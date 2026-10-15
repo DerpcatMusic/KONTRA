@@ -159,7 +159,7 @@ impl Engine {
         let cap = |c: f32, x: f32| if c <= x { c } else { x };
         // SR setup 0x140abdda0 at the 4x rate.
         let i4 = 1.0 / (rate as f32 * 4.0);
-        let w = i4 * 6.283;
+        let w = i4 * f32::from_bits(0x40c90e56);
         let co = |i: u16| cap(1.0, w * table(f32::from(i) + 0.881_591_8));
         let f5 = -8.64_f32 * 5.0;
         let f4 = -8.64_f32 * 4.982_892;

@@ -44,6 +44,9 @@ pub use widget::{
 };
 mod control;
 pub use control::{
+    NativeSnapshotOverlay, SnapshotOverlayEpoch, SnapshotOverlayFence, SnapshotOverlayRefusal,
+    SNAPSHOT_OVERLAY_VALUE_CAPACITY,
+    BehaviorAdmissionFailure, BehaviorAdmissionOwner,
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
     ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
     ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
@@ -70,14 +73,14 @@ pub use diagnose::{ScriptFault, SilentNote, why_silent};
 mod stream;
 pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
-    StreamCache, StreamError, StreamWorker,
+    StreamCache, StreamDemandSnapshot, StreamError, StreamWorker,
 };
 mod wavetable;
 pub use sampler_ir::Wavetable;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
-pub use bus::{Bus, BusMix, BusSend, GroupFader};
+pub use bus::{Bus, BusMix, BusPeakTap, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
@@ -129,13 +132,17 @@ mod pitch;
 pub use pitch::NotePitch;
 mod groups;
 mod residency;
+pub use residency::InitialGroupResidency;
+pub use residency::{
+    GroupResidencyProgress, ResidencyProgress, ResidencyRejection, ResidencyRejectionReason,
+};
 mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
 mod packed;
 mod plans;
 mod prepare;
-pub use packed::Packed;
+pub use packed::{Packed, Packing};
 mod grow;
 mod parallel;
 mod release;
@@ -150,8 +157,10 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    ResidencyRanges, ResidentFrames,
-    AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
+    DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision, SampleControl,
+    SampleRevisionLimits, SampleTarget, SampleTargetId, SampleTask, SampleTransaction,
+    ResidencyRanges, ResidentFrames, ResidentBuffer, HeadBudget, HeadBudgetStatus, HeadPreparer, HeadRangeBuilder,
+    AXIS_BASE, AssetId, ConstantStartPrefix, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, PreparedRanges, Ranges, Region,
     Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
@@ -181,7 +190,7 @@ mod schedule;
 mod variation;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId, ChannelScope};
-pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance, MAX_EXPRESSION_GAIN};
+pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance, InputSelector, MAX_EXPRESSION_GAIN};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
@@ -249,6 +258,10 @@ pub enum Rejection {
     Group,
     /// Another round-robin take of the sequence was chosen.
     Take,
+    /// An authored dormant player has no committed source yet.
+    SourceUnavailable,
+    /// Actual source/output rate and authored pitch exceed the supported step range.
+    SourcePitch,
 }
 
 /// One mapped region's outcome in a selection; `rejected` is `None` if it sounded.
@@ -309,8 +322,10 @@ pub enum Protocol {
     Vst3,
 }
 
-/// Original host address, never the transposed playback address. Adapters own
-/// wildcard matching and protocol-specific interpretation of absent/signed IDs.
+/// Input ownership address, never the transposed playback address. Adapters
+/// own wildcard matching and protocol-specific interpretation of IDs. An
+/// adapter mapping host tuples onto an internal wire retains the physical
+/// tuple separately through [`Runtime::set_input_source`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
     pub protocol: Protocol,
@@ -338,11 +353,13 @@ pub enum Error {
     RevisionConflict,
     /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
     RandomBudget,
+    /// Candidate preparation was canceled before publication.
+    Canceled,
 }
 
 impl Error {
     /// Every variant, so one can travel as its index.
-    pub const ALL: [Error; 12] = [
+    pub const ALL: [Error; 13] = [
         Self::Capacity,
         Self::InvalidInput,
         Self::NotReady,
@@ -355,6 +372,7 @@ impl Error {
         Self::ArithmeticOverflow,
         Self::RevisionConflict,
         Self::RandomBudget,
+        Self::Canceled,
     ];
 }
 
@@ -373,6 +391,7 @@ impl std::fmt::Display for Error {
             Self::ArithmeticOverflow => "arithmetic overflow",
             Self::RevisionConflict => "the revision changed",
             Self::RandomBudget => "random selection exceeded its draw budget",
+            Self::Canceled => "candidate preparation was canceled",
         })
     }
 }
@@ -478,6 +497,8 @@ enum AttackStatus {
 #[derive(Clone, Copy, Debug)]
 struct Note {
     input: Option<Input>,
+    /// Physical provenance when an adapter maps host identities onto a wire.
+    input_source: Option<Input>,
     input_down: bool,
     address: ChannelAddress,
     plan: PlanId,
@@ -565,12 +586,12 @@ impl Voice {
     /// Set this block's pitch step. A stretch voice's cursor is the time axis:
     /// it advances at the speed-scaled rate while the engine plays `pitch`.
     fn set_step(&mut self, pitch: f64) {
-        self.cursor = match self.stretch {
-            None => self.cursor.with_step(pitch),
+        match self.stretch {
+            None => self.cursor.set_step(pitch),
             Some(link) => {
                 self.stretch_step = pitch;
                 let time = f64::from(link.spec.speed) * link.rate_ratio;
-                self.cursor.with_step(time.clamp(resample::MIN_STEP, resample::MAX_STEP))
+                self.cursor.set_step(time.clamp(resample::MIN_STEP, resample::MAX_STEP));
             }
         };
     }
@@ -817,6 +838,7 @@ pub struct Runtime {
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
     control_queues: Option<control::ControlQueues>,
+    sample_queues: Option<prepare::sample_revision::SampleQueues>,
     notes: Arena<Note>,
     release_times: Box<[release::ReleaseTimes]>,
     note_events: Box<[note_event::NoteEvent]>,
@@ -845,6 +867,8 @@ pub struct Runtime {
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
     voice_drops: u64,
+    voice_pool_refusals: u64,
+    waiting_voice_replacements: u64,
     refused_starts: u64,
     stretch_fallbacks: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
@@ -866,6 +890,8 @@ pub struct Runtime {
     /// Some expression follows another, so changes must propagate.
     expression_followers: bool,
     expression_changes: Box<[Option<RenderedExpression>]>,
+    /// Monotonic count of owners reached by forwarded poly-pressure inputs.
+    poly_pressure_owners: usize,
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_ready: Vec<behavior::Ready>,
@@ -935,13 +961,18 @@ impl Runtime {
     }
 
     pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
-        Self::new_with_note_params(plan, limits, limits.notes)
+        Self::new_cancelable(plan, limits, &||false)
+    }
+
+    pub fn new_cancelable(plan:Prepared,limits:Limits,canceled:&dyn Fn()->bool)->Result<Self,Error> {
+        Self::new_with_note_params(plan, limits, limits.notes,canceled)
     }
 
     fn new_with_note_params(
         mut plan: Prepared,
         limits: Limits,
         initial_notes: usize,
+        canceled: &dyn Fn()->bool,
     ) -> Result<Self, Error> {
         trace_report::configure(&mut plan)?;
         if initial_notes == 0 || initial_notes > limits.notes {
@@ -993,6 +1024,8 @@ impl Runtime {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Error::Capacity)?;
         let rate = plan.rate;
+        let initial_residency=plan.prepare_initial_residency(canceled)?;
+        let initial_callbacks=initial_residency.pending();
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(
             plans.insert(Generation {
@@ -1015,9 +1048,12 @@ impl Runtime {
                 projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
                 modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
                 script: script_params::EngineLayers::new(&plan),
+                samples: prepare::sample_revision::SampleState::new(&plan),
+                initial_residency,
+                start_cursor: 0,
                 prepared: Box::new(plan),
                 notes: 0,
-                callbacks: 0,
+                callbacks: initial_callbacks,
             })?,
         );
         let signal_trace = plans
@@ -1036,6 +1072,7 @@ impl Runtime {
             active_plan,
             plan_queues: None,
             control_queues: None,
+            sample_queues: None,
             notes: Arena::new(id, limits.notes),
             closed_notes: Vec::with_capacity(limits.notes),
             source_ids: Vec::with_capacity(limits.notes),
@@ -1059,6 +1096,8 @@ impl Runtime {
             stream_admission_errors: [0; 2],
             stream_reserved: 0,
             voice_drops: 0,
+            voice_pool_refusals: 0,
+            waiting_voice_replacements: 0,
             refused_starts: 0,
             stretch_fallbacks: 0,
             voice_growths: 0,
@@ -1075,6 +1114,7 @@ impl Runtime {
             expressions: Arena::new(id, limits.expressions),
             expression_followers: false,
             expression_changes: vec![None; limits.expressions].into_boxed_slice(),
+            poly_pressure_owners: 0,
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
             behavior_ready: Vec::with_capacity(ready_capacity),
@@ -1147,6 +1187,12 @@ impl Runtime {
     }
     pub fn note_count(&self) -> usize {
         self.notes.count()
+    }
+    /// Fixed ownership slots, including held notes, tails and generated notes.
+    /// Transport adapters prepare matching binding/scratch storage off audio;
+    /// MIDI key range does not bound overlapping host note IDs.
+    pub fn note_capacity(&self) -> usize {
+        self.notes.slots.len()
     }
     pub fn voice_count(&self) -> usize {
         self.voices.count()
@@ -1233,6 +1279,29 @@ impl Runtime {
         }
     }
 
+    /// Enable raw input peaks for a bus of the active plan at a block boundary.
+    /// No allocation or sample scan occurs for an unobserved input. Changing
+    /// interest clears its previous observation; old generations are untouched.
+    pub fn enable_bus_input_peak(&mut self, bus: usize, enabled: bool) -> Result<(), Error> {
+        self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?
+            .dsp.buses.enable_input_peak(bus, enabled)
+    }
+
+    /// Raw linear stereo peak of an exact runtime bus since last taken.
+    /// Input must have been enabled before rendering. This does not map native
+    /// element identities or approximate their meter display laws.
+    pub fn bus_peak(&self, bus: usize, tap: BusPeakTap) -> Result<[f32; 2], Error> {
+        self.plans.get(self.active_plan.0).ok_or(Error::StaleHandle)?
+            .dsp.buses.peak(bus, tap)
+    }
+
+    /// Take enabled input taps independently of the existing output taps.
+    pub fn take_bus_input_peaks(&mut self, each: impl FnMut(usize, [f32; 2])) {
+        if let Some(g) = self.plans.get_mut(self.active_plan.0) {
+            g.dsp.buses.take_input_peaks(each);
+        }
+    }
+
     /// Mix `bus` of the active plan from the next rendered frame on. Older
     /// generations still sounding keep their own mix.
     pub fn set_bus_mix(&mut self, bus: usize, mix: BusMix) -> Result<(), Error> {
@@ -1305,11 +1374,7 @@ impl Runtime {
         if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
             return Err(Error::InvalidInput);
         }
-        if input.external_id.is_some()
-            && self.notes.slots.iter().enumerate().any(|(i, s)| {
-                s.value.is_some_and(|n| n.input == Some(input))
-                    && self.selections[i].performance == performance
-            })
+        if input.external_id.is_some() && self.owns_input(performance, input)
         {
             return Err(Error::DuplicateInput);
         }
@@ -1318,6 +1383,40 @@ impl Runtime {
             pitch,
             velocity,
         )
+    }
+
+    /// Retained terminal owners still reserve their identity. Traverse the
+    /// existing occupancy bitmap while sparse, and contiguous slots while
+    /// dense; pointer-chasing live notes is slower for a full arena.
+    fn owns_input(&self, performance: usize, input: Input) -> bool {
+        if self.notes.count() == 0 {
+            return false;
+        }
+        if self.notes.count() > self.notes.slots.len() / 2 {
+            return self.notes.slots.iter().enumerate().any(|(index, slot)| {
+                slot.value.is_some_and(|n| n.input == Some(input))
+                    && self.selections[index].performance == performance
+            });
+        }
+        for (word, &free) in self.notes.free.iter().enumerate() {
+            let valid = if (word + 1) * 64 > self.notes.slots.len() {
+                (1u64 << (self.notes.slots.len() % 64)) - 1
+            } else {
+                u64::MAX
+            };
+            let mut occupied = !free & valid;
+            while occupied != 0 {
+                let index = word * 64 + occupied.trailing_zeros() as usize;
+                let slot = &self.notes.slots[index];
+                if slot.value.is_some_and(|n| n.input == Some(input))
+                    && self.selections[index].performance == performance
+                {
+                    return true;
+                }
+                occupied &= occupied - 1;
+            }
+        }
+        false
     }
 
     /// Detached children do not release with their parent, but still retain its
@@ -1488,6 +1587,7 @@ impl Runtime {
         let id = match self.notes.insert_below(
             Note {
                 input,
+                input_source: input,
                 input_down: input.is_some(),
                 address,
                 plan,
@@ -1623,6 +1723,23 @@ impl Runtime {
         self.note_off_in(self.performance(0).unwrap(), input, velocity)
     }
 
+    /// Release the physical input owner captured at onset. Hosts with an exact
+    /// note identity need no FIFO search. Preserve the physical-key bookkeeping,
+    /// pedals, release callbacks and first-release record of [`Self::note_off`].
+    /// A generated owner, an already released input or a stale generation is
+    /// rejected without releasing another note with the same key.
+    pub fn note_off_exact(&mut self, id: NoteId, velocity: Option<f64>) -> Result<(), Error> {
+        release::validate_velocity(velocity)?;
+        self.apply_due();
+        let note = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
+        let input = note.input.ok_or(Error::InvalidInput)?;
+        if !note.input_down {
+            return Err(Error::StaleHandle);
+        }
+        self.input_keys &= !(1 << (input.key & 127));
+        self.key_up_now(id, velocity)
+    }
+
     /// FIFO pairing within the exact physical input identity and musical domain.
     pub fn note_off_in(
         &mut self,
@@ -1735,7 +1852,7 @@ impl Runtime {
             .apply_source(base_step, cursor.wavetable().is_some())?;
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
-        let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
+        let asset = self.plans.get(note.plan.0).unwrap().asset(sample);
         if !asset.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -1777,8 +1894,12 @@ impl Runtime {
                     .is_some_and(|v| v.started && v.cursor.waiting())
             });
             match waiting {
-                Some(i) => self.end_voice(VoiceId(self.voices.id(i))),
+                Some(i) => {
+                    self.waiting_voice_replacements = self.waiting_voice_replacements.saturating_add(1);
+                    self.end_voice(VoiceId(self.voices.id(i)));
+                }
                 None => {
+                    self.voice_pool_refusals = self.voice_pool_refusals.saturating_add(1);
                     self.voice_drops = self.voice_drops.saturating_add(1);
                     return Err(Error::Capacity);
                 }
@@ -1822,6 +1943,9 @@ impl Runtime {
             source_zone: 0,
             quiet: 0,
         })?);
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        generation.samples.pin(&generation.prepared, sample)
+            .expect("an admitted voice pins its validated live revision");
         self.link_allocation(id, 0, 0);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
@@ -1932,6 +2056,8 @@ impl Runtime {
             }
         }
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+            generation.callbacks=generation.callbacks.saturating_sub(generation.initial_residency.cancel());
+            generation.start_cursor=generation.prepared.plan_programs.len();
             generation.callbacks = generation.callbacks.saturating_sub(
                 generation
                     .midi_object

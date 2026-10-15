@@ -9,9 +9,16 @@ use std::{path::Path, sync::Arc};
 
 /// Where an instrument's resources come from.
 pub struct Source {
-    kontakt: sampler_kontakt::Resources,
+    kontakt: Option<sampler_kontakt::Resources>,
     uvi: Option<sampler_uvi::Resources>,
     strips: Strips,
+    resource_failure: Option<ResourceError>,
+    #[cfg(any(feature = "shots", test))]
+    current_probe: Option<AssetProbe>,
+    #[cfg(any(feature = "shots", test))]
+    probes: Vec<AssetProbe>,
+    #[cfg(any(feature = "shots", test))]
+    probe_dropped: usize,
     #[cfg(feature = "shots")]
     pub scan: Scan,
 }
@@ -26,6 +33,36 @@ struct Strips {
 }
 
 const STRIP_BUDGET: usize = 48 << 20;
+#[cfg(any(feature = "shots", test))]
+pub(super) const PROBE_LIMIT: usize = 512;
+
+/// Request evidence from the actual asset worker. No resource bytes or access
+/// values are retained. Paths belong in the user's local report only.
+#[cfg(any(feature = "shots", test))]
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AssetProbe {
+    pub index: Option<usize>,
+    pub path: String,
+    pub path_truncated: bool,
+    pub kind: &'static str,
+    pub resolver: &'static str,
+    pub status: &'static str,
+    pub codec: Option<&'static str>,
+    pub duration_ms: f64,
+    pub read_ms: f64,
+    pub decode_ms: f64,
+    pub queue_ms: Option<f64>,
+    pub permit_wait_ms: Option<f64>,
+    pub encoded_bytes: usize,
+    pub prepared_bytes: usize,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub frames: u32,
+    pub frame: usize,
+    pub target: [u32; 2],
+    pub window: Option<[u32; 4]>,
+    pub strip_cache_hit: bool,
+}
 
 impl Strips {
     fn get(&mut self, key: &str) -> Option<&Vec<Arc<Image>>> {
@@ -57,6 +94,11 @@ impl Strips {
 #[cfg(feature = "shots")]
 #[derive(Clone, Copy, Default)]
 pub struct Scan {
+    pub discovery_us: u64,
+    pub read_us: u64,
+    pub decode_us: u64,
+    pub encoded_bytes: usize,
+    pub strip_cache_hits: usize,
     pub lookups: usize,
     pub lookup_ok: usize,
     pub lookup_missing: usize,
@@ -82,41 +124,107 @@ pub struct Scan {
 
 impl Source {
     pub(super) fn for_program(instrument: &Path, program: u32) -> Result<Self, ResourceError> {
-        let mut source = Self::of(instrument);
-        source.kontakt =
+        if Self::is_uvi(instrument) {
+            return Ok(Self::of(instrument));
+        }
+        #[cfg(feature = "shots")]
+        let start = std::time::Instant::now();
+        let kontakt =
             sampler_kontakt::Resources::for_program(instrument, program).map_err(kontakt_error)?;
+        let mut source = Self::from_resources(Some(kontakt), None);
+        #[cfg(feature = "shots")]
+        {
+            source.scan.discovery_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        }
         Ok(source)
     }
 
     pub fn of(instrument: &Path) -> Self {
-        let uvi = instrument
-            .ancestors()
-            .any(|p| {
-                p.extension().is_some_and(|e| {
-                    e.eq_ignore_ascii_case("ufs") || e.eq_ignore_ascii_case("uvip")
-                })
-            })
-            .then(|| sampler_uvi::Resources::of(instrument));
+        #[cfg(feature = "shots")]
+        let start = std::time::Instant::now();
+        let uvi = Self::is_uvi(instrument).then(|| sampler_uvi::Resources::of(instrument));
+        // A UVI program has exactly one authority. Walking Kontakt resource
+        // trees here was unrelated work and could scan an entire bank's parent.
+        let kontakt = uvi
+            .is_none()
+            .then(|| sampler_kontakt::Resources::of(instrument));
+        let mut source = Self::from_resources(kontakt, uvi);
+        #[cfg(feature = "shots")]
+        {
+            source.scan.discovery_us = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        }
+        source
+    }
+    fn is_uvi(instrument: &Path) -> bool {
+        instrument.ancestors().any(|p| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("ufs") || e.eq_ignore_ascii_case("uvip"))
+        })
+    }
+    pub(super) fn failed(error: ResourceError) -> Self {
+        let mut source = Self::from_resources(None, None);
+        source.resource_failure = Some(error);
+        source
+    }
+    fn from_resources(
+        kontakt: Option<sampler_kontakt::Resources>,
+        uvi: Option<sampler_uvi::Resources>,
+    ) -> Self {
         Self {
-            kontakt: sampler_kontakt::Resources::of(instrument),
+            kontakt,
             uvi,
             strips: Strips::default(),
+            resource_failure: None,
+            #[cfg(any(feature = "shots", test))]
+            current_probe: None,
+            #[cfg(any(feature = "shots", test))]
+            probes: Vec::new(),
+            #[cfg(any(feature = "shots", test))]
+            probe_dropped: 0,
             #[cfg(feature = "shots")]
             scan: Scan::default(),
         }
     }
 
     pub(crate) fn read_result(&mut self, path: &str) -> Result<Option<Vec<u8>>, ResourceError> {
+        #[cfg(any(feature = "shots", test))]
+        let start = std::time::Instant::now();
         let result = if path.is_empty() || path.len() > 4096 || path.contains('\0') {
             Err(ResourceError::InvalidPath)
+        } else if let Some(failure) = self.resource_failure {
+            Err(failure)
         } else {
             match &self.uvi {
-                Some(uvi) => uvi.read_result(path),
-                None => self.kontakt.read_result(path).map_err(kontakt_error),
+                Some(uvi) => uvi.read_with_origin_result(path),
+                None => self
+                    .kontakt
+                    .as_mut()
+                    .ok_or(ResourceError::Unavailable)
+                    .and_then(|kontakt| {
+                        kontakt.read_with_origin_result(path).map_err(kontakt_error)
+                    }),
             }
         };
+        #[cfg(any(feature = "shots", test))]
+        if let Ok(Some((_, origin))) = &result
+            && let Some(probe) = &mut self.current_probe
+        {
+            probe.resolver = origin;
+        }
+        let result = result.map(|found| found.map(|(bytes, _)| bytes));
         #[cfg(feature = "shots")]
         {
+            self.scan.read_us = self
+                .scan
+                .read_us
+                .saturating_add(start.elapsed().as_micros().min(u64::MAX as u128) as u64);
+            self.scan.encoded_bytes = self.scan.encoded_bytes.saturating_add(
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(|b| b.as_ref())
+                    .map_or(0, Vec::len),
+            );
             self.scan.lookups += 1;
             match &result {
                 Ok(Some(_)) => self.scan.lookup_ok += 1,
@@ -134,34 +242,113 @@ impl Source {
                 Err(ResourceError::Unavailable) => self.scan.lookup_unavailable += 1,
             }
         }
+        #[cfg(any(feature = "shots", test))]
+        if let Some(probe) = &mut self.current_probe {
+            probe.read_ms += start.elapsed().as_secs_f64() * 1000.;
+            probe.status = match &result {
+                Ok(Some(bytes)) => {
+                    probe.encoded_bytes += bytes.len();
+                    "found"
+                }
+                Ok(None) => "missing",
+                Err(error) => resource_category(*error),
+            };
+        }
         result
     }
     pub(super) fn native_names(&mut self) -> Vec<String> {
-        let mut names = self.kontakt.names("resources/native_ui/");
-        names.extend(self.kontakt.names("native_ui/"));
+        let Some(kontakt) = &mut self.kontakt else {
+            return Vec::new();
+        };
+        let mut names = kontakt.names("resources/native_ui/");
+        names.extend(kontakt.names("native_ui/"));
         names.sort();
         names.dedup();
         names
     }
     pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
-        let font = self
-            .read_result(&asset.path)
-            .ok()
-            .flatten()
-            .and_then(|bytes| moose::mui::mui::prelude::Font::new(bytes).ok());
+        #[cfg(any(feature = "shots", test))]
+        let start = self.begin_probe(asset, 0, [0; 2], None);
+        let bytes = self.read_result(&asset.path).ok().flatten();
+        #[cfg(any(feature = "shots", test))]
+        let decode_start = std::time::Instant::now();
+        let font = bytes.and_then(|bytes| moose::mui::mui::prelude::Font::new(bytes).ok());
+        #[cfg(any(feature = "shots", test))]
+        self.finish_font_probe(start, decode_start, font.as_ref());
+        font
+    }
+    #[cfg(any(feature = "shots", test))]
+    pub(super) fn finish_font_probe(
+        &mut self,
+        start: std::time::Instant,
+        decode_start: std::time::Instant,
+        font: Option<&moose::mui::mui::prelude::Font>,
+    ) {
+        {
+            let elapsed = decode_start.elapsed();
+            if let Some(probe) = &mut self.current_probe {
+                probe.decode_ms = elapsed.as_secs_f64() * 1000.;
+                if font.is_some() {
+                    probe.status = "found";
+                    probe.codec = Some("font");
+                    probe.prepared_bytes = font.map_or(0, |f| f.as_ref().len());
+                } else if probe.status == "found" {
+                    probe.status = "decode_failed";
+                }
+            }
+            #[cfg(feature = "shots")]
+            {
+                self.scan.decode_us = self
+                    .scan
+                    .decode_us
+                    .saturating_add(elapsed.as_micros().min(u64::MAX as u128) as u64);
+            }
+            self.finish_probe(start);
+        }
         #[cfg(feature = "shots")]
         {
             self.scan.fonts += 1;
             self.scan.font_ok += usize::from(font.is_some());
         }
-        font
     }
 
-    /// Compatibility probe: one frame, never an eagerly decoded strip.
+    /// Compatibility probe: returns one frame. A bounded strip cache can
+    /// prepare its neighboring frames; production uses requested device size.
     pub fn load(&mut self, asset: &ir::Asset) -> Option<Arc<Picture>> {
         self.load_frame(asset, 0, [u32::MAX; 2], None, || false)
     }
     pub(super) fn load_frame(
+        &mut self,
+        asset: &ir::Asset,
+        frame: usize,
+        target: [u32; 2],
+        window: Option<[u32; 4]>,
+        canceled: impl Fn() -> bool,
+    ) -> Option<Arc<Picture>> {
+        #[cfg(any(feature = "shots", test))]
+        let start = self.begin_probe(asset, frame, target, window);
+        let picture = self.load_frame_inner(asset, frame, target, window, &canceled);
+        #[cfg(any(feature = "shots", test))]
+        {
+            if let Some(probe) = &mut self.current_probe {
+                if let Some(picture) = &picture {
+                    probe.status = "found";
+                    probe.prepared_bytes = picture.frames.iter().map(|i| i.rgba.len()).sum();
+                    if let Some(image) = picture.frames.first() {
+                        probe.width = Some(image.width);
+                        probe.height = Some(image.height);
+                    }
+                } else if canceled() {
+                    probe.status = "canceled";
+                } else if probe.status == "found" {
+                    probe.status = "decode_failed";
+                }
+            }
+            self.finish_probe(start);
+        }
+        picture
+    }
+    fn load_frame_inner(
         &mut self,
         asset: &ir::Asset,
         frame: usize,
@@ -177,36 +364,86 @@ impl Source {
             ir::AssetKind::BitmapFont => ir::ImageMeta::default(),
             _ => return None,
         };
-        let strip = window.is_none() && meta.frames > 1 && matches!(asset.kind, ir::AssetKind::Image(_));
+        let strip =
+            window.is_none() && meta.frames > 1 && matches!(asset.kind, ir::AssetKind::Image(_));
         let key = format!("{}:{:?}:{target:?}", asset.path, meta);
         if strip && let Some(frames) = self.strips.get(&key) {
             let image = frames.get(frame.min(frames.len() - 1))?.clone();
-            return Some(Arc::new(Picture::prepared(image, frame, meta.frames as usize, window)));
+            #[cfg(any(feature = "shots", test))]
+            if let Some(probe) = &mut self.current_probe {
+                probe.strip_cache_hit = true;
+                probe.codec = Some("png");
+            }
+            #[cfg(feature = "shots")]
+            {
+                self.scan.strip_cache_hits += 1;
+            }
+            return Some(Arc::new(Picture::prepared(
+                image,
+                frame,
+                meta.frames as usize,
+                window,
+            )));
         }
         let bytes = self.read_result(&asset.path).ok().flatten()?;
         if canceled() {
             return None;
         }
-        if strip
-            && let Some(frames) = super::picture_decode::png_strip(&bytes, meta, target, &canceled)
-        {
+        #[cfg(any(feature = "shots", test))]
+        let decode_start = std::time::Instant::now();
+        #[cfg(any(feature = "shots", test))]
+        if let Some(probe) = &mut self.current_probe {
+            probe.codec = super::picture_decode::codec(&bytes);
+            probe.status = if probe.codec.is_some() {
+                "decode_failed"
+            } else {
+                "unsupported"
+            };
+        }
+        let frames = strip
+            .then(|| {
+                super::picture_decode::png_strip(&bytes, meta, target, STRIP_BUDGET, &canceled)
+            })
+            .flatten();
+        if let Some(frames) = frames {
+            #[cfg(any(feature = "shots", test))]
+            self.record_decode(decode_start, true);
             let frames: Vec<_> = frames.into_iter().map(Arc::new).collect();
             let image = frames.get(frame.min(frames.len() - 1))?.clone();
             self.strips.put(key, frames);
-            return Some(Arc::new(Picture::prepared(image, frame, meta.frames as usize, window)));
+            return Some(Arc::new(Picture::prepared(
+                image,
+                frame,
+                meta.frames as usize,
+                window,
+            )));
         }
         let image = super::picture_decode::decode(&bytes, meta, frame, target, window, canceled);
-
-        #[cfg(feature = "shots")]
-        {
-            self.scan.decodes += 1;
-            self.scan.decode_ok += usize::from(image.is_some());
-        }
+        #[cfg(any(feature = "shots", test))]
+        self.record_decode(decode_start, image.is_some());
 
         let image = image?;
         if matches!(asset.kind, ir::AssetKind::BitmapFont) {
+            #[cfg(any(feature = "shots", test))]
+            if let Some(probe) = &mut self.current_probe {
+                probe.status = "bitmap_font_invalid";
+            }
             let sidecar = format!("{}.txt", asset.path.rsplit_once('.')?.0);
-            let text = self.read_result(&sidecar).ok().flatten()?;
+            let text = match self.read_result(&sidecar) {
+                Ok(Some(text)) => text,
+                Ok(None) => {
+                    #[cfg(any(feature = "shots", test))]
+                    if let Some(probe) = &mut self.current_probe {
+                        probe.status = "bitmap_font_metadata_missing";
+                    }
+                    return None;
+                }
+                Err(_) => return None,
+            };
+            #[cfg(any(feature = "shots", test))]
+            if let Some(probe) = &mut self.current_probe {
+                probe.status = "bitmap_font_invalid";
+            }
             if sampler_ksp::ui::picture_meta(&String::from_utf8_lossy(&text)).frames != 1 {
                 return None;
             }
@@ -218,6 +455,94 @@ impl Source {
             meta.frames.max(1) as usize,
             window,
         )))
+    }
+    #[cfg(any(feature = "shots", test))]
+    pub(super) fn begin_probe(
+        &mut self,
+        asset: &ir::Asset,
+        frame: usize,
+        target: [u32; 2],
+        window: Option<[u32; 4]>,
+    ) -> std::time::Instant {
+        let path_end = (0..=asset.path.len().min(4096))
+            .rev()
+            .find(|end| asset.path.is_char_boundary(*end))
+            .unwrap_or(0);
+        self.current_probe = Some(AssetProbe {
+            index: None,
+            path: asset.path[..path_end].to_owned(),
+            path_truncated: path_end < asset.path.len(),
+            kind: match asset.kind {
+                ir::AssetKind::Image(_) => "image",
+                ir::AssetKind::BitmapFont => "bitmap_font",
+                ir::AssetKind::TrueTypeFont => "font",
+            },
+            resolver: self.uvi.as_ref().map_or_else(
+                || {
+                    self.kontakt
+                        .as_ref()
+                        .map_or("unavailable", |k| k.authority_for(&asset.path))
+                },
+                |uvi| uvi.authority(),
+            ),
+            status: "unsupported",
+            codec: None,
+            duration_ms: 0.,
+            read_ms: 0.,
+            decode_ms: 0.,
+            queue_ms: None,
+            permit_wait_ms: None,
+            encoded_bytes: 0,
+            prepared_bytes: 0,
+            width: None,
+            height: None,
+            frames: match asset.kind {
+                ir::AssetKind::Image(meta) => meta.frames,
+                _ => 1,
+            },
+            frame,
+            target,
+            window,
+            strip_cache_hit: false,
+        });
+        std::time::Instant::now()
+    }
+    #[cfg(any(feature = "shots", test))]
+    fn record_decode(&mut self, start: std::time::Instant, ok: bool) {
+        let elapsed = start.elapsed();
+        if let Some(probe) = &mut self.current_probe {
+            probe.decode_ms += elapsed.as_secs_f64() * 1000.;
+        }
+        #[cfg(feature = "shots")]
+        {
+            self.scan.decodes += 1;
+            self.scan.decode_ok += usize::from(ok);
+            self.scan.decode_us = self
+                .scan
+                .decode_us
+                .saturating_add(elapsed.as_micros().min(u64::MAX as u128) as u64);
+        }
+        #[cfg(not(feature = "shots"))]
+        let _ = ok;
+    }
+    #[cfg(any(feature = "shots", test))]
+    fn finish_probe(&mut self, start: std::time::Instant) {
+        if let Some(mut probe) = self.current_probe.take() {
+            probe.duration_ms = start.elapsed().as_secs_f64() * 1000.;
+            if self.probes.len() < PROBE_LIMIT {
+                self.probes.push(probe);
+            } else {
+                self.probe_dropped += 1;
+            }
+        }
+    }
+    #[cfg(any(feature = "shots", test))]
+    pub fn take_probes(&mut self) -> Vec<AssetProbe> {
+        std::mem::take(&mut self.probes)
+    }
+    #[cfg(any(feature = "shots", test))]
+    pub fn probe_dropped(&self) -> usize {
+        self.probe_dropped
     }
 }
 
@@ -241,8 +566,14 @@ fn kontakt_error(error: sampler_kontakt::LoadError) -> ResourceError {
         E::Invalid { reason, .. } => match reason.as_str() {
             "Invalid library-relative resource path" => ResourceError::InvalidPath,
             "Ambiguous loose resource name" | "Ambiguous resource name" => ResourceError::Ambiguous,
-            "Resource exceeds 32 MiB" => ResourceError::Limit,
+            "Resource exceeds 32 MiB" | "Resource namespace exceeds discovery bounds" => {
+                ResourceError::Limit
+            }
+            "Resource namespace could not be read" => ResourceError::Read,
             "Resource container could not be indexed" => ResourceError::Unavailable,
+            "authored resource container is unavailable" | "resource program is absent" => {
+                ResourceError::Unavailable
+            }
             _ => ResourceError::Corrupt,
         },
         E::Staged { source, .. } => kontakt_error(*source),
@@ -341,10 +672,12 @@ mod tests {
             )
             .unwrap();
             let mut source = Source::of(path);
-            let root = source.kontakt.root().to_owned();
-            let names = source.kontakt.names("");
+            let root = source.kontakt.as_ref().unwrap().root().to_owned();
+            let names = source.kontakt.as_mut().unwrap().names("");
             for (container, path) in source
                 .kontakt
+                .as_ref()
+                .unwrap()
                 .locations()
                 .iter()
                 .filter(|p| {
@@ -688,6 +1021,116 @@ mod tests {
     }
 
     #[test]
+    fn asset_probes_distinguish_missing_unsupported_corrupt_geometry_and_cache_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let pictures = dir.path().join("Resources/pictures");
+        std::fs::create_dir_all(&pictures).unwrap();
+        std::fs::write(pictures.join("unsupported.bin"), b"unknown authored format").unwrap();
+        std::fs::write(pictures.join("corrupt.png"), b"\x89PNGtruncated").unwrap();
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 1, 4);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[1, 2, 3, 255, 4, 5, 6, 127, 7, 8, 9, 255, 10, 11, 12, 127])
+                .unwrap();
+        }
+        std::fs::write(pictures.join("strip.png"), &png).unwrap();
+        let mut source = Source::of(&dir.path().join("fixture.nki"));
+        let asset = |name: &str, frames| ir::Asset {
+            path: format!("Resources/pictures/{name}"),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                frames,
+                ..Default::default()
+            }),
+        };
+        for (name, frames, status, codec) in [
+            ("absent.png", 1, "missing", None),
+            ("unsupported.bin", 1, "unsupported", None),
+            ("corrupt.png", 1, "decode_failed", Some("png")),
+            ("strip.png", 3, "decode_failed", Some("png")),
+        ] {
+            assert!(source.load(&asset(name, frames)).is_none());
+            let probe = source.take_probes().pop().unwrap();
+            assert_eq!((probe.status, probe.codec), (status, codec));
+            assert!(probe.duration_ms >= probe.read_ms);
+            assert!(!probe.strip_cache_hit);
+        }
+        for frame in [0, 1] {
+            let image = source
+                .load_frame(&asset("strip.png", 2), frame, [1, 2], None, || false)
+                .unwrap();
+            assert_eq!(image.frames[0].rgba[0], if frame == 0 { 1 } else { 7 });
+            let probe = source.take_probes().pop().unwrap();
+            assert_eq!(
+                (probe.status, probe.codec, probe.frames, probe.frame),
+                ("found", Some("png"), 2, frame)
+            );
+            assert_eq!(probe.strip_cache_hit, frame == 1);
+            assert_eq!(
+                (probe.width, probe.height, probe.prepared_bytes),
+                (Some(1), Some(2), 8)
+            );
+            assert_eq!(probe.encoded_bytes, if frame == 0 { png.len() } else { 0 });
+        }
+        #[cfg(feature = "shots")]
+        assert_eq!(
+            (
+                source.scan.decodes,
+                source.scan.decode_ok,
+                source.scan.strip_cache_hits
+            ),
+            (4, 1, 1)
+        );
+        let bitmap = ir::Asset {
+            path: "Resources/pictures/strip.png".into(),
+            kind: ir::AssetKind::BitmapFont,
+        };
+        assert!(source.load(&bitmap).is_none());
+        assert_eq!(
+            source.take_probes()[0].status,
+            "bitmap_font_metadata_missing"
+        );
+        std::fs::write(pictures.join("strip.txt"), b"Number of Animations: 1").unwrap();
+        std::fs::write(pictures.join("valid.ttf"), super::super::theme::NOTO_SANS).unwrap();
+        // Namespace discovery is a source snapshot; reload after adding files.
+        let mut source = Source::of(&dir.path().join("fixture.nki"));
+        assert!(source.load(&bitmap).is_none());
+        assert_eq!(source.take_probes()[0].status, "bitmap_font_invalid");
+        let font = |name| ir::Asset {
+            path: format!("Resources/pictures/{name}"),
+            kind: ir::AssetKind::TrueTypeFont,
+        };
+        assert!(source.font(&font("valid.ttf")).is_some());
+        let probe = source.take_probes().pop().unwrap();
+        assert_eq!(
+            (probe.kind, probe.status, probe.codec),
+            ("font", "found", Some("font"))
+        );
+        assert_eq!(probe.prepared_bytes, super::super::theme::NOTO_SANS.len());
+        assert!(source.font(&font("absent.ttf")).is_none());
+        assert_eq!(source.take_probes()[0].status, "missing");
+        assert!(source.font(&font("unsupported.bin")).is_none());
+        assert_eq!(source.take_probes()[0].status, "decode_failed");
+        for _ in 0..PROBE_LIMIT + 3 {
+            source.load(&asset("absent.png", 1));
+        }
+        assert_eq!(source.take_probes().len(), PROBE_LIMIT);
+        assert_eq!(source.probe_dropped(), 3);
+        let mut uvi = Source::of(&dir.path().join("fixture.uvip"));
+        assert!(
+            uvi.kontakt.is_none(),
+            "UVI must not discover a Kontakt authority"
+        );
+        assert!(uvi.uvi.is_some());
+        uvi.load(&asset("absent.png", 1));
+        assert_eq!(uvi.take_probes()[0].resolver, "uvi-loose");
+    }
+
+    #[test]
     fn a_dragged_strip_decodes_once_not_once_per_frame() {
         let dir = std::env::temp_dir().join(format!("strip-cache-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("Samples")).unwrap();
@@ -708,7 +1151,10 @@ mod tests {
         std::fs::write(dir.join("Resources/pictures/strip.png"), &bytes).unwrap();
         let meta = ir::ImageMeta {
             frames: 128,
-            size: Some(ir::Size { width: 100.0, height: 100.0 }),
+            size: Some(ir::Size {
+                width: 100.0,
+                height: 100.0,
+            }),
             ..Default::default()
         };
         let asset = ir::Asset {
@@ -725,21 +1171,31 @@ mod tests {
         };
         // Before: every frame read and decoded the strip up to its own rows.
         let per_frame = time(&mut |frame| {
-            let image = super::super::picture_decode::decode(&bytes, meta, frame, [100, 100], None, || false);
+            let image =
+                super::super::picture_decode::decode(&bytes, meta, frame, [100, 100], None, || {
+                    false
+                });
             assert_eq!(image.unwrap().rgba[0], frame as u8);
         });
         // After: one pass, then cache hits.
         let first = time(&mut |frame| {
             if frame == 0 {
-                source.load_frame(&asset, 0, [100, 100], None, || false).unwrap();
+                source
+                    .load_frame(&asset, 0, [100, 100], None, || false)
+                    .unwrap();
             }
         }) * 128;
         let cached = time(&mut |frame| {
-            let p = source.load_frame(&asset, frame, [100, 100], None, || false).unwrap();
+            let p = source
+                .load_frame(&asset, frame, [100, 100], None, || false)
+                .unwrap();
             assert_eq!(p.frames[0].rgba[0], frame as u8);
         });
         println!("STRIP per_frame={per_frame:?} first_whole_strip={first:?} cached={cached:?}");
-        assert!(cached * 10 < per_frame, "cached {cached:?} vs per-frame {per_frame:?}");
+        assert!(
+            cached * 10 < per_frame,
+            "cached {cached:?} vs per-frame {per_frame:?}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

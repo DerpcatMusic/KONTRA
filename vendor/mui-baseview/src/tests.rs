@@ -702,7 +702,7 @@ fn cpu_presentation_fixture(resize_failure: bool) {
             ui: Ui::default(),
             view: Green,
         }));
-        let window = Window::create(
+        let window = baseview::ThreadedWindow::create(
             settings("MUI CPU regression", (240, 200))
                 .with_resizable(false)
                 .with_scale_factor_override(Some(1.0)),
@@ -734,7 +734,7 @@ fn cpu_presentation_fixture(resize_failure: bool) {
         .expect("CPU window");
         window.show().unwrap();
         let result = recv.recv_timeout(Duration::from_secs(30));
-        window.close();
+        std::thread::spawn(move || window.close()).join().unwrap();
         result
             .expect("CPU frame callback")
             .expect("CPU presentation");
@@ -1286,7 +1286,7 @@ fn native_destroyed_parent_and_drawable_stop_callbacks() {
         let (id_send, id_recv) = channel();
         let counter = Arc::clone(&callbacks);
         let close_counter = Arc::clone(&closes);
-        let child = Window::create(settings, move |cx| {
+        let child = baseview::ThreadedWindow::create(settings, move |cx| {
             let id = match cx.window_handle()?.as_raw() {
                 raw_window_handle::RawWindowHandle::Xlib(h) => h.window as u32,
                 raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get(),
@@ -1323,7 +1323,7 @@ fn native_destroyed_parent_and_drawable_stop_callbacks() {
             .expect("destroyed drawable must release its native handler");
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         let finished = callbacks.load(Ordering::SeqCst);
-        child.close();
+        std::thread::spawn(move || child.close()).join().unwrap();
         assert_eq!(callbacks.load(Ordering::SeqCst), finished);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         if !parented {

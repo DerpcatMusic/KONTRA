@@ -1074,7 +1074,8 @@ fn source_phase_is_sampled_at_onset_and_reused_without_heap() {
                                 lfo
                             } else {
                                 Lfo {
-                                    phase: 0.25,
+                                    // Native ID180 getter/emitter: saved .125 + CC1 * .25.
+                                    phase: 0.375,
                                     retrigger: true,
                                     ..lfo
                                 }
@@ -1105,7 +1106,7 @@ fn source_phase_is_sampled_at_onset_and_reused_without_heap() {
                 }
                 assert!(
                     render(&mut meta, 128, block) == render(&mut expected, 128, block),
-                    "phase must replace the saved phase at onset"
+                    "the absolute onset phase lane must include its saved base"
                 );
                 support::without_heap(|| {
                     meta.set_controller(meta.performance(0).unwrap(), 1, 0)

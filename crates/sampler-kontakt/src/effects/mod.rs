@@ -11,6 +11,9 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
+#[cfg(test)]
+mod record_audit;
+
 
 pub(crate) const RACK: u16 = 0x3a;
 pub(crate) const BUS: u16 = 0x45;
@@ -227,6 +230,9 @@ pub(crate) fn apply_writes(
             parameter @ ("ENGINE_PAR_SHAPE" | "ENGINE_PAR_DRIVE" | "ENGINE_PAR_DAMPING") => {
                 fx.apply_drive_parameter(parameter, w.value)
             }
+            parameter if color::skreamer_parameter(parameter).is_some() => {
+                fx.apply_skreamer_parameter(parameter, w.value)
+            }
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
             "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
@@ -321,6 +327,22 @@ pub(crate) enum Params {
 pub(crate) use space::Convolution;
 
 impl Slot {
+    fn apply_skreamer_parameter(&mut self, parameter: &str, value: i32) {
+        if self.module != 0x21 {
+            return;
+        }
+        let Some(index) = color::skreamer_parameter(parameter) else { return };
+        let Some(Params::Fields(fields)) = self.params() else { return };
+        if fields.len() != 5 || !fields.iter().all(|f| {
+            matches!(f.value, ni_file::kontakt::objects::EffectValue::Float(v) if (0.0..=1.0).contains(&v))
+        }) {
+            return;
+        }
+        let stored = sampler_core::EngineParameterLaw::Linear { low: 0., high: 1. }.decode(value) as f32;
+        let at = index * 4;
+        self.public[at..at + 4].copy_from_slice(&stored.to_le_bytes());
+    }
+
     fn apply_drive_parameter(&mut self, parameter: &str, value: i32) {
         let (at, low, high) = match (parameter, self.params()) {
             ("ENGINE_PAR_SHAPE", Some(Params::Saturation { .. })) => (0, -1., 1.),
@@ -777,12 +799,20 @@ pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
 /// A decoded impulse response: its sample rate and frames.
 pub(crate) type Decoded = (u32, Vec<[f32; 2]>);
 
+/// A file-table reference belongs to the exact physical effect that authored it.
+/// Equal indices in base and overlaid snapshot records are separate identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ImpulseRequest {
+    pub index: i32,
+    pub address: sampler_ir::SlotAddress,
+}
+
 /// Where convolution slots find their impulse responses: `load` decodes the
 /// response an other-files index names, `store` collects the shaped ones.
 pub(crate) struct Impulses<'a> {
     pub store: &'a mut Vec<sampler_ir::Impulse>,
-    pub recipes: Option<&'a mut Vec<Convolution>>,
-    pub load: &'a mut dyn FnMut(i32) -> Result<Decoded, String>,
+    pub recipes: Option<&'a mut Vec<(ImpulseRequest, Convolution)>>,
+    pub load: &'a mut dyn FnMut(ImpulseRequest) -> Result<Decoded, String>,
 }
 
 /// [`chain`], translating convolutions when `impulses` is given (bus scope).
@@ -970,11 +1000,8 @@ pub(crate) fn chain_with(
                     .collect();
                 match color::skreamer(&knobs) {
                     Some(config) => {
-                        out.processors.push(sampler_ir::Processor::Color(config));
+                        push_color(&mut out, fx.slot, dynamic, config);
                         combined = gain;
-                        if dynamic.is_some() {
-                            notes.push(("Skreamer live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
-                        }
                     }
                     None => modelled = false,
                 }
@@ -1215,7 +1242,10 @@ pub(crate) fn chain_with(
             }
             Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
                 let source = impulses.as_deref_mut().expect("checked above");
-                match space::convolution(c, source, &mut notes) {
+                let request = ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress {
+                    group: physical.0, slot: fx.slot as i32, generic: physical.1,
+                }};
+                match space::convolution(c, request, source, &mut notes) {
                     Ok(impulse) => {
                         flush(&mut combined, &mut filters, &mut out);
                         out.processors.push(sampler_ir::Processor::Space(
@@ -1395,7 +1425,8 @@ pub(crate) fn instrument_buses(
     dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
-    instrument_buses_with_recipes(ir, racks, buses, dynamic, load, None)
+    let mut indexed = |request: ImpulseRequest| load(request.index);
+    instrument_buses_with_recipes(ir, racks, buses, dynamic, &mut indexed, None)
 }
 
 pub(crate) fn instrument_buses_with_recipes(
@@ -1403,8 +1434,8 @@ pub(crate) fn instrument_buses_with_recipes(
     racks: &[(String, Vec<Slot>)],
     buses: &[BusPlan],
     dynamic: bool,
-    load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
-    recipes: Option<&mut Vec<Convolution>>,
+    load: &mut dyn FnMut(ImpulseRequest) -> Result<Decoded, String>,
+    recipes: Option<&mut Vec<(ImpulseRequest, Convolution)>>,
 ) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
     let rack = |name: &str| {
@@ -1776,7 +1807,7 @@ mod tests {
         use sampler_ir as ir;
         let mut instrument = ir::Instrument::default();
         instrument.groups.push(ir::Group::default());
-        instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.keys = ir::KeyRange { low: 60, high: 60 };
         zone.group = Some(ir::GroupRef(0));
@@ -2733,6 +2764,52 @@ mod tests {
     }
 
     #[test]
+    fn skreamer_init_writes_validate_module_record_and_complete_physical_address() {
+        let source = "on init\nset_engine_par($ENGINE_PAR_SK_TONE,100000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_DRIVE,900000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_BASS,200000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_BRIGHT,800000,-1,3,$NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_SK_MIX,300000,-1,3,$NI_INSERT_BUS)\nend on";
+        let initialized = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &Default::default()).unwrap();
+        let writes = initialized.engine_pars();
+        let payload: Vec<_> = [0.5f32; 5].into_iter().flat_map(f32::to_le_bytes).collect();
+        let mut fx = slot(0x21, payload.clone(), 0.25);
+        fx.slot = 3;
+        apply_writes(std::slice::from_mut(&mut fx), &writes, 0, -1);
+        assert_eq!(fx.public, payload);
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 2);
+        assert_eq!(fx.public, payload);
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert_eq!(fx.public, [0.1f32, 0.9, 0.2, 0.8, 0.3].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>());
+        assert_eq!(fx.output_gain, 0.25);
+        fx.module = 0x42;
+        fx.version = 0x10;
+        fx.public = [0.5f32; 3].into_iter().flat_map(f32::to_le_bytes).chain([0]).collect();
+        let tape = fx.public.clone();
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert_eq!(fx.public, tape, "SK controls cannot edit Tape");
+        fx.module = 0x21;
+        fx.version = 0x50;
+        fx.public = payload[..16].to_vec();
+        let invalid = fx.public.clone();
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert_eq!(fx.public, invalid, "a truncated record cannot be repaired by a guessed write");
+    }
+
+    #[test]
+    fn skreamer_live_lanes_keep_bypass_output_mix_and_tape_limit_distinct() {
+        let mut fx = slot(0x21, [0.5f32; 5].into_iter().flat_map(f32::to_le_bytes).collect(), 0.25);
+        fx.slot = 3;
+        fx.bypass = true;
+        let built = chain_with(&[fx], Scope::Bus, None, Some((-1, 1)), (-1, 1), &[]);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        assert!(matches!(built.processors[0], sampler_ir::Processor::Mix { count: 1, address: sampler_ir::SlotAddress { group: -1, slot: 3, generic: 1 }, dry: 0., wet: 0.25, bypass: true }));
+        let sampler_ir::Processor::Color(config) = built.processors[1] else { panic!("missing Skreamer") };
+        assert_eq!(config.lanes().len(), 5);
+        assert_eq!(built.lane_slots, [(3, 1)]);
+        let mut tape = slot(0x42, [0.5f32; 3].into_iter().flat_map(f32::to_le_bytes).chain([0]).collect(), 1.);
+        tape.version = 0x10;
+        let tape = chain_with(&[tape], Scope::Bus, None, Some((-1, 1)), (-1, 1), &[]);
+        assert!(tape.notes.iter().any(|(_, feature, value, _)| feature.contains("live controls") && value == "knobs are constants"));
+    }
+
+    #[test]
     fn init_shape_drive_and_damping_writes_update_only_addressed_valid_slots() {
         let initialized = sampler_ksp::initialize(
             "on init\nset_engine_par($ENGINE_PAR_SHAPE, 750000, -1, 3, $NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_DRIVE, 250000, -1, 5, $NI_INSERT_BUS)\nset_engine_par($ENGINE_PAR_DAMPING, 1000000, -1, 5, $NI_INSERT_BUS)\nend on",
@@ -2798,7 +2875,7 @@ mod tests {
             let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
             assert!(built.notes.is_empty(), "{:?}", built.notes);
             let mut instrument = ir::Instrument::default();
-            instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
             instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: built.processors, post_amplitude: vec![] });
             let mut zone = ir::Zone::new(ir::AssetRef(0));
             zone.keys = ir::KeyRange { low: 60, high: 60 };
@@ -2819,7 +2896,7 @@ mod tests {
 
     fn fx_runtime(processors: Vec<sampler_ir::Processor>, tempo: f64, input: &[[f32; 2]]) -> sampler_core::Runtime {
         let mut instrument = sampler_ir::Instrument::default();
-        instrument.assets.push(sampler_ir::Asset { location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
+        instrument.assets.push(sampler_ir::Asset { residency: Default::default(), location: sampler_ir::AssetLocation::Path("probe".into()), encoding: sampler_ir::Encoding::Wav, root_key: None, loops: vec![] });
         instrument.chains.push(sampler_ir::Chain { scope: sampler_ir::Scope::Voice, pre_amplitude: processors, post_amplitude: vec![] });
         let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
         zone.keys = sampler_ir::KeyRange { low: 60, high: 60 };
@@ -2991,6 +3068,7 @@ mod tests {
             let mut instrument = ir::Instrument::default();
             instrument.assets.push(ir::Asset {
                 location: ir::AssetLocation::Path("probe".into()),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),
@@ -3621,6 +3699,7 @@ pub(crate) fn restore_impulse(
     };
     space::convolution(
         c,
+        ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } },
         &mut Impulses {
             store: &mut store,
             load: &mut load,

@@ -13,15 +13,18 @@ sampler-midi = { path = "../../crates/sampler-midi" }
 sampler-kontakt = { path = "../../crates/sampler-kontakt", default-features = false, features = ["scan", "native-ui"] }
 sampler-ksp = { path = "../../crates/sampler-ksp" }
 sampler-ir = { path = "../../crates/sampler-ir" }
-sampler-uvi = { path = "../../crates/sampler-uvi", default-features = false }
+sampler-uvi = { path = "../../crates/sampler-uvi", default-features = false, features = ["scan"] }
 sampler-parity = { path = "../../crates/sampler-parity" }
 sampler-ui-ir = { path = "../../crates/sampler-ui-ir" }
 ni-file = { path = "../../vendor/ni-file" }
 serde_json = "1"
+kontakto = { path = "../..", default-features = false, features = ["shots"], optional = true }
 
 [features]
 default = ["library-access"]
 library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
+# Optional production UI layout/assets/CPU painter; no host, plugin instance or audio.
+ui-render = ["dep:kontakto"]
 
 # Only the counting allocator (src/heap.rs) opts out.
 [lints.rust]

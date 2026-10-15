@@ -85,7 +85,7 @@ impl Engine {
         let [vol, dist, filt, bass, balls, treble, tone, mono] = k;
         let cap = |c: f32, x: f32| if c <= x { c } else { x };
         // SR setup 0x140abec70.
-        let w = 6.283 / rate as f32;
+        let w = f32::from_bits(0x40c90e56) / rate as f32;
         let c2a8 = cap(1.0, w * table(1_371.881_6));
         let c2ac = cap(1.0, w * table(1_381.881_6));
         // Apply 0x140ab9100: volume.

@@ -93,6 +93,11 @@ impl<'de> Deserialize<'de> for crate::model::PersistenceCompletion {
 /// Frontend/model metadata remains rate-independent; no programs or PCM are cached.
 #[derive(Serialize, Deserialize)]
 pub struct CachedInit {
+    residency_schema: u8,
+    async_base: i32,
+    async_high: i32,
+    residency: Vec<crate::model::InitialResidencyRequest>,
+    source_digest: [u8; 32],
     groups: Vec<String>,
     folders: [String; 4],
     slot: u8,
@@ -214,12 +219,20 @@ impl Initialized {
     /// one fixed-capacity Text union for every integer cell.
     pub fn capture_initialized(&self) -> Option<CachedInit> {
         // ponytail: fall back to fresh init until the cache carries owned MIDI jobs/events.
-        if self.init.midi_object != Default::default()
-            || self.environment.midi_object != Default::default()
+        if !self.init.midi_object.has_only_async_id_reservations()
+            || !self.environment.midi_object.has_only_async_id_reservations()
+            || crate::eval::uses_array_file(&self.hir)
+            || self.init.midi_object.async_id_high_water().checked_sub(self.environment.midi_object.async_id_high_water())
+                .and_then(|n|usize::try_from(n).ok()) != Some(self.init.residency.len())
         {
             return None;
         }
         Some(CachedInit {
+            residency_schema: 1,
+            async_base:self.environment.midi_object.async_id_high_water(),
+            async_high:self.init.midi_object.async_id_high_water(),
+            residency:self.init.residency.clone(),
+            source_digest: self.source_digest,
             groups: self.environment.groups.clone(),
             folders: self.environment.folders.clone(),
             slot: self.environment.slot,
@@ -361,6 +374,33 @@ pub fn restore_initialized(
     if source.len() > limits.source_bytes {
         return Err(error("source byte budget exceeded"));
     }
+    if cached.residency_schema != 1 || cached.async_base < 0 || cached.async_high < cached.async_base
+        || cached.residency.len() > sampler_core::InitialGroupResidency::MAX_REQUESTS {
+        return Err(error("invalid cached startup residency identity"));
+    }
+    let mut prior=cached.async_base;
+    for request in &cached.residency {
+        if request.async_id <= prior || request.async_id > cached.async_high
+            || request.group < 0 || request.source_slot != cached.slot
+            || request.offset as usize >= source.len() {
+            return Err(error("invalid cached startup residency request"));
+        }
+        prior=request.async_id;
+    }
+    if cached.model.requests.iter().filter(|r|r.command=="purge_group").count()!=cached.residency.len() {
+        return Err(error("incomplete cached startup residency roster"));
+    }
+    match cached.model.snapshot_mode_write {
+        Some(write)
+            if write.mode != cached.model.snapshot_mode || write.offset as usize >= source.len() =>
+        {
+            return Err(error("invalid cached snapshot policy write"));
+        }
+        None if cached.model.snapshot_mode != crate::model::SnapshotMode::NativeWithInit => {
+            return Err(error("cached snapshot policy has no setter identity"));
+        }
+        _ => {}
+    }
     let frontend_begin = std::time::Instant::now();
     let mut syms = crate::lexer::Interner::default();
     let mut toks = crate::lexer::lex(source, &mut syms).map_err(|f| f.locate(source))?;
@@ -384,6 +424,11 @@ pub fn restore_initialized(
         );
     }
     let restore_begin = std::time::Instant::now();
+    // Preserve positioned source-admission diagnostics, then reject identity
+    // mismatch before any cached values or model state are applied.
+    if cached.source_digest != crate::setup::source_digest(source) {
+        return Err(error("cached source identity changed"));
+    }
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -399,6 +444,7 @@ pub fn restore_initialized(
     // addresses therefore need only describe the nonzero post-init values.
     let mut init = crate::eval::Initial {
         midi_object: Default::default(),
+        residency: cached.residency,
         cells: vec![0; hir.cells as usize],
         texts: vec![String::new(); hir.texts as usize],
         controls: vec![0; hir.uis.len()],
@@ -410,6 +456,7 @@ pub fn restore_initialized(
         text_properties: cached.text_properties.into_iter().collect(),
         indexed_properties: cached.indexed_properties.into_iter().collect(),
     };
+    init.midi_object.reserve_async_ids_through(cached.async_high).map_err(|_|error("invalid cached async high-water"))?;
     use serde::de::DeserializeSeed;
     let mut d = serde_json::Deserializer::from_str(cached.state.get());
     RestoreValues {
@@ -443,7 +490,10 @@ pub fn restore_initialized(
             message,
         });
     }
+    let mut initial_midi=sampler_core::MidiObject::default();
+    initial_midi.reserve_async_ids_through(cached.async_base).map_err(|_|error("invalid cached async base"))?;
     let environment = Environment {
+        midi_object:initial_midi,
         groups: cached.groups,
         folders: cached.folders,
         slot: cached.slot,
@@ -459,6 +509,7 @@ pub fn restore_initialized(
         crate::scan::attempt("product-cache");
     }
     Ok(Initialized {
+        source_digest: cached.source_digest,
         hir,
         init,
         conditions,

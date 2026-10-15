@@ -233,7 +233,7 @@ fn live_knob(p: &Parameter) -> bool {
 }
 
 impl Processor {
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         match self {
             Processor::Gain(gain) => gain.is_finite(),
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
@@ -827,7 +827,7 @@ impl PreparedVoiceChain {
         }
         let fault = fault
             || !result[..len].iter().flatten().all(|v| v.is_finite())
-            || !states.iter().all(ProcessorState::finite);
+            || !finite_states(self.pre.iter().chain(&self.post), states);
         if fault {
             states.fill(ProcessorState::default());
         } else {
@@ -856,9 +856,9 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::LiveFormant { .. }
                         | PreparedProcessor::Filter { .. }
                         | PreparedProcessor::Branch { .. }
-                        | PreparedProcessor::Eq(_)
                         | PreparedProcessor::ControlMatrix(_)
                 ) || matches!(stage, PreparedProcessor::Color { color, .. } if !color.batches())
+                  || matches!(stage, PreparedProcessor::Eq(eq) if !eq.batches())
             })
     }
 
@@ -878,6 +878,7 @@ impl PreparedVoiceChain {
 
 /// One voice block's source output, settled by [`PreparedVoiceChain::begin`].
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Begun {
     pub produced: usize,
     pub len: usize,
@@ -928,14 +929,50 @@ pub(super) struct ProcessorState {
     color: color::State,
 }
 impl ProcessorState {
-    pub(super) fn finite(&self) -> bool {
-        self.z
+    fn finite_for(&self, stage: &PreparedProcessor) -> bool {
+        let common = self.z
             .iter()
             .flatten()
             .chain(&self.aux)
-            .all(|v| v.is_finite())
-            && self.color.finite()
+            .all(|v| v.is_finite());
+        common && match stage {
+            PreparedProcessor::Color { color, .. } => color.finite_state(&self.color),
+            // Native KONTAKTFX filters keep their history in the color slot.
+            PreparedProcessor::Filter { .. } => self.color.finite(),
+            PreparedProcessor::Gain(_)
+            | PreparedProcessor::StereoMatrix(_)
+            | PreparedProcessor::Biquad(_)
+            | PreparedProcessor::ControlGain(_)
+            | PreparedProcessor::TimeMod { .. }
+            | PreparedProcessor::Dynamics(_)
+            | PreparedProcessor::Formant(_)
+            | PreparedProcessor::LiveFormant { .. }
+            | PreparedProcessor::Eq(_)
+            | PreparedProcessor::ControlMatrix(_)
+            | PreparedProcessor::Branch { .. }
+            | PreparedProcessor::StateVariable(_)
+            | PreparedProcessor::Space(..)
+            | PreparedProcessor::Mix { .. } => true,
+        }
     }
+}
+
+/// Prepared stage identities cannot change while their state cells are owned.
+/// A reused voice resets its cells before a different chain can claim them.
+/// Validate all potentially live state, including bypassed stages, without
+/// scanning color histories that this immutable processor cannot touch.
+pub(super) fn finite_states<'a>(
+    stages: impl IntoIterator<Item = &'a PreparedProcessor>,
+    states: &[ProcessorState],
+) -> bool {
+    let mut stages = stages.into_iter();
+    for state in states {
+        let Some(stage) = stages.next() else { return false; };
+        if !state.finite_for(stage) {
+            return false;
+        }
+    }
+    stages.next().is_none()
 }
 
 /// Run `len` frames of `block` through each stage in turn. Returns whether a
@@ -1422,6 +1459,117 @@ impl DspState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Attribution prototype only: production admission still uses DspState::reset.
+    fn reset_owned_candidate(stage: &PreparedProcessor, state: &mut ProcessorState) {
+        state.z = [[0.; 2]; 2];
+        state.aux = [0.; 16];
+        state.delay_position = 0;
+        state.delay_filled = 0;
+        if matches!(stage, PreparedProcessor::Color { .. } | PreparedProcessor::Filter { .. }) {
+            state.color = Default::default();
+        }
+    }
+
+    #[test]
+    #[ignore = "optimized voice-admission reset footprint attribution, not callback timing"]
+    fn voice_reset_stage_evidence() {
+        use std::{hint::black_box, time::Instant};
+        let mut processors = Vec::new();
+        for (frequency, gain) in [(0.3, 6.), (0.55, -4.), (0.7, 3.)] {
+            let mut band = EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, frequency, 0.5, gain);
+            band.law = sampler_ir::fx::eq::Law::KontaktLegacy;
+            processors.push(Processor::Eq(band));
+        }
+        processors.push(Processor::Color(ColorSettings::stereo(StereoSettings {
+            width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
+        })));
+        let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
+            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+        let stages: Vec<_> = chain.pre.iter().chain(&chain.post).collect();
+        eprintln!("voice_reset ProcessorState_bytes={} owned_stages={}",
+            size_of::<ProcessorState>(), stages.len());
+        for stride in [stages.len(), stages.len() * 4] {
+            let mut cells = vec![ProcessorState::default(); 300 * stride];
+            let loops = ((128 << 20) / (cells.len() * size_of::<ProcessorState>())).clamp(16, 2000);
+            for pair in 0..4 {
+                for candidate in if pair % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
+                    let start = Instant::now();
+                    for _ in 0..loops {
+                        for states in black_box(&mut cells[..]).chunks_exact_mut(stride) {
+                            match candidate {
+                                0 => states.fill(ProcessorState::default()),
+                                1 => states[..stages.len()].fill(ProcessorState::default()),
+                                _ => for (stage, state) in stages.iter().zip(states) {
+                                    reset_owned_candidate(stage, state);
+                                },
+                            }
+                        }
+                    }
+                    black_box(&mut cells);
+                    eprintln!("voice_reset stride={stride} pair={pair} candidate={candidate} voices=300 loops={loops} us={}",
+                        start.elapsed().as_micros());
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "optimized, isolated validation-stage evidence; not a full callback benchmark"]
+    fn finite_guard_stage_evidence() {
+        use std::{hint::black_box, time::Instant};
+        let mut processors = Vec::new();
+        for (frequency, gain) in [(0.3, 6.), (0.55, -4.), (0.7, 3.)] {
+            let mut band = EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, frequency, 0.5, gain);
+            band.law = sampler_ir::fx::eq::Law::KontaktLegacy;
+            processors.push(Processor::Eq(band));
+        }
+        processors.push(Processor::Color(ColorSettings::stereo(StereoSettings {
+            width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
+        })));
+        let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
+            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+        let mut cells = vec![ProcessorState::default(); 300 * chain.stages()];
+        for (i, cell) in cells.iter_mut().enumerate() {
+            cell.z = [[(i as f64 * 0.37).sin() * 0.8, 0.13]; 2];
+        }
+        let original = |states: &[ProcessorState]| states.iter().all(|s| {
+            s.z.iter().flatten().chain(&s.aux).all(|v| v.is_finite()) && s.color.finite()
+        });
+        assert!(original(&cells));
+        cells[17].aux[3] = f64::NAN;
+        assert!(!original(&cells));
+        assert!(!finite_states(chain.pre.iter().chain(&chain.post), &cells[16..20]));
+        cells[17].aux[3] = 0.;
+        for repeat in 0..4 {
+            for scoped in if repeat % 2 == 0 { [false, true] } else { [true, false] } {
+                let start = Instant::now();
+                for _ in 0..2_000 {
+                    for states in black_box(&cells).chunks_exact(chain.stages()) {
+                        let valid = if scoped {
+                            finite_states(black_box(chain.pre.iter().chain(&chain.post)), black_box(states))
+                        } else { original(black_box(states)) };
+                        assert!(black_box(valid));
+                    }
+                }
+                eprintln!("FINITE_GUARD_EVIDENCE repeat={repeat} scoped={scoped} voices=300 stages=4 checks=600000 elapsed_us={}", start.elapsed().as_micros());
+            }
+        }
+    }
+
+    #[test]
+    fn stage_guards_keep_common_histories_and_reject_state_shape_mismatch() {
+        let stage = PreparedProcessor::Gain(1.);
+        let mut state = ProcessorState::default();
+        assert!(finite_states([&stage], &[state]));
+        assert!(!finite_states([&stage], &[]));
+        assert!(!finite_states([], &[state]));
+        state.z[1][0] = f64::NAN;
+        assert!(!finite_states([&stage], &[state]));
+        state = ProcessorState::default();
+        state.aux[15] = f64::INFINITY;
+        assert!(!finite_states([&stage], &[state]));
+    }
 
     #[test]
     fn native_gain_and_non_pseudo_stereo_have_lane_kernels() {

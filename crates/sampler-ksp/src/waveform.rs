@@ -37,6 +37,53 @@ pub(crate) fn project(model: &mut Model, name: &str, id: i32, request: Request) 
     true
 }
 
+pub(crate) fn admit_sources(
+    hir: &crate::hir::Hir,
+    model: &mut Model,
+    captured: &std::collections::BTreeMap<u32, [i32; 3]>,
+    admitted: &std::collections::BTreeMap<u32, [i32; 3]>,
+) -> Vec<crate::WaveformSourceRejection> {
+    let mut rejected = Vec::new();
+    for (index, ui) in hir.uis.iter().enumerate() {
+        if ui.kind != crate::model::WidgetKind::Waveform || ui.unresolved { continue; }
+        let id = crate::builtins::FIRST_UI_ID + index as i32;
+        let name = &hir.vars[ui.var.0 as usize].name;
+        let Some(wave) = crate::ui::waveform_requests(model, id, name) else { continue; };
+        let zone = u32::try_from(wave.zone).ok().filter(|&zone| zone > 0);
+        let reason = match zone.and_then(|zone| captured.get(&zone).zip(admitted.get(&zone))) {
+            Some((before, after)) if before == after => continue,
+            Some(_) => crate::WaveformSourceReason::IdentityChanged,
+            None => crate::WaveformSourceReason::Unavailable,
+        };
+        // These operations belong to this declared widget only. Preserve other
+        // widgets and unrelated service requests, even if they share an ID arg.
+        model.requests.retain(|r| {
+            !(matches!(r.command, "attach_zone" | "set_ui_wf_property")
+                && (matches!(r.args.first(), Some(Value::Int(ui)) if *ui == id)
+                    || matches!(r.args.first(), Some(Value::Text(var)) if var == name.as_ref())))
+        });
+        rejected.push(crate::WaveformSourceRejection { ui: id, zone: wave.zone, reason });
+    }
+    rejected
+}
+
+/// Final binder boundary: an initialization/cache domain cannot grant a source
+/// identity which this prepared plan does not actually own.
+pub(crate) fn validate_prepared_sources(
+    plan: &sampler_core::Prepared,
+    store: &[([i32; 4], i64)],
+) -> Result<(), sampler_core::Error> {
+    for &(key, value) in store {
+        if key[3] == sampler_core::waveform::SOURCE_TAG && value == 1 {
+            let zone = u32::try_from(key[0]).map_err(|_| sampler_core::Error::InvalidInput)?;
+            if plan.source_zone_region(zone).is_none() {
+                return Err(sampler_core::Error::NotReady);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Seed only declared waveform IDs and the existing physical-source environment.
 /// Sparse Store annotations reuse the existing global runtime headroom; the
 /// 65536 decoder index bound is not an admission capacity guarantee.

@@ -1,0 +1,64 @@
+{
+  "native_sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+  "scope": "LP1 prepare/real setter + original shared wrapper; global branch zero; offset zero; null modulation buffers; no-op audio/reset virtual calls; 48kHz,128frame calls,resonance .25; boundary phase uncalibrated in runtime",
+  "rows": [
+    {
+      "initial": 8.5,
+      "goal": 0.5,
+      "before": {
+        "cutoff_clock": 8.5,
+        "setter_calls": [
+          8.5
+        ]
+      },
+      "after": {
+        "cutoff_clock": 8.07446575164795,
+        "setter_calls": [
+          8.41489315032959,
+          8.32978630065918,
+          8.24467945098877,
+          8.15957260131836,
+          8.07446575164795
+        ]
+      }
+    },
+    {
+      "initial": -8.5,
+      "goal": 0.5,
+      "before": {
+        "cutoff_clock": -8.5,
+        "setter_calls": [
+          -8.5
+        ]
+      },
+      "after": {
+        "cutoff_clock": -8.07446575164795,
+        "setter_calls": [
+          -8.41489315032959,
+          -8.32978630065918,
+          -8.24467945098877,
+          -8.15957260131836,
+          -8.07446575164795
+        ]
+      }
+    },
+    {
+      "initial": 0.5,
+      "goal": 0.3,
+      "before": {
+        "cutoff_clock": 0.5,
+        "setter_calls": [
+          0.5
+        ]
+      },
+      "after": {
+        "cutoff_clock": 0.30000001192092896,
+        "setter_calls": [
+          0.41489362716674805,
+          0.3297872543334961,
+          0.30000001192092896
+        ]
+      }
+    }
+  ]
+}

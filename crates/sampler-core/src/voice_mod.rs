@@ -148,6 +148,8 @@ pub(crate) enum CompiledTarget {
     /// set of FUN_140873040: `$out := $in + E * $intensity`) moves by
     /// depth·v each control cell; the LFO integrates the resulting rate.
     SourceRate(u32),
+    /// Offset of normalized position, first form amount, or second form amount.
+    Wavetable(u8),
     LoopStart,
     LoopLength,
 }
@@ -177,6 +179,9 @@ impl crate::ParameterAddress {
             (0, 12) => T::SampleStart,
             (i, 14) => T::SourcePhase(i),
             (i, 17) => T::SourceRate(i),
+            (0, 18) => T::Wavetable(0),
+            (0, 19) => T::Wavetable(1),
+            (0, 20) => T::Wavetable(2),
             (0, 15) => T::LoopStart,
             (0, 16) => T::LoopLength,
             _ => return None,
@@ -617,7 +622,7 @@ impl VoiceModulation {
                     let target = target as usize;
                     if !matches!(sources.get(target), Some(Prepared::Lfo(l)) if !l.shared)
                         || route.lag != 0
-                        || route.scale.is_some()
+                        || route.scales().next().is_some()
                     {
                         return Err(Error::InvalidInput);
                     }
@@ -648,7 +653,11 @@ impl VoiceModulation {
                         && phase_routes[i]
                             .iter()
                             .chain(&rate_routes[i])
-                            .all(|&r| emitted[program.routes[r].source])
+                            .all(|&r| {
+                                let route = &program.routes[r];
+                                emitted[route.source]
+                                    && route.scales().all(|scale| emitted[scale.source])
+                            })
                 });
                 let Some(next) = next else {
                     return Err(Error::InvalidInput);
@@ -758,7 +767,7 @@ impl VoiceModulation {
                             | CompiledTarget::ProcessorResonance(_)
                             | CompiledTarget::ProcessorNativeCutoff(_)
                             | CompiledTarget::ProcessorNativeResonance(_)
-                            | CompiledTarget::ProcessorNativeGain(_))
+                            | CompiledTarget::ProcessorNativeGain(_) | CompiledTarget::Wavetable(_))
                     {
                         return None;
                     }
@@ -868,14 +877,9 @@ impl VoiceModulation {
         if !program.start {
             return 0;
         }
-        let mut fraction = 0.0;
-        for route in program
-            .routes
-            .iter()
-            .filter(|r| r.target == ModTarget::SampleStart)
-        {
+        self.offset(program, region, |index| {
             // Lfo and envelope values at the voice's first frame.
-            let at_start = |index: usize| match program.sources[index] {
+            match program.sources[index] {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
                     let signal = wave(lfo.shape, lfo.phase, seed ^ index as u64);
                     program.fades[index].as_ref().map_or(signal, |gains| {
@@ -884,7 +888,35 @@ impl VoiceModulation {
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
                 other => other.input(inputs, seed, index),
-            };
+            }
+        })
+    }
+
+    /// Control-side proof, using the exact onset consumer below. A dependent
+    /// route makes the entire result unknown, even when its saved depth is zero.
+    pub fn constant_start_offset(&self, region: usize) -> Option<u32> {
+        self.start_ranges.get(region)?;
+        let Some(index) = self.program(region) else {
+            return Some(0);
+        };
+        let program = &self.programs[index as usize];
+        if program.routes.iter().filter(|r| r.target == ModTarget::SampleStart).any(|route| {
+            !matches!(program.sources[route.source], Prepared::Constant)
+                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Constant))
+        }) {
+            return None;
+        }
+        Some(self.offset(program, region, |_| 1.0))
+    }
+
+    pub fn has_loop_targets(&self, region: usize) -> bool {
+        self.program(region).is_some_and(|index| self.programs[index as usize].targets.iter()
+            .any(|target| matches!(target, CompiledTarget::LoopStart | CompiledTarget::LoopLength)))
+    }
+
+    fn offset(&self, program: &Program, region: usize, at_start: impl Fn(usize) -> f64) -> u32 {
+        let mut fraction = 0.0;
+        for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
             let bipolar = program.bipolar[route.source];
             let v = program.transform(route, at_start(route.source), bipolar);
             let depth = route.scales().fold(route.depth,
@@ -1107,6 +1139,7 @@ pub(crate) struct Outputs {
     pub filter: [f64; 2],
     /// Semitones below the tone filter's open cutoff; 0 bypasses it.
     pub tone: f64,
+    pub wavetable: [f64; 3],
 }
 
 impl Default for Outputs {
@@ -1116,6 +1149,7 @@ impl Default for Outputs {
             pitch: 0.0,
             filter: [1.0; 2],
             tone: 0.0,
+            wavetable: [0.; 3],
         }
     }
 }
@@ -1493,6 +1527,13 @@ impl VoiceModState {
         }
     }
 
+    pub(crate) fn wavetable_offsets(&self, voice: usize) -> [f32; 3] {
+        if self.program(voice).is_none() { return [0.; 3]; }
+        std::array::from_fn(|lane| {
+            ((self.previous[voice].wavetable[lane] + self.outputs[voice].wavetable[lane]) * 0.5) as f32
+        })
+    }
+
     /// The control ramp covering a segment starting at `clock.now`. Points
     /// sit on the absolute `CELL` grid (and the voice onset), so a segment
     /// entering a new cell evaluates its end once and segments inside a cell
@@ -1558,7 +1599,8 @@ impl VoiceModState {
             let source = p.sources[i];
             if onset && !p.phase_routes[i].is_empty() {
                 // The native phase lane is read once after reset, never each control cell.
-                let mut phase = 0.0;
+                // start_with_controls already seeded the owning source's saved base.
+                let mut phase = phases[i];
                 for &r in &p.phase_routes[i] {
                     let route = &p.routes[r];
                     phase += p.base_depth(r, inputs)
@@ -1717,6 +1759,7 @@ impl VoiceModState {
                 CompiledTarget::Cutoff => cutoff += d * v,
                 CompiledTarget::Resonance => resonance += d * v,
                 CompiledTarget::Tone => out.tone += d * v,
+                CompiledTarget::Wavetable(lane) => out.wavetable[usize::from(lane)] += d * v,
                 CompiledTarget::SampleStart
                 | CompiledTarget::SourcePhase(_)
                 | CompiledTarget::SourceRate(_) => {}
@@ -2419,6 +2462,97 @@ mod tests {
         assert_eq!(evaluate(&points, 0.75), 0.5);
         assert_eq!(evaluate(&[(0.5, 0.3)], 0.1), 0.3);
         assert_eq!(evaluate(&[(0.5, 0.3)], 0.9), 0.3);
+    }
+
+    #[test]
+    fn source_phase_keeps_native_saved_base_and_literal_onset_vectors() {
+        // Original Kontakt8.exe SHA0fe6356e: phase getter0x1408efd60,
+        // builder0x140977dc5, reset0x1405f45a0 and Digital0x140b078d0.
+        // (saved phase, Constant1 depth, absolute lane, first native sample).
+        // These are original-byte leaf outputs, not a full-host clock claim.
+        let vectors: [(f64, f64, f64, u32); 7] = [
+            (0.125, 0., 0.125, 0xbf3504f7),
+            (0.125, 0.125, 0.25, 0xbf800000),
+            (0.125, -0.25, -0.125, 0x3f3504f7),
+            (0.875, 0.25, 1.125, 0xbf3504f7),
+            (0.875, 0.125, 1., 0x00000000),
+            (0.3700000047683716, 0., 0.3700000047683716, 0xbf3a9da7),
+            (0.3700000047683716, 0.125, 0.4950000047683716, 0xbd00a885),
+        ];
+        let controllers = [0; 128];
+        let script = Default::default();
+        for (saved, depth, native_phase, native_sample_bits) in vectors {
+            let modulation = VoiceModulation::new(
+                vec![ModProgram {
+                    sources: vec![ModSource::Lfo(Lfo {
+                        shape: LfoShape::SineScaled(-1.),
+                        rate: LfoRate::Hertz(3.), phase: saved,
+                        delay: 0, fade: 0, retrigger: true, shared: false,
+                    }), ModSource::Constant],
+                    routes: vec![ModRoute::new(1, ModTarget::SourcePhase(0), depth),
+                        ModRoute::new(0, ModTarget::Pitch, 1.)],
+                    ..Default::default()
+                }], vec![Some(0)], vec![0],
+            ).unwrap();
+            let inputs = Inputs {
+                velocity: 1., key: 0.5, pressure: 0, timbre: 0,
+                controllers: &controllers, held: 0, script: &script,
+                bend: 0., controls: &[],
+            };
+            let mut state = VoiceModState::new(&modulation, 1).unwrap();
+            for now in [0, 2400, 48127] {
+                // Every onset must replace reused history with the saved base.
+                state.phase[0] = 123.75;
+                state.values[0] = -999.;
+                state.start(&modulation, 0, 0, &inputs,
+                    Clock { rate: 48000., tempo: 120., now }, 7);
+                assert_eq!(state.phase[0].to_bits(), native_phase.to_bits());
+                // Existing waveform approximation is intentionally unchanged.
+                assert!((state.values[0] - f64::from(f32::from_bits(native_sample_bits))).abs() < 2e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn source_phase_bypass_keeps_base_and_held_depth_changes_wait_for_next_onset() {
+        let mut modulation = VoiceModulation::new(vec![ModProgram {
+            sources: vec![ModSource::Lfo(Lfo {
+                shape: LfoShape::SineScaled(-1.), rate: LfoRate::Hertz(3.),
+                phase: 0.375, delay: 0, fade: 0, retrigger: true, shared: false,
+            }), ModSource::Constant],
+            routes: vec![ModRoute::new(1, ModTarget::SourcePhase(0), 0.125),
+                ModRoute::new(0, ModTarget::Pitch, 1.)],
+            ..Default::default()
+        }], vec![Some(0)], vec![0]).unwrap();
+        // Already resolved cells; public schema/heap behavior is tested by Runtime.
+        modulation.programs[0].controls = vec![(0, [0, 1])].into_boxed_slice();
+        let mut actual = VoiceModState::new(&modulation, 1).unwrap();
+        let mut unchanged = VoiceModState::new(&modulation, 1).unwrap();
+        let controllers = [0; 128];
+        let script = Default::default();
+        let old = [crate::ControlValue::Real(0.125), crate::ControlValue::Real(0.)];
+        let edited = [crate::ControlValue::Real(-0.25), crate::ControlValue::Real(0.)];
+        let bypass = [crate::ControlValue::Real(0.125), crate::ControlValue::Real(1.)];
+        let inputs = Inputs {
+            velocity: 1., key: 0.5, pressure: 0, timbre: 0,
+            controllers: &controllers, held: 0, script: &script,
+            bend: 0., controls: &old,
+        };
+        let clock = |now| Clock { rate: 48000., tempo: 120., now };
+        actual.start(&modulation, 0, 0, &inputs, clock(2400), 7);
+        unchanged.start(&modulation, 0, 0, &inputs, clock(2400), 7);
+        assert_eq!(actual.phase[0].to_bits(), 0.5f64.to_bits());
+        let held_inputs = Inputs { controls: &edited, ..inputs };
+        for now in [2400, 2432, 2464, 2528, 2591] {
+            actual.advance(&modulation, 0, &held_inputs, clock(now));
+            unchanged.advance(&modulation, 0, &inputs, clock(now));
+            assert_eq!(actual.phase[0].to_bits(), unchanged.phase[0].to_bits());
+            assert_eq!(actual.values[0].to_bits(), unchanged.values[0].to_bits());
+        }
+        actual.start(&modulation, 0, 0, &held_inputs, clock(3000), 8);
+        assert_eq!(actual.phase[0].to_bits(), 0.125f64.to_bits());
+        actual.start(&modulation, 0, 0, &Inputs { controls: &bypass, ..inputs }, clock(6000), 9);
+        assert_eq!(actual.phase[0].to_bits(), 0.375f64.to_bits());
     }
 
     #[test]

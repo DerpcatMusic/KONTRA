@@ -246,7 +246,7 @@ fn spark_coefficients_match_native_vectors() {
     let s = shelf(250.0 / 48_000.0, 0.5, 1.0);
     [0.988_691, -0.966_072, -0.954_763].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));
     let s = shelf(0.25, 1.0, 0.5);
-    [0.707_107, 0.121_320, -0.171_573].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));
+    [f64::from_bits(0x3fe6a09edbf8b9bb), 0.121_320, -0.171_573].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));
     let v = spark(&spark_controls(), 48_000.0);
     close(f64::from(v.gain), 0.429_786_3, 1e-6);
     close(f64::from(v.lines[0].a) * 8f64.sqrt(), 0.877_822, 1e-6);

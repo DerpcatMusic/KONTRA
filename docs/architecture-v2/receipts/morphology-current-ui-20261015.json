@@ -1,0 +1,263 @@
+{
+  "binary_sha256": "00694e20286c5f9c98eb1a5477a52f53f601f7ca9bb50a949729ff71e31bc43e",
+  "input_snapshot": "Morphology Evolved / Sound Design / Dual Splangs.nksn",
+  "mode": {
+    "audit_seed": null,
+    "ephemeral_render": true,
+    "ephemeral_source": false,
+    "initialize": true,
+    "lua_coverage": false,
+    "profile_init": false,
+    "settle_ui": true,
+    "ui_only": true
+  },
+  "status": "partial",
+  "launcher_ms": 3810.024456000974,
+  "performance": {
+    "scope": "Wall-clock durations within this process; nested render phases overlap. OS cache state and native host timing are unverified",
+    "timings": [
+      {
+        "elapsed_ms": 1422.386435,
+        "phase": "production_ui_lifecycle"
+      },
+      {
+        "elapsed_ms": 1594.7850489999998,
+        "phase": "ui_render"
+      },
+      {
+        "elapsed_ms": 667.60632,
+        "phase": "ui_render"
+      }
+    ],
+    "total_ms": 3728.038849
+  },
+  "lifecycle": {
+    "activation_readiness": "finite_callbacks_not_pending",
+    "advanced_ms": 2.6666666666666665,
+    "audio_frame_limit": 96000,
+    "background_observation": "first_callbacks_observed",
+    "blocks": 1,
+    "callback_progress": {
+      "callback_count": 1,
+      "callback_metadata_scope": "Retained ScriptView entry kinds and consecutive bind_modules program offsets; only bounded observed rows are classified. A recurring listener can legitimately remain waiting; absence of pending work is not proof of native equivalence",
+      "callbacks": [
+        {
+          "callback_kind": "listener driver",
+          "caller_depth": 0,
+          "error_kind": null,
+          "listener_callback_program": 1,
+          "local_program": 2,
+          "outcome": "pending",
+          "owner": "plan",
+          "pc": 12,
+          "program": 2,
+          "script_slot": 0,
+          "waiting": true,
+          "yielded_at": null
+        }
+      ],
+      "dropped_faults": 0,
+      "live_callback_failures": 0,
+      "observed_pending_callback_kinds": {
+        "listener driver": 1
+      },
+      "observed_pending_listener_drivers": 1,
+      "part_present": true,
+      "pending_non_background_plan_callbacks": 0,
+      "pending_plan_callbacks": 1,
+      "queued_faults": 0,
+      "rows_omitted": 0,
+      "unclassified_callback_rows": 0
+    },
+    "changed_widgets": 7,
+    "completed_listener_callbacks_observed": [
+      1
+    ],
+    "discarded_output_peak": 0.0,
+    "effect_stop_threshold": 65536,
+    "effects_applied": 161,
+    "frames": 128,
+    "input_scope": "No host note/controller/transport/gesture input. Authored plan-start and listener callbacks may execute; output is discarded, not auditioned",
+    "load_ms": 1392.847577,
+    "max_active_voices": 0,
+    "native_equivalence": "unknown",
+    "output_observed": true,
+    "pending_plan_callbacks": true,
+    "readiness_scope": "Finite activation and ongoing listener work are distinct. Early stop requires a completed callback from each exact active driver mapping plus its UI effect drain. Later ticks can still change the UI; one cycle is not visual stability or native equivalence",
+    "runtime_problems": {
+      "capacity_drops": 0,
+      "cold_starts": 0,
+      "fault_error": 0,
+      "fault_program": 0,
+      "ignored_input": 0,
+      "lua_faults": 0,
+      "narrowed_input": 0,
+      "nonfinite": 0,
+      "offline_failures": 0,
+      "refused_starts": 0,
+      "script_overruns": 0,
+      "silent": [
+        0,
+        0,
+        0
+      ],
+      "silent_notes": 0,
+      "stolen_voices": 0,
+      "stream_capacity": 0,
+      "stream_disconnected": 0,
+      "stream_errors": 0,
+      "stream_failed": 0,
+      "underruns": 0
+    },
+    "scope": "Production V2Loader/Part/V2Core plan activation and shared read-only KSP UI effect host; streaming and DSP runtime are instantiated, no plugin/DAW/audio device",
+    "service_failure_kind": null,
+    "source_conversion_gap_count": 1077,
+    "source_conversion_gap_kinds": {
+      "Filter": 904,
+      "Tape Saturator": 2,
+      "keys beyond the runtime's pitch range, narrowed": 127,
+      "saved release/MIDI/voice state and v4 selection words": 7,
+      "script Warning": 5,
+      "script interface": 2,
+      "wavetable source": 30
+    },
+    "source_conversion_gap_reasons": {
+      "InvalidValue": 127,
+      "NotModeled": 46,
+      "UnknownLaw": 904
+    },
+    "status": "background_active",
+    "step_ms": 0.40550800000000004,
+    "stop_scope": "Wall/effect thresholds checked between bounded blocks and shared effect drains; outer read-only launcher timeout bounds the process",
+    "stream_full_sample_bytes": 4803985520,
+    "stream_pool_bytes": 100663296,
+    "stream_sample_head_bytes": 21792425,
+    "total_ms": 1401.738395,
+    "wall_stop_threshold_ms": 5000
+  },
+  "ui_render_evidence": {
+    "gestures": "not_run",
+    "live_meter_service": "not_observed: CPU witness has no live meter provider; bitmap control strips can contain authored colour independently of audio",
+    "native_equivalence": "unknown",
+    "renderer": "Kontra production UI layout, asset worker and CPU painter",
+    "scope": "In-memory production lifecycle state through the same UI painter; bounded Runtime/DSP stepping is reported separately, no plugin/window/DAW/audio device",
+    "status": "executed"
+  },
+  "interfaces": [
+    {
+      "lifecycle_state": "compiled_initial",
+      "widgets": 671,
+      "visible_widgets": 140,
+      "pages": [
+        {
+          "width": 960.0,
+          "height": 630.0
+        }
+      ],
+      "control_bindings": 481,
+      "unsupported": {
+        "$CONTROL_PAR_AUTOMATION_ID[]": 1,
+        "$CONTROL_PAR_CURSOR_PICTURE[]": 1
+      },
+      "model_sha256": "e66510f7ec710e411a06a115fc5b751258cb5ccb67e2e41d71f45bc540d3ba2f",
+      "renderer_status": "ok",
+      "assets": {
+        "ambiguous": 0,
+        "corrupt": 0,
+        "decode_ok": 50,
+        "decodes": 50,
+        "encoded_bytes": 2525587,
+        "font_ok": 0,
+        "fonts": 0,
+        "found": 50,
+        "invalid": 0,
+        "limit": 0,
+        "lookups": 50,
+        "missing": 0,
+        "preparation_key_budget": 0,
+        "preparation_oversized": 0,
+        "read_failed": 0,
+        "unavailable": 0
+      },
+      "asset_probe_dropped": 0,
+      "shots": [
+        {
+          "page": 0,
+          "presentation": "Bitmap",
+          "width": 960,
+          "height": 630,
+          "status": "ok",
+          "pending_assets": 0,
+          "png_sha256": "1a103feda2848302b823f62003b627e38f6c6420c02e019d74c6ae823ee17ffd"
+        },
+        {
+          "page": 0,
+          "presentation": "Vector",
+          "width": 960,
+          "height": 630,
+          "status": "ok",
+          "pending_assets": 0,
+          "png_sha256": "71c19d61d8b3758019d42080b5996fc781b034466eceb6cf0a677fa942972cee"
+        }
+      ]
+    },
+    {
+      "lifecycle_state": "after_plan_activation",
+      "widgets": 671,
+      "visible_widgets": 113,
+      "pages": [
+        {
+          "width": 960.0,
+          "height": 630.0
+        }
+      ],
+      "control_bindings": 481,
+      "unsupported": {
+        "$CONTROL_PAR_AUTOMATION_ID[]": 1,
+        "$CONTROL_PAR_CURSOR_PICTURE[]": 1
+      },
+      "model_sha256": "4c2cb57c7ed0e754edfef097b78f9567b7d1290fb7f54579cb4f25d7b26f12c6",
+      "renderer_status": "ok",
+      "assets": {
+        "ambiguous": 0,
+        "corrupt": 0,
+        "decode_ok": 46,
+        "decodes": 46,
+        "encoded_bytes": 2514285,
+        "font_ok": 0,
+        "fonts": 0,
+        "found": 46,
+        "invalid": 0,
+        "limit": 0,
+        "lookups": 46,
+        "missing": 0,
+        "preparation_key_budget": 0,
+        "preparation_oversized": 0,
+        "read_failed": 0,
+        "unavailable": 0
+      },
+      "asset_probe_dropped": 0,
+      "shots": [
+        {
+          "page": 0,
+          "presentation": "Bitmap",
+          "width": 960,
+          "height": 630,
+          "status": "ok",
+          "pending_assets": 0,
+          "png_sha256": "221a84e87ec2264dc21d624355a3082cd95f89ad92246b4569ba773c16477a42"
+        },
+        {
+          "page": 0,
+          "presentation": "Vector",
+          "width": 960,
+          "height": 630,
+          "status": "ok",
+          "pending_assets": 0,
+          "png_sha256": "06b58b001bf3fdf1ca72fa4211aaa4f73be188abf0971ee7885853d301ceecb6"
+        }
+      ]
+    }
+  ],
+  "scope": "Single current production loader/KSP init and bounded runtime activation; no plugin/DAW/audio device, output discarded. PNG/model hashes retained, vendor code/artwork not saved. Native parity unverified; installed binary unchanged."
+}

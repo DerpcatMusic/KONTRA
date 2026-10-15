@@ -14,8 +14,12 @@ pub(crate) fn png_size(bytes: &[u8]) -> Option<sampler_ui_ir::Size> {
     }
     let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
     let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
-    (width > 0 && height > 0 && u64::from(width) * u64::from(height) <= (64 << 20) / 4)
-        .then_some(sampler_ui_ir::Size { width: f64::from(width), height: f64::from(height) })
+    (width > 0 && height > 0 && u64::from(width) * u64::from(height) <= (64 << 20) / 4).then_some(
+        sampler_ui_ir::Size {
+            width: f64::from(width),
+            height: f64::from(height),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -88,6 +92,18 @@ pub struct Resources {
     root: PathBuf,
 }
 impl Resources {
+    /// Only this program's admitted bank or loose resource tree participates.
+    pub fn authority(&self) -> &'static str {
+        if self
+            .root
+            .ancestors()
+            .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+        {
+            "uvi-bank"
+        } else {
+            "uvi-loose"
+        }
+    }
     pub fn of(program: &Path) -> Self {
         #[cfg(feature = "library-access")]
         let bank = program
@@ -109,14 +125,24 @@ impl Resources {
         }
     }
     pub fn read_result(&self, path: &str) -> Result<Option<Vec<u8>>, ResourceError> {
+        self.read_with_origin_result(path)
+            .map(|found| found.map(|(bytes, _)| bytes))
+    }
+    /// One bounded read with successful provenance. The explicitly authored
+    /// bundled host font remains distinguishable from loose or bank content.
+    pub fn read_with_origin_result(
+        &self,
+        path: &str,
+    ) -> Result<Option<(Vec<u8>, &'static str)>, ResourceError> {
         validate_path(path)?;
         #[cfg(feature = "library-access")]
         if let Some(bank) = &self.bank {
             let (bank, program) = bank.as_ref().map_err(|e| *e)?;
             // Bank authority, ambiguity and read failures still take precedence.
-            return bank
-                .ui_resource_result(program, path)
-                .map(|bytes| bytes.or_else(|| host_font(path)));
+            let bytes = bank.ui_resource_result(program, path)?;
+            return Ok(bytes
+                .map(|bytes| (bytes, "uvi-bank"))
+                .or_else(|| host_font(path).map(|bytes| (bytes, "uvi-host-font"))));
         }
         #[cfg(not(feature = "library-access"))]
         if self
@@ -143,10 +169,10 @@ impl Resources {
             Err(_) => Err(ResourceError::Read),
         };
         let Some(root) = canonical(&self.root)? else {
-            return Ok(host_font(&path));
+            return Ok(host_font(&path).map(|bytes| (bytes, "uvi-host-font")));
         };
         let Some(file) = canonical(&root.join(relative))? else {
-            return Ok(host_font(&path));
+            return Ok(host_font(&path).map(|bytes| (bytes, "uvi-host-font")));
         };
         if !file.starts_with(&root) {
             return Err(ResourceError::InvalidPath);
@@ -162,7 +188,7 @@ impl Resources {
         if bytes.len() as u64 > LIMIT {
             return Err(ResourceError::Limit);
         };
-        Ok(Some(bytes))
+        Ok(Some((bytes, "uvi-loose")))
     }
     /// Compatibility accessor; the shared renderer uses read_result diagnostics.
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {

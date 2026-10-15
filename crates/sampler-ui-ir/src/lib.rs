@@ -151,6 +151,10 @@ pub struct Widget {
     pub drag: Option<Drag>,
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
+    /// Authored separation between table bars. Unset preserves the stock drawing.
+    pub table_inner_edge: Option<TableInnerEdge>,
+    /// Explicit supported table fill; absent retains the renderer's fallback.
+    pub table_fill: Option<TableFill>,
     pub style: Option<StyleRef>,
     /// Off/on, off/on pressed, off/on hover; absent entries inherit `style`.
     pub state_styles: [Option<StyleRef>; 6],
@@ -168,12 +172,21 @@ pub struct Widget {
     pub mapper: Option<String>,
     /// MultiStateButton advances on click; Menu opens a choice list.
     pub menu_cycle: bool,
+    /// Show the stock right-hand menu arrow; authored skins may hide it.
+    pub menu_arrow: bool,
+    /// Validated slash-path menu tree; leaf indices refer to Kind::Menu items.
+    pub menu_hierarchy: Option<Vec<MenuNode>>,
+    /// Explicit authored value-popup policy. Unset retains the source default.
+    pub popup_display: Option<bool>,
     /// Even coordinate index of the manually selected XY cursor.
     pub active_index: Option<i32>,
     /// Current source value for typed widgets; numeric controls use their service.
     pub value: Option<Value>,
     pub waveform: Option<Waveform>,
     pub meter: Option<MeterAddress>,
+    /// Exact Falcon element request. It requires its own resolved tap and must
+    /// never fall back to an unrelated Kontakt/output meter address.
+    pub uvi_meter_request: Option<UviMeterRequest>,
     /// Source display endpoints, including an inverted meter scale.
     pub meter_range: Option<[i32; 2]>,
 }
@@ -205,6 +218,8 @@ impl Widget {
             automation: Automation::default(),
             drag: None,
             colors: Colors::default(),
+            table_inner_edge: None,
+            table_fill: None,
             style: None,
             state_styles: [None; 6],
             images: Vec::new(),
@@ -215,10 +230,14 @@ impl Widget {
             viewport: None,
             mapper: None,
             menu_cycle: false,
+            menu_arrow: true,
+            menu_hierarchy: None,
+            popup_display: None,
             active_index: None,
             value: None,
             waveform: None,
             meter: None,
+            uvi_meter_request: None,
             meter_range: None,
         }
     }
@@ -303,6 +322,28 @@ pub struct MeterAddress {
     pub bus: Option<i32>,
 }
 
+/// Authored Falcon element identity, independent of DSP packing or UI order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UviMeterScope {
+    Program,
+    Layer { ordinal: u32 },
+    Keygroup,
+    Oscillator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UviMeterRequest {
+    /// Canonical promoted-element ordinal exposed by Lua `__id`.
+    pub element_id: u32,
+    /// Actual XML NodeId from the same promoted element's retained source map.
+    pub element_node: u32,
+    pub scope: UviMeterScope,
+    pub bus_id: u32,
+    pub use_output: bool,
+    /// Authored mono-sum request; no channel averaging law is implied here.
+    pub display_as_mono: bool,
+}
+
 /// Attached source zone and waveform properties. Zone is the native ID, not
 /// an index into a translated sample list; the importer resolves that identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -330,12 +371,28 @@ pub struct Colors {
     pub on: Option<Rgba>,
     pub off: Option<Rgba>,
     pub bar: Option<Rgba>,
+    /// Authored menu border and right-hand arrow ink.
+    pub outline: Option<Rgba>,
+    pub arrow: Option<Rgba>,
     pub peak: Option<Rgba>,
     pub overload: Option<Rgba>,
     pub zero_line: Option<Rgba>,
     pub wave: Option<Rgba>,
     pub wave_cursor: Option<Rgba>,
     pub slice_markers: Option<Rgba>,
+}
+
+/// Table separator policy. An unknown native default colour remains unset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableInnerEdge {
+    pub visible: bool,
+    pub color: Option<Rgba>,
+}
+
+/// Supported authored table background/bar drawing. Native gloss is uncalibrated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableFill {
+    Solid,
 }
 
 /// Parts of a control hidden individually (KSP `HIDE_PART_*`).
@@ -524,6 +581,99 @@ pub struct MenuItem {
     pub text: String,
     pub value: i32,
     pub visible: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuNode {
+    pub label: String,
+    pub item_index: Option<usize>,
+    pub children: Vec<MenuNode>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuHierarchyError {
+    EmptySegment,
+    DuplicatePath,
+    LeafIsAlsoBranch,
+    RendererLimit,
+}
+
+/// Falcon's documented slash paths, preserving original item indices/order.
+/// Ambiguous native cases stay unmodeled rather than choosing a value silently.
+pub fn menu_hierarchy(items: &[MenuItem]) -> Result<Vec<MenuNode>, MenuHierarchyError> {
+    struct Node {
+        label: String,
+        item_index: Option<usize>,
+        children: Vec<usize>,
+    }
+    fn materialize(at: usize, nodes: &mut [Node]) -> MenuNode {
+        let label = std::mem::take(&mut nodes[at].label);
+        let item_index = nodes[at].item_index;
+        let children = std::mem::take(&mut nodes[at].children)
+            .into_iter()
+            .map(|child| materialize(child, nodes))
+            .collect();
+        MenuNode {
+            label,
+            item_index,
+            children,
+        }
+    }
+    let mut roots = Vec::new();
+    let mut nodes = Vec::<Node>::new();
+    let mut lookup = std::collections::HashMap::<(Option<usize>, &str), usize>::new();
+    for (item_index, item) in items.iter().enumerate().filter(|(_, item)| item.visible) {
+        let parts: Vec<_> = item.text.split('/').take(33).collect();
+        if parts.iter().any(|part| part.is_empty()) {
+            return Err(MenuHierarchyError::EmptySegment);
+        }
+        if parts.len() > 32 {
+            return Err(MenuHierarchyError::RendererLimit);
+        }
+        let mut parent = None;
+        for (depth, label) in parts.iter().enumerate() {
+            let at = match lookup.get(&(parent, *label)) {
+                Some(&at) => at,
+                None => {
+                    if nodes.len() >= 16_384 {
+                        return Err(MenuHierarchyError::RendererLimit);
+                    }
+                    let at = nodes.len();
+                    nodes.push(Node {
+                        label: (*label).into(),
+                        item_index: None,
+                        children: Vec::new(),
+                    });
+                    lookup.insert((parent, *label), at);
+                    if let Some(parent) = parent {
+                        nodes[parent].children.push(at);
+                    } else {
+                        roots.push(at);
+                    }
+                    at
+                }
+            };
+            let node = &mut nodes[at];
+            if depth + 1 == parts.len() {
+                if node.item_index.is_some() {
+                    return Err(MenuHierarchyError::DuplicatePath);
+                }
+                if !node.children.is_empty() {
+                    return Err(MenuHierarchyError::LeafIsAlsoBranch);
+                }
+                node.item_index = Some(item_index);
+                break;
+            }
+            if node.item_index.is_some() {
+                return Err(MenuHierarchyError::LeafIsAlsoBranch);
+            }
+            parent = Some(at);
+        }
+    }
+    Ok(roots
+        .into_iter()
+        .map(|at| materialize(at, &mut nodes))
+        .collect())
 }
 
 /// What a widget shows and edits.
@@ -773,6 +923,30 @@ pub enum Presentation {
 
 // ---------------------------------------------------------------- queries
 
+/// Documented Kontakt back-to-front type priority within one Z layer.
+/// Image is the shared-IR representation of a picture label; panels paint no
+/// pixels and retain their position before ordinary controls.
+fn kontakt_paint_rank(kind: &Kind) -> u8 {
+    match kind {
+        Kind::Panel => 0,
+        Kind::FileSelector { .. } => 1,
+        Kind::Waveform => 2,
+        Kind::Wavetable { .. } => 3,
+        Kind::LevelMeter { .. } => 4,
+        Kind::Label | Kind::Image => 5,
+        Kind::Knob { .. } => 6,
+        Kind::Slider { .. } => 7,
+        Kind::Switch => 8,
+        Kind::Button { .. } => 9,
+        Kind::ValueEdit { .. } => 10,
+        Kind::Menu { .. } => 11,
+        Kind::Table { .. } => 12,
+        Kind::Xy { .. } => 13,
+        Kind::TextEdit => 14,
+        Kind::MouseArea => 15,
+    }
+}
+
 impl Interface {
     /// Which assets `presentation` draws, indexed like [`Self::assets`].
     /// Everything else need not be decoded, or may be released.
@@ -842,7 +1016,8 @@ impl Interface {
         rect
     }
 
-    /// `page`'s widgets back to front by ([`Widget::z`], declaration order).
+    /// `page`'s widgets back to front. Kontakt layers order by widget type,
+    /// then declaration order (KSP Control Parameters, `$CONTROL_PAR_Z_LAYER`).
     /// Kontakt uses global layers; native graphs order siblings and draw each
     /// panel's contents straight after the panel.
     /// Requires a [validated](Self::validate) interface.
@@ -862,7 +1037,10 @@ impl Interface {
                 .filter(|(_, w)| w.page == page)
                 .map(|(n, _)| WidgetRef(n))
                 .collect();
-            out.sort_by_key(|n| (self.widgets[n.0].z, n.0));
+            out.sort_by_key(|n| {
+                let w = &self.widgets[n.0];
+                (w.z, kontakt_paint_rank(&w.kind), n.0)
+            });
             return out;
         }
         let mut children: Vec<Vec<WidgetRef>> = vec![Vec::new(); self.widgets.len() + 1];
@@ -1161,13 +1339,33 @@ mod tests {
         ui.widgets[1].z = 2;
         assert_eq!(
             ui.draw_order(PageRef(0)),
-            [WidgetRef(0), WidgetRef(1), WidgetRef(2)]
+            [WidgetRef(0), WidgetRef(2), WidgetRef(1)],
+            "a label remains behind a knob within the same Kontakt layer"
         );
         ui.widgets[0].hidden = true;
         assert!(
             !ui.visible(WidgetRef(1)),
             "global layers retain inherited hiding"
         );
+    }
+
+    #[test]
+    fn kontakt_layers_use_native_type_priority_before_declaration_order() {
+        let mut ui = sample();
+        ui.widgets = vec![
+            Widget::new("menu", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Menu { items: vec![] }),
+            Widget::new("slider", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Slider { range: Range::default(), orientation: Orientation::Vertical }),
+            Widget::new("first-label", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Label),
+            Widget::new("second-label", PageRef(0), Rect::new(0, 0, 20, 20), Kind::Label),
+            Widget::new("meter", PageRef(0), Rect::new(0, 0, 20, 20), Kind::LevelMeter { orientation: Orientation::Vertical }),
+        ];
+        // NI's documented top-to-bottom priority is Menu, Slider, Label, Meter.
+        // The two labels retain their declaration-order tie break.
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(4), WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0)]);
+        ui.widgets[4].z = 1;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0), WidgetRef(4)]);
+        ui.source = Source::PerformanceView;
+        assert_eq!(ui.draw_order(PageRef(0)), [WidgetRef(2), WidgetRef(3), WidgetRef(1), WidgetRef(0), WidgetRef(4)]);
     }
 
     #[test]
