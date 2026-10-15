@@ -38,6 +38,162 @@ fn editor_uses_the_auto_send_native_controller() {
     assert_send::<MuiEditor<Synth>>();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn native_parent_delivery_orders_active_close_and_rejects_stale_requests() {
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let params = Arc::new(Synth::default());
+    let mut editor = editor(&params);
+    let registry = Arc::clone(&editor.x11_requests);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let paused = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(Barrier::new(2));
+    let release = Arc::clone(&pause);
+    let (entered, active) = mpsc::channel();
+    editor = editor.on_x11_window(move |parent| {
+        assert!(
+            registry.try_lock().is_ok(),
+            "no registry lock across user code"
+        );
+        if parent.is_none() && !paused.swap(true, Ordering::SeqCst) {
+            entered.send(()).unwrap();
+            release.wait();
+        }
+        recorded.lock().unwrap().push(parent);
+    });
+    let old = editor.x11_window_hook().unwrap();
+    let closing = Arc::clone(&old);
+    let closer = std::thread::spawn(move || closing.lock().unwrap()(None));
+    active.recv().unwrap();
+    // A native close callback is active. Registering a new generation must
+    // neither wait on it nor allow its None edge after the new Some edge.
+    editor.requests = Arc::default();
+    let current = editor.x11_window_hook().unwrap();
+    let opening = Arc::clone(&current);
+    let opening_started = Arc::new(Barrier::new(2));
+    let started = Arc::clone(&opening_started);
+    let opener = std::thread::spawn(move || {
+        started.wait();
+        opening.lock().unwrap()(Some(42));
+    });
+    opening_started.wait();
+    pause.wait();
+    closer.join().unwrap();
+    opener.join().unwrap();
+    assert_eq!(*seen.lock().unwrap(), [None, Some(42)]);
+    old.lock().unwrap()(None);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [None, Some(42)],
+        "late old close ignored"
+    );
+    current.lock().unwrap()(None);
+    assert_eq!(*seen.lock().unwrap(), [None, Some(42), None]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn current_parent_close_registration_survives_editor_drop_without_requests_cycle() {
+    let params = Arc::new(Synth::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let editor = editor(&params).on_x11_window(move |parent| record.lock().unwrap().push(parent));
+    let worker_requests = Arc::clone(&editor.requests);
+    let requests = Arc::downgrade(&worker_requests);
+    let delivery = editor.x11_window_hook().unwrap();
+    drop(editor);
+    delivery.lock().unwrap()(None);
+    assert_eq!(*seen.lock().unwrap(), [None]);
+    drop(worker_requests);
+    assert!(
+        requests.upgrade().is_none(),
+        "hook retains no Requests cycle"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 display; run under Xvfb"]
+fn native_editor_parent_hook_survives_first_open_close_and_reopen() {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle as NativeHandle};
+    use std::sync::mpsc;
+    struct Parent;
+    impl baseview::WindowHandler for Parent {
+        fn on_frame(&self) -> Result<(), baseview::HandlerError> {
+            Ok(())
+        }
+        fn resized(&self, _: baseview::WindowSize) -> Result<(), baseview::HandlerError> {
+            Ok(())
+        }
+        fn on_event(&self, _: baseview::Event) -> baseview::EventStatus {
+            baseview::EventStatus::Ignored
+        }
+    }
+    let (created, parent_id) = mpsc::channel();
+    let parent = baseview::ThreadedWindow::create(baseview::WindowSettings::new(), move |cx| {
+        let id = match cx.window_handle()?.as_raw() {
+            NativeHandle::Xlib(handle) => u32::try_from(handle.window).unwrap(),
+            NativeHandle::Xcb(handle) => handle.window.get(),
+            _ => unreachable!(),
+        };
+        created.send(id).unwrap();
+        Ok(Parent)
+    })
+    .unwrap();
+    let parent_id = parent_id
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    let params = Arc::new(Synth::default());
+    let mut editor = editor(&params);
+    let model = Arc::downgrade(&editor.shared);
+    let (notify, events) = mpsc::channel();
+    editor = editor.on_x11_window(move |id| {
+        let shared = model.upgrade().unwrap();
+        assert!(
+            shared.try_lock().is_ok(),
+            "parent notification has no UI lock"
+        );
+        notify.send((id, std::thread::current().id())).unwrap();
+    });
+    let mut old_requests = None;
+    for _ in 0..2 {
+        let (context, _) = context(&params);
+        editor.open(RawWindowHandle::X11(parent_id as _), context);
+        assert!(editor.window.is_some(), "native child created");
+        let (id, owner) = events
+            .try_recv()
+            .expect("publish the parent before open returns");
+        let id = id.expect("live X11 identifier");
+        assert_eq!(editor.requests.x11_window(), Some(id));
+        assert_ne!(owner, std::thread::current().id());
+        if let Some(old) = old_requests.take() {
+            assert!(
+                !Arc::ptr_eq(&old, &editor.requests),
+                "fresh Requests per open"
+            );
+            assert_eq!(old.x11_window(), None);
+        }
+        old_requests = Some(Arc::clone(&editor.requests));
+        editor.close();
+        let (closed, closed_on) = events
+            .try_recv()
+            .expect("close completes parent cancellation");
+        assert_eq!(closed, None);
+        assert_eq!(closed_on, owner);
+        assert_eq!(editor.requests.x11_window(), None);
+        assert!(
+            events.try_recv().is_err(),
+            "one creation and cancellation per generation"
+        );
+    }
+    parent.close();
+}
+
 fn context(params: &Arc<Synth>) -> (PluginContext, Log) {
     let log = Log::default();
     let (begins, sets, ends) = (log.clone(), log.clone(), log.clone());
