@@ -38,7 +38,7 @@ impl ControlOperation {
             }
             Self::NativeSnapshotOverlay(v) => v.state.values.len()
                 .saturating_add(v.state.callbacks.len()).saturating_add(v.native.len())
-                .saturating_add(v.epochs.len()),
+                .saturating_add(v.epochs.len()).saturating_add(v.menus.len()),
         }
     }
 }

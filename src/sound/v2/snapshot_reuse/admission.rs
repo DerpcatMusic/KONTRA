@@ -71,6 +71,7 @@ struct Incoming {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 struct Prepared {
     script_value_homes: usize,
+    native_menu_positions: usize,
     text_slots: usize,
     persistence_callbacks: usize,
 }
@@ -240,9 +241,10 @@ impl Report {
             row_reason,
         });
     }
-    pub(super) fn prepared(&mut self, state: &sampler_core::ScriptStateBuffer) {
+    pub(super) fn prepared(&mut self, state: &sampler_core::ScriptStateBuffer, menus: usize) {
         self.prepared = Some(Prepared {
             script_value_homes: state.values.len(),
+            native_menu_positions: menus,
             text_slots: state.texts.len(),
             persistence_callbacks: state.callbacks.len(),
         });
