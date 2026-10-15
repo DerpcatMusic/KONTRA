@@ -4,6 +4,93 @@ use sampler_core::*;
 mod support;
 
 #[test]
+fn control_collects_returns_without_another_growth_or_pressure() {
+    for voice_first in [false, true] {
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 512, 2);
+        let (mut runtime, mut control) =
+            Runtime::with_plan_updates_and_note_capacity(plan, limits, 2, 1, 128).unwrap();
+        assert!(!control.collect_growth_returns());
+        let (mut voices, mut notes) = (2, 128);
+        for voice in [voice_first, !voice_first] {
+            if voice {
+                voices *= 2;
+                assert_eq!(control.grow_voices(voices), Ok(voices));
+            } else {
+                notes *= 2;
+                assert_eq!(control.grow_note_params(notes), Ok(notes));
+            }
+            assert!(
+                !control.collect_growth_returns(),
+                "no return before adoption"
+            );
+            assert_eq!(control.grow_voices(voices * 2), Err(PlanError::Capacity));
+            assert_eq!(
+                control.grow_note_params(notes * 2),
+                Err(PlanError::Capacity)
+            );
+            support::without_heap(|| runtime.render(&mut [[0.; 2]; 1]).unwrap());
+            assert!(!control.voice_pressure() && !control.note_pressure());
+            assert!(control.collect_growth_returns());
+            assert!(
+                !control.collect_growth_returns(),
+                "one return is reclaimed exactly once"
+            );
+            assert_eq!(
+                (runtime.voice_capacity(), runtime.note_params_capacity()),
+                (voices, notes)
+            );
+            assert_eq!(
+                (control.voice_capacity(), control.note_params_capacity()),
+                (voices, notes)
+            );
+        }
+    }
+}
+
+#[test]
+fn voice_and_note_growth_share_one_public_inflight_owner() {
+    for voice_first in [false, true] {
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 512, 2);
+        let (mut runtime, mut control) =
+            Runtime::with_plan_updates_and_note_capacity(plan, limits, 2, 1, 128).unwrap();
+        let (mut voices, mut notes) = (2, 128);
+        for voice in [voice_first, !voice_first] {
+            let before = (runtime.voice_capacity(), runtime.note_params_capacity());
+            if voice {
+                voices *= 2;
+                assert_eq!(control.grow_voices(voices), Ok(voices));
+            } else {
+                notes *= 2;
+                assert_eq!(control.grow_note_params(notes), Ok(notes));
+            }
+            // Both requests are otherwise valid. Neither producer may admit a
+            // second owner while the other kind's return remains outstanding.
+            assert_eq!(control.grow_voices(voices * 2), Err(PlanError::Capacity));
+            assert_eq!(
+                control.grow_note_params(notes * 2),
+                Err(PlanError::Capacity)
+            );
+            assert_eq!(
+                (runtime.voice_capacity(), runtime.note_params_capacity()),
+                before
+            );
+            support::without_heap(|| runtime.render(&mut [[0.; 2]; 1]).unwrap());
+            assert_eq!(
+                (runtime.voice_capacity(), runtime.note_params_capacity()),
+                (voices, notes)
+            );
+        }
+        assert_eq!(runtime.stats().voice_growths, 1);
+        assert_eq!(runtime.stats().growth_failures, 0);
+        // Both endpoints and any undrained return are destroyed off callback.
+        drop(control);
+        drop(runtime);
+    }
+}
+
+#[test]
 fn note_parameter_pages_grow_without_moving_live_state_or_audio_heap_work() {
     fn make(initial: usize) -> (Runtime, PlanControl) {
         let plan = Prepared::new(

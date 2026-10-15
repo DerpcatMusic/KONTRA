@@ -240,6 +240,43 @@ fn purge_completion_waits_for_borrowed_memory_reclamation() {
     assert_eq!(wait(&mut rt, 1), vec![(id, true, false)]);
     assert_eq!(pcm.resident_bytes(), 0);
 }
+
+#[test]
+fn budgeted_full_residency_purge_and_reload_keep_audio_guard_drops_heap_free() {
+    let budget = HeadBudget::new(128 * size_of::<Frame>());
+    let mut staged = ResidentBuffer::new(48000, 128, &budget).unwrap();
+    staged.frames_mut().fill([0.25; 2]);
+    let pcm = staged.finish().unwrap();
+    let reload_budget = budget.clone();
+    pcm.set_budgeted_resident_loader(move || {
+        let mut staged = ResidentBuffer::new(48000, 128, &reload_budget)?;
+        staged.frames_mut().fill([0.5; 2]);
+        Ok(staged)
+    }).unwrap();
+    let borrowed = pcm.resident_frames().unwrap();
+    let mut rt = runtime(pcm.clone(), false);
+    let plan = rt.active_plan();
+    let mut purge = 0;
+    support::without_heap(|| { purge = rt.request_group_residency(plan, 0, false, ScriptInstanceId(0)).unwrap(); });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    support::without_heap(|| rt.render(&mut []).unwrap());
+    assert!(drain(&mut rt).is_empty());
+    assert_eq!(borrowed[0], [0.25; 2]);
+    assert_eq!(budget.status().held_bytes, 1024);
+    support::without_heap(|| drop(borrowed));
+    assert_eq!(wait(&mut rt, 1), vec![(purge, true, false)]);
+    assert_eq!(budget.status().held_bytes, 0);
+    let mut reload = 0;
+    support::without_heap(|| { reload = rt.request_group_residency(plan, 0, true, ScriptInstanceId(0)).unwrap(); });
+    assert_eq!(wait(&mut rt, 1), vec![(reload, true, true)]);
+    assert_eq!(budget.status().held_bytes, 1024);
+    assert_eq!(budget.status().peak_bytes, 1024);
+    let note = rt.note_on(input(1), 60, 1.).unwrap();
+    rt.forward_attack(note).unwrap();
+    let mut audio = [[0.; 2]; 8];
+    support::without_heap(||rt.render(&mut audio).unwrap());
+    assert_eq!(audio, [[0.5; 2]; 8]);
+}
 #[test]
 fn a_new_purge_cancels_an_in_flight_reload_without_resurrecting_samples() {
     let pcm = Pcm::new(48000, vec![[0.25; 2]; 128].into()).unwrap();

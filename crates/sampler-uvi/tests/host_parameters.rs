@@ -1,6 +1,33 @@
 use sampler_uvi::script::{Config, ScriptHost};
 
 #[test]
+fn catalog_copies_keep_aliases_inventory_and_element_local_mutations() {
+    let xml = r#"<Program><Inserts><OnePole Custom='first'/><OnePole Custom='second'/></Inserts><EventProcessors><ScriptProcessor><script>
+      local oldClone,oldCreate=table.clone,table.create
+      table.clone=function() error('authored replacement must not enter the private schema copier') end
+      table.create=function() error('authored replacement must not enter the private schema copier') end
+      local first=Program.inserts[1].parameterDefinitions
+      local second=Program.inserts[2].parameterDefinitions
+      assert(type(first)=='table' and first~=second and #first==5 and #second==5)
+      for i,d in ipairs(first) do
+        assert(first[d.name]==d and d.id==i)
+        assert(second[d.name]~=d)
+      end
+      assert(first.Custom.type=='string' and first.Custom.provenance=='retained-xml')
+      assert(first.Custom.min==nil and first.Custom.default==nil)
+      local minimum=second.Freq.min
+      first.Freq.min=-99; first.Freq.extra='authored'; first.Custom.displayName='local'
+      assert(first[first.Freq.id].min==-99 and second.Freq.min==minimum)
+      assert(second.Freq.extra==nil and second.Custom.displayName=='Custom')
+      first[#first+1]={name='Private'}
+      assert(#first==6 and #second==5)
+      table.clone,table.create=oldClone,oldCreate
+    </script></ScriptProcessor></EventProcessors></Program>"#;
+    let host = ScriptHost::new(xml, (), Config::default()).unwrap();
+    assert!(host.fault_counts().init.is_empty(), "{:?}", host.fault_counts());
+}
+
+#[test]
 fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
     use sampler_uvi::script::Command;
     let xml = r#"<UVI4><Program><Inserts><OnePole/><OnePole Custom='text'/></Inserts><EventProcessors><ScriptProcessor><script>

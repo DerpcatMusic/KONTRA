@@ -6,6 +6,22 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.482
+
+This checkpoint brings the accumulated library, scripting, streaming, editor and native-DSP work since the last published 0.3.476 snapshot. Five newly reviewed defects advance the version from the locally installed 0.3.477; follow-up fixes and optimizations are not counted again.
+
+- Preset switching has sequential offline witnesses for actual preparation, publication, callback settlement, stale controls, menus and fresh-note audio. UVI probes now wait for the real Lua owner and ordered command drain, expose sample status and pace audio explicitly rather than treating a fast offline render as readiness.
+- Kontakt snapshots keep convolution resource ownership, so a saved impulse index resolves against its own file table while retaining base archive resources. Missing factory dependencies remain explicit.
+- UVI module reads retain typed failures and strict UTF-8; required final translation failures roll back. Menus, table fills and authored separators have additional projection coverage. Identical immutable presentation writes no longer rebuild the exported interface.
+- All 40 installed VWinds programs passed paced note witnesses; current initialized projection checks cover all 40, with WaveView limitations still reported. These checks establish KONTRA behavior, not full native parity.
+- Source-rate dependencies evaluate in order, and onset phase modulation preserves the saved LFO phase. Ladder float operation order now matches 117 complete native stereo vectors exactly within the admitted kernel scope. Skreamer live controls and saved control ownership include authored PCM and stale-generation checks.
+- Linux editor windows and callbacks remain on their worker; failed construction, close and reopen paths retain ownership and X11 parent notifications. The macOS open-state query has corrected polarity; native macOS acceptance remains subject to hosted checks.
+- Voice preparation copies are reduced, and completed growth owners are reclaimed off audio. A separate interleaved-mixing experiment was rejected after measurements failed its acceptance gates and is absent from this release.
+
+Validation at implementation checkpoint `95ac0d7d0dd6f313e0ead799ab9d8907b31a7680`: 807 root tests passed, 53 explicitly ignored, zero failed; the UI-enabled inspector built successfully. Focused native, core, UVI, KSP and editor receipts retain their narrower scopes. Release packaging and hosted platform validation report their own exact revisions.
+
+Known issues: the reported Areia doubled staccato and stream underruns remain under investigation. Large libraries can exhaust the configured attack budget and wait for disk; 300 voices at 1% on KONTRA's meter is not achieved or promised. Daft/Jump, some convolution size controls, wavetable and nested modulation paths, UVI native LFO modes and several authored UI cases remain incomplete. Full library/native/UI/DSP parity is not claimed. The Rust Doctor audit is retained with its resolver limitations, not reported as a clean result.
+
 ## 0.3.476
 
 Nineteen reviewed corrections follow 0.3.457. Kontakt support now checks itself against Kontakt: a native oracle compares KONTRA's load with real Kontakt 8.13.1 (0 mismatches over ~5.3M group/zone/loop values across 11 libraries) and Kontakt objects decode with Kontakt's own reader programs.

@@ -57,6 +57,90 @@ fn pixels_state(face: &Interface, input: &mut InputState) -> Vec<u8> {
 }
 
 #[test]
+fn unavailable_falcon_meter_never_reads_or_paints_unrelated_program_output() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut face = face(Kind::LevelMeter {orientation:ir::Orientation::Vertical});
+    face.source = ir::Source::FalconLua;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counter = reads.clone();
+    let mut unrelated = Assets::default();
+    unrelated.meter = Some(Arc::new(move |_,_| {counter.fetch_add(1,Ordering::Relaxed);[1.;2]}));
+    let paint = |face:&Interface, assets:&Assets, level:Option<f64>| {
+        let mut ui = super::super::theme::ui();
+        let mut values = Values::default();
+        let mut input = InputState::default();
+        if let Some(level)=level {input.meters.insert(WidgetRef(0),level);}
+        input.uvi_meters.insert(WidgetRef(0),sampler_uvi::meters::Observation {
+            availability:sampler_uvi::meters::Availability::RawStereoObserved,
+            physical_bus:Some(7),stereo_peak:Some([1.,0.25]),
+        });
+        for _ in 0..3 {
+            let root=view_state(&mut ui,"meter",face,PageRef(0),assets,Presentation::Bitmap,1.,&mut values,&mut input);
+            ui.frame(root,Some(Size::new(160.,120.)),Input::default(),1./60.).unwrap();
+        }
+        super::super::tests::pixels(&ui,160,120)
+    };
+    let empty = paint(&face,&Assets::default(),None);
+    assert_eq!(paint(&face,&unrelated,None),empty,"invalid or absent request stays unavailable");
+    face.widgets[0].uvi_meter_request = Some(ir::UviMeterRequest {element_id:0,element_node:2,scope:ir::UviMeterScope::Program,bus_id:0,use_output:false,display_as_mono:false});
+    assert_eq!(paint(&face,&unrelated,None),empty,"an input tap cannot be substituted by output");
+    assert_eq!(reads.load(Ordering::Relaxed),0);
+    assert_ne!(paint(&face,&unrelated,Some(0.75)),empty,"an explicit resolved provider value reaches the painter");
+    assert_eq!(reads.load(Ordering::Relaxed),0);
+    face.source=ir::Source::Ksp {slot:0};
+    face.widgets[0].uvi_meter_request=None;
+    assert_ne!(paint(&face,&unrelated,None),empty,"Kontakt's existing output provider remains active");
+    assert!(reads.load(Ordering::Relaxed)>0);
+}
+
+#[test]
+fn kontakt_type_layers_preserve_skin_pixels_and_pointer_target() {
+    let source = r#"on init
+make_perfview
+set_ui_width_px(160)
+set_ui_height_px(120)
+declare ui_button $front
+declare ui_label $back(1,1)
+move_control_px($front,10,10)
+move_control_px($back,10,10)
+set_control_par(get_ui_id($front),$CONTROL_PAR_WIDTH,60)
+set_control_par(get_ui_id($front),$CONTROL_PAR_HEIGHT,30)
+set_control_par(get_ui_id($back),$CONTROL_PAR_WIDTH,60)
+set_control_par(get_ui_id($back),$CONTROL_PAR_HEIGHT,30)
+set_control_par_str(get_ui_id($front),$CONTROL_PAR_PICTURE,"front")
+set_control_par_str(get_ui_id($back),$CONTROL_PAR_PICTURE,"back")
+set_text($front,"")
+set_text($back,"")
+end on"#;
+    let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let mut face = script.ui(&|_| Some(ir::ImageMeta { size: Some(ir::Size { width: 60., height: 30. }), ..Default::default() })).unwrap();
+    let mut assets = Assets::default();
+    assets.sync(&face, Presentation::Bitmap, |asset| {
+        let rgba = if asset.path.contains("front") { [255,0,0,255] } else { [0,0,255,255] };
+        Some(Arc::new(Picture::new(vec![Arc::new(moose::mui::mui::scene::Image::rgba(60,30,rgba.repeat(60*30)).unwrap())])))
+    });
+    let mut ui = super::super::theme::ui();
+    let mut values = Values::default();
+    let mut state = InputState::default();
+    let tick = |ui: &mut Ui, face: &Interface, values: &mut Values, state: &mut InputState, event| {
+        let root=view_state(ui,"order",face,PageRef(0),&assets,Presentation::Bitmap,1.,values,state);
+        ui.frame(root,Some(Size::new(160.,120.)),event,1./60.).unwrap();
+    };
+    for _ in 0..3 { tick(&mut ui,&face,&mut values,&mut state,Input::default()); }
+    let first=super::super::tests::pixels(&ui,160,120);
+    assert_eq!(&first[(20*160+20)*4..(20*160+20)*4+4], &[255,0,0,255], "later label must stay behind the earlier button");
+    let pointer=|down| Input {pointer: PointerInput { pos: Some(Point::new(20.,20.)), buttons: if down {Buttons::PRIMARY} else {Buttons::default()}, ..Default::default() }, ..Default::default()};
+    tick(&mut ui,&face,&mut values,&mut state,pointer(true));
+    tick(&mut ui,&face,&mut values,&mut state,pointer(false));
+    tick(&mut ui,&face,&mut values,&mut state,Input::default());
+    assert!(state.edits.iter().any(|edit| edit.widget==WidgetRef(0)), "the front button must receive the pointer gesture");
+    face.widgets[1].z=1;
+    for _ in 0..3 { tick(&mut ui,&face,&mut values,&mut state,Input::default()); }
+    let foreground=super::super::tests::pixels(&ui,160,120);
+    assert_eq!(&foreground[(20*160+20)*4..(20*160+20)*4+4], &[0,0,255,255], "explicit foreground layer overrides type priority");
+}
+
+#[test]
 fn menu_keeps_authored_selected_caption_when_item_is_hidden() {
     let paint = |visible: i32, value: i32| {
         let source = format!(

@@ -14,9 +14,11 @@ cache = ["dep:serde", "sampler-core/cache"]
 [dependencies]
 sampler-parity = { path = "../sampler-parity" }
 sampler-core = { path = "../sampler-core" }
+sampler-ir = { path = "../sampler-ir" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
 serde_json = { version = "1", features = ["raw_value"] }
 serde = { version = "1", features = ["derive"], optional = true }
+sha2 = "0.10.9"
 
 [lints.rust]
 unsafe_code = "deny"

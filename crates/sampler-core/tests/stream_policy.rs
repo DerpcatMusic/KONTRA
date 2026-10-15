@@ -496,3 +496,34 @@ fn a_horizon_change_updates_live_credits_before_the_next_start() {
         assert!(rt.voice_active(live));
     });
 }
+
+#[test]
+fn demand_snapshot_distinguishes_heads_from_pending_pages_without_polling_or_advancing() {
+    let (mut rt, mut worker) = player(4);
+    assert_eq!(rt.service_streaming(64), Ok(false));
+    let now = rt.now();
+    let mut resident = 0;
+    let mut tail = 0;
+    support::without_heap(|| {
+        assert!(rt.visit_stream_demand(64, |d| {
+            assert!(!d.starved && !d.cold);
+            assert_eq!(d.status, PageStatus::Pending);
+            if d.resident { resident += 1; } else { tail += 1; }
+            true
+        }).unwrap());
+        assert!(!rt.visit_stream_demand(64, |_| false).unwrap());
+    });
+    assert_eq!((resident, tail), (32, 32));
+    assert_eq!(rt.now(), now);
+    let mut job = worker.next_job().unwrap();
+    job.frames_mut().fill([0.25; 2]);
+    worker.complete(job, Ok(())).unwrap();
+    // Completion stays pending until ordinary streaming service polls it.
+    rt.visit_stream_demand(1, |d| { assert_eq!(d.status, PageStatus::Pending); true }).unwrap();
+    rt.service_streaming(64).unwrap();
+    rt.visit_stream_demand(64, |d| { assert_eq!(d.status, PageStatus::Ready); true }).unwrap();
+    let mut out = [[0.; 2]; 64];
+    rt.render(&mut out).unwrap();
+    assert_eq!(out, [[0.25; 2]; 64]);
+    assert_eq!(rt.stream_underruns(), 0);
+}

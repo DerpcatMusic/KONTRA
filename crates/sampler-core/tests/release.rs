@@ -67,6 +67,77 @@ fn prepared(value: f32) -> Prepared {
 }
 
 #[test]
+fn exact_host_release_matches_fifo_pedals_velocity_and_first_transition_records() {
+    for pedals in 0..4 {
+        let run = |exact: bool| {
+            let (mut rt, mut transfer) = Runtime::with_plan_updates(prepared(0.5), limits(), 2, 1).unwrap();
+            transfer.submit(Box::new(prepared(1.))).unwrap();
+            let mut evidence = None;
+            support::without_heap(|| {
+                let first_input = Input { external_id: Some(71), ..input() };
+                let second_input = Input { external_id: Some(72), ..input() };
+                let channel = rt.register_channel(input().channel_address()).unwrap();
+                rt.sustain(channel, pedals & 1 != 0).unwrap();
+                let first = rt.trigger(first_input, 60, 0.75).unwrap();
+                let second = rt.trigger(second_input, 60, 0.25).unwrap();
+                rt.sostenuto(channel, pedals & 2 != 0).unwrap();
+                let mut pcm = [[0.; 2]; 8];
+                rt.render(&mut pcm[..2]).unwrap(); // input owners survive source EOF
+                assert_eq!(rt.poll_plan_update(), Ok(Some(1)));
+                if exact {
+                    rt.note_off_exact(second, Some(0.123456789)).unwrap();
+                } else {
+                    assert_eq!(rt.note_off(second_input, Some(0.123456789)), Ok(second));
+                }
+                assert!(rt.key_down(first).unwrap());
+                let initial = rt.release_context(second).unwrap();
+                assert_eq!(rt.note_off_exact(second, Some(0.9)), Err(Error::StaleHandle));
+                assert_eq!(rt.release_context(second), Ok(initial));
+                rt.render(&mut pcm[2..4]).unwrap();
+                rt.sustain(channel, false).unwrap();
+                rt.sostenuto(channel, false).unwrap();
+                let second_context = rt.release_context(second).unwrap();
+                if exact { rt.note_off_exact(first, None).unwrap(); }
+                else { assert_eq!(rt.note_off(first_input, None), Ok(first)); }
+                let first_context = rt.release_context(first).unwrap();
+                rt.render(&mut pcm[4..]).unwrap();
+                let mut ended = 0;
+                rt.flush_ended(|_| { ended += 1; true });
+                assert_eq!(ended, 2);
+                assert_eq!(rt.collect_retired_plans(), 1);
+                evidence = Some((pcm, initial, second_context, first_context,
+                    rt.note_count(), rt.family_count(), rt.voice_count()));
+            });
+            drop(transfer.retired().unwrap());
+            evidence.unwrap()
+        };
+        assert_eq!(run(true), run(false), "pedal mask {pedals}");
+    }
+}
+
+#[test]
+fn exact_host_release_rejects_invalid_generated_and_recycled_owners_without_mutation() {
+    let mut rt = Runtime::new(prepared(1.), limits()).unwrap();
+    support::without_heap(|| {
+        let first = rt.trigger(input(), 60, 1.).unwrap();
+        let second = rt.trigger(input(), 60, 0.5).unwrap();
+        assert_eq!(rt.note_off_exact(second, Some(f64::NAN)), Err(Error::InvalidInput));
+        assert!(rt.key_down(second).unwrap());
+        rt.note_off_exact(second, None).unwrap();
+        assert!(rt.key_down(first).unwrap(), "exact release must not choose the anonymous FIFO head");
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        rt.flush_ended(|_| true);
+        let fresh = rt.trigger(input(), 60, 1.).unwrap();
+        assert_ne!(fresh, second);
+        assert_eq!(rt.note_off_exact(second, None), Err(Error::StaleHandle));
+        assert!(rt.key_down(fresh).unwrap());
+        let generated = rt.generated_note(input().channel_address(), 60, 0.5).unwrap();
+        assert_eq!(rt.note_off_exact(generated, None), Err(Error::InvalidInput));
+        assert!(rt.key_down(generated).unwrap());
+    });
+}
+
+#[test]
 fn physical_fifo_context_survives_eof_pedals_replacement_and_terminal_retry() {
     let (mut rt, mut control) = Runtime::with_plan_updates(prepared(0.5), limits(), 2, 1).unwrap();
     control.submit(Box::new(prepared(1.))).unwrap();

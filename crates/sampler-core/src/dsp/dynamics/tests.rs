@@ -318,7 +318,7 @@ mod generic {
             law.detector = detector;
             out[i] = peak(&run_law(Law::Generic(law), Link::Off, [-2., 100., 0., 0.], &input)[192..]);
         }
-        assert!((out[0] - 0.7071).abs() < 1e-3, "{out:?}");
+        assert!((out[0] - f64::from_bits(0x3fe6a0902de00d1b)).abs() < 1e-3, "{out:?}");
         assert!(out[1] < 0.84, "{out:?}");
     }
 }

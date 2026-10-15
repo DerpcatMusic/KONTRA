@@ -331,12 +331,30 @@ pub(super) fn sliced(image: &Arc<Image>, meta: ir::ImageMeta, w: f64, h: f64, s:
 }
 
 /// Authored table bars; input and runtime transport remain in widget_state.
-pub(super) fn table(
+pub(super) fn table_with_style(
     samples: Vec<f64>,
     range: ir::Range,
     bipolar: bool,
     colors: ir::Colors,
+    edge: Option<ir::TableInnerEdge>,
+    fill: Option<ir::TableFill>,
 ) -> El {
+    match fill {
+        // The existing default is a flat fallback; explicit solid selects that
+        // same uniform-colour background and bar painter. No gloss is inferred.
+        None | Some(ir::TableFill::Solid) => table_solid(samples, range, bipolar, colors, edge),
+    }
+}
+
+/// Explicit source separators; unknown/default ink keeps the existing drawing.
+fn table_solid(
+    samples: Vec<f64>,
+    range: ir::Range,
+    bipolar: bool,
+    colors: ir::Colors,
+    edge: Option<ir::TableInnerEdge>,
+) -> El {
+    let edge = edge.filter(|edge| !edge.visible || edge.color.is_some());
     let bar = colors.bar.map_or(Role::Ink.alpha(0.6), |c| {
         Fill::from(
             Color::srgb(c.r as f32 / 255., c.g as f32 / 255., c.b as f32 / 255.)
@@ -368,7 +386,7 @@ pub(super) fn table(
                     rect(
                         n as f64 * bw,
                         s.height * (1. - t.max(zero)),
-                        (bw - 1.).max(1.),
+                        if edge.is_some() { bw } else { (bw - 1.).max(1.) },
                         s.height * (t - zero).abs(),
                     ),
                     bar.clone(),
@@ -379,6 +397,18 @@ pub(super) fn table(
             rect(0., s.height * (1. - zero), s.width, 1.),
             zero_ink.clone(),
         ));
+        if let Some(ink) = edge.filter(|edge| edge.visible).and_then(|edge| edge.color) {
+            let ink = Color::srgb(ink.r as f32 / 255., ink.g as f32 / 255., ink.b as f32 / 255.)
+                .with_alpha(ink.a as f32 / 255.);
+            for n in 1..samples.len() {
+                // The shared renderer uses a logical-pixel separator. Native
+                // subpixel/gloss geometry is not inferred from the colour API.
+                draws.push(Draw::fill(
+                    rect(n as f64 * bw - 1., 0., 1., s.height),
+                    ink,
+                ));
+            }
+        }
         draws
     })
     .fill(colors.background.map_or(Role::Ink.alpha(0.06), |c| {

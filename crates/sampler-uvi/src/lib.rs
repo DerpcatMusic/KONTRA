@@ -10,9 +10,11 @@
 
 #[cfg(feature = "library-access")]
 mod access;
-pub mod arpeggiator;
 mod access_error;
+pub mod arpeggiator;
 mod audio;
+mod sample_metadata;
+mod residency_policy;
 #[cfg(feature = "library-access")]
 mod bank;
 #[cfg(feature = "scan")]
@@ -20,6 +22,7 @@ mod coverage;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod engine_parameters;
+pub mod meters;
 mod fx;
 mod inserts;
 pub use inserts::InsertNode;
@@ -212,8 +215,8 @@ fn bank_volume_sample_reaches_the_bank_resource_resolver() {
     assert_eq!(locations, ["$Authored.ufs/Samples/note.wav"]);
     let disk = translate(xml, Path::new(".")).unwrap();
     assert!(
-        disk.instrument.zones.is_empty(),
-        "a loose file has no bank authority"
+        disk.instrument.zones.iter().all(|z| z.asset.is_none()) && disk.instrument.assets.is_empty(),
+        "a loose file has no bank authority; its target remains unbound"
     );
 }
 
@@ -286,6 +289,15 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
+    // Every authored user contributes, including a bypassed user sharing an
+    // otherwise audible source. Do not instantiate unused/missing file assets.
+    for player in program.descendants().filter(|n|n.has_tag_name("SamplePlayer")) {
+        let required=residency_policy::sample(player).map_err(Translate::Invalid)?;
+        let Some(path)=player.attribute("SamplePath") else {continue;};
+        let relative=path.replace('\\',"/");
+        let location=match &out.source {Source::Bank=>relative,Source::Disk(folder)=>folder.join(relative).to_string_lossy().into_owned()};
+        if let Some(asset)=out.assets.get(&location) {out.ir.assets[asset.0].residency=out.ir.assets[asset.0].residency.merge(required);}
+    }
     // Whatever was neither structure nor consumed is reported once per node.
     // Modulation sources and mappers act only through connections, which
     // report what they could not translate.
@@ -379,12 +391,16 @@ thread_local! {
     static READS: std::cell::RefCell<Option<HashSet<(usize, String)>>> = const { std::cell::RefCell::new(None) };
 }
 
-fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
+fn record_read(node: Node, name: &str) {
     READS.with(|r| {
         if let Some(reads) = r.borrow_mut().as_mut() {
             reads.insert((node.id().get_usize(), name.to_owned()));
         }
     });
+}
+
+fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
+    record_read(node, name);
     match node.attribute(name) {
         None => Ok(default),
         Some(text) => text
@@ -760,7 +776,8 @@ impl Translation {
             .filter(|n| n.has_tag_name("SamplePlayer"))
             .enumerate()
         {
-            if number(player, "Bypass", 0.0)? != 0.0 {
+            let bypassed = number(player, "Bypass", 0.0)? != 0.0;
+            if bypassed && self.split.is_none() {
                 continue;
             }
             let group = self.oscillator_group(
@@ -769,14 +786,12 @@ impl Translation {
                 keygroup.id().get_usize(),
                 player.id().get_usize(),
             );
+            if bypassed {
+                self.ir.groups[group.0].muted = true;
+            }
             let at = path(player);
-            let Some(sample) = player.attribute("SamplePath").filter(|p| !p.is_empty()) else {
-                self.unsupported(&at, "sample player without a sample", "");
-                continue;
-            };
-            let Some(asset) = self.asset(&at, sample) else {
-                continue;
-            };
+            let asset = player.attribute("SamplePath").filter(|p| !p.is_empty())
+                .and_then(|sample| self.asset(&at, sample));
             let start = number(player, "SampleStart", 0.0)?;
             if start != 0.0 {
                 self.unsupported(&at, "SampleStart", start);
@@ -839,6 +854,9 @@ impl Translation {
                 self.ir.source_indices.zones[self.native_player_ids[&player.id()]] =
                     Some(ir::ZoneRef(self.ir.zones.len()));
             }
+            let zone = ir::ZoneRef(self.ir.zones.len());
+            let node = u32::try_from(player.id().get_usize()).map_err(|_| "sample player identity exceeds supported range".to_string())?;
+            self.ir.source_indices.sample_targets.push(ir::SourceSampleTarget { node, zones: vec![zone] });
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -868,7 +886,7 @@ impl Translation {
                 chain,
                 amplitude,
                 routes: modulation.routes,
-                ..ir::Zone::new(asset)
+                ..asset.map_or_else(ir::Zone::dormant, ir::Zone::new)
             });
         }
         Ok(())
@@ -1032,6 +1050,7 @@ impl Translation {
         }
         self.ir.assets.push(ir::Asset {
             location: ir::AssetLocation::Path(resolved.clone()),
+            residency: Default::default(),
             encoding,
             root_key: None,
             loops: Vec::new(),
@@ -1116,14 +1135,25 @@ pub struct Translated {
 
 /// A program's scripts loaded on a script thread for a host that owns the runtime.
 pub struct AttachedScript {
+    /// Every bank Lua occurrence and its admission result. Unused unavailable
+    /// modules remain optional; these are collection outcomes, not executions.
+    pub script_members: Vec<script::ScriptOccurrence>,
     /// Typed initial findings; runtime findings are published through the driver UI bridge.
     pub findings: Vec<script::Finding>,
     pub driver: scripted::Driver<scripted::ScriptThread>,
     /// The script's widgets.
     pub interface: sampler_ui_ir::Interface,
+    /// Ancillary exact XML-element/bus ownership, never a native display law.
+    pub meter_buses: std::sync::Arc<[meters::Binding]>,
 }
 
 impl Translated {
+    /// Collection outcomes before script/source filtering. A failed unused
+    /// member does not reject this program; required failures reach Lua.
+    pub fn script_members(&self) -> &[script::ScriptOccurrence] {
+        self.lua.occurrences()
+    }
+
     /// Start the program's Lua scripts on their own thread and mark the
     /// instrument as scripted: what they replace is no longer reported, what
     /// they use that is not modeled is. `None` when the program has none.
@@ -1149,16 +1179,20 @@ impl Translated {
         let mut lua = self.lua.clone();
         #[cfg(feature = "library-access")]
         if let Some((bank, program)) = &self.bank {
-            let (bank, program) = (std::sync::Arc::clone(bank), program.clone());
-            lua =
-                lua.with_images(move |path| bank.ui_resource_result(&program, path).ok().flatten());
+            lua = bank.bind_script_images(program, lua);
         }
         if self.bank.is_none()
             && let Some(dir) = &self.dir
         {
-            let resources = resources::Resources::of(&dir.join("ui.uvip"));
-            lua = lua.with_images(move |path| resources.read(path));
+            lua = bind_loose_script_images(lua, dir);
         }
+        let sample_source:Option<script::SampleSource>=match (&self.bank,&self.dir) {
+            (Some((bank,program)),_)=>{let(bank,program)=(std::sync::Arc::clone(bank),program.clone());
+                Some(std::sync::Arc::new(move|path,explicit|bank.sample_resource(&program,path,explicit)))},
+            (None,Some(dir))=>{let dir=dir.clone();Some(std::sync::Arc::new(move|path,explicit|stream::loose_sample_resource(&dir,path,explicit)))},
+            _=>None,
+        };
+        if let Some(source)=sample_source {lua=lua.with_samples(source);}
         let decode: Option<Box<dyn Fn(&str) -> Option<sampler_kontakt::Decoded> + Send + Sync>> =
             match (&self.bank, &self.dir) {
                 (Some((bank, program)), _) => {
@@ -1190,6 +1224,7 @@ impl Translated {
                 engine_parameters::convolver_slots(&self.instrument, &self.inserts),
             );
         }
+        let script_members = lua.occurrences().to_vec();
         let (thread, loaded) = scripted::ScriptThread::spawn_shared_with_ui_state(
             self.text.clone(),
             lua,
@@ -1210,12 +1245,16 @@ impl Translated {
                 (None, Some(dir)) => Source::Disk(dir.clone()),
                 _ => Source::Bank,
             };
-            if let Ok((mut instrument, locations, groups, inserts)) =
+            let (mut instrument, locations, groups, inserts) =
                 translate_initialized(&self.text, source, &loaded.insert_overrides, &loaded.folded_writes)
-            {
-                instrument.uvi_script_sources = self.instrument.uvi_script_sources.take();
-                (self.instrument, self.locations, self.groups, self.inserts) = (instrument, locations, groups, inserts);
-            }
+                    .map_err(|error| sampler_kontakt::LoadError::Invalid {
+                        path: "script initialization".into(),
+                        reason: error.to_string(),
+                    }.at(sampler_kontakt::Stage::Translate))?;
+            // Commit only a complete translation. On failure the new owner is
+            // dropped (stopped and joined) and the caller's previous IR stays intact.
+            instrument.uvi_script_sources = self.instrument.uvi_script_sources.take();
+            (self.instrument, self.locations, self.groups, self.inserts) = (instrument, locations, groups, inserts);
         }
         engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
@@ -1229,10 +1268,15 @@ impl Translated {
             });
         }
         let groups = self.groups.clone();
+        let meter_buses = if loaded.interface.widgets.iter().any(|widget| widget.uvi_meter_request.is_some()) {
+            meters::bindings(&self.text, &self.instrument, &self.inserts).into()
+        } else { std::sync::Arc::default() };
         Ok(Some(AttachedScript {
+            script_members,
             findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
+            meter_buses,
         }))
     }
 }
@@ -1299,6 +1343,10 @@ fn staged(
     stage: sampler_kontakt::Stage,
 ) -> Box<dyn std::error::Error> {
     use sampler_kontakt::{LoadError, Stage};
+    let error=match error.downcast::<sampler_kontakt::LoadError>() {
+        Ok(load)=>return Box::new(load.at(stage)),
+        Err(other)=>other,
+    };
     let (load, stage) = match error.downcast::<Error>() {
         Ok(e) => match *e {
             Error::Io { path, error } => (LoadError::Io { path, error }, Stage::Container),
@@ -1428,24 +1476,32 @@ pub fn assemble_translated(
 /// page pool are resident; the rest is read from the bank or file on demand.
 #[track_caller]
 pub fn assemble_translated_streamed(
-    t: Translated,
-    rate: u32,
-    policy: &sampler_kontakt::StreamPolicy,
-) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
-    let named = t.locations.first().map(PathBuf::from).unwrap_or_default();
-    let sources = t
-        .locations
-        .iter()
-        .map(|location| match &t.bank {
-            #[cfg(feature = "library-access")]
-            Some((bank, program_path)) => bank.stream_source(program_path, location),
-            #[cfg(not(feature = "library-access"))]
-            Some(_) => Err("bank samples need the library-access feature".to_string()),
-            None => stream::source(vec![stream::Origin::File(location.into())]),
-        })
-        .collect();
-    assemble_streamed(t.instrument, t.locations, sources, rate, policy)
-        .map_err(|e| staged(e, &named, sampler_kontakt::Stage::Prepare))
+    t: Translated,rate:u32,policy:&sampler_kontakt::StreamPolicy,
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    assemble_translated_streamed_cancelable(t,rate,policy,&||false)
+}
+/// As assemble_translated_streamed, preserving caller cancellation through
+/// source resolution, bounded decode and final publication. No canceled part
+/// is returned; the error remains LoadError::Canceled rather than Invalid.
+#[track_caller]
+pub fn assemble_translated_streamed_cancelable(
+    t:Translated,rate:u32,policy:&sampler_kontakt::StreamPolicy,canceled:&(dyn Fn()->bool+Sync),
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+    let named=t.locations.first().map(PathBuf::from).unwrap_or_default();
+    let mut sources=Vec::with_capacity(t.locations.len());
+    for location in &t.locations {
+        if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+        sources.push(match &t.bank {
+            #[cfg(feature="library-access")]
+            Some((bank,program_path))=>bank.stream_source(program_path,location),
+            #[cfg(not(feature="library-access"))]
+            Some(_)=>Err("bank samples need the library-access feature".to_string()),
+            None=>stream::source(vec![stream::Origin::File(location.into())]),
+        });
+    }
+    assemble_streamed_cancelable(t.instrument,t.locations,sources,rate,policy,canceled)
+        .map_err(|e|staged(e,&named,sampler_kontakt::Stage::Prepare))
 }
 
 /// Decode one loose WAV, AIFF or FLAC sample to in-memory stereo frames.
@@ -1549,19 +1605,38 @@ pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize
 
 type AssetSources = Vec<Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>, String>>;
 
-/// [`assemble`] for streamed samples: zones whose sample cannot be opened are dropped (reported).
+/// A failed initial file must not erase an authored dynamic target's mapping.
+/// The loader still reports the failed file; a later sample transaction can
+/// activate this same compiled region without replacing the whole plan.
+fn retain_failed_sample_targets(instrument: &mut ir::Instrument, usable: &[bool]) {
+    for target in &instrument.source_indices.sample_targets {
+        for zone in &target.zones {
+            let zone = &mut instrument.zones[zone.0];
+            if zone.asset.is_some_and(|a| !usable[a.0]) {
+                zone.asset = None;
+            }
+        }
+    }
+}
+
+/// [`assemble`] for streamed samples. Failed initial samples are reported;
+/// script-loadable players retain an unbound recipe, while other zones are removed.
 fn assemble_streamed(
+    instrument: ir::Instrument,locations:Vec<String>,sources:AssetSources,rate:u32,policy:&sampler_kontakt::StreamPolicy,
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    assemble_streamed_cancelable(instrument,locations,sources,rate,policy,&||false)
+}
+fn assemble_streamed_cancelable(
     mut instrument: ir::Instrument,
-    locations: Vec<String>,
-    sources: AssetSources,
-    rate: u32,
-    policy: &sampler_kontakt::StreamPolicy,
-) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    locations: Vec<String>, sources:AssetSources,rate:u32,policy:&sampler_kontakt::StreamPolicy,
+    canceled:&(dyn Fn()->bool+Sync),
+)->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
+    if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     for (location, result) in locations.iter().zip(&sources) {
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
                 location: location.clone(),
-                feature: "unreadable sample, zone dropped".into(),
+                feature: "unreadable initial sample".into(),
                 value: reason.clone(),
                 reason: ir::Reason::InvalidValue,
             });
@@ -1570,12 +1645,18 @@ fn assemble_streamed(
     inserts::fill_impulses(&mut instrument, &locations, |a| {
         let source = sources[a].as_ref().map_err(Clone::clone)?;
         let mut reader = source.open().map_err(|e| e.to_string())?;
+        if canceled(){return Err("load cancelled".into());}
         let mut frames = vec![[0f32; 2]; reader.frames()];
-        reader.read(0, &mut frames).map_err(|e| e.to_string())?;
+        for (index,page) in frames.chunks_mut(sampler_core::PAGE_FRAMES).enumerate() {
+            if canceled(){return Err("load cancelled".into());}
+            reader.read(index*sampler_core::PAGE_FRAMES,page).map_err(|e|e.to_string())?;
+        }
         Ok((reader.rate(), frames))
     });
+    if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
-    let kept = instrument.retain_zones(|z| usable[z.asset.0]);
+    retain_failed_sample_targets(&mut instrument, &usable);
+    let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
     let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
     let sources = kept
         .iter()
@@ -1589,7 +1670,7 @@ fn assemble_streamed(
     };
     let bindings = engine_parameters::bindings(&instrument);
     let mut streamed =
-        sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?;
+        sampler_kontakt::stream_instrument_cancelable(instrument, sources, labels, &options, policy,canceled)?;
     streamed.loaded.plan = streamed
         .loaded
         .plan
@@ -1660,7 +1741,7 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let lua = bank.scripts();
+    let lua = bank.bind_script_samples(&program_path, bank.scripts());
     let ((mut instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
@@ -1683,10 +1764,20 @@ pub fn load_program_scripted_with_options(
     })
 }
 
+/// Share the loose-program image service with playback and offline initialization.
+fn bind_loose_script_images(files: script::Scripts, dir: &Path) -> script::Scripts {
+    let resources = resources::Resources::of(&dir.join("ui.uvip"));
+    let dir=dir.to_owned();
+    files.with_images(move |path| resources.read(path)).with_samples(std::sync::Arc::new(move |path,explicit|stream::loose_sample_resource(&dir,path,explicit)))
+}
+
 /// Which source authority to use when inspecting decoded XML after onLoad.
 #[cfg(feature = "library-access")]
 pub enum ScriptedOrigin<'a> {
+    /// A decoded member without a retained resource authority. Image services
+    /// are unavailable; callers that own the bank should use BankWithResources.
     Bank(&'a str),
+    BankWithResources(&'a Bank, &'a str),
     Loose(&'a Path),
 }
 
@@ -1716,14 +1807,48 @@ pub fn inspect_decoded_scripted_program(
     files: script::Scripts,
     origin: ScriptedOrigin<'_>,
 ) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
-    let (source, path) = match origin {
-        ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program)),
-        ScriptedOrigin::Loose(path) => (
-            Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
-            path,
+    inspect_decoded_scripted_program_with_options(text, files, origin, true, false)
+}
+
+/// Same source/resource authority, with explicit coverage and profiling choices.
+/// UI preview uses the ordinary non-coverage constructor; source audits retain
+/// line coverage. Profiling changes observations, never the initializer count.
+#[cfg(feature = "library-access")]
+pub fn inspect_decoded_scripted_program_with_options(
+    text: String,
+    files: script::Scripts,
+    origin: ScriptedOrigin<'_>,
+    coverage: bool,
+    profile: bool,
+) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
+    inspect_decoded_scripted_program_with_config(
+        text, files, origin, coverage, profile, script::Config::default(),
+    )
+}
+
+/// Explicit inspection configuration, including scanner-only deterministic RNG.
+/// Ordinary production and legacy inspection entry points retain their defaults.
+#[cfg(feature = "library-access")]
+pub fn inspect_decoded_scripted_program_with_config(
+    text: String,
+    files: script::Scripts,
+    origin: ScriptedOrigin<'_>,
+    coverage: bool,
+    profile: bool,
+    config: script::Config,
+) -> Result<(ir::Instrument, script::ScriptHost), ScriptedTranslationFailure> {
+    let (source, path, files) = match origin {
+        ScriptedOrigin::Bank(program) => (Source::Bank, Path::new(program), files),
+        ScriptedOrigin::BankWithResources(bank, program) => (
+            Source::Bank, Path::new(program), bank.bind_script_images(program, files),
         ),
+        ScriptedOrigin::Loose(path) => {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            (Source::Disk(dir.into()), path, bind_loose_script_images(files, dir))
+        }
     };
-    let ((mut instrument, ..), host) = initialized_translation(text, files, source, path, true)?;
+    let ((mut instrument, ..), host) =
+        initialized_translation_configured(text, files, source, path, coverage, profile, config)?;
     note_script(&host, &mut instrument);
     Ok((instrument, host))
 }
@@ -1736,25 +1861,124 @@ fn initialized_translation(
     path: &Path,
     inspected: bool,
 ) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    initialized_translation_profiled(text, files, source, path, inspected, false)
+}
+
+#[cfg(feature = "library-access")]
+fn initialized_translation_profiled(
+    text: String,
+    files: script::Scripts,
+    source: Source,
+    path: &Path,
+    inspected: bool,
+    profile: bool,
+) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    initialized_translation_configured(
+        text, files, source, path, inspected, profile, script::Config::default(),
+    )
+}
+
+#[cfg(feature = "library-access")]
+fn initialized_translation_configured(
+    text: String,
+    files: script::Scripts,
+    source: Source,
+    path: &Path,
+    inspected: bool,
+    profile: bool,
+    config: script::Config,
+) -> Result<(FullTranslation, script::ScriptHost), ScriptedTranslationFailure> {
+    let promote_started = std::time::Instant::now();
     let text = promote(text, &files);
-    let host = if inspected {
-        script::ScriptHost::new_inspected(&text, files.clone(), script::Config::default())
+    let promote_ms = promote_started.elapsed().as_secs_f64() * 1000.;
+    let host = if profile {
+        script::ScriptHost::new_profiled(&text, files.clone(), config, inspected)
+    } else if inspected {
+        script::ScriptHost::new_inspected(&text, files.clone(), config)
     } else {
-        script::ScriptHost::new(&text, files.clone(), script::Config::default())
+        script::ScriptHost::new(&text, files.clone(), config)
     }
     .map_err(|error| ScriptedTranslationFailure::Initialize(error.into()))?;
+    if profile {
+        host.profile_record("script_promotion", promote_ms);
+    }
+    let _translation = host.profile_span("post_init_overlays_and_ir_translation");
+    let overlays = host.profile_span("parameter_overlay_export");
+    let insert_overrides = host.insert_overrides();
+    let folded_writes = host.folded_writes();
+    drop(overlays);
     let (mut instrument, locations, groups, inserts) =
-        translate_initialized(&text, source, &host.insert_overrides(), &host.folded_writes())
-            .map_err(|error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))))?;
+        translate_initialized(&text, source, &insert_overrides, &folded_writes).map_err(
+            |error| ScriptedTranslationFailure::Translate(Box::new(describe(path, error))),
+        )?;
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = files.sources();
     }
+    drop(_translation);
     Ok(((instrument, locations, groups, inserts), host))
 }
 
 #[cfg(all(test, feature = "library-access"))]
 mod scripted_translation_tests {
     use super::*;
+
+    fn translated_fixture(xml: &str) -> Translated {
+        let (instrument, locations, groups, inserts) = translate_full(xml, Source::Bank).unwrap();
+        Translated {
+            instrument, locations, groups, inserts, bank: None, dir: None,
+            text: std::sync::Arc::from(xml), lua: Default::default(),
+        }
+    }
+
+    #[test]
+    fn failed_final_initialization_stops_the_new_owner_and_preserves_previous_translation() {
+        // Fault injection after the initial graph was translated: a fractional
+        // MIDI root is valid XML but invalid for translation. Both final and
+        // fallback translations must reject it; the old implementation silently
+        // kept the prior graph. No vendor occurrence of this failure is claimed.
+        let xml = r#"<Program Name="Before" Streaming="1"><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers>
+          <EventProcessors><ScriptProcessor><script>
+            Program:setParameter('Streaming', false)
+        </script></ScriptProcessor></EventProcessors></Program>"#;
+        let mut translated = translated_fixture(xml);
+        translated.text = std::sync::Arc::from(xml.replace("BaseNote=\"60\"", "BaseNote=\"60.5\""));
+        let before = translated.instrument.clone();
+        let locations = translated.locations.clone();
+        let retained = std::sync::Arc::new(());
+        let owner_ref = retained.clone();
+        translated.lua = translated.lua.with_images(move |_| { let _ = &owner_ref; None });
+        for _ in 0..2 {
+            let error = translated.attach_script(48000, Default::default()).err()
+                .expect("untranslatable initialized state must reject attachment");
+            assert_eq!(error.stage(), Some(sampler_kontakt::Stage::Translate));
+            assert_eq!(translated.instrument, before);
+            assert_eq!(translated.locations, locations);
+            assert_eq!(std::sync::Arc::strong_count(&retained), 2,
+                "failed attachment must stop and join its owner before returning");
+        }
+        assert!(matches!(inspect_decoded_scripted_program(
+            translated.text.to_string(), Default::default(), ScriptedOrigin::Bank("Authored.uvip")),
+            Err(ScriptedTranslationFailure::Translate(_))));
+        translated.text = std::sync::Arc::from(xml);
+        let attached = translated.attach_script(48000, Default::default()).unwrap().unwrap();
+        assert_eq!(translated.instrument.name, "Before");
+        drop(attached);
+        assert_eq!(std::sync::Arc::strong_count(&retained), 2);
+    }
+
+    #[test]
+    fn rejected_folded_value_keeps_the_documented_explicit_fallback() {
+        let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let doc = Document::parse(xml).unwrap();
+        let node = doc.descendants().find(|n| n.has_tag_name("SamplePlayer")).unwrap().id().get_usize();
+        let (before, ..) = translate_full(xml, Source::Bank).unwrap();
+        let (after, ..) = translate_initialized(xml, Source::Bank,
+            &[(node, "BaseNote".into(), "60.5".into())],
+            &[(node, "SamplePlayer".into(), "BaseNote".into())]).unwrap();
+        assert_eq!(after.zones, before.zones);
+        assert!(after.unsupported.iter().any(|u|
+            u.feature.contains("BaseNote") && u.value.contains("translation rejects")));
+    }
 
     #[test]
     fn bank_product_and_inspector_use_the_same_post_onload_gain() {
@@ -1796,6 +2020,36 @@ function onInit() gain:setParameter('Volume',0.25) end]]></script></ScriptProces
         assert_eq!(gain(&inspected_ir), gain(&product_ir));
         assert!(host.fault_counts().init.values().all(|count| *count == 0));
     }
+
+    #[test]
+    fn loose_inspection_uses_playbacks_image_authority_for_intrinsic_widget_size() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let directory = Fixture(std::env::temp_dir().join(format!(
+            "kontra-inspected-images-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        )));
+        std::fs::create_dir_all(&directory.0).unwrap();
+        let path = directory.0.join("Authored.uvip");
+        let mut header = vec![0; 33];
+        header[..16].copy_from_slice(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        header[16..20].copy_from_slice(&720u32.to_be_bytes());
+        header[20..24].copy_from_slice(&18u32.to_be_bytes());
+        std::fs::write(directory.0.join("overlay.png"), header).unwrap();
+        let xml = r#"<Program><EventProcessors><ScriptProcessor><script>image=Image('overlay.png')</script></ScriptProcessor></EventProcessors></Program>"#;
+        let product = script::ScriptHost::new(xml,
+            bind_loose_script_images(script::Scripts::default(), &directory.0), Default::default()).unwrap();
+        let (_, inspected) = inspect_decoded_scripted_program(xml.into(), script::Scripts::default(),
+            ScriptedOrigin::Loose(&path)).unwrap();
+        for host in [&product, &inspected] {
+            let image = &host.interface().widgets[0];
+            assert_eq!((image.rect.width, image.rect.height), (720., 18.));
+            assert!(host.fault_counts().init.is_empty());
+        }
+        assert_eq!(product.interface(), inspected.interface());
+    }
 }
 
 /// Impulse assets use the translated program's original asset indices. Resolve
@@ -1832,6 +2086,7 @@ mod narrowed_impulse_tests {
                 .iter()
                 .map(|location| ir::Asset {
                     location: ir::AssetLocation::Path(location.clone()),
+                    residency: Default::default(),
                     encoding: ir::Encoding::Wav,
                     root_key: None,
                     loops: Vec::new(),
@@ -1876,7 +2131,7 @@ mod narrowed_impulse_tests {
         assert_eq!(reads, ["room.wav", "low.wav"]);
         assert_eq!(selected, ["low.wav"]);
         assert_eq!(decoded.len(), 1);
-        assert_eq!(instrument.zones[0].asset, ir::AssetRef(0));
+        assert_eq!(instrument.zones[0].asset, Some(ir::AssetRef(0)));
         assert_eq!(instrument.impulses[0].asset, None);
         assert_eq!(instrument.impulses[0].left, [0.5]);
         assert_eq!(instrument.impulses[0].right, [-0.5]);
@@ -2009,7 +2264,7 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let lua = bank.scripts();
+    let lua = bank.bind_script_samples(&program_path, bank.scripts());
     let ((instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
@@ -2077,8 +2332,8 @@ fn describe(path: &Path, e: Translate) -> Error {
     }
 }
 
-/// Drop zones whose sample could not be read (reported), then fit the rest to
-/// their decoded audio and lower. `decoded[i]` belongs to asset `i`.
+/// Report unreadable initial samples, retain unbound script-loadable recipes,
+/// then fit decoded zones to their audio and lower. `decoded[i]` belongs to asset `i`.
 fn assemble(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
@@ -2089,7 +2344,7 @@ fn assemble(
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
                 location: location.clone(),
-                feature: "unreadable sample, zone dropped".into(),
+                feature: "unreadable initial sample".into(),
                 value: reason.clone(),
                 reason: ir::Reason::InvalidValue,
             });
@@ -2099,7 +2354,9 @@ fn assemble(
         Ok(d) => Ok((d.rate, d.frames.clone())),
         Err(e) => Err(e.clone()),
     });
-    let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
+    let usable: Vec<bool> = decoded.iter().map(Result::is_ok).collect();
+    retain_failed_sample_targets(&mut instrument, &usable);
+    let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
     let mut pcm = Vec::with_capacity(kept.len());
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {

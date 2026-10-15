@@ -36,6 +36,10 @@
     border-radius: 1px;
     padding: 7px 10px;
   }
+  select {
+    min-width: 0;
+    max-width: 100%;
+  }
   button {
     cursor: pointer;
   }
@@ -349,6 +353,63 @@
     color: var(--muted);
     font-size: 12px;
   }
+  .ui-preview {
+    margin: 16px 0;
+    border: 1px solid var(--rule);
+    background: var(--field);
+    max-width: 100%;
+  }
+  .ui-image {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+  }
+  .ui-image img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .ui-image svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+  .widget-outline {
+    fill: transparent;
+    stroke: #e8e8e8;
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+    cursor: pointer;
+  }
+  .widget-outline:focus,
+  .widget-outline:hover {
+    fill: #ffffff28;
+    stroke-width: 2;
+    outline: none;
+  }
+  .ui-caption {
+    margin: 0;
+    padding: 8px 12px;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .inspect-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+  }
+  .inspect-label input {
+    accent-color: var(--focus);
+    width: auto;
+    min-width: 0;
+    flex: none;
+    padding: 0;
+    margin: 0;
+  }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -442,6 +503,14 @@
     issueFilter: "",
     severity: "all",
     structure: "groups",
+    uiFace: 0,
+    uiPage: 0,
+    uiMode: "Bitmap",
+    uiFilter: "all",
+    uiQuery: "",
+    uiWidget: null,
+    uiOverlay: false,
+    imageUrls: new Map(),
   };
   const $ = (id) => document.getElementById(id);
   function node(tag, text, cls) {
@@ -459,6 +528,9 @@
   }
   function json(v) {
     return JSON.stringify(v, null, 2);
+  }
+  function ms(value) {
+    return Number.isFinite(value) ? `${value.toLocaleString(undefined, {maximumFractionDigits: 2})} ms` : "Not recorded";
   }
   function shortPath(p) {
     return String(p || "Unnamed item").split(/[\\/]/).slice(-3).join("/");
@@ -615,6 +687,7 @@
       ["source", "Source & lowering"],
       ["converted", "Converted structure"],
       ["ui", "UI projection"],
+      ["timings", "Load timings"],
       ["metadata", "Source metadata"],
     ];
     for (const [id, label] of entries) {
@@ -657,6 +730,7 @@
       source: renderSource,
       converted: renderConverted,
       ui: renderUi,
+      timings: renderTimings,
       metadata: renderMetadata,
     }[state.tab] || renderProblems)(content, r);
   }
@@ -1040,23 +1114,30 @@
       ),
       node(
         "p",
-        "A projected UI model records authored controls and layout. It does not verify rendered pixels, asset decoding, gesture callbacks, or v1/v2 visual equivalence.",
+        r.mode?.settle_ui
+          ? "The before/after records share one production initialization and the same layout, asset worker and painter. Bounded plan activation uses the real runtime; native Kontakt pixels and later user interactions remain unverified."
+          : "The records come from the library's initialized UI IR. Optional CPU witnesses use Kontra's production layout, asset worker and painter. Native Kontakt/Falcon pixels, live callbacks and gestures remain unverified.",
         "notice",
       ),
     );
-    for (const [i, value] of asArray(u.interfaces).entries()) {
-      const d = node("details");
-      add(
-        d,
-        node(
-          "summary",
-          value.title || value.name || value.id || `Interface ${i}`,
-        ),
-        node("pre", json(value)),
-      );
-      root.append(d);
+    const lifecycle = r.evidence?.ui_lifecycle;
+    if (lifecycle) {
+      const pending = lifecycle.callback_progress?.pending_plan_callbacks;
+      root.append(node("p", `Plan activation: ${String(lifecycle.status).replaceAll("_", " ")} · ${lifecycle.changed_widgets} changed widgets · ${pending ?? "Unknown"} pending callback${pending === 1 ? "" : "s"} · ${lifecycle.callback_progress?.queued_faults ?? "Unknown"} retained faults`, "notice"));
+      const details = node("details");
+      add(details, node("summary", "Activation limits and runtime evidence"), node("p", lifecycle.input_scope, "notice"), properties({"audio frames advanced": lifecycle.frames,
+        "UI effects applied": lifecycle.effects_applied, "changed widgets": lifecycle.changed_widgets,
+        "pending plan callbacks": lifecycle.callback_progress?.pending_plan_callbacks,
+        "pending finite or unclassified plan callbacks": lifecycle.callback_progress?.pending_non_background_plan_callbacks,
+        "ongoing listener drivers": lifecycle.callback_progress?.observed_pending_listener_drivers,
+        "background observation": lifecycle.background_observation || "Not recorded",
+        "retained callback faults": lifecycle.callback_progress?.queued_faults,
+        "dropped callback faults": lifecycle.callback_progress?.dropped_faults,
+        "service failure": lifecycle.service_failure_kind || "None recorded"}), node("pre", json(lifecycle)));
+      root.append(details);
     }
-    if (!asArray(u.interfaces).length) {
+    const faces = asArray(u.interfaces);
+    if (!faces.length) {
       root.append(
         node(
           "p",
@@ -1064,7 +1145,255 @@
           "empty",
         ),
       );
+      return;
     }
+    if (r.mode?.summary) {
+      root.append(node("p", "Open a full per-file report for widget, asset and layout records.", "notice"));
+      root.append(properties({interfaces: faces}));
+      return;
+    }
+    state.uiFace = Math.min(state.uiFace, faces.length - 1);
+    const face = faces[state.uiFace], native = face.render || {};
+    const controls = node("div", undefined, "filters");
+    const chooseFace = node("select"), choosePage = node("select"), chooseMode = node("select");
+    chooseFace.setAttribute("aria-label", "UI interface");
+    choosePage.setAttribute("aria-label", "UI page");
+    chooseMode.setAttribute("aria-label", "UI presentation");
+    faces.forEach((f, index) => {
+      const lifecycle = f.lifecycle_state === "compiled_initial" ? " · Before plan activation" : f.lifecycle_state === "after_plan_activation" ? " · After bounded plan activation" : "";
+      const option = node("option", `Interface ${index} · ${f.source || "Unknown source"}${lifecycle}`);
+      option.value = index;
+      option.selected = index === state.uiFace;
+      chooseFace.append(option);
+    });
+    const pages = asArray(native.pages).length ? native.pages : asArray(face.pages);
+    state.uiPage = Math.min(state.uiPage, Math.max(0, pages.length - 1));
+    pages.forEach((page, index) => {
+      const option = node("option", page.name || `Page ${index}`);
+      option.value = index;
+      option.selected = index === state.uiPage;
+      choosePage.append(option);
+    });
+    choosePage.disabled = !pages.length;
+    for (const mode of ["Bitmap", "Vector"]) {
+      const option = node("option", mode === "Bitmap" ? "Original bitmap assets" : "Kontra vector controls");
+      option.value = mode;
+      option.selected = mode === state.uiMode;
+      chooseMode.append(option);
+    }
+    chooseMode.disabled = !asArray(native.shots).length;
+    const overlay = node("input");
+    overlay.type = "checkbox";
+    overlay.checked = state.uiOverlay;
+    overlay.disabled = !asArray(native.shots).length;
+    const overlayLabel = add(node("label", undefined, "inspect-label"), overlay, node("span", native.native_ui ? "Element bounds" : "Widget bounds"));
+    add(controls, chooseFace, choosePage, chooseMode, overlayLabel);
+    root.append(controls);
+    chooseFace.onchange = () => { state.uiFace = Number(chooseFace.value); state.uiPage = 0; state.uiWidget = null; render(); };
+    choosePage.onchange = () => { state.uiPage = Number(choosePage.value); state.uiWidget = null; render(); };
+    chooseMode.onchange = () => { state.uiMode = chooseMode.value; render(); };
+    overlay.onchange = () => { state.uiOverlay = overlay.checked; render(); };
+    if (face.validation_error) root.append(node("p", `IR validation: ${face.validation_error}`, "error-message"));
+    const shot = asArray(native.shots).find((s) => s.page === state.uiPage && s.presentation === state.uiMode);
+    if (shot) {
+      const url = imageUrl(shot);
+      if (url) {
+        const container = node("figure", undefined, "ui-preview"), stage = node("div", undefined, "ui-image");
+        stage.style.maxWidth = `${shot.width}px`;
+        const image = node("img");
+        image.src = url;
+        image.width = shot.width;
+        image.height = shot.height;
+        image.alt = `Kontra CPU witness, interface ${state.uiFace}, page ${state.uiPage}, ${state.uiMode} presentation`;
+        stage.append(image);
+        if (state.uiOverlay) {
+          const page = pages[state.uiPage];
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("viewBox", `0 0 ${page.width} ${page.height}`);
+          svg.setAttribute("aria-label", "Resolved widget geometry over the CPU witness");
+          const geometries = native.native_ui ? asArray(native.native_nodes) : asArray(native.widgets).filter((w) => w.page === state.uiPage && w.visible);
+          for (const geometry of geometries) {
+            const widget = asArray(face.widgets).find((w) => w.index === geometry.index);
+            const rect = document.createElementNS(svg.namespaceURI, "rect");
+            for (const key of ["x", "y", "width", "height"]) rect.setAttribute(key, geometry.rect[key]);
+            rect.setAttribute("class", "widget-outline");
+            rect.setAttribute("tabindex", "0");
+            rect.setAttribute("role", "button");
+            rect.setAttribute("aria-label", `Inspect ${geometry.path || widget?.name || "widget " + geometry.index}`);
+            const select = () => {
+              if (geometry.path) {
+                const record = $("nativeNodeRecord");
+                record.replaceChildren(node("h2", geometry.path), node("pre", json(geometry)));
+                record.scrollIntoView({block: "nearest"});
+              } else {state.uiWidget = geometry.index; render(); $("widgetRecord")?.scrollIntoView({block: "nearest"});}
+            };
+            rect.onclick = select;
+            rect.onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } };
+            svg.append(rect);
+          }
+          stage.append(svg);
+        }
+        add(container, stage, node("figcaption", `${shot.status} · ${shot.width} × ${shot.height} pixels · scale ${shot.scale} · assets ${ms(shot.preparation_ms)} · paint + PNG ${ms(shot.paint_and_encode_ms)} · ${shot.pending_assets || 0} assets pending`, "ui-caption"));
+        root.append(container);
+      }
+      if (shot.error) root.append(node("p", shot.error, "error-message"));
+      if (asArray(shot.asset_failures).length) root.append(node("p", `Asset failures: ${shot.asset_failures.join(", ")}`, "error-message"));
+      root.append(node("p", native.geometry_scope, "notice"));
+    } else {
+      root.append(node("p", "Pixels were not rendered. Run tools/library-inspector.py INPUT --render with a corpus-health build containing --features ui-render. Authored coordinates below may still need grid, stock-size and image resolution.", "notice"));
+    }
+    if (native.omitted_pages) root.append(node("p", `${native.omitted_pages} pages exceed the bounded 16-page witness limit.`, "notice"));
+    if (asArray(native.font_fallbacks).length) root.append(node("p", `Authored font families use the Kontra default-face fallback: ${native.font_fallbacks.map((f) => f.font).join(", ")}. See Fonts and text styles below.`, "error-message"));
+    const summaries = {widgets: asArray(face.widgets).length, visible: asArray(face.widgets).filter((w) => w.visible ?? !w.hidden).length,
+      assets: asArray(face.assets).length, styles: asArray(face.styles).length, unsupported: asArray(face.unsupported).length};
+    root.append(properties(summaries));
+    if (native.native_ui) {
+      add(root, node("h2", "Evaluated NativeUI composition"), properties(native.native_ui));
+      const selectedNode = node("div"); selectedNode.id = "nativeNodeRecord"; root.append(selectedNode);
+      const details = node("details");
+      add(details, node("summary", `Evaluated element geometry (${asArray(native.native_nodes).length}; bounded to 4096)`), node("pre", json(asArray(native.native_nodes))));
+      root.append(details);
+    }
+    renderWidgetRecords(root, face, native);
+    renderAssetRecords(root, face, native);
+    for (const [label, records] of [["Fonts and text styles", face.styles], ["Unsupported source properties", face.unsupported]]) {
+      const details = node("details");
+      add(details, node("summary", `${label} (${asArray(records).length})`), node("pre", json(asArray(records))));
+      root.append(details);
+    }
+  }
+  function imageUrl(shot) {
+    if (typeof shot.image_url === "string" && /^image\/\d+\/\d+\/\d+$/.test(shot.image_url) && /^\/[A-Za-z0-9_-]{32}\/$/.test(location.pathname)) {
+      return new URL(shot.image_url, location.href).href;
+    }
+    if (state.imageUrls.has(shot)) return state.imageUrls.get(shot);
+    if (typeof shot.png_hex !== "string" || shot.png_hex.length > 64 * 1024 * 1024 || !/^89504e470d0a1a0a[0-9a-f]*$/.test(shot.png_hex) || shot.png_hex.length % 2) return null;
+    const bytes = Uint8Array.from(shot.png_hex.match(/../g), (pair) => parseInt(pair, 16));
+    const url = URL.createObjectURL(new Blob([bytes], {type: "image/png"}));
+    state.imageUrls.set(shot, url);
+    return url;
+  }
+  function renderWidgetRecords(root, face, native) {
+    root.append(node("h2", "Widgets and bindings"));
+    const filters = node("div", undefined, "filters"), query = node("input"), filter = node("select");
+    query.type = "search";
+    query.placeholder = "Find a widget or binding";
+    query.setAttribute("aria-label", "Find a UI widget");
+    query.value = state.uiQuery;
+    filter.setAttribute("aria-label", "Widget state");
+    for (const [id, label] of [["all", "All widgets"], ["visible", "Visible"], ["hidden", "Hidden by widget or parent"], ["unbound", "Interactive without binding"], ["outside", "Outside page bounds"]]) {
+      const option = node("option", label); option.value = id; option.selected = state.uiFilter === id; filter.append(option);
+    }
+    const rows = node("div"), selected = node("div");
+    const geometryByIndex = new Map(asArray(native.widgets).map((widget) => [widget.index, widget]));
+    const records = asArray(face.widgets).map((widget) => {
+      const geometry = geometryByIndex.get(widget.index);
+      const record = {...widget, resolved: geometry, effectiveVisible: geometry?.visible ?? widget.visible ?? !widget.hidden};
+      return {record, search: json(record).toLowerCase()};
+    });
+    selected.id = "widgetRecord";
+    add(root, add(filters, query, filter), rows, selected);
+    function update() {
+      state.uiQuery = query.value;
+      state.uiFilter = filter.value;
+      rows.replaceChildren();
+      selected.replaceChildren();
+      const q = query.value.toLowerCase();
+      const found = records.filter(({record: w, search}) => w.page === state.uiPage && search.includes(q) &&
+        (filter.value === "all" || (filter.value === "visible" && w.effectiveVisible) || (filter.value === "hidden" && !w.effectiveVisible) ||
+          (filter.value === "unbound" && w.interactive && !w.binding_id) || (filter.value === "outside" && w.resolved?.outside_page))).map(({record}) => record);
+      rows.append(node("p", `${found.length} widgets on this page${found.length > 500 ? " · first 500 shown; narrow the filter" : ""}`, "notice"));
+      const table = node("table"), head = node("tr"), body = node("tbody");
+      for (const title of ["Source widget", "State / binding", "Page rectangle"]) head.append(node("th", title));
+      table.append(add(node("thead"), head));
+      for (const widget of found.slice(0, 500)) {
+        const button = node("button", widget.name || `Widget ${widget.index}`);
+        button.onclick = () => {state.uiWidget = widget.index; update();};
+        const stateText = `${widget.effectiveVisible ? "Visible" : "Hidden"}${widget.enabled === false ? " · disabled" : ""}${widget.resolved?.outside_page ? " · outside page" : ""}${widget.resolved?.zero_size ? " · zero size" : ""}`;
+        const rect = widget.resolved?.rect || widget.rect;
+        const position = rect ? [rect.x, rect.y, rect.width, rect.height].map((v) => Number(v).toLocaleString(undefined, {maximumFractionDigits: 2})).join(", ") : "Not recorded";
+        const tr = node("tr");
+        add(tr, add(node("td"), button, node("small", widget.kind?.split(/[ ({]/)[0])),
+          add(node("td"), node("div", stateText), node("small", widget.binding_id || widget.binding || "No binding")),
+          add(node("td", undefined, "numeric"), node("div", position), node("small", widget.resolved ? "Resolved" : "Authored; unresolved")));
+        body.append(tr);
+      }
+      table.append(body);
+      rows.append(add(node("div", undefined, "table-wrap"), table));
+      const widget = asArray(face.widgets).find((w) => w.index === state.uiWidget);
+      if (widget) add(selected, node("h2", widget.name), node("pre", json({...widget, resolved: geometryByIndex.get(widget.index)})));
+    }
+    query.oninput = update;
+    filter.onchange = update;
+    update();
+  }
+  function renderAssetRecords(root, face, native) {
+    root.append(node("h2", "Asset and font requests"));
+    if (native.asset_scope) root.append(node("p", native.asset_scope, "notice"));
+    if (native.asset_summary) {
+      const counts = Object.fromEntries(Object.entries(native.asset_summary).filter(([key, value]) => value || ["lookups", "found", "decodes", "fonts"].includes(key)));
+      root.append(properties(counts));
+    }
+    const probes = asArray(native.assets);
+    const table = node("table"), head = node("tr"), body = node("tbody");
+    for (const title of ["Library resource", "Lookup / decode", "Cost"]) head.append(node("th", title));
+    table.append(add(node("thead"), head));
+    const manifest = [...asArray(face.assets)];
+    for (const probe of probes) {
+      if (!manifest.some((asset) => asset.path === probe.path)) manifest.push({path: probe.path, kind: probe.kind});
+    }
+    for (const asset of manifest.slice(0, 500)) {
+      const requests = probes.filter((probe) => (asset.index != null && probe.index === asset.index) || probe.path === asset.path);
+      const tr = node("tr"), details = node("details");
+      add(details, node("summary", `${requests.length} requested frames`), node("pre", json(requests)));
+      add(tr, add(node("td"), node("div", asset.path), node("small", asset.kind?.split(/[ ({]/)[0])),
+        add(node("td"), node("div", requests.length ? [...new Set(requests.map((p) => p.status))].join(", ") : native.status ? "Not requested on rendered pages" : "Not evaluated"), details),
+        add(node("td", undefined, "numeric"), node("div", requests.length ? ms(requests.reduce((sum, p) => sum + (p.duration_ms || 0), 0)) : "—"),
+          node("small", requests.length ? `${requests.reduce((sum, p) => sum + (p.encoded_bytes || 0), 0).toLocaleString()} encoded bytes read` : "")));
+      body.append(tr);
+    }
+    table.append(body);
+    root.append(add(node("div", undefined, "table-wrap"), table));
+    if (native.asset_probe_dropped) root.append(node("p", `${native.asset_probe_dropped} asset requests exceed the bounded trace. Aggregate timings and counts still include them.`, "notice"));
+  }
+  function renderTimings(root, r) {
+    const performance = r.performance || {};
+    root.append(node("p", performance.scope || "This older report does not contain stage timings.", "notice"));
+    root.append(properties({"inspection wall time": ms(performance.total_ms), "launcher including queue / sandbox / JSON": ms(performance.launcher_ms)}));
+    const table = node("table"), head = node("tr"), body = node("tbody");
+    add(head, node("th", "Measured phase"), node("th", "Wall time"));
+    table.append(add(node("thead"), head));
+    for (const timing of asArray(performance.timings)) body.append(add(node("tr"), node("td", timing.phase), node("td", ms(timing.elapsed_ms), "numeric")));
+    table.append(body);
+    root.append(add(node("div", undefined, "table-wrap"), table));
+    const profile = performance.initialization_profile;
+    if (profile) {
+      root.append(node("h2", `Lua initialization profile · ${profile.coverage ? "with line coverage" : "ordinary constructor without line coverage"}`));
+      root.append(node("p", profile.timing_scope, "notice"));
+      root.append(properties({"collection window": ms(profile.collection_window_ms ?? profile.wall_ms), "VM safepoint observations": profile.sample_count, "measured stack-sampling overhead": ms(profile.sampling_overhead_ms), "dropped stack frames": profile.dropped_frames, ...profile.work}));
+      for (const [title, records] of [["Initialization phases", profile.stages], ["Native API calls during initialization", profile.native_apis]]) {
+        const table = node("table"), head = node("tr"), body = node("tbody");
+        add(head, node("th", "Inclusive phase"), node("th", "Calls"), node("th", "Wall time"));
+        table.append(add(node("thead"), head));
+        for (const record of asArray(records).toSorted((a, b) => b.elapsed_ms - a.elapsed_ms)) body.append(add(node("tr"), node("td", record.phase), node("td", Number(record.calls).toLocaleString(), "numeric"), node("td", ms(record.elapsed_ms), "numeric")));
+        table.append(body);
+        add(root, node("h2", title), add(node("div", undefined, "table-wrap"), table));
+      }
+      add(root, node("h2", "Lua safepoint attribution"), node("p", profile.sample_scope, "notice"));
+      const table = node("table"), head = node("tr"), body = node("tbody");
+      add(head, node("th", "Chunk / function"), node("th", "Inclusive observations"));
+      table.append(add(node("thead"), head));
+      for (const sample of asArray(profile.lua_samples).toSorted((a,b) => b.inclusive_samples-a.inclusive_samples)) body.append(add(node("tr"), add(node("td"), node("div", `${sample.source}:${sample.defined_line ?? "?"}`), node("small", sample.function || sample.kind)), node("td", Number(sample.inclusive_samples).toLocaleString(), "numeric")));
+      table.append(body);
+      root.append(add(node("div", undefined, "table-wrap"), table));
+    }
+    for (const face of asArray(r.ui?.interfaces)) {
+      if (face.render?.timings) add(root, node("h2", `Interface ${face.index} · production UI renderer`), properties(Object.fromEntries(Object.entries(face.render.timings).map(([key, value]) => [key, ms(value)]))));
+      for (const shot of asArray(face.render?.shots)) {
+        if (shot.paint_timings) add(root, node("h2", `Page ${shot.page} · ${shot.presentation} CPU paint`), properties(Object.fromEntries(Object.entries(shot.paint_timings).map(([key, value]) => [key, key === "frames" ? value : ms(value)]))));
+      }
+    }
+    root.append(node("p", "Asset preparation includes worker wait, discovery, encoded reads, decoding and cache admission. Paint + PNG measures CPU drawing and in-memory image encoding. These timings are not plugin first-frame, DAW latency or native host measurements.", "notice"));
   }
   function renderMetadata(root, r) {
     const m = r.metadata || {};
@@ -1113,6 +1442,8 @@
   };
   $("librarySearch").oninput = updateItems;
   $("clear").onclick = () => {
+    for (const url of state.imageUrls.values()) URL.revokeObjectURL(url);
+    state.imageUrls.clear();
     state.reports = [];
     state.item = 0;
     $("librarySearch").value = "";

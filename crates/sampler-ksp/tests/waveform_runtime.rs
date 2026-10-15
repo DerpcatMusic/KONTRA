@@ -12,7 +12,13 @@ fn script(source: &str, slot: u8) -> Script {
     sampler_ksp::compile_with(source, 48000, KspLimits::LIBRARY, &[], &environment(slot)).unwrap()
 }
 fn prepared(scripts: Vec<Script>) -> Prepared {
-    sampler_ksp::bind_modules(scripts, Prepared::new(48000, vec![], vec![], 1).unwrap()).unwrap()
+    // Real physical identities; test gestures on keys60/61 do not start these
+    // key0 regions. An arbitrary Environment alone cannot authorize a source.
+    let region = Region { sample:0, key_low:0, key_high:0, root_key:None,
+        velocity_low:0., velocity_high:1., gain:1., envelope:Envelope::default(), playback:Playback::default() };
+    let plan = Prepared::new(48000, vec![Pcm::new(48000, Box::from([[0.;2];16])).unwrap()], vec![region,region], 2)
+        .unwrap().with_source_zones(vec![27,91]).unwrap();
+    sampler_ksp::bind_modules(scripts, plan).unwrap()
 }
 fn limits(plan: &Prepared) -> Limits {
     let mut limits = Limits::for_plan(plan, 16, 16);

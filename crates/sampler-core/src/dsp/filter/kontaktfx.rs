@@ -432,7 +432,7 @@ impl Ladder {
     fn set(s: &mut LadderState, cutoff: f32) {
         s.ramp.tgt[0] = table(1200.0);
         s.ramp.tgt[1] = cutoff;
-        s.ramp.tgt[2] = 1.0 - (1.0 - 0.0) * (1.0 - 0.0);
+        s.ramp.tgt[2] = 0.0; // Constant native reset expression: 1 - (1 - 0)^2.
         s.ramp.dirty = true;
     }
 

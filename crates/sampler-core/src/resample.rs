@@ -2,6 +2,8 @@
 use std::{f64::consts::PI, sync::OnceLock};
 mod cubic_block;
 pub(super) use cubic_block::cubic_four;
+#[cfg(test)]
+mod coefficient_reuse;
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
 pub(super) const MAX_STEP: f64 = 16.0;
@@ -256,6 +258,47 @@ impl Polyphase {
         let half: [f32; 4] = std::array::from_fn(|k| sum[0][k] + sum[1][k]);
         [half[0] + half[2], half[1] + half[3]]
     }
+
+    /// Four independent output recurrences. Tap chunks and the final stereo
+    /// fold keep precisely the order of four separate `dot` calls. Interleave
+    /// their accumulations to expose independent dependency chains.
+    #[inline(always)]
+    pub(super) fn dot_four<const FUSED: bool>(
+        &self,
+        fractions: [f64; 4],
+        windows: [&[[f32; 2]]; 4],
+    ) -> [[f32; 2]; 4] {
+        let mut t = [0.; 4];
+        let mut rows: [(&[[f32; CHUNK]], &[[f32; CHUNK]]); 4] = [(&[], &[]); 4];
+        let mut inputs: [&[[f32; CHUNK]]; 4] = [&[]; 4];
+        for frame in 0..4 {
+            let position = fractions[frame] * PHASES as f64;
+            let phase = (position as u32 as usize).min(PHASES - 1);
+            t[frame] = (position - phase as f64) as f32;
+            let (a, b) = self.rows[phase * self.stride..][..2 * self.stride].split_at(self.stride);
+            rows[frame] = (a.as_chunks::<CHUNK>().0, b.as_chunks::<CHUNK>().0);
+            inputs[frame] = windows[frame].as_flattened()[..self.stride].as_chunks::<CHUNK>().0;
+        }
+        let mut sums = [[[0.0_f32; 4]; 2]; 4];
+        for chunk in 0..self.stride / CHUNK {
+            for frame in 0..4 {
+                let (a, b) = rows[frame];
+                accumulate::<FUSED>(
+                    &mut sums[frame],
+                    t[frame],
+                    &a[chunk],
+                    &b[chunk],
+                    &inputs[frame][chunk],
+                );
+            }
+        }
+        std::array::from_fn(|frame| {
+            // Match dot's memory barrier and reduction association per output.
+            let sum = std::hint::black_box(sums[frame]);
+            let half: [f32; 4] = std::array::from_fn(|k| sum[0][k] + sum[1][k]);
+            [half[0] + half[2], half[1] + half[3]]
+        })
+    }
 }
 
 #[inline(always)]
@@ -378,6 +421,79 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn four_output_bits<const FUSED: bool>(bank: &Polyphase, phases: [f64; 4], windows: [&[[f32; 2]]; 4]) {
+        let expected: [[f32; 2]; 4] = std::array::from_fn(|frame| bank.dot::<FUSED>(phases[frame], windows[frame]));
+        let actual = bank.dot_four::<FUSED>(phases, windows);
+        assert_eq!(actual.map(|x| x.map(f32::to_bits)), expected.map(|x| x.map(f32::to_bits)));
+    }
+
+    #[test]
+    fn four_output_polyphase_preserves_each_fused_and_unfused_dot_bit() {
+        let kernel = Kernel::new(ResampleQuality::Realtime);
+        let data: [[f32; 2]; MAX_WIDTH + 11] = std::array::from_fn(|i| std::array::from_fn(|c| match (i + c) % 13 {
+            0 => -0.0, 1 => f32::from_bits(1), 2 => -f32::from_bits(1), _ => ((i * 7 + c) as f32 * 0.173).sin(),
+        }));
+        for bank in kernel.bank {
+            let windows = std::array::from_fn(|i| &data[i * 3..i * 3 + bank.width()]);
+            for phase in 0..PHASES {
+                let phases = [phase as f64 / PHASES as f64, (phase as f64 + 0.001) / PHASES as f64,
+                    (phase as f64 + 0.5) / PHASES as f64, (phase as f64 + 0.999) / PHASES as f64];
+                four_output_bits::<false>(bank, phases, windows);
+                four_output_bits::<true>(bank, phases, windows);
+            }
+            four_output_bits::<false>(bank, [-0., 0.5, 1. - f64::EPSILON, 1.], windows);
+            four_output_bits::<true>(bank, [-0., 0.5, 1. - f64::EPSILON, 1.], windows);
+            // Finite PCM can still overflow a partial accumulation. Preserve
+            // those results too, so downstream fault guards see the same input.
+            let extreme: [[f32; 2]; MAX_WIDTH + 11] = std::array::from_fn(|i| [
+                if i % 3 == 0 { f32::MAX } else { -f32::MAX },
+                if i % 7 < 3 { f32::MAX } else { -0. },
+            ]);
+            let windows = std::array::from_fn(|i| &extreme[i * 3..i * 3 + bank.width()]);
+            four_output_bits::<false>(bank, [-0., 0.001, 0.999, 1.], windows);
+            four_output_bits::<true>(bank, [-0., 0.001, 0.999, 1.], windows);
+        }
+    }
+
+    #[inline(always)]
+    fn four_output_stage<const FUSED: bool>(bank: &Polyphase, data: &[crate::Frame], candidate: bool) -> (u64, f32) {
+        use std::{hint::black_box, time::Instant};
+        let windows = std::array::from_fn(|i| &data[i * 3..i * 3 + bank.width()]);
+        let phases = [0.125, 0.331, 0.557, 0.997];
+        let mut fingerprint = 0.0_f32;
+        let started = Instant::now();
+        for _ in 0..1_000_000 {
+            let result = if candidate {
+                bank.dot_four::<FUSED>(black_box(phases), black_box(windows))
+            } else {
+                std::array::from_fn(|i| bank.dot::<FUSED>(black_box(phases[i]), black_box(windows[i])))
+            };
+            fingerprint += black_box(result)[2][1];
+        }
+        (started.elapsed().as_nanos() as u64, fingerprint)
+    }
+
+    #[test]
+    #[ignore = "optimized four-output polyphase dependency-chain CPU receipt"]
+    fn four_output_polyphase_cpu_receipt() {
+        let kernel = Kernel::new(ResampleQuality::Realtime);
+        let data: [[f32; 2]; MAX_WIDTH + 11] = std::array::from_fn(|i| [((i * 7) as f32 * 0.173).sin(), ((i * 3) as f32 * 0.173).cos()]);
+        let bank = &kernel.bank[2];
+        for round in 0..4 {
+            let mut results = [(0, 0.); 2];
+            for candidate in [round % 2, 1 - round % 2] {
+                results[candidate] = sampler_simd::dispatch_fused((bank, &data[..], candidate != 0),
+                    #[inline(always)]
+                    |(bank, data, candidate)| four_output_stage::<false>(bank, data, candidate),
+                    #[inline(always)]
+                    |(bank, data, candidate)| four_output_stage::<true>(bank, data, candidate));
+            }
+            assert_eq!(results[0].1.to_bits(), results[1].1.to_bits());
+            println!("polyphase_four round={round} original_ms={:.3} four_ms={:.3} ratio={:.4}",
+                results[0].0 as f64 / 1e6, results[1].0 as f64 / 1e6, results[1].0 as f64 / results[0].0 as f64);
+        }
+    }
 
     #[test]
     fn fractional_kernel_preserves_dc_passband_and_rejects_alias_band() {

@@ -1886,6 +1886,7 @@ impl LoadTrace {
                 "scaling or curve unverified",
                 "approximated, may sound different",
             ),
+            R::UnknownLawOmitted => ("scaling or curve unverified", "plays without it"),
         };
         if missing.feature.starts_with("script Warning: ") {
             impact = "compiled with this warning; inspect the reported script slot and line";
@@ -2735,6 +2736,22 @@ mod tests {
         assert!(report["issues"][0]["message"].as_str().unwrap().contains("setParameter"));
         assert!(report["issues"][0]["message"].as_str().unwrap().contains("UVI ignores the write"));
         assert!(report["issues"][0]["impact"].as_str().unwrap().contains("supplied and expected types"));
+    }
+
+    #[test]
+    fn omitted_unverified_routes_report_that_the_route_does_not_play() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("route.nki"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        trace.missing(&Missing {
+            location: "group 0 external modulation slot 1".into(),
+            feature: "external modulation from RandomBipolar".into(),
+            value: "RANDOM -> PITCH".into(), reason: MissingReason::UnknownLawOmitted,
+        }, None);
+        let report = trace.finish("loaded");
+        assert_eq!(report["issues"][0]["impact"], "plays without it");
+        assert!(report["issues"][0]["message"].as_str().unwrap().contains("scaling or curve unverified"));
     }
 
     #[test]

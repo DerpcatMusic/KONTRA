@@ -642,7 +642,22 @@ pub fn interface(
         // sound of their own, so accepted without effect.
         let nks = |name: &str| name.starts_with("$CONTROL_PAR_NKS_");
         for (name, v) in &w.properties {
-            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) && !nks(name) {
+            // Runtime setters retain the property as well as updating w.value.
+            // Count it as consumed only when the scalar actually reaches the
+            // painter in a represented domain; malformed/other shapes stay gaps.
+            let scalar_value = name == "$CONTROL_PAR_VALUE"
+                && matches!((v, &out.value), (Value::Int(a), Some(ir::Value::Integer(b))) if a == b)
+                && match &out.kind {
+                    ir::Kind::Button { .. } | ir::Kind::Switch => matches!(v, Value::Int(0 | 1)),
+                    ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. }
+                    | ir::Kind::ValueEdit { range, .. } => match v {
+                        Value::Int(value) => (range.min..=range.max).contains(&f64::from(*value)),
+                        _ => false,
+                    },
+                    ir::Kind::Menu { items } => items.iter().any(|item| matches!(v, Value::Int(value) if *value == item.value)),
+                    _ => false,
+                };
+            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) && !nks(name) && !scalar_value {
                 bld.unsupported(Some(i), name.clone(), text(v));
             }
         }

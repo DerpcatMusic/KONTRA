@@ -137,6 +137,8 @@ pub fn previous_key_value(interval: Option<i16>) -> u32 {
 
 pub(super) struct PerformanceState {
     pub input_controllers: Box<[[u32; 130]]>,
+    pub input_poly_pressure: Box<[[u32; 128]]>,
+    pub poly_pressure: Box<[[u32; 128]]>,
     pub states: Box<[State]>,
     pub current: Box<[usize]>,
     free: Vec<usize>,
@@ -170,6 +172,8 @@ impl PerformanceState {
         states[0].owners = performances;
         Self {
             input_controllers: vec![RESET_INPUT_CONTROLLERS; performances].into_boxed_slice(),
+            input_poly_pressure: vec![[0; 128]; performances].into_boxed_slice(),
+            poly_pressure: vec![[0; 128]; performances].into_boxed_slice(),
             states,
             current: vec![0; performances].into_boxed_slice(),
             free: (1..capacity).rev().collect(),
