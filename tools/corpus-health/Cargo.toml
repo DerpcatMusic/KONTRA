@@ -7,6 +7,10 @@ license = "Apache-2.0"
 publish = false
 description = "Corpus health scoreboard: loads and plays every installed library instrument"
 
+[[bin]]
+name = "browser-inspector"
+path = "src/browser.rs"
+
 [dependencies]
 sampler-core = { path = "../../crates/sampler-core" }
 sampler-midi = { path = "../../crates/sampler-midi" }

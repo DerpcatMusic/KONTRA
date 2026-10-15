@@ -663,10 +663,11 @@ fn placeholder_plan(
 ) {
     // Metadata-only streamed assets allocate no sample payload. Their length/rate
     // are deliberately fictitious and cannot establish real sample admission.
+    let fictitious_frames = usize::try_from(1u64 << 32).unwrap_or(1usize << 31);
     let pcm = ir
         .assets
         .iter()
-        .map(|_| sampler_core::Pcm::streamed(48000, 1usize << 32).unwrap())
+        .map(|_| sampler_core::Pcm::streamed(48000, fictitious_frames).unwrap())
         .collect();
     match sampler_core::lower::lower_with(
         ir,
@@ -686,7 +687,7 @@ fn placeholder_plan(
         },
     ) {
         Ok(plan) => {
-            report["converted"]["placeholder_plan"] = json!({"status":"ok","sample_payload_bytes":0,"sample_metadata":"fictitious 48kHz/2^32frames","controls":plan.controls().len(),"engine_bindings":plan.engine_parameter_bindings().len(),"engine_lookups":plan.engine_lookups().len(),"runtime":"not_run"})
+            report["converted"]["placeholder_plan"] = json!({"status":"ok","sample_payload_bytes":0,"sample_metadata":format!("fictitious 48kHz/{fictitious_frames}frames"),"controls":plan.controls().len(),"engine_bindings":plan.engine_parameter_bindings().len(),"engine_lookups":plan.engine_lookups().len(),"runtime":"not_run"})
         }
         Err(_) => {
             report["converted"]["placeholder_plan"] = json!({"status":"failed","sample_metadata":"fictitious; failure is not a real-audio load verdict"});
@@ -1794,19 +1795,19 @@ pub(super) fn run_list(args: &[String]) -> i32 {
     if failed { 1 } else { 0 }
 }
 
+pub(super) fn report(args: &[String]) -> Result<Value, &'static str> {
+    let opts = options(args)?;
+    let report = inspect(&opts);
+    Ok(if opts.summary { compact(report) } else { report })
+}
+
 pub(super) fn run(args: &[String]) -> i32 {
-    let opts = match options(args) {
-        Ok(o) => o,
+    let report = match report(args) {
+        Ok(report) => report,
         Err(e) => {
             eprintln!("{e}");
             return 2;
         }
-    };
-    let report = inspect(&opts);
-    let report = if opts.summary {
-        compact(report)
-    } else {
-        report
     };
     let failed = report["status"] == "failed";
     println!("{}", serde_json::to_string(&report).unwrap());

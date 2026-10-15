@@ -167,6 +167,7 @@
   .stage span {
     color: var(--muted);
   }
+  .stage span.failed,
   .failed,
   .Fault,
   .Unsupported,
@@ -465,6 +466,13 @@
       transition: background-color .16s ease-out;
     }
   }
+  html[data-embedded] header, html[data-embedded] .toolbar, html[data-embedded] .footer { display: none; }
+  html[data-embedded] .workspace { padding: 0; }
+  html[data-embedded] .workspace > nav { padding-inline: 0; }
+  .browser-layout { margin: 20px 0; overflow: auto; }
+  .browser-layout svg { display: block; width: 100%; min-height: 80px; background: var(--field); }
+  .browser-layout g { cursor: pointer; }
+  .browser-layout g:focus-visible { outline: 2px solid #e6b6c7; outline-offset: 2px; }
   </style>
   <header>
     <h1>KONTRA Library Inspector</h1>
@@ -647,12 +655,12 @@
     root.replaceChildren();
     add(
       root,
-      node("div", r.item.path, "path"),
+      r.browser_engine ? null : node("div", r.item.path, "path"),
       node(
         "p",
-        `${r.item.kind} · ${
-          r.mode?.initialize ? "Initialization requested" : "Static inspection"
-        } · ${r.status || "unknown"}`,
+        r.browser_engine
+          ? `${({kontakt:"Kontakt instrument", "kontakt-multi":"Kontakt multi", "kontakt-snapshot":"Kontakt snapshot", "uvi-loose":"UVI program", "uvi-bank":"UVI bank"})[r.item.kind] || r.item.kind} · ${r.status || "unknown"}`
+          : `${r.item.kind} · ${r.mode?.initialize ? "Initialization requested" : "Static inspection"} · ${r.status || "unknown"}`,
         "muted",
       ),
     );
@@ -661,7 +669,7 @@
       const d = node("div", undefined, "stage");
       add(
         d,
-        node("b", s.name),
+        node("b", ({container:"Container", source_frontend:"Scripts", translate:"Conversion", initialize:"Initialization", ui_projection:"UI model", runtime:"Runtime", audio:"Audio", ui_render:"UI renderer"})[s.name] || s.name.replaceAll("_", " ")),
         node("span", s.status, s.status === "failed" ? "failed" : ""),
       );
       d.title = s.scope || "";
@@ -669,17 +677,9 @@
     }
     root.append(stages);
     const e = r.evidence || {};
-    root.append(
-      node(
-        "p",
-        `Runtime: ${e.runtime || "not recorded"} · Audio: ${
-          e.audio || "not recorded"
-        } · Native equivalence: ${
-          e.native_equivalence || "unknown"
-        }. Binding availability is not proof that a source line executed.`,
-        "scope",
-      ),
-    );
+    const scope = node("p", `Runtime: ${e.runtime || "not recorded"} · Audio: ${e.audio || "not recorded"} · Native equivalence: ${e.native_equivalence || "unknown"}. Binding availability is not proof that a source line executed.`, "scope");
+    if (r.browser_engine) root.append(add(node("details"), node("summary", "Evidence scope"), scope));
+    else root.append(scope);
     const tabs = node("div", undefined, "tabs");
     tabs.setAttribute("role", "tablist");
     const entries = [
@@ -733,7 +733,17 @@
       timings: renderTimings,
       metadata: renderMetadata,
     }[state.tab] || renderProblems)(content, r);
+    requestAnimationFrame(keepCurrentTabVisible);
   }
+  function keepCurrentTabVisible() {
+    const active = document.querySelector('.tabs [aria-selected="true"]');
+    if (!active) return;
+    const tabs = active.parentElement;
+    const control = active.getBoundingClientRect(), viewport = tabs.getBoundingClientRect();
+    if (control.left < viewport.left) tabs.scrollLeft -= viewport.left - control.left;
+    else if (control.right > viewport.right) tabs.scrollLeft += control.right - viewport.right;
+  }
+  window.addEventListener('resize', keepCurrentTabVisible);
   function renderProblems(root, r) {
     const filters = node("div", undefined, "filters"), query = node("input");
     query.type = "search";
@@ -1106,6 +1116,8 @@
   }
   function renderUi(root, r) {
     const u = r.ui || {};
+    if (r.browser_engine) root.append(node("p", `UI model: ${u.status || "not evaluated"}. Live callbacks and gestures are untested.`, "notice"));
+    else {
     add(
       root,
       node(
@@ -1120,6 +1132,7 @@
         "notice",
       ),
     );
+    }
     const lifecycle = r.evidence?.ui_lifecycle;
     if (lifecycle) {
       const pending = lifecycle.callback_progress?.pending_plan_callbacks;
@@ -1187,7 +1200,8 @@
     overlay.checked = state.uiOverlay;
     overlay.disabled = !asArray(native.shots).length;
     const overlayLabel = add(node("label", undefined, "inspect-label"), overlay, node("span", native.native_ui ? "Element bounds" : "Widget bounds"));
-    add(controls, chooseFace, choosePage, chooseMode, overlayLabel);
+    add(controls, chooseFace, choosePage);
+    if (asArray(native.shots).length) add(controls, chooseMode, overlayLabel);
     root.append(controls);
     chooseFace.onchange = () => { state.uiFace = Number(chooseFace.value); state.uiPage = 0; state.uiWidget = null; render(); };
     choosePage.onchange = () => { state.uiPage = Number(choosePage.value); state.uiWidget = null; render(); };
@@ -1239,6 +1253,8 @@
       if (shot.error) root.append(node("p", shot.error, "error-message"));
       if (asArray(shot.asset_failures).length) root.append(node("p", `Asset failures: ${shot.asset_failures.join(", ")}`, "error-message"));
       root.append(node("p", native.geometry_scope, "notice"));
+    } else if (r.browser_engine) {
+      renderBrowserLayout(root, face, state.uiPage);
     } else {
       root.append(node("p", "Pixels were not rendered. Run tools/library-inspector.py INPUT --render with a corpus-health build containing --features ui-render. Authored coordinates below may still need grid, stock-size and image resolution.", "notice"));
     }
@@ -1262,6 +1278,57 @@
       root.append(details);
     }
   }
+  function renderBrowserLayout(root, face, pageIndex) {
+    const page = asArray(face.pages)[pageIndex];
+    if (!page) return;
+    const visible = asArray(face.widgets).filter(w => w.page === pageIndex && (w.visible ?? !w.hidden));
+    const placed = visible.filter(w => w.placement === 'Pixels' && ['x', 'y', 'width', 'height'].every(k => Number.isFinite(w.rect?.[k])) && w.rect.width > 0 && w.rect.height > 0);
+    root.append(node('h2', 'Authored UI layout'));
+    root.append(node('p', 'Control positions from the initialized UI model. Artwork, stock sizing and grid placement are not rendered in this browser build.', 'notice'));
+    if (!placed.length) {
+      root.append(node('p', 'No explicit pixel rectangles were exported. Widget records and unsupported UI features are listed below.', 'empty'));
+      return;
+    }
+    const width = Math.min(8192, Math.max(1, Number(page.width) || 0, ...placed.map(w => w.rect.x + w.rect.width)));
+    const height = Math.min(8192, Math.max(1, Number(page.height) || 0, ...placed.map(w => w.rect.y + w.rect.height)));
+    const figure = node('figure', undefined, 'browser-layout');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('role', 'group');
+    svg.setAttribute('aria-label', 'Authored widget positions; select a rectangle to inspect its model');
+    svg.style.maxWidth = `${width}px`;
+    for (const widget of placed.slice(0, 4096)) {
+      const group = document.createElementNS(svg.namespaceURI, 'g');
+      group.setAttribute('tabindex', '0');
+      group.setAttribute('role', 'button');
+      group.setAttribute('aria-label', `Inspect ${widget.name || 'widget ' + widget.index}`);
+      const rect = document.createElementNS(svg.namespaceURI, 'rect');
+      for (const key of ['x', 'y', 'width', 'height']) rect.setAttribute(key, widget.rect[key]);
+      rect.setAttribute('fill', '#252525');
+      rect.setAttribute('stroke', state.uiWidget === widget.index ? '#e6b6c7' : '#b5b5b5');
+      rect.setAttribute('stroke-width', '1');
+      group.append(rect);
+      const title = document.createElementNS(svg.namespaceURI, 'title');
+      title.textContent = `${widget.name || widget.index}: ${widget.kind}`;
+      group.append(title);
+      if (widget.rect.width >= 35 && widget.rect.height >= 16) {
+        const text = document.createElementNS(svg.namespaceURI, 'text');
+        text.setAttribute('x', widget.rect.x + 4);
+        text.setAttribute('y', widget.rect.y + 13);
+        text.setAttribute('fill', '#e8e8e8');
+        text.setAttribute('font-size', '11');
+        text.textContent = String(widget.text || widget.name || widget.kind.split(/[ ({]/)[0]).slice(0, Math.max(1, Math.floor(widget.rect.width / 7) - 1));
+        group.append(text);
+      }
+      const select = () => { state.uiWidget = widget.index; render(); $('widgetRecord')?.scrollIntoView({ block: 'nearest' }); };
+      group.onclick = select;
+      group.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); } };
+      svg.append(group);
+    }
+    add(figure, svg, node('figcaption', `${Math.min(placed.length, 4096)} of ${placed.length} positioned widgets · ${visible.length - placed.length} visible widgets need layout resolution${width === 8192 || height === 8192 ? ' · Preview bounded to 8192 pixels per side' : ''}`, 'ui-caption'));
+    root.append(figure);
+  }
+
   function imageUrl(shot) {
     if (typeof shot.image_url === "string" && /^image\/\d+\/\d+\/\d+$/.test(shot.image_url) && /^\/[A-Za-z0-9_-]{32}\/$/.test(location.pathname)) {
       return new URL(shot.image_url, location.href).href;
@@ -1466,5 +1533,23 @@
       return r.json();
     }).then(loadReports).catch(() => {});
   }
+  if (new URLSearchParams(location.search).get('embedded') === '1' && parent !== window) {
+    document.documentElement.dataset.embedded = 'true';
+    window.addEventListener('message', event => {
+      if (event.origin !== location.origin || event.source !== parent) return;
+      if (event.data?.type === 'kontra-inspection-report') {
+        try {
+          const records = validate(event.data.report);
+          if (records.some(record => record.status === 'failed')) state.tab = 'problems';
+          loadReports(records);
+        }
+        catch { $('error').textContent = 'This inspection report could not be opened.'; }
+      }
+      if (event.data?.type === 'kontra-inspection-clear') $('clear').click();
+    });
+    new ResizeObserver(() => parent.postMessage({ type: 'kontra-inspection-height', height: document.body.scrollHeight + 24 }, location.origin)).observe($('main'));
+    parent.postMessage({ type: 'kontra-inspection-ready' }, location.origin);
+  }
+
   </script>
 </html>
