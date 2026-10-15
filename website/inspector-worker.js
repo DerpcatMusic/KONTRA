@@ -40,6 +40,10 @@ self.onmessage = async ({ data }) => {
     postMessage({ type: 'result', report });
   } catch (error) {
     // No authored payload or source text is emitted in this error channel.
-    postMessage({ type: 'error', message: error instanceof WebAssembly.RuntimeError ? 'The browser engine stopped. Try a single instrument or a smaller selection.' : String(error?.message || 'The browser engine could not start.') });
+    let message = String(error?.message || 'The browser engine could not start.');
+    if (error instanceof WebAssembly.RuntimeError) message = 'The browser engine stopped. Try a single instrument or a smaller selection.';
+    if (error instanceof WebAssembly.CompileError) message = 'This browser cannot run the inspector engine. Update your browser and reload the page.';
+    if (error instanceof TypeError) message = 'The inspector engine could not be loaded. Reload the page and try again.';
+    postMessage({ type: 'error', message });
   }
 };
