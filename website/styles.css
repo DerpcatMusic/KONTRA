@@ -184,7 +184,7 @@ button:disabled { cursor: default; }
 .page-intro > p:not(.revision-line) { margin-top: 18px; color: var(--muted); font-size: 15px; }
 .sampler-roadmap { padding-block: 8px; }
 .sampler-phase { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 48px; margin-bottom: 44px; }
-.sampler-phase h2 { padding-top: 18px; font-size: 22px; }
+.sampler-phase h2 { padding-top: 18px; font-size: 24px; }
 .sampler-list { min-width: 0; border-top: 1px solid var(--line); }
 .sampler-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px 110px; gap: 24px; align-items: baseline; padding-block: 20px; border-bottom: 1px solid var(--line); }
 .sampler-row h3 { font-size: 18px; }
