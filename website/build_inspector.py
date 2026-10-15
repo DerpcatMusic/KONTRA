@@ -41,7 +41,7 @@ def build(output, profile='ci'):
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=ROOT, text=True))
     artifacts = Path(metadata['target_directory']) / TARGET / ('debug' if profile == 'dev' else profile)
     shutil.copy2(artifacts / 'browser-inspector.js', output / 'inspector-engine.mjs')
-    shutil.copy2(artifacts / 'browser-inspector.wasm', output / 'browser-inspector.wasm')
+    shutil.copy2(artifacts / 'browser_inspector.wasm', output / 'browser_inspector.wasm')
     (output / 'inspector-build.json').write_text(json.dumps({'revision': revision, 'target': TARGET, 'emscripten': '6.0.12'}) + '\n')
     print(f'Built browser inspector at {revision[:7]} into {output}')
 
