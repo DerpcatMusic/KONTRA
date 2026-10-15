@@ -1318,7 +1318,7 @@
       group.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); } };
       svg.append(group);
     }
-    add(figure, svg, node('figcaption', `${placed.length} widgets with explicit pixel positions · ${visible.length - placed.length} visible widgets need layout resolution`, 'ui-caption'));
+    add(figure, svg, node('figcaption', `${Math.min(placed.length, 4096)} of ${placed.length} positioned widgets · ${visible.length - placed.length} visible widgets need layout resolution${width === 8192 || height === 8192 ? ' · Preview bounded to 8192 pixels per side' : ''}`, 'ui-caption'));
     root.append(figure);
   }
 
