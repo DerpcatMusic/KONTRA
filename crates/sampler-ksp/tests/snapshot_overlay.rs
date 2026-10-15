@@ -130,6 +130,140 @@ fn all_rows() -> Vec<(&'static str, Saved)> {
     ]
 }
 
+fn assert_frontend_opaque_refusal(script: Script) {
+    let (mut rt, views) = runtime(vec![script], 8, false);
+    let plan = rt.active_plan();
+    let fence = rt.snapshot_overlay_fence(plan).unwrap();
+    let mut overlay = NativeSnapshotOverlay::new(
+        fence,
+        snapshot_saved_state(
+            &views,
+            &[slot(0, vec![("$saved", Saved::Int(9))])],
+            limits(),
+        )
+        .unwrap(),
+        Box::new([]),
+    );
+    support::without_heap(|| {
+        assert_eq!(
+            rt.apply_snapshot_overlay(&mut overlay),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(
+            overlay.refusal,
+            Some(SnapshotOverlayRefusal::UnsafeCallback)
+        );
+        assert!(overlay.committed.is_none());
+        assert_eq!(rt.snapshot_overlay_fence(plan).unwrap(), fence);
+        assert_eq!(cell(&rt, &views[0], 0, "$saved"), 1);
+    });
+}
+
+#[test]
+fn frontend_ignored_persistence_and_reachable_function_or_warning_refuse() {
+    for body in [
+        "on persistence_changed set_snapshot_type(3) end on",
+        "function opaque set_snapshot_type(3) end function on persistence_changed call opaque end on",
+        "on persistence_changed $seen := $NOTE_HELD end on",
+    ] {
+        let source = format!(
+            "on init set_snapshot_type(3) declare $saved := 1 make_persistent($saved) declare $seen end on {body}"
+        );
+        assert_frontend_opaque_refusal(compile(&source, 0));
+    }
+}
+
+#[test]
+fn unrelated_opaque_function_does_not_taint_clean_persistence() {
+    let source = "on init set_snapshot_type(3) declare $saved := 1 make_persistent($saved) declare $seen declare ui_switch $edit end on
+        function opaque set_snapshot_type(3) end function
+        on ui_control($edit) call opaque end on
+        on persistence_changed $seen := $saved end on";
+    let script = compile(source, 0);
+    assert!(
+        script
+            .coverage()
+            .iter()
+            .any(|&(name, coverage, count)| name == "set_snapshot_type"
+                && coverage == sampler_ksp::Coverage::Ignored
+                && count == 1)
+    );
+    let (mut rt, views) = runtime(vec![script], 8, false);
+    let plan = rt.active_plan();
+    let mut overlay = NativeSnapshotOverlay::new(
+        rt.snapshot_overlay_fence(plan).unwrap(),
+        snapshot_saved_state(
+            &views,
+            &[slot(0, vec![("$saved", Saved::Int(9))])],
+            limits(),
+        )
+        .unwrap(),
+        Box::new([]),
+    );
+    support::without_heap(|| {
+        rt.apply_snapshot_overlay(&mut overlay).unwrap();
+    });
+    assert_eq!(cell(&rt, &views[0], 0, "$saved"), 9);
+    assert_eq!(cell(&rt, &views[0], 0, "$seen"), 9);
+}
+
+#[test]
+fn frontend_opaque_listener_body_cannot_prove_a_parked_driver() {
+    let source = "on init set_snapshot_type(3) declare $saved := 1 make_persistent($saved) set_listener($NI_SIGNAL_TIMER_MS,1000) end on
+        on listener set_snapshot_type(3) end on";
+    let (mut rt, views) = runtime(vec![compile(source, 0)], 8, false);
+    rt.render(&mut []).unwrap();
+    let plan = rt.active_plan();
+    let fence = rt.snapshot_overlay_fence(plan).unwrap();
+    let mut overlay = NativeSnapshotOverlay::new(
+        fence,
+        snapshot_saved_state(
+            &views,
+            &[slot(0, vec![("$saved", Saved::Int(9))])],
+            limits(),
+        )
+        .unwrap(),
+        Box::new([]),
+    );
+    support::without_heap(|| {
+        assert_eq!(
+            rt.apply_snapshot_overlay(&mut overlay),
+            Err(Error::NotReady)
+        );
+        assert_eq!(
+            overlay.refusal,
+            Some(SnapshotOverlayRefusal::PendingCommands)
+        );
+        assert_eq!(rt.snapshot_overlay_fence(plan).unwrap(), fence);
+        assert_eq!(cell(&rt, &views[0], 0, "$saved"), 1);
+    });
+}
+
+#[cfg(feature = "cache")]
+#[test]
+fn initializer_cache_relowers_frontend_opaque_snapshot_denial() {
+    let source = "on init set_snapshot_type(3) declare $saved := 1 make_persistent($saved) end on on persistence_changed set_snapshot_type(3) end on";
+    let initialized = sampler_ksp::initialize(
+        source,
+        sampler_ksp::Limits::LIBRARY,
+        &Environment::default(),
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&initialized.capture_initialized().unwrap()).unwrap();
+    let cached = serde_json::from_slice(&bytes).unwrap();
+    let restored =
+        sampler_ksp::restore_initialized(source, sampler_ksp::Limits::LIBRARY, cached).unwrap();
+    let script = sampler_ksp::compile_initialized(
+        source,
+        48_000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+        restored,
+    )
+    .unwrap();
+    assert_frontend_opaque_refusal(script);
+}
+
 #[test]
 fn exact_snapshot_mapper_rejects_missing_duplicate_foreign_types_counts_domains_and_limits() {
     let view = compile(ALL, 4).view();

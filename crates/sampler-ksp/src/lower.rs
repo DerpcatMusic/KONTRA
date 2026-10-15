@@ -128,6 +128,8 @@ pub struct Module {
     calls: Vec<(usize, FnId)>,
     starts: Vec<u32>,
     ends: Vec<u32>,
+    /// Bytecode positions where source semantics were omitted, never opcodes.
+    opaque: Vec<usize>,
     entries: Vec<(usize, Vec<Range<usize>>, i32, Span)>,
 }
 
@@ -200,6 +202,7 @@ impl<'h> Unit<'h> {
             calls: module.calls,
             starts: module.starts,
             ends: module.ends,
+            opaque: module.opaque,
             loops: Vec::new(),
             span,
             statement_span: None,
@@ -277,6 +280,7 @@ impl<'h> Unit<'h> {
             calls: g.calls,
             starts: g.starts,
             ends: g.ends,
+            opaque: g.opaque,
             entries,
         };
         self.modules[module_index].3 = module;
@@ -324,7 +328,13 @@ impl<'h> Unit<'h> {
                 .with_source_slot(self.slot)
                 .with_snapshot_overlay_services(&snapshot_ui_services);
             for (index, ranges, ui_id, span) in module.entries {
-                programs[index] = shared
+                // The initializer cache stores values/model metadata, not
+                // Programs: fresh lowering always reconstructs this proof.
+                let opaque = ranges.iter().any(|range| {
+                    let first = module.opaque.partition_point(|at| *at < range.start);
+                    module.opaque.get(first).is_some_and(|at| *at < range.end)
+                });
+                let program = shared
                     .clone()
                     .with_entry(ranges[0].start, &ranges, ui_id)
                     .map_err(|e| Fault {
@@ -332,6 +342,11 @@ impl<'h> Unit<'h> {
                         builtin: None,
                         message: format!("invalid lowered entry: {e:?}"),
                     })?;
+                programs[index] = if opaque {
+                    program.without_snapshot_overlay()
+                } else {
+                    program
+                };
             }
         }
         Ok(())
@@ -399,6 +414,7 @@ impl<'h> Unit<'h> {
             calls: Vec::new(),
             starts: Vec::new(),
             ends: Vec::new(),
+            opaque: Vec::new(),
             loops: Vec::new(),
             span,
             statement_span: None,
@@ -503,6 +519,7 @@ struct Gen<'u, 'h> {
     calls: Vec<(usize, FnId)>,
     starts: Vec<u32>,
     ends: Vec<u32>,
+    opaque: Vec<usize>,
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
@@ -576,7 +593,14 @@ impl Gen<'_, '_> {
         }
     }
     fn warn(&mut self, message: impl Into<String>) {
+        self.mark_opaque();
         self.report(None, crate::diag::Kind::Warning, message.into());
+    }
+    fn mark_opaque(&mut self) {
+        let at = self.code.len();
+        if self.opaque.last() != Some(&at) {
+            self.opaque.push(at);
+        }
     }
     fn report(&mut self, builtin: Option<Builtin>, kind: crate::diag::Kind, message: String) {
         if self.u.warnings.len() < 1000 {
@@ -609,6 +633,7 @@ impl Gen<'_, '_> {
         }
     }
     fn ignore(&mut self, builtin: Builtin, why: &str) {
+        self.mark_opaque();
         self.cover(builtin, Coverage::Ignored);
         let message = format!("{} {why}", builtin.name());
         self.report(Some(builtin), crate::diag::Kind::Unsupported, message);
@@ -1260,9 +1285,15 @@ impl Gen<'_, '_> {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
                     Const::Str(s) => TextPart::Constant(self.constant(&s)),
-                    _ => return Ok(()),
+                    _ => {
+                        self.mark_opaque();
+                        return Ok(());
+                    }
                 },
-                _ => return Ok(()),
+                _ => {
+                    self.mark_opaque();
+                    return Ok(());
+                }
             },
             ExprKind::LoadElem(v, index) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Texts { offset, len } => {
@@ -1272,7 +1303,10 @@ impl Gen<'_, '_> {
                         index: free,
                     })
                 }
-                _ => return Ok(()),
+                _ => {
+                    self.mark_opaque();
+                    return Ok(());
+                }
             },
             ExprKind::Builtin(Builtin::GroupName, args) => {
                 let name = self
@@ -2121,6 +2155,7 @@ impl Gen<'_, '_> {
                 true
             }
             IgnoreController => {
+                self.mark_opaque();
                 self.cover(builtin, Coverage::Native);
                 self.report(
                     None,
