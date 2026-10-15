@@ -42,7 +42,7 @@ type StoreEntry = ([i32; super::STORE_KEY], i64);
 struct PcmData {
     id: AssetId,
     rate: u32,
-    frames: Snapshot<Option<ResidentData>>,
+    frames: std::sync::Arc<Snapshot<Option<ResidentData>>>,
     resident_budget: std::sync::OnceLock<HeadBudget>,
     resident_published: AtomicBool,
     full: bool,
@@ -59,7 +59,7 @@ struct PcmData {
     used: AtomicU64,
     // A streamed asset's resident ranges (where voices start); empty when purged.
     /// Readers (every render thread) share it; only a control-side swap writes.
-    head: Snapshot<Ranges>,
+    head: std::sync::Arc<Snapshot<Ranges>>,
     head_budget: std::sync::OnceLock<HeadBudget>,
     // A start was refused because its pages were not resident.
     cold: AtomicBool,
@@ -79,6 +79,12 @@ impl std::fmt::Debug for ResidencyLoader {
 }
 /// Borrowed full-resident PCM; retiring storage is reclaimed only on control.
 pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<ResidentData>>);
+/// Owned counted generation used only through one cohort render segment.
+pub(crate) struct ResidentPin(sampler_pool::SnapshotPin<Option<ResidentData>>);
+impl std::ops::Deref for ResidentPin {
+    type Target = [Frame];
+    fn deref(&self) -> &[Frame] { self.0.as_ref().expect("resident generation").frames() }
+}
 impl std::ops::Deref for ResidentFrames<'_> {
     type Target = [Frame];
     fn deref(&self) -> &[Frame] {
@@ -350,6 +356,11 @@ impl Pcm {
     pub(crate) fn try_head(&self) -> Option<SnapshotRead<'_, Ranges>> {
         Some(self.0.head.read())
     }
+    /// The plan/sample revision retains the other Arc owner throughout render.
+    /// Clear pins before the render segment returns or source owners can retire.
+    pub(crate) fn pin_head(&self) -> sampler_pool::SnapshotPin<Ranges> {
+        self.0.head.read_owned()
+    }
     pub fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
     }
@@ -372,7 +383,7 @@ impl Pcm {
             rate,
             full,
             resident_published: AtomicBool::new(frames.is_some()),
-            frames: Snapshot::new(frames),
+            frames: std::sync::Arc::new(Snapshot::new(frames)),
             resident_budget: std::sync::OnceLock::new(),
             residency_owners: std::sync::atomic::AtomicUsize::new(0),
             residency_managed: AtomicBool::new(false),
@@ -381,7 +392,7 @@ impl Pcm {
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
-            head: Snapshot::default(),
+            head: std::sync::Arc::new(Snapshot::default()),
             head_budget: std::sync::OnceLock::new(),
             cold: AtomicBool::new(false),
             length,
@@ -416,6 +427,10 @@ impl Pcm {
     }
     pub fn frame_count(&self) -> usize {
         self.0.length
+    }
+    pub(crate) fn pin_resident(&self) -> Option<ResidentPin> {
+        let frames = self.0.frames.read_owned();
+        frames.is_some().then(|| ResidentPin(frames))
     }
     pub fn resident_frames(&self) -> Option<ResidentFrames<'_>> {
         let frames = self.0.frames.read();

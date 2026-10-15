@@ -3155,6 +3155,20 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
 
 /// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
+/// Preserve the legacy stretch path: sampler taps do not certify grains or
+/// pre-roll. Requested latency and service horizon are checked as one pair.
+fn sampler_stream_contract(head: usize, instrument: Option<&ir::Instrument>)
+    -> Result<(u32, Option<u32>), CoreError>
+{
+    let invalid = || CoreError::Invalid("streaming horizon exceeds output-frame domain".into());
+    let horizon = head.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
+    let horizon = u32::try_from(horizon).map_err(|_| invalid())?;
+    let requested = u32::try_from(head).map_err(|_| invalid())?;
+    if requested == 0 { return Err(invalid()); }
+    let sampler = instrument.is_some_and(|i| i.groups.iter().all(|g| g.time_stretch.is_none()));
+    Ok((horizon, sampler.then_some(requested)))
+}
+
 fn render_threads(request: &LoadRequest) -> Threads {
     match std::env::var("KONTRA_THREADS").as_deref() {
         Ok("auto") => Threads::Auto,
@@ -3861,14 +3875,15 @@ impl V2Loader {
         // render() rescales it to 128 per frame for longer blocks.
         runtime.set_behavior_block_fuel(8192);
         let streams = cache.is_some();
+        let stream_contract = stream.as_ref().map(|s| sampler_stream_contract(
+            s.report.head_frames, instrument.as_deref())).transpose()?;
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
-            if let Some(stream) = &stream {
-                runtime
-                    .set_stream_horizon(
-                        (stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32,
-                    )
-                    .map_err(core)?;
+            if let Some((horizon, runway)) = stream_contract {
+                runtime.set_stream_horizon(horizon).map_err(core)?;
+                if let Some(runway) = runway {
+                    runtime.set_stream_start_runway(runway).map_err(core)?;
+                }
             }
         }
         // Full polyphony steals (released, then quietest) rather than refusing notes.
@@ -3924,7 +3939,7 @@ impl V2Loader {
             });
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
-            part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
+            part.horizon = stream_contract.map(|(horizon, _)| horizon);
             part._stream = Some(stream.clone());
         }
         progress(Progress::DONE);
@@ -8232,5 +8247,28 @@ mod timing_parity_tests {
             r.buses[0][0][0] > 0.1,
             "audio starts exactly after 480 held frames"
         );
+    }
+}
+
+#[cfg(test)]
+mod sampler_stream_contract_tests {
+    use super::*;
+    #[test]
+    fn requested_latency_activates_only_instruments_without_stretch_groups() {
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap(),
+            ((PAGE_FRAMES + MAX_BLOCK) as u32, Some(1019)));
+        instrument.groups[0].time_stretch = Some(ir::TimeStretch::new(ir::StretchKind::TimeMachine2, 1.));
+        assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, None);
+        assert_eq!(sampler_stream_contract(1019, None).unwrap().1, None);
+    }
+    #[test]
+    fn both_requested_and_service_horizons_are_checked_without_clamping() {
+        let instrument = ir::Instrument::default();
+        assert!(sampler_stream_contract(0, Some(&instrument)).is_err());
+        assert!(sampler_stream_contract(usize::MAX, Some(&instrument)).is_err());
+        assert!(sampler_stream_contract(u32::MAX as usize, Some(&instrument)).is_err());
+        assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, Some(1019));
     }
 }
