@@ -273,7 +273,7 @@ button:disabled { cursor: default; }
 .inspector-selection input::placeholder { color: var(--muted); opacity: 1; }
 .inspector-status-line { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; margin-top: 20px; color: var(--muted); font-size: 12px; }
 .inspector-status-line a { overflow-wrap: anywhere; }
-#inspection-error { margin-top: 16px; color: #ff9a94; font-size: 14px; }
+#inspection-error { margin-top: 16px; color: var(--error); font-size: 14px; }
 .inspection-result { border-top: 1px solid var(--line); padding-block: 28px 48px; }
 .inspection-summary { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
 .inspection-summary h2 { font-size: 24px; }
