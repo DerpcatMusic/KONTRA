@@ -21,7 +21,7 @@ fn covered_frames_counts_partial_disjoint_current_ranges_without_heap() {
             (28..64, 0),
             (64..65, 0),
             (5..5, 0),
-            (10..9, 0),
+            (std::ops::Range { start: 10, end: 9 }, 0),
         ] {
             assert_eq!(pcm.resident_covered_frames(range.clone()), count);
             assert_eq!(clone.resident_covered_frames(range), count);
