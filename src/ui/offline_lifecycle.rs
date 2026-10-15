@@ -264,6 +264,8 @@ enum SwitchStep {
         source_id: i32,
         #[serde(default)]
         index: u32,
+        #[serde(default)]
+        require_visible_enabled: bool,
         value: SwitchValue,
     },
 }
@@ -391,17 +393,73 @@ fn switch_projection(
     (projection, capture)
 }
 
+#[derive(Clone, Copy)]
+struct SwitchWidgetTarget<'a> {
+    widget: &'a sampler_ui_ir::Widget,
+    effective_visible: bool,
+}
+
 fn switch_widget_target(
     faces: &[Interface],
     slot: u8,
     source_id: i32,
-) -> Vec<&sampler_ui_ir::Widget> {
+) -> Vec<SwitchWidgetTarget<'_>> {
     faces
         .iter()
         .filter(|face| face.source == sampler_ui_ir::Source::Ksp { slot })
-        .flat_map(|face| &face.widgets)
-        .filter(|widget| widget.source_id == Some(source_id))
+        .flat_map(|face| {
+            face.widgets
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, widget)| {
+                    (widget.source_id == Some(source_id)).then(|| SwitchWidgetTarget {
+                        widget,
+                        effective_visible: face.pages.get(widget.page.0).is_some()
+                            && face.visible(sampler_ui_ir::WidgetRef(index)),
+                    })
+                })
+        })
         .collect()
+}
+
+fn switch_widget_blocked_reason(
+    targets: &[SwitchWidgetTarget<'_>],
+    require_visible_enabled: bool,
+) -> Option<&'static str> {
+    if !require_visible_enabled {
+        return None;
+    }
+    match targets {
+        [] => Some("target_not_found"),
+        [target] if !target.effective_visible => Some("target_not_effectively_visible"),
+        [target] if !target.widget.enabled => Some("target_disabled"),
+        [_] => None,
+        _ => Some("ambiguous_target"),
+    }
+}
+
+fn switch_submit_widget(
+    ingress: Option<&mut ControlIngress>,
+    targets: &[SwitchWidgetTarget<'_>],
+    slot: u8,
+    cell: u32,
+    value: SwitchValue,
+    require_visible_enabled: bool,
+) -> (Option<bool>, Option<&'static str>) {
+    let blocked_reason = switch_widget_blocked_reason(targets, require_visible_enabled);
+    if blocked_reason.is_some() {
+        return (Some(false), blocked_reason);
+    }
+    let submitted = match (targets, ingress) {
+        ([target], Some(ingress)) => Some(ingress.submit_ui_widgets(
+            slot,
+            target.widget,
+            vec![(cell, value.ui())],
+            Default::default(),
+        )),
+        _ => None,
+    };
+    (submitted, None)
 }
 
 /// Fixed-frame render, irrespective of whether finite callbacks are pending.
@@ -687,6 +745,7 @@ fn switch_probe_inner(
                 slot,
                 source_id,
                 index: cell,
+                require_visible_enabled,
                 value,
             } => {
                 let (live_faces, _, _) = switch_state(&core, &mut owner);
@@ -703,20 +762,20 @@ fn switch_probe_inner(
                 } else {
                     None
                 };
-                let submitted = target.and_then(|widget| {
-                    ingresses.get_mut(&generation).map(|ingress| {
-                        ingress.submit_ui_widgets(
-                            slot,
-                            widget,
-                            vec![(cell, value.ui())],
-                            Default::default(),
-                        )
-                    })
-                });
+                let (submitted, blocked_reason) = switch_submit_widget(
+                    ingresses.get_mut(&generation),
+                    &targets,
+                    slot,
+                    cell,
+                    value,
+                    require_visible_enabled,
+                );
                 record["outcome"] = json!("widget_edit_observed");
                 record["widget_edit"] = json!({"generation":generation,"active_generation":core.epoch(0),"stale":generation!=core.epoch(0),
                     "slot":slot,"source_id":source_id,"index":cell,"typed_value":format!("{value:?}"),"target_count":targets.len(),
-                    "target_hidden":target.map(|widget|widget.hidden),"target_enabled":target.map(|widget|widget.enabled),
+                    "target_hidden":target.map(|target|target.widget.hidden),"target_enabled":target.map(|target|target.widget.enabled),
+                    "target_effective_visible":target.map(|target|target.effective_visible),"target_page":target.map(|target|target.widget.page.0),
+                    "require_visible_enabled":require_visible_enabled,"blocked_reason":blocked_reason,
                     "ingress_present":ingresses.contains_key(&generation),"submitted":submitted,
                     "scope":"Exact script-slot/source-ID resolution, one typed scalar/cell edit through production submit_ui_widgets/InvokeWidget; no file/text/drop services"});
                 if owner.request != 0 {
@@ -1474,7 +1533,7 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert!(ingress.submit_ui_widgets(
             0,
-            targets[0],
+            targets[0].widget,
             vec![(0, SwitchValue::Integer(1).ui())],
             Default::default()
         ));
@@ -1495,6 +1554,178 @@ mod tests {
         );
         assert_ne!(before["ui_state_sha256"], after["ui_state_sha256"]);
         assert!(before["visible_widgets"].as_u64() > after["visible_widgets"].as_u64());
+    }
+
+    #[test]
+    fn guarded_widget_action_blocks_hidden_parent_and_disabled_but_runs_visible_callback() {
+        let source = r#"on init
+            make_perfview
+            declare $calls := 0
+            declare ui_panel $panel
+            declare ui_button $child
+            declare ui_button $open
+            declare ui_label $receipt(1,1)
+            set_control_par(get_ui_id($child),$CONTROL_PAR_PARENT_PANEL,get_ui_id($panel))
+            set_control_par(get_ui_id($panel),$CONTROL_PAR_HIDE,$HIDE_WHOLE_CONTROL)
+            end on
+            on ui_control($open)
+                wait(1000)
+                if ($open = 1)
+                    set_control_par(get_ui_id($panel),$CONTROL_PAR_HIDE,$HIDE_NOTHING)
+                else
+                    set_control_par(get_ui_id($panel),$CONTROL_PAR_HIDE,$HIDE_WHOLE_CONTROL)
+                end if
+            end on
+            on ui_control($child)
+                inc($calls)
+                move_control_px($receipt,$calls,10)
+            end on"#;
+        let script =
+            sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let (part, views) = prepared_fixture(vec![script]);
+        let mut part = part.unwrap();
+        part.epoch = 1;
+        let mut ingress = part.ui_controls.take().unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(part));
+        let mut owner = SwitchOwner {
+            request: 1,
+            scripts: ScriptUi {
+                views,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (faces, _, _) = switch_state(&core, &mut owner);
+        let id = |name: &str| {
+            faces[0]
+                .widgets
+                .iter()
+                .find(|w| w.name == name)
+                .unwrap()
+                .source_id
+                .unwrap()
+        };
+        let (child, open) = (id("$child"), id("$open"));
+        let targets = switch_widget_target(&faces, 0, child);
+        assert!(!targets[0].widget.hidden);
+        assert!(
+            !targets[0].effective_visible,
+            "the authored parent is hidden"
+        );
+        assert_eq!(
+            switch_submit_widget(
+                Some(&mut ingress),
+                &targets,
+                0,
+                0,
+                SwitchValue::Integer(1),
+                true
+            ),
+            (Some(false), Some("target_not_effectively_visible"))
+        );
+        assert_eq!(switch_widget_blocked_reason(&targets, false), None);
+        switch_render(&mut core, &mut owner, 512).unwrap();
+        let (faces, _, _) = switch_state(&core, &mut owner);
+        let receipt_x = |faces: &[Interface]| {
+            faces[0]
+                .widgets
+                .iter()
+                .find(|w| w.name == "$receipt")
+                .unwrap()
+                .rect
+                .x
+        };
+        assert_eq!(receipt_x(&faces), 0.);
+
+        let targets = switch_widget_target(&faces, 0, open);
+        assert_eq!(
+            switch_submit_widget(
+                Some(&mut ingress),
+                &targets,
+                0,
+                0,
+                SwitchValue::Integer(1),
+                true
+            ),
+            (Some(true), None)
+        );
+        switch_render(&mut core, &mut owner, 512).unwrap();
+        step(&mut core, &mut owner.scripts.views).unwrap();
+        let (faces, _, _) = switch_state(&core, &mut owner);
+        assert!(switch_widget_target(&faces, 0, child)[0].effective_visible);
+
+        // Exercise the frontend's explicit disabled flag on the same authored
+        // control identity; no unsupported KSP enabled setter is fabricated.
+        let mut disabled = faces.clone();
+        disabled[0]
+            .widgets
+            .iter_mut()
+            .find(|w| w.source_id == Some(child))
+            .unwrap()
+            .enabled = false;
+        let targets = switch_widget_target(&disabled, 0, child);
+        assert_eq!(
+            switch_submit_widget(
+                Some(&mut ingress),
+                &targets,
+                0,
+                0,
+                SwitchValue::Integer(1),
+                true
+            ),
+            (Some(false), Some("target_disabled"))
+        );
+        switch_render(&mut core, &mut owner, 512).unwrap();
+        assert_eq!(receipt_x(&switch_state(&core, &mut owner).0), 0.);
+
+        let targets = switch_widget_target(&faces, 0, child);
+        assert_eq!(
+            switch_submit_widget(
+                Some(&mut ingress),
+                &targets,
+                0,
+                0,
+                SwitchValue::Integer(1),
+                true
+            ),
+            (Some(true), None)
+        );
+        switch_render(&mut core, &mut owner, 512).unwrap();
+        assert_eq!(receipt_x(&switch_state(&core, &mut owner).0), 1.);
+
+        // An explicit direct audit retains its old ability to invoke a hidden
+        // target when the new precondition is absent/false.
+        let targets = switch_widget_target(&faces, 0, open);
+        assert_eq!(
+            switch_submit_widget(
+                Some(&mut ingress),
+                &targets,
+                0,
+                0,
+                SwitchValue::Integer(0),
+                true
+            ),
+            (Some(true), None)
+        );
+        switch_render(&mut core, &mut owner, 512).unwrap();
+        step(&mut core, &mut owner.scripts.views).unwrap();
+        let (faces, _, _) = switch_state(&core, &mut owner);
+        let targets = switch_widget_target(&faces, 0, child);
+        assert!(!targets[0].effective_visible);
+        assert_eq!(
+            switch_submit_widget(
+                Some(&mut ingress),
+                &targets,
+                0,
+                0,
+                SwitchValue::Integer(0),
+                false
+            ),
+            (Some(true), None)
+        );
+        switch_render(&mut core, &mut owner, 512).unwrap();
+        assert_eq!(receipt_x(&switch_state(&core, &mut owner).0), 2.);
     }
 
     #[test]

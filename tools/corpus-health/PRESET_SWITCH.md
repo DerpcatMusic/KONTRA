@@ -74,7 +74,7 @@ To exercise an authored tab/menu callback, use one bounded typed widget action:
 
 ```json
 {"op":"widget_edit","generation":1,"slot":0,"source_id":123,"index":0,
- "value":{"type":"integer","value":1}}
+ "require_visible_enabled":true,"value":{"type":"integer","value":1}}
 ```
 
 The source ID must resolve to exactly one widget in that KSP slot, and the value
@@ -85,6 +85,15 @@ flags, visible-widget counts and bounded callback-settled state. Ambiguous or
 absent targets are not replaced with another control. No text, file selection,
 drop, script execution or source-file write operation is accepted. With
 `render_ui: true`, the resulting panel is also projected through the CPU painter.
+
+Set `require_visible_enabled: true` for user-reachable tab/menu flows. Before
+submission, the exact target must be on a declared page, pass the interface's
+effective visibility check (including hidden ancestors), and be enabled.
+`target_effective_visible`, `target_enabled` and `blocked_reason` report this
+decision. A blocked action is never queued, and no alternative target is used.
+The optional field defaults to `false`, preserving deliberate direct/stale-owner
+audit semantics. This precondition does not establish pointer hit testing,
+occlusion or native-host visibility.
 
 Every publication reports the resolved resource owner, actual audio generation,
 menu item values/visibility and caption hashes, complete UI/control fingerprints,
