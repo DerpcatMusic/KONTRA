@@ -22,6 +22,7 @@
 use anyhow::{Context, ensure};
 mod uvi_meters;
 mod control_diagnostics;
+pub(crate) mod load_wait;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -1201,6 +1202,17 @@ impl V2Core {
         Some(self.parts.get(part)?.as_ref()?.runtime.stats())
     }
 
+    /// Offline diagnostic only, between render calls. Physical compiled layout
+    /// supplies instance/cell; an old owner cannot inspect a replacement.
+    #[cfg(feature = "shots")]
+    pub fn diagnostic_script_cell(
+        &self, part: usize, epoch: u64, instance: u16, cell: u32,
+    ) -> Result<i64, sampler_core::Error> {
+        let part = self.parts.get(part).and_then(Option::as_ref)
+            .filter(|part| part.epoch == epoch).ok_or(sampler_core::Error::StaleHandle)?;
+        part.runtime.script_cell(part.runtime.active_plan(), sampler_core::ScriptInstanceId(instance), cell)
+    }
+
     /// Control-side demand inspection between render calls; never polls or waits.
     #[cfg(feature = "shots")]
     pub fn visit_stream_demand(
@@ -1462,7 +1474,7 @@ impl V2Core {
             }
         });
         let (queued_faults, dropped_faults) = part.fault_inbox.counts();
-        serde_json::json!({"part_present": true, "callback_count": callbacks,
+        serde_json::json!({"part_present": true, "audio_generation": part.epoch, "callback_count": callbacks,
             "pending_plan_callbacks": pending_plan, "live_callback_failures": failures,
             "queued_faults": queued_faults, "dropped_faults": dropped_faults,
             "rows_omitted": callbacks.saturating_sub(rows.len()), "callbacks": rows})
@@ -3637,6 +3649,33 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
 const LOADER_STACK: usize = 16 << 20;
 
 impl V2Loader {
+    /// Product loader only: keep the committed owner's host services moving
+    /// while this caller waits for its private preparation worker.
+    pub(crate) fn prepare_serviced(
+        &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
+        canceled: &(dyn Fn() -> bool + Sync), service: &mut dyn FnMut(),
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        self.prepare_waiting(request, progress, canceled, Some(service))
+    }
+
+    fn prepare_waiting(
+        &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
+        canceled: &(dyn Fn() -> bool + Sync), service: Option<&mut dyn FnMut()>,
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("sampler-load".into())
+                .stack_size(LOADER_STACK)
+                .spawn_scoped(scope, move || {
+                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+                })
+                .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            load_wait::relay(rx, progress, service);
+            worker.join().unwrap_or_else(|_| Err(CoreError::Invalid("loader panicked".into())))
+        })
+    }
+
     fn prepare_on_worker(
         &self,
         request: &LoadRequest,
@@ -3837,23 +3876,7 @@ impl CoreLoader for V2Loader {
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
-                .name("sampler-load".into())
-                .stack_size(LOADER_STACK)
-                .spawn_scoped(scope, move || {
-                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
-                })
-                .map_err(|e| CoreError::Invalid(e.to_string()))?;
-            // The sender drops when the worker ends, closing the channel.
-            for p in rx {
-                progress(p);
-            }
-            worker
-                .join()
-                .unwrap_or_else(|_| Err(CoreError::Invalid("loader panicked".into())))
-        })
+        self.prepare_waiting(request, progress, canceled, None)
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
