@@ -111,6 +111,39 @@ At most 16 pages per interface and both existing presentations are observed;
 renderer preparation bounds remain in force. Decode jobs, failures and pending
 shots stay distinct. No encoded images enter the switch report.
 
+For private visual inspection, the helper also accepts an explicit artifact sink:
+
+```sh
+EXISTING_CORPUS_HEALTH preset-switch PRIVATE_PLAN.json \
+  --ui-artifacts /mnt/Windows11/DEV_WORKSPACE/PluginArtifacts/PRIVATE_NEW_DIRECTORY \
+  --ui-slot 2 --ui-page 0
+```
+
+The plan must set `render_ui: true`. All three capture options are required
+together. The absolute output directory must be new, with an existing parent;
+existing directories and files are never overwritten. The bounded Python
+launcher above does not currently forward these options; use the selected helper
+directly or an explicitly bounded private runner. With no options, the existing
+probe API and its lack of artifact writes are unchanged.
+
+Capture selects exactly one authored **KSP script slot**, an explicit page and
+the Bitmap presentation. A slot is not an interface-array index. It saves the
+PNG already rendered after each publication and each `widget_edit` callback
+drain, without another script initialization. Filenames contain only numeric
+identity, for example
+`step-002-generation-000001-slot-02-page-000-bitmap.png`. At most 24 image-write
+attempts and 64 MiB of admitted PNG data are allowed. A partial or refused write
+still consumes its reserved budget. Missing/ambiguous slots, unavailable shots,
+malformed pixel data and exhausted budgets have explicit capture statuses.
+
+Artwork is written only to the requested private directory. JSON retains
+capture status, dimensions, byte counts and SHA-256, without pixels, captions or
+artwork paths. A partial render can be captured, while its render status and
+pending-asset count remain distinct from a successful file write. This is the
+current post-action interface/control projection through the shared CPU painter;
+it does not capture an open popup, pointer state, a native Kontakt host or the
+plugin's retained asset-cache lifecycle.
+
 Full runtime replacement can cut an already-held note. The report therefore
 separates its 512-frame post-publish transition from the new note played **after**
 bounded activation, including nonzero frames/blocks, peak, RMS, runtime faults
