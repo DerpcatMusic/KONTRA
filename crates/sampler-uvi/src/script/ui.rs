@@ -103,6 +103,18 @@ fn flag(t: &Table, key: &str, default: bool) -> bool {
     }
 }
 
+fn documented_property(key: &str) -> bool {
+    matches!(key,
+        "textColourOn" | "textColourOff" | "outlineColour" | "arrowColour"
+        | "0dBColour" | "fillStyle" | "displayAsMono" | "showPopupDisplay"
+        | "displayArrow" | "hierarchical" | "popupBackgroundColour"
+        | "popupTextColour" | "popupArrowColour" | "popupOutlineColour"
+        | "popupTextColourHighlight" | "popupBackgroundColourHighlight"
+        | "showScrollBar" | "scrollBarColour" | "waveColour" | "cursorColour"
+        | "gridColour"
+    )
+}
+
 fn unsigned(t: &Table, key: &str) -> Option<u32> {
     match t.raw_get::<Value>(key).ok()? {
         Value::Integer(n) => u32::try_from(n).ok(),
@@ -401,6 +413,12 @@ impl ScriptHost {
     }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
+        self.interface_classified::<2>()
+    }
+
+    // The canonical iterator and rejected classifier are test-only oracles.
+    // Ordinary exports use the same membership rules with mlua's raw for_each.
+    fn interface_classified<const INVENTORY_MODE: u8>(&self) -> ui::Interface {
         let _profile = self.shared.profile.span("ui_ir_export");
         let _budget = self.shared.inspection_budget();
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
@@ -872,9 +890,12 @@ impl ScriptHost {
             {
                 #[cfg(feature = "scan")]
                 let _inventory_sample = sampled_audit.map(|audit|audit.span(super::diagnostics::OwnerStage::ExportInventorySample));
-                for (key, _) in data.pairs::<String, Value>().flatten() {
+                let mut inventory = |key: String| {
                     // Lua scripts freely attach private data/functions to widgets.
                     // Only documented UI properties count as rendering gaps.
+                    if INVENTORY_MODE == 1 && !documented_property(&key) {
+                        return;
+                    }
                     let documented = [
                         "textColourOn",
                         "textColourOff",
@@ -906,12 +927,25 @@ impl ScriptHost {
                         "showPopupDisplay" => matches!(wd.kind, ui::Kind::Knob { .. } | ui::Kind::Slider { .. }) && wd.popup_display.is_some(),
                         _ => false,
                     };
-                    if !consumed && !modeled.contains(&key.as_str()) && documented.contains(&key.as_str()) {
+                    if !consumed && !modeled.contains(&key.as_str()) && (INVENTORY_MODE == 1 || documented.contains(&key.as_str())) {
                         out.unsupported.push(ui::Unsupported {
                             widget: Some(ui::WidgetRef(index)),
                             feature: format!("{kind}.{key}"),
                             value: "property not represented by renderer".into(),
                         });
+                    }
+                };
+                if INVENTORY_MODE == 2 {
+                    // Pinned mlua/Luau uses the same raw iterator and stops on
+                    // the first conversion error; ignore that terminal error
+                    // exactly as the canonical pairs().flatten() path does.
+                    let _ = data.for_each::<String, Value>(|key, _| {
+                        inventory(key);
+                        Ok(())
+                    });
+                } else {
+                    for (key, _) in data.pairs::<String, Value>().flatten() {
+                        inventory(key);
                     }
                 }
             }
@@ -995,6 +1029,9 @@ impl ScriptHost {
 
 #[cfg(all(test, feature = "scan"))]
 mod export_profile_tests;
+
+#[cfg(test)]
+mod inventory_tests;
 
 /// UVI script state is independent of KSP integer memory. Table keys preserve
 /// Lua's numeric/string distinction; cycles and userdata fail rather than truncate.

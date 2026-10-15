@@ -1,5 +1,7 @@
 //! Initial-state witnesses without a plugin instance, native window or audio host.
 //! Layout, sparse asset requests and painting are the editor's production path.
+#[cfg(all(test, feature = "shots"))]
+mod uvi_inventory_tests;
 use super::{ir_view, native_ui, theme};
 use moose::mui::mui::{prelude::*, vello};
 use sampler_ui_ir as ir;
