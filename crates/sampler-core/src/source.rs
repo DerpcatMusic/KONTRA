@@ -1767,6 +1767,15 @@ fn mix<'a>(
     }
 }
 
+// Baseline-only test adapter for the contiguous entry point. Production still
+// calls the unchanged iterator mixer; the experiment replaces this test-only
+// adapter only after its same-cohort callback baseline has been frozen.
+#[cfg(test)]
+fn mix_contiguous(input: &[Frame], output: &mut [Frame], envelope: &mut EnvelopeState,
+    gain: f32, gains: [f32; 2]) {
+    mix(input.iter(), output, envelope, gain, gains);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
