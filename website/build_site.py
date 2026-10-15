@@ -59,7 +59,7 @@ def collect(features, revision, committed_at):
 
 
 def render_row(f):
-    source = (f'<a href="{escape(f["source"], quote=True)}" aria-label="Source for {escape(f["name"], quote=True)}">Code</a>'
+    source = (f'<a href="{escape(f["source"], quote=True)}" aria-label="Source for {escape(f["name"], quote=True)}">View</a>'
               if f['source'] else '—')
     proof = f'<small class="proof-note">{escape(f["proof"])}</small>' if f['status'] == 'partial' else ''
     return (f'<tr><th scope="row">{escape(f["name"])}</th>'
