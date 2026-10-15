@@ -16,8 +16,11 @@ use std::{
 };
 
 mod uvi;
+mod uvi_edit;
 #[cfg(test)]
 mod snapshot_tests;
+#[cfg(test)]
+mod internal_preset_tests;
 
 pub struct Witness {
     pub initial: Vec<Interface>,
@@ -247,6 +250,12 @@ struct SwitchPlan {
     #[serde(default)]
     render_ui: bool,
     #[serde(default)]
+    notes_after_widgets: bool,
+    #[serde(default)]
+    observed_script_cells: Vec<ObservedScriptCell>,
+    #[serde(default)]
+    observed_source_zones: Vec<u32>,
+    #[serde(default)]
     residency_wait_ms: Option<u16>,
     #[serde(default)]
     uvi: Option<uvi::Config>,
@@ -257,6 +266,142 @@ struct SwitchPlan {
     #[serde(default = "default_note_frames")]
     note_frames: usize,
     steps: Vec<SwitchStep>,
+}
+
+/// Explicit numeric bank reads through the compiled layout and current owner.
+/// Names select declared integer fields; source bodies and text are excluded.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservedScriptCell {
+    slot: u8,
+    name: String,
+    #[serde(default)]
+    index: u32,
+}
+
+fn validate_script_cells(cells: &[ObservedScriptCell]) -> Result<(), &'static str> {
+    if cells.len() > 32
+        || cells.iter().any(|c| {
+            c.slot > 4
+                || !(2..=128).contains(&c.name.len())
+                || !matches!(c.name.as_bytes()[0], b'$' | b'%')
+                || !c.name[1..]
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || c.index > 16_777_216
+        })
+    {
+        return Err(
+            "Observed script cells require at most 32 bounded integer field names, slots 0..4 and bounded indices",
+        );
+    }
+    Ok(())
+}
+
+fn switch_script_cells(
+    core: &V2Core,
+    owner: &SwitchOwner,
+    cells: &[ObservedScriptCell],
+) -> Result<Value, &'static str> {
+    if owner.request != core.epoch(0) {
+        return Err("Observed script owner is stale");
+    }
+    let mut rows = Vec::with_capacity(cells.len());
+    for query in cells {
+        let mut slots = owner
+            .scripts
+            .views
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.slot() == query.slot);
+        let (instance, view) = slots.next().ok_or("Observed script slot is absent")?;
+        if slots.next().is_some() {
+            return Err("Observed script slot is ambiguous");
+        }
+        let mut fields = view.setup().fields.iter().filter(|f| f.name == query.name);
+        let field = fields.next().ok_or("Observed script field is absent")?;
+        if fields.next().is_some() || field.kind != sampler_ksp::setup::SetupValueKind::Integer {
+            return Err("Observed script field is ambiguous or not integer");
+        }
+        let value = match field.storage {
+            sampler_ksp::model::Location::Cells { offset, len } if query.index < len => core
+                .diagnostic_script_cell(0, owner.request, instance as u16, offset + query.index)
+                .map_err(|_| "Observed script bank is unavailable or stale")?,
+            sampler_ksp::model::Location::Control(id) if query.index == 0 => {
+                let value = core
+                    .control_value(0, ControlId(id.0))
+                    .ok_or("Observed script control is absent")?;
+                if !value.is_finite()
+                    || value.fract() != 0.
+                    || value < i32::MIN as f64
+                    || value > i32::MAX as f64
+                {
+                    return Err("Observed script control is not an integer");
+                }
+                value as i64
+            }
+            _ => return Err("Observed script field index or storage is invalid"),
+        };
+        rows.push(json!({"slot":query.slot,"name":query.name,"index":query.index,"value":value}));
+    }
+    Ok(json!(rows))
+}
+
+fn switch_widget_note(
+    core: &mut V2Core,
+    owner: &mut SwitchOwner,
+    plan: &SwitchPlan,
+    generation: u64,
+    admitted: bool,
+    action: usize,
+) -> Result<Value, &'static str> {
+    if !admitted || generation != owner.request || generation != core.epoch(0) {
+        return Ok(json!({"status":"skipped_unadmitted_or_stale_owner"}));
+    }
+    core.release_all_notes();
+    owner.held = None;
+    let release = switch_render(core, owner, 512)?;
+    let residency = switch_settle_residency(
+        core,
+        owner,
+        plan.residency_wait_ms
+            .ok_or("Post-widget notes require an explicit residency bound")?,
+    )?;
+    let callbacks = step(core, &mut owner.scripts.views)?;
+    if residency["status"] != "settled"
+        || callbacks["activation_readiness"] != "finite_callbacks_not_pending"
+    {
+        return Ok(
+            json!({"status":"skipped_pending_or_failed","release":release,"residency":residency,"callbacks":callbacks}),
+        );
+    }
+    let note = HostNote {
+        port: 0,
+        channel: 0,
+        key: plan.key,
+        id: 20000 + action as i32,
+        clap: true,
+    };
+    core.begin_block(&BlockInfo {
+        frames: 128,
+        offline: true,
+        ..Default::default()
+    });
+    core.play(
+        0,
+        Event::NoteOn {
+            note,
+            velocity: f64::from(plan.velocity) / 127.,
+            tune: 0.,
+        },
+    );
+    owner.held = Some(note);
+    let signal = switch_render(core, owner, plan.note_frames)?;
+    Ok(
+        json!({"status":"observed","release":release,"residency":residency,"callbacks":callbacks,
+        "key":plan.key,"velocity":plan.velocity,"signal":signal,"audio_generation":core.epoch(0),
+        "scope":"Explicit current-owner fresh host note after a widget callback and real residency settlement; discarded PCM, no native comparison"}),
+    )
 }
 
 fn default_note_key() -> u8 {
@@ -305,6 +450,12 @@ enum SwitchStep {
         control: String,
         value: f64,
     },
+    UviEdit {
+        generation: u64,
+        control: String,
+        value: f64,
+        timeout_ms: u16,
+    },
     WidgetEdit {
         generation: u64,
         slot: u8,
@@ -350,6 +501,31 @@ struct SwitchOwner {
     stream: Option<std::sync::Arc<crate::sound::Stream>>,
     controls: Vec<ControlId>,
     held: Option<HostNote>,
+    instrument: Option<std::sync::Arc<sampler_ir::Instrument>>,
+}
+
+fn switch_source_state(core: &V2Core, owner: &SwitchOwner, ids: &[u32]) -> Value {
+    let mut report = match core.diagnostic_sources(0, owner.request, ids) {
+        Ok(report) => report,
+        Err(error) => return json!({"status":"unavailable","error":error}),
+    };
+    if let Some(voices) = report["voices"].as_array_mut() {
+        for voice in voices {
+            let recipes: Vec<_> = voice["matching_regions"].as_array().into_iter().flatten()
+                .filter_map(|n| {
+                    let region = usize::try_from(n.as_u64()?).ok()?;
+                    let ir = owner.instrument.as_ref()?;
+                    let zone = ir.zones.get(region)?;
+                    let asset = zone.asset.and_then(|a| ir.assets.get(a.0));
+                    Some(json!({"region":region,"worker_group":zone.group.map(|g|g.0),
+                        "worker_asset":zone.asset.map(|a|a.0),"location":asset.map(|a|&a.location),
+                        "worker_wavetable":zone.group.and_then(|g|ir.groups.get(g.0)).and_then(|g|g.wavetable)}))
+                }).collect();
+            voice["worker_recipes"] = json!(recipes);
+        }
+    }
+    report["worker_recipe_scope"] = json!("Asset identity joins the actual occupied voice to immutable prepared recipes. Multiple recipes can share one asset; these rows alone do not identify a unique live recipe or prove live WT control values.");
+    report
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -435,8 +611,8 @@ fn switch_projection(
         }
         // Pixels reach only the explicit private sink, never the JSON report.
         json!({"status":report["status"],"timings":report["timings"],"asset_summary":report["asset_summary"],
-            "asset_probe_dropped":report["asset_probe_dropped"],"shots":report["shots"].as_array().into_iter().flatten().map(|s|
-                json!({"status":s["status"],"pending_assets":s["pending_assets"],"preparation_ms":s["preparation_ms"],"paint_and_encode_ms":s["paint_and_encode_ms"]})).collect::<Vec<_>>()})
+            "asset_probe_dropped":report["asset_probe_dropped"],"manual_wave_views":report["manual_wave_views"],"shots":report["shots"].as_array().into_iter().flatten().map(|s|
+                json!({"status":s["status"],"pending_assets":s["pending_assets"],"preparation_ms":s["preparation_ms"],"paint_and_encode_ms":s["paint_and_encode_ms"],"manual_wave_views":s["manual_wave_views"]})).collect::<Vec<_>>()})
     }).collect::<Vec<_>>());
     (projection, capture)
 }
@@ -695,7 +871,7 @@ fn switch_probe_inner(
     plan: &Value,
     artifact_request: Option<(&Path, sampler_ui_ir::Source, u32)>,
 ) -> Result<Value, &'static str> {
-    let plan: SwitchPlan =
+    let mut plan: SwitchPlan =
         serde_json::from_value(plan.clone()).map_err(|_| "Invalid preset-switch plan schema")?;
     if plan.schema != 1
         || plan.steps.is_empty()
@@ -711,6 +887,14 @@ fn switch_probe_inner(
     }
     if let Some(config) = &plan.uvi {
         config.validate(plan.note_frames)?;
+    }
+    validate_script_cells(&plan.observed_script_cells)?;
+    if plan.observed_source_zones.len() > 32
+        || plan.observed_source_zones.iter().enumerate().any(|(i,id)|plan.observed_source_zones[..i].contains(id)) {
+        return Err("Source observations require at most 32 distinct native IDs");
+    }
+    if plan.notes_after_widgets && (plan.residency_wait_ms.is_none() || plan.uvi.is_some()) {
+        return Err("Post-widget notes require an explicit residency bound and a Kontakt owner");
     }
     for step in &plan.steps {
         match step {
@@ -749,6 +933,10 @@ fn switch_probe_inner(
                     "Preset-switch UI edit requires a finite value and 0x-prefixed 32-hex-digit control ID",
                 );
             }
+            SwitchStep::UviEdit { control, value, timeout_ms, .. }
+                if !uvi_edit::valid(control, *value, *timeout_ms) => {
+                return Err("UVI edit requires a finite value, exact UVI control ID and timeout_ms in 1..10000");
+            }
             SwitchStep::WidgetEdit {
                 value: SwitchValue::Real(value),
                 ..
@@ -773,7 +961,7 @@ fn switch_probe_inner(
     let mut previous_states =
         BTreeMap::<(PathBuf, u32), (Vec<Interface>, Vec<(ControlId, f64)>)>::new();
     let mut records = Vec::new();
-    for (index, operation) in plan.steps.into_iter().enumerate() {
+    for (index, operation) in std::mem::take(&mut plan.steps).into_iter().enumerate() {
         switch_marker(index, "begin");
         let prepare_only = matches!(&operation, SwitchStep::Prepare { .. });
         let (_, _, before) = switch_state(&core, &mut owner);
@@ -941,6 +1129,19 @@ fn switch_probe_inner(
                 record["ui_edit"]["active_value_changed"] =
                     json!(before_value != core.control_value(0, id));
             }
+            SwitchStep::UviEdit { generation, control, value, timeout_ms } => {
+                switch_marker(index, "uvi_edit");
+                record["outcome"] = json!("uvi_edit_observed");
+                record["uvi_edit"] = uvi_edit::run(&mut core, &mut owner, generation, &control, value, timeout_ms);
+                let (faces, values, state) = switch_state(&core, &mut owner);
+                record["uvi_edit"]["after_callbacks"] = state;
+                if plan.render_ui {
+                    switch_marker(index, "ui_projection_assets");
+                    let (projection, capture) = switch_projection(&owner, &faces, &values, &mut artifacts, index);
+                    record["ui_projection"] = projection;
+                    if let Some(capture) = capture { record["ui_artifact"] = capture; }
+                }
+            }
             SwitchStep::WidgetEdit {
                 generation,
                 slot,
@@ -987,6 +1188,13 @@ fn switch_probe_inner(
                         step(&mut core, &mut owner.scripts.views)?;
                     let (faces, values, state) = switch_state(&core, &mut owner);
                     record["widget_edit"]["after_callbacks"] = state;
+                    if !plan.observed_script_cells.is_empty() {
+                        record["observed_script_cells"] = switch_script_cells(&core, &owner, &plan.observed_script_cells)?;
+                    }
+                    if plan.notes_after_widgets {
+                        record["post_widget_note"] = switch_widget_note(&mut core, &mut owner, &plan,
+                            generation, submitted == Some(true), index)?;
+                    }
                     if plan.render_ui {
                         switch_marker(index, "ui_projection_assets");
                         let (projection, capture) =
@@ -1038,6 +1246,7 @@ fn switch_probe_inner(
                     stream: loaded.stream,
                     controls: loaded.controls.into_iter().map(|(id, _)| id).collect(),
                     held: previous_held,
+                    instrument: loaded.instrument,
                 };
                 switch_marker(index, "activation");
                 record["activation"] = step(&mut core, &mut owner.scripts.views)?;
@@ -1065,6 +1274,9 @@ fn switch_probe_inner(
                 record["repeated_preset"] = json!({"observed_before":previous.is_some(),"complete_ui_equal":previous.as_ref().map(|(old,_)|old==&faces),
                     "controls_equal":previous.as_ref().map(|(_,old)|old==&values),"scope":"Exact initialized/activated state of this selected path and program; differences may be authored randomness or listener timing"});
                 record["after_activation"] = state;
+                if !plan.observed_script_cells.is_empty() {
+                    record["observed_script_cells"] = switch_script_cells(&core, &owner, &plan.observed_script_cells)?;
+                }
                 if plan.render_ui {
                     switch_marker(index, "ui_projection_assets");
                     let (projection, capture) =
@@ -1122,6 +1334,9 @@ fn switch_probe_inner(
             record["retained_owner_audio"] = switch_render(&mut core, &mut owner, 512)?;
         }
         let (_, _, after) = switch_state(&core, &mut owner);
+        if !plan.observed_source_zones.is_empty() {
+            record["source_state"] = switch_source_state(&core, &owner, &plan.observed_source_zones);
+        }
         record["old_owner_preserved"] =
             json!(record["before"]["audio_generation"] == after["audio_generation"]);
         record["control_structure_same"] =

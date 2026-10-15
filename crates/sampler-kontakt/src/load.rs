@@ -185,7 +185,7 @@ pub fn load_read(
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     progress(Progress::Translated {
         zones: instrument.zones.len(),
         assets: kept.len(),
@@ -280,7 +280,7 @@ pub fn load_read_streamed_cancelable(
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     progress(Progress::Translated {
         zones: instrument.zones.len(),
         assets: kept.len(),
@@ -370,7 +370,7 @@ pub fn stream_instrument_cancelable(
 )->Result<crate::Streamed,LoadError> {
     if canceled(){return Err(LoadError::Canceled);}
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     let listed = kept
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
@@ -530,6 +530,17 @@ fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) 
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
 /// (`ratio` is the asset rate over the output rate). `false` when none remain.
+fn retain_key_window(instrument:&mut ir::Instrument,low:u8,high:u8)->Vec<usize> {
+    let routed:std::collections::BTreeSet<_>=instrument.zone_routing.iter()
+        .flat_map(|route|route.variants.iter().filter_map(|v|v.zone.map(|z|z.0))).collect();
+    let mut index=0usize;
+    instrument.retain_zones(|zone| {
+        let keep=routed.contains(&index)||(zone.keys.low<=high&&zone.keys.high>=low);
+        index+=1;
+        keep
+    })
+}
+
 fn fit_keys(
     zone: &mut ir::Zone,
     group_tune: f64,
@@ -727,25 +738,11 @@ fn script_environment_with_zones(
             })
             .collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
-        zones: metadata.cloned().unwrap_or_else(|| source
-            .zones
-            .iter()
-            .enumerate()
-            .filter_map(|(index, zone)| {
-                let zone = zones.get(zone.as_ref()?.0)?;
-                let group = zone.group.map_or(-1, |group| {
-                    source
-                        .groups
-                        .iter()
-                        .position(|entry| *entry == Some(group))
-                        .map_or(group.0 as i32, |index| index as i32)
-                });
-                Some((
-                    index as u32 + 1,
-                    [group, i32::from(zone.keys.low), i32::from(zone.keys.high)],
-                ))
-            })
-            .collect()),
+        snapshot_mode: Default::default(),
+        zone_catalog: source.zone_catalog.clone(),
+        zones: metadata.cloned().unwrap_or_else(|| source.zone_catalog.iter().filter_map(|z| {
+            Some((z.id?,[i32::try_from(z.home.group).ok()?,i32::from(z.home.low_key),i32::from(z.home.high_key)]))
+        }).collect()),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted,
@@ -785,18 +782,13 @@ pub(crate) struct ScriptInit {
 /// Only final physical source identities, independent of dense IR ordering.
 /// Raw metadata preserves authored keys when playback admission narrows them.
 fn admitted_zone_metadata(instrument: &ir::Instrument) -> std::collections::BTreeMap<u32, [i32; 3]> {
-    instrument.source_indices.zones.iter().enumerate().filter_map(|(index, entry)| {
-        let zone = instrument.zones.get(entry.as_ref()?.0)?;
-        zone.asset?;
-        let values = if let Some(raw) = instrument.kontakt_objects.as_ref().and_then(|o| o.zones.get(index)) {
-            [i32::try_from(raw.group).ok()?, i32::from(raw.low_key), i32::from(raw.high_key)]
-        } else {
-            let group = zone.group.map_or(-1, |group| instrument.source_indices.groups.iter()
-                .position(|entry| *entry == Some(group)).map_or(group.0 as i32, |index| index as i32));
-            [group, i32::from(zone.keys.low), i32::from(zone.keys.high)]
-        };
-        Some((u32::try_from(index).ok()?.checked_add(1)?, values))
-    }).collect()
+    if instrument.source_indices.zone_catalog.len()!=instrument.source_indices.zones.len() {return Default::default();}
+    instrument.source_indices.zone_catalog.iter().zip(&instrument.source_indices.zones)
+        .filter_map(|(source,entry)| {
+            instrument.zones.get(entry.as_ref()?.0)?.asset?;
+            Some((source.id?,[i32::try_from(source.home.group).ok()?,
+                i32::from(source.home.low_key),i32::from(source.home.high_key)]))
+        }).collect()
 }
 
 pub(crate) fn admit_initialized_zone_sources(instrument: &mut ir::Instrument, initialized: &mut ScriptInit) {
@@ -847,6 +839,8 @@ pub(crate) fn initialize_scripts_with_zones(
     let resources = library.map(Resources::of).map(std::cell::RefCell::new);
     let mut views = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
+    let mut zone_parameters = metadata.clone();
+    let mut snapshot_mode = sampler_ksp::model::SnapshotMode::default();
     let mut faults = vec![None; instrument.behaviors.len()];
     let states = instrument
         .behaviors
@@ -885,8 +879,9 @@ pub(crate) fn initialize_scripts_with_zones(
                 &instrument.source_indices,
                 &instrument.zones,
                 performance_view,
-                Some(metadata),
+                Some(&zone_parameters),
             );
+            environment.snapshot_mode = snapshot_mode;
             environment.midi_object = midi_object.clone();
             environment.instrument_persisted =
                 instrument.snapshot_base_state.get(index).map(|state| saved_values(state));
@@ -908,7 +903,12 @@ pub(crate) fn initialize_scripts_with_zones(
                     sampler_ksp::Limits::LIBRARY,
                     &environment,
                 )
-                .inspect(|initialized| midi_object = initialized.midi_object().clone())
+
+                .inspect(|initialized| {
+                    midi_object = initialized.midi_object().clone();
+                    zone_parameters.extend(initialized.zone_parameters().iter().map(|(&id,&home)|(id,home)));
+                    if let Some(write)=initialized.snapshot_mode_write() {snapshot_mode=write.mode;}
+                })
                 .map_err(|e| {
                     faults[index] = Some(e.clone());
                     e.to_string()

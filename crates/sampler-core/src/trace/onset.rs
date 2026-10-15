@@ -146,6 +146,139 @@ pub struct VoiceSnapshot {
     pub cold: bool,
     pub starved: bool,
 }
+/// Hard bound on command rows plus provenance metadata inspected per query.
+pub const MAX_COMMAND_SCAN_STEPS: usize = 4096;
+
+/// Pure current-state evidence. Exempting a proven future timer from diagnostic
+/// activation settlement never authorizes a snapshot overlay or cancels work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct CommandProgress {
+    pub at: u64,
+    pub total: usize,
+    pub observed: usize,
+    pub exact_future_parked_listener_resumes: usize,
+    pub blocking_observed: usize,
+    pub reserved: usize,
+    pub scan_steps: usize,
+    pub scan_limit: usize,
+    pub truncated: bool,
+}
+impl CommandProgress {
+    pub fn non_background_complete(&self) -> bool {
+        !self.truncated && self.blocking_observed == 0 && self.reserved == 0
+    }
+}
+impl Runtime {
+    /// Off audio only: no polling, callback admission, time advancement or queue
+    /// mutation. Actual handles, current owner and validated driver bytecode
+    /// establish provenance; matching a count of waiting callbacks is insufficient.
+    pub fn onset_command_progress(
+        &self,
+        plan: crate::PlanId,
+        limit: usize,
+    ) -> Result<CommandProgress, Error> {
+        if plan != self.active_plan || self.plans.get(plan.0).is_none() {
+            return Err(Error::StaleHandle);
+        }
+        let limit = limit.min(MAX_COMMAND_SCAN_STEPS);
+        let mut remaining = limit;
+        let mut row = CommandProgress {
+            at: self.now,
+            total: self.commands.len(),
+            observed: 0,
+            exact_future_parked_listener_resumes: 0,
+            blocking_observed: 0,
+            reserved: self.reserved_commands,
+            scan_steps: 0,
+            scan_limit: limit,
+            truncated: false,
+        };
+        for command in &self.commands {
+            if remaining == 0 {
+                row.truncated = true;
+                break;
+            }
+            remaining -= 1;
+            row.observed += 1;
+            let parked = match command.action {
+                crate::schedule::Action::Resume(id) if command.at > self.now => {
+                    self.onset_parked_listener(id, plan, &mut remaining)
+                }
+                _ => Some(false),
+            };
+            match parked {
+                Some(true) => row.exact_future_parked_listener_resumes += 1,
+                Some(false) => row.blocking_observed += 1,
+                None => {
+                    row.blocking_observed += 1;
+                    row.truncated = true;
+                    break;
+                }
+            }
+        }
+        row.scan_steps = limit - remaining;
+        row.truncated |= row.observed < row.total;
+        Ok(row)
+    }
+    fn onset_parked_listener(
+        &self,
+        id: crate::BehaviorId,
+        plan: crate::PlanId,
+        remaining: &mut usize,
+    ) -> Option<bool> {
+        let Some(c) = self.behaviors.get(id.0) else {
+            return Some(false);
+        };
+        if c.owner != crate::BehaviorOwner::Plan(plan)
+            || c.outcome.is_some()
+            || !c.waiting
+            || c.yielded_at.is_some()
+            || c.async_wait.is_some()
+            || c.async_result.is_some()
+        {
+            return Some(false);
+        }
+        let generation = self.plans.get(plan.0)?;
+        let Some(program) = generation.prepared.programs.get(c.program) else {
+            return Some(false);
+        };
+        let Some(body) = program
+            .snapshot_listener_driver
+            .and_then(|body| generation.prepared.programs.get(body as usize))
+        else {
+            return Some(false);
+        };
+        // Deliberately independent of body.snapshot_overlay_safe: a listener
+        // may change DSP while its timer driver is parked. This is not overlay admission.
+        if body.script_instance != program.script_instance
+            || body.source_slot != program.source_slot
+            || !c
+                .pc
+                .checked_sub(1)
+                .and_then(|pc| program.code.get(pc))
+                .is_some_and(|op| {
+                    matches!(
+                        op,
+                        crate::Instruction::Wait(_) | crate::Instruction::WaitLocal { .. }
+                    )
+                })
+        {
+            return Some(false);
+        }
+        for entry in generation.prepared.plan_programs.iter() {
+            if *remaining == 0 {
+                return None;
+            }
+            *remaining -= 1;
+            if entry.program == c.program && c.context.stage() == Some(entry.stage) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+}
+
+
 impl Runtime {
     /// Read-only off-audio observation between render calls. This is current
     /// state, never a replacement for the historical selection-time Birth row.
@@ -236,5 +369,177 @@ mod tests {
             panic!("synthetic drain poison");
         }));
         assert!(matches!(reader.drain(), Err(DrainError::Poisoned)));
+    }
+    fn parked_runtime() -> Runtime {
+        use crate::{Instruction as I, Limits, PlanProgram, Prepared, Program, WaitLifetime};
+        let driver = Program::new(vec![
+            I::Wait(100),
+            I::StartProgram { program: 1 },
+            I::Jump { target: 0 },
+        ])
+        .unwrap()
+        .with_snapshot_listener_driver()
+        .unwrap()
+        .with_wait_lifetime(WaitLifetime::Callback);
+        let body = Program::new(vec![I::End])
+            .unwrap()
+            .without_snapshot_overlay()
+            .with_wait_lifetime(WaitLifetime::Callback);
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(vec![driver, body], None)
+            .unwrap()
+            .with_plan_programs(vec![PlanProgram {
+                program: 0,
+                stage: 0,
+            }])
+            .unwrap();
+        let limits = Limits::for_plan(&plan, 8, 16);
+        let mut runtime = Runtime::new(plan, limits).unwrap();
+        runtime.render(&mut [[0.; 2]; 1]).unwrap();
+        runtime
+    }
+    #[test]
+    fn command_query_proves_actual_parked_timer_without_overlay_or_queue_mutation() {
+        let mut rt = parked_runtime();
+        let plan = rt.active_plan();
+        assert!(!rt.plans.get(plan.0).unwrap().prepared.programs[1].snapshot_overlay_safe);
+        let before = (
+            rt.now(),
+            rt.pending_commands(),
+            rt.voice_count(),
+            rt.note_count(),
+        );
+        let row = rt.onset_command_progress(plan, usize::MAX).unwrap();
+        assert_eq!(row.total, 1);
+        assert_eq!(row.observed, 1);
+        assert_eq!(row.exact_future_parked_listener_resumes, 1);
+        assert_eq!(row.blocking_observed, 0);
+        assert!(row.non_background_complete());
+        assert_eq!(row.scan_limit, 4096);
+        assert_eq!(
+            before,
+            (
+                rt.now(),
+                rt.pending_commands(),
+                rt.voice_count(),
+                rt.note_count()
+            )
+        );
+        let short = rt.onset_command_progress(plan, 1).unwrap();
+        assert!(short.truncated && !short.non_background_complete());
+        assert_eq!(short.scan_steps, 1);
+        rt.reserved_commands = 1;
+        let reserved = rt.onset_command_progress(plan, 4096).unwrap();
+        assert_eq!(reserved.reserved, 1);
+        assert!(!reserved.non_background_complete());
+        rt.reserved_commands = 0;
+        let performance = rt.performance(0).unwrap();
+        rt.schedule_event(
+            rt.now() + 50,
+            crate::Event::Controller(performance, 12, 123),
+        )
+        .unwrap();
+        let scheduled = rt.onset_command_progress(plan, 4096).unwrap();
+        assert_eq!(scheduled.total, 2);
+        assert_eq!(scheduled.blocking_observed, 1);
+        assert!(!scheduled.non_background_complete());
+    }
+    #[test]
+    fn command_query_blocks_active_async_foreign_due_and_unvalidated_continuations() {
+        let mut rt = parked_runtime();
+        let plan = rt.active_plan();
+        let other = parked_runtime().active_plan();
+        assert_eq!(
+            rt.onset_command_progress(other, 4096),
+            Err(Error::StaleHandle)
+        );
+        let crate::schedule::Action::Resume(id) = rt.commands[0].action else {
+            panic!()
+        };
+        let original = *rt.behaviors.get(id.0).unwrap();
+        for variant in 0..9 {
+            let mut changed = original;
+            match variant {
+                0 => changed.waiting = false,
+                1 => changed.yielded_at = Some(rt.now()),
+                2 => changed.async_wait = Some(1),
+                3 => changed.async_result = Some((1, 1)),
+                4 => changed.owner = crate::BehaviorOwner::Plan(other),
+                5 => changed.outcome = Some(crate::Outcome::Finished),
+                6 => changed.program = 1,
+                7 => changed.pc = 2, // last instruction is StartProgram, not the validated wait.
+                8 => changed.context = crate::behavior::PlanContext::Bare,
+                _ => unreachable!(),
+            }
+            *rt.behaviors.get_mut(id.0).unwrap() = changed;
+            let row = rt.onset_command_progress(plan, 4096).unwrap();
+            assert_eq!(row.blocking_observed, 1, "variant {variant}");
+            assert_eq!(row.exact_future_parked_listener_resumes, 0);
+            assert!(!row.non_background_complete());
+        }
+        *rt.behaviors.get_mut(id.0).unwrap() = original;
+        let action = rt.commands[0].action;
+        let mut stale = id;
+        stale.0.generation = stale.0.generation.checked_add(1).unwrap();
+        rt.commands[0].action = crate::schedule::Action::Resume(stale);
+        assert_eq!(
+            rt.onset_command_progress(plan, 4096)
+                .unwrap()
+                .blocking_observed,
+            1
+        );
+        rt.commands[0].action = action;
+        let before = rt.now;
+        rt.now = rt.commands[0].at;
+        assert_eq!(
+            rt.onset_command_progress(plan, 4096)
+                .unwrap()
+                .blocking_observed,
+            1
+        );
+        rt.now = before;
+        assert!(
+            rt.onset_command_progress(plan, 4096)
+                .unwrap()
+                .non_background_complete()
+        );
+    }
+    #[test]
+    fn command_query_checks_real_body_instance_slot_and_plan_stage_metadata() {
+        let mut rt = parked_runtime();
+        let plan = rt.active_plan();
+        {
+            let prepared = rt.plans.get_mut(plan.0).unwrap().prepared.as_mut();
+            prepared.programs[1].source_slot = 1;
+        }
+        assert_eq!(
+            rt.onset_command_progress(plan, 4096)
+                .unwrap()
+                .blocking_observed,
+            1
+        );
+        {
+            let prepared = rt.plans.get_mut(plan.0).unwrap().prepared.as_mut();
+            prepared.programs[1].source_slot = 0;
+            prepared.programs[1].script_instance = Some(crate::ScriptInstanceId(1));
+        }
+        assert_eq!(
+            rt.onset_command_progress(plan, 4096)
+                .unwrap()
+                .blocking_observed,
+            1
+        );
+        {
+            let prepared = rt.plans.get_mut(plan.0).unwrap().prepared.as_mut();
+            prepared.programs[1].script_instance = None;
+            prepared.plan_programs[0].stage = usize::MAX;
+        }
+        assert_eq!(
+            rt.onset_command_progress(plan, 4096)
+                .unwrap()
+                .blocking_observed,
+            1
+        );
     }
 }

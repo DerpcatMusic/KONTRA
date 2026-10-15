@@ -215,6 +215,7 @@ impl Runtime {
         let _ = self.poll_sample_update();
         self.start_plan_programs();
         self.service_residency()?;
+        self.drain_behavior();
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();

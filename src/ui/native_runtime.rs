@@ -101,6 +101,10 @@ impl Images {
     pub fn bytes(&self) -> usize {
         self.cache.lock_unpoisoned().bytes
     }
+    fn complete(&self) -> bool {
+        let cache = self.cache.lock_unpoisoned();
+        cache.pending.is_empty() && cache.loaded.values().all(Option::is_some)
+    }
     #[cfg(feature = "shots")]
     pub fn scan(&self) -> super::pictures::Scan {
         self.cache.lock_unpoisoned().scan
@@ -121,6 +125,11 @@ impl Images {
     }
 }
 impl Package {
+    /// Sources/fonts finish before publication. Requested images must also have
+    /// settled successfully before another control generation can reuse them.
+    pub(super) fn complete(&self) -> bool {
+        self.images.complete()
+    }
     #[cfg(test)]
     pub(super) fn audit_bytes(&self) -> usize {
         self.members.values().map(|b| b.len()).sum::<usize>()
@@ -1242,6 +1251,21 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_package_reuse_requires_successful_image_completion() {
+        let images = Images::presentation_fixture();
+        assert!(images.complete());
+        images.cache.lock_unpoisoned().pending.insert("photo.png".into());
+        assert!(!images.complete(), "a queued image is not reusable");
+        {
+            let mut cache = images.cache.lock_unpoisoned();
+            cache.pending.clear();
+            cache.loaded.insert("photo.png".into(), None);
+        }
+        assert!(!images.complete(), "a failed image is not reusable");
+        images.presentation_complete("photo.png", Arc::new(Image::rgba(1, 1, vec![0, 0, 0, 255]).unwrap()));
+        assert!(images.complete());
+    }
     #[test]
     fn editor_memory_drops_unresolved_child_factories() {
         let lua = Lua::new();

@@ -1,7 +1,7 @@
 //! Structural checks shared by every consumer, so lowering can index freely.
 use crate::{
     Chain, Depth, Envelope, Gain, Instrument, Looping, ModulationSource, Output, Pan, Pitch,
-    Processor, Scope, Take, Target, Time,
+    Processor, Scope, SourceZoneHome, Take, Target, Time,
 };
 use std::fmt;
 
@@ -52,6 +52,7 @@ pub enum ValidationError {
         owner: String,
         reason: &'static str,
     },
+    ZoneRouting { owner: String, reason: &'static str },
     SampleTarget {
         owner: String,
         reason: &'static str,
@@ -78,6 +79,7 @@ impl fmt::Display for ValidationError {
                 write!(f, "zone {zone}: take {take} of a {takes}-take sequence")
             }
             Self::Switching { owner, reason } => write!(f, "{owner}: {reason}"),
+            Self::ZoneRouting { owner, reason } => write!(f, "{owner}: {reason}"),
             Self::SampleTarget { owner, reason } => write!(f, "{owner}: {reason}"),
         }
     }
@@ -497,6 +499,58 @@ impl Instrument {
             check.owner = format!("source zone {source}");
             if let Some(zone) = zone {
                 check.exists(Reference::Zone(zone.0))?;
+            }
+        }
+        let invalid_routing = |owner: String, reason| ValidationError::ZoneRouting { owner, reason };
+        let catalog = &self.source_indices.zone_catalog;
+        if !catalog.is_empty() && catalog.len() != self.source_indices.zones.len() {
+            return Err(invalid_routing("source zone catalog".into(), "catalog length differs from physical zone order"));
+        }
+        let mut identities = std::collections::HashMap::new();
+        for (ordinal, row) in catalog.iter().enumerate() {
+            check.owner = format!("source zone catalog {ordinal}");
+            check.range(row.home.low_key, row.home.high_key, "keys")?;
+            check.within(f64::from(row.home.high_key), 0.0..=127.0, "high key")?;
+            check.within(f64::from(row.home.group), 0.0..=f64::from(i32::MAX), "physical group")?;
+            if let Some(id) = row.id {
+                if identities.insert(id, ordinal).is_some() {
+                    return Err(invalid_routing(check.owner.clone(), "duplicate native source identity"));
+                }
+            }
+        }
+        if !self.zone_routing.is_empty() && !matches!(self.zone_routing_mode, Some(2 | 3)) {
+            return Err(invalid_routing("zone routing".into(), "ordinary zones require mode 2 or 3"));
+        }
+        let mut routed = std::collections::HashSet::new();
+        let mut templates = std::collections::HashSet::new();
+        for route in &self.zone_routing {
+            check.owner = format!("zone routing {}", route.source_zone);
+            let ordinal = *identities.get(&route.source_zone).ok_or_else(|| invalid_routing(check.owner.clone(), "unknown native source identity"))?;
+            let home = SourceZoneHome { group: route.group, low_key: route.low_key, high_key: route.high_key };
+            if !routed.insert(route.source_zone) || home != catalog[ordinal].home {
+                return Err(invalid_routing(check.owner.clone(), "duplicate route or initial home differs from source catalog"));
+            }
+            let mut groups = std::collections::HashSet::new();
+            let mut initial = false;
+            for variant in &route.variants {
+                if variant.group > i32::MAX as u32 || !groups.insert(variant.group) {
+                    return Err(invalid_routing(check.owner.clone(), "invalid or duplicate destination group"));
+                }
+                if variant.group == route.group {
+                    initial = true;
+                    if variant.zone != self.source_indices.zones[ordinal] {
+                        return Err(invalid_routing(check.owner.clone(), "initial recipe differs from admitted physical primary"));
+                    }
+                }
+                if let Some(zone) = variant.zone {
+                    check.exists(Reference::Zone(zone.0))?;
+                    if !templates.insert(zone) {
+                        return Err(invalid_routing(check.owner.clone(), "recipe belongs to several destinations"));
+                    }
+                }
+            }
+            if !initial {
+                return Err(invalid_routing(check.owner.clone(), "missing original destination"));
             }
         }
         let mut sample_nodes = std::collections::HashSet::new();

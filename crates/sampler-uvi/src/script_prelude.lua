@@ -139,6 +139,15 @@ function methods.setValue(w, v, arg, callChanged)
     if arg ~= false then notify(w) end
   end
 end
+-- Display binding is retained independently of any manual display sample.
+-- Playback position/native oscillator display are still diagnosed by export.
+local function wave_bind(w, oscillator)
+  local d = data(w)
+  if d.kind ~= "WaveView" then error("bind requires a WaveView") end
+  d.waveview_binding = oscillator
+  d.waveview_binding_set = true
+  ui.revision = ui.revision + 1
+end
 function methods.getValue(w, i)
   if not value_kinds[w.kind] then error("This UVI widget has no value control") end
   if w.kind == "Table" then
@@ -192,6 +201,7 @@ local widget
 widget_mt.__index = function(w, k)
   local d = data(w)
   if d.kind == "Button" and (k == "setValue" or k == "getValue" or k == "setRange") then return nil end
+  if k == "bind" and d.kind == "WaveView" then return wave_bind end
   if methods[k] then return methods[k] end
   if k == "size" then return {d.width, d.height} end
   if k == "position" or k == "pos" then return {d.x, d.y} end
@@ -225,6 +235,9 @@ widget_mt.__newindex = function(w, k, v)
   if k == "value" or k == "selected" then
     methods.setValue(w, v)
     return
+  elseif k == "sample" and d.kind == "WaveView" then
+    d.sample,d.sample_set = v,true
+    d.sample_directory = native.sampleDirectory()
   elseif k == "bounds" then
     d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
     d.width_set,d.height_set = true,true

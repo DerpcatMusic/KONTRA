@@ -24,6 +24,9 @@ use std::{
 type Frame = [f32; 2];
 #[path = "head_prepare.rs"]
 mod head_prepare;
+#[path = "stream_initial_hints.rs"]
+mod initial_hints;
+use initial_hints::InitialStartHints;
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
@@ -593,7 +596,7 @@ fn bounded_attack_anchors_with_hints(
     head: usize,
     policy: &StreamPolicy,
     pinned: &HashSet<AssetId>,
-    hints: Option<&ConstantStartHints>,
+    hints: Option<&InitialStartHints<'_>>,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<AttackAnchors> {
     let mut anchor_policy = *policy;
@@ -604,7 +607,7 @@ fn bounded_attack_anchors_with_hints(
         if canceled() { return Err(canceled_head()); }
         let mut ranges = start_ranges_with_offsets(instrument,assets,rate,head,&anchor_policy,false);
         if let Some(hints) = hints {
-            let hints = hints.ranges(instrument, assets, rate, head, &anchor_policy, canceled)?;
+            let hints = hints.ranges(head, canceled)?;
             for (base, hints) in ranges.iter_mut().zip(hints) {
                 base.extend(hints);
                 merge_start_ranges(base);
@@ -642,7 +645,7 @@ fn bounded_attack_anchors_with_hints(
         }
     }
     if canceled() { return Err(canceled_head()); }
-    let hint_ranges = hints.map(|h| h.ranges(instrument, assets, rate, low, &anchor_policy, canceled)).transpose()?;
+    let hint_ranges = hints.map(|h| h.ranges(low, canceled)).transpose()?;
     Ok(AttackAnchors{output_frames:low,ranges,hint_ranges})
 }
 
@@ -1232,12 +1235,15 @@ impl Streamer {
     pub fn head_fallback(&self)->Option<HeadBudgetExceeded> {self.head_fallback}
     pub fn selected_anchor_head_frames(&self)->Option<usize> {self.selected_anchor_head_frames}
     pub fn selected_hint_head_frames(&self) -> Option<usize> { self.selected_hint_head_frames }
-    /// Requested proved Constant windows at the original output horizon.
+    /// Physical coverage of startup-predicted Constant/initialized-CC windows
+    /// at the original horizon. This is not current engine-state readiness:
+    /// later controls, callbacks and source/plan revisions use strict demand.
     pub fn hint_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
         Some(self.ranges_readiness_matching(assets, |_| true, self.hint_ranges.as_deref()?))
     }
     /// Exact windows selected after quota admission, possibly shorter than the
-    /// requested hints. This never certifies omitted loop transitions or dynamic offsets.
+    /// requested startup predictions. This never certifies new controller
+    /// states, source revisions, omitted loop transitions or script offsets.
     pub fn selected_hint_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
         Some(self.ranges_readiness_matching(assets, |_| true, self.selected_hint_ranges.as_deref()?))
     }
@@ -1637,7 +1643,7 @@ impl Streamer {
                 selected_requested_hints = false;
                 selected_hint_head_frames = None;
                 let mut accepted = None;
-                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "constant_onsets"),
+                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
                     (onset_table.as_ref(), false, "base_onsets")] {
                     let Some(candidate) = candidate else { continue; };
                     match prepare(Some(candidate), false, phase) {
@@ -1654,7 +1660,7 @@ impl Streamer {
                 if accepted.is_none() {
                     let mut last_capacity = None;
                     let mut has_anchors = false;
-                    for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "constant_anchors"),
+                    for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "initial_state_anchors"),
                         (anchors, false, "base_anchors")] {
                         let Some(factory) = factory else { continue; };
                         has_anchors = true;
@@ -2384,14 +2390,24 @@ impl Streamed {
             let anchor_policy=StreamPolicy{head_budget:room,..policy};
             bounded_attack_anchors(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,canceled)
         };
-        let hint_recipe = policy.allow_cold_fallback.then(|| ConstantStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &policy, canceled))
+        let hint_recipe = policy.allow_cold_fallback.then(|| InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &policy, canceled))
             .transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
+        if let Some(recipe) = &hint_recipe {
+            if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+                eprintln!("stream_initial_start_hints {}", serde_json::json!({
+                    "controller_window_zones":recipe.controller_zones(),
+                    "unsupported_start_zones":recipe.unsupported,
+                    "controller_loop_zones_omitted":recipe.controller_loops,
+                    "scope":"one-shot bound initial-state prediction; future input uses strict demand"
+                }));
+            }
+        }
         let hinted_anchors = |room| {
             let anchor_policy=StreamPolicy{head_budget:room,..policy};
             bounded_attack_anchors_with_hints(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,hint_recipe.as_ref(),canceled)
         };
         let hints = hint_recipe.as_ref().filter(|h| h.eligible != 0).map(|h| {
-            h.ranges(&loaded.instrument,&kept,rate,head,&policy,canceled).map(|ranges| HintFallback {
+            h.ranges(head,canceled).map(|ranges| HintFallback {
                 head_frames:head,ranges,anchors:Some(&hinted_anchors),
             })
         }).transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;

@@ -1,4 +1,5 @@
 //! Display envelopes computed off audio from the already admitted sample source.
+pub(crate) mod uvi_manual;
 use crate::support::MutexExt;
 use sampler_core::{Pcm, PlanId};
 use std::{
@@ -11,11 +12,71 @@ use std::{
 };
 
 type Peaks = Arc<[(f32, f32)]>;
-type Request = (u32, usize, Option<(u64, u64)>);
+type Request = (usize, usize, Option<(u64, u64)>);
 #[derive(Clone)]
 pub(crate) struct Source {
     pub pcm: Pcm,
     pub stream: Option<Arc<dyn sampler_kontakt::AssetSource>>,
+}
+/// Prepared-region addresses and authored native IDs have separate authority.
+/// Both resolve to one worker/cache entry, so Mapping needs no invented native ID.
+#[derive(Default)]
+pub(crate) struct Sources {
+    regions: HashMap<usize, Source>,
+    native: HashMap<u32, Option<usize>>,
+}
+impl Sources {
+    pub fn insert_region(&mut self, region: usize, native: Option<u32>, source: Source) {
+        self.regions.insert(region, source);
+        if let Some(id) = native {
+            self.native
+                .entry(id)
+                .and_modify(|prior| {
+                    if *prior != Some(region) {
+                        *prior = None;
+                    }
+                })
+                .or_insert(Some(region));
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+    pub fn values(&self) -> impl Iterator<Item = &Source> {
+        self.regions.values()
+    }
+    #[cfg(feature = "shots")]
+    pub fn asset_regions(&self, asset: sampler_core::AssetId, limit: usize) -> (Vec<usize>, usize) {
+        let mut regions = Vec::new();
+        let mut count = 0;
+        for (&region, source) in &self.regions {
+            if source.pcm.asset_id() == asset {
+                count += 1;
+                if regions.len() < limit { regions.push(region); }
+            }
+        }
+        regions.sort_unstable();
+        (regions, count)
+    }
+    #[cfg(test)]
+    pub fn insert(&mut self, id: u32, source: Source) {
+        self.insert_region(id as usize, Some(id), source);
+    }
+    #[cfg(test)]
+    pub fn clear(&mut self) {
+        self.regions.clear();
+        self.native.clear();
+    }
+}
+#[cfg(test)]
+impl FromIterator<(u32, Source)> for Sources {
+    fn from_iter<T: IntoIterator<Item = (u32, Source)>>(iter: T) -> Self {
+        let mut sources = Self::default();
+        for (id, source) in iter {
+            sources.insert(id, source);
+        }
+        sources
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Envelope {
@@ -25,14 +86,37 @@ pub(crate) struct Envelope {
     pub sample_rate: u32,
     pub range: (u64, u64),
 }
-/// Waveform request IDs: physical source IDs where present, else IR ordinals.
-pub(crate) fn source_ids(inst: &sampler_ir::Instrument) -> Vec<u32> {
-    let mut ids: Vec<u32> = (1..=inst.zones.len() as u32).collect();
+/// Native identities never fall back to ordinals, including a valid native ID0.
+/// Non-Kontakt players retain their independently authored ordinal namespace.
+pub(crate) fn source_ids(inst: &sampler_ir::Instrument) -> Vec<Option<u32>> {
+    let catalog = &inst.source_indices.zone_catalog;
+    if !catalog.is_empty() || matches!(&inst.source, sampler_ir::SourceFormat::Kontakt { .. }) {
+        let mut ids = vec![None; inst.zones.len()];
+        if catalog.len() != inst.source_indices.zones.len() {
+            return ids;
+        }
+        let mut assigned = vec![false; inst.zones.len()];
+        for (source, zone) in catalog.iter().zip(&inst.source_indices.zones) {
+            if let Some(zone) = zone
+                && let Some(id) = ids.get_mut(zone.0)
+            {
+                // An ambiguous primary cannot borrow whichever ID was last.
+                if assigned[zone.0] {
+                    *id = None;
+                } else {
+                    *id = source.id;
+                    assigned[zone.0] = true;
+                }
+            }
+        }
+        return ids;
+    }
+    let mut ids: Vec<_> = (1..=inst.zones.len() as u32).map(Some).collect();
     for (physical, zone) in inst.source_indices.zones.iter().enumerate() {
         if let Some(zone) = zone
             && let Some(id) = ids.get_mut(zone.0)
         {
-            *id = physical as u32 + 1;
+            *id = Some(physical as u32 + 1);
         }
     }
     ids
@@ -49,21 +133,26 @@ pub(crate) struct Provider {
     requests: SyncSender<Request>,
     cache: Arc<Mutex<Cache>>,
     stop: Arc<AtomicBool>,
+    sources: Arc<HashMap<usize, Source>>,
+    native: HashMap<u32, Option<usize>>,
 }
 impl Provider {
     pub fn start(
         plan: PlanId,
-        sources: HashMap<u32, Source>,
+        sources: Sources,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
         let (requests, incoming) = sync_channel::<Request>(8);
         let cache = Arc::new(Mutex::new(Cache::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let native = sources.native;
+        let sources = Arc::new(sources.regions);
         std::thread::Builder::new()
             .name("sampler-waveform".into())
             .spawn({
                 let cache = cache.clone();
                 let stop = stop.clone();
+                let sources = sources.clone();
                 move || {
                     while let Ok(key) = incoming.recv() {
                         if stop.load(Ordering::Acquire) {
@@ -95,6 +184,8 @@ impl Provider {
             requests,
             cache,
             stop,
+            sources,
+            native,
         })
     }
     pub fn get(&self, zone: u32, bins: usize) -> Option<Envelope> {
@@ -106,10 +197,18 @@ impl Provider {
         bins: usize,
         range: Option<(u64, u64)>,
     ) -> Option<Envelope> {
-        if zone == 0 || range.is_some_and(|(a, b)| a >= b) {
+        self.get_region_window(self.native.get(&zone).copied().flatten()?, bins, range)
+    }
+    pub fn get_region_window(
+        &self,
+        region: usize,
+        bins: usize,
+        range: Option<(u64, u64)>,
+    ) -> Option<Envelope> {
+        if !self.sources.contains_key(&region) || range.is_some_and(|(a, b)| a >= b) {
             return None;
         }
-        let key = (zone, bins.clamp(1, 4096), range);
+        let key = (region, bins.clamp(1, 4096), range);
         let mut cache = self.cache.lock_unpoisoned();
         if let Some(value) = cache.values.get(&key).cloned() {
             cache.order.retain(|old| *old != key);
@@ -257,13 +356,117 @@ mod tests {
             inst.zones
                 .push(sampler_ir::Zone::new(sampler_ir::AssetRef(0)));
         }
-        assert_eq!(source_ids(&inst), vec![1, 2]);
+        assert_eq!(source_ids(&inst), vec![Some(1), Some(2)]);
         inst.source_indices.zones = vec![
             Some(sampler_ir::ZoneRef(1)),
             None,
             Some(sampler_ir::ZoneRef(0)),
         ];
-        assert_eq!(source_ids(&inst), vec![3, 1]);
+        assert_eq!(source_ids(&inst), vec![Some(3), Some(1)]);
+    }
+    #[test]
+    fn native_source_ids_preserve_zero_holes_and_unavailable_recipes() {
+        let mut inst = sampler_ir::Instrument {
+            source: sampler_ir::SourceFormat::Kontakt { version: 0x9c },
+            ..Default::default()
+        };
+        inst.zones
+            .resize_with(5, || sampler_ir::Zone::new(sampler_ir::AssetRef(0)));
+        assert_eq!(
+            source_ids(&inst),
+            vec![None; 5],
+            "unknown native IDs are not ordinal guesses"
+        );
+        inst.source_indices.zones = vec![
+            Some(sampler_ir::ZoneRef(2)),
+            None,
+            Some(sampler_ir::ZoneRef(0)),
+        ];
+        inst.source_indices.zone_catalog = [0, 7, 2018]
+            .map(|id| sampler_ir::SourceZone {
+                id: Some(id),
+                home: sampler_ir::SourceZoneHome {
+                    group: 0,
+                    low_key: 0,
+                    high_key: 127,
+                },
+            })
+            .into();
+        assert_eq!(
+            source_ids(&inst),
+            vec![Some(2018), None, Some(0), None, None]
+        );
+        inst.source_indices.zones[1] = Some(sampler_ir::ZoneRef(2));
+        assert_eq!(
+            source_ids(&inst)[2],
+            None,
+            "an ambiguous primary cannot borrow a different identity"
+        );
+        inst.source_indices.zone_catalog.pop();
+        assert_eq!(
+            source_ids(&inst),
+            vec![None; 5],
+            "partial metadata is not authoritative"
+        );
+    }
+    #[test]
+    fn native_zero_id_reaches_the_real_waveform_worker() {
+        let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap();
+        let limits = sampler_core::Limits::for_plan(&prepared, 1, 1);
+        let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+        let mut sources = Sources::default();
+        sources.insert_region(
+            9,
+            Some(0),
+            Source {
+                pcm: Pcm::new(8, vec![[-0.75, 0.5]; 8].into()).unwrap(),
+                stream: None,
+            },
+        );
+        sources.insert_region(
+            0,
+            None,
+            Source {
+                pcm: Pcm::new(8, vec![[0.25, 0.75]; 8].into()).unwrap(),
+                stream: None,
+            },
+        );
+        let provider = Provider::start(runtime.active_plan(), sources, || {}).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let envelope = loop {
+            if let Some(envelope) = provider.get(0, 4) {
+                break envelope;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native ID0 was not serviced"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        assert_eq!(envelope.frames, 8);
+        assert!(envelope.peaks.iter().all(|&pair| pair == (-0.75, 0.5)));
+        assert!(
+            Arc::ptr_eq(
+                &envelope.peaks,
+                &provider.get_region_window(9, 4, None).unwrap().peaks
+            ),
+            "native and Mapping bindings share the exact cached envelope"
+        );
+        let mapped = loop {
+            if let Some(envelope) = provider.get_region_window(0, 4, None) {
+                break envelope;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        assert!(
+            mapped.peaks.iter().all(|&pair| pair == (0.25, 0.75)),
+            "Mapping region0 cannot alias nativeID0"
+        );
+        assert!(
+            provider.get(7, 4).is_none(),
+            "an unavailable native ID is not a Mapping ordinal"
+        );
     }
     #[test]
     fn resident_and_streamed_envelopes_share_exact_bins_without_head_fallback() {
