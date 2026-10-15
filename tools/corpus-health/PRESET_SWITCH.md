@@ -165,8 +165,9 @@ and signal hash. An unfinished activation or a silent fresh note remains visible
 Controllers stay at loader defaults, and the chosen key/velocity can be unmapped
 or silent by design. KSP activation uses the existing 96,000-frame/five-second
 bound; musical windows use their own five-second threshold between blocks.
-Native comparison, all owned libraries and any future same-base runtime reuse
-remain unverified. No overall universal compatibility verdict is emitted.
+Native comparison and all owned libraries remain unverified. Full `load` actions
+still replace the owner; the explicit `snapshot` subset below separately tests
+retained-owner application. No overall universal compatibility verdict is emitted.
 
 `residency_at_note` records the generation-checked group eligibility and pending
 purge/reload work at the actual note boundary, including retained queue
@@ -236,3 +237,15 @@ up to 16 unfinished code-owned stages on a bounded or
 failed process. Matching completion records stay assigned to the phase where
 they began, even if another thread emits them later. Legacy end-only helpers
 remain supported. Truncated/unfinished coverage keeps work counts unknown.
+
+### Explicit same-owner snapshot action
+
+After a `load`, `{"op":"snapshot","path":"/absolute/Preset.nksn","release_held":true}`
+exercises the product's prepared saved-state mapper and queued native transaction
+without `Core::install`. It reports refusal instead of silently reloading.
+`release_held` releases only the probe's held host note and renders 4096 frames;
+callbacks, longer releases or other native events can still refuse admission.
+The current subset requires an unchanged complete setup/resource authority,
+no incoming native group/effect payload and no initialization. Persisted menus
+remain canonical-loader cases until their live position/value roster is fenced.
+See `docs/architecture-v2/SNAPSHOT_REUSE.md` for exact scope and bounds.

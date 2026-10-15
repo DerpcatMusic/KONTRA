@@ -313,6 +313,12 @@ impl Resources {
         paths
     }
 
+    /// Whether the complete bounded lookup namespace was observed. A partial
+    /// directory walk cannot authorize reuse of an already compiled script.
+    pub fn namespace_complete(&self) -> bool {
+        self.discovery_failure.is_none()
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
