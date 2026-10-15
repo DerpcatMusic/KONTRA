@@ -18,12 +18,14 @@
       if (url.origin !== 'https://github.com' || !url.pathname.startsWith('/DerpcatMusic/KONTRA/releases/')) throw new Error('Unexpected release URL');
       if (typeof release.tag_name !== 'string' || !release.tag_name) throw new Error('Missing release version');
       const label = document.querySelector('#release-version');
-      label.textContent = release.tag_name;
+      label.textContent = release.tag_name.match(/^v?\d+\.\d+\.\d+/)?.[0] || release.tag_name;
+      label.title = release.tag_name;
       label.href = url.href;
       const date = new Date(release.published_at);
       if (!Number.isNaN(date.getTime())) document.querySelector('#release-date').textContent = date.toLocaleDateString(undefined, {year:'numeric',month:'short',day:'numeric'});
     })
     .catch(() => {
-      document.querySelector('#release-date').textContent = 'See releases for the current version';
+      // Keep the working release-page link when the optional lookup is unavailable.
+      document.querySelector('#release-date').textContent = '';
     });
 })();
