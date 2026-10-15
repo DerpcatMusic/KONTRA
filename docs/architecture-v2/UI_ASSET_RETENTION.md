@@ -70,16 +70,14 @@ Resource lookups do not count namespace discovery's internal file reads.
 They do not certify original Kontakt/Falcon pixels, arbitrary callback state,
 NativeUI package transfer or sample-payload reuse.
 
-`picture_worker/retention_tests.rs` also characterizes an unchanged wallpaper
+`picture_worker/retention_tests.rs` also holds an unchanged wallpaper
 request while its real decode completion is held in a test-instance channel.
 Changing only the presentation, or appending an unused descriptor under the same
-filesystem authority, currently advances the worker epoch and reissues that
-pending key. The test records the existing behavior: two resource reads/decodes,
-one accepted prepared completion, rejection of the old epoch, then no additional
-work after settlement. This non-strip crop has no Source strip-cache shortcut.
-Its final production painter pixels must equal a fresh full-canvas source. This
-is an explicit possible source of repeated work during in-flight publication,
-not a fix or a claim that pending work already survives these invalidations.
+filesystem authority, originally advanced the worker epoch and reissued that
+pending key: two resource reads/decodes and one accepted prepared completion.
+The phase-two correction below supersedes that characterization. This non-strip
+crop has no Source strip-cache shortcut. Its final production painter pixels
+must equal a fresh full-canvas source.
 
 ## Settled-publication correction and validation
 
@@ -122,6 +120,53 @@ and unequal-input-oracle receipts are retained alongside GREEN evidence.
 
 Private logs, source/index hashes, test-artifact hashes and compact numeric
 receipt: `PluginArtifacts/kontra-diagnostic-fixes/ui-asset-retention-20261015`.
-All final commands observed stable source/index hashes. No real-library, native
+The phase-one collector covered tracked workspace sources and the explicitly
+owned new files. It omitted unrelated, untracked compiled snapshot-admission
+modules, although their six tests executed. The phase-two collector below binds
+those modules prospectively; it does not supply missing historical hashes.
+All phase-one final commands observed stable hashes within that recorded scope.
+No real-library, native
 host, plugin build, audio playback or performance benchmark was run for this
 slice.
+
+## Pending requests and duplicate dispatch
+
+Before the phase-two correction, a held real wallpaper completion reproduced
+**2 reads / 2 decodes** for both an unrelated asset-roster append and a
+presentation change. The new wanted keys are now computed before deciding
+whether a metadata change needs cancellation. A nonempty pending batch retains
+its epoch only when every exact pending key remains required. Identity includes
+asset index, descriptor, frame, target size, crop and wallpaper/control role,
+within the same worker/resource owner. Both cases now perform **1 read / 1
+decode / 1 accepted completion**, then no additional work after settlement.
+
+If any pending key becomes obsolete, the whole batch still advances its epoch.
+The tests change index, path, metadata, frame, target, crop and role separately;
+each rejects the old result and accepts only the new geometry. The existing
+same-key stale-result test retains its assertions with a genuinely obsolete
+second request: neither old completion may clear the current pending key or
+publish pixels. Empty-pending invalidation and wanted-only page/resize behavior
+remain unchanged. This is a whole-batch condition, not selective cancellation.
+
+A separate authored dispatch regression used three image uses with asset
+indices **0, 1, 0**, where both asset descriptors were equal. The previous sort
+omitted the asset-index tie breaker, so equal exact keys could remain separated:
+**3 dispatched / 2 unique / 2 pending**. The tie breaker makes exact keys
+adjacent before deduplication, yielding **2 / 2 / 2** without merging distinct
+indices or changing key equality.
+
+The same root test artifact
+`8d3f88231c2bef69720003e8059d423fa623ecd82110e1ffe48fdf49ff482c88`
+passed the preceding seven disjoint filters with **92 passed / 0 failed / 3
+ignored**; the worker filter now contains 16 passing tests. Full A/B/A models,
+effective committed values, resolved geometry and exact Bitmap/Vector pixels
+remain equal to fresh references. These are avoided resource operations and
+duplicate dispatches, not a measured CPU or native loading-speed improvement.
+
+Phase-two provenance uses tracked **and untracked nonignored** regular workspace
+Rust/manifests plus owned paths, excluding symlinks: **1,170 files**, including
+both new snapshot-admission modules. All GREEN commands had identical source,
+HEAD and index maps. During the first RED command only HEAD advanced for a
+separately tested commit; its recorded source-byte maps and index were equal.
+Both original RED receipts are preserved. The compact private receipt is
+`ui-asset-retention-20261015/phase2-evidence.json` in the artifact directory above.

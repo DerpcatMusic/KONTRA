@@ -294,8 +294,9 @@ fn empty_owner_metadata_wanted_and_real_completion_transitions_publish_once() {
 }
 
 #[test]
-fn held_real_completion_characterizes_same_key_requeue_without_admitting_old_epoch() {
+fn held_real_completion_survives_unrelated_roster_or_presentation_change_once() {
     use crate::sound::resource_revision::ResourceRevision;
+    let mut observed_work = Vec::new();
     for change_presentation in [false, true] {
         let (_directory, path, mut face) = fixture();
         let resources = sampler_kontakt::Resources::of(&path);
@@ -311,6 +312,8 @@ fn held_real_completion_characterizes_same_key_requeue_without_admitting_old_epo
         let first = decoded.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(first.picture.is_some());
         assert_eq!((first.scan.lookups, first.scan.decodes), (1, 1));
+        let original_epoch = first.epoch;
+        let encoded_bytes = first.scan.encoded_bytes;
         assert_eq!((worker.pending(), worker.bytes()), (1, 0));
         let presentation = if change_presentation {
             ir::Presentation::Vector
@@ -323,34 +326,35 @@ fn held_real_completion_characterizes_same_key_requeue_without_admitting_old_epo
             ir::Presentation::Bitmap
         };
         worker.prepare(&face, ir::PageRef(0), presentation, 1., &values);
-        let current = decoded.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert_eq!(
-            first.key, current.key,
-            "wallpaper key/bytes/role did not change"
-        );
-        assert_ne!(first.epoch, current.epoch);
+        // On the old behavior, retain the real redundant completion so RED
+        // reports actual two-read/two-decode work, not merely an epoch number.
+        let current = if worker.epoch.load(Ordering::Acquire) != original_epoch {
+            let redundant = decoded.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(
+                first.key, redundant.key,
+                "wallpaper key/bytes/role did not change"
+            );
+            redundant
+        } else {
+            first
+        };
         assert_eq!(worker.worker_identity(), worker_id);
         assert_eq!(
             ResourceRevision::capture(&path, 0, &resources),
             Some(authority)
         );
-        assert_eq!(
-            (current.scan.lookups, current.scan.decodes),
-            (2, 2),
-            "current full-list/presentation invalidation reissues this in-flight non-strip crop, including its resource read/decode"
-        );
-        assert_eq!(current.scan.encoded_bytes, first.scan.encoded_bytes * 2);
-
-        relay.send(first).unwrap();
-        assert!(
-            worker
-                .prepare(&face, ir::PageRef(0), presentation, 1., &values)
-                .is_empty()
-        );
+        observed_work.push((current.scan.lookups, current.scan.decodes));
+        if observed_work.last() != Some(&(1, 1)) {
+            // Observe both real RED cases before the aggregate assertion. No
+            // successful case skips its publication/pixel assertions below.
+            continue;
+        }
+        assert_eq!(current.scan.encoded_bytes, encoded_bytes);
+        assert_eq!(current.epoch, original_epoch);
         assert_eq!(
             (worker.pending(), worker.bytes()),
             (1, 0),
-            "old pixels cannot publish or clear the current pending key"
+            "the original required request remains pending until its real completion is published"
         );
         let current_picture = current.picture.as_ref().unwrap().clone();
         relay.send(current).unwrap();
@@ -367,8 +371,8 @@ fn held_real_completion_characterizes_same_key_requeue_without_admitting_old_epo
                 worker.scan.decodes,
                 worker.scan.preparation_completed
             ),
-            (2, 2, 1),
-            "Source work includes the discarded decode; published prepared-key count does not"
+            (1, 1, 1),
+            "one resource read/decode and one accepted prepared key"
         );
         let settled = (
             worker.scan.lookups,
@@ -397,4 +401,170 @@ fn held_real_completion_characterizes_same_key_requeue_without_admitting_old_epo
             "settled production painter matches a fresh full-canvas read"
         );
     }
+    assert_eq!(
+        observed_work,
+        vec![(1, 1), (1, 1)],
+        "unrelated roster and presentation changes must each preserve the required real pending crop without rereading/redecoding"
+    );
+}
+
+#[test]
+fn metadata_changes_with_obsolete_pending_geometry_keep_the_full_epoch_fence() {
+    for changed in [
+        "index", "path", "kind", "frame", "target", "window", "plane",
+    ] {
+        let (_directory, path, mut face) = fixture();
+        if changed == "frame"
+            && let ir::AssetKind::Image(meta) = &mut face.assets[0].kind
+        {
+            meta.frames = 2;
+            meta.size.as_mut().unwrap().height = 2.;
+        }
+        let mut worker = Preparation::new_for_program(&path, 0);
+        let (relay, intercepted) = mpsc::channel();
+        let decoded = std::mem::replace(&mut worker.results, intercepted);
+        let values = Values::default();
+        worker.prepare(&face, ir::PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        let obsolete = decoded.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(obsolete.picture.is_some());
+        // Keep metadata invalidation explicit: this does not authorize a new
+        // wanted-only resize/page cancellation policy.
+        face.assets.push(ir::Asset {
+            path: "unused.png".into(),
+            ..face.assets[0].clone()
+        });
+        let mut scale = 1.;
+        match changed {
+            "index" => {
+                face.assets.swap(0, 1);
+                face.pages[0].background.image = Some(ir::AssetRef(1));
+            }
+            "path" => face.assets[0].path = "Resources/pictures/CANVAS.png".into(),
+            "kind" => {
+                if let ir::AssetKind::Image(meta) = &mut face.assets[0].kind {
+                    meta.margins.left = 1;
+                }
+            }
+            "frame" => face.pages[0].background.frame = 1,
+            "target" => scale = 0.5,
+            "window" => face.pages[0].background.origin_y = 1,
+            "plane" => {
+                face.pages[0].background.image = None;
+                let mut label = ir::Widget::new(
+                    "$control",
+                    ir::PageRef(0),
+                    ir::Rect::new(0, 0, 2, 2),
+                    ir::Kind::Label,
+                );
+                label
+                    .images
+                    .push(ir::ImageUse::new(ir::AssetRef(0), ir::Role::Background));
+                face.widgets.push(label);
+            }
+            _ => unreachable!(),
+        }
+        worker.prepare(
+            &face,
+            ir::PageRef(0),
+            ir::Presentation::Bitmap,
+            scale,
+            &values,
+        );
+        let current = decoded.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            current.picture.is_some(),
+            "{changed}: valid authored resource request"
+        );
+        assert_ne!(
+            obsolete.key, current.key,
+            "{changed}: request is genuinely obsolete"
+        );
+        assert_ne!(
+            obsolete.epoch, current.epoch,
+            "{changed}: conservative epoch fence remains"
+        );
+        relay.send(obsolete).unwrap();
+        assert!(
+            worker
+                .prepare(
+                    &face,
+                    ir::PageRef(0),
+                    ir::Presentation::Bitmap,
+                    scale,
+                    &values
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            (worker.pending(), worker.bytes()),
+            (1, 0),
+            "{changed}: stale completion cannot publish or clear current pending work"
+        );
+        relay.send(current).unwrap();
+        assert_eq!(
+            worker
+                .prepare(
+                    &face,
+                    ir::PageRef(0),
+                    ir::Presentation::Bitmap,
+                    scale,
+                    &values
+                )
+                .len(),
+            1
+        );
+        assert_eq!(worker.pending(), 0);
+        assert_eq!(
+            (
+                worker.scan.lookups,
+                worker.scan.decodes,
+                worker.scan.preparation_completed
+            ),
+            (2, 2, 1),
+            "{changed}: required new geometry decodes once; old result remains rejected"
+        );
+    }
+}
+
+#[test]
+fn repeated_uses_with_aliased_asset_entries_dispatch_each_exact_key_once() {
+    let (_directory, path, mut face) = fixture();
+    face.pages[0].background.image = None;
+    face.assets.push(face.assets[0].clone());
+    // This is valid IR: different asset indices share a descriptor. Equal
+    // requests for index0 must become adjacent even when index1 intervenes.
+    for (n, asset) in [0, 1, 0].into_iter().enumerate() {
+        let mut label = ir::Widget::new(
+            format!("$art_{n}"),
+            ir::PageRef(0),
+            ir::Rect::new(0, 0, 4, 4),
+            ir::Kind::Label,
+        );
+        label
+            .images
+            .push(ir::ImageUse::new(ir::AssetRef(asset), ir::Role::Background));
+        face.widgets.push(label);
+    }
+    face.validate().unwrap();
+    let mut worker = Preparation::new_for_program(&path, 0);
+    let (capture, dispatched) = mpsc::sync_channel(1);
+    // Inspect the actual production admission batch without decoding or adding
+    // a worker hook. Only this test instance's sender is redirected.
+    worker.jobs = capture;
+    worker.prepare(
+        &face,
+        ir::PageRef(0),
+        ir::Presentation::Bitmap,
+        1.,
+        &Values::default(),
+    );
+    let batch = dispatched.recv_timeout(Duration::from_secs(10)).unwrap();
+    let unique: HashSet<_> = batch.iter().map(|request| request.key.clone()).collect();
+    assert_eq!(
+        (batch.len(), unique.len(), worker.pending()),
+        (2, 2, 2),
+        "three uses of two exact asset keys must not dispatch a duplicate hidden by pending's HashSet"
+    );
+    assert!(unique.iter().any(|key| key.asset == 0));
+    assert!(unique.iter().any(|key| key.asset == 1));
 }
