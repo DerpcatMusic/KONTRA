@@ -16,6 +16,11 @@ use std::{
     },
     thread,
 };
+
+#[cfg(all(test, feature = "shots"))]
+#[path = "picture_worker/retention_tests.rs"]
+mod retention_tests;
+
 const BUDGET: usize = 64 << 20;
 static REVISION: AtomicU64 = AtomicU64::new(0);
 // Bound aggregate transient decoder memory across rack instances.
@@ -339,6 +344,9 @@ impl Preparation {
         scale: f64,
         values: &Values,
     ) -> Vec<(usize, Option<Arc<Picture>>, Option<Font>, Plane)> {
+        // The first call must publish even an empty owner. Later calls are
+        // driven by actual input/result changes, not the previous return flag.
+        let mut changed = self.tick == 0;
         if self.assets != face.assets || self.presentation != presentation {
             self.epoch.fetch_add(1, Ordering::Release);
             self.pending.clear();
@@ -362,9 +370,8 @@ impl Preparation {
                 .map(|a| Arc::from(format!("{}:{:?}", a.path, a.kind)))
                 .collect();
             self.presentation = presentation;
-            self.unchanged = false;
+            changed = true;
         }
-        let mut changed = !self.unchanged;
         let epoch = self.epoch.load(Ordering::Acquire);
         self.tick = self.tick.wrapping_add(1);
         let mut wanted = Vec::new();
