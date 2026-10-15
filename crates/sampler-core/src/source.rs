@@ -665,6 +665,9 @@ impl Cursor {
     pub(super) fn trace_start(&self) -> u64 {
         self.start as u64
     }
+    pub(super) fn trace_phase(&self) -> (u64, f64, Option<u64>) {
+        (self.position, self.fraction, self.index(self.position as i128).map(|i| i as u64))
+    }
     pub(super) fn trace_position(&self) -> u64 {
         self.index(self.position as i128)
             .map_or(self.start as u64, |i| i as u64)
