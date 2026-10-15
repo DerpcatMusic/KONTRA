@@ -16,25 +16,25 @@ colors:
 typography:
   display:
     fontFamily: "Noto Sans, sans-serif"
-    fontSize: "clamp(44px, 5vw, 68px)"
+    fontSize: "clamp(36px, 4vw, 52px)"
     fontWeight: 400
     lineHeight: 1.15
     letterSpacing: "-0.035em"
   page-title:
     fontFamily: "Noto Sans, sans-serif"
-    fontSize: "clamp(42px, 5.4vw, 76px)"
+    fontSize: "clamp(36px, 4vw, 52px)"
     fontWeight: 400
     lineHeight: 1.15
     letterSpacing: "-0.035em"
   headline:
     fontFamily: "Noto Sans, sans-serif"
-    fontSize: "clamp(29px, 3vw, 42px)"
+    fontSize: "26px"
     fontWeight: 400
     lineHeight: 1.15
     letterSpacing: "-0.025em"
   title:
     fontFamily: "Noto Sans, sans-serif"
-    fontSize: "22px"
+    fontSize: "18px"
     fontWeight: 400
     lineHeight: 1.15
   body:
@@ -50,6 +50,9 @@ typography:
   download:
     fontFamily: "Noto Sans, sans-serif"
     fontSize: "15px"
+  small:
+    fontFamily: "Noto Sans, sans-serif"
+    fontSize: "12px"
   metadata:
     fontFamily: "Noto Sans, sans-serif"
     fontSize: "13px"
@@ -57,11 +60,11 @@ rounded:
   square: "0px"
 components:
   platform-download:
-    backgroundColor: "{colors.graphite-surface}"
+    backgroundColor: "{colors.graphite-background}"
     textColor: "{colors.text-primary}"
     typography: "{typography.download}"
     rounded: "{rounded.square}"
-    padding: "16px 20px"
+    padding: "14px 12px"
   platform-download-hover:
     backgroundColor: "{colors.graphite-hover}"
   current-navigation:
@@ -69,11 +72,8 @@ components:
     typography: "{typography.navigation}"
     rounded: "{rounded.square}"
   documentation-notice:
-    backgroundColor: "{colors.graphite-surface}"
-    textColor: "{colors.text-primary}"
-    typography: "{typography.body}"
-    rounded: "{rounded.square}"
-    padding: "22px"
+    textColor: "{colors.text-muted}"
+    typography: "{typography.metadata}"
 ---
 
 # Design System: KONTRA Public Website
@@ -113,15 +113,17 @@ The overview keeps the message short, puts the current release identity and thre
 
 ## Typography
 
-Noto Sans is bundled at `assets/noto-sans.woff2` and carries the wordmark, headings, navigation, download links, and reading copy. The overview title has its own responsive display scale; other pages use the shared page-title scale. Subheadings step down without changing the type family. Article paragraphs and table details use a denser reading size, with a small reduction on narrow screens. Inline `code` keeps the browser's monospace face on a dark inset fill.
+Noto Sans is bundled at `assets/noto-sans.woff2` and carries the wordmark, headings, navigation, download links, and reading copy. Overview and reading pages share one restrained title scale. Redundant page subtitles are omitted. Workspace terms use a compact definition list instead of separate subheadings; roadmap headings are short and keep their full planning prose. Article paragraphs and table details use a denser reading size, with a small reduction on narrow screens. Inline `code` keeps the browser's monospace face on a dark inset fill.
 
 **The One Face Rule.** Keep the bundled Noto Sans for the site's normal text and avoid adding a second display face.
 
 ## Layout
 
-The content frame stops at 1240px. Its side gutters step from 40px to 25px below 900px and 22px below 640px. The desktop header holds the wordmark at left and four page links at right; on mobile it wraps into two rows. The overview places three equal download cards in one row, capped at 850px, then stacks them at the 640px breakpoint. Their minimum height is 89px on desktop and 72px on mobile.
+The content frame stops at 1240px. Side gutters step from 40px to 24px below 760px and 20px below 480px. The desktop header keeps the wordmark left, page navigation in the middle, and Patreon and Discord at the far right. Below 1050px the page navigation moves to a second row; on small phones the two community actions stack at the top right. The same actions repeat at the right of the shared footer on all four pages. They remain at least 44px tall.
 
-Documentation and support pages use a 210px table of contents beside the article with a 75px gap. Below 900px the columns and gap tighten; below 640px the table of contents wraps above the article. General wide tables remain horizontally scrollable. Support tables instead reflow each row on mobile: feature and status share the first line, while scope and gaps span the full row below. Keep those caveats visible.
+The overview pairs one short introduction with a compact download list, followed immediately by the actual player image. Three flat download rows name the platform and architecture; avoid large download tiles. The format line appears once, beneath the downloads. A concise alpha caveat stays beside the introduction. On smaller screens, introduction and downloads stack.
+
+Documentation and roadmap pages use a 190px table of contents beside the article with a 64px gap. Below 760px the table of contents wraps above the article. General wide tables remain horizontally scrollable. Compatibility rows instead reflow below 760px: feature and status share the first line, while scope and gaps span the full row below. Keep those caveats visible.
 
 The overview fetches the latest GitHub release tag and published date when available; the direct release and asset links work without JavaScript, with a release-page fallback if the lookup fails. Desktop Windows, macOS, and Linux detection marks one download card. Mobile browsers, including iPad/iOS and Android, remain unmarked.
 
@@ -131,37 +133,37 @@ The overview fetches the latest GitHub release tag and published date when avail
 
 ## Elevation & Depth
 
-The site is flat. Graphite fills distinguish the main page, cards, and inline code; hairlines divide the header, footer, article sections, and support rows. There is no shadow vocabulary.
+The site is flat. Graphite fills distinguish the page and inline code; hairlines divide the header, footer, download rows and compatibility rows. Reading sections use space rather than repeated rules. There is no shadow vocabulary.
 
 **The Flat Plane Rule.** Use tonal fills, spacing, and hairlines for hierarchy; keep cards on the same plane as the page.
 
 ## Shapes
 
-Page surfaces, download cards, and disclosure rows have square corners. The detected platform uses a fine pink outline, and links and summaries use a visible offset focus outline. No rounded control style is present in the website CSS.
+Page surfaces, download rows, community actions and disclosures have square corners. The detected platform uses a fine pink bottom rule, and links and summaries use a visible offset focus outline. No rounded control style is present in the website CSS.
 
 **The Square Edge Rule.** Keep controls and containers rectangular; reserve the accent outline for an actual selected or focused state.
 
 ## Components
 
 ### Header and Navigation
-- A compact wordmark and four ordinary links repeat on every page. The current page uses primary text and a thin pink underline; other links use muted text.
-- On mobile, the links wrap below the wordmark. GitHub destinations remain in page content and the footer rather than the main navigation.
+- A compact wordmark, four page links and the two community actions repeat on every page. “Compatibility” names the audited feature table; installation and troubleshooting live in Documentation. The current page uses primary text and a thin pink underline; other links use muted text.
+- On mobile, page links wrap below the wordmark and right-aligned community actions. Source, releases and contributor links stay in the shared footer.
 
 ### Platform Downloads
-- Three text-led links cover Windows, macOS, and Linux. Each card names the platform and package architecture; the macOS note identifies both processor families.
-- Hover changes the card fill. Desktop platform detection adds a thin accent outline and a short “Your platform” label. Unknown and mobile platforms keep all three links equally available.
+- Three text-led links cover Windows, macOS, and Linux. Each row names the platform and package architecture; the macOS note identifies both processor families.
+- Hover changes the row fill. Desktop platform detection adds a thin accent rule and a short “Your platform” label. Unknown and mobile platforms keep all three links equally available.
 
 ### Product Screenshot
 - Show the supplied player screenshot wide and uncropped directly after the download area. Keep its caption beneath it; do not place the image inside a decorative frame.
-- The screenshot has one short settle animation, disabled when reduced motion is requested.
+- The screenshot remains still. It supplies product detail without an entrance animation.
 
 ### Documentation and Support
-- Long instructions use headings, a compact in-page contents column, plain tables, and native `details` / `summary` disclosures for installation steps, troubleshooting, and grouped support evidence.
+- Long instructions use concise headings, a compact in-page contents column, plain tables, a workspace definition list, and native `details` / `summary` disclosures for installation steps, troubleshooting, and grouped support evidence.
 - Support groups use text status labels for implemented, partial, missing, and unverified behavior. On mobile, keep the feature and status together and the scope/gap text on its own line.
 - The roadmap is a long-form page with a clear heading hierarchy and complete prose sections; it is not presented as a closed or abbreviated accordion.
 
 ### Notices
-- The documentation warning is a square graphite panel with compact text. Inline code uses a darker inset fill and a small monospace face.
+- The documentation warning is compact text above installation, without a separate panel. Inline code uses a darker inset fill and a small monospace face.
 
 **The Real Player Rule.** Let the actual application screenshot carry the product's visual detail; keep the surrounding web chrome quiet.
 
