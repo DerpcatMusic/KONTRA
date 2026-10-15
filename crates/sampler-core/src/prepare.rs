@@ -28,7 +28,7 @@ pub struct Pcm(std::sync::Arc<PcmData>);
 
 /// Process-local identity of one immutable decoded asset revision. Clones share it;
 /// a separately constructed revision never reuses an old identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct AssetId(u64);
 
 type StoreEntry = ([i32; super::STORE_KEY], i64);

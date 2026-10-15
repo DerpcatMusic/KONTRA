@@ -8,6 +8,10 @@ use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, Presentation};
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "shots"))]
+#[path = "part/asset_retention_tests.rs"]
+mod asset_retention_tests;
+
 /// One current raw materialization per source, never a history of publications.
 #[derive(Default)]
 struct SourceProjection {

@@ -6,6 +6,7 @@ use crate::sound::resource_revision::ResourceRevision;
 use sampler_ksp::setup::{
     SetupIdentity, SnapshotSavedLimits, SnapshotSavedSlot, snapshot_policy, snapshot_saved_state,
 };
+pub(crate) mod admission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,7 +113,24 @@ impl Descriptor {
         views: Vec<sampler_ksp::ScriptView>,
         service: &mut dyn FnMut(),
     ) -> Result<Ready, Refusal> {
-        prepare_waiting(move || self.prepare(path, rate, &views), service)?
+        self.prepare_serviced_reported(path, rate, views, service).0
+    }
+    pub(crate) fn prepare_serviced_reported(
+        self: Arc<Self>,
+        path: &Path,
+        rate: u32,
+        views: Vec<sampler_ksp::ScriptView>,
+        service: &mut dyn FnMut(),
+    ) -> (Result<Ready, Refusal>, admission::Report) {
+        let mode = self.mode;
+        match prepare_waiting(move || self.prepare_reported(path, rate, &views), service) {
+            Ok(reported) => reported,
+            Err(reason) => {
+                let mut report = admission::Report::new(Some(mode));
+                report.worker_lost(reason);
+                (Err(reason), report)
+            }
+        }
     }
     pub(crate) fn prepare(
         &self,
@@ -120,10 +138,34 @@ impl Descriptor {
         rate: u32,
         views: &[sampler_ksp::ScriptView],
     ) -> Result<Ready, Refusal> {
+        self.prepare_reported(path, rate, views).0
+    }
+    pub(crate) fn prepare_reported(
+        &self,
+        path: &Path,
+        rate: u32,
+        views: &[sampler_ksp::ScriptView],
+    ) -> (Result<Ready, Refusal>, admission::Report) {
+        let mut report = admission::Report::new(Some(self.mode));
+        let result = self.prepare_inner(path, rate, views, &mut report);
+        if let Err(reason) = &result {
+            report.refuse(*reason);
+        }
+        (result, report)
+    }
+    fn prepare_inner(
+        &self,
+        path: &Path,
+        rate: u32,
+        views: &[sampler_ksp::ScriptView],
+        report: &mut admission::Report,
+    ) -> Result<Ready, Refusal> {
         let _span = sampler_kontakt::audit::Span::new("snapshot_reuse_prepare");
+        report.at(admission::Stage::Policy);
         if self.mode.reruns_init() {
             return Err(Refusal::InitRequired);
         }
+        report.at(admission::Stage::SetupIdentity);
         if rate != self.rate
             || views.len() != self.identities.len()
             || views
@@ -134,17 +176,21 @@ impl Descriptor {
         {
             return Err(Refusal::SetupChanged);
         }
+        report.authority_check(admission::Stage::AuthorityBeforeRead);
         if authority(&self.base).as_ref() != Some(&self.authority) {
             return Err(Refusal::SourceOrResources);
         }
+        report.snapshot_read();
         let snapshot = sampler_kontakt::read_snapshot_for_base(path, &self.base)
             .map_err(|_| Refusal::SnapshotRead)?;
+        report.incoming(&snapshot);
         // Do not mistake equal IR indices or scalar rosters for a proof that
         // every native group/source/rack field is unchanged. Modes 1 and 3 can
         // reuse here only when there is no incoming native payload to apply.
         if !snapshot.groups.is_empty() || !snapshot.effects.is_empty() {
             return Err(Refusal::NativeState);
         }
+        report.saved_decode();
         let rows = snapshot.saved_values().map_err(|_| Refusal::SavedState)?;
         let incoming: Vec<_> = rows
             .into_iter()
@@ -156,6 +202,7 @@ impl Descriptor {
                 })
             })
             .collect::<Result<_, Refusal>>()?;
+        report.saved_schema();
         let state = snapshot_saved_state(
             views,
             &incoming,
@@ -165,18 +212,24 @@ impl Descriptor {
                     * sampler_core::TEXT_CAPACITY,
             },
         )
-        .map_err(|error| match error {
-            sampler_ksp::setup::SnapshotSavedError::Row {
-                reason: sampler_ksp::setup::SnapshotSavedRowError::MenuRosterUnverified,
-                ..
-            } => Refusal::MenuRosterUnverified,
-            _ => Refusal::SavedState,
+        .map_err(|error| {
+            report.saved_schema_refusal(&error);
+            match error {
+                sampler_ksp::setup::SnapshotSavedError::Row {
+                    reason: sampler_ksp::setup::SnapshotSavedRowError::MenuRosterUnverified,
+                    ..
+                } => Refusal::MenuRosterUnverified,
+                _ => Refusal::SavedState,
+            }
         })?;
+        report.prepared(&state);
         // Revalidate after all file reads. No candidate acquires live ownership
         // if the base/resource authority changed while it was being prepared.
+        report.authority_check(admission::Stage::AuthorityAfterRead);
         if authority(&self.base).as_ref() != Some(&self.authority) {
             return Err(Refusal::SourceOrResources);
         }
+        report.at(admission::Stage::Prepared);
         Ok(Ready {
             state,
             mode: self.mode,

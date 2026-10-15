@@ -6,6 +6,26 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.490
+
+Includes the accepted 0.3.489 parity checkpoint below, plus one shipping-pipeline correction: cold release-profile test compilation may use 180 minutes, while ordinary CI retains its 90-minute limit. Every test, native editor, signing, notarization, license and required-check gate remains mandatory. The observed previous job expired before any test harness started; this change does not claim a measured upper completion bound.
+
+The unchanged Rust source passed first-party Clippy, the complete core suite, 820 root/inspector tests (53 ignored) and three typed replacement tests at the preceding 0.3.489 source checkpoint. Final package identity, native format checks and hosted publication bind their own revisions. New experimental menu transactions and the production-loader Areia trace remain outside this accepted checkpoint.
+
+## 0.3.489
+
+Seven reviewed logical corrections follow 0.3.482; diagnostic features and extra reference vectors do not add fix counts.
+
+- Retained interfaces stop republishing unchanged image/font owners. Required in-flight artwork survives unrelated metadata changes, and repeated uses dispatch each exact asset request once. Obsolete requests remain fenced.
+- UVI ScriptEvent modulation uses the authored EventId independently of its display name. This fixes an observed VWinds source named with suffix 7 whose actual EventId is 12; malformed explicit IDs remain explicit errors.
+- Ladder feedback preparation preserves Kontakt's floating-point operation order. Twelve captured prepared states and 282 static native cases match exactly; production HQ ownership and moving-control parity remain separately gated.
+- Final modulation topology is validated before use, and parallel workers retain the gain history of audio actually rendered.
+- Inspector additions record bounded physical voice births, evaluated start offsets, first-window readiness and numeric signal crossings. Snapshot reuse reports actual policy/schema/admission stages without treating callback admission as completion.
+
+Focused source validation includes 92 UI/asset/snapshot tests (3 ignored), 78 affected core regressions (1 ignored), 21 UVI importer tests, and 25 bounded onset-trace controls. These are scoped source receipts; combined checkpoint, packaging and native-host checks retain their own exact revisions.
+
+Known limits: Areia's reported spiccato double attack is not yet attributed to its actual runtime trace. Generic cold sibling layers can start apart in authored tests, while Areia also intentionally layers ensembles and retains recorded lead-in. Full native/UI/library parity and 300 voices at 1% on KONTRA's meter remain unproved. Presets requiring initialization, native payload replacement or unsupported transactions still use the full load path. New menu transactions and the production-loader onset probe continue separately and are not part of this checkpoint.
+
 ## 0.3.482
 
 This checkpoint brings the accumulated library, scripting, streaming, editor and native-DSP work since the last published 0.3.476 snapshot. Five newly reviewed defects advance the version from the locally installed 0.3.477; follow-up fixes and optimizations are not counted again.

@@ -213,6 +213,8 @@ impl ControlRamp {
 
 impl Prepared {
     pub(crate) fn validate_dsp_controls(&self) -> Result<(), Error> {
+        self.voice_modulation
+            .validate_dsp_targets(&self.filters, self.dsp_bindings.len())?;
         for binding in self.dsp_bindings.iter().chain(self.buses.parameters.iter()) {
             self.control_index(binding.control)?;
         }

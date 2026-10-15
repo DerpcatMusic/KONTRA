@@ -1,5 +1,7 @@
 //! Optional signal measurements. Graph construction, draining and file I/O are
 //! control-side; the single render writer uses fixed buffers and a bounded SPSC.
+pub mod onset;
+
 use crate::dsp::{BLOCK, ControlRamp, Planar, PreparedProcessor};
 use crate::{EngineParameterAddress, EngineParameterLaw, Error, Frame, Prepared};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -73,6 +75,8 @@ pub struct TraceGraph {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceIdentity {
+    /// Physical identity is authoritative only on single-voice contribution rows.
+    pub voice: Option<onset::PhysicalVoice>,
     pub zone: u32,
     pub sample: usize,
     pub family: usize,
@@ -104,6 +108,7 @@ pub struct TraceIdentity {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceMetrics {
+    pub onset: onset::SignalOnset,
     pub peak: [f64; 2],
     pub rms: [f64; 2],
     pub dc: [f64; 2],
@@ -145,17 +150,20 @@ impl Default for Scratch {
 }
 
 pub(crate) struct TracePrepared {
+    onset: onset::Prepared,
     pub graph: Arc<TraceGraph>,
     writer: Mutex<Option<Producer<TraceRecord>>>,
     reader: TraceReader,
 }
 #[derive(Clone)]
 pub struct TraceReader {
+    onset: onset::Reader,
     pub graph: Arc<TraceGraph>,
     consumer: Arc<Mutex<Consumer<TraceRecord>>>,
     dropped: Arc<AtomicU64>,
 }
 impl TraceReader {
+    pub fn onset_reader(&self) -> onset::Reader { self.onset.clone() }
     pub(crate) fn abandoned(&self) -> bool {
         self.consumer
             .lock()
@@ -179,6 +187,7 @@ impl TraceReader {
     }
 }
 pub(crate) struct Recorder {
+    onset: onset::Recorder,
     writer: Mutex<Producer<TraceRecord>>,
     dropped: Arc<AtomicU64>,
     scratch: Box<[Scratch]>,
@@ -192,13 +201,16 @@ impl TracePrepared {
             return Err(Error::InvalidInput);
         }
         let graph = Arc::new(graph);
+        let onset = onset::Prepared::new(capacity.min(65536));
         let (writer, consumer) = RingBuffer::new(capacity);
         let reader = TraceReader {
+            onset: onset.reader.clone(),
             graph: graph.clone(),
             consumer: Arc::new(Mutex::new(consumer)),
             dropped: Arc::new(AtomicU64::new(0)),
         };
         Ok(Self {
+            onset,
             graph,
             writer: Mutex::new(Some(writer)),
             reader,
@@ -212,6 +224,7 @@ impl TracePrepared {
             .take()
             .ok_or(Error::InvalidInput)?;
         Ok(Recorder {
+            onset: self.onset.recorder()?,
             writer: Mutex::new(writer),
             dropped: self.reader.dropped.clone(),
             scratch: std::iter::repeat_with(Scratch::default)
@@ -323,8 +336,15 @@ pub(crate) fn metrics(block: &Planar, len: usize) -> TraceMetrics {
     }
     let mut result = TraceMetrics::default();
     for c in 0..2 {
-        for &v in &block[c][..len] {
-            result.peak[c] = result.peak[c].max(v.abs());
+        for (index, &v) in block[c][..len].iter().enumerate() {
+            let amplitude = v.abs();
+            if amplitude > 0. && result.onset.nonzero[c].is_none() {
+                result.onset.nonzero[c] = Some(index as u32);
+            }
+            if amplitude > onset::THRESHOLD && result.onset.above_threshold[c].is_none() {
+                result.onset.above_threshold[c] = Some(index as u32);
+            }
+            result.peak[c] = result.peak[c].max(amplitude);
             result.rms[c] += v * v;
             result.dc[c] += v;
         }

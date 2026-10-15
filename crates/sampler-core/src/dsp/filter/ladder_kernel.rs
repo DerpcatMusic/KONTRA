@@ -7,10 +7,10 @@
 //! zero-delay feedback estimate, the +-24 clamp and 1/48 soft clip, the four trapezoidal stages,
 //! the tap weights and the compensation curves of all twelve selectors, and the 4-frame
 //! control advance, and the prepare FUN_140b06180 (feedback correction, 2 ms ramp in 32-frame
-//! ticks). The strict authored-input original-code reference below checks static HQ-off
-//! gain and all twelve selectors. Factory/public gain binding, HQ processing (core flag
-//! 0x30 doubles the internal rate through FUN_140ae2190), and the alternative cutoff path
-//! (flag 0x49) are outside that static comparison. Importer diagnostics remain unchanged.
+//! ticks). Strict authored-input original-code references check static HQ-off gain and all
+//! twelve selectors, plus a test-only static x2 composition. Factory/public gain binding,
+//! production HQ ownership and moving controls, and the alternative cutoff path (flag
+//! 0x49) remain outside those static comparisons. Importer diagnostics remain unchanged.
 
 use std::sync::OnceLock;
 
@@ -283,10 +283,9 @@ impl Ladder {
         let w = (80.0 / r).max(0.0);
         let inv = 1.0 / rate;
         let w8 = inv * inv * 12.987_881;
+        // Original 0x140b0632b..0x140b0633e forms the frequency product first.
         self.correction = ((w8 * w * w + 3.289_868_4) * w * inv * w * inv + 1.0)
-            * w
-            * std::f32::consts::PI
-            * inv;
+            * ((w * std::f32::consts::PI) * inv);
         self.correction_reciprocal = 1.0 / (1.0 + self.correction);
         self.correction_previous = self.correction - 1.0;
         self.correction_gain = r * r - 1.0;
@@ -998,6 +997,140 @@ mod tests {
         eprintln!("native_ladder_comparison cells={} mismatched={} maximum_checkpoint_abs_error={maximum_checkpoint_error:e}",NATIVE_LADDER_CASES.len(),mismatches);
         assert_eq!(mismatches,0,"original HQ-off PCM; do not relax to a fitted oracle");
     }
+    // Test-only static composition; no production quality/admission changes.
+    // Dynamic32-host/4-internal controls and quality-switch lifetime are deliberately
+    // not represented by this static comparison. No runtime admission follows.
+    struct NativeLadderHqCase {
+        rate: f32,
+        cutoff: f32,
+        resonance: f32,
+        gain: f32,
+        taps: u8,
+        signal: u8,
+        hash: u64,
+    }
+    include!("ladder_native_hq_vectors.rs");
+
+    // Original preparation FUN_140b06180, exact image SHA0fe6356e0879d058...
+    // Synthetic core, captured quality0/1 with explicit internal rates below; no host/admission claim.
+    // Fields: correction, reciprocal, previous, fixed correction gain.
+    // Captured only after the original table initializer; BSS is not a file constant.
+    const NATIVE_PREPARED_COEFFICIENTS: [(f32, [u32; 4]); 12] = [
+        (44_100.0, [0x3bc20b3d, 0x3f7e7e33, 0xbf7e7bea, 0xbd971bb8]),
+        (88_200.0, [0x3b420ace, 0x3f7f3e89, 0xbf7f3df5, 0xbd971bb8]),
+        (48_000.0, [0x3bb2470b, 0x3f7e9d60, 0xbf7e9b72, 0xbd971bb8]),
+        (96_000.0, [0x3b3246b4, 0x3f7f4e36, 0xbf7f4db9, 0xbd971bb8]),
+        (96_000.0, [0x3b3246b4, 0x3f7f4e36, 0xbf7f4db9, 0xbd971bb8]),
+        (192_000.0, [0x3ab2469e, 0x3f7fa6fb, 0xbf7fa6dd, 0xbd971bb8]),
+        (12_000.0, [0x3cb24dcc, 0x3f7a8bf5, 0xbf7a6d92, 0xbd971bb8]),
+        (22_050.0, [0x3c420cfa, 0x3f7d00e2, 0xbf7cf7cc, 0xbd971bb8]),
+        (24_000.0, [0x3c324864, 0x3f7d3e8b, 0xbf7d36de, 0xbd971bb8]),
+        (32_000.0, [0x3c05b5b4, 0x3f7ded7e, 0xbf7de929, 0xbd971bb8]),
+        (88_200.0, [0x3b420ace, 0x3f7f3e89, 0xbf7f3df5, 0xbd971bb8]),
+        (384_000.0, [0x3a324698, 0x3f7fd376, 0xbf7fd36e, 0xbd971bb8]),
+    ];
+
+    #[test]
+    fn ladder_original_prepare_coefficient_fields() {
+        prepare();
+        let mut mismatched = 0;
+        for (case_index, (rate, expected)) in NATIVE_PREPARED_COEFFICIENTS.into_iter().enumerate() {
+            let mut filter = Ladder::default();
+            filter.tune([0.5, 0.7, 0.0], rate);
+            let actual = [filter.correction, filter.correction_reciprocal,
+                filter.correction_previous, filter.correction_gain].map(f32::to_bits);
+            if actual != expected {
+                mismatched += 1;
+                eprintln!("native_ladder_prepared_mismatch case_index={case_index} internal_rate={rate} actual={actual:08x?} expected={expected:08x?}");
+            }
+        }
+        eprintln!("native_ladder_prepared_comparison cells={} mismatched={mismatched}", NATIVE_PREPARED_COEFFICIENTS.len());
+        assert_eq!(mismatched, 0, "literal original prepared fields; exact f32 bits");
+    }
+
+    #[test]
+    fn ladder_original_hq_static_composition() {
+        use crate::dsp::kaiser::{Kaiser, State};
+        prepare();
+        // Diagnostic-only authored PCM; no production path or library input.
+        // Limit the complete capture before opening a new private DEV file.
+        let capture_bytes = NATIVE_LADDER_HQ_CASES.len().checked_mul(1024 * 2 * 4).unwrap();
+        assert!(capture_bytes <= 8 * 1024 * 1024);
+        let mut capture: Option<std::fs::File> = std::env::var_os("KONTRA_LADDER_HQ_CAPTURE").map(|raw| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let path = std::path::PathBuf::from(raw);
+                assert!(path.is_absolute());
+                assert!(!path.components().any(|p| matches!(p, std::path::Component::ParentDir)));
+                let parent = path.parent().unwrap().canonicalize().unwrap();
+                let allowed = std::path::Path::new("/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts")
+                    .canonicalize().unwrap();
+                assert!(parent.starts_with(allowed), "explicit private DEV capture only");
+                std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+                    .open(parent.join(path.file_name().unwrap())).unwrap()
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = raw;
+                panic!("HQ diagnostic capture requires Unix0600 private DEV output");
+            }
+        });
+        let mut mismatched = 0;
+        for (case_index, case) in NATIVE_LADDER_HQ_CASES.iter().enumerate() {
+            let os = Kaiser::new(2);
+            let mut state = [State::default(); 2];
+            let mut filter = Ladder::default();
+            filter.set_taps(case.taps);
+            filter.tune([case.cutoff, case.resonance, case.gain], case.rate * 2.0);
+            let mut left = [0.0f32; 1024];
+            let mut right = [0.0f32; 1024];
+            match case.signal {
+                0 => { left[0] = 0.125; right[0] = -0.0625; }
+                1 => { left[0] = 8.0; right[0] = -4.0; }
+                2 => for i in 0..64 {
+                    left[i] = f32::from_bits(NATIVE_NOISE_LEFT[i]);
+                    right[i] = f32::from_bits(NATIVE_NOISE_RIGHT[i]);
+                },
+                3 => {},
+                _ => unreachable!(),
+            }
+            for i in 0..1024 {
+                let mut l = [0.0; 2];
+                let mut r = [0.0; 2];
+                os.up(&mut state[0], left[i], &mut l);
+                os.up(&mut state[1], right[i], &mut r);
+                filter.process(&mut l, &mut r);
+                left[i] = os.down(&mut state[0], &l);
+                right[i] = os.down(&mut state[1], &r);
+            }
+            let mut hash = 0xcbf29ce484222325u64;
+            for value in left.iter().chain(&right) {
+                assert!(value.is_finite());
+                for byte in value.to_bits().to_le_bytes() {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+            if let Some(file) = &mut capture {
+                use std::io::Write;
+                let mut bytes = [0_u8; 1024 * 2 * 4];
+                for (out, sample) in bytes.chunks_exact_mut(4).zip(left.iter().chain(&right)) {
+                    out.copy_from_slice(&sample.to_bits().to_le_bytes());
+                }
+                file.write_all(&bytes).unwrap();
+            }
+            if hash != case.hash {
+                mismatched += 1;
+                eprintln!("native_ladder_hq_composition_mismatch case_index={case_index} rate={} cutoff={} resonance={} gain={} taps={} signal={} actual_hash={hash:016x} expected_hash={:016x} first16bits={:?}",case.rate,case.cutoff,case.resonance,case.gain,case.taps,case.signal,case.hash,left[..16].iter().map(|x|x.to_bits()).collect::<Vec<_>>());
+            }
+        }
+        if let Some(file) = &capture {
+            assert_eq!(file.metadata().unwrap().len(), capture_bytes as u64);
+        }
+        eprintln!("native_ladder_hq_composition cells={} mismatched={mismatched}",NATIVE_LADDER_HQ_CASES.len());
+        assert_eq!(mismatched,0,"static HQ composition only; keep strict original full-PCM hashes");
+    }
+
 }
 
 // Plan-owned numeric storage: only Ladder stages reserve these cells.

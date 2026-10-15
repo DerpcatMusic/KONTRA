@@ -806,19 +806,25 @@ impl Translation {
                 }))
             }
             "ScriptEventModulation" => {
-                // The script sets it per voice or for all voices
-                // (`sendScriptModulation`); its id is the number in the name,
-                // as the scripts' own id tables show.
-                let id = node
-                    .attribute("Name")
-                    .and_then(|n| n.rsplit(' ').next())
-                    .and_then(|t| t.parse::<u16>().ok());
-                let Some(id) = id else {
-                    return Ok(Err(gap(
-                        "ScriptEventModulation without an id",
-                        "",
-                        NotModeled,
-                    )));
+                // EventId is an independent native parameter, not the source's
+                // display/lookup name (original getters/setters 0x14114e2d0/e0).
+                let id = if let Some(raw) = node.attribute("EventId") {
+                    match number(node, "EventId", 0.0) {
+                        Ok(value) if (0.0..=127.0).contains(&value) && value.fract() == 0.0 => {
+                            value as u16
+                        }
+                        _ => return Ok(Err(gap("ScriptEventModulation EventId", raw, ir::Reason::InvalidValue))),
+                    }
+                } else {
+                    // Preserve the existing absent-field import behavior while
+                    // the older serialized-format loading law is investigated.
+                    let id = node.attribute("Name")
+                        .and_then(|n| n.rsplit(' ').next())
+                        .and_then(|t| t.parse::<u16>().ok());
+                    let Some(id) = id else {
+                        return Ok(Err(gap("ScriptEventModulation without an id", "", NotModeled)));
+                    };
+                    id
                 };
                 let polar = number(node, "Bipolar", 1.0)? != 0.0;
                 let source = if polar {
@@ -1452,6 +1458,40 @@ mod tests {
             .map(|u| (&u.location, &u.value))
             .collect();
         assert!(modules.is_empty(), "{modules:?}");
+    }
+
+    #[test]
+    fn script_event_explicit_id_is_independent_of_source_name() {
+        for (name, event_id, bipolar, expected) in [
+            ("Renamed", "7", 0, ir::ModulationSource::Script(7)),
+            ("ScriptEventModulation 3", "7", 1, ir::ModulationSource::ScriptBipolar(7)),
+            ("ScriptEventModulation 7", "12", 0, ir::ModulationSource::Script(12)),
+            ("ScriptEventModulation 3", "0", 0, ir::ModulationSource::Script(0)),
+            ("Renamed", "127", 0, ir::ModulationSource::Script(127)),
+            ("Renamed", "7.0", 0, ir::ModulationSource::Script(7)),
+        ] {
+            let ir = translate(
+                &format!(r#"<ScriptEventModulation Name="{name}" EventId="{event_id}" Bipolar="{bipolar}"/>"#),
+                "",
+                &format!(r#"<SignalConnection Source="$Program/{name}" Destination="Pitch" Ratio="1"/>"#),
+            );
+            let (_, source) = only_route(&ir);
+            assert_eq!(source, &expected);
+            assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+        }
+    }
+
+    #[test]
+    fn script_event_malformed_explicit_id_is_rejected_without_name_fallback() {
+        for value in ["", "bad", "true", "NaN", "inf", "-1", "7.5", "128", "65536"] {
+            let ir = translate(
+                &format!(r#"<ScriptEventModulation Name="ScriptEventModulation 3" EventId="{value}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/ScriptEventModulation 3" Destination="Pitch" Ratio="1"/>"#,
+            );
+            assert!(ir.zones[0].routes.is_empty(), "{value}: {:?}", ir.unsupported);
+            assert!(ir.unsupported.iter().any(|u| u.feature == "ScriptEventModulation EventId" && u.reason == ir::Reason::InvalidValue), "{value}: {:?}", ir.unsupported);
+        }
     }
 
     #[test]

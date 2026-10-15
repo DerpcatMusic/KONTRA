@@ -1,12 +1,13 @@
 //! The producer half of same-owner preset application. Preparation and payload
 //! retirement happen here; the exact live Runtime decides admission on audio.
 use super::*;
-use crate::sound::v2::snapshot_reuse::Refusal;
+use crate::sound::v2::snapshot_reuse::{Refusal, admission};
 
 pub(super) struct Pending {
     request: SnapshotRequest,
     command: u64,
     trace: crate::diagnostics::LoadTrace,
+    admission: admission::Report,
 }
 
 pub(super) fn same_base(a: &(String, u32, String), b: &(String, u32, String)) -> bool {
@@ -57,32 +58,39 @@ pub(super) fn try_submit(
     request: SnapshotRequest,
     mut trace: crate::diagnostics::LoadTrace,
 ) -> Result<(), (SnapshotRequest, crate::diagnostics::LoadTrace)> {
+    let mut admission = admission::Report::new(None);
     let result = (|| {
         if !request.allow_reuse || request.path.is_empty() {
             return Err(Refusal::NoSetup);
         }
+        admission.at(admission::Stage::Owner);
         let atoms = params
             .shared
             .part(request.slot)
             .ok_or(Refusal::OwnerChanged)?;
         let (descriptor, views) = {
             let scripts = atoms.scripts.lock_unpoisoned();
+            admission.at(admission::Stage::Availability);
             (
                 scripts.snapshot_reuse.clone().ok_or(Refusal::NoSetup)?,
                 scripts.views.clone(),
             )
         };
-        let ready = descriptor.prepare_serviced(
+        let (ready, report) = descriptor.prepare_serviced_reported(
             Path::new(&request.path),
             params.shared.rate() as u32,
             views,
             &mut || service_current_ui(params),
-        )?;
+        );
+        admission = report;
+        let ready = ready?;
+        admission.at(admission::Stage::Owner);
         if !current(params, &request, true) {
             return Err(Refusal::OwnerChanged);
         }
         let mut guard = atoms.ingress.lock_unpoisoned();
         let ingress = guard.as_mut().ok_or(Refusal::OwnerChanged)?;
+        admission.at(admission::Stage::Submission);
         let command = ingress.submit_snapshot_overlay(
             ready.state,
             Box::new([
@@ -103,6 +111,8 @@ pub(super) fn try_submit(
     })();
     match result {
         Ok((atoms, command)) => {
+            admission.queued();
+            trace.detail("snapshot_reuse_admission", admission.json());
             trace.detail("scope", "validated saved-state batch queued for the exact existing owner; callback completion and PCM remain separate");
             trace.stage("snapshot_apply_queued");
             let slot = request.slot;
@@ -110,11 +120,14 @@ pub(super) fn try_submit(
                 request,
                 command,
                 trace,
+                admission,
             });
             params.shared.view.lock_unpoisoned().parts[slot].status = "Applying preset…".into();
             Ok(())
         }
         Err(reason) => {
+            admission.refuse(reason);
+            trace.detail("snapshot_reuse_admission", admission.json());
             trace.detail(
                 "snapshot_reuse_fallback",
                 serde_json::to_value(reason).unwrap_or_default(),
@@ -133,6 +146,9 @@ pub(super) fn poll(params: &SamplerParams) {
             // An owner replacement retires the old ingress and its replies
             // off audio. Never use its metadata for the newly installed one.
             if atoms.generation.load(Ordering::Acquire) != job.request.generation {
+                job.admission.canceled();
+                job.trace
+                    .detail("snapshot_reuse_admission", job.admission.json());
                 job.trace.finish("canceled");
                 continue;
             }
@@ -151,9 +167,16 @@ pub(super) fn poll(params: &SamplerParams) {
             let sampler_core::ControlOperation::NativeSnapshotOverlay(overlay) =
                 reply.command.operation
             else {
+                job.admission.unrecognized_receipt();
+                job.trace
+                    .detail("snapshot_reuse_admission", job.admission.json());
                 job.trace.finish("failed");
                 continue;
             };
+            job.admission
+                .audio(overlay.committed.is_some(), overlay.refusal);
+            job.trace
+                .detail("snapshot_reuse_admission", job.admission.json());
             if reply.result.is_ok() && overlay.committed.is_some() {
                 job.trace.detail("snapshot_apply", "retained_owner");
                 job.trace.detail("callbacks", overlay.state.callbacks.len());
