@@ -16,6 +16,10 @@ use std::sync::OnceLock;
 
 static EXPONENTIAL: OnceLock<[f32; 2401]> = OnceLock::new();
 
+#[cfg(test)]
+#[path = "ladder_wrapper_research.rs"]
+pub(crate) mod wrapper_research;
+
 /// Warm in the loader, including when a voice will later change subtype.
 pub(crate) fn prepare() {
     EXPONENTIAL.get_or_init(|| {
