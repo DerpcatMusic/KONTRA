@@ -6,7 +6,9 @@ mod inspect;
 use std::{path::Path, sync::Arc};
 
 fn bank(path: &Path) -> Result<Arc<sampler_uvi::Bank>, Arc<sampler_uvi::AccessError>> {
-    sampler_uvi::Bank::open(path).map(Arc::new).map_err(Arc::new)
+    sampler_uvi::Bank::open(path)
+        .map(Arc::new)
+        .map_err(Arc::new)
 }
 
 fn main() {
