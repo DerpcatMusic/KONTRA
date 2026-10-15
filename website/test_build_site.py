@@ -42,8 +42,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(os.environ['KONTRA_COVERAGE_SOURCE_ONLY'], '1')
         with patch.object(build_site.tracker.os.path, 'exists', side_effect=AssertionError('Private cache inspected')):
             build_site.tracker.uvi_snapshot()
-        original = build_site.tracker.build.tsv
-        with patch.object(build_site.tracker.build, 'tsv', wraps=original) as read:
+        with patch.object(build_site.tracker.os.path, 'exists', side_effect=AssertionError('Private cache inspected')), patch.object(build_site.tracker.build, 'tsv', return_value=[{'target_id': '1'}]) as read:
             build_site.tracker.build.target_table()
             self.assertEqual(Path(read.call_args.args[0]).name, 'modulation-targets.tsv')
 
