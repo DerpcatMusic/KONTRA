@@ -799,6 +799,26 @@ struct Candidate {
     step: f64,
 }
 
+/// Immutable control-side initial source geometry, bound to one physical asset
+/// revision. It does not retain PCM or model future loop/pitch/script changes.
+#[derive(Clone, Copy, Debug)]
+pub struct ConstantStartPrefix {
+    asset: AssetId,
+    template: super::source::CursorTemplate,
+    offset: u32,
+}
+impl ConstantStartPrefix {
+    pub fn asset_id(&self) -> AssetId { self.asset }
+    /// Source window for an explicit conservative step and output horizon.
+    /// None rejects a loop transition/crossfade, reverse or ambiguous geometry.
+    pub fn window(&self, frames: usize, step: f64) -> Option<std::ops::Range<usize>> {
+        // Admission rejected indexed multi-loop/wavetable geometry, so this
+        // compact template needs no external slot table or retained plan.
+        self.template.cursor(&[]).skip(self.offset)
+            .initial_forward_window(u32::try_from(frames).ok()?, step)
+    }
+}
+
 pub struct Prepared {
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
@@ -900,6 +920,23 @@ impl Prepared {
         } else {
             self.voice_modulation.constant_start_offset(region)
         }
+    }
+
+    /// Positive Constant onset through the actual prepared cursor/skip law.
+    /// Only looped forward cursors qualify. Loop controls and complex segments remain unsupported;
+    /// the returned descriptor still checks each requested physical window.
+    pub fn constant_start_forward_prefix(&self, region: usize) -> Option<ConstantStartPrefix> {
+        let offset = self.constant_start_offset(region)?;
+        if offset == 0 || self.voice_modulation.has_loop_targets(region) { return None; }
+        let source = self.regions.get(region)?;
+        let template = source.cursor?;
+        let cursor = template.cursor(&self.cursor_loops);
+        if !cursor.trace_loops().iter().any(Option::is_some) { return None; }
+        // Reject offsets that already cross a transition, even when skip()
+        // would intentionally bypass that loop for the actual voice.
+        cursor.initial_forward_window(offset, 1.)?;
+        cursor.skip(offset).initial_forward_window(0, cursor.step())?;
+        Some(ConstantStartPrefix { asset: self.pcm.get(source.sample)?.asset_id(), template, offset })
     }
 
     /// One response per authored region, in its original order. Selection always
