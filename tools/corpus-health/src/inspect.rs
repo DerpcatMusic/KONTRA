@@ -418,6 +418,22 @@ fn widget_record(face: &sampler_ui_ir::Interface, n: usize, w: &sampler_ui_ir::W
     let range=match &w.kind {Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}|Kind::Table{range,..}=>Some(json!({"min":range.min,"max":range.max,"default":range.default,"step":range.step})),_=>None};
     let mut record = json!({"index":n,"name":w.name,"source_id":w.source_id,"page":w.page.0,"parent":w.parent.map(|p|p.0),"z_layer":w.z,"kind":format!("{:?}",w.kind),"rect":{"x":w.rect.x,"y":w.rect.y,"width":w.rect.width,"height":w.rect.height},"placement":format!("{:?}",w.placement),"auto_size":w.auto_size,"default_axes":w.default_axes,"binding":format!("{:?}",w.binding),"binding_id":match w.binding {Binding::Control(id)=>Some(id.0.to_string()),_=>None},"interactive":interactive,"components":w.components.iter().map(|id|id.0.to_string()).collect::<Vec<_>>(),"hidden":w.hidden,"visible":face.visible(WidgetRef(n)),"enabled":w.enabled,"text":w.text,"initial_value":w.initial_value,"range":range,"style":w.style.map(|s|s.0),"state_styles":w.state_styles.map(|s|s.map(|s|s.0)),"colors":format!("{:?}",w.colors),"menu_arrow":w.menu_arrow,"popup_display":w.popup_display,"uvi_meter_request":w.uvi_meter_request.map(|meter|json!({"element_id":meter.element_id,"element_node":meter.element_node,"scope":format!("{:?}",meter.scope),"bus_id":meter.bus_id,"use_output":meter.use_output,"display_as_mono":meter.display_as_mono})),"images":w.images.iter().map(|i|json!({"asset":i.asset.0,"role":format!("{:?}",i.role)})).collect::<Vec<_>>()});
     record["menu_hierarchy"] = w.menu_hierarchy.as_deref().map_or(Value::Null, menu_nodes);
+    // KSP publishes current scalar state in Widget.value. initial_value is the
+    // constructor seed and is not its menu selection after persistence/activation.
+    let scalar = match w.value.as_ref() {
+        Some(sampler_ui_ir::Value::Integer(value)) => Some(f64::from(*value)),
+        Some(sampler_ui_ir::Value::Real(value)) => Some(*value),
+        _ => None,
+    };
+    record["model_scalar_value"] = json!(scalar);
+    if let Kind::Menu { items } = &w.kind {
+        let value = scalar.unwrap_or(w.initial_value);
+        record["menu_items"] = json!(items.iter().enumerate().map(|(index,item)|json!({
+            "index":index,"text":item.text,"value":item.value,"visible":item.visible
+        })).collect::<Vec<_>>());
+        record["model_selected_item_index"] = json!(items.iter().position(|item|f64::from(item.value)==value));
+        record["menu_selection_scope"] = json!("Current exported widget scalar, then constructor seed; live control-overlay values and gestures are separate");
+    }
     record
 }
 
@@ -1818,6 +1834,29 @@ mod tests {
         assert_eq!(report[0]["label"], "A");
         assert_eq!(report[0]["children"][1]["item_index"], 2);
         assert_eq!(report[1]["children"][0]["item_index"], 1);
+    }
+
+    #[test]
+    fn menu_report_keeps_semantic_values_visibility_and_current_snapshot_selection() {
+        use sampler_ui_ir::{Interface, Kind, MenuItem, PageRef, Rect, Widget};
+        let mut widget=Widget::new("menu",PageRef(0),Rect::default(),Kind::Menu{items:vec![
+            MenuItem{text:"First".into(),value:30,visible:true},
+            MenuItem{text:"Hidden".into(),value:-4,visible:false},
+            MenuItem{text:"Last".into(),value:100,visible:true},
+        ]});
+        widget.initial_value=30.;
+        widget.value=Some(sampler_ui_ir::Value::Integer(-4));
+        let record=widget_record(&Interface::default(),0,&widget);
+        assert_eq!(record["initial_value"],30.);
+        assert_eq!(record["model_scalar_value"],-4.);
+        assert_eq!(record["model_selected_item_index"],1);
+        assert_eq!(record["menu_items"][2]["index"],2);
+        assert_eq!(record["menu_items"][2]["value"],100);
+        assert_eq!(record["menu_items"][1]["visible"],false);
+        widget.value=Some(sampler_ui_ir::Value::Integer(7));
+        let record=widget_record(&Interface::default(),0,&widget);
+        assert!(record["model_selected_item_index"].is_null());
+        assert_eq!(widget.value,Some(sampler_ui_ir::Value::Integer(7)));
     }
 
     struct Temp(PathBuf);
