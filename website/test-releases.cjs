@@ -21,11 +21,11 @@ async function run(platform, response, userAgent = '', maxTouchPoints = 0) {
 (async()=>{
   const good = {ok:true,json:async()=>({tag_name:'v0.3.393-nightly.test',html_url:'https://github.com/DerpcatMusic/KONTRA/releases/tag/v0.3.393',published_at:'2026-10-09T19:00:00Z'})};
   for(const [platform,expected] of [['Win32','windows'],['MacIntel','macos'],['Linux x86_64','linux']]) {
-    const r=await run(platform,good);assert.match(r.selected,new RegExp(expected));assert.equal(r.badge.hidden,false);assert.equal(r.label.textContent,'v0.3.393-nightly.test');
+    const r=await run(platform,good);assert.match(r.selected,new RegExp(expected));assert.equal(r.badge.hidden,false);assert.equal(r.label.textContent,'v0.3.393');assert.equal(r.label.title,'v0.3.393-nightly.test');assert.equal(r.download.dataset.detected,'true');
   }
   const mobile=await run('Linux armv8l',good,'Android');assert.equal(mobile.selected,undefined);
   const ipad=await run('MacIntel',good,'',5);assert.equal(ipad.selected,undefined);
-  const failure=await run('Win32',{ok:false});assert.equal(failure.label.href,'fallback');assert.match(failure.date.textContent,/See releases/);
+  const failure=await run('Win32',{ok:false});assert.equal(failure.label.href,'fallback');assert.equal(failure.date.textContent,'');
   const bad=await run('MacIntel',{ok:true,json:async()=>({tag_name:'bad',html_url:'https://evil.example/DerpcatMusic/KONTRA/releases/tag/bad'})});assert.equal(bad.label.href,'fallback');
   console.log('Release lookup: platform detection, Android exclusion, version display, API failure and URL validation pass.');
 })();

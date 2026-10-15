@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-10T01:05:22Z",
+  "generatedAt": "2026-10-15T22:20:52.090538Z",
   "title": "Design System: KONTRA Public Website",
   "extensions": {
     "colorMeta": {
@@ -168,6 +168,141 @@
           "oklch(80% 0.000 89.9)",
           "oklch(95% 0.000 89.9)"
         ]
+      },
+      "donation-hover": {
+        "role": "primary",
+        "displayName": "Donation Hover",
+        "canonical": "#f5cad7",
+        "tonalRamp": [
+          "oklch(15% 0.051 358.1)",
+          "oklch(25% 0.051 358.1)",
+          "oklch(35% 0.051 358.1)",
+          "oklch(45% 0.051 358.1)",
+          "oklch(55% 0.051 358.1)",
+          "oklch(65% 0.051 358.1)",
+          "oklch(80% 0.051 358.1)",
+          "oklch(95% 0.051 358.1)"
+        ]
+      },
+      "discord-blue": {
+        "role": "secondary",
+        "displayName": "Discord Blue",
+        "canonical": "#5865f2",
+        "tonalRamp": [
+          "oklch(15% 0.209 273.9)",
+          "oklch(25% 0.209 273.9)",
+          "oklch(35% 0.209 273.9)",
+          "oklch(45% 0.209 273.9)",
+          "oklch(55% 0.209 273.9)",
+          "oklch(65% 0.209 273.9)",
+          "oklch(80% 0.209 273.9)",
+          "oklch(95% 0.209 273.9)"
+        ]
+      },
+      "discord-hover": {
+        "role": "secondary",
+        "displayName": "Discord Hover",
+        "canonical": "#4752c4",
+        "tonalRamp": [
+          "oklch(15% 0.176 273.9)",
+          "oklch(25% 0.176 273.9)",
+          "oklch(35% 0.176 273.9)",
+          "oklch(45% 0.176 273.9)",
+          "oklch(55% 0.176 273.9)",
+          "oklch(65% 0.176 273.9)",
+          "oklch(80% 0.176 273.9)",
+          "oklch(95% 0.176 273.9)"
+        ]
+      },
+      "action-ink": {
+        "role": "neutral",
+        "displayName": "Action Ink",
+        "canonical": "#171719",
+        "tonalRamp": [
+          "oklch(15% 0.004 286.0)",
+          "oklch(25% 0.004 286.0)",
+          "oklch(35% 0.004 286.0)",
+          "oklch(45% 0.004 286.0)",
+          "oklch(55% 0.004 286.0)",
+          "oklch(65% 0.004 286.0)",
+          "oklch(80% 0.004 286.0)",
+          "oklch(95% 0.004 286.0)"
+        ]
+      },
+      "action-white": {
+        "role": "neutral",
+        "displayName": "Action White",
+        "canonical": "#fff",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "download-border": {
+        "role": "neutral",
+        "displayName": "Download Border",
+        "canonical": "#535353",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "download-hover": {
+        "role": "neutral",
+        "displayName": "Download Hover",
+        "canonical": "#3b3b3b",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "detected-metadata": {
+        "role": "neutral",
+        "displayName": "Detected Metadata",
+        "canonical": "#454549",
+        "tonalRamp": [
+          "oklch(15% 0.007 286.1)",
+          "oklch(25% 0.007 286.1)",
+          "oklch(35% 0.007 286.1)",
+          "oklch(45% 0.007 286.1)",
+          "oklch(55% 0.007 286.1)",
+          "oklch(65% 0.007 286.1)",
+          "oklch(80% 0.007 286.1)",
+          "oklch(95% 0.007 286.1)"
+        ]
+      },
+      "phase-marker": {
+        "role": "neutral",
+        "displayName": "Phase Marker",
+        "canonical": "#818181",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
       }
     },
     "typographyMeta": {
@@ -186,84 +321,124 @@
       "reading": {
         "displayName": "Reading Copy",
         "purpose": "Long-form documentation and support-table details."
+      },
+      "phase-heading-mobile": {
+        "displayName": "Mobile Phase Heading",
+        "purpose": "24px roadmap phase heading below 760px."
+      },
+      "technical": {
+        "displayName": "Technical Scope",
+        "purpose": "14px expanded engineering prose."
       }
     },
+    "shadows": [],
     "motion": [
       {
-        "name": "screenshot-settle",
-        "value": "0.7s cubic-bezier(.16, 1, .3, 1)",
-        "purpose": "One short entrance on the overview screenshot; removed when prefers-reduced-motion is set."
+        "name": "action-state",
+        "value": "150ms ease",
+        "purpose": "Community background and download background/border changes; disabled for reduced motion."
+      },
+      {
+        "name": "anchor-scroll",
+        "value": "smooth",
+        "purpose": "In-page navigation; auto for reduced motion."
       }
     ],
     "breakpoints": [
       {
-        "name": "tablet",
-        "value": "900px"
+        "name": "header-wrap",
+        "value": "1050px"
       },
       {
-        "name": "mobile",
-        "value": "640px"
+        "name": "reading-stack",
+        "value": "760px"
+      },
+      {
+        "name": "small-phone",
+        "value": "480px"
       }
     ]
   },
   "components": [
     {
-      "name": "Header and Navigation",
+      "name": "Patreon Donation",
+      "kind": "button",
+      "description": "Strong real-icon action repeated at header and footer right.",
+      "html": "<a class=\"ds-action ds-donate\" href=\"https://www.patreon.com/derpcatmusic\"><svg class=\"ds-icon\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc. --><path fill=\"currentColor\" d=\"M490 153.8c-.1-65.4-51-119-110.7-138.3-74.2-24-172-20.5-242.9 12.9-85.8 40.5-112.8 129.3-113.8 217.8-.8 72.8 6.4 264.4 114.6 265.8 80.3 1 92.3-102.5 129.5-152.3 26.4-35.5 60.5-45.5 102.4-55.9 72-17.8 121.1-74.7 121-150l-.1 0z\"/></svg><span>Donate</span></a>",
+      "css": ".ds-action{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:46px;padding:10px 16px;border:0;border-radius:0;font:13px/1.5 'Noto Sans',sans-serif;text-decoration:none;white-space:nowrap;transition:background-color 150ms ease}.ds-icon{width:20px;height:20px;flex-shrink:0}.ds-action:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(prefers-reduced-motion:reduce){.ds-action{transition:none}}.ds-donate{background:var(--accent);color:var(--action-ink)}.ds-donate:hover{background:#f5cad7;color:var(--action-ink)}",
+      "refersTo": "community-donate"
+    },
+    {
+      "name": "Discord Community",
+      "kind": "button",
+      "description": "Strong real-icon action repeated at header and footer right.",
+      "html": "<a class=\"ds-action ds-discord\" href=\"https://discord.gg/7hpCbGasQa\"><svg class=\"ds-icon\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 576 512\"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc. --><path fill=\"currentColor\" d=\"M492.5 69.8c-.2-.3-.4-.6-.8-.7-38.1-17.5-78.4-30-119.7-37.1-.4-.1-.8 0-1.1 .1s-.6 .4-.8 .8c-5.5 9.9-10.5 20.2-14.9 30.6-44.6-6.8-89.9-6.8-134.4 0-4.5-10.5-9.5-20.7-15.1-30.6-.2-.3-.5-.6-.8-.8s-.7-.2-1.1-.2c-41.3 7.1-81.6 19.6-119.7 37.1-.3 .1-.6 .4-.8 .7-76.2 113.8-97.1 224.9-86.9 334.5 0 .3 .1 .5 .2 .8s.3 .4 .5 .6c44.4 32.9 94 58 146.8 74.2 .4 .1 .8 .1 1.1 0s.7-.4 .9-.7c11.3-15.4 21.4-31.8 30-48.8 .1-.2 .2-.5 .2-.8s0-.5-.1-.8-.2-.5-.4-.6-.4-.3-.7-.4c-15.8-6.1-31.2-13.4-45.9-21.9-.3-.2-.5-.4-.7-.6s-.3-.6-.3-.9 0-.6 .2-.9 .3-.5 .6-.7c3.1-2.3 6.2-4.7 9.1-7.1 .3-.2 .6-.4 .9-.4s.7 0 1 .1c96.2 43.9 200.4 43.9 295.5 0 .3-.1 .7-.2 1-.2s.7 .2 .9 .4c2.9 2.4 6 4.9 9.1 7.2 .2 .2 .4 .4 .6 .7s.2 .6 .2 .9-.1 .6-.3 .9-.4 .5-.6 .6c-14.7 8.6-30 15.9-45.9 21.8-.2 .1-.5 .2-.7 .4s-.3 .4-.4 .7-.1 .5-.1 .8 .1 .5 .2 .8c8.8 17 18.8 33.3 30 48.8 .2 .3 .6 .6 .9 .7s.8 .1 1.1 0c52.9-16.2 102.6-41.3 147.1-74.2 .2-.2 .4-.4 .5-.6s.2-.5 .2-.8c12.3-126.8-20.5-236.9-86.9-334.5zm-302 267.7c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.2-52.8 59.2zm195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.2 59.2-52.8 59.2z\"/></svg><span>Join Discord</span></a>",
+      "css": ".ds-action{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:46px;padding:10px 16px;border:0;border-radius:0;font:13px/1.5 'Noto Sans',sans-serif;text-decoration:none;white-space:nowrap;transition:background-color 150ms ease}.ds-icon{width:20px;height:20px;flex-shrink:0}.ds-action:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(prefers-reduced-motion:reduce){.ds-action{transition:none}}.ds-discord{background:var(--discord);color:#fff}.ds-discord:hover{background:var(--discord-hover);color:#fff}",
+      "refersTo": "community-discord"
+    },
+    {
+      "name": "Alternative Platform Download",
+      "kind": "button",
+      "description": "Square OS action with architecture and a download icon.",
+      "html": "<a class=\"ds-download\" href=\"https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-linux-x86_64.zip\" aria-label=\"Download KONTRA for Linux\"><svg class=\"ds-os\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc. --><path fill=\"currentColor\" d=\"M220.9 123.3c1 .5 1.8 1.7 3 1.7 1.1 0 2.8-.4 2.9-1.5 .2-1.4-1.9-2.3-3.2-2.9-1.7-.7-3.9-1-5.5-.1-.4 .2-.8 .7-.6 1.1 .3 1.3 2.3 1.1 3.4 1.7zM199 125c1.2 0 2-1.2 3-1.7 1.1-.6 3.1-.4 3.5-1.6 .2-.4-.2-.9-.6-1.1-1.6-.9-3.8-.6-5.5 .1-1.3 .6-3.4 1.5-3.2 2.9 .1 1 1.8 1.5 2.8 1.4zM420 403.8c-3.6-4-5.3-11.6-7.2-19.7-1.8-8.1-3.9-16.8-10.5-22.4-1.3-1.1-2.6-2.1-4-2.9-1.3-.8-2.7-1.5-4.1-2 9.2-27.3 5.6-54.5-3.7-79.1-11.4-30.1-31.3-56.4-46.5-74.4-17.1-21.5-33.7-41.9-33.4-72 .5-45.9 5.1-131.2-75.8-131.3-102.4-.2-76.8 103.4-77.9 135.2-1.7 23.4-6.4 41.8-22.5 64.7-18.9 22.5-45.5 58.8-58.1 96.7-6 17.9-8.8 36.1-6.2 53.3-6.5 5.8-11.4 14.7-16.6 20.2-4.2 4.3-10.3 5.9-17 8.3s-14 6-18.5 14.5c-2.1 3.9-2.8 8.1-2.8 12.4 0 3.9 .6 7.9 1.2 11.8 1.2 8.1 2.5 15.7 .8 20.8-5.2 14.4-5.9 24.4-2.2 31.7 3.8 7.3 11.4 10.5 20.1 12.3 17.3 3.6 40.8 2.7 59.3 12.5 19.8 10.4 39.9 14.1 55.9 10.4 11.6-2.6 21.1-9.6 25.9-20.2 12.5-.1 26.3-5.4 48.3-6.6 14.9-1.2 33.6 5.3 55.1 4.1 .6 2.3 1.4 4.6 2.5 6.7l0 .1c8.3 16.7 23.8 24.3 40.3 23 16.6-1.3 34.1-11 48.3-27.9 13.6-16.4 36-23.2 50.9-32.2 7.4-4.5 13.4-10.1 13.9-18.3 .4-8.2-4.4-17.3-15.5-29.7zM223.8 87.3c9.8-22.2 34.2-21.8 44-.4 6.5 14.2 3.6 30.9-4.3 40.4-1.6-.8-5.9-2.6-12.6-4.9 1.1-1.2 3.1-2.7 3.9-4.6 4.8-11.8-.2-27-9.1-27.3-7.3-.5-13.9 10.8-11.8 23-4.1-2-9.4-3.5-13-4.4-1-6.9-.3-14.6 2.9-21.8zM183.1 75.8c10.1 0 20.8 14.2 19.1 33.5-3.5 1-7.1 2.5-10.2 4.6 1.2-8.9-3.3-20.1-9.6-19.6-8.4 .7-9.8 21.2-1.8 28.1 1 .8 1.9-.2-5.9 5.5-15.6-14.6-10.5-52.1 8.4-52.1zm-13.6 60.7c6.2-4.6 13.6-10 14.1-10.5 4.7-4.4 13.5-14.2 27.9-14.2 7.1 0 15.6 2.3 25.9 8.9 6.3 4.1 11.3 4.4 22.6 9.3 8.4 3.5 13.7 9.7 10.5 18.2-2.6 7.1-11 14.4-22.7 18.1-11.1 3.6-19.8 16-38.2 14.9-3.9-.2-7-1-9.6-2.1-8-3.5-12.2-10.4-20-15-8.6-4.8-13.2-10.4-14.7-15.3-1.4-4.9 0-9 4.2-12.3zm3.3 334c-2.7 35.1-43.9 34.4-75.3 18-29.9-15.8-68.6-6.5-76.5-21.9-2.4-4.7-2.4-12.7 2.6-26.4l0-.2c2.4-7.6 .6-16-.6-23.9-1.2-7.8-1.8-15 .9-20 3.5-6.7 8.5-9.1 14.8-11.3 10.3-3.7 11.8-3.4 19.6-9.9 5.5-5.7 9.5-12.9 14.3-18 5.1-5.5 10-8.1 17.7-6.9 8.1 1.2 15.1 6.8 21.9 16l19.6 35.6c9.5 19.9 43.1 48.4 41 68.9zm-1.4-25.9c-4.1-6.6-9.6-13.6-14.4-19.6 7.1 0 14.2-2.2 16.7-8.9 2.3-6.2 0-14.9-7.4-24.9-13.5-18.2-38.3-32.5-38.3-32.5-13.5-8.4-21.1-18.7-24.6-29.9s-3-23.3-.3-35.2c5.2-22.9 18.6-45.2 27.2-59.2 2.3-1.7 .8 3.2-8.7 20.8-8.5 16.1-24.4 53.3-2.6 82.4 .6-20.7 5.5-41.8 13.8-61.5 12-27.4 37.3-74.9 39.3-112.7 1.1 .8 4.6 3.2 6.2 4.1 4.6 2.7 8.1 6.7 12.6 10.3 12.4 10 28.5 9.2 42.4 1.2 6.2-3.5 11.2-7.5 15.9-9 9.9-3.1 17.8-8.6 22.3-15 7.7 30.4 25.7 74.3 37.2 95.7 6.1 11.4 18.3 35.5 23.6 64.6 3.3-.1 7 .4 10.9 1.4 13.8-35.7-11.7-74.2-23.3-84.9-4.7-4.6-4.9-6.6-2.6-6.5 12.6 11.2 29.2 33.7 35.2 59 2.8 11.6 3.3 23.7 .4 35.7 16.4 6.8 35.9 17.9 30.7 34.8-2.2-.1-3.2 0-4.2 0 3.2-10.1-3.9-17.6-22.8-26.1-19.6-8.6-36-8.6-38.3 12.5-12.1 4.2-18.3 14.7-21.4 27.3-2.8 11.2-3.6 24.7-4.4 39.9-.5 7.7-3.6 18-6.8 29-32.1 22.9-76.7 32.9-114.3 7.2zm257.4-11.5c-.9 16.8-41.2 19.9-63.2 46.5-13.2 15.7-29.4 24.4-43.6 25.5s-26.5-4.8-33.7-19.3c-4.7-11.1-2.4-23.1 1.1-36.3 3.7-14.2 9.2-28.8 9.9-40.6 .8-15.2 1.7-28.5 4.2-38.7 2.6-10.3 6.6-17.2 13.7-21.1 .3-.2 .7-.3 1-.5 .8 13.2 7.3 26.6 18.8 29.5 12.6 3.3 30.7-7.5 38.4-16.3 9-.3 15.7-.9 22.6 5.1 9.9 8.5 7.1 30.3 17.1 41.6 10.6 11.6 14 19.5 13.7 24.6zM173.4 148.7c2 1.9 4.7 4.5 8 7.1 6.6 5.2 15.8 10.6 27.3 10.6 11.6 0 22.5-5.9 31.8-10.8 4.9-2.6 10.9-7 14.8-10.4s5.9-6.3 3.1-6.6-2.6 2.6-6 5.1c-4.4 3.2-9.7 7.4-13.9 9.8-7.4 4.2-19.5 10.2-29.9 10.2s-18.7-4.8-24.9-9.7c-3.1-2.5-5.7-5-7.7-6.9-1.5-1.4-1.9-4.6-4.3-4.9-1.4-.1-1.8 3.7 1.7 6.5z\"/></svg><span class=\"ds-copy\"><span>Linux</span><small>x64</small></span><svg class=\"ds-arrow\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc. --><path fill=\"currentColor\" d=\"M256 32c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 210.7-41.4-41.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l96 96c12.5 12.5 32.8 12.5 45.3 0l96-96c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L256 242.7 256 32zM64 320c-35.3 0-64 28.7-64 64l0 32c0 35.3 28.7 64 64 64l320 0c35.3 0 64-28.7 64-64l0-32c0-35.3-28.7-64-64-64l-46.9 0-56.6 56.6c-31.2 31.2-81.9 31.2-113.1 0L110.9 320 64 320zm304 56a24 24 0 1 1 0 48 24 24 0 1 1 0-48z\"/></svg></a>",
+      "css": ".ds-download{display:grid;grid-template-columns:26px minmax(0,1fr) 18px;align-items:center;gap:14px;min-height:66px;padding:14px 16px;border:1px solid #535353;border-radius:0;background:var(--hover);color:var(--text);font:15px/1.65 'Noto Sans',sans-serif;text-decoration:none;transition:background-color 150ms ease,border-color 150ms ease}.ds-download:hover{border-color:var(--text);background:#3b3b3b;color:var(--text)}.ds-os{width:26px;height:26px}.ds-arrow{width:18px;height:18px}.ds-copy{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px}.ds-copy small{color:var(--muted);font-size:12px}.ds-download:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(max-width:480px){.ds-download{padding-inline:14px}}@media(prefers-reduced-motion:reduce){.ds-download{transition:none}}",
+      "refersTo": "platform-download"
+    },
+    {
+      "name": "Detected Desktop Download",
+      "kind": "button",
+      "description": "Light primary choice with assistive platform identification.",
+      "html": "<a class=\"ds-download\" data-detected=\"true\" href=\"https://github.com/DerpcatMusic/KONTRA/releases/latest/download/KONTRA-nightly-linux-x86_64.zip\" aria-label=\"Download KONTRA for Linux\"><svg class=\"ds-os\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc. --><path fill=\"currentColor\" d=\"M220.9 123.3c1 .5 1.8 1.7 3 1.7 1.1 0 2.8-.4 2.9-1.5 .2-1.4-1.9-2.3-3.2-2.9-1.7-.7-3.9-1-5.5-.1-.4 .2-.8 .7-.6 1.1 .3 1.3 2.3 1.1 3.4 1.7zM199 125c1.2 0 2-1.2 3-1.7 1.1-.6 3.1-.4 3.5-1.6 .2-.4-.2-.9-.6-1.1-1.6-.9-3.8-.6-5.5 .1-1.3 .6-3.4 1.5-3.2 2.9 .1 1 1.8 1.5 2.8 1.4zM420 403.8c-3.6-4-5.3-11.6-7.2-19.7-1.8-8.1-3.9-16.8-10.5-22.4-1.3-1.1-2.6-2.1-4-2.9-1.3-.8-2.7-1.5-4.1-2 9.2-27.3 5.6-54.5-3.7-79.1-11.4-30.1-31.3-56.4-46.5-74.4-17.1-21.5-33.7-41.9-33.4-72 .5-45.9 5.1-131.2-75.8-131.3-102.4-.2-76.8 103.4-77.9 135.2-1.7 23.4-6.4 41.8-22.5 64.7-18.9 22.5-45.5 58.8-58.1 96.7-6 17.9-8.8 36.1-6.2 53.3-6.5 5.8-11.4 14.7-16.6 20.2-4.2 4.3-10.3 5.9-17 8.3s-14 6-18.5 14.5c-2.1 3.9-2.8 8.1-2.8 12.4 0 3.9 .6 7.9 1.2 11.8 1.2 8.1 2.5 15.7 .8 20.8-5.2 14.4-5.9 24.4-2.2 31.7 3.8 7.3 11.4 10.5 20.1 12.3 17.3 3.6 40.8 2.7 59.3 12.5 19.8 10.4 39.9 14.1 55.9 10.4 11.6-2.6 21.1-9.6 25.9-20.2 12.5-.1 26.3-5.4 48.3-6.6 14.9-1.2 33.6 5.3 55.1 4.1 .6 2.3 1.4 4.6 2.5 6.7l0 .1c8.3 16.7 23.8 24.3 40.3 23 16.6-1.3 34.1-11 48.3-27.9 13.6-16.4 36-23.2 50.9-32.2 7.4-4.5 13.4-10.1 13.9-18.3 .4-8.2-4.4-17.3-15.5-29.7zM223.8 87.3c9.8-22.2 34.2-21.8 44-.4 6.5 14.2 3.6 30.9-4.3 40.4-1.6-.8-5.9-2.6-12.6-4.9 1.1-1.2 3.1-2.7 3.9-4.6 4.8-11.8-.2-27-9.1-27.3-7.3-.5-13.9 10.8-11.8 23-4.1-2-9.4-3.5-13-4.4-1-6.9-.3-14.6 2.9-21.8zM183.1 75.8c10.1 0 20.8 14.2 19.1 33.5-3.5 1-7.1 2.5-10.2 4.6 1.2-8.9-3.3-20.1-9.6-19.6-8.4 .7-9.8 21.2-1.8 28.1 1 .8 1.9-.2-5.9 5.5-15.6-14.6-10.5-52.1 8.4-52.1zm-13.6 60.7c6.2-4.6 13.6-10 14.1-10.5 4.7-4.4 13.5-14.2 27.9-14.2 7.1 0 15.6 2.3 25.9 8.9 6.3 4.1 11.3 4.4 22.6 9.3 8.4 3.5 13.7 9.7 10.5 18.2-2.6 7.1-11 14.4-22.7 18.1-11.1 3.6-19.8 16-38.2 14.9-3.9-.2-7-1-9.6-2.1-8-3.5-12.2-10.4-20-15-8.6-4.8-13.2-10.4-14.7-15.3-1.4-4.9 0-9 4.2-12.3zm3.3 334c-2.7 35.1-43.9 34.4-75.3 18-29.9-15.8-68.6-6.5-76.5-21.9-2.4-4.7-2.4-12.7 2.6-26.4l0-.2c2.4-7.6 .6-16-.6-23.9-1.2-7.8-1.8-15 .9-20 3.5-6.7 8.5-9.1 14.8-11.3 10.3-3.7 11.8-3.4 19.6-9.9 5.5-5.7 9.5-12.9 14.3-18 5.1-5.5 10-8.1 17.7-6.9 8.1 1.2 15.1 6.8 21.9 16l19.6 35.6c9.5 19.9 43.1 48.4 41 68.9zm-1.4-25.9c-4.1-6.6-9.6-13.6-14.4-19.6 7.1 0 14.2-2.2 16.7-8.9 2.3-6.2 0-14.9-7.4-24.9-13.5-18.2-38.3-32.5-38.3-32.5-13.5-8.4-21.1-18.7-24.6-29.9s-3-23.3-.3-35.2c5.2-22.9 18.6-45.2 27.2-59.2 2.3-1.7 .8 3.2-8.7 20.8-8.5 16.1-24.4 53.3-2.6 82.4 .6-20.7 5.5-41.8 13.8-61.5 12-27.4 37.3-74.9 39.3-112.7 1.1 .8 4.6 3.2 6.2 4.1 4.6 2.7 8.1 6.7 12.6 10.3 12.4 10 28.5 9.2 42.4 1.2 6.2-3.5 11.2-7.5 15.9-9 9.9-3.1 17.8-8.6 22.3-15 7.7 30.4 25.7 74.3 37.2 95.7 6.1 11.4 18.3 35.5 23.6 64.6 3.3-.1 7 .4 10.9 1.4 13.8-35.7-11.7-74.2-23.3-84.9-4.7-4.6-4.9-6.6-2.6-6.5 12.6 11.2 29.2 33.7 35.2 59 2.8 11.6 3.3 23.7 .4 35.7 16.4 6.8 35.9 17.9 30.7 34.8-2.2-.1-3.2 0-4.2 0 3.2-10.1-3.9-17.6-22.8-26.1-19.6-8.6-36-8.6-38.3 12.5-12.1 4.2-18.3 14.7-21.4 27.3-2.8 11.2-3.6 24.7-4.4 39.9-.5 7.7-3.6 18-6.8 29-32.1 22.9-76.7 32.9-114.3 7.2zm257.4-11.5c-.9 16.8-41.2 19.9-63.2 46.5-13.2 15.7-29.4 24.4-43.6 25.5s-26.5-4.8-33.7-19.3c-4.7-11.1-2.4-23.1 1.1-36.3 3.7-14.2 9.2-28.8 9.9-40.6 .8-15.2 1.7-28.5 4.2-38.7 2.6-10.3 6.6-17.2 13.7-21.1 .3-.2 .7-.3 1-.5 .8 13.2 7.3 26.6 18.8 29.5 12.6 3.3 30.7-7.5 38.4-16.3 9-.3 15.7-.9 22.6 5.1 9.9 8.5 7.1 30.3 17.1 41.6 10.6 11.6 14 19.5 13.7 24.6zM173.4 148.7c2 1.9 4.7 4.5 8 7.1 6.6 5.2 15.8 10.6 27.3 10.6 11.6 0 22.5-5.9 31.8-10.8 4.9-2.6 10.9-7 14.8-10.4s5.9-6.3 3.1-6.6-2.6 2.6-6 5.1c-4.4 3.2-9.7 7.4-13.9 9.8-7.4 4.2-19.5 10.2-29.9 10.2s-18.7-4.8-24.9-9.7c-3.1-2.5-5.7-5-7.7-6.9-1.5-1.4-1.9-4.6-4.3-4.9-1.4-.1-1.8 3.7 1.7 6.5z\"/></svg><span class=\"ds-copy\"><span>Linux</span><small>x64</small></span><svg class=\"ds-arrow\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 448 512\"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc. --><path fill=\"currentColor\" d=\"M256 32c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 210.7-41.4-41.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l96 96c12.5 12.5 32.8 12.5 45.3 0l96-96c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L256 242.7 256 32zM64 320c-35.3 0-64 28.7-64 64l0 32c0 35.3 28.7 64 64 64l320 0c35.3 0 64-28.7 64-64l0-32c0-35.3-28.7-64-64-64l-46.9 0-56.6 56.6c-31.2 31.2-81.9 31.2-113.1 0L110.9 320 64 320zm304 56a24 24 0 1 1 0 48 24 24 0 1 1 0-48z\"/></svg><span class=\"ds-detected\">Your platform</span></a>",
+      "css": ".ds-download{display:grid;grid-template-columns:26px minmax(0,1fr) 18px;align-items:center;gap:14px;min-height:66px;padding:14px 16px;border:1px solid #535353;border-radius:0;background:var(--hover);color:var(--text);font:15px/1.65 'Noto Sans',sans-serif;text-decoration:none;transition:background-color 150ms ease,border-color 150ms ease}.ds-download:hover{border-color:var(--text);background:#3b3b3b;color:var(--text)}.ds-os{width:26px;height:26px}.ds-arrow{width:18px;height:18px}.ds-copy{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px}.ds-copy small{color:var(--muted);font-size:12px}.ds-download:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(max-width:480px){.ds-download{padding-inline:14px}}@media(prefers-reduced-motion:reduce){.ds-download{transition:none}}.ds-download[data-detected=true]{background:var(--text);border-color:var(--text);color:var(--action-ink)}.ds-download[data-detected=true]:hover{background:#fff;border-color:#fff}.ds-download[data-detected=true] small{color:#454549}.ds-detected{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}",
+      "refersTo": "platform-download-detected"
+    },
+    {
+      "name": "Page Navigation",
       "kind": "nav",
-      "refersTo": "current-navigation",
-      "description": "Shared wordmark and four-page navigation, with a thin accent underline on the current page.",
-      "html": "<header class=\"ds-header\"><a class=\"ds-brand\" href=\"index.html\"><svg viewBox=\"0 0 26 26\" fill=\"none\" aria-hidden=\"true\"><path d=\"M3 4h20v18H3zM13 4v18\" stroke=\"currentColor\" stroke-width=\"2\"/></svg>KONTRA</a><nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"#overview\" aria-current=\"page\">Overview</a><a href=\"#docs\">Documentation</a><a href=\"#support\">Support</a><a href=\"#roadmap\">Roadmap</a></nav></header>",
-      "css": ".ds-header{min-height:94px;display:flex;align-items:center;justify-content:space-between;gap:25px;border-bottom:1px solid var(--line)}.ds-brand{display:flex;gap:13px;align-items:center;text-decoration:none;color:var(--text);font:700 23px/1.2 'Noto Sans',sans-serif;letter-spacing:.035em}.ds-brand svg{width:25px;height:25px}.ds-nav{display:flex;gap:30px;align-items:center}.ds-nav a{color:var(--muted);font:14px/1.4 'Noto Sans',sans-serif;text-decoration:none;padding:10px 0}.ds-nav a[aria-current=page]{color:var(--text);border-bottom:1px solid var(--accent)}.ds-header a:focus-visible{outline:2px solid var(--accent);outline-offset:6px}@media(max-width:640px){.ds-header{min-height:110px;flex-wrap:wrap;gap:0;padding:20px 0 12px}.ds-brand{font-size:21px}.ds-nav{width:100%;flex-wrap:wrap;justify-content:flex-start;gap:8px 22px}.ds-nav a{font-size:12px}}"
-    },
-    {
-      "name": "Platform Download",
-      "kind": "card",
-      "refersTo": "platform-download",
-      "description": "Text-led platform link with an optional desktop-detection outline and label.",
-      "html": "<a class=\"ds-download\" href=\"#release\" data-detected=\"true\"><span>Download for Linux</span><small>x64</small><span class=\"ds-detected\">Your platform</span></a>",
-      "css": ".ds-download{min-height:89px;display:flex;flex-direction:column;align-items:flex-start;padding:16px 20px;background:var(--surface);color:var(--text);font:15px/1.65 'Noto Sans',sans-serif;text-decoration:none}.ds-download:hover{background:#303030}.ds-download[data-detected=true]{outline:1px solid var(--accent)}.ds-download small{margin-top:4px;color:var(--muted);font-size:12px}.ds-detected{display:none;margin-top:5px;color:var(--accent);font-size:12px}.ds-download[data-detected=true] .ds-detected{display:block}.ds-download:focus-visible{outline:2px solid var(--accent);outline-offset:6px}@media(max-width:640px){.ds-download{min-height:72px}}"
-    },
-    {
-      "name": "Product Screenshot",
-      "kind": "custom",
-      "description": "Wide, uncropped proof image followed by a quiet caption.",
-      "html": "<figure class=\"ds-shot\"><img src=\"assets/kontra-ui.webp\" width=\"1967\" height=\"1248\" alt=\"KONTRA library browser and rack with the Conflux interface and on-screen keyboard\"><figcaption>KONTRA, with an instrument loaded. Library artwork belongs to its respective owners.</figcaption></figure>",
-      "css": ".ds-shot{margin:0;animation:ds-settle .7s cubic-bezier(.16,1,.3,1)}.ds-shot img{display:block;width:100%;height:auto;background:var(--field)}.ds-shot figcaption{display:flex;justify-content:space-between;gap:20px;padding:16px 0;color:var(--muted);font:12px/1.5 'Noto Sans',sans-serif}@keyframes ds-settle{from{transform:translateY(8px)}to{transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.ds-shot{animation:none}}@media(max-width:640px){.ds-shot figcaption{display:block}.ds-shot figcaption span+span{display:block;margin-top:7px}}"
-    },
-    {
-      "name": "Documentation Notice",
-      "kind": "custom",
-      "description": "Compact graphite callout for the nightly-alpha compatibility and backup warning.",
-      "html": "<div class=\"ds-notice\"><p><strong>Nightly alpha.</strong> Features and saved-state formats can change between builds. Preserve backups and check the exact release notes.</p></div>",
-      "css": ".ds-notice{margin-bottom:35px;padding:22px;background:var(--surface);color:var(--text);font:14px/1.65 'Noto Sans',sans-serif}.ds-notice p{margin:0}.ds-notice strong{font-weight:700;color:var(--text)}"
+      "description": "Shared page links with an underline on the current page.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"index.html\" aria-current=\"page\">Overview</a><a href=\"docs.html\">Documentation</a><a href=\"features.html\">Compatibility</a><a href=\"roadmap.html\">Roadmap</a></nav>",
+      "css": ".ds-nav{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 24px}.ds-nav a{display:inline-flex;align-items:center;min-height:44px;color:var(--muted);font:13px/1.65 'Noto Sans',sans-serif;text-decoration:none}.ds-nav a:hover{color:var(--accent)}.ds-nav a[aria-current=page]{color:var(--text);text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:10px}.ds-nav a:focus-visible{outline:2px solid var(--accent);outline-offset:5px}@media(max-width:480px){.ds-nav{justify-content:space-between;gap:0 12px}.ds-nav a{font-size:12px}}",
+      "refersTo": "current-navigation"
     },
     {
       "name": "Installation Disclosure",
       "kind": "custom",
-      "refersTo": "support-disclosure",
-      "description": "Native details disclosure keeps platform installation steps available in the reading flow.",
-      "html": "<details class=\"ds-disclosure\"><summary>Windows x64</summary><p>Download and extract the Windows ZIP. Use the standalone executable or install the plugin bundle in your host's configured directory.</p></details>",
-      "css": ".ds-disclosure{padding:18px 0;border-bottom:1px solid var(--line)}.ds-disclosure summary{cursor:pointer;color:var(--text);font:17px/1.4 'Noto Sans',sans-serif}.ds-disclosure p{margin:18px 0 12px;color:#c7c7c7;font:15px/1.65 'Noto Sans',sans-serif}.ds-disclosure summary:focus-visible{outline:2px solid var(--accent);outline-offset:6px}"
+      "description": "Native platform instructions; Windows starts open.",
+      "html": "<details class=\"ds-disclosure\" open><summary>Windows</summary><p>Extract the ZIP. Run the standalone executable, or copy the CLAP/VST3 bundle into your DAW\u2019s plugin directory and rescan. Keep the bundle intact.</p></details>",
+      "css": ".ds-disclosure{border-bottom:1px solid var(--line);padding:12px 0;color:var(--text);font:16px/1.65 'Noto Sans',sans-serif}.ds-disclosure summary{display:list-item;align-content:center;cursor:pointer;font-size:16px;min-height:44px}.ds-disclosure p{margin:16px 0 8px;color:#c7c7c7;font-size:15px;max-width:70ch}.ds-disclosure summary:focus-visible{outline:2px solid var(--accent);outline-offset:5px}"
     },
     {
-      "name": "Support Table Group",
+      "name": "Compatibility Evidence Group",
       "kind": "custom",
-      "description": "Expandable evidence group with feature, status, and scope; mobile rows keep scope below the first line.",
-      "html": "<details class=\"ds-support\"><summary>Kontakt · formats</summary><div class=\"ds-table-scroll\"><table><thead><tr><th scope=\"col\">Feature</th><th scope=\"col\">Support</th><th scope=\"col\">Scope and gaps</th></tr></thead><tbody><tr><td>Sample playback</td><td class=\"ds-partial\">Partial</td><td>Bounded playback path; verify instrument behavior against the linked evidence.</td></tr></tbody></table></div></details>",
-      "css": ".ds-support{margin:0;padding:0;border-bottom:1px solid var(--line)}.ds-support summary{padding:22px 0;color:var(--text);cursor:pointer;font:23px/1.35 'Noto Sans',sans-serif}.ds-table-scroll{overflow-x:auto;margin-bottom:25px}.ds-support table{width:100%;min-width:660px;border-collapse:collapse;margin:0 0 25px;font:13px/1.6 'Noto Sans',sans-serif}.ds-support th,.ds-support td{text-align:left;vertical-align:top;padding:14px 16px 14px 0;border-bottom:1px solid var(--line)}.ds-support th{color:var(--muted);font-size:13px;font-weight:400}.ds-support td:nth-child(2){white-space:nowrap}.ds-support td:nth-child(2).ds-partial{color:var(--accent)}.ds-support td:last-child{color:#c7c7c7}.ds-support summary:focus-visible{outline:2px solid var(--accent);outline-offset:6px}@media(max-width:640px){.ds-support summary{font-size:21px}.ds-support table{display:block;min-width:0}.ds-support thead{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.ds-support tbody{display:block}.ds-support tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 15px;border-bottom:1px solid var(--line);padding:15px 0}.ds-support td{display:block;border:0;padding:0;font-size:14px}.ds-support td:nth-child(2){padding-top:2px;font-size:12px}.ds-support td:last-child{grid-column:1/-1;margin-top:9px;color:var(--muted)}.ds-table-scroll{overflow:visible}}"
+      "description": "Evidence group keeps feature, status and scope together on mobile.",
+      "html": "<details class=\"ds-support-group\" open><summary>Kontakt \u00b7 formats</summary><div class=\"ds-table-scroll\"><table><thead><tr><th scope=\"col\">Feature</th><th scope=\"col\">Status</th><th scope=\"col\">Scope and gaps</th></tr></thead><tbody><tr><td>Sample playback</td><td class=\"ds-status-partial\">Partial</td><td>Verify instrument behavior against the linked evidence.</td></tr></tbody></table></div></details>",
+      "css": "a:focus-visible, summary:focus-visible, .ds-table-scroll:focus-visible{ outline: 2px solid var(--accent); outline-offset: 5px; }.ds-table-scroll{ overflow-x: auto; }.ds-support-group{ margin: 0; padding: 0; }.ds-support-group summary{ padding-block: 20px; font-size: 18px; }.ds-support-group table{ width: 100%; min-width: 660px; margin: 0 0 24px; border-collapse: collapse; }.ds-support-group th, .ds-support-group td{ padding: 14px 16px 14px 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 13px; line-height: 1.6; }.ds-support-group th{ color: var(--muted); font-weight: 400; }.ds-support-group th:first-child{ width: 27%; }.ds-support-group th:nth-child(2){ width: 15%; }.ds-support-group td:nth-child(2){ white-space: nowrap; }.ds-support-group td:last-child a{ color: var(--muted); }.ds-support-group td:last-child a:hover{ color: var(--accent); }.ds-support-group .ds-table-scroll{ margin-bottom: 24px; }.ds-support-group code{ font-size: 12px; }.ds-status-partial{ color: var(--accent); }@media (max-width: 760px){.ds-support-group table{ display: block; min-width: 0; }.ds-support-group thead{ position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }.ds-support-group tbody{ display: block; }.ds-support-group tr{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 15px; border-bottom: 1px solid var(--line); padding-block: 15px; }.ds-support-group td{ display: block; border: 0; padding: 0; font-size: 14px; }.ds-support-group td:nth-child(2){ padding-top: 2px; font-size: 12px; }.ds-support-group td:last-child{ grid-column: 1 / -1; margin-top: 9px; color: var(--muted); }.ds-support-group td:last-child a{ color: var(--text); }.ds-support-group .ds-table-scroll{ overflow: visible; }}.ds-support-group{color:var(--text);font:16px/1.65 'Noto Sans',sans-serif;border-bottom:1px solid var(--line)}.ds-support-group summary{display:list-item;min-height:44px;cursor:pointer}.ds-support-group summary:focus-visible{outline:2px solid var(--accent);outline-offset:5px}"
+    },
+    {
+      "name": "Connected Phase Roadmap",
+      "kind": "custom",
+      "description": "Thin priority sequence with visible goals and native technical scope.",
+      "html": "<ol class=\"ds-roadmap-track\"><li class=\"ds-roadmap-phase\" id=\"first-trustworthy-playback\"><span class=\"ds-phase-order\">First</span><div class=\"ds-phase-content\"><h2>Reliable playback</h2><ul class=\"ds-phase-goals\"><li>Note and MPE handling</li><li>Bounded audio callbacks</li><li>Streaming under storage pressure</li></ul><details class=\"ds-phase-details\"><summary>Technical scope</summary><div class=\"ds-technical-prose\"><p>Make failures explicit and fix musical correctness before broadening compatibility claims.</p><ul><li>Preserve note, family, expression and release ownership across sustain/sostenuto, MPE channel reuse, voice stealing, script-generated notes and plan replacement.</li><li>Complete missing MIDI 2.0 expression/management and source-specific event ordering against canonical timestamped events.</li><li>Finish modulation composition, envelope/LFO routing and source parameter laws; keep unsupported targets visible in load reports.</li><li>Establish production streaming admission, cold-onset preload, resource budgets and starvation behavior under real storage pressure.</li><li>Keep script execution, worker handoffs and retirement bounded; move allocation, filesystem work and destruction off audio callbacks.</li></ul><p><strong>Exit evidence:</strong> regression cases exercise the actual musical behavior; callback/heap guards and real storage workloads demonstrate bounded operation; errors retain their cause and build identity. A silent fallback is not a passing result.</p><p>Sources: <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/SCHEDULING_SLICE.md\">ownership and scheduling</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/MIDI_INGRESS.md\">MIDI</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/MODULATION.md\">modulation</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/STREAMING.md\">streaming</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/HANDOFF.md#known-engineering-limits-and-next-priorities\">current priorities</a>.</p></div></details></div></li><li class=\"ds-roadmap-phase\" id=\"next-kontakt-behavior-and-interfaces\"><span class=\"ds-phase-order\">Next</span><div class=\"ds-phase-content\"><h2>Kontakt</h2><ul class=\"ds-phase-goals\"><li>KSP scripts and callbacks</li><li>Instrument interfaces and resources</li><li>Effects, modulation and state recall</li></ul><details class=\"ds-phase-details\"><summary>Technical scope</summary><div class=\"ds-technical-prose\"><p>Translate instruments into shared services while preserving native semantics and recognizable authored interfaces.</p><ul><li>Expand versioned containers, resources, samples, snapshots and instrument semantic admission with strict malformed-input boundaries.</li><li>Complete KSP language, callbacks, builtins and underlying services, including asynchronous operations and persistent state.</li><li>Resolve stored-event note-off across script stages without losing the physical key lifetime or upstream release callbacks.</li><li>Expand source engines, loops, filters, effects and modulation laws against reference behavior.</li><li>Complete generic, stock and bitmap KSP views, native control resources and requested UI generations; retain Original and Vector presentation as distinct modes.</li><li>Preserve multi-part routing, automation identities and state recall through the production host integration.</li></ul><p><strong>Exit evidence:</strong> versioned instruments and scripts produce the expected audio, callbacks, UI interactions and recall in controlled reference comparisons. Decoding a file, displaying artwork or recognizing a builtin alone does not close the gate.</p><p>Sources: <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/KONTAKT_SOURCE.md\">Kontakt source boundary</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/KSP_PARITY.md\">KSP completion map</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/architecture-v2/UI_FRONTENDS.md\">UI frontends</a>, <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/COMPATIBILITY.md\">compatibility checklist</a>.</p></div></details></div></li></ol>",
+      "css": ".ds-roadmap-track{ max-width: 1000px; margin: 0 auto; padding: 0; list-style: none; }.ds-roadmap-phase{ position: relative; display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 36px; padding: 0 0 44px; }.ds-roadmap-phase::before{ content: \"\"; position: absolute; left: 100px; top: 19px; bottom: -19px; width: 1px; background: var(--line); }.ds-roadmap-phase:last-child::before{ display: none; }.ds-phase-order{ position: relative; padding-top: 7px; padding-right: 28px; color: var(--muted); font-size: 13px; }.ds-phase-order::after{ content: \"\"; position: absolute; right: 4px; top: 12px; width: 11px; height: 11px; border: 1px solid #818181; border-radius: 50%; background: var(--bg); }.ds-roadmap-phase:first-child .ds-phase-order{ color: var(--accent); }.ds-roadmap-phase:first-child .ds-phase-order::after{ background: var(--accent); border-color: var(--accent); }.ds-phase-content{ min-width: 0; padding-bottom: 28px; border-bottom: 1px solid var(--line); }.ds-phase-content h2{ margin: 0; font-size: 26px; }.ds-phase-goals{ display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 22px 0 12px; padding: 0; list-style: none; font-size: 13px; }.ds-phase-goals li{ flex: 1 1 150px; }.ds-phase-details{ padding: 0; border: 0; }.ds-phase-details > summary{ width: fit-content; color: var(--muted); font-size: 13px; }.ds-phase-details > summary:hover{ color: var(--text); }.ds-technical-prose{ max-width: 78ch; padding-block: 12px; }.ds-technical-prose p, .ds-technical-prose li{ color: #c7c7c7; font-size: 14px; }.ds-technical-prose ul{ padding-left: 20px; }.ds-technical-prose li + li{ margin-top: 10px; }.ds-technical-prose table{ width: 100%; border-collapse: collapse; font-size: 13px; }.ds-technical-prose th, .ds-technical-prose td{ padding: 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }.ds-technical-prose a{ overflow-wrap: anywhere; }@media (max-width: 760px){.ds-roadmap-phase{ grid-template-columns: 86px minmax(0, 1fr); gap: 24px; }.ds-roadmap-phase::before{ left: 76px; }.ds-phase-content h2{ font-size: 24px; }.ds-phase-goals{ display: block; margin-top: 18px; }.ds-phase-goals li + li{ margin-top: 8px; }}@media (max-width: 480px){.ds-roadmap-phase{ grid-template-columns: 1fr; gap: 8px; padding-left: 28px; padding-bottom: 28px; }.ds-roadmap-phase::before{ left: 5px; top: 18px; bottom: -18px; }.ds-phase-order{ padding: 0; }.ds-phase-order::after{ left: -28px; right: auto; top: 6px; }.ds-phase-content{ padding-bottom: 24px; }.ds-phase-content h2{ font-size: 24px; }}.ds-roadmap-track{color:var(--text);font:16px/1.65 'Noto Sans',sans-serif}.ds-phase-content h2{font-weight:400;line-height:1.2;letter-spacing:-.02em}.ds-phase-details summary{display:list-item;align-content:center;cursor:pointer;min-height:44px}.ds-phase-details summary:focus-visible{outline:2px solid var(--accent);outline-offset:5px}",
+      "refersTo": "technical-disclosure"
+    },
+    {
+      "name": "Footer Legal Disclosure",
+      "kind": "custom",
+      "description": "Right-aligned disclosure retains complete legal context.",
+      "html": "<details class=\"ds-footer-legal\"><summary>Legal</summary><p>Independent of Native Instruments and UVI. Third-party names and artwork belong to their respective owners. Bring your own legally usable libraries. <a href=\"https://github.com/DerpcatMusic/KONTRA/blob/main/docs/LEGAL.md\">Rights and provenance</a>.</p></details>",
+      "css": ".ds-footer-legal{ max-width: 70ch; margin-left: auto; padding: 0; border: 0; }.ds-footer-legal summary{ font-size: 12px; text-align: right; }.ds-footer-legal p{ font-size: 12px; }.ds-footer-legal{color:var(--muted);font:12px/1.65 'Noto Sans',sans-serif}.ds-footer-legal summary{display:list-item;align-content:center;cursor:pointer;min-height:44px}.ds-footer-legal p{margin:16px 0 8px}.ds-footer-legal a{color:inherit;text-underline-offset:5px}.ds-footer-legal a:hover{color:var(--accent)}.ds-footer-legal summary:focus-visible,.ds-footer-legal a:focus-visible{outline:2px solid var(--accent);outline-offset:5px}",
+      "refersTo": "footer-legal"
     }
   ],
   "narrative": {
     "northStar": "A Native Instrument's Public Home",
-    "overview": [
-      "This website extends the native graphite and Noto Sans system recorded in the root DESIGN.md. The native editor remains the authority for the application; this document records the web reading and download surface. Graphite fills and square edges carry through, while the website uses a muted pink accent for links, focus, active navigation, and platform detection.",
-      "The overview keeps the message short, puts the current release identity and three platform downloads before an uncropped image of the actual player, and then points to installation, support evidence, and the roadmap. The documentation pages use the same wordmark, navigation, and footer so technical detail stays part of one site."
-    ],
+    "overview": "This website extends the native graphite and Noto Sans system recorded in the root [DESIGN.md](../DESIGN.md). The native editor remains the authority for the application; this document records the web reading and download surface. Graphite fills and square edges carry through, while the website uses muted pink for interaction and donations, recognizable Discord blue for community access, and a light primary download for the detected desktop platform.\n\nThe overview keeps the message short and puts the release identity and three icon-led downloads before an uncropped image of the actual player. Shared header and footer actions make donations and community access prominent. Reading pages retain essential instructions and evidence; the roadmap uses a quiet connected phase sequence with complete implementation detail in native disclosures.",
     "keyCharacteristics": [
       "Dark graphite surfaces with thin dividers and quiet neutral text.",
-      "A restrained pink accent that marks interaction and partial support.",
+      "Purposeful pink donation actions, Discord blue, and light detected downloads on graphite.",
       "A bundled Noto Sans face and square page controls.",
-      "The real player screenshot as the main product proof, followed by practical reference pages."
+      "The real player screenshot as product proof, concise reading, and expandable engineering scope."
     ],
     "rules": [
       {
@@ -273,7 +448,7 @@
       },
       {
         "name": "The Pink Signal Rule",
-        "body": "Use the website's pink accent for interaction, active state, focus, and partial support; do not turn it into a decorative wash.",
+        "body": "Use pink for donation actions, interaction, focus, first-phase priority, and partial support; keep the page foundation graphite.",
         "section": "colors"
       },
       {
@@ -303,7 +478,7 @@
       },
       {
         "name": "The Square Edge Rule",
-        "body": "Keep controls and containers rectangular; reserve the accent outline for an actual selected or focused state.",
+        "body": "Keep controls and containers rectangular; use circular markers only for the roadmap sequence and an accent outline for keyboard focus.",
         "section": "shapes"
       },
       {
@@ -313,7 +488,7 @@
       },
       {
         "name": "The Evidence Stays Open Rule",
-        "body": "Keep support status and its scope visible in each row, including at mobile widths.",
+        "body": "Within expanded support groups, keep status and its full scope visible together in each row, including at mobile widths.",
         "section": "components"
       }
     ],
@@ -321,15 +496,16 @@
       "Do keep the website an extension of the native graphite and Noto Sans system.",
       "Do lead the overview with the current release and all three platform downloads.",
       "Do use the real, uncropped player screenshot as product proof.",
-      "Do keep installation guidance, support detail, and roadmap sections available through the shared page shell.",
+      "Do preserve full evidence and phase implementation scope in keyboard-native disclosures.",
+      "Do use pinned real service and OS SVGs with text labels and working static links.",
       "Do retain the visible scope and gaps beside support statuses on every screen size."
     ],
     "donts": [
       "Don't create a separate palette, rounded-card system, or shadow-heavy layer.",
       "Don't replace the player screenshot with stock artwork or a fabricated interface.",
-      "Don't use the pink accent as a large background or as a compatibility success color.",
+      "Don't spread action colors into decorative page backgrounds or use pink as a compatibility success color.",
       "Don't hide support gaps behind hover, tooltips, or mobile-only horizontal scrolling.",
-      "Don't describe roadmap sections as collapsible; the shipped page presents them as headings and prose."
+      "Don't turn the priority sequence into a completion chart or a promised release schedule."
     ]
   }
 }
