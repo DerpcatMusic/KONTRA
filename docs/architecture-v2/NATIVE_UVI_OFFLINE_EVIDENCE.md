@@ -59,3 +59,36 @@ the encoded input with a decoded-stage selector and was correctly refused;
 the successful request uses the independently validated research image.
 Earlier activation-window observations remain historical failures rather than
 being rewritten as successful runtime capture.
+
+## Bounded original-code execution
+
+Six original setter calls match independently calculated state and exact write
+masks at 44.1, 48 and 96 kHz. The rate setter updates both chaos denominators
+and the phase increment; the examined frequency setter resets state only in
+mode 3, and the depth setter writes its scalar field. All 4,816 caller-owned
+bytes are checked at each snapshot.
+
+The generator reads a fifth Windows x64 stack argument. A private additive
+eight-slot bridge first passed authored ABI checks for 0..8 arguments, rejection
+of 9, the existing four-slot convention, mixed integer/float/pointer arguments,
+stack alignment/home space, return registers, nonvolatile registers and caller
+sentinels. Neither the installed tool nor vendor instructions were modified.
+Private profile registration remains explicitly caller-reviewed authority.
+
+On that adapter, six original generator calls compare Lorenz type 7 and an
+authored 257-cell User type 9 table at the three rates over 64 frames. All
+caller state, output and canary bytes match the independent binary32 model.
+Another 42 calls reuse the same source closure and 13,920-byte caller blocks
+through actual partitions 0, 1, 31, 32, 33, 63 and 64. Each partition's state and
+outputs match its own model; this does not assert partition-invariant Euler
+integration. Lorenz commits actual cell steps and computes an additional
+uncommitted boundary lookahead. User interpolation uses the binary32-derived
+u32 phase increment, 24-bit fraction and wrapped table endpoint.
+
+The cases explicitly set reset, sync mode, delay, rise and smoothing to zero,
+and bipolar/depth to one. They do not establish constructor defaults, absent
+User-table behavior, triggering, shared ownership or host PCM parity. Runtime
+admission of these waveforms remains separate work. Private receipts under
+`kontra-uvi-lfo-20261015` are `kernel-state-20261015/independent-results.json`,
+`kernel-generator-draft-20261015/independent-results.json` and
+`kernel-generator-partitions-20261015/independent-results.json`.
