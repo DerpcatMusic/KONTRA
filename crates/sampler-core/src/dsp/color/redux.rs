@@ -41,9 +41,9 @@ struct Poles {
 
 impl Poles {
     fn new(fc: f64) -> Self {
-        let w = fc * 6.283185307179586;
+        let w = fc * std::f64::consts::TAU;
         let p: [C; 8] = std::array::from_fn(|k| {
-            let a = (k + 1) as f64 * 0.39269908169872414 + 1.3744467859455345;
+            let a = (k + 1) as f64 * std::f64::consts::FRAC_PI_8 + 1.3744467859455345;
             (a.cos() * w, a.sin() * w)
         });
         let f4 = fc * fc * fc * fc;
