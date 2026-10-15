@@ -122,6 +122,8 @@ fn documented_property(key: &str) -> bool {
             | "arrowColour"
             | "0dBColour"
             | "fillStyle"
+            | "drawInnerEdge"
+            | "innerEdgeColour"
             | "displayAsMono"
             | "showPopupDisplay"
             | "displayArrow"
@@ -909,6 +911,12 @@ impl ScriptHost {
             wd.colors.bar = text(w, "sliderColour")
                 .or_else(|| text(w, "fillColour"))
                 .and_then(|c| color(&c));
+            if matches!(wd.kind, ui::Kind::Table { .. }) {
+                wd.table_inner_edge = Some(ui::TableInnerEdge {
+                    visible: flag(w, "drawInnerEdge", true),
+                    color: text(w, "innerEdgeColour").and_then(|c| color(&c)),
+                });
+            }
             if kind == "Viewport" {
                 wd.viewport = Some(
                     w.table("viewPosition")
@@ -1142,6 +1150,8 @@ impl ScriptHost {
                         "arrowColour",
                         "0dBColour",
                         "fillStyle",
+                        "drawInnerEdge",
+                        "innerEdgeColour",
                         "displayAsMono",
                         "showPopupDisplay",
                         "displayArrow",
@@ -1159,6 +1169,14 @@ impl ScriptHost {
                         "gridColour",
                     ];
                     let consumed = match key.as_str() {
+                        "drawInnerEdge" => {
+                            matches!(wd.kind, ui::Kind::Table { .. })
+                                && matches!(w.raw_read("drawInnerEdge"), Some(Value::Boolean(_)))
+                        }
+                        "innerEdgeColour" => {
+                            matches!(wd.kind, ui::Kind::Table { .. })
+                                && text(w, &key).and_then(|c| color(&c)).is_some()
+                        }
                         "textColourOn" | "textColourOff" => {
                             matches!(wd.kind, ui::Kind::Button { .. })
                                 && text(w, &key).and_then(|c| color(&c)).is_some()
