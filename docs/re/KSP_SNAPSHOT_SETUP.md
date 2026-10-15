@@ -4,7 +4,7 @@ Una Corda Felt explicitly sets snapshot mode 1 in physical script slot 0, line
 13; Analog Strings does so in physical slot 2, line 42. Metadata-only reads used
 the production container/resource authority without running initialization. The
 source digests are respectively
-`a100b5a113abaed37e7c8e4443d49fe9e9c468912e5138eb32e398c41beedd13` and
+`b7bbcb44b60baa3bfd0c01e23d6e9961a4b81e176c1d831872b62cfc37d69a7e` and
 `5df3f62429a96f366f9250b29e7b370712fbfe00ae6448d8adf4453bafdbcee1`.
 No other physical slot in either instrument contains a snapshot policy setter.
 The sanitized private receipt is `ksp-snapshot-lifecycle-raw-metadata.json`.
