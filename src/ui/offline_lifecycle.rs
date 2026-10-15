@@ -872,7 +872,7 @@ fn switch_probe_inner(
                         let epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(owner.request));
                         let command = ingresses.get_mut(&owner.request)
                             .ok_or("Snapshot action has no current ingress")?
-                            .submit_snapshot_overlay(ready.state, Box::new([sampler_core::SnapshotOverlayEpoch {
+                            .submit_snapshot_overlay(ready.state, ready.menus, Box::new([sampler_core::SnapshotOverlayEpoch {
                                 sequence: epoch, expected: owner.request,
                             }])).map_err(|_| "Snapshot action queue refused payload")?;
                         record["snapshot_mode"] = json!(format!("{:?}", ready.mode));

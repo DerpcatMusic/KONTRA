@@ -45,6 +45,7 @@ pub use widget::{
 mod control;
 pub use control::{
     NativeSnapshotOverlay, SnapshotOverlayEpoch, SnapshotOverlayFence, SnapshotOverlayRefusal,
+    SnapshotMenuPosition, WidgetMenuStorage,
     SNAPSHOT_OVERLAY_VALUE_CAPACITY,
     BehaviorAdmissionFailure, BehaviorAdmissionOwner,
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
