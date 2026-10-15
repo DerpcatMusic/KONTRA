@@ -544,20 +544,16 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         }
         let w = &face.widgets[at.0];
         let r = face.page_rect(at);
-        if x < r.x as f64
-            || y < r.y as f64
-            || x >= (r.x as f64 + r.width as f64)
-            || y >= (r.y as f64 + r.height as f64)
-        {
-            continue;
-        }
-        if let Some(c) = w.colors.background {
+        let contains = |width: f64, height: f64| {
+            x >= r.x && y >= r.y && x < r.x + width && y < r.y + height
+        };
+        if let Some(c) = w.colors.background.filter(|_| contains(r.width, r.height)) {
             blend(&mut rgb, c);
         }
         if w.hide.background {
             continue;
         }
-        if let Some(img) = w
+        if let Some((asset, img)) = w
             .images
             .iter()
             .find(|i| i.role == Use::Background)
@@ -565,17 +561,49 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
                 assets
                     .get(i.asset)
                     .and_then(|p| p.at(i.frame.unwrap_or(0) as usize))
+                    .map(|image| (i.asset, image))
             })
         {
+            let [width, height] = label_background_size(face, at, asset, [r.width, r.height], 1.);
+            if !contains(width, height) {
+                continue;
+            }
             sample(
                 &mut rgb,
                 img,
-                (x - r.x as f64) / r.width.max(1.) as f64 * img.width as f64,
-                (y - r.y as f64) / r.height.max(1.) as f64 * img.height as f64,
+                (x - r.x) / width.max(1.) * img.width as f64,
+                (y - r.y) / height.max(1.) * img.height as f64,
             );
         }
     }
     0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 140.
+}
+
+/// Kontakt Label text/control bounds and its picture's bounds are independent.
+/// NI's resizable flags decide which picture axes may follow WIDTH/HEIGHT.
+fn label_background_size(
+    face: &Interface,
+    widget: WidgetRef,
+    asset: ir::AssetRef,
+    control: [f64; 2],
+    scale: f64,
+) -> [f64; 2] {
+    if !matches!(face.source, ir::Source::Ksp { .. } | ir::Source::PerformanceView)
+        || !matches!(face.widgets[widget.0].kind, Kind::Label)
+    {
+        return control;
+    }
+    let Some(ir::Asset { kind: ir::AssetKind::Image(meta), .. }) = face.assets.get(asset.0) else {
+        return control;
+    };
+    let Some(size) = meta.size else { return control };
+    let mut result = control;
+    for (axis, intrinsic) in [size.width * scale, size.height * scale].into_iter().enumerate() {
+        if !meta.stretch[axis] && intrinsic.is_finite() && intrinsic > 0. {
+            result[axis] = intrinsic;
+        }
+    }
+    result
 }
 
 fn art(
@@ -621,6 +649,7 @@ fn retained_art(
         ir::AssetKind::Image(m) => m,
         _ => ir::ImageMeta::default(),
     };
+    let [w, h] = label_background_size(face, n, asset, [w, h], scale);
     let r = face.page_rect(n);
     // The retained fill owns the image Arc, so this pointer cannot be reused
     // while that tree is live. Parent placement/clipping is rebuilt outside it;
@@ -642,10 +671,23 @@ fn retained_art(
             meta.margins.right,
         ),
     );
-    ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
+    let image = ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
         art(face, asset, p, frame, w, h, scale)
-    })
+    });
+    if matches!(face.source, ir::Source::Ksp { .. } | ir::Source::PerformanceView)
+        && matches!(face.widgets[n.0].kind, Kind::Label)
+    {
+        // A smaller fixed picture still starts at the control's authored
+        // position; the overlay's default alignment would center it instead.
+        image.at(0., 0.)
+    } else {
+        image
+    }
 }
+
+#[cfg(test)]
+#[path = "picture_geometry_tests.rs"]
+mod picture_geometry_tests;
 
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
 /// first cell's corner; `set_ui_height` rows are [`GRID_ROW_HEIGHT`] tall.
