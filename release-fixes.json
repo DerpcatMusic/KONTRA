@@ -4982,6 +4982,15 @@
       ],
       "validation": "Actual VWinds source name suffix7 carries EventId12.21 importer tests passed, including15 explicit valid/invalid cases and existing absent-field polarity behavior. Native LFO merger gates remain separate. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
       "accepted": true
+    },
+    {
+      "id": "cold-shipping-test-build-time-budget",
+      "summary": "Allow cold shipping-profile test compilation to finish without dropping any release checks",
+      "source_commits": [
+        "9967cb32b75bb76689c10ee3fc3d3d0d275b861b"
+      ],
+      "validation": "Hosted attempt1 exhausted90minutes during compilation with no test harness started and a cold cache. Existing workflow lint, script tests, signing/publication mocks and version tests pass after the narrow release-only180minute budget change. Ordinary CI remains90minutes; all test/profile/native/editor/signing/license/required gates remain unchanged.180minute completion remains subject to hosted execution.",
+      "accepted": true
     }
   ]
 }
