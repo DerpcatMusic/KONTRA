@@ -30,13 +30,6 @@ self.onmessage = async ({ data }) => {
         } catch { /* Raw diagnostics can contain library data; keep them local to the engine. */ }
       },
     });
-    engine.FS.mkdir('/library');
-    engine.FS.mount(engine.WORKERFS, {
-      blobs: data.files.map(({ path, file }) => ({ name: path, data: file })),
-    }, '/library');
-    engine.ENV.KONTRA_SCAN_ACTIVE = '1';
-    engine.ENV.KONTRA_INSPECT_READ_ONLY_INIT = '1';
-    engine.ENV.KONTRA_UVI_AUDIT_SEED = '0';
     postMessage({ type: 'progress', phase: 'opening' });
     const args = ['/library/' + data.path, '--initialize'];
     if (data.program !== '') args.push('--program', data.program);
