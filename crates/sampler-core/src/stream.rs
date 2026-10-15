@@ -187,6 +187,13 @@ pub struct StreamWorker {
 impl StreamCache {
     /// Nominal streaming polyphony; exact horizon admission also checks shared
     /// demand because pitch and crossfade windows can exceed three pages.
+    pub(crate) fn capacity(&self) -> usize { self.entries.len() }
+    pub(crate) fn onset_failed(&self, asset: AssetId) -> bool {
+        self.entries.iter().flatten().any(|entry| entry.request.key.asset == asset
+            && matches!(entry.state, State::Failed(error)
+                if error != DecodeFailure::Unavailable || entry.retries == 3))
+    }
+
     pub fn voice_budget(&self) -> usize {
         (self.entries.len() / 3).max(1)
     }
@@ -835,13 +842,43 @@ impl crate::Runtime {
     /// The horizon admitted with each start, matched to the frontend's service
     /// horizon. Setup side; changing it does not allocate.
     pub fn set_stream_horizon(&mut self, frames: u32) -> Result<(), Error> {
-        if frames == 0 {
+        if frames < self.stream_start_runway {
             return Err(Error::InvalidInput);
         }
         self.stream_horizon = frames;
         self.refresh_stream_reservations();
         Ok(())
     }
+    /// Explicit startup contract, in output frames, for subsequently admitted
+    /// streamed sources. Default 1 preserves first-window admission. A larger
+    /// value can delay an otherwise resident-first-window source: with cold
+    /// starts enabled it waits at its exact offset; otherwise admission refuses
+    /// it. No already-playing source is held or replayed. Configure before
+    /// starts, with no live voices. Existing sources are never rewritten.
+    ///
+    /// Use the requested latency-derived preload horizon, not the shorter quota
+    /// fallback. The service/reservation horizon must cover this runway. This
+    /// certifies the current source/pitch snapshot, not future controller events
+    /// or unbounded storage latency. Nonempty service extends held-source
+    /// demand to this contract even if passed a shorter render fragment.
+    /// Sampler sources only: stretch groups require a different grain footprint.
+    /// Configuration rejects retained stretch plans; a later adopted stretch
+    /// plan keeps the legacy first-window path for every source in that plan.
+    /// Equal authored start deadlines in one family release as a cohort; no
+    /// source/envelope/voice DSP state advances while held. Complex geometry
+    /// conservatively requires its full source view or fails pool admission.
+    /// No waiting, I/O, allocation or cache flush.
+    pub fn set_stream_start_runway(&mut self, frames: u32) -> Result<(), Error> {
+        if frames == 0 || frames > self.stream_horizon || self.voices.count() != 0 {
+            return Err(Error::InvalidInput);
+        }
+        if frames > 1 && self.plans.slots.iter().filter_map(|s| s.value.as_ref())
+            .any(|g| g.prepared.stretch_groups.iter().any(Option::is_some))
+        { return Err(Error::InvalidInput); }
+        self.stream_start_runway = frames;
+        Ok(())
+    }
+
     pub fn stream_underruns(&self) -> u64 {
         self.stream_underruns
     }
@@ -956,8 +993,11 @@ impl crate::Runtime {
     }
 
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
+        // A nonempty service also covers held sources' admitted startup
+        // contract. A zero-frame poll keeps its established poll-only demand.
+        let checked_frames = if frames == 0 { 0 } else { frames.max(self.stream_start_runway) };
         self.now
-            .checked_add(u64::from(frames))
+            .checked_add(u64::from(checked_frames))
             .ok_or(StreamError::ClockOverflow)?;
         let mut cache = self.stream_cache.take().ok_or(StreamError::NotConfigured)?;
         // Temporarily detach only the audio-owned cache to borrow the immutable
@@ -965,40 +1005,11 @@ impl crate::Runtime {
         let result = self.service_cache(&mut cache, frames);
         if matches!(
             result,
-            Err(StreamError::DecodeFailed(_) | StreamError::Disconnected)
+            Err(StreamError::DecodeFailed(_) | StreamError::Disconnected | StreamError::Capacity | StreamError::SequenceExhausted)
         ) {
-            // A terminal source fault cannot leave a never-started onset held.
-            for word in 0..self.voice_activity.len() {
-                let mut bits = self.voice_activity[word];
-                while bits != 0 {
-                    let index = word * 64 + bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let Some(voice) = self.voices.slots[index].value else {
-                        continue;
-                    };
-                    if !voice.cursor.holding_onset() {
-                        continue;
-                    }
-                    let note = self
-                        .notes
-                        .get(self.families.get(voice.family.0).unwrap().note.0)
-                        .unwrap();
-                    let asset = self
-                        .plans
-                        .get(note.plan.0)
-                        .unwrap()
-                        .asset(voice.sample)
-                        .asset_id();
-                    let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
-                        entry.request.key.asset == asset && matches!(entry.state,
-                            State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
-                    });
-                    if failed {
-                        self.end_voice(crate::VoiceId(self.voices.id(index)));
-                    }
-                }
-            }
+            self.fail_held_onsets(&cache, result.as_ref().err().copied().unwrap());
         }
+
         cache.wake();
         self.stream_cache = Some(cache);
         result
@@ -1048,6 +1059,7 @@ impl crate::Runtime {
                 // Visit each page once per run of demand on it, at its first
                 // (earliest) deadline.
                 let mut last = None;
+                let pool_pages = cache.entries.len();
                 let mut visit = |frames: std::ops::Range<usize>, deadline: u64| {
                     crate::prepare::uncovered(head, frames, |frames| {
                         for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES {
@@ -1073,6 +1085,9 @@ impl crate::Runtime {
                         true
                     })
                 };
+                let frames = if frames != 0 && voice.cursor.pending_start_runway() > 1 {
+                    frames.max(voice.cursor.pending_start_runway())
+                } else { frames };
                 let Some(demand) = self
                     .voice_demand(crate::VoiceId(self.voices.id(index)), frames)
                     .expect("live voice and validated horizon")
@@ -1083,7 +1098,15 @@ impl crate::Runtime {
                 // Native loop slots reduce to the single-loop law of their
                 // current segment, so they keep the geometric reaches too.
                 let cursor = full.segment_cursor();
-                if let Some((reach, direction, lead)) =
+                if full.bounded_demand() {
+                    if full.reservation_pages(demand.frames) > pool_pages {
+                        failure = Some(StreamError::Capacity);
+                    } else {
+                        for (range, offset) in full.runway_reach(demand.frames).into_iter().flatten() {
+                            if !visit(range, demand.at + u64::from(offset)) { break; }
+                        }
+                    }
+                } else if let Some((reach, direction, lead)) =
                     cursor.linear_reach(demand.frames.saturating_sub(1))
                 {
                     // A plain stretch: whole pages in traversal order, without
@@ -1123,7 +1146,10 @@ impl crate::Runtime {
                     }
                 } else {
                     let complete =
-                        full.visit_demand(demand.frames, demand.envelope, |offset, frames| {
+                        full.visit_demand(demand.frames,
+                            if full.bounded_demand() {
+                                crate::EnvelopeState::new(crate::Envelope::default())
+                            } else { demand.envelope }, |offset, frames| {
                             visit(frames, demand.at + u64::from(offset))
                         });
                     debug_assert!(complete || failure.is_some());
@@ -1137,9 +1163,20 @@ impl crate::Runtime {
         first_error.map_or(Ok(ready), Err)
     }
 
-    /// Whether a source can start: `Ok(true)` for a cold start (its first
-    /// window is not resident, and `set_cold_starts` allows starting it
-    /// silent until its pages arrive).
+    /// A newly adopted stretch plan keeps legacy admission even when the
+    /// previous sampler plan opted into cohort runways. Apply this same policy
+    /// in selection preflight and the sole concrete voice admission boundary.
+    pub(crate) fn stream_start_cursor(&self, plan: crate::PlanId,
+                                     cursor: crate::source::Cursor) -> crate::source::Cursor {
+        let sampler = !self.plans.get(plan.0).unwrap().prepared.stretch_groups.iter().any(Option::is_some);
+        if sampler && !self.offline && self.stream_start_runway > 1 {
+            cursor.with_start_runway(self.stream_start_runway)
+        } else { cursor }
+    }
+
+    /// Whether a source can start: `Ok(true)` for a cold start (its admitted
+    /// runway is not resident, and `set_cold_starts` allows starting it silent
+    /// until the complete runway is available). Default runway is one frame.
     pub(crate) fn check_source_ready(
         &self,
         asset: &Pcm,
@@ -1150,9 +1187,12 @@ impl crate::Runtime {
             return Ok(false);
         }
         let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+        if cursor.pending_start_runway() > 1
+            && cursor.reservation_pages(self.stream_horizon) > cache.entries.len()
+        { return Err(Error::Capacity); }
         let head = asset.try_head();
         let head = head.as_deref().map_or(&[][..], |h| h);
-        let ready = cursor.visit_demand(1, crate::EnvelopeState::new(envelope), |_, range| {
+        let ready = cursor.runway_ready(cursor.pending_start_runway().max(1), crate::EnvelopeState::new(envelope), |range| {
             crate::prepare::uncovered(head, range, |frames| {
                 (frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES).all(|index| {
                     cache.status(PageKey {
@@ -1165,8 +1205,20 @@ impl crate::Runtime {
         if ready {
             return Ok(false);
         }
-        asset.mark_cold();
-        cache.cold.store(true, std::sync::atomic::Ordering::Relaxed);
+        // A quota-shortened but present head needs page handoff, not a reload
+        // of the same short head. Preserve cold-head reloads only for a missing
+        // first window. Page service owns the runway requests in either case.
+        let first_ready = cursor.runway_ready(1, crate::EnvelopeState::new(envelope), |range| {
+            crate::prepare::uncovered(head, range, |frames| {
+                (frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES).all(|index| {
+                    cache.status(PageKey { asset: asset.asset_id(), index }) == PageStatus::Ready
+                })
+            })
+        });
+        if !first_ready {
+            asset.mark_cold();
+            cache.cold.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         if self.cold_starts {
             Ok(true)
         } else {

@@ -152,6 +152,7 @@ mod parallel;
 mod release;
 pub use parallel::Threads;
 mod render;
+mod onset;
 pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
     ReleaseStatus, ReleaseVelocity, Trigger,
@@ -603,6 +604,8 @@ struct Voice {
     /// v1 audible_voices: applied channel gains at the last render chunk.
     last_gains: [f32; 2],
     started: bool,
+    /// Authored absolute deadline: equal deadlines in one family form an onset cohort.
+    start_at: u64,
     /// Admission order, for oldest-first stealing.
     born: u64,
     /// Fading out after being stolen; no longer counts against polyphony.
@@ -615,6 +618,9 @@ struct Voice {
 }
 
 impl Voice {
+    fn held_onset(&self) -> bool {
+        self.cursor.holding_onset() || self.cursor.pending_start_runway() > 1
+    }
     /// Set this block's pitch step. A stretch voice's cursor is the time axis:
     /// it advances at the speed-scaled rate while the engine plays `pitch`.
     fn set_step(&mut self, pitch: f64) {
@@ -882,6 +888,8 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
+    onsets: onset::Storage,
+    pending_onsets: usize,
     stealing: Option<steal::Stealing>,
     stolen: usize,
     /// Voices stolen since the runtime started.
@@ -897,6 +905,7 @@ pub struct Runtime {
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
+    stream_start_runway: u32,
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
     voice_drops: u64,
@@ -1116,6 +1125,8 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
+            onsets: onset::Storage::new(limits.voices),
+            pending_onsets: 0,
             stealing: None,
             stolen: 0,
             steals: 0,
@@ -1128,6 +1139,7 @@ impl Runtime {
             offline: false,
             stream_fault: None,
             stream_horizon: 1,
+            stream_start_runway: 1,
             stream_admission_errors: [0; 2],
             stream_reserved: 0,
             voice_drops: 0,
@@ -1898,6 +1910,9 @@ impl Runtime {
         if !asset.residency_permitted() {
             return Err(Error::NotReady);
         }
+        // Full conservative geometry is shared by admission, service, and the
+        // pinned cohort release gate. No requested latency is shortened.
+        let cursor = self.stream_start_cursor(note.plan, cursor);
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
@@ -1962,11 +1977,7 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor: if cold && !self.offline {
-                cursor.cold()
-            } else {
-                cursor
-            },
+            cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
             mod_pitch: (f64::NAN, 1.0),
             stream_pages,
@@ -1979,6 +1990,7 @@ impl Runtime {
             gain,
             last_gains: [0.0; 2],
             started: at == self.now,
+            start_at: at,
             born: self.voice_order,
             stolen: false,
             group: None,
@@ -2000,6 +2012,7 @@ impl Runtime {
         if at > self.now {
             self.queue(at, Action::Start(id));
         }
+        self.pending_onsets += usize::from(cursor.pending_start_runway() > 1);
         self.stream_reserved += stream_pages;
         self.cold_started += u64::from(cold);
         self.voice_order += 1;
