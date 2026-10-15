@@ -55,3 +55,11 @@ and sends `RedrawRequested`; showing a window also sends that event. The
 KONTRA native host invalidates its GPU cache for that event and for explicit
 full-redraw/resize requests. This gives a freshly shown/restored embedded editor
 a complete frame even when its model has not changed.
+
+## macOS open-state query
+
+`WindowHandle::is_open` returns the inverse of the `closed` flag. That flag starts
+false and becomes true when the view closes or deallocates, so the query now
+matches the public `Window::is_open` contract. This one-line correction was
+verified against those lifecycle writes; it has not been exercised on AppKit in
+this Linux checkout.
