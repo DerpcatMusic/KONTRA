@@ -29,6 +29,7 @@ for path in root.glob('*.html'):
     assert page.headings == 1, f'expected one h1: {path}'
     assert 'main' in page.ids
     pages[path] = page
+assert len(set(footers)) == 1, 'site pages must share the same footer'
 assert {'index.html', 'docs.html', 'features.html', 'roadmap.html', 'inspector.html'} <= {p.name for p in pages}
 for path, page in pages.items():
     for link in page.links:
