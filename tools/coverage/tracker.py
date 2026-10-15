@@ -71,8 +71,10 @@ def engine_features(category, product, area, label=lambda r: r["name"], rows=Non
 
 # ------------------------------------------------------------------ Kontakt
 def effects():
-    mods = {int(h, 16): n for h, n in re.findall(r'\(0x([0-9a-f]+), "([^"]+)"\)', build.source("effects.rs").split("const MODULES")[1].split("];")[0])}
-    arms = {int(h, 16) for h in re.findall(r"^\s+0x([0-9a-f]{2}) =>", build.source("effects.rs"), re.M)}
+    effect_path = "crates/sampler-kontakt/src/effects/mod.rs"
+    effect_source = build.source(effect_path)
+    mods = {int(h, 16): n for h, n in re.findall(r'\(0x([0-9a-f]+), "([^"]+)"\)', effect_source.split("const MODULES")[1].split("];")[0])}
+    arms = {int(h, 16) for h in re.findall(r"^\s+0x([0-9a-f]{2}) =>", effect_source, re.M)}
     rows = {r["key"]: r for r in build.engine_rows() if r["category"] == "effect"}
     out, seen = [], set()
     for c in build.tsv(os.path.join(CAT, "ser_classes.tsv")):
@@ -91,7 +93,7 @@ def effects():
             s, n = "partial", "parameters decoded; no audio kernel yet"
         else:
             s, n = "todo", "no kernel yet; reported as not modeled"
-        out.append(feat("Kontakt", "Effects", f"{sid:02x}", name, s, n, "crates/sampler-kontakt/src/effects.rs", proof_of(row) if row else "unproven"))
+        out.append(feat("Kontakt", "Effects", f"{sid:02x}", name, s, n, effect_path, proof_of(row) if row else "unproven"))
         out[-1]["keys"] = [cls, cls.removeprefix("BParFX")]
     return out
 
