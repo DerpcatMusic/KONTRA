@@ -1800,7 +1800,9 @@ pub(super) fn widget_state(
                                 // single continuous table drawing.
                                 block(0., 0.)
                             } else {
-                                super::render_art::table(vec![value], *range, *bipolar, wd.colors)
+                                super::render_art::table_with_style(
+                                    vec![value], *range, *bipolar, wd.colors, None, wd.table_fill,
+                                )
                             }
                         })
                         .flex(1)
@@ -1818,7 +1820,7 @@ pub(super) fn widget_state(
             let cells = row(bars).gap(if edge.is_some() { 0. } else { 1. }).w(w).h(h);
             if edge.is_some() {
                 stack![
-                    super::render_art::table_with_inner_edge(samples, *range, *bipolar, wd.colors, edge)
+                    super::render_art::table_with_style(samples, *range, *bipolar, wd.colors, edge, wd.table_fill)
                         .w(w).h(h),
                     cells
                 ].w(w).h(h)
@@ -1901,7 +1903,7 @@ pub(super) fn widget_state(
                 }
             }
             samples.truncate(shown);
-            super::render_art::table_with_inner_edge(samples, *range, *bipolar, wd.colors, wd.table_inner_edge)
+            super::render_art::table_with_style(samples, *range, *bipolar, wd.colors, wd.table_inner_edge, wd.table_fill)
                 .cursor(Cursor::Crosshair)
                 .focusable()
         }

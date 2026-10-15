@@ -166,6 +166,13 @@ fn authored_value_popup_is_pinned_passive_and_suppressed_by_false() {
 const TABLE_XML: &str =
     include_str!("../../crates/sampler-uvi/tests/fixtures/table_inner_edge.uvip");
 
+fn table_style_sources() -> [String; 2] {
+    [
+        TABLE_XML.to_owned(),
+        TABLE_XML.replace("calls=0", "bars.fillStyle='solid'; calls=0"),
+    ]
+}
+
 #[test]
 fn authored_table_edges_reach_cpu_pixels_and_live_same_widget_updates() {
     let host = sampler_uvi::script::ScriptHost::new(TABLE_XML, (), Default::default()).unwrap();
@@ -239,78 +246,157 @@ fn authored_table_edges_reach_cpu_pixels_and_live_same_widget_updates() {
 
 #[test]
 fn table_edge_presentation_preserves_component_edits_and_one_based_lua_callbacks() {
-    for visible in [false, true] {
-        let mut host =
-            sampler_uvi::script::ScriptHost::new(TABLE_XML, (), Default::default()).unwrap();
-        let mut face = host.interface();
-        face.widgets[0].table_inner_edge.as_mut().unwrap().visible = visible;
-        let components = face.widgets[0].components.clone();
-        let mut ui = theme::ui();
-        let mut values = ir_view::Values::default();
-        let mut state = ir_view::InputState::default();
-        for _ in 0..3 {
-            tick(&mut ui, &face, &mut values, &mut state, Input::default());
+    for xml in table_style_sources() {
+        for visible in [false, true] {
+            let mut host =
+                sampler_uvi::script::ScriptHost::new(&xml, (), Default::default()).unwrap();
+            let mut face = host.interface();
+            face.widgets[0].table_inner_edge.as_mut().unwrap().visible = visible;
+            let components = face.widgets[0].components.clone();
+            let mut ui = theme::ui();
+            let mut values = ir_view::Values::default();
+            let mut state = ir_view::InputState::default();
+            for _ in 0..3 {
+                tick(&mut ui, &face, &mut values, &mut state, Input::default());
+            }
+            let third = ui
+                .scene()
+                .unwrap()
+                .surface("authored-ir-0-cell-2")
+                .unwrap()
+                .frame;
+            assert_eq!((third.x, third.size.width), (72., 30.));
+            assert!(ui.request_action(SemanticAction::set_value("authored-ir-0-cell-2", 0.375)));
+            for _ in 0..3 {
+                tick(&mut ui, &face, &mut values, &mut state, Input::default());
+            }
+            assert_eq!(values[&components[2]], 0.375);
+            for (i, id) in components.iter().enumerate() {
+                assert_eq!(values[id], if i == 2 { 0.375 } else { 1. });
+            }
+            host.set_control(components[2], values[&components[2]])
+                .unwrap();
+            assert_eq!(host.global_text("calls"), "1");
+            assert_eq!(host.global_text("last_index"), "3");
+            assert_eq!(host.global_text("last_value"), "0.375");
+            assert!(
+                state.edits.is_empty(),
+                "component controls use their own binding, not array indices"
+            );
         }
-        let third = ui
-            .scene()
-            .unwrap()
-            .surface("authored-ir-0-cell-2")
-            .unwrap()
-            .frame;
-        assert_eq!((third.x, third.size.width), (72., 30.));
-        assert!(ui.request_action(SemanticAction::set_value("authored-ir-0-cell-2", 0.375)));
-        for _ in 0..3 {
-            tick(&mut ui, &face, &mut values, &mut state, Input::default());
-        }
-        assert_eq!(values[&components[2]], 0.375);
-        for (i, id) in components.iter().enumerate() {
-            assert_eq!(values[id], if i == 2 { 0.375 } else { 1. });
-        }
-        host.set_control(components[2], values[&components[2]])
-            .unwrap();
-        assert_eq!(host.global_text("calls"), "1");
-        assert_eq!(host.global_text("last_index"), "3");
-        assert_eq!(host.global_text("last_value"), "0.375");
-        assert!(
-            state.edits.is_empty(),
-            "component controls use their own binding, not array indices"
-        );
     }
 }
 
 #[test]
 fn table_array_pointer_edits_keep_zero_based_indices_with_either_edge_policy() {
-    for visible in [false, true] {
-        let mut host =
-            sampler_uvi::script::ScriptHost::new(TABLE_XML, (), Default::default()).unwrap();
-        let mut face = host.interface();
-        let components = std::mem::take(&mut face.widgets[0].components);
-        face.widgets[0].table_inner_edge.as_mut().unwrap().visible = visible;
-        let mut ui = theme::ui();
-        let mut values = ir_view::Values::default();
-        let mut state = ir_view::InputState::default();
-        for _ in 0..3 {
-            tick(&mut ui, &face, &mut values, &mut state, Input::default());
+    for xml in table_style_sources() {
+        for visible in [false, true] {
+            let mut host =
+                sampler_uvi::script::ScriptHost::new(&xml, (), Default::default()).unwrap();
+            let mut face = host.interface();
+            let components = std::mem::take(&mut face.widgets[0].components);
+            face.widgets[0].table_inner_edge.as_mut().unwrap().visible = visible;
+            let mut ui = theme::ui();
+            let mut values = ir_view::Values::default();
+            let mut state = ir_view::InputState::default();
+            for _ in 0..3 {
+                tick(&mut ui, &face, &mut values, &mut state, Input::default());
+            }
+            for held in [false, true, false] {
+                tick(
+                    &mut ui,
+                    &face,
+                    &mut values,
+                    &mut state,
+                    point(87., 52., held),
+                );
+            }
+            assert_eq!(state.edits.len(), 1);
+            let edit = &state.edits[0];
+            assert_eq!(edit.widget, ir::WidgetRef(0));
+            assert_eq!((edit.index, edit.cursor), (2, 2));
+            assert_eq!(edit.value, ir::Value::Real(0.5));
+            host.set_control(components[edit.index as usize], 0.5)
+                .unwrap();
+            assert_eq!(host.global_text("calls"), "1");
+            assert_eq!(host.global_text("last_index"), "3");
+            assert_eq!(host.global_text("last_value"), "0.5");
         }
-        for held in [false, true, false] {
-            tick(
-                &mut ui,
-                &face,
-                &mut values,
-                &mut state,
-                point(87., 52., held),
+    }
+}
+
+#[test]
+fn solid_table_fill_selects_uniform_background_and_bars_without_changing_default_pixels() {
+    let xml = TABLE_XML.replace(
+        "Table('Bars',4,1,0,1,false)",
+        "Table('Bars',4,0.5,0,1,false)",
+    );
+    let solid = xml.replace("calls=0", "bars.fillStyle='solid'; calls=0");
+    let host =
+        |xml: &str| sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let (base_host, solid_host) = (host(&xml), host(&solid));
+    for component_bound in [false, true] {
+        for edge in [
+            None,
+            Some(ir::TableInnerEdge {
+                visible: false,
+                color: None,
+            }),
+            Some(ir::TableInnerEdge {
+                visible: true,
+                color: Some(ir::Rgba::rgb(0xff0000)),
+            }),
+        ] {
+            let mut base = base_host.interface();
+            let mut solid = solid_host.interface();
+            for face in [&mut base, &mut solid] {
+                face.widgets[0].table_inner_edge = edge;
+                if !component_bound {
+                    face.widgets[0].components.clear();
+                }
+            }
+            assert_eq!(base.widgets[0].table_fill, None);
+            assert_eq!(solid.widgets[0].table_fill, Some(ir::TableFill::Solid));
+            let patch = ir::InterfacePatch::between(&base, &solid);
+            assert_eq!(patch.widgets.len(), 1, "fill-only update must publish");
+            let mut published = base.clone();
+            let mut ui = theme::ui();
+            let mut values = ir_view::Values::default();
+            let mut state = ir_view::InputState::default();
+            for _ in 0..3 {
+                tick(
+                    &mut ui,
+                    &published,
+                    &mut values,
+                    &mut state,
+                    Input::default(),
+                );
+            }
+            let before = pixels(&ui, 320, 160);
+            let controls = values.clone();
+            patch.apply(&base, &Default::default(), &mut published);
+            assert_eq!(published, solid);
+            for _ in 0..3 {
+                tick(
+                    &mut ui,
+                    &published,
+                    &mut values,
+                    &mut state,
+                    Input::default(),
+                );
+            }
+            let after = pixels(&ui, 320, 160);
+            assert_eq!(
+                before, after,
+                "explicit solid uses the existing flat fallback"
             );
+            assert_eq!(values, controls, "style cannot reset cell state");
+            let pixel = |x: usize, y: usize| &after[4 * (y * 320 + x)..][..4];
+            assert_eq!(pixel(20, 20), &[0, 0, 0, 255]);
+            assert_eq!(pixel(20, 40), pixel(20, 20), "uniform background");
+            assert_eq!(pixel(20, 60), &[255, 255, 255, 255]);
+            assert_eq!(pixel(20, 80), pixel(20, 60), "uniform bar");
         }
-        assert_eq!(state.edits.len(), 1);
-        let edit = &state.edits[0];
-        assert_eq!(edit.widget, ir::WidgetRef(0));
-        assert_eq!((edit.index, edit.cursor), (2, 2));
-        assert_eq!(edit.value, ir::Value::Real(0.5));
-        host.set_control(components[edit.index as usize], 0.5)
-            .unwrap();
-        assert_eq!(host.global_text("calls"), "1");
-        assert_eq!(host.global_text("last_index"), "3");
-        assert_eq!(host.global_text("last_value"), "0.5");
     }
 }
 
