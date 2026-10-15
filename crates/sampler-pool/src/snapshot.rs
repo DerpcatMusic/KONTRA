@@ -6,7 +6,7 @@
 use std::{
     ops::Deref,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicPtr, AtomicUsize, Ordering::SeqCst},
     },
 };
@@ -37,6 +37,18 @@ impl<T: Send + Sync> Snapshot<T> {
             pointer: value,
         }
     }
+    /// Pin a generation independently of a lexical borrow. Dropping the pin
+    /// releases a reader count; it never reclaims retired values. A real-time
+    /// caller must keep another Arc owner alive until after the pin is dropped.
+    pub fn read_owned(self: &Arc<Self>) -> SnapshotPin<T> {
+        let owner = Arc::clone(self);
+        #[allow(deprecated, reason = "fetch_update supports Rust 1.92")]
+        self.readers.fetch_update(SeqCst, SeqCst, |n| n.checked_add(1))
+            .expect("snapshot reader count overflow");
+        let pointer = self.current.load(SeqCst);
+        SnapshotPin { owner, pointer }
+    }
+
     /// Control side only. Readers that entered before the swap protect the
     /// old pointer; readers entering afterwards see the new one. SeqCst orders
     /// admission, pointer selection, swap and the zero-reader observation.
@@ -105,6 +117,26 @@ impl<T: Send + Sync> Drop for SnapshotRead<'_, T> {
     fn drop(&mut self) {
         self.owner.readers.fetch_sub(1, SeqCst);
     }
+}
+
+/// An owned immutable generation; the publisher alone reclaims retired values.
+pub struct SnapshotPin<T: Send + Sync> {
+    owner: Arc<Snapshot<T>>,
+    pointer: *const T,
+}
+// SAFETY: the admitted reader count retains the immutable T, the Arc retains
+// its counter, and T is Send + Sync. Readers never mutate or reclaim T.
+unsafe impl<T: Send + Sync> Send for SnapshotPin<T> {}
+unsafe impl<T: Send + Sync> Sync for SnapshotPin<T> {}
+impl<T: Send + Sync> Deref for SnapshotPin<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: read_owned admitted this reader before selecting its pointer.
+        unsafe { &*self.pointer }
+    }
+}
+impl<T: Send + Sync> Drop for SnapshotPin<T> {
+    fn drop(&mut self) { self.owner.readers.fetch_sub(1, SeqCst); }
 }
 
 #[cfg(test)]
@@ -184,5 +216,27 @@ mod tests {
         assert_eq!(&**snapshot.read(), &[501; 64]);
         snapshot.collect();
         assert!(snapshot.retired.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod owned_pin_tests {
+    use super::*;
+    #[test]
+    fn owned_pin_survives_publication_and_cross_thread_drop_without_reclaiming_pcm() {
+        struct Value(usize, Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Value {
+            fn drop(&mut self) { self.1.fetch_add(1, SeqCst); }
+        }
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let value = Arc::new(Snapshot::new(Value(1, drops.clone())));
+        let pin = value.read_owned();
+        value.replace(Value(2, drops.clone()), |_| ());
+        value.collect();
+        assert_eq!(drops.load(SeqCst), 0);
+        std::thread::spawn(move || { assert_eq!(pin.0, 1); drop(pin); }).join().unwrap();
+        assert_eq!(drops.load(SeqCst), 0, "last reader cannot reclaim the retired payload");
+        value.collect();
+        assert_eq!(drops.load(SeqCst), 1);
     }
 }

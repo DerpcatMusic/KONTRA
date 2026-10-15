@@ -215,6 +215,8 @@ impl Runtime {
                 expressions: &self.expressions,
                 kernel: &self.kernel,
                 cache: self.stream_cache.as_ref().map(|c| c.reader()),
+                onset_heads: &self.onsets.heads,
+                onset_residents: &self.onsets.residents,
                 voices: Disjoint::new(&mut self.voices.slots, 1, claims),
                 scratch,
                 outcomes,
@@ -387,6 +389,8 @@ struct View<'a> {
     expressions: &'a super::Arena<super::ExpressionOwner>,
     kernel: &'a super::resample::Kernel,
     cache: Option<super::stream::PageReader<'a>>,
+    onset_heads: &'a [Option<sampler_pool::SnapshotPin<crate::prepare::Ranges>>],
+    onset_residents: &'a [Option<crate::prepare::ResidentPin>],
     voices: Disjoint<'a, Slot<Voice>>,
     scratch: &'a Slab<[Frame; BLOCK]>,
     outcomes: &'a Slab<Outcome>,
@@ -489,7 +493,19 @@ impl View<'_> {
                 ]
             });
         let states = &mut cells[..chain.map_or(0, |c| c.stages())];
-        let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+        let (produced, done, faults, underrun) = if let Some(head) = &self.onset_heads[i] {
+            let source = super::source::PagedFrames {
+                cache: self.cache.expect("pinned streamed onset"), asset: asset.asset_id(), head,
+            };
+            render_source::<false>(v, &source, segment, chain, states, context, self.kernel)
+        } else if let Some(frames) = &self.onset_residents[i] {
+            asset.want_levels(v.cursor.step(), self.at);
+            let guard = asset.try_levels();
+            let pcm = super::source::Resident {
+                frames, levels: guard.as_deref().map_or(&[], |l| l),
+            };
+            render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
+        } else if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), self.at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
@@ -567,7 +583,19 @@ impl View<'_> {
             starved[k] = v.cursor.starved();
             batch.expressions[k] = Some((n.expression, expression.value));
             let mut planar = [[0.; BLOCK]; 2];
-            begun[k] = if let Some(resident) = asset.resident_frames() {
+            begun[k] = if let Some(head) = &self.onset_heads[voices[k]] {
+                let pcm = super::source::PagedFrames {
+                    cache: self.cache.expect("pinned streamed onset"), asset: asset.asset_id(), head,
+                };
+                chain.begin(v, &pcm, frames, self.kernel, &mut planar, engine)
+            } else if let Some(resident) = &self.onset_residents[voices[k]] {
+                asset.want_levels(v.cursor.step(), self.at);
+                let guard = asset.try_levels();
+                let pcm = super::source::Resident {
+                    frames: resident, levels: guard.as_deref().map_or(&[], |l| l),
+                };
+                chain.begin(v, &pcm, frames, self.kernel, &mut planar, engine)
+            } else if let Some(resident) = asset.resident_frames() {
                 asset.want_levels(v.cursor.step(), self.at);
                 let guard = asset.try_levels();
                 if reuse_mask & (1 << k) != 0 {
