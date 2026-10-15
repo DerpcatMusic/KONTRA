@@ -43,6 +43,14 @@ def build(output, profile='ci'):
     shutil.copy2(artifacts / 'browser-inspector.js', output / 'inspector-engine.mjs')
     shutil.copy2(artifacts / 'browser_inspector.wasm', output / 'browser_inspector.wasm')
     (output / 'inspector-build.json').write_text(json.dumps({'revision': revision, 'target': TARGET, 'emscripten': '6.0.12'}) + '\n')
+    notices = output / 'licenses'
+    notices.mkdir(exist_ok=True)
+    sdk = Path(shutil.which('emcc')).resolve().parent
+    for source, name in [(sdk / 'LICENSE', 'EMSCRIPTEN-LICENSE.txt'),
+                         (sdk / 'system/lib/libcxx/LICENSE.TXT', 'LIBCXX-LICENSE.txt'),
+                         (sdk / 'system/lib/libc/musl/COPYRIGHT', 'MUSL-COPYRIGHT.txt')]:
+        if source.is_file():
+            shutil.copy2(source, notices / name)
     print(f'Built browser inspector at {revision[:7]} into {output}')
 
 
