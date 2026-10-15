@@ -276,7 +276,7 @@ button:disabled { cursor: default; }
 #inspection-error { margin-top: 16px; color: var(--error); font-size: 14px; }
 .inspection-result { border-top: 1px solid var(--line); padding-block: 28px 48px; }
 .inspection-summary { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
-.inspection-summary h2 { font-size: 24px; }
+.inspection-summary h2 { min-width: 0; flex: 1 1 280px; overflow-wrap: anywhere; font-size: 24px; }
 #inspection-viewer { display: block; width: 100%; min-height: 700px; border: 0; margin-top: 24px; background: var(--bg); }
 .text-button:disabled { color: var(--muted); text-decoration: none; }
 @media (max-width: 1050px) { .header > nav:not(.community-actions) { gap: 8px 20px; } }
