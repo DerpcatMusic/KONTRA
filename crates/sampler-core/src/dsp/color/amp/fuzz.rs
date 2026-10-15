@@ -76,7 +76,7 @@ impl Engine {
         let [amount, bass, treble, mono] = k;
         let cap = |c: f32, x: f32| if c <= x { c } else { x };
         // SR setup 0x140abf3b0.
-        let w = 6.283 / rate as f32;
+        let w = f32::from_bits(0x40c90e56) / rate as f32;
         // Level 0x140ad1980 (called with 1.0).
         let level = (table(1.0 * 338.836_67 + 861.163_33) - 0.019_952_623) * 0.032_261_837;
         // Apply 0x140abaa80: the drive gain, (float)+0x1c8 = 256.

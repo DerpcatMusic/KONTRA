@@ -106,7 +106,7 @@ fn run(st: &mut [f32; 2], c: &Section, x: f32) -> f32 {
 
 /// The air lines' power-of-two length (0x140abead0): A and B side by side per frame.
 pub(crate) fn frames(rate: u32) -> usize {
-    let shift = 1 - ((rate as f32 * 0.045_018_62).ln() * -1.442_695) as i32 as i8 as i32;
+    let shift = 1 - ((rate as f32 * 0.045_018_62).ln() * -f32::from_bits(0x3fb8aa3b)) as i32 as i8 as i32;
     1 << (shift & 31)
 }
 
@@ -151,7 +151,7 @@ impl Engine {
         for r in 1..12 {
             chain[12 + r] = sections[23 - 2 * r];
         }
-        let inv = 6.283 / sr;
+        let inv = f32::from_bits(0x40c90e56) / sr;
         let one_pole = [1_681.881_6_f32, 1_806.881_6].map(|i| (table(i) * inv).min(1.0));
         let len = frames(rate);
         let mut taps = [0; 8];

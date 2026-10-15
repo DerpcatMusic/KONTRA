@@ -224,7 +224,7 @@ impl Svf {
         let fc = 200.0 + 200.0 * (x - 0.5).max(0.0);
         let a2 = fexp2(-24.0 * x * 0.166_096_4);
         let a = a2.sqrt();
-        let k = 0.70711f32;
+        let k = f32::from_bits(0x3f350529);
         let g = tanpoly(fc / a.sqrt() * std::f32::consts::PI / rate);
         Self { g, d: 1.0 / (2.0 * g * k + 1.0 + g * g), m: [a2 - 1.0, (a - 1.0) * 2.0 * k], lp_only: false }
     }

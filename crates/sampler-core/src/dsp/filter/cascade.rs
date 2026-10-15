@@ -501,7 +501,7 @@ fn pro52(cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
     let r = clamp01(resonance);
     let k = if r >= 0.5 { r * 0.48 + 0.46 } else { r * 1.16 + 0.12 };
     let limit = (r * 0.293) * (r + 1.3075) + 0.7352;
-    let g = (note_hertz(cutoff) * (6.283 / rate)).clamp(0.0, limit);
+    let g = (note_hertz(cutoff) * (f32::from_bits(0x40c90e56) / rate)).clamp(0.0, limit);
     let k2 = k * 0.8;
     let d2 = 2.0 - (k2 + k2);
     let low = |d, k, eps| Stage { g, d, k, eps, weights: [1.0, 0.0, 0.0], wet: 1.0, ..Stage::default() };
@@ -518,7 +518,7 @@ fn pro52(cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
 /// `0x14096490b`, normaliser `FUN_14096f840`, process `FUN_140aef6e0`): three stages with the
 /// band-state shaper, morphing LP -> BP -> HP, each blended by its wet amount.
 fn versatile(v: &sampler_ir::fx::filter::Versatile, cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
-    let k = (1.0 / f64::from(rate) * 6.283) as f32;
+    let k = (1.0 / f64::from(rate) * f64::from_bits(0x401921cac083126f)) as f32;
     let note = clamp01(cutoff) * 111.0 + 20.0;
     let shift = v.shift.map(|x| clamp01(x) * 80.0);
     let n1 = shift[0] + note;
@@ -588,7 +588,7 @@ pub(crate) struct Ladder2x {
 }
 
 fn legacy_ladder(cutoff: f32, resonance: f32, rate: f32) -> Ladder2x {
-    let g = (note_hertz(cutoff) * (6.283 / rate)).max(0.0).min(1.57);
+    let g = (note_hertz(cutoff) * (f32::from_bits(0x40c90e56) / rate)).max(0.0).min(1.57);
     Ladder2x { g: g * 0.5, r4: clamp01(resonance) * 4.0 }
 }
 
