@@ -45,7 +45,7 @@
     if (row.status === 'partial' && row.proof) support.append(cell('small', row.proof, 'proof-note'));
     const source = cell('td', '');
     if (row.source) {
-      const link = cell('a', 'Code');
+      const link = cell('a', 'View');
       link.href = row.source;
       link.setAttribute('aria-label', `Source for ${row.name}`);
       source.append(link);
