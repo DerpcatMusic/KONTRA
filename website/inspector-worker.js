@@ -7,6 +7,15 @@ self.onmessage = async ({ data }) => {
     let output = '', outputBytes = 0;
     const engine = await createInspector({
       noInitialRun: true,
+      preRun: engine => {
+        engine.FS.mkdir('/library');
+        engine.FS.mount(engine.WORKERFS, {
+          blobs: data.files.map(({ path, file }) => ({ name: path, data: file })),
+        }, '/library');
+        engine.ENV.KONTRA_SCAN_ACTIVE = '1';
+        engine.ENV.KONTRA_INSPECT_READ_ONLY_INIT = '1';
+        engine.ENV.KONTRA_UVI_AUDIT_SEED = '0';
+      },
       locateFile: name => new URL(name, import.meta.url).href + `?v=${data.revision}`,
       print: line => {
         outputBytes += line.length;
