@@ -108,7 +108,7 @@ impl SetupLayout {
             })
             .collect();
         let controls: Vec<_> = controls
-            .map(|c| (c.definition.id, c.definition.domain.clone(), c.widget))
+            .map(|c| (c.definition.id, c.definition.domain, c.widget))
             .collect();
         // Values/defaults are deliberately absent: the same declared setup may
         // carry different snapshot values. Domains and actual control bindings
