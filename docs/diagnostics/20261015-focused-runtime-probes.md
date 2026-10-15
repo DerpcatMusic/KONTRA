@@ -70,3 +70,38 @@ The newer private reports are `analog-gates-layer-filter-enabled-png-current.jso
 `una-felt-wallpaper-fixed-current.json` and
 `evolved-residency-settled-current.json`. Every report retains its own executable
 and plan hashes. The installed plugin is unchanged.
+
+The subsequent helper
+`f1721026361e5b41f86d64e035de71003767bfc5d7e6093c4d4ab8784e560cf3`
+also contains the intrinsic-label-picture repair. A third guarded Una capture
+shows the complete fabric image at its authored origin and native size, while
+the white wallpaper and reachable tab/reverb actions remain correct. All three
+images finish with zero pending assets. This closes the two observed Workbench
+artwork defects, without certifying every control or native pixel equivalence.
+The report is `una-felt-intrinsic-picture-current.json`; the corresponding
+private artifact directory retains each post-action PNG.
+
+The same helper's explicit unseeded, paced UVI condition now observes Pizzicato
+owner execution, ordered core command consumption and audible PCM with no added
+controllers: 95,903 nonzero frames of 96,000, peak approximately 0.2466, up to
+three active voices, and zero reported Lua faults, refusals or stream underruns.
+A separate Pizzicato → Bartok → Pizzicato probe produces nonzero PCM in all
+three 4,800-frame windows. Final sample status is settled in each; the repeated
+Pizzicato UI and control state match exactly. Initial/final dynamic sample-job
+counters are zero, so these note probes do not re-exercise 1,746 sample changes.
+
+These findings resolve the earlier fast-render silence ambiguity for those
+two selections. They do not establish native sound equivalence, all UVI
+programs, dynamic sample replacement, or retained-runtime preset application:
+the observed strategy remains full prepare/install. The private reports are
+`uvi-pizzicato-acknowledged-default-current.json` and
+`uvi-pizzicato-acknowledged-aba-current.json`.
+
+The owner audit also exposes an open performance cost: full UI publication
+visits 10,145 widgets. In the long-note run, 15 publication calls consume about
+2.417 seconds wall time and 2.410 seconds caller-thread CPU, with a maximum near
+180 ms. The note owner/command acknowledgement spans about 155 ms and includes
+UI publication before command collection. These diagnostic observations count
+owner work; they are not KONTRA audio-meter measurements or a native latency
+comparison. Audio-command ordering and incremental projection need separate
+proof before optimization.
