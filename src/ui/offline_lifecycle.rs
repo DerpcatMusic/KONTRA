@@ -31,6 +31,177 @@ impl Witness {
     pub fn preset_switch_probe(plan: &Value) -> Result<Value, &'static str> {
         switch_probe(plan)
     }
+
+    /// Explicit private PNG capture from the already-rendered post-action UI.
+    /// The directory must be new and absolute. No artwork enters the report.
+    pub fn preset_switch_probe_with_ui_artifacts(
+        plan: &Value,
+        directory: &Path,
+        slot: u8,
+        page: u32,
+    ) -> Result<Value, &'static str> {
+        switch_probe_inner(plan, Some((directory, slot, page)))
+    }
+}
+
+const UI_ARTIFACT_IMAGES: usize = 24;
+const UI_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+
+struct UiArtifacts {
+    directory: PathBuf,
+    slot: u8,
+    page: u32,
+    attempted_images: usize,
+    reserved_bytes: usize,
+    written_images: usize,
+    written_bytes: usize,
+}
+
+impl UiArtifacts {
+    fn new(directory: &Path, slot: u8, page: u32) -> Result<Self, &'static str> {
+        if !directory.is_absolute() {
+            return Err("UI artifact directory must be an absolute, new private directory");
+        }
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(directory).map_err(
+            |_| "UI artifact directory could not be created; existing directories are refused",
+        )?;
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            slot,
+            page,
+            attempted_images: 0,
+            reserved_bytes: 0,
+            written_images: 0,
+            written_bytes: 0,
+        })
+    }
+
+    fn target(&self, faces: &[Interface]) -> Result<usize, &'static str> {
+        let mut targets = faces.iter().enumerate().filter_map(|(index, face)| {
+            (face.source == sampler_ui_ir::Source::Ksp { slot: self.slot }).then_some(index)
+        });
+        let first = targets.next().ok_or("slot_not_present")?;
+        if targets.next().is_some() {
+            return Err("ambiguous_slot");
+        }
+        Ok(first)
+    }
+
+    fn outcome(&self, step: usize, generation: u64, status: &str) -> Value {
+        json!({"status":status,"step":step,"generation":generation,"slot":self.slot,"page":self.page,"presentation":"Bitmap"})
+    }
+
+    fn capture(&mut self, step: usize, generation: u64, report: &Value) -> Value {
+        use std::io::Write;
+        let mut shots = report["shots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|shot| {
+                shot["page"].as_u64() == Some(u64::from(self.page))
+                    && shot["presentation"] == "Bitmap"
+            });
+        let Some(shot) = shots.next() else {
+            return self.outcome(step, generation, "shot_not_rendered");
+        };
+        if shots.next().is_some() {
+            return self.outcome(step, generation, "ambiguous_shot");
+        }
+        let mut result = self.outcome(step, generation, "png_missing");
+        for field in ["status", "pending_assets", "width", "height", "scale"] {
+            let key = if field == "status" {
+                "render_status"
+            } else {
+                field
+            };
+            result[key] = shot[field].clone();
+        }
+        let Some(encoded) = shot["png_hex"].as_str() else {
+            return result;
+        };
+        if self.attempted_images >= UI_ARTIFACT_IMAGES {
+            result["status"] = json!("image_limit");
+            return result;
+        }
+        if !encoded.len().is_multiple_of(2) {
+            result["status"] = json!("malformed_png_hex");
+            return result;
+        }
+        let bytes = encoded.len() / 2;
+        if bytes > UI_ARTIFACT_BYTES.saturating_sub(self.reserved_bytes) {
+            result["status"] = json!("byte_limit");
+            return result;
+        }
+        let digit = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        };
+        let mut png = Vec::with_capacity(bytes);
+        for pair in encoded.as_bytes().chunks_exact(2) {
+            let (Some(high), Some(low)) = (digit(pair[0]), digit(pair[1])) else {
+                result["status"] = json!("malformed_png_hex");
+                return result;
+            };
+            png.push((high << 4) | low);
+        }
+        if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+            result["status"] = json!("invalid_png_signature");
+            return result;
+        }
+        // Reserve before opening/writing: partial files and refused overwrites
+        // consume the same finite budget as a successful capture.
+        self.attempted_images += 1;
+        self.reserved_bytes += png.len();
+        let filename = format!(
+            "step-{step:03}-generation-{generation:06}-slot-{:02}-page-{:03}-bitmap.png",
+            self.slot, self.page
+        );
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(self.directory.join(filename));
+        let mut file = match file {
+            Ok(file) => file,
+            Err(error) => {
+                result["status"] = json!(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    "already_exists"
+                } else {
+                    "write_failed"
+                });
+                return result;
+            }
+        };
+        if file.write_all(&png).is_err() {
+            result["status"] = json!("write_failed");
+            return result;
+        }
+        self.written_images += 1;
+        self.written_bytes += png.len();
+        result["status"] = json!("written");
+        result["bytes"] = json!(png.len());
+        result["png_sha256"] = json!(sha256(&png));
+        result
+    }
+
+    fn summary(&self) -> Value {
+        json!({"slot":self.slot,"page":self.page,"presentation":"Bitmap",
+            "image_limit":UI_ARTIFACT_IMAGES,"byte_limit":UI_ARTIFACT_BYTES,
+            "attempted_images":self.attempted_images,"reserved_bytes":self.reserved_bytes,
+            "written_images":self.written_images,"written_bytes":self.written_bytes,
+            "scope":"Private post-action CPU projection of the exact script slot/page; fresh diagnostic asset owner, no popup/pointer/native-host or warm-cache equivalence"})
+    }
 }
 
 #[derive(Deserialize)]
@@ -194,14 +365,30 @@ fn switch_projection(
     owner: &SwitchOwner,
     faces: &[Interface],
     values: &[(ControlId, f64)],
-) -> Value {
-    json!(faces.iter().map(|face| {
+    artifacts: &mut Option<UiArtifacts>,
+    step: usize,
+) -> (Value, Option<Value>) {
+    let target = artifacts.as_ref().map(|sink| sink.target(faces));
+    let mut capture = match &target {
+        Some(Err(status)) => Some(
+            artifacts
+                .as_ref()
+                .unwrap()
+                .outcome(step, owner.request, status),
+        ),
+        _ => None,
+    };
+    let projection = json!(faces.iter().enumerate().map(|(index, face)| {
         let report=super::offline_preview::render(face,&owner.resource_path,values,owner.program,faces);
-        // Never return image pixels, asset paths, captions or authored diagnostics.
+        if target == Some(Ok(index)) {
+            capture = artifacts.as_mut().map(|sink| sink.capture(step, owner.request, &report));
+        }
+        // Pixels reach only the explicit private sink, never the JSON report.
         json!({"status":report["status"],"timings":report["timings"],"asset_summary":report["asset_summary"],
             "asset_probe_dropped":report["asset_probe_dropped"],"shots":report["shots"].as_array().into_iter().flatten().map(|s|
                 json!({"status":s["status"],"pending_assets":s["pending_assets"],"preparation_ms":s["preparation_ms"],"paint_and_encode_ms":s["paint_and_encode_ms"]})).collect::<Vec<_>>()})
-    }).collect::<Vec<_>>())
+    }).collect::<Vec<_>>());
+    (projection, capture)
 }
 
 fn switch_widget_target(
@@ -310,6 +497,13 @@ fn switch_marker(step: usize, phase: &str) {
 }
 
 fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
+    switch_probe_inner(plan, None)
+}
+
+fn switch_probe_inner(
+    plan: &Value,
+    artifact_request: Option<(&Path, u8, u32)>,
+) -> Result<Value, &'static str> {
     let plan: SwitchPlan =
         serde_json::from_value(plan.clone()).map_err(|_| "Invalid preset-switch plan schema")?;
     if plan.schema != 1
@@ -365,6 +559,12 @@ fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
             _ => {}
         }
     }
+    if artifact_request.is_some() && !plan.render_ui {
+        return Err("UI artifact capture requires render_ui: true in the plan");
+    }
+    let mut artifacts = artifact_request
+        .map(|(directory, slot, page)| UiArtifacts::new(directory, slot, page))
+        .transpose()?;
     let mut core = V2Core::with_parts(1, 48000.);
     let mut owner = SwitchOwner::default();
     let mut latest_request = 0u64;
@@ -529,7 +729,12 @@ fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
                     record["widget_edit"]["after_callbacks"] = state;
                     if plan.render_ui {
                         switch_marker(index, "ui_projection_assets");
-                        record["ui_projection"] = switch_projection(&owner, &faces, &values);
+                        let (projection, capture) =
+                            switch_projection(&owner, &faces, &values, &mut artifacts, index);
+                        record["ui_projection"] = projection;
+                        if let Some(capture) = capture {
+                            record["ui_artifact"] = capture;
+                        }
                     }
                 }
             }
@@ -591,7 +796,12 @@ fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
                 record["after_activation"] = state;
                 if plan.render_ui {
                     switch_marker(index, "ui_projection_assets");
-                    record["ui_projection"] = switch_projection(&owner, &faces, &values);
+                    let (projection, capture) =
+                        switch_projection(&owner, &faces, &values, &mut artifacts, index);
+                    record["ui_projection"] = projection;
+                    if let Some(capture) = capture {
+                        record["ui_artifact"] = capture;
+                    }
                 }
                 switch_marker(index, "fresh_note");
                 let note = HostNote {
@@ -640,15 +850,17 @@ fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
         records.push(record);
         switch_marker(index, "end");
     }
-    Ok(
-        json!({"format":"kontra-preset-switch-probe","schema":1,"steps":records,
+    let mut report = json!({"format":"kontra-preset-switch-probe","schema":1,"steps":records,
         "build":crate::build_info::BUILD,"source_sha256":{"offline_lifecycle.rs":sha256(include_bytes!("offline_lifecycle.rs")),"sound/v2.rs":sha256(include_bytes!("../sound/v2.rs"))},
         "scope":"Real V2Loader, full Core::install, deferred callbacks, production UI command queues, streaming/DSP and optional CPU UI projection; no plugin instance, DAW, audio device or audition",
         "publication_gate_scope":"Request ordering and audio generation assignment are diagnostic-host policy; plugin worker/publication races and any future same-base reuse path are not exercised",
         "audio_scope":"Held-note transitions and fresh notes after bounded activation are separate; controllers remain at loader defaults",
         "stage_metrics_scope":"KONTRA_AUDIT_LOAD numeric stderr spans, grouped by PRESET_SWITCH phase markers; wrapper can count actual spans without reparsing sources",
-        "native_equivalence":"unknown","universal_compatibility":"not_established"}),
-    )
+        "native_equivalence":"unknown","universal_compatibility":"not_established"});
+    if let Some(artifacts) = artifacts {
+        report["ui_artifacts"] = artifacts.summary();
+    }
+    Ok(report)
 }
 
 /// The real loader, metadata getters, bounded scheduler and read-only UI outbox.
@@ -972,6 +1184,138 @@ mod tests {
     use crate::sound::{tree::MixTree, v2::Part};
     use sampler_core::{Limits, Prepared, Runtime};
 
+    fn artifact_shot(page: u32, presentation: &str, color: [u8; 4]) -> (Value, Vec<u8>) {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&color).unwrap();
+            writer.finish().unwrap();
+        }
+        let encoded: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        (
+            json!({"page":page,"presentation":presentation,"width":1,"height":1,"scale":1.,
+                "status":"ok","pending_assets":0,"png_hex":encoded}),
+            bytes,
+        )
+    }
+
+    #[test]
+    fn ui_artifacts_select_exact_script_slot_and_bitmap_page() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("new-captures");
+        let mut sink = UiArtifacts::new(&output, 2, 1).unwrap();
+        let mut faces = vec![
+            Interface::default(),
+            Interface {
+                source: sampler_ui_ir::Source::Ksp { slot: 0 },
+                ..Default::default()
+            },
+            Interface {
+                source: sampler_ui_ir::Source::Ksp { slot: 2 },
+                ..Default::default()
+            },
+        ];
+        assert_eq!(sink.target(&faces), Ok(2));
+        faces.pop();
+        assert_eq!(sink.target(&faces), Err("slot_not_present"));
+        faces.push(Interface {
+            source: sampler_ui_ir::Source::Ksp { slot: 2 },
+            ..Default::default()
+        });
+        faces.push(faces[2].clone());
+        assert_eq!(sink.target(&faces), Err("ambiguous_slot"));
+        assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
+
+        let (other_page, _) = artifact_shot(0, "Bitmap", [255, 0, 0, 255]);
+        let (other_mode, _) = artifact_shot(1, "Vector", [0, 255, 0, 255]);
+        let (mut wanted, bytes) = artifact_shot(1, "Bitmap", [0, 0, 255, 255]);
+        // Partial renders may still provide useful pixels, with honest status.
+        wanted["status"] = json!("partial");
+        wanted["pending_assets"] = json!(2);
+        let report = json!({"shots":[other_page,other_mode,wanted]});
+        let result = sink.capture(3, 7, &report);
+        assert_eq!(result["status"], "written");
+        assert_eq!(result["render_status"], "partial");
+        assert_eq!(result["pending_assets"], 2);
+        assert_eq!(result["png_sha256"], sha256(&bytes));
+        assert!(result.get("png_hex").is_none());
+        assert_eq!(
+            std::fs::read(output.join("step-003-generation-000007-slot-02-page-001-bitmap.png"))
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(sink.summary()["written_images"], 1);
+        assert_eq!(sink.summary()["reserved_bytes"], bytes.len());
+        assert_eq!(
+            sink.capture(4, 7, &json!({"shots":[]}))["status"],
+            "shot_not_rendered"
+        );
+    }
+
+    #[test]
+    fn ui_artifacts_never_overwrite_directory_or_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("new-captures");
+        let mut sink = UiArtifacts::new(&output, 0, 0).unwrap();
+        assert!(UiArtifacts::new(&output, 0, 0).is_err());
+        let path = output.join("step-000-generation-000001-slot-00-page-000-bitmap.png");
+        std::fs::write(&path, b"earlier evidence").unwrap();
+        let (shot, bytes) = artifact_shot(0, "Bitmap", [1, 2, 3, 255]);
+        let result = sink.capture(0, 1, &json!({"shots":[shot]}));
+        assert_eq!(result["status"], "already_exists");
+        assert_eq!(std::fs::read(path).unwrap(), b"earlier evidence");
+        assert_eq!(sink.attempted_images, 1);
+        assert_eq!(sink.reserved_bytes, bytes.len());
+        assert_eq!(sink.written_images, 0);
+    }
+
+    #[test]
+    fn ui_artifacts_bound_images_bytes_and_reject_malformed_pixels() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("new-captures");
+        let mut sink = UiArtifacts::new(&output, 0, 0).unwrap();
+        let (shot, _) = artifact_shot(0, "Bitmap", [1, 2, 3, 255]);
+        let report = json!({"shots":[shot]});
+        sink.attempted_images = UI_ARTIFACT_IMAGES;
+        assert_eq!(sink.capture(0, 1, &report)["status"], "image_limit");
+        sink.attempted_images = 0;
+        sink.reserved_bytes = UI_ARTIFACT_BYTES - 1;
+        assert_eq!(sink.capture(0, 1, &report)["status"], "byte_limit");
+        sink.reserved_bytes = 0;
+        for (encoded, expected) in [
+            ("0", "malformed_png_hex"),
+            ("gg", "malformed_png_hex"),
+            ("0000", "invalid_png_signature"),
+        ] {
+            let mut malformed = report.clone();
+            malformed["shots"][0]["png_hex"] = json!(encoded);
+            assert_eq!(sink.capture(0, 1, &malformed)["status"], expected);
+        }
+        assert_eq!(sink.attempted_images, 0);
+        assert_eq!(sink.reserved_bytes, 0);
+        assert_eq!(std::fs::read_dir(output).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ui_artifacts_require_explicit_render_before_creating_any_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("must-not-exist");
+        assert!(
+            Witness::preset_switch_probe_with_ui_artifacts(
+                &json!({"schema":1,"steps":[{"op":"load","path":"absent.nki"}]}),
+                &output,
+                0,
+                0,
+            )
+            .is_err()
+        );
+        assert!(!output.exists());
+        assert!(UiArtifacts::new(Path::new("relative-not-created"), 0, 0).is_err());
+    }
+
     fn probe_wave(directory: &Path, name: &str, amplitude: f32) -> PathBuf {
         let path = directory.join(name);
         let mut writer = hound::WavWriter::create(
@@ -1022,6 +1366,7 @@ mod tests {
             steps[0]["fresh_note"]["pcm_sha256"]
         );
         assert_eq!(report["universal_compatibility"], "not_established");
+        assert!(report.get("ui_artifacts").is_none());
     }
 
     #[test]
