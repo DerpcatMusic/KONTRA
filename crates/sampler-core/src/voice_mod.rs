@@ -403,6 +403,39 @@ pub(crate) struct ModShape {
 }
 
 impl VoiceModulation {
+    /// Revalidate compiled processor references after a control-side topology edit.
+    /// The target kind and index must still belong to this prepared generation.
+    pub(crate) fn validate_dsp_targets(
+        &self,
+        filters: &[crate::dsp::filter::svf::PreparedFilter],
+        parameters: usize,
+    ) -> Result<(), Error> {
+        use crate::dsp::filter::svf::PreparedFilter;
+        let invalid = self
+            .programs
+            .iter()
+            .flat_map(|program| program.targets.iter())
+            .any(|target| match *target {
+                CompiledTarget::ProcessorCutoff(index)
+                | CompiledTarget::ProcessorResonance(index) => !matches!(
+                    filters.get(index as usize),
+                    Some(PreparedFilter::StateVariable(_))
+                ),
+                CompiledTarget::ProcessorNativeCutoff(index)
+                | CompiledTarget::ProcessorNativeResonance(index)
+                | CompiledTarget::ProcessorNativeGain(index) => !matches!(
+                    filters.get(index as usize),
+                    Some(PreparedFilter::NativeControl)
+                ),
+                CompiledTarget::Control(index) => index >= parameters,
+                _ => false,
+            });
+        if invalid {
+            return Err(Error::InvalidInput);
+        }
+        Ok(())
+    }
+
     /// Re-resolve sparse input cells off audio after a complete schema replacement.
     pub(crate) fn remap_controls(
         &mut self,
