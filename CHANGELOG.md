@@ -6,6 +6,12 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.490
+
+Includes the accepted 0.3.489 parity checkpoint below, plus one shipping-pipeline correction: cold release-profile test compilation may use 180 minutes, while ordinary CI retains its 90-minute limit. Every test, native editor, signing, notarization, license and required-check gate remains mandatory. The observed previous job expired before any test harness started; this change does not claim a measured upper completion bound.
+
+The unchanged Rust source passed first-party Clippy, the complete core suite, 820 root/inspector tests (53 ignored) and three typed replacement tests at the preceding 0.3.489 source checkpoint. Final package identity, native format checks and hosted publication bind their own revisions. New experimental menu transactions and the production-loader Areia trace remain outside this accepted checkpoint.
+
 ## 0.3.489
 
 Seven reviewed logical corrections follow 0.3.482; diagnostic features and extra reference vectors do not add fix counts.
