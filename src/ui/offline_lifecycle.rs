@@ -42,7 +42,17 @@ impl Witness {
         slot: u8,
         page: u32,
     ) -> Result<Value, &'static str> {
-        switch_probe_inner(plan, Some((directory, slot, page)))
+        switch_probe_inner(plan, Some((directory, sampler_ui_ir::Source::Ksp { slot }, page)))
+    }
+
+    /// Source-explicit capture; a Lua or performance-view face never aliases a KSP slot.
+    pub fn preset_switch_probe_with_source_ui_artifacts(
+        plan: &Value,
+        directory: &Path,
+        source: sampler_ui_ir::Source,
+        page: u32,
+    ) -> Result<Value, &'static str> {
+        switch_probe_inner(plan, Some((directory, source, page)))
     }
 }
 
@@ -51,7 +61,7 @@ const UI_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 
 struct UiArtifacts {
     directory: PathBuf,
-    slot: u8,
+    source: sampler_ui_ir::Source,
     page: u32,
     attempted_images: usize,
     reserved_bytes: usize,
@@ -60,7 +70,15 @@ struct UiArtifacts {
 }
 
 impl UiArtifacts {
+    #[cfg(test)]
     fn new(directory: &Path, slot: u8, page: u32) -> Result<Self, &'static str> {
+        Self::new_source(directory, sampler_ui_ir::Source::Ksp { slot }, page)
+    }
+
+    fn new_source(directory: &Path, source: sampler_ui_ir::Source, page: u32) -> Result<Self, &'static str> {
+        if source == sampler_ui_ir::Source::Generated {
+            return Err("UI artifact capture requires an authored source");
+        }
         if !directory.is_absolute() {
             return Err("UI artifact directory must be an absolute, new private directory");
         }
@@ -75,7 +93,7 @@ impl UiArtifacts {
         )?;
         Ok(Self {
             directory: directory.to_path_buf(),
-            slot,
+            source,
             page,
             attempted_images: 0,
             reserved_bytes: 0,
@@ -86,7 +104,7 @@ impl UiArtifacts {
 
     fn target(&self, faces: &[Interface]) -> Result<usize, &'static str> {
         let mut targets = faces.iter().enumerate().filter_map(|(index, face)| {
-            (face.source == sampler_ui_ir::Source::Ksp { slot: self.slot }).then_some(index)
+            (face.source == self.source).then_some(index)
         });
         let first = targets.next().ok_or("slot_not_present")?;
         if targets.next().is_some() {
@@ -95,8 +113,21 @@ impl UiArtifacts {
         Ok(first)
     }
 
+    fn source_name(&self) -> &'static str {
+        match self.source {
+            sampler_ui_ir::Source::Ksp { .. } => "ksp",
+            sampler_ui_ir::Source::FalconLua => "uvi",
+            sampler_ui_ir::Source::PerformanceView => "performance-view",
+            sampler_ui_ir::Source::Generated => "generated",
+        }
+    }
+
+    fn slot(&self) -> Option<u8> {
+        match self.source { sampler_ui_ir::Source::Ksp { slot } => Some(slot), _ => None }
+    }
+
     fn outcome(&self, step: usize, generation: u64, status: &str) -> Value {
-        json!({"status":status,"step":step,"generation":generation,"slot":self.slot,"page":self.page,"presentation":"Bitmap"})
+        json!({"status":status,"step":step,"generation":generation,"source":self.source_name(),"slot":self.slot(),"page":self.page,"presentation":"Bitmap"})
     }
 
     fn capture(&mut self, step: usize, generation: u64, report: &Value) -> Value {
@@ -162,9 +193,10 @@ impl UiArtifacts {
         // consume the same finite budget as a successful capture.
         self.attempted_images += 1;
         self.reserved_bytes += png.len();
+        let selection = self.slot().map_or_else(|| self.source_name().to_owned(), |slot| format!("slot-{slot:02}"));
         let filename = format!(
-            "step-{step:03}-generation-{generation:06}-slot-{:02}-page-{:03}-bitmap.png",
-            self.slot, self.page
+            "step-{step:03}-generation-{generation:06}-{selection}-page-{:03}-bitmap.png",
+            self.page
         );
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -198,11 +230,11 @@ impl UiArtifacts {
     }
 
     fn summary(&self) -> Value {
-        json!({"slot":self.slot,"page":self.page,"presentation":"Bitmap",
+        json!({"source":self.source_name(),"slot":self.slot(),"page":self.page,"presentation":"Bitmap",
             "image_limit":UI_ARTIFACT_IMAGES,"byte_limit":UI_ARTIFACT_BYTES,
             "attempted_images":self.attempted_images,"reserved_bytes":self.reserved_bytes,
             "written_images":self.written_images,"written_bytes":self.written_bytes,
-            "scope":"Private post-action CPU projection of the exact script slot/page; fresh diagnostic asset owner, no popup/pointer/native-host or warm-cache equivalence"})
+            "scope":"Private post-action CPU projection of the exact authored source/page; fresh diagnostic asset owner, no popup/pointer/native-host or warm-cache equivalence"})
     }
 }
 
@@ -652,7 +684,7 @@ fn switch_probe(plan: &Value) -> Result<Value, &'static str> {
 
 fn switch_probe_inner(
     plan: &Value,
-    artifact_request: Option<(&Path, u8, u32)>,
+    artifact_request: Option<(&Path, sampler_ui_ir::Source, u32)>,
 ) -> Result<Value, &'static str> {
     let plan: SwitchPlan =
         serde_json::from_value(plan.clone()).map_err(|_| "Invalid preset-switch plan schema")?;
@@ -717,7 +749,7 @@ fn switch_probe_inner(
         return Err("UI artifact capture requires render_ui: true in the plan");
     }
     let mut artifacts = artifact_request
-        .map(|(directory, slot, page)| UiArtifacts::new(directory, slot, page))
+        .map(|(directory, source, page)| UiArtifacts::new_source(directory, source, page))
         .transpose()?;
     let mut core = V2Core::with_parts(1, 48000.);
     let mut owner = SwitchOwner::default();
@@ -1440,6 +1472,33 @@ mod tests {
                 "status":"ok","pending_assets":0,"png_hex":encoded}),
             bytes,
         )
+    }
+
+    #[test]
+    fn ui_artifacts_keep_lua_and_performance_sources_separate_from_ksp_slots() {
+        use sampler_ui_ir::Source;
+        let directory = tempfile::tempdir().unwrap();
+        let faces = vec![
+            Interface { source: Source::Ksp { slot: 0 }, ..Default::default() },
+            Interface { source: Source::FalconLua, ..Default::default() },
+            Interface { source: Source::PerformanceView, ..Default::default() },
+        ];
+        let mut lua = UiArtifacts::new_source(&directory.path().join("lua"), Source::FalconLua, 0).unwrap();
+        assert_eq!(lua.target(&faces), Ok(1));
+        assert_eq!(lua.outcome(0, 1, "observed")["source"], "uvi");
+        assert!(lua.outcome(0, 1, "observed")["slot"].is_null());
+        assert_eq!(lua.target(&faces[..1]), Err("slot_not_present"));
+        let mut ambiguous = faces.clone();
+        ambiguous.push(faces[1].clone());
+        assert_eq!(lua.target(&ambiguous), Err("ambiguous_slot"));
+        let (shot, bytes) = artifact_shot(0, "Bitmap", [255, 0, 0, 255]);
+        let capture = lua.capture(0, 1, &json!({"shots":[shot]}));
+        assert_eq!(capture["status"], "written");
+        assert_eq!(std::fs::read(directory.path().join("lua/step-000-generation-000001-uvi-page-000-bitmap.png")).unwrap(), bytes);
+        let performance = UiArtifacts::new_source(&directory.path().join("performance"), Source::PerformanceView, 0).unwrap();
+        assert_eq!(performance.target(&faces), Ok(2));
+        assert!(UiArtifacts::new_source(&directory.path().join("generated"), Source::Generated, 0).is_err());
+        assert!(!directory.path().join("generated").exists());
     }
 
     #[test]
