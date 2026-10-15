@@ -242,6 +242,18 @@ pub struct StreamStartup {
     pub selected_anchor_head_frames: Option<usize>,
     pub anchor_ranges: usize,
     pub covered_anchor_ranges: usize,
+    /// Proved non-loop Constant onset windows at the original requested horizon.
+    pub hint_ranges: usize,
+    pub covered_hint_ranges: usize,
+    pub hint_source_frames: u64,
+    pub covered_hint_source_frames: u64,
+    /// Selected hint windows can be shorter than the requested ones. None means
+    /// a hint-bearing candidate was not selected, even if base ranges overlap.
+    pub selected_hint_head_frames: Option<usize>,
+    pub selected_hint_ranges: usize,
+    pub covered_selected_hint_ranges: usize,
+    pub selected_hint_source_frames: u64,
+    pub covered_selected_hint_source_frames: u64,
     pub packed_head_bytes: usize,
     pub head_budget_bytes: usize,
     pub required_resident_assets: usize,
@@ -256,6 +268,8 @@ impl StreamStartup {
         let readiness = streamer.head_readiness(assets);
         let onsets = streamer.onset_readiness(assets);
         let anchors = streamer.anchor_readiness(assets);
+        let hints = streamer.hint_readiness(assets);
+        let selected_hints = streamer.selected_hint_readiness(assets);
         Self {
             ranges: readiness.ranges,
             covered_ranges: readiness.covered_ranges,
@@ -264,6 +278,15 @@ impl StreamStartup {
             selected_anchor_head_frames: streamer.selected_anchor_head_frames(),
             anchor_ranges: anchors.as_ref().map_or(0,|r|r.ranges),
             covered_anchor_ranges: anchors.as_ref().map_or(0,|r|r.covered_ranges),
+            hint_ranges: hints.as_ref().map_or(0,|r|r.ranges),
+            covered_hint_ranges: hints.as_ref().map_or(0,|r|r.covered_ranges),
+            hint_source_frames: hints.as_ref().map_or(0,|r|r.source_frames),
+            covered_hint_source_frames: hints.as_ref().map_or(0,|r|r.covered_source_frames),
+            selected_hint_head_frames: streamer.selected_hint_head_frames(),
+            selected_hint_ranges: selected_hints.as_ref().map_or(0,|r|r.ranges),
+            covered_selected_hint_ranges: selected_hints.as_ref().map_or(0,|r|r.covered_ranges),
+            selected_hint_source_frames: selected_hints.as_ref().map_or(0,|r|r.source_frames),
+            covered_selected_hint_source_frames: selected_hints.as_ref().map_or(0,|r|r.covered_source_frames),
             packed_head_bytes: readiness.packed_bytes,
             head_budget_bytes: readiness.budget_bytes,
             required_resident_assets: report.required_resident_assets,
@@ -278,7 +301,10 @@ impl StreamStartup {
             let anchors=self.selected_anchor_head_frames.map(|frames|format!(
                 " Shorter attack anchors: {} of {}, covering {frames} output frames.",
                 self.covered_anchor_ranges,self.anchor_ranges)).unwrap_or_default();
-            format!("Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. Base attacks: {} of {}.{anchors} Uncached starts may wait for disk reads.",
+            let hints=self.selected_hint_head_frames.map(|frames|format!(
+                " Constant onset windows: {} of {}, covering {frames} output frames.",
+                self.covered_selected_hint_ranges,self.selected_hint_ranges)).unwrap_or_default();
+            format!("Attack preload budget exceeded: {why}. Resident start ranges: {} of {}. Base attacks: {} of {}.{anchors}{hints} Uncached starts may wait for disk reads.",
                 self.covered_ranges,self.ranges,self.covered_onset_ranges,self.onset_ranges)
         })
     }

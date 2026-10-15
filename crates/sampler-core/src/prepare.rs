@@ -294,6 +294,24 @@ impl Pcm {
         }
         uncovered(&self.0.head.read(), range, |_| false)
     }
+    /// Control-side count of the currently resident source frames in `range`,
+    /// including partial intersections with disjoint packed heads. Invalid or
+    /// empty ranges return zero. The immutable read snapshot is pinned only for
+    /// this query; no allocation, I/O or residency mutation occurs.
+    pub fn resident_covered_frames(&self, range: std::ops::Range<usize>) -> usize {
+        if range.start >= range.end || range.end > self.frame_count() {
+            return 0;
+        }
+        if self.resident_frames().is_some() {
+            return range.len();
+        }
+        let mut missing = 0;
+        uncovered(&self.0.head.read(), range.clone(), |part| {
+            missing += part.len();
+            true
+        });
+        range.len() - missing
+    }
     /// Copy an exact source-frame window from one pinned resident generation.
     /// Intended for bounded control-side verification/waveforms. Never opens a
     /// file, allocates, changes readiness, or partially writes on failure.
