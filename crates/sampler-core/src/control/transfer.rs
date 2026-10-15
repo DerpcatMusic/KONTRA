@@ -167,6 +167,15 @@ impl Runtime {
     /// Apply at most one command at this sample boundary. Response pressure leaves
     /// commands untouched; no accepted edit loses its acknowledgement. No coalescing.
     pub fn poll_control_update(&mut self) -> Result<Option<u64>, ControlQueueError> {
+        self.poll_control_update_with_snapshot_gate(|| true)
+    }
+
+    /// Inspect host-owned audio state only for a snapshot overlay whose complete
+    /// core preflight succeeded. Other operations never invoke `snapshot_gate`.
+    pub fn poll_control_update_with_snapshot_gate(
+        &mut self,
+        snapshot_gate: impl FnOnce() -> bool,
+    ) -> Result<Option<u64>, ControlQueueError> {
         let queues = self
             .control_queues
             .as_mut()
@@ -248,7 +257,7 @@ impl Runtime {
                     overlay.refusal = Some(super::SnapshotOverlayRefusal::InvalidInput);
                     Err(Error::InvalidInput)
                 } else {
-                    self.apply_snapshot_overlay(overlay)
+                    self.apply_snapshot_overlay_with_gate(overlay, snapshot_gate)
                 }
             }
             ControlOperation::Edit(writes) => self

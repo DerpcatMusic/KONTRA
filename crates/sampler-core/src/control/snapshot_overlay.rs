@@ -32,6 +32,8 @@ pub enum SnapshotOverlayRefusal {
     RevisionConflict,
     StaleEpoch,
     ActiveEvents,
+    AudioTail,
+    HostState,
     PendingCommands,
     ActiveCallbacks,
     PendingServices,
@@ -205,6 +207,11 @@ impl Runtime {
         if self.notes.count() != 0 || self.voices.count() != 0 || !self.deferred.is_empty() {
             return Err(R::ActiveEvents);
         }
+        if self.plans.slots.iter().filter_map(|slot| slot.value.as_ref())
+            .any(|generation| generation.dsp.buses.needs_render())
+        {
+            return Err(R::AudioTail);
+        }
         if generation.start_cursor != generation.prepared.plan_programs.len()
             || generation.initial_residency.pending() != 0
         {
@@ -366,6 +373,17 @@ impl Runtime {
         &mut self,
         overlay: &mut NativeSnapshotOverlay,
     ) -> Result<(usize, u64), Error> {
+        self.apply_snapshot_overlay_with_gate(overlay, || true)
+    }
+
+    /// Check host-owned audio state after the complete pure core preflight and
+    /// before any writes or callback admission. The gate runs once on a valid
+    /// candidate; refusal neither drains native work nor changes the owner.
+    pub fn apply_snapshot_overlay_with_gate(
+        &mut self,
+        overlay: &mut NativeSnapshotOverlay,
+        snapshot_gate: impl FnOnce() -> bool,
+    ) -> Result<(usize, u64), Error> {
         if overlay.linearized {
             if overlay.epochs.is_empty() {
                 overlay.refusal = Some(SnapshotOverlayRefusal::InvalidInput);
@@ -389,6 +407,10 @@ impl Runtime {
                 return Err(refusal.error());
             }
         };
+        if !snapshot_gate() {
+            overlay.refusal = Some(SnapshotOverlayRefusal::HostState);
+            return Err(Error::NotReady);
+        }
         overlay.refusal = None;
         let plan = overlay.expected.plan;
         for callback in &mut overlay.state.callbacks {
