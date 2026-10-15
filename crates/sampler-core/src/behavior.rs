@@ -473,6 +473,8 @@ pub struct Program {
     pub(super) starts_program: bool,
     pub(super) writes_slots: bool,
     pub(super) snapshot_overlay_safe: bool,
+    /// Frontend semantics omitted from bytecode can only deny admission.
+    pub(super) snapshot_frontend_opaque: bool,
     pub(super) snapshot_overlay_services: Arc<[u16]>,
     pub(super) snapshot_listener_driver: Option<u32>,
 }
@@ -586,7 +588,8 @@ impl Program {
         ) = Self::requirements(instructions)?;
         self.entry = entry;
         self.ui_id = ui_id;
-        self.snapshot_overlay_safe = crate::control::snapshot_callback_safe(&self.code, ranges, &self.snapshot_overlay_services);
+        self.snapshot_overlay_safe = !self.snapshot_frontend_opaque
+            && crate::control::snapshot_callback_safe(&self.code, ranges, &self.snapshot_overlay_services);
         self.snapshot_listener_driver = None;
         Ok(self)
     }
@@ -922,6 +925,7 @@ impl Program {
             requires_controller,
             requires_note,
             snapshot_overlay_safe: crate::control::snapshot_callback_safe(&code, &[0..code.len()], &[]),
+            snapshot_frontend_opaque: false,
             snapshot_overlay_services: Arc::from([]),
             snapshot_listener_driver: None,
             code: code.into(),

@@ -72,6 +72,16 @@ pub(crate) fn snapshot_callback_safe(
 }
 
 impl Program {
+    /// A frontend elided or approximated unsupported source semantics within
+    /// this entry's reachable body. This denial is monotone across clones and
+    /// later entry/service configuration; it never changes runtime bytecode.
+    pub fn without_snapshot_overlay(mut self) -> Self {
+        self.snapshot_frontend_opaque = true;
+        self.snapshot_overlay_safe = false;
+        self.snapshot_listener_driver = None;
+        self
+    }
+
     /// Frontend-proven presentation-only effect service IDs. Setting the table
     /// invalidates safety until with_entry proves the complete callback ranges.
     /// Runtime service numbers have no universal semantics outside the frontend.
@@ -84,6 +94,9 @@ impl Program {
     /// Mark a compiler-generated listener driver after proving its code can only
     /// read its private period, wait, and dispatch one immutable body target.
     pub fn with_snapshot_listener_driver(mut self) -> Result<Self, Error> {
+        if self.snapshot_frontend_opaque {
+            return Err(Error::InvalidInput);
+        }
         let mut body = None;
         let mut waits = false;
         for op in self.code.iter() {
@@ -115,6 +128,43 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontend_snapshot_denial_survives_cloning_entry_and_service_configuration() {
+        let program = Program::new(vec![I::End]).unwrap();
+        let code = program.code.clone();
+        let program = program.without_snapshot_overlay();
+        assert!(std::sync::Arc::ptr_eq(&code, &program.code));
+        assert!(!program.snapshot_overlay_safe);
+        assert!(
+            !program
+                .clone()
+                .with_entry(0, &[0..1], 0)
+                .unwrap()
+                .snapshot_overlay_safe
+        );
+        assert!(
+            !program
+                .with_snapshot_overlay_services(&[])
+                .with_entry(0, &[0..1], 0)
+                .unwrap()
+                .snapshot_overlay_safe
+        );
+        let driver = Program::new(vec![
+            I::StartProgram { program: 2 },
+            I::Wait(480),
+            I::Jump { target: 0 },
+        ])
+        .unwrap()
+        .with_snapshot_listener_driver()
+        .unwrap()
+        .without_snapshot_overlay();
+        assert_eq!(driver.snapshot_listener_driver, None);
+        assert!(matches!(
+            driver.with_snapshot_listener_driver(),
+            Err(Error::InvalidInput)
+        ));
+    }
 
     #[test]
     fn callback_ranges_prove_calls_jumps_fallthrough_and_service_allowlist() {
