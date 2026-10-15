@@ -369,6 +369,26 @@ impl Assets {
 /// Values the interface shows, by control.
 pub type Values = HashMap<ControlId, f64>;
 
+/// Committed scalar readback, then typed state, then the authored kind default.
+/// Keep non-scalar payloads and numeric bit patterns under the painter's policy.
+pub(super) fn effective_value(widget: &ir::Widget, values: &Values) -> f64 {
+    if let Binding::Control(control) = widget.binding
+        && let Some(value) = values.get(&control)
+    {
+        return *value;
+    }
+    match widget.value.as_ref() {
+        Some(ir::Value::Integer(value)) => f64::from(*value),
+        Some(ir::Value::Real(value)) => *value,
+        _ => match &widget.kind {
+            Kind::Knob { range, .. }
+            | Kind::Slider { range, .. }
+            | Kind::ValueEdit { range, .. } => range.default,
+            _ => widget.initial_value,
+        },
+    }
+}
+
 /// Runtime snapshots and pending widget edits, retained by the owning Face.
 #[derive(Default)]
 pub struct InputState {
@@ -1269,16 +1289,6 @@ pub(super) fn widget_state(
         Binding::Control(c) => Some(c),
         _ => None,
     };
-    let initial = match wd.value.as_ref() {
-        Some(ir::Value::Integer(value)) => f64::from(*value),
-        Some(ir::Value::Real(value)) => *value,
-        _ => match &wd.kind {
-            Kind::Knob { range, .. }
-            | Kind::Slider { range, .. }
-            | Kind::ValueEdit { range, .. } => range.default,
-            _ => wd.initial_value,
-        },
-    };
     let mut enabled = wd.enabled;
     let mut opacity = wd.opacity;
     let mut parent = wd.parent;
@@ -1297,9 +1307,7 @@ pub(super) fn widget_state(
         GesturePolicy::Kontakt
     };
     let numeric_edit = input.typing.as_ref().is_some_and(|(at, _)| at == &id);
-    let mut v = control
-        .and_then(|c| values.get(&c).copied())
-        .unwrap_or(initial);
+    let mut v = effective_value(wd, values);
     // KSP responsive menu "on" is the open popup, not its selected value.
     // Port the state selection from v1 0cb7a8a0:src/ui/perf_view.rs.
     let on = if matches!(wd.kind, Kind::Menu { .. }) {

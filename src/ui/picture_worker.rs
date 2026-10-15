@@ -20,6 +20,9 @@ use std::{
 #[cfg(all(test, feature = "shots"))]
 #[path = "picture_worker/retention_tests.rs"]
 mod retention_tests;
+#[cfg(all(test, feature = "shots"))]
+#[path = "picture_worker/default_frame_tests.rs"]
+mod default_frame_tests;
 
 const BUDGET: usize = 64 << 20;
 static REVISION: AtomicU64 = AtomicU64::new(0);
@@ -433,10 +436,7 @@ impl Preparation {
             .filter(|&n| face.visible(n))
         {
             let w = &face.widgets[n.0];
-            let value = match w.binding {
-                ir::Binding::Control(c) => values.get(&c).copied().unwrap_or(w.initial_value),
-                _ => w.initial_value,
-            };
+            let value = super::ir_view::effective_value(w, values);
             for image in &w.images {
                 if presentation == ir::Presentation::Vector
                     && image.role.replaced_by_vector()
