@@ -7,10 +7,10 @@
 //! zero-delay feedback estimate, the +-24 clamp and 1/48 soft clip, the four trapezoidal stages,
 //! the tap weights and the compensation curves of all twelve selectors, and the 4-frame
 //! control advance, and the prepare FUN_140b06180 (feedback correction, 2 ms ramp in 32-frame
-//! ticks), in the core's f32 operation order. Not checked: the gain lane law, the HQ mode
-//! (core flag 0x30 doubles the internal rate through the FUN_140ae2190 resampler; this kernel
-//! is the HQ-off path), and the alternative cutoff path (flag 0x49). The Kontakt mapping
-//! reports those as an unknown law.
+//! ticks). The strict authored-input original-code reference below checks static HQ-off
+//! gain and all twelve selectors. Factory/public gain binding, HQ processing (core flag
+//! 0x30 doubles the internal rate through FUN_140ae2190), and the alternative cutoff path
+//! (flag 0x49) are outside that static comparison. Importer diagnostics remain unchanged.
 
 use std::sync::OnceLock;
 
@@ -358,17 +358,18 @@ impl Ladder {
         let c = self.g * self.reciprocal;
         let c4 = ((c * c) * c) * c;
         let taps = usize::from(self.taps());
+        let feedback_scale = self.feedback * FEEDBACK;
         for (channel, samples) in [left, right].into_iter().enumerate() {
             let state = &mut self.state[channel];
             for sample in samples {
                 let input = self.gain * *sample;
-                // Native order (FUN_140b00be2): ((s0+s0)*G*g + s1) + s1, ...
-                let step = |h: f32, s: f32| h * self.reciprocal * self.g + s + s;
+                // Original 0x140b01092..0x140b01125 doubles each history before addition.
+                let step = |h: f32, s: f32| h * self.reciprocal * self.g + (s + s);
                 let histories = step(step(step(state[0] + state[0], state[1]), state[2]), state[3]);
-                // `feedback` holds the shaped resonance; 4.16 is applied as the core does.
+                // Original 0x140b010c4 forms q*4.16 before both feedback products.
                 let predicted = (c4 * input + histories * self.reciprocal)
-                    / (c4 * self.feedback * FEEDBACK + 1.0);
-                let feedback = predicted * self.feedback * FEEDBACK;
+                    / (c4 * feedback_scale + 1.0);
+                let feedback = predicted * feedback_scale;
                 let correction =
                     (feedback - state[4] * self.correction_previous) * self.correction_reciprocal;
                 let feedback =
@@ -388,10 +389,9 @@ impl Ladder {
                     outputs[taps]
                 } else {
                     let weights = MORPHOLOGY_WEIGHTS[taps - 1];
-                    // Native sum order: stage 4, 3, 2, 1, then the clipped input.
-                    (((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
-                        + outputs[1] * weights[1])
-                        + outputs[0] * weights[0]
+                    // Original 0x140b012a9..0x140b012bf groups stage 1 with the input.
+                    ((outputs[4] * weights[4] + outputs[3] * weights[3]) + outputs[2] * weights[2])
+                        + (outputs[1] * weights[1] + outputs[0] * weights[0])
                 };
                 *sample = tap * self.compensation;
             }
@@ -913,6 +913,90 @@ mod tests {
                 }
             }
         }
+    }
+    struct NativeLadderCase {
+        rate: f32,
+        cutoff: f32,
+        resonance: f32,
+        gain: f32,
+        taps: u8,
+        signal: u8,
+        hash: u64,
+        checkpoints: [u32; 24],
+    }
+
+    include!("ladder_native_vectors.rs");
+
+    #[test]
+    fn ladder_original_gain_literal_targets() {
+        prepare();
+        // Original setter0x140b05c70 ->0x140b05320 with its generated lookup table.
+        // Only the initializer's CRT pow is substituted, as recorded by the probe.
+        for (raw, native_bits) in [
+            (-1.0,0x3e809c5a),(-0.75,0x3eb5aac9),(-0.25,0x3f353c3a),
+            (-0.0,0x3f800000),(0.0,0x3f800000),(0.125,0x3f9820fd),
+            (0.5,0x3fff6572),(0.75,0x40346105),(1.0,0x407ecae4),
+        ] {
+            let mut filter = Ladder::default();
+            filter.tune([0.5,0.0,raw],48_000.0);
+            assert_eq!(filter.controls.current[0].to_bits(),native_bits,"gain{raw}");
+        }
+    }
+
+    #[test]
+    fn ladder_original_static_pcm_grid() {
+        prepare();
+        let mut mismatches = 0;
+        let mut maximum_checkpoint_error = 0.0f32;
+        for case in NATIVE_LADDER_CASES {
+            let mut filter = Ladder::default();
+            // Native capture used zeroed cutoff-clock flag0x49; no record version
+            // is guessed from that synthetic state. All controls are static here.
+            filter.set_taps(case.taps);
+            filter.tune([case.cutoff, case.resonance, case.gain], case.rate);
+            let mut left = [0.0f32; 1024];
+            let mut right = [0.0f32; 1024];
+            match case.signal {
+                0 => { left[0] = 0.125; right[0] = -0.0625; }
+                1 => { left[0] = 8.0; right[0] = -4.0; }
+                2 => {
+                    for i in 0..64 {
+                        left[i] = f32::from_bits(NATIVE_NOISE_LEFT[i]);
+                        right[i] = f32::from_bits(NATIVE_NOISE_RIGHT[i]);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            for (left, right) in left.chunks_mut(32).zip(right.chunks_mut(32)) {
+                filter.process(left, right);
+            }
+            let mut hash = 0xcbf29ce484222325u64;
+            for value in left.iter().chain(&right) {
+                assert!(value.is_finite());
+                for byte in value.to_bits().to_le_bytes() {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
+            }
+            let mut first_bad_checkpoint = None;
+            for (channel, samples) in [&left, &right].into_iter().enumerate() {
+                for (i, &sample) in NATIVE_CHECKPOINTS.iter().enumerate() {
+                    let actual = samples[sample];
+                    let expected_bits = case.checkpoints[channel * 12 + i];
+                    maximum_checkpoint_error = maximum_checkpoint_error.max((actual - f32::from_bits(expected_bits)).abs());
+                    if actual.to_bits() != expected_bits && first_bad_checkpoint.is_none() {
+                        first_bad_checkpoint = Some((channel, sample, actual.to_bits(), expected_bits));
+                    }
+                }
+            }
+            if hash != case.hash || first_bad_checkpoint.is_some() {
+                mismatches += 1;
+                if mismatches <= 8 {
+                    eprintln!("native_ladder_mismatch rate={} cutoff={} resonance={} gain={} taps={} signal={} actual_hash={hash:016x} expected_hash={:016x} first_checkpoint={first_bad_checkpoint:?}", case.rate,case.cutoff,case.resonance,case.gain,case.taps,case.signal,case.hash);
+                }
+            }
+        }
+        eprintln!("native_ladder_comparison cells={} mismatched={} maximum_checkpoint_abs_error={maximum_checkpoint_error:e}",NATIVE_LADDER_CASES.len(),mismatches);
+        assert_eq!(mismatches,0,"original HQ-off PCM; do not relax to a fitted oracle");
     }
 }
 

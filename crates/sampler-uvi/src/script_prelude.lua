@@ -76,7 +76,21 @@ local widget_mt, methods = {}, {}
 local registry = {}
 local ui = { widgets = registry, revision = 0, keys = {} }
 local rawtype = type
+local rawmetatable = getmetatable
 local function data(w) return rawget(w, "__data") end
+local function same_presentation_scalar(d, k, v)
+  -- Mutable objects can be reassigned to signal an in-place edit. Authored
+  -- data metatables can also give otherwise identical writes side effects.
+  if rawmetatable(d) ~= nil then return false end
+  local old = rawget(d, k)
+  local t = rawtype(v)
+  if rawtype(old) ~= t or old ~= v then return false end
+  if t == "number" then
+    -- Keep nonfinite writes observable, and distinguish the signs of zero.
+    return v-v == 0 and (v ~= 0 or 1/old == 1/v)
+  end
+  return t == "string" or t == "boolean" or t == "nil"
+end
 local function notify(w, index)
   local f = data(w).changed
   if rawtype(f) == "function" then f(w, index) end
@@ -221,7 +235,10 @@ widget_mt.__newindex = function(w, k, v)
   elseif k == "height" then d.height,d.height_set = v,true
   elseif k == "position" or k == "pos" then d.x,d.y = v[1],v[2]
   elseif k == "parent" then d.parent,d.parent_id = v,v and rawget(v,"id")
-  else d[k] = v end
+  else
+    if same_presentation_scalar(d, k, v) then return end
+    d[k] = v
+  end
   ui.revision = ui.revision + 1
 end
 local sizes = {Knob={80,80},Slider={120,20},NumBox={80,20},Button={100,25},OnOffButton={100,25},
@@ -239,6 +256,7 @@ widget = function(kind, ...)
     interceptsMouseClicks=true, mapper="Linear",unit="Generic"}
   local w = setmetatable({__data=d}, widget_mt)
   if kind == "Table" then
+    d.drawInnerEdge = true
     d.length,d.value,d.min,d.max,d.integer = value or 0,0,args[4] or 0,args[5] or 1,args[6]==true
     d.default = args[3] or 0
     d.values = {}; for i=1,d.length do d.values[i] = args[3] or 0 end
@@ -248,7 +266,9 @@ widget = function(kind, ...)
   elseif kind == "Button" or kind == "OnOffButton" then
     d.value = value == true; if kind == "Button" then d.persistent=false end
   elseif kind == "AudioMeter" then
-    d.meter_element,d.stereo,d.channel,d.vertical,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
+    -- Native constructor: element, isVertical, busId, useOutput. The bus id is
+    -- not a channel index, and input/output selection cannot set orientation.
+    d.meter_element,d.vertical,d.busId,d.useOutput,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
   elseif kind == "XY" then
     d.paramX,d.paramY,d.value = name,value,0
   elseif kind == "Image" or kind == "SVG" then d.image = native.resourcePath(name)
@@ -342,6 +362,7 @@ local element = {}
 local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
   sends=true,modulations=true,eventProcessors=true,connections=true}
 element.__index = function(t, k)
+  if k == "sampleInfo" then return native.sampleInfo(rawget(t, "__id")) end
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then

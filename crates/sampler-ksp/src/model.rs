@@ -195,6 +195,23 @@ pub struct Request {
     pub args: Vec<Value>,
 }
 
+/// Source-owned pass in which a finite startup residency request was captured.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ResidencyPass { InstrumentPersistence, SnapshotPersistence }
+
+/// Execution metadata, deliberately absent from the frequently cloned UI Model.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct InitialResidencyRequest {
+    pub group: i32,
+    pub reload: bool,
+    pub async_id: i32,
+    pub source_slot: u8,
+    pub pass: ResidencyPass,
+    pub offset: u32,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interface {
@@ -242,6 +259,15 @@ impl SnapshotMode {
         matches!(self, Self::NativeWithInit | Self::NativeWithoutInit)
     }
 }
+
+/// Last executed setter in this slot's initialization, distinct from the
+/// default policy when no setter ran. The offset locates authored code only.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotModeWrite {
+    pub mode: SnapshotMode,
+    pub offset: u32,
+}
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvaluationFailure {
@@ -266,6 +292,8 @@ pub enum PersistenceCompletion {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
     pub snapshot_mode: SnapshotMode,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub snapshot_mode_write: Option<SnapshotModeWrite>,
     pub persistence_completion: PersistenceCompletion,
     pub interface: Interface,
     pub persistent: Vec<Persistent>,

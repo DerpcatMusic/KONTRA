@@ -41,6 +41,18 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
     knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
 }
 
+/// Native Skreamer field/setter order (fx_dynamics_dist_tape.tsv).
+pub(super) fn skreamer_parameter(parameter: &str) -> Option<usize> {
+    Some(match parameter {
+        "ENGINE_PAR_SK_TONE" => 0,
+        "ENGINE_PAR_SK_DRIVE" => 1,
+        "ENGINE_PAR_SK_BASS" => 2,
+        "ENGINE_PAR_SK_BRIGHT" => 3,
+        "ENGINE_PAR_SK_MIX" => 4,
+        _ => return None,
+    })
+}
+
 /// The modules whose saved fields `typed_core` maps.
 pub(super) const TYPED_CORES: [u16; 13] = [0x23, 0x24, 0x42, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x6f, 0x78];
 

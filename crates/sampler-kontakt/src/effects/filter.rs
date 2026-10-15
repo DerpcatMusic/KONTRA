@@ -160,6 +160,10 @@ pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result
             Err(Gap { name, reason: "belongs to another translation arm" })
         }
         Some((_, Build::Config(mut config, fidelity, caveat))) => {
+            let (fidelity, caveat) = if matches!(id, 2..=4 | 6..=12)
+                && !(0.0..=1.0).contains(&cutoff) {
+                (Partial, "legacy cutoff coefficient saturation and raw slew state verified in native setters/wrapper; transition boundary phase for out-of-range saved targets is not yet calibrated")
+            } else { (fidelity, caveat) };
             config.cutoff = f64::from(cutoff);
             config.resonance = f64::from(resonance);
             let lead = extra.first().copied().filter(|_| id != 19);

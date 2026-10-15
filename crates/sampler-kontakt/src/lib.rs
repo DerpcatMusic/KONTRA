@@ -54,7 +54,7 @@ pub use load::take_script_init_runs;
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish,
     load, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable,
-    load_streamed, prepare, stream_instrument,
+    load_streamed, prepare, stream_instrument, stream_instrument_cancelable,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use metadata::{
@@ -67,10 +67,15 @@ pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
-pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
-pub use stream::{
-    AssetSource, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+pub use snapshot::{
+    GroupState, SnapshotState, apply_snapshot, read_snapshot, read_snapshot_for_base, resolve_snapshot_base,
+    snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
+pub use stream::{
+    AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+};
+mod source_identity;
+pub use source_identity::{FileIdentity, SourceChanged};
 
 /// Increment when protected catalog metadata decoding changes, for cache invalidation.
 pub const LIBRARY_ACCESS_REVISION: u32 = 1;

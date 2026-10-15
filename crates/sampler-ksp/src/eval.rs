@@ -164,6 +164,24 @@ fn statement_has_array_file(stmt: &StmtKind) -> bool {
     }
 }
 
+#[cfg(feature="cache")]
+pub(crate) fn uses_array_file(hir:&Hir)->bool {
+    let mut pending:Vec<&[Stmt]>=hir.callbacks.iter().map(|c|c.body.as_slice())
+        .chain(hir.functions.iter().map(|f|f.body.as_slice())).collect();
+    while let Some(body)=pending.pop() {
+        for statement in body {
+            if statement_has_array_file(&statement.kind) {return true;}
+            match &statement.kind {
+                StmtKind::If(_,yes,no)=>{pending.push(yes);pending.push(no);}
+                StmtKind::While(_,body)=>pending.push(body),
+                StmtKind::Select(_,cases)=>pending.extend(cases.iter().map(|c|c.body.as_slice())),
+                _=>{},
+            }
+        }
+    }
+    false
+}
+
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
     use sampler_core::IntegerBinary as I;
     match op {
@@ -252,6 +270,7 @@ impl V {
 #[derive(Clone)]
 pub struct Initial {
     pub midi_object: sampler_core::MidiObject,
+    pub residency: Vec<model::InitialResidencyRequest>,
     pub cells: Vec<i64>,
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
@@ -287,6 +306,7 @@ struct Eval<'h, const TRACK: bool> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
+    residency_pass: model::ResidencyPass,
     async_result: Option<(i32, i32)>,
     async_depth: u8,
     current_statement: Option<u32>,
@@ -318,6 +338,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         env: instrument.as_ref().unwrap_or(env),
         st: Initial {
             midi_object: env.midi_object.clone(),
+            residency: Vec::new(),
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
@@ -334,6 +355,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
+        residency_pass: model::ResidencyPass::InstrumentPersistence,
         async_result: None,
         async_depth: 0,
         current_statement: None,
@@ -384,6 +406,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         }
         // Then the snapshot: every saved value, read in init or not.
         e.env = env;
+        e.residency_pass = model::ResidencyPass::SnapshotPersistence;
         e.restore_saved(true);
     }
     if let Some(cb) = persistence_changed {
@@ -1598,6 +1621,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         builtin: Some("set_snapshot_type"),
                         message: "invalid snapshot mode".into(),
                     })?;
+                self.st.model.snapshot_mode_write = Some(model::SnapshotModeWrite {
+                    mode: self.st.model.snapshot_mode,
+                    offset: span.start,
+                });
                 V::I(0)
             }
             DisableLogging | WatchVar | WatchArrayIdx | ExposeControls | ShowLibraryTab
@@ -1974,7 +2001,11 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 )
             }
             AttachZone | SetUiWfProperty | GetUiWfProperty => self.waveform(builtin, args, span)?,
-            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit
+            GetPurgeState => {
+                self.warn(span,"get_purge_state during initialization has no physical residency authority; startup query remains unsupported");
+                V::I(0)
+            }
+            GetNumZones | GetZoneId | GetVoiceLimit
             | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
@@ -2051,7 +2082,28 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     V::I(id)
                 }
             }
-            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
+            PurgeGroup => {
+                let group=self.int(args,0)?;
+                let mode=self.int(args,1)?;
+                if self.callback_type != b::cb::PERSISTENCE_CHANGED || group < 0 || !(0..=1).contains(&mode) {
+                    self.warn(span,"purge_group startup replay requires a documented persistence callback, nonnegative group and mode 0 or 1");
+                    V::I(-1)
+                } else {
+                    if self.st.residency.len() >= sampler_core::InitialGroupResidency::MAX_REQUESTS {
+                        return fault(span,"startup residency request budget exceeded");
+                    }
+                    let async_id=self.st.midi_object.allocate_async_id().map_err(|_|Fault {
+                        span,builtin:Some(builtin.name()),message:"startup async identity exhausted".into()
+                    })?;
+                    self.request(builtin,args)?;
+                    self.st.residency.push(model::InitialResidencyRequest {
+                        group,reload:mode!=0,async_id,source_slot:self.env.slot,
+                        pass:self.residency_pass,offset:span.start,
+                    });
+                    V::I(async_id)
+                }
+            }
+            SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
             | FsNavigate | LoadNativeUi | SetNksNavName
             | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;

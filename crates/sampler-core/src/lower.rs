@@ -200,7 +200,10 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
                 ir::Rectifier::Half => Rectifier::Half,
             }),
             fx::Curve::Destructor { drive } => Curve::Destructor(drive),
-            fx::Curve::Skreamer(knobs) => Curve::Skreamer(knobs),
+            fx::Curve::Skreamer([tone, drive, bass, bright, mix]) => Curve::Skreamer([
+                knob(P::Tone, tone), knob(P::Drive, drive), knob(P::Bass, bass),
+                knob(P::Bright, bright), knob(P::Mix, mix),
+            ]),
             fx::Curve::Drive(d) => Curve::Drive(d),
             fx::Curve::Tubescreamer(d) => Curve::Tubescreamer(d),
             fx::Curve::Dirt(d) => Curve::Dirt(d),
@@ -601,11 +604,10 @@ pub fn lower_with(
     for (i, zone) in instrument.zones.iter().enumerate() {
         let (region, chain) = lowering.zone(i, zone)?;
         // Name the zone whose geometry the runtime would reject as a whole.
-        let source = &pcm[region.sample];
-        region
-            .playback
-            .cursor(source.frame_count(), source.sample_rate(), rate)
-            .map_err(core(Stage::Regions, format!("zone {i}")))?;
+        if let Some(source) = pcm.get(region.sample) {
+            region.playback.cursor(source.frame_count(), source.sample_rate(), rate)
+                .map_err(core(Stage::Regions, format!("zone {i}")))?;
+        }
         candidates += usize::from(zone.keys.high - zone.keys.low) + 1;
         regions.push(region);
         chain_of.push(chain.map(|chain| {
@@ -1014,6 +1016,17 @@ pub fn lower_with(
         .map_err(core(Stage::Controls, "authored source engine values"))?;
     plan = lowering.parameter_registry(plan)?;
     plan = lowering.modulation(plan)?;
+    if !instrument.source_indices.sample_targets.is_empty() {
+        let count = instrument.source_indices.sample_targets.len();
+        let slots = count.checked_add(64).ok_or_else(|| core(Stage::Regions, "sample revision slots")(Error::Capacity))?;
+        plan = plan.with_sample_targets(
+            instrument.source_indices.sample_targets.iter().map(|t| crate::SampleTarget {
+                id: crate::SampleTargetId(t.node),
+                regions: t.zones.iter().map(|z| z.0).collect(),
+            }).collect(),
+            crate::SampleRevisionLimits { slots, resident_bytes: 256 << 20 },
+        ).map_err(core(Stage::Regions, "sample targets"))?;
+    }
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -1146,7 +1159,7 @@ impl Lowering<'_> {
         let gain = zone.gain.linear() * group.map_or(1.0, |g| g.gain.linear());
         let tune = zone.tune.semitones() + group.map_or(0.0, |g| g.tune.semitones());
         let pan = zone.pan.position + group.map_or(0.0, |g| g.pan.position);
-        let asset_rate = f64::from(self.pcm[zone.asset.0].sample_rate());
+        let asset_rate = zone.asset.map_or(f64::from(self.rate), |a| f64::from(self.pcm[a.0].sample_rate()));
         let envelope = self.envelope(&owner, zone)?;
         let mut pre = Vec::new();
         let mut post = Vec::new();
@@ -1333,7 +1346,7 @@ impl Lowering<'_> {
             transpose_semitones: tune,
         };
         let region = Region {
-            sample: zone.asset.0,
+            sample: zone.asset.map_or(crate::DORMANT_SAMPLE, |a| a.0),
             key_low: zone.keys.low,
             key_high: zone.keys.high,
             root_key,
@@ -1724,6 +1737,16 @@ impl Lowering<'_> {
                     ModTarget::SourceRate(source_of(target, &mut program)? as u32),
                     d,
                 ),
+                (ir::Target::Wavetable(parameter), ir::Depth::Normalized(d)) => {
+                    if !zone.group.and_then(|group| self.ir.groups.get(group.0)).is_some_and(|group| group.wavetable.is_some()) {
+                        return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+                    }
+                    (match parameter {
+                        ir::WavetableParameter::Position => ModTarget::WavetablePosition,
+                        ir::WavetableParameter::Form1 => ModTarget::WavetableForm1,
+                        ir::WavetableParameter::Form2 => ModTarget::WavetableForm2,
+                    }, d)
+                }
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,
@@ -2171,6 +2194,17 @@ fn bind_role(processor: &mut Processor, role: ir::ProcessorParameter, parameter:
                 return filter.bind(knob, parameter);
             }
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer(knobs), .. }), Tone | Drive | Bass | Bright | Mix) => {
+                let index = match role {
+                    Tone => 0,
+                    Drive => 1,
+                    Bass => 2,
+                    Bright => 3,
+                    Mix => 4,
+                    _ => unreachable!(),
+                };
+                knobs[index] = parameter;
+            }
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
@@ -2384,6 +2418,11 @@ impl Lowering<'_> {
                 if !found {
                     return Err(unsupported(owner, Feature::Controls));
                 }
+            }
+            if let Some((stage_index, stage)) = stages.iter().enumerate().find(|(_, stage)| !stage.valid()) {
+                return Err(core(if matches!(self.ir.chains[chain.0].scope, ir::Scope::Bus(_)) { Stage::Buses } else { Stage::VoiceChains },
+                    format!("{owner}, chain {}, processor {}, lowered stage {stage_index}: {stage:?}", chain.0, start + index)
+                )(Error::InvalidInput));
             }
             processors.extend(stages);
         }
@@ -3177,6 +3216,7 @@ mod chain_sharing_tests {
         let mut instrument = ir::Instrument {
             assets: vec![ir::Asset {
                 location: ir::AssetLocation::Path("synthetic.wav".into()),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: vec![],

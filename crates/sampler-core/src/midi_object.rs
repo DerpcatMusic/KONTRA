@@ -626,6 +626,18 @@ impl MidiObject {
         self.next_job = self.next_job.checked_add(1).ok_or(Error::Capacity)?;
         Ok(self.next_job)
     }
+    /// Control-side identity of the shared MIDI/NKA/residency async domain.
+    pub fn async_id_high_water(&self) -> i32 { self.next_job }
+    /// Restore only a monotonic high-water mark, without fabricating jobs.
+    pub fn reserve_async_ids_through(&mut self, high: i32) -> Result<(),Error> {
+        if high < self.next_job || high < 0 { return Err(Error::InvalidInput); }
+        self.next_job=high;
+        Ok(())
+    }
+    pub fn has_only_async_id_reservations(&self) -> bool {
+        *self == Self { next_job:self.next_job, ..Self::default() }
+    }
+    pub(crate) fn has_async_job(&self,id:i32)->bool {self.jobs.iter().any(|j|j.id==id)}
     pub fn queue_initial(
         &mut self,
         slot: u8,

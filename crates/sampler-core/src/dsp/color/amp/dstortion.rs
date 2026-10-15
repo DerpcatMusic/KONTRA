@@ -79,7 +79,7 @@ impl Engine {
         let [vol, tone, drive, bass, mid, treble, mono] = k;
         let one = |x: f32| x.min(1.0);
         // SR setup 0x140abf080.
-        let f9 = 6.283 / rate as f32;
+        let f9 = f32::from_bits(0x40c90e56) / rate as f32;
         let c12c4 = one(f9 * table(1_481.881_6));
         let c12cc = one(f9 * table(1_381.881_6));
         let c12d8 = one(f9 * table(1_696.881_6));

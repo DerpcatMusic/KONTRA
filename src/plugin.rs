@@ -10,6 +10,9 @@
 mod automation;
 mod host_probe;
 mod held_keys;
+mod snapshot_reuse;
+#[cfg(test)]
+pub(crate) mod snapshot_reuse_tests;
 pub(crate) mod ui_activity;
 use ui_activity::Count as UiCount;
 pub(crate) use host_probe::export_multi_state;
@@ -33,6 +36,7 @@ use moose::core::{
 };
 use moose::mui::mui::scene::Image;
 use moose::prelude::*;
+mod uvi_meters;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -480,6 +484,13 @@ impl SamplerParams {
     }
 
     fn reload_ui_controls(&self) {
+        // Invalidate queued same-owner overlays before host recall can change
+        // the desired state, including a recall of the identical source tuple.
+        self.shared.with_parts(|parts| {
+            for part in parts {
+                let _ = part.snapshot_sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1));
+            }
+        });
         // Recall of the same source still needs fresh script initialization.
         let sources: Vec<_> = self
             .selection
@@ -572,7 +583,9 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PartShared {
     ui_activity: Option<Arc<ui_activity::Activity>>,
     effect_controls: Mutex<effect_controls::EffectControls>,
-    pub(crate) generation: AtomicU64,
+    pub(crate) generation: Arc<AtomicU64>,
+    snapshot_sequence: Arc<AtomicU64>,
+    snapshot_pending: Mutex<std::collections::VecDeque<snapshot_reuse::Pending>>,
     pub(crate) scalar_revision: AtomicU64,
     pub(crate) native_revision: AtomicU64,
     ingress: Mutex<Option<crate::sound::v2::ControlIngress>>,
@@ -581,10 +594,12 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 20],
+    problems: [AtomicU64; 23],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
+    uvi_meters: Mutex<Vec<uvi_meters::Cell>>,
+    uvi_meter_interest: AtomicUsize,
     pub(crate) editor_taps: [AtomicU64; 16],
     pub(crate) engine_bindings: Mutex<Arc<[sampler_core::EngineParameterBinding]>>,
     waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
@@ -873,6 +888,9 @@ impl PartShared {
             stream_errors,
             offline_failures,
             lua_faults,
+            cold_starts,
+            voice_pool_refusals,
+            waiting_voice_replacements,
         ] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
@@ -893,6 +911,9 @@ impl PartShared {
             stream_errors,
             offline_failures,
             lua_faults,
+            cold_starts,
+            voice_pool_refusals,
+            waiting_voice_replacements,
         }
     }
 
@@ -918,6 +939,9 @@ impl PartShared {
             p.stream_errors,
             p.offline_failures,
             p.lua_faults,
+            p.cold_starts,
+            p.voice_pool_refusals,
+            p.waiting_voice_replacements,
         ];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
@@ -1023,6 +1047,7 @@ pub struct Shared {
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) resource_path: Option<PathBuf>,
+    pub(crate) resource_revision: Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
     pub(crate) effects: Arc<[crate::sound::effect_controls::EffectSnapshot]>,
     pub(crate) program: u32,
     pub(crate) generation: u64,
@@ -1428,11 +1453,20 @@ impl Shared {
             return false;
         };
         let generation = atoms.generation.load(Ordering::Acquire);
+        // MAX is a permanent exhausted/cancelled sentinel. Host recall must
+        // still be able to invalidate the last admitted sequence (MAX - 1).
+        let Ok(previous) = atoms.snapshot_sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1).filter(|next| *next != u64::MAX)) else {
+            return false;
+        };
+        let recall_revision = self.view.lock_unpoisoned().parts.get(slot).map_or(0, |v| v.recall_revision);
         *request = Some(SnapshotRequest {
             slot,
             source: part.source(),
             path,
             generation,
+            sequence: previous + 1,
+            recall_revision,
+            allow_reuse: true,
         });
         true
     }
@@ -1780,7 +1814,10 @@ impl Shared {
         };
         let mut changed =
             std::collections::BTreeMap::<(usize, u64), std::collections::BTreeSet<usize>>::new();
-        while let Some((slot, epoch, instance, effect)) = self.effects.pop() {
+        // Bound one service pass even when audio keeps producing. FIFO work
+        // arriving during this batch remains queued for the next pass.
+        for _ in 0..self.effects.len() {
+            let Some((slot, epoch, instance, effect)) = self.effects.pop() else { break };
             let Some(part) = self.part(slot) else {
                 continue;
             };
@@ -2010,11 +2047,15 @@ impl SavedMulti {
 }
 
 // Port from v1 0cb7a8a0:src/plugin.rs; prepared v2 part stays off audio until validation.
+#[derive(Clone)]
 pub(crate) struct SnapshotRequest {
     slot: usize,
     source: (String, u32, String),
     path: String,
     generation: u64,
+    sequence: u64,
+    recall_revision: u64,
+    allow_reuse: bool,
 }
 
 /// Validate on the loader before replacing any saved or playing state.
@@ -2028,6 +2069,13 @@ fn prepare_snapshot(
     let request = {
         let mut pending = params.shared.snapshot_request.lock_unpoisoned();
         if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize {
+            return None;
+        }
+        // At most two admitted payloads: the current receipt and one newer
+        // request. Further gestures replace the one lightweight request above;
+        // an inactive host cannot accumulate unbounded saved-state buffers.
+        if params.shared.part(pending.as_ref()?.slot)
+            .is_some_and(|part| part.snapshot_pending.lock_unpoisoned().len() >= 2) {
             return None;
         }
         pending.take()?
@@ -2045,22 +2093,7 @@ fn prepare_snapshot(
         "container parsing, explicit base matching and supported state import; audio not installed",
     );
     trace.stage("snapshot_parse_and_validation");
-    let current = || {
-        params
-            .shared
-            .part(request.slot)
-            .unwrap()
-            .generation
-            .load(Ordering::Acquire)
-            == request.generation
-            && params
-                .selection
-                .read_unpoisoned()
-                .parts
-                .get(request.slot)
-                .is_some_and(|p| p.source() == request.source)
-            && params.shared.snapshot_request.lock_unpoisoned().is_none()
-    };
+    let current = || snapshot_reuse::current(params, &request, true);
     if !current() {
         trace.detail(
             "cancellation",
@@ -2069,6 +2102,11 @@ fn prepare_snapshot(
         trace.finish("canceled");
         return None;
     }
+    let (request, mut trace) = match snapshot_reuse::try_submit(params, request, trace) {
+        Ok(()) => return None,
+        Err(ordinary) => ordinary,
+    };
+    let current = || snapshot_reuse::current(params, &request, true);
     params.shared.view.lock_unpoisoned().parts[request.slot].status = "Loading preset…".into();
     let part = params.selection.read_unpoisoned().parts[request.slot].clone();
     let rack_streaming = params.selection.read_unpoisoned().streaming;
@@ -2089,7 +2127,9 @@ fn prepare_snapshot(
             library::ThreadSetting::Fixed(n) => Some(crate::sound::ThreadChoice::Fixed(n.into())),
         },
     };
-    let result = V2Loader.prepare(&load, &mut |_| {}, &|| !current());
+    let result = V2Loader.prepare_serviced(
+        &load, &mut |_| {}, &|| !current(), &mut || service_current_ui(params),
+    );
     if !current() {
         trace.detail(
             "cancellation",
@@ -2103,6 +2143,7 @@ fn prepare_snapshot(
             let mut selection = params.selection.write_unpoisoned();
             let pending = params.shared.snapshot_request.lock_unpoisoned();
             let valid = pending.is_none()
+                && params.shared.part(request.slot).unwrap().snapshot_sequence.load(Ordering::Acquire) == request.sequence
                 && params
                     .shared
                     .part(request.slot)
@@ -2113,7 +2154,7 @@ fn prepare_snapshot(
             let Some(part) = selection
                 .parts
                 .get_mut(request.slot)
-                .filter(|p| valid && p.source() == request.source)
+                .filter(|p| valid && snapshot_reuse::source_current(params, &request, &p.source()))
             else {
                 drop(pending);
                 drop(selection);
@@ -2134,7 +2175,8 @@ fn prepare_snapshot(
         Err(error) => {
             let selection = params.selection.read_unpoisoned();
             let pending = params.shared.snapshot_request.lock_unpoisoned();
-            let valid = params
+            let valid = params.shared.part(request.slot).unwrap().snapshot_sequence.load(Ordering::Acquire) == request.sequence
+                && params
                 .shared
                 .part(request.slot)
                 .unwrap()
@@ -2144,7 +2186,7 @@ fn prepare_snapshot(
                 && selection
                     .parts
                     .get(request.slot)
-                    .is_some_and(|p| p.source() == request.source)
+                    .is_some_and(|p| snapshot_reuse::source_current(params, &request, &p.source()))
                 && pending.is_none();
             if !valid {
                 drop(pending);
@@ -2172,6 +2214,23 @@ fn prepare_snapshot(
 /// The loader: serialized, polled by the audio thread about ten times a second.
 pub struct Load;
 
+/// Services of the already committed owners; never begins another load or
+/// acquires candidate state. Also called while waiting on private preparation.
+fn service_current_ui(params: &SamplerParams) {
+    let shared = &params.shared;
+    let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
+    shared.apply_effects();
+    shared.with_parts(|parts| {
+        for part in parts {
+            if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
+                && ingress.refresh()
+            {
+                part.scalar_revision.fetch_add(1, Ordering::Release);
+            }
+        }
+    });
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -2179,20 +2238,11 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.ui_activity.add(UiCount::WorkerTicks, 1);
         shared.flush_ready();
-        {
-            let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
-            shared.apply_effects();
-        }
-        shared.with_parts(|parts| {
-            for part in parts {
-                if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
-                    && ingress.refresh()
-                {
-                    part.scalar_revision.fetch_add(1, Ordering::Release);
-                }
-            }
-        });
-        shared.refresh_uvi(&params);
+        service_current_ui(params);
+        snapshot_reuse::poll(params);
+        // UVI publication retains its existing source/lock policy. The load
+        // heartbeat only services the bounded core effect/control handoff.
+        shared.refresh_uvi(params);
         shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
@@ -2320,7 +2370,9 @@ fn load_part(
     prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
 ) -> bool {
     load_part_with(params, slot, prepared, |request, progress, canceled| {
-        V2Loader.prepare(request, progress, canceled)
+        V2Loader.prepare_serviced(
+            request, progress, canceled, &mut || service_current_ui(params),
+        )
     })
 }
 
@@ -2377,6 +2429,8 @@ fn load_part_with(
             let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
             *ingress = None;
             atoms.engine_meters.lock_unpoisoned().clear();
+            atoms.uvi_meters.lock_unpoisoned().clear();
+            atoms.uvi_meter_interest.store(0, Ordering::Release);
             *atoms.waveforms.lock_unpoisoned() = None;
             epoch
         };
@@ -2483,10 +2537,17 @@ fn load_part_with(
             let _span = sampler_kontakt::audit::Span::new("mapping_index");
             let mapping_index = loaded.instrument.as_ref()
                 .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
+            let resource_revision = loaded.scripts.resource_path.as_deref()
+                .zip(loaded.scripts.resources.as_ref())
+                .and_then(|(owner, resources)| {
+                    crate::sound::resource_revision::ResourceRevision::capture(
+                        owner, part.program, resources,
+                    ).map(Arc::new)
+                });
             if canceled() {
                 return Err(CoreError::Canceled);
             }
-            Ok((loaded, mapping_index))
+            Ok((loaded, mapping_index, resource_revision))
         });
     let result = if canceled() {
         Err(CoreError::Canceled)
@@ -2506,7 +2567,7 @@ fn load_part_with(
         return false;
     }
     match result {
-        Ok((mut loaded, mapping_index)) => {
+        Ok((mut loaded, mapping_index, resource_revision)) => {
             // Commit ownership only after preparation and persistence succeed.
             // Serialize the fence with off-audio command producers.
             let generation = {
@@ -2514,6 +2575,8 @@ fn load_part_with(
                 let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
                 *ingress = None;
                 atoms.engine_meters.lock_unpoisoned().clear();
+                atoms.uvi_meters.lock_unpoisoned().clear();
+                atoms.uvi_meter_interest.store(0, Ordering::Release);
                 *atoms.waveforms.lock_unpoisoned() = None;
                 epoch
             };
@@ -2533,6 +2596,12 @@ fn load_part_with(
             }
             for missing in &loaded.report.missing {
                 trace.missing(missing, loaded.instrument.as_deref());
+            }
+            if let Some(startup) = &loaded.report.stream_startup {
+                trace.detail("stream_startup", serde_json::to_value(startup).unwrap_or_default());
+                if let Some(warning) = startup.warning() {
+                    trace.issue("prepare", "attack_preload_budget", warning);
+                }
             }
             v.fault_inbox = loaded.part.as_ref().map(|p| p.fault_inbox.clone());
             let mut runtime_log = trace.runtime_log();
@@ -2557,6 +2626,7 @@ fn load_part_with(
             v.generation = generation;
             v.interfaces = loaded.interfaces.into();
             v.resource_path = loaded.scripts.resource_path.clone();
+            v.resource_revision = resource_revision;
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
                 v.effects =
@@ -2971,6 +3041,84 @@ pub struct Dsp {
     unsupported: u64,
     end_rejections: u64,
     playing: bool,
+    master_gain: MasterGain,
+    #[cfg(test)]
+    callback_audit: Option<CallbackAudit>,
+}
+
+/// Diagnostic clock groups exist only in test builds. Publishing/serialization
+/// happens in the receipt fixture after process() has returned.
+#[cfg(test)]
+#[derive(Default)]
+struct CallbackAudit {
+    wall_ns: [u64; 10],
+    caller_cpu_ns: [u64; 10],
+    calls: [u64; 10],
+}
+
+#[cfg(test)]
+struct CallbackAuditStamp {
+    wall: Instant,
+    caller_cpu_ns: u64,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn callback_thread_nanos() -> u64 {
+    let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: the test-only clock call receives a valid writable timespec.
+    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+fn callback_thread_nanos() -> u64 { 0 }
+
+#[cfg(test)]
+fn callback_audit_mark(
+    audit: &mut Option<CallbackAudit>,
+    stamp: &mut Option<CallbackAuditStamp>,
+    group: usize,
+) {
+    if let (Some(audit), Some(previous)) = (audit.as_mut(), stamp.as_mut()) {
+        let now = CallbackAuditStamp { wall: Instant::now(), caller_cpu_ns: callback_thread_nanos() };
+        audit.wall_ns[group] = audit.wall_ns[group].saturating_add(
+            now.wall.duration_since(previous.wall).as_nanos().min(u128::from(u64::MAX)) as u64,
+        );
+        audit.caller_cpu_ns[group] = audit.caller_cpu_ns[group]
+            .saturating_add(now.caller_cpu_ns.saturating_sub(previous.caller_cpu_ns));
+        audit.calls[group] = audit.calls[group].saturating_add(1);
+        *previous = now;
+    }
+}
+
+/// Keep sample-accurate smoothing while reusing the transform of an identical
+/// dB value. The host event loop splits blocks at automation boundaries.
+#[derive(Default)]
+struct MasterGain {
+    previous: Option<(u32, f32)>,
+}
+
+impl MasterGain {
+    fn fill(&mut self, volume: &FloatParam, output: &mut [f32]) {
+        volume.read_into(output);
+        let Some(first) = output.first().copied() else { return };
+        let bits = first.to_bits();
+        if output.iter().all(|sample| sample.to_bits() == bits) {
+            let linear = match self.previous {
+                Some((previous, linear)) if previous == bits => linear,
+                _ => {
+                    let linear = db_to_linear(first);
+                    self.previous = Some((bits, linear));
+                    linear
+                }
+            };
+            output.fill(linear);
+        } else {
+            let last = output.last().unwrap().to_bits();
+            for sample in output.iter_mut() { *sample = db_to_linear(*sample); }
+            self.previous = Some((last, *output.last().unwrap()));
+        }
+    }
 }
 
 impl Default for Dsp {
@@ -2986,6 +3134,9 @@ impl Default for Dsp {
             unsupported: 0,
             end_rejections: 0,
             playing: false,
+            master_gain: MasterGain::default(),
+            #[cfg(test)]
+            callback_audit: None,
         }
     }
 }
@@ -3066,6 +3217,11 @@ impl PluginLogic for Sampler {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let started = Instant::now();
+        #[cfg(test)]
+        let mut callback_stamp = s.callback_audit.as_ref().map(|_| CallbackAuditStamp {
+            wall: started,
+            caller_cpu_ns: callback_thread_nanos(),
+        });
         let shared = &p.shared;
         if !shared.discard.is_full()
             && let Some(mut growth) = shared.growth.pop()
@@ -3138,6 +3294,8 @@ impl PluginLogic for Sampler {
             };
             let _ = shared.discard.push(retired);
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 0);
         // Port v1 per-part engine defaults before any keyboard or host note starts.
         s.core.set_performance(
             p.attack.raw_target(),
@@ -3190,6 +3348,8 @@ impl PluginLogic for Sampler {
             s.audition[selected] = ((rate * 1.5) as usize, note);
         }
 
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 1);
         let channels = b.num_output_channels();
         let thru = shared.midi_thru.load(Ordering::Relaxed);
         let mut peak = [0f32; 2];
@@ -3220,6 +3380,8 @@ impl PluginLogic for Sampler {
                     },
                 }
             }
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 2);
             if at >= frames {
                 break;
             }
@@ -3235,12 +3397,14 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            for gain in &mut gains[..len] {
-                *gain = db_to_linear(p.volume.read());
-            }
+            s.master_gain.fill(&p.volume, &mut gains[..len]);
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 3);
             let ports = s.core.bus_ports().map(usize::from);
             s.core.set_tap(scope.checked_sub(1));
             let Rendered { buses, live } = s.core.render(len);
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 4);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
                 for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
@@ -3309,6 +3473,8 @@ impl PluginLogic for Sampler {
                 shared.scope.push(tapped);
             }
             at += len;
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 5);
         }
         for slot in 0..s.core.parts() {
             let epoch = s.core.epoch(slot);
@@ -3338,11 +3504,15 @@ impl PluginLogic for Sampler {
                     .is_ok()
             });
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 6);
         let offset = frames.saturating_sub(1) as u32;
         let refused = s
             .core
             .end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 7);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
@@ -3359,6 +3529,12 @@ impl PluginLogic for Sampler {
                 let Some(atoms) = part_atoms(&s.shared_parts, shared, slot) else {
                     continue;
                 };
+                // Raw UVI taps must be published before take_node_peaks
+                // consumes the same physical output observations below.
+                atoms.refresh_uvi_meters(s.core.epoch(slot), |request| {
+                    s.core.uvi_meter_observation(slot, request)
+                });
+                s.core.finish_uvi_meter_observation(slot);
                 let Ok(meters) = atoms.node_meters.try_lock_unpoisoned() else {
                     continue;
                 };
@@ -3377,6 +3553,8 @@ impl PluginLogic for Sampler {
             peaks.parts.fill([0.0; 2]);
             peaks.buses.fill([0.0; 2]);
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 8);
         let voices = s.core.voices();
         shared.voices.store(voices.active as u64, Ordering::Relaxed);
         shared
@@ -3389,6 +3567,8 @@ impl PluginLogic for Sampler {
         shared
             .end_rejections
             .store(s.end_rejections, Ordering::Relaxed);
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 9);
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
             let busy = started.elapsed();
@@ -3493,6 +3673,9 @@ pub(crate) mod tests {
             stream_failed: 3,
             stream_errors: 4,
             offline_failures: 5,
+            cold_starts: 126,
+            voice_pool_refusals: 127,
+            waiting_voice_replacements: 128,
             ..Default::default()
         };
         assert_eq!(
@@ -3513,6 +3696,55 @@ pub(crate) mod tests {
         assert_eq!(db_to_linear(p.volume.read()), 1.0, "master gain");
         let full_scale = 1.0_f32;
         assert_eq!(full_scale * db_to_linear(p.volume.read()), full_scale);
+    }
+
+    #[test]
+    fn master_gain_bulk_reads_preserve_smoothed_samples_and_automation_boundaries() {
+        let reference = SamplerParams::new();
+        let cached = SamplerParams::new();
+        reference.volume.set_sample_rate(48000.0);
+        cached.volume.set_sample_rate(48000.0);
+        let mut gain = MasterGain::default();
+        for target in [0.0, -60.0, 6.0, -3.5, 0.0, -0.0, -60.0] {
+            reference.volume.set_value(target);
+            cached.volume.set_value(target);
+            for frames in [1, 3, 64, 128, 17, 128, 128, 128, 128, 128, 128] {
+                let mut actual = [0.; MAX_BLOCK];
+                gain.fill(&cached.volume, &mut actual[..frames]);
+                for &sample in &actual[..frames] {
+                    let expected: f32 = db_to_linear(reference.volume.read());
+                    assert_eq!(sample.to_bits(), expected.to_bits(), "target {target}, {frames}-frame boundary");
+                }
+                let a: f32 = cached.volume.current();
+                let b: f32 = reference.volume.current();
+                assert_eq!(a.to_bits(), b.to_bits(), "both smoothers advance by exactly the same sample count");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "timing receipt: run optimized and without competing workloads"]
+    fn master_gain_cpu_receipt() {
+        use std::hint::black_box;
+        let parameter = SamplerParams::new();
+        parameter.volume.set_sample_rate(48000.0);
+        let blocks = 100_000;
+        for moving in [false, true] {
+            for cached in [false, true] {
+                parameter.volume.set_value(0.0);
+                parameter.volume.snap_smoother();
+                let mut gain = MasterGain::default();
+                let mut out = [0.; MAX_BLOCK];
+                let began = Instant::now();
+                for block in 0..blocks {
+                    if moving { parameter.volume.set_value(if block % 2 == 0 { -30.0 } else { -6.0 }); }
+                    if cached { gain.fill(&parameter.volume, &mut out); }
+                    else { for sample in &mut out { *sample = db_to_linear(parameter.volume.read()); } }
+                    black_box(&out);
+                }
+                eprintln!("master_gain moving={moving} cached={cached} blocks={blocks} frames={} elapsed_ns={}", MAX_BLOCK, began.elapsed().as_nanos());
+            }
+        }
     }
     use std::{
         alloc::{GlobalAlloc, Layout, System},
@@ -3854,9 +4086,14 @@ pub(crate) mod tests {
     }
 
     fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+        transaction_candidate_with_source(name,
+            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on")
+    }
+
+    pub(super) fn transaction_candidate_with_source(name: &str, source: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
         use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
         let script = sampler_ksp::compile(
-            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on",
+            source,
             48000,
             sampler_ksp::Limits::LIBRARY,
             &[],
@@ -3928,6 +4165,60 @@ pub(crate) mod tests {
         core.play(0, CoreEvent::midi1(0x90, 60, 100));
         assert!(core.render(64).live[0]);
         (params, core)
+    }
+
+    #[test]
+    fn a_waiting_load_services_real_retained_ui_callbacks_and_keeps_audio_playing() {
+        let params = SamplerParams::new();
+        params.selection.write_unpoisoned().parts = vec![Part {
+            path: "active.nki".into(), ..Default::default()
+        }];
+        let candidate = transaction_candidate_with_source("Active", concat!(
+            "on init declare ui_knob $value(0,1000,1) $value := 250 ",
+            "declare ui_label $status(1,1) end on ",
+            "on ui_control($value) set_text($status,\"still live\") end on",
+        ));
+        let control = candidate.controls[0].0;
+        assert!(load_part(&params, 0, Some(candidate)));
+        let (slot, epoch, part) = params.shared.ready.pop().unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(slot, part);
+        core.play(0, CoreEvent::midi1(0x90, 60, 100));
+        params.selection.write_unpoisoned().parts[0].path = "private-next.nki".into();
+        assert!(params.shared.set_control_at(0, epoch, control, 750.));
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let mut services = 0;
+        let mut published = false;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                // This worker cannot report progress or finish until the old
+                // owner's real callback and publication have advanced twice.
+                release_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                progress_tx.send(Progress::DONE).unwrap();
+            });
+            crate::sound::v2::load_wait::relay(progress_rx, &mut |_| {}, Some(&mut || {
+                services += 1;
+                core.begin_block(&crate::sound::BlockInfo { frames:64, ..Default::default() });
+                assert!(core.render(64).buses[0][0].iter().any(|v| *v != 0.));
+                core.end_block(64, &mut |_| true);
+                core.take_effects(0, &mut |instance, effect| {
+                    params.shared.effects.push((0, epoch, instance, *effect)).is_ok()
+                });
+                service_current_ui(&params);
+                let view = params.shared.view.lock_unpoisoned();
+                let part = &view.parts[0];
+                assert_eq!(part.generation, epoch);
+                assert_eq!(part.active, "Active");
+                published |= part.updates.iter().any(|patch| patch.widgets.iter()
+                    .any(|(_, widget)| widget.text == "still live"));
+                if published && services >= 2 { let _ = release_tx.try_send(()); }
+            }));
+        });
+        assert!(published);
+        assert!(services >= 2);
+        assert_eq!(core.epoch(0), epoch);
+        assert!(params.shared.ready.pop().is_none());
     }
 
     #[test]
@@ -4413,6 +4704,8 @@ pub(crate) mod tests {
 mod effect_controls;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod cpu_receipt;
 #[cfg(test)]
 mod persistence_tests;
 #[cfg(test)]

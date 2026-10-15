@@ -136,6 +136,27 @@ pub(crate) enum Stage {
 }
 
 impl Stage {
+    pub(super) fn batches(self) -> bool {
+        matches!(self, Stage::Native { eq, enabled: PreparedParameter::Constant(_) } if eq.batches())
+    }
+
+    pub(super) fn process_lanes(
+        self,
+        cells: &mut super::lanes::Cells<'_>,
+        cell: usize,
+        batch: &super::lanes::Batch,
+        block: &mut super::lanes::LaneBlock,
+        parameters: &[ControlRamp],
+        at: u64,
+    ) {
+        match self {
+            Stage::Native { eq, enabled: PreparedParameter::Constant(enabled) } if eq.batches() => {
+                if enabled >= 0.5 { eq.process_lanes(cells, cell, batch, block, parameters, at); }
+            }
+            _ => unreachable!("only constant native EQ stages batch"),
+        }
+    }
+
     pub(crate) fn trace_parameters(self) -> Vec<(&'static str, PreparedParameter)> {
         match self {
             Stage::Native { eq, enabled } => {

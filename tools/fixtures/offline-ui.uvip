@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored, source-owned inspector fixture. No vendor source or artwork. -->
+<UVI4>
+  <Program Name="Authored inspector fixture">
+    <Layers><Layer Name="Empty fixture layer"><Keygroups /></Layer></Layers>
+    <EventProcessors>
+      <ScriptProcessor>
+        <script><![CDATA[
+setSize(320, 120)
+local panel = Panel('Authored inspector fixture')
+local label = panel:Label('Authored label')
+label.text = 'Inspector verification fixture'
+label.x = 12
+label.y = 12
+label.width = 280
+label.height = 28
+local hidden = panel:Label('Hidden authored label')
+hidden.text = 'Hidden state is retained in IR'
+hidden.visible = false
+]]></script>
+      </ScriptProcessor>
+    </EventProcessors>
+  </Program>
+</UVI4>

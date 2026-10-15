@@ -3,11 +3,14 @@
 //! Some faithfully parsed record fields are retained but unused by this crate.
 #![allow(dead_code)]
 use super::crypto;
+#[path = "ufs_cache.rs"]
+mod cache;
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(any(not(unix), test))]
+use std::io::{Read, Seek, SeekFrom};
 use std::{
     collections::{HashMap, HashSet},
     fs::{File, Metadata, OpenOptions},
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -40,7 +43,7 @@ impl std::fmt::Display for NeedsMetadataNamespace {
 }
 impl std::error::Error for NeedsMetadataNamespace {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     /// Offset of the eight-byte payload-length prefix.
     pub offset: u64,
@@ -68,7 +71,7 @@ impl From<u8> for Protection {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
     pub record_offset: u64,
     pub name: String,
@@ -80,7 +83,7 @@ pub struct Member {
     pub footer: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folder {
     pub record_offset: u64,
     pub name: String,
@@ -95,7 +98,7 @@ pub struct Folder {
     pub footer: Vec<u8>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Directory {
     pub files: Vec<Member>,
     pub directories: Vec<Folder>,
@@ -172,10 +175,139 @@ fn same_file(before: &Metadata, after: &Metadata) -> bool {
 }
 
 fn read_at(file: &mut File, offset: u64, size: usize) -> Result<Vec<u8>> {
-    file.seek(SeekFrom::Start(offset))?;
     let mut bytes = vec![0; size];
-    file.read_exact(&mut bytes)?;
+    read_exact_positioned(file, offset, &mut bytes)?;
     Ok(bytes)
+}
+
+fn read_exact_positioned(file: &mut File, offset: u64, bytes: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        // One positioned read avoids a separate lseek for every scattered
+        // metadata/header range, without inflating bytes or changing framing.
+        file.read_exact_at(bytes, offset)
+    }
+    #[cfg(not(unix))]
+    {
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(bytes)
+    }
+}
+
+#[derive(Default, serde::Serialize)]
+struct DirectoryIo {
+    reads: u64,
+    requested_bytes: u64,
+    elapsed_ns: u64,
+    max_read_ns: u64,
+}
+fn directory_read_at(
+    file: &mut File,
+    offset: u64,
+    size: usize,
+    audit: Option<&mut DirectoryIo>,
+) -> Result<Vec<u8>> {
+    let mut bytes = vec![0; size];
+    directory_read_into(file, offset, &mut bytes, audit)?;
+    Ok(bytes)
+}
+fn directory_read_into(
+    file: &mut File,
+    offset: u64,
+    bytes: &mut [u8],
+    audit: Option<&mut DirectoryIo>,
+) -> Result<()> {
+    let start = audit.as_ref().map(|_| std::time::Instant::now());
+    let result = read_exact_positioned(file, offset, bytes).map_err(Into::into);
+    if let (Some(audit), Some(start)) = (audit, start) {
+        let elapsed = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        audit.reads += 1;
+        audit.requested_bytes += bytes.len() as u64;
+        audit.elapsed_ns = audit.elapsed_ns.saturating_add(elapsed);
+        audit.max_read_ns = audit.max_read_ns.max(elapsed);
+    }
+    result
+}
+
+/// Experimental, bounded, aligned lookahead for record headers only. Metadata
+/// and resource payload reads keep their exact existing ranges. A zero window
+/// uses direct reads and the same fixed stack header as the buffered oracle.
+struct HeaderWindow {
+    physical_size: u64,
+    bytes: Vec<u8>,
+    offset: Option<u64>,
+    valid: usize,
+}
+impl HeaderWindow {
+    fn configured_size() -> usize {
+        std::env::var("KONTRA_UFS_HEADER_WINDOW_BYTES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|size| matches!(*size, 512 | 4096 | 8192 | 65536))
+            .unwrap_or(0)
+    }
+    fn new(physical_size: u64, size: usize) -> Self {
+        Self {
+            physical_size,
+            bytes: vec![0; size],
+            offset: None,
+            valid: 0,
+        }
+    }
+    #[cfg(test)]
+    fn read_into(
+        &mut self,
+        file: &mut File,
+        offset: u64,
+        output: &mut [u8],
+        audit: Option<&mut DirectoryIo>,
+    ) -> Result<()> {
+        self.read_into_with_lookahead(file, offset, output, true, audit)
+    }
+    fn read_into_with_lookahead(
+        &mut self,
+        file: &mut File,
+        offset: u64,
+        output: &mut [u8],
+        allow_lookahead: bool,
+        mut audit: Option<&mut DirectoryIo>,
+    ) -> Result<()> {
+        ensure!(
+            offset
+                .checked_add(output.len() as u64)
+                .is_some_and(|end| end <= self.physical_size),
+            "UFS header range exceeds physical container"
+        );
+        if self.bytes.is_empty() {
+            return directory_read_into(file, offset, output, audit);
+        }
+        let mut copied = 0;
+        while copied < output.len() {
+            let at = offset + copied as u64;
+            if self
+                .offset
+                .is_none_or(|start| at < start || at - start >= self.valid as u64)
+            {
+                if !allow_lookahead {
+                    return directory_read_into(file, at, &mut output[copied..], audit);
+                }
+                let start = at / self.bytes.len() as u64 * self.bytes.len() as u64;
+                let valid = (self.physical_size - start).min(self.bytes.len() as u64) as usize;
+                directory_read_into(file, start, &mut self.bytes[..valid], audit.as_deref_mut())?;
+                self.offset = Some(start);
+                self.valid = valid;
+            }
+            let index = (at - self.offset.unwrap()) as usize;
+            let count = (output.len() - copied).min(self.valid - index);
+            output[copied..copied + count].copy_from_slice(&self.bytes[index..index + count]);
+            copied += count;
+        }
+        Ok(())
+    }
+}
+fn elapsed_ms(start: Option<std::time::Instant>) -> f64 {
+    start.map_or(0., |start| start.elapsed().as_secs_f64() * 1000.)
 }
 
 fn member_path(
@@ -271,9 +403,19 @@ impl Ufs {
 
     /// Walk the length-prefixed record chain without scanning opaque resource bytes.
     pub fn records(&self) -> Result<Vec<Record>> {
+        self.records_profiled(None, HeaderWindow::configured_size(), true)
+    }
+    fn records_profiled(
+        &self,
+        mut audit: Option<&mut DirectoryIo>,
+        window_size: usize,
+        locality_gate: bool,
+    ) -> Result<Vec<Record>> {
         let mut file = self.open_snapshot()?;
+        let mut window = HeaderWindow::new(self.header.physical_size, window_size);
         let mut records = Vec::new();
         let mut offset = HEADER_SIZE;
+        let mut allow_lookahead = !locality_gate;
         while offset < self.header.physical_size {
             ensure!(
                 records.len() < MAX_RECORDS,
@@ -285,15 +427,19 @@ impl Ufs {
             );
             // Length and tag in one read: the walk visits every record of
             // multi-gigabyte banks.
-            let head = read_at(
+            let mut head = [0; 12];
+            let head_size = (self.header.physical_size - offset).min(12) as usize;
+            window.read_into_with_lookahead(
                 &mut file,
                 offset,
-                (self.header.physical_size - offset).min(12) as usize,
+                &mut head[..head_size],
+                allow_lookahead,
+                audit.as_deref_mut(),
             )?;
-            let length = u64_le(&head);
+            let length = u64_le(&head[..head_size]);
             let payload_offset = offset + 8;
             let available = length.min(self.header.physical_size - payload_offset);
-            let tag = (available >= 4 && head.len() == 12).then(|| u32_le(&head[8..12]));
+            let tag = (available >= 4 && head_size == 12).then(|| u32_le(&head[8..12]));
             records.push(Record {
                 offset,
                 payload_offset,
@@ -307,17 +453,80 @@ impl Ufs {
             offset = payload_offset
                 .checked_add(length)
                 .context("UFS record offset overflow")?;
+            // A preceding short record establishes locality. An isolated
+            // sample header following a long opaque payload remains a direct
+            // read, avoiding one whole page of readahead for every sample.
+            allow_lookahead = !locality_gate || length <= window_size.saturating_sub(8) as u64;
         }
         self.check_snapshot(&file)?;
         Ok(records)
     }
 
     pub fn decode_directory(&self, namespace: &[u8]) -> Result<Directory> {
+        // The product cache is metadata-only and remains outside scanner runs.
+        // Unit fixtures call cache load/store explicitly in their owned directory.
+        let read_only = std::env::var_os("KONTRA_UFS_CACHE_READ_ONLY").is_some();
+        if !cfg!(test)
+            && let Some(root) =
+                cache::root(std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() && !read_only)
+        {
+            return self.decode_directory_cached_policy(namespace, &root, !read_only);
+        }
+        self.decode_directory_window(namespace, HeaderWindow::configured_size())
+    }
+    fn decode_directory_cached(&self, namespace: &[u8], root: &Path) -> Result<Directory> {
+        self.decode_directory_cached_policy(namespace, root, true)
+    }
+    fn decode_directory_cached_policy(
+        &self,
+        namespace: &[u8],
+        root: &Path,
+        write: bool,
+    ) -> Result<Directory> {
+        if let Some(stamp) = cache::stamp(self, namespace) {
+            if let Some(directory) = cache::load(root, self, namespace, stamp) {
+                return Ok(directory);
+            }
+            let directory =
+                self.decode_directory_window(namespace, HeaderWindow::configured_size())?;
+            if write {
+                cache::store(root, self, namespace, stamp, &directory);
+            }
+            return Ok(directory);
+        }
+        self.decode_directory_window(namespace, HeaderWindow::configured_size())
+    }
+    fn decode_directory_window(&self, namespace: &[u8], window_size: usize) -> Result<Directory> {
+        self.decode_directory_policy(namespace, window_size, true)
+    }
+    fn decode_directory_policy(
+        &self,
+        namespace: &[u8],
+        window_size: usize,
+        locality_gate: bool,
+    ) -> Result<Directory> {
+        // Fixed aggregates only: no per-record events, names, keys or payloads.
+        // Disabled runs do not create timing clocks.
+        let audit = std::env::var_os("KONTRA_AUDIT_UFS_DIRECTORY").is_some();
+        let phase_start = || audit.then(std::time::Instant::now);
+        let mut records_io = DirectoryIo::default();
+        let mut metadata_io = DirectoryIo::default();
+        let mut children_io = DirectoryIo::default();
+        let mut metadata_transform_ns = 0u64;
+        let mut child_transform_ns = 0u64;
+        let mut transform_bytes = 0u64;
+        let total_start = phase_start();
+        let io_before = audit.then(|| process_read_counters()).flatten();
         if self.header.encoded_names && namespace.is_empty() {
             return Err(NeedsMetadataNamespace.into());
         }
-        let records = self.records()?;
+        let start = phase_start();
+        let records =
+            self.records_profiled(audit.then_some(&mut records_io), window_size, locality_gate)?;
+        let record_chain_ms = elapsed_ms(start);
+        let start = phase_start();
         let key = crypto::metadata_key(namespace, &self.header.bank_name);
+        let namespace_ms = elapsed_ms(start);
         let mut directory = Directory {
             files: Vec::new(),
             directories: Vec::new(),
@@ -326,6 +535,7 @@ impl Ufs {
             metadata_key: key,
         };
         let mut file = self.open_snapshot()?;
+        let start = phase_start();
         for record in &directory.records {
             if record.available < record.length {
                 directory.warnings.push(format!(
@@ -346,10 +556,20 @@ impl Ufs {
                     "Unexpected UFS metadata record length at {}",
                     record.offset
                 );
-                let mut bytes =
-                    read_at(&mut file, record.payload_offset, record.available as usize)?;
+                let mut bytes = directory_read_at(
+                    &mut file,
+                    record.payload_offset,
+                    record.available as usize,
+                    audit.then_some(&mut metadata_io),
+                )?;
                 if self.header.encoded_names {
+                    let transform_start = phase_start();
                     crypto::transform(&mut bytes[4..260], key, record.payload_offset + 4);
+                    if let Some(start) = transform_start {
+                        metadata_transform_ns +=
+                            start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                        transform_bytes += 256;
+                    }
                 }
                 let name = text(&bytes[4..260])
                     .with_context(|| format!("UFS metadata record {}", record.offset))?;
@@ -398,6 +618,8 @@ impl Ufs {
                 }
             }
         }
+        let metadata_pass_ms = elapsed_ms(start);
+        let start = phase_start();
         let by_payload: HashMap<u64, &Record> = directory
             .records
             .iter()
@@ -416,6 +638,8 @@ impl Ufs {
             .collect();
         let mut parents = HashMap::new();
         let mut folder_links = HashMap::new();
+        let temporary_indices_ms = elapsed_ms(start);
+        let start = phase_start();
         for folder in &directory.directories {
             let Some(descriptor) = by_payload.get(&folder.child_descriptor) else {
                 directory.warnings.push(format!(
@@ -431,7 +655,12 @@ impl Ufs {
                 ));
                 continue;
             }
-            let bytes = read_at(&mut file, descriptor.payload_offset, 28)?;
+            let bytes = directory_read_at(
+                &mut file,
+                descriptor.payload_offset,
+                28,
+                audit.then_some(&mut children_io),
+            )?;
             let index = u64_le(&bytes[4..12]);
             let first = u64_le(&bytes[12..20]);
             let last = u64_le(&bytes[20..28]);
@@ -454,7 +683,12 @@ impl Ufs {
                     ));
                     break;
                 };
-                let count = u32_le(&read_at(&mut file, pointer + 4, 4)?) as u64;
+                let count = u32_le(&directory_read_at(
+                    &mut file,
+                    pointer + 4,
+                    4,
+                    audit.then_some(&mut children_io),
+                )?) as u64;
                 let used = 24 + count * 264;
                 ensure!(
                     used <= table.available,
@@ -464,7 +698,12 @@ impl Ufs {
                     children.len() as u64 + count <= MAX_RECORDS as u64,
                     "UFS directory exceeds child resource limit"
                 );
-                let mut bytes = read_at(&mut file, pointer, used as usize)?;
+                let mut bytes = directory_read_at(
+                    &mut file,
+                    pointer,
+                    used as usize,
+                    audit.then_some(&mut children_io),
+                )?;
                 for i in 0..count as usize {
                     let at = 8 + i * 264;
                     // A live entry always holds a name and a link: an all-zero slot is a
@@ -475,7 +714,13 @@ impl Ufs {
                          the bank file is incomplete or damaged"
                     );
                     if self.header.encoded_names {
+                        let transform_start = phase_start();
                         crypto::transform(&mut bytes[at..at + 256], key, pointer + at as u64);
+                        if let Some(start) = transform_start {
+                            child_transform_ns +=
+                                start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                            transform_bytes += 256;
+                        }
                     }
                     let name = text(&bytes[at..at + 256])?;
                     let child_pointer = u64_le(&bytes[at + 256..at + 264]);
@@ -510,6 +755,8 @@ impl Ufs {
             }
             folder_links.insert(folder.record_offset, (index, first, last, children));
         }
+        let child_links_ms = elapsed_ms(start);
+        let start = phase_start();
         let root = directory
             .directories
             .iter()
@@ -549,7 +796,57 @@ impl Ufs {
         {
             return Err(NeedsMetadataNamespace.into());
         }
+        let path_links_ms = elapsed_ms(start);
+        let start = phase_start();
         self.check_snapshot(&file)?;
+        let snapshot_check_ms = elapsed_ms(start);
+        if audit {
+            let retained_bytes = directory.records.capacity() * std::mem::size_of::<Record>()
+                + directory.files.capacity() * std::mem::size_of::<Member>()
+                + directory.directories.capacity() * std::mem::size_of::<Folder>()
+                + directory.warnings.capacity() * std::mem::size_of::<String>()
+                + directory
+                    .files
+                    .iter()
+                    .map(|m| {
+                        m.name.capacity()
+                            + m.path.as_ref().map_or(0, String::capacity)
+                            + m.footer.capacity()
+                    })
+                    .sum::<usize>()
+                + directory
+                    .directories
+                    .iter()
+                    .map(|d| {
+                        d.name.capacity()
+                            + d.path.as_ref().map_or(0, String::capacity)
+                            + d.footer.capacity()
+                            + d.children.capacity() * std::mem::size_of::<u64>()
+                    })
+                    .sum::<usize>()
+                + directory
+                    .warnings
+                    .iter()
+                    .map(String::capacity)
+                    .sum::<usize>();
+            eprintln!(
+                "UFS_DIRECTORY_PROFILE {}",
+                serde_json::json!({
+                    "schema":1,"scope":"opt-in elapsed wall time; phase times include read/transform times; retained bytes are visible vector/string capacities, not peak allocator/RSS",
+                    "total_ms":elapsed_ms(total_start),"record_chain_ms":record_chain_ms,"namespace_ms":namespace_ms,
+                    "metadata_pass_ms":metadata_pass_ms,"temporary_indices_ms":temporary_indices_ms,"child_links_ms":child_links_ms,
+                    "path_links_ms":path_links_ms,"snapshot_check_ms":snapshot_check_ms,
+                    "records_io":records_io,"metadata_io":metadata_io,"children_io":children_io,
+                    "metadata_transform_ns":metadata_transform_ns,"child_transform_ns":child_transform_ns,"transformed_name_bytes":transform_bytes,
+                    "records":directory.records.len(),"members":directory.files.len(),"folders":directory.directories.len(),
+                "header_window_bytes":window_size,
+                "header_window_locality_gate":locality_gate,
+                    "linked_nodes":parents.len(),"retained_capacity_bytes":retained_bytes,"decoded_payloads":0
+                ,"process_read_delta":process_read_counters().zip(io_before).map(|(after,before)| after.into_iter().zip(before).map(|(a,b)|a.saturating_sub(b)).collect::<Vec<_>>()),
+                "process_read_fields":["rchar","syscr","read_bytes"],"process_read_scope":"Linux process counters; includes surrounding proc/header reads; physical read_bytes depends on OS cache"
+                })
+            );
+        }
         Ok(directory)
     }
 
@@ -616,9 +913,223 @@ impl Ufs {
     }
 }
 
+fn process_read_counters() -> Option<[u64; 3]> {
+    let text = std::fs::read_to_string("/proc/self/io").ok()?;
+    let value = |name: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(name)?.trim().parse::<u64>().ok())
+    };
+    Some([value("rchar:")?, value("syscr:")?, value("read_bytes:")?])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn positioned_reads_preserve_exact_bytes_eof_and_cursor() {
+        let path =
+            std::env::temp_dir().join(format!("kontra-positioned-{}.bin", std::process::id()));
+        let bytes: Vec<u8> = (0..1057).map(|i| (i * 17) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut file = File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(23)).unwrap();
+        for offset in [0, 17, 511, 1024, 1045, 7] {
+            let mut got = [0; 12];
+            read_exact_positioned(&mut file, offset, &mut got).unwrap();
+            assert_eq!(
+                got.as_slice(),
+                &bytes[offset as usize..offset as usize + 12]
+            );
+            assert_eq!(file.stream_position().unwrap(), 23);
+        }
+        let error = read_exact_positioned(&mut file, 1056, &mut [0; 2]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(file.stream_position().unwrap(), 23);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires the user-owned bank; OS-warm header mechanism comparison only"]
+    fn owned_bank_positioned_header_profile() {
+        let path = std::env::var_os("KONTRA_PROFILE_BANK").expect("owned bank path");
+        let ufs = Ufs::open(Path::new(&path)).unwrap();
+        let records = ufs.records_profiled(None, 0, true).unwrap();
+        for repetition in 0..5 {
+            for positioned in if repetition % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let mut file = ufs.open_snapshot().unwrap();
+                let mut requested_bytes = 0u64;
+                let start = std::time::Instant::now();
+                for record in &records {
+                    let mut head = [0; 12];
+                    let size = (ufs.header.physical_size - record.offset).min(12) as usize;
+                    if positioned {
+                        read_exact_positioned(&mut file, record.offset, &mut head[..size]).unwrap();
+                    } else {
+                        file.seek(SeekFrom::Start(record.offset)).unwrap();
+                        file.read_exact(&mut head[..size]).unwrap();
+                    }
+                    requested_bytes += size as u64;
+                    assert_eq!(u64_le(&head[..size]), record.length);
+                    assert_eq!(
+                        (record.available >= 4 && size == 12).then(|| u32_le(&head[8..12])),
+                        record.tag
+                    );
+                }
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.;
+                ufs.check_snapshot(&file).unwrap();
+                println!(
+                    "UFS_POSITIONED_HEADER_PROFILE {}",
+                    serde_json::json!({
+                        "schema":1,"positioned":positioned,"repetition":repetition,"elapsed_ms":elapsed_ms,
+                        "records":records.len(),"requested_bytes":requested_bytes,"exact_parity":true,
+                        "scope":"same-process ordered alternating warm header mechanism runs; reconstructed seek/read oracle; stack headers both paths; OS cache uncontrolled; no payload decode"
+                    })
+                );
+            }
+        }
+    }
+
+    fn assert_directory_windows(ufs: &Ufs, namespace: &[u8], direct: &Directory) {
+        for size in [512, 4096, 8192, 65536] {
+            let buffered = ufs.decode_directory_window(namespace, size).unwrap();
+            // Do not print directory names, metadata keys or opaque footers.
+            assert!(buffered == *direct, "directory differs for window {size}");
+        }
+    }
+
+    #[test]
+    fn aligned_header_windows_match_direct_bytes_across_edges_and_eof() {
+        let path =
+            std::env::temp_dir().join(format!("kontra-header-window-{}.bin", std::process::id()));
+        let bytes: Vec<u8> = (0..131_083).map(|i| (i * 73 + i / 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let offsets = [
+            0, 7, 319, 507, 511, 512, 4091, 4095, 8191, 65531, 65535, 131071,
+        ];
+        for size in [0, 512, 4096, 8192, 65536] {
+            let mut file = File::open(&path).unwrap();
+            let mut window = HeaderWindow::new(bytes.len() as u64, size);
+            let mut audit = DirectoryIo::default();
+            for offset in offsets.into_iter().chain(offsets.into_iter().rev()) {
+                let mut got = [0; 12];
+                window
+                    .read_into(&mut file, offset as u64, &mut got, Some(&mut audit))
+                    .unwrap();
+                assert_eq!(got.as_slice(), &bytes[offset..offset + 12]);
+            }
+            let mut tail = [0; 3];
+            window
+                .read_into(&mut file, (bytes.len() - 3) as u64, &mut tail, None)
+                .unwrap();
+            assert_eq!(tail.as_slice(), &bytes[bytes.len() - 3..]);
+            assert!(
+                window
+                    .read_into(&mut file, bytes.len() as u64, &mut [0], None)
+                    .is_err()
+            );
+            assert!(
+                window
+                    .read_into(&mut file, u64::MAX, &mut [0; 2], None)
+                    .is_err()
+            );
+            let before = audit.reads;
+            window
+                .read_into(&mut file, bytes.len() as u64, &mut [], Some(&mut audit))
+                .unwrap();
+            // Zero-length direct reads may still call Read; buffered mode does not refill.
+            assert_eq!(audit.reads, before + u64::from(size == 0));
+            assert!(window.bytes.len() <= 65536);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn locality_gate_keeps_isolated_headers_direct_and_reuses_short_record_pages() {
+        let path =
+            std::env::temp_dir().join(format!("kontra-header-locality-{}.bin", std::process::id()));
+        let bytes: Vec<u8> = (0..16384).map(|i| (i * 13) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let mut window = HeaderWindow::new(bytes.len() as u64, 4096);
+        let mut audit = DirectoryIo::default();
+        for (offset, lookahead) in [
+            (0, false),
+            (8192, false),
+            (8480, true),
+            (8768, true),
+            (12280, true),
+        ] {
+            let mut got = [0; 12];
+            window
+                .read_into_with_lookahead(&mut file, offset, &mut got, lookahead, Some(&mut audit))
+                .unwrap();
+            assert_eq!(
+                got.as_slice(),
+                &bytes[offset as usize..offset as usize + 12]
+            );
+        }
+        assert_eq!(
+            audit.reads, 4,
+            "two direct headers and two aligned page fills"
+        );
+        assert_eq!(audit.requested_bytes, 24 + 8192);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the user-owned bank; metadata-only numeric timing and exact parity"]
+    fn owned_bank_header_window_parity_profile() {
+        let path = std::env::var_os("KONTRA_PROFILE_BANK").expect("owned bank path");
+        let ufs = Ufs::open(Path::new(&path)).unwrap();
+        let namespace = super::super::access::Namespaces::native().metadata;
+        let mut direct = None;
+        for (window_bytes, locality_gate) in [
+            (0, true),
+            (512, false),
+            (4096, false),
+            (4096, true),
+            (0, true),
+        ] {
+            let before = process_read_counters();
+            let start = std::time::Instant::now();
+            let directory = ufs
+                .decode_directory_policy(&namespace, window_bytes, locality_gate)
+                .unwrap();
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1000.;
+            let io_delta = before.zip(process_read_counters()).map(|(a, b)| {
+                [
+                    b[0].saturating_sub(a[0]),
+                    b[1].saturating_sub(a[1]),
+                    b[2].saturating_sub(a[2]),
+                ]
+            });
+            if let Some(ref oracle) = direct {
+                assert!(
+                    directory == *oracle,
+                    "owned directory differs for window {window_bytes}"
+                );
+            }
+            println!(
+                "UFS_HEADER_WINDOW_PARITY {}",
+                serde_json::json!({
+                    "schema":1,"window_bytes":window_bytes,"locality_gate":locality_gate,"elapsed_ms":elapsed_ms,
+                    "records":directory.records.len(),"members":directory.files.len(),
+                    "process_io_delta_rchar_syscr_read_bytes":io_delta,"exact_parity":true,
+                    "scope":"ordered same-process metadata-only runs; OS cache uncontrolled; baseline first; no payload decode; no cache flush"
+                })
+            );
+            if direct.is_none() {
+                direct = Some(directory);
+            }
+        }
+    }
 
     #[test]
     #[ignore = "requires the local UFS numeric corpus"]
@@ -764,7 +1275,8 @@ mod tests {
         bytes[32..40].copy_from_slice(&expected.to_le_bytes());
         File::create(&path).unwrap().write_all(&bytes).unwrap();
         let ufs = Ufs::open(&path).unwrap();
-        let directory = ufs.decode_directory(namespace).unwrap();
+        let directory = ufs.decode_directory_window(namespace, 0).unwrap();
+        assert_directory_windows(&ufs, namespace, &directory);
         assert_eq!(directory.files.len(), 1);
         assert_eq!(directory.files[0].name, "test.wav");
         assert!(directory.files[0].footer.is_empty());
@@ -779,7 +1291,12 @@ mod tests {
         member.offset = 328;
         member.mode = Protection::Content;
         assert!(ufs.read_member(&member, key, None).is_err());
-        assert!(ufs.decode_directory(b"wrong namespace").is_err());
+        for size in [0, 512, 4096, 8192, 65536] {
+            assert!(
+                ufs.decode_directory_window(b"wrong namespace", size)
+                    .is_err()
+            );
+        }
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -862,7 +1379,8 @@ mod tests {
         ));
         File::create(&path).unwrap().write_all(&bytes).unwrap();
         let ufs = Ufs::open(&path).unwrap();
-        let directory = ufs.decode_directory(namespace).unwrap();
+        let directory = ufs.decode_directory_window(namespace, 0).unwrap();
+        assert_directory_windows(&ufs, namespace, &directory);
         assert_eq!(
             directory
                 .files
@@ -891,7 +1409,8 @@ mod tests {
         File::create(&path).unwrap().write_all(&clear).unwrap();
         let clear_bank = Ufs::open(&path).unwrap();
         assert!(!clear_bank.header.encoded_names);
-        let clear_directory = clear_bank.decode_directory(&[]).unwrap();
+        let clear_directory = clear_bank.decode_directory_window(&[], 0).unwrap();
+        assert_directory_windows(&clear_bank, &[], &clear_directory);
         assert_eq!(
             clear_directory
                 .files
@@ -910,7 +1429,12 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("zero-filled"), "{error}");
         File::create(&path).unwrap().write_all(&[0; 400]).unwrap();
-        assert!(Ufs::open(&path).unwrap_err().to_string().contains("zero-filled"));
+        assert!(
+            Ufs::open(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("zero-filled")
+        );
         bytes[first as usize + 280..first as usize + 288].copy_from_slice(&first.to_le_bytes());
         File::create(&path).unwrap().write_all(&bytes).unwrap();
         assert!(

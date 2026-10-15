@@ -14,8 +14,8 @@ pub struct Entry {
     pub binding: String,
 }
 
-pub(crate) fn owner(file: &str, anchor: &str) -> String {
-    let text = match file {
+fn owner_source(file: &str) -> Option<&'static str> {
+    Some(match file {
         "script.rs" => include_str!("../script.rs"),
         "script_prelude.lua" => include_str!("../script_prelude.lua"),
         "engine_parameters.rs" => include_str!("../engine_parameters.rs"),
@@ -23,12 +23,17 @@ pub(crate) fn owner(file: &str, anchor: &str) -> String {
         "modulation.rs" => include_str!("../modulation.rs"),
         "script/async_data.rs" => include_str!("../script/async_data.rs"),
         "script/modules.rs" => include_str!("../script/modules.rs"),
-        _ => unreachable!(),
-    };
+        "script/sample_loading.rs" => include_str!("../script/sample_loading.rs"),
+        _ => return None,
+    })
+}
+
+pub(crate) fn owner(file: &str, anchor: &str) -> String {
+    let text = owner_source(file).unwrap_or_else(|| panic!("unregistered ledger owner file {file:?}"));
     let line = text
         .lines()
         .position(|l| l.contains(anchor))
-        .expect("ledger owner anchor")
+        .unwrap_or_else(|| panic!("ledger owner anchor {anchor:?} is missing in {file}"))
         + 1;
     format!("crates/sampler-uvi/src/{file}:{line}")
 }
@@ -145,7 +150,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         }
         add(row("loadData", K::LuaApi, S::Approximate, "script/async_data.rs", "pub(super) fn install", "Bounded asynchronous filesystem JSON loading; other native formats unavailable.", "loadData worker -> JSON decode -> completion coroutine"));
         add(row("loadImpulse", K::LuaApi, S::Approximate, "script.rs", "\"loadImpulse\"", "Requires a supplied impulse resolver and a translated bus convolution slot; task can fail.", "impulse resolver -> convolution upload"));
-        add(row("loadSample", K::LuaApi, S::Unsupported, "script.rs", "for name in [\"loadSample\"]", "Resource task unavailable; callback receives nil.", "failed resource task"));
+        add(row("loadSample", K::LuaApi, S::Approximate, "script/sample_loading.rs", "pub(super) fn install", "Requires exact source/target authority and successful runtime revision commit; bounded task failure/cancellation remain explicit. Native resource semantics unverified.", "sample task -> prepared source -> revision commit / failure"));
         for name in ["class", "AsyncUpdater"] {
             add(row(name, K::LuaApi, S::Approximate, "script/modules.rs", if name == "class" { "fn install_class" } else { "struct AsyncUpdater" }, "Host class/module implementation; full native behavior unverified.", "host class / module"));
         }
@@ -394,4 +399,45 @@ pub(super) fn module_reference(span: Span, kind: &str) -> Construct {
         .unwrap_or_else(|| unknown(span, kind, false));
     c.kind = K::LuaModule;
     c
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    #[test]
+    fn every_ledger_owner_anchor_resolves_into_its_registered_source() {
+        let entries = entries();
+        assert!(!entries.is_empty());
+        for entry in entries.values() {
+            let (path, line) = entry
+                .owner
+                .rsplit_once(':')
+                .expect("owner has a source line");
+            let file = path
+                .strip_prefix("crates/sampler-uvi/src/")
+                .expect("owner stays in the UVI source registry");
+            let source =
+                owner_source(file).unwrap_or_else(|| panic!("{}: unregistered {file}", entry.name));
+            let line: usize = line.parse().unwrap();
+            assert!(
+                line > 0
+                    && source
+                        .lines()
+                        .nth(line - 1)
+                        .is_some_and(|s| !s.trim().is_empty()),
+                "{}: {}",
+                entry.name,
+                entry.owner
+            );
+        }
+        let sample = &entries["loadSample"];
+        assert!(
+            sample
+                .owner
+                .starts_with("crates/sampler-uvi/src/script/sample_loading.rs:")
+        );
+        assert_eq!(sample.status, S::Approximate);
+        assert!(sample.detail.contains("authority") && sample.detail.contains("unverified"));
+    }
 }

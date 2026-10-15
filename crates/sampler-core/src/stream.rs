@@ -15,6 +15,23 @@ pub struct PageKey {
     pub asset: AssetId,
     pub index: usize,
 }
+/// Read-only control-side snapshot of one voice's predicted page demand.
+/// This reports current readiness, not historical proof of the exact missed read.
+#[derive(Clone, Debug)]
+pub struct StreamDemandSnapshot {
+    pub voice: crate::VoiceId,
+    pub source_zone: u32,
+    /// Script-requested source-time offset, distinct from start modulation.
+    pub source_offset_micros: u32,
+    pub source_frame: u64,
+    pub key: PageKey,
+    pub frames: Range<usize>,
+    pub deadline: u64,
+    pub starved: bool,
+    pub cold: bool,
+    pub resident: bool,
+    pub status: PageStatus,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeFailure {
     Unavailable,
@@ -54,6 +71,7 @@ struct Request {
     slot: usize,
     serial: u64,
     store: u64,
+    queued_at: Option<std::time::Instant>,
 }
 
 /// A worker-owned decode buffer. Fill every exposed frame, then complete or fail it.
@@ -70,6 +88,10 @@ impl DecodeJob {
     pub fn range(&self) -> Range<usize> {
         let start = self.request.key.index * PAGE_FRAMES;
         start..start + self.request.len
+    }
+    /// Present only when control enabled stream audit at cache construction.
+    pub fn queued_at(&self) -> Option<std::time::Instant> {
+        self.request.queued_at
     }
     pub fn deadline(&self) -> u64 {
         self.request.deadline
@@ -148,6 +170,7 @@ pub struct StreamCache {
     vacant: Vec<usize>,
     idle: PageList,
     active: PageList,
+    audit_requests: bool,
 }
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
@@ -191,7 +214,9 @@ impl StreamCache {
         // Reserve on the control thread; only touch sample pages when decoding.
         for _ in 0..pages {
             let mut frames = Vec::new();
-            frames.try_reserve_exact(PAGE_FRAMES).map_err(|_| Error::Capacity)?;
+            frames
+                .try_reserve_exact(PAGE_FRAMES)
+                .map_err(|_| Error::Capacity)?;
             free.push(frames);
         }
         static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
@@ -220,6 +245,7 @@ impl StreamCache {
                 vacant: (0..pages).rev().collect(),
                 idle: PageList::default(),
                 active: PageList::default(),
+                audit_requests: std::env::var_os("KONTRA_STREAM_AUDIT").is_some(),
             },
             StreamWorker {
                 requests: incoming,
@@ -434,6 +460,7 @@ impl StreamCache {
             slot,
             serial,
             store: self.store,
+            queued_at: self.audit_requests.then(std::time::Instant::now),
         };
         // Single producer, and the consumer only frees space after the check.
         self.requests
@@ -504,6 +531,7 @@ impl StreamCache {
                         .ok_or(StreamError::SequenceExhausted)?;
                     entry.request.serial = self.serial;
                     entry.request.deadline = deadline;
+                    entry.request.queued_at = self.audit_requests.then(std::time::Instant::now);
                     self.requests
                         .push(entry.request)
                         .expect("reserved request capacity");
@@ -766,6 +794,44 @@ impl crate::Runtime {
     pub fn stream_cache_mut(&mut self) -> Option<&mut StreamCache> {
         self.stream_cache.as_mut()
     }
+    /// Inspect live voice demand without polling workers, advancing playback or
+    /// mutating protection/requests. Call on control between render calls. The
+    /// visitor can bound output with `false`; requery after commands or rendering.
+    /// Resident coverage is checked for the exact interpolation range in each
+    /// page; a ready tail page and a permanent resident head remain distinct.
+    pub fn visit_stream_demand(
+        &self,
+        frames: u32,
+        mut accept: impl FnMut(StreamDemandSnapshot) -> bool,
+    ) -> Result<bool, Error> {
+        for (index, slot) in self.voices.slots.iter().enumerate() {
+            let Some(voice) = slot.value.as_ref() else { continue };
+            let id = crate::VoiceId(self.voices.id(index));
+            let family = self.families.get(voice.family.0).unwrap();
+            let note = self.notes.get(family.note.0).unwrap();
+            let asset = self.plans.get(note.plan.0).unwrap().asset(voice.sample);
+            let complete = self.visit_voice_demand(id, frames, |demand| {
+                if demand.frames.is_empty() { return true; }
+                for page in demand.frames.start / PAGE_FRAMES..=(demand.frames.end - 1) / PAGE_FRAMES {
+                    let range = demand.frames.start.max(page * PAGE_FRAMES)
+                        ..demand.frames.end.min((page + 1) * PAGE_FRAMES);
+                    let key = PageKey { asset: demand.asset, index: page };
+                    if !accept(StreamDemandSnapshot {
+                        voice: id, key, source_zone:voice.source_zone,
+                        source_offset_micros:self.note_events[family.note.0.index].source_offset_micros,
+                        source_frame:voice.cursor.trace_position(),
+                        resident: asset.resident_covers(range.clone()),
+                        frames: range, deadline: demand.deadline,
+                        starved: voice.cursor.starved(), cold: voice.cursor.holding_onset(),
+                        status: self.stream_cache.as_ref().map_or(PageStatus::Missing, |cache| cache.status(key)),
+                    }) { return false; }
+                }
+                true
+            })?;
+            if !complete { return Ok(false); }
+        }
+        Ok(true)
+    }
     /// The horizon admitted with each start, matched to the frontend's service
     /// horizon. Setup side; changing it does not allocate.
     pub fn set_stream_horizon(&mut self, frames: u32) -> Result<(), Error> {
@@ -917,8 +983,12 @@ impl crate::Runtime {
                         .notes
                         .get(self.families.get(voice.family.0).unwrap().note.0)
                         .unwrap();
-                    let asset =
-                        self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample].asset_id();
+                    let asset = self
+                        .plans
+                        .get(note.plan.0)
+                        .unwrap()
+                        .asset(voice.sample)
+                        .asset_id();
                     let failed = cache.requests.is_abandoned() || cache.entries.iter().flatten().any(|entry| {
                         entry.request.key.asset == asset && matches!(entry.state,
                             State::Failed(error) if error != DecodeFailure::Unavailable || entry.retries == 3)
@@ -967,7 +1037,7 @@ impl crate::Runtime {
                 };
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
-                let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];
+                let asset = self.plans.get(note.plan.0).unwrap().asset(voice.sample);
                 if asset.resident_frames().is_some() {
                     continue;
                 }

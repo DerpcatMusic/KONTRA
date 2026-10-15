@@ -28,6 +28,9 @@ const FILE_TABLE: u16 = 0x4b;
 const LEGACY_FILE_TABLE: u16 = 0x3d;
 const SCRIPT: u16 = 6;
 
+mod impulse_namespace;
+use impulse_namespace::EffectFileOrigins;
+
 /// A translated instrument and the resolver of the samples its assets name.
 pub struct Kontakt {
     pub instrument: ir::Instrument,
@@ -247,19 +250,7 @@ fn translate(
     control_values: &[(sampler_core::ControlId, i32)],
     cache_program: Option<u32>,
 ) -> Result<Kontakt, LoadError> {
-    if let Some(snapshot) = snapshot {
-        // The snapshot's racks and buses are the program's own, in the same order.
-        let mut saved = snapshot.effects.iter();
-        for kind in [crate::effects::RACK, crate::effects::BUS] {
-            let mut theirs = saved.clone().filter(|(id, _)| *id == kind);
-            for child in program.0.children.iter_mut().filter(|c| c.id == kind) {
-                if let Some((_, data)) = theirs.next() {
-                    child.data = data.clone();
-                }
-            }
-        }
-        let _ = saved.next();
-    }
+    let effect_files = EffectFileOrigins::overlay(&mut program, snapshot);
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -450,6 +441,17 @@ fn translate(
         .map(|g| g.params().map(|p| p.name))
         .collect::<Result<_, _>>()
         .map_err(|e| decode("source group names", e))?;
+    let zone_data = &program.0.find_first(ZONE_LIST)
+        .ok_or_else(|| invalid("missing zone list"))?.data;
+    // Initializers may query/attach physical zones before effect/group DSP
+    // admission. Read only bounded serialized metadata here, never samples.
+    let span = crate::audit::Span::new("translate_zone_metadata_prepass");
+    let zone_metadata = if out.ir.behaviors.iter().any(|b| b.language == ir::Language::Ksp) {
+        source_zone_metadata(zone_data, group_names.len()).map_err(|reason| invalid(&reason))?
+    } else {
+        Default::default()
+    };
+    drop(span);
     if let Some(snapshot) = snapshot {
         out.ir.snapshot_base_state = out.ir.behaviors.iter().map(|b| b.state.clone()).collect();
         for behavior in &mut out.ir.behaviors {
@@ -472,8 +474,9 @@ fn translate(
         }
     }
     let span = crate::audit::Span::new("translate_ksp_init");
-    let initialized =
-        crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, control_values);
+    let mut initialized = crate::load::initialize_scripts_with_zones(
+        &mut out.ir, Some(&path), group_names, control_values, &zone_metadata,
+    );
     out.engine = initialized
         .states
         .iter()
@@ -540,16 +543,13 @@ fn translate(
     let mut impulse_params = Vec::new();
     {
         // Convolution impulse responses are named by the other-files table.
-        let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
-            let name = u32::try_from(index)
-                .ok()
-                .and_then(|i| others.get(&i))
-                .ok_or_else(|| format!("index {index} is not in the file table"))?;
+        let mut load = |request: crate::effects::ImpulseRequest| -> Result<crate::effects::Decoded, String> {
+            let name = effect_files.name(request, &others, snapshot)?;
             let at = samples
                 .resolve_impulse(parent, name, &containers)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("{name} was not found"))?;
-            impulse_sources.insert(index, at.clone());
+            impulse_sources.insert(request, at.clone());
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
@@ -570,11 +570,7 @@ fn translate(
     let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
-    let data = &program
-        .0
-        .find_first(ZONE_LIST)
-        .ok_or_else(|| invalid("missing zone list"))?
-        .data;
+    let data = zone_data;
     let mut r = Cursor::new(data.as_slice());
     let count = u32le(&mut r).map_err(|e| LoadError::io(&path, e))? as usize;
     if count > data.len() / 8 {
@@ -660,6 +656,7 @@ fn translate(
         objects.zones.shrink_to_fit();
     }
     drop(_span);
+    crate::load::admit_initialized_zone_sources(&mut out.ir, &mut initialized);
     let mut kontakt = Kontakt {
         instrument: out.ir,
         locations: out.locations,
@@ -668,9 +665,9 @@ fn translate(
     };
     let recipes = impulse_params
         .into_iter()
-        .map(|params| {
+        .map(|(request, params)| {
             Some(crate::cache::ImpulseRecipe {
-                source: impulse_sources.get(&params.ir_index)?.clone(),
+                source: impulse_sources.get(&request)?.clone(),
                 params,
             })
         })
@@ -763,12 +760,16 @@ fn wakeable(params: &ni_file::kontakt::objects::InternalModParams) -> bool {
         && params.targets.iter().all(|t| {
             // Module targets (filter, effect and formant knobs) carry the
             // same live depth lane as volume/pitch/pan; a route whose depth
-            // cannot be bound is dropped and reported below. Phase, rate,
-            // intensity and sample-position targets have their own paths.
+            // cannot be bound is dropped and reported below. Rate targets use
+            // that lane after their physical destination is resolved, but only
+            // for already-active sources: a newly added bypassed rate route
+            // changes the saved rate through the lane's inverse/forward pair.
+            // Phase, intensity and sample-position have separate admission.
             !matches!(
                 t.param.as_str(),
-                "startPhase" | "frequency" | "intensity" | "playPos" | "loopStart" | "loopLength"
-            ) && t.unknown_flags & 2 == 0
+                "startPhase" | "intensity" | "playPos" | "loopStart" | "loopLength"
+            ) && (t.param != "frequency" || params.unknown_flags[1] == 0)
+                && t.unknown_flags & 2 == 0
                 && !t.shaper.as_ref().is_some_and(|s| s.enabled)
                 && (0. ..=1.).contains(&t.intensity)
         })
@@ -1582,9 +1583,17 @@ impl Translation {
         let mut flex_release = None;
         let mut routes = Vec::new();
         let mut phase_routes = Vec::new();
+        let mut internal_bypasses = [None; 16];
         if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
-            for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
-                let params = modulator.params()?;
+            let modulators = InternalModArray16::try_from(chunk)?.slots()?.into_iter()
+                .map(|(slot, modulator)| Ok((slot, modulator.params()?, modulator)))
+                .collect::<Result<Vec<_>, ni_file::Error>>()?;
+            let free_lfos = modulators.iter().fold(0u16, |mask, (slot, params, _)| {
+                if matches!(params.modulator, Modulator::Lfo(_)) && params.unknown_flags[2] == 0 {
+                    mask | (1u16 << slot)
+                } else { mask }
+            });
+            for (slot, params, modulator) in modulators {
                 let at = format!("{at} modulator slot {slot}");
                 self.ir
                     .source_parameters
@@ -1599,8 +1608,28 @@ impl Translation {
                 }
                 let retrigger = params.unknown_flags[2] != 0;
                 let volume = primary_volume(&params);
-                let live = wakeable(&params);
-                if dormant(&params) {
+                if params.unknown_flags[1] != 0 {
+                    for target in params.targets.iter().filter(|target| target.param == "frequency") {
+                        self.unsupported(&at, "LFO rate live controls",
+                            format!("frequency ({}) destination slot {:?}: saved-bypassed base-rate law", target.name, target.slot),
+                            ir::Reason::UnknownLaw);
+                    }
+                }
+                let mut live = wakeable(&params);
+                if live {
+                    for target in &params.targets {
+                        if target.param == "frequency" && target.slot.is_some_and(|slot|
+                            free_lfos & 1u16.checked_shl(u32::from(slot)).unwrap_or(0) != 0)
+                        {
+                            // A shared source bypass cannot cover only its other targets.
+                            live = false;
+                            self.unsupported(&at, "LFO rate live controls",
+                                format!("frequency ({}) destination slot {:?}: free-running destination clock", target.name, target.slot),
+                                ir::Reason::UnknownLaw);
+                        }
+                    }
+                }
+                if params.unknown_flags[1] != 0 && !live {
                     continue;
                 }
                 let source = match params.modulator {
@@ -1749,10 +1778,10 @@ impl Translation {
                             false,
                             _ordinal,
                             target.clone(),
+                            Some((live, params.unknown_flags[1] != 0)),
                         ));
                         continue;
                     }
-                    let before = self.ir.routes.len();
                     let mut route = self.route(
                         &at,
                         modulator,
@@ -1761,33 +1790,21 @@ impl Translation {
                         chain.zip(Some(&filter_slots[..])),
                     );
                     if live && let Some(bound) = route {
-                        let bound = self.internal_route_controls(
+                        route = self.finalize_internal_route(
+                            &at,
                             [index, usize::from(slot), _ordinal],
                             bound,
                             target,
                             params.unknown_flags[1] != 0,
                             &mut bypass,
                         );
-                        if !bound && params.unknown_flags[1] != 0 {
-                            // Saved bypassed with no live depth lane: the route could
-                            // never be enabled, so it must not run unconditionally.
-                            self.ir.routes.truncate(before);
-                            self.route_intensity.remove(&before);
-                            self.ir.source_indices.unipolar_routes.retain(|r| r.0 < before);
-                            self.unsupported(
-                                &at,
-                                "bypassed modulator route without live depth",
-                                format!("{} ({})", target.param, target.name),
-                                ir::Reason::NotModeled,
-                            );
-                            route = None;
-                        }
                     }
                     #[cfg(feature = "scan")]
                     self.target_outcomes
                         .insert((index, usize::from(slot), false, _ordinal), route.is_some());
                     routes.extend(route);
                 }
+                internal_bypasses[slot] = bypass;
             }
         }
         if let (None, Some(release_ms)) = (envelope, flex_release) {
@@ -1866,7 +1883,7 @@ impl Translation {
                     ModSource::Unassigned => continue,
                     other => {
                         let reason = match other {
-                            ModSource::RandomBipolar => ir::Reason::UnknownLaw,
+                            ModSource::RandomBipolar => ir::Reason::UnknownLawOmitted,
                             _ => not_modeled,
                         };
                         let targets: Vec<_> =
@@ -1907,6 +1924,7 @@ impl Translation {
                             true,
                             _ordinal,
                             target.clone(),
+                            None,
                         ));
                         continue;
                     }
@@ -1970,8 +1988,16 @@ impl Translation {
             }
         }
         // Resolve source targets only after every physical internal slot has an owner.
-        for (at, source, _slot, _external, _ordinal, target) in phase_routes {
-            let route = self.route(&at, source, true, &target, None);
+        for (at, source, _slot, _external, _ordinal, target, internal) in phase_routes {
+            let mut route = self.route(&at, source, true, &target, None);
+            if let Some((true, saved_bypass)) = internal
+                && let Some(bound) = route
+            {
+                route = self.finalize_internal_route(
+                    &at, [index, _slot, _ordinal], bound, &target, saved_bypass,
+                    &mut internal_bypasses[_slot],
+                );
+            }
             #[cfg(feature = "scan")]
             self.target_outcomes
                 .insert((index, _slot, _external, _ordinal), route.is_some());
@@ -2164,8 +2190,45 @@ impl Translation {
             .filter(|&n| n < 16)
     }
 
+    /// Apply the same internal control admission before or after resolving a destination.
+    fn finalize_internal_route(
+        &mut self,
+        at: &str,
+        address: [usize; 3],
+        route: ir::RouteRef,
+        target: &ni_file::kontakt::objects::ModTarget,
+        saved_bypass: bool,
+        bypass: &mut Option<ir::ControlRef>,
+    ) -> Option<ir::RouteRef> {
+        debug_assert_eq!(route.0 + 1, self.ir.routes.len(), "finalize only the just-added route");
+        let clock_supported = match self.ir.routes[route.0].target {
+            ir::Target::SourceRate(destination) => matches!(self.ir.modulators[destination.0].source,
+                ir::ModulationSource::Lfo(ir::Lfo { retrigger: true, .. })),
+            _ => true,
+        };
+        if !clock_supported {
+            self.unsupported(at, "LFO rate live controls",
+                format!("{} ({}) destination slot {:?}: free-running destination clock", target.param, target.name, target.slot),
+                ir::Reason::UnknownLaw);
+        }
+        let bound = clock_supported && self.internal_route_controls(address, route, target, saved_bypass, bypass);
+        if !bound && saved_bypass {
+            // An unbound saved-bypassed route must not run unconditionally.
+            self.ir.routes.truncate(route.0);
+            self.route_intensity.remove(&route.0);
+            self.ir.source_indices.unipolar_routes.retain(|r| r.0 < route.0);
+            if clock_supported {
+                self.unsupported(at, "bypassed modulator route without live depth",
+                    format!("{} ({})", target.param, target.name), ir::Reason::NotModeled);
+            }
+            None
+        } else {
+            Some(route)
+        }
+    }
+
     // Only positive, simple outgoing targets use the documented linear knob here.
-    // Primary amplitude ownership, MP/sign, module targets and sample-start remain unbound.
+    // Primary amplitude ownership, saved signed depth, phase and sample-start stay unbound.
     fn internal_route_controls(
         &mut self,
         address: [usize; 3],
@@ -2176,7 +2239,7 @@ impl Translation {
     ) -> bool {
         let [group, slot, ordinal] = address;
         let unit = match self.ir.routes[route.0].target {
-            ir::Target::Amplitude | ir::Target::Pan => 1.,
+            ir::Target::Amplitude | ir::Target::Pan | ir::Target::SourceRate(_) => 1.,
             ir::Target::Pitch => 12.,
             // Module targets: depth units per unit of intensity, as the route's own law.
             ir::Target::Processor { .. } | ir::Target::Control(_) => {
@@ -2381,7 +2444,8 @@ impl Translation {
             ir::Target::LoopStart
             | ir::Target::LoopLength
             | ir::Target::SourceRate(_)
-            | ir::Target::SourcePhase(_) => true,
+            | ir::Target::SourcePhase(_)
+            | ir::Target::Wavetable(_) => true,
             ir::Target::Processor { parameter, .. } => !matches!(
                 parameter,
                 ir::ProcessorParameter::Gain
@@ -2716,6 +2780,19 @@ impl Translation {
                 )
             }
             "pan" => (ir::Target::Pan, ir::Depth::Normalized(i)),
+            "wavetablePosition" | "warpFactor" | "warpFactor2"
+                if self.ir.source_indices.modulators.iter().find(|m| m.runtime == Some(source))
+                    .and_then(|m| self.ir.source_indices.groups.get(m.group).copied().flatten()
+                        .or_else(|| self.ir.source_indices.groups.is_empty().then_some(ir::GroupRef(m.group))))
+                    .and_then(|group| self.ir.groups.get(group.0))
+                    .is_some_and(|group| group.wavetable.is_some()) =>
+            {
+                (ir::Target::Wavetable(match target.param.as_str() {
+                    "wavetablePosition" => ir::WavetableParameter::Position,
+                    "warpFactor" => ir::WavetableParameter::Form1,
+                    _ => ir::WavetableParameter::Form2,
+                }), ir::Depth::Normalized(i))
+            }
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
         // The invert flag does not act through an enabled shaper: Vista Full
@@ -2923,6 +3000,7 @@ impl Translation {
                 };
                 self.ir.assets.push(ir::Asset {
                     location: ir::AssetLocation::Path(location.to_string_lossy().into_owned()),
+                    residency: Default::default(),
                     encoding,
                     root_key: None,
                     loops: Vec::new(),
@@ -3092,6 +3170,29 @@ struct RawZone {
     source: ir::kontakt::Zone,
 }
 
+/// Same one-based physical identities used by the later ZoneList admission
+/// pass. No dense group/zone ordinals, sample resolution or payload reads.
+fn source_zone_metadata(
+    data: &[u8],
+    groups: usize,
+) -> Result<std::collections::BTreeMap<u32, [i32; 3]>, String> {
+    let mut reader = Cursor::new(data);
+    let count = u32le(&mut reader).map_err(|e| e.to_string())?;
+    if count as usize > data.len() / 8 {
+        return Err("zone count exceeds the zone list".into());
+    }
+    let mut metadata = std::collections::BTreeMap::new();
+    for index in 0..count {
+        let zone = raw_zone(&mut reader).map_err(|reason| format!("zone {index}: {reason}"))?;
+        if zone.group >= groups {
+            return Err(format!("zone {index} refers to missing group {}", zone.group));
+        }
+        let group = i32::try_from(zone.group).map_err(|_| "source group index exceeds script range")?;
+        metadata.insert(index + 1, [group, i32::from(zone.source.low_key), i32::from(zone.source.high_key)]);
+    }
+    Ok(metadata)
+}
+
 /// A saved automation tag's script slot, widget ordinal and whether it names a `ui_switch`.
 fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
     let (switch, rest) = match tag.strip_prefix("pts_script_slider_") {
@@ -3104,6 +3205,33 @@ fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
 
 #[cfg(test)]
 mod empty_zone_tests {
+    fn zone_record(group: u32, low: i16, high: i16) -> Vec<u8> {
+        let mut public = vec![0; 48];
+        public[16..18].copy_from_slice(&low.to_le_bytes());
+        public[18..20].copy_from_slice(&high.to_le_bytes());
+        let mut record = group.to_le_bytes().to_vec();
+        record.extend([1, 0x9a, 0]);
+        record.extend(0u32.to_le_bytes());
+        record.extend(48u32.to_le_bytes());
+        record.extend(public);
+        record.extend(0u32.to_le_bytes());
+        record
+    }
+
+    #[test]
+    fn initializer_zone_prepass_uses_physical_order_and_needs_no_sample_resolver() {
+        let mut data = 3u32.to_le_bytes().to_vec();
+        data.extend(zone_record(2,60,61));
+        data.extend(zone_record(0,36,48));
+        data.extend(zone_record(1,80,90));
+        assert_eq!(super::source_zone_metadata(&data,3).unwrap(),
+            [(1,[2,60,61]),(2,[0,36,48]),(3,[1,80,90])].into());
+        assert!(super::source_zone_metadata(&data,2).is_err());
+        assert!(super::source_zone_metadata(&data[..data.len()-1],3).is_err());
+        data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(super::source_zone_metadata(&data,3).is_err());
+    }
+
     #[test]
     fn automation_tags_name_sliders_and_switches() {
         assert_eq!(super::automation_target("pts_script_slider_3_2"), Some((3, 2, false)));
@@ -4418,6 +4546,25 @@ mod modulation {
     }
 
     #[test]
+    fn wavetable_targets_bind_to_the_real_source_group_and_keep_normalized_depth() {
+        let mut out = translation();
+        out.ir.groups.push(ir::Group { wavetable: Some(ir::Wavetable::default()), ..Default::default() });
+        out.ir.source_indices.groups = vec![None; 8];
+        out.ir.source_indices.groups[7] = Some(ir::GroupRef(0));
+        out.ir.modulators.push(ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity });
+        out.source_modulator(7, 31, true, String::new(), &[], None);
+        out.ir.source_indices.modulators[0].runtime = Some(ir::ModulatorRef(0));
+        for (name, parameter) in [("wavetablePosition", ir::WavetableParameter::Position),
+            ("warpFactor", ir::WavetableParameter::Form1), ("warpFactor2", ir::WavetableParameter::Form2)] {
+            let route = out.route("source", ir::ModulatorRef(0), true, &target(name, 0.25), None).unwrap();
+            assert_eq!(out.ir.routes[route.0].target, ir::Target::Wavetable(parameter));
+            assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(0.25));
+        }
+        out.ir.groups[0].wavetable = None;
+        assert!(out.route("sample", ir::ModulatorRef(0), true, &target("wavetablePosition", 0.25), None).is_none());
+    }
+
+    #[test]
     fn published_processor_controls_accept_native_modulation_by_physical_slot() {
         let mut out = translation();
         out.source_modulator(7, 31, true, String::new(), &[], None);
@@ -4527,6 +4674,328 @@ mod modulation {
         out.route_intensity.insert(0, (0., 1.));
         assert!(out.internal_route_controls([0, 3, 1], ir::RouteRef(0), &t, true, &mut bypass));
         assert_eq!(out.ir.source_indices.route_controls.len(), 1);
+    }
+
+    /// Sparse authored source slots: slot 2 modulates slot 9's rate and pan.
+    /// No native binary, library sample, or script payload is used.
+    fn deferred_rate_group(bypass: bool, rate_first: bool) -> Group {
+        let rate = ModTarget { slot: Some(9), ..target("frequency", 0.25) };
+        let pan = target("pan", 0.);
+        let targets = if rate_first { vec![rate, pan] } else { vec![pan, rate] };
+        deferred_source_group(bypass, targets, false, true)
+    }
+
+    fn deferred_source_group(bypass: bool, targets: Vec<ModTarget>, synchronized_receiver: bool, receiver_retrigger: bool) -> Group {
+        let source = |rate: f32, phase: f32| Lfo {
+            structured: false, version: 0x72, waveform: 0,
+            initial_values: [0., rate, 0.5, phase],
+            records: std::array::from_fn(|_| LfoRecord { flag: false, values: [-1., 0., 0.] }),
+            trailing_flag: false, trailing_values: None, additional_flag: None,
+        };
+        let internal = |name: &str, bypass: bool, retrigger: bool, lfo: Lfo, targets: Vec<ModTarget>| {
+            let mut private = (targets.len() as u32).to_le_bytes().to_vec();
+            for target in &targets {
+                descriptor_name(&mut private, &target.param);
+                private.extend(target.intensity.to_le_bytes());
+                private.extend(target.unknown_i16.to_le_bytes());
+                private.push(target.unknown_flags);
+                private.extend(target.lag_ms.to_le_bytes());
+                descriptor_name(&mut private, &target.name);
+                if let Some(slot) = target.slot { private.push(slot); }
+                private.push(u8::from(target.invert));
+            }
+            private.extend(std::iter::repeat_n(0, targets.len())); // No shapers.
+            private.extend([0, u8::from(bypass), u8::from(retrigger), 0]);
+            private.extend(0u32.to_le_bytes());
+            descriptor_name(&mut private, name);
+            private.extend(1u32.to_le_bytes());
+            descriptor_object(0x0d, 0x81, &private, &[], &[lfo.to_chunk().unwrap()])
+        };
+        let mut receiver = source(2., 0.);
+        if synchronized_receiver { receiver.records[0].values[0] = 1.; }
+        let mut public = 0u32.to_le_bytes().to_vec();
+        for value in [1f32, 0., 1.] { public.extend(value.to_le_bytes()); }
+        public.extend([1, 0, 0, 0]);
+        public.extend(0i32.to_le_bytes());
+        public.extend((-1i16).to_le_bytes());
+        public.extend([0; 10]);
+        public.extend(0i32.to_le_bytes());
+        Group(ni_file::kontakt::StructuredObject {
+            version: 0x95, private_data: vec![], public_data: public,
+            children: vec![
+                ni_file::kontakt::Chunk { id: 0x38, data: 0u32.to_le_bytes().to_vec() },
+                descriptor_slots(INTERNAL_MODS, 16, &[
+                    (2, internal("rate-driver", bypass, true, source(3., 0.25), targets)),
+                    (9, internal("rate-receiver", false, receiver_retrigger, receiver, vec![target("volume", 1.)])),
+                ]),
+            ],
+        })
+    }
+
+    fn deferred_rate_translation(bypass: bool, rate_first: bool) -> (Translation, GroupInfo) {
+        let mut out = translation();
+        let group = deferred_rate_group(bypass, rate_first);
+        out.source_modulators(7, &group).unwrap();
+        let info = out.group(7, &group).unwrap().unwrap();
+        out.ir.source_indices.groups = vec![None; 8];
+        out.ir.source_indices.groups[7] = Some(info.group);
+        (out, info)
+    }
+
+    #[test]
+    fn deferred_rate_routes_keep_internal_depth_and_one_shared_bypass() {
+        for saved_bypass in [false, true] {
+            for rate_first in [false, true] {
+                let (out, _) = deferred_rate_translation(saved_bypass, rate_first);
+                let owner = out.ir.source_indices.modulators.iter()
+                    .find(|m| m.group == 7 && m.slot == 2 && !m.external).unwrap();
+                if saved_bypass {
+                    assert!(owner.runtime.is_none(), "never wake a rate source before its bypassed base-rate law is proved");
+                    assert!(!out.ir.source_indices.control_aliases.iter().any(|a| a.address.group == 7 && a.address.slot == 2));
+                    assert!(out.ir.unsupported.iter().any(|u| u.feature == "LFO rate live controls"
+                        && u.reason == ir::Reason::UnknownLaw && u.value.contains("saved-bypassed")));
+                    continue;
+                }
+                let source = owner.runtime.expect("a supported active internal rate source has a live owner");
+                let receiver = out.ir.source_indices.modulators.iter()
+                    .find(|m| m.group == 7 && m.slot == 9 && !m.external).unwrap().runtime.unwrap();
+                let routes: Vec<_> = out.ir.routes.iter().enumerate().filter(|(_, r)| r.source == source).collect();
+                assert_eq!(routes.len(), 2);
+                let rate = routes.iter().find(|(_, r)| r.target == ir::Target::SourceRate(receiver)).unwrap().0;
+                let controls: Vec<_> = out.ir.source_indices.route_controls.iter()
+                    .filter(|(r, _, _)| routes.iter().any(|(index, _)| *index == r.0)).collect();
+                assert_eq!(controls.len(), 2, "ordinary and deferred targets need live controls");
+                assert_eq!(controls[0].2, controls[1].2, "one source owns one bypass");
+                assert!(matches!(out.ir.controls[controls[0].2.0].value,
+                    ir::ControlValue::Continuous { default, .. } if default == f64::from(saved_bypass)));
+                let depth = controls.iter().find(|(r, _, _)| r.0 == rate).unwrap().1;
+                let ordinal = if rate_first { 0 } else { 1 };
+                for name in ["ENGINE_PAR_MOD_TARGET_INTENSITY", "ENGINE_PAR_INTMOD_INTENSITY", "ENGINE_PAR_MOD_TARGET_MP_INTENSITY"] {
+                    assert!(out.ir.source_indices.control_aliases.iter().any(|a|
+                        a.control == depth && a.parameter == name
+                            && a.address == ir::SlotAddress { group: 7, slot: 2, generic: ordinal }));
+                }
+                if rate_first {
+                    assert!(out.ir.source_indices.control_aliases.iter().any(|a|
+                        a.control == depth && a.parameter == "ENGINE_PAR_INTMOD_INTENSITY"
+                            && a.address == ir::SlotAddress { group: 7, slot: 2, generic: -1 }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_rate_refusals_are_reported_for_active_and_saved_bypassed_sources() {
+        for bypass in [false, true] {
+            for mixed in [false, true] {
+                for (slot, synchronized, lag) in [(8, false, 0), (9, true, 0), (9, false, -1)] {
+                    let mut targets = vec![ModTarget { slot: Some(slot), lag_ms: lag, ..target("frequency", 0.25) }];
+                    if mixed { targets.push(target("pan", 0.)); }
+                    let group = deferred_source_group(bypass, targets, synchronized, true);
+                    let mut out = translation();
+                    out.source_modulators(7, &group).unwrap();
+                    out.group(7, &group).unwrap().unwrap();
+                    let source = out.ir.source_indices.modulators.iter()
+                        .find(|m| m.group == 7 && m.slot == 2 && !m.external).unwrap().runtime;
+                    assert_eq!(source.is_none(), bypass, "a saved-bypassed rate source must stay inactive");
+                    assert!(!out.ir.routes.iter().any(|r| Some(r.source) == source && matches!(r.target, ir::Target::SourceRate(_))));
+                    assert!(out.ir.unsupported.iter().any(|u| u.value.contains("frequency") && if bypass {
+                        u.feature == "LFO rate live controls" && u.reason == ir::Reason::UnknownLaw
+                    } else {
+                        matches!(u.feature.as_str(), "modulation of a module parameter" | "negative modulation lag")
+                    }), "bypass {bypass}, mixed {mixed}, slot {slot}, synchronized {synchronized}, lag {lag}: retain the refusal");
+                    if bypass {
+                        assert!(!out.ir.source_indices.control_aliases.iter().any(|a| a.address.group == 7 && a.address.slot == 2),
+                            "never publish a partial sibling bypass");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_rate_does_not_widen_a_mixed_phase_sources_bypass_admission() {
+        for bypass in [false, true] {
+            let group = deferred_source_group(bypass, vec![
+                ModTarget { slot: Some(9), ..target("frequency", 0.25) },
+                ModTarget { slot: Some(9), ..target("startPhase", 0.25) },
+            ], false, true);
+            let mut out = translation();
+            out.source_modulators(7, &group).unwrap();
+            out.group(7, &group).unwrap().unwrap();
+            let owner = out.ir.source_indices.modulators.iter()
+                .find(|m| m.group == 7 && m.slot == 2 && !m.external).unwrap();
+            assert_eq!(owner.runtime.is_none(), bypass);
+            assert_eq!(owner.settings.as_ref().unwrap().targets.len(), 2);
+            assert!(!out.ir.source_indices.control_aliases.iter().any(|a| a.address.group == 7 && a.address.slot == 2));
+        }
+    }
+
+    #[test]
+    fn deferred_rate_native_writes_read_back_and_match_direct_control_pcm() {
+        use sampler_core::{ControlValue, ControlWrite, EngineParameterAddress, Input, Protocol, Runtime};
+        let bypass = false;
+        for rate_first in [false, true] {
+            for partition in [1, 7, 64, 127] {
+                let (mut out, info) = deferred_rate_translation(bypass, rate_first);
+                let ordinal = if rate_first { 0 } else { 1 };
+                let address = |name, generic| EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id(name).unwrap(), group: 7, slot: 2, generic,
+                };
+                let control = |name, generic| {
+                    let alias = out.ir.source_indices.control_aliases.iter().find(|a|
+                        a.parameter == name && a.address == ir::SlotAddress { group: 7, slot: 2, generic }).unwrap();
+                    sampler_core::lower::ir_control_id(&out.ir.controls[alias.control.0].key)
+                };
+                let depth = control("ENGINE_PAR_MOD_TARGET_INTENSITY", ordinal);
+                let bypass_id = control("ENGINE_PAR_INTMOD_BYPASS", -1);
+                out.ir.assets.push(ir::Asset { location: ir::AssetLocation::Path("authored-rate".into()),
+                    residency: Default::default(), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+                let mut zone = ir::Zone::new(ir::AssetRef(0));
+                zone.group = Some(info.group);
+                zone.routes = info.routes;
+                zone.pitch = ir::KeyTracking::Fixed;
+                zone.velocity = ir::VelocityResponse::None;
+                out.ir.zones.push(zone);
+                let driver = out.ir.source_indices.modulators.iter()
+                    .find(|m| m.group == 7 && m.slot == 2 && !m.external).unwrap().runtime.unwrap();
+                let make = |bind_controls: bool| {
+                    let mut instrument = out.ir.clone();
+                    if !bind_controls {
+                        // The previous importer kept this owner's routes static.
+                        let routes = &instrument.routes;
+                        let removed: Vec<_> = instrument.source_indices.route_controls.iter()
+                            .filter(|(r, _, _)| routes[r.0].source == driver)
+                            .flat_map(|(_, depth, bypass)| [*depth, *bypass]).collect();
+                        instrument.source_indices.route_controls.retain(|(r, _, _)| routes[r.0].source != driver);
+                        instrument.source_indices.control_aliases.retain(|alias| !removed.contains(&alias.control));
+                    }
+                    let pcm = sampler_core::Pcm::new(48000, vec![[0.5, 0.25]; 16384].into_boxed_slice()).unwrap();
+                    let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
+                    let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+                    Runtime::new(plan, limits).unwrap()
+                };
+                let (mut actual, mut reference, mut unchanged) = (make(true), make(true), make(false));
+                let input = |id| Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+                let mut a = [[0.; 2]; 384];
+                let mut b = [[0.; 2]; 384];
+                let mut baseline = [[0.; 2]; 384];
+                for id in [1, 2] {
+                    actual.trigger(input(id), 60, 1.).unwrap();
+                    reference.trigger(input(id), 60, 1.).unwrap();
+                    unchanged.trigger(input(id), 60, 1.).unwrap();
+                    if id == 1 {
+                        assert_eq!(actual.engine_parameter(address("ENGINE_PAR_MOD_TARGET_INTENSITY", ordinal)).unwrap(), 250000);
+                        assert_eq!(actual.engine_parameter(address("ENGINE_PAR_INTMOD_BYPASS", -1)).unwrap(), 0);
+                        for ((a, b), baseline) in a.chunks_mut(partition).zip(b.chunks_mut(partition)).zip(baseline.chunks_mut(partition)) {
+                            actual.render(a).unwrap();
+                            reference.render(b).unwrap();
+                            unchanged.render(baseline).unwrap();
+                        }
+                        for (a, baseline) in a.iter().zip(&baseline) {
+                            assert_eq!(a.map(f32::to_bits), baseline.map(f32::to_bits), "binding must preserve the active static route before edits");
+                        }
+                    }
+                    let mut audible_edit = false;
+                    for (name, generic, encoded, decoded, target) in [
+                        ("ENGINE_PAR_INTMOD_INTENSITY", ordinal, 750000, 0.125, depth),
+                        ("ENGINE_PAR_INTMOD_BYPASS", -1, 0, 0., bypass_id),
+                        ("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", ordinal, 1000000, 1., depth),
+                        ("ENGINE_PAR_INTMOD_BYPASS", -1, 1, 1., bypass_id),
+                        ("ENGINE_PAR_INTMOD_BYPASS", -1, 0, 0., bypass_id),
+                        ("ENGINE_PAR_MOD_TARGET_INTENSITY", ordinal, 0, 0., depth),
+                    ] {
+                        actual.set_engine_parameter(address(name, generic), encoded).unwrap();
+                        assert_eq!(actual.engine_parameter(address(name, generic)).unwrap(), encoded);
+                        reference.edit_controls(reference.active_plan(), None,
+                            &[ControlWrite { id: target, value: ControlValue::Real(decoded) }]).unwrap();
+                        for ((a, b), baseline) in a.chunks_mut(partition).zip(b.chunks_mut(partition)).zip(baseline.chunks_mut(partition)) {
+                            actual.render(a).unwrap();
+                            reference.render(b).unwrap();
+                            unchanged.render(baseline).unwrap();
+                        }
+                        assert!(a.iter().flatten().all(|v| v.is_finite()));
+                        assert!(a.iter().flatten().any(|&v| v != 0.));
+                        for (a, b) in a.iter().zip(&b) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+                        audible_edit |= a.iter().zip(&baseline).any(|(a, b)| a.map(f32::to_bits) != b.map(f32::to_bits));
+                    }
+                    assert!(audible_edit, "native rate writes must change PCM, not just readback");
+                    for rt in [&mut actual, &mut reference, &mut unchanged] {
+                        rt.note_off(input(id), None).unwrap();
+                        rt.render(&mut [[0.; 2]; 64]).unwrap();
+                        assert_eq!(rt.voice_count(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_rate_saved_bypass_preserves_late_receiver_clock() {
+        for retrigger in [false, true] {
+            let group = deferred_source_group(true,
+                vec![ModTarget { slot: Some(9), ..target("frequency", 0.25) }], false, retrigger);
+            let mut out = translation();
+            out.source_modulators(7, &group).unwrap();
+            let info = out.group(7, &group).unwrap().unwrap();
+            out.ir.source_indices.groups = vec![None; 8];
+            out.ir.source_indices.groups[7] = Some(info.group);
+            let source = out.ir.source_indices.modulators.iter()
+                .find(|m| m.group == 7 && m.slot == 2 && !m.external).unwrap().runtime;
+            out.ir.assets.push(ir::Asset { location: ir::AssetLocation::Path("authored-late-rate".into()),
+                residency: Default::default(), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.group = Some(info.group);
+            zone.routes = info.routes;
+            zone.pitch = ir::KeyTracking::Fixed;
+            zone.velocity = ir::VelocityResponse::None;
+            out.ir.zones.push(zone);
+            let make = |without_driver: bool| {
+                let mut instrument = out.ir.clone();
+                if without_driver {
+                    instrument.zones[0].routes.retain(|r| Some(instrument.routes[r.0].source) != source);
+                }
+                let plan = sampler_core::lower::lower(&instrument, 48000,
+                    vec![sampler_core::Pcm::new(48000, vec![[0.5; 2]; 8192].into_boxed_slice()).unwrap()], |_, p| Ok(p)).unwrap();
+                let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
+                let mut runtime = sampler_core::Runtime::new(plan, limits).unwrap();
+                runtime.render(&mut [[0.; 2]; 2400]).unwrap();
+                runtime.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Clap,
+                    port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) }, 60, 1.).unwrap();
+                let mut pcm = [[0.; 2]; 4096];
+                runtime.render(&mut pcm).unwrap();
+                pcm
+            };
+            let (actual, unchanged) = (make(false), make(true));
+            for (frame, (a, b)) in actual.iter().zip(&unchanged).enumerate() {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "retrigger {retrigger}, frame {frame}");
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_rate_free_receiver_keeps_active_static_route_but_refuses_live_controls() {
+        for bypass in [false, true] {
+            for mixed in [false, true] {
+                let mut targets = vec![ModTarget { slot: Some(9), ..target("frequency", 0.25) }];
+                if mixed { targets.push(target("pan", 0.)); }
+                let group = deferred_source_group(bypass, targets, false, false);
+                let mut out = translation();
+                out.source_modulators(7, &group).unwrap();
+                out.group(7, &group).unwrap().unwrap();
+                let source = out.ir.source_indices.modulators.iter()
+                    .find(|m| m.group == 7 && m.slot == 2 && !m.external).unwrap().runtime;
+                let rate = out.ir.routes.iter().enumerate().find(|(_, r)| Some(r.source) == source && matches!(r.target, ir::Target::SourceRate(_)));
+                assert_eq!(rate.is_some(), !bypass, "retain an active static route, never run the saved-bypassed route");
+                if let Some((rate, _)) = rate {
+                    assert!(!out.ir.source_indices.route_controls.iter().any(|(r, _, _)| r.0 == rate));
+                }
+                assert!(!out.ir.source_indices.control_aliases.iter().any(|a| a.address.group == 7 && a.address.slot == 2),
+                    "never publish a partial source bypass through a sibling target");
+                assert!(out.ir.unsupported.iter().any(|u| u.feature == "LFO rate live controls"
+                    && u.reason == ir::Reason::UnknownLaw && u.value.contains("frequency")));
+            }
+        }
     }
 
     /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
@@ -4796,6 +5265,7 @@ mod modulation {
         assert!(matches!(t.ir.controls[1].value, ir::ControlValue::Continuous { default, .. }
             if default == f64::from(sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.))));
         t.ir.assets.push(ir::Asset { location: ir::AssetLocation::Path("authored".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.chain = Some(ir::ChainRef(0));

@@ -39,8 +39,8 @@ fn butterworth(x: &mut [f32], rate: u32, hz: f32, high_pass: bool) {
     if (!high_pass && w > 0.45) || (high_pass && w < 0.01) || !w.is_finite() {
         return;
     }
-    const SQRT2: f32 = 1.414_213_5;
-    let k = (w * 3.141_592_7).tan();
+    const SQRT2: f32 = std::f32::consts::SQRT_2;
+    let k = (w * std::f32::consts::PI).tan();
     let k2 = k * k;
     let n = 1.0 / (SQRT2 * k + 1.0 + k2);
     let b = if high_pass { [n, -2.0 * n, n] } else { [k2 * n, 2.0 * k2 * n, k2 * n] };
