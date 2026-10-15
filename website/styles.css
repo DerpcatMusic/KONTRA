@@ -224,6 +224,8 @@ button:disabled { cursor: default; }
   .table-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .table-filters .quiet-button { justify-self: start; }
   .feature-table { min-width: 1040px; }
+  .feature-table thead th:nth-child(1) { width: 17%; }
+  .feature-table thead th:nth-child(4) { width: 20%; }
   article h2 { margin-top: 36px; }
   article table { min-width: 600px; }
 }
