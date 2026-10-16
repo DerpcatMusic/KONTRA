@@ -1340,3 +1340,303 @@ fn a_same_size_resize_requires_native_presentation() {
     h.resized(WindowSize::from_logical(LogicalSize::new(640., 400.), 1.));
     assert!(h.unpainted);
 }
+
+/// A grab redirects device events but does not change XGetInputFocus. Treating
+/// its FocusOut as deactivation cancels every MUI click/drag in flight (#77).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 display; run under Xvfb"]
+fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
+    use raw_window_handle::{HandleError, WindowHandle, XcbWindowHandle};
+    use std::num::NonZeroU32;
+    use std::sync::mpsc::{Sender, channel};
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        ButtonPressEvent, ConnectionExt, CreateWindowAux, EventMask, GrabMode, GrabStatus,
+        InputFocus, KeyButMask, MotionNotifyEvent, WindowClass,
+    };
+
+    struct Parent(NonZeroU32);
+    impl HasWindowHandle for Parent {
+        #[expect(unsafe_code, reason = "the test owns the parent through child close")]
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            // SAFETY: this fixture owns the mapped parent until the child closes.
+            Ok(unsafe { WindowHandle::borrow_raw(XcbWindowHandle::new(self.0).into()) })
+        }
+    }
+    #[derive(Debug)]
+    struct Snapshot {
+        marker: i16,
+        down: bool,
+        focused: bool,
+        losses: u32,
+        leaves: u32,
+    }
+    struct Probe {
+        h: RefCell<Handler<Knob>>,
+        cx: WindowContext,
+        losses: Cell<u32>,
+        leaves: Cell<u32>,
+        send: Sender<Snapshot>,
+    }
+    impl WindowHandler for Probe {
+        fn on_frame(&self) -> Result<(), HandlerError> {
+            Ok(())
+        }
+        fn resized(&self, _: WindowSize) -> Result<(), HandlerError> {
+            Ok(())
+        }
+        fn on_event(&self, event: Event) -> EventStatus {
+            if matches!(event, Event::Window(WindowEvent::Unfocused)) {
+                self.losses.set(self.losses.get() + 1);
+            }
+            if matches!(event, Event::Mouse(MouseEvent::CursorLeft)) {
+                self.leaves.set(self.leaves.get() + 1);
+            }
+            let mut h = self.h.borrow_mut();
+            let status = h.on_event_inner(&event);
+            if let Event::Mouse(MouseEvent::CursorMoved { position, .. }) = event
+                && position.x >= 1000.
+            {
+                self.send
+                    .send(Snapshot {
+                        marker: position.x as i16,
+                        down: !h.driver.pointer().buttons.is_empty(),
+                        focused: self.cx.has_focus(),
+                        losses: self.losses.get(),
+                        leaves: self.leaves.get(),
+                    })
+                    .unwrap();
+            }
+            status
+        }
+    }
+
+    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None).unwrap();
+    let root = conn.setup().roots[screen].root;
+    let parent = conn.generate_id().unwrap();
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        parent,
+        root,
+        0,
+        0,
+        64,
+        64,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new(),
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    conn.map_window(parent).unwrap().check().unwrap();
+    let (send, recv) = channel();
+    let (id_send, id_recv) = channel();
+    let child = baseview::ThreadedWindow::create(
+        settings("KONTRA native focus regression", (64, 64))
+            .with_parent(&Parent(NonZeroU32::new(parent).unwrap())),
+        move |cx| {
+            let id = match cx.window_handle()?.as_raw() {
+                raw_window_handle::RawWindowHandle::Xlib(h) => h.window as u32,
+                raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get(),
+                _ => unreachable!(),
+            };
+            id_send.send(id).unwrap();
+            Ok(Probe {
+                h: RefCell::new(handler((64, 64), 1.)),
+                cx,
+                losses: Cell::new(0),
+                leaves: Cell::new(0),
+                send,
+            })
+        },
+    )
+    .unwrap();
+    let id = id_recv.recv_timeout(Duration::from_secs(3)).unwrap();
+    child.show().unwrap();
+    // Map acknowledgement precedes focus requests; no sleep or compositor needed.
+    assert_eq!(
+        conn.get_window_attributes(id)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .map_state,
+        x11rb::protocol::xproto::MapState::VIEWABLE
+    );
+    conn.set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let motion = |marker| {
+        conn.send_event(
+            false,
+            id,
+            EventMask::POINTER_MOTION,
+            MotionNotifyEvent {
+                response_type: x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
+                root,
+                event: id,
+                event_x: marker,
+                event_y: 24,
+                same_screen: true,
+                state: KeyButMask::BUTTON1,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+        loop {
+            let state = recv.recv_timeout(Duration::from_secs(3)).unwrap();
+            if state.marker == marker {
+                break state;
+            }
+        }
+    };
+    let press = || {
+        conn.send_event(
+            false,
+            id,
+            EventMask::BUTTON_PRESS,
+            ButtonPressEvent {
+                response_type: x11rb::protocol::xproto::BUTTON_PRESS_EVENT,
+                detail: 1,
+                root,
+                event: id,
+                event_x: 24,
+                event_y: 24,
+                same_screen: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    };
+    press();
+    let before = motion(1001);
+    assert!(before.focused && before.down, "native setup: {before:?}");
+    assert_eq!(
+        conn.grab_keyboard(
+            false,
+            parent,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status,
+        GrabStatus::SUCCESS
+    );
+    assert_eq!(conn.get_input_focus().unwrap().reply().unwrap().focus, id);
+    let grabbed = motion(1002);
+    conn.ungrab_keyboard(x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let restored = motion(1003);
+    assert!(
+        grabbed.down && grabbed.focused && grabbed.losses == before.losses,
+        "a temporary keyboard grab must not cancel the drag: {grabbed:?}"
+    );
+    assert!(
+        restored.down && restored.focused && restored.losses == before.losses,
+        "ungrab must not introduce deactivation: {restored:?}"
+    );
+
+    // Actual focus changes during a grab use NotifyWhileGrabbed, not NotifyGrab.
+    assert_eq!(
+        conn.grab_keyboard(
+            false,
+            parent,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status,
+        GrabStatus::SUCCESS
+    );
+    conn.set_input_focus(InputFocus::PARENT, parent, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let lost_during_grab = motion(1004);
+    conn.ungrab_keyboard(x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(
+        !lost_during_grab.down && !lost_during_grab.focused,
+        "real focus loss while grabbed must still cancel: {lost_during_grab:?}"
+    );
+    assert_eq!(lost_during_grab.losses, before.losses + 1);
+
+    conn.set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    press();
+    assert!(motion(1005).down);
+    conn.set_input_focus(InputFocus::PARENT, parent, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let lost_normally = motion(1006);
+    assert!(
+        !lost_normally.down && !lost_normally.focused,
+        "ordinary deactivation still cancels: {lost_normally:?}"
+    );
+    assert_eq!(lost_normally.losses, before.losses + 2);
+    // Pointer grabs generate pseudo crossing events as well. They must not
+    // forget the pointer while the cursor has not physically left the editor.
+    conn.warp_pointer(x11rb::NONE, id, 0, 0, 0, 0, 20, 20)
+        .unwrap()
+        .check()
+        .unwrap();
+    let inside = motion(1007);
+    assert_eq!(
+        conn.grab_pointer(
+            false,
+            parent,
+            EventMask::POINTER_MOTION,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            x11rb::NONE,
+            x11rb::NONE,
+            x11rb::CURRENT_TIME
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status,
+        GrabStatus::SUCCESS
+    );
+    let pointer_grabbed = motion(1008);
+    conn.ungrab_pointer(x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_eq!(
+        pointer_grabbed.leaves, inside.leaves,
+        "pseudo crossing is not an actual pointer leave"
+    );
+    conn.warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, 100, 100)
+        .unwrap()
+        .check()
+        .unwrap();
+    let outside = motion(1009);
+    assert_eq!(
+        outside.leaves,
+        inside.leaves + 1,
+        "real boundary exit is retained"
+    );
+    child.close();
+    conn.destroy_window(parent).unwrap().check().unwrap();
+}
