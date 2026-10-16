@@ -32,6 +32,20 @@ fn wavetable_bindings(
 }
 
 impl V2Core {
+    pub(crate) fn diagnostic_group_gains(&self,slot:usize,epoch:u64,groups:&[u32]) -> Result<Value,&'static str> {
+        if groups.len()>8 || groups.iter().enumerate().any(|(i,g)|*g>65535 || groups[..i].contains(g)) {
+            return Err("Gain observation group limit exceeded");
+        }
+        let part=self.parts.get(slot).and_then(Option::as_ref).ok_or("Gain owner unavailable")?;
+        if part.epoch!=epoch { return Err("Gain observation owner is stale"); }
+        let host=self.mix.parts.get(slot).map(|p|json!({"gain":p.gain,"pan":p.pan,
+            "mute":p.mute,"solo":p.solo,"output":p.output,"aux":p.aux,"aux_gain":p.aux_gain}));
+        let buses:Vec<_>=self.mix.buses.iter().enumerate().map(|(index,b)|json!({"bus":index,
+            "gain":b.gain,"pan":b.pan,"mute":b.mute,"solo":b.solo,"port":b.port})).collect();
+        Ok(json!({"at":part.runtime.now(),"epoch":epoch,"host_part":host,"host_buses":buses,
+            "groups":groups.iter().map(|&g|json!({"group":g,"state":part.runtime.diagnostic_group_gain(g)})).collect::<Vec<_>>(),
+            "scope":"Pure read of current committed compiled group indices, not native group identities; absent group/fader remains null"}))
+    }
     pub(crate) fn diagnostic_sources(
         &self,
         slot: usize,
@@ -70,13 +84,18 @@ impl V2Core {
             })
             .collect();
         let mut voices = Vec::new();
+        let mut gain_rows=0usize;
         let complete = part.runtime.visit_onset_voices(|voice| {
             if voices.len() == 256 {
                 return false;
             }
             let (regions, count) = part.waveform_sources.asset_regions(voice.asset, 64);
+            let gain_state=if gain_rows<32 {
+                gain_rows+=1;
+                part.runtime.diagnostic_voice_gain(voice.voice)
+            } else { None };
             voices.push(
-                json!({"voice":voice,"matching_regions":regions,"matching_region_count":count,
+                json!({"voice":voice,"gain_state":gain_state,"matching_regions":regions,"matching_region_count":count,
                 "region_matches_complete":count<=64}),
             );
             true
@@ -116,6 +135,7 @@ impl V2Core {
             .collect();
         Ok(
             json!({"epoch":epoch,"native_homes":homes,"voices":voices,"voices_complete":complete,
+            "gain_readback_limit":32,"gain_readbacks_omitted":voices.len().saturating_sub(gain_rows),
             "routing":routing,"wavetable_controls":wt_controls,"engine_binding_scan_truncated":false,
             "engine_binding_count":bindings.len(),"wavetable_control_count":wt_total,
             "wavetable_control_limit_reached":wt_total>WT_CONTROL_LIMIT,

@@ -18,6 +18,9 @@ pub(super) struct Config {
     /// Explicitly requested, note-relative physical output-pair windows.
     #[serde(default)]
     output_windows: Vec<OutputWindow>,
+    /// Explicit compiled IR indices, never native UVI identities.
+    #[serde(default)]
+    gain_groups: Vec<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +48,10 @@ impl Config {
             return Err(
                 "UVI probe requires phase/total wall limits 1..10000 ms with phase <= total, pace 1..20 ms, 128..96000 note frames and at most 32 valid explicit MIDI controllers",
             );
+        }
+        if self.gain_groups.len()>8 || self.gain_groups.iter().enumerate()
+            .any(|(i,g)|*g>65535 || self.gain_groups[..i].contains(g)) {
+            return Err("UVI gain readback requires at most eight unique compiled group indices <=65535");
         }
         validate_output_windows(&self.output_windows, note_frames)?;
         Ok(())
@@ -646,6 +653,9 @@ pub(super) fn probe_note(
         );
         let mut proceed = initial.drained();
         result["initial_owner_sample_condition"] = initial.report;
+        if !config.gain_groups.is_empty() {
+            result["gain_after_initial_ack"]=switch_gain_state(core,owner,&config.gain_groups);
+        }
         if !proceed {
             issues.push(format!("initial:{}", initial.status));
         }
@@ -747,6 +757,9 @@ pub(super) fn probe_note(
                 issues.push(format!("samples:{}", samples.status));
             }
             result["samples_before_pcm"] = samples.report;
+            if !config.gain_groups.is_empty() {
+                result["gain_before_pcm"]=switch_gain_state(core,owner,&config.gain_groups);
+            }
             // A pending task is explicit partial evidence. Ordinary clock
             // advancement may still expose authored future child activity.
             while audio.frames < note_frames && Instant::now() < bounds.deadline {
@@ -812,6 +825,9 @@ pub(super) fn probe_note(
             result["final_owner_sample_condition"] =
                 json!({"status":"total_wall_limit","observed":false});
         }
+    }
+    if !config.gain_groups.is_empty() {
+        result["gain_after_pcm"]=switch_gain_state(core,owner,&config.gain_groups);
     }
     let problems = core.problems(0);
     if problems.script_overruns != 0
@@ -884,6 +900,7 @@ mod tests {
             pace_ms: 1,
             controllers: vec![],
             output_windows: vec![],
+            gain_groups: vec![],
         }
     }
     fn note() -> HostNote {
@@ -1471,6 +1488,9 @@ mod tests {
         .unwrap();
         let (mut core, mut owner) = install(runtime, thread);
         let report = probe_note(&mut core, &mut owner, &config(50), note(), 64, 128).unwrap();
+        for field in ["gain_after_initial_ack","gain_before_pcm","gain_after_pcm"] {
+            assert!(report.get(field).is_none(),"unexpected opt-in readback: {field}");
+        }
         assert_eq!(report["status"], "partial", "{report}");
         assert!(!report["issues"].as_array().unwrap().is_empty());
         assert_eq!(report["note_submitted"], true);
@@ -1490,5 +1510,23 @@ mod tests {
             !invoked.load(Ordering::Acquire),
             "metadata must not reach a worker before host binding"
         );
+    }
+}
+
+#[cfg(test)]
+mod gain_readback_tests {
+    use super::*;
+    #[test]
+    fn gain_readback_is_default_off_and_rejects_unbounded_or_duplicate_indices() {
+        let make=|extra:Value| {
+            let mut value=json!({"phase_timeout_ms":100,"total_timeout_ms":200,"pace_ms":1});
+            if !extra.is_null() {value["gain_groups"]=extra;}
+            serde_json::from_value::<Config>(value).unwrap()
+        };
+        assert!(make(Value::Null).gain_groups.is_empty());
+        assert!(make(json!([123,334])).validate(96000).is_ok());
+        for invalid in [json!([123,123]),json!([65536]),json!([0,1,2,3,4,5,6,7,8])] {
+            assert!(make(invalid).validate(96000).is_err());
+        }
     }
 }

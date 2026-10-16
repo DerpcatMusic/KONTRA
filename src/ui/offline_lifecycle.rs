@@ -522,10 +522,69 @@ fn switch_source_state(core: &V2Core, owner: &SwitchOwner, ids: &[u32]) -> Value
                         "worker_wavetable":zone.group.and_then(|g|ir.groups.get(g.0)).and_then(|g|g.wavetable)}))
                 }).collect();
             voice["worker_recipes"] = json!(recipes);
+            if let (Some(group),Some(ir))=(voice["gain_state"]["group"].as_u64(),owner.instrument.as_ref()) {
+                let group=group as usize;
+                let matching_zone_count=ir.zones.iter().filter(|z|z.group.map(|g|g.0)==Some(group)).count();
+                let zones:Vec<_>=ir.zones.iter().enumerate().filter(|(_,z)|z.group.map(|g|g.0)==Some(group))
+                    .take(16).map(|(index,z)|json!({"region":index,"gain_linear":z.gain.linear(),
+                        "pan":z.pan,"tune":z.tune,"voice_chain":z.chain.map(|c|c.0)})).collect();
+                if let Some(g)=ir.groups.get(group) {
+                    let mut bus=match g.output {sampler_ir::Output::Bus(b)=>Some(b.0),_=>None};
+                    let mut path=Vec::new(); let mut seen=Vec::new();
+                    while let Some(index)=bus {
+                        if path.len()==16 || seen.contains(&index) {break;}
+                        seen.push(index);
+                        let Some(b)=ir.buses.get(index) else {break;};
+                        path.push(json!({"bus":index,"initialized_gain_linear":b.gain.linear(),
+                            "chain":b.chain.map(|c|switch_gain_chain(ir,c.0))}));
+                        bus=match b.output {sampler_ir::Output::Bus(b)=>Some(b.0),_=>None};
+                    }
+                    voice["initialized_ir_gain_recipe"]=json!({"group":group,"group_gain_linear":g.gain.linear(),
+                        "group_pan":g.pan,"group_tune":g.tune,"muted":g.muted,
+                        "group_chain":g.chain.map(|c|switch_gain_chain(ir,c.0)),
+                        "zones":zones,"zone_limit":16,"matching_zone_count":matching_zone_count,
+                        "zones_complete":matching_zone_count<=16,"zones_omitted":matching_zone_count.saturating_sub(16),"bus_path":path,"bus_path_complete":bus.is_none(),
+                        "scope":"Initialized worker IR settings, not live processor values or measured stage transfer; PCM excluded"});
+                }
+            }
         }
     }
     report["worker_recipe_scope"] = json!("Asset identity joins the actual occupied voice to immutable prepared recipes. Multiple recipes can share one asset; these rows alone do not identify a unique live recipe or prove live WT control values.");
     report
+}
+
+fn switch_gain_chain(ir:&sampler_ir::Instrument,index:usize)->Value {
+    let Some(chain)=ir.chains.get(index) else {return Value::Null;};
+    let total=chain.pre_amplitude.len()+chain.post_amplitude.len();
+    let rows:Vec<_>=chain.pre_amplitude.iter().map(|p|("pre",p))
+        .chain(chain.post_amplitude.iter().map(|p|("post",p))).take(32).enumerate()
+        .map(|(ordinal,(side,p))| {
+            use sampler_ir::Processor as P;
+            let setting=match p {
+                P::Gain(g)=>json!({"kind":"gain","linear":g.linear()}),
+                P::StereoMatrix(m)=>json!({"kind":"stereo_matrix","matrix":m}),
+                P::Mix{count,dry,wet,bypass,..}=>json!({"kind":"mix","count":count,"dry":dry,"wet":wet,"bypass":bypass}),
+                P::Branch{count,gain,first,last}=>json!({"kind":"branch","count":count,"gain":gain.linear(),"first":first,"last":last}),
+                P::Space(c)=> {
+                    let shape=c.impulse.and_then(|i|ir.impulse_shapes.get(i.0)).and_then(Option::as_ref)
+                        .map(|s|json!({"time":s.time,"damping_low":s.damping_low,"damping_high":s.damping_high,
+                            "pre_delay_ms":s.pre_delay_ms,"width":s.width,"normalize":s.normalize,
+                            "sampled_reverb":s.sampled_reverb,"reverse":s.reverse,"auto_gain":s.auto_gain}));
+                    let impulse=c.impulse.and_then(|i|ir.impulses.get(i.0)).map(|i|json!({"rate":i.rate,
+                        "left_frames":i.left.len(),"right_frames":i.right.len(),"unresolved_asset":i.asset.map(|a|a.0)}));
+                    json!({"kind":"space","dry":c.dry,"wet":c.wet,"impulse_index":c.impulse.map(|i|i.0),
+                        "shape":shape,"impulse_metadata":impulse,"has_network":c.network.is_some()})
+                },
+                _=>json!({"kind":"other"}),
+            };
+            json!({"ordinal":ordinal,"side":side,"settings":setting})
+        }).collect();
+    json!({"chain":index,"processors":rows,"processor_count":total,"complete":total<=32})
+}
+
+fn switch_gain_state(core:&V2Core,owner:&SwitchOwner,groups:&[u32])->Value {
+    json!({"levels":core.diagnostic_group_gains(0,owner.request,groups).unwrap_or_else(|e|json!({"error":e})),
+        "occupied_sources":switch_source_state(core,owner,&[])})
 }
 
 fn sha256(bytes: &[u8]) -> String {
