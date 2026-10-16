@@ -10,6 +10,8 @@ const RATE: u32 = 48_000;
 const SOURCE_FRAMES: usize = 2_048;
 const NOTE_FRAMES: usize = 8_192;
 const BEFORE_WRITE: usize = 4_096;
+const MAX_BLOCK_FRAMES: usize = 127;
+const STREAM_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 const VELOCITY: f64 = 0.73;
 // Coefficients in exact integer quarters: matrix[output][input].
 type Matrix = [[i16; 6]; 2];
@@ -105,26 +107,52 @@ struct Session {
     ir: sampler_ir::Instrument,
     note: NoteId,
     _stream: Option<(sampler_kontakt::Streamer, Vec<sampler_core::Pcm>)>,
+    stream_horizon: Option<u32>,
 }
 impl Session {
     fn load(path: &Path, streamed: bool) -> Self {
-        let (loaded, cache, keep) = if streamed {
+        let (loaded, cache, keep, stream_horizon) = if streamed {
             let s = sampler_uvi::load_streamed(path, RATE, &Default::default()).unwrap();
-            (s.loaded, Some(s.cache), Some((s.streamer, s.assets)))
-        } else { (sampler_uvi::load(path, RATE).unwrap(), None, None) };
+            // Normal streamer contract: heads cover starts, running voices need
+            // block service ahead of them. This changes no source/loop geometry.
+            let horizon = s.report.head_frames.max(sampler_core::PAGE_FRAMES)
+                .checked_add(MAX_BLOCK_FRAMES).unwrap();
+            assert!(horizon <= 2 * RATE as usize, "unexpected authored-test stream horizon");
+            let horizon = u32::try_from(horizon).unwrap();
+            (s.loaded, Some(s.cache), Some((s.streamer, s.assets)), Some(horizon))
+        } else { (sampler_uvi::load(path, RATE).unwrap(), None, None, None) };
         let limits = Limits::for_plan(&loaded.plan, 4, 4);
         let mut rt = Runtime::new(loaded.plan, limits).unwrap();
-        if let Some(cache) = cache { rt = rt.with_stream_cache(cache); }
+        if let Some(cache) = cache {
+            rt = rt.with_stream_cache(cache);
+            rt.set_stream_horizon(stream_horizon.unwrap()).unwrap();
+            // This fixture runs entirely off audio. Use the ordinary offline
+            // segment readiness after due controls, as well as boundary service.
+            rt.set_offline(true);
+        }
         let note = rt.trigger(input(), 60, VELOCITY).unwrap();
-        Self { rt, ir: loaded.instrument, note, _stream: keep }
+        Self { rt, ir: loaded.instrument, note, _stream: keep, stream_horizon }
+    }
+    fn ready(&mut self, frames: usize) {
+        if let Some(horizon) = self.stream_horizon {
+            let horizon = horizon.max(u32::try_from(frames).unwrap());
+            let now = self.rt.now();
+            // wait_streaming calls ordinary service_streaming: poll bounded
+            // completions, protect/request exact demand and wake the worker.
+            // It must return complete readiness or a real error/timeout. Never
+            // render missing pages, mute a failure or move the note clock here.
+            self.rt.wait_streaming(horizon, STREAM_WAIT).unwrap();
+            assert_eq!(self.rt.now(), now, "storage readiness must not advance the note clock");
+        }
     }
     fn render(&mut self, frames: usize) -> Vec<[f32; 2]> {
         assert!(frames <= NOTE_FRAMES + BEFORE_WRITE);
         let mut out = vec![[0.; 2]; frames];
         // Exercise normal internal segmentation; no source cursor hooks.
-        let blocks = [31, 127, 64, 13]; let mut at = 0; let mut block = 0;
+        let blocks = [31, MAX_BLOCK_FRAMES, 64, 13]; let mut at = 0; let mut block = 0;
         while at < frames {
             let end = (at + blocks[block % blocks.len()]).min(frames);
+            self.ready(end - at);
             self.rt.render(&mut out[at..end]).unwrap();
             at = end; block += 1;
         }
@@ -148,7 +176,8 @@ impl Session {
         result.unwrap()
     }
     fn close(mut self) {
-        self.rt.release(self.note).unwrap(); self.rt.render(&mut [[0.; 2]; 512]).unwrap();
+        self.rt.release(self.note).unwrap(); self.ready(512);
+        self.rt.render(&mut [[0.; 2]; 512]).unwrap();
         self.rt.flush_ended(|_| true); self.healthy();
         assert_eq!(self.rt.voice_count(), 0, "one release retires the same source");
     }
