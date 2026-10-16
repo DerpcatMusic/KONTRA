@@ -65,36 +65,49 @@ batch operations, and 96-byte parallel runs versus the prior 72-byte field
 layout. These figures are not a measured whole-plan memory saving or callback
 timing result. Final combined performance and native/editor gates remain open.
 
-## Remaining audit error and open review
+## Remaining audit error and corrected control review
 
-The control-store candidate passed all-target Clippy, 558 core tests with 11
-existing ignores, and 163 focused tests with one existing modulation-cost
-benchmark ignore. Its complete audit has one error: Kontakt filter state-family
-pairing. This does not establish candidate acceptance. Independent review found
-that ordinary non-Real WavetableForm writes lost a historical refusal and that
-the loop-remapping fixture never reached an affected boundary. Both require
-correction and causal validation; passing existing tests did not expose them.
+The initial control-store candidate passed existing checks but independent
+review found a lost ordinary non-Real WavetableForm refusal and an ineffective
+loop-remapping test. Both findings were addressed in a separately frozen patch
+and a new source review found no remaining issue. Identical public causal test
+bytes now discriminate the proper older baseline, uncorrected candidate and
+corrected source: the older baseline passes four and fails active loop remapping;
+the uncorrected candidate passes three and fails both refusal witnesses; the
+corrected candidate passes all five. The independent loop-sensitivity controls
+cross actual changed boundaries and differ from bypassed/plain playback.
 
-The previous three-error checkpoint covered the two control projections and
-Kontakt filter state pairing. The control changes are still under review.
+A first attempted uncorrected run reused the older executable from the shared
+Cargo target and is retained as INVALID evidence. The corrected identity run
+refreshes tracked input mtimes without changing bytes, requires fresh compiler
+artifacts naming the actual worktree, and checks the complete executable test
+list. No target directory or compiler wrapper override was used.
 
-All remaining sites are currently private constructor/consumer invariants;
+The corrected source3eb7067d7 passed broad all-target Clippy, 558 core tests
+with11 existing ignores, and168 focused runtime tests with one existing
+modulation-cost benchmark ignore. The complete same-policy Doctor scan has
+zero producer errors but remains FAILED with one error and11,474 warnings.
+The remaining error is Kontakt filter state-family pairing. Its private typed
+owner follow-through is not yet applied or validated. No audit rule or severity
+has been waived.
+
+The earlier three-error checkpoint covered two control projections and the
+Kontakt filter pairing. These were private constructor/consumer invariants;
 no public malformed-input crash was established for them. The macro detector
-correctly identifies their source patterns. Treating every such diagnostic as
-a demonstrated crash would be a false interpretation, while calling the
-failed report clean would also be wrong.
-
-These sites concern wavetable Real-control projection, paired control
-domain/value normalization, and Kontakt filter state-family pairing.
-Follow-up changes must retain the finite
-domain in its actual owner. Moving an assertion into an accessor, adding an
-unwrap, fabricating a fallback processor, or duplicating authoritative scalar
-state does not resolve the ownership issue.
+correctly identified source patterns. Treating every such diagnostic as a
+proved crash would be a false interpretation; calling the failed report clean
+would also be wrong. Typed ownership must remove the impossible cross-product
+without hiding an assertion in an accessor, adding a fallback processor or
+changing DSP arithmetic.
 
 The complete reports, source hashes, classifications and executable receipts
 are retained in dev-drive PluginArtifacts under
 `kontra-install-doctor-20261016-r5`. The latest complete same-policy report is
-`doctor-typed-d01/same-policy-doctor.stdout`, SHA-256
-`3186ce077b0d63c777f07058084c065d417b0b6e5721a0dc24434e3712ebd70b`.
-The successful GPU receipt is `gpu-owner09-01/receipt.json`. Candidate code is
-committed separately from the installed 0.3.503 binaries.
+`doctor-typed-d-r10-green01/same-policy-doctor.stdout`, SHA-256
+`821e0698b76e979a86242b2612a1ddb83b506089966866073c11d771f8ea9acb`.
+Causal receipts are `doctor-d-r10-causal01` and
+`doctor-d-r10-uncorrected-fresh01`; the former explicitly marks its reused
+uncorrected executable invalid. The successful GPU receipt remains
+`gpu-owner09-01/receipt.json`. Applied changes are committed separately from
+the installed0.3.503 binaries. Final combined validation, binary replacement
+and release remain pending.
