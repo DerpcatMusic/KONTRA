@@ -143,7 +143,7 @@ The observation again rendered 288,000 frames, retained one held voice, and
 reported no note end or runtime health error. Bank/helper hashes were unchanged.
 The separate compiled-chain/core join refused at its existing
 worker_chain_processor_bound; its cap was not raised. The graph remains partial,
-with5,601 unprojected model nodes and156 boundary edges, and no complete compiled
+with 5,601 unprojected model nodes and 156 boundary edges, and no complete compiled
 route or MC01/MC09 admission claim. No further actual invocation is queued.
 
 The private functional channel draft still intentionally rejects the actual
