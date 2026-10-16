@@ -1,6 +1,7 @@
 //! Same-generation snapshot admission. This operation never drains scheduled
 //! work before deciding whether the complete producer-owned batch can commit.
-use super::{ControlWrite, ScriptStateAddress, ScriptStateBuffer, ScriptStateValue};
+use super::script_state::ResolvedStateWrite;
+use super::{ControlWrite, ScriptStateAddress, ScriptStateBuffer};
 use crate::{Error, PlanId, Runtime};
 use std::sync::{
     Arc,
@@ -287,34 +288,19 @@ impl Runtime {
             .checked_add(1)
             .ok_or(R::Capacity)?;
         for entry in &state.values {
-            Self::script_state_slot(entry, &state.texts).map_err(|_| R::InvalidInput)?;
-            let old = self
-                .script_state_value(fence.plan, entry.address)
+            ResolvedStateWrite::resolve(generation, entry, &state.texts, true)
                 .map_err(|_| R::InvalidInput)?;
-            match (old, entry.value, entry.address) {
-                (
-                    ScriptStateValue::Control(_),
-                    ScriptStateValue::Control(value),
-                    ScriptStateAddress::Control(id),
-                ) => {
-                    if !self
-                        .control_definition(fence.plan, id)
-                        .map_err(|_| R::InvalidInput)?
-                        .domain
-                        .accepts(value)
-                        || overlay
-                            .native
-                            .binary_search_by_key(&id, |row| row.id)
-                            .is_ok()
-                        || overlay.menus.binary_search_by_key(&id, |row| row.control).is_ok()
-                    {
-                        return Err(R::InvalidInput);
-                    }
-                }
-                (ScriptStateValue::Cell(_), ScriptStateValue::Cell(_), _) => {}
-                (ScriptStateValue::Text(_), ScriptStateValue::Text(slot), _)
-                    if !state.texts[slot as usize].is_truncated() => {}
-                _ => return Err(R::InvalidInput),
+            if let ScriptStateAddress::Control(id) = entry.address
+                && (overlay
+                    .native
+                    .binary_search_by_key(&id, |row| row.id)
+                    .is_ok()
+                    || overlay
+                        .menus
+                        .binary_search_by_key(&id, |row| row.control)
+                        .is_ok())
+            {
+                return Err(R::InvalidInput);
             }
         }
         for row in &overlay.native {
@@ -437,50 +423,21 @@ impl Runtime {
                 .persistence_callback = Some((id, None));
         }
         let generation = self.plans.get_mut(plan.0).unwrap();
+        // The pure whole-batch preflight resolved all of these destinations.
+        // Admission ran no authored code; prior writes cannot change their
+        // domains, bank shapes, producer slots or the sparse menu roster.
         for row in &overlay.native {
-            let index = generation.prepared.control_index(row.id).unwrap();
-            generation.controls.base[index] = row.value;
-            let playing = generation.controls.playing(&generation.prepared, index);
-            generation.controls.values[index] = playing;
-            generation
-                .dsp
-                .edit_control(&generation.prepared, index, playing, self.now);
+            let write = ResolvedStateWrite::control(generation, row.id, row.value)?;
+            write.apply(generation, &overlay.state.texts, self.now);
         }
         for entry in &overlay.state.values {
-            match (entry.address, entry.value) {
-                (ScriptStateAddress::Control(id), ScriptStateValue::Control(value)) => {
-                    let index = generation.prepared.control_index(id).unwrap();
-                    generation.controls.base[index] = value;
-                    let playing = generation.controls.playing(&generation.prepared, index);
-                    generation.controls.values[index] = playing;
-                    generation
-                        .dsp
-                        .edit_control(&generation.prepared, index, playing, self.now);
-                }
-                (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
-                    let bank = &mut generation.scripts[usize::from(instance.0)];
-                    let changed = bank.cells[index as usize] != value;
-                    bank.cells[index as usize] = value;
-                    bank.mark_captured_cell(index as usize, changed);
-                }
-                (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(slot)) => {
-                    generation.scripts[usize::from(instance.0)].texts[index as usize] =
-                        overlay.state.texts[slot as usize];
-                }
-                _ => unreachable!("preflighted snapshot home"),
-            }
+            let write = ResolvedStateWrite::resolve(generation, entry, &overlay.state.texts, true)?;
+            write.apply(generation, &overlay.state.texts, self.now);
         }
-        // Preflight checked ALL ordinals before ANY writes. No incoming home can
-        // address sparse roster keys; admitted callbacks have not run yet. This
-        // second read is fenced by the same exclusive audio-owner boundary.
         for row in &overlay.menus {
-            let value = super::snapshot_menu::menu_value(generation, row)
-                .expect("preflighted immutable-at-commit menu roster");
-            let index = generation.prepared.control_index(row.control).unwrap();
-            generation.controls.base[index] = value;
-            let playing = generation.controls.playing(&generation.prepared, index);
-            generation.controls.values[index] = playing;
-            generation.dsp.edit_control(&generation.prepared, index, playing, self.now);
+            let value = super::snapshot_menu::menu_value(generation, row)?;
+            let write = ResolvedStateWrite::control(generation, row.control, value)?;
+            write.apply(generation, &overlay.state.texts, self.now);
         }
         generation.controls.revision = next_revision;
         generation.script_revision += 1;

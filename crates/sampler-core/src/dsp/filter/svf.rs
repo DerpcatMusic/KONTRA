@@ -42,7 +42,7 @@ impl StateVariableFilter {
         self,
         rate: u32,
         bindings: &mut Vec<ControlRange>,
-    ) -> Result<PreparedFilter, Error> {
+    ) -> Result<PreparedSvf, Error> {
         for hz in self.cutoff_hz.bounds() {
             for q in self.q.bounds() {
                 if rate == 0 || hz <= 0. || hz >= f64::from(rate) * 0.5 || q <= 0. {
@@ -63,12 +63,12 @@ impl StateVariableFilter {
                 }
             }
         }
-        Ok(PreparedFilter::StateVariable(PreparedSvf {
+        Ok(PreparedSvf {
             mode: self.mode,
             rate: f64::from(rate),
             cutoff: self.cutoff_hz.compile(bindings),
             q: self.q.compile(bindings),
-        }))
+        })
     }
 }
 
@@ -155,7 +155,12 @@ impl PreparedFilter {
         [("cutoff_hz", f.cutoff), ("q", f.q)]
     }
     pub fn requires_expression(self) -> bool {
-        matches!(self, Self::StateVariable(f) if f.cutoff.requires_expression() || f.q.requires_expression())
+        matches!(self, Self::StateVariable(f) if f.requires_expression())
+    }
+}
+impl PreparedSvf {
+    fn requires_expression(self) -> bool {
+        self.cutoff.requires_expression() || self.q.requires_expression()
     }
 }
 
@@ -205,10 +210,7 @@ pub(crate) struct FilterCache {
     last: Coefficients,
 }
 impl FilterCache {
-    pub fn new(filter: PreparedFilter) -> Self {
-        let PreparedFilter::StateVariable(filter) = filter else {
-            unreachable!("native filter has no SVF cache")
-        };
+    pub fn new(filter: PreparedSvf) -> Self {
         Self {
             filter,
             owner: None,
@@ -412,10 +414,13 @@ impl FilterBank {
         let mut shared = Vec::new();
         let mut per_expression = Vec::new();
         for &filter in filters {
-            if matches!(filter, PreparedFilter::NativeControl) {
-                scopes.push(Scope::NativeControl);
-                continue;
-            }
+            let filter = match filter {
+                PreparedFilter::NativeControl => {
+                    scopes.push(Scope::NativeControl);
+                    continue;
+                }
+                PreparedFilter::StateVariable(filter) => filter,
+            };
             scopes.push(if filter.requires_expression() {
                 let index = per_expression.len();
                 per_expression.push(filter);
@@ -576,7 +581,7 @@ impl FilterContext<'_> {
         let filter = cache.filter;
         if filter.cutoff.projected(parameters) || filter.q.projected(parameters) {
             // Voice offsets must neither reuse nor overwrite a sibling's coefficients.
-            let mut projected = FilterCache::new(PreparedFilter::StateVariable(filter));
+            let mut projected = FilterCache::new(filter);
             projected.process(state, block, len, parameters, at, expression);
         } else {
             cache.process(state, block, len, parameters, at, expression);

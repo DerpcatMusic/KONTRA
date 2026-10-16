@@ -278,6 +278,49 @@ pub enum Error {
     #[cfg(feature = "wgpu")]
     #[error("Buffer '{0}' is not available but used for {1}")]
     UnavailableBufferUsed(&'static str, &'static str),
+    /// A texture registered by another renderer, or unregistered too early,
+    /// has no CPU pixels available to upload.
+    #[cfg(feature = "wgpu")]
+    #[error("Image {0} has no pixels or texture override in this renderer")]
+    UnavailableImage(u64),
+    /// A recording refers to a shader this renderer has not registered.
+    #[cfg(feature = "wgpu")]
+    #[error("Shader {0} is not available in this renderer")]
+    UnavailableShader(usize),
+    /// Neither a CPU implementation nor a GPU implementation is available.
+    #[cfg(feature = "wgpu")]
+    #[error("No available implementation for shader '{0}'")]
+    MissingShaderImplementation(&'static str),
+    /// The recording uses a shader with the wrong kind of pipeline.
+    #[cfg(feature = "wgpu")]
+    #[error("Shader '{shader}' cannot be used for {operation}")]
+    InvalidShaderUse { shader: &'static str, operation: &'static str },
+    /// A dynamic recording error invalidated resident resources. Construct a new
+    /// renderer before submitting another recording; retrying cannot draw safely.
+    #[cfg(feature = "wgpu")]
+    #[error("Renderer was invalidated by a recording error; recreate the renderer")]
+    RendererInvalidated,
+    /// A CPU dispatch requests a binding kind not supported by the CPU engine.
+    #[cfg(feature = "wgpu")]
+    #[error("CPU dispatch does not support {0} bindings")]
+    UnsupportedCpuBinding(&'static str),
+    /// A debug draw requires a target supplied by the caller.
+    #[cfg(feature = "wgpu")]
+    #[error("Render target {0} is not available")]
+    UnavailableRenderTarget(u64),
+    /// An indirect CPU dispatch has no complete, aligned argument record.
+    #[cfg(feature = "wgpu")]
+    #[error("Invalid indirect dispatch arguments in '{buffer}' at byte {offset}")]
+    InvalidIndirectDispatch { buffer: &'static str, offset: u64 },
+    /// Fine rasterization requires resources from a coarse pass.
+    #[error("No coarse pass is pending for fine rasterization")]
+    MissingFinePass,
+    /// A second coarse pass would overwrite the first pass's owned resources.
+    #[error("A coarse pass is already pending fine rasterization or discard")]
+    FinePassPending,
+    /// The requested anti-aliasing shader was not enabled in the renderer.
+    #[error("Renderer has no shader for anti-aliasing mode {0:?}")]
+    UnsupportedAntialiasing(AaConfig),
     /// Failed to async map a buffer.
     /// See [`wgpu::BufferAsyncError`] for more information.
     #[cfg(feature = "wgpu")]
@@ -797,7 +840,7 @@ impl Renderer {
             let mut recording = Recording::default();
             match readback {
                 Ok(bump) if bump.failed == 0 => {
-                    render.record_fine(&self.shaders, &mut recording);
+                    render.record_fine(&self.shaders, &mut recording)?;
                     self.engine.run_recording(
                         device,
                         queue,

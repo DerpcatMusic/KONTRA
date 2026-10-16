@@ -551,22 +551,23 @@ impl Pcm {
             return Ok(());
         }
         let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
-        if let ResidencyLoader::Resident(loader)=loader {
-            let (rate,data,budget)=loader()?.into_parts()?;
-            if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
-            if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
-            if !self.residency_permitted() {return Err(Error::NotReady);}
-            self.0.frames.replace(Some(data), |_|());
-            return Ok(());
-        }
-        if let ResidencyLoader::Prepared(loader)=loader {
-            let prepared=loader()?;
-            if !self.residency_permitted() {return Err(Error::NotReady);}
-            self.publish_ranges_unlocked(prepared)?;
-            return Ok(());
-        }
-        let ResidencyLoader::Raw(loader)=loader else {unreachable!()};
-        let mut ranges = loader()?;
+        let mut ranges = match loader {
+            ResidencyLoader::Resident(loader) => {
+                let (rate,data,budget)=loader()?.into_parts()?;
+                if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+                if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+                if !self.residency_permitted() {return Err(Error::NotReady);}
+                self.0.frames.replace(Some(data), |_|());
+                return Ok(());
+            }
+            ResidencyLoader::Prepared(loader) => {
+                let prepared=loader()?;
+                if !self.residency_permitted() {return Err(Error::NotReady);}
+                self.publish_ranges_unlocked(prepared)?;
+                return Ok(());
+            }
+            ResidencyLoader::Raw(loader) => loader()?,
+        };
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }

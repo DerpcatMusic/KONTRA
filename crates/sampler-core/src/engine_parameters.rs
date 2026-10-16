@@ -215,15 +215,10 @@ impl EngineParameterLaw {
     /// Convert the normalized service range to a native DSP value. Use a law
     /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
     pub fn decode(self, value: i32) -> f64 {
-        if self == Self::WavetableForm {
-            return f64::from(value.clamp(0, 33));
-        }
-        if self == Self::SignedNormalized {
-            return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6;
-        }
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
-            Self::WavetableForm | Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm => f64::from(value.clamp(0, 33)),
+            Self::SignedNormalized => f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6,
             Self::Switch => f64::from(value != 0),
             Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
             Self::ScaledSignedCubic { scale } => scale * Self::SignedCubic.decode(value),
@@ -279,14 +274,9 @@ impl EngineParameterLaw {
     /// Convert a finite native DSP value to the normalized service range.
     /// Frontends should use normalized_value to validate authored input.
     pub fn encode(self, value: f64) -> i32 {
-        if self == Self::WavetableForm {
-            return value.round().clamp(0., 33.) as i32;
-        }
-        if self == Self::SignedNormalized {
-            return (value * 1e6).round().clamp(-1e6, 1e6) as i32;
-        }
         (match self {
-            Self::WavetableForm | Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm => return value.round().clamp(0., 33.) as i32,
+            Self::SignedNormalized => return (value * 1e6).round().clamp(-1e6, 1e6) as i32,
             Self::Switch => f64::from(value != 0.),
             Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
             Self::ScaledSignedCubic { scale } => 500_000. * ((value / scale).cbrt() + 1.),

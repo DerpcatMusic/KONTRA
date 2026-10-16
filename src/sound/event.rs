@@ -93,3 +93,84 @@ impl Event {
         }
     }
 }
+
+/// Host-pattern operation without the note-on/packet alternatives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HostAction {
+    Off(Option<f64>),
+    Choke,
+    Expression(NoteExpression),
+}
+impl HostAction {
+    pub(crate) fn at(self, pattern: HostPattern) -> Event {
+        match self {
+            Self::Off(None) => Event::NoteOff(pattern),
+            Self::Off(Some(velocity)) => Event::NoteOffVelocity(pattern, velocity),
+            Self::Choke => Event::Choke(pattern),
+            Self::Expression(value) => Event::Expression(pattern, value),
+        }
+    }
+}
+impl Event {
+    pub(crate) fn host_action(self) -> Option<(HostPattern, HostAction)> {
+        Some(match self {
+            Self::NoteOff(pattern) => (pattern, HostAction::Off(None)),
+            Self::NoteOffVelocity(pattern, velocity) => (pattern, HostAction::Off(Some(velocity))),
+            Self::Choke(pattern) => (pattern, HostAction::Choke),
+            Self::Expression(pattern, value) => (pattern, HostAction::Expression(value)),
+            Self::NoteOn { .. } | Self::Ump(_) => return None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod doctor_host_action_tests {
+    use super::*;
+    #[test]
+    fn host_actions_retarget_every_exact_axis_and_preserve_release_velocity_bits() {
+        let wildcard = HostPattern {
+            port: -1,
+            channel: -1,
+            key: -1,
+            id: -1,
+            clap: true,
+        };
+        let exact = HostPattern {
+            port: 3,
+            channel: 7,
+            key: 60,
+            id: 91,
+            clap: true,
+        };
+        for event in [
+            Event::NoteOff(wildcard),
+            Event::NoteOffVelocity(wildcard, -0.0),
+            Event::Choke(wildcard),
+            Event::Expression(wildcard, NoteExpression::Tune(-0.75)),
+        ] {
+            let (pattern, action) = event.host_action().unwrap();
+            assert_eq!(pattern, wildcard);
+            let retargeted = action.at(exact);
+            assert_eq!(retargeted.host_action().unwrap(), (exact, action));
+            if let Event::NoteOffVelocity(_, velocity) = retargeted {
+                assert_eq!(velocity.to_bits(), (-0.0_f64).to_bits());
+            }
+        }
+        assert!(Event::midi1(0x90, 60, 80).host_action().is_none());
+        assert!(
+            Event::NoteOn {
+                note: HostNote {
+                    port: 0,
+                    channel: 0,
+                    key: 60,
+                    id: 1,
+                    clap: false
+                },
+                velocity: 1.,
+                tune: 0.
+            }
+            .host_action()
+            .is_none()
+        );
+    }
+}

@@ -353,7 +353,7 @@ fn shared_svf_matches_frozen_pcm_and_state_bits() {
                     .unwrap();
                     check(
                         &[PreparedProcessor::StateVariable(0)],
-                        &[filter],
+                        &[PreparedFilter::StateVariable(filter)],
                         &parameters,
                     );
                 }

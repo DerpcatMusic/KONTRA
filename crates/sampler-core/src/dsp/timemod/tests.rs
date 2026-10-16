@@ -414,3 +414,45 @@ fn addressed_phaser_filter_exposes_cutoff_and_resonance_lanes() {
     assert_eq!(cfg.allpass, fixed.allpass);
     assert!(Config::phaser_filter(0.25, 0.5, None).lanes().is_empty());
 }
+
+/// Exercise every prepared oscillator through both the per-frame LFO and
+/// shifted voice reads, with the same scalar sample history at every partition.
+#[test]
+fn every_oscillator_preserves_voice_reads_across_partitions() {
+    let input: Vec<_> = (0..513).map(|i| [((i * 17) % 31) as f64 / 31., -((i * 7) % 23) as f64 / 23.]).collect();
+    let shapes = [
+        LfoShape::Sine, LfoShape::Triangle, LfoShape::Saw, LfoShape::Square,
+        LfoShape::Uvi { wave: UviWave::Sine, direct: false },
+    ];
+    for shape in shapes {
+        let mut l = line(&[Tap { time: DelayTime::Ms(8.), level: 1., pan: 0., depth_ms: 2. }], 15.);
+        l.voices = 3;
+        l.voice_phase = 0.75;
+        l.interpolation = Interpolation::Linear;
+        let cfg = wrap(l, Lfo { shape, rate: Rate::Hz(3.), phase: 0.2 });
+        let (expected, fault) = run(cfg, 1000, 120., &input, 64);
+        assert!(!fault);
+        for partition in [1, 3, 17, 63] {
+            let (actual, fault) = run(cfg, 1000, 120., &input, partition);
+            assert!(!fault);
+            assert_eq!(actual, expected, "{shape:?}, partition {partition}");
+        }
+    }
+}
+
+#[test]
+fn every_interpolation_keeps_integer_reads_and_ring_wrap_exact() {
+    let slab = std::array::from_fn::<_, 16, _>(|i| [i as f64, -(i as f64)]);
+    for kind in [Interpolation::Nearest, Interpolation::Floor, Interpolation::Ceil,
+        Interpolation::Linear, Interpolation::Hermite, Interpolation::Lagrange] {
+        for position in 0..16 {
+            for delay in 2..12 {
+                for channel in 0..2 {
+                    let expected = slab[(position + 16 - delay) % 16][channel];
+                    assert_eq!(read(&slab, 16, position, 16, delay as f64, kind, channel), expected);
+                    assert_eq!(read(&slab, 16, position, 0, delay as f64, kind, channel), 0.);
+                }
+            }
+        }
+    }
+}

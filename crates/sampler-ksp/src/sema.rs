@@ -901,47 +901,47 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn binary(&mut self, op: BinOp, l: &ast::Expr, r: &ast::Expr, span: Span) -> Result<Expr> {
-        if op == BinOp::Concat {
-            let mut parts = Vec::new();
-            for side in [l, r] {
-                let e = self.expr(side)?;
-                match e.kind {
-                    ExprKind::Concat(inner) if e.ty == Ty::Str => parts.extend(inner),
-                    _ => parts.push(e),
-                }
-            }
-            return Ok(Expr {
-                ty: Ty::Str,
-                span,
-                kind: ExprKind::Concat(parts),
-            });
+        enum ScalarOp {
+            Logic(Logic),
+            Compare(Comparison),
+            Arithmetic(Arith),
         }
+        let op = match op {
+            BinOp::Concat => {
+                let mut parts = Vec::new();
+                for side in [l, r] {
+                    let e = self.expr(side)?;
+                    match e.kind {
+                        ExprKind::Concat(inner) if e.ty == Ty::Str => parts.extend(inner),
+                        _ => parts.push(e),
+                    }
+                }
+                return Ok(Expr {
+                    ty: Ty::Str,
+                    span,
+                    kind: ExprKind::Concat(parts),
+                });
+            }
+            BinOp::And => ScalarOp::Logic(Logic::And),
+            BinOp::Or => ScalarOp::Logic(Logic::Or),
+            BinOp::Xor => ScalarOp::Logic(Logic::Xor),
+            BinOp::Eq => ScalarOp::Compare(Comparison::Equal),
+            BinOp::Ne => ScalarOp::Compare(Comparison::NotEqual),
+            BinOp::Lt => ScalarOp::Compare(Comparison::Less),
+            BinOp::Gt => ScalarOp::Compare(Comparison::Greater),
+            BinOp::Le => ScalarOp::Compare(Comparison::LessEqual),
+            BinOp::Ge => ScalarOp::Compare(Comparison::GreaterEqual),
+            BinOp::Add => ScalarOp::Arithmetic(Arith::Add),
+            BinOp::Sub => ScalarOp::Arithmetic(Arith::Sub),
+            BinOp::Mul => ScalarOp::Arithmetic(Arith::Mul),
+            BinOp::Div => ScalarOp::Arithmetic(Arith::Div),
+            BinOp::Mod => ScalarOp::Arithmetic(Arith::Mod),
+            BinOp::BitAnd => ScalarOp::Arithmetic(Arith::BitAnd),
+            BinOp::BitOr => ScalarOp::Arithmetic(Arith::BitOr),
+            BinOp::BitXor => ScalarOp::Arithmetic(Arith::BitXor),
+        };
         let l = self.expr(l)?;
         let r = self.expr(r)?;
-        let logic = match op {
-            BinOp::And => Some(Logic::And),
-            BinOp::Or => Some(Logic::Or),
-            BinOp::Xor => Some(Logic::Xor),
-            _ => None,
-        };
-        if let Some(logic) = logic {
-            let l = self.coerce(l, Ty::Bool)?;
-            let r = self.coerce(r, Ty::Bool)?;
-            return Ok(Expr {
-                ty: Ty::Bool,
-                span,
-                kind: ExprKind::Logic(logic, Box::new(l), Box::new(r)),
-            });
-        }
-        let comparison = match op {
-            BinOp::Eq => Some(Comparison::Equal),
-            BinOp::Ne => Some(Comparison::NotEqual),
-            BinOp::Lt => Some(Comparison::Less),
-            BinOp::Gt => Some(Comparison::Greater),
-            BinOp::Le => Some(Comparison::LessEqual),
-            BinOp::Ge => Some(Comparison::GreaterEqual),
-            _ => None,
-        };
         // Conditions compare as integers.
         let unify = |s: &Self, l: Expr, r: Expr| -> Result<(Expr, Expr)> {
             let l = if l.ty == Ty::Bool {
@@ -967,27 +967,30 @@ impl<'a> Sema<'a, '_> {
             }
             Ok((l, r))
         };
-        if let Some(comparison) = comparison {
-            let (l, r) = unify(self, l, r)?;
-            if l.ty == Ty::Str && !matches!(comparison, Comparison::Equal | Comparison::NotEqual) {
-                return fault(span, "strings compare only for equality");
-            }
-            return Ok(Expr {
-                ty: Ty::Bool,
-                span,
-                kind: ExprKind::Compare(comparison, Box::new(l), Box::new(r)),
-            });
-        }
         let arith = match op {
-            BinOp::Add => Arith::Add,
-            BinOp::Sub => Arith::Sub,
-            BinOp::Mul => Arith::Mul,
-            BinOp::Div => Arith::Div,
-            BinOp::Mod => Arith::Mod,
-            BinOp::BitAnd => Arith::BitAnd,
-            BinOp::BitOr => Arith::BitOr,
-            BinOp::BitXor => Arith::BitXor,
-            _ => unreachable!(),
+            ScalarOp::Logic(logic) => {
+                let l = self.coerce(l, Ty::Bool)?;
+                let r = self.coerce(r, Ty::Bool)?;
+                return Ok(Expr {
+                    ty: Ty::Bool,
+                    span,
+                    kind: ExprKind::Logic(logic, Box::new(l), Box::new(r)),
+                });
+            }
+            ScalarOp::Compare(comparison) => {
+                let (l, r) = unify(self, l, r)?;
+                if l.ty == Ty::Str
+                    && !matches!(comparison, Comparison::Equal | Comparison::NotEqual)
+                {
+                    return fault(span, "strings compare only for equality");
+                }
+                return Ok(Expr {
+                    ty: Ty::Bool,
+                    span,
+                    kind: ExprKind::Compare(comparison, Box::new(l), Box::new(r)),
+                });
+            }
+            ScalarOp::Arithmetic(arith) => arith,
         };
         let (l, r) = unify(self, l, r)?;
         let integer_only = !matches!(arith, Arith::Add | Arith::Sub | Arith::Mul | Arith::Div);
@@ -1118,6 +1121,17 @@ impl<'a> Sema<'a, '_> {
         fault(span, format!("undeclared variable {name}"))
     }
 
+    fn declared_var_arg(&mut self, e: &ast::Expr, array: bool) -> Result<(VarId, Span)> {
+        let A::Var(sym, None) = &e.kind else {
+            return fault(e.span, "expected a variable");
+        };
+        let var = self.lookup(*sym, e.span)?;
+        if array && self.hir.vars[var.0 as usize].len.is_none() {
+            return fault(e.span, "expected an array");
+        }
+        Ok((var, e.span))
+    }
+
     fn var_arg(&mut self, e: &ast::Expr, array: bool) -> Result<Arg> {
         let A::Var(sym, None) = &e.kind else {
             return fault(e.span, "expected a variable");
@@ -1128,11 +1142,8 @@ impl<'a> Sema<'a, '_> {
         {
             return Ok(Arg::SysArray(sys));
         }
-        let var = self.lookup(*sym, e.span)?;
-        if array && self.hir.vars[var.0 as usize].len.is_none() {
-            return fault(e.span, "expected an array");
-        }
-        Ok(Arg::Var(var, e.span))
+        let (var, span) = self.declared_var_arg(e, array)?;
+        Ok(Arg::Var(var, span))
     }
 
     fn builtin(&mut self, b: Builtin, args: &[ast::Expr], span: Span) -> Result<(Vec<Arg>, Ty)> {
@@ -1178,7 +1189,13 @@ impl<'a> Sema<'a, '_> {
                     num = Some(value.ty);
                     Arg::Expr(value)
                 }
-                K::V => self.var_arg(e, false)?,
+                K::V => {
+                    let (var, span) = self.declared_var_arg(e, false)?;
+                    if b == Builtin::GetUiId && self.hir.vars[var.0 as usize].ui.is_none() {
+                        return fault(span, "get_ui_id requires a UI control");
+                    }
+                    Arg::Var(var, span)
+                }
                 K::A => self.var_arg(e, true)?,
                 K::P => {
                     let place = self.place(e)?;
@@ -1215,14 +1232,6 @@ impl<'a> Sema<'a, '_> {
                 builtin: Some(b.name()),
                 message: "get_scale requires a declared destination array".into(),
             });
-        }
-        if b == Builtin::GetUiId {
-            let Arg::Var(v, s) = out[0] else {
-                unreachable!()
-            };
-            if self.hir.vars[v.0 as usize].ui.is_none() {
-                return fault(s, "get_ui_id requires a UI control");
-            }
         }
         if matches!(b, Builtin::Search | Builtin::Sort) && args.len() == 3 {
             return fault(span, format!("{} requires both range endpoints", b.name()));

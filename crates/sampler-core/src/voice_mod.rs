@@ -323,6 +323,13 @@ enum Prepared {
     Envelope(usize),
     /// Index into the program's breakpoint envelopes and the voice's segments.
     Breakpoints(usize),
+    Input(InputSource),
+}
+
+/// Inputs with no per-voice oscillator/envelope state. Only this type can be
+/// projected directly from a note/controller snapshot.
+#[derive(Clone, Copy)]
+enum InputSource {
     Velocity,
     Key,
     Controller(u8),
@@ -586,20 +593,20 @@ impl VoiceModulation {
                             }
                             Prepared::Breakpoints(index)
                         }
-                        ModSource::Velocity => Prepared::Velocity,
-                        ModSource::Key => Prepared::Key,
-                        ModSource::Controller(cc) if cc < 128 => Prepared::Controller(cc),
+                        ModSource::Velocity => Prepared::Input(InputSource::Velocity),
+                        ModSource::Key => Prepared::Input(InputSource::Key),
+                        ModSource::Controller(cc) if cc < 128 => Prepared::Input(InputSource::Controller(cc)),
                         ModSource::Controller(_) => return Err(Error::InvalidInput),
-                        ModSource::Pressure => Prepared::Pressure,
-                        ModSource::Timbre => Prepared::Timbre,
-                        ModSource::Random => Prepared::Random,
-                        ModSource::Constant => Prepared::Constant,
+                        ModSource::Pressure => Prepared::Input(InputSource::Pressure),
+                        ModSource::Timbre => Prepared::Input(InputSource::Timbre),
+                        ModSource::Random => Prepared::Input(InputSource::Random),
+                        ModSource::Constant => Prepared::Input(InputSource::Constant),
                         ModSource::ReleaseCounter { frames: 0 } => {
                             return Err(Error::InvalidInput);
                         }
-                        ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
-                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
-                        ModSource::PitchBend => Prepared::PitchBend,
+                        ModSource::ReleaseCounter { frames } => Prepared::Input(InputSource::ReleaseCounter(frames)),
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Input(InputSource::Script(id)),
+                        ModSource::PitchBend => Prepared::Input(InputSource::PitchBend),
                     })
                 })
                 .collect::<Result<Box<[_]>, Error>>()?;
@@ -626,7 +633,7 @@ impl VoiceModulation {
                     || (matches!(
                         route.target.compiled(),
                         Some(CompiledTarget::LoopStart | CompiledTarget::LoopLength)
-                    ) && (!matches!(sources.get(route.source), Some(Prepared::Constant))
+                    ) && (!matches!(sources.get(route.source), Some(Prepared::Input(InputSource::Constant)))
                         || route.invert
                         || route.shape.is_some()
                         || route.scale.is_some()
@@ -831,15 +838,15 @@ impl VoiceModulation {
                 cacheable: sources.iter().all(|s| {
                     matches!(
                         s,
-                        Prepared::Velocity
-                            | Prepared::Key
-                            | Prepared::Controller(_)
-                            | Prepared::Pressure
-                            | Prepared::Timbre
-                            | Prepared::Random
-                            | Prepared::Constant
-                            | Prepared::Script(_)
-                            | Prepared::PitchBend
+                        Prepared::Input(InputSource::Velocity)
+                            | Prepared::Input(InputSource::Key)
+                            | Prepared::Input(InputSource::Controller(_))
+                            | Prepared::Input(InputSource::Pressure)
+                            | Prepared::Input(InputSource::Timbre)
+                            | Prepared::Input(InputSource::Random)
+                            | Prepared::Input(InputSource::Constant)
+                            | Prepared::Input(InputSource::Script(_))
+                            | Prepared::Input(InputSource::PitchBend)
                     )
                 }) && program.routes.iter().all(|r| r.lag == 0)
                     && program.controls.is_empty(),
@@ -920,7 +927,7 @@ impl VoiceModulation {
                     })
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
-                other => other.input(inputs, seed, index),
+                Prepared::Input(input) => input.input(inputs, seed, index),
             }
         })
     }
@@ -934,8 +941,8 @@ impl VoiceModulation {
         };
         let program = &self.programs[index as usize];
         if program.routes.iter().filter(|r| r.target == ModTarget::SampleStart).any(|route| {
-            !matches!(program.sources[route.source], Prepared::Constant)
-                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Constant))
+            !matches!(program.sources[route.source], Prepared::Input(InputSource::Constant))
+                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Input(InputSource::Constant)))
         }) {
             return None;
         }
@@ -954,8 +961,8 @@ impl VoiceModulation {
         let Some(index) = self.program(region) else { return Some(0) };
         let program = &self.programs[index as usize];
         let at_start = |index: usize| match program.sources[index] {
-            Prepared::Constant => Some(1.0),
-            Prepared::Controller(cc) => controller(cc).map(|v| f64::from(v) * FULL_SCALE),
+            Prepared::Input(InputSource::Constant) => Some(1.0),
+            Prepared::Input(InputSource::Controller(cc)) => controller(cc).map(|v| f64::from(v) * FULL_SCALE),
             _ => None,
         };
         for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
@@ -985,7 +992,7 @@ impl VoiceModulation {
     }
 }
 
-impl Prepared {
+impl InputSource {
     fn input(self, inputs: &Inputs<'_>, seed: u64, index: usize) -> f64 {
         match self {
             Self::Velocity => inputs.velocity,
@@ -999,9 +1006,6 @@ impl Prepared {
             Self::Script(id) => (f64::from(inputs.script.get(id)) / 1_000_000.0).clamp(-1.0, 1.0),
             Self::ReleaseCounter(frames) => {
                 (1.0 - inputs.held as f64 / f64::from(frames)).clamp(0.0, 1.0)
-            }
-            Self::Lfo(_) | Self::Envelope(_) | Self::Breakpoints(_) => {
-                unreachable!("stateful sources")
             }
         }
     }
@@ -1723,7 +1727,7 @@ impl VoiceModState {
                 Prepared::Breakpoints(b) => f64::from(
                     self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
                 ),
-                other => other.input(inputs, seed, i),
+                Prepared::Input(input) => input.input(inputs, seed, i),
             };
             if p.cacheable || native.is_some() {
                 changed |= values[i].to_bits() != value.to_bits();
