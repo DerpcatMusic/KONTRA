@@ -181,7 +181,7 @@ impl Runtime {
         }
         let mut par = self.parallel.take().expect("checked");
         let eligible = self.plan_runs(&mut par.runs, frames, par.threads);
-        let voices: usize = par.runs.iter().map(|r| r.count).sum();
+        let voices: usize = par.runs.iter().map(|r| r.count()).sum();
         if !eligible || voices < MIN_VOICES_PER_THREAD * par.threads {
             self.parallel = Some(par);
             return false;
