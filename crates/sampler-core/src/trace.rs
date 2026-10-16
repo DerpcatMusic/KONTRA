@@ -892,7 +892,7 @@ impl TraceGraph {
                 if bus.is_some() && zone.is_none() {
                     plan.buses.trace_filter(*i)
                 } else {
-                    plan.filters[*i].trace_parameters()
+                    plan.filters.trace_parameters(*i)
                 }
                 .into_iter()
                 .map(|(n, p)| parameter(n, p))

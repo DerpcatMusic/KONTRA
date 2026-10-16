@@ -1,7 +1,7 @@
 //! Frozen 608a20a1 equations, independent of the extracted sample helpers.
 use super::*;
 use lanes::{Batch, Cells, LaneBlock, VOICES};
-use svf::{FilterBank, FilterContext, PreparedFilter};
+use svf::{FilterBank, FilterContext, FilterRegistryBuilder, PreparedFilters};
 
 fn reference(
     stages: &[PreparedProcessor],
@@ -116,7 +116,7 @@ fn bits(state: &ProcessorState) -> ([[u64; 2]; 2], [u64; 16], u32, u32, color::S
     )
 }
 
-fn check(stages: &[PreparedProcessor], filters: &[PreparedFilter], parameters: &[ControlRamp]) {
+fn check(stages: &[PreparedProcessor], filters: &PreparedFilters, parameters: &[ControlRamp]) {
     for len in [0usize, 1, 3, 4, 5, 17, BLOCK] {
         for masked in [false, true] {
             for count in [1, 3, VOICES] {
@@ -242,12 +242,12 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
         ControlRamp::test_ramp(0., 1., 0, 199),
     ];
     for gain in [-1.5, 0., 0.75] {
-        check(&[PreparedProcessor::Gain(gain)], &[], &[]);
+        check(&[PreparedProcessor::Gain(gain)], &PreparedFilters::default(), &[]);
     }
-    check(&[PreparedProcessor::ControlGain(0)], &[], &parameters);
+    check(&[PreparedProcessor::ControlGain(0)], &PreparedFilters::default(), &parameters);
     check(
         &[PreparedProcessor::StereoMatrix([[0.3, -0.7], [1.2, 0.9]])],
-        &[],
+        &PreparedFilters::default(),
         &[],
     );
     for dry in [0., 0.5, 1.] {
@@ -262,7 +262,7 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
             ..ColorSettings::IDENTITY
         }
         .compile(48000, &mut Vec::new());
-        check(&[PreparedProcessor::Color { color, offset: 0 }], &[], &parameters);
+        check(&[PreparedProcessor::Color { color, offset: 0 }], &PreparedFilters::default(), &parameters);
     }
     // Width then pan map to parameter slots 1 and 2.
     let mut bindings = vec![ControlRange {
@@ -290,7 +290,7 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
         ..ColorSettings::IDENTITY
     }
     .compile(48000, &mut bindings);
-    check(&[PreparedProcessor::Color { color, offset: 0 }], &[], &parameters);
+    check(&[PreparedProcessor::Color { color, offset: 0 }], &PreparedFilters::default(), &parameters);
     // Memoryless curves, one control-driven (lane 0) and one fixed, share a stage.
     for curve in [
         CurveSettings::Classic(Parameter::Control(ControlRange {
@@ -302,7 +302,7 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
         CurveSettings::Rectifier(Rectifier::Half),
     ] {
         let color = ColorSettings { curve, ..ColorSettings::IDENTITY }.compile(48000, &mut Vec::new());
-        check(&[PreparedProcessor::Color { color, offset: 0 }], &[], &parameters);
+        check(&[PreparedProcessor::Color { color, offset: 0 }], &PreparedFilters::default(), &parameters);
     }
     // A stateless inner stage avoids the existing shorter-voice bypass state limitation.
     check(
@@ -313,7 +313,7 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
             },
             PreparedProcessor::Gain(-0.75),
         ],
-        &[],
+        &PreparedFilters::default(),
         &parameters,
     );
 }
@@ -351,9 +351,11 @@ fn shared_svf_matches_frozen_pcm_and_state_bits() {
                     }
                     .compile(rate, &mut bindings)
                     .unwrap();
+                    let mut filters = FilterRegistryBuilder::default();
+                    let handle = filters.push_svf(filter);
                     check(
-                        &[PreparedProcessor::StateVariable(0)],
-                        &[PreparedFilter::StateVariable(filter)],
+                        &[PreparedProcessor::StateVariable(handle)],
+                        &filters.finish(),
                         &parameters,
                     );
                 }
@@ -377,10 +379,10 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
         ControlRamp::test_ramp(0., 0.8, 0, 0),
         ControlRamp::test_ramp(0., 0.25, 0, 0),
     ];
-    check(&stages, &[], &parameters);
+    check(&stages, &PreparedFilters::default(), &parameters);
     let mut states = [ProcessorState::default(); 2];
     let mut block = [[0.125; BLOCK]; 2];
-    let mut bank = FilterBank::new(&[], 0).unwrap();
+    let mut bank = FilterBank::new(&PreparedFilters::default(), 0).unwrap();
     let mut context = FilterContext {
         tempo: 120.0,
         bank: &mut bank,
@@ -431,4 +433,25 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
         reads <= 8,
         "held lane mix performed {reads} target reads for 32 frames"
     );
+}
+
+/// Native stages belonging to other chains still occupy public filter addresses.
+/// This chain's scalar and lane kernels must consume its dense SVF handles with
+/// the frozen equations, including masked tails and partial SIMD batches.
+#[test]
+fn interleaved_addressed_svf_handles_match_frozen_pcm_and_state_bits() {
+    let mut filters = FilterRegistryBuilder::default();
+    filters.push_native();
+    let first = filters.push_svf(StateVariableFilter {
+        mode: SvfMode::LowPass, cutoff_hz: Parameter::Constant(700.),
+        q: Parameter::Constant(0.7),
+    }.compile(48_000, &mut Vec::new()).unwrap());
+    filters.push_native();
+    let last = filters.push_svf(StateVariableFilter {
+        mode: SvfMode::HighPass, cutoff_hz: Parameter::Constant(2600.),
+        q: Parameter::Constant(0.9),
+    }.compile(48_000, &mut Vec::new()).unwrap());
+    assert_eq!([first.addressed(), last.addressed()], [1, 3]);
+    check(&[PreparedProcessor::StateVariable(first), PreparedProcessor::StateVariable(last)],
+        &filters.finish(), &[]);
 }
