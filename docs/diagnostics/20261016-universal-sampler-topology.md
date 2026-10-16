@@ -108,13 +108,45 @@ found 169 relevant type candidates and 198 validated locator/vtable-pointer
 relationships. Pointer runs remain candidate extents, not method names or
 runtime ownership proof. No activation, loader, target or bank code ran.
 
-UNPACER's static function frontier and REA/Ghidra 12.1.4 admitted the complete
-235-byte body at `0x140f23590` and 1,414-byte body at `0x140f28530`, with zero
-synthetic bytes in those bodies. The first copies a keygroup-state object and
-registers it through its owner. The second selects oscillator members and
-contains a real before/after stage branch. The control names and called stages
-must be joined before assigning them native parameter semantics. This is
-targeted DSP analysis, not whole-application decompilation or runtime restoration.
+UNPACER's static function frontier and REA/Ghidra 12.1.4 admitted 13 targeted
+bodies totaling 17,843 bytes, with zero synthetic bytes in the admitted ranges.
+The evidence index distinguishes actual analyzed body ranges from unwind
+metadata spans. In particular, the property declaration has a 5,630-byte unwind
+closure but only 5,613 admitted body bytes in separated ranges. Byte equality
+does not by itself prove decompiler semantics or whole-application coverage.
+
+The keygroup processing body at `0x140f28530` selects retained oscillator
+members, renders them, combines their outputs, then runs the ordered insert
+wrapper. Layout binding at `0x140f26230` considers every retained child, including
+bypassed children: one child can bind directly to the output, while multiple
+children use scratch with the selected layout. Sharing that scratch does not
+mean sharing their source clocks. The oscillator wrapper at `0x140ece100` has a
+32-frame subdivision branch and a distinct full-slice branch; the mask's
+upstream state law is still unresolved and must not be replaced by the current
+core's 64-frame cadence without an explicit format profile.
+
+The exact `FXPostGain` literal-to-property registration, constructor binding,
+getter/setter and processing branch are joined. Its native storage is bit `0x02`
+at keygroup offset `0x410`: true applies the gain-like stage before ordered
+inserts, false after them. The constructor initializes false before restoration.
+The stage's control handle, smoother and other state factors remain separately
+named facts; this does not yet establish every factor's public parameter name
+or envelope provenance. The other insert-bypass branch is not assigned a public
+name without its own registration join.
+
+The combine dispatcher reaches a distinct layout conversion helper at
+`0x141353410`. That helper uses an input-major native conversion matrix and
+normalization, then adds contributions in order. This operation is separate from
+the programmable GainMatrix insert. Four bounded static selector paths were
+reconstructed, with every instruction and table read hashed: descriptor `6→6`
+is identity; `6→2` maps inputs 1 and 5 to the first output, 2 and 6 to the second,
+drops 3 and 4, and scales by float32 `0.5773502588272095`; `2→6` retains the first
+two outputs; `1→6` targets the third output. These are descriptor-code paths,
+not permission to identify every six-channel file with descriptor 6. Actual
+negotiated layout and downstream projection still need their callsite joins.
+
+This is targeted DSP analysis, not whole-application decompilation or runtime
+restoration. No target, activation or bank code ran for this static checkpoint.
 
 The immutable M2 packet remains unapplied. It rejects the actual multi-player
 shape and does not substitute for this implementation. No new binary has been
