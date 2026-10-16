@@ -403,6 +403,13 @@ impl Prepared {
         let mut controls = self.controls.to_vec();
         let mut bindings = self.engine_parameters.to_vec();
         let mut lanes = self.envelope_controls.to_vec();
+        // Each admitted group adds exactly six definitions and bindings. Use
+        // the iterator's known minimum, bounded by the possible group count,
+        // so a normal bank batch does not repeatedly grow both schema arrays.
+        let additional = envelopes.size_hint().0.min(self.group_count as usize)
+            .checked_mul(ENVELOPE_STAGES.len()).ok_or(Error::Capacity)?;
+        controls.try_reserve(additional).map_err(|_| Error::Capacity)?;
+        bindings.try_reserve(additional).map_err(|_| Error::Capacity)?;
         lanes.resize(self.group_count as usize, [None; 6]);
         for (group, physical_group, slot, authored) in envelopes {
             if group >= self.group_count || physical_group < 0 || slot < 0 {
