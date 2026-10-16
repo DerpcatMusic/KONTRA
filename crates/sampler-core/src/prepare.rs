@@ -854,7 +854,7 @@ pub struct Prepared {
     pub(super) buses: super::bus::PreparedBuses,
     pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
     pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
-    pub(super) filters: Box<[super::dsp::svf::PreparedFilter]>,
+    pub(super) filters: super::dsp::svf::PreparedFilters,
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
     pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
@@ -1158,7 +1158,7 @@ impl Prepared {
             voice_chains: Box::new([]),
             signal_trace: None,
             dsp_bindings: Box::new([]),
-            filters: Box::new([]),
+            filters: super::dsp::svf::PreparedFilters::default(),
             dsp_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
             cursor_loops: cursor_loops.into_boxed_slice(),
@@ -1318,16 +1318,16 @@ impl Prepared {
                         super::voice_mod::CompiledTarget::ProcessorCutoff(i)
                         | super::voice_mod::CompiledTarget::ProcessorResonance(i),
                     ) => !matches!(
-                        self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))
+                        self.filters.kind(i as usize),
+                        Some(super::dsp::svf::FilterKind::StateVariable)
                     ),
                     Some(
                         super::voice_mod::CompiledTarget::ProcessorNativeCutoff(i)
                         | super::voice_mod::CompiledTarget::ProcessorNativeResonance(i)
                         | super::voice_mod::CompiledTarget::ProcessorNativeGain(i),
                     ) => !matches!(
-                        self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::NativeControl)
+                        self.filters.kind(i as usize),
+                        Some(super::dsp::svf::FilterKind::NativeControl)
                     ),
                     _ => false,
                 })
@@ -2039,7 +2039,7 @@ impl Prepared {
             region.chain = chain;
         }
         let mut parameters = Vec::new();
-        let mut filters = Vec::new();
+        let mut filters = super::dsp::svf::FilterRegistryBuilder::default();
         self.voice_chains = chains
             .into_iter()
             .map(|chain| chain.compile(self.rate, &mut parameters, &mut filters))
@@ -2052,7 +2052,7 @@ impl Prepared {
         controls.sort_unstable();
         self.dsp_controls = controls.into_boxed_slice();
         self.dsp_bindings = parameters.into_boxed_slice();
-        self.filters = filters.into_boxed_slice();
+        self.filters = filters.finish();
         self.validate_dsp_controls()?;
         Ok(self)
     }
