@@ -6,7 +6,7 @@ fn source_plan() -> Prepared {
     let pcm = (0..4096)
         .map(|i| [(i as f32 * 0.071).sin() * 0.125, (i as f32 * 0.037).cos() * -0.1])
         .collect::<Vec<_>>();
-    Prepared::new(48_000, vec![Pcm::new(48_000, pcm).unwrap()], vec![Region {
+    Prepared::new(48_000, vec![Pcm::new(48_000, pcm.into_boxed_slice()).unwrap()], vec![Region {
         sample: 0, key_low: 60, key_high: 60, root_key: None,
         velocity_low: 0., velocity_high: 1., gain: 0.75,
         envelope: Envelope::new(7, 3, 31, 0.6, 19).unwrap(),
