@@ -19,6 +19,8 @@ use std::{
 
 mod async_data;
 mod sample_loading;
+mod live_graph;
+pub use live_graph::{LiveGraphQuery, LiveGraphReceipt};
 pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource, SamplePath, SampleLoadTimings, SampleSourceTimings};
 mod sources;
 pub use sources::{ScriptOccurrence, ScriptReadError};
