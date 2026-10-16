@@ -1,20 +1,17 @@
 # Doctor remediation checkpoint
 
-The same full-policy corrected producer completed with zero producer errors
-on both the baseline and this branch. No rule or error severity was waived.
-The baseline report failed with 69 error-level findings. The complete report
-at `c28041019` failed with 11 and at `4d70b5710` with six. The latest report
-at `a263eed7a` fails with three. The typed control-store candidate at
-`19eaf9e10` produces one error, but two independent review findings block
-acceptance of that candidate.
-This is not a clean audit or final release acceptance. The latest report also
-retains 11,473 warnings and 85 informational diagnostics.
+The complete same-policy corrected producer passes its error gate at
+`c41e24dc1`: zero error findings, zero producer errors, 11,475 warnings and
+85 informational diagnostics. No rule or severity was waived. This is an
+error-gate result, not a warning-free audit, final combined validation or release
+acceptance.
 
-The reduction of 68 source patterns must not be described as 68 observed
-crashes. The audit detects macros and policy violations; it does not prove
-public reachability. Findings were separated into malformed-input defects,
-private validated invariants, and analyzer interpretation limits before
-changing their ownership or refusal boundaries.
+The historical baseline failed with 69 error-level findings. Subsequent complete
+reports recorded 11, six, three and finally one before this zero-error result.
+These 69 removed source patterns were not 69 observed crashes. Findings were
+separated into malformed-input defects, private validated invariants and
+analyzer interpretation limits before their ownership or refusal boundaries
+changed. The original failing reports remain retained.
 
 ## Executable evidence
 
@@ -65,7 +62,7 @@ batch operations, and 96-byte parallel runs versus the prior 72-byte field
 layout. These figures are not a measured whole-plan memory saving or callback
 timing result. Final combined performance and native/editor gates remain open.
 
-## Remaining audit error and corrected control review
+## Corrected control review and final Kontakt ownership
 
 The initial control-store candidate passed existing checks but independent
 review found a lost ordinary non-Real WavetableForm refusal and an ineffective
@@ -83,13 +80,12 @@ refreshes tracked input mtimes without changing bytes, requires fresh compiler
 artifacts naming the actual worktree, and checks the complete executable test
 list. No target directory or compiler wrapper override was used.
 
-The corrected source `3eb7067d7` passed broad all-target Clippy, 558 core tests
+The earlier corrected source `3eb7067d7` passed broad all-target Clippy, 558 core tests
 with 11 existing ignores, and 168 focused runtime tests with one existing
 modulation-cost benchmark ignore. The complete same-policy Doctor scan has
-zero producer errors but remains FAILED with one error and 11,474 warnings.
-The remaining error is Kontakt filter state-family pairing. Its private typed
-owner follow-through is not yet applied or validated. No audit rule or severity
-has been waived.
+zero producer errors and recorded FAILED with one error and 11,474 warnings.
+That remaining error was Kontakt filter state-family pairing. Its follow-through
+is now applied and validated below. No audit rule or severity has been waived.
 
 The earlier three-error checkpoint covered two control projections and the
 Kontakt filter pairing. These were private constructor/consumer invariants;
@@ -100,14 +96,43 @@ would also be wrong. Typed ownership must remove the impossible cross-product
 without hiding an assertion in an accessor, adding a fallback processor or
 changing DSP arithmetic.
 
-The complete reports, source hashes, classifications and executable receipts
-are retained in dev-drive PluginArtifacts under
-`kontra-install-doctor-20261016-r5`. The latest complete same-policy report is
-`doctor-typed-d-r10-green01/same-policy-doctor.stdout`, SHA-256
-`821e0698b76e979a86242b2612a1ddb83b506089966866073c11d771f8ea9acb`.
-Causal receipts are `doctor-d-r10-causal01` and
-`doctor-d-r10-uncorrected-fresh01`; the former explicitly marks its reused
-uncorrected executable invalid. The successful GPU receipt remains
-`gpu-owner09-01/receipt.json`. Applied changes are committed separately from
-the installed 0.3.503 binaries. Final combined validation, binary replacement
-and release remain pending.
+The final Kontakt correction binds the actual filter history to borrowed
+references to the current prepared kernel for one process call. Matching-family
+warm history survives prepared rate/mode/variant changes; different families use
+the original initialization. Native equations, 32-frame scheduling, vector
+expectations and stored history declarations are unchanged.
+
+The proper baseline and candidate match all 180 exact output-bit digests. The
+mixed-generation public runtime fixture compares exact PCM and semantic state
+across serial, two-thread and four-thread rendering; its all-thread callback
+allocation and free counters remain zero. Independent review found two defects
+in the added supplemental test (SVF targets used for Kontakt modulation, and
+shared allocation counters in separate concurrent tests). Both were corrected
+identically in baseline and candidate before acceptance. A test-oracle module
+path compilation failure was also retained and corrected.
+
+At `c41e24dc1`, broad all-target Clippy passes; 565 core tests pass with 11
+existing ignores, and 168 focused runtime tests pass with one existing manual
+modulation-cost benchmark ignore. The same-policy complete Doctor scan returns
+exit zero and passes its error gate. It still reports 11,475 warnings. The one
+net new warning identifies a real 1,208-byte by-value history transfer; it is a
+reviewed cost, not a false positive or a suppressed diagnostic.
+
+Stored Kontakt history measures 1,208 bytes and the transient typed owner 1,216
+bytes. A balanced 11-pair optimized-CI fixture comparison measured median
+candidate/parent process-wall and CPU ratios of 0.986 and 0.987. This bounded
+workload detected no regression; it includes preparation and test overhead and
+does not establish isolated callback deadlines or shipping-profile stack/copy
+costs. Those remain final acceptance obligations. No zero-cost claim is made.
+
+Complete reports, source hashes, classifications and executable receipts are
+retained in dev-drive PluginArtifacts under `kontra-install-doctor-20261016-r5`.
+The latest complete same-policy report is `phase-e-quality01/same-policy-doctor.stdout`,
+SHA-256 `eff973536846f1fdb270c6d2eb967cdf83658e676b30ac5b9764d8e8596b559b`.
+Exact baseline/candidate receipts are `phase-e-preservation02`; the failed first
+compile remains `phase-e-preservation01`. The bounded cost receipt is
+`phase-e-cost01`. Earlier causal receipts and the successful GPU receipt
+`gpu-owner09-01/receipt.json` remain unchanged. Applied source changes are
+committed separately from the installed 0.3.503 binaries. Final combined
+validation, VWinds six-channel body restoration, binary replacement and release
+remain pending.
