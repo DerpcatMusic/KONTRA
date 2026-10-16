@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::errors::ConnectionError;
 use x11rb::protocol::randr::{ConnectionExt as _, ModeFlag, ModeInfo};
-use x11rb::protocol::xproto::{ConnectionExt as _, EventMask, KeyPressEvent, KeyReleaseEvent};
+use x11rb::protocol::xproto::{
+    ConnectionExt as _, EventMask, KeyPressEvent, KeyReleaseEvent, NotifyMode,
+};
 use x11rb::protocol::Event as XEvent;
 use x11rb::CURRENT_TIME;
 
@@ -584,7 +586,12 @@ impl EventLoop {
                 }));
             }
 
-            XEvent::EnterNotify(event) if event.event == self.window.raw_id() => {
+            // Grab activation only simulates crossing into/out of the grab
+            // window; it did not move the cursor. Ungrab crossings are kept
+            // to reconcile the physical pointer when capture is released.
+            XEvent::EnterNotify(event)
+                if event.event == self.window.raw_id() && event.mode != NotifyMode::GRAB =>
+            {
                 self.handle_event(Event::Mouse(MouseEvent::CursorEntered));
                 // since no `MOTION_NOTIFY` event is generated when `ENTER_NOTIFY` is generated,
                 // we generate a CursorMoved as well, so the mouse position from here isn't lost
@@ -595,7 +602,9 @@ impl EventLoop {
                 }));
             }
 
-            XEvent::LeaveNotify(event) if event.event == self.window.raw_id() => {
+            XEvent::LeaveNotify(event)
+                if event.event == self.window.raw_id() && event.mode != NotifyMode::GRAB =>
+            {
                 self.handle_event(Event::Mouse(MouseEvent::CursorLeft));
             }
 
@@ -655,7 +664,13 @@ impl EventLoop {
                 }
             }
 
-            XEvent::FocusIn(event) if event.event == self.window.raw_id() => {
+            // Keyboard grab/ungrab events describe temporary device routing,
+            // not a change to XGetInputFocus. Forwarding them as deactivation
+            // cancels the MUI gesture and IME state. Normal/WhileGrabbed
+            // events still carry real focus changes, including Alt-Tab.
+            XEvent::FocusIn(event)
+                if event.event == self.window.raw_id() && !is_grab_transition(event.mode) =>
+            {
                 self.window.is_focused.set(true);
                 let config = self.window.ime_configuration.borrow().clone();
                 self.window.set_ime_configuration(config);
@@ -663,7 +678,9 @@ impl EventLoop {
                 self.handle_event(Event::Window(WindowEvent::Focused));
             }
 
-            XEvent::FocusOut(e) if e.event == self.window.raw_id() => {
+            XEvent::FocusOut(e)
+                if e.event == self.window.raw_id() && !is_grab_transition(e.mode) =>
+            {
                 self.window.is_focused.set(false);
                 let config = self.window.ime_configuration.borrow().clone();
                 self.window.set_ime_configuration(config);
@@ -806,6 +823,10 @@ fn mode_refresh_hz(mode: &ModeInfo) -> Option<f64> {
     }
     let pixels = f64::from(mode.htotal) * lines;
     (pixels > 0.0).then(|| f64::from(mode.dot_clock) / pixels)
+}
+
+fn is_grab_transition(mode: NotifyMode) -> bool {
+    matches!(mode, NotifyMode::GRAB | NotifyMode::UNGRAB)
 }
 
 fn is_auto_repeat_pair(release: &KeyReleaseEvent, press: &KeyPressEvent) -> bool {
