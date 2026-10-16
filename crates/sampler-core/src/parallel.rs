@@ -470,7 +470,7 @@ impl View<'_> {
                 &plan.prepared.voice_modulation,
                 i,
                 state,
-                &plan.controls.base,
+                plan.controls.base_reals(),
             )
         });
         let mut stretch = v

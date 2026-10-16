@@ -186,10 +186,7 @@ mod merge_tests {
 /// Consequently the second resolution has the same result for every row.
 /// No operation survives a Runtime boundary or is reused against another plan.
 pub(super) enum ResolvedStateWrite {
-    Control {
-        index: usize,
-        value: ControlValue,
-    },
+    Control(super::ControlEdit),
     Cell {
         instance: usize,
         index: usize,
@@ -207,11 +204,7 @@ impl ResolvedStateWrite {
         id: ControlId,
         value: ControlValue,
     ) -> Result<Self, Error> {
-        let index = generation.prepared.control_index(id)?;
-        if !generation.prepared.controls[index].domain.accepts(value) {
-            return Err(Error::InvalidInput);
-        }
-        Ok(Self::Control { index, value })
+        Ok(Self::Control(generation.prepared.resolve_control(id,value)?))
     }
 
     pub(super) fn resolve(
@@ -263,13 +256,9 @@ impl ResolvedStateWrite {
 
     pub(super) fn apply(self, generation: &mut crate::Generation, texts: &[Text], now: u64) {
         match self {
-            Self::Control { index, value } => {
-                generation.controls.base[index] = value;
-                let playing = generation.controls.playing(&generation.prepared, index);
-                generation.controls.values[index] = playing;
-                generation
-                    .dsp
-                    .edit_control(&generation.prepared, index, playing, now);
+            Self::Control(edit) => {
+                let (id,projection)=generation.controls.apply(&generation.prepared,edit);
+                generation.dsp.edit_control(&generation.prepared,id,projection,now);
             }
             Self::Cell {
                 instance,

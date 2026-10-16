@@ -363,3 +363,645 @@ fn phase_c_single_eligible_voice_uses_scalar_view_through_slot_reuse() {
         assert_eq!(expected.voice_count(), 0);
     }
 }
+
+// Phase D: public heterogeneous schema, authoritative homogeneous runtime cells.
+fn phase_d_definition(id: u128, domain: ControlDomain, default: ControlValue) -> ControlDefinition {
+    ControlDefinition {
+        id: ControlId(id),
+        domain,
+        default,
+    }
+}
+fn phase_d_schema() -> Vec<ControlDefinition> {
+    vec![
+        phase_d_definition(
+            10,
+            ControlDomain::Integer {
+                min: i64::MIN,
+                max: i64::MAX,
+            },
+            ControlValue::Integer(i64::MAX),
+        ),
+        phase_d_definition(
+            20,
+            ControlDomain::Real {
+                min: -f64::MAX,
+                max: f64::MAX,
+            },
+            ControlValue::Real(-0.),
+        ),
+        phase_d_definition(30, ControlDomain::Toggle, ControlValue::Toggle(true)),
+    ]
+}
+
+#[test]
+fn phase_d_all_domains_keep_bits_and_late_refusal_before_valid_snapshot_retry_without_heap() {
+    let p = source_plan().with_controls(phase_d_schema()).unwrap();
+    let mut rt = Runtime::new(p, limits()).unwrap();
+    let owner = rt.active_plan();
+    let writes = [
+        ControlWrite {
+            id: ControlId(10),
+            value: ControlValue::Integer(i64::MIN),
+        },
+        ControlWrite {
+            id: ControlId(20),
+            value: ControlValue::Real(f64::from_bits(1)),
+        },
+        ControlWrite {
+            id: ControlId(30),
+            value: ControlValue::Toggle(false),
+        },
+    ];
+    let mut snapshot = [writes[0]; 3];
+    let mut state = ScriptStateBuffer {
+        values: writes
+            .iter()
+            .map(|w| ScriptStateEntry {
+                address: ScriptStateAddress::Control(w.id),
+                value: ScriptStateValue::Control(w.value),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    support::without_heap(|| {
+        rt.capture_controls(owner, &mut snapshot).unwrap();
+        assert!(
+            matches!(snapshot[1].value,ControlValue::Real(value) if value.to_bits()==(-0.0f64).to_bits())
+        );
+        for (row, wrong) in [
+            (0, ControlValue::Real(0.)),
+            (0, ControlValue::Toggle(false)),
+            (1, ControlValue::Integer(0)),
+            (1, ControlValue::Toggle(false)),
+            (1, ControlValue::Real(f64::NAN)),
+            (1, ControlValue::Real(f64::INFINITY)),
+            (2, ControlValue::Integer(0)),
+            (2, ControlValue::Real(0.)),
+        ] {
+            let mut invalid = writes;
+            invalid[row].value = wrong;
+            assert_eq!(
+                rt.edit_controls(owner, Some(0), &invalid),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.control_revision(owner), Ok(0));
+            assert_eq!(
+                rt.control_value(owner, ControlId(10)),
+                Ok(ControlValue::Integer(i64::MAX))
+            );
+            assert!(
+                matches!(rt.control_value(owner,ControlId(20)),Ok(ControlValue::Real(v)) if v.to_bits()==(-0.0f64).to_bits())
+            );
+            assert_eq!(
+                rt.control_value(owner, ControlId(30)),
+                Ok(ControlValue::Toggle(true))
+            );
+            // The ordinary snapshot path resolves the same typed row operation.
+            state.values[row].value = ScriptStateValue::Control(wrong);
+            assert_eq!(
+                rt.restore_script_state(owner, Some(0), &mut state),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.control_revision(owner), Ok(0));
+            assert_eq!(
+                rt.control_value(owner, ControlId(10)),
+                Ok(ControlValue::Integer(i64::MAX))
+            );
+            assert!(
+                matches!(rt.control_value(owner,ControlId(20)),Ok(ControlValue::Real(v)) if v.to_bits()==(-0.0f64).to_bits())
+            );
+            assert_eq!(
+                rt.control_value(owner, ControlId(30)),
+                Ok(ControlValue::Toggle(true))
+            );
+            state.values[row].value = ScriptStateValue::Control(writes[row].value);
+        }
+        assert_eq!(
+            rt.restore_script_state(owner, Some(0), &mut state),
+            Ok((3, 1))
+        );
+        rt.capture_controls(owner, &mut snapshot).unwrap();
+        assert_eq!(snapshot, writes);
+        assert!(matches!(snapshot[1].value,ControlValue::Real(value) if value.to_bits()==1));
+        assert_eq!(rt.recall_controls(owner, Some(1), &snapshot), Ok(2));
+        assert_eq!(
+            rt.control_base_value(owner, ControlId(10)),
+            Ok(ControlValue::Integer(i64::MIN))
+        );
+    });
+}
+
+const D_DEPTH: ControlId = ControlId(100);
+const D_BYPASS: ControlId = ControlId(200);
+fn phase_d_live_schema(extra: bool) -> Vec<ControlDefinition> {
+    let mut defs = vec![
+        phase_d_definition(
+            100,
+            ControlDomain::Real { min: -1., max: 1. },
+            ControlValue::Real(0.125),
+        ),
+        phase_d_definition(
+            200,
+            ControlDomain::Real { min: 0., max: 1. },
+            ControlValue::Real(0.),
+        ),
+    ];
+    if extra {
+        defs.extend([
+            phase_d_definition(
+                25,
+                ControlDomain::Integer { min: 0, max: 10 },
+                ControlValue::Integer(9),
+            ),
+            phase_d_definition(
+                50,
+                ControlDomain::Real { min: 0., max: 1. },
+                ControlValue::Real(0.875),
+            ),
+            phase_d_definition(150, ControlDomain::Toggle, ControlValue::Toggle(true)),
+        ]);
+    }
+    defs.reverse();
+    defs
+}
+fn phase_d_live_plan(target: ModTarget, replaced: bool) -> Prepared {
+    let mut p = source_plan()
+        .with_controls(phase_d_live_schema(!replaced))
+        .unwrap()
+        .with_voice_chains(
+            vec![VoiceChain::new(vec![Processor::Gain(1.)], vec![], 0).unwrap()],
+            vec![Some(0)],
+        )
+        .unwrap()
+        .with_voice_modulation(
+            vec![ModProgram {
+                controls: vec![(0, [D_DEPTH, D_BYPASS])],
+                sources: vec![ModSource::Constant],
+                routes: vec![ModRoute::new(0, target, 0.125)],
+                ..Default::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+    if replaced {
+        // Insert another Real lane, plus non-Real lanes. Both physical and logical
+        // positions change; a second substitution uses the immediately prior map.
+        p = p.with_controls(phase_d_live_schema(true)).unwrap();
+        let reversed = p.controls().iter().rev().copied().collect();
+        p = p.with_controls(reversed).unwrap();
+    }
+    p
+}
+
+/// This additionally catches the original loop_routes remapping omission.
+#[test]
+fn phase_d_live_real_handles_follow_replacements_for_pan_and_both_loop_lanes_without_heap() {
+    for target in [ModTarget::Pan, ModTarget::LoopStart, ModTarget::LoopLength] {
+        for threads in [1, 2] {
+            let p = phase_d_live_plan(target, true);
+            let cap = Limits::for_plan(&p, 20, 20);
+            let mut actual = Runtime::new(p, cap)
+                .unwrap()
+                .with_threads(Threads::Fixed(threads));
+            let mut expected = Runtime::new(phase_d_live_plan(target, false), cap)
+                .unwrap()
+                .with_threads(Threads::Fixed(threads));
+            let mut a = [[0.; 2]; 137];
+            let mut b = a;
+            let mut nonzero = false;
+            support::without_heap(|| {
+                for id in 0..16 {
+                    actual.trigger(input(id), 60, 0.75).unwrap();
+                    expected.trigger(input(id), 60, 0.75).unwrap();
+                }
+                for round in 0..24 {
+                    if round == 6 || round == 12 || round == 18 {
+                        let w = if round == 12 {
+                            ControlWrite {
+                                id: D_BYPASS,
+                                value: ControlValue::Real(1.),
+                            }
+                        } else if round == 18 {
+                            ControlWrite {
+                                id: D_BYPASS,
+                                value: ControlValue::Real(0.),
+                            }
+                        } else {
+                            ControlWrite {
+                                id: D_DEPTH,
+                                value: ControlValue::Real(-0.25),
+                            }
+                        };
+                        actual
+                            .edit_controls(actual.active_plan(), None, &[w])
+                            .unwrap();
+                        expected
+                            .edit_controls(expected.active_plan(), None, &[w])
+                            .unwrap();
+                    }
+                    let n = [1, 7, 64, 137][round % 4];
+                    actual.render(&mut a[..n]).unwrap();
+                    expected.render(&mut b[..n]).unwrap();
+                    assert_eq!(a[..n], b[..n], "{target:?} round {round}");
+                    nonzero |= a[..n].iter().flatten().any(|v| *v != 0.);
+                }
+            });
+            assert!(nonzero);
+            assert_eq!(actual.stats().nonfinite_frames, 0);
+        }
+    }
+}
+
+fn phase_d_engine_address(group: i32) -> EngineParameterAddress {
+    EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_GAIN").unwrap(),
+        group,
+        slot: 3,
+        generic: -1,
+    }
+}
+
+/// Non-Real bindings are historically accepted by with_engine_parameters. Their
+/// offsets still advance the revision and restart the same DSP ramp, but never
+/// turn their integer/toggle values into fabricated Real values.
+#[test]
+fn phase_d_engine_offsets_preserve_non_real_admission_and_last_real_binding_law() {
+    let defs = vec![
+        phase_d_definition(
+            10,
+            ControlDomain::Integer { min: -9, max: 9 },
+            ControlValue::Integer(7),
+        ),
+        phase_d_definition(
+            20,
+            ControlDomain::Real { min: -1., max: 1. },
+            ControlValue::Real(-0.25),
+        ),
+        phase_d_definition(30, ControlDomain::Toggle, ControlValue::Toggle(true)),
+    ];
+    let bindings = vec![
+        EngineParameterBinding {
+            address: phase_d_engine_address(0),
+            control: ControlId(10),
+            law: EngineParameterLaw::Linear { low: 0., high: 1. },
+        },
+        EngineParameterBinding {
+            address: phase_d_engine_address(1),
+            control: ControlId(20),
+            law: EngineParameterLaw::Linear { low: -1., high: 1. },
+        },
+        EngineParameterBinding {
+            address: phase_d_engine_address(2),
+            control: ControlId(20),
+            law: EngineParameterLaw::SignedNormalized,
+        },
+        EngineParameterBinding {
+            address: phase_d_engine_address(3),
+            control: ControlId(30),
+            law: EngineParameterLaw::Linear { low: 0., high: 1. },
+        },
+    ];
+    let p = source_plan()
+        .with_controls(defs)
+        .unwrap()
+        .with_engine_parameters(bindings, vec![])
+        .unwrap();
+    let mut rt = Runtime::new(p, limits()).unwrap();
+    let owner = rt.active_plan();
+    let offsets = [
+        EngineParameterOffset {
+            address: phase_d_engine_address(0),
+            offset: 0.1,
+        },
+        EngineParameterOffset {
+            address: phase_d_engine_address(1),
+            offset: 0.2,
+        },
+        EngineParameterOffset {
+            address: phase_d_engine_address(2),
+            offset: -0.125,
+        },
+        EngineParameterOffset {
+            address: phase_d_engine_address(3),
+            offset: 0.3,
+        },
+    ];
+    support::without_heap(|| {
+        rt.set_engine_offsets(&offsets).unwrap();
+        assert_eq!(rt.control_revision(owner), Ok(1));
+        assert_eq!(
+            rt.control_value(owner, ControlId(10)),
+            Ok(ControlValue::Integer(7))
+        );
+        assert_eq!(
+            rt.control_value(owner, ControlId(30)),
+            Ok(ControlValue::Toggle(true))
+        );
+        let law = EngineParameterLaw::SignedNormalized;
+        let expected = law.decode(law.encode(-0.25) - 125000).clamp(-1., 1.);
+        assert_eq!(
+            rt.control_value(owner, ControlId(20)),
+            Ok(ControlValue::Real(expected))
+        );
+        assert_eq!(
+            rt.control_base_value(owner, ControlId(20)),
+            Ok(ControlValue::Real(-0.25))
+        );
+        let mut bad = offsets;
+        bad[3].offset = f32::NAN;
+        assert_eq!(rt.set_engine_offsets(&bad), Err(Error::InvalidInput));
+        assert_eq!(rt.control_revision(owner), Ok(1));
+        rt.set_engine_offsets(&[]).unwrap();
+        assert_eq!(
+            rt.control_value(owner, ControlId(20)),
+            Ok(ControlValue::Real(-0.25))
+        );
+        assert_eq!(
+            rt.control_value(owner, ControlId(10)),
+            Ok(ControlValue::Integer(7))
+        );
+        assert_eq!(
+            rt.control_value(owner, ControlId(30)),
+            Ok(ControlValue::Toggle(true))
+        );
+    });
+}
+
+fn phase_d_wave_plan(replaced: bool) -> Prepared {
+    use sampler_ir as ir;
+    let data = (0..4096)
+        .map(|i| [(i as f32 * 0.013).sin() * 0.1; 2])
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let mut zone = ir::Zone::new(ir::AssetRef(0));
+    zone.group = Some(ir::GroupRef(0));
+    zone.velocity = ir::VelocityResponse::None;
+    let instrument = ir::Instrument {
+        assets: vec![ir::Asset {
+            location: ir::AssetLocation::Path("typed-wave.wav".into()),
+            residency: Default::default(),
+            encoding: ir::Encoding::Wav,
+            root_key: None,
+            loops: vec![],
+        }],
+        groups: vec![ir::Group {
+            wavetable: Some(Wavetable::default()),
+            ..Default::default()
+        }],
+        zones: vec![zone],
+        ..Default::default()
+    };
+    let p = lower::lower(
+        &instrument,
+        48000,
+        vec![Pcm::new(48000, data).unwrap()],
+        |_, p| Ok(p),
+    )
+    .unwrap();
+    if replaced {
+        let mut defs = p.controls().to_vec();
+        defs.push(phase_d_definition(
+            1,
+            ControlDomain::Real { min: 0., max: 1. },
+            ControlValue::Real(0.9375),
+        ));
+        defs.push(phase_d_definition(
+            2,
+            ControlDomain::Toggle,
+            ControlValue::Toggle(true),
+        ));
+        defs.reverse();
+        let p = p.with_controls(defs).unwrap();
+        let defs = p.controls().iter().rev().copied().collect();
+        p.with_controls(defs).unwrap()
+    } else {
+        p
+    }
+}
+
+#[test]
+fn phase_d_wavetable_real_handles_survive_replacement_and_old_new_generations_without_heap() {
+    let p = phase_d_wave_plan(true);
+    let cap = Limits::for_plan(&p, 16, 16);
+    let (mut actual, mut ac) = Runtime::with_plan_updates(p, cap, 2, 1).unwrap();
+    let (mut expected, mut ec) =
+        Runtime::with_plan_updates(phase_d_wave_plan(false), cap, 2, 1).unwrap();
+    let wave = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_WT_POSITION").unwrap(),
+        group: 0,
+        slot: -1,
+        generic: -1,
+    };
+    // Use actual lowered addresses; the schema is public and remains unchanged.
+    let wave_a = actual
+        .engine_parameter_bindings(actual.active_plan())
+        .unwrap()
+        .iter()
+        .find(|b| b.address.parameter == wave.parameter)
+        .unwrap()
+        .address;
+    let wave_e = expected
+        .engine_parameter_bindings(expected.active_plan())
+        .unwrap()
+        .iter()
+        .find(|b| b.address.parameter == wave.parameter)
+        .unwrap()
+        .address;
+    let mut a = [[0.; 2]; 64];
+    let mut b = a;
+    support::without_heap(|| {
+        actual.trigger(input(1), 60, 1.).unwrap();
+        expected.trigger(input(1), 60, 1.).unwrap();
+        actual.set_engine_parameter(wave_a, 750000).unwrap();
+        expected.set_engine_parameter(wave_e, 750000).unwrap();
+        actual.render(&mut a).unwrap();
+        expected.render(&mut b).unwrap();
+        assert_eq!(a, b);
+    });
+    let old_a = actual.active_plan();
+    let old_e = expected.active_plan();
+    ac.submit(Box::new(phase_d_wave_plan(false))).unwrap();
+    ec.submit(Box::new(phase_d_wave_plan(true))).unwrap();
+    support::without_heap(|| {
+        actual.poll_plan_update().unwrap();
+        expected.poll_plan_update().unwrap();
+        assert_ne!(actual.active_plan(), old_a);
+        assert_ne!(expected.active_plan(), old_e);
+        actual.trigger(input(2), 60, 1.).unwrap();
+        expected.trigger(input(2), 60, 1.).unwrap();
+        for _ in 0..12 {
+            actual.render(&mut a).unwrap();
+            expected.render(&mut b).unwrap();
+            assert_eq!(a, b);
+        }
+        let ca = actual
+            .engine_parameter_bindings(old_a)
+            .unwrap()
+            .iter()
+            .find(|b| b.address == wave_a)
+            .unwrap()
+            .control;
+        let ce = expected
+            .engine_parameter_bindings(old_e)
+            .unwrap()
+            .iter()
+            .find(|b| b.address == wave_e)
+            .unwrap()
+            .control;
+        assert_eq!(
+            actual.control_value(old_a, ca),
+            expected.control_value(old_e, ce)
+        );
+        assert_eq!(
+            actual.control_value(old_a, ca),
+            Ok(ControlValue::Real(0.75))
+        );
+        actual.panic();
+        expected.panic();
+        actual.flush_ended(|_| true);
+        expected.flush_ended(|_| true);
+        actual.collect_retired_plans();
+        expected.collect_retired_plans();
+    });
+    drop(ac.retired().unwrap());
+    drop(ec.retired().unwrap());
+}
+
+#[test]
+fn phase_d_wavetable_admission_rejects_wrong_domains_missing_ids_and_inexact_real_bounds() {
+    for change in [
+        None,
+        Some((
+            ControlDomain::Integer { min: 0, max: 1 },
+            ControlValue::Integer(0),
+        )),
+        Some((ControlDomain::Toggle, ControlValue::Toggle(false))),
+        Some((
+            ControlDomain::Real { min: 0., max: 2. },
+            ControlValue::Real(0.),
+        )),
+    ] {
+        let p = phase_d_wave_plan(true);
+        let position = engine_parameter_id("ENGINE_PAR_WT_POSITION").unwrap();
+        let id = p
+            .engine_parameter_bindings()
+            .iter()
+            .find(|b| b.address.parameter == position)
+            .unwrap()
+            .control;
+        let mut defs = p.controls().to_vec();
+        if let Some((domain, default)) = change {
+            let c = defs.iter_mut().find(|c| c.id == id).unwrap();
+            c.domain = domain;
+            c.default = default;
+        } else {
+            defs.retain(|c| c.id != id);
+        }
+        assert!(matches!(p.with_controls(defs), Err(Error::InvalidInput)));
+    }
+}
+
+#[test]
+fn phase_d_host_automation_reaches_the_same_real_owner_after_schema_replacement_without_heap() {
+    let p = phase_d_live_plan(ModTarget::Pan, true)
+        .with_script_instances(vec![vec![]])
+        .unwrap()
+        .with_widgets(vec![WidgetDefinition {
+            id: D_DEPTH,
+            source_slot: 0,
+            ui_id: 1,
+            instance: ScriptInstanceId(0),
+            storage: WidgetStorage::Control(D_DEPTH),
+            drop: None,
+            menu: None,
+            program: None,
+            stage: 0,
+        }])
+        .unwrap()
+        .with_automation_bindings(vec![AutomationBinding {
+            source: AutomationSource::HostParameter(7),
+            source_slot: 0,
+            ui_id: 1,
+            low: 0.,
+            high: 1.,
+            soft_takeover: false,
+        }])
+        .unwrap();
+    let mut actual = Runtime::new(p, limits()).unwrap();
+    let mut expected = Runtime::new(phase_d_live_plan(ModTarget::Pan, false), limits()).unwrap();
+    let context = ControlContext {
+        performance: actual.performance(0).unwrap(),
+        origin: ChannelAddress {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
+    };
+    let mut a = [[0.; 2]; 128];
+    let mut b = a;
+    support::without_heap(|| {
+        actual.trigger(input(1), 60, 1.).unwrap();
+        expected.trigger(input(1), 60, 1.).unwrap();
+        actual.dispatch_host_parameter(context, 7, 0.75).unwrap();
+        expected
+            .edit_controls(
+                expected.active_plan(),
+                None,
+                &[ControlWrite {
+                    id: D_DEPTH,
+                    value: ControlValue::Real(0.5),
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            actual.control_base_value(actual.active_plan(), D_DEPTH),
+            Ok(ControlValue::Real(0.5))
+        );
+        for _ in 0..4 {
+            actual.render(&mut a).unwrap();
+            expected.render(&mut b).unwrap();
+            assert_eq!(a, b);
+        }
+    });
+}
+
+#[test]
+fn phase_d_typed_control_preparation_allocation_receipt() {
+    let mut prepared = None;
+    let preparation = support::allocated_bytes(|| {
+        let defs = (0..1024u128)
+            .map(|i| match i % 3 {
+                0 => phase_d_definition(
+                    i,
+                    ControlDomain::Integer {
+                        min: i64::MIN,
+                        max: i64::MAX,
+                    },
+                    ControlValue::Integer(i as i64),
+                ),
+                1 => phase_d_definition(
+                    i,
+                    ControlDomain::Real {
+                        min: -f64::MAX,
+                        max: f64::MAX,
+                    },
+                    ControlValue::Real(-0.),
+                ),
+                _ => phase_d_definition(i, ControlDomain::Toggle, ControlValue::Toggle(true)),
+            })
+            .collect();
+        prepared = Some(source_plan().with_controls(defs).unwrap());
+    });
+    let mut runtime = None;
+    let runtime_bytes = support::allocated_bytes(|| {
+        runtime = Some(Runtime::new(prepared.take().unwrap(), limits()).unwrap());
+    });
+    eprintln!(
+        "D 1024-control fixture requested bytes: preparation={preparation} runtime={runtime_bytes}"
+    );
+    assert!(runtime.is_some());
+}
