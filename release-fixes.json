@@ -5112,6 +5112,17 @@
       "category": "Fixed",
       "release_note": "Include the bundled assistant-font and FastLZ notices on macOS and reject missing legal inventory before composing or publishing an installer.",
       "validation": "Real Mach-O synthetic composition suite passes with missing assistant font, FastLZ, BUFFR license and provenance rejection controls; publication and packaging safety suites pass. Original Apple signing/notarization/native install/rollback gates remain mandatory. This is notice completeness, not clearance of the documented ni-file permission gap."
+    },
+    {
+      "id": "kontakt-initializer-behavior-shape",
+      "summary": "Invalidate cached Kontakt initialization when the public behavior roster or KSP language shape changes.",
+      "source_commits": [
+        "dd94552755ceeb0aee2b65b163a26d51b40cbc37"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Reinitialize changed script rosters instead of indexing stale Kontakt initializer state.",
+      "validation": "Causal appended-behavior panic reproduced before the guard; all 279 Kontakt library tests passed after it, including six behavior-shape/source-identity regressions (9 unrelated explicit ignores). Original branch Clippy stopped on older DSP debt already corrected in this release branch. Exact combined-candidate tests/Clippy and hosted shipping checks remain separate required receipts."
     }
   ]
 }
