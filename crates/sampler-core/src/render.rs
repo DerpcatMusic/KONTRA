@@ -271,12 +271,12 @@ impl Runtime {
         // audio activity. No voices or tails means no sum kernels/tiles to run.
         // Keep tracing and the one pending bus-history reset on their old path.
         // NI engine activity contract / topology B9-B10; no control-rate change.
-        if !TRACE && self.voices.count() == 0
+        if !TRACE && self.voices.count() == 0 && self.processing_owners.count() == 0
             && self.plans.slots.iter().filter_map(|s| s.value.as_ref()).all(|g| !g.dsp.buses.needs_render())
         {
             return;
         }
-        let chunked = TRACE
+        let chunked = self.processing_owners.count() != 0 || TRACE
             || self.script_params
             || self.parallel.is_some()
             || self.plans.slots.iter().any(|s| {
@@ -383,6 +383,7 @@ impl Runtime {
                     self.render_voice::<true>(word * 64 + bit, output, at);
                 }
             }
+            self.render_processing_owners(output, at);
             return;
         }
         if self.render_voices_parallel(output, at) {
@@ -429,12 +430,14 @@ impl Runtime {
         if let Some(run) = batch {
             self.render_run(run.key, &run.voices[..run.count], output, at);
         }
+        self.render_processing_owners(output, at);
     }
 
     /// Voices batch when consecutive in slot order, started, and running the
     /// same delay-free chain of the same plan over at most one block.
     pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<BatchKey> {
         let v = self.voices.slots[i].value.as_ref()?;
+        if v.processing.is_some() { return None; }
         let chain = v.chain?;
         if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting()
             || v.cursor.pending_start_runway() > 1 {
@@ -755,10 +758,15 @@ impl Runtime {
 
     #[inline]
     fn render_voice<const TRACE: bool>(&mut self, i: usize, segment: &mut [Frame], at: u64) {
+        if self.voices.slots[i].value.as_ref().is_some_and(|v| v.processing.is_some()) { return; }
+        let _ = self.render_source_voice::<TRACE>(i, segment, at, false);
+    }
+
+    pub(super) fn render_source_voice<const TRACE: bool>(
+        &mut self, i: usize, segment: &mut [Frame], at: u64, owner_capture: bool,
+    ) -> Option<usize> {
         let prelude = self.prepare_voice(i, at, segment.len());
-        let Some(prelude) = prelude.as_ref() else {
-            return;
-        };
+        let Some(prelude) = prelude.as_ref() else { return None; };
         let points = prelude.points.as_ref();
         let modulated = prelude.modulated;
         let stop = prelude.stop;
@@ -772,7 +780,8 @@ impl Runtime {
         let f = self.families.get(v.family.0).unwrap();
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
-        let gains = expression.rendered.gains;
+        let gains = if owner_capture { [1.; 2] } else { expression.rendered.gains };
+        let tap_gains = expression.rendered.gains;
         let cc = |controller: usize| {
             if TRACE {
                 ((u64::from(
@@ -809,7 +818,7 @@ impl Runtime {
         bank.modulation = filter.unwrap_or([1.0; 2]);
         bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
         let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
-        let bus = v.bus;
+        let bus = if owner_capture { None } else { v.bus };
         let target = if let Some(bus) = bus {
             plan.dsp.buses.input(bus, segment.len())
         } else {
@@ -998,7 +1007,7 @@ impl Runtime {
                     let target = plan.dsp.buses.input(bus, produced);
                     for (i, sample) in target.iter_mut().enumerate() {
                         for c in 0..2 {
-                            sample[c] += (feed[c][i] * f64::from(gains[c])) as f32;
+                            sample[c] += (feed[c][i] * f64::from(tap_gains[c])) as f32;
                         }
                     }
                     plan.dsp.buses.fed(bus, produced);
@@ -1021,6 +1030,7 @@ impl Runtime {
         } else {
             self.refresh_stream_reservation(i, stream_step);
         }
+        Some(produced)
     }
 }
 

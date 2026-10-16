@@ -524,6 +524,13 @@ pub(crate) enum CacheRef {
 }
 
 impl FilterBank {
+    pub(crate) fn clear_source_modulation(&mut self) {
+        self.modulation = [1.; 2];
+        self.modulation_program = None;
+        for (index, factors) in self.addressed_modulation.iter_mut().enumerate() {
+            *factors = if self.native[index] { [0.; 4] } else { [1., 1., 0., 0.] };
+        }
+    }
     pub(crate) fn set_addressed_modulation(
         &mut self,
         modulation: &crate::voice_mod::VoiceModulation,

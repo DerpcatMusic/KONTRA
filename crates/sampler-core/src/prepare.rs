@@ -854,6 +854,9 @@ pub struct Prepared {
     pub(super) buses: super::bus::PreparedBuses,
     pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
     pub(super) voice_chains: super::dsp::PreparedChains,
+    pub(super) processing_scopes: Box<[super::topology::PreparedScope]>,
+    pub(super) region_processing: Box<[Option<(usize, usize)>]>,
+    pub(super) processing_source_amplitude: Box<[bool]>,
     pub(super) filters: super::dsp::svf::PreparedFilters,
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
     pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
@@ -1160,6 +1163,9 @@ impl Prepared {
             buses: super::bus::PreparedBuses::default(),
             impulses: Vec::new(),
             voice_chains: super::dsp::PreparedChains::default(),
+            processing_scopes: Box::new([]),
+            region_processing: Box::new([]),
+            processing_source_amplitude: Box::new([]),
             signal_trace: None,
             dsp_bindings: Box::new([]),
             filters: super::dsp::svf::PreparedFilters::default(),
@@ -1457,6 +1463,9 @@ impl Prepared {
         self.rate
     }
 
+    pub(crate) fn region_has_amplitude(&self, region: usize) -> bool {
+        self.processing_source_amplitude.get(region).copied().unwrap_or(false)
+    }
     pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
         self.regions[region].chain
     }
@@ -1512,6 +1521,15 @@ impl Prepared {
             + stages * size_of::<crate::dsp::ProcessorState>()
             + delay * size_of::<[f64; 2]>()
             + self.voice_modulation.bytes_per_voice()
+            // Runtime always has a fixed-capacity owner arena so a retained
+            // legacy generation can adopt an incoming explicit-scope plan.
+            + size_of::<crate::Slot<crate::topology::ProcessingOwner>>()
+            + size_of::<u64>() // conservative arena free-word/claim overhead
+            + if self.processing_scopes.is_empty() { 0 } else {
+                stages * size_of::<crate::dsp::ProcessorState>()
+                    + delay * size_of::<[f64; 2]>()
+                    + 2 * size_of::<std::sync::atomic::AtomicBool>()
+            }
     }
     pub fn sample_count(&self) -> usize {
         self.pcm.len()
@@ -1900,6 +1918,15 @@ impl Prepared {
                 .voices
                 .min(self.controller_release_bound(key, trigger));
         }
+        if !self.processing_scopes.is_empty() {
+            let mut owners = [false; 256];
+            for candidate in &self.candidates[self.range(key, trigger)] {
+                if let Some((owner, _)) = self.region_processing.get(candidate.region).copied().flatten() {
+                    owners[owner] = true;
+                }
+            }
+            maximum.processing_owners = owners.iter().filter(|used| **used).count().min(maximum.voices);
+        }
         maximum
     }
 
@@ -2027,6 +2054,7 @@ impl Prepared {
         bindings: Vec<Option<usize>>,
     ) -> Result<Self, Error> {
         if bindings.len() != self.regions.len()
+            || self.processing_scopes.iter().any(|s| s.chain.is_some_and(|c| c >= chains.len()))
             || bindings
                 .iter()
                 .flatten()
@@ -2082,6 +2110,7 @@ impl Prepared {
         bindings: Vec<Option<usize>>,
     ) -> Result<Self, Error> {
         if bindings.len() != self.regions.len()
+            || self.processing_scopes.iter().any(|s| s.bus.is_some_and(|b| b >= buses.len()))
             || bindings.iter().flatten().any(|i| *i >= buses.len())
         {
             return Err(Error::InvalidInput);
@@ -2178,7 +2207,11 @@ impl Prepared {
         self.enable_signal_trace_scope(records, None)
     }
     fn enable_signal_trace_scope(&mut self, records: usize, scope: Option<crate::trace::SignalTraceScope>) -> Result<(), Error> {
-        if self.signal_trace.is_some() || records == 0 { return Err(Error::InvalidInput); }
+        if self.signal_trace.is_some() || records == 0 || !self.processing_scopes.is_empty() {
+            // The legacy trace schema has no shared-owner edge/state node.
+            // Do not emit a misleading graph; numeric owner snapshots remain available.
+            return Err(Error::InvalidInput);
+        }
         // Exact preflight is before TraceGraph::new, chain insertion, parameter
         // arrays, ring storage and (later) Runtime's per-node Recorder scratch.
         let expected = if let Some(scope) = scope {
