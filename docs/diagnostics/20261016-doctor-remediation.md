@@ -136,3 +136,23 @@ compile remains `phase-e-preservation01`. The bounded cost receipt is
 committed separately from the installed 0.3.503 binaries. Final combined
 validation, VWinds six-channel body restoration, binary replacement and release
 remain pending.
+
+PR #76 Linux CI exposed a separate synchronization error in an inherited
+diagnostic test. After filling the bounded request queue, the test treated the
+independently observed `Parked` phase as a queue-empty fence. A subsequent
+nonblocking UI edit could correctly refuse while canceled requests remained.
+The correction uses an ordinary FIFO diagnostic request, owner acknowledgement
+and command-marker drain before the second edit. Queue capacity, deadlines,
+production behavior and the existing refusal assertions are unchanged.
+
+The actual CI failure is retained under `pr76-linux-failure01`; one local
+baseline execution did not reproduce the race and is not labeled RED. At
+baseline `dd00e59a0`, with the test-only patch SHA-256
+`1582ea943d1946d6e83d744f7fc7de32cf5fcb6a11fbe2987edd2cb171c05a68`,
+all 15 threaded tests passed with eight test threads, affected all-target Clippy
+passed, and the complete same-policy Doctor scan passed with zero errors,
+zero producer errors and 11,475 warnings. The final test file SHA-256 is
+`2d35b53eecc760c5d532a31524fa33a89e3b2d81bb6d676b6027951140b11ba8`.
+Exact feature/source/artifact identities and unchanged-source checks are in
+`pr76-diagnostic-fifo01/validation01/receipt.json`. This evidence does not replace
+the new PR CI/platform checks or establish a VWinds audio fix.
