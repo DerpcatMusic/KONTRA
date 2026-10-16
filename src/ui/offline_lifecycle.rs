@@ -950,11 +950,12 @@ fn switch_probe_inner(
         || plan.steps.len() > 24
         || plan.key > 127
         || !(1..=127).contains(&plan.velocity)
-        || !(128..=96000).contains(&plan.note_frames)
+        || !(128..=if plan.uvi.is_some() {uvi::MAX_NOTE_FRAMES} else {96000})
+            .contains(&plan.note_frames)
         || plan.residency_wait_ms.is_some_and(|ms| ms == 0 || ms > 10000)
     {
         return Err(
-            "Preset-switch schema 1 requires 1..24 steps, valid MIDI key/velocity, 128..96000 note frames and optional residency_wait_ms in 1..10000",
+            "Preset-switch schema 1 requires 1..24 steps, valid MIDI key/velocity, 128..96000 note frames (explicit UVI probes: up to 288000) and optional residency_wait_ms in 1..10000",
         );
     }
     if let Some(config) = &plan.uvi {

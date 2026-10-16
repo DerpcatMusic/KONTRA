@@ -38,7 +38,7 @@ impl Config {
             || !(1..=10000).contains(&self.total_timeout_ms)
             || self.phase_timeout_ms > self.total_timeout_ms
             || !(1..=20).contains(&self.pace_ms)
-            || !(128..=96000).contains(&note_frames)
+            || !(128..=MAX_NOTE_FRAMES).contains(&note_frames)
             || self.controllers.len() > 32
             || self
                 .controllers
@@ -46,7 +46,7 @@ impl Config {
                 .any(|c| c.channel > 15 || c.cc > 127 || c.value > 127)
         {
             return Err(
-                "UVI probe requires phase/total wall limits 1..10000 ms with phase <= total, pace 1..20 ms, 128..96000 note frames and at most 32 valid explicit MIDI controllers",
+                "UVI probe requires phase/total wall limits 1..10000 ms with phase <= total, pace 1..20 ms, 128..288000 note frames and at most 32 valid explicit MIDI controllers",
             );
         }
         if self.gain_groups.len()>8 || self.gain_groups.iter().enumerate()
@@ -57,6 +57,10 @@ impl Config {
         Ok(())
     }
 }
+
+// A finite six-second observation can cross the selected Clarinet file end.
+// Wall time, output-window storage and correlation work keep their own caps.
+pub(super) const MAX_NOTE_FRAMES: usize = 288_000;
 
 // Work and memory bounds are checked with the complete plan before loading.
 const OUTPUT_WINDOW_FRAMES: usize = 96_000;
@@ -1528,5 +1532,32 @@ mod gain_readback_tests {
         for invalid in [json!([123,123]),json!([65536]),json!([0,1,2,3,4,5,6,7,8])] {
             assert!(make(invalid).validate(96000).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod held_note_bound_tests {
+    use super::*;
+
+    #[test]
+    fn six_second_uvi_observation_keeps_independent_capture_and_work_caps() {
+        let mut config: Config = serde_json::from_value(json!({
+            "phase_timeout_ms":3000,"total_timeout_ms":10000,"pace_ms":1,
+        })).unwrap();
+        assert!(config.validate(MAX_NOTE_FRAMES).is_ok());
+        assert!(config.validate(MAX_NOTE_FRAMES + 1).is_err());
+        assert!(config.validate(127).is_err());
+        let window = |start,end| OutputWindow {
+            start_frame:start,end_frame:end,output_pair:0,
+            min_lag:16,max_lag:800,max_peaks:8,
+        };
+        config.output_windows = vec![window(0,6000),window(180000,192000),
+            window(228000,240000),window(276000,288000)];
+        assert!(config.validate(MAX_NOTE_FRAMES).is_ok());
+        assert!(config.validate(96000).is_err());
+        config.output_windows = vec![window(0,96000),window(192000,288000)];
+        assert!(config.validate(MAX_NOTE_FRAMES).is_err());
+        assert_eq!(OUTPUT_WINDOW_FRAMES,96000);
+        assert_eq!(OUTPUT_WINDOW_CORRELATION_WORK,128_000_000);
     }
 }
