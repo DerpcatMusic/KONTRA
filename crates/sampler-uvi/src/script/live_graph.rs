@@ -193,16 +193,30 @@ impl ScriptHost{
         b.step(q.player_nodes.len()*players.len()+1)?;
         if players.len()!=q.player_nodes.len()||q.player_nodes.iter().any(|n|!players.contains(n)){return Err("player_membership_mismatch")}
         for n in &q.player_nodes{let i=lookup(*n,b)?;b.step(2)?;if all[&i].parent!=Some(key){return Err("player_scope_mismatch")}selected.insert(i);}
-        let mut seeds=Vec::new();
-        for &i in &selected{for collection in ["inserts","auxs","sends","connections"]{
-            for t in list(&all[&i].table,collection,b)?{let j=canonical_member(&t,i,&all,b)?;b.step(1)?;seeds.push(j);}
+        // A single deterministic hop from synthesis owners/queried players.
+        // Descendant processors can affect sound, but are deliberately unexpanded;
+        // the receipt below must never claim their inventory or routing complete.
+        b.step(selected.len())?;let base=selected.clone();
+        for &i in &base{for collection in ["inserts","auxs","sends"]{
+            for t in list(&all[&i].table,collection,b)?{
+                let j=canonical_member(&t,i,&all,b)?;b.step(1)?;selected.insert(j);
+                if selected.len()>128{return Err("selected_node_budget")}
+            }
         }}
-        while let Some(i)=seeds.pop(){
-            b.step(2)?;if !selected.insert(i){continue}if selected.len()>128{return Err("selected_node_budget")}
-            let e=all.get(&i).ok_or("collection_identity_mismatch")?;
-            for t in list(&e.table,"children",b)?{let j=canonical_member(&t,i,&all,b)?;b.step(1)?;seeds.push(j);}
-        }
         b.step(1)?;if !selected.contains(&matrix){return Err("matrix_not_on_selected_path")}
+        let selected_model_nodes=selected.len();
+        // Whole-model omissions include synthesis siblings, not merely audio
+        // processors. Counts intentionally make no claim about their relevance.
+        let unprojected_model_nodes=all.len().checked_sub(selected_model_nodes).ok_or("selection_count")?;
+        let mut unexpanded_child_edges=0usize;
+        // Count existing canonical edges only. This does not traverse a second VM
+        // graph, infer causal relevance, or count transitive descendants as edges.
+        for (&i,e) in &all{
+            b.step(3)?;
+            if !selected.contains(&i)&&e.parent.is_some_and(|p|selected.contains(&p)){
+                unexpanded_child_edges=unexpanded_child_edges.checked_add(1).ok_or("selection_count")?;
+            }
+        }
         let root_id=*ancestors.last().ok_or("ancestor_missing")?;let root=&all[&root_id].table;
         let synthetic=read::<Option<Table>>(root,"parent",b)?;
         if let Some(t)=&synthetic{
@@ -251,9 +265,13 @@ impl ScriptHost{
             rows.push(json!({"node":Json::Null,"model_index":i,"kind":"Part","synthetic":true,"fields":f}));
         }
         if rows.len()>128{return Err("selected_node_budget")}
-        let route_free=routes.is_empty();
-        Ok(json!({"schema_version":1,"status":"observed","inventory_complete":true,"complete":route_free,
-            "route_topology":{"complete":route_free,"scope":"Owner route inventory only; compiled route linkage is separate","reason":if route_free{"no_selected_owner_audio_route"}else{"compiled_route_linkage_unavailable"}},
+        let inventory_complete=unprojected_model_nodes==0&&unexpanded_child_edges==0;
+        let route_complete=inventory_complete&&routes.is_empty();
+        Ok(json!({"schema_version":1,"status":"observed","inventory_complete":inventory_complete,"complete":route_complete,
+            "selection":{"policy":"required_owner_facts_v1","required_facts_complete":true,
+                "selected_model_nodes":selected_model_nodes,"unprojected_model_nodes":unprojected_model_nodes,
+                "unexpanded_child_edges":unexpanded_child_edges},
+            "route_topology":{"complete":route_complete,"scope":"Owner route inventory only; compiled route linkage is separate","reason":if route_complete{"no_selected_owner_audio_route"}else{"compiled_route_linkage_unavailable"}},
             "query":q,"owner_time_ms":self.shared.now.get(),"nodes":rows,"matrices":matrices,"ancestors":ancestors.iter().map(|i|nodes[*i].0).collect::<Vec<_>>(),"ordered_inserts":inserts,"routes":routes,"oscillator_order":players,"fx_post_gain_support":"not_implemented; keygroup chain currently pre_amplitude","scope":"Current owner tables/getter model, not native scope or instantaneous DSP ramps"}))
     }
 }
@@ -437,6 +455,84 @@ mod tests{
             let bytes=serde_json::to_vec(&v).unwrap();assert!(bytes.len()<512);
             if let Some(expected)=&encoded{assert_eq!(&bytes,expected)}else{encoded=Some(bytes)}
         }
+    }
+
+    fn selection_fixture(inserts:&str,routes:&str,program_extra:&str)->(ScriptHost,LiveGraphQuery){
+        let xml=format!("<Program><Layers><Layer><Keygroups><Keygroup FXPostGain='1'><Inserts>{inserts}</Inserts><Oscillators><SamplePlayer/><SamplePlayer Bypass='1'/><SamplePlayer Bypass='1'/></Oscillators>{routes}</Keygroup></Keygroups></Layer></Layers>{program_extra}</Program>");
+        from_ancestry_xml(&xml)
+    }
+    fn large_descendant_fixture()->(ScriptHost,LiveGraphQuery){
+        // The former recursive selection has 8 + 9*(1+15) = 152 nodes and
+        // 10 matrices. Immediate aux insert inventory remains below32.
+        let branch=format!("<GainMatrix><Connections>{}</Connections></GainMatrix>","<SignalConnection/>".repeat(15));
+        let aux=format!("<Auxs><AuxEffect><Inserts>{}</Inserts></AuxEffect></Auxs>",branch.repeat(9));
+        selection_fixture("<GainMatrix Gain_3_1='-0.25' Gain_12_7='0.4'/>","",&aux)
+    }
+    #[test]
+    fn required_owner_facts_survive_large_unexpanded_descendants_with_exact_partial_counts(){
+        let(h,q)=large_descendant_fixture();let p:Table=h.lua.globals().raw_get("Program").unwrap();
+        let aux=list(&p,"auxs").unwrap().remove(0);let matrices=list(&aux,"inserts").unwrap();
+        assert_eq!(matrices.len(),9);assert!(8+matrices.len()*16>128);assert!(1+matrices.len()>8);
+        let calls=std::rc::Rc::new(std::cell::Cell::new(0));let seen=calls.clone();
+        let hook=h.lua.create_function(move|_,_:mlua::MultiValue|{seen.set(seen.get()+1);Ok(Value::Nil)}).unwrap();
+        let mt=h.lua.create_table().unwrap();mt.raw_set("__index",hook.clone()).unwrap();
+        for m in matrices{
+            let overlay=h.lua.create_table().unwrap();overlay.set_metatable(Some(mt.clone())).unwrap();
+            m.raw_set("__set",overlay).unwrap();m.raw_set("getParameter",hook.clone()).unwrap();
+        }
+        let v=h.observe_live_graph(&q).value;assert_eq!(v["status"],"observed");
+        assert_eq!(v["selection"]["policy"],"required_owner_facts_v1");
+        assert_eq!(v["selection"]["required_facts_complete"],true);
+        assert_eq!(v["selection"]["selected_model_nodes"],8);
+        assert_eq!(v["selection"]["unprojected_model_nodes"],144);
+        assert_eq!(v["selection"]["unexpanded_child_edges"],9);
+        assert_eq!(v["work"]["nodes"],152);assert_eq!(v["inventory_complete"],false);assert_eq!(v["complete"],false);
+        assert_eq!(v["route_topology"]["complete"],false);
+        assert_eq!(v["route_topology"]["reason"],"compiled_route_linkage_unavailable");
+        assert_eq!(v["matrices"].as_array().unwrap().len(),1);
+        assert_eq!(v["matrices"][0]["node"],q.matrix_node);
+        assert_eq!(v["matrices"][0]["cells"][0][2]["current"]["value"],-0.25);
+        assert_eq!(v["matrices"][0]["cells"][6][11]["current"]["value"],0.4);
+        let k=v["nodes"].as_array().unwrap().iter().find(|n|n["node"]==q.keygroup_node).unwrap();
+        assert_eq!(k["fields"]["FXPostGain"]["current"]["value"],true);
+        assert_eq!(k["fields"]["Bypass"]["current"]["value"],false);
+        assert_eq!(v["oscillator_order"].as_array().unwrap().len(),3);
+        assert_eq!(v["ordered_inserts"].as_array().unwrap().len(),10);assert_eq!(calls.get(),0);
+    }
+    #[test]
+    fn required_owner_facts_keep_selected_matrix_insert_and_route_refusal_caps(){
+        let inserts=format!("<GainMatrix/>{}","<Gain/>".repeat(122));
+        let(h,q)=selection_fixture(&inserts,"","");
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"selected_node_budget");
+        let(h,q)=selection_fixture(&"<GainMatrix/>".repeat(9),"","");
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"matrix_budget");
+        let inserts=format!("<GainMatrix/>{}","<Gain/>".repeat(32));
+        let(h,q)=selection_fixture(&inserts,"","");
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"insert_budget");
+        let routes=format!("<BusRouters>{}</BusRouters>","<BusRouter PreFader='1'/>".repeat(17));
+        let(h,q)=selection_fixture("<GainMatrix/>",&routes,"");
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"route_budget");
+    }
+    #[test]
+    fn required_owner_facts_validate_direct_aux_and_unexpanded_member_identity(){
+        let(h,q)=large_descendant_fixture();let p:Table=h.lua.globals().raw_get("Program").unwrap();
+        let entries:Table=p.raw_get("auxs").unwrap();let aux=list(&p,"auxs").unwrap().remove(0);
+        let copy=shallow(&h,&aux);let overlay=h.lua.create_table().unwrap();overlay.raw_set("Bypass",true).unwrap();copy.raw_set("__set",overlay).unwrap();
+        entries.raw_set(1,copy).unwrap();
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"collection_identity_mismatch");
+        let(h,q)=large_descendant_fixture();let p:Table=h.lua.globals().raw_get("Program").unwrap();
+        let aux=list(&p,"auxs").unwrap().remove(0);let m=list(&aux,"inserts").unwrap().remove(0);
+        let entries:Table=aux.raw_get("inserts").unwrap();entries.raw_set(1,shallow(&h,&m)).unwrap();
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"collection_identity_mismatch");
+    }
+    #[test]
+    fn unexpanded_descendants_still_obey_whole_graph_parent_and_work_guards(){
+        let(h,q)=large_descendant_fixture();let p:Table=h.lua.globals().raw_get("Program").unwrap();
+        let aux=list(&p,"auxs").unwrap().remove(0);let m=list(&aux,"inserts").unwrap().remove(0);
+        let c=list(&m,"connections").unwrap().remove(0);c.raw_set("parent",aux).unwrap();
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"inconsistent_parent");
+        let(h,q)=large_descendant_fixture();let mut b=Budget{steps:STEPS-32,..Default::default()};
+        assert!(matches!(h.live_graph_inner(&q,&mut b),Err("field_budget")));assert!(b.exhausted);
     }
 
 }
