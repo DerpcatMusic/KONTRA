@@ -1391,7 +1391,7 @@ mod doctor_tests {
     fn recording_refuses_missing_shader_and_implementation_without_gpu() {
         let mut engine = WgpuEngine::default();
         let mut recording = Recording::default();
-        recording.dispatch(ShaderId(0), (1, 1, 1), []);
+        recording.dispatch(ShaderId(0), (1, 1, 1), std::iter::empty::<ResourceProxy>());
         assert!(matches!(engine.validate_recording(&recording), Err(Error::UnavailableShader(0))));
         engine.shaders.push(Shader { label: "missing", wgpu: None, cpu: None });
         assert!(matches!(engine.validate_recording(&recording), Err(Error::MissingShaderImplementation("missing"))));
@@ -1532,5 +1532,251 @@ mod recording_owner_tests {
         assert_eq!(transient.indirect_workgroups(&resident, &proxy, 12).unwrap(), 11);
         assert!(matches!(transient.indirect_workgroups(&resident, &proxy, 1), Err(Error::InvalidIndirectDispatch { .. })));
         assert_eq!(resident.indirect_workgroups(&proxy, 0).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod coarse_owner_retry_tests {
+    use super::*;
+    use crate::{AaConfig, Error, RenderParams, Scene, low_level::FullShaders, render::Render};
+    use peniko::{Blob, ImageAlphaType, ImageData, kurbo::Affine};
+    use std::{collections::BTreeSet, sync::Arc};
+    use vello_encoding::Resolver;
+
+    // Only real static preflight is called. No shader executes, no device is
+    // opened, and an Ok callback is not evidence of submitted/pixel output.
+    fn cpu_shader(_: u32, _: &[CpuBinding<'_>]) {}
+
+    fn engine() -> WgpuEngine {
+        let mut engine = WgpuEngine::default();
+        engine.shaders.push(Shader {
+            label: "coarse-preflight", cpu: Some(CpuShader { shader: cpu_shader }), wgpu: None,
+        });
+        engine
+    }
+
+    fn shaders() -> FullShaders {
+        FullShaders {
+            pathtag_reduce: ShaderId(0), pathtag_reduce2: ShaderId(0),
+            pathtag_scan1: ShaderId(0), pathtag_scan: ShaderId(0), pathtag_scan_large: ShaderId(0),
+            bbox_clear: ShaderId(0), flatten: ShaderId(0), draw_reduce: ShaderId(0),
+            draw_leaf: ShaderId(0), clip_reduce: ShaderId(0), clip_leaf: ShaderId(0),
+            binning: ShaderId(0), tile_alloc: ShaderId(0), backdrop: ShaderId(0),
+            path_count_setup: ShaderId(0), path_count: ShaderId(0), coarse: ShaderId(0),
+            path_tiling_setup: ShaderId(0), path_tiling: ShaderId(0),
+            fine_area: Some(ShaderId(0)), fine_msaa8: None, fine_msaa16: None,
+            pathtag_is_cpu: true,
+        }
+    }
+
+    fn params() -> RenderParams {
+        RenderParams {
+            base_color: peniko::Color::BLACK, width: 8, height: 8,
+            antialiasing_method: AaConfig::Area,
+        }
+    }
+
+    fn image(width: u32, height: u32, foreign: bool) -> ImageData {
+        ImageData {
+            data: Blob::new(Arc::new(if foreign { Vec::new() } else { vec![255; (width * height * 4) as usize] })),
+            format: peniko::ImageFormat::Rgba8, alpha_type: ImageAlphaType::Alpha,
+            width, height,
+        }
+    }
+
+    fn scene(images: &[&ImageData]) -> Scene {
+        let mut scene = Scene::new();
+        for image in images { scene.draw_image(*image, Affine::IDENTITY); }
+        scene
+    }
+
+    struct Attempt {
+        result: Result<()>,
+        uploads: BTreeSet<u64>,
+        write_targets: BTreeSet<u64>,
+        frees: Vec<u64>,
+        prepared_atlas: ImageProxy,
+        committed_atlas: Option<ImageProxy>,
+    }
+
+    fn attempt(
+        resolver: &mut Resolver,
+        atlas: &mut Option<ImageProxy>,
+        engine: &WgpuEngine,
+        scene: &Scene,
+    ) -> Attempt {
+        let previous_atlas = *atlas;
+        let mut render = Render::new();
+        #[cfg(feature = "debug_layers")]
+        { render.capture_debug = false; }
+        let recording = render.render_encoding_coarse(
+            scene.encoding(), resolver, &shaders(), atlas, &params(), true,
+        ).unwrap();
+        let prepared_atlas = atlas.expect("image scene prepares an atlas proxy");
+        let uploads = recording.commands.iter().filter_map(|command| match command {
+            Command::WriteImage(_, _, image) => Some(image.data.id()), _ => None,
+        }).collect();
+        let write_targets = recording.commands.iter().filter_map(|command| match command {
+            Command::WriteImage(proxy, _, _) => Some(proxy.id.0.get()), _ => None,
+        }).collect();
+        let frees = recording.commands.iter().filter_map(|command| match command {
+            Command::FreeImage(proxy) => Some(proxy.id.0.get()), _ => None,
+        }).collect();
+        // This is the same owner completion helper used by public Renderer.
+        // The callback is its actual engine static preflight, without execution.
+        let result = crate::render::submit_coarse_recording(
+            resolver, atlas, previous_atlas, &recording,
+            || engine.validate_recording(&recording),
+        );
+        Attempt { result, uploads, write_targets, frees, prepared_atlas, committed_atlas: *atlas }
+    }
+
+    fn atlas_id(atlas: Option<ImageProxy>) -> Option<u64> {
+        atlas.map(|proxy| proxy.id.0.get())
+    }
+
+    fn unavailable(attempt: &Attempt, image: &ImageData) {
+        assert!(matches!(&attempt.result, Err(Error::UnavailableImage(id)) if *id == image.data.id()),
+            "expected repeated ownership refusal, got {:?}", attempt.result);
+    }
+
+    fn static_engine_untouched(engine: &WgpuEngine) {
+        assert!(!engine.invalidated);
+        assert!(engine.bind_map.buf_map.is_empty());
+        assert!(engine.bind_map.image_map.is_empty());
+        assert!(engine.pool.bufs.is_empty());
+        assert!(engine.pool.images.is_empty());
+        assert!(engine.pool.spare_images.is_empty());
+        assert!(engine.bind_groups.map.is_empty());
+        assert!(engine.downloads.is_empty());
+    }
+
+    #[test]
+    fn foreign_image_refuses_both_attempts_through_one_persistent_resolver() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let engine = engine();
+        let foreign = image(4, 4, true);
+        let scene = scene(&[&foreign]);
+        // Generate BOTH attempts before assertions: the old owner behavior
+        // yields no WriteImage and apparent success on the second attempt.
+        let attempts: Vec<_> = (0..2).map(|_| attempt(&mut resolver, &mut atlas, &engine, &scene)).collect();
+        for result in &attempts { unavailable(result, &foreign); }
+        for result in &attempts {
+            assert_eq!(result.uploads, BTreeSet::from([foreign.data.id()]));
+            assert_eq!(result.write_targets, BTreeSet::from([result.prepared_atlas.id.0.get()]));
+            assert!(result.frees.is_empty());
+            assert!(result.committed_atlas.is_none());
+        }
+        assert_ne!(attempts[0].prepared_atlas.id.0.get(), attempts[1].prepared_atlas.id.0.get());
+        assert!(atlas.is_none());
+        static_engine_untouched(&engine);
+    }
+
+    #[test]
+    fn mixed_refusal_redirties_valid_uploads_on_both_sides_of_foreign_image() {
+        for foreign_first in [false, true] {
+            let mut resolver = Resolver::new();
+            let mut atlas = None;
+            let engine = engine();
+            let valid = image(2, 2, false);
+            let foreign = image(4, 4, true);
+            let mixed = if foreign_first { scene(&[&foreign, &valid]) } else { scene(&[&valid, &foreign]) };
+            let rejected = attempt(&mut resolver, &mut atlas, &engine, &mixed);
+            let valid_only = scene(&[&valid]);
+            let retry = attempt(&mut resolver, &mut atlas, &engine, &valid_only);
+            unavailable(&rejected, &foreign);
+            assert_eq!(rejected.uploads, BTreeSet::from([valid.data.id(), foreign.data.id()]));
+            assert!(retry.result.is_ok());
+            assert_eq!(retry.uploads, BTreeSet::from([valid.data.id()]));
+            assert!(rejected.committed_atlas.is_none());
+            assert_ne!(retry.prepared_atlas.id.0.get(), rejected.prepared_atlas.id.0.get());
+            assert_eq!(retry.write_targets, BTreeSet::from([retry.prepared_atlas.id.0.get()]));
+            assert!(retry.frees.is_empty());
+            let accepted_id = atlas_id(atlas);
+            let clean = attempt(&mut resolver, &mut atlas, &engine, &valid_only);
+            assert!(clean.result.is_ok());
+            assert!(clean.uploads.is_empty());
+            assert_eq!(atlas_id(atlas), accepted_id);
+            static_engine_untouched(&engine);
+        }
+    }
+
+    #[test]
+    fn refused_resize_restores_old_atlas_and_retries_its_free_and_all_surviving_uploads() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let engine = engine();
+        let resident = image(2, 2, false);
+        assert!(attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident])).result.is_ok());
+        let old = atlas.unwrap();
+        let valid = image(3, 3, false);
+        // The cached allocator must grow. The foreign Blob stays empty, so
+        // constructing this fixture needs no large image-pixel allocation.
+        let foreign = image(old.width + 1, 1, true);
+        let mixed = scene(&[&resident, &valid, &foreign]);
+        let attempts: Vec<_> = (0..2).map(|_| attempt(&mut resolver, &mut atlas, &engine, &mixed)).collect();
+        for rejected in &attempts { unavailable(rejected, &foreign); }
+        for rejected in &attempts {
+            assert!(rejected.prepared_atlas.width > old.width);
+            assert_eq!(atlas_id(rejected.committed_atlas), Some(old.id.0.get()));
+            assert_eq!(rejected.frees, [old.id.0.get()]);
+            assert_eq!(rejected.uploads, BTreeSet::from([resident.data.id(), valid.data.id(), foreign.data.id()]));
+        }
+        assert_eq!(atlas_id(atlas), Some(old.id.0.get()));
+        let retry = attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident, &valid]));
+        assert!(retry.result.is_ok());
+        assert!(retry.prepared_atlas.width > old.width);
+        assert_eq!(retry.frees, [old.id.0.get()]);
+        assert_eq!(retry.uploads, BTreeSet::from([resident.data.id(), valid.data.id()]));
+        assert_eq!(retry.write_targets, BTreeSet::from([retry.prepared_atlas.id.0.get()]));
+        for rejected in &attempts { assert_ne!(retry.prepared_atlas.id.0.get(), rejected.prepared_atlas.id.0.get()); }
+        assert_eq!(atlas_id(atlas), Some(retry.prepared_atlas.id.0.get()));
+        static_engine_untouched(&engine);
+    }
+
+    #[test]
+    fn refused_reused_atlas_preserves_resident_atlas_and_requeues_new_uploads() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let engine = engine();
+        let resident = image(2, 2, false);
+        assert!(attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident])).result.is_ok());
+        let old = atlas.unwrap();
+        let valid = image(3, 3, false);
+        let foreign = image(4, 4, true);
+        let rejected = attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident, &valid, &foreign]));
+        unavailable(&rejected, &foreign);
+        assert_eq!(rejected.prepared_atlas.id.0.get(), old.id.0.get());
+        assert!(rejected.frees.is_empty());
+        assert_eq!(rejected.uploads, BTreeSet::from([valid.data.id(), foreign.data.id()]));
+        let retry = attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident, &valid]));
+        assert!(retry.result.is_ok());
+        assert_eq!(retry.prepared_atlas.id.0.get(), old.id.0.get());
+        assert!(retry.frees.is_empty());
+        assert_eq!(retry.uploads, BTreeSet::from([valid.data.id()]));
+        static_engine_untouched(&engine);
+    }
+
+    #[test]
+    fn allocation_refusal_after_resolve_restores_unsubmitted_uploads_before_retry() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let valid = image(2, 2, false);
+        let scene = scene(&[&valid]);
+        let mut render = Render::new();
+        render.buffer_limit = 0;
+        let result = render.render_encoding_coarse(
+            scene.encoding(), &mut resolver, &shaders(), &mut atlas, &params(), true,
+        );
+        assert!(matches!(result, Err(Error::AllocationLimit(_, _, _))));
+        let restored = atlas.is_none();
+        let engine = engine();
+        let retry = attempt(&mut resolver, &mut atlas, &engine, &scene);
+        assert!(retry.result.is_ok());
+        assert_eq!(retry.uploads, BTreeSet::from([valid.data.id()]));
+        assert!(restored);
+        assert!(retry.frees.is_empty());
+        static_engine_untouched(&engine);
     }
 }

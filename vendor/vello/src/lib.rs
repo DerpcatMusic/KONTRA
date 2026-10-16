@@ -612,7 +612,8 @@ impl Renderer {
     /// Register a [`wgpu::Texture`] with Vello, to allow drawing GPU-resident data.
     ///
     /// The returned `Image` can be used in [`Scene`]s (only those rendered with this `Renderer`)
-    /// Rendering Scenes which use this `Image` with other `Renderer`s will panic.
+    /// Rendering scenes which use this image with another renderer returns
+    /// [`Error::UnavailableImage`], including on repeated attempts.
     ///  
     /// `texture` must have the [`wgpu::TextureFormat::Rgba8Unorm`] format and
     /// the [`wgpu::TextureUsages::COPY_SRC`] flag set. This is because the data will
@@ -792,6 +793,7 @@ impl Renderer {
             render.buffer_limit = limits
                 .max_buffer_size
                 .min(u64::from(limits.max_storage_buffer_binding_size));
+            let previous_atlas = self.image_atlas;
             let recording = render.render_encoding_coarse(
                 scene.encoding(),
                 &mut self.resolver,
@@ -804,14 +806,23 @@ impl Renderer {
             let bump_proxy = render.bump_buf();
             #[cfg(feature = "debug_layers")]
             let captured = render.take_captured_buffers();
-            self.engine.run_recording(
-                device,
-                queue,
+            let engine = &mut self.engine;
+            #[cfg(feature = "wgpu-profiler")]
+            let profiler = &mut self.profiler;
+            render::submit_coarse_recording(
+                &mut self.resolver,
+                &mut self.image_atlas,
+                previous_atlas,
                 &recording,
-                &[],
-                "checked_coarse",
-                #[cfg(feature = "wgpu-profiler")]
-                &mut self.profiler,
+                || engine.run_recording(
+                    device,
+                    queue,
+                    &recording,
+                    &[],
+                    "checked_coarse",
+                    #[cfg(feature = "wgpu-profiler")]
+                    profiler,
+                ),
             )?;
             let readback = async {
                 let buffer = self
