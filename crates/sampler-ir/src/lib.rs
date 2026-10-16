@@ -249,6 +249,11 @@ pub struct SourceIndices {
     /// Presence is explicit: an empty stored PlaybackOptions suppresses inheritance.
     #[cfg_attr(feature = "cache", serde(default))]
     pub file_playback_zones: Vec<ZoneRef>,
+    /// One logical six-channel source, stored as three ordinary stereo assets.
+    /// Empty in legacy translations. These dependencies must survive narrowing;
+    /// their presence never authorizes a consumer to fall back to the first pack.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_bundles: Vec<SourceBundle>,
     pub modulators: Vec<SourceModulator>,
     /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
     pub ahdsrs: Vec<SourceAhdsr>,
@@ -309,6 +314,62 @@ pub struct ZoneRouteVariant {
 pub struct SourceSampleTarget {
     pub node: u32,
     pub zones: Vec<ZoneRef>,
+}
+
+/// Initial storage recipe for ONE source/zone, not three selectable voices.
+/// Pack order is fixed: input channels (1,2), (3,4), (5,6). Geometry applies
+/// identically to all packs; source pitch and Playback remain on the zone.
+/// This semantic record does not assert native oscillator grouping or width.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceBundle {
+    pub zone: ZoneRef,
+    pub packs: [AssetRef; 3],
+    pub geometry: SourceBundleGeometry,
+    /// Original logical player/resource identities, independent of asset compaction.
+    pub player: u32,
+    pub logical_asset: u32,
+    /// Immutable resource identity. No PCM, URI or decoder state is retained here.
+    pub origin: [u8; 32],
+    pub boundary: SourceMatrixBoundary,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceBundleGeometry {
+    pub rate: u32,
+    pub frames: u64,
+}
+
+/// Authored position of the first width-reducing matrix. Coordinates and control
+/// identities remain explicit so deleting a prefix cannot renumber later slots.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceMatrixBoundary {
+    pub node: u32,
+    pub chain: ChainRef,
+    pub section: SourceBoundarySection,
+    pub index: usize,
+    /// Twelve independent signed cells. Coordinates are zero-based; XML's
+    /// Gain_i_j has input i and output j, not row-major XML field order.
+    pub cells: [SourceMatrixCell; 12],
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceBoundarySection {
+    BeforeAmplitude,
+    AfterAmplitude,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceMatrixCell {
+    pub input: u8,
+    pub output: u8,
+    pub coefficient: f64,
+    pub control: Option<ControlRef>,
+    pub ramp: Time,
 }
 
 /// What a Kontakt external route record says about its law: the native target
@@ -964,10 +1025,26 @@ impl Instrument {
         self.source_indices.sample_targets.retain(|t| !t.zones.is_empty());
         self.source_indices.file_playback_zones=self.source_indices.file_playback_zones.iter()
             .filter_map(|z|remap[z.0]).collect();
+        // Malformed public recipes remain malformed for validate(); never turn
+        // a dangling owner into a silently removed wide-source declaration.
+        self.source_indices.source_bundles.retain_mut(|bundle| {
+            match remap.get(bundle.zone.0) {
+                Some(Some(zone)) => { bundle.zone = *zone; true }
+                Some(None) => false,
+                None => true,
+            }
+        });
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
             if let Some(used) = zone.asset.and_then(|a| used.get_mut(a.0)) {
                 *used = true;
+            }
+        }
+        for bundle in &self.source_indices.source_bundles {
+            for asset in bundle.packs {
+                if let Some(used) = used.get_mut(asset.0) {
+                    *used = true;
+                }
             }
         }
         let kept: Vec<usize> = (0..self.assets.len()).filter(|&i| used[i]).collect();
@@ -987,6 +1064,15 @@ impl Instrument {
                     .copied()
                     .unwrap_or(asset.0),
             ));
+        }
+        for bundle in &mut self.source_indices.source_bundles {
+            for asset in &mut bundle.packs {
+                // Every valid dependency was marked above; dangling refs stay
+                // outside the compacted table and fail structural validation.
+                if let Some(index) = renumbered.get(asset.0) {
+                    *asset = AssetRef(*index);
+                }
+            }
         }
         kept
     }
