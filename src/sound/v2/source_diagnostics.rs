@@ -31,6 +31,29 @@ fn wavetable_bindings(
     (selected, total)
 }
 
+// This cap counts inspected registry entries across ALL repeated lookups,
+// plus the prepared-binding scan. Candidate limit64 is a separate bound.
+const GRAPH_REGISTRY_WORK: usize = 262_144;
+struct GraphRegistryBudget { entries:usize, remaining:usize, scanned:usize, calls:usize, planned_calls:usize }
+impl GraphRegistryBudget {
+    fn preflight(hint:(usize,Option<usize>),calls:usize,bindings:usize)->Result<Self,&'static str>{
+        if calls>11{return Err("live_graph_registry_scan_bound")}
+        let(lower,upper)=hint;
+        let entries=upper.filter(|&n|n==lower).ok_or("live_graph_registry_size_unavailable")?;
+        let reserved=entries.checked_mul(calls).and_then(|n|n.checked_add(bindings))
+            .ok_or("live_graph_registry_scan_bound")?;
+        if reserved>GRAPH_REGISTRY_WORK{return Err("live_graph_registry_scan_bound")}
+        Ok(Self{entries,remaining:GRAPH_REGISTRY_WORK-bindings,scanned:0,calls:0,planned_calls:calls})
+    }
+    fn scan<T>(&mut self,read:impl FnOnce()->T)->Result<T,&'static str>{
+        if self.calls>=self.planned_calls{return Err("live_graph_registry_scan_bound")}
+        self.remaining=self.remaining.checked_sub(self.entries).ok_or("live_graph_registry_scan_bound")?;
+        self.scanned=self.scanned.checked_add(self.entries).ok_or("live_graph_registry_scan_bound")?;
+        self.calls+=1;
+        Ok(read())
+    }
+}
+
 impl V2Core {
     /// Off-audio pure actual target/voice/control reads. No worker or source service.
     pub(crate) fn diagnostic_live_graph_runtime(
@@ -51,11 +74,16 @@ impl V2Core {
         let plan=part.runtime.active_plan();
         let bindings=part.runtime.engine_parameter_bindings(plan).map_err(|_|"live_graph_stale_plan")?;
         if bindings.len()>262144 { return Err("live_graph_binding_scan_bound"); }
+        // values() is the existing region registry iterator; require its exact
+        // size hint before asset_regions walks it. &self keeps this registry
+        // immutable throughout these reads. Reserve the worst case3+8 scans.
+        let mut registry=GraphRegistryBudget::preflight(
+            part.waveform_sources.values().size_hint(),players.len()+8,bindings.len())?;
         let mut targets=Vec::new();
         for &node in players {
             let row=match part.runtime.sample_target_asset(sampler_core::SampleTargetId(node)) {
                 Ok(pcm)=> {
-                    let(regions,count)=part.waveform_sources.asset_regions(pcm.asset_id(),64);
+                    let(regions,count)=registry.scan(||part.waveform_sources.asset_regions(pcm.asset_id(),64))?;
                     json!({"player_node":node,"status":"observed","current_pcm_revision_asset_id":pcm.asset_id(),
                         "source_rate_hz":pcm.sample_rate(),"frames":pcm.frame_count(),
                         "matching_regions":regions,"matching_region_count":count,"region_matches_complete":count<=64})
@@ -65,13 +93,17 @@ impl V2Core {
             targets.push(row);
         }
         let mut voices=Vec::new();
+        let mut registry_error=None;
         let complete=part.runtime.visit_onset_voices(|voice| {
             if voices.len()==8 { return false; }
-            let(regions,count)=part.waveform_sources.asset_regions(voice.asset,64);
+            let(regions,count)=match registry.scan(||part.waveform_sources.asset_regions(voice.asset,64)) {
+                Ok(rows)=>rows,Err(error)=>{registry_error=Some(error);return false;},
+            };
             voices.push(json!({"voice":voice,"gain_state":part.runtime.diagnostic_voice_gain(voice.voice),
                 "matching_regions":regions,"matching_region_count":count,"region_matches_complete":count<=64}));
             true
         });
+        if let Some(error)=registry_error{return Err(error)}
         let control=|id: sampler_core::ControlId| {
             fn value(v:Result<sampler_core::ControlValue,sampler_core::Error>)->Value {
                 match v {
@@ -98,7 +130,10 @@ impl V2Core {
         let bypass:Vec<_>=mixes.iter().map(|&(group,slot,generic)|json!({"group":group,"slot":slot,"generic":generic,
             "state":control(sampler_core::slot_control(sampler_core::SlotKind::Bypass,group,slot,generic))})).collect();
         Ok(json!({"epoch":epoch,"at":part.runtime.now(),"at_before":at_before,"at_after":part.runtime.now(),"plan_token":format!("{plan:?}"),"targets":targets,
-            "voices":voices,"voices_complete":complete,"prepared_controls":controls,"mix_bypass_controls":bypass,
+            "voices":voices,"voices_complete":complete,
+            "registry_work":{"entries_per_scan":registry.entries,"actual_scan_calls":registry.calls,
+                "entry_visits":registry.scanned,"binding_entries":bindings.len(),"ceiling":GRAPH_REGISTRY_WORK,
+                "preflight_scan_calls":players.len()+8,"candidate_limit":64},"prepared_controls":controls,"mix_bypass_controls":bypass,
             "scope":"Pure actual committed Pcm and generation-fenced occupied voices. Static region matches may not resolve dynamic provenance. No IO, source read, render, service or time advance."}))
     }
 
@@ -362,6 +397,32 @@ mod tests {
         assert_eq!(a["voices"][0]["voice"]["asset"],json!(old_id));
         assert_eq!(a["voices"][0]["matching_regions"],json!([0]));
         assert_eq!(a,core.diagnostic_live_graph_runtime(0,8,&[9019],&[8985],&[]).unwrap());
+    }
+
+    #[test]
+    fn live_graph_registry_preflight_refuses_unrelated_large_registry_before_lookup() {
+        let pcm=Pcm::new(48000,vec![[0.;2];1].into()).unwrap();
+        let needle=Pcm::new(48000,vec![[1.;2];1].into()).unwrap();
+        assert_ne!(pcm.asset_id(),needle.asset_id());
+        let mut sources=Sources::default();
+        for n in 0..24000 {sources.insert_region(n,None,Source{pcm:pcm.clone(),stream:None});}
+        let calls=std::cell::Cell::new(0);
+        let result=GraphRegistryBudget::preflight(sources.values().size_hint(),11,0)
+            .and_then(|mut b|b.scan(||{calls.set(calls.get()+1);sources.asset_regions(needle.asset_id(),64)}));
+        assert!(matches!(result,Err("live_graph_registry_scan_bound")));assert_eq!(calls.get(),0);
+        assert!(GraphRegistryBudget::preflight((1,None),11,0).is_err());
+        assert!(GraphRegistryBudget::preflight((1,Some(2)),11,0).is_err());
+        assert!(GraphRegistryBudget::preflight((usize::MAX,Some(usize::MAX)),11,0).is_err());
+    }
+    #[test]
+    fn live_graph_registry_budget_charges_repeated_scans_and_exact_boundary() {
+        let entries=GRAPH_REGISTRY_WORK/11;let bindings=GRAPH_REGISTRY_WORK-entries*11;
+        let mut b=GraphRegistryBudget::preflight((entries,Some(entries)),11,bindings).unwrap();
+        let calls=std::cell::Cell::new(0);
+        for _ in 0..11 {b.scan(||calls.set(calls.get()+1)).unwrap();}
+        assert_eq!(b.scanned+bindings,GRAPH_REGISTRY_WORK);assert_eq!(b.calls,11);
+        assert!(b.scan(||calls.set(calls.get()+1)).is_err());assert_eq!(calls.get(),11);
+        assert!(GraphRegistryBudget::preflight((entries,Some(entries)),11,bindings+1).is_err());
     }
 
 }
