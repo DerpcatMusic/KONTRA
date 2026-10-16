@@ -37,6 +37,10 @@ pub struct Environment {
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// Physical source zone id -> group, low key, high key.
     pub zones: BTreeMap<u32, [i32; 3]>,
+    /// Physical order and source-defined IDs; not dense DSP region order.
+    pub zone_catalog: Vec<sampler_ir::SourceZone>,
+    /// Current global instrument policy inherited from earlier physical slots.
+    pub snapshot_mode: model::SnapshotMode,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
@@ -282,6 +286,8 @@ pub struct Initial {
     pub warnings: Vec<Fault>,
     /// `set_engine_par` writes keyed `(parameter, group, slot, generic)`.
     pub engine: HashMap<[i32; 4], i32>,
+    /// Committed physical-source metadata replacements; never creates a zone.
+    pub zone_parameters: BTreeMap<u32, [i32; 3]>,
     /// Integer `$CONTROL_PAR_*` mirror keyed `(ui id, parameter)`.
     pub properties: HashMap<(i32, i32), i32>,
     pub text_properties: HashMap<(i32, i32), String>,
@@ -309,6 +315,7 @@ struct Eval<'h, const TRACK: bool> {
     residency_pass: model::ResidencyPass,
     async_result: Option<(i32, i32)>,
     async_depth: u8,
+    zone_batch: crate::zone_routing::InitialZoneBatch,
     current_statement: Option<u32>,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
     /// `random()`'s stream, seeded as the runtime's.
@@ -346,6 +353,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
             model,
             warnings: Vec::new(),
             engine: HashMap::new(),
+            zone_parameters: BTreeMap::new(),
             properties: HashMap::new(),
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),
@@ -358,6 +366,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         residency_pass: model::ResidencyPass::InstrumentPersistence,
         async_result: None,
         async_depth: 0,
+        zone_batch: Default::default(),
         current_statement: None,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
         random: sampler_core::RANDOM_SEED,
@@ -382,6 +391,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         #[cfg(feature = "scan")]
         crate::scan::phase("init", r.as_ref().err());
         r?;
+        e.finish_zone_batch(init.span, true)?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
@@ -397,11 +407,11 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         // ponytail: shares init's fuel, so a polling loop spends it before
         // the rollback; give the pass its own budget if a library hits that.
         if let Some(cb) = persistence_changed {
-            let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone());
-            let ok = e.block(&cb.body).is_ok();
+            let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone(), e.zone_batch.clone());
+            let ok = e.block(&cb.body).and_then(|_| e.finish_zone_batch(cb.span, true)).is_ok();
             e.st.warnings.truncate(before.0.warnings.len());
             if !ok {
-                (e.st, e.fuel, e.consumed, e.pending_menus) = before;
+                (e.st, e.fuel, e.consumed, e.pending_menus, e.zone_batch) = before;
             }
         }
         // Then the snapshot: every saved value, read in init or not.
@@ -417,7 +427,9 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         } else {
             #[cfg(feature = "scan")]
             crate::scan::stage("persistence_changed");
-            let result = e.block(&cb.body);
+            let body = e.block(&cb.body);
+            let finish = e.finish_zone_batch(cb.span, body.is_ok());
+            let result = body.map(|_|()).and(finish);
             #[cfg(feature = "scan")]
             crate::scan::phase("persistence_changed", result.as_ref().err());
             e.st.model.persistence_completion = match result {
@@ -470,6 +482,34 @@ pub fn declared_range(ui: &Ui) -> Option<(i32, i32)> {
 }
 
 impl<const TRACK: bool> Eval<'_, TRACK> {
+    fn finish_zone_batch(&mut self, span: Span, commit: bool) -> Result<()> {
+        if self.zone_batch.is_empty() { return Ok(()); }
+        // A worker can finish finite metadata work. Clock/file waits require a
+        // scheduled runtime callback, never a replayed initializer prefix.
+        if self.hir.callbacks.iter().find(|c| c.kind == CallbackKind::AsyncComplete)
+            .is_some_and(|c| may_suspend(self.hir, &c.body, true)) {
+            return fault(span, "zone async completion requires runtime scheduling");
+        }
+        if self.async_depth >= 8 { return fault(span, "zone async completion nesting limit"); }
+        let completed = if commit { self.zone_batch.commit(&mut self.st.zone_parameters) }
+            else { self.zone_batch.abort() };
+        let mut failure=None;
+        for (id,success) in completed {
+            self.async_depth += 1;
+            let previous = (self.callback_type, self.async_result);
+            self.callback_type = b::cb::ASYNC_COMPLETE;
+            self.async_result = Some((id,i32::from(success)));
+            let result = if let Some(cb) = self.hir.callbacks.iter().find(|c| c.kind == CallbackKind::AsyncComplete) {
+                let body=self.block(&cb.body);
+                let finish=self.finish_zone_batch(cb.span, body.is_ok());
+                body.map(|_|()).and(finish)
+            } else { Ok(()) };
+            (self.callback_type,self.async_result) = previous;
+            self.async_depth -= 1;
+            if failure.is_none() {failure=result.err();}
+        }
+        failure.map_or(Ok(()),Err)
+    }
     fn warn(&mut self, span: Span, message: impl Into<String>) {
         if self.st.warnings.len() < 1000 {
             self.st.warnings.push(Fault {
@@ -1108,7 +1148,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             return Ok(V::I(0));
         };
         if builtin == Builtin::AttachZone {
-            if selector <= 0 || !self.env.zones.contains_key(&(selector as u32)) {
+            if selector < 0 || !self.env.zones.contains_key(&(selector as u32)) {
                 self.warn(span, "waveform source zone is absent from the physical-source environment");
                 return Ok(V::I(0));
             }
@@ -1614,6 +1654,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             SetSnapshotType => {
+                if self.callback_type != b::cb::INIT {
+                    self.warn(span, "set_snapshot_type is valid only in on init");
+                    return Ok(V::I(0));
+                }
                 let value = self.int(args, 0)?;
                 self.st.model.snapshot_mode =
                     model::SnapshotMode::from_native(value).ok_or_else(|| Fault {
@@ -1799,6 +1843,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             WaitAsync => {
                 let id = self.int(args, 0)?;
+                self.finish_zone_batch(span, true)?;
                 // Init completes MIDI jobs synchronously; only clock waits defer their callback.
                 let deferred = self
                     .hir
@@ -1987,17 +2032,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     Some("$ZONE_PAR_GROUP") => Some(0),
                     Some("$ZONE_PAR_LOW_KEY") => Some(1),
                     Some("$ZONE_PAR_HIGH_KEY") => Some(2),
-                    _ => None,
+                    _ => return fault(span, "zone parameter has no represented getter"),
                 };
                 V::I(
                     field
                         .and_then(|field| {
-                            self.env
-                                .zones
-                                .get(&u32::try_from(zone).ok()?)
+                            self.st.zone_parameters.get(&u32::try_from(zone).ok()?)
+                                .or_else(|| self.env.zones.get(&u32::try_from(zone).ok()?))
                                 .map(|values| values[field])
                         })
-                        .unwrap_or(0),
+                        .unwrap_or(-1),
                 )
             }
             AttachZone | SetUiWfProperty | GetUiWfProperty => self.waveform(builtin, args, span)?,
@@ -2005,11 +2049,46 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 self.warn(span,"get_purge_state during initialization has no physical residency authority; startup query remains unsupported");
                 V::I(0)
             }
-            GetNumZones | GetZoneId | GetVoiceLimit
+            GetNumZones => V::I(self.env.zone_catalog.len().min(i32::MAX as usize) as i32),
+            GetZoneId => {
+                let ordinal=self.int(args,0)?;
+                V::I(usize::try_from(ordinal).ok().and_then(|i| self.env.zone_catalog.get(i))
+                    .and_then(|z|z.id).and_then(|id|i32::try_from(id).ok()).unwrap_or(-1))
+            }
+            GetVoiceLimit
             | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
-            // No host consumes zone writes (FindZone finds nothing at init), and
-            // Conflux issues three million of them: logging each cost ~1 GB.
-            SetZonePar => V::I(0),
+            SetZonePar => {
+                let zone = self.int(args,0)?;
+                let selector = self.int(args,1)?;
+                let value = self.int(args,2)?;
+                let parameter = match symbol_name(self.hir,selector).as_deref() {
+                    Some("$ZONE_PAR_GROUP") => sampler_core::ZoneParameter::Group,
+                    Some("$ZONE_PAR_LOW_KEY") => sampler_core::ZoneParameter::LowKey,
+                    Some("$ZONE_PAR_HIGH_KEY") => sampler_core::ZoneParameter::HighKey,
+                    _ => return fault(span,"zone parameter has no represented routing consumer"),
+                };
+                let mode = self.st.model.snapshot_mode_write.map_or(self.env.snapshot_mode, |w|w.mode);
+                if mode.saves_engine() {
+                    return fault(span,"normal-zone writes require active snapshot policy 2 or 3; user-zone provenance is unavailable");
+                }
+                if self.callback_type == b::cb::INIT {
+                    crate::zone_routing::write_initial(&self.env.zones,&mut self.st.zone_parameters,
+                        self.env.groups.len(),zone,parameter,value).map_err(|message|Fault {
+                            span,builtin:Some("set_zone_par"),message:message.into()
+                        })?;
+                    V::I(-1)
+                } else {
+                    if self.async_depth >= 8 { return fault(span,"zone async completion nesting limit"); }
+                    if self.hir.callbacks.iter().find(|c|c.kind==CallbackKind::AsyncComplete)
+                        .is_some_and(|c|may_suspend(self.hir,&c.body,true)) {
+                        return fault(span,"zone async completion requires runtime scheduling");
+                    }
+                    let id=self.zone_batch.queue(&self.env.zones,&self.st.zone_parameters,
+                        self.env.groups.len(),&mut self.st.midi_object,zone,parameter,value)
+                        .map_err(|message|Fault {span,builtin:Some("set_zone_par"),message:message.into()})?;
+                    V::I(id)
+                }
+            },
             LoadArray => {
                 // NI load/save contract: load_array in init implicitly persists
                 // its target; saved state is restored after the init callback.
@@ -2119,11 +2198,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 }
                 V::I(0)
             }
+            Wait | WaitTicks => {
+                self.finish_zone_batch(span, true)?;
+                self.warn(span,format!("{} has no clock delay in on init",builtin.name()));
+                V::I(0)
+            }
             PlayNote | NoteOff | IgnoreEvent | ChangeVol | ChangeTune | ChangePan | ChangeVelo
             | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr | AllowGroup
             | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds | IgnoreController
             | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter | WillNeverTerminate
-            | RedirectOutput | Wait | WaitTicks | StopWait => {
+            | RedirectOutput | StopWait => {
                 self.warn(span, format!("{} has no effect in on init", builtin.name()));
                 V::I(0)
             }

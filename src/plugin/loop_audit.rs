@@ -422,7 +422,7 @@ fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_
     *atoms.waveforms.lock().unwrap() = Some(
         Provider::start(
             plan,
-            [(3, Source { pcm, stream: None })].into(),
+            [(3, Source { pcm, stream: None })].into_iter().collect(),
             move || {
                 wake.send(()).ok();
             },
@@ -450,11 +450,9 @@ fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_
     }
     assert!(atoms.widget_waveforms(&face, 0, 0.5).is_empty());
     let _ = atoms.widget_waveforms(&face, 1, 0.5);
-    for _ in 0..2 {
-        ready
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-    }
+    ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(matches!(ready.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "duplicate widgets share one preparation; an absent ID queues no job");
     let values = atoms.widget_waveforms(&face, 1, 0.5);
     assert_eq!(
         values.len(),

@@ -1,6 +1,11 @@
 //! Control-thread compilation of immutable assets and native mappings.
 mod predicates;
 mod selection;
+#[path = "zone_routing.rs"]
+pub(crate) mod zone_routing;
+pub use zone_routing::{MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
+    ZoneRouteVariant, ZoneRouting, ZoneRoutingLimits, ZoneRoutingBuildError,
+    ZoneRoutingFeature, ZoneRoutingRefusal, ZoneRoutingReport};
 #[path = "sample_revision.rs"]
 pub(crate) mod sample_revision;
 pub use sample_revision::{DORMANT_SAMPLE, MAX_SAMPLE_REVISIONS, PreparedSampleRevision,
@@ -28,7 +33,7 @@ pub struct Pcm(std::sync::Arc<PcmData>);
 
 /// Process-local identity of one immutable decoded asset revision. Clones share it;
 /// a separately constructed revision never reuses an old identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct AssetId(u64);
 
 type StoreEntry = ([i32; super::STORE_KEY], i64);
@@ -37,7 +42,7 @@ type StoreEntry = ([i32; super::STORE_KEY], i64);
 struct PcmData {
     id: AssetId,
     rate: u32,
-    frames: Snapshot<Option<ResidentData>>,
+    frames: std::sync::Arc<Snapshot<Option<ResidentData>>>,
     resident_budget: std::sync::OnceLock<HeadBudget>,
     resident_published: AtomicBool,
     full: bool,
@@ -54,7 +59,7 @@ struct PcmData {
     used: AtomicU64,
     // A streamed asset's resident ranges (where voices start); empty when purged.
     /// Readers (every render thread) share it; only a control-side swap writes.
-    head: Snapshot<Ranges>,
+    head: std::sync::Arc<Snapshot<Ranges>>,
     head_budget: std::sync::OnceLock<HeadBudget>,
     // A start was refused because its pages were not resident.
     cold: AtomicBool,
@@ -74,6 +79,12 @@ impl std::fmt::Debug for ResidencyLoader {
 }
 /// Borrowed full-resident PCM; retiring storage is reclaimed only on control.
 pub struct ResidentFrames<'a>(SnapshotRead<'a, Option<ResidentData>>);
+/// Owned counted generation used only through one cohort render segment.
+pub(crate) struct ResidentPin(sampler_pool::SnapshotPin<Option<ResidentData>>);
+impl std::ops::Deref for ResidentPin {
+    type Target = [Frame];
+    fn deref(&self) -> &[Frame] { self.0.as_ref().expect("resident generation").frames() }
+}
 impl std::ops::Deref for ResidentFrames<'_> {
     type Target = [Frame];
     fn deref(&self) -> &[Frame] {
@@ -345,6 +356,11 @@ impl Pcm {
     pub(crate) fn try_head(&self) -> Option<SnapshotRead<'_, Ranges>> {
         Some(self.0.head.read())
     }
+    /// The plan/sample revision retains the other Arc owner throughout render.
+    /// Clear pins before the render segment returns or source owners can retire.
+    pub(crate) fn pin_head(&self) -> sampler_pool::SnapshotPin<Ranges> {
+        self.0.head.read_owned()
+    }
     pub fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
     }
@@ -367,7 +383,7 @@ impl Pcm {
             rate,
             full,
             resident_published: AtomicBool::new(frames.is_some()),
-            frames: Snapshot::new(frames),
+            frames: std::sync::Arc::new(Snapshot::new(frames)),
             resident_budget: std::sync::OnceLock::new(),
             residency_owners: std::sync::atomic::AtomicUsize::new(0),
             residency_managed: AtomicBool::new(false),
@@ -376,7 +392,7 @@ impl Pcm {
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
-            head: Snapshot::default(),
+            head: std::sync::Arc::new(Snapshot::default()),
             head_budget: std::sync::OnceLock::new(),
             cold: AtomicBool::new(false),
             length,
@@ -411,6 +427,10 @@ impl Pcm {
     }
     pub fn frame_count(&self) -> usize {
         self.0.length
+    }
+    pub(crate) fn pin_resident(&self) -> Option<ResidentPin> {
+        let frames = self.0.frames.read_owned();
+        frames.is_some().then(|| ResidentPin(frames))
     }
     pub fn resident_frames(&self) -> Option<ResidentFrames<'_>> {
         let frames = self.0.frames.read();
@@ -820,6 +840,8 @@ impl ConstantStartPrefix {
 }
 
 pub struct Prepared {
+    pub(crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
+    pub(crate) zone_routing: Option<zone_routing::PreparedRouting>,
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
     pub(super) group_mutes: Box<[AtomicBool]>,
@@ -920,6 +942,24 @@ impl Prepared {
         } else {
             self.voice_modulation.constant_start_offset(region)
         }
+    }
+
+    /// One-time preload prediction for this plan's explicitly initialized
+    /// controllers and Constant sources. Uses the voice admission offset law,
+    /// including authored shapes, signed depths and intensity assignments.
+    /// Missing controller assignments and other input kinds return None.
+    ///
+    /// The last bound assignment wins, including with_initial_level overrides.
+    /// This is the bound state before runtime callbacks/inputs, not the current
+    /// state of an active engine. It never certifies readiness after a CC,
+    /// script offset, plan/source revision or authored listener changes state.
+    pub fn initialized_start_offset(&self, region: usize) -> Option<u32> {
+        self.regions.get(region)?;
+        if self.voice_modulation.is_empty() { return Some(0); }
+        self.voice_modulation.initialized_start_offset(region, |controller| {
+            self.initial_controllers.iter().rev()
+                .find(|&&(cc, _)| cc == controller).map(|&(_, value)| value)
+        })
     }
 
     /// Positive Constant onset through the actual prepared cursor/skip law.
@@ -1104,6 +1144,8 @@ impl Prepared {
         Ok(Self {
             sample_targets: Box::new([]),
             sample_limits: None,
+            source_zone_catalog: None,
+            zone_routing: None,
             group_mutes: Box::new([]),
             residency: None,
             initial_residency: Box::new([]),
@@ -1487,26 +1529,19 @@ impl Prepared {
         self.region_zone_ids.iter().position(|&id| id == zone_id)
     }
 
+    /// Read an immutable authored home by native zone-command identity.
+    /// Requires `with_source_zone_identities`; `with_source_zones` supplies event IDs
+    /// in a separate namespace. `Runtime::zone_parameter_in` reads committed edits.
     pub fn source_zone_parameter(
         &self,
         zone_id: u32,
         parameter: super::ZoneParameter,
     ) -> Option<i32> {
-        let region = self.source_zone_region(zone_id)?;
+        let home = self.source_zone_identity_home(zone_id)?;
         Some(match parameter {
-            super::ZoneParameter::Group => self
-                .region_groups
-                .get(region)
-                .copied()
-                .flatten()
-                .map_or(-1, |group| {
-                    self.group_source_ids
-                        .get(group as usize)
-                        .copied()
-                        .unwrap_or(group) as i32
-                }),
-            super::ZoneParameter::LowKey => i32::from(self.regions.get(region)?.bounds[0]),
-            super::ZoneParameter::HighKey => i32::from(self.regions.get(region)?.bounds[1]),
+            super::ZoneParameter::Group => home.group as i32,
+            super::ZoneParameter::LowKey => i32::from(home.low_key),
+            super::ZoneParameter::HighKey => i32::from(home.high_key),
         })
     }
 
@@ -1550,7 +1585,7 @@ impl Prepared {
         max_states: usize,
         max_shuffle_entries: usize,
     ) -> Result<Self, Error> {
-        if region_takes.len() != self.regions.len() {
+        if self.zone_routing.is_some() || region_takes.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         let mut prepared = Vec::with_capacity(sequences.len());
@@ -1616,7 +1651,7 @@ impl Prepared {
         key_release: super::ReleaseOptions,
         gate_release: super::ReleaseOptions,
     ) -> Result<Self, Error> {
-        if triggers.len() != self.regions.len() {
+        if self.zone_routing.is_some() || triggers.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         for options in [key_release, gate_release] {
@@ -1648,7 +1683,7 @@ impl Prepared {
         key_release: super::SelectionPolicy,
         gate_release: super::SelectionPolicy,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if self.zone_routing.is_some() || regions.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         let mut keyswitches = [None; 128];
@@ -1884,7 +1919,7 @@ impl Prepared {
                 self.active_ranges(from..until, state.articulation)
             });
             let mut matching = Matching::new(ranges);
-            while let Some(candidate) = matching.next(self, state, velocity) {
+            while let Some(candidate) = matching.next(self, state, velocity, None) {
                 // An unbound player has no source rate yet. Its dimensionless
                 // pitch cannot be tested against resampling limits until the
                 // actual immutable revision is prepared and admitted.
@@ -1933,7 +1968,7 @@ impl Prepared {
             let ranges = state.map_or([range.start..until, 0..0], |state| {
                 self.active_ranges(range.start..until, state.articulation)
             });
-            let eligible = Matching::new(ranges).next(self, state, velocity).is_some();
+            let eligible = Matching::new(ranges).next(self, state, velocity, None).is_some();
             let sequence = self.regions[self.candidates[range.start].region]
                 .take
                 .map(|t| t.sequence)
@@ -2122,11 +2157,50 @@ impl Prepared {
         self.enable_signal_trace(records)?;
         Ok(self)
     }
+    /// Build the same signal graph with an explicitly owned off-audio reader.
+    /// Environment reporting never consumes rows from this plan.
+    pub fn with_signal_trace_reader(mut self, records: usize) -> Result<(Self, crate::trace::TraceReader), Error> {
+        self.enable_signal_trace(records)?;
+        self.signal_trace.as_mut().unwrap().collection_owner = crate::trace::CollectionOwner::External;
+        let reader = self.signal_trace_reader().unwrap();
+        Ok((self, reader))
+    }
+    /// Explicit diagnostic scope. This only filters graph construction; every
+    /// region still participates in rendering, selection and Birth/window rows.
+    pub fn with_scoped_signal_trace_reader(mut self, records: usize, scope: crate::trace::SignalTraceScope)
+        -> Result<(Self, crate::trace::TraceReader), Error> {
+        self.enable_signal_trace_scope(records, Some(scope))?;
+        self.signal_trace.as_mut().unwrap().collection_owner = crate::trace::CollectionOwner::External;
+        let reader = self.signal_trace_reader().unwrap();
+        Ok((self, reader))
+    }
     pub(crate) fn enable_signal_trace(&mut self, records: usize) -> Result<(), Error> {
-        if self.signal_trace.is_some() {
-            return Err(Error::InvalidInput);
-        }
-        if self.regions.iter().any(|r| r.chain.is_none()) {
+        self.enable_signal_trace_scope(records, None)
+    }
+    fn enable_signal_trace_scope(&mut self, records: usize, scope: Option<crate::trace::SignalTraceScope>) -> Result<(), Error> {
+        if self.signal_trace.is_some() || records == 0 { return Err(Error::InvalidInput); }
+        // Exact preflight is before TraceGraph::new, chain insertion, parameter
+        // arrays, ring storage and (later) Runtime's per-node Recorder scratch.
+        let expected = if let Some(scope) = scope {
+            scope.validate()?;
+            if records > 65536 { return Err(Error::InvalidInput); }
+            let mut count = crate::trace::TraceGraph::HOST_NODE_COUNT
+                .checked_add(self.buses.trace_node_count().ok_or(Error::Capacity)?)
+                .ok_or(Error::Capacity)?;
+            if count > scope.max_nodes { return Err(Error::Capacity); }
+            for region in &self.regions {
+                if !scope.includes(region.bounds[0], region.bounds[1]) { continue; }
+                let nodes = region.chain.map_or(Some(3), |c| self.voice_chains[c].trace_node_count())
+                    .ok_or(Error::Capacity)?;
+                count = count.checked_add(nodes).ok_or(Error::Capacity)?;
+                if count > scope.max_nodes { return Err(Error::Capacity); }
+            }
+            if self.regions.iter().any(|r| r.chain.is_none() && scope.includes(r.bounds[0], r.bounds[1]))
+                && self.voice_chains.len() >= scope.max_nodes { return Err(Error::Capacity); }
+            Some(count)
+        } else { None };
+        if self.regions.iter().any(|r| r.chain.is_none()
+            && scope.is_none_or(|s| s.includes(r.bounds[0], r.bounds[1]))) {
             let index = self.voice_chains.len();
             let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(
                 self.rate,
@@ -2137,15 +2211,36 @@ impl Prepared {
             chains.push(empty);
             self.voice_chains = chains.into_boxed_slice();
             for region in &mut self.regions {
-                if region.chain.is_none() {
+                if region.chain.is_none()
+                    && scope.is_none_or(|s| s.includes(region.bounds[0], region.bounds[1])) {
                     region.chain = Some(index);
                 }
             }
         }
+        // Source-zone IDs need not be unique. Do not let an excluded region
+        // borrow a selected region's contribution graph through an aliased ID.
+        // This map is bounded by the selected-node preflight, never all regions.
+        let scoped_zone_counts = scope.map(|scope| {
+            let mut counts = std::collections::BTreeMap::new();
+            for (index, region) in self.regions.iter().enumerate() {
+                if scope.includes(region.bounds[0], region.bounds[1]) {
+                    let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+                    counts.insert(zone, 0u8);
+                }
+            }
+            for index in 0..self.regions.len() {
+                let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+                if let Some(count) = counts.get_mut(&zone) { *count = count.saturating_add(1).min(2); }
+            }
+            counts
+        });
         let mut graph = crate::trace::TraceGraph::new(self.rate);
+        graph.scope = scope;
         self.buses.trace_graph(&self, &mut graph);
-        let initial = crate::dsp::control::initial_parameters(&self, &self.dsp_bindings);
+        let initial = if scope.is_some() { Box::new([]) as Box<[crate::dsp::ControlRamp]> }
+            else { crate::dsp::control::initial_parameters(&self, &self.dsp_bindings) };
         for (index, region) in self.regions.iter().enumerate() {
+            if scope.is_some_and(|s| !s.includes(region.bounds[0], region.bounds[1])) { continue; }
             let zone = self
                 .region_zone_ids
                 .get(index)
@@ -2191,8 +2286,13 @@ impl Prepared {
                     }),
             )
             .collect();
-            graph.voices.insert(zone, nodes);
+            if scoped_zone_counts.as_ref().is_none_or(|counts| counts.get(&zone) == Some(&1)) {
+                graph.voices.insert(zone, nodes);
+            }
         }
+        // A regression in the builder/count contract must fail before Runtime.
+        // This check is a second guard; preflight above bounds construction.
+        if expected.is_some_and(|n| n != graph.nodes.len()) { return Err(Error::InvalidInput); }
         graph.order = graph.topological_order();
         if graph.order.len() != graph.nodes.len() {
             return Err(Error::InvalidInput);

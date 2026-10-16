@@ -4,8 +4,9 @@
 use super::*;
 use crate::sound::resource_revision::ResourceRevision;
 use sampler_ksp::setup::{
-    SetupIdentity, SnapshotSavedLimits, SnapshotSavedSlot, snapshot_policy, snapshot_saved_state,
+    SetupIdentity, SnapshotSavedLimits, SnapshotSavedSlot, snapshot_policy, snapshot_saved_state_with_menus,
 };
+pub(crate) mod admission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,6 +14,7 @@ pub(crate) enum Refusal {
     NoSetup,
     InitRequired,
     NativeState,
+    ZoneRouting,
     SourceOrResources,
     SetupChanged,
     SnapshotRead,
@@ -41,6 +43,7 @@ pub(crate) struct Descriptor {
 
 pub(crate) struct Ready {
     pub state: sampler_core::ScriptStateBuffer,
+    pub menus: Box<[sampler_core::SnapshotMenuPosition]>,
     pub mode: sampler_ksp::model::SnapshotMode,
 }
 
@@ -112,7 +115,24 @@ impl Descriptor {
         views: Vec<sampler_ksp::ScriptView>,
         service: &mut dyn FnMut(),
     ) -> Result<Ready, Refusal> {
-        prepare_waiting(move || self.prepare(path, rate, &views), service)?
+        self.prepare_serviced_reported(path, rate, views, service).0
+    }
+    pub(crate) fn prepare_serviced_reported(
+        self: Arc<Self>,
+        path: &Path,
+        rate: u32,
+        views: Vec<sampler_ksp::ScriptView>,
+        service: &mut dyn FnMut(),
+    ) -> (Result<Ready, Refusal>, admission::Report) {
+        let mode = self.mode;
+        match prepare_waiting(move || self.prepare_reported(path, rate, &views), service) {
+            Ok(reported) => reported,
+            Err(reason) => {
+                let mut report = admission::Report::new(Some(mode));
+                report.worker_lost(reason);
+                (Err(reason), report)
+            }
+        }
     }
     pub(crate) fn prepare(
         &self,
@@ -120,10 +140,34 @@ impl Descriptor {
         rate: u32,
         views: &[sampler_ksp::ScriptView],
     ) -> Result<Ready, Refusal> {
+        self.prepare_reported(path, rate, views).0
+    }
+    pub(crate) fn prepare_reported(
+        &self,
+        path: &Path,
+        rate: u32,
+        views: &[sampler_ksp::ScriptView],
+    ) -> (Result<Ready, Refusal>, admission::Report) {
+        let mut report = admission::Report::new(Some(self.mode));
+        let result = self.prepare_inner(path, rate, views, &mut report);
+        if let Err(reason) = &result {
+            report.refuse(*reason);
+        }
+        (result, report)
+    }
+    fn prepare_inner(
+        &self,
+        path: &Path,
+        rate: u32,
+        views: &[sampler_ksp::ScriptView],
+        report: &mut admission::Report,
+    ) -> Result<Ready, Refusal> {
         let _span = sampler_kontakt::audit::Span::new("snapshot_reuse_prepare");
+        report.at(admission::Stage::Policy);
         if self.mode.reruns_init() {
             return Err(Refusal::InitRequired);
         }
+        report.at(admission::Stage::SetupIdentity);
         if rate != self.rate
             || views.len() != self.identities.len()
             || views
@@ -134,17 +178,26 @@ impl Descriptor {
         {
             return Err(Refusal::SetupChanged);
         }
+
+        if views.iter().any(|view| view.setup().zone_routing
+            == sampler_ksp::ZoneRoutingCapability::RequiresPreparedRoutes) {
+            return Err(Refusal::ZoneRouting);
+        }
+        report.authority_check(admission::Stage::AuthorityBeforeRead);
         if authority(&self.base).as_ref() != Some(&self.authority) {
             return Err(Refusal::SourceOrResources);
         }
+        report.snapshot_read();
         let snapshot = sampler_kontakt::read_snapshot_for_base(path, &self.base)
             .map_err(|_| Refusal::SnapshotRead)?;
+        report.incoming(&snapshot);
         // Do not mistake equal IR indices or scalar rosters for a proof that
         // every native group/source/rack field is unchanged. Modes 1 and 3 can
         // reuse here only when there is no incoming native payload to apply.
         if !snapshot.groups.is_empty() || !snapshot.effects.is_empty() {
             return Err(Refusal::NativeState);
         }
+        report.saved_decode();
         let rows = snapshot.saved_values().map_err(|_| Refusal::SavedState)?;
         let incoming: Vec<_> = rows
             .into_iter()
@@ -156,7 +209,8 @@ impl Descriptor {
                 })
             })
             .collect::<Result<_, Refusal>>()?;
-        let state = snapshot_saved_state(
+        report.saved_schema();
+        let mapped = snapshot_saved_state_with_menus(
             views,
             &incoming,
             SnapshotSavedLimits {
@@ -165,20 +219,27 @@ impl Descriptor {
                     * sampler_core::TEXT_CAPACITY,
             },
         )
-        .map_err(|error| match error {
-            sampler_ksp::setup::SnapshotSavedError::Row {
-                reason: sampler_ksp::setup::SnapshotSavedRowError::MenuRosterUnverified,
-                ..
-            } => Refusal::MenuRosterUnverified,
-            _ => Refusal::SavedState,
+        .map_err(|error| {
+            report.saved_schema_refusal(&error);
+            match error {
+                sampler_ksp::setup::SnapshotSavedError::Row {
+                    reason: sampler_ksp::setup::SnapshotSavedRowError::MenuRosterUnverified,
+                    ..
+                } => Refusal::MenuRosterUnverified,
+                _ => Refusal::SavedState,
+            }
         })?;
+        report.prepared(&mapped.state, mapped.menus.len());
         // Revalidate after all file reads. No candidate acquires live ownership
         // if the base/resource authority changed while it was being prepared.
+        report.authority_check(admission::Stage::AuthorityAfterRead);
         if authority(&self.base).as_ref() != Some(&self.authority) {
             return Err(Refusal::SourceOrResources);
         }
+        report.at(admission::Stage::Prepared);
         Ok(Ready {
-            state,
+            state: mapped.state,
+            menus: mapped.menus,
             mode: self.mode,
         })
     }
@@ -188,11 +249,13 @@ impl ControlIngress {
     pub(crate) fn submit_snapshot_overlay(
         &mut self,
         state: sampler_core::ScriptStateBuffer,
+        menus: Box<[sampler_core::SnapshotMenuPosition]>,
         epochs: Box<[sampler_core::SnapshotOverlayEpoch]>,
     ) -> Result<u64, Refusal> {
         let mut overlay =
             sampler_core::NativeSnapshotOverlay::linearized(self.plan, state, Box::new([]));
         overlay.epochs = epochs;
+        overlay.menus = menus;
         self.client
             .submit(sampler_core::ControlRequest {
                 plan: self.plan,
@@ -311,6 +374,17 @@ mod tests {
             descriptor.prepare(&saved, 48000, &views),
             Err(Refusal::SourceOrResources)
         ));
+    }
+    #[test]
+    fn snapshot_callbacks_with_native_zone_routing_require_full_prepared_replacement() {
+        let (_dir, base, saved) = files();
+        for selector in ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"] {
+            let source = format!("{SOURCE} on persistence_changed wait(1) set_zone_par($saved,{selector},0) end on");
+            std::fs::write(&base, fixture::base_instrument("Authority", &[Some(&source), None, None, None, None])).unwrap();
+            let views = views(&source);
+            let descriptor = Seed::capture(&base, 48000).unwrap().finish(&views).unwrap();
+            assert!(matches!(descriptor.prepare(&saved, 48000, &views), Err(Refusal::ZoneRouting)));
+        }
     }
     #[test]
     fn source_change_during_initialization_and_later_rate_or_setup_changes_refuse() {

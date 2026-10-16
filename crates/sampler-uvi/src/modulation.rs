@@ -135,7 +135,18 @@ impl Mapper {
     /// Inputs (in source units) where the table's slope changes.
     fn knots(&self) -> impl Iterator<Item = f64> + '_ {
         let n = (self.samples.len() - 1) as f64;
-        (0..self.samples.len()).map(move |j| j as f64 / n)
+        (0..self.samples.len()).map(move |j| j as f64 / n).chain(
+            self.samples
+                .windows(2)
+                .enumerate()
+                .filter_map(move |(i, p)| {
+                    let (a, b) = (p[0], p[1]);
+                    // Min/Max scale opposite signs separately, so an interpolated
+                    // zero is another slope boundary inside this table segment.
+                    ((a < 0.0 && b > 0.0) || (a > 0.0 && b < 0.0))
+                        .then(|| (i as f64 - a / (b - a)) / n)
+                }),
+        )
     }
 }
 
@@ -806,19 +817,25 @@ impl Translation {
                 }))
             }
             "ScriptEventModulation" => {
-                // The script sets it per voice or for all voices
-                // (`sendScriptModulation`); its id is the number in the name,
-                // as the scripts' own id tables show.
-                let id = node
-                    .attribute("Name")
-                    .and_then(|n| n.rsplit(' ').next())
-                    .and_then(|t| t.parse::<u16>().ok());
-                let Some(id) = id else {
-                    return Ok(Err(gap(
-                        "ScriptEventModulation without an id",
-                        "",
-                        NotModeled,
-                    )));
+                // EventId is an independent native parameter, not the source's
+                // display/lookup name (original getters/setters 0x14114e2d0/e0).
+                let id = if let Some(raw) = node.attribute("EventId") {
+                    match number(node, "EventId", 0.0) {
+                        Ok(value) if (0.0..=127.0).contains(&value) && value.fract() == 0.0 => {
+                            value as u16
+                        }
+                        _ => return Ok(Err(gap("ScriptEventModulation EventId", raw, ir::Reason::InvalidValue))),
+                    }
+                } else {
+                    // Preserve the existing absent-field import behavior while
+                    // the older serialized-format loading law is investigated.
+                    let id = node.attribute("Name")
+                        .and_then(|n| n.rsplit(' ').next())
+                        .and_then(|t| t.parse::<u16>().ok());
+                    let Some(id) = id else {
+                        return Ok(Err(gap("ScriptEventModulation without an id", "", NotModeled)));
+                    };
+                    id
                 };
                 let polar = number(node, "Bipolar", 1.0)? != 0.0;
                 let source = if polar {
@@ -1455,6 +1472,40 @@ mod tests {
     }
 
     #[test]
+    fn script_event_explicit_id_is_independent_of_source_name() {
+        for (name, event_id, bipolar, expected) in [
+            ("Renamed", "7", 0, ir::ModulationSource::Script(7)),
+            ("ScriptEventModulation 3", "7", 1, ir::ModulationSource::ScriptBipolar(7)),
+            ("ScriptEventModulation 7", "12", 0, ir::ModulationSource::Script(12)),
+            ("ScriptEventModulation 3", "0", 0, ir::ModulationSource::Script(0)),
+            ("Renamed", "127", 0, ir::ModulationSource::Script(127)),
+            ("Renamed", "7.0", 0, ir::ModulationSource::Script(7)),
+        ] {
+            let ir = translate(
+                &format!(r#"<ScriptEventModulation Name="{name}" EventId="{event_id}" Bipolar="{bipolar}"/>"#),
+                "",
+                &format!(r#"<SignalConnection Source="$Program/{name}" Destination="Pitch" Ratio="1"/>"#),
+            );
+            let (_, source) = only_route(&ir);
+            assert_eq!(source, &expected);
+            assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+        }
+    }
+
+    #[test]
+    fn script_event_malformed_explicit_id_is_rejected_without_name_fallback() {
+        for value in ["", "bad", "true", "NaN", "inf", "-1", "7.5", "128", "65536"] {
+            let ir = translate(
+                &format!(r#"<ScriptEventModulation Name="ScriptEventModulation 3" EventId="{value}"/>"#),
+                "",
+                r#"<SignalConnection Source="$Program/ScriptEventModulation 3" Destination="Pitch" Ratio="1"/>"#,
+            );
+            assert!(ir.zones[0].routes.is_empty(), "{value}: {:?}", ir.unsupported);
+            assert!(ir.unsupported.iter().any(|u| u.feature == "ScriptEventModulation EventId" && u.reason == ir::Reason::InvalidValue), "{value}: {:?}", ir.unsupported);
+        }
+    }
+
+    #[test]
     fn bipolar_script_modulation_keeps_negative_values() {
         for (bip, expected) in [(1, ir::ModulationSource::ScriptBipolar(3)), (0, ir::ModulationSource::Script(3))] {
             let ir = translate(
@@ -1568,6 +1619,49 @@ mod tests {
         // Ratio 12 × the macro's factor 0.25.
         assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(3.0)));
         assert_eq!(shape(&ir, route), [(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)]);
+    }
+
+    #[test]
+    fn signed_mapper_shapes_keep_internal_zero_crossings() {
+        // The raw table crosses zero inside both intervals. Distinct signed
+        // scales make those crossings real corners, rather than sample knots.
+        for inverted in [false, true] {
+            let xml = format!(
+                r#"<Program><Mappers><ControlSignalMapper Name="Signed" Min="-0.5" Max="0.75">-1,0 0,25 -1,0</ControlSignalMapper></Mappers>
+                <Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer><Connections>
+                <SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="12" Mapper="Signed" Inverted="{}"/>
+                </Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#,
+                u8::from(inverted)
+            );
+            let ir = crate::translate_bank(&xml).unwrap().0;
+            assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+            let (route, source) = only_route(&ir);
+            assert_eq!(source, &ir::ModulationSource::Controller(1));
+            let points = shape(&ir, route);
+            assert_eq!(points.len(), 5);
+            // Independent piecewise oracle: table [-1,.25,-1], negative
+            // scale .5, positive scale .75; corners are at .4 and .6.
+            for i in 0..=100 {
+                let input = f64::from(i) / 100.0;
+                let x = if inverted { 1.0 - input } else { input };
+                let raw = if x <= 0.5 {
+                    -1.0 + 2.5 * x
+                } else {
+                    1.5 - 2.5 * x
+                };
+                let expected = raw * if raw < 0.0 { 0.5 } else { 0.75 };
+                let span = points
+                    .windows(2)
+                    .find(|s| input >= s[0].0 && input <= s[1].0)
+                    .unwrap();
+                let t = (input - span[0].0) / (span[1].0 - span[0].0);
+                let actual = span[0].1 + t * (span[1].1 - span[0].1);
+                assert!(
+                    (actual - expected).abs() < 1e-12,
+                    "inverted={inverted} input={input}: {actual} != {expected}"
+                );
+            }
+        }
     }
 
     #[test]

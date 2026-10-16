@@ -29,6 +29,7 @@ const LEGACY_FILE_TABLE: u16 = 0x3d;
 const SCRIPT: u16 = 6;
 
 mod impulse_namespace;
+mod zone_routing;
 use impulse_namespace::EffectFileOrigins;
 
 /// A translated instrument and the resolver of the samples its assets name.
@@ -446,11 +447,14 @@ fn translate(
     // Initializers may query/attach physical zones before effect/group DSP
     // admission. Read only bounded serialized metadata here, never samples.
     let span = crate::audit::Span::new("translate_zone_metadata_prepass");
-    let zone_metadata = if out.ir.behaviors.iter().any(|b| b.language == ir::Language::Ksp) {
-        source_zone_metadata(zone_data, group_names.len()).map_err(|reason| invalid(&reason))?
-    } else {
-        Default::default()
-    };
+    out.ir.source_indices.zone_catalog = source_zone_catalog(zone_data,group_names.len())
+        .map_err(|reason|invalid(&reason))?;
+    let zone_metadata = zone_catalog_homes(&out.ir.source_indices.zone_catalog);
+    let unavailable=out.ir.source_indices.zone_catalog.iter().filter(|z|z.id.is_none()).count();
+    if unavailable!=0 {
+        out.unsupported("zone catalog","native source zone identity",
+            format!("{unavailable} identities unavailable; no ordinal alias was created"),ir::Reason::NotModeled);
+    }
     drop(span);
     if let Some(snapshot) = snapshot {
         out.ir.snapshot_base_state = out.ir.behaviors.iter().map(|b| b.state.clone()).collect();
@@ -477,6 +481,15 @@ fn translate(
     let mut initialized = crate::load::initialize_scripts_with_zones(
         &mut out.ir, Some(&path), group_names, control_values, &zone_metadata,
     );
+
+    let zone_routes = zone_routing::Routes::new(&initialized,&zone_metadata,groups.groups.len())
+        .map_err(|reason|invalid(&reason))?;
+    out.ir.zone_routing_mode=zone_routes.mode;
+    for entry in &mut out.ir.source_indices.zone_catalog {
+        if let Some(home)=entry.id.and_then(|id|zone_routes.home(id)) {
+            entry.home=ir::SourceZoneHome {group:home[0] as u32,low_key:home[1] as u8,high_key:home[2] as u8};
+        }
+    }
     out.engine = initialized
         .states
         .iter()
@@ -578,8 +591,13 @@ fn translate(
     }
     out.ir.source_indices.zones.resize(count, None);
     for index in 0..count {
-        let zone =
+        let mut zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
+        if !zone_metadata.is_empty() {
+            if let Some(id)=zone.source_id {
+                zone_routes.apply_initial(id,&mut zone).map_err(|reason|invalid(&reason))?;
+            }
+        }
         if let Some(objects) = &mut out.ir.kontakt_objects {
             objects.zones.push(zone.source.clone());
         }
@@ -625,9 +643,26 @@ fn translate(
             ),
         };
         let before = out.ir.zones.len();
+        let template=zone.clone();
+        let home=[zone.group as u32,u32::from(zone.keys[0]),u32::from(zone.keys[1])];
         out.zone(index, zone, end, group, &params, location.clone());
         if out.ir.zones.len() > before {
             out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
+            if zone_routes.enabled && let Some(source_zone)=template.source_id {
+                let mut variants=vec![ir::ZoneRouteVariant {group:home[0],zone:Some(ir::ZoneRef(before))}];
+                for destination in zone_routes.destinations(home[0] as usize) {
+                    let at=out.ir.zones.len();
+                    if let Some(Some(group))=translated.get(destination) {
+                        let mut variant=template.clone();
+                        variant.group=destination;
+                        out.zone(index,variant,end,group,&params,location.clone());
+                    }
+                    variants.push(ir::ZoneRouteVariant {group:destination as u32,
+                        zone:(out.ir.zones.len()>at).then_some(ir::ZoneRef(at))});
+                }
+                out.ir.zone_routing.push(ir::ZoneRouting {source_zone,
+                    group:home[0],low_key:home[1] as u8,high_key:home[2] as u8,variants});
+            }
         }
     }
     drop(span);
@@ -3150,7 +3185,9 @@ impl Translation {
 }
 
 /// One serialized zone: its group, mapping and sample reference.
+#[derive(Clone)]
 struct RawZone {
+    source_id: Option<u32>,
     sample_present: bool,
     group: usize,
     start: u64,
@@ -3170,27 +3207,37 @@ struct RawZone {
     source: ir::kontakt::Zone,
 }
 
-/// Same one-based physical identities used by the later ZoneList admission
-/// pass. No dense group/zone ordinals, sample resolution or payload reads.
-fn source_zone_metadata(
-    data: &[u8],
-    groups: usize,
-) -> Result<std::collections::BTreeMap<u32, [i32; 3]>, String> {
-    let mut reader = Cursor::new(data);
-    let count = u32le(&mut reader).map_err(|e| e.to_string())?;
-    if count as usize > data.len() / 8 {
-        return Err("zone count exceeds the zone list".into());
-    }
-    let mut metadata = std::collections::BTreeMap::new();
+/// Complete physical order, independent of source/sample/playback admission.
+/// Unsupported/absent private identity is None, never ordinal+1 or region0.
+fn source_zone_catalog(data:&[u8],groups:usize)->Result<Vec<ir::SourceZone>,String> {
+    let mut reader=Cursor::new(data);
+    let count=u32le(&mut reader).map_err(|e|e.to_string())?;
+    if count as usize>data.len()/8 {return Err("zone count exceeds the zone list".into());}
+    let mut catalog=Vec::with_capacity(count as usize);
+    let mut identities=std::collections::BTreeSet::new();
     for index in 0..count {
-        let zone = raw_zone(&mut reader).map_err(|reason| format!("zone {index}: {reason}"))?;
-        if zone.group >= groups {
-            return Err(format!("zone {index} refers to missing group {}", zone.group));
+        let zone=raw_zone(&mut reader).map_err(|e|format!("zone {index}: {e}"))?;
+        if zone.group>=groups {return Err(format!("zone {index} refers to missing group {}",zone.group));}
+        if let Some(id)=zone.source_id && !identities.insert(id) {
+            return Err(format!("duplicate native zone source identity {id}"));
         }
-        let group = i32::try_from(zone.group).map_err(|_| "source group index exceeds script range")?;
-        metadata.insert(index + 1, [group, i32::from(zone.source.low_key), i32::from(zone.source.high_key)]);
+        if !(0..=127).contains(&zone.source.low_key) || !(0..=127).contains(&zone.source.high_key)
+            || zone.source.low_key>zone.source.high_key {return Err(format!("zone {index} has invalid source key bounds"));}
+        catalog.push(ir::SourceZone {id:zone.source_id,home:ir::SourceZoneHome {
+            group:zone.group as u32,low_key:u8::try_from(zone.source.low_key).map_err(|_|"invalid source low key")?,
+            high_key:u8::try_from(zone.source.high_key).map_err(|_|"invalid source high key")?,
+        }});
     }
-    Ok(metadata)
+    if reader.position()!=data.len() as u64 {return Err("trailing zone-list bytes".into());}
+    Ok(catalog)
+}
+fn zone_catalog_homes(catalog:&[ir::SourceZone])->std::collections::BTreeMap<u32,[i32;3]> {
+    catalog.iter().filter_map(|z|Some((z.id?,[i32::try_from(z.home.group).ok()?,
+        i32::from(z.home.low_key),i32::from(z.home.high_key)]))).collect()
+}
+#[cfg(test)]
+fn source_zone_metadata(data:&[u8],groups:usize)->Result<std::collections::BTreeMap<u32,[i32;3]>,String> {
+    source_zone_catalog(data,groups).map(|c|zone_catalog_homes(&c))
 }
 
 /// A saved automation tag's script slot, widget ordinal and whether it names a `ui_switch`.
@@ -3205,13 +3252,15 @@ fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
 
 #[cfg(test)]
 mod empty_zone_tests {
-    fn zone_record(group: u32, low: i16, high: i16) -> Vec<u8> {
+    fn zone_record(id:i32, group: u32, low: i16, high: i16) -> Vec<u8> {
         let mut public = vec![0; 48];
         public[16..18].copy_from_slice(&low.to_le_bytes());
         public[18..20].copy_from_slice(&high.to_le_bytes());
         let mut record = group.to_le_bytes().to_vec();
         record.extend([1, 0x9a, 0]);
-        record.extend(0u32.to_le_bytes());
+        record.extend(87u32.to_le_bytes());
+        let mut private=vec![0;87];private[83..87].copy_from_slice(&id.to_le_bytes());
+        record.extend(private);
         record.extend(48u32.to_le_bytes());
         record.extend(public);
         record.extend(0u32.to_le_bytes());
@@ -3221,11 +3270,11 @@ mod empty_zone_tests {
     #[test]
     fn initializer_zone_prepass_uses_physical_order_and_needs_no_sample_resolver() {
         let mut data = 3u32.to_le_bytes().to_vec();
-        data.extend(zone_record(2,60,61));
-        data.extend(zone_record(0,36,48));
-        data.extend(zone_record(1,80,90));
+        data.extend(zone_record(0,2,60,61));
+        data.extend(zone_record(7,0,36,48));
+        data.extend(zone_record(2018,1,80,90));
         assert_eq!(super::source_zone_metadata(&data,3).unwrap(),
-            [(1,[2,60,61]),(2,[0,36,48]),(3,[1,80,90])].into());
+            [(0,[2,60,61]),(7,[0,36,48]),(2018,[1,80,90])].into());
         assert!(super::source_zone_metadata(&data,2).is_err());
         assert!(super::source_zone_metadata(&data[..data.len()-1],3).is_err());
         data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -3270,6 +3319,12 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let so = StructuredObject::read(&mut *r).map_err(|e| e.to_string())?;
     let source_zone = Zone(so);
     let params = source_zone.params().map_err(|e| e.to_string())?;
+    // Unknown private variants retain no invented command identity.
+    let private=&source_zone.0.private_data;
+    let source_id = if matches!(source_zone.0.version,0x9a..=0x9c)
+        && private.len()==87 && private.get(56..58)==Some(&[0,0]) {
+        source_zone.source_id().map_err(|e|e.to_string())?
+    } else {None};
     let (start, end, start_mod) = (
         params.sample_start,
         params.sample_end,
@@ -3335,6 +3390,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     };
     let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
+        source_id,
         sample_present,
         group,
         start: start as u64,

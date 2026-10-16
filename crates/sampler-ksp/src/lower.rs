@@ -2767,7 +2767,16 @@ impl Gen<'_, '_> {
                 }))?;
                 true
             }
-            GetZonePar => {
+            GetNumZones => {
+                self.emit(I::Op(Op::SourceZoneCount {local:dst}))?;
+                true
+            }
+            GetZoneId => {
+                self.arg(args,0,dst)?;
+                self.emit(I::Op(Op::SourceZoneIdentity {index:dst,local:dst}))?;
+                true
+            }
+            GetZonePar | SetZonePar => {
                 let selectors =
                     ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"].map(|name| {
                         self.u
@@ -2780,11 +2789,18 @@ impl Gen<'_, '_> {
                 if let Some(parameter) = self.const_int(args, 1)
                     && !selectors.contains(&Some(parameter))
                 {
-                    self.ignore(builtin, "zone parameter is not implemented; result 0");
-                    return self.set(dst, 0);
+                    self.ignore(builtin, "zone parameter is outside the represented routing subset; live operation rejects");
                 }
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, dst + 1)?;
+                if builtin == SetZonePar {
+                    self.arg(args,2,dst+2)?;
+                    self.emit(I::Op(Op::SetZoneParameter {
+                        zone:dst, parameter:dst+1, value:dst+2, result:dst,
+                        selectors:selectors.map(|s|s.unwrap_or(0)),
+                        present:selectors.iter().enumerate().fold(0,|mask,(i,s)|mask|(u8::from(s.is_some())<<i)),
+                    }))?;
+                } else {
                 self.emit(I::Op(Op::ZoneParameter {
                     zone: dst,
                     parameter: dst + 1,
@@ -2797,6 +2813,7 @@ impl Gen<'_, '_> {
                         }),
                     local: dst,
                 }))?;
+                }
                 true
             }
             AddMenuItem => {
@@ -2957,7 +2974,7 @@ impl Gen<'_, '_> {
             // Instrument, presentation and logging services the engine does not own.
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
             | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
-            | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
+            | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
             | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
             | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
             | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal

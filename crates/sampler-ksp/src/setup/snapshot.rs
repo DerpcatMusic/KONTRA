@@ -35,7 +35,7 @@ pub enum SnapshotSavedRowError {
     Domain,
     TextCapacity,
     /// Native menus save an item position; the mutable live menu roster owns
-    /// its semantic value and has no atomic roster fence in this first slice.
+    /// its semantic value. The scalar-only mapper cannot resolve it.
     MenuRosterUnverified,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +131,12 @@ fn shape(field: &SetupField, value: &Saved) -> Result<usize, SnapshotSavedRowErr
     Ok(count)
 }
 
+#[derive(Debug)]
+pub struct SnapshotSavedState {
+    pub state: ScriptStateBuffer,
+    pub menus: Box<[sampler_core::SnapshotMenuPosition]>,
+}
+
 /// Map exact source names to current dense bank homes. Only Snapshot persistence
 /// is writable. Every expected row is required, with no coercion, broadcasting,
 /// truncation, or initialization fallback. Physical slots may be sparse (0/4).
@@ -139,6 +145,29 @@ pub fn snapshot_saved_state(
     incoming: &[SnapshotSavedSlot],
     limits: SnapshotSavedLimits,
 ) -> Result<ScriptStateBuffer, SnapshotSavedError> {
+    let mapped = snapshot_saved_state_with_menus(views, incoming, limits)?;
+    if let Some(menu) = mapped.menus.first() {
+        for view in views {
+            if let Some(field) = view.setup().fields.iter()
+                .find(|field| field.storage == Location::Control(menu.control))
+            {
+                return Err(row_error(
+                    view.slot, &field.name, SnapshotSavedRowError::MenuRosterUnverified,
+                ));
+            }
+        }
+        return Err(SnapshotSavedError::InvalidLayout);
+    }
+    Ok(mapped.state)
+}
+
+/// Complete typed incoming state plus unresolved native menu ordinals. Only the
+/// audio-owned sparse roster may turn these positions into semantic values.
+pub fn snapshot_saved_state_with_menus(
+    views: &[ScriptView],
+    incoming: &[SnapshotSavedSlot],
+    limits: SnapshotSavedLimits,
+) -> Result<SnapshotSavedState, SnapshotSavedError> {
     use SnapshotSavedError as E;
     let mut slots = BTreeMap::new();
     for (instance, view) in views.iter().enumerate() {
@@ -189,15 +218,6 @@ pub fn snapshot_saved_state(
             .iter()
             .filter(|field| field.persistence == Persistence::Snapshot)
         {
-            if view.model().interface.widgets.iter().any(|widget| {
-                widget.name == field.name && widget.kind == crate::model::WidgetKind::Menu
-            }) {
-                return Err(row_error(
-                    view.slot,
-                    &field.name,
-                    SnapshotSavedRowError::MenuRosterUnverified,
-                ));
-            }
             if !names.insert(field.name.as_str()) {
                 return Err(E::InvalidLayout);
             }
@@ -214,6 +234,12 @@ pub fn snapshot_saved_state(
                 let Saved::Int(value) = value else {
                     return Err(E::InvalidLayout);
                 };
+                if is_menu(view, id) {
+                    if *value < 0 {
+                        return Err(row_error(view.slot, &field.name, SnapshotSavedRowError::Domain));
+                    }
+                    continue;
+                }
                 if !view.setup().control_domains.iter().any(|(control, domain)| *control == id && matches!(domain, ControlDomain::Integer { min, max } if min <= value && value <= max)) {
                     return Err(row_error(view.slot, &field.name, SnapshotSavedRowError::Domain));
                 }
@@ -235,6 +261,7 @@ pub fn snapshot_saved_state(
         callbacks: Vec::with_capacity(views.len()),
         texts: Vec::with_capacity(text_count),
     };
+    let mut menus = Vec::new();
     let mut base = 0usize;
     for (instance, view) in views.iter().enumerate() {
         let instance = ScriptInstanceId(instance as u16);
@@ -245,6 +272,13 @@ pub fn snapshot_saved_state(
             .filter(|field| field.persistence == Persistence::Snapshot)
         {
             let saved = rows[&(view.slot, field.name.as_str())];
+            if let Location::Control(control) = field.storage && is_menu(view, control) {
+                let Saved::Int(position) = saved else {
+                    return Err(E::InvalidLayout);
+                };
+                menus.push(sampler_core::SnapshotMenuPosition::new(control, *position as i32));
+                continue;
+            }
             let len = match field.storage {
                 Location::Control(_) => 1,
                 Location::Cells { len, .. } | Location::Texts { len, .. } => len,
@@ -296,5 +330,18 @@ pub fn snapshot_saved_state(
     {
         return Err(E::InvalidLayout);
     }
-    Ok(state)
+    menus.sort_unstable_by_key(|row| row.control);
+    if menus.windows(2).any(|rows| rows[0].control == rows[1].control) {
+        return Err(E::InvalidLayout);
+    }
+    Ok(SnapshotSavedState {
+        state,
+        menus: menus.into_boxed_slice(),
+    })
+}
+
+fn is_menu(view: &ScriptView, control: sampler_core::ControlId) -> bool {
+    view.model().interface.widgets.iter().any(|widget| {
+        widget.control == Some(control) && widget.kind == crate::model::WidgetKind::Menu
+    })
 }

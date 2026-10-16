@@ -63,6 +63,8 @@ pub struct NativeSnapshotOverlay {
     pub expected: SnapshotOverlayFence,
     pub state: ScriptStateBuffer,
     pub native: Box<[ControlWrite]>,
+    /// Native saved ordinals, resolved only against the current audio-owned roster.
+    pub menus: Box<[super::SnapshotMenuPosition]>,
     /// At most two product generation/load gates.
     pub epochs: Box<[SnapshotOverlayEpoch]>,
     pub refusal: Option<SnapshotOverlayRefusal>,
@@ -80,6 +82,7 @@ impl NativeSnapshotOverlay {
             expected,
             state,
             native,
+            menus: Box::new([]),
             epochs: Box::new([]),
             refusal: None,
             committed: None,
@@ -179,6 +182,7 @@ impl Runtime {
             .values
             .len()
             .checked_add(overlay.native.len())
+            .and_then(|count| count.checked_add(overlay.menus.len()))
             .is_none_or(|count| count > SNAPSHOT_OVERLAY_VALUE_CAPACITY)
             || overlay.state.callbacks.len() > 5
         {
@@ -269,6 +273,7 @@ impl Runtime {
                 .windows(2)
                 .any(|v| v[0].program >= v[1].program)
             || overlay.native.windows(2).any(|v| v[0].id >= v[1].id)
+            || overlay.menus.windows(2).any(|v| v[0].control >= v[1].control)
             || state
                 .callbacks
                 .iter()
@@ -301,6 +306,7 @@ impl Runtime {
                             .native
                             .binary_search_by_key(&id, |row| row.id)
                             .is_ok()
+                        || overlay.menus.binary_search_by_key(&id, |row| row.control).is_ok()
                     {
                         return Err(R::InvalidInput);
                     }
@@ -320,6 +326,12 @@ impl Runtime {
             {
                 return Err(R::InvalidInput);
             }
+        }
+        for row in &overlay.menus {
+            if overlay.native.binary_search_by_key(&row.control, |row| row.id).is_ok() {
+                return Err(R::InvalidInput);
+            }
+            super::snapshot_menu::menu_value(generation, row).map_err(|_| R::InvalidInput)?;
         }
         let mut prior = None;
         for callback in &state.callbacks {
@@ -353,9 +365,9 @@ impl Runtime {
             .callbacks
             .checked_add(state.callbacks.len())
             .ok_or(R::Capacity)?;
-        self.last_callback_id
-            .checked_add(i32::try_from(state.callbacks.len()).map_err(|_| R::Capacity)?)
-            .ok_or(R::Capacity)?;
+        crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, state.callbacks.len())
+            .map_err(|_| R::Capacity)?;
         // Preparation may be canceled while the bounded roster is checked.
         // This last acquire is the snapshot's admission linearization point.
         if overlay
@@ -458,6 +470,18 @@ impl Runtime {
                 _ => unreachable!("preflighted snapshot home"),
             }
         }
+        // Preflight checked ALL ordinals before ANY writes. No incoming home can
+        // address sparse roster keys; admitted callbacks have not run yet. This
+        // second read is fenced by the same exclusive audio-owner boundary.
+        for row in &overlay.menus {
+            let value = super::snapshot_menu::menu_value(generation, row)
+                .expect("preflighted immutable-at-commit menu roster");
+            let index = generation.prepared.control_index(row.control).unwrap();
+            generation.controls.base[index] = value;
+            let playing = generation.controls.playing(&generation.prepared, index);
+            generation.controls.values[index] = playing;
+            generation.dsp.edit_control(&generation.prepared, index, playing, self.now);
+        }
         generation.controls.revision = next_revision;
         generation.script_revision += 1;
         overlay.committed = Some(SnapshotOverlayFence {
@@ -471,7 +495,7 @@ impl Runtime {
             callback.outcome = self.behavior_outcome(id)?;
         }
         Ok((
-            overlay.state.values.len() + overlay.native.len(),
+            overlay.state.values.len() + overlay.native.len() + overlay.menus.len(),
             self.control_revision(plan)?,
         ))
     }

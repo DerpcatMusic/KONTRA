@@ -18,6 +18,7 @@ pub(super) fn waveform(
     duration_us: Option<u64>,
     colors: ir::Colors,
     hide_background: bool,
+    axis: Option<ir::Rgba>,
 ) -> El {
     let fill = |c: ir::Rgba| {
         Fill::from(
@@ -37,6 +38,10 @@ pub(super) fn waveform(
         let across = (s.width.ceil() as usize).clamp(1, 4096);
         let n = peaks.len();
         let mid = s.height / 2.;
+        // Generic manual-display axis only; no native channel/name/blend law.
+        if let Some(axis) = axis {
+            draws.push(Draw::fill(rect(0., mid.floor(), s.width, 1.), fill(axis)));
+        }
         if n > 0 && mid > 0. {
             let mut top = Vec::with_capacity(across * 2);
             let mut foot = Vec::with_capacity(across * 2);

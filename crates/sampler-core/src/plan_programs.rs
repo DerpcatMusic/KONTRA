@@ -204,9 +204,8 @@ impl Runtime {
             .callbacks
             .checked_add(needed)
             .ok_or(Error::Capacity)?;
-        self.last_callback_id
-            .checked_add(i32::try_from(needed).map_err(|_| Error::Capacity)?)
-            .ok_or(Error::Capacity)?;
+        crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, needed)?;
         if !self.behavior_room(needed) {
             return Err(Error::Capacity);
         }
