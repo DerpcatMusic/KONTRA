@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "packages": {
+    "kontakto": [
+      "clap",
+      "default",
+      "library-access",
+      "plugin",
+      "vst3"
+    ],
+    "sampler-core": [
+      "cache"
+    ],
+    "sampler-ir": [
+      "cache"
+    ],
+    "sampler-simd": [],
+    "sampler-pool": [],
+    "sampler-ksp": [
+      "cache",
+      "scan"
+    ],
+    "sampler-kontakt": [
+      "default",
+      "library-access",
+      "native-ui",
+      "scan"
+    ],
+    "sampler-uvi": [
+      "default",
+      "library-access",
+      "scan"
+    ],
+    "sampler-midi": [],
+    "sampler-native": [
+      "default",
+      "library-access"
+    ],
+    "sampler-ui-ir": [],
+    "sampler-perf": [],
+    "sampler-parity": [],
+    "corpus-health": [
+      "default",
+      "library-access"
+    ]
+  },
+  "evidence": [
+    {
+      "source": "a05ffc3de2b1c71ee93ffc7dd7a2298712232143",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "-j2",
+        "--profile",
+        "release",
+        "--locked",
+        "--message-format=json-render-diagnostics",
+        "-p",
+        "kontakto",
+        "-p",
+        "sampler-core",
+        "-p",
+        "sampler-ir",
+        "-p",
+        "sampler-simd",
+        "-p",
+        "sampler-pool",
+        "-p",
+        "sampler-ksp",
+        "-p",
+        "sampler-kontakt",
+        "-p",
+        "sampler-uvi",
+        "-p",
+        "sampler-midi",
+        "-p",
+        "sampler-native",
+        "-p",
+        "sampler-ui-ir",
+        "-p",
+        "sampler-perf",
+        "-p",
+        "sampler-parity",
+        "-p",
+        "corpus-health",
+        "--test",
+        "inspect_seed",
+        "--test",
+        "source"
+      ],
+      "log_sha256": "afb3ad2b63e71f5b5341d26818711d4c1458c72b84589bbffe11ac2d6b2a6fa2",
+      "note": "Completed real Cargo process exit 0, unchanged source closure. Full release profile; same fourteen packages; ordinary default ignored-test behavior. cargo-proof07"
+    },
+    {
+      "source": "a05ffc3de2b1c71ee93ffc7dd7a2298712232143",
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "-j2",
+        "--profile",
+        "release",
+        "--locked",
+        "--message-format=json-render-diagnostics",
+        "-p",
+        "kontakto",
+        "-p",
+        "sampler-core",
+        "-p",
+        "sampler-ir",
+        "-p",
+        "sampler-simd",
+        "-p",
+        "sampler-pool",
+        "-p",
+        "sampler-ksp",
+        "-p",
+        "sampler-kontakt",
+        "-p",
+        "sampler-uvi",
+        "-p",
+        "sampler-midi",
+        "-p",
+        "sampler-native",
+        "-p",
+        "sampler-ui-ir",
+        "-p",
+        "sampler-perf",
+        "-p",
+        "sampler-parity",
+        "-p",
+        "corpus-health",
+        "--test",
+        "mpe_uvi",
+        "--bin",
+        "sampler-native",
+        "--bin",
+        "sampler-perf"
+      ],
+      "log_sha256": "542c6169d4a2058839d5285993ccfa8fa6cbdb392f8ad64c368c6aa92da541a5",
+      "note": "Completed real Cargo process exit 0, unchanged source closure. Full release profile; same fourteen packages; ordinary default ignored-test behavior. feature-proof08"
+    }
+  ]
+}
