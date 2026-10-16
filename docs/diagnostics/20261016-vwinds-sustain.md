@@ -131,11 +131,11 @@ One new six-second observation used the same key 60, velocity 96, no CC plan and
 that frozen helper. All six owner snapshots returned the required facts:
 12 selected model nodes plus synthetic Part, one complete 144-cell matrix,
 14 ordered insert references and three routes. The matrix values were identical
-at initialization, before PCM, frames48,000/240,000, and the final288,000.
-Matrix8985 is enabled; its first output uses input coefficients
-[1,1,0.99960017,1,1,1], and output2 uses [0.0024501085,0,0,0,0,0].
-Outputs3–6 have zero coefficients for the six actual inputs. The primary
-player9019 is enabled, alternates9073/9127 are bypassed, second insert9003 is
+at initialization, before PCM, frames 48,000/240,000, and the final 288,000.
+Matrix 8985 is enabled; its first output uses input coefficients
+[1,1,0.99960017,1,1,1], and output 2 uses [0.0024501085,0,0,0,0,0].
+Outputs 3–6 have zero coefficients for the six actual inputs. The primary
+player 9019 is enabled, alternates 9073/9127 are bypassed, second insert 9003 is
 bypassed, and keygroup FXPostGain is false. These are ordinary owner/getter
 facts, not native dimensional semantics or future-state proof.
 
