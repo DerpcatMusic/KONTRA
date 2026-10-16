@@ -6,6 +6,14 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.503
+
+Distributes shipping integration-test compilation across eight Linux runners after the 0.3.502 Nightly exhausted its three-hour validation budget before any test harness started. Every integration target remains required exactly once, including names shared by packages. All fourteen first-party package selections and the release ThinLTO profile remain unchanged.
+
+Shipping validation now checks actual enabled features against a reviewed Cargo artifact contract and rejects source changes beyond the deterministic Nightly version stamp. Library and binary tests, documentation tests, example builds, native format/editor checks, signing/notarization, installer rollback and legal/manifest gates remain mandatory. Local workflow and selected Cargo proofs passed; hosted cold-build completion and publication bind the new merged source and are not inferred from those local checks.
+
+This is a release-pipeline correction. The compatibility, finite-loading and performance limits below remain, as do the 69 reviewed error-level Doctor findings and its failed tool gate under contextual review. No local installation is changed by this source checkpoint.
+
 ## 0.3.502
 
 Adds one reviewed loader correction to the 0.3.501 source checkpoint: changing a translated instrument's public script roster or changing a script to KSP invalidates the cached initializer shape. Valid unchanged scripts still initialize once; malformed replacements and source-identity changes retain explicit diagnostics. Six authored regressions cover these boundaries.
