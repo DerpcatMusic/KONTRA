@@ -343,6 +343,8 @@ pub enum Stage {
 /// IR meaning the runtime cannot yet execute.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Feature {
+    /// An explicitly typed wide source never falls through a stereo renderer.
+    SourceBundle(crate::SourceBundleRefusal),
     Trigger(ir::Trigger),
     ZoneRouting(crate::ZoneRoutingFeature),
     KeyScaling {
@@ -592,6 +594,10 @@ pub fn lower_with(
         return Err(core(Stage::ZoneRouting, "source zone catalog")(Error::Capacity));
     }
     instrument.validate().map_err(LowerError::Invalid)?;
+    // This must precede group-tap rewriting, effect preparation, behavior
+    // binding and publication. A wide recipe may never become a legacy voice
+    // merely because the initial implementation cannot render its layout yet.
+    crate::source::bundle::admit_initial(instrument, &pcm)?;
     let tapped;
     let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
         tapped = instrument.with_group_taps();
