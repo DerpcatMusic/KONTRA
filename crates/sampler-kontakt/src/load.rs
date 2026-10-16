@@ -984,8 +984,21 @@ fn compile_ui_initialized(
     Option<Resources>,
 ) {
     let (rate, scripts) = (options.rate, options.scripts);
-    // Reuse translated init only for the same host state; late callers may supply different overrides.
-    let initialized = initialized.filter(|init| init.control_values == options.control_values);
+    // The public instrument may have gained/removed behaviors or changed their
+    // languages since translation. Reuse only a matching initialization shape;
+    // otherwise initialize the current instrument through the ordinary path.
+    // Same-shape KSP source changes still fail compile_initialized's digest check.
+    let initialized = initialized.filter(|init| {
+        init.control_values == options.control_values
+            && init.states.len() == instrument.behaviors.len()
+            && init
+                .states
+                .iter()
+                .zip(&instrument.behaviors)
+                .all(|(state, behavior)| {
+                    state.is_some() == (behavior.language == ir::Language::Ksp)
+                })
+    });
     let mut initialized = initialized.unwrap_or_else(|| {
         let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
         initialize_scripts(instrument, options.library.as_deref(), groups, &options.control_values)
@@ -1756,3 +1769,128 @@ mod diagnostic_tests {
 #[cfg(test)]
 #[path = "zone_init_tests.rs"]
 mod zone_init_tests;
+
+#[cfg(test)]
+mod initialization_shape_tests {
+    use super::*;
+
+    fn behavior(slot: u8, language: ir::Language) -> ir::Behavior {
+        ir::Behavior {
+            name: format!("shape slot {slot}"),
+            language,
+            slot: Some(slot),
+            state: vec![],
+            requires: vec![],
+            source: "on init\n declare ui_knob $Value(0, 127, 1)\nend on".into(),
+        }
+    }
+
+    fn translated(behaviors: Vec<ir::Behavior>) -> Kontakt {
+        let mut instrument = ir::Instrument {
+            behaviors,
+            ..Default::default()
+        };
+        let initialized = initialize_scripts(&mut instrument, None, vec![], &[]);
+        Kontakt {
+            instrument,
+            locations: vec![],
+            samples: crate::Samples::new(Path::new(".")),
+            initialized: Some(initialized),
+        }
+    }
+
+    #[test]
+    fn unchanged_behavior_shape_consumes_existing_initialization_once() {
+        take_script_init_runs();
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        assert_eq!(take_script_init_runs(), 1);
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 3);
+        assert_eq!(take_script_init_runs(), 0);
+        assert!(kontakt.initialized.is_none());
+    }
+
+    #[test]
+    fn appended_ksp_behavior_reinitializes_before_indexing_cached_states() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        kontakt
+            .instrument
+            .behaviors
+            .push(behavior(4, ir::Language::Ksp));
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(
+            scripts
+                .iter()
+                .map(|script| script.slot())
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(take_script_init_runs(), 2);
+    }
+
+    #[test]
+    fn language_change_reinitializes_instead_of_unwrapping_absent_ksp_state() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Lua)]);
+        kontakt.instrument.behaviors[0].language = ir::Language::Ksp;
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 3);
+        assert_eq!(take_script_init_runs(), 1);
+    }
+
+    #[test]
+    fn removed_behavior_invalidates_the_cached_roster() {
+        let mut kontakt = translated(vec![
+            behavior(3, ir::Language::Ksp),
+            behavior(4, ir::Language::Ksp),
+        ]);
+        kontakt.instrument.behaviors.remove(0);
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 4);
+        assert_eq!(take_script_init_runs(), 1);
+    }
+
+    #[test]
+    fn changed_shape_retains_initializer_failure_as_a_script_diagnostic() {
+        let mut kontakt = translated(vec![]);
+        let mut invalid = behavior(3, ir::Language::Ksp);
+        invalid.source = "on init\n get_scale(0, %CC)\nend on".into();
+        kontakt.instrument.behaviors.push(invalid);
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert!(scripts.is_empty());
+        assert!(interfaces.is_empty());
+        assert_eq!(take_script_init_runs(), 1);
+        assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
+            diagnostic.location == "shape slot 3"
+                && diagnostic.feature == "script"
+                && diagnostic.value.contains("get_scale")
+        }));
+    }
+
+    #[test]
+    fn same_shape_source_change_still_reports_source_identity_failure() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        kontakt.instrument.behaviors[0].source.push('\n');
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert!(scripts.is_empty());
+        assert!(interfaces.is_empty());
+        assert_eq!(take_script_init_runs(), 0);
+        assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
+            diagnostic.feature == "script"
+                && diagnostic
+                    .value
+                    .contains("initialized source identity changed")
+        }));
+    }
+}
