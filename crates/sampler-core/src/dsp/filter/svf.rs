@@ -186,6 +186,10 @@ pub(crate) struct PreparedFilters {
     svfs: Box<[PreparedSvf]>,
 }
 impl PreparedFilters {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
     pub(crate) fn kind(&self, addressed: usize) -> Option<FilterKind> {
         self.kinds.get(addressed).copied()
     }
