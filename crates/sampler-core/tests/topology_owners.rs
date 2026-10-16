@@ -416,14 +416,25 @@ fn authored_member_order_defines_each_binary32_sum_boundary() {
         },
     );
     ir.processing_scopes[0].members = vec![ir::ZoneRef(2), ir::ZoneRef(0), ir::ZoneRef(1)];
-    let sources = [4_194_304., -4_194_304., 0.125]
+    let sources: Vec<_> = [4_194_304., -4_194_304., 0.125]
         .into_iter()
         .map(|v| pcm(48000, vec![[v; 2]; 128]))
         .collect();
-    let mut rt = runtime(&ir, sources);
+    let mut rt = runtime(&ir, sources.clone());
     rt.trigger(input(1), 60, 1.).unwrap();
     // Physical slot order gives 0.125; authored 0.125 + large - large gives0.
     assert!(render(&mut rt, 64, 17).iter().all(|x| *x == [0.; 2]));
+
+    // Same immutable sources, alternate authored permutation. A dropped or
+    // muted owner cannot satisfy this nonzero positive control.
+    ir.processing_scopes[0].members = vec![ir::ZoneRef(0), ir::ZoneRef(1), ir::ZoneRef(2)];
+    let mut positive = runtime(&ir, sources);
+    positive.trigger(input(1), 60, 1.).unwrap();
+    assert!(
+        render(&mut positive, 64, 17)
+            .iter()
+            .all(|x| *x == [0.125; 2])
+    );
 }
 
 #[test]
@@ -565,4 +576,146 @@ fn member_local_tap_retains_note_expression_while_main_is_captured_for_owner() {
     close(&actual, &render(&mut reference, 64, 17));
     assert!((actual[63][0] - 0.03125).abs() < 1e-6);
     assert!((actual[63][1] - 0.0625).abs() < 1e-6);
+}
+
+/// Uses the same pinned public SourceModulator/SourceAhdsr provenance and
+/// parameter geometry as lower.rs::native_primary_fixture. The data is an
+/// existing supported native primary, not a guessed UVI amplitude mapping.
+fn native_primary_scope_fixture() -> ir::Instrument {
+    let mut instrument = ir::Instrument {
+        assets: vec![asset(0)],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            amplitude: Some(ir::ModulatorRef(0)),
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                attack: ir::Time::Milliseconds(125.01293),
+                attack_shape: {
+                    let b = f64::from((-20_000f64.ln()).exp() as f32);
+                    ir::Curve::Exponential(((1. + b) / b).ln())
+                },
+                release_shape: ir::Curve::Exponential((3.0f64 / 43.).ln()),
+                release: ir::Time::Milliseconds(250.0013),
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    };
+    instrument
+        .source_indices
+        .modulators
+        .push(ir::SourceModulator {
+            group: 0,
+            slot: 7,
+            external: false,
+            name: "primary".into(),
+            runtime: Some(ir::ModulatorRef(0)),
+            settings: None,
+        });
+    instrument.source_indices.ahdsrs.push(ir::SourceAhdsr {
+        group: 0,
+        slot: 7,
+        attack_ms: 125.01293,
+        attack_curve: -1.,
+        hold_ms: 0.,
+        decay_ms: 0.,
+        sustain: 1.,
+        release_ms: 250.0013,
+        ahd_only: false,
+        native_amplitude: true,
+    });
+    instrument
+}
+
+#[test]
+fn native_amplitude_provenance_refuses_owner_migration_but_preserves_source_law() {
+    use sampler_core::v1_voice_controls::{Ahdsr, ControlDescription, ControlPlan, ControlState};
+    // Both the existing singleton and a source-local native amplitude beneath
+    // an identity owner stay on the supported pinned production evaluator.
+    for identity_owner in [false, true] {
+        let mut instrument = native_primary_scope_fixture();
+        if identity_owner {
+            instrument.processing_scopes.push(ir::ProcessingScope {
+                members: vec![ir::ZoneRef(0)],
+                sum: ir::ProcessingSumLaw::OrderedF32,
+                cadence: ir::ProcessingCadence::CoreCell64,
+                chain: None,
+                amplitude: None,
+                output: None,
+            });
+        }
+        let reference = ControlPlan::prepare(
+            ControlDescription {
+                amplitude: Ahdsr::from(&instrument.source_indices.ahdsrs[0]),
+                native_amplitude: true,
+                ..Default::default()
+            },
+            48000.,
+        )
+        .unwrap();
+        let mut expected = ControlState::new(&reference);
+        let mut rt = runtime(&instrument, vec![pcm(48000, vec![[1.; 2]; 4800])]);
+        let note = rt.trigger(input(1), 60, 1.).unwrap();
+        let mut any_positive = false;
+        for (block, n) in [1usize, 7, 31, 32, 33, 64, 17, 3].into_iter().enumerate() {
+            if block == 5 {
+                expected.release(&reference);
+                rt.note_off_exact(note, None).unwrap();
+            }
+            let mut output = [[0.; 2]; 128];
+            let mut amplitudes = [0.; 128];
+            let mut positions = [0; 128];
+            expected
+                .render(
+                    &reference,
+                    120.,
+                    1.,
+                    &mut amplitudes[..n],
+                    None,
+                    None,
+                    &mut positions[..n],
+                )
+                .unwrap();
+            support::without_heap(|| rt.render(&mut output[..n]).unwrap());
+            for (frame, value) in output[..n].iter().zip(&amplitudes) {
+                assert_eq!(
+                    frame.map(f32::to_bits),
+                    [value.to_bits(); 2],
+                    "identity_owner={identity_owner} block={block}"
+                );
+                any_positive |= *value > 0.;
+            }
+        }
+        assert!(any_positive);
+        rt.panic();
+    }
+    // The same declaration cannot silently become a generic shared owner
+    // envelope merely by clearing the zone's source identity during lowering.
+    let mut instrument = native_primary_scope_fixture();
+    instrument.processing_scopes.push(ir::ProcessingScope {
+        members: vec![ir::ZoneRef(0)],
+        sum: ir::ProcessingSumLaw::OrderedF32,
+        cadence: ir::ProcessingCadence::CoreCell64,
+        chain: None,
+        amplitude: Some(ir::ModulatorRef(0)),
+        output: None,
+    });
+    assert!(matches!(
+        lower(
+            &instrument,
+            48000,
+            vec![pcm(48000, vec![[1.; 2]; 4800])],
+            |_, p| Ok::<_, LowerError>(p)
+        ),
+        Err(LowerError::Unsupported {
+            feature: sampler_core::lower::Feature::Controls,
+            ..
+        })
+    ));
 }
