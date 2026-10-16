@@ -94,6 +94,24 @@ transaction refusal cover the ownership law beyond a memoryless example.
 These authored tests establish the graph contract, not native UVI mode numbering
 or actual instrument timbre.
 
+The first executable slice is implemented and validated at code commit
+`634cb6788a8ac295b9696ab0cf245ca98bcf8790`. Eighteen authored topology tests pass,
+including native Kontakt amplitude preservation/refusal controls. The complete
+core/IR library and integration test command, affected all-target Clippy,
+Kontakt/UVI library tests, and standalone all-target check pass. The same-policy
+Doctor producer completed with no producer errors, zero blocking diagnostics,
+and 11,619 warnings; these warnings remain visible and no rules were waived.
+
+The broad test run exposed an existing envelope-schema allocation failure:
+the unchanged baseline requested 536,140 bytes against its 524,288-byte limit.
+Reserving known batch dimensions reduced the request to 290,860 bytes. The test
+and limit remain unchanged. Baseline and corrected receipts are retained.
+
+This slice has explicit resident stereo edges, scalar shared processing and an
+opt-in IR definition. Existing format adapters do not yet emit the new scopes.
+No six-channel playback, full streaming cohort, actual VWinds fix, binary
+installation or shipping acceptance is established by these passing tests.
+
 Next, the normal UVI adapter and full-channel source lifecycle must emit and
 execute the actual Clarinet topology, including all three retained players,
 matrix, OnePole, envelope placement, sends and live control paths. Native DSP
