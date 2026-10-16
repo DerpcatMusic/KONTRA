@@ -1559,12 +1559,12 @@ mod tests {
                             None => m.core(s, x),
                             Some(k) => {
                                 let f = m.factor;
-                                let mut up = [[0f32; super::super::kaiser::MAX]; 2];
+                                let mut up = [[0f32; crate::dsp::kaiser::MAX]; 2];
                                 for c in 0..2 {
                                     let rs = &mut s.ch[c].rs;
                                     k.up(rs, x[c], &mut up[c]);
                                 }
-                                let mut down = [[0f32; super::super::kaiser::MAX]; 2];
+                                let mut down = [[0f32; crate::dsp::kaiser::MAX]; 2];
                                 for p in 0..f {
                                     let y = m.core(s, [up[0][p], up[1][p]]);
                                     (down[0][p], down[1][p]) = (y[0], y[1]);
