@@ -15,6 +15,9 @@ pub(super) struct Config {
     pace_ms: u8,
     #[serde(default)]
     controllers: Vec<Controller>,
+    /// Explicitly requested, note-relative physical output-pair windows.
+    #[serde(default)]
+    output_windows: Vec<OutputWindow>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,8 +46,150 @@ impl Config {
                 "UVI probe requires phase/total wall limits 1..10000 ms with phase <= total, pace 1..20 ms, 128..96000 note frames and at most 32 valid explicit MIDI controllers",
             );
         }
+        validate_output_windows(&self.output_windows, note_frames)?;
         Ok(())
     }
+}
+
+// Work and memory bounds are checked with the complete plan before loading.
+const OUTPUT_WINDOW_FRAMES: usize = 96_000;
+const OUTPUT_WINDOW_CORRELATION_WORK: usize = 128_000_000;
+const OUTPUT_WINDOW_RATE: f64 = 48_000.;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputWindow {
+    start_frame: usize,
+    end_frame: usize,
+    output_pair: usize,
+    min_lag: usize,
+    max_lag: usize,
+    max_peaks: usize,
+}
+fn validate_output_windows(windows: &[OutputWindow], note_frames: usize) -> Result<(), &'static str> {
+    if windows.len() > 8 {
+        return Err("At most eight explicit output windows are allowed");
+    }
+    let mut frames = 0usize;
+    let mut work = 0usize;
+    for w in windows {
+        let len = w.end_frame.checked_sub(w.start_frame)
+            .filter(|len| *len >= 8 && w.end_frame <= note_frames)
+            .ok_or("Output window must contain at least eight frames within the held note")?;
+        if w.output_pair >= crate::sound::BUSES || w.min_lag == 0
+            || w.min_lag > w.max_lag || w.max_lag > 2048
+            || w.max_lag >= len / 2 || !(1..=8).contains(&w.max_peaks)
+        {
+            return Err("Invalid output pair, lag bounds or peak count");
+        }
+        frames = frames.checked_add(len).ok_or("Output window frame budget overflow")?;
+        let operations = len.checked_mul(w.max_lag - w.min_lag + 3)
+            .and_then(|v| v.checked_mul(2)).ok_or("Output correlation work budget overflow")?;
+        work = work.checked_add(operations).ok_or("Output correlation work budget overflow")?;
+        if frames > OUTPUT_WINDOW_FRAMES || work > OUTPUT_WINDOW_CORRELATION_WORK {
+            return Err("Output windows exceed the frame or correlation work budget");
+        }
+    }
+    Ok(())
+}
+
+struct WindowSamples {
+    config: OutputWindow,
+    samples: Vec<[f32; 2]>,
+}
+pub(super) struct OutputWindowCapture {
+    frames: usize,
+    windows: Vec<WindowSamples>,
+}
+impl OutputWindowCapture {
+    fn new(windows: &[OutputWindow]) -> Self {
+        Self {
+            frames: 0,
+            windows: windows.iter().cloned().map(|config| {
+                let samples = Vec::with_capacity(config.end_frame - config.start_frame);
+                WindowSamples { config, samples }
+            }).collect(),
+        }
+    }
+    /// Runs after core.render on this off-audio diagnostic host. Capacities
+    /// already cover every intersection; PCM never enters serde or a log.
+    pub(super) fn observe(&mut self, buses: &[crate::sound::Block; crate::sound::BUSES], frames: usize) {
+        let end = self.frames + frames;
+        for window in &mut self.windows {
+            let start = self.frames.max(window.config.start_frame);
+            let stop = end.min(window.config.end_frame);
+            if start >= stop { continue; }
+            let channels = &buses[window.config.output_pair];
+            for frame in start - self.frames..stop - self.frames {
+                window.samples.push([channels[0][frame], channels[1][frame]]);
+            }
+        }
+        self.frames = end;
+    }
+    fn finish(self) -> Value {
+        let started = Instant::now();
+        let windows: Vec<_> = self.windows.into_iter().enumerate().map(|(index,w)| {
+            let expected = w.config.end_frame - w.config.start_frame;
+            json!({"index":index,"start_frame":w.config.start_frame,"end_frame":w.config.end_frame,
+                "output_pair":w.config.output_pair,"sample_rate":OUTPUT_WINDOW_RATE,
+                "frames":w.samples.len(),"requested_frames":expected,"complete":w.samples.len()==expected,
+                "min_lag":w.config.min_lag,"max_lag":w.config.max_lag,"max_peaks":w.config.max_peaks,
+                "channels":[output_channel_metrics(&w.samples,0,&w.config),output_channel_metrics(&w.samples,1,&w.config)]})
+        }).collect();
+        json!({"windows":windows,"analysis_wall_ms":started.elapsed().as_secs_f64()*1000.,
+            "frame_budget":OUTPUT_WINDOW_FRAMES,"correlation_work_budget":OUTPUT_WINDOW_CORRELATION_WORK,
+            "pcm_exported":false,"scope":"Exact half-open note-relative PCM intersections, each explicit physical output pair/channel independently; bounded DC-removed normalized autocorrelation candidates, not a native-parity or perceptual pitch verdict"})
+    }
+}
+
+fn output_channel_metrics(samples: &[[f32; 2]], channel: usize, config: &OutputWindow) -> Value {
+    let finite = samples.iter().all(|s| s[channel].is_finite());
+    if samples.is_empty() || !finite {
+        return json!({"channel":channel,"frames":samples.len(),"finite":finite,"measured":false,"reason":if finite {"no_frames"}else{"nonfinite"}});
+    }
+    let count = samples.len() as f64;
+    let dc = samples.iter().map(|s| f64::from(s[channel])).sum::<f64>() / count;
+    let square_sum = samples.iter().map(|s| f64::from(s[channel]).powi(2)).sum::<f64>();
+    let rms = (square_sum / count).sqrt();
+    // A centered second pass preserves tiny AC on top of a large DC offset.
+    let ac_rms = (samples.iter().map(|s| (f64::from(s[channel])-dc).powi(2)).sum::<f64>() / count).sqrt();
+    let peak = samples.iter().map(|s| f64::from(s[channel]).abs()).fold(0., f64::max);
+    let mut result = json!({"channel":channel,"frames":samples.len(),"finite":true,"measured":true,
+        "dc":dc,"rms":rms,"ac_rms":ac_rms,"peak":peak,
+        "rms_dbfs":(rms>0.).then(||20.*rms.log10()),"ac_rms_dbfs":(ac_rms>0.).then(||20.*ac_rms.log10()),
+        "periodicity":{"status":"no_ac_energy","peaks":[]}});
+    if ac_rms == 0. { return result; }
+    if samples.len() <= config.max_lag * 2 {
+        result["periodicity"]["status"] = json!("insufficient_observed_frames");
+        return result;
+    }
+    // Include one neighboring lag at either end so requested boundary peaks
+    // have a real local-maximum test and parabolic interpolation.
+    let first_lag = config.min_lag.saturating_sub(1);
+    let last_lag = config.max_lag + 1;
+    let correlation: Vec<f64> = (first_lag..=last_lag).map(|lag| {
+        let (mut product, mut a2, mut b2) = (0.,0.,0.);
+        for i in 0..samples.len()-lag {
+            let a = f64::from(samples[i][channel])-dc;
+            let b = f64::from(samples[i+lag][channel])-dc;
+            product += a*b; a2 += a*a; b2 += b*b;
+        }
+        if a2 > 0. && b2 > 0. { (product/(a2*b2).sqrt()).clamp(-1.,1.) } else { 0. }
+    }).collect();
+    let mut peaks: Vec<_> = (config.min_lag..=config.max_lag).filter_map(|lag| {
+        let i = lag-first_lag;
+        let (before,score,after) = (correlation[i-1],correlation[i],correlation[i+1]);
+        if score <= 0. || score <= before || score < after { return None; }
+        let curvature = before-2.*score+after;
+        let fraction = if curvature < 0. { (0.5*(before-after)/curvature).clamp(-0.5,0.5) } else { 0. };
+        Some((lag,score,lag as f64+fraction))
+    }).collect();
+    peaks.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    peaks.truncate(config.max_peaks);
+    result["periodicity"] = json!({"status":"measured","peaks":peaks.into_iter().map(|(lag,score,refined)|
+        json!({"lag_frames":lag,"refined_lag_frames":refined,"hz":OUTPUT_WINDOW_RATE/refined,"normalized_correlation":score})).collect::<Vec<_>>(),
+        "candidate_scope":"Positive local maxima sorted by correlation, then lag; harmonics/octave alternatives retained, no octave correction"});
+    result
 }
 
 struct Bounds {
@@ -459,6 +604,8 @@ pub(super) fn probe_note(
     let bounds = Bounds::new(config);
     let mut service = Service::default();
     let mut audio = Audio::new();
+    // Allocate the complete finite PCM budget before any note or render.
+    let mut output_windows = OutputWindowCapture::new(&config.output_windows);
     let mut issues = Vec::<String>::new();
     let mut result = json!({"status":"partial","requested_frames":note_frames,"key":note.key,
         "velocity":velocity,"note_channel":note.channel,"audio_generation":owner.request,
@@ -608,7 +755,8 @@ pub(super) fn probe_note(
                     break;
                 }
                 let n = (note_frames - audio.frames).min(128);
-                let block = match switch_render(core, owner, n) {
+                let observer = (!config.output_windows.is_empty()).then_some(&mut output_windows);
+                let block = match switch_render_observed(core, owner, n, observer) {
                     Ok(block) => block,
                     Err(e) => {
                         issues.push(format!("pcm:{e}"));
@@ -702,6 +850,9 @@ pub(super) fn probe_note(
     result["pcm_digest_scope"] = json!(
         "v1 domain + LE u64 block index + LE u64 frame count + 64 ASCII hex bytes of each parent block PCM SHA256; all output channels; not a concatenated-PCM digest"
     );
+    if !config.output_windows.is_empty() {
+        result["output_windows"] = output_windows.finish();
+    }
     result["first_signal"] = json!(audio.first_signal);
     result["runtime_problems"] = json!(problems);
     result["issues"] = json!(issues);
@@ -732,6 +883,7 @@ mod tests {
             total_timeout_ms: 2000,
             pace_ms: 1,
             controllers: vec![],
+            output_windows: vec![],
         }
     }
     fn note() -> HostNote {
@@ -913,6 +1065,7 @@ mod tests {
         assert!(report["peak"].as_f64().unwrap() > 0.01);
         assert_eq!(report["service_clock_frames"], 0);
         assert!(report.get("pcm_sha256").is_none());
+        assert!(report.get("output_windows").is_none(), "default remains disabled");
     }
 
     #[test]
@@ -959,6 +1112,97 @@ mod tests {
         );
         assert!(report["peak"].as_f64().unwrap() > 0.01);
         assert_eq!(report["note_phase"]["owner"]["commands_drained"], true);
+    }
+
+
+    fn output_window(start: usize, end: usize) -> OutputWindow {
+        OutputWindow { start_frame:start,end_frame:end,output_pair:0,min_lag:16,max_lag:128,max_peaks:4 }
+    }
+
+    #[test]
+    fn output_window_limits_are_checked_before_loading_and_do_not_enable_by_default() {
+        let base=json!({"phase_timeout_ms":100,"total_timeout_ms":1000,"pace_ms":1});
+        let disabled:Config=serde_json::from_value(base.clone()).unwrap();
+        assert!(disabled.output_windows.is_empty());
+        let valid=output_window(1,12001);
+        assert!(validate_output_windows(std::slice::from_ref(&valid),96000).is_ok());
+        assert!(validate_output_windows(&vec![valid.clone();9],96000).is_err());
+        assert!(validate_output_windows(&vec![output_window(0,20000);5],96000).is_err());
+        let mut too_much_work=output_window(0,96000);too_much_work.max_lag=2048;
+        assert!(validate_output_windows(&[too_much_work],96000).is_err());
+        for (field,value) in [("start_frame",json!(12001)),("end_frame",json!(96001)),
+            ("output_pair",json!(crate::sound::BUSES)),("min_lag",json!(0)),
+            ("max_lag",json!(2049)),("max_peaks",json!(0)),("max_peaks",json!(9))] {
+            let mut row=json!({"start_frame":1,"end_frame":12001,"output_pair":0,"min_lag":16,"max_lag":128,"max_peaks":4});
+            row[field]=value;
+            let window:OutputWindow=serde_json::from_value(row).unwrap();
+            assert!(validate_output_windows(&[window],96000).is_err(),"{field}");
+        }
+        let mut unknown=base;
+        unknown["output_windows"]=json!([{"start_frame":0,"end_frame":12000,"output_pair":0,"min_lag":16,"max_lag":128,"max_peaks":4,"dump_pcm":true}]);
+        assert!(serde_json::from_value::<Config>(unknown).is_err());
+        assert!(validate_output_windows(&[output_window(usize::MAX,0)],96000).is_err());
+    }
+
+    #[test]
+    fn exact_output_intersections_preserve_pair_channel_and_preallocated_storage() {
+        let mut w=output_window(3,14);w.min_lag=1;w.max_lag=3;w.output_pair=2;
+        assert!(validate_output_windows(std::slice::from_ref(&w),128).is_ok());
+        let mut capture=OutputWindowCapture::new(&[w]);
+        let capacity=capture.windows[0].samples.capacity();
+        let pointer=capture.windows[0].samples.as_ptr();
+        let mut buses=[[[0.;crate::sound::MAX_BLOCK];2];crate::sound::BUSES];
+        for begin in [0,8] {
+            for i in 0..8 {let value=(begin+i) as f32;buses[2][0][i]=value;buses[2][1][i]=-value;}
+            capture.observe(&buses,8);
+        }
+        assert_eq!(capture.windows[0].samples,(3..14).map(|i|[i as f32,-(i as f32)]).collect::<Vec<_>>());
+        assert_eq!(capture.windows[0].samples.capacity(),capacity);
+        assert_eq!(capture.windows[0].samples.as_ptr(),pointer);
+        let report=capture.finish();let row=&report["windows"][0];
+        assert_eq!(row["frames"],11);assert_eq!(row["complete"],true);
+        assert_eq!(row["channels"][0]["dc"],8.);assert_eq!(row["channels"][1]["dc"],-8.);
+        assert_eq!(row["channels"][0]["ac_rms"],row["channels"][1]["ac_rms"]);
+        assert!(row.get("samples").is_none());
+    }
+
+    #[test]
+    fn output_metrics_separate_dc_from_tone_and_preserve_antiphase_pitch() {
+        let w=output_window(0,12000);
+        let tone:Vec<_>=(0..12000).map(|i| {
+            let s=(i as f64*480.*std::f64::consts::TAU/48000.).sin() as f32*0.25;
+            [s+0.125,-s-0.125]
+        }).collect();
+        let left=output_channel_metrics(&tone,0,&w);let right=output_channel_metrics(&tone,1,&w);
+        assert!((left["dc"].as_f64().unwrap()-0.125).abs()<1e-7);
+        assert!((left["ac_rms"].as_f64().unwrap()-0.25/2f64.sqrt()).abs()<1e-7);
+        assert_eq!(left["ac_rms"],right["ac_rms"]);
+        for channel in [&left,&right] {
+            assert!(channel["periodicity"]["peaks"].as_array().unwrap().iter().any(|p|
+                (p["hz"].as_f64().unwrap()-480.).abs()<0.1 && p["normalized_correlation"].as_f64().unwrap()>0.999));
+        }
+        let dc=output_channel_metrics(&vec![[0.25;2];12000],0,&w);
+        assert_eq!(dc["ac_rms"],0.);assert_eq!(dc["periodicity"]["status"],"no_ac_energy");
+        let silence=output_channel_metrics(&vec![[0.;2];12000],0,&w);
+        assert!(silence["rms_dbfs"].is_null());assert_eq!(silence["peak"],0.);
+        let partial=output_channel_metrics(&tone[..128],0,&w);
+        assert_eq!(partial["periodicity"]["status"],"insufficient_observed_frames");
+    }
+
+    #[test]
+    fn paced_authored_note_reports_early_silence_and_later_body_in_distinct_windows() {
+        let (mut core,mut owner)=fixture(
+            "function onNote(e) wait(20); playNote(e.note,e.velocity) end",(),ScriptConfig::default());
+        let mut cfg=config(1000);
+        let mut early=output_window(0,128);early.min_lag=1;early.max_lag=16;
+        cfg.output_windows=vec![early,output_window(1024,2048)];
+        let report=probe_note(&mut core,&mut owner,&cfg,note(),64,2048).unwrap();
+        assert_eq!(report["status"],"observed","{report}");
+        let windows=report["output_windows"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(),2);assert_eq!(windows[0]["complete"],true);assert_eq!(windows[1]["complete"],true);
+        assert_eq!(windows[0]["channels"][0]["peak"],0.);
+        assert!(windows[1]["channels"][0]["rms"].as_f64().unwrap()>0.01);
+        assert_eq!(report["output_windows"]["pcm_exported"],false);
     }
 
     #[test]
