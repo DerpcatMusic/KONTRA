@@ -479,6 +479,12 @@ impl Bank {
         }).collect()
     }
 
+    pub(crate) fn initial_stream_source(&self,program_path:&str,path:&str,inherit:bool)
+        ->Result<crate::stream::InitialSource,String> {
+        let parts=self.resource_origins(program_path,path).map_err(|e|access::failure_reason(&e))?;
+        crate::stream::initial_source(parts,inherit)
+    }
+
     fn stream_inner(
         &self,
         program_path: &str,

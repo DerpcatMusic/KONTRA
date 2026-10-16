@@ -68,7 +68,8 @@ pub(crate) fn decode_channels(bytes: &[u8]) -> Result<(Vec<f32>, usize, u32), St
 
 /// One sample, or a channel bundle of mono members, as stereo frames: mono
 /// is duplicated and channels past the second are left out (reported by the caller).
-pub(crate) fn decode(parts: &[Vec<u8>]) -> Result<(Decoded, usize), String> {
+fn decode_with_initial_playback(parts: &[Vec<u8>],inherit:bool) -> Result<(Decoded, usize, Result<Option<sampler_ir::Playback>,String>), String> {
+    if parts.is_empty() || parts.len()>12 {return Err("invalid sample part count".into());}
     let decoded = parts
         .iter()
         .map(|bytes| decode_channels(bytes))
@@ -90,6 +91,23 @@ pub(crate) fn decode(parts: &[Vec<u8>]) -> Result<(Decoded, usize), String> {
                 .collect()
         }
     };
+    let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
+        let frames=channels[0].0.len();let mut metadata=None;
+        for (bytes,(samples,count,_)) in parts.iter().zip(&decoded) {
+            if *count==0 || samples.len()%*count!=0 || samples.len()/(*count)!=frames {
+                return Err("channel bundle has inconsistent initial source geometry".into());
+            }
+            let found=crate::sample_metadata::parse(bytes,frames)
+                .map_err(|e|format!("initial sample playback metadata {e:?}"))?;
+            if found.channels.map(usize::from)!=Some(*count) {
+                return Err("initial playback channel metadata differs from decoder".into());
+            }
+            let playback=found.initial_ir_playback().map_err(|e|format!("initial sample playback conversion {e:?}"))?;
+            if metadata.is_some_and(|old|old!=playback) {return Err("channel bundle has inconsistent initial playback".into());}
+            metadata=Some(playback);
+        }
+        Ok(metadata)
+    } else {Ok(None)} })();
     let total = decoded.iter().map(|(_, count, _)| count).sum();
     let (left, right) = (&channels[0].0, &channels.get(1).unwrap_or(&channels[0]).0);
     let frames = left.iter().zip(right).map(|(&l, &r)| [l, r]).collect();
@@ -98,7 +116,7 @@ pub(crate) fn decode(parts: &[Vec<u8>]) -> Result<(Decoded, usize), String> {
             rate: decoded[0].2,
             frames,
         },
-        total,
+        total,playback,
     ))
 }
 
@@ -112,4 +130,18 @@ mod tests {
         assert_eq!((decoded.rate, channels), (48000, 1));
         assert_eq!(decoded.frames, [[0.5, 0.5], [-0.5, -0.5]]);
     }
+}
+
+
+pub(crate) struct InitialDecoded {
+    pub audio:Decoded,
+    pub playback:Result<Option<sampler_ir::Playback>,String>,
+}
+pub(crate) fn decode(parts:&[Vec<u8>])->Result<(Decoded,usize),String> {
+    decode_with_initial_playback(parts,false).map(|(audio,channels,_)|(audio,channels))
+}
+/// Initial metadata is read only for assets used by an inheriting player.
+/// Explicit PlaybackOptions do not depend on unused file-loop data.
+pub(crate) fn decode_initial(parts:&[Vec<u8>],inherit:bool)->Result<InitialDecoded,String> {
+    decode_with_initial_playback(parts,inherit).map(|(audio,_,playback)|InitialDecoded {audio,playback})
 }

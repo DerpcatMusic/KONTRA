@@ -857,6 +857,9 @@ impl Translation {
             let zone = ir::ZoneRef(self.ir.zones.len());
             let node = u32::try_from(player.id().get_usize()).map_err(|_| "sample player identity exceeds supported range".to_string())?;
             self.ir.source_indices.sample_targets.push(ir::SourceSampleTarget { node, zones: vec![zone] });
+            if !player.children().any(|n|n.has_tag_name("PlaybackOptions")) {
+                self.ir.source_indices.file_playback_zones.push(zone);
+            }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -1449,15 +1452,16 @@ pub fn assemble_translated(
     rate: u32,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     let named = t.locations.first().map(PathBuf::from).unwrap_or_default();
+    let inherit=initial_playback_assets(&t.instrument,t.locations.len())?;
     let decoded = t
         .locations
         .iter()
-        .map(|location| match &t.bank {
+        .enumerate().map(|(asset,location)| match &t.bank {
             Some((bank, program_path)) => bank
                 .resource(program_path, location)
                 .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d)),
-            None => decode_sample(Path::new(location)).map_err(|e| e.to_string()),
+                .and_then(|parts| audio::decode_initial(&parts,inherit[asset])),
+            None => decode_initial_file(Path::new(location),inherit[asset]).map_err(|e| e.to_string()),
         })
         .collect();
     assemble(
@@ -1489,15 +1493,16 @@ pub fn assemble_translated_streamed_cancelable(
 )->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
     if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     let named=t.locations.first().map(PathBuf::from).unwrap_or_default();
+    let inherit=initial_playback_assets(&t.instrument,t.locations.len())?;
     let mut sources=Vec::with_capacity(t.locations.len());
-    for location in &t.locations {
+    for (asset,location) in t.locations.iter().enumerate() {
         if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
         sources.push(match &t.bank {
             #[cfg(feature="library-access")]
-            Some((bank,program_path))=>bank.stream_source(program_path,location),
+            Some((bank,program_path))=>bank.initial_stream_source(program_path,location,inherit[asset]),
             #[cfg(not(feature="library-access"))]
             Some(_)=>Err("bank samples need the library-access feature".to_string()),
-            None=>stream::source(vec![stream::Origin::File(location.into())]),
+            None=>stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset]),
         });
     }
     assemble_streamed_cancelable(t.instrument,t.locations,sources,rate,policy,canceled)
@@ -1533,9 +1538,10 @@ pub fn load_streamed(
     let folder = path.parent().unwrap_or(Path::new("."));
     let (instrument, locations) = translate_with(&read_text(path)?, Source::Disk(folder.into()))
         .map_err(|e| describe(path, e))?;
+    let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
-        .iter()
-        .map(|location| stream::source(vec![stream::Origin::File(location.into())]))
+        .iter().enumerate()
+        .map(|(asset,location)| stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset]))
         .collect();
     assemble_streamed(instrument, locations, sources, rate, policy)
 }
@@ -1554,9 +1560,10 @@ pub fn load_program_streamed(
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = bank.scripts().sources();
     }
+    let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
-        .iter()
-        .map(|authored| bank.stream_source(&program_path, authored))
+        .iter().enumerate()
+        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset]))
         .collect();
     assemble_streamed(instrument, locations, sources, rate, policy)
 }
@@ -1603,7 +1610,65 @@ pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize
     Ok(n)
 }
 
-type AssetSources = Vec<Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>, String>>;
+type AssetSources = Vec<Result<stream::InitialSource, String>>;
+
+fn initial_playback_error(reason:impl Into<String>)->sampler_kontakt::LoadError {
+    sampler_kontakt::LoadError::Invalid {path:"initial file playback".into(),reason:reason.into()}
+        .at(sampler_kontakt::Stage::Prepare)
+}
+fn initial_playback_assets(instrument:&ir::Instrument,source_count:usize)->Result<Vec<bool>,sampler_kontakt::LoadError> {
+    if source_count!=instrument.assets.len() {return Err(initial_playback_error("asset/source count mismatch"));}
+    for zone in &instrument.zones {
+        if zone.asset.is_some_and(|a|a.0>=source_count) {return Err(initial_playback_error("dangling initial source asset"));}
+    }
+    let mut needed=vec![false;source_count];let mut seen=std::collections::HashSet::new();
+    for id in &instrument.source_indices.file_playback_zones {
+        if !seen.insert(id.0) {return Err(initial_playback_error("duplicate file playback marker"));}
+        let zone=instrument.zones.get(id.0).ok_or_else(||initial_playback_error("dangling file playback marker"))?;
+        if let Some(asset)=zone.asset {
+            *needed.get_mut(asset.0).ok_or_else(||initial_playback_error("dangling file playback asset"))?=true;
+        }
+    }
+    Ok(needed)
+}
+fn apply_initial_playbacks(instrument:&mut ir::Instrument,playbacks:&[Result<Option<ir::Playback>,String>],usable:&[bool])->Result<(),sampler_kontakt::LoadError> {
+    initial_playback_assets(instrument,playbacks.len())?;
+    if usable.len()!=playbacks.len() {return Err(initial_playback_error("playback/source state count mismatch"));}
+    for id in &instrument.source_indices.file_playback_zones {
+        let zone=instrument.zones.get_mut(id.0).ok_or_else(||initial_playback_error("dangling file playback marker"))?;
+        if let Some(asset)=zone.asset {
+            let available=*usable.get(asset.0).ok_or_else(||initial_playback_error("dangling file playback asset"))?;
+            let playback=playbacks.get(asset.0).ok_or_else(||initial_playback_error("missing file playback state"))?;
+            if available {
+                match playback {
+                    Ok(Some(playback))=>{
+                        zone.playback.start=playback.start;zone.playback.end=playback.end;zone.playback.looping=playback.looping;
+                        zone.playback.loop_control_crossfade=playback.loop_control_crossfade;
+                    },
+                    Ok(None)=>return Err(initial_playback_error("successful inherited source has no playback metadata")),
+                    Err(reason)=>{
+                        // Only this marked player's recipe is disabled. Other
+                        // players and impulse readers still own the valid PCM.
+                        zone.asset=None;
+                        instrument.unsupported.push(ir::Unsupported {location:format!("file playback zone {}",id.0),
+                            feature:"unreadable initial sample".into(),value:reason.clone(),reason:ir::Reason::InvalidValue});
+                    },
+                }
+            }
+            // Failed sources keep explicit unreadable-source reports/unbound
+            // recipes. No replacement playback is fabricated.
+        }
+    }
+    Ok(())
+}
+
+fn decode_initial_file(path:&Path,inherit:bool)->Result<audio::InitialDecoded,Error> {
+    use std::io::Read;
+    let mut bytes=Vec::new();
+    std::fs::File::open(path).and_then(|file|file.take((512<<20)+1).read_to_end(&mut bytes))
+        .map_err(|error|Error::Io {path:path.into(),error})?;
+    audio::decode_initial(&[bytes],inherit).map_err(|reason|Error::Invalid {path:path.into(),reason})
+}
 
 /// A failed initial file must not erase an authored dynamic target's mapping.
 /// The loader still reports the failed file; a later sample transaction can
@@ -1632,6 +1697,10 @@ fn assemble_streamed_cancelable(
     canceled:&(dyn Fn()->bool+Sync),
 )->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
     if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+    initial_playback_assets(&instrument,locations.len())?;
+    if sources.len()!=locations.len() {return Err(initial_playback_error("stream/source count mismatch").into());}
+    let playbacks:Vec<_>=sources.iter().map(|s|match s {Ok(s)=>s.playback.clone(),Err(_)=>Ok(None)}).collect();
+    apply_initial_playbacks(&mut instrument,&playbacks,&sources.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&sources) {
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
@@ -1644,7 +1713,7 @@ fn assemble_streamed_cancelable(
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| {
         let source = sources[a].as_ref().map_err(Clone::clone)?;
-        let mut reader = source.open().map_err(|e| e.to_string())?;
+        let mut reader = source.source.open().map_err(|e| e.to_string())?;
         if canceled(){return Err("load cancelled".into());}
         let mut frames = vec![[0f32; 2]; reader.frames()];
         for (index,page) in frames.chunks_mut(sampler_core::PAGE_FRAMES).enumerate() {
@@ -1657,7 +1726,7 @@ fn assemble_streamed_cancelable(
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
     retain_failed_sample_targets(&mut instrument, &usable);
     let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
-    let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
+    let mut sources: Vec<_> = sources.into_iter().map(|s|s.ok().map(|s|s.source)).collect();
     let sources = kept
         .iter()
         .map(|&a| sources[a].take().expect("usable"))
@@ -1709,11 +1778,11 @@ pub fn load_program_with_options(
         sources.files = bank.scripts().sources();
     }
     let (locations, decoded) =
-        decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
+        decode_selected_bank_assets(&mut instrument, locations, options, |authored,inherit| {
             bank.resource(&program_path, authored)
                 .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
-        });
+                .and_then(|parts| audio::decode_initial(&parts,inherit))
+        })?;
     assemble(instrument, locations, decoded, options)
 }
 
@@ -1746,11 +1815,11 @@ pub fn load_program_scripted_with_options(
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
     let (locations, decoded) =
-        decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
+        decode_selected_bank_assets(&mut instrument, locations, options, |authored,inherit| {
             bank.resource(&program_path, authored)
                 .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
-        });
+                .and_then(|parts| audio::decode_initial(&parts,inherit))
+        })?;
     let loaded = assemble(instrument, locations, decoded, options)?;
     let mut instrument = loaded.instrument;
     note_script(&host, &mut instrument);
@@ -2058,17 +2127,19 @@ fn decode_selected_bank_assets(
     instrument: &mut ir::Instrument,
     locations: Vec<String>,
     options: &sampler_kontakt::Options,
-    mut decode: impl FnMut(&str) -> Result<sampler_kontakt::Decoded, String>,
-) -> (Vec<String>, Vec<Result<sampler_kontakt::Decoded, String>>) {
+    mut decode: impl FnMut(&str,bool) -> Result<audio::InitialDecoded, String>,
+) -> Result<(Vec<String>, Vec<Result<audio::InitialDecoded, String>>),sampler_kontakt::LoadError> {
+    initial_playback_assets(instrument,locations.len())?;
     inserts::fill_impulses(instrument, &locations, |asset| {
-        decode(&locations[asset]).map(|decoded| (decoded.rate, decoded.frames))
+        decode(&locations[asset],false).map(|decoded| (decoded.audio.rate, decoded.audio.frames))
     });
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
     let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
-    let decoded = locations.iter().map(|location| decode(location)).collect();
-    (locations, decoded)
+    let inherit=initial_playback_assets(instrument,locations.len())?;
+    let decoded = locations.iter().enumerate().map(|(asset,location)| decode(location,inherit[asset])).collect();
+    Ok((locations, decoded))
 }
 
 #[cfg(test)]
@@ -2120,14 +2191,14 @@ mod narrowed_impulse_tests {
                 keys: 60..=60,
                 ..Default::default()
             },
-            |location| {
+            |location,_| {
                 reads.push(location.to_owned());
-                Ok(sampler_kontakt::Decoded {
+                Ok(audio::InitialDecoded {audio:sampler_kontakt::Decoded {
                     rate: 48000,
                     frames: vec![[0.5, -0.5]],
-                })
+                },playback:Ok(None)})
             },
-        );
+        ).unwrap();
         assert_eq!(reads, ["room.wav", "low.wav"]);
         assert_eq!(selected, ["low.wav"]);
         assert_eq!(decoded.len(), 1);
@@ -2268,9 +2339,10 @@ pub fn load_program_scripted_streamed(
     let ((instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
+    let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
-        .iter()
-        .map(|authored| bank.stream_source(&program_path, authored))
+        .iter().enumerate()
+        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset]))
         .collect();
     let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
     let sampler_kontakt::Streamed {
@@ -2337,9 +2409,13 @@ fn describe(path: &Path, e: Translate) -> Error {
 fn assemble(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
-    decoded: Vec<Result<sampler_kontakt::Decoded, String>>,
+    decoded: Vec<Result<audio::InitialDecoded, String>>,
     options: &sampler_kontakt::Options,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    initial_playback_assets(&instrument,locations.len())?;
+    if decoded.len()!=locations.len() {return Err(initial_playback_error("decoded/source count mismatch").into());}
+    let playbacks:Vec<_>=decoded.iter().map(|d|match d {Ok(d)=>d.playback.clone(),Err(_)=>Ok(None)}).collect();
+    apply_initial_playbacks(&mut instrument,&playbacks,&decoded.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&decoded) {
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
@@ -2351,7 +2427,7 @@ fn assemble(
         }
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| match &decoded[a] {
-        Ok(d) => Ok((d.rate, d.frames.clone())),
+        Ok(d) => Ok((d.audio.rate, d.audio.frames.clone())),
         Err(e) => Err(e.clone()),
     });
     let usable: Vec<bool> = decoded.iter().map(Result::is_ok).collect();
@@ -2361,7 +2437,7 @@ fn assemble(
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {
         let d = decoded[asset].take().unwrap().unwrap();
-        pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
+        pcm.push(sampler_core::Pcm::new(d.audio.rate, d.audio.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
     let bindings = engine_parameters::bindings(&instrument);
@@ -3317,5 +3393,26 @@ mod survey {
         for (k, (p, n)) in &gaps {
             println!("{p:5} {n:9} {k}");
         }
+    }
+}
+
+#[cfg(test)]
+mod initial_playback_admission_tests {
+    use super::*;
+    fn instrument()->ir::Instrument {
+        ir::Instrument {assets:vec![ir::Asset {location:ir::AssetLocation::Path("not-opened.wav".into()),
+            residency:Default::default(),encoding:ir::Encoding::Wav,root_key:None,loops:vec![]}],
+            zones:vec![ir::Zone::new(ir::AssetRef(0))],..Default::default()}
+    }
+    #[test]
+    fn invalid_markers_assets_and_dimensions_reject_before_effect_preparation() {
+        let mut value=instrument();value.source_indices.file_playback_zones=vec![ir::ZoneRef(99)];
+        assert!(initial_playback_assets(&value,1).is_err());
+        value.source_indices.file_playback_zones=vec![ir::ZoneRef(0)];value.zones[0].asset=Some(ir::AssetRef(99));
+        assert!(initial_playback_assets(&value,1).is_err());
+        value.zones[0].asset=Some(ir::AssetRef(0));assert!(initial_playback_assets(&value,0).is_err());
+        value.source_indices.file_playback_zones.push(ir::ZoneRef(0));assert!(initial_playback_assets(&value,1).is_err());
+        value.source_indices.file_playback_zones=vec![ir::ZoneRef(0)];
+        assert!(apply_initial_playbacks(&mut value,&[Ok(None)],&[true]).is_err());
     }
 }

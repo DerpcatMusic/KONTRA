@@ -224,3 +224,47 @@ fn aiff_stream_header_and_full_decode_match_the_authored_pcm_frame_count() {
     assert_eq!(streamed.assets.len(),1);assert_eq!(streamed.assets[0].frame_count(),FRAMES);
     assert_eq!(streamed.assets[0].sample_rate(),48000);
 }
+
+
+fn mixed_players(f:&Fixture,bytes:&[u8],options:&str,impulse:bool)->PathBuf {
+    let path=f.program("wav",bytes,"");let mut xml=std::fs::read_to_string(&path).unwrap();
+    let start=xml.find("<Keygroup LowKey").unwrap();let end=xml.find("</Keygroup>").unwrap()+"</Keygroup>".len();
+    let second=xml[start..end].replace("LowKey=\"60\" HighKey=\"60\"","LowKey=\"61\" HighKey=\"61\"")
+        .replace("</SamplePlayer>",&format!("{options}</SamplePlayer>"));
+    xml=xml.replacen("</Keygroups>",&format!("{second}</Keygroups>"),1);
+    if impulse {xml=xml.replace("<Program>","<Program><Inserts><Convolver Dry='0' Wet='1' NormalizePower='0' SamplePath='tone.wav'/></Inserts>");}
+    std::fs::write(&path,xml).unwrap();path
+}
+#[test]
+fn malformed_inheritance_preserves_explicit_players_sharing_valid_pcm_full_and_streamed() {
+    for bytes in [wav(16,95,true),wav(16,999,false)] {
+        for options in ["<PlaybackOptions/>","<PlaybackOptions Start='0' Stop='128'><Loop Start='32' End='64' Type='0'/></PlaybackOptions>"] {
+            let f=Fixture::new();let path=mixed_players(&f,&bytes,options,false);
+            for streamed in [false,true] {
+                let (ir,voices,audio,_)=render(&path,streamed,60);
+                let bad=ir.zones.iter().find(|z|z.keys.low==60).unwrap();assert!(bad.asset.is_none());
+                assert_eq!(voices,0);assert!(audio.iter().all(|v|*v==[0.;2]));
+                assert!(ir.unsupported.iter().any(|u|u.feature=="unreadable initial sample" && u.value.contains("metadata")),"{:?}",ir.unsupported);
+                let (ir,voices,audio,_)=render(&path,streamed,61);
+                assert!(ir.zones.iter().find(|z|z.keys.low==61).unwrap().asset.is_some());
+                assert!(audio[..64].iter().any(|v|v[0].abs()>0.1),"explicit player's PCM must remain audible");
+                if options=="<PlaybackOptions/>" {assert_eq!(voices,0);assert_eq!(late_energy(&audio),0.);}
+                else {assert_eq!(voices,1);assert!(late_energy(&audio)>0.01);}
+            }
+        }
+    }
+}
+#[test]
+fn malformed_inheritance_does_not_replace_a_shared_decodable_impulse_with_placeholder() {
+    let f=Fixture::new();let path=mixed_players(&f,&wav(16,95,true),"<PlaybackOptions/>",true);
+    let expected:Vec<_>=signal().into_iter().map(|s|f32::from(s)/32768.).collect();
+    for streamed in [false,true] {
+        let ir=if streamed {sampler_uvi::load_streamed(&path,48000,&Default::default()).unwrap().loaded.instrument}
+            else {sampler_uvi::load(&path,48000).unwrap().instrument};
+        assert!(ir.zones.iter().find(|z|z.keys.low==60).unwrap().asset.is_none());
+        assert!(ir.zones.iter().find(|z|z.keys.low==61).unwrap().asset.is_some());
+        assert_eq!(ir.impulses.len(),1);assert_eq!(ir.impulses[0].rate,48000);
+        assert_eq!(ir.impulses[0].left,expected);assert_eq!(ir.impulses[0].right,expected);
+        assert!(!ir.unsupported.iter().any(|u|u.feature=="unreadable impulse response (passed through)"));
+    }
+}

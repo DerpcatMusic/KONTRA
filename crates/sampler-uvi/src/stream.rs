@@ -740,3 +740,36 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+
+pub(crate) struct InitialSource {
+    pub source:Arc<dyn AssetSource>,
+    pub playback:Result<Option<sampler_ir::Playback>,String>,
+}
+/// Same frozen normal source as `source`, plus optional initial file playback.
+/// No dynamic-sample admission or channel-routing policy is changed here.
+pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSource,String> {
+    let sample=Sample::new(parts).map_err(|e|e.to_string())?;
+    let reader=sample.open().map_err(|e|e.to_string())?;
+    let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
+        let mut metadata=None;
+        for origin in &sample.parts {
+            let header=Stream::open_counted(origin,false).map_err(|e|e.to_string())?;
+            if header.frames!=reader.frames()as u64 || header.rate!=reader.rate() {
+                return Err("channel bundle has inconsistent initial source geometry".into());
+            }
+            let mut bytes=origin.open(false).map_err(|e|e.to_string())?;
+            bytes.repair_riff=false;
+            let found=crate::sample_metadata::parse_reader(&mut bytes,reader.frames(),false)
+                .map_err(|e|format!("initial sample playback metadata {e:?}"))?;
+            if found.channels.map(usize::from)!=Some(header.channels) {
+                return Err("initial playback channel metadata differs from decoder".into());
+            }
+            let playback=found.initial_ir_playback().map_err(|e|format!("initial sample playback conversion {e:?}"))?;
+            if metadata.is_some_and(|old|old!=playback) {return Err("channel bundle has inconsistent initial playback".into());}
+            metadata=Some(playback);
+        }
+        Ok(metadata)
+    } else {Ok(None)} })();
+    Ok(InitialSource {source:Arc::new(sample),playback})
+}
