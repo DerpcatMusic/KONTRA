@@ -57,6 +57,10 @@ pub enum ValidationError {
         owner: String,
         reason: &'static str,
     },
+    SourceBundle {
+        owner: String,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -81,6 +85,7 @@ impl fmt::Display for ValidationError {
             Self::Switching { owner, reason } => write!(f, "{owner}: {reason}"),
             Self::ZoneRouting { owner, reason } => write!(f, "{owner}: {reason}"),
             Self::SampleTarget { owner, reason } => write!(f, "{owner}: {reason}"),
+            Self::SourceBundle { owner, reason } => write!(f, "{owner}: {reason}"),
         }
     }
 }
@@ -553,6 +558,14 @@ impl Instrument {
                 return Err(invalid_routing(check.owner.clone(), "missing original destination"));
             }
         }
+        let mut file_playback_zones=std::collections::HashSet::new();
+        for zone in &self.source_indices.file_playback_zones {
+            check.owner=format!("file playback zone {}",zone.0);
+            check.exists(Reference::Zone(zone.0))?;
+            if !file_playback_zones.insert(zone.0) {
+                return Err(ValidationError::SampleTarget {owner:check.owner.clone(),reason:"duplicate file playback zone"});
+            }
+        }
         let mut sample_nodes = std::collections::HashSet::new();
         let mut sample_zones = std::collections::HashSet::new();
         for target in &self.source_indices.sample_targets {
@@ -564,6 +577,66 @@ impl Instrument {
                 check.exists(Reference::Zone(zone.0))?;
                 if !sample_zones.insert(zone.0) {
                     return Err(ValidationError::SampleTarget { owner: check.owner.clone(), reason: "zone belongs to several sample targets" });
+                }
+            }
+        }
+        let mut bundled_zones = std::collections::HashSet::new();
+        for (ordinal, bundle) in self.source_indices.source_bundles.iter().enumerate() {
+            check.owner = format!("source bundle {ordinal}");
+            let invalid = |reason| ValidationError::SourceBundle {
+                owner: check.owner.clone(), reason,
+            };
+            check.exists(Reference::Zone(bundle.zone.0))?;
+            check.exists(Reference::Chain(bundle.boundary.chain.0))?;
+            if !bundled_zones.insert(bundle.zone.0) {
+                return Err(invalid("several bundles own one zone"));
+            }
+            for pack in bundle.packs { check.exists(Reference::Asset(pack.0))?; }
+            if bundle.packs[0] == bundle.packs[1] || bundle.packs[0] == bundle.packs[2]
+                || bundle.packs[1] == bundle.packs[2] {
+                return Err(invalid("physical pack references must be distinct"));
+            }
+            let zone = &self.zones[bundle.zone.0];
+            if zone.asset != Some(bundle.packs[0]) || zone.chain != Some(bundle.boundary.chain) {
+                return Err(invalid("bundle primary/chain differs from its owning zone"));
+            }
+            if bundle.geometry.rate == 0 || bundle.geometry.frames == 0 {
+                return Err(invalid("empty source geometry"));
+            }
+            let chain = &self.chains[bundle.boundary.chain.0];
+            let section = match bundle.boundary.section {
+                crate::SourceBoundarySection::BeforeAmplitude => &chain.pre_amplitude,
+                crate::SourceBoundarySection::AfterAmplitude => &chain.post_amplitude,
+            };
+            let Some(processor) = section.get(bundle.boundary.index) else {
+                return Err(invalid("boundary index is outside its amplitude section"));
+            };
+            let Processor::StereoMatrix(matrix) = processor else {
+                return Err(invalid("boundary must identify the authored matrix"));
+            };
+            let mut cells = [[false; 6]; 2];
+            let mut controls = std::collections::HashSet::new();
+            for cell in bundle.boundary.cells {
+                let (input, output) = (usize::from(cell.input), usize::from(cell.output));
+                if input >= 6 || output >= 2 { return Err(invalid("cell coordinates exceed 2x6")); }
+                if std::mem::replace(&mut cells[output][input], true) {
+                    return Err(invalid("duplicate matrix cell"));
+                }
+                check.within(cell.coefficient, -1.0..=1.0, "matrix coefficient")?;
+                check.within(cell.ramp.seconds(), 0.0..=f64::MAX, "matrix ramp")?;
+                if input < 2 && matrix[output][input] != cell.coefficient {
+                    return Err(invalid("matrix first-pair coefficients differ from boundary"));
+                }
+                if let Some(control) = cell.control {
+                    check.exists(Reference::Control(control.0))?;
+                    if !controls.insert(control.0) { return Err(invalid("cells must have independent control identities")); }
+                    let crate::ControlValue::Continuous { min, max, default, .. } = self.controls[control.0].value else {
+                        return Err(invalid("matrix cell needs a continuous numeric control"));
+                    };
+                    if !min.is_finite() || !max.is_finite() || min > max || min < -1.0 || max > 1.0
+                        || default != cell.coefficient || default < min || default > max {
+                        return Err(invalid("matrix control range/default differs from signed cell"));
+                    }
                 }
             }
         }
@@ -837,6 +910,8 @@ impl Instrument {
         let bound: std::collections::HashSet<_> = (self.processor_controls.iter())
             .map(|binding| binding.control)
             .chain(self.source_indices.route_controls.iter().flat_map(|b| [b.1, b.2]))
+            .chain(self.source_indices.source_bundles.iter()
+                .flat_map(|b| b.boundary.cells.iter().filter_map(|cell| cell.control)))
             .collect();
         let mut native_aliases = std::collections::HashSet::new();
         for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
@@ -1203,4 +1278,14 @@ mod tests {
             Err(ValidationError::Switching { .. })
         ));
     }
+    #[test]
+    fn file_playback_marker_validates_and_tracks_zone_retention() {
+        let mut ir=one_zone();let mut second=ir.zones[0].clone();second.keys=KeyRange {low:61,high:61};ir.zones.push(second);
+        ir.source_indices.file_playback_zones=vec![ZoneRef(0),ZoneRef(1)];
+        assert_eq!(ir.validate(),Ok(()));ir.retain_zones(|z|z.keys.low==61);
+        assert_eq!(ir.source_indices.file_playback_zones,vec![ZoneRef(0)]);assert_eq!(ir.validate(),Ok(()));
+        ir.source_indices.file_playback_zones.push(ZoneRef(0));assert!(matches!(ir.validate(),Err(ValidationError::SampleTarget {..})));
+        ir.source_indices.file_playback_zones=vec![ZoneRef(99)];assert!(matches!(ir.validate(),Err(ValidationError::Dangling {..})));
+    }
+
 }
