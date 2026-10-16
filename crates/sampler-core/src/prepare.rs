@@ -906,6 +906,10 @@ pub struct Prepared {
     pub(super) automation: Box<[super::AutomationBinding]>,
     pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
+    pub(super) control_layout: super::control::ControlLayout,
+    pub(super) engine_controls: Box<[super::control::EngineControl]>,
+    pub(super) envelope_real: Box<[[Option<super::control::RealControlIndex>;6]]>,
+    pub(super) wavetable_real: Box<[Option<[super::control::RealControlIndex;5]>]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) initial_residency: Box<[super::InitialGroupResidency]>,
@@ -1203,6 +1207,10 @@ impl Prepared {
             automation: Box::new([]),
             widgets: Box::new([]),
             controls: Box::new([]),
+            control_layout: Default::default(),
+            engine_controls: Box::new([]),
+            envelope_real: Box::new([]),
+            wavetable_real: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
             signal_programs: Box::new([]),
@@ -1434,16 +1442,7 @@ impl Prepared {
             start_ranges,
             native,
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
-            |id| {
-                let index = self.control_index(id)?;
-                if !matches!(
-                    self.controls[index].domain,
-                    super::ControlDomain::Real { .. }
-                ) {
-                    return Err(Error::InvalidInput);
-                }
-                Ok(index)
-            },
+            |id| self.real_control(id),
         )?;
         Ok(self)
     }

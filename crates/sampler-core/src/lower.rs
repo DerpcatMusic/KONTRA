@@ -720,6 +720,7 @@ pub fn lower_with(
             .map_err(core(Stage::Regions, "slot controls"))?;
     }
     plan.wavetable_controls = wave_controls.into_boxed_slice();
+    plan.refresh_real_controls().map_err(core(Stage::Regions, "wavetable controls"))?;
     if instrument.groups.iter().any(|g| g.time_stretch.is_some()) {
         plan.stretch_groups = instrument
             .groups

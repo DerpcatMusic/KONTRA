@@ -937,7 +937,7 @@ impl Runtime {
                     &state.controllers,
                     held,
                     &self.note_params[note.0.index].mods,
-                    &self.plans.get(plan.0).unwrap().controls.base,
+                    self.plans.get(plan.0).unwrap().controls.base_reals(),
                 );
                 let start = prepared
                     .voice_modulation
@@ -1029,7 +1029,7 @@ impl Runtime {
                     controllers,
                     held,
                     &self.note_params[note.0.index].mods,
-                    &g.controls.base,
+                    g.controls.base_reals(),
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),

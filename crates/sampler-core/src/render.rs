@@ -655,7 +655,7 @@ impl Runtime {
                 &self.performance_state.current(performance).controllers,
                 self.release_times[f.note.0.index].counter(n.key_down(), at),
                 &self.note_params[f.note.0.index].mods,
-                &plan.controls.base,
+                plan.controls.base_reals(),
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
@@ -922,7 +922,7 @@ impl Runtime {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, plan.controls.base_reals()));
         let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
         let context = super::dsp::RenderContext {
             controls,
