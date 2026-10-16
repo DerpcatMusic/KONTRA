@@ -882,16 +882,38 @@ fn take_json(t: &Take) -> Value {
     })
 }
 
+/// A subject that owns a prepared audio plan; translated-only IR is rejected
+/// before any audio preparation, exactly at the existing public error boundary.
+enum Playable {
+    Plan(Box<sampler_kontakt::Loaded>),
+    Streamed(Box<sampler_kontakt::Streamed>),
+    Scripted(Box<sampler_uvi::scripted::Program>),
+}
+impl Playable {
+    fn instrument(&self) -> &sampler_ir::Instrument {
+        match self {
+            Self::Plan(loaded) => &loaded.instrument,
+            Self::Streamed(stream) => &stream.loaded.instrument,
+            Self::Scripted(program) => &program.instrument,
+        }
+    }
+}
+
 fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Result<Sound, String> {
     stage("prepare");
-    let (rate, limits) = match &subject {
-        Subject::Plan(l) => (l.plan.sample_rate(), limits_for(&l.plan)),
-        Subject::Streamed(s) => (s.loaded.plan.sample_rate(), limits_for(&s.loaded.plan)),
-        Subject::Scripted(p) => (p.plan.sample_rate(), limits_for(&p.plan)),
+    let subject = match subject {
+        Subject::Plan(plan) => Playable::Plan(plan),
+        Subject::Streamed(stream) => Playable::Streamed(stream),
+        Subject::Scripted(program) => Playable::Scripted(program),
         Subject::Ir(_) => return Err("prepare: no plan".into()),
     };
+    let (rate, limits) = match &subject {
+        Playable::Plan(l) => (l.plan.sample_rate(), limits_for(&l.plan)),
+        Playable::Streamed(s) => (s.loaded.plan.sample_rate(), limits_for(&s.loaded.plan)),
+        Playable::Scripted(p) => (p.plan.sample_rate(), limits_for(&p.plan)),
+    };
     let stream_info = match &subject {
-        Subject::Streamed(s) => json!({
+        Playable::Streamed(s) => json!({
             "full_bytes": s.report.full_bytes,
             "head_bytes": s.report.head_bytes,
             "pool_bytes": s.report.pool_bytes,
@@ -901,8 +923,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         _ => Value::Null,
     };
     let mut views: Vec<sampler_ksp::ScriptView> = match &subject {
-        Subject::Plan(l) => l.scripts.clone(),
-        Subject::Streamed(s) => s.loaded.scripts.clone(),
+        Playable::Plan(l) => l.scripts.clone(),
+        Playable::Streamed(s) => s.loaded.scripts.clone(),
         _ => Vec::new(),
     };
     let build = |plan, cache: Option<sampler_core::StreamCache>| -> Result<Box<Runtime>, String> {
@@ -980,7 +1002,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     };
     let horizon_of = |head: usize| (head.max(sampler_core::PAGE_FRAMES) + 4096) as u32;
     let mut rig = match subject {
-        Subject::Plan(l) => {
+        Playable::Plan(l) => {
             let mut rt = build(l.plan, None)?;
             rt.record_selections(diagnose);
             Rig::Midi {
@@ -990,7 +1012,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 _keep: None,
             }
         }
-        Subject::Streamed(s) => {
+        Playable::Streamed(s) => {
             let sampler_kontakt::Streamed {
                 loaded,
                 assets,
@@ -1007,7 +1029,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 _keep: Some((streamer, assets)),
             }
         }
-        Subject::Scripted(p) => {
+        Playable::Scripted(p) => {
             let sampler_uvi::scripted::Program {
                 plan,
                 host,
@@ -1025,7 +1047,6 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 _keep: stream,
             }
         }
-        Subject::Ir(_) => unreachable!("checked above"),
     };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
@@ -1236,10 +1257,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt,
         };
         peak_voices = peak_voices.max(rt.voice_count());
-        if matches!(rig, Rig::Midi { .. }) {
-            let Rig::Midi { rt, .. } = &mut rig else {
-                unreachable!()
-            };
+        if let Rig::Midi { rt, .. } = &mut rig {
             // Off the measured audio interval, exactly like the existing native
             // headless host. A callback can emit more than the bounded outbox.
             // Draining lets its next render retry the suspended instruction.

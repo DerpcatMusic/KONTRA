@@ -929,11 +929,11 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
     fn text(&mut self, args: &[Arg], i: usize) -> Result<String> {
         Ok(self.arg(args, i)?.text())
     }
-    fn var(args: &[Arg], i: usize) -> VarId {
-        match &args[i] {
-            Arg::Var(v, _) => *v,
-            Arg::Place(p) => p.var(),
-            _ => unreachable!("sema checks variable arguments"),
+    fn var(args: &[Arg], i: usize, span: Span) -> Result<VarId> {
+        match args.get(i) {
+            Some(Arg::Var(v, _)) => Ok(*v),
+            Some(Arg::Place(p)) => Ok(p.var()),
+            _ => fault(span, "expected a variable argument"),
         }
     }
 
@@ -1134,7 +1134,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
 
     fn waveform(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use sampler_core::waveform::Property;
-        let var = Self::var(args, 0);
+        let var = Self::var(args, 0, span)?;
         let ui = self.ui_of(var);
         let id = ui.map(|i| b::FIRST_UI_ID + i as i32);
         let name = self.hir.vars[var.0 as usize].name.to_string();
@@ -1235,8 +1235,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         Ok(match builtin {
             Exit | Continue => V::I(0),
             Inc | Dec => {
-                let Arg::Place(place) = &args[0] else {
-                    unreachable!()
+                let Some(Arg::Place(place)) = args.first() else {
+                    return fault(span, "inc/dec requires a variable");
                 };
                 let current = match place {
                     Place::Var(v) => self.read_var(*v),
@@ -1323,12 +1323,12 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             MsToTicks => V::I((i64::from(self.int(args, 0)?) * 960 / 500_000) as i32),
             TicksToMs => V::I((i64::from(self.int(args, 0)?) * 500_000 / 960) as i32),
             NumElements => V::I(
-                self.hir.vars[Self::var(args, 0).0 as usize]
+                self.hir.vars[Self::var(args, 0, span)?.0 as usize]
                     .len
                     .unwrap_or(1) as i32,
             ),
             Search => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 let needle = self.arg(args, 1)?;
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let (lo, hi) = if args.len() == 4 {
@@ -1352,7 +1352,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(found)
             }
             Sort => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 let descending = self.int(args, 1)? != 0;
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let (lo, hi) = if args.len() == 4 {
@@ -1378,14 +1378,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             ArrayEqual => {
-                let (a, b2) = (Self::var(args, 0), Self::var(args, 1));
+                let (a, b2) = (Self::var(args, 0, span)?, Self::var(args, 1, span)?);
                 let len = self.hir.vars[a.0 as usize].len.unwrap_or(0);
                 // Sema admits only same-sized declared integer arrays.
                 let equal = (0..len as i32)
                     .all(|i| self.read_elem(a, i, span).int() == self.read_elem(b2, i, span).int());
                 V::I(i32::from(equal))
             }
-            GetUiId => V::I(b::FIRST_UI_ID + self.ui_of(Self::var(args, 0)).unwrap_or(0) as i32),
+            GetUiId => {
+                V::I(b::FIRST_UI_ID + self.ui_of(Self::var(args, 0, span)?).unwrap_or(0) as i32)
+            }
             SetControlPar | SetControlParReal | SetControlParStr => {
                 let (id, par, value) = (self.int(args, 0)?, self.int(args, 1)?, self.arg(args, 2)?);
                 self.set_property(id, par, value, span);
@@ -1436,7 +1438,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 }
             }
             SetText | SetKnobLabel | SetControlHelp | AddTextLine => {
-                let ui = self.ui_of(Self::var(args, 0));
+                let ui = self.ui_of(Self::var(args, 0, span)?);
                 let text = self.text(args, 1)?;
                 let par = match builtin {
                     SetText | AddTextLine => b::CONTROL_PAR_TEXT,
@@ -1458,7 +1460,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             SetKnobUnit | SetKnobDefval | HidePart | SetTableStepsShown => {
-                if let Some(ui) = self.ui_of(Self::var(args, 0)) {
+                if let Some(ui) = self.ui_of(Self::var(args, 0, span)?) {
                     let par = match builtin {
                         SetKnobUnit => b::CONTROL_PAR_UNIT,
                         SetKnobDefval => b::CONTROL_PAR_DEFAULT_VALUE,
@@ -1473,7 +1475,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             MoveControl | MoveControlPx => {
-                if let Some(ui) = self.ui_of(Self::var(args, 0)) {
+                if let Some(ui) = self.ui_of(Self::var(args, 0, span)?) {
                     let id = b::FIRST_UI_ID + ui as i32;
                     let (x, y) = (self.int(args, 1)?, self.int(args, 2)?);
                     let (px, py) = if builtin == MoveControl {
@@ -1487,7 +1489,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             AddMenuItem => {
-                let ui = self.ui_of(Self::var(args, 0));
+                let ui = self.ui_of(Self::var(args, 0, span)?);
                 let (text, value) = (self.text(args, 1)?, self.int(args, 2)?);
                 if let Some(ui) = ui {
                     self.menu(ui).push(MenuItem {
@@ -1502,7 +1504,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                             .and_then(|i| items.get(i))
                             .or_else(|| items.first())
                             .map_or(0, |item| item.value);
-                        self.write_var(Self::var(args, 0), V::I(selected));
+                        self.write_var(Self::var(args, 0, span)?, V::I(selected));
                     }
                 }
                 V::I(0)
@@ -1679,7 +1681,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             MakePersistent | MakeInstrPersistent => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 self.st.persistence[var.0 as usize] = if builtin == MakeInstrPersistent {
                     Persistence::Instrument
                 } else {
@@ -1688,7 +1690,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             ReadPersistentVar => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 self.restore(var);
                 self.consumed.insert(var);
                 V::I(0)
@@ -1994,7 +1996,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             FsGetFilename => V::S(String::new()),
             GetScale => {
                 let scale = self.int(args, 0)?;
-                let var = Self::var(args, 1);
+                let var = Self::var(args, 1, span)?;
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let notes = b::scale(scale).map(|s| s.1);
                 if notes.is_none() {
@@ -2092,7 +2094,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             LoadArray => {
                 // NI load/save contract: load_array in init implicitly persists
                 // its target; saved state is restored after the init callback.
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 if self.callback_type == b::cb::INIT
                     && self.st.persistence[var.0 as usize] == Persistence::None
                 {
@@ -2109,7 +2111,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     );
                     V::I(-1)
                 } else {
-                    let var = Self::var(args, 0);
+                    let var = Self::var(args, 0, span)?;
                     let path = self.text(args, 1)?;
                     let id = self.st.midi_object.allocate_async_id().map_err(|_| Fault {
                         span,
@@ -2262,5 +2264,38 @@ fn placeholder() -> model::Widget {
         callback: None,
         persistence: Persistence::None,
         location: None,
+    }
+}
+
+#[cfg(test)]
+mod doctor_argument_tests {
+    use super::*;
+    use crate::builtins::SysArray;
+    #[test]
+    fn invalid_variable_argument_shapes_return_positioned_faults() {
+        let span = Span::new(13, 21);
+        for arg in [
+            Arg::Expr(Expr {
+                ty: Ty::Int,
+                span,
+                kind: ExprKind::Int(7),
+            }),
+            Arg::Key("key".into()),
+            Arg::SysArray(SysArray::KeyDown),
+        ] {
+            let error = Eval::<false>::var(&[arg], 0, span).unwrap_err();
+            assert_eq!(error.span, span);
+            assert_eq!(error.message, "expected a variable argument");
+        }
+        assert_eq!(Eval::<false>::var(&[], 0, span).unwrap_err().span, span);
+        let var = VarId(4);
+        assert_eq!(
+            Eval::<false>::var(&[Arg::Var(var, span)], 0, span).unwrap(),
+            var
+        );
+        assert_eq!(
+            Eval::<false>::var(&[Arg::Place(Place::Var(var))], 0, span).unwrap(),
+            var
+        );
     }
 }

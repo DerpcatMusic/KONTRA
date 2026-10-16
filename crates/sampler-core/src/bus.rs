@@ -88,16 +88,16 @@ pub(super) struct PreparedBuses {
     impulses: Box<[std::sync::Arc<crate::dsp::Impulse>]>,
     rate: u32,
     pub(super) input: Option<usize>,
-    filters: Box<[crate::dsp::svf::PreparedFilter]>,
+    filters: crate::dsp::svf::PreparedFilters,
     pub parameters: Box<[ControlRange]>,
     pub controls: Box<[(crate::ControlId, usize)]>,
 }
 impl PreparedBuses {
     pub(crate) fn trace_filter(
         &self,
-        i: usize,
+        i: crate::dsp::svf::SvfHandle,
     ) -> [(&'static str, crate::dsp::control::PreparedParameter); 2] {
-        self.filters[i].trace_parameters()
+        self.filters.trace_parameters(i)
     }
     pub(crate) fn trace_space(&self, i: usize) -> Vec<(&'static str, f64)> {
         let c = self.spaces[i];
@@ -181,7 +181,7 @@ impl PreparedBuses {
         let mut parameters = Vec::new();
         let mut cells = 0usize;
         let mut delay_frames = 0;
-        let mut filters = Vec::new();
+        let mut filters = crate::dsp::svf::FilterRegistryBuilder::default();
         let mut spaces = Vec::new();
         let mut space_bus = Vec::new();
         let nodes = buses
@@ -215,7 +215,7 @@ impl PreparedBuses {
             return Err(Error::InvalidInput);
         }
         let convolutions: Vec<usize> = (0..spaces.len()).filter(|&i| spaces[i].impulse.is_some()).collect();
-        if filters.iter().any(|filter| filter.requires_expression()) {
+        if filters.requires_expression() {
             return Err(Error::InvalidInput);
         }
         let mut controls: Vec<_> = parameters
@@ -235,7 +235,7 @@ impl PreparedBuses {
             impulses: impulses.into(),
             rate,
             input: None,
-            filters: filters.into_boxed_slice(),
+            filters: filters.finish(),
             parameters: parameters.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
         })
@@ -520,7 +520,7 @@ impl BusState {
                     }
                 }
                 let fault = crate::dsp::process::<TRACE>(
-                    &node.processors,
+                    node.processors.as_ref(),
                     states,
                     &mut block,
                     produced,
@@ -716,7 +716,7 @@ impl PreparedBuses {
                 .iter()
                 .map(|s| {
                     graph.stage(
-                        s,
+                        s.view(),
                         "bus_fx",
                         None,
                         group,
@@ -761,7 +761,7 @@ impl PreparedBuses {
                 graph.edge(input, id, "serial");
                 id
             });
-            let parent = graph.connect(&node.processors, &stages, tone.unwrap_or(input));
+            let parent = graph.connect(node.processors.as_ref(), &stages, tone.unwrap_or(input));
             graph.edge(parent, output, "serial");
             let sends = node
                 .sends

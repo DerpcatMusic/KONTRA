@@ -844,17 +844,30 @@ impl Network {
         // Four lines at a time: each line's filter is a serial recurrence,
         // so four interleaved chains keep the core busy.
         let mut i = 0;
-        for rings in self.rings.chunks_mut(4) {
-            let n = rings.len();
-            let (v, glide, src) = (&mut self.v[i..i + n], &self.glide[i..i + n], &mut src[i..i + n]);
-            match rings {
-                [a, b, c, d] => line.run::<I, M, F, 4>(i, [a, b, c, d], st, v, glide, src),
-                [a, b, c] => line.run::<I, M, F, 3>(i, [a, b, c], st, v, glide, src),
-                [a, b] => line.run::<I, M, F, 2>(i, [a, b], st, v, glide, src),
-                [a] => line.run::<I, M, F, 1>(i, [a], st, v, glide, src),
-                _ => unreachable!(),
-            }
-            i += n;
+        let (chunks, rest) = self.rings.as_chunks_mut::<4>();
+        for rings in chunks {
+            let (v, glide, src) = (&mut self.v[i..i + 4], &self.glide[i..i + 4], &mut src[i..i + 4]);
+            let [a, b, c, d] = rings;
+            line.run::<I, M, F, 4>(i, [a, b, c, d], st, v, glide, src);
+            i += 4;
+        }
+        let (chunks, rest) = rest.as_chunks_mut::<3>();
+        for rings in chunks {
+            let (v, glide, src) = (&mut self.v[i..i + 3], &self.glide[i..i + 3], &mut src[i..i + 3]);
+            let [a, b, c] = rings;
+            line.run::<I, M, F, 3>(i, [a, b, c], st, v, glide, src);
+            i += 3;
+        }
+        let (chunks, rest) = rest.as_chunks_mut::<2>();
+        for rings in chunks {
+            let (v, glide, src) = (&mut self.v[i..i + 2], &self.glide[i..i + 2], &mut src[i..i + 2]);
+            let [a, b] = rings;
+            line.run::<I, M, F, 2>(i, [a, b], st, v, glide, src);
+            i += 2;
+        }
+        for a in rest {
+            line.run::<I, M, F, 1>(i, [a], st, &mut self.v[i..i + 1], &self.glide[i..i + 1], &mut src[i..i + 1]);
+            i += 1;
         }
         self.w = w0.wrapping_add(len);
         // Taps across the block (each frame still sums in tap order), then
@@ -1330,5 +1343,41 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 3, "{checked}");
+    }
+}
+
+#[cfg(test)]
+mod remainder_tests {
+    use super::*;
+
+    /// Cover every 4/3/2/1 line grouping, including the full 32-line bound.
+    /// The independent frame kernel is the signal and recurrence-state oracle.
+    #[test]
+    fn all_line_counts_are_bit_exact_against_the_frame_kernel() {
+        for count in 0..=MAX_LINES {
+            let lines = (0..count).map(|i| {
+                let mut line = LineSpec::new(128, 69.25 + i as f64);
+                line.inject = ((i % 2) as u8, 0.5);
+                line.a = 0.75;
+                line.b = 0.25;
+                line
+            }).collect();
+            let matrix = Matrix::Permutation { p: std::array::from_fn(|i| i as u8), g: [0.6; MAX_LINES] };
+            let mut spec = Spec::new(lines, matrix);
+            spec.taps = std::array::from_fn(|c| (0..count).filter(|i| i % 2 == c).map(|i| (i as u8, 0.125)).collect());
+            let (mut batch, mut scalar) = (Network::new(spec.clone()), Network::new(spec));
+            assert!(batch.parallel);
+            scalar.parallel = false;
+            for block in 0..8 {
+                let mut left = std::array::from_fn::<_, 37, _>(|i| ((block * 37 + i) % 19) as f32 / 19.);
+                let mut right = left.map(|x| -x);
+                let (mut expected_left, mut expected_right) = (left, right);
+                batch.process(&mut left, &mut right);
+                scalar.process(&mut expected_left, &mut expected_right);
+                assert_eq!(left.map(f32::to_bits), expected_left.map(f32::to_bits), "count {count}");
+                assert_eq!(right.map(f32::to_bits), expected_right.map(f32::to_bits), "count {count}");
+                assert_eq!(batch.v.map(f32::to_bits), scalar.v.map(f32::to_bits));
+            }
+        }
     }
 }

@@ -174,31 +174,65 @@ enum Tok {
     List(Vec<Tok>),
 }
 
-fn parse_toks(text: &str) -> Vec<Tok> {
+#[derive(Debug, PartialEq, Eq)]
+struct IrError(String);
+
+impl Tok {
+    fn atom(&self) -> Result<&str, IrError> {
+        match self {
+            Self::Atom(a) => Ok(a),
+            Self::List(_) => Err(IrError("expected IR atom".into())),
+        }
+    }
+
+    fn list(&self) -> Result<&[Tok], IrError> {
+        match self {
+            Self::List(l) => Ok(l),
+            Self::Atom(_) => Err(IrError("expected IR list".into())),
+        }
+    }
+
+    fn form(&self) -> Result<(&str, &[Tok]), IrError> {
+        let (head, args) = self.list()?.split_first()
+            .ok_or_else(|| IrError("empty IR form".into()))?;
+        Ok((head.atom()?, args))
+    }
+}
+
+fn parse_toks(text: &str) -> Result<Vec<Tok>, IrError> {
     let mut stack: Vec<Vec<Tok>> = vec![Vec::new()];
     let mut atom = String::new();
-    let flush = |atom: &mut String, stack: &mut Vec<Vec<Tok>>| {
+    let flush = |atom: &mut String, stack: &mut Vec<Vec<Tok>>| -> Result<(), IrError> {
         if !atom.is_empty() {
-            stack.last_mut().unwrap().push(Tok::Atom(std::mem::take(atom)));
+            stack.last_mut().ok_or_else(|| IrError("missing IR root".into()))?
+                .push(Tok::Atom(std::mem::take(atom)));
         }
+        Ok(())
     };
     for c in text.chars() {
         match c {
             '(' => {
-                flush(&mut atom, &mut stack);
+                flush(&mut atom, &mut stack)?;
                 stack.push(Vec::new());
             }
             ')' => {
-                flush(&mut atom, &mut stack);
-                let done = stack.pop().unwrap();
-                stack.last_mut().unwrap().push(Tok::List(done));
+                flush(&mut atom, &mut stack)?;
+                if stack.len() == 1 {
+                    return Err(IrError("unmatched IR closing parenthesis".into()));
+                }
+                let done = stack.pop().ok_or_else(|| IrError("missing IR list".into()))?;
+                stack.last_mut().ok_or_else(|| IrError("missing IR root".into()))?
+                    .push(Tok::List(done));
             }
-            c if c.is_whitespace() => flush(&mut atom, &mut stack),
+            c if c.is_whitespace() => flush(&mut atom, &mut stack)?,
             c => atom.push(c),
         }
     }
-    flush(&mut atom, &mut stack);
-    stack.pop().unwrap()
+    flush(&mut atom, &mut stack)?;
+    if stack.len() != 1 {
+        return Err(IrError("unclosed IR parenthesis".into()));
+    }
+    stack.pop().ok_or_else(|| IrError("missing IR root".into()))
 }
 
 struct Builder<'a> {
@@ -213,133 +247,125 @@ impl Builder<'_> {
         *self.regs.entry(name.to_string()).or_insert(n)
     }
 
-    fn ex(&mut self, t: &Tok) -> Ex {
+    fn ex(&mut self, t: &Tok) -> Result<Ex, IrError> {
         match t {
-            Tok::Atom(a) => match a.as_str() {
+            Tok::Atom(a) => Ok(match a.as_str() {
                 "?" => Ex::Undef,
                 "g_cls" => Ex::Glob(0),
                 "g_curver" => Ex::Glob(1),
-                a if a.parse::<i64>().is_ok() => Ex::Int(a.parse().unwrap()),
-                a => Ex::Reg(self.reg(a)),
-            },
-            Tok::List(l) => {
-                let Tok::Atom(head) = &l[0] else { unreachable!("IR head") };
-                let h = head.as_str();
-                let a = |i: usize, me: &mut Self| Box::new(me.ex(&l[i]));
-                match h {
-                    "rd" => {
-                        let Tok::Atom(k) = &l[1] else { unreachable!() };
-                        Ex::Rd(k.chars().next().unwrap())
-                    }
-                    "sel" => Ex::Sel(a(1, self), a(2, self), a(3, self)),
-                    "&&" => Ex::AndAnd(a(1, self), a(2, self)),
-                    "||" => Ex::OrOr(a(1, self), a(2, self)),
-                    "!" => Ex::Un(Un::Not, a(1, self)),
-                    "~" => Ex::Un(Un::BitNot, a(1, self)),
-                    "neg" => Ex::Un(Un::Neg, a(1, self)),
-                    "u8" | "s8" | "u16" | "s16" | "u32" | "s32" => {
-                        let bits: u8 = h[1..].parse().unwrap();
-                        Ex::Wrap(bits, h.starts_with('s'), a(1, self))
-                    }
-                    h if h.starts_with("ld") => {
-                        let w: u8 = h[2..3].parse().unwrap();
-                        Ex::Ld(w, h.ends_with('s'), a(1, self))
-                    }
-                    h => {
-                        let op = match h {
-                            "+" => Bin::Add,
-                            "-" => Bin::Sub,
-                            "*" => Bin::Mul,
-                            "div" => Bin::Div,
-                            "divu" => Bin::DivU,
-                            "mod" => Bin::Mod,
-                            "modu" => Bin::ModU,
-                            "&" => Bin::And,
-                            "|" => Bin::Or,
-                            "^" => Bin::Xor,
-                            "<<" => Bin::Shl,
-                            ">>" => Bin::Shr,
-                            "shru" => Bin::ShrU,
-                            "==" => Bin::Eq,
-                            "!=" => Bin::Ne,
-                            "<" => Bin::Lt,
-                            "<=" => Bin::Le,
-                            ">" => Bin::Gt,
-                            ">=" => Bin::Ge,
-                            "ltu" => Bin::Ltu,
-                            "leu" => Bin::Leu,
-                            "gtu" => Bin::Gtu,
-                            "geu" => Bin::Geu,
-                            other => unreachable!("IR operator {other}"),
+                a => match a.parse::<i64>() {
+                    Ok(n) => Ex::Int(n),
+                    Err(_) => Ex::Reg(self.reg(a)),
+                },
+            }),
+            Tok::List(_) => {
+                let (h, args) = t.form()?;
+                Ok(match (h, args) {
+                    ("rd", [k]) => {
+                        let kind = match k.atom()? {
+                            "F" => 'F', "B" => 'B', "H" => 'H', "I" => 'I',
+                            "Q" => 'Q', "S" => 'S', "W" => 'W', "O" => 'O',
+                            other => return Err(IrError(format!("unknown IR read kind {other}"))),
                         };
-                        Ex::Bin(op, a(1, self), a(2, self))
+                        Ex::Rd(kind)
                     }
-                }
+                    ("sel", [c, a, b]) => Ex::Sel(Box::new(self.ex(c)?), Box::new(self.ex(a)?), Box::new(self.ex(b)?)),
+                    ("&&", [a, b]) => Ex::AndAnd(Box::new(self.ex(a)?), Box::new(self.ex(b)?)),
+                    ("||", [a, b]) => Ex::OrOr(Box::new(self.ex(a)?), Box::new(self.ex(b)?)),
+                    ("!", [a]) => Ex::Un(Un::Not, Box::new(self.ex(a)?)),
+                    ("~", [a]) => Ex::Un(Un::BitNot, Box::new(self.ex(a)?)),
+                    ("neg", [a]) => Ex::Un(Un::Neg, Box::new(self.ex(a)?)),
+                    ("u8" | "s8" | "u16" | "s16" | "u32" | "s32", [a]) => {
+                        let bits = match h { "u8" | "s8" => 8, "u16" | "s16" => 16, _ => 32 };
+                        Ex::Wrap(bits, h.starts_with('s'), Box::new(self.ex(a)?))
+                    }
+                    ("ld1" | "ld1u" | "ld1s" | "ld2" | "ld2u" | "ld2s" | "ld4" | "ld4u" | "ld4s" | "ld8" | "ld8u" | "ld8s", [a]) => {
+                        let width = match h { "ld1" | "ld1u" | "ld1s" => 1, "ld2" | "ld2u" | "ld2s" => 2, "ld4" | "ld4u" | "ld4s" => 4, _ => 8 };
+                        Ex::Ld(width, h.ends_with('s'), Box::new(self.ex(a)?))
+                    }
+                    (h, [a, b]) => {
+                        let op = match h {
+                            "+" => Bin::Add, "-" => Bin::Sub, "*" => Bin::Mul,
+                            "div" => Bin::Div, "divu" => Bin::DivU,
+                            "mod" => Bin::Mod, "modu" => Bin::ModU,
+                            "&" => Bin::And, "|" => Bin::Or, "^" => Bin::Xor,
+                            "<<" => Bin::Shl, ">>" => Bin::Shr, "shru" => Bin::ShrU,
+                            "==" => Bin::Eq, "!=" => Bin::Ne, "<" => Bin::Lt,
+                            "<=" => Bin::Le, ">" => Bin::Gt, ">=" => Bin::Ge,
+                            "ltu" => Bin::Ltu, "leu" => Bin::Leu,
+                            "gtu" => Bin::Gtu, "geu" => Bin::Geu,
+                            other => return Err(IrError(format!("unknown IR binary operator {other}"))),
+                        };
+                        Ex::Bin(op, Box::new(self.ex(a)?), Box::new(self.ex(b)?))
+                    }
+                    _ => return Err(IrError(format!("invalid IR expression {h} with {} arguments", args.len()))),
+                })
             }
         }
     }
+
+    fn label(&self, t: &Tok) -> Result<usize, IrError> {
+        let name = t.atom()?;
+        self.labels.get(name).copied().ok_or_else(|| IrError(format!("unknown IR label {name}")))
+    }
 }
 
-fn build(src: &ProgramSrc, progs: &HashMap<&'static str, usize>) -> Program {
+fn build(src: &ProgramSrc, progs: &HashMap<&'static str, usize>) -> Result<Program, IrError> {
     let mut b = Builder { regs: HashMap::new(), labels: HashMap::new(), progs };
     let params: Vec<usize> = src.params.iter().map(|p| b.reg(p)).collect();
     let sp = b.reg("sp");
-    // First pass: label positions.
-    let toks: Vec<Tok> = src.ops.lines().flat_map(parse_toks).collect();
+    let toks = parse_toks(src.ops)?;
     let mut n = 0;
     for t in &toks {
-        let Tok::List(l) = t else { continue };
-        let Tok::Atom(h) = &l[0] else { continue };
-        if h == "label" {
-            let Tok::Atom(name) = &l[1] else { continue };
-            b.labels.insert(name.clone(), n);
-        } else {
-            n += 1;
+        match t.form()? {
+            ("label", [name]) => {
+                let name = name.atom()?;
+                if b.labels.insert(name.to_owned(), n).is_some() {
+                    return Err(IrError(format!("duplicate IR label {name}")));
+                }
+            }
+            ("label", _) => return Err(IrError("invalid IR label".into())),
+            _ => n += 1,
         }
     }
     let mut ops = Vec::with_capacity(n);
     for t in &toks {
-        let Tok::List(l) = t else { continue };
-        let Tok::Atom(h) = &l[0] else { continue };
-        let atom = |i: usize| -> String {
-            match &l[i] {
-                Tok::Atom(a) => a.clone(),
-                _ => unreachable!(),
-            }
-        };
-        match h.as_str() {
-            "label" => {}
-            "set" => {
-                let r = b.reg(&atom(1));
-                ops.push(Op::Set(r, b.ex(&l[2])));
-            }
-            "st" => ops.push(Op::St(atom(1).parse().unwrap(), b.ex(&l[2]), b.ex(&l[3]))),
-            "br" | "brb" | "brt" => {
-                let target = b.labels[&atom(2)];
-                let fixed = match h.as_str() {
-                    "brb" => Some(false),
-                    "brt" => Some(true),
-                    _ => None,
+        let (h, args) = t.form()?;
+        let op = match (h, args) {
+            ("label", [_]) => continue,
+            ("set", [r, e]) => Op::Set(b.reg(r.atom()?), b.ex(e)?),
+            ("st", [width, a, v]) => {
+                let width = match width.atom()? {
+                    "1" => 1, "2" => 2, "4" => 4, "8" => 8,
+                    other => return Err(IrError(format!("invalid IR store width {other}"))),
                 };
-                ops.push(Op::Br(b.ex(&l[1]), target, fixed));
+                Op::St(width, b.ex(a)?, b.ex(v)?)
             }
-            "jmp" => ops.push(Op::Jmp(b.labels[&atom(1)])),
-            "rdn" => ops.push(Op::RdN(b.ex(&l[1]), b.ex(&l[2]))),
-            "rdbody" => ops.push(Op::RdBody(b.ex(&l[1]))),
-            "call" => {
-                let prog = b.progs[atom(1).as_str()];
-                let dst = b.reg(&atom(2));
-                let Tok::List(args) = &l[3] else { unreachable!() };
-                let args = args.iter().map(|a| b.ex(a)).collect();
-                ops.push(Op::Call(prog, dst, args));
+            ("br" | "brb" | "brt", [e, target]) => {
+                let fixed = match h { "brb" => Some(false), "brt" => Some(true), _ => None };
+                Op::Br(b.ex(e)?, b.label(target)?, fixed)
             }
-            "ret" => ops.push(Op::Ret(l.get(1).map(|e| b.ex(e)))),
-            "throw" => ops.push(Op::Throw),
-            "callx" => ops.push(Op::CallX(atom(1))),
-            other => unreachable!("IR op {other}"),
-        }
+            ("jmp", [target]) => Op::Jmp(b.label(target)?),
+            ("rdn", [a, n]) => Op::RdN(b.ex(a)?, b.ex(n)?),
+            ("rdbody", [v]) => Op::RdBody(b.ex(v)?),
+            ("call", [callee, dst, args]) => {
+                let name = callee.atom()?;
+                let prog = b.progs.get(name).copied()
+                    .ok_or_else(|| IrError(format!("unknown IR program {name}")))?;
+                let dst = b.reg(dst.atom()?);
+                let args = args.list()?.iter().map(|a| b.ex(a)).collect::<Result<_, _>>()?;
+                Op::Call(prog, dst, args)
+            }
+            ("ret", []) => Op::Ret(None),
+            ("ret", [e]) => Op::Ret(Some(b.ex(e)?)),
+            ("throw", []) => Op::Throw,
+            ("throw", [why]) => { why.atom()?; Op::Throw },
+            ("callx", [why]) => Op::CallX(why.atom()?.to_owned()),
+            _ => return Err(IrError(format!("invalid IR instruction {h} with {} arguments", args.len()))),
+        };
+        ops.push(op);
     }
-    Program { params, nregs: b.regs.len(), sp, frame: i64::from(src.frame), ops }
+    Ok(Program { params, nregs: b.regs.len(), sp, frame: i64::from(src.frame), ops })
 }
 
 struct Library {
@@ -347,13 +373,15 @@ struct Library {
     index: HashMap<&'static str, usize>,
 }
 
-fn library() -> &'static Library {
-    static LIB: OnceLock<Library> = OnceLock::new();
+fn library() -> Result<&'static Library, &'static IrError> {
+    static LIB: OnceLock<Result<Library, IrError>> = OnceLock::new();
     LIB.get_or_init(|| {
         let index: HashMap<&'static str, usize> = PROGRAMS.iter().enumerate().map(|(i, p)| (p.name, i)).collect();
-        let programs = PROGRAMS.iter().map(|p| build(p, &index)).collect();
-        Library { programs, index }
-    })
+        let programs = PROGRAMS.iter().map(|p| {
+            build(p, &index).map_err(|IrError(why)| IrError(format!("{}: {why}", p.name)))
+        }).collect::<Result<_, _>>()?;
+        Ok(Library { programs, index })
+    }).as_ref()
 }
 
 const OBJ: i64 = 0x1000_0000;
@@ -428,9 +456,9 @@ fn wrap(v: i64, bits: u8, signed: bool) -> i64 {
 }
 
 impl<'a> Machine<'a> {
-    fn new(stream: Stream<'a>, chooser: Chooser, values: &'a [i64], class: Option<u16>, steps: u32) -> Self {
+    fn new(lib: &'static Library, stream: Stream<'a>, chooser: Chooser, values: &'a [i64], class: Option<u16>, steps: u32) -> Self {
         let mut m = Self {
-            lib: library(),
+            lib,
             stream,
             chooser,
             values,
@@ -819,15 +847,26 @@ struct Outcome {
 }
 
 fn attempt(r: &'static ReaderSrc, version: u16, stream: Stream<'_>, prefix: Vec<usize>, values: &[i64]) -> Outcome {
-    let lib = library();
-    let prog = lib.index[r.program];
     let chooser = Chooser { prefix, ..Chooser::default() };
+    let lib = match library() {
+        Ok(lib) => lib,
+        Err(IrError(why)) => return Outcome {
+            stop: Some(Stop::Virtual(format!("bundled reader IR: {why}"))),
+            fields: Vec::new(), consumed: 0, out: Vec::new(), chooser,
+        },
+    };
+    let Some(&prog) = lib.index.get(r.program) else {
+        return Outcome {
+            stop: Some(Stop::Virtual(format!("bundled reader IR: missing program {}", r.program))),
+            fields: Vec::new(), consumed: 0, out: Vec::new(), chooser,
+        };
+    };
     // A reader does bounded work per byte it reads; a path that spins on host state does not.
     let steps = match stream.data {
         Some(d) => 4_000 + 600 * d.len() as u32,
         None => 120_000,
     };
-    let mut m = Machine::new(stream, chooser, values, element_of(r), steps);
+    let mut m = Machine::new(lib, stream, chooser, values, element_of(r), steps);
     let args = [Some((OBJ, 0)), Some((STREAM, 0)), Some((i64::from(version), 0)), Some((CTX, 0))];
     let stop = m.call(prog, &args, 0).err();
     Outcome { stop, fields: m.fields, consumed: m.stream.pos, out: m.stream.out, chooser: m.chooser }
@@ -995,4 +1034,175 @@ pub fn synthesize_all(sertype: u16, version: u16, limit: usize) -> Result<Vec<Ve
         }
     }
     if out.is_empty() { Err(last) } else { Ok(out) }
+}
+
+#[cfg(test)]
+mod ir_validation_tests {
+    use super::*;
+
+    #[test]
+    fn every_bundled_program_validates() {
+        assert!(library().is_ok(), "{:?}", library().err());
+    }
+
+    #[test]
+    fn malformed_ir_is_refused_instead_of_panicking_or_skipped() {
+        let index = HashMap::from([("test", 0)]);
+        for ops in [
+            ")", "(ret", "()", "((ret))", "stray", "(set r (rd (I)))",
+            "(set r (rd Z))", "(set r (+ 1))", "(set r (unknown 1 2))",
+            "(set r (ld0 1))", "(set r (ld9 1))", "(st 0 0 0)",
+            "(jmp missing)", "(br 1 missing)", "(label x)(label x)",
+            "(call missing r ())", "(call test r not-a-list)",
+            "(set (r) 1)", "(ret 1 2)", "(unknown)",
+        ] {
+            let src = ProgramSrc { name: "test", params: &[], frame: 0, ops };
+            assert!(build(&src, &index).is_err(), "accepted {ops}");
+        }
+    }
+
+    #[test]
+    fn validated_ir_preserves_control_flow_and_expression_values() {
+        let index = HashMap::from([("test", 0)]);
+        let src = ProgramSrc {
+            name: "test", params: &["param"], frame: 32,
+            ops: "(label start)(set r (+ (rd I) 2))(br (== r 3) end)(jmp start)(label end)(call test dst (r))(ret r)",
+        };
+        let program = build(&src, &index).unwrap();
+        assert_eq!(program.ops.len(), 5);
+        assert!(matches!(&program.ops[0], Op::Set(_, Ex::Bin(Bin::Add, a, b))
+            if matches!(a.as_ref(), Ex::Rd('I')) && matches!(b.as_ref(), Ex::Int(2))));
+        assert!(matches!(program.ops[1], Op::Br(_, 3, None)));
+        assert!(matches!(program.ops[2], Op::Jmp(0)));
+        assert!(matches!(&program.ops[3], Op::Call(0, _, a) if a.len() == 1));
+        assert!(matches!(program.ops[4], Op::Ret(Some(Ex::Reg(_)))));
+        let src = ProgramSrc { name: "test", params: &[], frame: 0, ops: "(throw native-throw)" };
+        assert!(matches!(build(&src, &index).unwrap().ops.as_slice(), [Op::Throw]));
+    }
+}
+
+#[cfg(test)]
+mod catalog_equivalence_tests {
+    use super::*;
+
+    // Test-only oracle of the pre-remediation lowering rules. It is used only
+    // on retained, valid catalog programs. Structural errors fail the test;
+    // the production parser remains the sole fallible validation path.
+    fn legacy_ex(b: &mut Builder<'_>, t: &Tok) -> Ex {
+        match t {
+            Tok::Atom(a) => match a.as_str() {
+                "?" => Ex::Undef, "g_cls" => Ex::Glob(0), "g_curver" => Ex::Glob(1),
+                a if a.parse::<i64>().is_ok() => Ex::Int(a.parse().unwrap()),
+                a => Ex::Reg(b.reg(a)),
+            },
+            Tok::List(l) => {
+                let h = l[0].atom().unwrap();
+                let a = |i: usize, b: &mut Builder<'_>| Box::new(legacy_ex(b, &l[i]));
+                match h {
+                    "rd" => Ex::Rd(l[1].atom().unwrap().chars().next().unwrap()),
+                    "sel" => Ex::Sel(a(1, b), a(2, b), a(3, b)),
+                    "&&" => Ex::AndAnd(a(1, b), a(2, b)),
+                    "||" => Ex::OrOr(a(1, b), a(2, b)),
+                    "!" => Ex::Un(Un::Not, a(1, b)),
+                    "~" => Ex::Un(Un::BitNot, a(1, b)),
+                    "neg" => Ex::Un(Un::Neg, a(1, b)),
+                    "u8" | "s8" | "u16" | "s16" | "u32" | "s32" =>
+                        Ex::Wrap(h[1..].parse().unwrap(), h.starts_with('s'), a(1, b)),
+                    h if h.starts_with("ld") =>
+                        Ex::Ld(h[2..3].parse().unwrap(), h.ends_with('s'), a(1, b)),
+                    h => {
+                        let op = match h {
+                            "+" => Bin::Add, "-" => Bin::Sub, "*" => Bin::Mul,
+                            "div" => Bin::Div, "divu" => Bin::DivU, "mod" => Bin::Mod, "modu" => Bin::ModU,
+                            "&" => Bin::And, "|" => Bin::Or, "^" => Bin::Xor,
+                            "<<" => Bin::Shl, ">>" => Bin::Shr, "shru" => Bin::ShrU,
+                            "==" => Bin::Eq, "!=" => Bin::Ne, "<" => Bin::Lt, "<=" => Bin::Le,
+                            ">" => Bin::Gt, ">=" => Bin::Ge, "ltu" => Bin::Ltu, "leu" => Bin::Leu,
+                            "gtu" => Bin::Gtu, "geu" => Bin::Geu,
+                            _ => panic!("invalid catalog expression {h}"),
+                        };
+                        Ex::Bin(op, a(1, b), a(2, b))
+                    }
+                }
+            }
+        }
+    }
+
+    fn legacy_build(src: &ProgramSrc, progs: &HashMap<&'static str, usize>) -> Program {
+        let mut b = Builder { regs: HashMap::new(), labels: HashMap::new(), progs };
+        let params = src.params.iter().map(|p| b.reg(p)).collect();
+        let sp = b.reg("sp");
+        let toks: Vec<_> = src.ops.lines().flat_map(|line| parse_toks(line).unwrap()).collect();
+        let mut n = 0;
+        for t in &toks {
+            let (head, args) = t.form().unwrap();
+            if head == "label" { b.labels.insert(args[0].atom().unwrap().to_owned(), n); }
+            else { n += 1; }
+        }
+        let mut ops = Vec::with_capacity(n);
+        for t in &toks {
+            let l = t.list().unwrap();
+            let atom = |i: usize| l[i].atom().unwrap().to_owned();
+            match l[0].atom().unwrap() {
+                "label" => {}
+                "set" => { let r = b.reg(&atom(1)); ops.push(Op::Set(r, legacy_ex(&mut b, &l[2]))); }
+                "st" => ops.push(Op::St(atom(1).parse().unwrap(), legacy_ex(&mut b, &l[2]), legacy_ex(&mut b, &l[3]))),
+                h @ ("br" | "brb" | "brt") => {
+                    let target = b.labels[&atom(2)];
+                    let fixed = match h { "brb" => Some(false), "brt" => Some(true), _ => None };
+                    ops.push(Op::Br(legacy_ex(&mut b, &l[1]), target, fixed));
+                }
+                "jmp" => ops.push(Op::Jmp(b.labels[&atom(1)])),
+                "rdn" => ops.push(Op::RdN(legacy_ex(&mut b, &l[1]), legacy_ex(&mut b, &l[2]))),
+                "rdbody" => ops.push(Op::RdBody(legacy_ex(&mut b, &l[1]))),
+                "call" => {
+                    let prog = b.progs[atom(1).as_str()];
+                    let dst = b.reg(&atom(2));
+                    let args = l[3].list().unwrap().iter().map(|a| legacy_ex(&mut b, a)).collect();
+                    ops.push(Op::Call(prog, dst, args));
+                }
+                "ret" => ops.push(Op::Ret(l.get(1).map(|e| legacy_ex(&mut b, e)))),
+                "throw" => ops.push(Op::Throw),
+                "callx" => ops.push(Op::CallX(atom(1))),
+                h => panic!("invalid catalog instruction {h}"),
+            }
+        }
+        Program { params, nregs: b.regs.len(), sp, frame: i64::from(src.frame), ops }
+    }
+
+    #[test]
+    fn every_retained_program_builds_and_matches_legacy_lowering() {
+        let index: HashMap<_, _> = PROGRAMS.iter().enumerate().map(|(i, p)| (p.name, i)).collect();
+        let mut checked = 0;
+        for src in PROGRAMS {
+            let current = build(src, &index).unwrap_or_else(|e| panic!("{}: {e:?}", src.name));
+            let old = legacy_build(src, &index);
+            assert_eq!(current.params, old.params, "{} params", src.name);
+            assert_eq!(current.nregs, old.nregs, "{} registers", src.name);
+            assert_eq!(current.sp, old.sp, "{} stack register", src.name);
+            assert_eq!(current.frame, old.frame, "{} frame", src.name);
+            // Debug renders every operation and nested expression, including
+            // resolved jump labels, call IDs, register IDs and signed widths.
+            assert_eq!(format!("{:?}", current.ops), format!("{:?}", old.ops), "{} ops", src.name);
+            checked += 1;
+        }
+        assert_eq!(checked, PROGRAMS.len());
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn all_supported_load_spellings_preserve_width_and_signedness() {
+        let index = HashMap::new();
+        let mut b = Builder { regs: HashMap::new(), labels: HashMap::new(), progs: &index };
+        for width in [1, 2, 4, 8] {
+            for suffix in ["", "u", "s"] {
+                let text = format!("(ld{width}{suffix} 42)");
+                let toks = parse_toks(&text).unwrap();
+                let ex = b.ex(&toks[0]).unwrap();
+                assert!(matches!(&ex, Ex::Ld(w, signed, a) if *w == width
+                    && *signed == (suffix == "s") && matches!(a.as_ref(), Ex::Int(42))));
+                assert_eq!(format!("{ex:?}"), format!("{:?}", legacy_ex(&mut b, &toks[0])));
+            }
+        }
+    }
 }

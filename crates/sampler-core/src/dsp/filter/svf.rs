@@ -42,7 +42,7 @@ impl StateVariableFilter {
         self,
         rate: u32,
         bindings: &mut Vec<ControlRange>,
-    ) -> Result<PreparedFilter, Error> {
+    ) -> Result<PreparedSvf, Error> {
         for hz in self.cutoff_hz.bounds() {
             for q in self.q.bounds() {
                 if rate == 0 || hz <= 0. || hz >= f64::from(rate) * 0.5 || q <= 0. {
@@ -63,12 +63,12 @@ impl StateVariableFilter {
                 }
             }
         }
-        Ok(PreparedFilter::StateVariable(PreparedSvf {
+        Ok(PreparedSvf {
             mode: self.mode,
             rate: f64::from(rate),
             cutoff: self.cutoff_hz.compile(bindings),
             q: self.q.compile(bindings),
-        }))
+        })
     }
 }
 
@@ -132,11 +132,70 @@ impl OutputLowPass {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum PreparedFilter {
-    StateVariable(PreparedSvf),
-    /// Addressed normalized knob deltas; no SVF coefficient cache.
+/// The logical target kind is admission metadata. It owns no coefficient or
+/// history storage and never dispatches an SVF render operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum FilterKind {
+    StateVariable,
     NativeControl,
+}
+
+/// Issued only while appending an actual SVF design to its prepared registry.
+/// Addressed identity is public modulation order; dense identity owns caches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SvfHandle {
+    addressed: usize,
+    dense: usize,
+}
+impl SvfHandle {
+    pub(crate) fn addressed(self) -> usize { self.addressed }
+}
+
+/// Control-side builder: append kind and design together in constant work.
+#[derive(Default)]
+pub(crate) struct FilterRegistryBuilder {
+    kinds: Vec<FilterKind>,
+    svfs: Vec<PreparedSvf>,
+}
+impl FilterRegistryBuilder {
+    pub(crate) fn push_svf(&mut self, filter: PreparedSvf) -> SvfHandle {
+        let handle = SvfHandle { addressed: self.kinds.len(), dense: self.svfs.len() };
+        self.kinds.push(FilterKind::StateVariable);
+        self.svfs.push(filter);
+        handle
+    }
+    pub(crate) fn push_native(&mut self) -> usize {
+        let addressed = self.kinds.len();
+        self.kinds.push(FilterKind::NativeControl);
+        addressed
+    }
+    pub(crate) fn requires_expression(&self) -> bool {
+        self.svfs.iter().any(|filter| filter.requires_expression())
+    }
+    pub(crate) fn finish(self) -> PreparedFilters {
+        PreparedFilters { kinds: self.kinds.into_boxed_slice(), svfs: self.svfs.into_boxed_slice() }
+    }
+}
+
+/// Immutable designs are owned once. Native addresses do not reserve an SVF
+/// payload; each rendering cache still owns exactly its previous window.
+#[derive(Default)]
+pub(crate) struct PreparedFilters {
+    kinds: Box<[FilterKind]>,
+    svfs: Box<[PreparedSvf]>,
+}
+impl PreparedFilters {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+    pub(crate) fn kind(&self, addressed: usize) -> Option<FilterKind> {
+        self.kinds.get(addressed).copied()
+    }
+    pub(crate) fn trace_parameters(&self, handle: SvfHandle) -> [(&'static str, PreparedParameter); 2] {
+        self.svfs[handle.dense].trace_parameters()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -147,15 +206,12 @@ pub(crate) struct PreparedSvf {
     q: PreparedParameter,
 }
 
-impl PreparedFilter {
-    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
-        let Self::StateVariable(f) = self else {
-            unreachable!("native filter traces its own lanes")
-        };
-        [("cutoff_hz", f.cutoff), ("q", f.q)]
+impl PreparedSvf {
+    fn trace_parameters(self) -> [(&'static str, PreparedParameter); 2] {
+        [("cutoff_hz", self.cutoff), ("q", self.q)]
     }
-    pub fn requires_expression(self) -> bool {
-        matches!(self, Self::StateVariable(f) if f.cutoff.requires_expression() || f.q.requires_expression())
+    fn requires_expression(self) -> bool {
+        self.cutoff.requires_expression() || self.q.requires_expression()
     }
 }
 
@@ -205,10 +261,7 @@ pub(crate) struct FilterCache {
     last: Coefficients,
 }
 impl FilterCache {
-    pub fn new(filter: PreparedFilter) -> Self {
-        let PreparedFilter::StateVariable(filter) = filter else {
-            unreachable!("native filter has no SVF cache")
-        };
+    pub fn new(filter: PreparedSvf) -> Self {
         Self {
             filter,
             owner: None,
@@ -391,12 +444,13 @@ impl SvfMode {
 enum Scope {
     Shared(usize),
     Expression(usize),
-    NativeControl,
 }
 
 /// Prepared caches, indexed by the actual owner rather than MIDI channel or key.
 pub(crate) struct FilterBank {
     scopes: Box<[Scope]>,
+    /// Logical-address reset defaults for native knob modulation, not SVF scopes.
+    native: Box<[bool]>,
     shared: Box<[FilterCache]>,
     expressions: Box<[FilterCache]>,
     stride: usize,
@@ -407,15 +461,11 @@ pub(crate) struct FilterBank {
     modulation_program: Option<u32>,
 }
 impl FilterBank {
-    pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
-        let mut scopes = Vec::with_capacity(filters.len());
+    pub fn new(filters: &PreparedFilters, expressions: usize) -> Result<Self, Error> {
+        let mut scopes = Vec::with_capacity(filters.svfs.len());
         let mut shared = Vec::new();
         let mut per_expression = Vec::new();
-        for &filter in filters {
-            if matches!(filter, PreparedFilter::NativeControl) {
-                scopes.push(Scope::NativeControl);
-                continue;
-            }
+        for &filter in &filters.svfs {
             scopes.push(if filter.requires_expression() {
                 let index = per_expression.len();
                 per_expression.push(filter);
@@ -437,15 +487,17 @@ impl FilterBank {
         }
         Ok(Self {
             scopes: scopes.into_boxed_slice(),
+            native: filters.kinds.iter().map(|kind| *kind == FilterKind::NativeControl).collect(),
             shared: shared.into_boxed_slice(),
             expressions: caches.into_boxed_slice(),
             stride,
             modulation: [1.0; 2],
             modulation_program: None,
             addressed_modulation: filters
+                .kinds
                 .iter()
-                .map(|f| {
-                    if matches!(f, PreparedFilter::NativeControl) {
+                .map(|kind| {
+                    if *kind == FilterKind::NativeControl {
                         [0.; 4]
                     } else {
                         [1., 1., 0., 0.]
@@ -483,7 +535,7 @@ impl FilterBank {
             voice,
             &mut self.addressed_modulation,
             &mut self.modulation_program,
-            |i| matches!(self.scopes[i], Scope::NativeControl),
+            |i| self.native[i],
         );
     }
 
@@ -493,14 +545,13 @@ impl FilterBank {
     /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
     pub(crate) fn prepare(
         &mut self,
-        index: usize,
+        index: SvfHandle,
         len: usize,
         parameters: &[ControlRamp],
         at: u64,
         expression: Option<(crate::ExpressionId, crate::Expression)>,
     ) -> CacheRef {
-        let cache = match self.scopes[index] {
-            Scope::NativeControl => unreachable!("native filter prepares its own coefficients"),
+        let cache = match self.scopes[index.dense] {
             Scope::Shared(index) => CacheRef::Shared(index),
             Scope::Expression(index) => {
                 let (id, _) = expression.expect("prepared voice-scoped filter");
@@ -533,15 +584,14 @@ impl FilterContext<'_> {
     #[inline]
     pub fn process(
         &mut self,
-        index: usize,
+        index: SvfHandle,
         state: &mut [[f64; 2]; 2],
         block: &mut Planar,
         len: usize,
         parameters: &[ControlRamp],
         at: u64,
     ) {
-        let cache = match self.bank.scopes[index] {
-            Scope::NativeControl => unreachable!("native filter processes its own coefficients"),
+        let cache = match self.bank.scopes[index.dense] {
             Scope::Shared(index) => &mut self.bank.shared[index],
             Scope::Expression(index) => {
                 let (id, _) = self.expression.expect("prepared voice-scoped filter");
@@ -555,7 +605,7 @@ impl FilterContext<'_> {
         };
         let expression = self.expression.as_ref().map(|(_, value)| value);
         let [cutoff, q] = std::array::from_fn(|i| {
-            self.bank.modulation[i] * self.bank.addressed_modulation[index][i]
+            self.bank.modulation[i] * self.bank.addressed_modulation[index.addressed][i]
         });
         if cutoff != 1.0 || q != 1.0 {
             // A modulated voice's coefficients are its own: one set per chunk at
@@ -576,7 +626,7 @@ impl FilterContext<'_> {
         let filter = cache.filter;
         if filter.cutoff.projected(parameters) || filter.q.projected(parameters) {
             // Voice offsets must neither reuse nor overwrite a sibling's coefficients.
-            let mut projected = FilterCache::new(PreparedFilter::StateVariable(filter));
+            let mut projected = FilterCache::new(filter);
             projected.process(state, block, len, parameters, at, expression);
         } else {
             cache.process(state, block, len, parameters, at, expression);
@@ -587,6 +637,114 @@ impl FilterContext<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared(cutoff_hz: Parameter) -> PreparedSvf {
+        StateVariableFilter { mode: SvfMode::LowPass, cutoff_hz, q: Parameter::Constant(0.7) }
+            .compile(48_000, &mut Vec::new()).unwrap()
+    }
+
+    /// Public addresses include native stages; cache/design indices do not.
+    /// The oracle derives coefficients directly from the authored parameters.
+    #[test]
+    fn interleaved_filter_addresses_select_their_dense_design_and_scope() {
+        let mut builder = FilterRegistryBuilder::default();
+        assert_eq!(builder.push_native(), 0);
+        let first = builder.push_svf(prepared(Parameter::Constant(700.)));
+        assert_eq!(builder.push_native(), 2);
+        let expressive = builder.push_svf(prepared(Parameter::Expression {
+            source: crate::ExpressionSource::Pressure, low: 400., high: 4000.,
+        }));
+        let last = builder.push_svf(prepared(Parameter::Constant(2600.)));
+        assert_eq!([first.addressed(), expressive.addressed(), last.addressed()], [1, 3, 4]);
+        assert_eq!([first.dense, expressive.dense, last.dense], [0, 1, 2]);
+        assert!(builder.requires_expression());
+        let filters = builder.finish();
+        for (index, kind) in [FilterKind::NativeControl, FilterKind::StateVariable,
+            FilterKind::NativeControl, FilterKind::StateVariable, FilterKind::StateVariable]
+            .into_iter().enumerate() {
+            assert_eq!(filters.kind(index), Some(kind));
+        }
+        assert_eq!(filters.kind(5), None);
+        for (handle, expected) in [(first, 700.), (last, 2600.)] {
+            assert!(matches!(filters.trace_parameters(handle)[0],
+                ("cutoff_hz", PreparedParameter::Constant(value)) if value == expected));
+        }
+        let mut bank = FilterBank::new(&filters, 2).unwrap();
+        assert_eq!(bank.scopes.len(), 3);
+        assert_eq!(bank.shared.len(), 2);
+        assert_eq!(bank.expressions.len(), 2);
+        assert_eq!(bank.stride, 1);
+        assert_eq!(&*bank.native, &[true, false, true, false, false]);
+        assert_eq!(&*bank.addressed_modulation,
+            &[[0.; 4], [1., 1., 0., 0.], [0.; 4], [1., 1., 0., 0.], [1., 1., 0., 0.]]);
+        for (handle, hz, slot) in [(first, 700., 0), (last, 2600., 1)] {
+            let cache = bank.prepare(handle, 7, &[], 0, None);
+            assert!(matches!(cache, CacheRef::Shared(index) if index == slot));
+            let actual = bank.cache(cache).coefficients[0];
+            let expected = Coefficients::new(SvfMode::LowPass, 48_000., hz, 0.7);
+            assert_eq!([actual.a1, actual.a2, actual.a3, actual.k].map(f64::to_bits),
+                [expected.a1, expected.a2, expected.a3, expected.k].map(f64::to_bits));
+        }
+    }
+
+    /// Same frame and recycled physical slot must still invalidate the window
+    /// when the expression generation changes. A native address precedes it.
+    #[test]
+    fn dense_expression_cache_reuse_keeps_the_full_owner_identity() {
+        let mut builder = FilterRegistryBuilder::default();
+        builder.push_native();
+        let handle = builder.push_svf(prepared(Parameter::Expression {
+            source: crate::ExpressionSource::Pressure, low: 400., high: 4000.,
+        }));
+        let filters = builder.finish();
+        let mut bank = FilterBank::new(&filters, 1).unwrap();
+        for (generation, pressure, hz) in [(1, 0, 400.), (2, u32::MAX, 4000.), (3, 0, 400.)] {
+            let id = crate::ExpressionId(crate::Handle { runtime: 1, index: 0, generation });
+            let expression = crate::Expression { pressure, ..Default::default() };
+            let cache = bank.prepare(handle, 7, &[], 0, Some((id, expression)));
+            assert!(matches!(cache, CacheRef::Expression(0)));
+            let actual = bank.cache(cache);
+            assert_eq!(actual.owner, Some(id));
+            let expected = Coefficients::new(SvfMode::LowPass, 48_000., hz, 0.7);
+            let actual = actual.coefficients[0];
+            assert_eq!([actual.a1, actual.a2, actual.a3, actual.k].map(f64::to_bits),
+                [expected.a1, expected.a2, expected.a3, expected.k].map(f64::to_bits));
+        }
+    }
+
+    /// Modulation must read the logical address, even when its dense index is
+    /// different. An independent constant-design filter is the PCM oracle.
+    #[test]
+    fn dense_svf_process_reads_addressed_modulation_factors() {
+        let mut builder = FilterRegistryBuilder::default();
+        builder.push_native();
+        let handle = builder.push_svf(prepared(Parameter::Constant(700.)));
+        let filters = builder.finish();
+        let mut bank = FilterBank::new(&filters, 0).unwrap();
+        bank.addressed_modulation[handle.addressed()] = [1.5, 2., 0., 0.];
+        let mut actual: Planar = std::array::from_fn(|ch|
+            std::array::from_fn(|i| ((i + ch * 3) as f64 * 0.13).sin() * 0.1));
+        let mut expected = actual;
+        let mut state = [[0.; 2]; 2];
+        let mut expected_state = state;
+        FilterContext { tempo: 120., bank: &mut bank, expression: None, spaces: &mut [] }
+            .process(handle, &mut state, &mut actual, BLOCK, &[], 0);
+        let oracle = StateVariableFilter { mode: SvfMode::LowPass,
+            cutoff_hz: Parameter::Constant(1050.), q: Parameter::Constant(1.4) }
+            .compile(48_000, &mut Vec::new()).unwrap();
+        FilterCache::new(oracle).process(&mut expected_state, &mut expected, BLOCK, &[], 0, None);
+        assert_eq!(actual, expected);
+        assert_eq!(state, expected_state);
+    }
+
+    #[test]
+    fn svf_typed_registry_layout_receipt() {
+        use std::mem::size_of;
+        eprintln!("svf layout: handle={} kind={} design={} registry={} scope={} bank={} cache={}",
+            size_of::<SvfHandle>(), size_of::<FilterKind>(), size_of::<PreparedSvf>(),
+            size_of::<PreparedFilters>(), size_of::<Scope>(), size_of::<FilterBank>(), size_of::<FilterCache>());
+        assert_eq!(size_of::<FilterKind>(), 1);
+    }
 
     #[test]
     fn static_responses_match_the_analog_prototype_under_bilinear_frequency_mapping() {

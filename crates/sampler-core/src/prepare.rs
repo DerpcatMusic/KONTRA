@@ -551,22 +551,23 @@ impl Pcm {
             return Ok(());
         }
         let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
-        if let ResidencyLoader::Resident(loader)=loader {
-            let (rate,data,budget)=loader()?.into_parts()?;
-            if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
-            if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
-            if !self.residency_permitted() {return Err(Error::NotReady);}
-            self.0.frames.replace(Some(data), |_|());
-            return Ok(());
-        }
-        if let ResidencyLoader::Prepared(loader)=loader {
-            let prepared=loader()?;
-            if !self.residency_permitted() {return Err(Error::NotReady);}
-            self.publish_ranges_unlocked(prepared)?;
-            return Ok(());
-        }
-        let ResidencyLoader::Raw(loader)=loader else {unreachable!()};
-        let mut ranges = loader()?;
+        let mut ranges = match loader {
+            ResidencyLoader::Resident(loader) => {
+                let (rate,data,budget)=loader()?.into_parts()?;
+                if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+                if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+                if !self.residency_permitted() {return Err(Error::NotReady);}
+                self.0.frames.replace(Some(data), |_|());
+                return Ok(());
+            }
+            ResidencyLoader::Prepared(loader) => {
+                let prepared=loader()?;
+                if !self.residency_permitted() {return Err(Error::NotReady);}
+                self.publish_ranges_unlocked(prepared)?;
+                return Ok(());
+            }
+            ResidencyLoader::Raw(loader) => loader()?,
+        };
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -852,8 +853,8 @@ pub struct Prepared {
     pub(super) pcm: Box<[Pcm]>,
     pub(super) buses: super::bus::PreparedBuses,
     pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
-    pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
-    pub(super) filters: Box<[super::dsp::svf::PreparedFilter]>,
+    pub(super) voice_chains: super::dsp::PreparedChains,
+    pub(super) filters: super::dsp::svf::PreparedFilters,
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
     pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
@@ -905,6 +906,10 @@ pub struct Prepared {
     pub(super) automation: Box<[super::AutomationBinding]>,
     pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
+    pub(super) control_layout: super::control::ControlLayout,
+    pub(super) engine_controls: Box<[super::control::EngineControl]>,
+    pub(super) envelope_real: Box<[[Option<super::control::RealControlIndex>;6]]>,
+    pub(super) wavetable_real: Box<[Option<[super::control::RealControlIndex;5]>]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) initial_residency: Box<[super::InitialGroupResidency]>,
@@ -1154,10 +1159,10 @@ impl Prepared {
             pcm: pcm.into_boxed_slice(),
             buses: super::bus::PreparedBuses::default(),
             impulses: Vec::new(),
-            voice_chains: Box::new([]),
+            voice_chains: super::dsp::PreparedChains::default(),
             signal_trace: None,
             dsp_bindings: Box::new([]),
-            filters: Box::new([]),
+            filters: super::dsp::svf::PreparedFilters::default(),
             dsp_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
             cursor_loops: cursor_loops.into_boxed_slice(),
@@ -1202,6 +1207,10 @@ impl Prepared {
             automation: Box::new([]),
             widgets: Box::new([]),
             controls: Box::new([]),
+            control_layout: Default::default(),
+            engine_controls: Box::new([]),
+            envelope_real: Box::new([]),
+            wavetable_real: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
             signal_programs: Box::new([]),
@@ -1317,16 +1326,16 @@ impl Prepared {
                         super::voice_mod::CompiledTarget::ProcessorCutoff(i)
                         | super::voice_mod::CompiledTarget::ProcessorResonance(i),
                     ) => !matches!(
-                        self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))
+                        self.filters.kind(i as usize),
+                        Some(super::dsp::svf::FilterKind::StateVariable)
                     ),
                     Some(
                         super::voice_mod::CompiledTarget::ProcessorNativeCutoff(i)
                         | super::voice_mod::CompiledTarget::ProcessorNativeResonance(i)
                         | super::voice_mod::CompiledTarget::ProcessorNativeGain(i),
                     ) => !matches!(
-                        self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::NativeControl)
+                        self.filters.kind(i as usize),
+                        Some(super::dsp::svf::FilterKind::NativeControl)
                     ),
                     _ => false,
                 })
@@ -1433,16 +1442,7 @@ impl Prepared {
             start_ranges,
             native,
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
-            |id| {
-                let index = self.control_index(id)?;
-                if !matches!(
-                    self.controls[index].domain,
-                    super::ControlDomain::Real { .. }
-                ) {
-                    return Err(Error::InvalidInput);
-                }
-                Ok(index)
-            },
+            |id| self.real_control(id),
         )?;
         Ok(self)
     }
@@ -2038,11 +2038,11 @@ impl Prepared {
             region.chain = chain;
         }
         let mut parameters = Vec::new();
-        let mut filters = Vec::new();
-        self.voice_chains = chains
+        let mut filters = super::dsp::svf::FilterRegistryBuilder::default();
+        self.voice_chains = super::dsp::PreparedChains::from_compiled(chains
             .into_iter()
             .map(|chain| chain.compile(self.rate, &mut parameters, &mut filters))
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?);
         let mut controls: Vec<_> = parameters
             .iter()
             .enumerate()
@@ -2051,7 +2051,7 @@ impl Prepared {
         controls.sort_unstable();
         self.dsp_controls = controls.into_boxed_slice();
         self.dsp_bindings = parameters.into_boxed_slice();
-        self.filters = filters.into_boxed_slice();
+        self.filters = filters.finish();
         self.validate_dsp_controls()?;
         Ok(self)
     }
@@ -2205,11 +2205,9 @@ impl Prepared {
             let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(
                 self.rate,
                 &mut vec![],
-                &mut vec![],
+                &mut crate::dsp::filter::svf::FilterRegistryBuilder::default(),
             )?;
-            let mut chains = std::mem::take(&mut self.voice_chains).into_vec();
-            chains.push(empty);
-            self.voice_chains = chains.into_boxed_slice();
+            self.voice_chains.push_empty(empty);
             for region in &mut self.regions {
                 if region.chain.is_none()
                     && scope.is_none_or(|s| s.includes(region.bounds[0], region.bounds[1])) {
@@ -2247,7 +2245,7 @@ impl Prepared {
                 .copied()
                 .unwrap_or(index as u32 + 1);
             let group = self.region_groups.get(index).copied().flatten();
-            let chain = &self.voice_chains[region.chain.unwrap()];
+            let chain = self.voice_chains.view(region.chain.unwrap());
             let mut nodes = chain.trace_graph(&self, &mut graph, zone, group, region.bus, &initial);
             nodes.region = index;
             graph.nodes[nodes.amp].parameters = std::iter::once(

@@ -73,6 +73,35 @@ pub struct WidgetEdit {
     pub value: WidgetValue,
     pub interaction: WidgetInteraction,
 }
+/// One resolved non-scalar write. Both admission and commit use the same pure
+/// conversion; commit never dispatches over a storage/value cross product.
+enum WidgetWrite {
+    Cell { index: usize, value: i64 },
+    Text { index: usize, value: Text },
+    Drop { storage: WidgetDropStorage, kind: WidgetDropKind, path: Text },
+}
+fn storage_write(
+    storage: WidgetStorage,
+    drop: Option<WidgetDropStorage>,
+    edit: &WidgetEdit,
+) -> Result<WidgetWrite, Error> {
+    match (storage, edit.value) {
+        (WidgetStorage::Cells { offset, len, real: false, min, max }, WidgetValue::Integer(v))
+            if edit.index < len && (v as f64) >= min && (v as f64) <= max =>
+            Ok(WidgetWrite::Cell { index: (offset + edit.index) as usize, value: v }),
+        (WidgetStorage::Cells { offset, len, real: true, min, max }, WidgetValue::Real(v))
+            if edit.index < len && v.is_finite() && v >= min && v <= max =>
+            Ok(WidgetWrite::Cell { index: (offset + edit.index) as usize, value: v.to_bits() as i64 }),
+        (WidgetStorage::FileSelection { offset }, WidgetValue::Text(value)) if edit.index == 0 =>
+            Ok(WidgetWrite::Text { index: offset as usize, value }),
+        (WidgetStorage::Texts { offset, len }, WidgetValue::Text(value)) if edit.index < len =>
+            Ok(WidgetWrite::Text { index: (offset + edit.index) as usize, value }),
+        (_, WidgetValue::DropPath { kind, path }) =>
+            Ok(WidgetWrite::Drop { storage: drop.ok_or(Error::InvalidInput)?, kind, path }),
+        _ => Err(Error::InvalidInput),
+    }
+}
+
 /// Service event codes resolved by the KSP compiler and UI producer together.
 /// These encode named event semantics; they are not opaque per-script symbols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,31 +420,11 @@ impl Runtime {
                         value: ControlValue::Real(v),
                     })
                 }
-                (
-                    WidgetStorage::Cells {
-                        len,
-                        real: false,
-                        min,
-                        max,
-                        ..
-                    },
-                    WidgetValue::Integer(v),
-                ) if e.index < len && (v as f64) >= min && (v as f64) <= max => {}
-                (
-                    WidgetStorage::Cells {
-                        len,
-                        real: true,
-                        min,
-                        max,
-                        ..
-                    },
-                    WidgetValue::Real(v),
-                ) if e.index < len && v.is_finite() && v >= min && v <= max => {}
-                (WidgetStorage::FileSelection { .. }, WidgetValue::Text(_))
-                    if e.index == 0 && edits.len() == 1 => {}
-                (WidgetStorage::Texts { len, .. }, WidgetValue::Text(_)) if e.index < len => {}
-                _ => return Err(Error::InvalidInput),
+                _ => { storage_write(w.storage, w.drop, e)?; }
             }
+        }
+        if matches!(w.storage, WidgetStorage::FileSelection { .. }) && !dropping && edits.len() != 1 {
+            return Err(Error::InvalidInput);
         }
         if let Some(drop) = w.drop {
             let bank = &generation.scripts[usize::from(w.instance.0)];
@@ -480,36 +489,21 @@ impl Runtime {
                 }
             }
             for e in edits {
-                if let WidgetValue::DropPath { kind, path } = e.value {
-                    let drop = w.drop.unwrap();
-                    let count = &mut bank.cells[drop.counts as usize + kind as usize];
-                    bank.texts[(drop.texts + kind as u32 * WIDGET_DROP_CAPACITY) as usize
-                        + *count as usize] = path;
-                    *count += 1;
-                    bank.mark_captured_cell(drop.counts as usize + kind as usize, true);
-                    continue;
-                }
-                match (w.storage, e.value) {
-                    (WidgetStorage::Cells { offset, .. }, WidgetValue::Integer(v)) => {
-                        let index = (offset + e.index) as usize;
-                        let changed = bank.cells[index] != v;
-                        bank.cells[index] = v;
-                        bank.mark_captured_cell(index, changed);
-                    }
-                    (WidgetStorage::Cells { offset, .. }, WidgetValue::Real(v)) => {
-                        let index = (offset + e.index) as usize;
-                        let value = v.to_bits() as i64;
+                // `w` and `edits` are unchanged since the complete pure preflight.
+                // Resolving one row keeps stack usage independent of gesture size.
+                match storage_write(w.storage, w.drop, e)? {
+                    WidgetWrite::Cell { index, value } => {
                         let changed = bank.cells[index] != value;
                         bank.cells[index] = value;
                         bank.mark_captured_cell(index, changed);
                     }
-                    (WidgetStorage::FileSelection { offset }, WidgetValue::Text(v)) => {
-                        bank.texts[offset as usize] = v
+                    WidgetWrite::Text { index, value } => bank.texts[index] = value,
+                    WidgetWrite::Drop { storage, kind, path } => {
+                        let count = &mut bank.cells[storage.counts as usize + kind as usize];
+                        bank.texts[(storage.texts + kind as u32 * WIDGET_DROP_CAPACITY) as usize + *count as usize] = path;
+                        *count += 1;
+                        bank.mark_captured_cell(storage.counts as usize + kind as usize, true);
                     }
-                    (WidgetStorage::Texts { offset, .. }, WidgetValue::Text(v)) => {
-                        bank.texts[(offset + e.index) as usize] = v
-                    }
-                    _ => unreachable!(),
                 }
             }
             generation.controls.revision = next;

@@ -13,6 +13,7 @@
 //! largest program, so rendering never allocates.
 pub mod laws;
 
+use crate::control::{RealControlIndex, RealValuesRef};
 use crate::{Envelope, Error, blocks::envelope::EnvelopeState};
 pub use crate::blocks::envelope::{Breakpoint, Breakpoints};
 use crate::blocks::envelope::Segment;
@@ -323,6 +324,13 @@ enum Prepared {
     Envelope(usize),
     /// Index into the program's breakpoint envelopes and the voice's segments.
     Breakpoints(usize),
+    Input(InputSource),
+}
+
+/// Inputs with no per-voice oscillator/envelope state. Only this type can be
+/// projected directly from a note/controller snapshot.
+#[derive(Clone, Copy)]
+enum InputSource {
     Velocity,
     Key,
     Controller(u8),
@@ -346,20 +354,20 @@ struct NativeLaw {
 
 struct Program {
     native: Option<crate::whole_voice::Program>,
-    native_controls: Box<[Option<([usize; 2], f64)>]>,
-    native_flex_control: Option<(f64, Option<[usize; 2]>)>,
+    native_controls: Box<[Option<([RealControlIndex; 2], f64)>]>,
+    native_flex_control: Option<(f64, Option<[RealControlIndex; 2]>)>,
     sources: Box<[Prepared]>,
     fades: Box<[Option<Box<[f32]>>]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
     /// Per envelope: control indices of its stages ([`ModProgram::envelope_controls`]).
-    envelope_controls: Box<[[Option<usize>; 6]]>,
+    envelope_controls: Box<[[Option<RealControlIndex>; 6]]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
     /// Per route: the native law when its identity and table are proved.
     laws: Box<[Option<NativeLaw>]>,
     targets: Box<[CompiledTarget]>,
-    controls: Box<[(usize, [usize; 2])]>,
+    controls: Box<[(usize, [RealControlIndex; 2])]>,
     filter_indices: Box<[usize]>,
     /// Prepared source order and incoming phase-route spans; no callback graph scans.
     source_order: Box<[usize]>,
@@ -368,7 +376,7 @@ struct Program {
     /// of the normalized frequency lane (NaN: unrouted).
     rate_routes: Box<[Box<[usize]>]>,
     rate_lane: Box<[f64]>,
-    loop_routes: Box<[(usize, Option<[usize; 2]>)]>,
+    loop_routes: Box<[(usize, Option<[RealControlIndex; 2]>)]>,
     shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
@@ -407,10 +415,10 @@ impl VoiceModulation {
     /// The target kind and index must still belong to this prepared generation.
     pub(crate) fn validate_dsp_targets(
         &self,
-        filters: &[crate::dsp::filter::svf::PreparedFilter],
+        filters: &crate::dsp::filter::svf::PreparedFilters,
         parameters: usize,
     ) -> Result<(), Error> {
-        use crate::dsp::filter::svf::PreparedFilter;
+        use crate::dsp::filter::svf::FilterKind;
         let invalid = self
             .programs
             .iter()
@@ -418,14 +426,14 @@ impl VoiceModulation {
             .any(|target| match *target {
                 CompiledTarget::ProcessorCutoff(index)
                 | CompiledTarget::ProcessorResonance(index) => !matches!(
-                    filters.get(index as usize),
-                    Some(PreparedFilter::StateVariable(_))
+                    filters.kind(index as usize),
+                    Some(FilterKind::StateVariable)
                 ),
                 CompiledTarget::ProcessorNativeCutoff(index)
                 | CompiledTarget::ProcessorNativeResonance(index)
                 | CompiledTarget::ProcessorNativeGain(index) => !matches!(
-                    filters.get(index as usize),
-                    Some(PreparedFilter::NativeControl)
+                    filters.kind(index as usize),
+                    Some(FilterKind::NativeControl)
                 ),
                 CompiledTarget::Control(index) => index >= parameters,
                 _ => false,
@@ -439,7 +447,7 @@ impl VoiceModulation {
     /// Re-resolve sparse input cells off audio after a complete schema replacement.
     pub(crate) fn remap_controls(
         &mut self,
-        resolve: impl Fn(usize) -> Result<usize, Error>,
+        resolve: impl Fn(RealControlIndex) -> Result<RealControlIndex, Error>,
     ) -> Result<(), Error> {
         for program in &self.programs {
             for (_, indices) in &program.controls {
@@ -449,6 +457,9 @@ impl VoiceModulation {
             for (indices, _) in program.native_controls.iter().flatten() {
                 resolve(indices[0])?;
                 resolve(indices[1])?;
+            }
+            for (_, indices) in &program.loop_routes {
+                if let Some(indices)=indices { resolve(indices[0])?; resolve(indices[1])?; }
             }
             for index in program.envelope_controls.iter().flatten().flatten() {
                 resolve(*index)?;
@@ -464,6 +475,9 @@ impl VoiceModulation {
             }
             for (indices, _) in program.native_controls.iter_mut().flatten() {
                 *indices = [resolve(indices[0])?, resolve(indices[1])?];
+            }
+            for (_, indices) in &mut program.loop_routes {
+                if let Some(indices)=indices { *indices=[resolve(indices[0])?,resolve(indices[1])?]; }
             }
             for index in program.envelope_controls.iter_mut().flatten().flatten() {
                 *index = resolve(*index)?;
@@ -529,7 +543,7 @@ impl VoiceModulation {
         start_ranges: Vec<u32>,
         native: Vec<Option<crate::whole_voice::Program>>,
         resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
-        control: impl Fn(crate::ControlId) -> Result<usize, Error>,
+        control: impl Fn(crate::ControlId) -> Result<RealControlIndex, Error>,
     ) -> Result<Self, Error> {
         if start_ranges.len() != regions.len()
             || regions.iter().flatten().any(|p| *p >= programs.len())
@@ -586,20 +600,20 @@ impl VoiceModulation {
                             }
                             Prepared::Breakpoints(index)
                         }
-                        ModSource::Velocity => Prepared::Velocity,
-                        ModSource::Key => Prepared::Key,
-                        ModSource::Controller(cc) if cc < 128 => Prepared::Controller(cc),
+                        ModSource::Velocity => Prepared::Input(InputSource::Velocity),
+                        ModSource::Key => Prepared::Input(InputSource::Key),
+                        ModSource::Controller(cc) if cc < 128 => Prepared::Input(InputSource::Controller(cc)),
                         ModSource::Controller(_) => return Err(Error::InvalidInput),
-                        ModSource::Pressure => Prepared::Pressure,
-                        ModSource::Timbre => Prepared::Timbre,
-                        ModSource::Random => Prepared::Random,
-                        ModSource::Constant => Prepared::Constant,
+                        ModSource::Pressure => Prepared::Input(InputSource::Pressure),
+                        ModSource::Timbre => Prepared::Input(InputSource::Timbre),
+                        ModSource::Random => Prepared::Input(InputSource::Random),
+                        ModSource::Constant => Prepared::Input(InputSource::Constant),
                         ModSource::ReleaseCounter { frames: 0 } => {
                             return Err(Error::InvalidInput);
                         }
-                        ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
-                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Script(id),
-                        ModSource::PitchBend => Prepared::PitchBend,
+                        ModSource::ReleaseCounter { frames } => Prepared::Input(InputSource::ReleaseCounter(frames)),
+                        ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Input(InputSource::Script(id)),
+                        ModSource::PitchBend => Prepared::Input(InputSource::PitchBend),
                     })
                 })
                 .collect::<Result<Box<[_]>, Error>>()?;
@@ -626,7 +640,7 @@ impl VoiceModulation {
                     || (matches!(
                         route.target.compiled(),
                         Some(CompiledTarget::LoopStart | CompiledTarget::LoopLength)
-                    ) && (!matches!(sources.get(route.source), Some(Prepared::Constant))
+                    ) && (!matches!(sources.get(route.source), Some(Prepared::Input(InputSource::Constant)))
                         || route.invert
                         || route.shape.is_some()
                         || route.scale.is_some()
@@ -831,15 +845,15 @@ impl VoiceModulation {
                 cacheable: sources.iter().all(|s| {
                     matches!(
                         s,
-                        Prepared::Velocity
-                            | Prepared::Key
-                            | Prepared::Controller(_)
-                            | Prepared::Pressure
-                            | Prepared::Timbre
-                            | Prepared::Random
-                            | Prepared::Constant
-                            | Prepared::Script(_)
-                            | Prepared::PitchBend
+                        Prepared::Input(InputSource::Velocity)
+                            | Prepared::Input(InputSource::Key)
+                            | Prepared::Input(InputSource::Controller(_))
+                            | Prepared::Input(InputSource::Pressure)
+                            | Prepared::Input(InputSource::Timbre)
+                            | Prepared::Input(InputSource::Random)
+                            | Prepared::Input(InputSource::Constant)
+                            | Prepared::Input(InputSource::Script(_))
+                            | Prepared::Input(InputSource::PitchBend)
                     )
                 }) && program.routes.iter().all(|r| r.lag == 0)
                     && program.controls.is_empty(),
@@ -920,7 +934,7 @@ impl VoiceModulation {
                     })
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
-                other => other.input(inputs, seed, index),
+                Prepared::Input(input) => input.input(inputs, seed, index),
             }
         })
     }
@@ -934,8 +948,8 @@ impl VoiceModulation {
         };
         let program = &self.programs[index as usize];
         if program.routes.iter().filter(|r| r.target == ModTarget::SampleStart).any(|route| {
-            !matches!(program.sources[route.source], Prepared::Constant)
-                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Constant))
+            !matches!(program.sources[route.source], Prepared::Input(InputSource::Constant))
+                || route.scales().any(|scale| !matches!(program.sources[scale.source], Prepared::Input(InputSource::Constant)))
         }) {
             return None;
         }
@@ -954,8 +968,8 @@ impl VoiceModulation {
         let Some(index) = self.program(region) else { return Some(0) };
         let program = &self.programs[index as usize];
         let at_start = |index: usize| match program.sources[index] {
-            Prepared::Constant => Some(1.0),
-            Prepared::Controller(cc) => controller(cc).map(|v| f64::from(v) * FULL_SCALE),
+            Prepared::Input(InputSource::Constant) => Some(1.0),
+            Prepared::Input(InputSource::Controller(cc)) => controller(cc).map(|v| f64::from(v) * FULL_SCALE),
             _ => None,
         };
         for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
@@ -985,7 +999,7 @@ impl VoiceModulation {
     }
 }
 
-impl Prepared {
+impl InputSource {
     fn input(self, inputs: &Inputs<'_>, seed: u64, index: usize) -> f64 {
         match self {
             Self::Velocity => inputs.velocity,
@@ -999,9 +1013,6 @@ impl Prepared {
             Self::Script(id) => (f64::from(inputs.script.get(id)) / 1_000_000.0).clamp(-1.0, 1.0),
             Self::ReleaseCounter(frames) => {
                 (1.0 - inputs.held as f64 / f64::from(frames)).clamp(0.0, 1.0)
-            }
-            Self::Lfo(_) | Self::Envelope(_) | Self::Breakpoints(_) => {
-                unreachable!("stateful sources")
             }
         }
     }
@@ -1045,10 +1056,7 @@ impl Program {
         match self.controls.binary_search_by_key(&i, |c| c.0) {
             Ok(at) => {
                 let [depth, bypass] = self.controls[at].1;
-                match (inputs.controls[depth], inputs.controls[bypass]) {
-                    (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d * self.routes[i].live_gain,
-                    _ => 0.,
-                }
+                if inputs.controls.get(bypass) == 0. { inputs.controls.get(depth) * self.routes[i].live_gain } else { 0. }
             }
             Err(_) => self.routes[i].depth,
         }
@@ -1162,7 +1170,7 @@ pub(crate) struct Inputs<'a> {
     pub script: &'a crate::script_params::ModValues,
     /// The note's raw pitch bend, -1..=1.
     pub bend: f64,
-    pub controls: &'a [crate::ControlValue],
+    pub controls: RealValuesRef<'a>,
 }
 
 impl<'a> Inputs<'a> {
@@ -1172,7 +1180,7 @@ impl<'a> Inputs<'a> {
         controllers: &'a [u32; 128],
         held: u64,
         script: &'a crate::script_params::ModValues,
-        controls: &'a [crate::ControlValue],
+        controls: RealValuesRef<'a>,
     ) -> Self {
         Self {
             velocity: note.velocity,
@@ -1507,11 +1515,9 @@ impl VoiceModState {
             // A stage moved off its authored value by a lane write (host or script).
             let mut live = *envelope;
             for (stage, index) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().zip(controls) {
-                if let Some(index) = index
-                    && let crate::ControlValue::Real(value) = inputs.controls[*index]
-                    && value != envelope.control_value(stage)
-                {
-                    live = live.with_control(stage, value);
+                if let Some(index) = index {
+                    let value=inputs.controls.get(*index);
+                    if value != envelope.control_value(stage) { live=live.with_control(stage,value); }
                 }
             }
             self.envelope[voice * self.envelopes + i] = EnvelopeState::new(live);
@@ -1529,7 +1535,7 @@ impl VoiceModState {
         &self,
         modulation: &VoiceModulation,
         voice: usize,
-        controls: &[crate::ControlValue],
+        controls: RealValuesRef<'_>,
     ) -> Option<[f32; 2]> {
         let p = &modulation.programs[self.program(voice)? as usize];
         if p.loop_routes.is_empty() {
@@ -1539,10 +1545,7 @@ impl VoiceModState {
         for &(i, ids) in &p.loop_routes {
             let route = &p.routes[i];
             let depth = match ids {
-                Some([depth, bypass]) => match (controls[depth], controls[bypass]) {
-                    (crate::ControlValue::Real(v), crate::ControlValue::Real(0.)) => v,
-                    _ => 0.,
-                },
+                Some([depth, bypass]) => if controls.get(bypass) == 0. { controls.get(depth) } else { 0. },
                 None => route.depth,
             };
             let lane = usize::from(route.target == ModTarget::LoopLength);
@@ -1552,14 +1555,11 @@ impl VoiceModState {
     }
 
     pub(crate) fn native_render<'a>(&'a self, modulation: &'a VoiceModulation, voice: usize,
-        state: &'a mut Option<crate::v1_voice_controls::ControlState>, controls: &[crate::ControlValue]) -> Option<crate::whole_voice::Render<'a>> {
+        state: &'a mut Option<crate::v1_voice_controls::ControlState>, controls: RealValuesRef<'_>) -> Option<crate::whole_voice::Render<'a>> {
         let program = &modulation.programs[self.program(voice)? as usize];
         let native = program.native.as_ref()?;
         let flex_depth = program.native_flex_control.map_or(1., |(base,ids)| {
-            ids.map_or(base, |[depth,bypass]| match (controls[depth],controls[bypass]) {
-                (crate::ControlValue::Real(depth),crate::ControlValue::Real(0.)) => depth,
-                _ => 0.,
-            })
+            ids.map_or(base, |[depth,bypass]| if controls.get(bypass) == 0. { controls.get(depth) } else { 0. })
         });
         Some(crate::whole_voice::Render { plan: &native.plan, state: state.as_mut()?, blocks: &self.native_blocks, flex_depth })
     }
@@ -1723,7 +1723,7 @@ impl VoiceModState {
                 Prepared::Breakpoints(b) => f64::from(
                     self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
                 ),
-                other => other.input(inputs, seed, i),
+                Prepared::Input(input) => input.input(inputs, seed, i),
             };
             if p.cacheable || native.is_some() {
                 changed |= values[i].to_bits() != value.to_bits();
@@ -1737,10 +1737,7 @@ impl VoiceModState {
             state.plan_controls_read_with_intensity(&native.plan,
                 |s,t| crate::whole_voice::read(inputs,s,t), 0, frames as usize,
                 |assignment, m| match p.native_controls[assignment] {
-                    Some(([depth, bypass], scale)) => match (inputs.controls[depth], inputs.controls[bypass]) {
-                        (crate::ControlValue::Real(value), crate::ControlValue::Real(0.)) => (value / scale) as f32,
-                        _ => 0.,
-                    },
+                    Some(([depth, bypass], scale)) => if inputs.controls.get(bypass) == 0. { (inputs.controls.get(depth) / scale) as f32 } else { 0. },
                     None => m.intensity,
                 })
         });
@@ -1761,10 +1758,7 @@ impl VoiceModState {
             let base = match controls.peek().copied() {
                 Some(&(index, [depth, bypass])) if index == i => {
                     controls.next();
-                    match (inputs.controls[depth], inputs.controls[bypass]) {
-                        (crate::ControlValue::Real(d), crate::ControlValue::Real(0.)) => d * route.live_gain,
-                        _ => 0.,
-                    }
+                    if inputs.controls.get(bypass) == 0. { inputs.controls.get(depth) * route.live_gain } else { 0. }
                 }
                 _ => route.depth,
             };
@@ -2349,7 +2343,7 @@ mod tests {
             held: 0,
             script: &script,
             bend: 0.0,
-            controls: &[],
+            controls: RealValuesRef::new(&[]),
         };
         let clock = |now| Clock {
             rate: 48000.0,
@@ -2555,7 +2549,7 @@ mod tests {
             let inputs = Inputs {
                 velocity: 1., key: 0.5, pressure: 0, timbre: 0,
                 controllers: &controllers, held: 0, script: &script,
-                bend: 0., controls: &[],
+                bend: 0., controls: RealValuesRef::new(&[]),
             };
             let mut state = VoiceModState::new(&modulation, 1).unwrap();
             for now in [0, 2400, 48127] {
@@ -2583,24 +2577,24 @@ mod tests {
             ..Default::default()
         }], vec![Some(0)], vec![0]).unwrap();
         // Already resolved cells; public schema/heap behavior is tested by Runtime.
-        modulation.programs[0].controls = vec![(0, [0, 1])].into_boxed_slice();
+        modulation.programs[0].controls = vec![(0, [RealControlIndex::test(0), RealControlIndex::test(1)])].into_boxed_slice();
         let mut actual = VoiceModState::new(&modulation, 1).unwrap();
         let mut unchanged = VoiceModState::new(&modulation, 1).unwrap();
         let controllers = [0; 128];
         let script = Default::default();
-        let old = [crate::ControlValue::Real(0.125), crate::ControlValue::Real(0.)];
-        let edited = [crate::ControlValue::Real(-0.25), crate::ControlValue::Real(0.)];
-        let bypass = [crate::ControlValue::Real(0.125), crate::ControlValue::Real(1.)];
+        let old = [crate::control::RealCell::test(0.125), crate::control::RealCell::test(0.)];
+        let edited = [crate::control::RealCell::test(-0.25), crate::control::RealCell::test(0.)];
+        let bypass = [crate::control::RealCell::test(0.125), crate::control::RealCell::test(1.)];
         let inputs = Inputs {
             velocity: 1., key: 0.5, pressure: 0, timbre: 0,
             controllers: &controllers, held: 0, script: &script,
-            bend: 0., controls: &old,
+            bend: 0., controls: RealValuesRef::new(&old),
         };
         let clock = |now| Clock { rate: 48000., tempo: 120., now };
         actual.start(&modulation, 0, 0, &inputs, clock(2400), 7);
         unchanged.start(&modulation, 0, 0, &inputs, clock(2400), 7);
         assert_eq!(actual.phase[0].to_bits(), 0.5f64.to_bits());
-        let held_inputs = Inputs { controls: &edited, ..inputs };
+        let held_inputs = Inputs { controls: RealValuesRef::new(&edited), ..inputs };
         for now in [2400, 2432, 2464, 2528, 2591] {
             actual.advance(&modulation, 0, &held_inputs, clock(now));
             unchanged.advance(&modulation, 0, &inputs, clock(now));
@@ -2609,7 +2603,7 @@ mod tests {
         }
         actual.start(&modulation, 0, 0, &held_inputs, clock(3000), 8);
         assert_eq!(actual.phase[0].to_bits(), 0.125f64.to_bits());
-        actual.start(&modulation, 0, 0, &Inputs { controls: &bypass, ..inputs }, clock(6000), 9);
+        actual.start(&modulation, 0, 0, &Inputs { controls: RealValuesRef::new(&bypass), ..inputs }, clock(6000), 9);
         assert_eq!(actual.phase[0].to_bits(), 0.375f64.to_bits());
     }
 
@@ -2643,7 +2637,7 @@ mod tests {
                 held: 0,
                 script: &Default::default(),
                 bend: 0.0,
-                controls: &[],
+                controls: RealValuesRef::new(&[]),
             };
             let clock = |now| Clock {
                 rate: 1000.0,

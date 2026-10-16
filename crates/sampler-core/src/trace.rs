@@ -2,7 +2,7 @@
 //! control-side; the single render writer uses fixed buffers and a bounded SPSC.
 pub mod onset;
 
-use crate::dsp::{BLOCK, ControlRamp, Planar, PreparedProcessor};
+use crate::dsp::{BLOCK, ControlRamp, Planar, ProcessorRef, ProcessorSlice};
 use crate::{EngineParameterAddress, EngineParameterLaw, Error, Frame, Prepared};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::Serialize;
@@ -668,40 +668,41 @@ impl TraceGraph {
         }
         order
     }
-    pub(crate) fn connect(
+    pub(crate) fn connect<'a>(
         &mut self,
-        stages: &[PreparedProcessor],
+        stages: impl Into<ProcessorSlice<'a>>,
         ids: &[usize],
         mut parent: usize,
     ) -> usize {
+        let stages = stages.into();
         let mut n = 0;
         let mut fork = None;
         let mut accumulator = None;
         while n < stages.len() {
             let id = ids[n];
-            match stages[n] {
-                PreparedProcessor::Mix { count, .. } => {
-                    let end = n + 1 + usize::from(count);
-                    let wet = self.connect(&stages[n + 1..end], &ids[n + 1..end], parent);
+            match stages.get(n) {
+                ProcessorRef::Mix { count, .. } => {
+                    let end = n + 1 + usize::from(*count);
+                    let wet = self.connect(stages.slice(n + 1..end), &ids[n + 1..end], parent);
                     self.edge(parent, id, "dry_or_bypass");
                     self.edge(wet, id, "wet");
                     parent = id;
                     n = end;
                 }
-                PreparedProcessor::Branch {
+                ProcessorRef::Branch {
                     count, first, last, ..
                 } => {
-                    if first || fork.is_none() {
+                    if *first || fork.is_none() {
                         fork = Some(parent);
                     }
-                    let end = n + 1 + usize::from(count);
-                    let child = self.connect(&stages[n + 1..end], &ids[n + 1..end], fork.unwrap());
+                    let end = n + 1 + usize::from(*count);
+                    let child = self.connect(stages.slice(n + 1..end), &ids[n + 1..end], fork.unwrap());
                     self.edge(child, id, "branch_sum");
                     if let Some(previous) = accumulator {
                         self.edge(previous, id, "accumulate");
                     }
                     accumulator = Some(id);
-                    if last {
+                    if *last {
                         parent = id;
                         fork = None;
                         accumulator = None;
@@ -808,7 +809,7 @@ impl TraceGraph {
     }
     pub(crate) fn stage(
         &mut self,
-        stage: &PreparedProcessor,
+        stage: ProcessorRef<'_>,
         kind: &'static str,
         zone: Option<u32>,
         group: Option<u32>,
@@ -821,13 +822,13 @@ impl TraceGraph {
         let parameter = |name, p| self.parameter(name, p, plan, bindings, initial);
         let constant = |name, value| parameter(name, PreparedParameter::Constant(value));
         let (name, parameters, latency) = match stage {
-            PreparedProcessor::Gain(g) => ("gain", vec![constant("linear_gain", *g)], 0),
-            PreparedProcessor::ControlGain(lane) => (
+            ProcessorRef::Gain(g) => ("gain", vec![constant("linear_gain", *g)], 0),
+            ProcessorRef::ControlGain(lane) => (
                 "control_gain",
                 vec![parameter("linear_gain", PreparedParameter::Control(*lane))],
                 0,
             ),
-            PreparedProcessor::Mix { lanes, .. } => (
+            ProcessorRef::Mix { lanes, .. } => (
                 "slot_mix",
                 ["dry", "output_gain", "bypass"]
                     .into_iter()
@@ -836,7 +837,7 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::StereoMatrix(m) => (
+            ProcessorRef::StereoMatrix(m) => (
                 "stereo_matrix",
                 vec![
                     constant("ll", m[0][0]),
@@ -846,7 +847,7 @@ impl TraceGraph {
                 ],
                 0,
             ),
-            PreparedProcessor::Dynamics(c) => (
+            ProcessorRef::Dynamics(c) => (
                 "dynamics",
                 c.trace_parameters()
                     .into_iter()
@@ -854,8 +855,8 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::Branch { gain, .. } => ("branch", vec![constant("gain", *gain)], 0),
-            PreparedProcessor::TimeMod { timemod, .. } => (
+            ProcessorRef::Branch { gain, .. } => ("branch", vec![constant("gain", *gain)], 0),
+            ProcessorRef::TimeMod { timemod, .. } => (
                 "timemod",
                 timemod
                     .trace_parameters()
@@ -864,12 +865,12 @@ impl TraceGraph {
                     .collect(),
                 timemod.trace_frames(),
             ),
-            PreparedProcessor::Eq(eq) => (
+            ProcessorRef::Eq(eq) => (
                 "eq",
                 eq.trace_parameters().into_iter().map(|(n, p)| parameter(n, p)).collect(),
                 0,
             ),
-            PreparedProcessor::ControlMatrix(cells) => (
+            ProcessorRef::ControlMatrix(cells) => (
                 "control_matrix",
                 ["ll", "lr", "rl", "rr"]
                     .into_iter()
@@ -878,7 +879,7 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::Biquad(b) => (
+            ProcessorRef::Biquad(b) => (
                 "biquad",
                 ["b0", "b1", "b2", "a1", "a2"]
                     .into_iter()
@@ -887,29 +888,29 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::StateVariable(i) => (
+            ProcessorRef::StateVariable(i) => (
                 "state_variable_filter",
                 if bus.is_some() && zone.is_none() {
                     plan.buses.trace_filter(*i)
                 } else {
-                    plan.filters[*i].trace_parameters()
+                    plan.filters.trace_parameters(*i)
                 }
                 .into_iter()
                 .map(|(n, p)| parameter(n, p))
                 .collect(),
                 0,
             ),
-            PreparedProcessor::Filter { engine, .. } => {
+            ProcessorRef::Filter { engine, .. } => {
                 let (name, lanes) = engine.trace();
                 (name, lanes.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
             }
-            PreparedProcessor::Color { color, .. } => {
+            ProcessorRef::Color { color, .. } => {
                 let (name, parameters) = color.trace();
                 (name, parameters.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
             }
-            PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
-            PreparedProcessor::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
-            PreparedProcessor::Space(i, _) => (
+            ProcessorRef::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
+            ProcessorRef::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
+            ProcessorRef::Space(i, _) => (
                 "space",
                 plan.buses
                     .trace_space(*i)
@@ -921,10 +922,10 @@ impl TraceGraph {
         };
         let id = self.node(kind, name, zone, group, bus, parameters, latency);
         self.nodes[id].gain_measurement = match stage {
-            PreparedProcessor::Gain(_)
-            | PreparedProcessor::ControlGain(_)
-            | PreparedProcessor::Branch { .. } => "scalar_multiplier",
-            PreparedProcessor::Mix { .. } => "mix_coefficients",
+            ProcessorRef::Gain(_)
+            | ProcessorRef::ControlGain(_)
+            | ProcessorRef::Branch { .. } => "scalar_multiplier",
+            ProcessorRef::Mix { .. } => "mix_coefficients",
             _ => "effective_energy_ratio",
         };
         id

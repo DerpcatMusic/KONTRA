@@ -89,6 +89,42 @@ impl Legacy {
     }
 }
 
+/// The exact finite domain of the direct-form coefficient generator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SectionClass {
+    Lp1,
+    Hp1,
+    Bp2,
+    Lp2,
+    Hp2,
+    Lp4,
+    Hp4,
+    Bp4,
+    Br4,
+    Lp6,
+    VowelA,
+    VowelB,
+    Biquad { mode: u8, hertz: f32, q: f32 },
+}
+impl SectionClass {
+    fn retains_raw_cutoff(self) -> bool {
+        matches!(self, Self::Lp1 | Self::Hp1 | Self::Bp2 | Self::Lp2 | Self::Hp2
+            | Self::Lp4 | Self::Hp4 | Self::Bp4 | Self::Br4 | Self::Lp6)
+    }
+}
+
+/// A law evaluated by the native knob clock. Fixed UVI and SV cores have
+/// separate prepared owners and cannot enter the clocked law.
+#[derive(Clone, Copy, Debug)]
+enum ClockedClass {
+    Sections(SectionClass),
+    Pro52,
+    Ladder,
+    Versatile(sampler_ir::fx::filter::Versatile),
+    Moog { hertz: f32, q: f32 },
+    Rez { mode: u8, hertz: f32, q: f32 },
+}
+
 /// One direct-form section: `y = b0 x + b1 x1 + b2 x2 + c1 y1 + c2 y2` (feedback taps added).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Section {
@@ -298,7 +334,7 @@ fn one_pole_high(a: f64) -> Section {
 }
 
 /// The coefficients a class's setter derives from its knobs at `rate` hertz.
-pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> Design {
+fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design {
     let rate_factor = (44_011.976_047_904_19 / f64::from(rate)) as f32;
     let v = knob_position(cutoff, rate_factor);
     let r = clamp01(1.0 - (1.0 - resonance) * (1.0 - resonance));
@@ -307,16 +343,16 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
     let mut d = Design { gain: 1.0, count: 1, ..Design::default() };
     let s = &mut d.sections;
     match class {
-        Legacy::Lp1 => s[0] = one_pole_low(f64::from(lp_pole(angle(v, 0.99)))),
-        Legacy::Hp1 => s[0] = one_pole_high(f64::from(hp_pole(angle(v, 0.82)))),
-        Legacy::Bp2 => {
+        SectionClass::Lp1 => s[0] = one_pole_low(f64::from(lp_pole(angle(v, 0.99)))),
+        SectionClass::Hp1 => s[0] = one_pole_high(f64::from(hp_pole(angle(v, 0.82)))),
+        SectionClass::Bp2 => {
             let w = angle(v, 0.82);
             s[0] = one_pole_low(f64::from(lp_pole(w)));
             s[1] = one_pole_high(f64::from(hp_pole(w)) * 0.99);
             d.count = 2;
         }
-        Legacy::Lp2 | Legacy::Hp2 => {
-            let high = class == Legacy::Hp2;
+        SectionClass::Lp2 | SectionClass::Hp2 => {
+            let high = class == SectionClass::Hp2;
             let a = if high { hp_pole(angle(v, 0.92)) } else { lp_pole(angle(v, 0.99)) };
             let n = (1.0 - r) * 0.55 + 0.45;
             let sec = warp(bits(P2_0), 0.0, 2.687, r, a);
@@ -330,8 +366,8 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
                 sec.scale(dv)
             };
         }
-        Legacy::Lp4 | Legacy::Hp4 => {
-            let high = class == Legacy::Hp4;
+        SectionClass::Lp4 | SectionClass::Hp4 => {
+            let high = class == SectionClass::Hp4;
             let a = if high { hp_pole(angle(v, 0.82)) } else { lp_pole(angle(v, 0.99)) };
             let n = f64::from(q * 0.35 + 0.65);
             let mut x = warp(bits(P4_0), 0.647, 6.294, r, a);
@@ -353,7 +389,7 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
             // LP4 (FUN_140909bf0) knees the first section's output, HP4 (FUN_14090b4e0) the input.
             d.clip = Some((if high { 0 } else { 1 }, 0.6));
         }
-        Legacy::Bp4 => {
+        SectionClass::Bp4 => {
             let w = angle(v, 0.82);
             let n = f64::from(q * 0.35 + 0.65);
             let x = warp(bits(P4_0), 0.647, 6.294, r, lp_pole(w));
@@ -365,7 +401,7 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
             d.gain = gain;
             d.clip = Some((1, 0.6));
         }
-        Legacy::Br4 => {
+        SectionClass::Br4 => {
             // f64 coefficients (FUN_1408e4af0); the section math is the same.
             let w = angle(v, 0.82);
             let n = f64::from((1.0 - r) * 0.2 + 0.8);
@@ -397,10 +433,10 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
             d.count = 2;
             d.parallel = true;
         }
-        Legacy::VowelA | Legacy::VowelB => {
+        SectionClass::VowelA | SectionClass::VowelB => {
             // FUN_14095dd00 / FUN_14095e250: no exp series; two formant sections in parallel,
             // A warped low (unit DC gain), B mirrored high (unit Nyquist gain), both x `level`.
-            let a_kind = class == Legacy::VowelA;
+            let a_kind = class == SectionClass::VowelA;
             let (k8, mb, bb) = if a_kind { (0.18, 0.068, 0.071_24) } else { (0.22, 0.083, 0.052) };
             let r1 = (f64::from(r) * k8 + 0.85) as f32;
             let r2 = if a_kind { (f64::from(r * 0.5) + 0.2) as f32 } else { (f64::from(r) * 0.4 + 0.2) as f32 };
@@ -417,11 +453,8 @@ pub(crate) fn design(class: Legacy, cutoff: f32, resonance: f32, rate: f32) -> D
             d.count = 2;
             d.parallel = true;
         }
-        Legacy::Uvi(Uvi::Biquad { mode, hertz, q }) => s[0] = uvi_biquad(mode, hertz, q, rate),
-        Legacy::Pro52 | Legacy::Ladder | Legacy::Versatile(_) | Legacy::Sv(_) | Legacy::Uvi(_) => {
-            unreachable!("not a section class")
-        }
-        Legacy::Lp6 => {
+        SectionClass::Biquad { mode, hertz, q } => s[0] = uvi_biquad(mode, hertz, q, rate),
+        SectionClass::Lp6 => {
             let a = lp_pole(angle(v, 0.99));
             let n = f64::from(q * 0.55 + 0.45);
             let x = warp(bits(P6_0), 0.771, 7.786, r, a);
@@ -1109,11 +1142,21 @@ fn xp_sat<const D: u8>(u: f32) -> f32 {
     }
 }
 
+#[derive(Clone, Copy)]
+struct XpanderConfig {
+    mode: u8,
+    hertz: f32,
+    q: f32,
+    distortion: u8,
+    drive: f32,
+    fat: f32,
+    algorithm: u8,
+    oversampling: bool,
+}
+
 impl Xpander {
-    pub(crate) fn new(u: Uvi, rate: f32) -> Option<Self> {
-        let Uvi::Xpander { mode, hertz, q, distortion, drive, fat, algorithm, oversampling } = u else {
-            return None;
-        };
+    fn new(config: XpanderConfig, rate: f32) -> Self {
+        let XpanderConfig { mode, hertz, q, distortion, drive, fat, algorithm, oversampling } = config;
         let zdf = algorithm == 1;
         let os2 = (!zdf && rate <= 48_000.0) || oversampling;
         let rate2 = if os2 { rate + rate } else { rate };
@@ -1137,7 +1180,7 @@ impl Xpander {
             let h = rate2 * 0.5;
             r *= 1.0 - (hertz.min(h) - fb(0x469c_4000)) / h;
         }
-        Some(Self {
+        Self {
             r,
             g,
             fat,
@@ -1147,7 +1190,7 @@ impl Xpander {
             os2,
             drive: 10f32.powf(drive * fb(0x3d4c_cccd)),
             hiir: Hiir::new(rate, f64::from((20_000.0 / rate).min(fb(0x3ef5_c28f))) * f64::from(rate), 80.0),
-        })
+        }
     }
 
     fn makeup(&self, drive: f32) -> f32 {
@@ -1554,11 +1597,17 @@ fn digital_design(kind: u8, n: usize, fn_: f64, gain_db: f32, q: f64, bw: f64) -
     (sections, first)
 }
 
+#[derive(Clone, Copy)]
+enum BankConfig {
+    Digital { kind: u8, order: u8, hertz: f32, track: f32, spread: f32, q: f32, gain: f32, bandwidth: f32 },
+    Vowel { morph: f32, q: f32, formant: f32, a: u8, b: u8, mode: u8, count: u8 },
+}
+
 impl Bank {
-    fn new(u: Uvi, rate: f32) -> Option<Self> {
+    fn new(config: BankConfig, rate: f32) -> Self {
         let mut bank = Self { sections: [[[0.0; 5]; BANK]; 2], count: 0, first: [None; 2], wide: false, sum: None };
-        match u {
-            Uvi::Digital { kind, order, hertz, track, spread, q, gain, bandwidth } => {
+        match config {
+            BankConfig::Digital { kind, order, hertz, track, spread, q, gain, bandwidth } => {
                 bank.wide = true;
                 for ch in 0..2 {
                     // 0x141287010: stereo spread is -/+ half the semitones per channel.
@@ -1580,7 +1629,7 @@ impl Bank {
                     bank.first[ch] = first;
                 }
             }
-            Uvi::Vowel { morph, q, formant, a, b, mode, count } => {
+            BankConfig::Vowel { morph, q, formant, a, b, mode, count } => {
                 let count = usize::from(count.clamp(1, 4));
                 let m = f64::from(morph);
                 for i in 0..count {
@@ -1593,9 +1642,8 @@ impl Bank {
                 bank.count = count;
                 bank.sum = Some(if mode == 1 { 1.0 } else { 1.0 / count as f32 });
             }
-            _ => return None,
         }
-        Some(bank)
+        bank
     }
 
     fn process(&self, cells: &mut [[f64; 2]], block: &mut Planar, len: usize) {
@@ -1658,15 +1706,18 @@ pub(crate) struct Comb {
     g: f32,
 }
 
+#[derive(Clone, Copy)]
+struct CombConfig { hertz: f32, q: f32, negative: bool }
+
 impl Comb {
-    fn new(u: Uvi, rate: f32) -> Option<Self> {
-        let Uvi::Comb { hertz, q, negative } = u else { return None };
+    fn new(config: CombConfig, rate: f32) -> Self {
+        let CombConfig { hertz, q, negative } = config;
         let half = rate * 0.5;
         let fc = if hertz <= half { hertz } else { half };
         let p = 1.0 / ((fc + fc) / rate);
         let dl = (p + p).abs();
         let delay = dl as usize;
-        Some(Self { delay, frac: dl - delay as f32, g: if negative { -q } else { q } })
+        Self { delay, frac: dl - delay as f32, g: if negative { -q } else { q } }
     }
 
     fn cells(&self) -> usize {
@@ -1702,14 +1753,6 @@ enum Fixed {
 }
 
 impl Fixed {
-    fn new(class: Legacy, rate: f32) -> Option<Self> {
-        let Legacy::Uvi(u) = class else { return None };
-        Xpander::new(u, rate)
-            .map(Self::Xpander)
-            .or_else(|| Bank::new(u, rate).map(Self::Bank))
-            .or_else(|| Comb::new(u, rate).map(Self::Comb))
-    }
-
     fn cells(&self) -> usize {
         match self {
             Self::Xpander(_) => XPANDER_CELLS,
@@ -1724,6 +1767,54 @@ impl Fixed {
             Self::Bank(b) => b.process(cells, block, len),
             Self::Comb(c) => c.process(cells, block, len),
         }
+    }
+}
+
+/// Exactly one prepared kernel owns each instance; no duplicated class/fixed
+/// selectors need to agree at render time.
+#[derive(Debug)]
+enum PreparedCascadeCore {
+    Fixed(Fixed),
+    StateVariable(Sv),
+    Clocked(ClockedClass),
+}
+impl PreparedCascadeCore {
+    fn new(class: Legacy, rate: f32) -> Self {
+        match class {
+            Legacy::Lp1 => Self::Clocked(ClockedClass::Sections(SectionClass::Lp1)),
+            Legacy::Hp1 => Self::Clocked(ClockedClass::Sections(SectionClass::Hp1)),
+            Legacy::Bp2 => Self::Clocked(ClockedClass::Sections(SectionClass::Bp2)),
+            Legacy::Lp2 => Self::Clocked(ClockedClass::Sections(SectionClass::Lp2)),
+            Legacy::Hp2 => Self::Clocked(ClockedClass::Sections(SectionClass::Hp2)),
+            Legacy::Lp4 => Self::Clocked(ClockedClass::Sections(SectionClass::Lp4)),
+            Legacy::Hp4 => Self::Clocked(ClockedClass::Sections(SectionClass::Hp4)),
+            Legacy::Bp4 => Self::Clocked(ClockedClass::Sections(SectionClass::Bp4)),
+            Legacy::Br4 => Self::Clocked(ClockedClass::Sections(SectionClass::Br4)),
+            Legacy::Lp6 => Self::Clocked(ClockedClass::Sections(SectionClass::Lp6)),
+            Legacy::VowelA => Self::Clocked(ClockedClass::Sections(SectionClass::VowelA)),
+            Legacy::VowelB => Self::Clocked(ClockedClass::Sections(SectionClass::VowelB)),
+            Legacy::Pro52 => Self::Clocked(ClockedClass::Pro52),
+            Legacy::Ladder => Self::Clocked(ClockedClass::Ladder),
+            Legacy::Versatile(v) => Self::Clocked(ClockedClass::Versatile(v)),
+            Legacy::Sv(sv) => Self::StateVariable(sv),
+            Legacy::Uvi(uvi) => match uvi {
+                Uvi::Biquad { mode, hertz, q } => Self::Clocked(ClockedClass::Sections(SectionClass::Biquad { mode, hertz, q })),
+                Uvi::Moog { hertz, q } => Self::Clocked(ClockedClass::Moog { hertz, q }),
+                Uvi::Rez { mode, hertz, q } => Self::Clocked(ClockedClass::Rez { mode, hertz, q }),
+                Uvi::Xpander { mode, hertz, q, distortion, drive, fat, algorithm, oversampling } =>
+                    Self::Fixed(Fixed::Xpander(Xpander::new(XpanderConfig { mode, hertz, q, distortion, drive, fat, algorithm, oversampling }, rate))),
+                Uvi::Digital { kind, order, hertz, track, spread, q, gain, bandwidth } =>
+                    Self::Fixed(Fixed::Bank(Bank::new(BankConfig::Digital { kind, order, hertz, track, spread, q, gain, bandwidth }, rate))),
+                Uvi::Vowel { morph, q, formant, a, b, mode, count } =>
+                    Self::Fixed(Fixed::Bank(Bank::new(BankConfig::Vowel { morph, q, formant, a, b, mode, count }, rate))),
+                Uvi::Comb { hertz, q, negative } =>
+                    Self::Fixed(Fixed::Comb(Comb::new(CombConfig { hertz, q, negative }, rate))),
+            },
+        }
+    }
+
+    fn retains_raw_cutoff(&self) -> bool {
+        matches!(self, Self::Clocked(ClockedClass::Sections(section)) if section.retains_raw_cutoff())
     }
 }
 
@@ -1752,26 +1843,27 @@ impl CascadeSettings {
 
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Cascade {
         super::ladder_kernel::prepare();
+        let parameters = [self.cutoff, self.resonance].map(|p| p.compile(bindings));
         Cascade {
-            class: self.class,
-            parameters: [self.cutoff, self.resonance].map(|p| p.compile(bindings)),
+            core: PreparedCascadeCore::new(self.class, rate as f32),
+            parameters,
             rate: rate as f32,
-            fixed: Fixed::new(self.class, rate as f32),
         }
     }
 }
 
 pub(crate) struct Cascade {
-    class: Legacy,
+    core: PreparedCascadeCore,
     parameters: [PreparedParameter; 2],
     rate: f32,
-    /// UVI laws designed at prepare.
-    fixed: Option<Fixed>,
 }
 
 impl Cascade {
     pub(crate) fn cells(&self) -> usize {
-        self.fixed.map_or(CELLS, |f| f.cells())
+        match &self.core {
+            PreparedCascadeCore::Fixed(fixed) => fixed.cells(),
+            PreparedCascadeCore::StateVariable(_) | PreparedCascadeCore::Clocked(_) => CELLS,
+        }
     }
 
     pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] {
@@ -1805,17 +1897,20 @@ impl Cascade {
                     + modulation[i] as f32;
                 // BFilter's wrapper slews the raw cutoff; its setter saturates
                 // only while deriving coefficients. Retain that clock state.
-                if i == 0 && self.class.retains_raw_cutoff() && value.is_finite() { value } else { value.clamp(0., 1.) }
+                if i == 0 && self.core.retains_raw_cutoff() && value.is_finite() { value } else { value.clamp(0., 1.) }
             })
         };
-        if let Some(f) = &self.fixed {
-            f.process(cells, block, len);
-            return !cells.iter().flatten().all(|v| v.is_finite());
-        }
-        if let Legacy::Sv(sv) = self.class {
-            self.sv(sv, cells, block, len, target);
-            return !cells[..KNOBS].iter().flatten().all(|v| v.is_finite());
-        }
+        let class = match &self.core {
+            PreparedCascadeCore::Fixed(fixed) => {
+                fixed.process(cells, block, len);
+                return !cells.iter().flatten().all(|v| v.is_finite());
+            }
+            PreparedCascadeCore::StateVariable(sv) => {
+                self.sv(*sv, cells, block, len, target);
+                return !cells[..KNOBS].iter().flatten().all(|v| v.is_finite());
+            }
+            PreparedCascadeCore::Clocked(class) => *class,
+        };
         let started = cells[CLOCK + 1][0] != 0.0;
         let mut current = if started { cells[CLOCK].map(|v| v as f32) } else { target(0) };
         let step = (1.0 / (31.0 * current[1] + 4.0)).clamp(0.028_571_429, 0.25);
@@ -1823,7 +1918,7 @@ impl Cascade {
         while position < len {
             let goal = target(position);
             let frames = position..position + QUANTUM.min(len - position);
-            match self.law(cells, current) {
+            match class.law(self.rate, cells, current) {
                 Law::Sections(d) => {
                     for ch in 0..2 {
                         let mut state: [[f32; 4]; 3] = std::array::from_fn(|s| {
@@ -1860,16 +1955,19 @@ impl Cascade {
                 }
             }
             position = frames.end;
-            current = self.clock(current, goal, step, modulation[0] != 0.0);
+            current = class.clock(current, goal, step, modulation[0] != 0.0);
         }
         cells[CLOCK] = current.map(f64::from);
         cells[CLOCK + 1][0] = 1.0;
         !cells[..KNOBS].iter().flatten().all(|v| v.is_finite())
     }
 
+}
+
+impl ClockedClass {
     /// One control tick toward `goal`.
-    fn clock(&self, [cut, res]: [f32; 2], goal: [f32; 2], step: f32, modulated: bool) -> [f32; 2] {
-        if matches!(self.class, Legacy::Versatile(_)) {
+    fn clock(self, [cut, res]: [f32; 2], goal: [f32; 2], step: f32, modulated: bool) -> [f32; 2] {
+        if matches!(self, Self::Versatile(_)) {
             return [cut + (goal[0] - cut) * 0.015, res + (goal[1] - res) * 0.015];
         }
         let delta = goal[0] - cut;
@@ -1879,26 +1977,21 @@ impl Cascade {
     }
 
     /// The law for `knobs`; section designs come from the cells when designed already.
-    fn law(&self, cells: &mut [[f64; 2]], knobs: [f32; 2]) -> Law {
-        match self.class {
-            Legacy::Pro52 => return Law::Chamberlin(pro52(knobs[0], knobs[1], self.rate)),
-            Legacy::Versatile(v) => {
-                return Law::Chamberlin(versatile(&v, knobs[0], knobs[1], self.rate));
-            }
-            Legacy::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], self.rate)),
-            Legacy::Uvi(Uvi::Moog { hertz, q }) => return Law::Moog(Moog::new(hertz, q, self.rate)),
-            Legacy::Uvi(Uvi::Rez { mode, hertz, q }) => return Law::Rez(Rez::new(mode, hertz, q, self.rate)),
-            Legacy::Uvi(Uvi::Xpander { .. } | Uvi::Digital { .. } | Uvi::Vowel { .. } | Uvi::Comb { .. }) => {
-                unreachable!("fixed UVI laws run before the clocked laws")
-            }
-            _ => {}
-        }
+    fn law(self, rate: f32, cells: &mut [[f64; 2]], knobs: [f32; 2]) -> Law {
+        let section = match self {
+            Self::Pro52 => return Law::Chamberlin(pro52(knobs[0], knobs[1], rate)),
+            Self::Versatile(v) => return Law::Chamberlin(versatile(&v, knobs[0], knobs[1], rate)),
+            Self::Ladder => return Law::Ladder(legacy_ladder(knobs[0], knobs[1], rate)),
+            Self::Moog { hertz, q } => return Law::Moog(Moog::new(hertz, q, rate)),
+            Self::Rez { mode, hertz, q } => return Law::Rez(Rez::new(mode, hertz, q, rate)),
+            Self::Sections(section) => section,
+        };
         let seen = cells[KNOBS];
         let valid = cells[KNOBS + 1][0] != 0.0;
         if valid && seen == [f64::from(knobs[0]), f64::from(knobs[1])] {
             return Law::Sections(unpack(&cells[COEFS..]));
         }
-        let design = design(self.class, knobs[0], knobs[1], self.rate);
+        let design = design(section, knobs[0], knobs[1], rate);
         cells[KNOBS] = [f64::from(knobs[0]), f64::from(knobs[1])];
         cells[KNOBS + 1][0] = 1.0;
         pack(&design, &mut cells[COEFS..]);
@@ -2003,6 +2096,63 @@ fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// Admission selects one kernel owner. Fixed UVI designs never enter a
+    /// clocked law; every section law receives only its exact design domain.
+    #[test]
+    fn prepared_cascade_owners_cover_the_authored_families() {
+        for id in [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14, 15] {
+            let class = Legacy::from_saved(id).unwrap();
+            let core = PreparedCascadeCore::new(class, 48_000.);
+            assert!(matches!(core, PreparedCascadeCore::Clocked(ClockedClass::Sections(_))));
+            assert_eq!(core.retains_raw_cutoff(), id <= 12);
+        }
+        for class in [Legacy::Pro52, Legacy::Ladder, Legacy::Versatile(sampler_ir::fx::filter::Versatile {
+            shift: [0.5; 2], resonance: [0.2; 2], types: [0.0; 3], wet: [1.0; 3], gain: 0.5,
+        })] {
+            let core = PreparedCascadeCore::new(class, 48_000.);
+            assert!(matches!(core, PreparedCascadeCore::Clocked(_)));
+            assert!(!core.retains_raw_cutoff());
+        }
+        for sv in [Sv::One { high: false }, Sv::Two { mode: 0 }, Sv::Four { mode: 0 },
+            Sv::Six { mode: 0 }, Sv::Multi { mode: 0, bandwidth: 0.5 }] {
+            assert!(matches!(PreparedCascadeCore::new(Legacy::Sv(sv), 48_000.),
+                PreparedCascadeCore::StateVariable(retained) if retained == sv));
+        }
+        for uvi in [Uvi::Biquad { mode: 1, hertz: 1200., q: 0.2 },
+            Uvi::Moog { hertz: 1200., q: 0.2 }, Uvi::Rez { mode: 0, hertz: 1200., q: 0.2 }] {
+            assert!(matches!(PreparedCascadeCore::new(Legacy::Uvi(uvi), 48_000.),
+                PreparedCascadeCore::Clocked(_)));
+        }
+        let cases = [
+            (Uvi::Xpander { mode: 0, hertz: 1200., q: 0.2, distortion: 0, drive: 0., fat: 0.,
+                algorithm: 0, oversampling: false }, 0),
+            (Uvi::Digital { kind: 0, order: 4, hertz: 1200., track: 0., spread: 0., q: 0.2,
+                gain: 0., bandwidth: 1. }, 1),
+            (Uvi::Vowel { morph: 0.5, q: 0.2, formant: 0., a: 0, b: 1, mode: 1, count: 3 }, 1),
+            (Uvi::Comb { hertz: 1200., q: 0.2, negative: false }, 2),
+        ];
+        for (uvi, family) in cases {
+            let core = PreparedCascadeCore::new(Legacy::Uvi(uvi), 48_000.);
+            assert!(match (&core, family) {
+                (PreparedCascadeCore::Fixed(Fixed::Xpander(_)), 0)
+                | (PreparedCascadeCore::Fixed(Fixed::Bank(_)), 1)
+                | (PreparedCascadeCore::Fixed(Fixed::Comb(_)), 2) => true,
+                _ => false,
+            });
+            assert!(!core.retains_raw_cutoff());
+        }
+    }
+
+    /// Root records the compiler's actual layouts; no guessed ABI budget is a
+    /// test oracle. Coefficients/histories remain owned by the existing fields.
+    #[test]
+    fn cascade_typed_owner_layout_receipt() {
+        use std::mem::size_of;
+        eprintln!("cascade layout: owner={} legacy={} option_fixed={} prepared={} cells={}",
+            size_of::<PreparedCascadeCore>(), size_of::<Legacy>(), size_of::<Option<Fixed>>(),
+            size_of::<Cascade>(), CELLS);
+    }
+
     #[test]
     fn legacy_cutoff_clock_keeps_raw_state_until_the_coefficient_setter() {
         let unit = CascadeSettings {
@@ -2026,7 +2176,7 @@ mod tests {
         // Four 32-frame updates: the first four native setter arguments from
         // wrapper 0x140ae9f90 at res .25, rather than a clipped 1 -> .5 slew.
         assert_eq!(cells[CLOCK][0], f64::from(8.15957260131836_f32));
-        assert_eq!(unit.clock([8.5, 0.25], [0.5, 0.25], 1.0 / 11.75, true)[0], 0.5);
+        assert_eq!(ClockedClass::Sections(SectionClass::Lp1).clock([8.5, 0.25], [0.5, 0.25], 1.0 / 11.75, true)[0], 0.5);
     }
 
     #[test]
@@ -2063,7 +2213,7 @@ mod tests {
         }
     }
 
-    fn impulse_response(class: Legacy, cutoff: f32, resonance: f32, input: &[f32]) -> Vec<f32> {
+    fn impulse_response(class: SectionClass, cutoff: f32, resonance: f32, input: &[f32]) -> Vec<f32> {
         let d = design(class, cutoff, resonance, 48_000.0);
         let mut state = [[0f32; 4]; 3];
         input.iter().map(|&x| tick(&d, &mut state, x)).collect()
@@ -2077,9 +2227,9 @@ mod tests {
         let vectors: std::collections::BTreeMap<String, Vec<f32>> =
             serde_json::from_str(include_str!("cascade_native_vectors.json")).unwrap();
         let classes = [
-            ("LP1", Legacy::Lp1), ("HP1", Legacy::Hp1), ("BP2", Legacy::Bp2), ("LP2", Legacy::Lp2),
-            ("HP2", Legacy::Hp2), ("LP4", Legacy::Lp4), ("HP4", Legacy::Hp4), ("BP4", Legacy::Bp4),
-            ("BR4", Legacy::Br4), ("LP6", Legacy::Lp6),
+            ("LP1", SectionClass::Lp1), ("HP1", SectionClass::Hp1), ("BP2", SectionClass::Bp2), ("LP2", SectionClass::Lp2),
+            ("HP2", SectionClass::Hp2), ("LP4", SectionClass::Lp4), ("HP4", SectionClass::Hp4), ("BP4", SectionClass::Bp4),
+            ("BR4", SectionClass::Br4), ("LP6", SectionClass::Lp6),
         ];
         let mut failures = Vec::new();
         for (key, native) in &vectors {
@@ -2142,7 +2292,7 @@ mod tests {
                     let mut s = [0f32; 8];
                     input.iter().map(|&x| l.tick(&mut s, x)).collect()
                 }
-                n => impulse_response(if n == "VOWELA" { Legacy::VowelA } else { Legacy::VowelB }, cut, res, &input),
+                n => impulse_response(if n == "VOWELA" { SectionClass::VowelA } else { SectionClass::VowelB }, cut, res, &input),
             };
             let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
             let err = ours.iter().zip(native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
@@ -2263,7 +2413,7 @@ mod tests {
             let settings =
                 CascadeSettings { class: Legacy::Uvi(uvi), cutoff: Parameter::Constant(0.0), resonance: Parameter::Constant(0.0) };
             let unit = settings.compile(48_000, &mut Vec::new());
-            let Some(Fixed::Xpander(x)) = unit.fixed else { panic!() };
+            let PreparedCascadeCore::Fixed(Fixed::Xpander(x)) = &unit.core else { panic!() };
             let (r, g) = (case["R"].as_f64().unwrap() as f32, case["g"].as_f64().unwrap() as f32);
             if (x.r - r).abs() > 1e-6 || (x.g - g).abs() > 1e-6 {
                 failures.push(format!("{p}: R/g {} {} vs {r} {g}", x.r, x.g));
@@ -2369,11 +2519,11 @@ mod tests {
             })
         };
         let db = |v: f64| 20.0 * v.log10();
-        let flat = design(Legacy::Lp4, 0.5, 0.0, 48_000.0);
+        let flat = design(SectionClass::Lp4, 0.5, 0.0, 48_000.0);
         let corner = (100..20_000).find(|&f| db(response(&flat, f64::from(f))) < -3.0).unwrap();
         assert!((corner as f64 / 1192.0 - 1.0).abs() < 0.01, "{corner}");
         for (res, passband, peak) in [(0.5, -5.23, 20.88), (0.9, -9.88, 37.26)] {
-            let d = design(Legacy::Lp4, 0.5, res, 48_000.0);
+            let d = design(SectionClass::Lp4, 0.5, res, 48_000.0);
             let pb = db(response(&d, 30.0));
             let top = (100..5_000).map(|f| db(response(&d, f64::from(f)))).fold(f64::MIN, f64::max);
             assert!((pb - passband).abs() < 0.05, "{res}: passband {pb}");
@@ -2381,7 +2531,7 @@ mod tests {
         }
         // LP6 rows 80, 83, 84.
         for (res, passband) in [(0.5, -11.17), (0.9, -22.92)] {
-            let pb = db(response(&design(Legacy::Lp6, 0.5, res, 48_000.0), 30.0));
+            let pb = db(response(&design(SectionClass::Lp6, 0.5, res, 48_000.0), 30.0));
             assert!((pb - passband).abs() < 0.05, "LP6 {res}: {pb}");
         }
     }

@@ -52,6 +52,19 @@ pub struct RuntimeStats {
     pub stream_disconnected_refusals: u64,
 }
 
+/// Dense batch identity retained from admission through dispatch. Plan identity
+/// keeps the existing slot-order grouping law; live notes pin its generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BatchKey {
+    plan: usize,
+    pub(super) batch: super::dsp::BatchIndex,
+}
+struct PendingBatch {
+    key: BatchKey,
+    voices: [usize; VOICES],
+    count: usize,
+}
+
 impl Runtime {
     /// Cap the callback instructions run per rendered block across all
     /// callbacks (default unlimited). Callbacks over it resume next block in
@@ -375,7 +388,7 @@ impl Runtime {
         if self.render_voices_parallel(output, at) {
             return;
         }
-        let mut batch: (Option<(usize, usize)>, [usize; VOICES], usize) = (None, [0; VOICES], 0);
+        let mut batch: Option<PendingBatch> = None;
         // Skip empty slots a word at a time. Ascending set bits preserve the
         // original slot-order sum even after holes and generational slot reuse.
         for word in 0..self.voice_activity.len() {
@@ -395,25 +408,32 @@ impl Runtime {
                         return;
                     }
                     let key = self.batch_key(i, output.len());
-                    if key.is_none() || key != batch.0 || batch.2 == VOICES {
-                        self.render_run(&batch.1[..batch.2], output, at);
-                        batch = (key, [0; VOICES], 0);
+                    if batch.as_ref().is_some_and(|run| Some(run.key) != key || run.count == VOICES) {
+                        if let Some(run) = batch.take() {
+                            self.render_run(run.key, &run.voices[..run.count], output, at);
+                        }
                     }
-                    if key.is_none() {
-                        self.render_voice::<false>(i, output, at);
-                    } else {
-                        batch.1[batch.2] = i;
-                        batch.2 += 1;
+                    match key {
+                        None => self.render_voice::<false>(i, output, at),
+                        Some(key) => match batch.as_mut() {
+                            Some(run) => { run.voices[run.count] = i; run.count += 1; }
+                            None => {
+                                let mut voices = [0; VOICES]; voices[0] = i;
+                                batch = Some(PendingBatch { key, voices, count: 1 });
+                            }
+                        },
                     }
                 }
             }
         }
-        self.render_run(&batch.1[..batch.2], output, at);
+        if let Some(run) = batch {
+            self.render_run(run.key, &run.voices[..run.count], output, at);
+        }
     }
 
     /// Voices batch when consecutive in slot order, started, and running the
     /// same delay-free chain of the same plan over at most one block.
-    pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
+    pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<BatchKey> {
         let v = self.voices.slots[i].value.as_ref()?;
         let chain = v.chain?;
         if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting()
@@ -428,22 +448,21 @@ impl Runtime {
             return None;
         }
         let prepared = &generation.prepared;
-        prepared.voice_chains[chain]
-            .batches()
-            .then_some((plan.index, chain))
+        prepared.voice_chains[chain].batch_index()
+            .map(|batch| BatchKey { plan: plan.index, batch })
     }
 
-    fn render_run(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
+    fn render_run(&mut self, key: BatchKey, voices: &[usize], output: &mut [Frame], at: u64) {
         match voices {
             [] => {}
             [i] => self.render_voice::<false>(*i, output, at),
-            _ => self.render_batch(voices, output, at),
+            _ => self.render_batch(key, voices, output, at),
         }
     }
 
     /// [`Self::render_voice`] for a batch: sources and the epilogue per voice
     /// in slot order, every stage across the batch's lanes.
-    fn render_batch(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
+    fn render_batch(&mut self, key: BatchKey, voices: &[usize], output: &mut [Frame], at: u64) {
         use super::dsp::lanes;
         let mut block = [[0.; lanes::LANES]; super::dsp::BLOCK];
         let mut batch = lanes::Batch {
@@ -537,8 +556,7 @@ impl Runtime {
             .plans
             .get_mut(plan_id.expect("a batch has a voice"))
             .unwrap();
-        let first = self.voices.slots[voices[0]].value.as_ref().unwrap();
-        let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
+        let chain = plan.prepared.voice_chains.batch(key.batch);
         let dsp = &mut plan.dsp;
         let mut cells: lanes::Cells<'_> =
             std::array::from_fn(|lane| voices.get(lane).map(|&i| dsp.cells.claim(i)));
@@ -637,7 +655,7 @@ impl Runtime {
                 &self.performance_state.current(performance).controllers,
                 self.release_times[f.note.0.index].counter(n.key_down(), at),
                 &self.note_params[f.note.0.index].mods,
-                &plan.controls.base,
+                plan.controls.base_reals(),
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
@@ -779,7 +797,7 @@ impl Runtime {
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         // Modulated voices render at most one BLOCK chunk per call (render_segment
         // chunks whenever a plan has programs) into scratch, then mix with ramps.
-        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        let chain = v.chain.map(|index| plan.prepared.voice_chains.view(index));
         if let Some(chain) = chain {
             for &bus in &chain.tap_buses {
                 plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
@@ -904,7 +922,7 @@ impl Runtime {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, plan.controls.base_reals()));
         let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
         let context = super::dsp::RenderContext {
             controls,
@@ -1037,7 +1055,7 @@ pub(super) fn render_source<const TRACE: bool>(
     voice: &mut super::Voice,
     source: &(impl super::source::ReadFrames + ?Sized),
     output: &mut [Frame],
-    chain: Option<&super::dsp::PreparedVoiceChain>,
+    chain: Option<super::dsp::PreparedChainRef<'_>>,
     states: &mut [super::dsp::ProcessorState],
     mut context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,

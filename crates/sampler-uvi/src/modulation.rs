@@ -105,7 +105,7 @@ enum Law {
     /// `Pitch` or `Pan`: adds `ratio · value`.
     Add(ir::Target),
     /// OnePole: base Hz times 1000^(ratio * source).
-    Frequency(ir::Target),
+    Frequency { chain: ir::ChainRef, index: usize },
 }
 
 /// A `ControlSignalMapper`: an evenly spaced table over the input's unipolar
@@ -243,11 +243,7 @@ impl Translation {
         index: usize,
         out: &mut Modulation,
     ) -> Result<(), String> {
-        let law = Law::Frequency(ir::Target::Processor {
-            chain,
-            index,
-            parameter: ir::ProcessorParameter::Cutoff,
-        });
+        let law = Law::Frequency { chain, index };
         if let Err(gap) = self.try_connect(connection, out, Some(law))? {
             self.gap(connection, gap);
         }
@@ -358,7 +354,7 @@ impl Translation {
                     }
                     Law::Add(ir::Target::Pitch) => out.pitch += ratio * value,
                     Law::Add(_) => out.pan += ratio * value,
-                    Law::Frequency(ir::Target::Processor { chain, index, .. }) => {
+                    Law::Frequency { chain, index } => {
                         let chain = &mut self.ir.chains[chain.0];
                         let processor = chain
                             .pre_amplitude
@@ -372,7 +368,6 @@ impl Translation {
                             }
                         }
                     }
-                    Law::Frequency(_) => unreachable!("frequency is a placed filter"),
                 }
             }
             Signal::Live {
@@ -443,8 +438,12 @@ impl Translation {
                         ir::Depth::Pitch(ir::Pitch::Semitones(ratio)),
                     ),
                     Law::Add(target) => (target, ir::Depth::Normalized(ratio)),
-                    Law::Frequency(target) => (
-                        target,
+                    Law::Frequency { chain, index } => (
+                        ir::Target::Processor {
+                            chain,
+                            index,
+                            parameter: ir::ProcessorParameter::Cutoff,
+                        },
                         ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * 1000f64.log2() * ratio)),
                     ),
                 };
@@ -454,8 +453,8 @@ impl Translation {
                         match self.live_points(connection, &curve, bipolar, |m| match law {
                             Law::Factor if ratio >= 0.0 => Mapper::position(m, bipolar),
                             Law::Factor => 1.0 - Mapper::position(m, bipolar),
-                            Law::Add(_) | Law::Frequency(_) if ir_bipolar => (m + 1.0) * 0.5,
-                            Law::Add(_) | Law::Frequency(_) => m,
+                            Law::Add(_) | Law::Frequency { .. } if ir_bipolar => (m + 1.0) * 0.5,
+                            Law::Add(_) | Law::Frequency { .. } => m,
                         })? {
                             Ok(points) => points,
                             Err(gap) => return Ok(Err(gap)),

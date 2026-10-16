@@ -177,6 +177,110 @@ mod merge_tests {
     }
 }
 
+/// One checked destination/value pair, held only for the current row. Keeping
+/// the operation on the stack avoids per-snapshot scratch (persistent state can
+/// contain millions of rows). A complete pure pass resolves EVERY row before
+/// callback admission or writes; commit resolves the same immutable rows again.
+/// Admission does not execute code. Writes change values/dirty bits/DSP state,
+/// never prepared domains, IDs, script bank lengths or producer text slots.
+/// Consequently the second resolution has the same result for every row.
+/// No operation survives a Runtime boundary or is reused against another plan.
+pub(super) enum ResolvedStateWrite {
+    Control(super::ControlEdit),
+    Cell {
+        instance: usize,
+        index: usize,
+        value: i64,
+    },
+    Text {
+        instance: usize,
+        index: usize,
+        slot: usize,
+    },
+}
+impl ResolvedStateWrite {
+    pub(super) fn control(
+        generation: &crate::Generation,
+        id: ControlId,
+        value: ControlValue,
+    ) -> Result<Self, Error> {
+        Ok(Self::Control(generation.prepared.resolve_control(id,value)?))
+    }
+
+    pub(super) fn resolve(
+        generation: &crate::Generation,
+        entry: &ScriptStateEntry,
+        texts: &[Text],
+        reject_truncated: bool,
+    ) -> Result<Self, Error> {
+        Ok(match (entry.address, entry.value) {
+            (ScriptStateAddress::Control(id), ScriptStateValue::Control(value)) => {
+                return Self::control(generation, id, value);
+            }
+            (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
+                let instance = usize::from(instance.0);
+                let index = usize::try_from(index).map_err(|_| Error::InvalidInput)?;
+                generation
+                    .scripts
+                    .get(instance)
+                    .and_then(|bank| bank.cells.get(index))
+                    .ok_or(Error::InvalidInput)?;
+                Self::Cell {
+                    instance,
+                    index,
+                    value,
+                }
+            }
+            (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(slot)) => {
+                let instance = usize::from(instance.0);
+                let index = usize::try_from(index).map_err(|_| Error::InvalidInput)?;
+                let slot = usize::try_from(slot).map_err(|_| Error::InvalidInput)?;
+                generation
+                    .scripts
+                    .get(instance)
+                    .and_then(|bank| bank.texts.get(index))
+                    .ok_or(Error::InvalidInput)?;
+                let text = texts.get(slot).ok_or(Error::InvalidInput)?;
+                if reject_truncated && text.is_truncated() {
+                    return Err(Error::InvalidInput);
+                }
+                Self::Text {
+                    instance,
+                    index,
+                    slot,
+                }
+            }
+            _ => return Err(Error::InvalidInput),
+        })
+    }
+
+    pub(super) fn apply(self, generation: &mut crate::Generation, texts: &[Text], now: u64) {
+        match self {
+            Self::Control(edit) => {
+                let (id,projection)=generation.controls.apply(&generation.prepared,edit);
+                generation.dsp.edit_control(&generation.prepared,id,projection,now);
+            }
+            Self::Cell {
+                instance,
+                index,
+                value,
+            } => {
+                let bank = &mut generation.scripts[instance];
+                let changed = bank.cells[index] != value;
+                bank.cells[index] = value;
+                bank.mark_captured_cell(index, changed);
+            }
+            Self::Text {
+                instance,
+                index,
+                slot,
+            } => {
+                generation.scripts[instance].texts[index] = texts[slot];
+            }
+        }
+    }
+}
+
 impl Runtime {
     pub(super) fn script_state_context(&self, instance: ScriptInstanceId) -> crate::behavior::PlanContext {
         if self.performance_state.current.is_empty() {
@@ -418,23 +522,9 @@ impl Runtime {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         next.checked_add(generation.controls.pending as u64)
             .ok_or(Error::ArithmeticOverflow)?;
+        // Resolve the entire batch without changing live or producer state.
         for entry in &state.values {
-            Self::script_state_slot(entry, &state.texts)?;
-            let old = self.script_state_value(plan, entry.address)?;
-            match (old, entry.value, entry.address) {
-                (
-                    ScriptStateValue::Control(_),
-                    ScriptStateValue::Control(value),
-                    ScriptStateAddress::Control(id),
-                ) => {
-                    if !self.control_definition(plan, id)?.domain.accepts(value) {
-                        return Err(Error::InvalidInput);
-                    }
-                }
-                (ScriptStateValue::Cell(_), ScriptStateValue::Cell(_), _)
-                | (ScriptStateValue::Text(_), ScriptStateValue::Text(_), _) => {}
-                _ => return Err(Error::InvalidInput),
-            }
+            ResolvedStateWrite::resolve(generation, entry, &state.texts, false)?;
         }
         if !self.behavior_room(state.callbacks.len()) {
             return Err(Error::Capacity);
@@ -490,28 +580,8 @@ impl Runtime {
         }
         let generation = self.plans.get_mut(plan.0).unwrap();
         for entry in &state.values {
-            match (entry.address, entry.value) {
-                (ScriptStateAddress::Control(id), ScriptStateValue::Control(value)) => {
-                    let index = generation.prepared.control_index(id).unwrap();
-                    generation.controls.base[index] = value;
-                    let playing = generation.controls.playing(&generation.prepared, index);
-                    generation.controls.values[index] = playing;
-                    generation
-                        .dsp
-                        .edit_control(&generation.prepared, index, playing, self.now);
-                }
-                (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
-                    let bank = &mut generation.scripts[usize::from(instance.0)];
-                    let changed = bank.cells[index as usize] != value;
-                    bank.cells[index as usize] = value;
-                    bank.mark_captured_cell(index as usize, changed);
-                }
-                (ScriptStateAddress::Text { instance, index }, ScriptStateValue::Text(slot)) => {
-                    generation.scripts[usize::from(instance.0)].texts[index as usize] =
-                        state.texts[slot as usize]
-                }
-                _ => unreachable!("preflighted script-state type"),
-            }
+            let write = ResolvedStateWrite::resolve(generation, entry, &state.texts, false)?;
+            write.apply(generation, &state.texts, self.now);
         }
         generation.controls.revision = next;
         for callback in &mut state.callbacks {

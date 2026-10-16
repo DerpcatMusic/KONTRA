@@ -699,7 +699,7 @@ fn filter(
 /// A rack as serial processors plus the levels its Send Levels slots feed
 /// into the instrument's send slots, and what it leaves out.
 #[derive(Default)]
-pub(crate) struct Chain {
+pub(crate) struct Chain<P = usize> {
     pub processors: Vec<sampler_ir::Processor>,
     pub sends: Vec<f32>,
     pub notes: Vec<Note>,
@@ -709,14 +709,37 @@ pub(crate) struct Chain {
     /// Each script-addressed effect module (distortion, saturation, formant,
     /// lo-fi) slot and its index in `processors`: modulation targets name them.
     pub lane_slots: Vec<(usize, usize)>,
-    pub send_taps: Vec<SendTap>,
+    pub send_taps: Vec<SendTap<P>>,
 }
 
-pub(crate) struct SendTap {
+pub(crate) struct SendTap<P = sampler_ir::VoiceSendPosition> {
     pub slot: usize,
-    pub position: sampler_ir::VoiceSendPosition,
+    pub position: P,
     pub levels: Vec<f32>,
     pub bypass: bool,
+}
+
+impl<P> Chain<P> {
+    /// Place rack-relative indices on one chosen side of the amplifier once.
+    fn map_send_positions<Q>(self, mut position: impl FnMut(P) -> Q) -> Chain<Q> {
+        Chain {
+            processors: self.processors,
+            sends: self.sends,
+            notes: self.notes,
+            filter_slots: self.filter_slots,
+            lane_slots: self.lane_slots,
+            send_taps: self
+                .send_taps
+                .into_iter()
+                .map(|tap| SendTap {
+                    slot: tap.slot,
+                    position: position(tap.position),
+                    levels: tap.levels,
+                    bypass: tap.bypass,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Keep the amplifier boundary at its physical slot, even when either side
@@ -727,7 +750,7 @@ pub(crate) fn voice_chain(
     dynamic: Option<(i32, i32)>,
     group: i32,
     live_eq: &[usize],
-) -> (Chain, usize) {
+) -> (Chain<sampler_ir::VoiceSendPosition>, usize) {
     let valid = (0..=8).contains(&split);
     let cut = if valid {
         slots.partition_point(|slot| slot.slot < split as usize)
@@ -741,7 +764,8 @@ pub(crate) fn voice_chain(
         dynamic,
         (group, -1),
         live_eq,
-    );
+    )
+    .map_send_positions(sampler_ir::VoiceSendPosition::BeforeAmplitude);
     let after = chain_with(
         &slots[cut..],
         Scope::Voice,
@@ -749,18 +773,11 @@ pub(crate) fn voice_chain(
         dynamic,
         (group, -1),
         live_eq,
-    );
+    )
+    .map_send_positions(sampler_ir::VoiceSendPosition::AfterAmplitude);
     let boundary = before.processors.len();
     before.processors.extend(after.processors);
-    before
-        .send_taps
-        .extend(after.send_taps.into_iter().map(|mut tap| {
-            let sampler_ir::VoiceSendPosition::BeforeAmplitude(n) = tap.position else {
-                unreachable!()
-            };
-            tap.position = sampler_ir::VoiceSendPosition::AfterAmplitude(n);
-            tap
-        }));
+    before.send_taps.extend(after.send_taps);
     before.notes.extend(after.notes);
     before.filter_slots.extend(
         after
@@ -1084,7 +1101,7 @@ pub(crate) fn chain_with(
                 }
                 out.send_taps.push(SendTap {
                     slot: fx.slot,
-                    position: sampler_ir::VoiceSendPosition::BeforeAmplitude(out.processors.len()),
+                    position: out.processors.len(),
                     levels: sends,
                     bypass: fx.bypass,
                 });
@@ -1229,15 +1246,30 @@ pub(crate) fn chain_with(
                     }
                 }
             }
-            Some(p @ (Params::Reverb(_) | Params::LegacyReverb(_) | Params::Plate(_) | Params::Raum { .. })) if scope == Scope::Bus => {
+            Some(Params::Reverb(v)) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors.push(sampler_ir::Processor::Space(match p {
-                    Params::Reverb(v) => space::galois(v, &mut notes),
-                    Params::LegacyReverb(v) => space::legacy(v, &mut notes),
-                    Params::Plate(v) => space::plate(v, &mut notes),
-                    Params::Raum { core, synced } => space::raum(core, *synced, &mut notes),
-                    _ => unreachable!(),
-                }));
+                out.processors
+                    .push(sampler_ir::Processor::Space(space::galois(v, &mut notes)));
+                combined = gain;
+            }
+            Some(Params::LegacyReverb(v)) if scope == Scope::Bus => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors
+                    .push(sampler_ir::Processor::Space(space::legacy(v, &mut notes)));
+                combined = gain;
+            }
+            Some(Params::Plate(v)) if scope == Scope::Bus => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors
+                    .push(sampler_ir::Processor::Space(space::plate(v, &mut notes)));
+                combined = gain;
+            }
+            Some(Params::Raum { core, synced }) if scope == Scope::Bus => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors
+                    .push(sampler_ir::Processor::Space(space::raum(
+                        core, *synced, &mut notes,
+                    )));
                 combined = gain;
             }
             Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
@@ -1608,9 +1640,7 @@ pub(crate) fn instrument_buses_with_recipes(
         let mut segments = Vec::new();
         let mut cursor = 0;
         for tap in &insert.send_taps {
-            let sampler_ir::VoiceSendPosition::BeforeAmplitude(n) = tap.position else {
-                unreachable!()
-            };
+            let n = tap.position;
             let feeds = if tap.bypass {
                 Vec::new()
             } else {

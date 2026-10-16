@@ -331,7 +331,7 @@ pub(super) enum PreparedProcessor {
         first: bool,
         last: bool,
     },
-    StateVariable(usize),
+    StateVariable(svf::SvfHandle),
     /// Index into the bus graph's spaces.
     Space(usize, PreparedKnobs),
     /// `count` following stages in parallel with the dry signal; the lanes are
@@ -342,7 +342,7 @@ pub(super) enum PreparedProcessor {
     },
 }
 
-pub(super) struct PreparedVoiceChain {
+pub(super) struct CompiledVoiceChain {
     pub parameter_span: std::ops::Range<usize>,
     pre: Box<[PreparedProcessor]>,
     post: Box<[PreparedProcessor]>,
@@ -350,6 +350,288 @@ pub(super) struct PreparedVoiceChain {
     pub delay_frames: usize,
     taps: Box<[taps::PreparedTap]>,
     pub tap_buses: Box<[usize]>,
+}
+
+/// The exact operation domain accepted by voice lanes. Payloads move here;
+/// scalar-only processors and bus spaces have no representation in this owner.
+pub(super) enum BatchOp {
+    Gain(f64),
+    StereoMatrix([[f64; 2]; 2]),
+    Biquad(Biquad),
+    Eq(eq_family::ConstantNativeEq),
+    Color { color: color::BatchColor, offset: usize },
+    ControlGain(usize),
+    StateVariable(svf::SvfHandle),
+    Mix { count: u16, lanes: [usize; 3] },
+}
+/// Preparation classifies a valid operation; scalar ownership is not an error.
+enum OperationOwner { Batch(BatchOp), Scalar(PreparedProcessor) }
+impl PreparedProcessor {
+    fn into_batch(self) -> OperationOwner {
+        match self {
+            Self::Gain(x) => OperationOwner::Batch(BatchOp::Gain(x)),
+            Self::StereoMatrix(x) => OperationOwner::Batch(BatchOp::StereoMatrix(x)),
+            Self::Biquad(x) => OperationOwner::Batch(BatchOp::Biquad(x)),
+            Self::ControlGain(x) => OperationOwner::Batch(BatchOp::ControlGain(x)),
+            Self::StateVariable(x) => OperationOwner::Batch(BatchOp::StateVariable(x)),
+            Self::Mix { count, lanes } => OperationOwner::Batch(BatchOp::Mix { count, lanes }),
+            Self::Eq(eq) => match eq.constant() {
+                Some(eq) => OperationOwner::Batch(BatchOp::Eq(eq)),
+                None => OperationOwner::Scalar(Self::Eq(eq)),
+            },
+            Self::Color { color, offset } => match color::BatchColor::classify(color) {
+                color::ColorOwner::Batch(color) => OperationOwner::Batch(BatchOp::Color { color, offset }),
+                color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
+            },
+            scalar @ (Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
+                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. }
+                | Self::Branch { .. } | Self::Space(..)) => OperationOwner::Scalar(scalar),
+        }
+    }
+    pub(super) fn view(&self) -> ProcessorRef<'_> {
+        match self {
+            Self::Gain(x) => ProcessorRef::Gain(x),
+            Self::StereoMatrix(x) => ProcessorRef::StereoMatrix(x),
+            Self::Biquad(x) => ProcessorRef::Biquad(x),
+            Self::Eq(x) => ProcessorRef::Eq(eq_family::EqRef::Scalar(x)),
+            Self::ControlGain(x) => ProcessorRef::ControlGain(x),
+            Self::ControlMatrix(x) => ProcessorRef::ControlMatrix(x),
+            Self::TimeMod { timemod, offset, live } => ProcessorRef::TimeMod { timemod, offset, live },
+            Self::Dynamics(x) => ProcessorRef::Dynamics(x),
+            Self::LiveFormant { knobs, rate } => ProcessorRef::LiveFormant { knobs, rate },
+            Self::Formant(x) => ProcessorRef::Formant(x),
+            Self::Color { color, offset } => ProcessorRef::Color { color, offset },
+            Self::Filter { engine, offset } => ProcessorRef::Filter { engine, offset },
+            Self::Branch { count, gain, first, last } => ProcessorRef::Branch { count, gain, first, last },
+            Self::StateVariable(x) => ProcessorRef::StateVariable(x),
+            Self::Space(index, live) => ProcessorRef::Space(index, live),
+            Self::Mix { count, lanes } => ProcessorRef::Mix { count, lanes },
+        }
+    }
+}
+impl BatchOp {
+    fn into_scalar(self) -> PreparedProcessor {
+        match self {
+            Self::Gain(x) => PreparedProcessor::Gain(x),
+            Self::StereoMatrix(x) => PreparedProcessor::StereoMatrix(x),
+            Self::Biquad(x) => PreparedProcessor::Biquad(x),
+            Self::Eq(x) => PreparedProcessor::Eq(x.into_stage()),
+            Self::Color { color, offset } => PreparedProcessor::Color { color: color.into_color(), offset },
+            Self::ControlGain(x) => PreparedProcessor::ControlGain(x),
+            Self::StateVariable(x) => PreparedProcessor::StateVariable(x),
+            Self::Mix { count, lanes } => PreparedProcessor::Mix { count, lanes },
+        }
+    }
+    fn view(&self) -> ProcessorRef<'_> {
+        match self {
+            Self::Gain(x) => ProcessorRef::Gain(x),
+            Self::StereoMatrix(x) => ProcessorRef::StereoMatrix(x),
+            Self::Biquad(x) => ProcessorRef::Biquad(x),
+            Self::Eq(x) => ProcessorRef::Eq(eq_family::EqRef::Constant(x)),
+            Self::Color { color, offset } => ProcessorRef::Color { color: color.color(), offset },
+            Self::ControlGain(x) => ProcessorRef::ControlGain(x),
+            Self::StateVariable(x) => ProcessorRef::StateVariable(x),
+            Self::Mix { count, lanes } => ProcessorRef::Mix { count, lanes },
+        }
+    }
+}
+
+/// Exhaustive borrowed scalar/trace/finiteness view. No payload or history is
+/// copied into a general operation array to render a typed batch owner.
+#[derive(Clone, Copy)]
+pub(super) enum ProcessorRef<'a> {
+    Gain(&'a f64), StereoMatrix(&'a [[f64; 2]; 2]), Biquad(&'a Biquad),
+    Eq(eq_family::EqRef<'a>), ControlGain(&'a usize),
+    ControlMatrix(&'a [control::PreparedParameter; 4]),
+    TimeMod { timemod: &'a timemod::TimeMod, offset: &'a usize, live: &'a PreparedKnobs },
+    Dynamics(&'a dynamics::Dynamics),
+    LiveFormant { knobs: &'a [control::PreparedParameter; 3], rate: &'a u32 },
+    Formant(&'a formant::Formant),
+    Color { color: &'a color::Color, offset: &'a usize },
+    Filter { engine: &'a filter::Engine, offset: &'a usize },
+    Branch { count: &'a u16, gain: &'a f64, first: &'a bool, last: &'a bool },
+    StateVariable(&'a svf::SvfHandle), Space(&'a usize, &'a PreparedKnobs),
+    Mix { count: &'a u16, lanes: &'a [usize; 3] },
+}
+impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
+    fn from(stage: &'a PreparedProcessor) -> Self { stage.view() }
+}
+#[derive(Clone, Copy)]
+pub(super) enum ProcessorSlice<'a> {
+    Scalar(&'a [PreparedProcessor]),
+    Batch(&'a [BatchOp]),
+}
+impl<'a> ProcessorSlice<'a> {
+    pub(super) fn len(self) -> usize { match self { Self::Scalar(x) => x.len(), Self::Batch(x) => x.len() } }
+    pub(super) fn get(self, index: usize) -> ProcessorRef<'a> {
+        match self { Self::Scalar(x) => x[index].view(), Self::Batch(x) => x[index].view() }
+    }
+    pub(super) fn slice(self, range: std::ops::Range<usize>) -> Self {
+        match self { Self::Scalar(x) => Self::Scalar(&x[range]), Self::Batch(x) => Self::Batch(&x[range]) }
+    }
+    pub(super) fn iter(self) -> impl Iterator<Item = ProcessorRef<'a>> {
+        (0..self.len()).map(move |index| self.get(index))
+    }
+}
+impl<'a> From<&'a [BatchOp]> for ProcessorSlice<'a> {
+    fn from(stages: &'a [BatchOp]) -> Self { Self::Batch(stages) }
+}
+impl<'a, const N: usize> From<&'a [BatchOp; N]> for ProcessorSlice<'a> {
+    fn from(stages: &'a [BatchOp; N]) -> Self { Self::Batch(stages) }
+}
+impl<'a> From<&'a [PreparedProcessor]> for ProcessorSlice<'a> {
+    fn from(stages: &'a [PreparedProcessor]) -> Self { Self::Scalar(stages) }
+}
+impl<'a, const N: usize> From<&'a [PreparedProcessor; N]> for ProcessorSlice<'a> {
+    fn from(stages: &'a [PreparedProcessor; N]) -> Self { Self::Scalar(stages) }
+}
+
+struct ScalarOps { pre: Box<[PreparedProcessor]>, post: Box<[PreparedProcessor]> }
+struct BatchOps { logical_chain: usize, pre: Box<[BatchOp]>, post: Box<[BatchOp]> }
+#[derive(Clone, Copy)]
+enum ChainOwner { Scalar(usize), Batch(BatchIndex) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BatchIndex(usize);
+/// Stable source/tail/tap metadata keeps the same identity for source reuse.
+/// It owns no parallel copy of its processor lists.
+pub(super) struct PreparedVoiceChain {
+    pub parameter_span: std::ops::Range<usize>,
+    owner: ChainOwner,
+    stage_count: usize,
+    tail_frames: u32,
+    pub delay_frames: usize,
+    taps: Box<[taps::PreparedTap]>,
+    pub tap_buses: Box<[usize]>,
+}
+impl PreparedVoiceChain {
+    pub(super) fn batch_index(&self) -> Option<BatchIndex> {
+        match self.owner { ChainOwner::Scalar(_) => None, ChainOwner::Batch(index) => Some(index) }
+    }
+}
+#[derive(Default)]
+pub(super) struct PreparedChains {
+    chains: Box<[PreparedVoiceChain]>,
+    scalar: Box<[ScalarOps]>,
+    batch: Box<[BatchOps]>,
+}
+impl std::ops::Deref for PreparedChains {
+    type Target = [PreparedVoiceChain];
+    fn deref(&self) -> &Self::Target { &self.chains }
+}
+#[derive(Clone, Copy)]
+pub(super) struct PreparedChainRef<'a> {
+    common: &'a PreparedVoiceChain,
+    pre: ProcessorSlice<'a>,
+    post: ProcessorSlice<'a>,
+}
+impl std::ops::Deref for PreparedChainRef<'_> {
+    type Target = PreparedVoiceChain;
+    fn deref(&self) -> &Self::Target { self.common }
+}
+pub(super) struct PreparedBatchRef<'a> {
+    view: PreparedChainRef<'a>,
+    ops: &'a BatchOps,
+}
+impl<'a> std::ops::Deref for PreparedBatchRef<'a> {
+    type Target = PreparedChainRef<'a>;
+    fn deref(&self) -> &Self::Target { &self.view }
+}
+impl PreparedBatchRef<'_> {
+    pub(super) fn pre(&self) -> &[BatchOp] { &self.ops.pre }
+    pub(super) fn post(&self) -> &[BatchOp] { &self.ops.post }
+}
+
+/// A one-pass off-audio move. If any stage is scalar-only, earlier batch values
+/// move back without losing f64 controls, offsets or backing owners. No graph is
+/// retained twice, and there is no rejection/fallback in a render operation.
+fn batch_slice(stages: Box<[PreparedProcessor]>) -> Result<Box<[BatchOp]>, Box<[PreparedProcessor]>> {
+    let count = stages.len();
+    let mut batch = Vec::with_capacity(count);
+    let mut stages = stages.into_vec().into_iter();
+    while let Some(stage) = stages.next() {
+        match stage.into_batch() {
+            OperationOwner::Batch(stage) => batch.push(stage),
+            OperationOwner::Scalar(stage) => {
+                let mut scalar = Vec::with_capacity(count);
+                scalar.extend(batch.into_iter().map(BatchOp::into_scalar));
+                scalar.push(stage);
+                scalar.extend(stages);
+                return Err(scalar.into_boxed_slice());
+            }
+        }
+    }
+    Ok(batch.into_boxed_slice())
+}
+impl PreparedChains {
+    pub(super) fn from_compiled(chains: Vec<CompiledVoiceChain>) -> Self {
+        let mut common = Vec::with_capacity(chains.len());
+        let mut scalar = Vec::new();
+        let mut batch = Vec::new();
+        for CompiledVoiceChain { parameter_span, pre, post, tail_frames, delay_frames, taps, tap_buses } in chains {
+            let stage_count = pre.len() + post.len();
+            let batchable = if taps.is_empty() {
+                match batch_slice(pre) {
+                    Ok(pre) => match batch_slice(post) {
+                        Ok(post) => Ok((pre, post)),
+                        Err(post) => Err((pre.into_vec().into_iter().map(BatchOp::into_scalar).collect(), post)),
+                    },
+                    Err(pre) => Err((pre, post)),
+                }
+            } else { Err((pre, post)) };
+            let owner = match batchable {
+                Ok((pre, post)) => {
+                    let index = BatchIndex(batch.len());
+                    batch.push(BatchOps { logical_chain: common.len(), pre, post });
+                    ChainOwner::Batch(index)
+                }
+                Err((pre, post)) => {
+                    let index = scalar.len(); scalar.push(ScalarOps { pre, post }); ChainOwner::Scalar(index)
+                }
+            };
+            common.push(PreparedVoiceChain { parameter_span, owner, stage_count, tail_frames,
+                delay_frames, taps, tap_buses });
+        }
+        Self { chains: common.into_boxed_slice(), scalar: scalar.into_boxed_slice(), batch: batch.into_boxed_slice() }
+    }
+    pub(super) fn view(&self, index: usize) -> PreparedChainRef<'_> {
+        let common = &self.chains[index];
+        let (pre, post) = match common.owner {
+            ChainOwner::Scalar(i) => (ProcessorSlice::Scalar(&self.scalar[i].pre), ProcessorSlice::Scalar(&self.scalar[i].post)),
+            ChainOwner::Batch(i) => (ProcessorSlice::Batch(&self.batch[i.0].pre), ProcessorSlice::Batch(&self.batch[i.0].post)),
+        };
+        PreparedChainRef { common, pre, post }
+    }
+    pub(super) fn batch(&self, index: BatchIndex) -> PreparedBatchRef<'_> {
+        let ops = &self.batch[index.0];
+        PreparedBatchRef { view: PreparedChainRef { common: &self.chains[ops.logical_chain],
+            pre: ProcessorSlice::Batch(&ops.pre), post: ProcessorSlice::Batch(&ops.post) }, ops }
+    }
+    pub(super) fn push_empty(&mut self, chain: CompiledVoiceChain) {
+        // Trace inserts an actually empty chain. Rebuild only these immutable
+        // descriptors/lists off audio, moving all existing operation owners.
+        let mut chains = std::mem::take(&mut self.chains).into_vec();
+        let mut batch = std::mem::take(&mut self.batch).into_vec();
+        let CompiledVoiceChain { parameter_span, pre, post, tail_frames, delay_frames, taps, tap_buses } = chain;
+        // The caller constructs an empty VoiceChain; classify its actual lists
+        // with the same preparation path rather than assert that shape here.
+        let appended = Self::from_compiled(vec![CompiledVoiceChain { parameter_span, pre, post,
+            tail_frames, delay_frames, taps, tap_buses }]);
+        let mut scalar = std::mem::take(&mut self.scalar).into_vec();
+        let scalar_offset = scalar.len(); let batch_offset = batch.len(); let logical_offset = chains.len();
+        scalar.extend(appended.scalar);
+        batch.extend(appended.batch.into_vec().into_iter().map(|mut ops| { ops.logical_chain += logical_offset; ops }));
+        chains.extend(appended.chains.into_vec().into_iter().map(|mut chain| {
+            chain.owner = match chain.owner { ChainOwner::Scalar(i) => ChainOwner::Scalar(i + scalar_offset),
+                ChainOwner::Batch(i) => ChainOwner::Batch(BatchIndex(i.0 + batch_offset)) };
+            chain
+        }));
+        self.chains = chains.into_boxed_slice(); self.scalar = scalar.into_boxed_slice(); self.batch = batch.into_boxed_slice();
+    }
+}
+#[cfg(test)]
+impl CompiledVoiceChain {
+    fn stages(&self) -> usize { self.pre.len() + self.post.len() }
+
 }
 
 pub(super) struct RenderContext<'a> {
@@ -403,14 +685,14 @@ impl VoiceChain {
         self,
         rate: u32,
         bindings: &mut Vec<ControlRange>,
-        filters: &mut Vec<svf::PreparedFilter>,
-    ) -> Result<PreparedVoiceChain, Error> {
+        filters: &mut svf::FilterRegistryBuilder,
+    ) -> Result<CompiledVoiceChain, Error> {
         let first_parameter = bindings.len();
         let mut delay_frames = 0;
         let mut tap_buses: Vec<_> = self.taps.iter().map(|tap| tap.bus).collect();
         tap_buses.sort_unstable();
         tap_buses.dedup();
-        Ok(PreparedVoiceChain {
+        Ok(CompiledVoiceChain {
             pre: compile_processors(
                 self.pre,
                 rate,
@@ -439,12 +721,26 @@ impl VoiceChain {
         })
     }
 }
+fn prepare_timemod(
+    timemod: timemod::TimeMod,
+    live: Option<LiveKnobs>,
+    bindings: &mut Vec<ControlRange>,
+    delay_frames: &mut usize,
+) -> Result<PreparedProcessor, Error> {
+    let offset = *delay_frames;
+    *delay_frames = offset.checked_add(timemod.frames()).ok_or(Error::Capacity)?;
+    let live = live.map_or([None; LIVE_KNOBS], |knobs| {
+        knobs.map(|k| k.map(|(role, parameter)| (role, parameter.compile(bindings))))
+    });
+    Ok(PreparedProcessor::TimeMod { timemod, offset, live })
+}
+
 pub(super) fn compile_processors(
     stages: Box<[Processor]>,
     rate: u32,
     bindings: &mut Vec<ControlRange>,
     delay_frames: &mut usize,
-    filters: &mut Vec<svf::PreparedFilter>,
+    filters: &mut svf::FilterRegistryBuilder,
     mut spaces: Option<&mut Vec<sampler_ir::fx::space::Config>>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
@@ -456,27 +752,21 @@ pub(super) fn compile_processors(
         .map(|stage| {
             Ok(match stage {
                 Processor::StateVariable(filter) => {
-                    let index = filters.len();
-                    filters.push(filter.compile(rate, bindings)?);
+                    let index = filters.push_svf(filter.compile(rate, bindings)?);
                     PreparedProcessor::StateVariable(index)
                 }
-                Processor::Delay(_) | Processor::TimeMod(_) | Processor::LiveTimeMod(..) | Processor::Phaser(_) => {
-                    let timemod = match stage {
-                        Processor::Delay(delay) => timemod::TimeMod::compile(delay.config(), rate)?,
-                        Processor::TimeMod(config) | Processor::LiveTimeMod(config, _) => timemod::TimeMod::compile(config, rate)?,
-                        Processor::Phaser(knobs) => timemod::TimeMod::phaser_filter(knobs)?,
-                        _ => unreachable!(),
-                    };
-                    let offset = *delay_frames;
-                    *delay_frames = offset
-                        .checked_add(timemod.frames())
-                        .ok_or(Error::Capacity)?;
-                    let live = match stage {
-                        Processor::LiveTimeMod(_, knobs) => knobs.map(|k| k.map(|(r, p)| (r, p.compile(bindings)))),
-                        _ => [None; LIVE_KNOBS],
-                    };
-                    PreparedProcessor::TimeMod { timemod, offset, live }
-                }
+                Processor::Delay(delay) => prepare_timemod(
+                    timemod::TimeMod::compile(delay.config(), rate)?, None, bindings, delay_frames,
+                )?,
+                Processor::TimeMod(config) => prepare_timemod(
+                    timemod::TimeMod::compile(config, rate)?, None, bindings, delay_frames,
+                )?,
+                Processor::LiveTimeMod(config, knobs) => prepare_timemod(
+                    timemod::TimeMod::compile(config, rate)?, Some(knobs), bindings, delay_frames,
+                )?,
+                Processor::Phaser(knobs) => prepare_timemod(
+                    timemod::TimeMod::phaser_filter(knobs)?, None, bindings, delay_frames,
+                )?,
                 Processor::Dynamics(settings) => {
                     PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
                 }
@@ -495,8 +785,7 @@ pub(super) fn compile_processors(
                     let offset = *delay_frames;
                     let mut engine = settings.compile(rate, bindings);
                     *delay_frames = offset.checked_add(engine.cells()).ok_or(Error::Capacity)?;
-                    engine.modulation_index = filters.len();
-                    filters.push(svf::PreparedFilter::NativeControl);
+                    engine.modulation_index = filters.push_native();
                     PreparedProcessor::Filter { engine, offset }
                 }
                 Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
@@ -554,26 +843,104 @@ pub(super) fn compile_processors(
 }
 
 impl PreparedVoiceChain {
+
+    pub(super) fn stages(&self) -> usize {
+        self.stage_count
+    }
+
+
+
+    /// Render the source for one block into `block` and settle its length:
+    /// None once the chain is done. Frames past the source's output are its
+    /// zero-input tail, which starts at the first of them and runs for at most
+    /// `tail_frames`.
+    pub(super) fn begin(
+        &self,
+        voice: &mut Voice,
+        pcm: &(impl crate::source::ReadFrames + ?Sized),
+        frames: usize,
+        kernel: &crate::resample::Kernel,
+        block: &mut Planar,
+        stretch: Option<&mut crate::source::StretchEngine>,
+    ) -> Option<Begun> {
+        if self.done(voice) {
+            return None;
+        }
+        let mut raw = [[0.; 2]; BLOCK];
+        let waiting = voice.cursor.waiting();
+        let active = voice
+            .envelope
+            .remaining()
+            .min(voice.tail_remaining.map_or(usize::MAX, |n| n as usize));
+        // A finite unity hold clocks only frames the cursor advances, including silent misses.
+        let mut unity = EnvelopeState::new(if waiting {
+            Envelope::one_shot(0, active.min(BLOCK + 1) as u32, 0)
+        } else {
+            Envelope::default()
+        });
+        let remaining = unity.remaining();
+        let count = if waiting { frames } else { frames.min(active) };
+        let produced = if voice.cursor.done() || voice.envelope.done() {
+            0
+        } else if let (Some(engine), false) = (stretch, waiting) {
+            crate::source::stretch_block(engine, voice, pcm, &mut raw[..count])
+        } else {
+            voice
+                .cursor
+                .render(pcm, &mut raw[..count], &mut unity, 1.0, [1.; 2], kernel)
+        };
+        let held = if waiting {
+            produced - (remaining - unity.remaining())
+        } else {
+            0
+        };
+        let tail = voice
+            .tail_remaining
+            .or_else(|| (produced < frames).then_some(self.tail_frames));
+        let len = match (voice.tail_remaining, tail) {
+            (Some(t), _) => held + (frames - held).min(t as usize),
+            (None, Some(t)) => produced + (frames - produced).min(t as usize),
+            (None, None) => frames,
+        };
+        for (i, frame) in raw[..produced.min(len)].iter().enumerate() {
+            block[0][i] = f64::from(frame[0]);
+            block[1][i] = f64::from(frame[1]);
+        }
+        Some(Begun {
+            produced,
+            len,
+            held,
+            tail,
+        })
+    }
+
+
+
+    pub(super) fn done(&self, voice: &Voice) -> bool {
+        voice.tail_remaining == Some(0)
+            || (self.tail_frames == 0 && (voice.cursor.done() || voice.envelope.done()))
+    }
+}
+
+impl PreparedChainRef<'_> {
+    pub(super) fn pre_len(&self) -> usize { self.pre.len() }
+    pub(super) fn post_len(&self) -> usize { self.post.len() }
     pub(crate) fn filter_indices(&self, stages: std::ops::Range<usize>) -> Vec<u32> {
         self.pre
             .iter()
-            .chain(&self.post)
+            .chain(self.post.iter())
             .enumerate()
             .filter_map(|(i, p)| match p {
-                PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
-                    u32::try_from(*filter).ok()
+                ProcessorRef::StateVariable(filter) if stages.contains(&i) => {
+                    u32::try_from(filter.addressed()).ok()
                 }
-                PreparedProcessor::Filter { engine, .. } if stages.contains(&i) => {
+                ProcessorRef::Filter { engine, .. } if stages.contains(&i) => {
                     u32::try_from(engine.modulation_index).ok()
                 }
                 _ => None,
             })
             .collect()
     }
-    pub(super) fn stages(&self) -> usize {
-        self.pre.len() + self.post.len()
-    }
-
     /// Render one voice block by block: every stage runs over the whole block
     /// before the next, with its coefficients and response chosen once. A
     /// nonfinite block drops that voice's block and resets its processor state.
@@ -731,71 +1098,6 @@ impl PreparedVoiceChain {
         }
         (rendered, faults)
     }
-
-    /// Render the source for one block into `block` and settle its length:
-    /// None once the chain is done. Frames past the source's output are its
-    /// zero-input tail, which starts at the first of them and runs for at most
-    /// `tail_frames`.
-    pub(super) fn begin(
-        &self,
-        voice: &mut Voice,
-        pcm: &(impl crate::source::ReadFrames + ?Sized),
-        frames: usize,
-        kernel: &crate::resample::Kernel,
-        block: &mut Planar,
-        stretch: Option<&mut crate::source::StretchEngine>,
-    ) -> Option<Begun> {
-        if self.done(voice) {
-            return None;
-        }
-        let mut raw = [[0.; 2]; BLOCK];
-        let waiting = voice.cursor.waiting();
-        let active = voice
-            .envelope
-            .remaining()
-            .min(voice.tail_remaining.map_or(usize::MAX, |n| n as usize));
-        // A finite unity hold clocks only frames the cursor advances, including silent misses.
-        let mut unity = EnvelopeState::new(if waiting {
-            Envelope::one_shot(0, active.min(BLOCK + 1) as u32, 0)
-        } else {
-            Envelope::default()
-        });
-        let remaining = unity.remaining();
-        let count = if waiting { frames } else { frames.min(active) };
-        let produced = if voice.cursor.done() || voice.envelope.done() {
-            0
-        } else if let (Some(engine), false) = (stretch, waiting) {
-            crate::source::stretch_block(engine, voice, pcm, &mut raw[..count])
-        } else {
-            voice
-                .cursor
-                .render(pcm, &mut raw[..count], &mut unity, 1.0, [1.; 2], kernel)
-        };
-        let held = if waiting {
-            produced - (remaining - unity.remaining())
-        } else {
-            0
-        };
-        let tail = voice
-            .tail_remaining
-            .or_else(|| (produced < frames).then_some(self.tail_frames));
-        let len = match (voice.tail_remaining, tail) {
-            (Some(t), _) => held + (frames - held).min(t as usize),
-            (None, Some(t)) => produced + (frames - produced).min(t as usize),
-            (None, None) => frames,
-        };
-        for (i, frame) in raw[..produced.min(len)].iter().enumerate() {
-            block[0][i] = f64::from(frame[0]);
-            block[1][i] = f64::from(frame[1]);
-        }
-        Some(Begun {
-            produced,
-            len,
-            held,
-            tail,
-        })
-    }
-
     /// Scale, check and mix one processed block, then advance the tail.
     /// Returns whether the block faulted (and was dropped).
     #[allow(clippy::too_many_arguments)]
@@ -827,7 +1129,7 @@ impl PreparedVoiceChain {
         }
         let fault = fault
             || !result[..len].iter().flatten().all(|v| v.is_finite())
-            || !finite_states(self.pre.iter().chain(&self.post), states);
+            || !finite_states(self.pre.iter().chain(self.post.iter()), states);
         if fault {
             states.fill(ProcessorState::default());
         } else {
@@ -842,37 +1144,6 @@ impl PreparedVoiceChain {
             None => tail.map(|t| t - (len - produced) as u32),
         };
         fault
-    }
-
-    /// Whether every stage has a lane kernel (delay lines and compressors stay per voice).
-    pub(super) fn batches(&self) -> bool {
-        self.taps.is_empty()
-            && !self.pre.iter().chain(&self.post).any(|stage| {
-                matches!(
-                    stage,
-                    PreparedProcessor::TimeMod { .. }
-                        | PreparedProcessor::Dynamics(_)
-                        | PreparedProcessor::Formant(_)
-                        | PreparedProcessor::LiveFormant { .. }
-                        | PreparedProcessor::Filter { .. }
-                        | PreparedProcessor::Branch { .. }
-                        | PreparedProcessor::ControlMatrix(_)
-                ) || matches!(stage, PreparedProcessor::Color { color, .. } if !color.batches())
-                  || matches!(stage, PreparedProcessor::Eq(eq) if !eq.batches())
-            })
-    }
-
-    pub(super) fn pre(&self) -> &[PreparedProcessor] {
-        &self.pre
-    }
-
-    pub(super) fn post(&self) -> &[PreparedProcessor] {
-        &self.post
-    }
-
-    pub(super) fn done(&self, voice: &Voice) -> bool {
-        voice.tail_remaining == Some(0)
-            || (self.tail_frames == 0 && (voice.cursor.done() || voice.envelope.done()))
     }
 }
 
@@ -929,30 +1200,30 @@ pub(super) struct ProcessorState {
     color: color::State,
 }
 impl ProcessorState {
-    fn finite_for(&self, stage: &PreparedProcessor) -> bool {
+    fn finite_for(&self, stage: ProcessorRef<'_>) -> bool {
         let common = self.z
             .iter()
             .flatten()
             .chain(&self.aux)
             .all(|v| v.is_finite());
         common && match stage {
-            PreparedProcessor::Color { color, .. } => color.finite_state(&self.color),
+            ProcessorRef::Color { color, .. } => color.finite_state(&self.color),
             // Native KONTAKTFX filters keep their history in the color slot.
-            PreparedProcessor::Filter { .. } => self.color.finite(),
-            PreparedProcessor::Gain(_)
-            | PreparedProcessor::StereoMatrix(_)
-            | PreparedProcessor::Biquad(_)
-            | PreparedProcessor::ControlGain(_)
-            | PreparedProcessor::TimeMod { .. }
-            | PreparedProcessor::Dynamics(_)
-            | PreparedProcessor::Formant(_)
-            | PreparedProcessor::LiveFormant { .. }
-            | PreparedProcessor::Eq(_)
-            | PreparedProcessor::ControlMatrix(_)
-            | PreparedProcessor::Branch { .. }
-            | PreparedProcessor::StateVariable(_)
-            | PreparedProcessor::Space(..)
-            | PreparedProcessor::Mix { .. } => true,
+            ProcessorRef::Filter { .. } => self.color.finite(),
+            ProcessorRef::Gain(_)
+            | ProcessorRef::StereoMatrix(_)
+            | ProcessorRef::Biquad(_)
+            | ProcessorRef::ControlGain(_)
+            | ProcessorRef::TimeMod { .. }
+            | ProcessorRef::Dynamics(_)
+            | ProcessorRef::Formant(_)
+            | ProcessorRef::LiveFormant { .. }
+            | ProcessorRef::Eq(_)
+            | ProcessorRef::ControlMatrix(_)
+            | ProcessorRef::Branch { .. }
+            | ProcessorRef::StateVariable(_)
+            | ProcessorRef::Space(..)
+            | ProcessorRef::Mix { .. } => true,
         }
     }
 }
@@ -961,14 +1232,14 @@ impl ProcessorState {
 /// A reused voice resets its cells before a different chain can claim them.
 /// Validate all potentially live state, including bypassed stages, without
 /// scanning color histories that this immutable processor cannot touch.
-pub(super) fn finite_states<'a>(
-    stages: impl IntoIterator<Item = &'a PreparedProcessor>,
+pub(super) fn finite_states<'a, T: Into<ProcessorRef<'a>>>(
+    stages: impl IntoIterator<Item = T>,
     states: &[ProcessorState],
 ) -> bool {
     let mut stages = stages.into_iter();
     for state in states {
         let Some(stage) = stages.next() else { return false; };
-        if !state.finite_for(stage) {
+        if !state.finite_for(stage.into()) {
             return false;
         }
     }
@@ -978,8 +1249,8 @@ pub(super) fn finite_states<'a>(
 /// Run `len` frames of `block` through each stage in turn. Returns whether a
 /// stage observed a nonfinite value it does not keep in visible state.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn process<const TRACE: bool>(
-    stages: &[PreparedProcessor],
+pub(super) fn process<'a, const TRACE: bool>(
+    stages: impl Into<ProcessorSlice<'a>>,
     states: &mut [ProcessorState],
     block: &mut Planar,
     len: usize,
@@ -989,12 +1260,13 @@ pub(super) fn process<const TRACE: bool>(
     filters: &mut svf::FilterContext<'_>,
     mut trace: Option<crate::trace::Section<'_>>,
 ) -> bool {
+    let stages = stages.into();
     let mut fault = false;
     let mut next = 0;
     // The entering signal and the running sum of the rack branch in progress.
     let mut split: Option<(Planar, Planar)> = None;
     while next < stages.len() {
-        let (stage, index) = (&stages[next], next);
+        let (stage, index) = (stages.get(next), next);
         next += 1;
         let state = &mut states[index];
         let input = if TRACE { *block } else { [[0.; BLOCK]; 2] };
@@ -1002,7 +1274,7 @@ pub(super) fn process<const TRACE: bool>(
         let mut trace_output = None;
         let mut enabled = true;
         match stage {
-            PreparedProcessor::Branch {
+            ProcessorRef::Branch {
                 count,
                 gain,
                 first,
@@ -1014,7 +1286,7 @@ pub(super) fn process<const TRACE: bool>(
                     split = Some((*block, [[0.; BLOCK]; 2]));
                 }
                 fault |= process::<TRACE>(
-                    &stages[inner.clone()],
+                    stages.slice(inner.clone()),
                     &mut states[inner.clone()],
                     block,
                     len,
@@ -1049,7 +1321,7 @@ pub(super) fn process<const TRACE: bool>(
                     split = None;
                 }
             }
-            PreparedProcessor::Mix { count, lanes } => {
+            ProcessorRef::Mix { count, lanes } => {
                 let inner = next..next + usize::from(*count);
                 next = inner.end;
                 let [dry, wet, bypass] = lanes.map(|lane| parameters[lane]);
@@ -1071,7 +1343,7 @@ pub(super) fn process<const TRACE: bool>(
                 }
                 if !off {
                     fault |= process::<TRACE>(
-                        &stages[inner.clone()],
+                        stages.slice(inner.clone()),
                         &mut states[inner.clone()],
                         block,
                         len,
@@ -1118,10 +1390,10 @@ pub(super) fn process<const TRACE: bool>(
                     }
                 }
             }
-            PreparedProcessor::StateVariable(index) => {
+            ProcessorRef::StateVariable(index) => {
                 filters.process(*index, &mut state.z, block, len, parameters, at);
             }
-            PreparedProcessor::Space(index, live) => {
+            ProcessorRef::Space(index, live) => {
                 if live[0].is_some() {
                     let space = &mut filters.spaces[*index];
                     let mut config = space.config();
@@ -1146,7 +1418,7 @@ pub(super) fn process<const TRACE: bool>(
                         .for_each(|(v, w)| *v = f64::from(*w));
                 }
             }
-            PreparedProcessor::TimeMod { timemod, offset, live } => {
+            ProcessorRef::TimeMod { timemod, offset, live } => {
                 // Event-rate lanes: the unit re-derives from its stored knobs; the ring persists.
                 let retuned;
                 let timemod = if live[0].is_some() {
@@ -1167,7 +1439,7 @@ pub(super) fn process<const TRACE: bool>(
                     filters.tempo,
                 );
             }
-            PreparedProcessor::Dynamics(dynamics) => dynamics.process(
+            ProcessorRef::Dynamics(dynamics) => dynamics.process(
                 state,
                 &mut delay_samples[dynamics.cells()],
                 parameters,
@@ -1175,14 +1447,14 @@ pub(super) fn process<const TRACE: bool>(
                 len,
                 at,
             ),
-            PreparedProcessor::Formant(formant) => formant.process(state, block, len),
+            ProcessorRef::Formant(formant) => formant.process(state, block, len),
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
-            PreparedProcessor::LiveFormant { knobs, rate } => {
+            ProcessorRef::LiveFormant { knobs, rate } => {
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
                 formant::Formant::compile([talk, sharp, size], false, *rate).process(state, block, len)
             }
-            PreparedProcessor::Filter { engine, offset } => {
+            ProcessorRef::Filter { engine, offset } => {
                 fault |= engine.process(
                     state,
                     &mut delay_samples[*offset..*offset + engine.cells()],
@@ -1193,11 +1465,11 @@ pub(super) fn process<const TRACE: bool>(
                     filters.bank.native_knobs(engine.modulation_index),
                 );
             }
-            PreparedProcessor::Color { color, offset } => {
+            ProcessorRef::Color { color, offset } => {
                 let ring = &mut delay_samples[*offset..];
                 color.process(&mut state.color, parameters, block, len, at, ring);
             }
-            PreparedProcessor::Gain(gain) => {
+            ProcessorRef::Gain(gain) => {
                 applied = [*gain; 2];
                 for channel in block.iter_mut() {
                     channel[..len]
@@ -1205,13 +1477,13 @@ pub(super) fn process<const TRACE: bool>(
                         .for_each(|v| *v = kernels::gain(*v, *gain));
                 }
             }
-            PreparedProcessor::StereoMatrix(m) => {
+            ProcessorRef::StereoMatrix(m) => {
                 let [left, right] = block;
                 for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
                     [*l, *r] = kernels::matrix([*l, *r], *m);
                 }
             }
-            PreparedProcessor::ControlGain(lane) => {
+            ProcessorRef::ControlGain(lane) => {
                 let ramp = parameters[*lane];
                 if TRACE {
                     applied = [0.; 2];
@@ -1228,11 +1500,11 @@ pub(super) fn process<const TRACE: bool>(
                     *r = kernels::gain(*r, gain);
                 }
             }
-            PreparedProcessor::Eq(eq) => eq.process(state, parameters, block, len, at),
-            PreparedProcessor::ControlMatrix(cells) => {
+            ProcessorRef::Eq(eq) => eq.process(state, parameters, block, len, at),
+            ProcessorRef::ControlMatrix(cells) => {
                 live::matrix(cells, parameters, block, len, at)
             }
-            PreparedProcessor::Biquad(filter) => {
+            ProcessorRef::Biquad(filter) => {
                 let [mut zl, mut zr] = state.z;
                 let [left, right] = block;
                 for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
@@ -1246,10 +1518,10 @@ pub(super) fn process<const TRACE: bool>(
             if let Some(t) = trace.as_mut() {
                 if !matches!(
                     stage,
-                    PreparedProcessor::Gain(_)
-                        | PreparedProcessor::ControlGain(_)
-                        | PreparedProcessor::Mix { .. }
-                        | PreparedProcessor::Branch { .. }
+                    ProcessorRef::Gain(_)
+                        | ProcessorRef::ControlGain(_)
+                        | ProcessorRef::Mix { .. }
+                        | ProcessorRef::Branch { .. }
                 ) {
                     for c in 0..2 {
                         let a: f64 = input[c][..len].iter().map(|v| v * v).sum();
@@ -1380,7 +1652,7 @@ impl DspState {
         let stride = plan
             .voice_chains
             .iter()
-            .map(PreparedVoiceChain::stages)
+            .map(|chain| chain.stages())
             .max()
             .unwrap_or(0);
         let delay = plan
@@ -1485,7 +1757,7 @@ mod tests {
             width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
         })));
         let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
-            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            .compile(48_000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default()).unwrap();
         let stages: Vec<_> = chain.pre.iter().chain(&chain.post).collect();
         eprintln!("voice_reset ProcessorState_bytes={} owned_stages={}",
             size_of::<ProcessorState>(), stages.len());
@@ -1528,7 +1800,7 @@ mod tests {
             width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
         })));
         let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
-            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            .compile(48_000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default()).unwrap();
         let mut cells = vec![ProcessorState::default(); 300 * chain.stages()];
         for (i, cell) in cells.iter_mut().enumerate() {
             cell.z = [[(i as f64 * 0.37).sin() * 0.8, 0.13]; 2];
@@ -1563,7 +1835,7 @@ mod tests {
         let mut state = ProcessorState::default();
         assert!(finite_states([&stage], &[state]));
         assert!(!finite_states([&stage], &[]));
-        assert!(!finite_states([], &[state]));
+        assert!(!finite_states(std::iter::empty::<ProcessorRef<'_>>(), &[state]));
         state.z[1][0] = f64::NAN;
         assert!(!finite_states([&stage], &[state]));
         state = ProcessorState::default();
@@ -1588,9 +1860,10 @@ mod tests {
                 0,
             )
             .unwrap()
-            .compile(48000, &mut Vec::new(), &mut Vec::new())
+            .compile(48000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default())
             .unwrap();
-            assert_eq!(chain.batches(), !pseudo);
+            let chains = PreparedChains::from_compiled(vec![chain]);
+            assert_eq!(chains[0].batch_index().is_some(), !pseudo);
         }
     }
 
@@ -1669,7 +1942,7 @@ mod tests {
             ] {
                 let filter = Biquad::new(rate, kind, frequency, 0.7).unwrap();
                 let mut state = [ProcessorState::default()];
-                let mut filters = svf::FilterBank::new(&[], 0).unwrap();
+                let mut filters = svf::FilterBank::new(&svf::PreparedFilters::default(), 0).unwrap();
                 let (mut x, mut y) = ([0.; 2], [0.; 2]);
                 let mut response = [[0.; 2]; 3];
                 for sample in 0..4096 {
@@ -1752,7 +2025,7 @@ mod tests {
                             let boost = Biquad::new(rate, kind(gain_db), frequency, q).unwrap();
                             let cut = Biquad::new(rate, kind(-gain_db), frequency, q).unwrap();
                             let mut state = [ProcessorState::default(); 2];
-                            let mut filters = svf::FilterBank::new(&[], 0).unwrap();
+                            let mut filters = svf::FilterBank::new(&svf::PreparedFilters::default(), 0).unwrap();
                             for i in 0..4096 {
                                 let input =
                                     [(f64::from(i) * 0.017).sin(), if i == 0 { 1. } else { 0. }];
@@ -1811,8 +2084,12 @@ mod tests {
 impl PreparedVoiceChain {
     /// Three voice boundaries, one node per compiled processor and per tap.
     pub(crate) fn trace_node_count(&self) -> Option<usize> {
-        3usize.checked_add(self.pre.len())?.checked_add(self.post.len())?.checked_add(self.taps.len())
+        3usize.checked_add(self.stage_count)?.checked_add(self.taps.len())
     }
+
+}
+
+impl PreparedChainRef<'_> {
     pub(crate) fn trace_graph(
         &self,
         plan: &Prepared,
@@ -1881,9 +2158,9 @@ impl PreparedVoiceChain {
                 )
             })
             .collect();
-        let parent = graph.connect(&self.pre, &pre, source);
+        let parent = graph.connect(self.pre, &pre, source);
         graph.edge(parent, amp, "serial");
-        let parent = graph.connect(&self.post, &post, amp);
+        let parent = graph.connect(self.post, &post, amp);
         graph.edge(parent, output, "serial");
         graph.edge(
             output,
@@ -1929,5 +2206,94 @@ impl PreparedVoiceChain {
             taps,
             region: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod typed_batch_owner_tests {
+    use super::*;
+
+    fn native_band() -> Processor {
+        let mut band = EqBand::rbj(sampler_ir::fx::eq::Kind::Peak,
+            f64::from_bits(0x3fe0_0000_0000_0001), 0.3456789012345, 9.1234567898);
+        band.law = sampler_ir::fx::eq::Law::KontaktLegacy;
+        band.enabled = Parameter::Constant(f64::from_bits(0x3fe0_0000_0000_0001));
+        Processor::Eq(band)
+    }
+    fn compile(pre: Vec<Processor>, post: Vec<Processor>) -> CompiledVoiceChain {
+        VoiceChain::new(pre, post, 31).unwrap()
+            .compile(48_000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default()).unwrap()
+    }
+    fn color() -> Processor {
+        Processor::Color(ColorSettings { curve: CurveSettings::Classic(Parameter::Constant(0.3)),
+            gainer: Some(GainerSettings { gain: Parameter::Constant(0.7), dry: 0.2 }),
+            ..ColorSettings::IDENTITY })
+    }
+    fn scalar_matrix() -> Processor {
+        Processor::ControlMatrix([Parameter::Constant(1.), Parameter::Constant(0.),
+            Parameter::Constant(0.), Parameter::Constant(1.)])
+    }
+    fn eq_constants(chain: PreparedChainRef<'_>) -> Vec<u64> {
+        chain.pre.iter().filter_map(|stage| match stage { ProcessorRef::Eq(eq) => Some(eq), _ => None })
+            .flat_map(|eq| eq.trace_parameters()).map(|(_, p)| match p {
+                control::PreparedParameter::Constant(value) => value.to_bits(),
+                _ => panic!("constant fixture changed parameter kind"),
+            }).collect()
+    }
+
+    #[test]
+    fn dense_batch_owner_is_retained_when_logical_chain_indices_differ() {
+        let chains = PreparedChains::from_compiled(vec![
+            compile(vec![scalar_matrix()], vec![]),
+            compile(vec![native_band(), color()], vec![]),
+            compile(vec![Processor::Eq(EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, 1100., 0.7, 2.))], vec![]),
+            compile(vec![Processor::Gain(0.5)], vec![]),
+        ]);
+        assert!(chains[0].batch_index().is_none());
+        assert!(chains[2].batch_index().is_none());
+        let first = chains[1].batch_index().unwrap();
+        let last = chains[3].batch_index().unwrap();
+        assert_eq!([first.0, last.0], [0, 1]);
+        assert!(std::ptr::eq(chains.batch(first).common, &chains[1]));
+        assert!(std::ptr::eq(chains.batch(last).common, &chains[3]));
+        assert_eq!([chains.scalar.len(), chains.batch.len()], [2, 2]);
+    }
+
+    /// A late scalar-only operation moves the earlier Color and constant EQ back
+    /// to scalar ownership. It must retain their original f64 trace identities.
+    #[test]
+    fn late_scalar_classification_preserves_constant_native_eq_bits() {
+        let chains = PreparedChains::from_compiled(vec![
+            compile(vec![native_band(), color()], vec![]),
+            compile(vec![native_band(), color()], vec![scalar_matrix()]),
+        ]);
+        assert!(chains[0].batch_index().is_some());
+        assert!(chains[1].batch_index().is_none());
+        let expected = [f64::from_bits(0x3fe0_0000_0000_0001), 0.3456789012345,
+            9.1234567898, f64::from_bits(0x3fe0_0000_0000_0001)].map(f64::to_bits);
+        assert_eq!(eq_constants(chains.view(0)), expected);
+        assert_eq!(eq_constants(chains.view(1)), expected);
+        assert!(matches!(chains.view(0).pre.get(1), ProcessorRef::Color { .. }));
+        assert!(matches!(chains.view(1).pre.get(1), ProcessorRef::Color { .. }));
+    }
+
+    #[test]
+    fn dynamic_native_eq_keeps_scalar_ownership() {
+        const ID: crate::ControlId = crate::ControlId(0xbeef);
+        let mut band = EqBand::rbj(sampler_ir::fx::eq::Kind::Peak, 0.5, 0.5, 6.);
+        band.law = sampler_ir::fx::eq::Law::KontaktLegacy;
+        band.frequency = Parameter::Control(ControlRange { control: ID, low: 0., high: 1., ramp_frames: 32 });
+        let chains = PreparedChains::from_compiled(vec![compile(vec![Processor::Eq(band)], vec![])]);
+        assert!(chains[0].batch_index().is_none());
+        assert!(matches!(chains.view(0).pre.get(0), ProcessorRef::Eq(eq_family::EqRef::Scalar(_))));
+    }
+
+    #[test]
+    fn typed_batch_owner_layout_receipt() {
+        use std::mem::size_of;
+        eprintln!("typed batch layouts: scalar_op={} batch_op={} chain={} owner={} scalar_lists={} batch_lists={} registry={} ref={} batch_index={} state={}",
+            size_of::<PreparedProcessor>(), size_of::<BatchOp>(), size_of::<PreparedVoiceChain>(),
+            size_of::<ChainOwner>(), size_of::<ScalarOps>(), size_of::<BatchOps>(), size_of::<PreparedChains>(),
+            size_of::<PreparedChainRef<'_>>(), size_of::<BatchIndex>(), size_of::<ProcessorState>());
     }
 }

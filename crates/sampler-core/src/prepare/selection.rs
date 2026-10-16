@@ -280,6 +280,11 @@ impl Runtime {
                 pitch,
             )?
         };
+        // Refuse before admitting a note or pinning its lifecycle. Every accepted
+        // deferred attack consumes exactly one preallocated slot.
+        if defer.is_some() && self.deferred.len() == self.deferred.capacity() {
+            return Err(Error::Capacity);
+        }
         let note = match origin {
             NoteOrigin::Input(input, expression, performance) => self.note_on_pitched_in(
                 self.performance(performance).unwrap(),
@@ -331,7 +336,6 @@ impl Runtime {
             let _ = release;
             let n = self.notes.get_mut(note.0).unwrap();
             n.work = n.work.checked_add(1).expect("bounded deferred attack pin");
-            assert!(self.deferred.len() < self.deferred.capacity());
             self.deferred.push((id, note, entry));
             if routed {
                 let count = self.plans.get(plan.0).unwrap().prepared.stages[entry..]
@@ -933,7 +937,7 @@ impl Runtime {
                     &state.controllers,
                     held,
                     &self.note_params[note.0.index].mods,
-                    &self.plans.get(plan.0).unwrap().controls.base,
+                    self.plans.get(plan.0).unwrap().controls.base_reals(),
                 );
                 let start = prepared
                     .voice_modulation
@@ -1025,7 +1029,7 @@ impl Runtime {
                     controllers,
                     held,
                     &self.note_params[note.0.index].mods,
-                    &g.controls.base,
+                    g.controls.base_reals(),
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),

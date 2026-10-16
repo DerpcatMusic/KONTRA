@@ -252,6 +252,40 @@ impl MidiObject {
             .filter(|e| self.matches(e, selector))
             .min_by_key(|e| (e.position, e.id))
     }
+    fn set_parameter(&mut self, selector: i32, parameter: i32, value: i32) -> Result<i32, Error> {
+        if parameter == midi_par::ID {
+            let Some(old) = self.find(selector).map(|e| e.id) else {
+                return Ok(0);
+            };
+            if value < 0
+                || value >= MIDI_MARKS_FLAG
+                || self
+                    .events
+                    .iter()
+                    .filter(|e| self.matches(e, selector))
+                    .count()
+                    != 1
+                || self.events.iter().any(|e| e.id == value && e.id != old)
+            {
+                return Err(Error::InvalidInput);
+            }
+            self.events.iter_mut().find(|e| e.id == old).unwrap().id = value;
+            if self.selected == Some(old) {
+                self.selected = Some(value);
+            }
+            self.next_id = self.next_id.max(value + 1);
+            return Ok(0);
+        }
+        let selected = self.selected;
+        for e in &mut self.events {
+            let matches = matches_event(e, selector, selected);
+            if matches {
+                e.set(parameter, value);
+            }
+        }
+        Ok(0)
+    }
+
     /// Numeric edits never allocate; init reserves before applying buffer edits.
     pub fn apply(
         &mut self,
@@ -294,51 +328,8 @@ impl MidiObject {
                 .find(MIDI_CURRENT_EVENT)
                 .map_or(0, |e| e.get(parameter)),
             GetParameter => self.find(a(0)).map_or(0, |e| e.get(a(1))),
-            Set(_) | SetParameter => {
-                let (selector, parameter, value) = if action == SetParameter {
-                    (a(0), a(1), a(2))
-                } else {
-                    (
-                        MIDI_CURRENT_EVENT,
-                        match action {
-                            Set(parameter) => parameter,
-                            _ => unreachable!(),
-                        },
-                        a(0),
-                    )
-                };
-                if parameter == midi_par::ID {
-                    let Some(old) = self.find(selector).map(|e| e.id) else {
-                        return Ok(0);
-                    };
-                    if value < 0
-                        || value >= MIDI_MARKS_FLAG
-                        || self
-                            .events
-                            .iter()
-                            .filter(|e| self.matches(e, selector))
-                            .count()
-                            != 1
-                        || self.events.iter().any(|e| e.id == value && e.id != old)
-                    {
-                        return Err(Error::InvalidInput);
-                    }
-                    self.events.iter_mut().find(|e| e.id == old).unwrap().id = value;
-                    if self.selected == Some(old) {
-                        self.selected = Some(value);
-                    }
-                    self.next_id = self.next_id.max(value + 1);
-                    return Ok(0);
-                }
-                let selected = self.selected;
-                for e in &mut self.events {
-                    let matches = matches_event(e, selector, selected);
-                    if matches {
-                        e.set(parameter, value);
-                    }
-                }
-                0
-            }
+            Set(parameter) => return self.set_parameter(MIDI_CURRENT_EVENT, parameter, a(0)),
+            SetParameter => return self.set_parameter(a(0), a(1), a(2)),
             Tracks => self.tracks.max(
                 self.events
                     .iter()

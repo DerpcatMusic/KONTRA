@@ -31,8 +31,30 @@ pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLoo
         .collect()
 }
 
+/// A native lane is real by construction; keep its scalar range typed until
+/// publishing the public heterogeneous control schema.
+#[derive(Clone, Copy)]
+struct NativeControl {
+    id: crate::ControlId,
+    min: f64,
+    max: f64,
+    default: f64,
+}
+impl NativeControl {
+    fn definition(self) -> ControlDefinition {
+        ControlDefinition {
+            id: self.id,
+            domain: ControlDomain::Real { min: self.min, max: self.max },
+            default: ControlValue::Real(self.default),
+        }
+    }
+    fn range(self) -> ControlRange {
+        ControlRange { control: self.id, low: self.min, high: self.max, ramp_frames: 0 }
+    }
+}
+
 /// Defaults, lawful service conversions and DSP identities for native physical effect lanes.
-fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
+fn native_lanes(p: ir::Processor) -> Vec<(NativeControl, crate::EngineParameterBinding)> {
     use crate::EngineParameterLaw::{Linear, SignedNormalized};
     let unit = Linear { low: 0., high: 1. };
     let (slot, lanes) = match p {
@@ -75,11 +97,7 @@ fn native_lanes(p: ir::Processor) -> Vec<(ControlDefinition, crate::EngineParame
             // The law's values at both write ends (16 at the top of an output gain).
             let (a, b) = (law.decode(if law == SignedNormalized { -1_000_000 } else { 0 }), law.decode(1_000_000));
             (
-                ControlDefinition {
-                    id,
-                    domain: ControlDomain::Real { min: a.min(b), max: a.max(b) },
-                    default: ControlValue::Real(value),
-                },
+                NativeControl { id, min: a.min(b), max: a.max(b), default: value },
                 crate::EngineParameterBinding {
                     address,
                     control: id,
@@ -126,8 +144,8 @@ fn lane_roles(p: ir::Processor) -> Vec<ir::ProcessorParameter> {
 
 /// Lane `index` of [`native_lanes`] as the stage reads it: the stored value,
 /// or its linear rescale (ms to seconds) where the lane declares one.
-fn lane_parameter(p: ir::Processor, lanes: &[(ControlDefinition, crate::EngineParameterBinding)], index: usize) -> Parameter {
-    let Parameter::Control(range) = native_parameter(lanes, index) else { unreachable!() };
+fn lane_parameter(p: ir::Processor, lanes: &[(NativeControl, crate::EngineParameterBinding)], index: usize) -> Parameter {
+    let range = lanes[index].0.range();
     let scale = p.lanes().and_then(|(_, l)| l.get(index)?.scale);
     let Some([at_low, at_high]) = scale else { return Parameter::Control(range) };
     // `scale` names the stage's values at writes 0 and 1e6; the domain is sorted.
@@ -137,19 +155,10 @@ fn lane_parameter(p: ir::Processor, lanes: &[(ControlDefinition, crate::EnginePa
 }
 
 fn native_parameter(
-    lanes: &[(ControlDefinition, crate::EngineParameterBinding)],
+    lanes: &[(NativeControl, crate::EngineParameterBinding)],
     index: usize,
 ) -> Parameter {
-    let c = lanes[index].0;
-    let ControlDomain::Real { min, max } = c.domain else {
-        unreachable!()
-    };
-    Parameter::Control(ControlRange {
-        control: c.id,
-        low: min,
-        high: max,
-        ramp_frames: 0,
-    })
+    Parameter::Control(lanes[index].0.range())
 }
 
 /// The runtime color unit for an IR config: script-addressed knobs become the
@@ -711,6 +720,7 @@ pub fn lower_with(
             .map_err(core(Stage::Regions, "slot controls"))?;
     }
     plan.wavetable_controls = wave_controls.into_boxed_slice();
+    plan.refresh_real_controls().map_err(core(Stage::Regions, "wavetable controls"))?;
     if instrument.groups.iter().any(|g| g.time_stretch.is_some()) {
         plan.stretch_groups = instrument
             .groups
@@ -1658,8 +1668,7 @@ impl Lowering<'_> {
             for (at, p) in chain.pre_amplitude.iter().chain(&chain.post_amplitude).enumerate() {
                 let roles = lane_roles(*p);
                 for ((control, binding), role) in native_lanes(*p).into_iter().zip(roles) {
-                    let ControlDomain::Real { min, max } = control.domain else { continue };
-                    let ControlValue::Real(default) = control.default else { continue };
+                    let NativeControl { min, max, default, .. } = control;
                     let address = ParameterAddress { scope, node: next, parameter: 0 };
                     next += 1;
                     registry
@@ -1855,21 +1864,21 @@ impl Lowering<'_> {
                     let native_chain = plan.region_chain(zone_index).ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
-                    let native = &plan.voice_chains[native_chain];
+                    let native = plan.voice_chains.view(native_chain);
                     let pre_count = authored.pre_amplitude.len();
                     let (before, authored_side, native_start, native_len) = if index < pre_count {
                         (
                             &listed[..index],
                             &listed[..pre_count],
                             0,
-                            native.pre().len(),
+                            native.pre_len(),
                         )
                     } else {
                         (
                             &listed[pre_count..index],
                             &listed[pre_count..],
-                            native.pre().len(),
-                            native.post().len(),
+                            native.pre_len(),
+                            native.post_len(),
                         )
                     };
                     let mut start = native_start + native_len;
@@ -2247,17 +2256,11 @@ fn bind_role(processor: &mut Processor, role: ir::ProcessorParameter, parameter:
                 return filter.bind(knob, parameter);
             }
             (Processor::Color(crate::ColorSettings { gainer: Some(g), .. }), Gain) => g.gain = parameter,
-            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer(knobs), .. }), Tone | Drive | Bass | Bright | Mix) => {
-                let index = match role {
-                    Tone => 0,
-                    Drive => 1,
-                    Bass => 2,
-                    Bright => 3,
-                    Mix => 4,
-                    _ => unreachable!(),
-                };
-                knobs[index] = parameter;
-            }
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer([tone, ..]), .. }), Tone) => *tone = parameter,
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer([_, drive, ..]), .. }), Drive) => *drive = parameter,
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer([_, _, bass, ..]), .. }), Bass) => *bass = parameter,
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer([_, _, _, bright, _]), .. }), Bright) => *bright = parameter,
+            (Processor::Color(crate::ColorSettings { curve: crate::CurveSettings::Skreamer([_, _, _, _, mix]), .. }), Mix) => *mix = parameter,
             (Processor::Eq(eq), Gain | GainDecibels) => eq.gain_db = parameter,
             (Processor::Eq(eq), Cutoff | Frequency) => eq.frequency = parameter,
             (Processor::Eq(eq), Resonance | Quality) => eq.q = parameter,
@@ -2382,7 +2385,7 @@ impl Lowering<'_> {
         for chain in &self.ir.chains {
             for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
                 for (control, _) in native_lanes(*p) {
-                    all.entry(control.id).or_insert(control);
+                    all.entry(control.id).or_insert_with(|| control.definition());
                 }
                 let ir::Processor::Mix {
                     address,
@@ -2500,20 +2503,15 @@ impl Lowering<'_> {
         owner: &str,
         processor: ir::Processor,
     ) -> Result<Vec<Processor>, LowerError> {
-        let two = |kind| {
-            ir::Processor::Filter(match processor {
-                ir::Processor::Filter(f) => ir::Filter { kind, ..f },
-                _ => unreachable!(),
-            })
-        };
         if let ir::Processor::Eq(config) = &processor {
             return Ok(crate::dsp::eq_family::lower(config));
         }
-        let kind = match processor {
-            ir::Processor::Filter(f) => f.kind,
+        let filter = match processor {
+            ir::Processor::Filter(f) => f,
             _ => return Ok(vec![self.processor(owner, processor)?]),
         };
-        let (half, sections) = match kind {
+        let two = |kind| ir::Processor::Filter(ir::Filter { kind, ..filter });
+        let (half, sections) = match filter.kind {
             ir::FilterKind::LowPass { poles: poles @ (4 | 6) } => (ir::FilterKind::LowPass { poles: 2 }, poles / 2),
             ir::FilterKind::HighPass { poles: poles @ (4 | 6) } => (ir::FilterKind::HighPass { poles: 2 }, poles / 2),
             ir::FilterKind::BandPass { poles: poles @ (4 | 6) } => (ir::FilterKind::BandPass { poles: 2 }, poles / 2),
@@ -2567,17 +2565,7 @@ impl Lowering<'_> {
                 let parameter = |index: usize, value: f64| {
                     lanes
                         .get(index)
-                        .map_or(Parameter::Constant(value), |(c, _)| {
-                            let ControlDomain::Real { min, max } = c.domain else {
-                                unreachable!()
-                            };
-                            Parameter::Control(ControlRange {
-                                control: c.id,
-                                low: min,
-                                high: max,
-                                ramp_frames: 0,
-                            })
-                        })
+                        .map_or(Parameter::Constant(value), |(c, _)| Parameter::Control(c.range()))
                 };
                 Processor::Filter(crate::FilterSettings::Ladder(crate::LadderSettings {
                     cutoff: parameter(0, d.cutoff),

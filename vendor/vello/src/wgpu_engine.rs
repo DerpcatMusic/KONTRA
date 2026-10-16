@@ -32,6 +32,9 @@ struct UninitialisedShader {
 #[derive(Default)]
 pub(crate) struct WgpuEngine {
     shaders: Vec<Shader>,
+    // Dynamic execution errors can invalidate persistent GPU resources. Refuse
+    // further work until the renderer is recreated, rather than reuse stale IDs.
+    invalidated: bool,
     pool: ResourcePool,
     bind_map: BindMap,
     bind_groups: BindGroupCache,
@@ -79,13 +82,13 @@ struct Shader {
 }
 
 impl Shader {
-    fn select(&self) -> ShaderKind<'_> {
+    fn select(&self) -> Result<ShaderKind<'_>> {
         if let Some(cpu) = self.cpu.as_ref() {
-            ShaderKind::Cpu(cpu)
+            Ok(ShaderKind::Cpu(cpu))
         } else if let Some(wgpu) = self.wgpu.as_ref() {
-            ShaderKind::Wgpu(wgpu)
+            Ok(ShaderKind::Wgpu(wgpu))
         } else {
-            panic!("no available shader for {}", self.label)
+            Err(Error::MissingShaderImplementation(self.label))
         }
     }
 }
@@ -413,7 +416,92 @@ impl WgpuEngine {
         ShaderId(id)
     }
 
+    fn validate_recording(&self, recording: &Recording) -> Result<()> {
+        if self.invalidated {
+            return Err(Error::RendererInvalidated);
+        }
+        for command in &recording.commands {
+            match command {
+                Command::WriteImage(_, _, image) => {
+                    if image.data.is_empty() && image.width != 0 && image.height != 0
+                        && !self.image_overrides.contains_key(&image.data.id())
+                    {
+                        return Err(Error::UnavailableImage(image.data.id()));
+                    }
+                }
+                Command::Dispatch(id, _, bindings) | Command::DispatchIndirect(id, _, _, bindings) => {
+                    let shader = self.shaders.get(id.0).ok_or(Error::UnavailableShader(id.0))?;
+                    match shader.select()? {
+                        ShaderKind::Cpu(_) => {
+                            for binding in bindings {
+                                match binding {
+                                    ResourceProxy::Buffer(_) => {}
+                                    ResourceProxy::BufferRange { .. } => return Err(Error::UnsupportedCpuBinding("buffer range")),
+                                    ResourceProxy::Image(_) => return Err(Error::UnsupportedCpuBinding("image")),
+                                }
+                            }
+                        }
+                        ShaderKind::Wgpu(gpu) => match &gpu.pipeline {
+                            PipelineState::Compute(_) => {}
+                            #[cfg(feature = "debug_layers")]
+                            PipelineState::Render(_) => return Err(Error::InvalidShaderUse {
+                                shader: shader.label, operation: "compute dispatch",
+                            }),
+                        },
+                    }
+                }
+                #[cfg(feature = "debug_layers")]
+                Command::Draw(params) => {
+                    let shader = self.shaders.get(params.shader_id.0)
+                        .ok_or(Error::UnavailableShader(params.shader_id.0))?;
+                    match shader.select()? {
+                        ShaderKind::Wgpu(gpu) if matches!(gpu.pipeline, PipelineState::Render(_)) => {}
+                        _ => return Err(Error::InvalidShaderUse { shader: shader.label, operation: "draw" }),
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Static preflight refusals leave resident resources untouched. A dynamic
+    /// execution failure drops the unsubmitted encoder, releases all resident
+    /// engine resources, and poisons this engine. Its resolver/atlas IDs may be
+    /// stale: the caller must recreate the renderer, never retry into a blank frame.
     pub fn run_recording(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        recording: &Recording,
+        external_resources: &[ExternalResource<'_>],
+        label: &'static str,
+        #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
+    ) -> Result<()> {
+        self.validate_recording(recording)?;
+        let result = self.run_recording_inner(
+            device, queue, recording, external_resources, label,
+            #[cfg(feature = "wgpu-profiler")]
+            profiler,
+        );
+        // Inner locals (including passes/encoder) have been dropped before
+        // releasing handles here. No rollback of already queued writes is claimed.
+        self.finish_recording(result)
+    }
+
+    fn finish_recording(&mut self, result: Result<()>) -> Result<()> {
+        if result.is_err() {
+            self.invalidated = true;
+            self.bind_groups = BindGroupCache::default();
+            self.bind_map = BindMap::default();
+            self.pool = ResourcePool::default();
+            self.downloads.clear();
+            self.image_overrides.clear();
+        }
+        result
+    }
+
+    fn run_recording_inner(
         &mut self,
         device: &Device,
         queue: &Queue,
@@ -531,14 +619,6 @@ impl WgpuEngine {
                             },
                         );
                     } else {
-                        if image.data.is_empty() && image.width != 0 && image.height != 0 {
-                            panic!(
-                                "Tried to draw an invalid empty image (id: {}). \
-                                Maybe it was registered to a different renderer, or \
-                                unregistered before this render was submitted.",
-                                image.data.id()
-                            );
-                        }
                         queue.write_texture(
                             wgpu::TexelCopyTextureInfo {
                                 texture,
@@ -564,7 +644,7 @@ impl WgpuEngine {
                     let (x, y, z) = *wg_size;
                     // println!("dispatching {:?} with {} bindings", wg_size, bindings.len());
                     let shader = &self.shaders[shader_id.0];
-                    match shader.select() {
+                    match shader.select()? {
                         ShaderKind::Cpu(cpu_shader) => {
                             // The current strategy is to run the CPU shader synchronously. This
                             // works because there is currently the added constraint that data
@@ -575,7 +655,7 @@ impl WgpuEngine {
                             // command buffer submission completes (and, in WebGPU, the async
                             // mapping operations on the buffers completes).
                             let resources =
-                                transient_map.create_cpu_resources(&mut self.bind_map, bindings);
+                                transient_map.create_cpu_resources(&mut self.bind_map, bindings)?;
                             (cpu_shader.shader)(x, &resources);
                         }
                         ShaderKind::Wgpu(wgpu_shader) => {
@@ -603,15 +683,12 @@ impl WgpuEngine {
                             let query = profiler
                                 .begin_query(shader.label, cpass)
                                 .with_parent(Some(&query));
-                            #[cfg_attr(
-                                not(feature = "debug_layers"),
-                                expect(
-                                    irrefutable_let_patterns,
-                                    reason = "Render shaders are only enabled if we have the debug pipeline"
-                                )
-                            )]
-                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
-                                panic!("cannot issue a dispatch with a render pipeline");
+                            let pipeline = match &wgpu_shader.pipeline {
+                                PipelineState::Compute(pipeline) => pipeline,
+                                #[cfg(feature = "debug_layers")]
+                                PipelineState::Render(_) => return Err(Error::InvalidShaderUse {
+                                    shader: shader.label, operation: "compute dispatch",
+                                }),
                             };
                             cpass.set_pipeline(pipeline);
                             cpass.set_bind_group(0, &bind_group, &[]);
@@ -623,19 +700,12 @@ impl WgpuEngine {
                 }
                 Command::DispatchIndirect(shader_id, proxy, offset, bindings) => {
                     let shader = &self.shaders[shader_id.0];
-                    match shader.select() {
+                    match shader.select()? {
                         ShaderKind::Cpu(cpu_shader) => {
                             // Same consideration as above about running the CPU shader synchronously.
-                            let n_wg;
-                            if let CpuBinding::BufferRW(b) = self.bind_map.get_cpu_buf(proxy.id) {
-                                let slice = b.borrow();
-                                let indirect: &[u32] = bytemuck::cast_slice(&slice);
-                                n_wg = indirect[0];
-                            } else {
-                                panic!("indirect buffer missing from bind map");
-                            }
+                            let n_wg = transient_map.indirect_workgroups(&self.bind_map, proxy, *offset)?;
                             let resources =
-                                transient_map.create_cpu_resources(&mut self.bind_map, bindings);
+                                transient_map.create_cpu_resources(&mut self.bind_map, bindings)?;
                             (cpu_shader.shader)(n_wg, &resources);
                         }
                         ShaderKind::Wgpu(wgpu_shader) => {
@@ -666,15 +736,12 @@ impl WgpuEngine {
                             let query = profiler
                                 .begin_query(shader.label, cpass)
                                 .with_parent(Some(&query));
-                            #[cfg_attr(
-                                not(feature = "debug_layers"),
-                                expect(
-                                    irrefutable_let_patterns,
-                                    reason = "Render shaders are only enabled if we have the debug pipeline"
-                                )
-                            )]
-                            let PipelineState::Compute(pipeline) = &wgpu_shader.pipeline else {
-                                panic!("cannot issue a dispatch with a render pipeline");
+                            let pipeline = match &wgpu_shader.pipeline {
+                                PipelineState::Compute(pipeline) => pipeline,
+                                #[cfg(feature = "debug_layers")]
+                                PipelineState::Render(_) => return Err(Error::InvalidShaderUse {
+                                    shader: shader.label, operation: "compute dispatch",
+                                }),
                             };
                             cpass.set_pipeline(pipeline);
                             cpass.set_bind_group(0, &bind_group, &[]);
@@ -692,8 +759,8 @@ impl WgpuEngine {
                     let shader = &self.shaders[draw_params.shader_id.0];
                     #[cfg(feature = "wgpu-profiler")]
                     let label = shader.label;
-                    let ShaderKind::Wgpu(shader) = shader.select() else {
-                        panic!("a render pass does not have a CPU equivalent");
+                    let ShaderKind::Wgpu(shader) = shader.select()? else {
+                        return Err(Error::InvalidShaderUse { shader: shader.label, operation: "draw" });
                     };
                     let bind_group = transient_map.create_bind_group(
                         &mut self.bind_map,
@@ -708,7 +775,7 @@ impl WgpuEngine {
                     );
                     pass = None;
                     let render_target = transient_map
-                        .materialize_external_image_for_render_pass(&draw_params.target);
+                        .materialize_external_image_for_render_pass(&draw_params.target)?;
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -738,7 +805,9 @@ impl WgpuEngine {
                         .begin_query(label, &mut rpass)
                         .with_parent(Some(&query));
                     let PipelineState::Render(pipeline) = &shader.pipeline else {
-                        panic!("cannot issue a draw with a compute pipeline");
+                        return Err(Error::InvalidShaderUse {
+                            shader: self.shaders[draw_params.shader_id.0].label, operation: "draw",
+                        });
                     };
                     rpass.set_pipeline(pipeline);
                     if let Some(proxy) = draw_params.vertex_buffer {
@@ -932,7 +1001,27 @@ impl WgpuEngine {
     }
 }
 
+fn read_indirect_arguments(proxy: &BufferProxy, offset: u64, bytes: &[u8]) -> Result<u32> {
+    let invalid = || Error::InvalidIndirectDispatch { buffer: proxy.name, offset };
+    if offset % 4 != 0 || offset.checked_add(12).is_none_or(|end| end > proxy.size) {
+        return Err(invalid());
+    }
+    let start = usize::try_from(offset).map_err(|_| invalid())?;
+    let end = start.checked_add(12).ok_or_else(invalid)?;
+    let args = bytes.get(start..end).ok_or_else(invalid)?;
+    Ok(u32::from_le_bytes([args[0], args[1], args[2], args[3]]))
+}
+
 impl BindMap {
+    fn indirect_workgroups(&self, proxy: &BufferProxy, offset: u64) -> Result<u32> {
+        let buffer = self.buf_map.get(&proxy.id)
+            .ok_or(Error::UnavailableBufferUsed(proxy.name, "indirect CPU dispatch"))?;
+        let MaterializedBuffer::Cpu(bytes) = &buffer.buffer else {
+            return Err(Error::UnavailableBufferUsed(proxy.name, "indirect CPU dispatch"));
+        };
+        read_indirect_arguments(proxy, offset, &bytes.borrow())
+    }
+
     fn insert_buf(&mut self, proxy: &BufferProxy, buffer: Buffer) {
         self.buf_map.insert(
             proxy.id,
@@ -951,13 +1040,11 @@ impl BindMap {
         })
     }
 
-    /// Get a CPU buffer.
-    ///
-    /// Panics if buffer is not present or is on GPU.
-    fn get_cpu_buf(&self, id: ResourceId) -> CpuBinding<'_> {
-        match &self.buf_map[&id].buffer {
-            MaterializedBuffer::Cpu(b) => CpuBinding::BufferRW(b),
-            _ => panic!("getting cpu buffer, but it's on gpu"),
+    /// Get a CPU buffer, refusing missing or GPU-only storage.
+    fn get_cpu_buf(&self, proxy: &BufferProxy) -> Result<CpuBinding<'_>> {
+        match self.buf_map.get(&proxy.id).map(|buf| &buf.buffer) {
+            Some(MaterializedBuffer::Cpu(b)) => Ok(CpuBinding::BufferRW(b)),
+            _ => Err(Error::UnavailableBufferUsed(proxy.name, "CPU dispatch")),
         }
     }
 
@@ -1086,6 +1173,16 @@ impl BindMapBuffer {
 }
 
 impl<'a> TransientBindMap<'a> {
+    fn indirect_workgroups(&self, bind_map: &BindMap, proxy: &BufferProxy, offset: u64) -> Result<u32> {
+        match self.bufs.get(&proxy.id) {
+            // Upload commands earlier in this recording have their newest bytes
+            // here, even if an older resident copy is materialized on the GPU.
+            Some(TransientBuf::Cpu(bytes)) => read_indirect_arguments(proxy, offset, bytes),
+            Some(TransientBuf::Gpu(_)) => Err(Error::UnavailableBufferUsed(proxy.name, "indirect CPU dispatch")),
+            None => bind_map.indirect_workgroups(proxy, offset),
+        }
+    }
+
     /// Create new transient bind map, seeded from external resources
     fn new(external_resources: &'a [ExternalResource<'_>]) -> Self {
         let mut bufs = HashMap::default();
@@ -1119,12 +1216,13 @@ impl<'a> TransientBindMap<'a> {
     }
 
     #[cfg(feature = "debug_layers")]
-    fn materialize_external_image_for_render_pass(&mut self, proxy: &ImageProxy) -> &TextureView {
+    fn materialize_external_image_for_render_pass(&mut self, proxy: &ImageProxy) -> Result<&TextureView> {
         // TODO: Maybe this should support instantiating a transient texture. Right now all render
         // passes target a `SurfaceTexture`, so supporting external textures is sufficient.
         self.images
             .get(&proxy.id)
-            .expect("texture not materialized")
+            .copied()
+            .ok_or(Error::UnavailableRenderTarget(proxy.id.0.get()))
     }
 
     fn create_bind_group(
@@ -1254,34 +1352,431 @@ impl<'a> TransientBindMap<'a> {
         &self,
         bind_map: &'a mut BindMap,
         bindings: &[ResourceProxy],
-    ) -> Vec<CpuBinding<'_>> {
-        // First pass is mutable; create buffers as needed
+    ) -> Result<Vec<CpuBinding<'_>>> {
+        // First pass is mutable; create buffers as needed. Unsupported resource
+        // kinds and GPU-only resources are explicit refusals, never empty output.
         for resource in bindings {
             match resource {
-                ResourceProxy::Buffer(proxy)
-                | ResourceProxy::BufferRange {
-                    proxy,
-                    offset: _,
-                    size: _,
-                } => match self.bufs.get(&proxy.id) {
+                ResourceProxy::Buffer(proxy) => match self.bufs.get(&proxy.id) {
                     Some(TransientBuf::Cpu(_)) => (),
-                    Some(TransientBuf::Gpu(_)) => panic!("buffer was already materialized on GPU"),
-                    _ => bind_map.materialize_cpu_buf(proxy),
+                    Some(TransientBuf::Gpu(_)) => return Err(Error::UnavailableBufferUsed(proxy.name, "CPU dispatch")),
+                    None => bind_map.materialize_cpu_buf(proxy),
                 },
-                ResourceProxy::Image(_) => todo!(),
+                ResourceProxy::BufferRange { .. } => return Err(Error::UnsupportedCpuBinding("buffer range")),
+                ResourceProxy::Image(_) => return Err(Error::UnsupportedCpuBinding("image")),
             }
         }
-        // Second pass takes immutable references
-        bindings
-            .iter()
-            .map(|resource| match resource {
-                ResourceProxy::Buffer(buf) => match self.bufs.get(&buf.id) {
-                    Some(TransientBuf::Cpu(b)) => CpuBinding::Buffer(b),
-                    _ => bind_map.get_cpu_buf(buf.id),
-                },
-                ResourceProxy::BufferRange { .. } => todo!(),
-                ResourceProxy::Image(_) => todo!(),
-            })
-            .collect()
+        // Second pass takes immutable references after materialization.
+        bindings.iter().map(|resource| match resource {
+            ResourceProxy::Buffer(buf) => match self.bufs.get(&buf.id) {
+                Some(TransientBuf::Cpu(b)) => Ok(CpuBinding::Buffer(b)),
+                _ => bind_map.get_cpu_buf(buf),
+            },
+            ResourceProxy::BufferRange { .. } => Err(Error::UnsupportedCpuBinding("buffer range")),
+            ResourceProxy::Image(_) => Err(Error::UnsupportedCpuBinding("image")),
+        }).collect()
+    }
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+    use crate::recording::ImageFormat;
+    use peniko::{Blob, ImageAlphaType, ImageData};
+    use std::sync::Arc;
+
+    fn cpu_shader(_: u32, _: &[CpuBinding<'_>]) {}
+
+    #[test]
+    fn recording_refuses_missing_shader_and_implementation_without_gpu() {
+        let mut engine = WgpuEngine::default();
+        let mut recording = Recording::default();
+        recording.dispatch(ShaderId(0), (1, 1, 1), std::iter::empty::<ResourceProxy>());
+        assert!(matches!(engine.validate_recording(&recording), Err(Error::UnavailableShader(0))));
+        engine.shaders.push(Shader { label: "missing", wgpu: None, cpu: None });
+        assert!(matches!(engine.validate_recording(&recording), Err(Error::MissingShaderImplementation("missing"))));
+        engine.shaders[0].cpu = Some(CpuShader { shader: cpu_shader });
+        assert!(engine.validate_recording(&recording).is_ok());
+    }
+
+    #[test]
+    fn recording_refuses_unowned_empty_image_and_accepts_cpu_pixels() {
+        let engine = WgpuEngine::default();
+        let proxy = ImageProxy::new(1, 1, ImageFormat::Rgba8);
+        let image = |data: Vec<u8>| ImageData {
+            data: Blob::new(Arc::new(data)), format: peniko::ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha, width: 1, height: 1,
+        };
+        let mut recording = Recording::default();
+        let empty = image(Vec::new());
+        let id = empty.data.id();
+        recording.push(Command::WriteImage(proxy, [0, 0], empty));
+        assert!(matches!(engine.validate_recording(&recording), Err(Error::UnavailableImage(got)) if got == id));
+        assert!(engine.bind_map.image_map.is_empty());
+        assert!(engine.pool.images.is_empty());
+        recording.commands.clear();
+        recording.push(Command::WriteImage(proxy, [0, 0], image(vec![255; 4])));
+        assert!(engine.validate_recording(&recording).is_ok());
+    }
+
+    #[test]
+    fn indirect_cpu_arguments_respect_offset_and_refuse_missing_or_invalid_storage() {
+        let mut map = BindMap::default();
+        let proxy = BufferProxy::new(24, "arguments");
+        assert!(matches!(map.indirect_workgroups(&proxy, 0), Err(Error::UnavailableBufferUsed("arguments", _))));
+        let bytes: Vec<u8> = [7u32, 1, 1, 11, 1, 1].into_iter().flat_map(u32::to_le_bytes).collect();
+        map.buf_map.insert(proxy.id, BindMapBuffer {
+            buffer: MaterializedBuffer::Cpu(RefCell::new(bytes)), label: "arguments",
+        });
+        assert_eq!(map.indirect_workgroups(&proxy, 0).unwrap(), 7);
+        assert_eq!(map.indirect_workgroups(&proxy, 12).unwrap(), 11);
+        for offset in [1, 16, 24, u64::MAX] {
+            assert!(matches!(map.indirect_workgroups(&proxy, offset), Err(Error::InvalidIndirectDispatch { .. })));
+        }
+        map.buf_map.insert(proxy.id, BindMapBuffer {
+            buffer: MaterializedBuffer::Cpu(RefCell::new(vec![0; 4])), label: "arguments",
+        });
+        assert!(matches!(map.indirect_workgroups(&proxy, 0), Err(Error::InvalidIndirectDispatch { .. })));
+    }
+}
+
+#[cfg(test)]
+mod cpu_resource_refusal_tests {
+    use super::*;
+    use crate::recording::ImageFormat;
+
+    #[test]
+    fn cpu_binding_kinds_are_refused_or_materialized_explicitly() {
+        let transient = TransientBindMap::default();
+        let image = ResourceProxy::new_image(1, 1, ImageFormat::Rgba8);
+        let buffer = BufferProxy::new(16, "cpu");
+        let range = ResourceProxy::BufferRange { proxy: buffer, offset: 0, size: 4 };
+        assert!(matches!(transient.create_cpu_resources(&mut BindMap::default(), &[image]), Err(Error::UnsupportedCpuBinding("image"))));
+        assert!(matches!(transient.create_cpu_resources(&mut BindMap::default(), &[range]), Err(Error::UnsupportedCpuBinding("buffer range"))));
+        let mut map = BindMap::default();
+        assert!(matches!(map.get_cpu_buf(&buffer), Err(Error::UnavailableBufferUsed("cpu", _))));
+        let bindings = [ResourceProxy::Buffer(buffer)];
+        let resources = transient.create_cpu_resources(&mut map, &bindings).unwrap();
+        assert!(matches!(resources.as_slice(), [CpuBinding::BufferRW(_)]));
+    }
+
+    #[cfg(feature = "debug_layers")]
+    #[test]
+    fn missing_debug_target_is_a_typed_refusal() {
+        let mut transient = TransientBindMap::default();
+        let image = ImageProxy::new(1, 1, ImageFormat::Rgba8);
+        assert!(matches!(transient.materialize_external_image_for_render_pass(&image), Err(Error::UnavailableRenderTarget(_))));
+    }
+}
+
+#[cfg(test)]
+mod recording_owner_tests {
+    use super::*;
+    use crate::recording::ImageFormat;
+
+    fn shader(_: u32, _: &[CpuBinding<'_>]) {}
+
+    #[test]
+    fn static_cpu_binding_refusal_preserves_existing_resources_and_allows_retry() {
+        let mut engine = WgpuEngine::default();
+        engine.shaders.push(Shader { label: "cpu", cpu: Some(CpuShader { shader }), wgpu: None });
+        let buffer = BufferProxy::new(16, "resident");
+        engine.bind_map.buf_map.insert(buffer.id, BindMapBuffer {
+            buffer: MaterializedBuffer::Cpu(RefCell::new(vec![7; 16])), label: "resident",
+        });
+        let mut bad = Recording::default();
+        bad.dispatch(ShaderId(0), (1, 1, 1), [ResourceProxy::new_image(1, 1, ImageFormat::Rgba8)]);
+        assert!(matches!(engine.validate_recording(&bad), Err(Error::UnsupportedCpuBinding("image"))));
+        assert_eq!(engine.bind_map.buf_map.len(), 1);
+        assert!(!engine.invalidated);
+        let mut good = Recording::default();
+        good.dispatch(ShaderId(0), (1, 1, 1), [ResourceProxy::Buffer(buffer)]);
+        assert!(engine.validate_recording(&good).is_ok());
+    }
+
+    #[test]
+    fn dynamic_failure_releases_resources_and_refuses_further_recordings_until_recreated() {
+        let mut engine = WgpuEngine::default();
+        for _ in 0..32 {
+            let buffer = BufferProxy::new(16, "owned");
+            engine.bind_map.buf_map.insert(buffer.id, BindMapBuffer {
+                buffer: MaterializedBuffer::Cpu(RefCell::new(vec![0; 16])), label: "owned",
+            });
+        }
+        assert!(engine.finish_recording(Err(Error::InvalidIndirectDispatch { buffer: "owned", offset: 1 })).is_err());
+        assert!(engine.bind_map.buf_map.is_empty());
+        assert!(engine.bind_map.image_map.is_empty());
+        assert!(engine.bind_groups.map.is_empty());
+        assert!(engine.pool.bufs.is_empty());
+        assert!(engine.pool.images.is_empty());
+        assert!(engine.pool.spare_images.is_empty());
+        assert!(engine.downloads.is_empty());
+        for _ in 0..128 {
+            assert!(matches!(engine.validate_recording(&Recording::default()), Err(Error::RendererInvalidated)));
+            assert!(engine.bind_map.buf_map.is_empty());
+        }
+        assert!(WgpuEngine::default().validate_recording(&Recording::default()).is_ok());
+    }
+
+    #[test]
+    fn indirect_cpu_dispatch_uses_latest_uploaded_bytes_before_resident_data() {
+        let proxy = BufferProxy::new(24, "arguments");
+        let mut resident = BindMap::default();
+        resident.buf_map.insert(proxy.id, BindMapBuffer {
+            buffer: MaterializedBuffer::Cpu(RefCell::new(vec![0; 24])), label: "arguments",
+        });
+        let bytes: Vec<u8> = [7u32, 1, 1, 11, 1, 1].into_iter().flat_map(u32::to_le_bytes).collect();
+        let mut transient = TransientBindMap::default();
+        transient.bufs.insert(proxy.id, TransientBuf::Cpu(&bytes));
+        assert_eq!(transient.indirect_workgroups(&resident, &proxy, 0).unwrap(), 7);
+        assert_eq!(transient.indirect_workgroups(&resident, &proxy, 12).unwrap(), 11);
+        assert!(matches!(transient.indirect_workgroups(&resident, &proxy, 1), Err(Error::InvalidIndirectDispatch { .. })));
+        assert_eq!(resident.indirect_workgroups(&proxy, 0).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod coarse_owner_retry_tests {
+    use super::*;
+    use crate::{AaConfig, Error, RenderParams, Scene, low_level::FullShaders, render::Render};
+    use peniko::{Blob, ImageAlphaType, ImageData, kurbo::Affine};
+    use std::{collections::BTreeSet, sync::Arc};
+    use vello_encoding::Resolver;
+
+    // Only real static preflight is called. No shader executes, no device is
+    // opened, and an Ok callback is not evidence of submitted/pixel output.
+    fn cpu_shader(_: u32, _: &[CpuBinding<'_>]) {}
+
+    fn engine() -> WgpuEngine {
+        let mut engine = WgpuEngine::default();
+        engine.shaders.push(Shader {
+            label: "coarse-preflight", cpu: Some(CpuShader { shader: cpu_shader }), wgpu: None,
+        });
+        engine
+    }
+
+    fn shaders() -> FullShaders {
+        FullShaders {
+            pathtag_reduce: ShaderId(0), pathtag_reduce2: ShaderId(0),
+            pathtag_scan1: ShaderId(0), pathtag_scan: ShaderId(0), pathtag_scan_large: ShaderId(0),
+            bbox_clear: ShaderId(0), flatten: ShaderId(0), draw_reduce: ShaderId(0),
+            draw_leaf: ShaderId(0), clip_reduce: ShaderId(0), clip_leaf: ShaderId(0),
+            binning: ShaderId(0), tile_alloc: ShaderId(0), backdrop: ShaderId(0),
+            path_count_setup: ShaderId(0), path_count: ShaderId(0), coarse: ShaderId(0),
+            path_tiling_setup: ShaderId(0), path_tiling: ShaderId(0),
+            fine_area: Some(ShaderId(0)), fine_msaa8: None, fine_msaa16: None,
+            pathtag_is_cpu: true,
+        }
+    }
+
+    fn params() -> RenderParams {
+        RenderParams {
+            base_color: peniko::Color::BLACK, width: 8, height: 8,
+            antialiasing_method: AaConfig::Area,
+        }
+    }
+
+    fn image(width: u32, height: u32, foreign: bool) -> ImageData {
+        ImageData {
+            data: Blob::new(Arc::new(if foreign { Vec::new() } else { vec![255; (width * height * 4) as usize] })),
+            format: peniko::ImageFormat::Rgba8, alpha_type: ImageAlphaType::Alpha,
+            width, height,
+        }
+    }
+
+    fn scene(images: &[&ImageData]) -> Scene {
+        let mut scene = Scene::new();
+        for image in images { scene.draw_image(*image, Affine::IDENTITY); }
+        scene
+    }
+
+    struct Attempt {
+        result: Result<()>,
+        uploads: BTreeSet<u64>,
+        write_targets: BTreeSet<u64>,
+        frees: Vec<u64>,
+        prepared_atlas: ImageProxy,
+        committed_atlas: Option<ImageProxy>,
+    }
+
+    fn attempt(
+        resolver: &mut Resolver,
+        atlas: &mut Option<ImageProxy>,
+        engine: &WgpuEngine,
+        scene: &Scene,
+    ) -> Attempt {
+        let previous_atlas = *atlas;
+        let mut render = Render::new();
+        #[cfg(feature = "debug_layers")]
+        { render.capture_debug = false; }
+        let recording = render.render_encoding_coarse(
+            scene.encoding(), resolver, &shaders(), atlas, &params(), true,
+        ).unwrap();
+        let prepared_atlas = atlas.expect("image scene prepares an atlas proxy");
+        let uploads = recording.commands.iter().filter_map(|command| match command {
+            Command::WriteImage(_, _, image) => Some(image.data.id()), _ => None,
+        }).collect();
+        let write_targets = recording.commands.iter().filter_map(|command| match command {
+            Command::WriteImage(proxy, _, _) => Some(proxy.id.0.get()), _ => None,
+        }).collect();
+        let frees = recording.commands.iter().filter_map(|command| match command {
+            Command::FreeImage(proxy) => Some(proxy.id.0.get()), _ => None,
+        }).collect();
+        // This is the same owner completion helper used by public Renderer.
+        // The callback is its actual engine static preflight, without execution.
+        let result = crate::render::submit_coarse_recording(
+            resolver, atlas, previous_atlas, &recording,
+            || engine.validate_recording(&recording),
+        );
+        Attempt { result, uploads, write_targets, frees, prepared_atlas, committed_atlas: *atlas }
+    }
+
+    fn atlas_id(atlas: Option<ImageProxy>) -> Option<u64> {
+        atlas.map(|proxy| proxy.id.0.get())
+    }
+
+    fn unavailable(attempt: &Attempt, image: &ImageData) {
+        assert!(matches!(&attempt.result, Err(Error::UnavailableImage(id)) if *id == image.data.id()),
+            "expected repeated ownership refusal, got {:?}", attempt.result);
+    }
+
+    fn static_engine_untouched(engine: &WgpuEngine) {
+        assert!(!engine.invalidated);
+        assert!(engine.bind_map.buf_map.is_empty());
+        assert!(engine.bind_map.image_map.is_empty());
+        assert!(engine.pool.bufs.is_empty());
+        assert!(engine.pool.images.is_empty());
+        assert!(engine.pool.spare_images.is_empty());
+        assert!(engine.bind_groups.map.is_empty());
+        assert!(engine.downloads.is_empty());
+    }
+
+    #[test]
+    fn foreign_image_refuses_both_attempts_through_one_persistent_resolver() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let engine = engine();
+        let foreign = image(4, 4, true);
+        let scene = scene(&[&foreign]);
+        // Generate BOTH attempts before assertions: the old owner behavior
+        // yields no WriteImage and apparent success on the second attempt.
+        let attempts: Vec<_> = (0..2).map(|_| attempt(&mut resolver, &mut atlas, &engine, &scene)).collect();
+        for result in &attempts { unavailable(result, &foreign); }
+        for result in &attempts {
+            assert_eq!(result.uploads, BTreeSet::from([foreign.data.id()]));
+            assert_eq!(result.write_targets, BTreeSet::from([result.prepared_atlas.id.0.get()]));
+            assert!(result.frees.is_empty());
+            assert!(result.committed_atlas.is_none());
+        }
+        assert_ne!(attempts[0].prepared_atlas.id.0.get(), attempts[1].prepared_atlas.id.0.get());
+        assert!(atlas.is_none());
+        static_engine_untouched(&engine);
+    }
+
+    #[test]
+    fn mixed_refusal_redirties_valid_uploads_on_both_sides_of_foreign_image() {
+        for foreign_first in [false, true] {
+            let mut resolver = Resolver::new();
+            let mut atlas = None;
+            let engine = engine();
+            let valid = image(2, 2, false);
+            let foreign = image(4, 4, true);
+            let mixed = if foreign_first { scene(&[&foreign, &valid]) } else { scene(&[&valid, &foreign]) };
+            let rejected = attempt(&mut resolver, &mut atlas, &engine, &mixed);
+            let valid_only = scene(&[&valid]);
+            let retry = attempt(&mut resolver, &mut atlas, &engine, &valid_only);
+            unavailable(&rejected, &foreign);
+            assert_eq!(rejected.uploads, BTreeSet::from([valid.data.id(), foreign.data.id()]));
+            assert!(retry.result.is_ok());
+            assert_eq!(retry.uploads, BTreeSet::from([valid.data.id()]));
+            assert!(rejected.committed_atlas.is_none());
+            assert_ne!(retry.prepared_atlas.id.0.get(), rejected.prepared_atlas.id.0.get());
+            assert_eq!(retry.write_targets, BTreeSet::from([retry.prepared_atlas.id.0.get()]));
+            assert!(retry.frees.is_empty());
+            let accepted_id = atlas_id(atlas);
+            let clean = attempt(&mut resolver, &mut atlas, &engine, &valid_only);
+            assert!(clean.result.is_ok());
+            assert!(clean.uploads.is_empty());
+            assert_eq!(atlas_id(atlas), accepted_id);
+            static_engine_untouched(&engine);
+        }
+    }
+
+    #[test]
+    fn refused_resize_restores_old_atlas_and_retries_its_free_and_all_surviving_uploads() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let engine = engine();
+        let resident = image(2, 2, false);
+        assert!(attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident])).result.is_ok());
+        let old = atlas.unwrap();
+        let valid = image(3, 3, false);
+        // The cached allocator must grow. The foreign Blob stays empty, so
+        // constructing this fixture needs no large image-pixel allocation.
+        let foreign = image(old.width + 1, 1, true);
+        let mixed = scene(&[&resident, &valid, &foreign]);
+        let attempts: Vec<_> = (0..2).map(|_| attempt(&mut resolver, &mut atlas, &engine, &mixed)).collect();
+        for rejected in &attempts { unavailable(rejected, &foreign); }
+        for rejected in &attempts {
+            assert!(rejected.prepared_atlas.width > old.width);
+            assert_eq!(atlas_id(rejected.committed_atlas), Some(old.id.0.get()));
+            assert_eq!(rejected.frees, [old.id.0.get()]);
+            assert_eq!(rejected.uploads, BTreeSet::from([resident.data.id(), valid.data.id(), foreign.data.id()]));
+        }
+        assert_eq!(atlas_id(atlas), Some(old.id.0.get()));
+        let retry = attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident, &valid]));
+        assert!(retry.result.is_ok());
+        assert!(retry.prepared_atlas.width > old.width);
+        assert_eq!(retry.frees, [old.id.0.get()]);
+        assert_eq!(retry.uploads, BTreeSet::from([resident.data.id(), valid.data.id()]));
+        assert_eq!(retry.write_targets, BTreeSet::from([retry.prepared_atlas.id.0.get()]));
+        for rejected in &attempts { assert_ne!(retry.prepared_atlas.id.0.get(), rejected.prepared_atlas.id.0.get()); }
+        assert_eq!(atlas_id(atlas), Some(retry.prepared_atlas.id.0.get()));
+        static_engine_untouched(&engine);
+    }
+
+    #[test]
+    fn refused_reused_atlas_preserves_resident_atlas_and_requeues_new_uploads() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let engine = engine();
+        let resident = image(2, 2, false);
+        assert!(attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident])).result.is_ok());
+        let old = atlas.unwrap();
+        let valid = image(3, 3, false);
+        let foreign = image(4, 4, true);
+        let rejected = attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident, &valid, &foreign]));
+        unavailable(&rejected, &foreign);
+        assert_eq!(rejected.prepared_atlas.id.0.get(), old.id.0.get());
+        assert!(rejected.frees.is_empty());
+        assert_eq!(rejected.uploads, BTreeSet::from([valid.data.id(), foreign.data.id()]));
+        let retry = attempt(&mut resolver, &mut atlas, &engine, &scene(&[&resident, &valid]));
+        assert!(retry.result.is_ok());
+        assert_eq!(retry.prepared_atlas.id.0.get(), old.id.0.get());
+        assert!(retry.frees.is_empty());
+        assert_eq!(retry.uploads, BTreeSet::from([valid.data.id()]));
+        static_engine_untouched(&engine);
+    }
+
+    #[test]
+    fn allocation_refusal_after_resolve_restores_unsubmitted_uploads_before_retry() {
+        let mut resolver = Resolver::new();
+        let mut atlas = None;
+        let valid = image(2, 2, false);
+        let scene = scene(&[&valid]);
+        let mut render = Render::new();
+        render.buffer_limit = 0;
+        let result = render.render_encoding_coarse(
+            scene.encoding(), &mut resolver, &shaders(), &mut atlas, &params(), true,
+        );
+        assert!(matches!(result, Err(Error::AllocationLimit(_, _, _))));
+        let restored = atlas.is_none();
+        let engine = engine();
+        let retry = attempt(&mut resolver, &mut atlas, &engine, &scene);
+        assert!(retry.result.is_ok());
+        assert_eq!(retry.uploads, BTreeSet::from([valid.data.id()]));
+        assert!(restored);
+        assert!(retry.frees.is_empty());
+        static_engine_untouched(&engine);
     }
 }

@@ -178,12 +178,233 @@ impl ControlEvent {
     }
 }
 
+// Logical IDs remain the public schema; these handles address homogeneous cells.
+// Handles are minted/remapped only against the owning Prepared's exact layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RealControlIndex(usize);
+impl RealControlIndex {
+    #[cfg(test)]
+    pub(crate) fn test(slot: usize) -> Self {
+        Self(slot)
+    }
+}
+/// Retain the historical non-Real engine-binding admission explicitly. Its
+/// offset is recorded, while its playing scalar remains its base scalar.
+#[derive(Clone, Copy)]
+enum EngineSlot {
+    Integer(usize),
+    Real {
+        slot: RealControlIndex,
+        playback: usize,
+    },
+    Toggle(usize),
+}
+#[derive(Clone, Copy)]
+pub(super) struct EngineControl {
+    slot: EngineSlot,
+}
+#[derive(Clone, Copy, Debug)]
+enum ControlKind {
+    Integer(usize),
+    Real(RealControlIndex),
+    Toggle(usize),
+}
+/// Logical scalar ownership and the last sorted binding's validation law.
+/// All scalar domains participate, including historically admitted non-Real
+/// engine bindings. This replaces the Real-only binding metadata.
+#[derive(Clone, Copy)]
+struct ControlSlot {
+    kind: ControlKind,
+    engine: Option<usize>,
+}
+#[derive(Clone, Copy)]
+struct IntegerDefinition {
+    min: i64,
+    max: i64,
+    default: i64,
+}
+#[derive(Clone, Copy)]
+struct RealDefinition {
+    logical: usize,
+    min: f64,
+    max: f64,
+    default: f64,
+}
+
+#[derive(Default)]
+pub(super) struct ControlLayout {
+    slots: Box<[ControlSlot]>,
+    integers: Box<[IntegerDefinition]>,
+    reals: Box<[RealDefinition]>,
+    toggles: Box<[bool]>,
+}
+impl ControlLayout {
+    fn new(definitions: &[ControlDefinition]) -> Result<Self, Error> {
+        let counts = definitions.iter().fold([0usize; 3], |mut counts, c| {
+            counts[match c.domain {
+                ControlDomain::Integer { .. } => 0,
+                ControlDomain::Real { .. } => 1,
+                ControlDomain::Toggle => 2,
+            }] += 1;
+            counts
+        });
+        let mut slots = Vec::with_capacity(definitions.len());
+        let mut integers = Vec::with_capacity(counts[0]);
+        let mut reals = Vec::with_capacity(counts[1]);
+        let mut toggles = Vec::with_capacity(counts[2]);
+        for (logical, c) in definitions.iter().enumerate() {
+            if !c.domain.accepts(c.default) {
+                return Err(Error::InvalidInput);
+            }
+            slots.push(ControlSlot {
+                kind: match (c.domain, c.default) {
+                    (ControlDomain::Integer { min, max }, ControlValue::Integer(default)) => {
+                        let slot = integers.len();
+                        integers.push(IntegerDefinition { min, max, default });
+                        ControlKind::Integer(slot)
+                    }
+                    (ControlDomain::Real { min, max }, ControlValue::Real(default)) => {
+                        let slot = RealControlIndex(reals.len());
+                        reals.push(RealDefinition {
+                            logical,
+                            min,
+                            max,
+                            default,
+                        });
+                        ControlKind::Real(slot)
+                    }
+                    (ControlDomain::Toggle, ControlValue::Toggle(default)) => {
+                        let slot = toggles.len();
+                        toggles.push(default);
+                        ControlKind::Toggle(slot)
+                    }
+                    _ => return Err(Error::InvalidInput),
+                },
+                engine: None,
+            });
+        }
+        Ok(Self {
+            slots: slots.into_boxed_slice(),
+            integers: integers.into_boxed_slice(),
+            reals: reals.into_boxed_slice(),
+            toggles: toggles.into_boxed_slice(),
+        })
+    }
+    pub(super) fn real(&self, logical: usize) -> Result<RealControlIndex, Error> {
+        match self.slots.get(logical).map(|slot| slot.kind) {
+            Some(ControlKind::Real(slot)) => Ok(slot),
+            _ => Err(Error::InvalidInput),
+        }
+    }
+    pub(crate) fn initial(&self, logical: usize) -> ControlProjection {
+        match self.slots[logical].kind {
+            ControlKind::Integer(slot) => {
+                let c = self.integers[slot];
+                ControlProjection::Integer {
+                    min: c.min,
+                    max: c.max,
+                    value: c.default,
+                }
+            }
+            ControlKind::Real(slot) => {
+                let c = self.reals[slot.0];
+                ControlProjection::Real {
+                    min: c.min,
+                    max: c.max,
+                    value: c.default,
+                }
+            }
+            ControlKind::Toggle(slot) => ControlProjection::Toggle(self.toggles[slot]),
+        }
+    }
+    fn edit(&self, index: usize, value: ControlValue) -> Result<ControlEdit, Error> {
+        let value = match (self.slots[index].kind, value) {
+            (ControlKind::Integer(slot), ControlValue::Integer(value)) => {
+                let c = self.integers[slot];
+                if !(c.min..=c.max).contains(&value) {
+                    return Err(Error::InvalidInput);
+                }
+                TypedEdit::Integer { slot, value }
+            }
+            (ControlKind::Real(slot), ControlValue::Real(value)) => {
+                let c = self.reals[slot.0];
+                if !value.is_finite() || !(c.min..=c.max).contains(&value) {
+                    return Err(Error::InvalidInput);
+                }
+                TypedEdit::Real { slot, value }
+            }
+            (ControlKind::Toggle(slot), ControlValue::Toggle(value)) => {
+                TypedEdit::Toggle { slot, value }
+            }
+            _ => return Err(Error::InvalidInput),
+        };
+        Ok(ControlEdit { index, value })
+    }
+}
+
+/// The value and its scalar domain are one exhaustive input to DSP projection.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ControlProjection {
+    Integer { min: i64, max: i64, value: i64 },
+    Real { min: f64, max: f64, value: f64 },
+    Toggle(bool),
+}
+#[derive(Clone, Copy)]
+enum TypedEdit {
+    Integer { slot: usize, value: i64 },
+    Real { slot: RealControlIndex, value: f64 },
+    Toggle { slot: usize, value: bool },
+}
+#[derive(Clone, Copy)]
+pub(super) struct ControlEdit {
+    index: usize,
+    value: TypedEdit,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct RealCell {
+    base: f64,
+    playing: f64,
+    offset: f32,
+}
+impl RealCell {
+    fn new(value: f64) -> Self {
+        Self {
+            base: value,
+            playing: value,
+            offset: 0.,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn test(value: f64) -> Self {
+        Self::new(value)
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) struct RealValuesRef<'a>(&'a [RealCell]);
+impl<'a> RealValuesRef<'a> {
+    pub(crate) fn new(cells: &'a [RealCell]) -> Self {
+        Self(cells)
+    }
+    pub(crate) fn get(self, slot: RealControlIndex) -> f64 {
+        self.0[slot.0].base
+    }
+}
+
+#[derive(Clone, Copy)]
+struct IntegerCell {
+    value: i64,
+    offset: f32,
+}
+#[derive(Clone, Copy)]
+struct ToggleCell {
+    value: bool,
+    offset: f32,
+}
 pub(super) struct ControlState {
-    pub(super) values: Box<[ControlValue]>,
-    // Port v1 Bank::base/settings: scripts own base, player offsets affect DSP.
-    pub(super) base: Box<[ControlValue]>,
-    pub(super) offsets: Box<[f32]>,
-    pub(super) engine_index: Box<[usize]>,
+    // Integer/toggle values have no offset law: their base is also their playing value.
+    integers: Box<[IntegerCell]>,
+    reals: Box<[RealCell]>,
+    toggles: Box<[ToggleCell]>,
     pub(super) automation: Box<[crate::automation::AutomationState]>,
     pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
@@ -191,43 +412,166 @@ pub(super) struct ControlState {
 }
 impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
-        let mut engine_index = vec![usize::MAX; plan.controls.len()];
-        for (binding, b) in plan.engine_parameters.iter().enumerate() {
-            engine_index[plan.control_index(b.control).unwrap()] = binding;
-        }
         Self {
-            values: plan.controls.iter().map(|c| c.default).collect(),
-            base: plan.controls.iter().map(|c| c.default).collect(),
-            offsets: vec![0.; plan.controls.len()].into_boxed_slice(),
-            engine_index: engine_index.into_boxed_slice(),
+            integers: plan
+                .control_layout
+                .integers
+                .iter()
+                .map(|c| IntegerCell {
+                    value: c.default,
+                    offset: 0.,
+                })
+                .collect(),
+            reals: plan
+                .control_layout
+                .reals
+                .iter()
+                .map(|c| RealCell::new(c.default))
+                .collect(),
+            toggles: plan
+                .control_layout
+                .toggles
+                .iter()
+                .map(|&value| ToggleCell { value, offset: 0. })
+                .collect(),
             automation: vec![crate::automation::AutomationState::default(); plan.automation.len()]
                 .into_boxed_slice(),
             revision: 0,
             pending: 0,
         }
     }
+    pub(super) fn base_reals(&self) -> RealValuesRef<'_> {
+        RealValuesRef::new(&self.reals)
+    }
+    pub(super) fn real_value(&self, slot: RealControlIndex) -> f64 {
+        self.reals[slot.0].playing
+    }
+    pub(super) fn real_base(&self, slot: RealControlIndex) -> f64 {
+        self.reals[slot.0].base
+    }
+    pub(super) fn offset(&self, control: EngineControl) -> f32 {
+        match control.slot {
+            EngineSlot::Integer(slot) => self.integers[slot].offset,
+            EngineSlot::Real { slot, .. } => self.reals[slot.0].offset,
+            EngineSlot::Toggle(slot) => self.toggles[slot].offset,
+        }
+    }
+    pub(super) fn engine_base(&self, control: EngineControl) -> Option<f64> {
+        match control.slot {
+            EngineSlot::Real { slot, .. } => Some(self.real_base(slot)),
+            EngineSlot::Integer(_) | EngineSlot::Toggle(_) => None,
+        }
+    }
+    fn value(&self, layout: &ControlLayout, index: usize, base: bool) -> ControlValue {
+        match layout.slots[index].kind {
+            ControlKind::Integer(slot) => ControlValue::Integer(self.integers[slot].value),
+            ControlKind::Real(slot) => {
+                let c = self.reals[slot.0];
+                ControlValue::Real(if base { c.base } else { c.playing })
+            }
+            ControlKind::Toggle(slot) => ControlValue::Toggle(self.toggles[slot].value),
+        }
+    }
+    fn refresh_real(&mut self, prepared: &Prepared, slot: RealControlIndex) -> ControlProjection {
+        let c = &mut self.reals[slot.0];
+        let definition = prepared.control_layout.reals[slot.0];
+        // Plain controls have no offset owner; this is their complete playing law.
+        // Engine-owned controls use the same last-binding-wins law as before.
+        c.playing = match prepared.control_layout.slots[definition.logical].engine {
+            None => c.base,
+            Some(binding) => offset_value(
+                c.base,
+                c.offset,
+                &prepared.engine_parameters[binding],
+                definition,
+            ),
+        };
+        ControlProjection::Real {
+            min: definition.min,
+            max: definition.max,
+            value: c.playing,
+        }
+    }
+    pub(super) fn set_offset(
+        &mut self,
+        prepared: &Prepared,
+        control: EngineControl,
+        offset: f32,
+    ) -> ControlProjection {
+        match control.slot {
+            EngineSlot::Integer(slot) => {
+                let c = &mut self.integers[slot];
+                c.offset = offset;
+                let definition = prepared.control_layout.integers[slot];
+                ControlProjection::Integer {
+                    min: definition.min,
+                    max: definition.max,
+                    value: c.value,
+                }
+            }
+            EngineSlot::Real { slot, playback } => {
+                let c = &mut self.reals[slot.0];
+                let definition = prepared.control_layout.reals[slot.0];
+                c.offset = offset;
+                c.playing = offset_value(
+                    c.base,
+                    offset,
+                    &prepared.engine_parameters[playback],
+                    definition,
+                );
+                ControlProjection::Real {
+                    min: definition.min,
+                    max: definition.max,
+                    value: c.playing,
+                }
+            }
+            EngineSlot::Toggle(slot) => {
+                let c = &mut self.toggles[slot];
+                c.offset = offset;
+                ControlProjection::Toggle(c.value)
+            }
+        }
+    }
+    pub(super) fn apply(
+        &mut self,
+        prepared: &Prepared,
+        edit: ControlEdit,
+    ) -> (ControlId, ControlProjection) {
+        let projection = match edit.value {
+            TypedEdit::Integer { slot, value } => {
+                self.integers[slot].value = value;
+                let c = prepared.control_layout.integers[slot];
+                ControlProjection::Integer {
+                    min: c.min,
+                    max: c.max,
+                    value,
+                }
+            }
+            TypedEdit::Real { slot, value } => {
+                self.reals[slot.0].base = value;
+                self.refresh_real(prepared, slot)
+            }
+            TypedEdit::Toggle { slot, value } => {
+                self.toggles[slot].value = value;
+                ControlProjection::Toggle(value)
+            }
+        };
+        (prepared.controls[edit.index].id, projection)
+    }
 }
 
-impl ControlState {
-    pub(super) fn playing(&self, prepared: &Prepared, index: usize) -> ControlValue {
-        let base = self.base[index];
-        let offset = self.offsets[index];
-        if offset == 0. {
-            return base;
-        }
-        let ControlValue::Real(base) = base else {
-            return base;
-        };
-        let binding = &prepared.engine_parameters[self.engine_index[index]];
-        let norm = binding.law.encode(base);
-        // The admitted law owns its normalized bounds, including bipolar gains.
-        let to = (f64::from(norm) + f64::from(offset) * 1e6).round() as i32;
-        let mut value = binding.law.decode(to);
-        if let ControlDomain::Real { min, max } = prepared.controls[index].domain {
-            value = value.clamp(min, max);
-        }
-        ControlValue::Real(value)
+fn offset_value(
+    base: f64,
+    offset: f32,
+    binding: &crate::EngineParameterBinding,
+    definition: RealDefinition,
+) -> f64 {
+    if offset == 0. {
+        return base;
     }
+    let norm = binding.law.encode(base);
+    let to = (f64::from(norm) + f64::from(offset) * 1e6).round() as i32;
+    binding.law.decode(to).clamp(definition.min, definition.max)
 }
 
 impl Prepared {
@@ -240,6 +584,8 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
+        let layout = ControlLayout::new(&controls)?;
+        let previous_layout = std::mem::replace(&mut self.control_layout, layout);
         let previous = std::mem::replace(&mut self.controls, controls.into_boxed_slice());
         self.validate_program_controls(&self.programs)?;
         self.validate_dsp_controls()?;
@@ -294,17 +640,20 @@ impl Prepared {
                 self.control_index(id)?;
             }
         }
+        self.refresh_real_controls()?;
         let controls = &self.controls;
-        self.voice_modulation.remap_controls(|index| {
+        let layout = &self.control_layout;
+        self.voice_modulation.remap_controls(|slot| {
             // The previous schema is the identity of every compiled input cell.
-            let id = previous.get(index).ok_or(Error::InvalidInput)?.id;
+            let logical = previous_layout.reals.get(slot.0).ok_or(Error::InvalidInput)?.logical;
+            let id = previous.get(logical).ok_or(Error::InvalidInput)?.id;
             let index = controls
                 .binary_search_by_key(&id, |c| c.id)
                 .map_err(|_| Error::InvalidInput)?;
             if !matches!(controls[index].domain, ControlDomain::Real { .. }) {
                 return Err(Error::InvalidInput);
             }
-            Ok(index)
+            layout.real(index)
         })?;
         Ok(self)
     }
@@ -347,6 +696,68 @@ impl Prepared {
             .map_err(|_| Error::InvalidInput)
     }
 
+    pub(super) fn real_control(&self, id: ControlId) -> Result<RealControlIndex, Error> {
+        self.control_layout.real(self.control_index(id)?)
+    }
+    pub(super) fn resolve_control(
+        &self,
+        id: ControlId,
+        value: ControlValue,
+    ) -> Result<ControlEdit, Error> {
+        self.control_layout.edit(self.control_index(id)?, value)
+    }
+    /// Rebuild physical handles whenever IDs or attached metadata change, before publication.
+    pub(super) fn refresh_real_controls(&mut self) -> Result<(), Error> {
+        for slot in &mut self.control_layout.slots {
+            slot.engine = None;
+        }
+        let mut engine_controls = Vec::with_capacity(self.engine_parameters.len());
+        for (playback, b) in self.engine_parameters.iter().enumerate() {
+            let logical = self.control_index(b.control)?;
+            let slot = match self.control_layout.slots[logical].kind {
+                ControlKind::Integer(slot) => EngineSlot::Integer(slot),
+                ControlKind::Real(slot) => EngineSlot::Real { slot, playback },
+                ControlKind::Toggle(slot) => EngineSlot::Toggle(slot),
+            };
+            self.control_layout.slots[logical].engine = Some(playback);
+            engine_controls.push(EngineControl { slot });
+        }
+        for control in &mut engine_controls {
+            if let EngineSlot::Real { slot, playback } = &mut control.slot {
+                let logical = self.control_layout.reals[slot.0].logical;
+                *playback = self.control_layout.slots[logical]
+                    .engine
+                    .ok_or(Error::InvalidInput)?;
+            }
+        }
+        self.engine_controls = engine_controls.into_boxed_slice();
+        let mut envelopes = Vec::with_capacity(self.envelope_controls.len());
+        for ids in &self.envelope_controls {
+            let mut slots = [None; 6];
+            for (slot, id) in slots.iter_mut().zip(ids) {
+                *slot = id.map(|id| self.real_control(id)).transpose()?;
+            }
+            envelopes.push(slots);
+        }
+        self.envelope_real = envelopes.into_boxed_slice();
+        let mut waves = Vec::with_capacity(self.wavetable_controls.len());
+        for ids in &self.wavetable_controls {
+            waves.push(
+                ids.map(|[a, b, c, d, e]| {
+                    Ok([
+                        self.real_control(a)?,
+                        self.real_control(b)?,
+                        self.real_control(c)?,
+                        self.real_control(d)?,
+                        self.real_control(e)?,
+                    ])
+                })
+                .transpose()?,
+            );
+        }
+        self.wavetable_real = waves.into_boxed_slice();
+        Ok(())
+    }
     pub(super) fn validate_program_controls(
         &self,
         programs: &[super::Program],
@@ -376,16 +787,9 @@ impl crate::Generation {
             return;
         }
         if let Some(Some(lanes)) =
-            group.and_then(|g| self.prepared.wavetable_controls.get(g as usize))
+            group.and_then(|g| self.prepared.wavetable_real.get(g as usize))
         {
-            cursor.set_wavetable_controls(lanes.map(|id| {
-                let ControlValue::Real(value) =
-                    self.controls.values[self.prepared.control_index(id).unwrap()]
-                else {
-                    unreachable!("wavetable lanes are real controls")
-                };
-                value as f32
-            }));
+            cursor.set_wavetable_controls(lanes.map(|slot| self.controls.real_value(slot) as f32));
         }
         cursor.set_wavetable_offsets(self.modulation.wavetable_offsets(voice));
     }
@@ -445,19 +849,16 @@ impl Runtime {
         let generation = self.plans.get(plan.0).unwrap();
         let mut envelope = generation.script.envelope(group, envelope);
         if let Some(controls) =
-            group.and_then(|g| generation.prepared.envelope_controls.get(g as usize))
+            group.and_then(|g| generation.prepared.envelope_real.get(g as usize))
         {
             for (stage, id) in crate::engine_parameters::ENVELOPE_STAGES
                 .into_iter()
                 .zip(controls)
             {
-                if let Some(id) = id {
-                    let index = generation.prepared.control_index(*id).unwrap();
-                    let value = generation.controls.values[index];
-                    if value != generation.prepared.controls[index].default {
-                        if let ControlValue::Real(value) = value {
-                            envelope = envelope.with_control(stage, value);
-                        }
+                if let Some(slot) = id {
+                    let value = generation.controls.real_value(*slot);
+                    if value != generation.prepared.control_layout.reals[slot.0].default {
+                        envelope = envelope.with_control(stage, value);
                     }
                 }
             }
@@ -513,14 +914,14 @@ impl Runtime {
 
     pub fn control_value(&self, plan: PlanId, id: ControlId) -> Result<ControlValue, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        Ok(generation.controls.values[generation.prepared.control_index(id)?])
+        Ok(generation.controls.value(&generation.prepared.control_layout, generation.prepared.control_index(id)?, false))
     }
 
     /// The authored/script value before the player's editor offsets. Use this
     /// for host persistence so recalling an offset cannot apply it twice.
     pub fn control_base_value(&self, plan: PlanId, id: ControlId) -> Result<ControlValue, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        Ok(generation.controls.base[generation.prepared.control_index(id)?])
+        Ok(generation.controls.value(&generation.prepared.control_layout, generation.prepared.control_index(id)?, true))
     }
 
     /// The control's id, domain and default in `plan`.
@@ -565,15 +966,8 @@ impl Runtime {
         if output.len() < definitions.len() {
             return Err(Error::Capacity);
         }
-        for ((slot, definition), value) in output
-            .iter_mut()
-            .zip(definitions.iter())
-            .zip(generation.controls.values.iter())
-        {
-            *slot = ControlWrite {
-                id: definition.id,
-                value: *value,
-            };
+        for (index, (slot, definition)) in output.iter_mut().zip(definitions.iter()).enumerate() {
+            *slot = ControlWrite { id:definition.id, value:generation.controls.value(&generation.prepared.control_layout,index,false) };
         }
         Ok((definitions.len(), generation.controls.revision))
     }
@@ -631,18 +1025,20 @@ impl Runtime {
         }
         for write in writes {
             let index = definitions.control_index(write.id)?;
-            if !definitions.controls[index].domain.accepts(write.value) {
-                return Err(Error::InvalidInput);
-            }
-            if let Some(binding) = definitions
-                .engine_parameters
-                .get(generation.controls.engine_index[index])
+            let edit = definitions.control_layout.edit(index, write.value)?;
+            if let Some(binding) = definitions.control_layout.slots[index]
+                .engine
+                .map(|i| &definitions.engine_parameters[i])
                 && binding.law == crate::EngineParameterLaw::WavetableForm
             {
-                let ControlValue::Real(value) = write.value else {
-                    return Err(Error::InvalidInput);
-                };
-                binding.law.normalized_value(value)?;
+                match edit.value {
+                    TypedEdit::Real { value, .. } => {
+                        binding.law.normalized_value(value)?;
+                    }
+                    TypedEdit::Integer { .. } | TypedEdit::Toggle { .. } => {
+                        return Err(Error::InvalidInput);
+                    }
+                }
             }
         }
         let revision = generation
@@ -658,7 +1054,6 @@ impl Runtime {
             .ok_or(Error::ArithmeticOverflow)?;
         Ok(revision)
     }
-
     pub(super) fn edit_controls_now(
         &mut self,
         plan: PlanId,
@@ -669,14 +1064,11 @@ impl Runtime {
         let generation = self.plans.get_mut(plan.0).unwrap();
         let definitions = &generation.prepared;
         for write in writes {
-            // All lookups/values validated above; one writer, no reentrancy.
-            let index = definitions.control_index(write.id).unwrap();
-            generation.controls.base[index] = write.value;
-            let playing = generation.controls.playing(definitions, index);
-            generation.controls.values[index] = playing;
-            generation
-                .dsp
-                .edit_control(definitions, index, playing, self.now);
+            // Recreate one typed row token after the complete pure preflight.
+            // The schema and borrowed writes cannot change between these passes.
+            let edit = definitions.resolve_control(write.id,write.value)?;
+            let (id,projection)=generation.controls.apply(definitions,edit);
+            generation.dsp.edit_control(definitions,id,projection,self.now);
         }
         generation.controls.revision = revision;
         Ok(revision)
@@ -686,6 +1078,18 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_control_owner_layout_receipt() {
+        eprintln!("D layout bytes: slot={} integer_definition={} real_definition={} integer_cell={} real_cell={} toggle_cell={} engine_handle={} projection={} edit={} real_handle={} optional_real={} wavetable_row={} layout={} state={} resolved_row={}",
+            size_of::<ControlSlot>(),size_of::<IntegerDefinition>(),size_of::<RealDefinition>(),
+            size_of::<IntegerCell>(),size_of::<RealCell>(),size_of::<ToggleCell>(),
+            size_of::<EngineControl>(),size_of::<ControlProjection>(),size_of::<ControlEdit>(),
+            size_of::<RealControlIndex>(),size_of::<Option<RealControlIndex>>(),
+            size_of::<Option<[RealControlIndex;5]>>(),size_of::<ControlLayout>(),size_of::<ControlState>(),size_of::<script_state::ResolvedStateWrite>());
+        assert!(size_of::<ControlEdit>()<=32);
+        assert!(size_of::<ControlProjection>()<=32);
+    }
+
     #[test]
     fn schema_replacement_rejects_invalid_compiled_input_index() {
         let definitions: Vec<_> = [ControlId(1), ControlId(2)]
@@ -722,7 +1126,7 @@ mod tests {
             vec![],
             Vec::new(),
             |_| None,
-            |id| Ok(if id == ControlId(1) { 0 } else { 9 }),
+            |id| Ok(RealControlIndex(if id == ControlId(1) { 0 } else { 9 })),
         )
         .unwrap();
         assert!(matches!(

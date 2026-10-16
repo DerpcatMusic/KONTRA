@@ -48,9 +48,24 @@ struct Outcome {
 }
 
 #[derive(Clone, Copy)]
-struct Run {
-    voices: [usize; VOICES],
-    count: usize,
+enum Run {
+    Single(usize),
+    Batch { voices: [usize; VOICES], count: usize, key: super::render::BatchKey },
+}
+impl Run {
+    fn count(&self) -> usize { match self { Self::Single(_) => 1, Self::Batch { count, .. } => *count } }
+    fn voices(&self) -> &[usize] {
+        match self { Self::Single(voice) => std::slice::from_ref(voice), Self::Batch { voices, count, .. } => &voices[..*count] }
+    }
+    fn append(&mut self, voice: usize, key: super::render::BatchKey) {
+        match self {
+            Self::Single(first) => {
+                let mut voices = [0; VOICES]; voices[0] = *first; voices[1] = voice;
+                *self = Self::Batch { voices, count: 2, key };
+            }
+            Self::Batch { voices, count, .. } => { voices[*count] = voice; *count += 1; }
+        }
+    }
 }
 
 /// Per-voice-slot storage of the parallel path.
@@ -166,7 +181,7 @@ impl Runtime {
         }
         let mut par = self.parallel.take().expect("checked");
         let eligible = self.plan_runs(&mut par.runs, frames, par.threads);
-        let voices: usize = par.runs.iter().map(|r| r.count).sum();
+        let voices: usize = par.runs.iter().map(|r| r.count()).sum();
         if !eligible || voices < MIN_VOICES_PER_THREAD * par.threads {
             self.parallel = Some(par);
             return false;
@@ -175,7 +190,7 @@ impl Runtime {
         // Modulation and script state advance per voice on this thread, in
         // slot order, ahead of the workers.
         for run in &par.runs {
-            for &i in &run.voices[..run.count] {
+            for &i in run.voices() {
                 let needs = self.script_params
                     || self
                         .families
@@ -189,7 +204,7 @@ impl Runtime {
                                 .program(i)
                                 .is_some()
                         });
-                par.preps[i] = if needs && run.count == 1 {
+                par.preps[i] = if needs && run.count() == 1 {
                     self.prepare_voice(i, at, frames)
                 } else {
                     None
@@ -255,7 +270,7 @@ impl Runtime {
     /// a voice needs state this path does not parallelize.
     fn plan_runs(&self, runs: &mut Vec<Run>, frames: usize, lanes: usize) -> bool {
         runs.clear();
-        let mut open: Option<((usize, usize), usize)> = None;
+        let mut open: Option<(super::render::BatchKey, usize)> = None;
         for word in 0..self.voice_activity.len() {
             let mut bits = self.voice_activity[word];
             while bits != 0 {
@@ -284,15 +299,11 @@ impl Runtime {
                     return false;
                 }
                 match (key, open) {
-                    (Some(k), Some((o, r))) if k == o && runs[r].count < VOICES => {
-                        let run = &mut runs[r];
-                        run.voices[run.count] = i;
-                        run.count += 1;
+                    (Some(k), Some((o, r))) if k == o && runs[r].count() < VOICES => {
+                        runs[r].append(i, k);
                     }
                     _ => {
-                        let mut voices = [0; VOICES];
-                        voices[0] = i;
-                        runs.push(Run { voices, count: 1 });
+                        runs.push(Run::Single(i));
                         open = key.map(|k| (k, runs.len() - 1));
                     }
                 }
@@ -306,7 +317,7 @@ impl Runtime {
     fn fold_runs(&mut self, par: &Parallel, output: &mut [Frame], at: u64) {
         let frames = output.len();
         for run in &par.runs {
-            for &i in &run.voices[..run.count] {
+            for &i in run.voices() {
                 let outcome = par.outcomes.claim(i)[0];
                 let mut scratch = par.scratch.claim(i);
                 let v = self.voices.slots[i].value.as_ref().unwrap();
@@ -372,7 +383,7 @@ impl Runtime {
             }
         }
         for run in &par.runs {
-            for &i in &run.voices[..run.count] {
+            for &i in run.voices() {
                 if par.outcomes.claim(i)[0].done {
                     self.end_voice(VoiceId(self.voices.id(i)));
                 }
@@ -402,10 +413,9 @@ struct View<'a> {
 
 impl View<'_> {
     fn exec(&self, run: &Run, lane: usize) {
-        if run.count == 1 {
-            self.single(run.voices[0], lane);
-        } else {
-            self.batch(&run.voices[..run.count], lane);
+        match run {
+            Run::Single(voice) => self.single(*voice, lane),
+            Run::Batch { key, .. } => self.batch(*key, run.voices(), lane),
         }
     }
 
@@ -427,7 +437,7 @@ impl View<'_> {
             .samples
             .asset(&plan.prepared, v.sample)
             .expect("a live voice pins its immutable source");
-        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        let chain = v.chain.map(|index| plan.prepared.voice_chains.view(index));
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
         let mut bank = plan.dsp.filters.claim(lane);
@@ -460,7 +470,7 @@ impl View<'_> {
                 &plan.prepared.voice_modulation,
                 i,
                 state,
-                &plan.controls.base,
+                plan.controls.base_reals(),
             )
         });
         let mut stretch = v
@@ -539,7 +549,7 @@ impl View<'_> {
     }
 
     /// `Runtime::render_batch`, into scratch.
-    fn batch(&self, voices: &[usize], lane: usize) {
+    fn batch(&self, key: super::render::BatchKey, voices: &[usize], lane: usize) {
         let frames = self.frames;
         let mut block = [[0.; lanes::LANES]; BLOCK];
         let mut batch = lanes::Batch {
@@ -644,8 +654,7 @@ impl View<'_> {
             .plans
             .get(plan_id.expect("a batch has a voice"))
             .unwrap();
-        let first = slots[0].as_ref().unwrap()[0].value.as_ref().unwrap();
-        let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
+        let chain = plan.prepared.voice_chains.batch(key.batch);
         let mut cells: lanes::Cells<'_> =
             std::array::from_fn(|k| voices.get(k).map(|&i| plan.dsp.cells.claim(i)));
         let mut bank = plan.dsp.filters.claim(lane);
@@ -921,7 +930,7 @@ mod tests {
                                 .unwrap()
                                 .runs
                                 .iter()
-                                .any(|run| run.count > 1),
+                                .any(|run| run.count() > 1),
                             chained
                         );
                     }
@@ -1023,5 +1032,20 @@ mod tests {
                 "{threads} threads differ from one"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod typed_run_layout {
+    #[test]
+    fn retained_batch_run_layout_receipt() {
+        use std::mem::size_of;
+        let baseline_field_layout = size_of::<([usize; super::VOICES], usize)>();
+        let candidate = size_of::<super::Run>();
+        eprintln!("retained batch run: baseline_field_layout={baseline_field_layout} candidate={candidate} key={}",
+            size_of::<crate::render::BatchKey>());
+        // The proposal's finite bound is 32 extra bytes per preallocated run.
+        // Root's compiler measures this; no child layout probe was run.
+        assert!(candidate <= baseline_field_layout + 32);
     }
 }

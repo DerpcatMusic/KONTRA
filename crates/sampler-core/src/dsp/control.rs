@@ -1,4 +1,5 @@
-use crate::{ControlDomain, ControlId, ControlValue, Error, Prepared};
+use crate::{ControlId, Error, Prepared};
+use crate::control::ControlProjection;
 
 /// Map a control's declared range to destination units, with a sample-clock ramp.
 /// Integer, real and toggle controls share the same value owner; constant domains
@@ -124,9 +125,9 @@ fn interpolate(low: f64, high: f64, normalized: f64) -> f64 {
     }
 }
 
-fn normalized(domain: ControlDomain, value: ControlValue) -> f64 {
-    match (domain, value) {
-        (ControlDomain::Integer { min, max }, ControlValue::Integer(value)) => {
+fn normalized(value: ControlProjection) -> f64 {
+    match value {
+        ControlProjection::Integer { min, max, value } => {
             let span = i128::from(max) - i128::from(min);
             if span == 0 {
                 0.
@@ -134,7 +135,7 @@ fn normalized(domain: ControlDomain, value: ControlValue) -> f64 {
                 (i128::from(value) - i128::from(min)) as f64 / span as f64
             }
         }
-        (ControlDomain::Real { min, max }, ControlValue::Real(value)) => {
+        ControlProjection::Real { min, max, value } => {
             if min == max {
                 0.
             } else if (max - min).is_finite() {
@@ -143,8 +144,7 @@ fn normalized(domain: ControlDomain, value: ControlValue) -> f64 {
                 (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
             }
         }
-        (ControlDomain::Toggle, ControlValue::Toggle(value)) => f64::from(value),
-        _ => unreachable!("control values are validated before DSP projection"),
+        ControlProjection::Toggle(value) => f64::from(value),
     }
     .clamp(0., 1.)
 }
@@ -228,8 +228,8 @@ pub(crate) fn initial_parameters(plan: &Prepared, bindings: &[ControlRange]) -> 
 /// Same initialization law for one scoped graph parameter, without allocating
 /// a temporary ramp array for controls belonging to excluded regions.
 pub(crate) fn initial_parameter(plan: &Prepared, binding: &ControlRange) -> ControlRamp {
-    let definition = plan.controls[plan.control_index(binding.control).unwrap()];
-    let target = binding.target(normalized(definition.domain, definition.default));
+    let index = plan.control_index(binding.control).unwrap();
+    let target = binding.target(normalized(plan.control_layout.initial(index)));
     ControlRamp { from: target, target, start: 0, frames: 0, modulation: None }
 }
 
@@ -237,16 +237,15 @@ impl super::DspState {
     pub(crate) fn edit_control(
         &mut self,
         plan: &Prepared,
-        index: usize,
-        value: ControlValue,
+        id: ControlId,
+        value: ControlProjection,
         at: u64,
     ) {
-        let definition = plan.controls[index];
         edit_parameters(
             &mut self.parameters,
             &plan.dsp_bindings,
             &plan.dsp_controls,
-            definition,
+            id,
             value,
             at,
         );
@@ -254,7 +253,7 @@ impl super::DspState {
             &mut self.buses.parameters,
             &plan.buses.parameters,
             &plan.buses.controls,
-            definition,
+            id,
             value,
             at,
         );
@@ -265,13 +264,13 @@ fn edit_parameters(
     parameters: &mut [ControlRamp],
     bindings: &[ControlRange],
     controls: &[(ControlId, usize)],
-    definition: crate::ControlDefinition,
-    value: ControlValue,
+    control: ControlId,
+    value: ControlProjection,
     at: u64,
 ) {
-    let from = controls.partition_point(|(id, _)| *id < definition.id);
-    let until = controls.partition_point(|(id, _)| *id <= definition.id);
-    let value = normalized(definition.domain, value);
+    let from = controls.partition_point(|(id, _)| *id < control);
+    let until = controls.partition_point(|(id, _)| *id <= control);
+    let value = normalized(value);
     for &(_, lane) in &controls[from..until] {
         let binding = bindings[lane];
         parameters[lane].set(at, binding.target(value), binding.ramp_frames);
@@ -281,6 +280,22 @@ fn edit_parameters(
 #[cfg(test)]
 mod projection_tests {
     use super::*;
+
+    #[test]
+    fn typed_projection_retains_full_width_extreme_equal_and_signed_zero_laws() {
+        for (projection,expected) in [
+            (ControlProjection::Integer {min:i64::MIN,max:i64::MAX,value:i64::MIN},0.0f64),
+            (ControlProjection::Integer {min:i64::MIN,max:i64::MAX,value:i64::MAX},1.),
+            (ControlProjection::Integer {min:i64::MIN,max:i64::MAX,value:0},0.5),
+            (ControlProjection::Integer {min:42,max:42,value:42},0.),
+            (ControlProjection::Real {min:-f64::MAX,max:f64::MAX,value:0.},0.5),
+            (ControlProjection::Real {min:-f64::MAX,max:f64::MAX,value:f64::MAX},1.),
+            (ControlProjection::Real {min:0.,max:1.,value:-0.},-0.),
+            (ControlProjection::Real {min:0.25,max:0.25,value:0.25},0.),
+            (ControlProjection::Real {min:f64::from_bits(1),max:f64::from_bits(2),value:f64::from_bits(2)},1.),
+            (ControlProjection::Toggle(false),0.),(ControlProjection::Toggle(true),1.),
+        ] { assert_eq!(normalized(projection).to_bits(),expected.to_bits()); }
+    }
 
     #[test]
     fn held_controls_keep_ramp_edges_and_clamped_plateaus() {

@@ -483,11 +483,7 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
         let overlay = &cx.selection.parts[slot].articulation_overlay;
         for (n, (a, source)) in inst.articulations.iter().zip(&ids).enumerate() {
             let color = super::inside::articulation_color(cx, slot, &source, a);
-            let crate::sound::articulation::Input::Keys(keys) =
-                overlay.input(&source, a, sampler_ir::Driver::Keys)
-            else {
-                unreachable!()
-            };
+            let keys = overlay.keys(source, a);
             for &key in &a.switch_keys {
                 let moved = !keys.contains(&key);
                 looks[usize::from(key)] =
@@ -497,12 +493,8 @@ fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
         // Assigned keys win over dimmed originals, including swapped assignments.
         for (n, (a, source)) in inst.articulations.iter().zip(&ids).enumerate() {
             let color = super::inside::articulation_color(cx, slot, source, a);
-            if let crate::sound::articulation::Input::Keys(keys) =
-                overlay.input(source, a, sampler_ir::Driver::Keys)
-            {
-                for key in keys.into_iter().filter(|k| *k < 128) {
-                    looks[usize::from(key)] = Look::Switch(color, active == Some(n), false);
-                }
+            for key in overlay.keys(source, a).iter().copied().filter(|k| *k < 128) {
+                looks[usize::from(key)] = Look::Switch(color, active == Some(n), false);
             }
         }
     }

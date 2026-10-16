@@ -243,8 +243,8 @@ fn chunks(rt: &mut Runtime, count: usize, output: &mut Receipt) {
         output.states.push(s);
     }
 }
-fn run(threads: usize) -> Receipt {
-    let (mut rt, mut control) = Runtime::with_plan_updates(plan(true), limits(), 3, 1).unwrap();
+fn run_with(threads: usize, make_plan: fn(bool) -> Prepared) -> Receipt {
+    let (mut rt, mut control) = Runtime::with_plan_updates(make_plan(true), limits(), 3, 1).unwrap();
     rt.set_threads(Threads::Fixed(threads));
     let mut first = Vec::with_capacity(NOTES);
     let mut second = Vec::with_capacity(NOTES);
@@ -261,7 +261,7 @@ fn run(threads: usize) -> Receipt {
     };
     chunks(&mut rt, 40, &mut result);
     let old = rt.active_plan();
-    let request = control.submit(Box::new(plan(false))).unwrap();
+    let request = control.submit(Box::new(make_plan(false))).unwrap();
     without_heap(|| {
         assert_eq!(rt.poll_plan_update(), Ok(Some(request)));
         on(&mut rt, 1, &mut second);
@@ -277,7 +277,7 @@ fn run(threads: usize) -> Receipt {
     });
     // Returned generations are consumed/dropped off the guarded callback domain.
     assert_eq!(control.retired().unwrap().request, 0);
-    let request = control.submit(Box::new(plan(true))).unwrap();
+    let request = control.submit(Box::new(make_plan(true))).unwrap();
     without_heap(|| {
         assert_eq!(rt.poll_plan_update(), Ok(Some(request)));
         on(&mut rt, 2, &mut third);
@@ -305,6 +305,9 @@ fn run(threads: usize) -> Receipt {
     // must also be witnessed by the separate cfg(test) unit oracle before promotion.
     result
 }
+fn run(threads: usize) -> Receipt {
+    run_with(threads, plan)
+}
 #[test]
 fn mixed_generations_keep_pcm_state_and_all_thread_heap_across_filter_shape_changes() {
     let reference = run(1);
@@ -328,5 +331,58 @@ fn mixed_generations_keep_pcm_state_and_all_thread_heap_across_filter_shape_chan
             got.states.len(),
             got.pooled
         );
+    }
+    kontakt_generations_keep_exact_pcm_state_and_all_thread_heap();
+}
+
+// Use all three actual Kontakt color kernels in every generation. The existing
+// CountAll allocator observes every rendering thread, not just this test thread.
+fn kontakt_plan(first: bool) -> Prepared {
+    use sampler_ir::fx::filter::KontaktFx;
+    let knobs = if first {
+        [0.63, 0.18, 0.27, 0.4, 0.22]
+    } else {
+        [0.31, 0.42, 0.71, 0.2, 0.61]
+    };
+    let filters = [
+        KontaktFx::SimpleLpHp { lp: knobs[0], hp: knobs[1] },
+        KontaktFx::DualSkf(knobs),
+        KontaktFx::Monark {
+            mode: if first { 0 } else { 3 },
+            variant: if first { 0 } else { 2 },
+            knobs,
+        },
+    ];
+    let chains = filters.into_iter().map(|f| {
+        VoiceChain::new(vec![], vec![Processor::Filter(FilterSettings::Kontakt(f))], 0).unwrap()
+    }).collect();
+    let route = |target, depth| ModProgram {
+        sources: vec![ModSource::Constant],
+        routes: vec![ModRoute::new(0, target, depth)],
+        ..ModProgram::default()
+    };
+    plan(false)
+        .with_voice_chains(chains, (0..NOTES).map(|i| Some(i % 3)).collect())
+        .unwrap()
+        .with_voice_modulation(
+            vec![route(ModTarget::ProcessorNativeCutoff(0), 0.125),
+                 route(ModTarget::ProcessorNativeResonance(1), -0.0625),
+                 route(ModTarget::Decibels, -3.)],
+            (0..NOTES).map(|i| Some(i % 3)).collect(),
+            vec![0; NOTES],
+        )
+        .unwrap()
+}
+fn kontakt_generations_keep_exact_pcm_state_and_all_thread_heap() {
+    let reference = run_with(1, kontakt_plan);
+    assert!(reference.pcm.iter().flatten().any(|bits| f32::from_bits(*bits) != 0.));
+    for threads in [2, 4] {
+        let got = run_with(threads, kontakt_plan);
+        assert_eq!(got.pcm, reference.pcm, "Kontakt threads {threads}: PCM");
+        assert_eq!(got.states, reference.states, "Kontakt threads {threads}: semantic state");
+        let hash = got.pcm.iter().flatten().fold(0xcbf29ce484222325u64,
+            |h, x| (h ^ u64::from(*x)).wrapping_mul(0x100000001b3));
+        println!("KONTAKT_PROJECTION_ORACLE threads={threads} hash={hash:016x} frames={} states={} pooled={}",
+            got.pcm.len(), got.states.len(), got.pooled);
     }
 }

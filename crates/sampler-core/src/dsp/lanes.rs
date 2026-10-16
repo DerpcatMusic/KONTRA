@@ -4,7 +4,7 @@
 //! exactly the scalar stage's arithmetic in the same order: results are
 //! bit-identical to [`super::process`] voice by voice.
 use super::{
-    BLOCK, PreparedProcessor, ProcessorState,
+    BLOCK, BatchOp, ProcessorState,
     control::ControlRamp,
     flush,
     svf::{CacheRef, FilterBank},
@@ -38,7 +38,7 @@ pub(crate) type Cells<'a> = [Option<sampler_pool::Claim<'a, ProcessorState>>; VO
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process(
-    stages: &[PreparedProcessor],
+    stages: &[BatchOp],
     first: usize,
     cells: &mut Cells<'_>,
     batch: &Batch,
@@ -54,7 +54,7 @@ pub(crate) fn process(
         let (stage, cell) = (&stages[index], first + index);
         index += 1;
         match stage {
-            PreparedProcessor::Mix { count, lanes } => {
+            BatchOp::Mix { count, lanes } => {
                 let inner = index..index + usize::from(*count);
                 index = inner.end;
                 let [dry, wet, bypass] = lanes.map(|lane| parameters[lane]);
@@ -100,26 +100,26 @@ pub(crate) fn process(
                     }
                 }
             }
-            PreparedProcessor::Gain(gain) => {
+            BatchOp::Gain(gain) => {
                 for x in &mut block[..len] {
                     x.iter_mut()
                         .for_each(|v| *v = super::kernels::gain(*v, *gain));
                 }
             }
-            PreparedProcessor::StereoMatrix(m) => {
+            BatchOp::StereoMatrix(m) => {
                 for x in &mut block[..len] {
                     for pair in x.as_chunks_mut::<2>().0 {
                         *pair = super::kernels::matrix(*pair, *m);
                     }
                 }
             }
-            PreparedProcessor::Color { color, .. } => {
+            BatchOp::Color { color, .. } => {
                 color.process_lanes(cells, cell, batch, block, parameters, at);
             }
-            PreparedProcessor::Eq(eq) => {
+            BatchOp::Eq(eq) => {
                 eq.process_lanes(cells, cell, batch, block, parameters, at);
             }
-            PreparedProcessor::ControlGain(lane) => {
+            BatchOp::ControlGain(lane) => {
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
                     let gain = ramp.value(at + i as u64);
@@ -127,7 +127,7 @@ pub(crate) fn process(
                         .for_each(|v| *v = super::kernels::gain(*v, gain));
                 }
             }
-            PreparedProcessor::Biquad(filter) => {
+            BatchOp::Biquad(filter) => {
                 // Scalar layout: z[channel] = [z0, z1].
                 let mut z = [[0.; LANES]; 2];
                 for v in 0..batch.count {
@@ -146,7 +146,7 @@ pub(crate) fn process(
                         std::array::from_fn(|c| [z[0][2 * v + c], z[1][2 * v + c]].map(flush));
                 }
             }
-            PreparedProcessor::StateVariable(filter) => {
+            BatchOp::StateVariable(filter) => {
                 // Scalar layout: z = [s0, s1], each [left, right].
                 let mut s = [[0.; LANES]; 2];
                 let mut refs = [None; VOICES];
@@ -166,18 +166,7 @@ pub(crate) fn process(
                         std::array::from_fn(|i| [s[i][2 * v], s[i][2 * v + 1]].map(flush));
                 }
             }
-            PreparedProcessor::TimeMod { .. }
-            | PreparedProcessor::Dynamics(_)
-            | PreparedProcessor::Formant(_)
-            | PreparedProcessor::LiveFormant { .. }
-            | PreparedProcessor::Filter { .. }
-            | PreparedProcessor::ControlMatrix(_)
-            | PreparedProcessor::Branch { .. } => {
-                unreachable!("delay, compressor and decimator chains render per voice")
-            }
-            PreparedProcessor::Space(..) => {
-                unreachable!("reverbs and convolutions are bus processors")
-            }
+
         }
     }
 }
@@ -333,7 +322,7 @@ fn recurrence<const MASK: bool>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Biquad, FilterKind};
+    use super::super::{Biquad, FilterKind, PreparedProcessor};
     use super::*;
 
     fn reference(filter: Biquad, x: f64, z: [f64; 2]) -> (f64, [f64; 2]) {
@@ -378,7 +367,7 @@ mod tests {
                                 let mut z = [[0.; LANES]; 2];
                                 let mut expected_z = z;
                                 let mut scalar = [ProcessorState::default()];
-                                let mut bank = FilterBank::new(&[], 0).unwrap();
+                                let mut bank = FilterBank::new(&crate::dsp::filter::svf::PreparedFilters::default(), 0).unwrap();
                                 for block_index in 0..3 {
                                     let mut block: LaneBlock = std::array::from_fn(|i| {
                                         std::array::from_fn(|k| match block_index {
