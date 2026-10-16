@@ -543,7 +543,8 @@ impl Runtime {
     /// unless the outstanding reservations could cover the shortfall.
     fn steal_release_reserves(&mut self, required: ReleaseReserve) {
         let fits = |rt: &Self, extra: ReleaseReserve| {
-            required.voices <= rt.voices.available() + extra.voices
+            required.processing_owners <= rt.processing_owners.available() + extra.processing_owners
+                && required.voices <= rt.voices.available() + extra.voices
                 && required.families <= rt.families.available() + extra.families
                 && required.decisions <= rt.decisions.available() + extra.decisions
                 && required.commands <= rt.available_commands() + extra.commands
@@ -576,7 +577,8 @@ impl Runtime {
     }
 
     fn check_selection_capacity(&self, required: ReleaseReserve) -> Result<(), Error> {
-        if required.voices > self.voices.available()
+        if required.processing_owners > self.processing_owners.available()
+            || required.voices > self.voices.available()
             || required.families > self.families.available()
             || required.decisions > self.decisions.available()
             || required.commands > self.available_commands()
@@ -608,6 +610,7 @@ impl Runtime {
         let range = prepared.range(key, trigger);
         let groups = groups.map(|(index, view)| generation.groups.view(index, view));
         let mut required = ReleaseReserve::default();
+        let mut processing_scopes = [false; 256];
         let mut from = range.start;
         while from < range.end {
             let until = prepared.group_end(from, range.end);
@@ -627,6 +630,9 @@ impl Runtime {
                         let cursor=cursor.with_offset(offset_micros,asset.sample_rate()).with_step(step);
                         let cursor = self.stream_start_cursor(plan, cursor);
                         self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
+                        if let Some((scope, _)) = prepared.region_processing.get(c.region).copied().flatten() {
+                            processing_scopes[scope] = true;
+                        }
                         count+=1;
                     }
                 }
@@ -637,6 +643,7 @@ impl Runtime {
             required.decisions += usize::from(choice.is_some());
             from = until;
         }
+        required.processing_owners = processing_scopes.iter().filter(|used| **used).count();
         if let Some(index) = trigger.release_index()
             && let Some(frames) = prepared.release_options[index].duration
         {
@@ -851,6 +858,7 @@ impl Runtime {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address) = (n.plan, n.pitch, n.address);
         let key = note_pitch.key();
+        let processing_activation = self.begin_processing_activation();
         let range = self.plans.get(plan.0).unwrap().prepared.range(key, trigger);
         let (begin, end) = (range.start, range.end);
         if trigger == Trigger::Attack {
@@ -956,6 +964,12 @@ impl Runtime {
                 } else {
                     cursor
                 };
+                let processing = match self.processing_member_admission(
+                    note, processing_activation, candidate.region,
+                ) {
+                    Ok(processing) => processing,
+                    Err(_) => { self.refused_starts = self.refused_starts.saturating_add(1); continue; }
+                };
                 let family = *family.get_or_insert_with(|| {
                     let family = self
                         .create_family_for(note, trigger)
@@ -968,6 +982,7 @@ impl Runtime {
                     group,
                     self.region_envelope(r.envelope, r.fallback_envelope),
                 );
+                self.processing_admission = processing.is_some();
                 let admitted = self.admit_voice(
                     family,
                     sample,
@@ -976,14 +991,19 @@ impl Runtime {
                     envelope,
                     cursor.with_step(step),
                 );
+                self.processing_admission = false;
                 // Preflight reserved this start, but a page can be evicted or
                 // the pool fill between then and now. Never panic on the audio
                 // thread: refuse this voice, count it, carry on.
                 let Ok(voice) = admitted else {
+                    if let Some((owner, _, _)) = processing { self.fail_processing_owner(owner); }
                     self.refused_starts = self.refused_starts.saturating_add(1);
                     continue;
                 };
 
+                if let Some((owner, ordinal, gate)) = processing {
+                    self.attach_processing_member(owner, ordinal, voice, gate);
+                }
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
                 state.group = group;
@@ -1074,6 +1094,7 @@ impl Runtime {
             }
             from = until;
         }
+        self.finish_processing_activation(processing_activation);
     }
     /// Always consumes an armed phase, including suppressed/failed selections.
     /// Physical cleanup must never be rolled back by a release-policy failure.

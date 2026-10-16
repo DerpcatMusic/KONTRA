@@ -411,6 +411,7 @@ impl Runtime {
     }
 
     pub(super) fn release_family_now(&mut self, id: FamilyId) {
+        self.release_processing_family(id);
         let Some(family) = self.families.get_mut(id.0) else {
             return;
         };
@@ -424,10 +425,9 @@ impl Runtime {
         while let Some(index) = voice {
             let state = self.voices.at_mut(index);
             voice = state.siblings.next;
-            if state.held_onset() {
-                state.envelope.release_onset();
-            } else {
-                state.envelope.release();
+            if !state.processing_gate {
+                if state.held_onset() { state.envelope.release_onset(); }
+                else { state.envelope.release(); }
             }
             state.cursor.release();
             let g = self.plans.get_mut(plan.0).unwrap();
@@ -504,6 +504,7 @@ impl Runtime {
     }
 
     pub(super) fn choke_family_now(&mut self, id: FamilyId, frames: u32) {
+        self.choke_processing_family(id, frames);
         // A scheduled choke does not retain a naturally completed family. The
         // generation check makes its later execution harmless after slot reuse.
         let Some(family) = self.families.get_mut(id.0) else {
@@ -613,6 +614,12 @@ impl Runtime {
 
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
+        if let Some((owner, ordinal)) = v.processing {
+            if let Some(state) = self.processing_owners.get_mut(owner.0) {
+                state.members[ordinal] = None;
+                if !state.published { state.failed = true; }
+            }
+        }
         if let Some(link) = v.stretch {
             self.plans.get_mut(v.plan.0).unwrap().dsp.stretch_busy &= !(1 << link.engine);
         }
@@ -663,6 +670,7 @@ impl Runtime {
     pub(super) fn reclaim_internal_notes(&mut self, required: super::ReleaseReserve) {
         if self.notes.available() != 0
             && self.expressions.available() != 0
+            && self.processing_owners.available() >= required.processing_owners
             && self.decisions.available() >= required.decisions
             && self.voices.available() >= required.voices
             && self.families.available() >= required.families
@@ -685,7 +693,7 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(live notes + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
-            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0;
+            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0 && n.processing_owners == 0;
             if quiet
                 && n.children == 0
                 && n.gate()
@@ -706,6 +714,7 @@ impl Runtime {
                 || n.pins != 0
                 || n.work != 0
                 || n.families != 0
+                || n.processing_owners != 0
                 || n.children != 0
             {
                 break;
