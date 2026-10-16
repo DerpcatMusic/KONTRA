@@ -32,7 +32,7 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
     let source = r#"on init
       declare $result declare $i declare %a[2] := (7,9)
     end on
-    on persistence_changed
+    on note
       $i := 0
       while ($i < 4)
         select ($i)
@@ -51,7 +51,7 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
     let program = script
         .entries()
         .iter()
-        .find(|entry| entry.kind == EntryKind::PersistenceChanged)
+        .find(|entry| entry.kind == EntryKind::Note)
         .unwrap()
         .program;
     let prepared = script
@@ -61,6 +61,11 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
     limits.behavior_fuel = 2048;
     let mut rt = Runtime::new(prepared, limits).unwrap();
     let plan = rt.active_plan();
+    // Persistence callbacks are already evaluated during initialization. Use
+    // a note entry so the first runtime traversal starts from authored cells.
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(0));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(7));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(9));
     support::without_heap(|| {
         let id = rt.start_plan_behavior(plan, program).unwrap();
         assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
@@ -68,5 +73,11 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
         assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(4));
         assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(8));
         assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(8));
+        let repeated = rt.start_plan_behavior(plan, program).unwrap();
+        assert_eq!(rt.behavior_outcome(repeated), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(252));
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(4));
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(9));
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(7));
     });
 }
