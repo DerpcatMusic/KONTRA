@@ -3,11 +3,12 @@
 The same full-policy corrected producer completed with zero producer errors
 on both the baseline and this branch. No rule or error severity was waived.
 The baseline report failed with 69 error-level findings. The complete report
-at `c28041019` failed with 11; the latest report at `4d70b5710` fails with six.
+at `c28041019` failed with 11 and at `4d70b5710` with six. The latest report
+at `a263eed7a` fails with three.
 This is not a clean audit or final release acceptance. The latest report also
-retains 11,485 warnings and 85 informational diagnostics.
+retains 11,474 warnings and 85 informational diagnostics.
 
-The reduction of 63 source patterns must not be described as 63 observed
+The reduction of 66 source patterns must not be described as 66 observed
 crashes. The audit detects macros and policy violations; it does not prove
 public reachability. Findings were separated into malformed-input defects,
 private validated invariants, and analyzer interpretation limits before
@@ -47,7 +48,22 @@ registries, trace equivalence and parallel runtime behavior. Initial compiler
 failures from missed internal caller migrations and an authored fixture's
 Box-slice argument were retained and corrected before this passing run.
 
-## Six remaining errors
+The subsequent typed batch-owner change passed all-target Clippy, 556 core
+library tests (11 existing ignores), and 48 focused runtime tests. Scalar and
+batch chains retain one operation owner; scalar views borrow the same payloads.
+The runtime tests cover exact f64 trace values, actual parallel rendering,
+shifted batch indices across retained plans, voice reuse, and callback
+allocation/deallocation. Existing native-vector expectations remain unchanged.
+Independent review found one missed count-field caller migration, which was
+corrected before this passing run; no additional actionable source defect was
+found. The failed first compilation remains in the receipts.
+
+Compiler layout measurements include 2,576-byte scalar operations, 1,712-byte
+batch operations, and 96-byte parallel runs versus the prior 72-byte field
+layout. These figures are not a measured whole-plan memory saving or callback
+timing result. Final combined performance and native/editor gates remain open.
+
+## Three remaining errors
 
 All remaining sites are currently private constructor/consumer invariants;
 no public malformed-input crash was established for them. The macro detector
@@ -56,8 +72,8 @@ a demonstrated crash would be a false interpretation, while calling the
 failed report clean would also be wrong.
 
 The sites concern wavetable Real-control projection, paired control
-domain/value normalization, constant batch EQ, Kontakt filter state-family
-pairing, and two batch operation boundaries. Follow-up changes must retain the finite
+domain/value normalization, and Kontakt filter state-family pairing.
+Follow-up changes must retain the finite
 domain in its actual owner. Moving an assertion into an accessor, adding an
 unwrap, fabricating a fallback processor, or duplicating authoritative scalar
 state does not resolve the ownership issue.
@@ -65,7 +81,7 @@ state does not resolve the ownership issue.
 The complete reports, source hashes, classifications and executable receipts
 are retained in dev-drive PluginArtifacts under
 `kontra-install-doctor-20261016-r5`. The latest complete same-policy report is
-`doctor-typed-ab03/same-policy-doctor.stdout`, SHA-256
-`780ad0b968862f4533bf9950e42c86a3cc2d59be4ce9bbd9b5a9b44cec50b1ed`.
+`doctor-typed-c02/same-policy-doctor.stdout`, SHA-256
+`0a890079176c2fa30a6bbddcb91ba4490e1d9d8a11b6156613d681f2da6dc5bd`.
 The successful GPU receipt is `gpu-owner09-01/receipt.json`. Candidate code is
 committed separately from the installed 0.3.503 binaries.
