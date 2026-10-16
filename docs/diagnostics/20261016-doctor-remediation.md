@@ -2,11 +2,12 @@
 
 The same full-policy corrected producer completed with zero producer errors
 on both the baseline and this branch. No rule or error severity was waived.
-The baseline report failed with 69 error-level findings; the latest complete
-report at `c28041019` fails with 11. Changes after that scan add GPU regression
-coverage only. This is not a clean audit or final release acceptance.
+The baseline report failed with 69 error-level findings. The complete report
+at `c28041019` failed with 11; the latest report at `4d70b5710` fails with six.
+This is not a clean audit or final release acceptance. The latest report also
+retains 11,485 warnings and 85 informational diagnostics.
 
-The reduction of 58 source patterns must not be described as 58 observed
+The reduction of 63 source patterns must not be described as 63 observed
 crashes. The audit detects macros and policy violations; it does not prove
 public reachability. Findings were separated into malformed-input defects,
 private validated invariants, and analyzer interpretation limits before
@@ -37,7 +38,16 @@ changing their ownership or refusal boundaries.
   receipt green. A final coherent matrix and candidate native/editor gates
   remain required.
 
-## Eleven remaining errors
+The next typed Cascade and dense-SVF ownership correction passed all-target
+Clippy, 551 core library tests (11 existing ignores), and 44 focused runtime
+tests. Native-vector expectations, numerical equations and goldens were
+unchanged. The runtime tests include callback allocation/deallocation checks,
+addressed filter targets, expression generations, independent bus/voice
+registries, trace equivalence and parallel runtime behavior. Initial compiler
+failures from missed internal caller migrations and an authored fixture's
+Box-slice argument were retained and corrected before this passing run.
+
+## Six remaining errors
 
 All remaining sites are currently private constructor/consumer invariants;
 no public malformed-input crash was established for them. The macro detector
@@ -46,9 +56,8 @@ a demonstrated crash would be a false interpretation, while calling the
 failed report clean would also be wrong.
 
 The sites concern wavetable Real-control projection, paired control
-domain/value normalization, constant batch EQ, two cascade class boundaries,
-Kontakt filter state-family pairing, three SVF/native-control boundaries,
-and two batch operation boundaries. Follow-up changes must retain the finite
+domain/value normalization, constant batch EQ, Kontakt filter state-family
+pairing, and two batch operation boundaries. Follow-up changes must retain the finite
 domain in its actual owner. Moving an assertion into an accessor, adding an
 unwrap, fabricating a fallback processor, or duplicating authoritative scalar
 state does not resolve the ownership issue.
@@ -56,7 +65,7 @@ state does not resolve the ownership issue.
 The complete reports, source hashes, classifications and executable receipts
 are retained in dev-drive PluginArtifacts under
 `kontra-install-doctor-20261016-r5`. The latest complete same-policy report is
-`doctor-focused05/same-policy-doctor.stdout`, SHA-256
-`e7e2c1ce7560ec7151319e6c3704ce4a1d79adf39a1ef15fd9693dc7a2cba0c9`.
+`doctor-typed-ab03/same-policy-doctor.stdout`, SHA-256
+`780ad0b968862f4533bf9950e42c86a3cc2d59be4ce9bbd9b5a9b44cec50b1ed`.
 The successful GPU receipt is `gpu-owner09-01/receipt.json`. Candidate code is
 committed separately from the installed 0.3.503 binaries.
