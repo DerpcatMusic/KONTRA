@@ -32,6 +32,76 @@ fn wavetable_bindings(
 }
 
 impl V2Core {
+    /// Off-audio pure actual target/voice/control reads. No worker or source service.
+    pub(crate) fn diagnostic_live_graph_runtime(
+        &self, slot: usize, epoch: u64, players: &[u32], nodes: &[u32],
+        mixes: &[(i32, i32, i32)],
+    ) -> Result<Value, &'static str> {
+        fn unique(ids: &[u32], limit: usize) -> bool {
+            ids.len() <= limit && ids.iter().enumerate().all(|(i,n)| !ids[..i].contains(n))
+        }
+        if !unique(players,3) || players.is_empty() || !unique(nodes,128) || mixes.len()>32
+            || mixes.iter().enumerate().any(|(i,m)| mixes[..i].contains(m)
+                || u32::try_from(m.2).ok().is_none_or(|n| !nodes.contains(&n))) {
+            return Err("live_graph_query_bounds");
+        }
+        let part=self.parts.get(slot).and_then(Option::as_ref).ok_or("live_graph_part_unavailable")?;
+        if part.epoch!=epoch { return Err("live_graph_stale_epoch"); }
+        let at_before=part.runtime.now();
+        let plan=part.runtime.active_plan();
+        let bindings=part.runtime.engine_parameter_bindings(plan).map_err(|_|"live_graph_stale_plan")?;
+        if bindings.len()>262144 { return Err("live_graph_binding_scan_bound"); }
+        let mut targets=Vec::new();
+        for &node in players {
+            let row=match part.runtime.sample_target_asset(sampler_core::SampleTargetId(node)) {
+                Ok(pcm)=> {
+                    let(regions,count)=part.waveform_sources.asset_regions(pcm.asset_id(),64);
+                    json!({"player_node":node,"status":"observed","current_pcm_revision_asset_id":pcm.asset_id(),
+                        "source_rate_hz":pcm.sample_rate(),"frames":pcm.frame_count(),
+                        "matching_regions":regions,"matching_region_count":count,"region_matches_complete":count<=64})
+                },
+                Err(e)=>json!({"player_node":node,"status":"unavailable","error":format!("{e:?}")}),
+            };
+            targets.push(row);
+        }
+        let mut voices=Vec::new();
+        let complete=part.runtime.visit_onset_voices(|voice| {
+            if voices.len()==8 { return false; }
+            let(regions,count)=part.waveform_sources.asset_regions(voice.asset,64);
+            voices.push(json!({"voice":voice,"gain_state":part.runtime.diagnostic_voice_gain(voice.voice),
+                "matching_regions":regions,"matching_region_count":count,"region_matches_complete":count<=64}));
+            true
+        });
+        let control=|id: sampler_core::ControlId| {
+            fn value(v:Result<sampler_core::ControlValue,sampler_core::Error>)->Value {
+                match v {
+                    Ok(sampler_core::ControlValue::Integer(v))=>json!({"type":"integer","value":v}),
+                    Ok(sampler_core::ControlValue::Real(v))=>json!({"type":"real","value":v,"bits":v.to_bits()}),
+                    Ok(sampler_core::ControlValue::Toggle(v))=>json!({"type":"toggle","value":v}),
+                    Err(e)=>json!({"status":"unavailable","error":format!("{e:?}")}),
+                }
+            }
+            let control_id=id.0; // ControlId is packed; copy before borrowing for formatting.
+            json!({"control_id":control_id.to_string(),
+                "base":value(part.runtime.control_base_value(plan,id)),
+                "current_target":value(part.runtime.control_value(plan,id)),
+                "scope":"Existing base/offset control targets, not instantaneous ramped DSP"})
+        };
+        let mut controls=Vec::new();
+        for b in bindings {
+            if u32::try_from(b.address.generic).ok().is_some_and(|n|nodes.contains(&n)) {
+                if controls.len()==512 { return Err("live_graph_selected_binding_bound"); }
+                controls.push(json!({"parameter":b.address.parameter,"group":b.address.group,
+                    "slot":b.address.slot,"generic":b.address.generic,"law":b.law,"state":control(b.control)}));
+            }
+        }
+        let bypass:Vec<_>=mixes.iter().map(|&(group,slot,generic)|json!({"group":group,"slot":slot,"generic":generic,
+            "state":control(sampler_core::slot_control(sampler_core::SlotKind::Bypass,group,slot,generic))})).collect();
+        Ok(json!({"epoch":epoch,"at":part.runtime.now(),"at_before":at_before,"at_after":part.runtime.now(),"plan_token":format!("{plan:?}"),"targets":targets,
+            "voices":voices,"voices_complete":complete,"prepared_controls":controls,"mix_bypass_controls":bypass,
+            "scope":"Pure actual committed Pcm and generation-fenced occupied voices. Static region matches may not resolve dynamic provenance. No IO, source read, render, service or time advance."}))
+    }
+
     pub(crate) fn diagnostic_group_gains(&self,slot:usize,epoch:u64,groups:&[u32]) -> Result<Value,&'static str> {
         if groups.len()>8 || groups.iter().enumerate().any(|(i,g)|*g>65535 || groups[..i].contains(g)) {
             return Err("Gain observation group limit exceeded");
@@ -262,4 +332,36 @@ mod tests {
         assert_eq!(first["voices_complete"], true);
         assert_eq!(first, core.diagnostic_sources(0, 8, &[0, 19]).unwrap());
     }
+    #[test]
+    fn live_graph_read_is_pure_and_separates_current_revision_from_old_voice() {
+        use sampler_core::{SampleTarget,SampleTargetId,SampleRevisionLimits,PreparedSampleRevision,SampleTask};
+        let old=Pcm::new(48000,vec![[0.4;2];4096].into()).unwrap();
+        let new=Pcm::new(48000,vec![[0.7;2];4096].into()).unwrap();
+        let old_id=old.asset_id();let new_id=new.asset_id();
+        let prepared=Prepared::new(48000,vec![old.clone()],vec![Region{
+            sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,
+            envelope:Envelope::default(),playback:Playback::default()}],1).unwrap()
+            .with_sample_targets(vec![SampleTarget{id:SampleTargetId(9019),regions:vec![0].into()}],
+                SampleRevisionLimits{slots:4,resident_bytes:1<<20}).unwrap();
+        let limits=Limits::for_plan(&prepared,4,4);
+        let(mut runtime,mut producer)=Runtime::new(prepared,limits).unwrap().with_sample_updates(2).unwrap();
+        runtime.trigger(Input{protocol:Protocol::Clap,port:0,group:0,channel:0,key:60,external_id:Some(1)},60,1.).unwrap();
+        runtime.render(&mut [[0.;2];1]).unwrap();
+        producer.submit(PreparedSampleRevision::new(SampleTargetId(9019),new,Playback::default(),48000).unwrap(),
+            std::sync::Arc::new(SampleTask::default())).unwrap();
+        runtime.poll_sample_update().unwrap();assert!(producer.reply().unwrap().result.is_ok());
+        let mut part=Part::new(runtime,MixTree::instrument("numeric fixture")).unwrap();part.epoch=8;
+        let mut sources=Sources::default();sources.insert_region(0,None,Source{pcm:old,stream:None});part.waveform_sources=sources;
+        let mut core=V2Core::with_parts(1,48000.);core.install(0,Some(Box::new(part)));
+        assert!(core.diagnostic_live_graph_runtime(0,7,&[9019],&[],&[]).is_err());
+        assert!(core.diagnostic_live_graph_runtime(0,8,&[9019;4],&[],&[]).is_err());
+        assert!(core.diagnostic_live_graph_runtime(0,8,&[9019],&[8985],&[(-1,-1,9003)]).is_err());
+        let a=core.diagnostic_live_graph_runtime(0,8,&[9019],&[8985],&[]).unwrap();
+        assert_eq!(a["targets"][0]["current_pcm_revision_asset_id"],json!(new_id));
+        assert_eq!(a["targets"][0]["matching_region_count"],0);
+        assert_eq!(a["voices"][0]["voice"]["asset"],json!(old_id));
+        assert_eq!(a["voices"][0]["matching_regions"],json!([0]));
+        assert_eq!(a,core.diagnostic_live_graph_runtime(0,8,&[9019],&[8985],&[]).unwrap());
+    }
+
 }
