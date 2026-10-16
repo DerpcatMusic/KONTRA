@@ -2270,6 +2270,7 @@ fn placeholder() -> model::Widget {
 #[cfg(test)]
 mod doctor_argument_tests {
     use super::*;
+    use crate::builtins::SysArray;
     #[test]
     fn invalid_variable_argument_shapes_return_positioned_faults() {
         let span = Span::new(13, 21);
