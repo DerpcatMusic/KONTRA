@@ -405,6 +405,28 @@ impl Bank {
             .map_err(|e| AccessError::Resource(access::failure_reason(&e)))
     }
 
+    /// Read one ordinary sample resource with a preflight bound on encoded
+    /// bytes. Resolution is identical to `resource`; no member is read until
+    /// every resolved member fits the aggregate budget. The caller may spend a
+    /// smaller remaining budget across several resources, up to 128 MiB.
+    /// This does not decode PCM or change the existing `resource` API.
+    pub fn resource_bounded(
+        &self,
+        program_path: &str,
+        path: &str,
+        byte_limit: u64,
+    ) -> Result<Vec<Vec<u8>>, AccessError> {
+        let read = || -> Result<Vec<Vec<u8>>> {
+            let path = path.replace('\\', "/");
+            let (program_path, path) =
+                resource_base(program_path, &path, &self.ufs.header.bank_name)?;
+            let members = resources(program_path, path, |path| self.resolve(path))?;
+            read_bounded_resource_parts(&members, byte_limit, |member| member.size,
+                |member| self.read(member))
+        };
+        read().map_err(|e| AccessError::Resource(access::failure_reason(&e)))
+    }
+
     /// Decode a resource or mono-channel bundle without translating the program.
     pub fn decode_resource(
         &self,
@@ -706,6 +728,35 @@ fn resource<'a>(
     resolve(&path)
 }
 
+/// A stricter off-audio budget, separate from the unchanged 512 MiB member
+/// limit of the ordinary reader. All admission work precedes the first read.
+fn read_bounded_resource_parts<T>(
+    members: &[T],
+    byte_limit: u64,
+    size: impl Fn(&T) -> u64,
+    mut read: impl FnMut(&T) -> Result<Vec<u8>>,
+) -> Result<Vec<Vec<u8>>> {
+    const MAX_RESOURCE_BYTES: u64 = 128 << 20;
+    ensure!(byte_limit <= MAX_RESOURCE_BYTES,
+        "bounded UVI resource budget exceeds 128 MiB");
+    ensure!(!members.is_empty() && members.len() <= 12,
+        "bounded UVI resource needs 1 through 12 members");
+    // Sum before checking the budget: overflow is a refusal, never a wrapped
+    // value that might admit an over-budget read.
+    let total = members.iter().try_fold(0u64, |total, member| {
+        total.checked_add(size(member)).context("bounded UVI resource size overflow")
+    })?;
+    ensure!(members.iter().all(|member| size(member) <= crate::ufs::MAX_MEMBER_SIZE),
+        "UVI member exceeds ordinary resource limit");
+    ensure!(total <= byte_limit, "bounded UVI resource exceeds byte budget");
+    members.iter().map(|member| {
+        let bytes = read(member)?;
+        ensure!(bytes.len() as u64 == size(member),
+            "bounded UVI resource returned a different byte count");
+        Ok(bytes)
+    }).collect()
+}
+
 /// A starred filename is an ordered list of synchronized mono channels.
 fn resources<'a>(
     program_path: &str,
@@ -740,6 +791,81 @@ fn resources<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_resources_refuse_before_reading_members() {
+        use std::cell::Cell;
+        let calls = Cell::new(0usize);
+        for (sizes, limit) in [
+            (vec![4u64, 5], 8),
+            (vec![1u64; 13], 128),
+            (vec![crate::ufs::MAX_MEMBER_SIZE + 1], 128 << 20),
+            (vec![0u64], (128 << 20) + 1),
+            (Vec::new(), 128),
+        ] {
+            let result = read_bounded_resource_parts(&sizes, limit, |size| *size, |_| {
+                calls.set(calls.get() + 1);
+                Ok(Vec::new())
+            });
+            assert!(result.is_err());
+            assert_eq!(calls.get(), 0, "preflight refusal must precede any read");
+        }
+    }
+
+    #[test]
+    fn bounded_resources_size_overflow_refuses_before_read() {
+        let sizes = [u64::MAX, 1];
+        let error = read_bounded_resource_parts(&sizes, 128 << 20, |size| *size,
+            |_| panic!("overflow must not invoke the read closure")).unwrap_err();
+        assert_eq!(error.to_string(), "bounded UVI resource size overflow");
+    }
+
+    #[test]
+    fn bounded_resources_128_mib_boundary_is_admitted_without_allocating_payload() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let limit = 128u64 << 20;
+        let error = read_bounded_resource_parts(&[limit], limit, |size| *size, |_| {
+            calls.set(calls.get() + 1);
+            anyhow::bail!("read reached after exact preflight boundary")
+        }).unwrap_err();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(error.to_string(), "read reached after exact preflight boundary");
+        let over = read_bounded_resource_parts(&[limit + 1], limit, |size| *size,
+            |_| panic!("one byte beyond 128 MiB must not read"));
+        assert!(over.is_err());
+    }
+
+    #[test]
+    fn bounded_resources_exact_budget_preserves_member_order() {
+        let members = [(3u64, 7u8), (5, 11)];
+        let got = read_bounded_resource_parts(&members, 8, |(size, _)| *size,
+            |(size, fill)| Ok(vec![*fill; *size as usize])).unwrap();
+        assert_eq!(got, [vec![7; 3], vec![11; 5]]);
+        assert!(read_bounded_resource_parts(&members, 7, |(size, _)| *size,
+            |_| panic!("one byte over budget must not read")).is_err());
+    }
+
+    #[test]
+    fn bounded_resource_resolution_matches_normal_resource_order() {
+        let member = |path: &str, size| Member {
+            record_offset: 0, name: path.rsplit('/').next().unwrap().into(), parent: None,
+            path: Some(path.into()), size, offset: 0, mode: Protection::Clear, footer: Vec::new(),
+        };
+        let directory = Directory {
+            files: vec![member("Samples/left.flac", 3), member("Samples/right.flac", 5)],
+            directories: Vec::new(), records: Vec::new(), warnings: Vec::new(), metadata_key: 0,
+        };
+        let path = "$Fixture.ufs/Samples/*left.wav*right.wav";
+        let (program, relative) = resource_base("Presets/p.uvip", path, "Fixture").unwrap();
+        let ordinary = resources(program, relative, |p| resolve(&directory, p)).unwrap();
+        let bounded = resources(program, relative, |p| resolve(&directory, p)).unwrap();
+        assert!(ordinary.iter().zip(&bounded).all(|(a,b)| std::ptr::eq(*a,*b)));
+        let encode = |m: &&Member| Ok(vec![m.size as u8; m.size as usize]);
+        let expected = ordinary.iter().map(encode).collect::<Result<Vec<_>>>().unwrap();
+        let got = read_bounded_resource_parts(&bounded, 8, |m| m.size, encode).unwrap();
+        assert_eq!(got, expected);
+    }
 
     #[test]
     fn lua_inventory_retains_failed_occurrences_without_rewriting_source_or_requiring_unused_modules() {
