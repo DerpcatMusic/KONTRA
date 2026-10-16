@@ -4,11 +4,13 @@ The same full-policy corrected producer completed with zero producer errors
 on both the baseline and this branch. No rule or error severity was waived.
 The baseline report failed with 69 error-level findings. The complete report
 at `c28041019` failed with 11 and at `4d70b5710` with six. The latest report
-at `a263eed7a` fails with three.
+at `a263eed7a` fails with three. The typed control-store candidate at
+`19eaf9e10` produces one error, but two independent review findings block
+acceptance of that candidate.
 This is not a clean audit or final release acceptance. The latest report also
-retains 11,474 warnings and 85 informational diagnostics.
+retains 11,473 warnings and 85 informational diagnostics.
 
-The reduction of 66 source patterns must not be described as 66 observed
+The reduction of 68 source patterns must not be described as 68 observed
 crashes. The audit detects macros and policy violations; it does not prove
 public reachability. Findings were separated into malformed-input defects,
 private validated invariants, and analyzer interpretation limits before
@@ -63,7 +65,18 @@ batch operations, and 96-byte parallel runs versus the prior 72-byte field
 layout. These figures are not a measured whole-plan memory saving or callback
 timing result. Final combined performance and native/editor gates remain open.
 
-## Three remaining errors
+## Remaining audit error and open review
+
+The control-store candidate passed all-target Clippy, 558 core tests with 11
+existing ignores, and 163 focused tests with one existing modulation-cost
+benchmark ignore. Its complete audit has one error: Kontakt filter state-family
+pairing. This does not establish candidate acceptance. Independent review found
+that ordinary non-Real WavetableForm writes lost a historical refusal and that
+the loop-remapping fixture never reached an affected boundary. Both require
+correction and causal validation; passing existing tests did not expose them.
+
+The previous three-error checkpoint covered the two control projections and
+Kontakt filter state pairing. The control changes are still under review.
 
 All remaining sites are currently private constructor/consumer invariants;
 no public malformed-input crash was established for them. The macro detector
@@ -71,7 +84,7 @@ correctly identifies their source patterns. Treating every such diagnostic as
 a demonstrated crash would be a false interpretation, while calling the
 failed report clean would also be wrong.
 
-The sites concern wavetable Real-control projection, paired control
+These sites concern wavetable Real-control projection, paired control
 domain/value normalization, and Kontakt filter state-family pairing.
 Follow-up changes must retain the finite
 domain in its actual owner. Moving an assertion into an accessor, adding an
@@ -81,7 +94,7 @@ state does not resolve the ownership issue.
 The complete reports, source hashes, classifications and executable receipts
 are retained in dev-drive PluginArtifacts under
 `kontra-install-doctor-20261016-r5`. The latest complete same-policy report is
-`doctor-typed-c02/same-policy-doctor.stdout`, SHA-256
-`0a890079176c2fa30a6bbddcb91ba4490e1d9d8a11b6156613d681f2da6dc5bd`.
+`doctor-typed-d01/same-policy-doctor.stdout`, SHA-256
+`3186ce077b0d63c777f07058084c065d417b0b6e5721a0dc24434e3712ebd70b`.
 The successful GPU receipt is `gpu-owner09-01/receipt.json`. Candidate code is
 committed separately from the installed 0.3.503 binaries.
