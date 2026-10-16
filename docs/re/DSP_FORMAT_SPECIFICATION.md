@@ -447,6 +447,20 @@ For Gain Matrix, each input's binding record occupies `0x18` bytes; its handle a
 
 The descriptor switch explicitly handles 0–8 and 12 channels and maps descriptor values 13/14 to four channels. This does not establish every channel-layout enum. Exact accumulation bits and execution of the whole matrix remain unverified: several vector helpers jump through runtime-initialized pointers absent from the retained `.text`-only snapshot. [Static method/control-layout evidence](../artifacts/engine-analysis-2026-10-07/uvi-workstation/gain-routing-topology.json).
 
+A 2026-10-16 static recheck of the existing verified offline-derived image
+(`c997d9ce5ca6619a74d159a3424003cb5f76f7c51825f2234b2d057ee1ac9925`)
+followed the matrix's seven chained unwind fragments rather than stopping at its
+52-byte entry fragment. The 1,512-byte unwind extent includes a 60-byte jump
+table after the return; those bytes are data, not additional instructions.
+For a dynamic coefficient contributing to an already initialized destination,
+`0x141338850`/`0x141338857` use separate `mulps`/`addps`, followed by a float32
+store. The scalar tail at `0x1413389c3`/`0x1413389c9` likewise uses separate
+`mulss`/`addss`, then stores float32. This establishes those branch operation
+boundaries statically, not the unresolved constant/first-contribution vector
+dispatch, complete matrix execution, keygroup voice grouping or downstream
+projection. No target function was executed. The retained extraction/limitation
+receipts are in `PluginArtifacts/kontra-vwinds-parity-reference-20261016-r17/`.
+
 ## XML hierarchy and named modulation topology
 
 The [runnable topology extractor](../artifacts/engine-analysis-2026-10-07/uvi-workstation/trace_format_topology.py) verifies each factory member's hash against the retained ZIP and both official program-file hashes. Its 507 documents contain 1,312 nodes. Every non-root node has a resolved parent and ordered sibling index. The graph preserves all observed attribute values, 80 distinct parent/child pairs and distinct ordered child layouts.
