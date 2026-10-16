@@ -685,7 +685,7 @@ fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nod
         for region in &targets[0].zones {
             let z=ir.zones.get(region.0).ok_or("worker_region_missing")?;
             let asset=z.asset.and_then(|a|ir.assets.get(a.0));
-            let location=asset.map(|a|a.location.as_bytes());
+            let location=asset.and_then(|a|match &a.location { sampler_ir::AssetLocation::Path(p)=>Some(p.as_bytes()), sampler_ir::AssetLocation::KontaktFile{..}=>None });
             if let Some(b)=location {
                 bytes=bytes.checked_add(b.len()).ok_or("worker_location_budget")?;
                 if b.len()>65536 || bytes>(16<<20) {return Err("worker_location_budget")}
