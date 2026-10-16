@@ -155,11 +155,26 @@ fn trigger(rt:&mut Runtime,driver:&mut Driver<ObservedHost>,key:u8) {
     let note=rt.note_on(Input{protocol:Protocol::Native,port:0,group:0,channel:0,key,external_id:None},key,96./127.).unwrap();
     driver.note_on(rt,note,key,96./127.).unwrap();
 }
-fn run_case(dir:&Path,name:&str,initial:[f64;5],live_constant:bool,unit_reference:bool,edits:&[(usize,f64)])->Value {
+fn run_case(dir:&Path,name:&str,initial:[f64;5],live_constant:bool,unit_reference:bool,tapped:bool,edits:&[(usize,f64)])->Value {
     let dir=dir.join(name);std::fs::create_dir(&dir).unwrap();
     std::fs::write(dir.join("primary.wav"),wav(480.)).unwrap();std::fs::write(dir.join("sibling.wav"),wav(720.)).unwrap();
     let path=dir.join("Public.uvip");std::fs::write(&path,xml(initial,live_constant,unit_reference)).unwrap();
-    let translated=sampler_uvi::translate_path(&path).unwrap();
+    let mut translated=sampler_uvi::translate_path(&path).unwrap();
+    // The same public IR transformation performed by V2 nest: each group's
+    // output gets a bus, tap_group moves its authored gain onto that bus.
+    // This exercises the real lower/runtime fader path. It is not the async
+    // V2 loader, initialized folding, a native host, or Clarinet evidence.
+    if tapped {
+        for index in 0..translated.instrument.groups.len() {
+            let ir=&mut translated.instrument;
+            let output=ir.groups[index].output;
+            let bus=sampler_ir::BusRef(ir.buses.len());
+            ir.buses.push(sampler_ir::Bus { name:format!("Public tap {index}"),
+                chain:None,sends:Vec::new(),output,gain:sampler_ir::Gain::UNITY });
+            ir.groups[index].output=sampler_ir::Output::Bus(bus);
+            ir.tap_group(index,bus);
+        }
+    }
     let promoted=translated.instrument.uvi_script_sources.as_ref().unwrap().xml.clone();
     let host=ScriptHost::new(&promoted,(),Config::default()).unwrap();
     assert!(host.fault_counts().init.is_empty());
@@ -180,22 +195,27 @@ fn run_case(dir:&Path,name:&str,initial:[f64;5],live_constant:bool,unit_referenc
     driver.note_off(&mut rt,60).unwrap();let primary_release=phase(&mut rt,&mut driver,&reader);
     trigger(&mut rt,&mut driver,72);let sibling=phase(&mut rt,&mut driver,&reader);
     driver.note_off(&mut rt,72).unwrap();let release=phase(&mut rt,&mut driver,&reader);
-    json!({"case":name,"initial":initial,"constant_live":live_constant,"metadata":metadata,"phases":rows,"sibling_expected_linear_product":expected[0]*if unit_reference {1.} else {0.125},"unit_gain_reference":unit_reference,"sibling":sibling,"primary_release":primary_release,"sibling_release":release,"typed_commands":*events.borrow(),"audit_truncated":events.borrow().len()>=256,"driver_unmodeled":driver.unmodeled(),"runtime_stats": {"underruns":rt.stats().stream_underruns,"nonfinite":rt.stats().nonfinite_frames,"voice_drops":rt.stats().voice_drops,"refused_starts":rt.stats().refused_starts,"voice_pool_refusals":rt.stats().voice_pool_refusals,"stream_capacity_refusals":rt.stats().stream_capacity_refusals,"stream_disconnected_refusals":rt.stats().stream_disconnected_refusals},"scope":"synthetic public production APIs; not Clarinet cause evidence"})
+    json!({"case":name,"fixture_scope":if tapped {"nested_group_taps"} else {"flat_adapter"},"initial":initial,"constant_live":live_constant,"metadata":metadata,"phases":rows,"sibling_expected_linear_product":expected[0]*if unit_reference {1.} else {0.125},"unit_gain_reference":unit_reference,"sibling":sibling,"primary_release":primary_release,"sibling_release":release,"typed_commands":*events.borrow(),"audit_truncated":events.borrow().len()>=256,"driver_unmodeled":driver.unmodeled(),"runtime_stats": {"underruns":rt.stats().stream_underruns,"nonfinite":rt.stats().nonfinite_frames,"voice_drops":rt.stats().voice_drops,"refused_starts":rt.stats().refused_starts,"voice_pool_refusals":rt.stats().voice_pool_refusals,"stream_capacity_refusals":rt.stats().stream_capacity_refusals,"stream_disconnected_refusals":rt.stats().stream_disconnected_refusals},"scope":"synthetic public production APIs; not Clarinet cause evidence"})
 }
 fn main() {
     let dir=std::env::args_os().nth(1).expect("explicit new private DEV artifact directory required");let dir=Path::new(&dir);
     assert!(dir.is_absolute()&&dir.starts_with("/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts"));std::fs::create_dir(dir).unwrap();
+    let tapped=match std::env::args_os().nth(2) {
+        None=>false,
+        Some(flag) if flag=="--tapped"=>true,
+        Some(_)=>panic!("only optional --tapped is supported"),
+    };
     let mut rows=Vec::new();
-    rows.push(run_case(dir,"unit_gain_reference",[1.;5],false,true,&[]));
+    rows.push(run_case(dir,"unit_gain_reference",[1.;5],false,true,tapped,&[]));
     for focus in 0..4 {
         let mut initial=[0.5;5];initial[4]=1.;initial[focus]=0.;
         let edits=[(focus,1.),(focus,1.),(focus,0.5),(focus,0.),(focus,0.),(focus,1.)];
-        rows.push(run_case(dir,SCOPES[focus],initial,false,false,&edits));
+        rows.push(run_case(dir,SCOPES[focus],initial,false,false,tapped,&edits));
     }
-    rows.push(run_case(dir,"nonzero_composition",[0.5,0.5,0.5,0.5,1.],false,false,&[(0,1.),(1,1.),(2,1.),(3,1.),(3,0.),(1,0.),(3,1.),(1,0.5),(3,0.5)]));
-    rows.push(run_case(dir,"constant_live",[0.5,0.5,0.5,0.5,0.],true,false,&[(4,1.),(4,0.5),(4,0.),(4,1.)]));
+    rows.push(run_case(dir,"nonzero_composition",[0.5,0.5,0.5,0.5,1.],false,false,tapped,&[(0,1.),(1,1.),(2,1.),(3,1.),(3,0.),(1,0.),(3,1.),(1,0.5),(3,0.5)]));
+    rows.push(run_case(dir,"constant_live",[0.5,0.5,0.5,0.5,0.],true,false,tapped,&[(4,1.),(4,0.5),(4,0.),(4,1.)]));
     // A static authored constant gate must remain closed while another scope
     // opens: changing unrelated Gain is not permission to erase that source.
-    rows.push(run_case(dir,"constant_static_barrier",[0.5,0.5,0.5,0.5,0.],false,false,&[(1,1.),(2,1.),(3,1.)]));
-    println!("{}",json!({"schema":2,"case_execution_is_observational":true,"requires_external_contract_validator":true,"reference_scope":"Fresh owner with primary and sibling authored gains all unity; shared velocity/pan/envelope pipeline observed independently","cases":rows,"library_access_executed":false,"production_parameters_invented":false,"raw_protected_content_written":false}));
+    rows.push(run_case(dir,"constant_static_barrier",[0.5,0.5,0.5,0.5,0.],false,false,tapped,&[(1,1.),(2,1.),(3,1.)]));
+    println!("{}",json!({"schema":2,"fixture_scope":if tapped {"nested_group_taps"} else {"flat_adapter"},"case_execution_is_observational":true,"requires_external_contract_validator":true,"reference_scope":"Fresh owner with primary and sibling authored gains all unity; shared velocity/pan/envelope pipeline observed independently","cases":rows,"library_access_executed":false,"production_parameters_invented":false,"raw_protected_content_written":false}));
 }
