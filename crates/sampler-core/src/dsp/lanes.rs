@@ -378,7 +378,7 @@ mod tests {
                                 let mut z = [[0.; LANES]; 2];
                                 let mut expected_z = z;
                                 let mut scalar = [ProcessorState::default()];
-                                let mut bank = FilterBank::new(&[], 0).unwrap();
+                                let mut bank = FilterBank::new(&crate::dsp::filter::svf::PreparedFilters::default(), 0).unwrap();
                                 for block_index in 0..3 {
                                     let mut block: LaneBlock = std::array::from_fn(|i| {
                                         std::array::from_fn(|k| match block_index {

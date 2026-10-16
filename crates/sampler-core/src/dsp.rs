@@ -331,7 +331,7 @@ pub(super) enum PreparedProcessor {
         first: bool,
         last: bool,
     },
-    StateVariable(usize),
+    StateVariable(svf::SvfHandle),
     /// Index into the bus graph's spaces.
     Space(usize, PreparedKnobs),
     /// `count` following stages in parallel with the dry signal; the lanes are
@@ -403,7 +403,7 @@ impl VoiceChain {
         self,
         rate: u32,
         bindings: &mut Vec<ControlRange>,
-        filters: &mut Vec<svf::PreparedFilter>,
+        filters: &mut svf::FilterRegistryBuilder,
     ) -> Result<PreparedVoiceChain, Error> {
         let first_parameter = bindings.len();
         let mut delay_frames = 0;
@@ -458,7 +458,7 @@ pub(super) fn compile_processors(
     rate: u32,
     bindings: &mut Vec<ControlRange>,
     delay_frames: &mut usize,
-    filters: &mut Vec<svf::PreparedFilter>,
+    filters: &mut svf::FilterRegistryBuilder,
     mut spaces: Option<&mut Vec<sampler_ir::fx::space::Config>>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
@@ -470,8 +470,7 @@ pub(super) fn compile_processors(
         .map(|stage| {
             Ok(match stage {
                 Processor::StateVariable(filter) => {
-                    let index = filters.len();
-                    filters.push(svf::PreparedFilter::StateVariable(filter.compile(rate, bindings)?));
+                    let index = filters.push_svf(filter.compile(rate, bindings)?);
                     PreparedProcessor::StateVariable(index)
                 }
                 Processor::Delay(delay) => prepare_timemod(
@@ -504,8 +503,7 @@ pub(super) fn compile_processors(
                     let offset = *delay_frames;
                     let mut engine = settings.compile(rate, bindings);
                     *delay_frames = offset.checked_add(engine.cells()).ok_or(Error::Capacity)?;
-                    engine.modulation_index = filters.len();
-                    filters.push(svf::PreparedFilter::NativeControl);
+                    engine.modulation_index = filters.push_native();
                     PreparedProcessor::Filter { engine, offset }
                 }
                 Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
@@ -570,7 +568,7 @@ impl PreparedVoiceChain {
             .enumerate()
             .filter_map(|(i, p)| match p {
                 PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
-                    u32::try_from(*filter).ok()
+                    u32::try_from(filter.addressed()).ok()
                 }
                 PreparedProcessor::Filter { engine, .. } if stages.contains(&i) => {
                     u32::try_from(engine.modulation_index).ok()
@@ -1678,7 +1676,7 @@ mod tests {
             ] {
                 let filter = Biquad::new(rate, kind, frequency, 0.7).unwrap();
                 let mut state = [ProcessorState::default()];
-                let mut filters = svf::FilterBank::new(&[], 0).unwrap();
+                let mut filters = svf::FilterBank::new(&svf::PreparedFilters::default(), 0).unwrap();
                 let (mut x, mut y) = ([0.; 2], [0.; 2]);
                 let mut response = [[0.; 2]; 3];
                 for sample in 0..4096 {
@@ -1761,7 +1759,7 @@ mod tests {
                             let boost = Biquad::new(rate, kind(gain_db), frequency, q).unwrap();
                             let cut = Biquad::new(rate, kind(-gain_db), frequency, q).unwrap();
                             let mut state = [ProcessorState::default(); 2];
-                            let mut filters = svf::FilterBank::new(&[], 0).unwrap();
+                            let mut filters = svf::FilterBank::new(&svf::PreparedFilters::default(), 0).unwrap();
                             for i in 0..4096 {
                                 let input =
                                     [(f64::from(i) * 0.017).sin(), if i == 0 { 1. } else { 0. }];

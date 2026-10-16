@@ -414,10 +414,10 @@ impl VoiceModulation {
     /// The target kind and index must still belong to this prepared generation.
     pub(crate) fn validate_dsp_targets(
         &self,
-        filters: &[crate::dsp::filter::svf::PreparedFilter],
+        filters: &crate::dsp::filter::svf::PreparedFilters,
         parameters: usize,
     ) -> Result<(), Error> {
-        use crate::dsp::filter::svf::PreparedFilter;
+        use crate::dsp::filter::svf::FilterKind;
         let invalid = self
             .programs
             .iter()
@@ -425,14 +425,14 @@ impl VoiceModulation {
             .any(|target| match *target {
                 CompiledTarget::ProcessorCutoff(index)
                 | CompiledTarget::ProcessorResonance(index) => !matches!(
-                    filters.get(index as usize),
-                    Some(PreparedFilter::StateVariable(_))
+                    filters.kind(index as usize),
+                    Some(FilterKind::StateVariable)
                 ),
                 CompiledTarget::ProcessorNativeCutoff(index)
                 | CompiledTarget::ProcessorNativeResonance(index)
                 | CompiledTarget::ProcessorNativeGain(index) => !matches!(
-                    filters.get(index as usize),
-                    Some(PreparedFilter::NativeControl)
+                    filters.kind(index as usize),
+                    Some(FilterKind::NativeControl)
                 ),
                 CompiledTarget::Control(index) => index >= parameters,
                 _ => false,
