@@ -92,11 +92,14 @@ same-held-note controller write producing silence instead of the independent
 stereo reference. These are baseline regressions awaiting the channel fix,
 not a passing test suite or a native timbre comparison.
 
-The optional live-owner observer is also unfinished. Independent source review
-requested five corrections to identity joins, overlay lookup refusal, inspection
-work limits, and route provenance. The common diagnostic build compiles, but its
-library tests currently stop at a test-helper visibility error. No actual
-Clarinet run using that observer has been accepted.
+The optional live-owner observer passed its common build, all 28 targeted tests,
+15 other lifecycle tests, and affected all-target Clippy. Review corrections
+cover identity joins, overlay lookup refusal, inspection work limits and bounded
+invalid-query reporting. Three fixture defects were retained and corrected:
+test-helper ownership, ordinary render service for marker drain, and the ordinary
+getter's two lookups. These tests do not establish actual Clarinet state.
+Compiled route linkage is explicitly incomplete; a graph receipt cannot claim
+complete routing or native scope admission from these observations.
 
 The first source-bundle foundation passed 15 public admission tests and 13 IR
 library tests, with no failures or ignores and unchanged source during execution.
@@ -105,9 +108,9 @@ physical identity, signed matrix cells, and initial preparation estimates.
 Every valid new bundle still receives an explicit ExecutionPending refusal
 before effect or behavior preparation. This checkpoint has no wide-source
 producer or renderer, so these passing admission tests do not resolve the 22
-audio/control regressions. The next observer review also retains two corrections
-for ancestor collection identity and invalid-query receipt bounds; its library
-tests remain blocked by a fixture constructor error.
+audio/control regressions. The corresponding observer review corrections and
+normal Zone constructor fixture now pass the targeted cohort. No actual
+Clarinet run using that observer has yet been accepted.
 
 ## Findings that are not accepted explanations
 
@@ -128,6 +131,6 @@ directory `kontra-vwinds-sustain-root-20261016-r8`, including
 `loop-baseline-red01`, `loop-baseline-controls01`, `aiff-decoder-only01`,
 `loop-candidate-green01`, `loop-boundary-candidate01`,
 `multichannel-baseline01`, `multichannel-baseline02`, and
-`source-bundle-m1-check01`. Protected program
+`source-bundle-m1-check01`, and `live-matrix-cohort08`. Protected program
 source, XML, encoded audio and decoded PCM were not exported by these
 measurements.
