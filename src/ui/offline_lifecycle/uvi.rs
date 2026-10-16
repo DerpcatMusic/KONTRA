@@ -1868,7 +1868,13 @@ mod held_note_bound_tests {
         ir.groups.push(sampler_ir::Group::default());
         ir.buses.push(sampler_ir::Bus{name:"authored route fixture".into(),chain:None,sends:vec![],
             output:sampler_ir::Output::Master,gain:sampler_ir::Gain::Linear(1.)});
-        ir.zones.push(sampler_ir::Zone{group:Some(sampler_ir::GroupRef(0)),..Default::default()});
+        ir.assets.push(sampler_ir::Asset{
+            location:sampler_ir::AssetLocation::Path("authored/fixture.wav".into()),
+            encoding:sampler_ir::Encoding::Wav,residency:sampler_ir::AssetResidency::Resident,
+            root_key:Some(60),loops:vec![],
+        });
+        let mut zone=sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.group=Some(sampler_ir::GroupRef(0));ir.zones.push(zone);
         ir.source_indices.sample_targets.push(sampler_ir::SourceSampleTarget{node:3,zones:vec![sampler_ir::ZoneRef(0)]});
         let q=sampler_uvi::script::LiveGraphQuery{keygroup_node:1,matrix_node:2,player_nodes:vec![3]};
         for pre_fader in [false,true] {

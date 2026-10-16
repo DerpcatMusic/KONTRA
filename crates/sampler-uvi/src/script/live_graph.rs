@@ -106,9 +106,45 @@ fn canonical_member(t:&Table,parent:usize,all:&BTreeMap<usize,Entry>,b:&mut Budg
     if !same_table(&actual,expected,b)?{return Err("inconsistent_parent")}
     Ok(i)
 }
+// Check the selected synthesis path in the same plural collections that ordinary
+// callers use. Only existing Program/Layer/Keygroup containers are supported;
+// an unknown wrapper is not inferred from the independent children traversal.
+fn selected_ancestry(
+    ancestors:&[usize],all:&BTreeMap<usize,Entry>,kinds:&[String],b:&mut Budget,
+)->Result<(),&'static str>{
+    b.step(1)?;let root=*ancestors.last().ok_or("ancestor_missing")?;
+    if kinds.get(root).is_none_or(|k|k!="Program"){return Err("unsupported_selected_ancestry")}
+    for edge in ancestors.windows(2){
+        b.step(3)?;let(child,parent)=(edge[0],edge[1]);
+        if !matches!(kinds[parent].as_str(),"Program"|"Layer"|"Keygroup"){
+            return Err("unsupported_selected_ancestry");
+        }
+        let collection=match kinds[child].as_str(){
+            "Layer"=>"layers","Keygroup"=>"keygroups",
+            _=>return Err("unsupported_selected_ancestry"),
+        };
+        let mut found=false;
+        for entry in list(&all[&parent].table,collection,b)?{
+            let member=id(&entry,b)?;b.step(1)?;
+            if member==child{
+                if canonical_member(&entry,parent,all,b)?!=child{return Err("collection_identity_mismatch")}
+                found=true;
+            }
+        }
+        if !found{return Err("selected_ancestry_membership_missing")}
+    }
+    Ok(())
+}
 impl ScriptHost{
     pub fn observe_live_graph(&self,q:&LiveGraphQuery)->LiveGraphReceipt{
-        let mut b=Budget::default();let mut v=self.live_graph_inner(q,&mut b).unwrap_or_else(|r|json!({"schema_version":1,"status":"refused","reason":r,"query":q,"complete":false}));
+        // Public callers need not come through UiBridge. Reject before VM reads
+        // or any query-to-JSON conversion; a rejected vector is never reflected.
+        if q.validate().is_err(){
+            return LiveGraphReceipt{value:json!({"schema_version":1,"status":"refused",
+                "reason":"invalid_query","complete":false,
+                "work":{"nodes":0,"field_steps":0,"scalar_bytes":0,"field_budget_exhausted":false}})};
+        }
+        let mut b=Budget::default();let mut v=self.live_graph_inner(q,&mut b).unwrap_or_else(|r|json!({"schema_version":1,"status":"refused","reason":r,"complete":false}));
         v["work"]=json!({"nodes":b.nodes,"field_steps":b.steps,"scalar_bytes":b.bytes,"field_budget_exhausted":b.exhausted});
         struct Counter(usize);impl std::io::Write for Counter{
             fn write(&mut self,b:&[u8])->std::io::Result<usize>{self.0=self.0.checked_add(b.len()).ok_or(std::io::ErrorKind::OutOfMemory)?;if self.0>SIZE{return Err(std::io::ErrorKind::OutOfMemory.into())}Ok(b.len())}
@@ -145,6 +181,7 @@ impl ScriptHost{
             b.step(ancestors.len()+2)?;if ancestors.len()==16||ancestors.contains(&i){return Err("ancestor_budget_or_cycle")}
             ancestors.push(i);selected.insert(i);next=all[&i].parent;
         }
+        selected_ancestry(&ancestors,&all,kinds.as_slice(),b)?;
         let first=list(&all[&key].table,"inserts",b)?.into_iter().next().ok_or("keygroup_insert_missing")?;
         if canonical_member(&first,key,&all,b)?!=matrix{return Err("required_matrix_not_first_keygroup_insert")}
         let mut players=Vec::new();
@@ -338,6 +375,66 @@ mod tests{
         assert!(matches!(super::list(&container,"connections",&mut b),Err("field_budget")));assert!(b.exhausted);assert!(b.steps<=STEPS);
         entries.raw_set(1,false).unwrap();entries.raw_set(2,false).unwrap();let mut b=Budget{steps:STEPS-3,..Default::default()};
         assert!(matches!(super::list(&container,"connections",&mut b),Err("field_budget")));assert!(b.exhausted);assert!(b.steps<=STEPS);
+    }
+
+    #[test]
+    fn selected_layer_and_keygroup_collection_copies_refuse_without_getter_calls(){
+        for collection in ["layers","keygroups"]{
+            let(h,q)=fixture();let program:Table=h.lua.globals().raw_get("Program").unwrap();
+            let layer=list(&program,"layers").unwrap().remove(0);
+            let parent=if collection=="layers"{program}else{layer};
+            let original=list(&parent,collection).unwrap().remove(0);let copy=shallow(&h,&original);
+            let parameter=if collection=="layers"{"Bypass"}else{"FXPostGain"};
+            let overlay=h.lua.create_table().unwrap();overlay.raw_set(parameter,true).unwrap();copy.raw_set("__set",overlay).unwrap();
+            let get_copy:mlua::Function=copy.get("getParameter").unwrap();
+            let get_original:mlua::Function=original.get("getParameter").unwrap();
+            assert!(get_copy.call::<bool>((copy.clone(),parameter)).unwrap());
+            assert!(!get_original.call::<bool>((original.clone(),parameter)).unwrap());
+            let calls=std::rc::Rc::new(std::cell::Cell::new(0));let seen=calls.clone();
+            let hook=h.lua.create_function(move|_,_:mlua::MultiValue|{seen.set(seen.get()+1);Ok(Value::Nil)}).unwrap();
+            original.raw_set("getParameter",hook.clone()).unwrap();copy.raw_set("getParameter",hook).unwrap();
+            let entries:Table=parent.raw_get(collection).unwrap();entries.raw_set(1,copy).unwrap();
+            let v=h.observe_live_graph(&q).value;
+            assert_eq!(v["reason"],"collection_identity_mismatch");assert_eq!(v["complete"],false);assert_eq!(calls.get(),0);
+        }
+    }
+    fn from_ancestry_xml(xml:&str)->(ScriptHost,LiveGraphQuery){
+        let doc=roxmltree::Document::parse(xml).unwrap();let node=|kind:&str|doc.descendants().find(|n|n.has_tag_name(kind)).unwrap().id().get_usize()as u32;
+        let q=LiveGraphQuery{keygroup_node:node("Keygroup"),matrix_node:node("GainMatrix"),
+            player_nodes:doc.descendants().filter(|n|n.has_tag_name("SamplePlayer")).map(|n|n.id().get_usize()as u32).collect()};
+        (ScriptHost::new(xml,Empty,super::super::Config::default()).unwrap(),q)
+    }
+    #[test]
+    fn nested_layer_membership_is_checked_and_unknown_wrappers_refuse(){
+        let body="<Keygroup><Inserts><GainMatrix/></Inserts><Oscillators><SamplePlayer/><SamplePlayer Bypass='1'/><SamplePlayer Bypass='1'/></Oscillators></Keygroup>";
+        let xml=format!("<Program><Layers><Layer><Layers><Layer><Keygroups>{body}</Keygroups></Layer></Layers></Layer></Layers></Program>");
+        let(h,q)=from_ancestry_xml(&xml);assert_eq!(h.observe_live_graph(&q).value["status"],"observed");
+        let program:Table=h.lua.globals().raw_get("Program").unwrap();let outer=list(&program,"layers").unwrap().remove(0);
+        let inner=list(&outer,"layers").unwrap().remove(0);let copy=shallow(&h,&inner);
+        let overlay=h.lua.create_table().unwrap();overlay.raw_set("Bypass",true).unwrap();copy.raw_set("__set",overlay).unwrap();
+        let entries:Table=outer.raw_get("layers").unwrap();entries.raw_set(1,copy).unwrap();
+        assert_eq!(h.observe_live_graph(&q).value["reason"],"collection_identity_mismatch");
+        let xml=format!("<Program><Layers><Layer><Keygroups><Container><Keygroups>{body}</Keygroups></Container></Keygroups></Layer></Layers></Program>");
+        let(h,q)=from_ancestry_xml(&xml);assert_eq!(h.observe_live_graph(&q).value["reason"],"unsupported_selected_ancestry");
+    }
+    #[test]
+    fn selected_ancestor_absent_from_public_collection_is_not_inferred_from_children(){
+        let(h,q)=fixture();let program:Table=h.lua.globals().raw_get("Program").unwrap();let layer=list(&program,"layers").unwrap().remove(0);
+        let groups:Table=layer.raw_get("keygroups").unwrap();groups.raw_set(1,Value::Nil).unwrap();
+        let v=h.observe_live_graph(&q).value;assert_eq!(v["reason"],"selected_ancestry_membership_missing");assert_eq!(v["complete"],false);
+    }
+    #[test]
+    fn public_invalid_player_vector_has_fixed_refusal_without_query_reflection(){
+        let(h,valid)=fixture();h.lua.globals().raw_set("Program",false).unwrap();
+        let mut encoded=None;
+        for len in [4,65536,1000000]{
+            let q=LiveGraphQuery{keygroup_node:valid.keygroup_node,matrix_node:valid.matrix_node,player_nodes:vec![9;len]};
+            let v=h.observe_live_graph(&q).value;
+            assert_eq!(v["reason"],"invalid_query");assert_eq!(v["complete"],false);assert!(v.get("query").is_none());
+            assert_eq!(v["work"]["nodes"],0);assert_eq!(v["work"]["field_steps"],0);
+            let bytes=serde_json::to_vec(&v).unwrap();assert!(bytes.len()<512);
+            if let Some(expected)=&encoded{assert_eq!(&bytes,expected)}else{encoded=Some(bytes)}
+        }
     }
 
 }
