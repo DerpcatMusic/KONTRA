@@ -24,6 +24,9 @@ use std::{
 type Frame = [f32; 2];
 #[path = "head_prepare.rs"]
 mod head_prepare;
+#[path = "stream_initial_hints.rs"]
+mod initial_hints;
+use initial_hints::InitialStartHints;
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
@@ -593,7 +596,7 @@ fn bounded_attack_anchors_with_hints(
     head: usize,
     policy: &StreamPolicy,
     pinned: &HashSet<AssetId>,
-    hints: Option<&ConstantStartHints>,
+    hints: Option<&InitialStartHints<'_>>,
     canceled: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<AttackAnchors> {
     let mut anchor_policy = *policy;
@@ -604,7 +607,7 @@ fn bounded_attack_anchors_with_hints(
         if canceled() { return Err(canceled_head()); }
         let mut ranges = start_ranges_with_offsets(instrument,assets,rate,head,&anchor_policy,false);
         if let Some(hints) = hints {
-            let hints = hints.ranges(instrument, assets, rate, head, &anchor_policy, canceled)?;
+            let hints = hints.ranges(head, canceled)?;
             for (base, hints) in ranges.iter_mut().zip(hints) {
                 base.extend(hints);
                 merge_start_ranges(base);
@@ -626,8 +629,8 @@ fn bounded_attack_anchors_with_hints(
         Ok((ranges,bytes))
     };
     // Even a zero-output-frame horizon keeps both interpolation guards at each
-    // authored forward/reverse start. Exact admission can still reject these
-    // minimum anchors; it must not silently publish an empty plan instead.
+    // authored forward/reverse start. These optional anchors still require
+    // exact quota admission before falling back to mandatory residency only.
     let (mut ranges, minimum) = trial(0)?;
     let mut low = 0;
     let mut high = head;
@@ -642,7 +645,7 @@ fn bounded_attack_anchors_with_hints(
         }
     }
     if canceled() { return Err(canceled_head()); }
-    let hint_ranges = hints.map(|h| h.ranges(instrument, assets, rate, low, &anchor_policy, canceled)).transpose()?;
+    let hint_ranges = hints.map(|h| h.ranges(low, canceled)).transpose()?;
     Ok(AttackAnchors{output_frames:low,ranges,hint_ranges})
 }
 
@@ -1232,12 +1235,15 @@ impl Streamer {
     pub fn head_fallback(&self)->Option<HeadBudgetExceeded> {self.head_fallback}
     pub fn selected_anchor_head_frames(&self)->Option<usize> {self.selected_anchor_head_frames}
     pub fn selected_hint_head_frames(&self) -> Option<usize> { self.selected_hint_head_frames }
-    /// Requested proved Constant windows at the original output horizon.
+    /// Physical coverage of startup-predicted Constant/initialized-CC windows
+    /// at the original horizon. This is not current engine-state readiness:
+    /// later controls, callbacks and source/plan revisions use strict demand.
     pub fn hint_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
         Some(self.ranges_readiness_matching(assets, |_| true, self.hint_ranges.as_deref()?))
     }
     /// Exact windows selected after quota admission, possibly shorter than the
-    /// requested hints. This never certifies omitted loop transitions or dynamic offsets.
+    /// requested startup predictions. This never certifies new controller
+    /// states, source revisions, omitted loop transitions or script offsets.
     pub fn selected_hint_readiness(&self, assets: &[Pcm]) -> Option<HeadReadiness> {
         Some(self.ranges_readiness_matching(assets, |_| true, self.selected_hint_ranges.as_deref()?))
     }
@@ -1637,7 +1643,7 @@ impl Streamer {
                 selected_requested_hints = false;
                 selected_hint_head_frames = None;
                 let mut accepted = None;
-                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "constant_onsets"),
+                for (candidate, hinted, phase) in [(hinted_table.as_ref(), true, "initial_state_onsets"),
                     (onset_table.as_ref(), false, "base_onsets")] {
                     let Some(candidate) = candidate else { continue; };
                     match prepare(Some(candidate), false, phase) {
@@ -1652,12 +1658,9 @@ impl Streamer {
                     }
                 }
                 if accepted.is_none() {
-                    let mut last_capacity = None;
-                    let mut has_anchors = false;
-                    for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "constant_anchors"),
+                    for (factory, hinted, phase) in [(hint_anchors.filter(|_|hinted_table.is_some()), true, "initial_state_anchors"),
                         (anchors, false, "base_anchors")] {
                         let Some(factory) = factory else { continue; };
-                        has_anchors = true;
                         let room = head_budget.saturating_sub(residency_budget.status().held_bytes);
                         let candidate = factory(room)?;
                         let enclosing = if hinted { hinted_table.as_ref().unwrap() } else { onset_table.as_ref().unwrap_or(&table) };
@@ -1682,11 +1685,12 @@ impl Streamer {
                                 accepted = Some(staged);
                                 break;
                             }
-                            Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => { last_capacity=Some(error); }
+                            Err(error) if error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()) => {}
                             Err(error) => return Err(error),
                         }
                     }
-                    if has_anchors && accepted.is_none() { return Err(last_capacity.expect("an unaccepted anchor failed its exact quota")); }
+                    // Optional anchors may stay cold; the mandatory-only attempt
+                    // below still admits full sources and pinned wavetable ranges.
                 }
                 let staged = match accepted {
                     Some(staged) => staged,
@@ -2384,14 +2388,24 @@ impl Streamed {
             let anchor_policy=StreamPolicy{head_budget:room,..policy};
             bounded_attack_anchors(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,canceled)
         };
-        let hint_recipe = policy.allow_cold_fallback.then(|| ConstantStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &policy, canceled))
+        let hint_recipe = policy.allow_cold_fallback.then(|| InitialStartHints::new(&loaded.instrument, &loaded.plan, &kept, rate, head, &policy, canceled))
             .transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
+        if let Some(recipe) = &hint_recipe {
+            if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+                eprintln!("stream_initial_start_hints {}", serde_json::json!({
+                    "controller_window_zones":recipe.controller_zones(),
+                    "unsupported_start_zones":recipe.unsupported,
+                    "controller_loop_zones_omitted":recipe.controller_loops,
+                    "scope":"one-shot bound initial-state prediction; future input uses strict demand"
+                }));
+            }
+        }
         let hinted_anchors = |room| {
             let anchor_policy=StreamPolicy{head_budget:room,..policy};
             bounded_attack_anchors_with_hints(&loaded.instrument,&kept,rate,head,&anchor_policy,&anchor_pins,hint_recipe.as_ref(),canceled)
         };
         let hints = hint_recipe.as_ref().filter(|h| h.eligible != 0).map(|h| {
-            h.ranges(&loaded.instrument,&kept,rate,head,&policy,canceled).map(|ranges| HintFallback {
+            h.ranges(head,canceled).map(|ranges| HintFallback {
                 head_frames:head,ranges,anchors:Some(&hinted_anchors),
             })
         }).transpose().map_err(|e| if canceled() { LoadError::Canceled } else { invalid(e.to_string()) })?;
@@ -2984,24 +2998,89 @@ mod tests {
     }
 
     #[test]
-    fn minimum_attack_anchors_are_atomic_or_fail_with_typed_capacity() {
-        for budget in [511,575,767,768] {
+    fn optional_anchor_capacity_falls_back_atomically_to_mandatory_sources() {
+        // Full PCM is 64 * 8 = 512 bytes; the optional lossless stereo-f32
+        // anchor is 32 * 8 = 256. Its mono16 preflight lower bound is 64.
+        for decoders in [1,4] {
+        for budget in [511,512,575,576,767,768] {
         let assets=vec![Pcm::streamed(48000,8192).unwrap(),Pcm::pending_resident(48000,64).unwrap()];
         let sources=assets.iter().map(|p|(p.asset_id(),Arc::new(HeadFixture{opens:Arc::new(AtomicU64::new(0)),
             cancel:None,frames:p.frame_count(),wide:true}) as Arc<dyn AssetSource>)).collect();
         let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..32],vec![0..64]],hint_ranges:None});
         let (_,worker)=StreamCache::new(4).unwrap();
         let result=Streamer::start_with_fallbacks_cancelable(sources,&assets,vec![vec![0..8192],vec![0..64]],
-            Some(vec![vec![0..4096],vec![0..64]]),Some(&anchors),worker,4,false,budget,HashSet::new(),true,&||false);
-        if budget==768 {
-            let (streamer,bytes)=result.unwrap();assert_eq!(bytes,768);
-            assert!(streamer.anchor_readiness(&assets).unwrap().complete());
+            Some(vec![vec![0..4096],vec![0..64]]),Some(&anchors),worker,decoders,false,budget,HashSet::new(),true,&||false);
+        if budget>=512 {
+            let (streamer,bytes)=result.unwrap();
+            let anchored=budget==768;
+            assert_eq!(bytes,if anchored {768}else{512});
+            assert!(streamer.head_fallback().is_some());
+            assert_eq!(streamer.head_budget_status().held_bytes,bytes);
+            assert!(streamer.head_budget_status().peak_bytes<=budget);
+            assert_eq!(assets[0].head_bytes(),if anchored {256}else{0});
+            assert!(assets[0].resident_frames().is_none());
+            let value=[f32::from_bits(0x3f123457),f32::from_bits(0x3f234569)];
+            assert_eq!(&*assets[1].resident_frames().unwrap(),&[value;64]);
+            assert!(assets[1].requires_resident());
+            assert_eq!(streamer.selected_anchor_head_frames(),anchored.then_some(0));
+            assert_eq!(streamer.anchor_readiness(&assets).map(|r|r.complete()),anchored.then_some(true));
             assert!(!streamer.onset_readiness(&assets).complete());
+            assert!(!streamer.head_readiness(&assets).complete());
+            assert!(matches!(streamer.restore_ranges[&assets[1].asset_id()],RestoreRange::Admitted(_)));
+            if !anchored {
+                assert!(matches!(streamer.restore_ranges[&assets[0].asset_id()],RestoreRange::DeferredRequested(_)));
+                assert_eq!(streamer.restore_ranges[&assets[0].asset_id()].as_ref(),&[0..8192]);
+            }
         } else {
             let error=result.err().unwrap();
-            assert!(error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
+            let capacity=error.get_ref().and_then(|e|e.downcast_ref::<HeadBudgetExceeded>()).unwrap();
+            assert_eq!(capacity.budget_bytes,budget);
+            assert_eq!(capacity.required_at_least_bytes,512);
             assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()));
+            assert_eq!(assets[0].head_preparer().budget_status().unwrap().held_bytes,0);
         }
+        }
+        }
+    }
+
+    #[test]
+    fn mandatory_only_after_anchor_capacity_preserves_source_errors_and_cancellation() {
+        struct Failure { cancel: Arc<AtomicBool>, cancel_read: bool, opens: Arc<AtomicU64> }
+        impl AssetSource for Failure {
+            fn open(&self)->io::Result<SampleReader> {
+                self.opens.fetch_add(1,Ordering::Relaxed);
+                let (cancel,cancel_read)=(self.cancel.clone(),self.cancel_read);
+                Ok(SampleReader::custom(48000,16,move|_,out| {
+                    if !cancel_read {return Err(io::Error::new(io::ErrorKind::InvalidData,"mandatory fallback source failure"));}
+                    out.fill([0.25;2]);
+                    cancel.store(true,Ordering::Release);
+                    Ok(())
+                }))
+            }
+        }
+        for cancel_read in [false,true] {
+            let cancel=Arc::new(AtomicBool::new(false));
+            let opens=Arc::new(AtomicU64::new(0));
+            let optional_opens=Arc::new(AtomicU64::new(0));
+            let assets=vec![Pcm::streamed(48000,16).unwrap(),Pcm::pending_resident(48000,16).unwrap()];
+            let sources=HashMap::from([
+                (assets[0].asset_id(),Arc::new(HeadFixture{opens:optional_opens.clone(),cancel:None,frames:16,wide:false}) as Arc<dyn AssetSource>),
+                (assets[1].asset_id(),Arc::new(Failure{cancel:cancel.clone(),cancel_read,opens:opens.clone()}) as Arc<dyn AssetSource>),
+            ]);
+            let anchors=|_room|Ok(AttackAnchors{output_frames:0,ranges:vec![vec![0..16];2],hint_ranges:None});
+            let (_,worker)=StreamCache::new(1).unwrap();
+            // Every optional candidate needs at least 128 + 32 bytes. Only the
+            // mandatory-only attempt fits 128 and reaches the failing reader.
+            let error=Streamer::start_with_fallbacks_cancelable(sources,&assets,vec![vec![0..16];2],
+                Some(vec![vec![0..16];2]),Some(&anchors),worker,1,false,128,HashSet::new(),true,
+                &||cancel.load(Ordering::Acquire)).err().expect("mandatory failure must propagate");
+            assert_eq!(error.kind(),if cancel_read {io::ErrorKind::Interrupted}else{io::ErrorKind::InvalidData});
+            assert!(!error.get_ref().is_some_and(|e|e.is::<HeadBudgetExceeded>()));
+            assert_eq!(opens.load(Ordering::Relaxed),1);
+            assert_eq!(optional_opens.load(Ordering::Relaxed),0);
+            assert_eq!(cancel.load(Ordering::Acquire),cancel_read);
+            assert!(assets.iter().all(|p|p.head_bytes()==0 && p.resident_frames().is_none()));
+            assert_eq!(assets[0].head_preparer().budget_status().unwrap().held_bytes,0);
         }
     }
 

@@ -681,8 +681,17 @@ impl BusState {
 }
 
 impl PreparedBuses {
+    /// Exact current builder count, no graph/storage allocation. All buses stay
+    /// present even when no region feeding them is in diagnostic graph scope.
+    pub(crate) fn trace_node_count(&self) -> Option<usize> {
+        self.nodes.iter().enumerate().try_fold(0usize, |count, (bus, node)| {
+            count.checked_add(2 + usize::from(self.input == Some(bus)))?
+                .checked_add(node.processors.len())?.checked_add(node.sends.len())
+        })
+    }
     pub(crate) fn trace_graph(&self, plan: &Prepared, graph: &mut crate::trace::TraceGraph) {
-        let initial = crate::dsp::control::initial_parameters(plan, &self.parameters);
+        let initial = if graph.scope.is_some() { Box::new([]) as Box<[crate::dsp::ControlRamp]> }
+            else { crate::dsp::control::initial_parameters(plan, &self.parameters) };
         for (bus, node) in self.nodes.iter().enumerate() {
             let group = plan
                 .group_faders

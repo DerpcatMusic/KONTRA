@@ -497,3 +497,150 @@ fn kontakt_switch_skin_selects_pressed_hover_and_fixed_picture_states() {
         }
     }
 }
+
+
+#[test]
+fn manual_wave_view_real_provider_pointer_callbacks_a_b_clear_a_pixels_and_counts() {
+    struct Probe {
+        host: sampler_uvi::script::ScriptHost,
+        face: Interface,
+        ui: Ui,
+        values: Values,
+        input: InputState,
+        assets: Assets,
+        owner: std::path::PathBuf,
+    }
+    impl Probe {
+        fn tick(&mut self, event: Input) {
+            self.assets.prepare(&self.owner, &self.face, PageRef(0), Presentation::Bitmap, 1., &self.values);
+            let root = view_state(
+                &mut self.ui, "waveview", &self.face, PageRef(0),
+                &self.assets, Presentation::Bitmap, 1.,
+                &mut self.values, &mut self.input,
+            );
+            self.ui.frame(root, Some(Size::new(320., 200.)), event, 1. / 60.).unwrap();
+        }
+        fn settle(&mut self) {
+            for _ in 0..3 { self.tick(Input::default()); }
+        }
+        fn click(&mut self, id: &str) {
+            let frame = self.ui.scene().unwrap().surface(id).expect("fixture target").frame;
+            let pos = Some(Point::new(frame.x + frame.size.width / 2., frame.y + frame.size.height / 2.));
+            for down in [true, false] {
+                self.tick(Input {
+                    pointer: PointerInput {
+                        pos,
+                        buttons: if down { Buttons::PRIMARY } else { Buttons::default() },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            }
+            self.settle();
+        }
+        fn select(&mut self, original_value: i32) {
+            self.input.edits.clear();
+            self.click("waveview-ir-0");
+            self.click(&format!("waveview-ir-0-item-{}", original_value - 1));
+            let edits = std::mem::take(&mut self.input.edits);
+            assert_eq!(edits.len(), 1, "one actual menu edit, no WaveView value edit");
+            assert_eq!(edits[0].widget, WidgetRef(0));
+            assert_eq!(edits[0].index, 0);
+            assert_eq!(edits[0].value, ir::Value::Integer(original_value));
+            let Binding::Control(control) = self.face.widgets[0].binding else { panic!("fixture menu") };
+            assert_eq!(self.values[&control], f64::from(original_value));
+            self.host.set_control(control, self.values[&control]).unwrap();
+            assert_eq!(self.host.global_text("picked"), original_value.to_string());
+            let old = self.face.clone();
+            let next = self.host.interface();
+            ir::InterfacePatch::between(&old, &next).apply(&old, &Default::default(), &mut self.face);
+            assert_eq!(self.face, next);
+            for at in 0..2 {
+                assert_eq!(self.face.widgets[at].source_id, old.widgets[at].source_id);
+                assert_eq!(self.face.widgets[at].binding, old.widgets[at].binding);
+                assert_eq!(self.face.widgets[at].rect, old.widgets[at].rect);
+            }
+            assert_eq!(self.face.assets, old.assets);
+            assert!(self.face.unsupported.iter().any(|u| u.feature == "WaveView service"));
+            self.assets.epoch = self.assets.epoch.wrapping_add(1);
+            self.settle();
+        }
+        fn provided(&mut self) {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                self.tick(Input::default());
+                if self.assets.wave_views.as_ref().and_then(|p| p.get(WidgetRef(1), self.face.widgets[1].uvi_wave_view_request.as_ref().unwrap())).is_some() { break; }
+                assert!(std::time::Instant::now() < end, "authorized manual provider did not complete");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            self.settle();
+        }
+        fn crop(&self) -> Vec<u8> {
+            let image = crate::ui::tests::pixels(&self.ui, 320, 200);
+            (75..171).flat_map(|y| image[(y * 320 + 20) * 4..(y * 320 + 260) * 4].iter().copied()).collect()
+        }
+    }
+    let xml = include_str!("../../crates/sampler-uvi/tests/fixtures/wave_view_request.uvip");
+    let host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let face = host.interface();
+    let values = host.control_values().into_iter().collect();
+    let dir = tempfile::tempdir().unwrap();
+    let owner = dir.path().join("authored.uvip");
+    std::fs::write(&owner, xml).unwrap();
+    std::fs::write(dir.path().join("wave-a.wav"), wave_view::authored_wav(4096)).unwrap();
+    std::fs::write(dir.path().join("wave-b.wav"), wave_view::authored_wav(24576)).unwrap();
+    let mut p = Probe { host, face, ui: crate::ui::theme::ui(), values, input: InputState::default(), assets: Assets::default(), owner };
+    p.settle();
+    assert!(!p.face.visible(WidgetRef(1)));
+    assert!(p.ui.scene().unwrap().surface("/waveview-ir-1").is_none());
+    assert_eq!(p.face.widgets[1].rect, ir::Rect::new(20, 75, 240, 96));
+
+    p.select(2);
+    assert_eq!(p.host.global_text("pickedText"), "10");
+    assert!(p.face.visible(WidgetRef(1)));
+    // Noninteractive WaveView art uses MUI's slash-prefixed decoration ID.
+    let bounds = p.ui.scene().unwrap().surface("/waveview-ir-1").unwrap().frame;
+    assert_eq!((bounds.x, bounds.y, bounds.size.width, bounds.size.height), (20., 75., 240., 96.));
+    assert_eq!(p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap().sample, ir::UviWaveViewSample::Manual("wave-a.wav".into()));
+    p.provided();
+    let provided_a = p.crop();
+    let source_a = p.assets.wave_views.as_ref().unwrap().get(WidgetRef(1), p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap()).unwrap().clone();
+    p.select(3);
+    assert_eq!(p.host.global_text("pickedText"), "20");
+    assert_eq!(p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap().sample, ir::UviWaveViewSample::Manual("wave-b.wav".into()));
+    p.provided();
+    assert_ne!(provided_a, p.crop(), "distinct files decoded by the real provider change full CPU display pixels");
+    assert!(p.input.peaks.is_empty(), "no injected or unrelated zone peaks supply the display");
+    assert!(p.face.widgets[1].waveform.is_none(), "no fabricated Kontakt zone identity");
+    p.select(4);
+    assert_eq!(p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap().sample, ir::UviWaveViewSample::Cleared);
+    assert_ne!(provided_a, p.crop());
+    assert!(p.assets.wave_views.as_ref().unwrap().get(WidgetRef(1), p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap()).is_none());
+    p.select(2);
+    p.provided();
+    assert_eq!(provided_a, p.crop(), "A returns with the exact same authored display pixels");
+    let source_again = p.assets.wave_views.as_ref().unwrap().get(WidgetRef(1), p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap()).unwrap();
+    assert!(Arc::ptr_eq(&source_a.source, &source_again.source));
+    assert!(Arc::ptr_eq(&source_a.envelope.peaks, &source_again.envelope.peaks));
+    assert_eq!(p.assets.wave_views.as_ref().unwrap().counts(), (2, 2, 2));
+    // Equal authored hi/low ink is unambiguous without inventing a native blend.
+    let saved_colors = p.face.widgets[1].uvi_wave_view_request.as_ref().unwrap().colors;
+    let colors = &mut p.face.widgets[1].uvi_wave_view_request.as_mut().unwrap().colors;
+    colors.high_wave = Some(ir::Rgba::rgb(0xff0000));
+    colors.low_wave = colors.high_wave;
+    p.assets.epoch = p.assets.epoch.wrapping_add(1);
+    p.settle();
+    assert_ne!(provided_a, p.crop());
+    assert_eq!(p.assets.wave_views.as_ref().unwrap().counts(), (2, 2, 2), "authored color changes do not read/decode the source again");
+    p.face.widgets[1].uvi_wave_view_request.as_mut().unwrap().colors = saved_colors;
+    p.assets.epoch = p.assets.epoch.wrapping_add(1);
+    p.settle();
+    assert_eq!(provided_a, p.crop());
+    assert_eq!(p.host.sample_load_status().requested, 0);
+    assert_eq!(p.host.global_text("calls"), "4");
+    assert!(p.host.take_commands().is_empty());
+    p.select(1);
+    assert!(!p.face.visible(WidgetRef(1)));
+    assert!(p.ui.scene().unwrap().surface("/waveview-ir-1").is_none());
+    assert_eq!(p.host.global_text("calls"), "5");
+}

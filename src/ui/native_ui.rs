@@ -45,6 +45,11 @@ pub(super) fn gate_diagnostics() -> Vec<String> {
     GATE_DIAGNOSTICS.with(|state| state.borrow().values().cloned().collect())
 }
 #[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_package(slot: usize) -> Option<(u64, Arc<Package>)> {
+    let id = GATE_PAINTED.with(|state| state.borrow().get(&slot).copied())?;
+    LOCAL.with(|local| local.borrow().get(&id).map(|local| (id, local.package.clone())))
+}
+#[cfg(all(test, feature = "shots"))]
 pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
     fn visit(node: &Table, slot: u64, out: &mut Vec<(String, &'static str)>) {
         let kind = string(node, "kind");
@@ -188,6 +193,20 @@ pub(super) fn audit_assets() -> (usize, usize, usize) {
             })
     })
 }
+#[derive(Clone, Copy)]
+enum ViewScale {
+    Fixed(f64),
+    Fitted { room: Size, setting: f32 },
+}
+impl ViewScale {
+    fn resolve(self, authored: Size) -> f64 {
+        match self {
+            Self::Fixed(scale) => scale,
+            Self::Fitted { room, setting } => super::part::scale_to_fit(room, authored, setting),
+        }
+    }
+}
+
 pub(super) struct State {
     id: u64,
     activity: Option<Arc<Activity>>,
@@ -197,6 +216,7 @@ pub(super) struct State {
     failed: bool,
     failure: Option<String>,
     started: bool,
+    lowered: bool,
     /// Frames the first draw still spreads over: the VM is made on one, the
     /// graph first rendered on the next, and lowered on the third, so no one
     /// frame pays all of them (Conflux: 30 + 25 + 28 ms, then MUI layout).
@@ -295,32 +315,47 @@ impl State {
         entry: &str,
         controls: Vec<(ir::Source, usize, ir::Widget)>,
     ) -> Self {
+        Self::with_package(path, program, entry, controls, None)
+    }
+    /// The caller has proved the same complete resource namespace. Mutable Lua,
+    /// bindings, gestures and drafts always belong to the new State's identity.
+    pub(super) fn with_package(
+        path: &Path,
+        program: u32,
+        entry: &str,
+        controls: Vec<(ir::Source, usize, ir::Widget)>,
+        package: Option<Arc<Package>>,
+    ) -> Self {
         let path = path.to_path_buf();
         let (done, loading) = std::sync::mpsc::sync_channel(1);
         let canceled = Arc::new(AtomicBool::new(false));
-        let cancel = canceled.clone();
-        let _ = std::thread::Builder::new()
-            .name("native-resources".into())
-            .spawn(move || {
-                let result = Package::load_cancel_for_program(&path, program, || {
-                    cancel.load(Ordering::Acquire)
-                })
-                .map(Arc::new);
-                if !cancel.load(Ordering::Acquire) {
-                    let _ = done.send(result);
-                    super::picture_worker::completed();
-                }
-            });
+        let warm = package.is_some();
+        if !warm {
+            let cancel = canceled.clone();
+            let _ = std::thread::Builder::new()
+                .name("native-resources".into())
+                .spawn(move || {
+                    let result = Package::load_cancel_for_program(&path, program, || {
+                        cancel.load(Ordering::Acquire)
+                    })
+                    .map(Arc::new);
+                    if !cancel.load(Ordering::Acquire) {
+                        let _ = done.send(result);
+                        super::picture_worker::completed();
+                    }
+                });
+        }
         Self {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
             activity: None,
             loading,
             canceled,
-            package: None,
+            package,
             failed: false,
             failure: None,
             started: false,
-            stages: 2,
+            lowered: false,
+            stages: if warm { 0 } else { 2 },
             entry: entry.into(),
             seed: controls,
             size: Size::new(970., 600.),
@@ -329,6 +364,14 @@ impl State {
             #[cfg(feature = "shots")]
             graph_work: None,
         }
+    }
+    pub(super) fn reusable_package(&self) -> Option<Arc<Package>> {
+        if self.failed || !self.lowered || self.stages != 0 {
+            return None;
+        }
+        self.package.as_ref()
+            .filter(|package| package.complete())
+            .cloned()
     }
     pub fn bytes(&self) -> usize {
         self.package.as_ref().map_or(0, |p| p.images.bytes())
@@ -428,12 +471,39 @@ impl State {
     pub fn view(
         &mut self,
         ui: &mut Ui,
-        _slot: usize,
+        slot: usize,
         scale: f64,
         face: &ir::Interface,
         values: &super::ir_view::Values,
         input: &super::ir_view::InputState,
     ) -> El {
+        self.view_scaled(ui, slot, ViewScale::Fixed(scale), face, values, input)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn view_fitted(
+        &mut self,
+        ui: &mut Ui,
+        slot: usize,
+        room: Size,
+        setting: f32,
+        face: &ir::Interface,
+        values: &super::ir_view::Values,
+        input: &super::ir_view::InputState,
+    ) -> El {
+        self.view_scaled(ui, slot, ViewScale::Fitted { room, setting }, face, values, input)
+    }
+    fn view_scaled(
+        &mut self,
+        ui: &mut Ui,
+        _slot: usize,
+        scaling: ViewScale,
+        face: &ir::Interface,
+        values: &super::ir_view::Values,
+        input: &super::ir_view::InputState,
+    ) -> El {
+        // Existing events belong to the previous graph. A fresh owner has no
+        // old graph/gesture targets to consult.
+        let scale = scaling.resolve(self.size);
         let slot = self.id as usize;
         if let Ok(result) = self.loading.try_recv() {
             match result {
@@ -553,6 +623,9 @@ impl State {
             }
             let authored = authored_size(&graph);
             self.size = authored;
+            // Fit this incoming graph before lowering its first frame. Keep
+            // the single authored lookup and its original evaluation order.
+            let scale = scaling.resolve(authored);
             // While the Lua graph is the one lowered last frame, MUI keeps the
             // lowered, laid-out subtree; a hover or press inside it rebuilds.
             let editing = session.text_fields().iter().any(|path| ui.focused(format!("nui-{slot}-{path}-text").as_str()));
@@ -569,6 +642,7 @@ impl State {
             };
             drop(_p);
             if let Some(error) = error { return Err(error); }
+            self.lowered = true;
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
             GATE_PAINTED.with(|painted| {
@@ -2312,6 +2386,7 @@ mod tests {
             failed: false,
             failure: None,
             started: false,
+            lowered: false,
             stages: 0,
             entry: "main".into(),
             seed: Vec::new(),
@@ -3182,6 +3257,7 @@ mod tests {
             failed: false,
             failure: None,
             started: false,
+            lowered: false,
             stages: 0,
             entry: "main".into(),
             seed: vec![

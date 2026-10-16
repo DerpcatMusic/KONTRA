@@ -403,6 +403,39 @@ pub(crate) struct ModShape {
 }
 
 impl VoiceModulation {
+    /// Revalidate compiled processor references after a control-side topology edit.
+    /// The target kind and index must still belong to this prepared generation.
+    pub(crate) fn validate_dsp_targets(
+        &self,
+        filters: &[crate::dsp::filter::svf::PreparedFilter],
+        parameters: usize,
+    ) -> Result<(), Error> {
+        use crate::dsp::filter::svf::PreparedFilter;
+        let invalid = self
+            .programs
+            .iter()
+            .flat_map(|program| program.targets.iter())
+            .any(|target| match *target {
+                CompiledTarget::ProcessorCutoff(index)
+                | CompiledTarget::ProcessorResonance(index) => !matches!(
+                    filters.get(index as usize),
+                    Some(PreparedFilter::StateVariable(_))
+                ),
+                CompiledTarget::ProcessorNativeCutoff(index)
+                | CompiledTarget::ProcessorNativeResonance(index)
+                | CompiledTarget::ProcessorNativeGain(index) => !matches!(
+                    filters.get(index as usize),
+                    Some(PreparedFilter::NativeControl)
+                ),
+                CompiledTarget::Control(index) => index >= parameters,
+                _ => false,
+            });
+        if invalid {
+            return Err(Error::InvalidInput);
+        }
+        Ok(())
+    }
+
     /// Re-resolve sparse input cells off audio after a complete schema replacement.
     pub(crate) fn remap_controls(
         &mut self,
@@ -907,6 +940,31 @@ impl VoiceModulation {
             return None;
         }
         Some(self.offset(program, region, |_| 1.0))
+    }
+
+    /// Prediction for explicitly initialized controllers, using the same
+    /// compiled offset consumer as voice admission. Unknown dependencies make
+    /// the whole prediction unknown, including zero-depth assignments.
+    pub fn initialized_start_offset(
+        &self,
+        region: usize,
+        controller: impl Fn(u8) -> Option<u32>,
+    ) -> Option<u32> {
+        self.start_ranges.get(region)?;
+        let Some(index) = self.program(region) else { return Some(0) };
+        let program = &self.programs[index as usize];
+        let at_start = |index: usize| match program.sources[index] {
+            Prepared::Constant => Some(1.0),
+            Prepared::Controller(cc) => controller(cc).map(|v| f64::from(v) * FULL_SCALE),
+            _ => None,
+        };
+        for route in program.routes.iter().filter(|r| r.target == ModTarget::SampleStart) {
+            at_start(route.source)?;
+            for scale in route.scales() { at_start(scale.source)?; }
+        }
+        Some(self.offset(program, region, |index| {
+            at_start(index).expect("every contributing onset source was checked")
+        }))
     }
 
     pub fn has_loop_targets(&self, region: usize) -> bool {

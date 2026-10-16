@@ -196,6 +196,9 @@ impl Part {
     pub(crate) fn select_snapshot(&mut self, path: String) {
         self.snapshot = path;
         self.control_values.clear();
+        // Project captures belong to host recall, not a new explicit preset.
+        self.script_state.clear();
+        self.script_state_source.clear();
         self.uvi_state.clear();
         self.uvi_state_source.clear();
     }
@@ -794,6 +797,22 @@ impl PartShared {
         bins: usize,
         range: Option<(u64, u64)>,
     ) -> Option<crate::sound::waveform::Envelope> {
+        self.waveform_window(epoch, |provider| provider.get_window(zone, bins, range))
+    }
+    pub(crate) fn mapping_waveform_window(
+        &self,
+        region: usize,
+        epoch: u64,
+        bins: usize,
+        range: Option<(u64, u64)>,
+    ) -> Option<crate::sound::waveform::Envelope> {
+        self.waveform_window(epoch, |provider| provider.get_region_window(region, bins, range))
+    }
+    fn waveform_window(
+        &self,
+        epoch: u64,
+        read: impl FnOnce(&crate::sound::waveform::Provider) -> Option<crate::sound::waveform::Envelope>,
+    ) -> Option<crate::sound::waveform::Envelope> {
         let plan = self
             .ingress
             .lock_unpoisoned()
@@ -803,10 +822,9 @@ impl PartShared {
         if self.generation.load(Ordering::Acquire) != epoch {
             return None;
         }
-        provider
+        read(provider
             .as_ref()
-            .filter(|provider| Some(provider.plan) == plan)?
-            .get_window(zone, bins, range)
+            .filter(|provider| Some(provider.plan) == plan)?)
     }
 
     pub(crate) fn widget_waveforms(
@@ -838,8 +856,7 @@ impl PartShared {
                     return None;
                 }
                 let zone = u32::try_from(widget.waveform.as_ref()?.zone)
-                    .ok()
-                    .filter(|id| *id > 0)?;
+                    .ok()?;
                 let bins = (f64::from(face.page_rect(sampler_ui_ir::WidgetRef(n)).width)
                     * pixel_scale)
                     .ceil()

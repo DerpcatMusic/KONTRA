@@ -276,6 +276,21 @@ fn acknowledge(
     }
 }
 
+/// Reuse the ordinary owner/FIFO-marker service for an inspector UI edit.
+/// This does not invent an edit counter: the diagnostic marker follows the
+/// accepted edit on the same UI queue and acknowledges the owner attempt.
+pub(super) fn acknowledge_ui_edit(
+    core: &mut V2Core, owner: &mut SwitchOwner, bridge: &Arc<UiBridge>, timeout_ms: u16,
+) -> Value {
+    let started = Instant::now();
+    let bounds = Bounds { started, deadline: started + Duration::from_millis(u64::from(timeout_ms)), phase: Duration::from_millis(u64::from(timeout_ms)) };
+    let mut service = Service::default();
+    let phase = acknowledge(core, owner, bridge, &bounds, bounds.deadline, &mut service);
+    json!({"owner_acknowledged":phase.ack.is_some(),"ordered_drained":phase.drained(),
+        "phase":phase.report,"zero_frame_service_blocks":service.zero_frame_blocks,
+        "effects_applied":service.effects,"clock_frames":0})
+}
+
 fn input_counts(
     before: DiagnosticProgress,
     after: Option<DiagnosticProgress>,

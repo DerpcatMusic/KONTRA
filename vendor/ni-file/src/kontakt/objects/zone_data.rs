@@ -142,6 +142,66 @@ impl Zone {
     }
 }
 
+
+impl Zone {
+    /// Source-defined KSP zone identity, independent of ZoneList position.
+    ///
+    /// Original Kontakt8 0fe6356e: private reader 0x140d0c760 writes the
+    /// terminal i32 into (zone+0x10)+0xa4. For v9a..9c with no auxiliary
+    /// slots, its exact private layout is 87 bytes and ID is at 83..87.
+    /// The public six-byte prefix contains different user/sample/owner fields.
+    /// Unsupported private variants stay explicit; no ordinal is fabricated.
+    pub fn source_id(&self) -> Result<Option<u32>, Error> {
+        if !matches!(self.0.version, 0x9a..=0x9c) {
+            return Err(Error::Static("Unverified zone source identity version"));
+        }
+        let private = &self.0.private_data;
+        if private.len() != 87 || private.get(56..58) != Some(&[0, 0]) {
+            return Err(Error::Static("Unverified zone source identity private layout"));
+        }
+        // cf0360 accepts only these three values before the auxiliary mask.
+        if u32::from_le_bytes(private[4..8].try_into().unwrap()) > 2 {
+            return Err(Error::Static("Invalid zone private mode"));
+        }
+        match i32::from_le_bytes(private[83..87].try_into().unwrap()) {
+            -1 => Ok(None),
+            id if id >= 0 => Ok(Some(id as u32)),
+            _ => Err(Error::Static("Invalid zone source identity")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+    fn zone(id:i32) -> Zone {
+        let mut private_data=vec![0;87];
+        private_data[83..87].copy_from_slice(&id.to_le_bytes());
+        let mut public_data=vec![0;48];
+        public_data[42..48].copy_from_slice(&[0,1,255,255,255,255]);
+        Zone(StructuredObject {version:0x9c,private_data,public_data,children:Vec::new()})
+    }
+    #[test]
+    fn explicit_zero_and_sparse_native_ids_do_not_use_public_owner_or_ordinal() {
+        for id in [0,7,2018] {assert_eq!(zone(id).source_id().unwrap(),Some(id as u32));}
+        assert_eq!(zone(-1).source_id().unwrap(),None);
+        assert!(zone(-2).source_id().is_err());
+    }
+    #[test]
+    fn unverified_private_variants_never_supply_a_suffix_as_identity() {
+        for len in [0,4,83,86,88,512] {
+            let mut z=zone(7);z.0.private_data.resize(len,0);
+            assert!(z.source_id().is_err());
+        }
+        let mut z=zone(7);z.0.private_data[56]=1;
+        assert!(z.source_id().is_err());
+        z.0.private_data[56]=0;z.0.private_data[4]=3;
+        assert!(z.source_id().is_err());
+        z.0.private_data[4]=0;z.0.version=0x99;
+        assert!(z.source_id().is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;

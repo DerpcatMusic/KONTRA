@@ -1106,11 +1106,8 @@ impl Runtime {
             yielded_at: None,
             wait_carry: 0,
             callback_id: {
-                self.last_callback_id = self
-                    .last_callback_id
-                    .checked_add(1)
-                    .ok_or(Error::Capacity)?;
-                self.last_callback_id
+                crate::prepare::zone_routing::allocate_callback_id(
+                    &mut self.last_callback_id, self.callback_id_reservations)?
             },
             waiting: false,
             disable_wait: false,
@@ -1202,11 +1199,8 @@ impl Runtime {
             yielded_at: None,
             wait_carry: 0,
             callback_id: {
-                self.last_callback_id = self
-                    .last_callback_id
-                    .checked_add(1)
-                    .ok_or(Error::Capacity)?;
-                self.last_callback_id
+                crate::prepare::zone_routing::allocate_callback_id(
+                    &mut self.last_callback_id, self.callback_id_reservations)?
             },
             waiting: false,
             disable_wait: false,
@@ -1294,6 +1288,7 @@ impl Runtime {
             if let BehaviorOwner::Note(note) = c.owner {
                 self.release_now(note, super::ReleaseCause::BehaviorCancelled)?;
             }
+            self.cancel_zone_parameters(id);
             self.cancel_closed_work();
         }
         Ok(())
@@ -1355,6 +1350,10 @@ impl Runtime {
     /// cancellations always wait for flush_behaviors. Allocation-free; the scan
     /// runs only when the arena is short.
     pub(super) fn behavior_room(&mut self, needed: usize) -> bool {
+        if crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, needed).is_err() {
+            return false;
+        }
         let available = self.behaviors.available();
         if available >= needed {
             return true;
@@ -1420,7 +1419,7 @@ impl Runtime {
     }
 
     pub(super) fn drain_behavior(&mut self) {
-        if self.dispatching_behavior || self.behavior_ready.is_empty() {
+        if self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
             return;
         }
         let time = self.behavior_time_left;
@@ -1429,100 +1428,117 @@ impl Runtime {
         self.dispatching_behavior = true;
         // A bounded explicit stack preserves synchronous nested callback ordering.
         // Each suspended caller retains its own remaining fuel, never a Rust frame.
-        while let Some(ready) = self.behavior_ready.last().copied() {
-            let index = self.behavior_ready.len() - 1;
-            let (id, fuel) = match ready {
-                Ready::Resume { id, fuel } => (id, fuel),
-                Ready::Release { note, stage } => {
-                    self.behavior_ready.pop();
-                    self.note_events[note.0.index].release_queued = false;
-                    if self.notes.get(note.0).unwrap().gate() {
-                        if let Some(stage) = stage {
-                            self.advance_release_stage(note, stage);
-                        } else {
-                            self.key_up_with_cause(note, None, super::ReleaseCause::Script)
-                                .expect("retained generated note release");
+        loop {
+            while let Some(ready) = self.behavior_ready.last().copied() {
+                let index = self.behavior_ready.len() - 1;
+                let (id, fuel) = match ready {
+                    Ready::Resume { id, fuel } => (id, fuel),
+                    Ready::Release { note, stage } => {
+                        self.behavior_ready.pop();
+                        self.note_events[note.0.index].release_queued = false;
+                        if self.notes.get(note.0).unwrap().gate() {
+                            if let Some(stage) = stage {
+                                self.advance_release_stage(note, stage);
+                            } else {
+                                self.key_up_with_cause(note, None, super::ReleaseCause::Script)
+                                    .expect("retained generated note release");
+                            }
                         }
+                        self.notes.get_mut(note.0).unwrap().work -= 1;
+                        continue;
                     }
-                    self.notes.get_mut(note.0).unwrap().work -= 1;
+                };
+                // A finished callback retires at once; a stale entry is skipped.
+                let Some(c) = self.behaviors.get(id.0).copied() else {
+                    self.behavior_ready.pop();
+                    continue;
+                };
+                if c.outcome.is_some() {
+                    self.release_controller_reserve(id);
+                    self.behavior_ready.pop();
                     continue;
                 }
-            };
-            // A finished callback retires at once; a stale entry is skipped.
-            let Some(c) = self.behaviors.get(id.0).copied() else {
-                self.behavior_ready.pop();
-                continue;
-            };
-            if c.outcome.is_some() {
-                self.release_controller_reserve(id);
-                self.behavior_ready.pop();
-                continue;
-            }
-            let plan = &self
-                .plans
-                .get(self.behavior_plan(c.owner).unwrap().0)
-                .unwrap()
-                .prepared;
-            let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
-                self.flush_deferred(id);
-                self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
-                self.release_controller_reserve(id);
-                self.behavior_ready.remove(index);
-                continue;
-            };
-            if time_check_steps >= 64 {
-                time_check_steps = 0;
-                if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
-                    self.block_fuel_left = 0;
-                }
-            }
-            if fuel == 0 || self.block_fuel_left == 0 {
-                self.behavior_ready.remove(index);
-                self.yield_behavior(id);
-                continue;
-            }
-            // Bound the interval between clock checks without timing every instruction.
-            let slice = if started.is_some() { 256 } else { usize::MAX };
-            let ran = self.run_straight(id, fuel.min(self.block_fuel_left).min(slice));
-            if ran > 0 {
-                time_check_steps = time_check_steps.saturating_add(ran);
-                self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
-                self.behavior_ready[index] = Ready::Resume {
-                    id,
-                    fuel: fuel - ran,
+                let plan = &self
+                    .plans
+                    .get(self.behavior_plan(c.owner).unwrap().0)
+                    .unwrap()
+                    .prepared;
+                let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
+                    self.flush_zone_parameters(id);
+                    self.flush_deferred(id);
+                    self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
+                    self.release_controller_reserve(id);
+                    self.behavior_ready.remove(index);
+                    continue;
                 };
-                continue;
-            }
-            time_check_steps += 1;
-            self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
-            self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
-            self.behaviors.get_mut(id.0).unwrap().pc += 1;
-            let stepped = self.behavior_step(id, c.owner, op);
-            if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
-                // The callback waited, ended or faulted: notes it played start now.
-                self.flush_deferred(id);
-            }
-            match stepped {
-                Ok(true) => {
-                    if self.behaviors.get(id.0).unwrap().outcome.is_some() {
-                        self.release_controller_reserve(id);
-                    }
-                    self.behavior_ready.remove(index);
-                }
-                Ok(false) => {
-                    // Outbox full: the emit rewound its pc; resume next block.
-                    if std::mem::take(&mut self.ops.outbox_full) {
-                        self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
+                if time_check_steps >= 64 {
+                    time_check_steps = 0;
+                    if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
+                        self.block_fuel_left = 0;
                     }
                 }
-                // Kontakt ignores a script's call on a note that already ended
-                // (play_note on a released parent, forwarding a dropped note).
-                Err(Error::ClosedNote) => {}
-                Err(error) => {
-                    self.fail_behavior(id, Outcome::Fault(error));
+                if fuel == 0 || self.block_fuel_left == 0 {
                     self.behavior_ready.remove(index);
+                    self.yield_behavior(id);
+                    continue;
+                }
+                // Bound the interval between clock checks without timing every instruction.
+                let slice = if started.is_some() { 256 } else { usize::MAX };
+                let ran = self.run_straight(id, fuel.min(self.block_fuel_left).min(slice));
+                if ran > 0 {
+                    time_check_steps = time_check_steps.saturating_add(ran);
+                    self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
+                    self.behavior_ready[index] = Ready::Resume {
+                        id,
+                        fuel: fuel - ran,
+                    };
+                    continue;
+                }
+                time_check_steps += 1;
+                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
+                self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
+                self.behaviors.get_mut(id.0).unwrap().pc += 1;
+                let stepped = self.behavior_step(id, c.owner, op);
+                if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
+                    // Zone commit precedes deferred attacks at actual wait/end.
+                    // This ordering is KONTRA policy; no native ordering claim.
+                    if stepped == Ok(true) {
+                        self.flush_zone_parameters(id);
+                    } else if stepped.is_err() {
+                        self.cancel_zone_parameters(id);
+                    }
+                    self.flush_deferred(id);
+                }
+                match stepped {
+                    Ok(true) => {
+                        if self.behaviors.get(id.0).unwrap().outcome.is_some() {
+                            self.release_controller_reserve(id);
+                        }
+                        self.behavior_ready.remove(index);
+                    }
+                    Ok(false) => {
+                        // Outbox full: the emit rewound its pc; resume next block.
+                        if std::mem::take(&mut self.ops.outbox_full) {
+                            self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
+                        }
+                    }
+                    // Kontakt ignores a script's call on a note that already ended
+                    // (play_note on a released parent, forwarding a dropped note).
+                    Err(Error::ClosedNote) => {}
+                    Err(error) => {
+                        self.fail_behavior(id, Outcome::Fault(error));
+                        self.behavior_ready.remove(index);
+                    }
                 }
             }
+            // Entries have settled before completion admissions can push work.
+            // One completion at a time preserves callback/waiter order with LIFO
+            // dispatch and keeps callback execution on this bounded explicit stack.
+            let serviced = match self.service_zone_completions() {
+                Ok(serviced) => serviced,
+                Err(error) => { self.fault = Some((0, error)); false },
+            };
+            if self.behavior_ready.is_empty() && !serviced { break; }
         }
         if let Some((start, left)) = started.zip(time) {
             self.behavior_time_left = Some(left.saturating_sub(start.elapsed()));
@@ -2799,6 +2815,13 @@ impl Runtime {
                     Ok(false) | Err(Error::ClosedNote) => {}
                     // No room once the selection was edited: drop the note.
                     Err(_) => {
+                        // Zone commit precedes this final admission. Report the
+                        // representability/capacity refusal instead of silently
+                        // implying that the routed deferred attack sounded.
+                        let plan = self.notes.get(note.0).unwrap().plan;
+                        if self.plans.get(plan.0).unwrap().prepared.zone_routing.is_some() {
+                            self.refused_starts = self.refused_starts.saturating_add(1);
+                        }
                         let _ = self.suppress_attack(note);
                     }
                 }
@@ -3020,6 +3043,7 @@ impl Runtime {
     }
 
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
+        self.cancel_zone_parameters(id);
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
         if let Outcome::Fault(error) = outcome {

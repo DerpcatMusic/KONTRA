@@ -65,6 +65,7 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.validate_zone_routing_pitch(self.active_plan, pitch)?;
         let index = self.performance_index(performance)?;
         self.apply_due();
         if !expression.valid() {
@@ -180,6 +181,7 @@ impl Runtime {
                 self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan
             }
         };
+        self.validate_zone_routing_pitch(plan, note_pitch)?;
         let entry = source_stage.map_or(0, |stage| stage.index() + 1);
         // As in Kontakt, a note a module's note callback plays skips that note
         // callback but its release runs the module's release callback too (Una
@@ -608,7 +610,7 @@ impl Runtime {
             let state = &self.performance_state.states[snapshot];
             let ranges = prepared.active_ranges(from..until, state.articulation);
             let mut matching = super::Matching::new(ranges);
-            let first = matching.next_in_groups(prepared, state, velocity, groups);
+            let first = matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref());
             let choice = prepared.choose(first, address, key, &generation.sequences)?;
             let mut candidate = first;
             let mut count = 0;
@@ -619,11 +621,12 @@ impl Runtime {
                         let step=pitch.apply_source(cursor.step(),cursor.wavetable().is_some())?;
                         let asset=generation.asset(sample);
                         let cursor=cursor.with_offset(offset_micros,asset.sample_rate()).with_step(step);
+                        let cursor = self.stream_start_cursor(plan, cursor);
                         self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
                         count+=1;
                     }
                 }
-                candidate = matching.next_in_groups(prepared, state, velocity, groups);
+                candidate = matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref());
             }
             required.voices += count;
             required.families += usize::from(count != 0);
@@ -691,7 +694,9 @@ impl Runtime {
             let c = prepared.candidates[index];
             let r = prepared.regions[c.region];
             let group = prepared.region_groups.get(c.region).copied().flatten();
-            let verdict = if !phase.contains(&index) {
+            let verdict = if generation.zone_routing.as_ref().is_some_and(|s| s.next_eligible(index..index + 1).is_none()) {
+                Some(Rejection::Group)
+            } else if !phase.contains(&index) {
                 Some(Rejection::Trigger)
             } else if prepared.articulated
                 && r.articulation.is_some_and(|a| a != state.articulation)
@@ -756,7 +761,7 @@ impl Runtime {
                 let ranges = prepared.active_ranges(from..until, state.articulation);
                 let mut matching = super::Matching::new(ranges);
                 while let Some(c) =
-                    matching.next_in_groups(prepared, state, properties.velocity, mask)
+                    matching.next_in_groups(prepared, state, properties.velocity, mask, generation.zone_routing.as_ref())
                 {
                     if prepared.region_groups[c.region] == Some(group) {
                         found = true;
@@ -880,7 +885,7 @@ impl Runtime {
                     .groups
                     .view(note.0.index, crate::groups::GroupView::Committed),
             );
-            let mut first = matching.next_in_groups(prepared, state, velocity, groups);
+            let mut first = matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref());
             let choice = prepared
                 .choose(first, address, key, &generation.sequences)
                 .expect("preflighted take decision");
@@ -897,11 +902,17 @@ impl Runtime {
                 let state = &self.performance_state.states[snapshot];
                 let Some(candidate) = first
                     .take()
-                    .or_else(|| matching.next_in_groups(prepared, state, velocity, groups))
+                    .or_else(|| matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref()))
                 else {
                     break;
                 };
-                let r = prepared.regions[candidate.region];
+                let mut r = prepared.regions[candidate.region];
+                if let Some((low, high)) = generation.zone_routing.as_ref()
+                    .zip(prepared.zone_routing.as_ref())
+                    .and_then(|(s, p)| s.bounds_for_region(p, candidate.region)) {
+                    r.bounds[0] = low;
+                    r.bounds[1] = high;
+                }
                 if r.take != choice.map(|c| c.take) {
                     continue;
                 }
@@ -1032,6 +1043,9 @@ impl Runtime {
                 );
                 if let Some(Some(state)) = g.modulation.native.as_mut_slice().get(voice.0.index) {
                     self.voices.get_mut(voice.0).unwrap().envelope.set_v1_amplitude(state.amplitude(), self.rate as f32);
+                }
+                if self.signal_trace {
+                    self.trace_selected_birth(voice, start, seed);
                 }
             }
             if let Some(family) = family {
