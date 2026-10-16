@@ -1863,21 +1863,21 @@ impl Lowering<'_> {
                     let native_chain = plan.region_chain(zone_index).ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
-                    let native = &plan.voice_chains[native_chain];
+                    let native = plan.voice_chains.view(native_chain);
                     let pre_count = authored.pre_amplitude.len();
                     let (before, authored_side, native_start, native_len) = if index < pre_count {
                         (
                             &listed[..index],
                             &listed[..pre_count],
                             0,
-                            native.pre().len(),
+                            native.pre_len(),
                         )
                     } else {
                         (
                             &listed[pre_count..index],
                             &listed[pre_count..],
-                            native.pre().len(),
-                            native.post().len(),
+                            native.pre_len(),
+                            native.post_len(),
                         )
                     };
                     let mut start = native_start + native_len;
