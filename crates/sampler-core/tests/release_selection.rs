@@ -155,6 +155,7 @@ fn full_capacity_pedal_burst_preserves_complete_mics_and_independent_phase_histo
         assert_eq!(
             rt.release_reserve(),
             ReleaseReserve {
+                processing_owners: 0,
                 voices: 8,
                 families: 4,
                 decisions: 4,
@@ -298,6 +299,7 @@ fn velocity_sweep_reserves_overlap_not_all_takes_or_disjoint_layers() {
             assert_eq!(
                 rt.release_reserve(),
                 ReleaseReserve {
+                processing_owners: 0,
                     voices: 4,
                     families: 2,
                     decisions: 1,

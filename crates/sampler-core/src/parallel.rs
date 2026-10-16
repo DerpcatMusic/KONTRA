@@ -270,6 +270,9 @@ impl Runtime {
     /// a voice needs state this path does not parallelize.
     fn plan_runs(&self, runs: &mut Vec<Run>, frames: usize, lanes: usize) -> bool {
         runs.clear();
+        // A shared owner is one schedulable task. Stage A executes these tasks
+        // serially; never split members into independent worker claims.
+        if self.processing_owners.count() != 0 { return false; }
         let mut open: Option<(super::render::BatchKey, usize)> = None;
         for word in 0..self.voice_activity.len() {
             let mut bits = self.voice_activity[word];
