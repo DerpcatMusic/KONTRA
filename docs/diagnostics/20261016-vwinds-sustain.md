@@ -1,9 +1,9 @@
 # Clarinet A sustain investigation
 
-This records measured behavior of the published 0.3.503 source and separately
-compiled, opt-in diagnostic observers. It is not a claim of native equivalence,
-all-VWinds support, or a completed playback fix. The installed plugin remains
-0.3.503; no diagnostic candidate has replaced it.
+This records measured behavior of the published 0.3.503 source, separately
+compiled opt-in observers, and a validated initial-loop correction. It is not
+a claim of native equivalence, all-VWinds support, or completed channel routing.
+The installed plugin remains 0.3.503; no diagnostic candidate has replaced it.
 
 ## Source and output evidence
 
@@ -33,8 +33,8 @@ coefficients, bypass behavior, downstream channel width, or effect placement.
 A decode-time sum would lose those semantics and is not an accepted repair.
 
 The same file contains a continuous wrap loop at source frames
-`[22050, 196510)`. The selected program has no stored PlaybackOptions. Initial
-loading currently does not apply that file playback metadata. The file's root
+`[22050, 196510)`. The selected program has no stored PlaybackOptions. Published
+initial loading does not apply that file playback metadata. The file's root
 64 must remain distinct from the oscillator's authored BaseNote 60.
 
 A normal-loader six-second held key 60, velocity 96, without injected CCs,
@@ -53,15 +53,29 @@ reached the expected missing-loop assertion. The AIFF streamed case instead
 failed earlier during header admission; it is not counted as a sixth causal
 loop failure. Source inspection found that the vendored AIFF demuxer includes
 the eight-byte SSND prefix in its advertised audio length. A separate checked
-decoder correction and admission regression are required before loop testing
-can claim six causal failures.
+decoder correction and admission regression were required before loop testing
+could claim six causal failures. The isolated explicit-options regression
+reproduced streamed admission failure, then passed after excluding the eight
+prefix bytes. Three parser tests passed. With only that decoder correction,
+all six unchanged cases reached the specific missing-loop assertion.
 
 Both baseline controls passed: stored empty/nonempty playback options retain
 precedence, and a player with explicit options can ignore unsupported file
 sampler metadata. Independent review additionally requires metadata failure
 to remain local to inheriting players when a valid audio asset is shared with
-explicit-options players or impulse consumers. No loop production candidate
-has yet passed that corrected review and executable validation.
+explicit-options players or impulse consumers. The corrected loop candidate
+passed independent review with no findings and all 15 public-loader tests,
+including mixed shared-asset and exact impulse regressions. Metadata conversion,
+checked admission and IR-marker tests also passed.
+
+The identical six-second Clarinet plan on the loop candidate retained one
+physical voice, with no note end or runtime health errors. Its unwrapped source
+traversal reached frame 264,251, beyond the file end; the actual cursor was
+89,791, matching the exact wrap modulus for `[22050, 196510)`. Late output
+remained periodic near 261 Hz, at -52.82/-55.03 dBFS in the 5.75–6 second
+window. This verifies the loop correction on this normal-loader observation.
+It remains quiet: source-channel truncation and native timbre/level are separate
+unresolved work. No gain, controller default or response policy was changed.
 
 ## Findings that are not accepted explanations
 
@@ -79,6 +93,7 @@ has yet passed that corrected review and executable validation.
 Full numeric receipts are retained under the dev-drive PluginArtifacts
 directory `kontra-vwinds-sustain-root-20261016-r8`, including
 `resource-channel-windows01`, `loop-boundary-baseline01`,
-`loop-baseline-red01`, and `loop-baseline-controls01`. Protected program
+`loop-baseline-red01`, `loop-baseline-controls01`, `aiff-decoder-only01`,
+`loop-candidate-green01`, and `loop-boundary-candidate01`. Protected program
 source, XML, encoded audio and decoded PCM were not exported by these
 measurements.
