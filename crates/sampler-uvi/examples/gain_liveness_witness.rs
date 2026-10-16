@@ -38,9 +38,12 @@ impl Script for ObservedHost {
             drop(events);
             out.push(c);
         }
+        let findings=self.host.findings().len();
+        if findings>0 {let mut events=self.events.borrow_mut();if events.len()<256 {events.push(json!({"kind":"finding_count","count":findings}));}}
         let f=self.host.fault_counts();
         if !f.init.is_empty() || !f.runtime.is_empty() {
-            self.events.borrow_mut().push(json!({"kind":"fault_counts","init":f.init,"runtime":f.runtime}));
+            let mut events=self.events.borrow_mut();
+            if events.len()<256 {events.push(json!({"kind":"fault_counts","init":f.init,"runtime":f.runtime}));}
         }
     }
 }
@@ -59,7 +62,7 @@ fn wav(frequency: f64) -> Vec<u8> {
     let size=(out.len()-8) as u32; out[4..8].copy_from_slice(&size.to_le_bytes()); out
 }
 
-fn xml(initial: [f64;5], live_constant: bool) -> String {
+fn xml(initial: [f64;5], live_constant: bool, unit_reference: bool) -> String {
     let gate=if live_constant {"if e.controller==24 then Program.modulations['Gate']:setParameter('Value',v) end"} else {""};
     format!(r#"<UVI4><Program Name="Public gain witness" Gain="{p}">
 <ControlSignalSources><ConstantModulation Name="Gate" Value="{g}"/></ControlSignalSources>
@@ -79,13 +82,13 @@ fn xml(initial: [f64;5], live_constant: bool) -> String {
 <Connections><SignalConnection Source="$Program/Gate" Destination="Gain" Ratio="1"/></Connections>
 <PlaybackOptions Start="0" Stop="400"><Loop Start="0" End="400" Type="0"/></PlaybackOptions>
 </SamplePlayer></Oscillators></Keygroup></Keygroups></Layer>
-<Layer Name="Sibling" Gain="0.5"><Keygroups><Keygroup LowKey="72" HighKey="72" Gain="0.5">
+<Layer Name="Sibling" Gain="{sg}"><Keygroups><Keygroup LowKey="72" HighKey="72" Gain="{sg}">
 <ControlSignalSources><DAHDSR Name="Amp" AttackTime="0" DecayTime="0" SustainLevel="1" ReleaseTime="0.01" VelocityAmount="0"/></ControlSignalSources>
 <Connections><SignalConnection Source="$Keygroup/Amp" Destination="Gain" Ratio="1"/></Connections>
-<Inserts><Gain Volume="1"/></Inserts><Oscillators><SamplePlayer SamplePath="sibling.wav" BaseNote="72" Gain="0.5">
+<Inserts><Gain Volume="1"/></Inserts><Oscillators><SamplePlayer SamplePath="sibling.wav" BaseNote="72" Gain="{sg}">
 <PlaybackOptions Start="0" Stop="400"><Loop Start="0" End="400" Type="0"/></PlaybackOptions>
 </SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#,
-        p=initial[0],l=initial[1],k=initial[2],o=initial[3],g=initial[4])
+        p=initial[0],l=initial[1],k=initial[2],o=initial[3],g=initial[4],sg=if unit_reference {1.} else {0.5})
 }
 
 #[derive(Default)]
@@ -142,7 +145,7 @@ fn phase(rt:&mut Runtime,driver:&mut Driver<ObservedHost>,reader:&TraceReader)->
         let _=reader.onset_reader().drain().unwrap();
         done+=count;
     }
-    json!({"full":full.value(),"late":late.value(),"periodicity":periodicity(&waveform),"voices":rt.voice_count(),"notes":rt.note_count(),"trace_dropped":reader.dropped(),"trace":stages.iter().map(|((zone,node,contribution),m)|json!({"zone":zone,"node":node,"kind":reader.graph.nodes[*node].kind,"contribution":contribution,"metrics":m.value()})).collect::<Vec<_>>()})
+    json!({"full":full.value(),"late":late.value(),"periodicity":periodicity(&waveform),"voices":rt.voice_count(),"notes":rt.note_count(),"trace_dropped":reader.dropped(),"onset_trace_dropped":reader.onset_reader().dropped(),"trace":stages.iter().map(|((zone,node,contribution),m)|json!({"zone":zone,"node":node,"kind":reader.graph.nodes[*node].kind,"contribution":contribution,"metrics":m.value()})).collect::<Vec<_>>()})
 }
 fn write(driver:&mut Driver<ObservedHost>,rt:&Runtime,scope:usize,value:f64) {
     let midi=if value==0.5{64}else{(value*127.).round()as u8};
@@ -152,10 +155,10 @@ fn trigger(rt:&mut Runtime,driver:&mut Driver<ObservedHost>,key:u8) {
     let note=rt.note_on(Input{protocol:Protocol::Native,port:0,group:0,channel:0,key,external_id:None},key,96./127.).unwrap();
     driver.note_on(rt,note,key,96./127.).unwrap();
 }
-fn run_case(dir:&Path,name:&str,initial:[f64;5],live_constant:bool,edits:&[(usize,f64)])->Value {
+fn run_case(dir:&Path,name:&str,initial:[f64;5],live_constant:bool,unit_reference:bool,edits:&[(usize,f64)])->Value {
     let dir=dir.join(name);std::fs::create_dir(&dir).unwrap();
     std::fs::write(dir.join("primary.wav"),wav(480.)).unwrap();std::fs::write(dir.join("sibling.wav"),wav(720.)).unwrap();
-    let path=dir.join("Public.uvip");std::fs::write(&path,xml(initial,live_constant)).unwrap();
+    let path=dir.join("Public.uvip");std::fs::write(&path,xml(initial,live_constant,unit_reference)).unwrap();
     let translated=sampler_uvi::translate_path(&path).unwrap();
     let promoted=translated.instrument.uvi_script_sources.as_ref().unwrap().xml.clone();
     let host=ScriptHost::new(&promoted,(),Config::default()).unwrap();
@@ -174,24 +177,25 @@ fn run_case(dir:&Path,name:&str,initial:[f64;5],live_constant:bool,edits:&[(usiz
     }
     // After releasing primary, use a fresh held sibling to detect leaked local
     // scope changes. Program writes correctly affect both layers.
-    driver.note_off(&mut rt,60).unwrap();let _=phase(&mut rt,&mut driver,&reader);
+    driver.note_off(&mut rt,60).unwrap();let primary_release=phase(&mut rt,&mut driver,&reader);
     trigger(&mut rt,&mut driver,72);let sibling=phase(&mut rt,&mut driver,&reader);
     driver.note_off(&mut rt,72).unwrap();let release=phase(&mut rt,&mut driver,&reader);
-    json!({"case":name,"initial":initial,"constant_live":live_constant,"metadata":metadata,"phases":rows,"sibling_expected_linear_product":expected[0]*0.125,"sibling":sibling,"release":release,"typed_commands":*events.borrow(),"runtime_stats": {"underruns":rt.stats().stream_underruns,"nonfinite":rt.stats().nonfinite_frames},"scope":"synthetic public production APIs; not Clarinet cause evidence"})
+    json!({"case":name,"initial":initial,"constant_live":live_constant,"metadata":metadata,"phases":rows,"sibling_expected_linear_product":expected[0]*if unit_reference {1.} else {0.125},"unit_gain_reference":unit_reference,"sibling":sibling,"primary_release":primary_release,"sibling_release":release,"typed_commands":*events.borrow(),"audit_truncated":events.borrow().len()>=256,"driver_unmodeled":driver.unmodeled(),"runtime_stats": {"underruns":rt.stats().stream_underruns,"nonfinite":rt.stats().nonfinite_frames,"voice_drops":rt.stats().voice_drops,"refused_starts":rt.stats().refused_starts,"voice_pool_refusals":rt.stats().voice_pool_refusals,"stream_capacity_refusals":rt.stats().stream_capacity_refusals,"stream_disconnected_refusals":rt.stats().stream_disconnected_refusals},"scope":"synthetic public production APIs; not Clarinet cause evidence"})
 }
 fn main() {
     let dir=std::env::args_os().nth(1).expect("explicit new private DEV artifact directory required");let dir=Path::new(&dir);
     assert!(dir.is_absolute()&&dir.starts_with("/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts"));std::fs::create_dir(dir).unwrap();
     let mut rows=Vec::new();
+    rows.push(run_case(dir,"unit_gain_reference",[1.;5],false,true,&[]));
     for focus in 0..4 {
         let mut initial=[0.5;5];initial[4]=1.;initial[focus]=0.;
         let edits=[(focus,1.),(focus,1.),(focus,0.5),(focus,0.),(focus,0.),(focus,1.)];
-        rows.push(run_case(dir,SCOPES[focus],initial,false,&edits));
+        rows.push(run_case(dir,SCOPES[focus],initial,false,false,&edits));
     }
-    rows.push(run_case(dir,"nonzero_composition",[0.5,0.5,0.5,0.5,1.],false,&[(0,1.),(1,1.),(2,1.),(3,1.),(3,0.),(1,0.),(3,1.),(1,0.5),(3,0.5)]));
-    rows.push(run_case(dir,"constant_live",[0.5,0.5,0.5,0.5,0.],true,&[(4,1.),(4,0.5),(4,0.),(4,1.)]));
+    rows.push(run_case(dir,"nonzero_composition",[0.5,0.5,0.5,0.5,1.],false,false,&[(0,1.),(1,1.),(2,1.),(3,1.),(3,0.),(1,0.),(3,1.),(1,0.5),(3,0.5)]));
+    rows.push(run_case(dir,"constant_live",[0.5,0.5,0.5,0.5,0.],true,false,&[(4,1.),(4,0.5),(4,0.),(4,1.)]));
     // A static authored constant gate must remain closed while another scope
     // opens: changing unrelated Gain is not permission to erase that source.
-    rows.push(run_case(dir,"constant_static_barrier",[0.5,0.5,0.5,0.5,0.],false,&[(1,1.),(2,1.),(3,1.)]));
-    println!("{}",json!({"schema":1,"cases":rows,"library_access_executed":false,"production_parameters_invented":false,"raw_protected_content_written":false}));
+    rows.push(run_case(dir,"constant_static_barrier",[0.5,0.5,0.5,0.5,0.],false,false,&[(1,1.),(2,1.),(3,1.)]));
+    println!("{}",json!({"schema":2,"case_execution_is_observational":true,"requires_external_contract_validator":true,"reference_scope":"Fresh owner with primary and sibling authored gains all unity; shared velocity/pan/envelope pipeline observed independently","cases":rows,"library_access_executed":false,"production_parameters_invented":false,"raw_protected_content_written":false}));
 }
