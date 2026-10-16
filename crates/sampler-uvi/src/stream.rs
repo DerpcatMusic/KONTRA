@@ -3,7 +3,7 @@
 //! read, never written out) is decoded a window at a time through the same
 //! decoder a full load uses, so a streamed frame equals the loaded frame.
 
-use sampler_kontakt::{AssetSource, FileIdentity, SampleReader};
+use sampler_kontakt::{AssetSource, EncodedChannelReader, FileIdentity, SampleReader};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -11,18 +11,12 @@ use std::{
     sync::Arc,
 };
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::{Decoder, DecoderOptions},
-    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
-    io::{MediaSource, MediaSourceStream},
+    io::MediaSource,
     meta::{Limit, MetadataOptions},
-    probe::Hint,
 };
 
 /// Bytes per file read; a multiple of the cipher's 512-byte blocks.
 const CHUNK: usize = 32 << 10;
-/// A read this far past the decoded window decodes forward rather than seeks.
-const SKIP_FRAMES: u64 = 16384;
 
 /// Where one encoded audio file's bytes live.
 #[derive(Clone)]
@@ -219,127 +213,31 @@ fn invalid(e: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
 }
 
-/// One encoded file, read by frame position.
+/// One normal guarded encoded source, delegated to the shared packet owner.
 struct Stream {
-    format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
-    track: u32,
+    reader: EncodedChannelReader,
     channels: usize,
     rate: u32,
     frames: u64,
-    buffer: Option<SampleBuffer<f32>>,
-    /// Interleaved samples of the last decoded packet, from frame `start`.
-    window: Vec<f32>,
-    start: u64,
 }
 
 impl Stream {
     fn open_counted(origin: &FrozenOrigin, counted: bool) -> io::Result<Self> {
-        let stream = MediaSourceStream::new(Box::new(origin.open(counted)?), Default::default());
         let metadata = MetadataOptions {
             limit_metadata_bytes: Limit::Maximum(2 << 20),
             limit_visual_bytes: Limit::Maximum(2 << 20),
         };
-        let mut format = symphonia::default::get_probe()
-            .format(&Hint::new(), stream, &FormatOptions::default(), &metadata)
-            .map_err(|e| invalid(format!("not WAV, AIFF or FLAC: {e}")))?
-            .format;
-        let track = format
-            .default_track()
-            .ok_or_else(|| invalid("no audio track"))?;
-        let (id, params) = (track.id, track.codec_params.clone());
-        let rate = params
-            .sample_rate
-            .ok_or_else(|| invalid("undeclared sample rate"))?;
-        let channels = params
-            .channels
-            .ok_or_else(|| invalid("undeclared channel count"))?
-            .count();
-        let frames = match params.n_frames {
-            Some(n) => n,
-            None => {
-                return Err(invalid(
-                    "streamed source has no declared frame count; full scan unsupported",
-                ));
-            }
-        };
-        if rate == 0 || channels == 0 || frames == 0 {
-            return Err(invalid("invalid audio dimensions"));
-        }
-        let decoder = symphonia::default::get_codecs()
-            .make(&params, &DecoderOptions::default())
-            .map_err(invalid)?;
+        let reader = EncodedChannelReader::open_legacy(Box::new(origin.open(counted)?), &metadata)?;
         Ok(Self {
-            format,
-            decoder,
-            track: id,
-            channels,
-            rate,
-            frames,
-            buffer: None,
-            window: Vec::new(),
-            // Nothing decoded yet: the first packet is frame 0.
-            start: 0,
+            channels: reader.channels(),
+            rate: reader.rate(),
+            frames: reader.frames(),
+            reader,
         })
     }
 
-    fn window_end(&self) -> u64 {
-        self.start + (self.window.len() / self.channels) as u64
-    }
-
-    /// Decode the next packet into the window.
-    fn advance(&mut self) -> io::Result<()> {
-        loop {
-            let packet = self.format.next_packet().map_err(invalid)?;
-            if packet.track_id() != self.track {
-                continue;
-            }
-            let decoded = self.decoder.decode(&packet).map_err(invalid)?;
-            let buffer = self.buffer.get_or_insert_with(|| {
-                SampleBuffer::new(decoded.capacity() as u64, *decoded.spec())
-            });
-            buffer.copy_interleaved_ref(decoded);
-            self.window.clear();
-            self.window.extend_from_slice(buffer.samples());
-            self.start = packet.ts();
-            return Ok(());
-        }
-    }
-
-    /// Fill `out` (whole interleaved frames) from frame `start`.
     fn read(&mut self, start: u64, out: &mut [f32]) -> io::Result<()> {
-        let channels = self.channels;
-        let end = start + (out.len() / channels) as u64;
-        if end > self.frames {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        let mut at = start;
-        while at < end {
-            let window_end = self.window_end();
-            if at >= self.start && at < window_end {
-                let n = end.min(window_end) - at;
-                let from = ((at - self.start) as usize) * channels;
-                let to = ((at - start) as usize) * channels;
-                let len = n as usize * channels;
-                out[to..to + len].copy_from_slice(&self.window[from..from + len]);
-                at += n;
-                continue;
-            }
-            // Decode forward when the target is at or just past the window,
-            // else seek (to a frame at or before it).
-            if !(at >= window_end && at - window_end < SKIP_FRAMES) {
-                let to = SeekTo::TimeStamp {
-                    ts: at,
-                    track_id: self.track,
-                };
-                let sought = self.format.seek(SeekMode::Accurate, to).map_err(invalid)?;
-                self.decoder.reset();
-                self.window.clear();
-                self.start = sought.actual_ts;
-            }
-            self.advance()?;
-        }
-        Ok(())
+        self.reader.read_interleaved(start, out)
     }
 }
 
