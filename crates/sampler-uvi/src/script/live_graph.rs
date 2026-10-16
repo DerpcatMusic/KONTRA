@@ -115,7 +115,7 @@ impl ScriptHost{
                     ids.push(nodes[j].0);
                     let row=json!({"owner_node":nodes[i].0,"collection":collection,"ordinal":ordinal,"node":nodes[j].0,"kind":kinds[j]});
                     if collection=="inserts" {if inserts.len()==32{return Err("insert_budget")}inserts.push(row);}
-                    if matches!(collection,"auxs"|"sends") {if routes.len()==16{return Err("route_budget")}routes.push(row);}
+                    else if matches!(collection,"auxs"|"sends") {if routes.len()==16{return Err("route_budget")}routes.push(row);}
                 }
                 if !ids.is_empty(){collections.insert(collection.into(),json!(ids));}
             }
