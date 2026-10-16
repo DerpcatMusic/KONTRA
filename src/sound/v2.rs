@@ -2404,8 +2404,7 @@ impl V2Core {
     fn enqueue(&mut self, slot: usize, event: Event) {
         // Wildcards may also reach owners which predate alignment. Dispatch
         // only those exact tuples immediately; the scheduler retains its own holds.
-        if let Event::NoteOff(pattern) | Event::NoteOffVelocity(pattern, _) | Event::Choke(pattern) | Event::Expression(pattern, _) =
-            event
+        if let Some((pattern, action)) = event.host_action()
             && self.align.parts[slot].hosts().any(|n| pattern.matches(n))
         {
             self.exact_work.clear();
@@ -2427,16 +2426,7 @@ impl V2Core {
                     id: note.id,
                     clap: note.clap,
                 };
-                self.deliver(
-                    slot,
-                    match event {
-                        Event::NoteOff(_) => Event::NoteOff(p),
-                        Event::NoteOffVelocity(_, velocity) => Event::NoteOffVelocity(p, velocity),
-                        Event::Choke(_) => Event::Choke(p),
-                        Event::Expression(_, x) => Event::Expression(p, x),
-                        _ => unreachable!(),
-                    },
-                );
+                self.deliver(slot, action.at(p));
             }
         }
         let Some(Some(p)) = self.parts.get_mut(slot) else {

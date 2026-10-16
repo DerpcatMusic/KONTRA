@@ -204,8 +204,13 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
     s.values
         .iter()
         .filter_map(|&(p, n)| {
-            let x = match p {
-                Param::Cutoff(_) | Param::Freq(..) => p,
+            let (x, y, wheel) = match p {
+                Param::Cutoff(slot) => (p, Param::Resonance(slot), None),
+                Param::Freq(slot, band) => (
+                    p,
+                    Param::Gain(slot, band),
+                    Some(Param::Bandwidth(slot, band)),
+                ),
                 _ => return None,
             };
             let hz = s.frequency(p, n)?;
@@ -216,11 +221,6 @@ pub fn filter_handles(s: &GroupSettings) -> Vec<Handle> {
                 (HIGH_HZ / LOW_HZ).log2() / (high / low).log2()
             } else {
                 1.
-            };
-            let (y, wheel) = match p {
-                Param::Cutoff(slot) => (Param::Resonance(slot), None),
-                Param::Freq(slot, b) => (Param::Gain(slot, b), Some(Param::Bandwidth(slot, b))),
-                _ => unreachable!(),
             };
             // port from v1 0cb7a8a0:src/ui/viz.rs: EQ handles show their own gain.
             let (db, y_scale) = if matches!(p, Param::Freq(..)) {

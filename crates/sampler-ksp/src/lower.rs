@@ -505,6 +505,21 @@ fn callback_type(kind: CallbackKind) -> i32 {
     }
 }
 
+/// One append-only code slot awaiting a target. Only the branch emitters mint
+/// this token, and `land` consumes it exactly once without downcasting code.
+struct PendingBranch {
+    at: usize,
+    local: Option<u16>,
+}
+impl PendingBranch {
+    fn instruction(self, target: usize) -> I {
+        match self.local {
+            Some(local) => I::JumpIfZero { local, target },
+            None => I::Jump { target },
+        }
+    }
+}
+
 struct Gen<'u, 'h> {
     u: &'u mut Unit<'h>,
     ctx: Context,
@@ -575,22 +590,23 @@ impl Gen<'_, '_> {
         self.code.len()
     }
     /// Placeholder branch, patched by `land`.
-    fn jump_if_zero(&mut self, local: u16) -> Result<usize> {
+    fn jump_if_zero(&mut self, local: u16) -> Result<PendingBranch> {
         let at = self.here();
         self.emit(I::JumpIfZero { local, target: 0 })?;
-        Ok(at)
+        Ok(PendingBranch {
+            at,
+            local: Some(local),
+        })
     }
-    fn jump(&mut self) -> Result<usize> {
+    fn jump(&mut self) -> Result<PendingBranch> {
         let at = self.here();
         self.emit(I::Jump { target: 0 })?;
-        Ok(at)
+        Ok(PendingBranch { at, local: None })
     }
-    fn land(&mut self, at: usize) {
+    fn land(&mut self, branch: PendingBranch) {
         let target = self.here();
-        match &mut self.code[at] {
-            I::Jump { target: t } | I::JumpIfZero { target: t, .. } => *t = target,
-            _ => unreachable!("patched instruction is a branch"),
-        }
+        let at = branch.at;
+        self.code[at] = branch.instruction(target);
     }
     fn warn(&mut self, message: impl Into<String>) {
         self.mark_opaque();
@@ -3921,7 +3937,7 @@ impl Gen<'_, '_> {
         self.set(base + 3, i64::from(MENU_TAG))
     }
 
-    fn menu_missing(&mut self, base: u16, field: i32, presence: i32) -> Result<usize> {
+    fn menu_missing(&mut self, base: u16, field: i32, presence: i32) -> Result<PendingBranch> {
         // Menu values are signed-32; the 64-bit sentinel cannot be an item value.
         self.set(base + 1, i64::from(presence))?;
         self.set(base + 4, i64::MIN)?;

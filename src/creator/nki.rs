@@ -196,14 +196,19 @@ fn groups(groups: &[Group]) -> Result<Vec<u8>> {
     private.extend(hex(EMPTY_FX));
     private.extend(hex(GROUP_TAIL_DEFAULT));
     // Every v0x95 group Kontakt 6.7 saves has 1722 private bytes.
-    assert_eq!(private.len(), 1722, "group template");
+    let private: [u8; 1722] = private.try_into().map_err(|bytes: Vec<u8>| {
+        anyhow::anyhow!(
+            "invalid group template length: expected 1722, got {}",
+            bytes.len()
+        )
+    })?;
 
     let mods = hex(GROUP_MODS_DEFAULT);
     let anchor = hex(AHDSR_AT);
     let at = mods
         .windows(anchor.len())
         .position(|w| w == anchor)
-        .expect("AHDSR in the group template")
+        .ok_or_else(|| anyhow::anyhow!("AHDSR missing from the group template"))?
         + anchor.len();
 
     let mut out = (groups.len() as u32).to_le_bytes().to_vec();
@@ -614,5 +619,21 @@ mod tests {
             "9e107d9d372bb6826bd81d3542a419d6"
         );
         assert_eq!(super::crc32(b"123456789"), 0xcbf4_3926);
+    }
+}
+
+#[cfg(test)]
+mod doctor_template_tests {
+    use super::*;
+    #[test]
+    fn authored_group_template_has_fixed_native_width_and_rejects_capacity() {
+        let record = groups(&[Group::default()]).unwrap();
+        assert_eq!(&record[..4], &1_u32.to_le_bytes());
+        assert_eq!(groups(&[]).unwrap(), 0_u32.to_le_bytes());
+        let too_many = vec![Group::default(); 4097];
+        assert_eq!(
+            groups(&too_many).unwrap_err().to_string(),
+            "Too many groups for Kontakt"
+        );
     }
 }

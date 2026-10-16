@@ -18,11 +18,13 @@ pub struct FM8Preset;
 impl FM8Preset {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
-        assert_eq!(
-            &magic.to_be_bytes(),
-            FM8_MAGIC,
-            "Stream does not appear to be an FM8 Ensemble",
-        );
+        if &magic.to_be_bytes() != FM8_MAGIC {
+            return Err(NIFileError::InvalidField {
+                field: "FM8 magic",
+                expected: "FM8E (little-endian word)",
+                actual: format!("{magic:08x}"),
+            });
+        }
 
         let major_version: u32 = ReadBytesExt::read_le(&mut reader)?;
         println!("major version {:?}", major_version);
@@ -916,7 +918,11 @@ impl FM8Preset {
                 println!("Step Sequencer {} - Transpose {:?}", i, reader.read_i8()?);
             }
         } else {
-            panic!("Newer version than supported");
+            return Err(NIFileError::UnsupportedVersion {
+                format: "FM8",
+                max_supported: 0xCF,
+                got: major_version,
+            });
         }
 
         Ok(Self)
@@ -934,6 +940,44 @@ mod tests {
     use std::fs::File;
 
     use super::*;
+
+    #[test]
+    fn malformed_headers_are_typed_errors() {
+        use std::io::Cursor;
+        assert!(matches!(
+            FM8Preset::read(Cursor::new([0; 8])),
+            Err(NIFileError::InvalidField { field: "FM8 magic", .. })
+        ));
+        for version in [0xD0u32, u32::MAX] {
+            let mut bytes = u32::from_be_bytes(*FM8_MAGIC).to_le_bytes().to_vec();
+            bytes.extend(version.to_le_bytes());
+            assert!(matches!(
+                FM8Preset::read(Cursor::new(bytes)),
+                Err(NIFileError::UnsupportedVersion { got, .. }) if got == version
+            ));
+        }
+    }
+
+    #[test]
+    fn supported_zero_presets_consume_the_same_fixture_on_reparse() {
+        use std::io::Cursor;
+        // The reader exposes no writer or preset fields. Encode all-zero fields,
+        // delimit the consumed prefix, and verify both supported header layouts.
+        for version in [0xC9u32, 0xCA, 0xCF] {
+            let mut bytes = u32::from_be_bytes(*FM8_MAGIC).to_le_bytes().to_vec();
+            bytes.extend(version.to_le_bytes());
+            bytes.resize(64 * 1024, 0);
+            let mut reader = Cursor::new(bytes);
+            FM8Preset::read(&mut reader).unwrap();
+            let consumed = reader.position() as usize;
+            assert!(consumed > 8 && consumed < reader.get_ref().len());
+            let fixture = &reader.get_ref()[..consumed];
+            let mut exact = Cursor::new(fixture);
+            FM8Preset::read(&mut exact).unwrap();
+            assert_eq!(exact.position() as usize, fixture.len());
+            assert!(FM8Preset::read(Cursor::new(&fixture[..consumed - 1])).is_err());
+        }
+    }
 
     #[test]
     #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]

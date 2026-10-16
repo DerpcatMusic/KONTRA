@@ -981,6 +981,11 @@ fn voice_limit(
 /// with base b = e^((1 − |c|)·ln 500000 − ln 20000) for authored curve c in
 /// −1..1: k = ln(b / (1 + b)) for c > 0 (fast start), ln((1 + b) / b) else.
 fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
+    let (attack, fall) = ahdsr_coefficients(curve);
+    (ir::Curve::Exponential(attack), ir::Curve::Exponential(fall))
+}
+
+fn ahdsr_coefficients(curve: f32) -> (f64, f64) {
     let c = f64::from(curve.clamp(-1.0, 1.0));
     // The engine rounds the base to f32 before its power.
     let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
@@ -989,10 +994,7 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
     } else {
         ((1.0 + b) / b).ln()
     };
-    (
-        ir::Curve::Exponential(attack),
-        ir::Curve::Exponential((3.0f64 / 43.0).ln()),
-    )
+    (attack, (3.0f64 / 43.0).ln())
 }
 
 impl Translation {
@@ -1275,9 +1277,7 @@ impl Translation {
             native_amplitude: false,
         });
         use sampler_core::{EngineParameterLaw, EnvelopeStage};
-        let (ir::Curve::Exponential(curve), _) = ahdsr_curves(envelope.attack_curve) else {
-            unreachable!()
-        };
+        let (curve, _) = ahdsr_coefficients(envelope.attack_curve);
         for (name, stage, native) in [
             (
                 "ENGINE_PAR_ATTACK",
@@ -6221,5 +6221,24 @@ mod time_machine_tests {
         assert_eq!(source_mode_name(SOURCE_MODE_TM2), "Time Machine 2");
         assert_eq!(source_mode_name(SOURCE_MODE_TM_PRO), "Time Machine Pro");
         assert_eq!(SOURCE_MODE_DFD, 3);
+    }
+}
+
+#[cfg(test)]
+mod doctor_envelope_coefficients_tests {
+    use super::*;
+    #[test]
+    fn scalar_envelope_coefficients_retain_native_decay_landmarks_and_attack_direction() {
+        let (fast, fall) = ahdsr_coefficients(0.5);
+        let (slow, _) = ahdsr_coefficients(-0.5);
+        let progress = |coefficient: f64, time: f64| (coefficient * time).exp_m1() / coefficient.exp_m1();
+        assert!(progress(fast, 0.5) > 0.5);
+        assert!(progress(slow, 0.5) < 0.5);
+        // KONTAKT_REFERENCE.md section 17: remaining travel measured during decay.
+        for (time, measured) in [(0.125, 0.67), (0.375, 0.30), (0.625, 0.11), (0.875, 0.026)] {
+            assert!((1.0 - progress(fall, time) - measured).abs() < 0.04);
+        }
+        assert_eq!(ahdsr_coefficients(-2.), ahdsr_coefficients(-1.));
+        assert_eq!(ahdsr_coefficients(2.), ahdsr_coefficients(1.));
     }
 }
