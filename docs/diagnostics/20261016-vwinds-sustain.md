@@ -1,0 +1,84 @@
+# Clarinet A sustain investigation
+
+This records measured behavior of the published 0.3.503 source and separately
+compiled, opt-in diagnostic observers. It is not a claim of native equivalence,
+all-VWinds support, or a completed playback fix. The installed plugin remains
+0.3.503; no diagnostic candidate has replaced it.
+
+## Source and output evidence
+
+The selected Clarinet A source is a six-channel, 44.1 kHz FLAC with 196,510
+frames. Its encoded payload SHA-256 is
+`06cc62e2308af040f85414f976a346326976bc402d9aecc0468f7ca0addf3bf5`.
+The normal decoder's original-channel path was used in bounded, off-audio
+memory; only numeric measurements and hashes were retained.
+
+In the source-clock 1.75–2 second window, channel AC levels in dBFS were:
+
+| Channel | AC dBFS |
+| --- | ---: |
+| 1 | -89.50 |
+| 2 | -40.36 |
+| 3 | -27.07 |
+| 4 | -20.67 |
+| 5 | -17.25 |
+| 6 | -15.68 |
+
+Channels 2–6 have strong periodic candidates near 261.6 Hz, with subharmonic
+candidates also present. This does not identify a unique fundamental or prove
+native rendered timbre. Initial resident and streamed loading currently keep
+only the first two channels. The saved keygroup matrix routes all six inputs
+to its first output. Its saved coefficients alone do not establish live
+coefficients, bypass behavior, downstream channel width, or effect placement.
+A decode-time sum would lose those semantics and is not an accepted repair.
+
+The same file contains a continuous wrap loop at source frames
+`[22050, 196510)`. The selected program has no stored PlaybackOptions. Initial
+loading currently does not apply that file playback metadata. The file's root
+64 must remain distinct from the oscillator's authored BaseNote 60.
+
+A normal-loader six-second held key 60, velocity 96, without injected CCs,
+ended with zero physical voices despite continued note ownership and no note
+end. Output AC levels in the left channel fell from -52.61 dBFS at 3.75–4
+seconds to -117.49 dBFS at 5.75–6 seconds. Runtime health counters were zero.
+No persistent cursor wrap was observed past the file's approximately 4.455
+second duration. Earlier two-second output was faint but periodic; CC7/11
+full and a separate CC1 condition did not restore its level.
+
+## Authored regressions and admission boundaries
+
+Unchanged authored WAV, AIFF and FLAC fixtures exercise missing file-loop
+inheritance through both resident and streamed public loaders. Five cases
+reached the expected missing-loop assertion. The AIFF streamed case instead
+failed earlier during header admission; it is not counted as a sixth causal
+loop failure. Source inspection found that the vendored AIFF demuxer includes
+the eight-byte SSND prefix in its advertised audio length. A separate checked
+decoder correction and admission regression are required before loop testing
+can claim six causal failures.
+
+Both baseline controls passed: stored empty/nonempty playback options retain
+precedence, and a player with explicit options can ignore unsupported file
+sampler metadata. Independent review additionally requires metadata failure
+to remain local to inheriting players when a valid audio asset is shared with
+explicit-options players or impulse consumers. No loop production candidate
+has yet passed that corrected review and executable validation.
+
+## Findings that are not accepted explanations
+
+- A boolean write to a float parameter is intentionally ignored; global
+  coercion is not a sustain fix.
+- The two IgnoredInput counts do not demonstrate dropped note/CC messages.
+- A synthetic Part SignalConnection warning does not establish a muted
+  physical voice.
+- Saved layer gain zero and a separate generic gain-reopening regression do
+  not establish the cause of this preset's body loss. Actual initialization
+  and nested bus ownership must be distinguished from a flat synthetic test.
+- Response normalization, gain boosts, and CC default changes have not been
+  used to mask missing source channels or loops.
+
+Full numeric receipts are retained under the dev-drive PluginArtifacts
+directory `kontra-vwinds-sustain-root-20261016-r8`, including
+`resource-channel-windows01`, `loop-boundary-baseline01`,
+`loop-baseline-red01`, and `loop-baseline-controls01`. Protected program
+source, XML, encoded audio and decoded PCM were not exported by these
+measurements.
