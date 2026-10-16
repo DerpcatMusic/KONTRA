@@ -127,6 +127,28 @@ impl V2Core {
         })
     }
 
+    /// Opt-in query of the same actual installed owner; no standalone VM.
+    pub fn request_uvi_live_graph(
+        &self, slot: usize, epoch: u64, owner: &Arc<UiBridge>, timeout: Duration,
+        query: sampler_uvi::script::LiveGraphQuery,
+    ) -> Result<UviDiagnosticRequest, UviDiagnosticError> {
+        let driver = self.uvi_diagnostic_owner(slot, epoch, owner)?;
+        let request = driver.ui().request_live_graph(timeout, query)
+            .map_err(UviDiagnosticError::Request)?;
+        Ok(UviDiagnosticRequest { slot, epoch, owner: owner.clone(), request })
+    }
+    /// Validate owner/epoch even after terminal success, and require FIFO drain.
+    pub fn take_uvi_live_graph(
+        &self, token: &mut UviDiagnosticRequest,
+    ) -> Result<Option<Box<sampler_uvi::script::LiveGraphReceipt>>, UviDiagnosticError> {
+        if let Err(error) = self.uvi_diagnostic_owner(token.slot, token.epoch, &token.owner) {
+            token.cancel();
+            return Err(error);
+        }
+        if !token.request.commands_drained() { return Ok(None); }
+        Ok(token.request.take_live_graph())
+    }
+
     /// Validate the current installed owner on EVERY poll, including terminal
     /// replies. A retired or staged bridge cannot satisfy a replacement's wait.
     pub fn poll_uvi_diagnostics(
@@ -361,4 +383,20 @@ mod tests {
         ));
         drop(retired);
     }
+    #[test]
+    fn live_graph_terminal_receipt_is_one_shot_and_stale_owner_is_rejected() {
+        let query=||sampler_uvi::script::LiveGraphQuery{keygroup_node:8981,matrix_node:8985,player_nodes:vec![9019,9073,9127]};
+        let(installed,owner)=part(Module);let mut core=V2Core::default();core.reset(48000.);core.install(0,Some(installed));
+        let mut token=core.request_uvi_live_graph(0,77,&owner,Duration::from_secs(3),query()).unwrap();
+        until(||{core.begin_block(&BlockInfo{frames:0,offline:true,..Default::default()});
+            let r=core.poll_uvi_diagnostics(&mut token).unwrap();matches!(r.poll,DiagnosticPoll::Complete(_))&&r.commands_drained});
+        assert_eq!(core.take_uvi_live_graph(&mut token).unwrap().unwrap().value["status"],"refused");
+        assert!(core.take_uvi_live_graph(&mut token).unwrap().is_none());
+        let mut token=core.request_uvi_live_graph(0,77,&owner,Duration::from_secs(3),query()).unwrap();
+        until(||{core.begin_block(&BlockInfo{frames:0,offline:true,..Default::default()});
+            let r=core.poll_uvi_diagnostics(&mut token).unwrap();matches!(r.poll,DiagnosticPoll::Complete(_))&&r.commands_drained});
+        let(replacement,_)=part(Module);core.install(0,Some(replacement));
+        assert!(matches!(core.take_uvi_live_graph(&mut token),Err(UviDiagnosticError::StaleOwner)));
+    }
+
 }

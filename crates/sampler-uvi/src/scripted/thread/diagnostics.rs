@@ -96,6 +96,7 @@ pub enum DiagnosticRequestError {
     OwnerStopped,
     SeededOwner,
     InvalidTimeout,
+    InvalidGraphQuery,
 }
 
 /// Published after the owner drains earlier events, advances at the ordinary
@@ -141,10 +142,17 @@ pub enum DiagnosticPoll {
 
 /// Host/background only. Poll is one try_recv, never a blocking receive.
 /// Drop/cancel abandons this observation, not the owner's authored work.
+#[derive(Debug)]
+struct Reply {
+    acknowledgement: DiagnosticAcknowledgement,
+    graph: Option<Box<crate::script::LiveGraphReceipt>>,
+}
+
 pub struct DiagnosticRequest {
     id: u64,
     deadline: Instant,
-    reply: mpsc::Receiver<DiagnosticAcknowledgement>,
+    reply: mpsc::Receiver<Reply>,
+    graph: Option<Box<crate::script::LiveGraphReceipt>>,
     cancelled: Arc<AtomicBool>,
     progress: Arc<Progress>,
     terminal: Option<DiagnosticPoll>,
@@ -152,6 +160,10 @@ pub struct DiagnosticRequest {
 impl DiagnosticRequest {
     pub fn id(&self) -> u64 {
         self.id
+    }
+    /// One-shot owner-model receipt; only present after a successful poll.
+    pub fn take_live_graph(&mut self) -> Option<Box<crate::script::LiveGraphReceipt>> {
+        if matches!(self.terminal, Some(DiagnosticPoll::Complete(_))) { self.graph.take() } else { None }
     }
     pub fn progress(&self) -> DiagnosticProgress {
         self.progress.snapshot()
@@ -174,7 +186,10 @@ impl DiagnosticRequest {
             return self.finish(DiagnosticPoll::TimedOut);
         }
         match self.reply.try_recv() {
-            Ok(reply) => self.finish(DiagnosticPoll::Complete(reply)),
+            Ok(reply) => {
+                self.graph = reply.graph;
+                self.finish(DiagnosticPoll::Complete(reply.acknowledgement))
+            },
             Err(mpsc::TryRecvError::Empty) => DiagnosticPoll::Pending,
             Err(mpsc::TryRecvError::Disconnected) => self.finish(DiagnosticPoll::OwnerStopped),
         }
@@ -198,7 +213,8 @@ pub(super) struct Pending {
     id: u64,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
-    reply: mpsc::SyncSender<DiagnosticAcknowledgement>,
+    reply: mpsc::SyncSender<Reply>,
+    query: Option<crate::script::LiveGraphQuery>,
     pub(super) eligible: bool,
 }
 impl Pending {
@@ -225,8 +241,10 @@ impl Pending {
             next_due_ms: host.next_due(),
             samples: host.sample_load_status(),
         };
+        let graph = self.query.as_ref().map(|q| Box::new(host.observe_live_graph(q)));
+        if self.abandoned() { return; }
         p.acknowledged.store(self.id, Ordering::Release);
-        let _ = self.reply.try_send(ack);
+        let _ = self.reply.try_send(Reply { acknowledgement: ack, graph });
     }
 }
 
@@ -251,6 +269,18 @@ impl UiBridge {
     pub fn request_diagnostics(
         &self,
         timeout: Duration,
+    ) -> Result<DiagnosticRequest, DiagnosticRequestError> {
+        self.request_diagnostics_inner(timeout, None)
+    }
+    /// Same ordinary owner/FIFO service, with a bounded optional model receipt.
+    pub fn request_live_graph(
+        &self, timeout: Duration, query: crate::script::LiveGraphQuery,
+    ) -> Result<DiagnosticRequest, DiagnosticRequestError> {
+        query.validate().map_err(|_| DiagnosticRequestError::InvalidGraphQuery)?;
+        self.request_diagnostics_inner(timeout, Some(query))
+    }
+    fn request_diagnostics_inner(
+        &self, timeout: Duration, query: Option<crate::script::LiveGraphQuery>,
     ) -> Result<DiagnosticRequest, DiagnosticRequestError> {
         #[cfg(feature = "scan")]
         if self.seeded {
@@ -278,6 +308,7 @@ impl UiBridge {
             cancelled: cancelled.clone(),
             reply: send,
             eligible: false,
+            query,
         };
         if let Err(error) = self.edits.try_send(UiRequest::Diagnostic(request)) {
             progress.occupied.store(false, Ordering::Release);
@@ -294,6 +325,44 @@ impl UiBridge {
             cancelled,
             progress,
             terminal: None,
+            graph: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod live_graph_tests {
+    use super::*;
+    fn acknowledgement()->DiagnosticAcknowledgement {
+        DiagnosticAcknowledgement {request_id:1,events_executed:0,commands_collected:0,commands_pushed:0,
+            ui_revision:0,runtime_faults:0,runtime_budgets:0,next_due_ms:None,samples:Default::default()}
+    }
+    fn request()->(DiagnosticRequest,mpsc::SyncSender<Reply>) {
+        let(send,reply)=mpsc::sync_channel(1);
+        let progress=Arc::new(Progress::default());progress.occupied.store(true,Ordering::Release);
+        (DiagnosticRequest{id:1,deadline:Instant::now()+Duration::from_secs(2),reply,
+            graph:None,cancelled:Arc::new(AtomicBool::new(false)),progress,terminal:None},send)
+    }
+    #[test]
+    fn copy_contract_and_one_shot_envelope() {
+        fn is_copy<T:Copy>(){} is_copy::<DiagnosticAcknowledgement>();is_copy::<DiagnosticPoll>();
+        let(mut r,send)=request();assert_eq!(r.poll(),DiagnosticPoll::Pending);
+        assert!(r.take_live_graph().is_none());
+        send.send(Reply{acknowledgement:acknowledgement(),graph:Some(Box::new(crate::script::LiveGraphReceipt{
+            value:serde_json::json!({"status":"observed"})}))}).unwrap();
+        assert!(matches!(r.poll(),DiagnosticPoll::Complete(_)));assert!(!r.commands_drained());
+        r.progress.marker_drained.store(1,Ordering::Release);assert!(r.commands_drained());
+        assert_eq!(r.take_live_graph().unwrap().value["status"],"observed");assert!(r.take_live_graph().is_none());
+        assert!(matches!(r.poll(),DiagnosticPoll::Complete(_)));
+    }
+    #[test]
+    fn cancellation_and_expired_reply_never_publish_graph() {
+        let(mut r,send)=request();assert_eq!(r.cancel(),DiagnosticPoll::Cancelled);
+        send.send(Reply{acknowledgement:acknowledgement(),graph:None}).unwrap();
+        assert_eq!(r.poll(),DiagnosticPoll::Cancelled);assert!(r.take_live_graph().is_none());
+        let(mut r,send)=request();r.deadline=Instant::now();
+        send.send(Reply{acknowledgement:acknowledgement(),graph:None}).unwrap();
+        assert_eq!(r.poll(),DiagnosticPoll::TimedOut);assert!(r.take_live_graph().is_none());
+        assert!(!r.progress.occupied.load(Ordering::Acquire));
     }
 }
