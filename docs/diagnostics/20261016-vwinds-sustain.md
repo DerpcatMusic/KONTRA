@@ -92,7 +92,7 @@ same-held-note controller write producing silence instead of the independent
 stereo reference. These are baseline regressions awaiting the channel fix,
 not a passing test suite or a native timbre comparison.
 
-The optional live-owner observer passed its common build, all 28 targeted tests,
+The initial optional live-owner observer passed its common build, all 28 targeted tests,
 15 other lifecycle tests, and affected all-target Clippy. Review corrections
 cover identity joins, overlay lookup refusal, inspection work limits and bounded
 invalid-query reporting. Three fixture defects were retained and corrected:
@@ -116,8 +116,42 @@ zero runtime health errors, but all six owner graph snapshots refused at the
 128-selected-node limit. The bank and helper hashes were unchanged. No current
 matrix, bypass or FXPostGain facts were recovered from those refusals. The
 receipt remains partial; the limit has not been raised and no automatic repeat
-was started. Source-only selection diagnosis continues separately from the
-unfinished channel renderer.
+was started. The first refusal remains immutable; the subsequent reviewed selection change
+and observation are recorded below.
+
+The subsequent required-owner-facts selection keeps the whole canonical walk
+and every existing cap, projects only required owners and their immediate
+inserts/auxs/sends, and labels omitted descendants explicitly. Independent
+review identified an omitted nested-route scalar read; its correction retains
+identity/order without those scalar fields. The corrected source passed all
+37 observer tests, 15 other lifecycle tests, affected all-target Clippy and a
+fresh independent source review with no remaining finding.
+
+One new six-second observation used the same key60/velocity96/no-CC plan and
+that frozen helper. All six owner snapshots returned the required facts:
+12 selected model nodes plus synthetic Part, one complete 144-cell matrix,
+14 ordered insert references and three routes. The matrix values were identical
+at initialization, before PCM, frames48,000/240,000, and the final288,000.
+Matrix8985 is enabled; its first output uses input coefficients
+[1,1,0.99960017,1,1,1], and output2 uses [0.0024501085,0,0,0,0,0].
+Outputs3–6 have zero coefficients for the six actual inputs. The primary
+player9019 is enabled, alternates9073/9127 are bypassed, second insert9003 is
+bypassed, and keygroup FXPostGain is false. These are ordinary owner/getter
+facts, not native dimensional semantics or future-state proof.
+
+The observation again rendered288,000 frames, retained one held voice, and
+reported no note end or runtime health error. Bank/helper hashes were unchanged.
+The separate compiled-chain/core join refused at its existing
+worker_chain_processor_bound; its cap was not raised. The graph remains partial,
+with5,601 unprojected model nodes and156 boundary edges, and no complete compiled
+route or MC01/MC09 admission claim. No further actual invocation is queued.
+
+The private functional channel draft still intentionally rejects the actual
+three-authored-player plus second-insert topology. Its one-authored-player,
+matrix-only represented subset is not completion of the Clarinet fix. Shared
+oscillator/processor placement or a complete supported mutation/selection guard
+must be established before that real graph can be admitted. The private draft
+remains ExecutionPending and has not been applied, compiled or activated.
 
 ## Findings that are not accepted explanations
 
@@ -139,6 +173,7 @@ directory `kontra-vwinds-sustain-root-20261016-r8`, including
 `loop-candidate-green01`, `loop-boundary-candidate01`,
 `multichannel-baseline01`, `multichannel-baseline02`, and
 `source-bundle-m1-check01`, `live-matrix-cohort08`, and
-`live-matrix-actual01`. Protected program
+`live-matrix-actual01`, `live-matrix-cohort09`, and
+`live-matrix-actual02`. Protected program
 source, XML, encoded audio and decoded PCM were not exported by these
 measurements.
