@@ -77,6 +77,27 @@ window. This verifies the loop correction on this normal-loader observation.
 It remains quiet: source-channel truncation and native timbre/level are separate
 unresolved work. No gain, controller default or response policy was changed.
 
+The authored six-channel matrix regression now has four passing controls:
+resident and streamed first-two-channel references, ordinary mono/stereo, and
+a live program-matrix write on the same held source. The first test run omitted
+normal streaming readiness service and failed two controls with underruns; that
+run is retained as a fixture failure, not channel-loss evidence. After adding
+the existing bounded offline readiness service, all four controls passed without
+relaxing the health checks or changing fixture PCM and expected audio.
+
+Against the unchanged stereo implementation, all 22 targeted cases then failed
+at their required causal checks: 20 resident/streamed signed matrix PCM
+comparisons, the missing keygroup Gain_3_1 control binding, and the corresponding
+same-held-note controller write producing silence instead of the independent
+stereo reference. These are baseline regressions awaiting the channel fix,
+not a passing test suite or a native timbre comparison.
+
+The optional live-owner observer is also unfinished. Independent source review
+requested five corrections to identity joins, overlay lookup refusal, inspection
+work limits, and route provenance. The common diagnostic build compiles, but its
+library tests currently stop at a test-helper visibility error. No actual
+Clarinet run using that observer has been accepted.
+
 ## Findings that are not accepted explanations
 
 - A boolean write to a float parameter is intentionally ignored; global
@@ -94,6 +115,7 @@ Full numeric receipts are retained under the dev-drive PluginArtifacts
 directory `kontra-vwinds-sustain-root-20261016-r8`, including
 `resource-channel-windows01`, `loop-boundary-baseline01`,
 `loop-baseline-red01`, `loop-baseline-controls01`, `aiff-decoder-only01`,
-`loop-candidate-green01`, and `loop-boundary-candidate01`. Protected program
+`loop-candidate-green01`, `loop-boundary-candidate01`,
+`multichannel-baseline01`, and `multichannel-baseline02`. Protected program
 source, XML, encoded audio and decoded PCM were not exported by these
 measurements.
