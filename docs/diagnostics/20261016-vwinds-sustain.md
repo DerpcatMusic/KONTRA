@@ -139,7 +139,7 @@ player 9019 is enabled, alternates 9073/9127 are bypassed, second insert 9003 is
 bypassed, and keygroup FXPostGain is false. These are ordinary owner/getter
 facts, not native dimensional semantics or future-state proof.
 
-The observation again rendered288,000 frames, retained one held voice, and
+The observation again rendered 288,000 frames, retained one held voice, and
 reported no note end or runtime health error. Bank/helper hashes were unchanged.
 The separate compiled-chain/core join refused at its existing
 worker_chain_processor_bound; its cap was not raised. The graph remains partial,
