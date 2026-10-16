@@ -213,3 +213,14 @@ fn unsupported_init_set_playback_options_is_an_explicit_lua_fault_not_an_effecti
     assert!(host.findings().iter().any(|f|f.feature=="lua error" && f.value.contains("setPlaybackOptions")),"{:?}",host.findings());
     let loaded=sampler_uvi::load(&path,48000).unwrap();assert_eq!(loop_range(&loaded.instrument),(16,96));
 }
+
+#[test]
+fn aiff_stream_header_and_full_decode_match_the_authored_pcm_frame_count() {
+    let f=Fixture::new();let path=f.program("aiff",&aiff(),"<PlaybackOptions/>");
+    let full=sampler_uvi::decode_sample(&f.0.join("tone.aiff")).unwrap();
+    assert_eq!(full.rate,48000);assert_eq!(full.frames.len(),FRAMES);
+    let expected:Vec<_>=signal().into_iter().map(|s|[f32::from(s)/32768.;2]).collect();assert_eq!(full.frames,expected);
+    let streamed=sampler_uvi::load_streamed(&path,48000,&Default::default()).unwrap();
+    assert_eq!(streamed.assets.len(),1);assert_eq!(streamed.assets[0].frame_count(),FRAMES);
+    assert_eq!(streamed.assets[0].sample_rate(),48000);
+}
