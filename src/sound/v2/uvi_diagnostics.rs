@@ -388,12 +388,14 @@ mod tests {
         let query=||sampler_uvi::script::LiveGraphQuery{keygroup_node:8981,matrix_node:8985,player_nodes:vec![9019,9073,9127]};
         let(installed,owner)=part(Module);let mut core=V2Core::default();core.reset(48000.);core.install(0,Some(installed));
         let mut token=core.request_uvi_live_graph(0,77,&owner,Duration::from_secs(3),query()).unwrap();
-        until(||{core.begin_block(&BlockInfo{frames:0,offline:true,..Default::default()});
+        until(||{core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+            let _=core.render(128);
             let r=core.poll_uvi_diagnostics(&mut token).unwrap();matches!(r.poll,DiagnosticPoll::Complete(_))&&r.commands_drained});
         assert_eq!(core.take_uvi_live_graph(&mut token).unwrap().unwrap().value["status"],"refused");
         assert!(core.take_uvi_live_graph(&mut token).unwrap().is_none());
         let mut token=core.request_uvi_live_graph(0,77,&owner,Duration::from_secs(3),query()).unwrap();
-        until(||{core.begin_block(&BlockInfo{frames:0,offline:true,..Default::default()});
+        until(||{core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+            let _=core.render(128);
             let r=core.poll_uvi_diagnostics(&mut token).unwrap();matches!(r.poll,DiagnosticPoll::Complete(_))&&r.commands_drained});
         let(replacement,_)=part(Module);core.install(0,Some(replacement));
         assert!(matches!(core.take_uvi_live_graph(&mut token),Err(UviDiagnosticError::StaleOwner)));
