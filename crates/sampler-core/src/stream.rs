@@ -129,6 +129,7 @@ struct Entry {
     retries: u8,
     retry_after: Option<std::time::Instant>,
     next: Option<Index>,
+    previous: Option<Index>,
     previous_use: Option<Index>,
     next_use: Option<Index>,
 }
@@ -354,23 +355,15 @@ impl StreamCache {
     fn unlink(&mut self, slot: usize) {
         let entry = self.entries[slot].as_ref().unwrap();
         let bucket = bucket(entry.request.key, self.buckets.len());
-        let mut at = self.buckets[bucket];
-        let mut previous: Option<Index> = None;
-        while let Some(index) = at {
-            let i = index.get();
-            let next = self.entries[i].as_ref().unwrap().next;
-            if i == slot {
-                if let Some(p) = previous {
-                    self.entries[p.get()].as_mut().unwrap().next = next;
-                } else {
-                    self.buckets[bucket] = next;
-                }
-                return;
-            }
-            previous = Some(index);
-            at = next;
+        let (previous, next) = (entry.previous, entry.next);
+        if let Some(previous) = previous {
+            self.entries[previous.get()].as_mut().unwrap().next = next;
+        } else {
+            self.buckets[bucket] = next;
         }
-        unreachable!("every admitted entry is indexed");
+        if let Some(next) = next {
+            self.entries[next.get()].as_mut().unwrap().previous = previous;
+        }
     }
     pub fn status(&self, key: PageKey) -> PageStatus {
         self.find(key).map_or(PageStatus::Missing, |i| {
@@ -443,12 +436,12 @@ impl StreamCache {
         // Port from v1 0cb7a8a0:src/engine/mod.rs: free.pop()/free.push().
         // Shared decoded pages additionally reuse the oldest idle chain head.
         // Neither allocation nor eviction searches the reserved slot array.
-        let slot = self
-            .vacant
-            .last()
-            .copied()
-            .or_else(|| self.idle.first.map(Index::get))
-            .ok_or(StreamError::Capacity)?;
+        // Carry the admission decision through commit. A vacant reservation
+        // names its remaining prefix, so commit does not rediscover/pop a slot.
+        let (slot, vacant_prefix) = match self.vacant.split_last() {
+            Some((&slot, prefix)) => (slot, Some(prefix.len())),
+            None => (self.idle.first.map(Index::get).ok_or(StreamError::Capacity)?, None),
+        };
         if self.recycled.is_full()
             && self.entries[slot]
                 .as_ref()
@@ -475,11 +468,12 @@ impl StreamCache {
             .expect("reserved request capacity");
         self.pushed = true;
         self.serial = serial;
-        if self.entries[slot].is_some() {
-            self.unlink_use(slot);
-            self.unlink(slot);
-        } else {
-            assert_eq!(self.vacant.pop(), Some(slot));
+        match vacant_prefix {
+            Some(remaining) => self.vacant.truncate(remaining),
+            None => {
+                self.unlink_use(slot);
+                self.unlink(slot);
+            }
         }
         if let Some(old) = self.entries[slot].take() {
             if let State::Ready(samples) = old.state {
@@ -495,10 +489,14 @@ impl StreamCache {
             retries: 0,
             retry_after: None,
             next: self.buckets[bucket(key, self.buckets.len())],
+            previous: None,
             previous_use: None,
             next_use: None,
         });
         let bucket = bucket(key, self.buckets.len());
+        if let Some(next) = self.buckets[bucket] {
+            self.entries[next.get()].as_mut().unwrap().previous = Some(Index::new(slot));
+        }
         self.buckets[bucket] = Some(Index::new(slot));
         self.append_active(slot);
         Ok(PageStatus::Pending)
@@ -1538,5 +1536,94 @@ mod admission_tests {
             cache.request(&pcm, keys[5].index, 0),
             Err(StreamError::Capacity)
         );
+    }
+}
+
+#[cfg(test)]
+mod bucket_link_tests {
+    use super::*;
+
+    fn check_index(cache: &StreamCache) {
+        let mut seen = vec![false; cache.entries.len()];
+        for (bucket_index, &head) in cache.buckets.iter().enumerate() {
+            let (mut at, mut previous) = (head, None);
+            let mut traversed = 0;
+            while let Some(index) = at {
+                traversed += 1;
+                assert!(traversed <= cache.entries.len(), "cycle in hash bucket");
+                let slot = index.get();
+                let entry = cache.entries[slot].as_ref().unwrap();
+                assert_eq!(bucket(entry.request.key, cache.buckets.len()), bucket_index);
+                assert_eq!(entry.previous, previous);
+                assert!(!seen[slot], "slot indexed twice");
+                seen[slot] = true;
+                previous = Some(index);
+                at = entry.next;
+            }
+        }
+        for (slot, entry) in cache.entries.iter().enumerate() {
+            assert_eq!(seen[slot], entry.is_some());
+        }
+    }
+
+    #[test]
+    fn colliding_heads_middles_and_tails_survive_repeated_eviction() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 1024).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(3).unwrap();
+        let pages: Vec<_> = (0..1024).filter(|&index| {
+            bucket(PageKey { asset: pcm.asset_id(), index }, cache.buckets.len()) == 0
+        }).take(12).collect();
+        assert_eq!(pages.len(), 12);
+        for &page in &pages[..3] {
+            assert_eq!(cache.request(&pcm, page, 0), Ok(PageStatus::Pending));
+            let mut job = worker.next_job().unwrap();
+            job.frames_mut().fill([0.25; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            cache.poll().unwrap();
+            check_index(&cache);
+        }
+        for (round, &page) in pages[3..].iter().enumerate() {
+            cache.begin_epoch().unwrap();
+            // Reorder idle/use and hash order independently. Head, middle and
+            // tail links all become eviction targets during this cycle.
+            let key = pages[round];
+            cache.protect(&pcm, key * PAGE_FRAMES..(key + 1) * PAGE_FRAMES).unwrap();
+            assert_eq!(cache.request(&pcm, page, round as u64), Ok(PageStatus::Pending));
+            check_index(&cache);
+            let mut job = worker.next_job().unwrap();
+            job.frames_mut().fill([0.5; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            cache.poll().unwrap();
+            check_index(&cache);
+            assert_eq!(cache.status(PageKey { asset: pcm.asset_id(), index: page }), PageStatus::Ready);
+        }
+        // Explicitly remove each current head, ending with a sole-member
+        // bucket, then exercise refilling the vacant-slot reservation path.
+        for remaining in (1..=3).rev() {
+            let head = cache.buckets[0].unwrap().get();
+            let key = cache.entries[head].as_ref().unwrap().request.key;
+            assert!(cache.invalidate(key).unwrap());
+            assert_eq!(cache.status(key), PageStatus::Missing);
+            check_index(&cache);
+            let occupied = cache.entries.iter().filter(|e| e.is_some()).count();
+            assert_eq!(occupied, remaining - 1);
+            assert_eq!(cache.vacant.len() + occupied, 3);
+            for entry in cache.entries.iter().flatten() {
+                assert_eq!(cache.status(entry.request.key), PageStatus::Ready);
+            }
+        }
+        assert!(cache.buckets[0].is_none());
+        for &page in &pages[..3] {
+            assert_eq!(cache.request(&pcm, page, 100), Ok(PageStatus::Pending));
+            check_index(&cache);
+            let mut job = worker.next_job().unwrap();
+            job.frames_mut().fill([0.75; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            cache.poll().unwrap();
+            check_index(&cache);
+            let occupied = cache.entries.iter().filter(|e| e.is_some()).count();
+            assert_eq!(cache.vacant.len() + occupied, 3);
+            assert_eq!(cache.status(PageKey { asset: pcm.asset_id(), index: page }), PageStatus::Ready);
+        }
     }
 }

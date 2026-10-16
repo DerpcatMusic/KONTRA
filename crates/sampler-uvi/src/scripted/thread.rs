@@ -231,27 +231,22 @@ fn send_ready_commands(
     ui.diagnostic_phase(DiagnosticPhase::Commands);
     #[cfg(feature = "scan")]
     let _span = host.owner_span(OwnerStage::ReadyCommandsPush);
-    let mut batch = batch.into_iter();
-    while let Some(command) = batch.next() {
-        match outgoing.push(Outgoing::Command(command)) {
-            Ok(()) => {
-                if let Some(progress) = ui.diagnostics.get() {
-                    progress.pushed.fetch_add(1, Ordering::Release);
-                }
-                #[cfg(feature = "scan")]
-                {
-                    host.owner_count(OwnerCounter::CommandsPushed, 1);
-                    host.owner_count(OwnerCounter::ReadyCommandsPushed, 1);
-                }
+    let count = batch.len();
+    match outgoing.write_chunk_uninit(count) {
+        Ok(chunk) => {
+            chunk.fill_from_iter(batch.into_iter().map(Outgoing::Command));
+            if let Some(progress) = ui.diagnostics.get() {
+                progress.pushed.fetch_add(count as u64, Ordering::Release);
             }
-            Err(rtrb::PushError::Full(Outgoing::Command(command))) => {
-                // SPSC free space cannot shrink while this producer pushes
-                // the admitted batch. Retain FIFO even if that API changes.
-                backlog.push(command);
-                backlog.extend(batch);
-                break;
+            #[cfg(feature = "scan")]
+            {
+                host.owner_count(OwnerCounter::CommandsPushed, count);
+                host.owner_count(OwnerCounter::ReadyCommandsPushed, count);
             }
-            Err(rtrb::PushError::Full(Outgoing::Diagnostic(_))) => unreachable!(),
+        }
+        Err(_) => {
+            // Preserve every command in FIFO order if admission ever changes.
+            backlog.extend(batch);
         }
     }
 }

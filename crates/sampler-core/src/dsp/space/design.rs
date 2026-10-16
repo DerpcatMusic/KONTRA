@@ -508,43 +508,72 @@ fn spark(s: &SparkVerb, rate: f64) -> Spec {
 ///   constants at `0x141e821d8..0x141e82230` and `0x141cfa9dc` (441/44100),
 ///   left and right alternating the +23 spread.
 pub(super) mod jezar_law {
+    /// The authored tunings of the native table. A coefficient lookup cannot
+    /// accept a length outside this finite domain.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Tuning {
+        T225,
+        T248,
+        T341,
+        T364,
+        T441,
+        T464,
+        T556,
+        T579,
+        T1116,
+        T1139,
+        T1188,
+        T1211,
+        T1277,
+        T1300,
+        T1356,
+        T1379,
+        T1422,
+        T1445,
+        T1491,
+        T1514,
+        T1557,
+        T1580,
+        T1617,
+        T1640,
+    }
     /// `k·44100` of the comb and allpass constants, L then R.
-    pub(crate) const COMB: [[u32; 8]; 2] = [[1116, 1211, 1277, 1379, 1422, 1514, 1557, 1640], [1139, 1188, 1300, 1356, 1445, 1491, 1580, 1617]];
-    pub(crate) const ALLPASS: [[u32; 4]; 2] = [[556, 464, 341, 248], [579, 441, 364, 225]];
+    pub(crate) const COMB: [[Tuning; 8]; 2] = [[Tuning::T1116, Tuning::T1211, Tuning::T1277, Tuning::T1379, Tuning::T1422, Tuning::T1514, Tuning::T1557, Tuning::T1640], [Tuning::T1139, Tuning::T1188, Tuning::T1300, Tuning::T1356, Tuning::T1445, Tuning::T1491, Tuning::T1580, Tuning::T1617]];
+    pub(crate) const ALLPASS: [[Tuning; 4]; 2] = [[Tuning::T556, Tuning::T464, Tuning::T341, Tuning::T248], [Tuning::T579, Tuning::T441, Tuning::T364, Tuning::T225]];
 
-    /// The f32 constant for a tuning (the table at `0x141e821d8`).
-    fn k(len: u32) -> f32 {
-        match len {
-            225 => f32::from_bits(0x3ba72f05),
-            248 => f32::from_bits(0x3bb84608),
-            341 => f32::from_bits(0x3bfd604b),
-            364 => f32::from_bits(0x3c073ba7),
-            441 => f32::from_bits(0x3c23d70a),
-            464 => f32::from_bits(0x3c2c628b),
-            556 => f32::from_bits(0x3c4e9091),
-            579 => f32::from_bits(0x3c571c12),
-            1116 => f32::from_bits(0x3ccf4ec9),
-            1139 => f32::from_bits(0x3cd39489),
-            1188 => f32::from_bits(0x3cdcaeb5),
-            1211 => f32::from_bits(0x3ce0f475),
-            1277 => f32::from_bits(0x3ced370e),
-            1300 => f32::from_bits(0x3cf17cce),
-            1356 => f32::from_bits(0x3cfbe3db),
-            1379 => f32::from_bits(0x3d0014ce),
-            1422 => f32::from_bits(0x3d04133a),
-            1445 => f32::from_bits(0x3d06361a),
-            1491 => f32::from_bits(0x3d0a7bdb),
-            1514 => f32::from_bits(0x3d0c9ebb),
-            1557 => f32::from_bits(0x3d109d27),
-            1580 => f32::from_bits(0x3d12c007),
-            1617 => f32::from_bits(0x3d162fc9),
-            1640 => f32::from_bits(0x3d1852aa),
-            _ => unreachable!("no constant for {len}"),
+    impl Tuning {
+        /// The f32 constant at `0x141e821d8`, with its native rounding.
+        fn coefficient(self) -> f32 {
+            match self {
+                Self::T225 => f32::from_bits(0x3ba72f05),
+                Self::T248 => f32::from_bits(0x3bb84608),
+                Self::T341 => f32::from_bits(0x3bfd604b),
+                Self::T364 => f32::from_bits(0x3c073ba7),
+                Self::T441 => f32::from_bits(0x3c23d70a),
+                Self::T464 => f32::from_bits(0x3c2c628b),
+                Self::T556 => f32::from_bits(0x3c4e9091),
+                Self::T579 => f32::from_bits(0x3c571c12),
+                Self::T1116 => f32::from_bits(0x3ccf4ec9),
+                Self::T1139 => f32::from_bits(0x3cd39489),
+                Self::T1188 => f32::from_bits(0x3cdcaeb5),
+                Self::T1211 => f32::from_bits(0x3ce0f475),
+                Self::T1277 => f32::from_bits(0x3ced370e),
+                Self::T1300 => f32::from_bits(0x3cf17cce),
+                Self::T1356 => f32::from_bits(0x3cfbe3db),
+                Self::T1379 => f32::from_bits(0x3d0014ce),
+                Self::T1422 => f32::from_bits(0x3d04133a),
+                Self::T1445 => f32::from_bits(0x3d06361a),
+                Self::T1491 => f32::from_bits(0x3d0a7bdb),
+                Self::T1514 => f32::from_bits(0x3d0c9ebb),
+                Self::T1557 => f32::from_bits(0x3d109d27),
+                Self::T1580 => f32::from_bits(0x3d12c007),
+                Self::T1617 => f32::from_bits(0x3d162fc9),
+                Self::T1640 => f32::from_bits(0x3d1852aa),
+            }
         }
     }
-
-    pub(crate) fn length(len: u32, rate: f32) -> usize {
-        (rate * k(len)) as usize
+    pub(crate) fn length(tuning: Tuning, rate: f32) -> usize {
+        (rate * tuning.coefficient()) as usize
     }
 
     /// Comb feedback (`0x141313400`).

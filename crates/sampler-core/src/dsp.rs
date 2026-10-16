@@ -439,6 +439,20 @@ impl VoiceChain {
         })
     }
 }
+fn prepare_timemod(
+    timemod: timemod::TimeMod,
+    live: Option<LiveKnobs>,
+    bindings: &mut Vec<ControlRange>,
+    delay_frames: &mut usize,
+) -> Result<PreparedProcessor, Error> {
+    let offset = *delay_frames;
+    *delay_frames = offset.checked_add(timemod.frames()).ok_or(Error::Capacity)?;
+    let live = live.map_or([None; LIVE_KNOBS], |knobs| {
+        knobs.map(|k| k.map(|(role, parameter)| (role, parameter.compile(bindings))))
+    });
+    Ok(PreparedProcessor::TimeMod { timemod, offset, live })
+}
+
 pub(super) fn compile_processors(
     stages: Box<[Processor]>,
     rate: u32,
@@ -457,26 +471,21 @@ pub(super) fn compile_processors(
             Ok(match stage {
                 Processor::StateVariable(filter) => {
                     let index = filters.len();
-                    filters.push(filter.compile(rate, bindings)?);
+                    filters.push(svf::PreparedFilter::StateVariable(filter.compile(rate, bindings)?));
                     PreparedProcessor::StateVariable(index)
                 }
-                Processor::Delay(_) | Processor::TimeMod(_) | Processor::LiveTimeMod(..) | Processor::Phaser(_) => {
-                    let timemod = match stage {
-                        Processor::Delay(delay) => timemod::TimeMod::compile(delay.config(), rate)?,
-                        Processor::TimeMod(config) | Processor::LiveTimeMod(config, _) => timemod::TimeMod::compile(config, rate)?,
-                        Processor::Phaser(knobs) => timemod::TimeMod::phaser_filter(knobs)?,
-                        _ => unreachable!(),
-                    };
-                    let offset = *delay_frames;
-                    *delay_frames = offset
-                        .checked_add(timemod.frames())
-                        .ok_or(Error::Capacity)?;
-                    let live = match stage {
-                        Processor::LiveTimeMod(_, knobs) => knobs.map(|k| k.map(|(r, p)| (r, p.compile(bindings)))),
-                        _ => [None; LIVE_KNOBS],
-                    };
-                    PreparedProcessor::TimeMod { timemod, offset, live }
-                }
+                Processor::Delay(delay) => prepare_timemod(
+                    timemod::TimeMod::compile(delay.config(), rate)?, None, bindings, delay_frames,
+                )?,
+                Processor::TimeMod(config) => prepare_timemod(
+                    timemod::TimeMod::compile(config, rate)?, None, bindings, delay_frames,
+                )?,
+                Processor::LiveTimeMod(config, knobs) => prepare_timemod(
+                    timemod::TimeMod::compile(config, rate)?, Some(knobs), bindings, delay_frames,
+                )?,
+                Processor::Phaser(knobs) => prepare_timemod(
+                    timemod::TimeMod::phaser_filter(knobs)?, None, bindings, delay_frames,
+                )?,
                 Processor::Dynamics(settings) => {
                     PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
                 }
