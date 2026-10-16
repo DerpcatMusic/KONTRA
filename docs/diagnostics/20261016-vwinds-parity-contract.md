@@ -82,6 +82,31 @@ bundle at ExecutionPending, requires seven typed-core ports, has open aggregate
 resource obligations and rejects the actual three-player keygroup. It is not
 accepted as the user's playback fix and has not replaced the installed binaries.
 
+The combined Doctor/file-loop baseline was separately validated at
+`bc24c9250ae5db30a4f9e498296f1ab473d0d57b`, tree
+`03372ad8d3d9e54027979c6421da47c6d176e177`. Core library tests passed 565 with
+11 existing ignores; the nonactivating source-bundle admission tests passed 15;
+normal file-playback inheritance tests passed 15. Affected core/UVI all-target
+Clippy passed. A complete same-policy Doctor report passed with zero error
+findings, zero producer errors, 11,551 warnings and 85 informational findings.
+Warnings remain visible; the net increase of 76 over the Doctor-only `c41e24dc1`
+report is not classified as false positives. Exact diagnostic-ID comparison
+also includes moved sites, so its additions/removals are not a count of new bugs.
+
+All these commands ran under the common global lock, with unchanged tracked
+source inputs and a freshly compiled core test executable whose package identity
+names the integration worktree. Receipts and the warning delta are under
+`PluginArtifacts/kontra-vwinds-parity-reference-20261016-r17/combined-quality02/`.
+This cohort did not apply M2, read an actual bank, execute a native target, build
+shipping plugins or change the installation. Earlier native/editor/full-matrix
+results keep their separate source identities.
+
+Root's partial M2 review also identified a numerical mismatch: its output fold
+uses float64 products and accumulation, whereas the retained original matrix's
+dynamic accumulation branch has separate float32 multiply/add/store boundaries.
+The quarter-gain authored fixtures cannot establish equivalence here. The
+original constant/first-contribution helpers remain a separate evidence gate.
+
 References: [retained native topology](../re/DSP_FORMAT_SPECIFICATION.md),
 [historical level investigation](../re/uvi-survey-vwinds-level-investigation.md),
 [actual loop/source results](20261016-vwinds-sustain.md), and the
