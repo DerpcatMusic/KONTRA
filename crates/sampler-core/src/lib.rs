@@ -115,6 +115,8 @@ pub use engine_parameters::{
 };
 mod parameter_registry;
 mod steal;
+mod topology;
+pub use topology::{ProcessingOwnerId, ProcessingOwnerSnapshot};
 pub use parameter_registry::{
     ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw, ParameterRegistry,
     ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry,
@@ -554,6 +556,7 @@ struct Note {
     order: u64,
     expression: ExpressionId,
     families: usize,
+    processing_owners: usize,
     children: usize,
 }
 
@@ -588,6 +591,8 @@ struct Voice {
     stretch_step: f64,
     allocation: [allocation::Link; 4],
     family: FamilyId,
+    processing: Option<(ProcessingOwnerId, usize)>,
+    processing_gate: bool,
     siblings: Siblings,
     sample: usize,
     cursor: source::Cursor,
@@ -888,6 +893,9 @@ pub struct Runtime {
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
+    processing_owners: Arena<topology::ProcessingOwner>,
+    processing_activation: u64,
+    processing_admission: bool,
     voice_activity: Box<[u64]>,
     onsets: onset::Storage,
     pending_onsets: usize,
@@ -1024,6 +1032,8 @@ impl Runtime {
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
+        std::alloc::Layout::array::<Slot<topology::ProcessingOwner>>(limits.voices)
+            .map_err(|_| Error::Capacity)?;
         let initial_controllers = plan.initial_controllers.clone();
         let note_stride = limits.note_cells / limits.notes;
         if plan.note_cells > note_stride {
@@ -1125,6 +1135,9 @@ impl Runtime {
             callback_id_reservations: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
+            processing_owners: Arena::new(id, limits.voices),
+            processing_activation: 0,
+            processing_admission: false,
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             onsets: onset::Storage::new(limits.voices),
             pending_onsets: 0,
@@ -1671,6 +1684,7 @@ impl Runtime {
                 order,
                 expression,
                 families: 0,
+                processing_owners: 0,
                 children: 0,
             },
             self.note_params.capacity(),
@@ -1937,7 +1951,10 @@ impl Runtime {
         } else {
             0
         };
-        self.steal_voices(1);
+        if !self.processing_admission { self.steal_voices(1); }
+        if self.processing_admission && self.voices.available() == 0 {
+            return Err(Error::Capacity);
+        }
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
@@ -1973,6 +1990,8 @@ impl Runtime {
             stretch_step: 1.0,
             allocation: [allocation::Link::default(); 4],
             family,
+            processing: None,
+            processing_gate: false,
             siblings: Siblings {
                 previous: None,
                 next: next_sibling,
@@ -2057,6 +2076,7 @@ impl Runtime {
     }
 
     fn close_gate(&mut self, id: NoteId, cause: ReleaseCause) {
+        self.release_processing_note(id);
         let note = self.notes.get_mut(id.0).unwrap();
         let first = note.gate();
         if first {
@@ -2107,6 +2127,7 @@ impl Runtime {
         }
         self.abandon_zone_jobs();
         // Panic hard-stops tails as well as held voices.
+        self.stop_processing_owners();
         for i in 0..self.voices.slots.len() {
             if self.voices.slots[i].value.is_some() {
                 self.end_voice(VoiceId(self.voices.id(i)));

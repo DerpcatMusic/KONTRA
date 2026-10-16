@@ -672,6 +672,9 @@ pub fn lower_with(
                 .iter()
                 .map(|z| {
                     z.amplitude.is_none()
+                        && !instrument.processing_scopes.iter().any(|scope|
+                            scope.amplitude.is_some() && scope.members.iter().any(|m|
+                                std::ptr::eq(z, &instrument.zones[m.0])))
                         && !z.routes.iter().any(|r| {
                             let r = &instrument.routes[r.0];
                             r.target == ir::Target::Amplitude
@@ -851,6 +854,58 @@ pub fn lower_with(
             )
             .map_err(core(Stage::Regions, "monophonic release"))?;
     }
+    // Compile explicit shared sections into the SAME typed chain owner table.
+    // A definition shared by members is not a physical source or a global bus.
+    let mut processing_scopes = Vec::with_capacity(instrument.processing_scopes.len());
+    let mut region_processing = vec![None; instrument.zones.len()];
+    for (index, scope) in instrument.processing_scopes.iter().enumerate() {
+        let owner = format!("processing scope {index}");
+        match scope.cadence { ir::ProcessingCadence::CoreCell64 => {} }
+        if scope.members.iter().any(|z| {
+            instrument.zones[z.0].asset.is_none_or(|a| pcm[a.0].resident_frames().is_none())
+        }) {
+            return Err(core(Stage::Regions, owner)(Error::InvalidInput));
+        }
+        // Stage A executes resident independently-clocked members. The graph
+        // declares its final output; members cannot also emit to source buses.
+        for (ordinal, zone) in scope.members.iter().enumerate() {
+            let z = &instrument.zones[zone.0];
+            if z.group.is_some_and(|g| instrument.groups[g.0].output != ir::Output::Master
+                || !instrument.groups[g.0].sends.is_empty()
+                || instrument.groups[g.0].voice_limit.is_some()
+                || instrument.groups[g.0].source_voice_limit.is_some())
+                || instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty()
+            {
+                return Err(core(Stage::Regions, owner.clone())(Error::InvalidInput));
+            }
+            region_processing[zone.0] = Some((index, ordinal));
+        }
+        if instrument.source_indices.sample_targets.iter().any(|target| {
+            target.zones.iter().any(|z| scope.members.contains(z))
+        }) || !instrument.zone_routing.is_empty() {
+            return Err(core(Stage::Regions, owner.clone())(Error::InvalidInput));
+        }
+        if scope.amplitude.is_some_and(|amplitude| instrument.source_indices.modulators.iter()
+            .any(|source| source.runtime == Some(amplitude))) {
+            return Err(unsupported(owner.clone(), Feature::Controls));
+        }
+        let first = scope.members[0];
+        let mut section = ir::Zone::new(instrument.zones[first.0].asset.unwrap());
+        section.chain = scope.chain;
+        section.amplitude = scope.amplitude;
+        section.velocity = ir::VelocityResponse::None;
+        let (region, chain) = lowering.zone(first.0, &section)?;
+        let chain = chain.map(|chain| { let index = chains.len(); chains.push(chain); index });
+        processing_scopes.push(crate::topology::PreparedScope {
+            chain, sum: scope.sum, envelope: region.envelope, has_amplitude: scope.amplitude.is_some(),
+            bus: scope.output.or(instrument.input_bus).map(|b| b.0),
+            members: scope.members.iter().map(|z| z.0).collect(),
+        });
+    }
+    plan.processing_source_amplitude = instrument.zones.iter().map(|z| z.amplitude.is_some()
+        || z.routes.iter().any(|r| instrument.routes[r.0].target == ir::Target::Amplitude)).collect();
+    plan.processing_scopes = processing_scopes.into_boxed_slice();
+    plan.region_processing = region_processing.into_boxed_slice();
     if !chains.is_empty() {
         plan = plan
             .with_voice_chains(chains, chain_of)

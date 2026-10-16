@@ -1563,6 +1563,8 @@ pub(super) struct DspState {
     pub stride: usize,
     /// One `stride` of chain state per voice slot; claimed per voice.
     pub cells: Slab<ProcessorState>,
+    pub owner_cells: Slab<ProcessorState>,
+    pub owner_delays: Slab<[f64; 2]>,
     pub parameters: Box<[ControlRamp]>,
     pub modulated_parameters: Slab<ControlRamp>,
     pub delay_samples: Slab<[f64; 2]>,
@@ -1604,6 +1606,14 @@ impl DspState {
             voices,
             stride,
             cells: Slab::new(allocate(cells)?, stride),
+            owner_cells: {
+                let n = if plan.processing_scopes.is_empty() { 0 } else { voices };
+                Slab::new(allocate(stride.checked_mul(n).ok_or(Error::Capacity)?)?, stride)
+            },
+            owner_delays: {
+                let n = if plan.processing_scopes.is_empty() { 0 } else { voices };
+                Slab::new(allocate(delay_stride.checked_mul(n).ok_or(Error::Capacity)?)?, delay_stride)
+            },
             filters: Slab::new(
                 (0..lanes.clamp(1, MAX_LANES))
                     .map(|_| svf::FilterBank::new(&plan.filters, expressions))
@@ -2295,5 +2305,38 @@ mod typed_batch_owner_tests {
             size_of::<PreparedProcessor>(), size_of::<BatchOp>(), size_of::<PreparedVoiceChain>(),
             size_of::<ChainOwner>(), size_of::<ScalarOps>(), size_of::<BatchOps>(), size_of::<PreparedChains>(),
             size_of::<PreparedChainRef<'_>>(), size_of::<BatchIndex>(), size_of::<ProcessorState>());
+    }
+}
+
+impl PreparedChainRef<'_> {
+    pub(super) fn owner_tail_frames(&self) -> u32 { self.tail_frames }
+
+    /// Execute one shared section once over its ordered source sum. Existing
+    /// typed ProcessorSlice and native history owners are retained verbatim.
+    pub(super) fn render_owner(
+        &self, envelope: &mut EnvelopeState, input: &mut [Frame],
+        states: &mut [ProcessorState], mut context: RenderContext<'_>,
+    ) -> bool {
+        let len = input.len();
+        let mut block = [[0.; BLOCK]; 2];
+        for (i, frame) in input.iter().enumerate() {
+            block[0][i] = f64::from(frame[0]); block[1][i] = f64::from(frame[1]);
+        }
+        let (pre, post) = states.split_at_mut(self.pre.len());
+        let mut fault = self.process_section::<false>(true, pre, &mut block, len, 0, context.at, &mut context);
+        for i in 0..len {
+            let gain = f64::from(envelope.constant_level().unwrap_or_else(|| envelope.next()));
+            block[0][i] *= gain; block[1][i] *= gain;
+        }
+        fault |= self.process_section::<false>(false, post, &mut block, len, 0, context.at, &mut context);
+        fault |= !finite_states(self.pre.iter().chain(self.post.iter()), states);
+        for (i, frame) in input.iter_mut().enumerate() {
+            for c in 0..2 {
+                frame[c] = (block[c][i] * f64::from(context.expression[c])) as f32;
+                fault |= !frame[c].is_finite();
+            }
+        }
+        if fault { states.fill(ProcessorState::default()); input.fill([0.; 2]); }
+        fault
     }
 }

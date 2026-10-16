@@ -270,6 +270,10 @@ pub enum ReleaseStatus {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReleaseReserve {
     pub voices: usize,
+    /// Processing-state owners, including future release owners; independent
+    /// from physical source slots because an owner may contain several sources
+    /// and may outlive every one of them during its zero-input tail.
+    pub processing_owners: usize,
     pub families: usize,
     pub decisions: usize,
     pub commands: usize,
@@ -279,6 +283,7 @@ impl ReleaseReserve {
     pub(super) fn plus(self, other: Self) -> Self {
         Self {
             voices: self.voices + other.voices,
+            processing_owners: self.processing_owners + other.processing_owners,
             families: self.families + other.families,
             decisions: self.decisions + other.decisions,
             commands: self.commands + other.commands,
@@ -287,6 +292,7 @@ impl ReleaseReserve {
     pub(super) fn maximum(self, other: Self) -> Self {
         Self {
             voices: self.voices.max(other.voices),
+            processing_owners: self.processing_owners.max(other.processing_owners),
             families: self.families.max(other.families),
             decisions: self.decisions.max(other.decisions),
             commands: self.commands.max(other.commands),
@@ -315,6 +321,7 @@ impl Runtime {
     pub fn release_reserve(&self) -> ReleaseReserve {
         ReleaseReserve {
             voices: self.voices.reserved,
+            processing_owners: self.processing_owners.reserved,
             families: self.families.reserved,
             decisions: self.decisions.reserved,
             commands: self.reserved_commands,
@@ -337,6 +344,7 @@ impl Runtime {
 
     pub(super) fn reserve_release(&mut self, reserve: ReleaseReserve) {
         self.voices.reserve(reserve.voices);
+        self.processing_owners.reserve(reserve.processing_owners);
         self.families.reserve(reserve.families);
         self.decisions.reserve(reserve.decisions);
         assert!(reserve.commands <= self.available_commands());
@@ -345,6 +353,7 @@ impl Runtime {
 
     pub(super) fn unreserve_release(&mut self, reserve: ReleaseReserve) {
         self.voices.unreserve(reserve.voices);
+        self.processing_owners.unreserve(reserve.processing_owners);
         self.families.unreserve(reserve.families);
         self.decisions.unreserve(reserve.decisions);
         assert!(reserve.commands <= self.reserved_commands);

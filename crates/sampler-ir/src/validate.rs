@@ -500,6 +500,28 @@ impl Instrument {
         if let Some(bus) = self.input_bus {
             check.output(Output::Bus(bus))?;
         }
+        if self.processing_scopes.len() > 256 {
+            return Err(ValidationError::ZoneRouting { owner: "processing scopes".into(),
+                reason: "processing scope definition capacity exceeded" });
+        }
+        let mut processing_members = std::collections::BTreeSet::new();
+        for (index, scope) in self.processing_scopes.iter().enumerate() {
+            check.owner = format!("processing scope {index}");
+            if scope.members.is_empty() || scope.members.len() > 16 {
+                return Err(ValidationError::ZoneRouting { owner: check.owner.clone(),
+                    reason: "processing scope requires 1..=16 authored members" });
+            }
+            for member in &scope.members {
+                check.exists(Reference::Zone(member.0))?;
+                if !processing_members.insert(member.0) {
+                    return Err(ValidationError::ZoneRouting { owner: check.owner.clone(),
+                        reason: "source zone belongs to multiple processing memberships" });
+                }
+            }
+            if let Some(chain) = scope.chain { check.exists(Reference::Chain(chain.0))?; }
+            if let Some(amplitude) = scope.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
+            if let Some(bus) = scope.output { check.exists(Reference::Bus(bus.0))?; }
+        }
         for (source, zone) in self.source_indices.zones.iter().enumerate() {
             check.owner = format!("source zone {source}");
             if let Some(zone) = zone {

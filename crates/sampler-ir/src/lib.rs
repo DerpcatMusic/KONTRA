@@ -90,6 +90,11 @@ pub struct Instrument {
     /// Transfer curves routes apply to their source value.
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
+    /// Explicit per-selection-activation processor owners. This namespace is
+    /// independent of GroupRef, selection families and source storage packs.
+    /// Empty retains the existing singleton source execution exactly.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_scopes: Vec<ProcessingScope>,
     pub buses: Vec<Bus>,
     /// Sum entering the instrument/program inserts, after upstream group buses.
     /// Direct outputs before this point bypass instrument-level processing.
@@ -1011,6 +1016,13 @@ impl Instrument {
             old += 1;
             retained
         });
+        for scope in &mut self.processing_scopes {
+            scope.members = scope.members.iter().filter_map(|z| {
+                // Preserve dangling public refs for validate(), never drop them.
+                remap.get(z.0).copied().unwrap_or(Some(*z))
+            }).collect();
+        }
+        self.processing_scopes.retain(|scope| !scope.members.is_empty());
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
         }
@@ -1891,6 +1903,38 @@ pub enum Depth {
 }
 
 // ---------------------------------------------------------------- DSP
+
+/// One per-attack shared processing definition. Only selected members of this
+/// activation contribute, in this authored order. Each member keeps its source
+/// clock, local chain and local amplitude; this section runs ONCE after their sum.
+/// Its optional amplitude is an additional explicit boundary, not an inferred
+/// envelope instance from the declaration's ancestry. No global group sharing.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingScope {
+    pub members: Vec<ZoneRef>,
+    /// Explicit precision boundary, not a format or compiler default.
+    pub sum: ProcessingSumLaw,
+    /// Explicit processing clock domain. This first schedule preserves core's
+    /// existing absolute CELL cadence; it does not stand for UVI's native32.
+    pub cadence: ProcessingCadence,
+    pub chain: Option<ChainRef>,
+    pub amplitude: Option<ModulatorRef>,
+    /// None emits to the instrument input; Some is the existing bus identity.
+    pub output: Option<BusRef>,
+}
+
+/// The first executable source-edge summation contract. Member blocks have
+/// binary32 storage; contributions add in authored order with a binary32 store
+/// after EVERY addition. Native UVI constant/vector helper equivalence remains
+/// a separate adapter proof, never inferred merely from choosing this variant.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSumLaw { OrderedF32 }
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingCadence { CoreCell64 }
 
 /// Serial processors in one scope. A voice chain splits around the amplitude
 /// envelope because nonlinear stages sound different on each side of it.
