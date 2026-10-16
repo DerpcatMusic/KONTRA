@@ -110,7 +110,14 @@ before effect or behavior preparation. This checkpoint has no wide-source
 producer or renderer, so these passing admission tests do not resolve the 22
 audio/control regressions. The corresponding observer review corrections and
 normal Zone constructor fixture now pass the targeted cohort. No actual
-Clarinet run using that observer has yet been accepted.
+Clarinet graph observation is complete: its first actual six-second run rendered
+all 288,000 requested frames with one held voice remaining, no note end, and
+zero runtime health errors, but all six owner graph snapshots refused at the
+128-selected-node limit. The bank and helper hashes were unchanged. No current
+matrix, bypass or FXPostGain facts were recovered from those refusals. The
+receipt remains partial; the limit has not been raised and no automatic repeat
+was started. Source-only selection diagnosis continues separately from the
+unfinished channel renderer.
 
 ## Findings that are not accepted explanations
 
@@ -131,6 +138,7 @@ directory `kontra-vwinds-sustain-root-20261016-r8`, including
 `loop-baseline-red01`, `loop-baseline-controls01`, `aiff-decoder-only01`,
 `loop-candidate-green01`, `loop-boundary-candidate01`,
 `multichannel-baseline01`, `multichannel-baseline02`, and
-`source-bundle-m1-check01`, and `live-matrix-cohort08`. Protected program
+`source-bundle-m1-check01`, `live-matrix-cohort08`, and
+`live-matrix-actual01`. Protected program
 source, XML, encoded audio and decoded PCM were not exported by these
 measurements.
