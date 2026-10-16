@@ -520,7 +520,7 @@ impl BusState {
                     }
                 }
                 let fault = crate::dsp::process::<TRACE>(
-                    &node.processors,
+                    node.processors.as_ref(),
                     states,
                     &mut block,
                     produced,
@@ -716,7 +716,7 @@ impl PreparedBuses {
                 .iter()
                 .map(|s| {
                     graph.stage(
-                        s,
+                        s.view(),
                         "bus_fx",
                         None,
                         group,
@@ -761,7 +761,7 @@ impl PreparedBuses {
                 graph.edge(input, id, "serial");
                 id
             });
-            let parent = graph.connect(&node.processors, &stages, tone.unwrap_or(input));
+            let parent = graph.connect(node.processors.as_ref(), &stages, tone.unwrap_or(input));
             graph.edge(parent, output, "serial");
             let sends = node
                 .sends
