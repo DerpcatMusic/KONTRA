@@ -83,6 +83,10 @@ mod wavetable;
 pub use sampler_ir::Wavetable;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
+pub use source::storage::{
+    ChannelCount, SourceResidentView, SourceStorage, SourceStorageFamily, SourceStorageId,
+    SourceStorageRef,
+};
 pub use source::bundle::SourceBundleRefusal;
 mod bus;
 pub use bus::{Bus, BusMix, BusPeakTap, BusSend, GroupFader};
