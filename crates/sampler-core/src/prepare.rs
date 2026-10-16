@@ -2206,7 +2206,7 @@ impl Prepared {
             let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(
                 self.rate,
                 &mut vec![],
-                &mut vec![],
+                &mut crate::dsp::filter::svf::FilterRegistryBuilder::default(),
             )?;
             let mut chains = std::mem::take(&mut self.voice_chains).into_vec();
             chains.push(empty);

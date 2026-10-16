@@ -1492,7 +1492,7 @@ mod tests {
             width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
         })));
         let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
-            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            .compile(48_000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default()).unwrap();
         let stages: Vec<_> = chain.pre.iter().chain(&chain.post).collect();
         eprintln!("voice_reset ProcessorState_bytes={} owned_stages={}",
             size_of::<ProcessorState>(), stages.len());
@@ -1535,7 +1535,7 @@ mod tests {
             width: Parameter::Constant(0.7), pan: Parameter::Constant(0.2), pseudo: false,
         })));
         let chain = VoiceChain::new(Vec::new(), processors, 128).unwrap()
-            .compile(48_000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            .compile(48_000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default()).unwrap();
         let mut cells = vec![ProcessorState::default(); 300 * chain.stages()];
         for (i, cell) in cells.iter_mut().enumerate() {
             cell.z = [[(i as f64 * 0.37).sin() * 0.8, 0.13]; 2];
@@ -1595,7 +1595,7 @@ mod tests {
                 0,
             )
             .unwrap()
-            .compile(48000, &mut Vec::new(), &mut Vec::new())
+            .compile(48000, &mut Vec::new(), &mut svf::FilterRegistryBuilder::default())
             .unwrap();
             assert_eq!(chain.batches(), !pseudo);
         }

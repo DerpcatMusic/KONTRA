@@ -2292,7 +2292,7 @@ mod tests {
                     let mut s = [0f32; 8];
                     input.iter().map(|&x| l.tick(&mut s, x)).collect()
                 }
-                n => impulse_response(if n == "VOWELA" { Legacy::VowelA } else { Legacy::VowelB }, cut, res, &input),
+                n => impulse_response(if n == "VOWELA" { SectionClass::VowelA } else { SectionClass::VowelB }, cut, res, &input),
             };
             let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
             let err = ours.iter().zip(native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
