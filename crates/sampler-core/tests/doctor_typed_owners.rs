@@ -1005,3 +1005,480 @@ fn phase_d_typed_control_preparation_allocation_receipt() {
     );
     assert!(runtime.is_some());
 }
+
+// r10 causal fixtures: public APIs only, identical bytes on a263 and D candidates.
+const R10_PREFIX: ControlId = ControlId(10);
+const R10_FORM: ControlId = ControlId(20);
+fn r10_form_value(case: usize) -> (ControlDomain, ControlValue, ControlValue) {
+    match case {
+        0 => (
+            ControlDomain::Integer { min: 0, max: 33 },
+            ControlValue::Integer(0),
+            ControlValue::Integer(8),
+        ),
+        1 => (
+            ControlDomain::Toggle,
+            ControlValue::Toggle(false),
+            ControlValue::Toggle(true),
+        ),
+        _ => (
+            ControlDomain::Real { min: 0., max: 33. },
+            ControlValue::Real(0.),
+            ControlValue::Real(8.5),
+        ),
+    }
+}
+fn r10_form_plan(case: usize, form_wins: bool) -> Prepared {
+    let (domain, default, _) = r10_form_value(case);
+    let address = |group| EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_GAIN").unwrap(),
+        group,
+        slot: 3,
+        generic: -1,
+    };
+    // Reverse producer order: winner is last by address, never last input row.
+    let bindings = vec![
+        EngineParameterBinding {
+            address: address(1),
+            control: R10_FORM,
+            law: if form_wins {
+                EngineParameterLaw::WavetableForm
+            } else {
+                EngineParameterLaw::Linear { low: 0., high: 33. }
+            },
+        },
+        EngineParameterBinding {
+            address: address(0),
+            control: R10_FORM,
+            law: if form_wins {
+                EngineParameterLaw::Linear { low: 0., high: 33. }
+            } else {
+                EngineParameterLaw::WavetableForm
+            },
+        },
+    ];
+    Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_controls(vec![
+            ControlDefinition {
+                id: R10_PREFIX,
+                domain: ControlDomain::Integer { min: 0, max: 100 },
+                default: ControlValue::Integer(1),
+            },
+            ControlDefinition {
+                id: R10_FORM,
+                domain,
+                default,
+            },
+        ])
+        .unwrap()
+        // This admission is intentionally accepted for all three scalar domains.
+        .with_engine_parameters(bindings, vec![])
+        .unwrap()
+        .with_script_instances(vec![vec![0]])
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    Instruction::SetLocal {
+                        local: 0,
+                        value: 77,
+                    },
+                    Instruction::WriteScriptCell { cell: 0, local: 0 },
+                    Instruction::Wait(1),
+                    Instruction::End,
+                ])
+                .unwrap()
+                .with_script_instance(ScriptInstanceId(0))
+                .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_control_programs(vec![ControlCallback {
+            control: R10_FORM,
+            program: 0,
+            stage: 0,
+        }])
+        .unwrap()
+}
+fn r10_form_runtime(case: usize, form_wins: bool) -> Runtime {
+    let p = r10_form_plan(case, form_wins);
+    let cap = Limits {
+        behaviors: 1,
+        behavior_fuel: 16,
+        behavior_cells: p.behavior_local_count(),
+        commands: 4,
+        ..Limits::for_plan(&p, 4, 0)
+    };
+    Runtime::new(p, cap).unwrap()
+}
+fn r10_context(rt: &Runtime) -> ControlContext {
+    ControlContext {
+        performance: rt.performance(0).unwrap(),
+        origin: ChannelAddress {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
+    }
+}
+#[test]
+fn phase_d_r10_ordinary_form_refusal_preserves_domains_prefix_revision_and_callback() {
+    for case in 0..3 {
+        let mut rt = r10_form_runtime(case, true);
+        let owner = rt.active_plan();
+        let context = r10_context(&rt);
+        let (_, initial, value) = r10_form_value(case);
+        let target = ControlWrite {
+            id: R10_FORM,
+            value,
+        };
+        let writes = [
+            ControlWrite {
+                id: R10_PREFIX,
+                value: ControlValue::Integer(99),
+            },
+            target,
+        ];
+        support::without_heap(|| {
+            assert_eq!(
+                rt.edit_controls(owner, Some(0), &[target]),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                rt.edit_controls(owner, Some(0), &writes),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                rt.recall_controls(owner, Some(0), &writes),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                rt.invoke_control(context, owner, Some(0), target),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.control_revision(owner), Ok(0));
+            assert_eq!(
+                rt.control_value(owner, R10_PREFIX),
+                Ok(ControlValue::Integer(1))
+            );
+            assert_eq!(rt.control_value(owner, R10_FORM), Ok(initial));
+            assert_eq!(rt.script_cell(owner, ScriptInstanceId(0), 0), Ok(0));
+            assert_eq!(rt.script_state_revision(owner), Ok((0, 0)));
+            // A refused interaction neither executes its callback nor consumes
+            // the sole callback slot. The same callback can still be admitted.
+            let callback = rt.start_plan_behavior(owner, 0).unwrap();
+            assert_eq!(rt.script_cell(owner, ScriptInstanceId(0), 0), Ok(77));
+            assert_eq!(rt.behavior_outcome(callback), Ok(None));
+            assert_eq!(rt.control_revision(owner), Ok(0));
+        });
+    }
+}
+#[test]
+fn phase_d_r10_last_sorted_non_form_law_admits_all_domains_and_the_callback() {
+    for case in 0..3 {
+        let mut rt = r10_form_runtime(case, false);
+        let owner = rt.active_plan();
+        let context = r10_context(&rt);
+        let (_, _, value) = r10_form_value(case);
+        let target = ControlWrite {
+            id: R10_FORM,
+            value,
+        };
+        let writes = [
+            ControlWrite {
+                id: R10_PREFIX,
+                value: ControlValue::Integer(99),
+            },
+            target,
+        ];
+        support::without_heap(|| {
+            assert_eq!(rt.edit_controls(owner, Some(0), &writes), Ok(1));
+            assert_eq!(
+                rt.control_value(owner, R10_PREFIX),
+                Ok(ControlValue::Integer(99))
+            );
+            assert_eq!(rt.control_value(owner, R10_FORM), Ok(value));
+            let (revision, callback) = rt.invoke_control(context, owner, Some(1), target).unwrap();
+            assert_eq!(revision, 2);
+            assert!(callback.is_some());
+            assert_eq!(rt.script_cell(owner, ScriptInstanceId(0), 0), Ok(77));
+        });
+    }
+}
+#[test]
+fn phase_d_r10_snapshot_restore_keeps_domain_only_form_semantics() {
+    for case in 0..3 {
+        let mut rt = r10_form_runtime(case, true);
+        let owner = rt.active_plan();
+        let (_, _, value) = r10_form_value(case);
+        let mut snapshot = ScriptStateBuffer {
+            values: vec![
+                ScriptStateEntry {
+                    address: ScriptStateAddress::Control(R10_PREFIX),
+                    value: ScriptStateValue::Control(ControlValue::Integer(99)),
+                },
+                ScriptStateEntry {
+                    address: ScriptStateAddress::Control(R10_FORM),
+                    value: ScriptStateValue::Control(value),
+                },
+            ],
+            ..Default::default()
+        };
+        support::without_heap(|| {
+            assert_eq!(
+                rt.restore_script_state(owner, Some(0), &mut snapshot),
+                Ok((2, 1))
+            );
+            assert_eq!(
+                rt.control_value(owner, R10_PREFIX),
+                Ok(ControlValue::Integer(99))
+            );
+            assert_eq!(rt.control_value(owner, R10_FORM), Ok(value));
+            assert_eq!(rt.script_cell(owner, ScriptInstanceId(0), 0), Ok(0));
+            // The same domain-valid value remains refused by ordinary editing.
+            assert_eq!(
+                rt.edit_controls(
+                    owner,
+                    Some(1),
+                    &[ControlWrite {
+                        id: R10_FORM,
+                        value
+                    }]
+                ),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.control_revision(owner), Ok(1));
+        });
+    }
+}
+
+const R10_DEPTH: ControlId = ControlId(100);
+const R10_BYPASS: ControlId = ControlId(200);
+fn r10_loop_source() -> Prepared {
+    let pcm = (0..1000)
+        .map(|i| [i as f32 / 1000., (i * 17 % 997) as f32 / 1000.])
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    Prepared::new(
+        48000,
+        vec![Pcm::new(48000, pcm).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback {
+                loop_range: Some(Loop {
+                    start: 100,
+                    end: 700,
+                    passes: None,
+                    shape: LoopShape::Wrap,
+                    mode: LoopMode::Continuous,
+                }),
+                ..Playback::default()
+            },
+        }],
+        1,
+    )
+    .unwrap()
+    .with_velocity_curves(vec![VelocityCurve::Constant])
+    .unwrap()
+}
+fn r10_loop_schema(extra: bool) -> Vec<ControlDefinition> {
+    let real = |id, value| ControlDefinition {
+        id: ControlId(id),
+        domain: ControlDomain::Real { min: -1., max: 1. },
+        default: ControlValue::Real(value),
+    };
+    let mut rows = vec![real(100, 0.), real(200, 0.)];
+    if extra {
+        rows.extend([
+            ControlDefinition {
+                id: ControlId(25),
+                domain: ControlDomain::Integer { min: 0, max: 10 },
+                default: ControlValue::Integer(9),
+            },
+            real(50, 0.875),
+            ControlDefinition {
+                id: ControlId(150),
+                domain: ControlDomain::Toggle,
+                default: ControlValue::Toggle(true),
+            },
+        ]);
+    }
+    rows.reverse();
+    rows
+}
+fn r10_loop_plan(target: ModTarget, replaced: bool) -> Prepared {
+    let mut p = r10_loop_source()
+        .with_controls(r10_loop_schema(!replaced))
+        .unwrap()
+        .with_voice_modulation(
+            vec![ModProgram {
+                sources: vec![ModSource::Constant],
+                controls: vec![(0, [R10_DEPTH, R10_BYPASS])],
+                routes: vec![ModRoute::new(0, target, 0.)],
+                ..Default::default()
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap();
+    if replaced {
+        p = p.with_controls(r10_loop_schema(true)).unwrap();
+        let rows = p.controls().iter().rev().copied().collect();
+        p = p.with_controls(rows).unwrap();
+    }
+    p
+}
+fn r10_loop_runtime(p: Prepared) -> Runtime {
+    let cap = Limits::for_plan(&p, 2, 2);
+    Runtime::new(p, cap).unwrap()
+}
+fn r10_loop_input() -> Input {
+    Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: Some(1),
+    }
+}
+// At physical frame 64, every edit is before the new end. A 2400-frame
+// active window traverses the base end 700 and each changed end:
+// Start +.125 -> [225,825), Start -.0625 -> [38,638),
+// Length +.125 -> [100,825), Length -.125 -> [100,575).
+// All ranges are interior, >4 frames, and use the ordinary public Playback.
+fn r10_loop_cases() -> [(ModTarget, f64); 4] {
+    [
+        (ModTarget::LoopStart, 0.125),
+        (ModTarget::LoopStart, -0.0625),
+        (ModTarget::LoopLength, 0.125),
+        (ModTarget::LoopLength, -0.125),
+    ]
+}
+#[test]
+fn phase_d_r10_loop_controls_change_active_boundaries_against_bypass_and_plain() {
+    for (target, depth) in r10_loop_cases() {
+        let mut edited = r10_loop_runtime(r10_loop_plan(target, false));
+        let mut bypassed = r10_loop_runtime(r10_loop_plan(target, false));
+        let mut plain = r10_loop_runtime(r10_loop_source());
+        let mut a = [[0.; 2]; 137];
+        let mut b = a;
+        let mut c = a;
+        let mut differing_frames = 0usize;
+        support::without_heap(|| {
+            for rt in [&mut edited, &mut bypassed, &mut plain] {
+                rt.trigger(r10_loop_input(), 60, 1.).unwrap();
+            }
+            edited.render(&mut a[..64]).unwrap();
+            bypassed.render(&mut b[..64]).unwrap();
+            plain.render(&mut c[..64]).unwrap();
+            assert_eq!(a[..64], b[..64]);
+            assert_eq!(b[..64], c[..64]);
+            edited
+                .edit_controls(
+                    edited.active_plan(),
+                    Some(0),
+                    &[ControlWrite {
+                        id: R10_DEPTH,
+                        value: ControlValue::Real(depth),
+                    }],
+                )
+                .unwrap();
+            bypassed
+                .edit_controls(
+                    bypassed.active_plan(),
+                    Some(0),
+                    &[
+                        ControlWrite {
+                            id: R10_DEPTH,
+                            value: ControlValue::Real(depth),
+                        },
+                        ControlWrite {
+                            id: R10_BYPASS,
+                            value: ControlValue::Real(1.),
+                        },
+                    ],
+                )
+                .unwrap();
+            let mut remaining = 2400usize;
+            let mut round = 0usize;
+            while remaining != 0 {
+                let n = [1, 7, 64, 137][round % 4].min(remaining);
+                edited.render(&mut a[..n]).unwrap();
+                bypassed.render(&mut b[..n]).unwrap();
+                plain.render(&mut c[..n]).unwrap();
+                assert_eq!(
+                    b[..n],
+                    c[..n],
+                    "bypass must reproduce unmodulated geometry: {target:?} depth={depth}"
+                );
+                differing_frames += a[..n].iter().zip(&b[..n]).filter(|(a, b)| a != b).count();
+                remaining -= n;
+                round += 1;
+            }
+            assert_eq!(edited.voice_count(), 1);
+            assert_eq!(bypassed.voice_count(), 1);
+            assert_eq!(plain.voice_count(), 1);
+        });
+        assert!(
+            differing_frames > 0,
+            "edited versus bypassed loop was not observed: {target:?} depth={depth}"
+        );
+        eprintln!(
+            "r10 loop sensitivity {target:?} depth={depth}: differing_frames={differing_frames}"
+        );
+    }
+}
+#[test]
+fn phase_d_r10_remapped_loop_controls_match_direct_through_active_boundaries() {
+    for (target, depth) in r10_loop_cases() {
+        let mut remapped = r10_loop_runtime(r10_loop_plan(target, true));
+        let mut direct = r10_loop_runtime(r10_loop_plan(target, false));
+        let mut a = [[0.; 2]; 137];
+        let mut b = a;
+        support::without_heap(|| {
+            remapped.trigger(r10_loop_input(), 60, 1.).unwrap();
+            direct.trigger(r10_loop_input(), 60, 1.).unwrap();
+            remapped.render(&mut a[..64]).unwrap();
+            direct.render(&mut b[..64]).unwrap();
+            assert_eq!(a[..64], b[..64]);
+            let writes = [ControlWrite {
+                id: R10_DEPTH,
+                value: ControlValue::Real(depth),
+            }];
+            remapped
+                .edit_controls(remapped.active_plan(), Some(0), &writes)
+                .unwrap();
+            direct
+                .edit_controls(direct.active_plan(), Some(0), &writes)
+                .unwrap();
+            let mut remaining = 2400usize;
+            let mut round = 0usize;
+            while remaining != 0 {
+                let n = [1, 7, 64, 137][round % 4].min(remaining);
+                remapped.render(&mut a[..n]).unwrap();
+                direct.render(&mut b[..n]).unwrap();
+                assert_eq!(
+                    a[..n],
+                    b[..n],
+                    "remapped loop differs through active boundary: {target:?} depth={depth}"
+                );
+                remaining -= n;
+                round += 1;
+            }
+            assert_eq!(remapped.voice_count(), 1);
+            assert_eq!(direct.voice_count(), 1);
+        });
+    }
+}
