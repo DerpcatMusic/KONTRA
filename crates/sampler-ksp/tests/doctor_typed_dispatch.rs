@@ -32,7 +32,7 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
     let source = r#"on init
       declare $result declare $i declare %a[2] := (7,9)
     end on
-    on note
+    on pgs_changed
       $i := 0
       while ($i < 4)
         select ($i)
@@ -51,7 +51,7 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
     let program = script
         .entries()
         .iter()
-        .find(|entry| entry.kind == EntryKind::Note)
+        .find(|entry| entry.kind == EntryKind::PgsChanged)
         .unwrap()
         .program;
     let prepared = script
@@ -62,7 +62,7 @@ fn consuming_branch_handles_keep_nested_loop_select_and_fallthrough_targets() {
     let mut rt = Runtime::new(prepared, limits).unwrap();
     let plan = rt.active_plan();
     // Persistence callbacks are already evaluated during initialization. Use
-    // a note entry so the first runtime traversal starts from authored cells.
+    // an unfired plan callback so runtime starts from authored cells.
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(0));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(7));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(9));
