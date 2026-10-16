@@ -144,6 +144,10 @@ drops 3 and 4, and scales by float32 `0.5773502588272095`; `2→6` retains the f
 two outputs; `1→6` targets the third output. These are descriptor-code paths,
 not permission to identify every six-channel file with descriptor 6. Actual
 negotiated layout and downstream projection still need their callsite joins.
+The `6→2` and `2→6` coefficient arrays are in writable `.data`: these are exact
+on-disk initial values, not yet proved immutable runtime coefficients. Their
+initialization/write closure remains open. The small static interpreter is
+admitted only for these four reviewed paths, not arbitrary x86 condition flow.
 
 This is targeted DSP analysis, not whole-application decompilation or runtime
 restoration. No target, activation or bank code ran for this static checkpoint.
