@@ -127,7 +127,7 @@ identity/order without those scalar fields. The corrected source passed all
 37 observer tests, 15 other lifecycle tests, affected all-target Clippy and a
 fresh independent source review with no remaining finding.
 
-One new six-second observation used the same key60/velocity96/no-CC plan and
+One new six-second observation used the same key 60, velocity 96, no CC plan and
 that frozen helper. All six owner snapshots returned the required facts:
 12 selected model nodes plus synthetic Part, one complete 144-cell matrix,
 14 ordered insert references and three routes. The matrix values were identical
