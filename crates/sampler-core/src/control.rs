@@ -204,10 +204,18 @@ pub(super) struct EngineControl {
     slot: EngineSlot,
 }
 #[derive(Clone, Copy, Debug)]
-enum ControlSlot {
+enum ControlKind {
     Integer(usize),
     Real(RealControlIndex),
     Toggle(usize),
+}
+/// Logical scalar ownership and the last sorted binding's validation law.
+/// All scalar domains participate, including historically admitted non-Real
+/// engine bindings. This replaces the Real-only binding metadata.
+#[derive(Clone, Copy)]
+struct ControlSlot {
+    kind: ControlKind,
+    engine: Option<usize>,
 }
 #[derive(Clone, Copy)]
 struct IntegerDefinition {
@@ -221,7 +229,6 @@ struct RealDefinition {
     min: f64,
     max: f64,
     default: f64,
-    engine: Option<usize>,
 }
 
 #[derive(Default)]
@@ -249,29 +256,31 @@ impl ControlLayout {
             if !c.domain.accepts(c.default) {
                 return Err(Error::InvalidInput);
             }
-            slots.push(match (c.domain, c.default) {
-                (ControlDomain::Integer { min, max }, ControlValue::Integer(default)) => {
-                    let slot = integers.len();
-                    integers.push(IntegerDefinition { min, max, default });
-                    ControlSlot::Integer(slot)
-                }
-                (ControlDomain::Real { min, max }, ControlValue::Real(default)) => {
-                    let slot = RealControlIndex(reals.len());
-                    reals.push(RealDefinition {
-                        logical,
-                        min,
-                        max,
-                        default,
-                        engine: None,
-                    });
-                    ControlSlot::Real(slot)
-                }
-                (ControlDomain::Toggle, ControlValue::Toggle(default)) => {
-                    let slot = toggles.len();
-                    toggles.push(default);
-                    ControlSlot::Toggle(slot)
-                }
-                _ => return Err(Error::InvalidInput),
+            slots.push(ControlSlot {
+                kind: match (c.domain, c.default) {
+                    (ControlDomain::Integer { min, max }, ControlValue::Integer(default)) => {
+                        let slot = integers.len();
+                        integers.push(IntegerDefinition { min, max, default });
+                        ControlKind::Integer(slot)
+                    }
+                    (ControlDomain::Real { min, max }, ControlValue::Real(default)) => {
+                        let slot = RealControlIndex(reals.len());
+                        reals.push(RealDefinition {
+                            logical,
+                            min,
+                            max,
+                            default,
+                        });
+                        ControlKind::Real(slot)
+                    }
+                    (ControlDomain::Toggle, ControlValue::Toggle(default)) => {
+                        let slot = toggles.len();
+                        toggles.push(default);
+                        ControlKind::Toggle(slot)
+                    }
+                    _ => return Err(Error::InvalidInput),
+                },
+                engine: None,
             });
         }
         Ok(Self {
@@ -282,14 +291,14 @@ impl ControlLayout {
         })
     }
     pub(super) fn real(&self, logical: usize) -> Result<RealControlIndex, Error> {
-        match self.slots.get(logical) {
-            Some(ControlSlot::Real(slot)) => Ok(*slot),
+        match self.slots.get(logical).map(|slot| slot.kind) {
+            Some(ControlKind::Real(slot)) => Ok(slot),
             _ => Err(Error::InvalidInput),
         }
     }
     pub(crate) fn initial(&self, logical: usize) -> ControlProjection {
-        match self.slots[logical] {
-            ControlSlot::Integer(slot) => {
+        match self.slots[logical].kind {
+            ControlKind::Integer(slot) => {
                 let c = self.integers[slot];
                 ControlProjection::Integer {
                     min: c.min,
@@ -297,7 +306,7 @@ impl ControlLayout {
                     value: c.default,
                 }
             }
-            ControlSlot::Real(slot) => {
+            ControlKind::Real(slot) => {
                 let c = self.reals[slot.0];
                 ControlProjection::Real {
                     min: c.min,
@@ -305,26 +314,26 @@ impl ControlLayout {
                     value: c.default,
                 }
             }
-            ControlSlot::Toggle(slot) => ControlProjection::Toggle(self.toggles[slot]),
+            ControlKind::Toggle(slot) => ControlProjection::Toggle(self.toggles[slot]),
         }
     }
     fn edit(&self, index: usize, value: ControlValue) -> Result<ControlEdit, Error> {
-        let value = match (self.slots[index], value) {
-            (ControlSlot::Integer(slot), ControlValue::Integer(value)) => {
+        let value = match (self.slots[index].kind, value) {
+            (ControlKind::Integer(slot), ControlValue::Integer(value)) => {
                 let c = self.integers[slot];
                 if !(c.min..=c.max).contains(&value) {
                     return Err(Error::InvalidInput);
                 }
                 TypedEdit::Integer { slot, value }
             }
-            (ControlSlot::Real(slot), ControlValue::Real(value)) => {
+            (ControlKind::Real(slot), ControlValue::Real(value)) => {
                 let c = self.reals[slot.0];
                 if !value.is_finite() || !(c.min..=c.max).contains(&value) {
                     return Err(Error::InvalidInput);
                 }
                 TypedEdit::Real { slot, value }
             }
-            (ControlSlot::Toggle(slot), ControlValue::Toggle(value)) => {
+            (ControlKind::Toggle(slot), ControlValue::Toggle(value)) => {
                 TypedEdit::Toggle { slot, value }
             }
             _ => return Err(Error::InvalidInput),
@@ -454,13 +463,13 @@ impl ControlState {
         }
     }
     fn value(&self, layout: &ControlLayout, index: usize, base: bool) -> ControlValue {
-        match layout.slots[index] {
-            ControlSlot::Integer(slot) => ControlValue::Integer(self.integers[slot].value),
-            ControlSlot::Real(slot) => {
+        match layout.slots[index].kind {
+            ControlKind::Integer(slot) => ControlValue::Integer(self.integers[slot].value),
+            ControlKind::Real(slot) => {
                 let c = self.reals[slot.0];
                 ControlValue::Real(if base { c.base } else { c.playing })
             }
-            ControlSlot::Toggle(slot) => ControlValue::Toggle(self.toggles[slot].value),
+            ControlKind::Toggle(slot) => ControlValue::Toggle(self.toggles[slot].value),
         }
     }
     fn refresh_real(&mut self, prepared: &Prepared, slot: RealControlIndex) -> ControlProjection {
@@ -468,7 +477,7 @@ impl ControlState {
         let definition = prepared.control_layout.reals[slot.0];
         // Plain controls have no offset owner; this is their complete playing law.
         // Engine-owned controls use the same last-binding-wins law as before.
-        c.playing = match definition.engine {
+        c.playing = match prepared.control_layout.slots[definition.logical].engine {
             None => c.base,
             Some(binding) => offset_value(
                 c.base,
@@ -699,26 +708,24 @@ impl Prepared {
     }
     /// Rebuild physical handles whenever IDs or attached metadata change, before publication.
     pub(super) fn refresh_real_controls(&mut self) -> Result<(), Error> {
+        for slot in &mut self.control_layout.slots {
+            slot.engine = None;
+        }
         let mut engine_controls = Vec::with_capacity(self.engine_parameters.len());
         for (playback, b) in self.engine_parameters.iter().enumerate() {
-            let slot = match self.control_layout.slots[self.control_index(b.control)?] {
-                ControlSlot::Integer(slot) => EngineSlot::Integer(slot),
-                ControlSlot::Real(slot) => EngineSlot::Real { slot, playback },
-                ControlSlot::Toggle(slot) => EngineSlot::Toggle(slot),
+            let logical = self.control_index(b.control)?;
+            let slot = match self.control_layout.slots[logical].kind {
+                ControlKind::Integer(slot) => EngineSlot::Integer(slot),
+                ControlKind::Real(slot) => EngineSlot::Real { slot, playback },
+                ControlKind::Toggle(slot) => EngineSlot::Toggle(slot),
             };
+            self.control_layout.slots[logical].engine = Some(playback);
             engine_controls.push(EngineControl { slot });
-        }
-        for c in &mut self.control_layout.reals {
-            c.engine = None;
-        }
-        for control in &engine_controls {
-            if let EngineSlot::Real { slot, playback } = control.slot {
-                self.control_layout.reals[slot.0].engine = Some(playback);
-            }
         }
         for control in &mut engine_controls {
             if let EngineSlot::Real { slot, playback } = &mut control.slot {
-                *playback = self.control_layout.reals[slot.0]
+                let logical = self.control_layout.reals[slot.0].logical;
+                *playback = self.control_layout.slots[logical]
                     .engine
                     .ok_or(Error::InvalidInput)?;
             }
@@ -1019,11 +1026,19 @@ impl Runtime {
         for write in writes {
             let index = definitions.control_index(write.id)?;
             let edit = definitions.control_layout.edit(index, write.value)?;
-            if let TypedEdit::Real { slot, value } = edit.value
-                && let Some(binding) = definitions.control_layout.reals[slot.0].engine.map(|i| &definitions.engine_parameters[i])
+            if let Some(binding) = definitions.control_layout.slots[index]
+                .engine
+                .map(|i| &definitions.engine_parameters[i])
                 && binding.law == crate::EngineParameterLaw::WavetableForm
             {
-                binding.law.normalized_value(value)?;
+                match edit.value {
+                    TypedEdit::Real { value, .. } => {
+                        binding.law.normalized_value(value)?;
+                    }
+                    TypedEdit::Integer { .. } | TypedEdit::Toggle { .. } => {
+                        return Err(Error::InvalidInput);
+                    }
+                }
             }
         }
         let revision = generation
@@ -1039,7 +1054,6 @@ impl Runtime {
             .ok_or(Error::ArithmeticOverflow)?;
         Ok(revision)
     }
-
     pub(super) fn edit_controls_now(
         &mut self,
         plan: PlanId,

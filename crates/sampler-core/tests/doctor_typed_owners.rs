@@ -555,62 +555,62 @@ fn phase_d_live_plan(target: ModTarget, replaced: bool) -> Prepared {
     p
 }
 
-/// This additionally catches the original loop_routes remapping omission.
+/// Pan identity smoke coverage. The r10 interior-loop fixtures below supply
+/// causal loop-boundary sensitivity and remapping coverage.
 #[test]
-fn phase_d_live_real_handles_follow_replacements_for_pan_and_both_loop_lanes_without_heap() {
-    for target in [ModTarget::Pan, ModTarget::LoopStart, ModTarget::LoopLength] {
-        for threads in [1, 2] {
-            let p = phase_d_live_plan(target, true);
-            let cap = Limits::for_plan(&p, 20, 20);
-            let mut actual = Runtime::new(p, cap)
-                .unwrap()
-                .with_threads(Threads::Fixed(threads));
-            let mut expected = Runtime::new(phase_d_live_plan(target, false), cap)
-                .unwrap()
-                .with_threads(Threads::Fixed(threads));
-            let mut a = [[0.; 2]; 137];
-            let mut b = a;
-            let mut nonzero = false;
-            support::without_heap(|| {
-                for id in 0..16 {
-                    actual.trigger(input(id), 60, 0.75).unwrap();
-                    expected.trigger(input(id), 60, 0.75).unwrap();
+fn phase_d_live_real_handles_follow_replacements_for_pan_without_heap() {
+    let target = ModTarget::Pan;
+    for threads in [1, 2] {
+        let p = phase_d_live_plan(target, true);
+        let cap = Limits::for_plan(&p, 20, 20);
+        let mut actual = Runtime::new(p, cap)
+            .unwrap()
+            .with_threads(Threads::Fixed(threads));
+        let mut expected = Runtime::new(phase_d_live_plan(target, false), cap)
+            .unwrap()
+            .with_threads(Threads::Fixed(threads));
+        let mut a = [[0.; 2]; 137];
+        let mut b = a;
+        let mut nonzero = false;
+        support::without_heap(|| {
+            for id in 0..16 {
+                actual.trigger(input(id), 60, 0.75).unwrap();
+                expected.trigger(input(id), 60, 0.75).unwrap();
+            }
+            for round in 0..24 {
+                if round == 6 || round == 12 || round == 18 {
+                    let w = if round == 12 {
+                        ControlWrite {
+                            id: D_BYPASS,
+                            value: ControlValue::Real(1.),
+                        }
+                    } else if round == 18 {
+                        ControlWrite {
+                            id: D_BYPASS,
+                            value: ControlValue::Real(0.),
+                        }
+                    } else {
+                        ControlWrite {
+                            id: D_DEPTH,
+                            value: ControlValue::Real(-0.25),
+                        }
+                    };
+                    actual
+                        .edit_controls(actual.active_plan(), None, &[w])
+                        .unwrap();
+                    expected
+                        .edit_controls(expected.active_plan(), None, &[w])
+                        .unwrap();
                 }
-                for round in 0..24 {
-                    if round == 6 || round == 12 || round == 18 {
-                        let w = if round == 12 {
-                            ControlWrite {
-                                id: D_BYPASS,
-                                value: ControlValue::Real(1.),
-                            }
-                        } else if round == 18 {
-                            ControlWrite {
-                                id: D_BYPASS,
-                                value: ControlValue::Real(0.),
-                            }
-                        } else {
-                            ControlWrite {
-                                id: D_DEPTH,
-                                value: ControlValue::Real(-0.25),
-                            }
-                        };
-                        actual
-                            .edit_controls(actual.active_plan(), None, &[w])
-                            .unwrap();
-                        expected
-                            .edit_controls(expected.active_plan(), None, &[w])
-                            .unwrap();
-                    }
-                    let n = [1, 7, 64, 137][round % 4];
-                    actual.render(&mut a[..n]).unwrap();
-                    expected.render(&mut b[..n]).unwrap();
-                    assert_eq!(a[..n], b[..n], "{target:?} round {round}");
-                    nonzero |= a[..n].iter().flatten().any(|v| *v != 0.);
-                }
-            });
-            assert!(nonzero);
-            assert_eq!(actual.stats().nonfinite_frames, 0);
-        }
+                let n = [1, 7, 64, 137][round % 4];
+                actual.render(&mut a[..n]).unwrap();
+                expected.render(&mut b[..n]).unwrap();
+                assert_eq!(a[..n], b[..n], "{target:?} round {round}");
+                nonzero |= a[..n].iter().flatten().any(|v| *v != 0.);
+            }
+        });
+        assert!(nonzero);
+        assert_eq!(actual.stats().nonfinite_frames, 0);
     }
 }
 
