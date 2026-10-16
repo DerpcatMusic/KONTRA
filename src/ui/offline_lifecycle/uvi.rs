@@ -743,6 +743,17 @@ fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nod
         "route_linkage":{"complete":false,"reason":"compiled_route_linkage_unavailable"},
         "scope":"Bounded initialized chain inventory only; owner-to-compiled send/output/bus linkage is not proved"}),mixes))
 }
+// Partial owner facts may feed the existing pure core join, but never imply
+// owner inventory or compiled route completeness. Legacy full receipts retain
+// their existing admission; the partial alternative needs the exact contract.
+fn graph_owner_allows_core(owner:&Value)->bool {
+    owner["status"]=="observed"&&(owner["inventory_complete"]==true ||
+        (owner["selection"]["policy"]=="required_owner_facts_v1"&&
+            owner["selection"]["required_facts_complete"]==true))
+}
+fn graph_owner_is_complete(owner:&Value)->bool {
+    owner["status"]=="observed"&&owner["inventory_complete"]==true&&owner["complete"]==true
+}
 fn capture_graph(
     core:&V2Core,owner:&SwitchOwner,bridge:&Arc<UiBridge>,config:&LiveGraphConfig,
     phase:&mut Phase,label:&str,frames:usize,captures:&mut GraphCaptures,
@@ -754,7 +765,7 @@ fn capture_graph(
     let observe=||->Result<Value,&'static str>{
         if !phase.drained(){return Err("owner_or_marker_unavailable")}
         let a=phase.ack.ok_or("owner_ack_unavailable")?;
-        if row["owner"]["status"]!="observed" || row["owner"]["inventory_complete"]!=true {return Err("owner_graph_unavailable")}
+        if !graph_owner_allows_core(&row["owner"]) {return Err("owner_graph_unavailable")}
         let nodes:Vec<_>=row["owner"]["nodes"].as_array().ok_or("owner_node_rows_unavailable")?.iter()
             .filter_map(|n|n["node"].as_u64().and_then(|n|u32::try_from(n).ok())).collect();
         let(records,compiled,mixes)=graph_worker_ir(owner,&config.query,&nodes)?;
@@ -787,7 +798,7 @@ fn capture_graph(
         Ok(observation)=>{
             let coherent=observation["ack_health_clean"]==true&&observation["prefix_counters_agree"]==true&&observation["sample_counts_conserved"]==true
                 &&observation["sample_tasks_settled"]==true&&observation["runtime"]["voices_complete"]==true
-                &&observation["compiled_topology"]["complete"]==true&&row["owner"]["complete"]==true;
+                &&observation["compiled_topology"]["complete"]==true&&graph_owner_is_complete(&row["owner"]);
             let joined=observation["source_joins"].as_array().is_some_and(|j|j.iter().all(|r|r["join"]["status"]=="joined"));
             row["status"]=json!(if coherent&&joined{"observed_finite_state"}else{"partial_or_incoherent"});
             if observation["compiled_topology"]["complete"]!=true {
@@ -1884,6 +1895,38 @@ mod held_note_bound_tests {
             assert_eq!(topology["inventory_complete"],true);assert_eq!(topology["complete"],false);
             assert_eq!(topology["route_linkage"]["reason"],"compiled_route_linkage_unavailable");
         }
+    }
+
+    #[test]
+    fn live_graph_required_facts_policy_admits_only_explicit_valid_partial_contract(){
+        let partial=json!({"status":"observed","inventory_complete":false,"complete":false,
+            "selection":{"policy":"required_owner_facts_v1","required_facts_complete":true}});
+        assert!(graph_owner_allows_core(&partial));assert!(!graph_owner_is_complete(&partial));
+        for policy in [Value::Null,json!("required_owner_facts_v2"),json!(true)]{
+            let mut bad=partial.clone();bad["selection"]["policy"]=policy;
+            assert!(!graph_owner_allows_core(&bad));assert!(!graph_owner_is_complete(&bad));
+        }
+        for available in [Value::Null,json!(false),json!(1)]{
+            let mut bad=partial.clone();bad["selection"]["required_facts_complete"]=available;
+            assert!(!graph_owner_allows_core(&bad));
+        }
+        let mut missing=partial.clone();missing.as_object_mut().unwrap().remove("selection");
+        assert!(!graph_owner_allows_core(&missing));
+        let mut refused=partial.clone();refused["status"]=json!("refused");
+        assert!(!graph_owner_allows_core(&refused));
+        // Neither a mislabeled complete bit nor pure-core eligibility can turn
+        // omitted owner inventory into a complete phase.
+        let mut mislabeled=partial;mislabeled["complete"]=json!(true);
+        assert!(graph_owner_allows_core(&mislabeled));assert!(!graph_owner_is_complete(&mislabeled));
+    }
+    #[test]
+    fn live_graph_legacy_inventory_admission_and_route_partial_classification_are_preserved(){
+        let mut legacy=json!({"status":"observed","inventory_complete":true,"complete":true});
+        assert!(graph_owner_allows_core(&legacy));assert!(graph_owner_is_complete(&legacy));
+        legacy["complete"]=json!(false);
+        assert!(graph_owner_allows_core(&legacy));assert!(!graph_owner_is_complete(&legacy));
+        legacy["status"]=json!("refused");
+        assert!(!graph_owner_allows_core(&legacy));assert!(!graph_owner_is_complete(&legacy));
     }
 
 }
