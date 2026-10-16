@@ -693,6 +693,16 @@ fn switch_render(
     owner: &mut SwitchOwner,
     frames: usize,
 ) -> Result<Value, &'static str> {
+    switch_render_observed(core, owner, frames, None)
+}
+
+/// Optional off-audio diagnostic collector; ordinary renders keep no PCM.
+fn switch_render_observed(
+    core: &mut V2Core,
+    owner: &mut SwitchOwner,
+    frames: usize,
+    mut windows: Option<&mut uvi::OutputWindowCapture>,
+) -> Result<Value, &'static str> {
     let start = Instant::now();
     let mut rendered = 0usize;
     let mut peak = 0f32;
@@ -730,6 +740,9 @@ fn switch_render(
             }
             nonzero_frames += usize::from(frame_signal);
             block_signal |= frame_signal;
+        }
+        if let Some(windows) = windows.as_deref_mut() {
+            windows.observe(output.buses, n);
         }
         nonzero_blocks += usize::from(block_signal);
         let mut progress = core.ui_lifecycle_progress(0);
