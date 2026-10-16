@@ -244,6 +244,11 @@ pub struct SourceIndices {
     /// An initially empty player retains complete dormant zone recipes.
     #[cfg_attr(feature = "cache", serde(default))]
     pub sample_targets: Vec<SourceSampleTarget>,
+    /// SamplePlayer zones without program-owned PlaybackOptions. Initial source
+    /// loading inherits file playback for these zones, never root/tune/gain.
+    /// Presence is explicit: an empty stored PlaybackOptions suppresses inheritance.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub file_playback_zones: Vec<ZoneRef>,
     pub modulators: Vec<SourceModulator>,
     /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
     pub ahdsrs: Vec<SourceAhdsr>,
@@ -957,6 +962,8 @@ impl Instrument {
             target.zones = target.zones.iter().filter_map(|z| remap[z.0]).collect();
         }
         self.source_indices.sample_targets.retain(|t| !t.zones.is_empty());
+        self.source_indices.file_playback_zones=self.source_indices.file_playback_zones.iter()
+            .filter_map(|z|remap[z.0]).collect();
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
             if let Some(used) = zone.asset.and_then(|a| used.get_mut(a.0)) {

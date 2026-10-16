@@ -553,6 +553,14 @@ impl Instrument {
                 return Err(invalid_routing(check.owner.clone(), "missing original destination"));
             }
         }
+        let mut file_playback_zones=std::collections::HashSet::new();
+        for zone in &self.source_indices.file_playback_zones {
+            check.owner=format!("file playback zone {}",zone.0);
+            check.exists(Reference::Zone(zone.0))?;
+            if !file_playback_zones.insert(zone.0) {
+                return Err(ValidationError::SampleTarget {owner:check.owner.clone(),reason:"duplicate file playback zone"});
+            }
+        }
         let mut sample_nodes = std::collections::HashSet::new();
         let mut sample_zones = std::collections::HashSet::new();
         for target in &self.source_indices.sample_targets {
@@ -1203,4 +1211,14 @@ mod tests {
             Err(ValidationError::Switching { .. })
         ));
     }
+    #[test]
+    fn file_playback_marker_validates_and_tracks_zone_retention() {
+        let mut ir=one_zone();let mut second=ir.zones[0].clone();second.keys=KeyRange {low:61,high:61};ir.zones.push(second);
+        ir.source_indices.file_playback_zones=vec![ZoneRef(0),ZoneRef(1)];
+        assert_eq!(ir.validate(),Ok(()));ir.retain_zones(|z|z.keys.low==61);
+        assert_eq!(ir.source_indices.file_playback_zones,vec![ZoneRef(0)]);assert_eq!(ir.validate(),Ok(()));
+        ir.source_indices.file_playback_zones.push(ZoneRef(0));assert!(matches!(ir.validate(),Err(ValidationError::SampleTarget {..})));
+        ir.source_indices.file_playback_zones=vec![ZoneRef(99)];assert!(matches!(ir.validate(),Err(ValidationError::Dangling {..})));
+    }
+
 }
