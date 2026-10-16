@@ -21,6 +21,35 @@ pub(super) struct Config {
     /// Explicit compiled IR indices, never native UVI identities.
     #[serde(default)]
     gain_groups: Vec<u32>,
+    /// Default-off bounded query of this actual installed owner.
+    #[serde(default)]
+    live_graph: Option<LiveGraphConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveGraphConfig {
+    query: sampler_uvi::script::LiveGraphQuery,
+    expected_player_node: u32,
+    expected_location_sha256: String,
+    expected_location_utf8_bytes: usize,
+    #[serde(default)]
+    held_checkpoints: Vec<usize>,
+}
+impl LiveGraphConfig {
+    fn validate(&self, frames: usize) -> Result<(), &'static str> {
+        self.query.validate()?;
+        if !self.query.player_nodes.contains(&self.expected_player_node)
+            || self.expected_location_sha256.len()!=64
+            || !self.expected_location_sha256.bytes().all(|b|b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !(1..=65536).contains(&self.expected_location_utf8_bytes)
+            || self.held_checkpoints.len()>3
+            || self.held_checkpoints.iter().enumerate().any(|(i,&n)|n<128 || n>frames
+                || (i!=0 && self.held_checkpoints[i-1]>=n)) {
+            return Err("invalid_live_graph_config");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +82,7 @@ impl Config {
             .any(|(i,g)|*g>65535 || self.gain_groups[..i].contains(g)) {
             return Err("UVI gain readback requires at most eight unique compiled group indices <=65535");
         }
+        if let Some(graph)=&self.live_graph { graph.validate(note_frames)?; }
         validate_output_windows(&self.output_windows, note_frames)?;
         Ok(())
     }
@@ -335,6 +365,13 @@ fn acknowledge(
     deadline: Instant,
     service: &mut Service,
 ) -> Phase {
+    acknowledge_query(core, owner, bridge, bounds, deadline, service, None)
+}
+fn acknowledge_query(
+    core: &mut V2Core, owner: &mut SwitchOwner, bridge: &Arc<UiBridge>,
+    bounds: &Bounds, deadline: Instant, service: &mut Service,
+    query: Option<&sampler_uvi::script::LiveGraphQuery>,
+) -> Phase {
     let started = Instant::now();
     let timeout = deadline
         .min(bounds.deadline)
@@ -344,7 +381,11 @@ fn acknowledge(
     }
     let drain_baseline = core.uvi_diagnostic_progress(0, owner.request, bridge)
         .ok().and_then(|o| o.progress).map(|p| p.commands_drained);
-    let mut token = match core.request_uvi_diagnostics(0, owner.request, bridge, timeout) {
+    let requested = match query {
+        Some(q) => core.request_uvi_live_graph(0, owner.request, bridge, timeout, q.clone()),
+        None => core.request_uvi_diagnostics(0, owner.request, bridge, timeout),
+    };
+    let mut token = match requested {
         Ok(token) => token,
         Err(e) => return Phase::failed("request_failed", json!(format!("{e:?}"))),
     };
@@ -419,7 +460,10 @@ fn acknowledge(
         }
         bounds.pause(1, deadline);
     };
-    Phase {
+    let graph = if query.is_some() && status == "acknowledged_and_drained" {
+        core.take_uvi_live_graph(&mut token).ok().flatten().map(|g|g.value)
+    } else { None };
+    let mut phase = Phase {
         status,
         ack,
         progress: last,
@@ -429,7 +473,9 @@ fn acknowledge(
         "command_drain_baseline":drain_baseline,"first_command_drain_observed":first_command_drain,
         "wall_ms":started.elapsed().as_secs_f64()*1000.,"clock_frames":0,
         "phase_observations":trace,"phase_observations_omitted":trace_omitted}),
-    }
+    };
+    if query.is_some() { phase.report["live_graph_owner"] = graph.unwrap_or_else(||json!({"status":"unavailable"})); }
+    phase
 }
 
 /// Reuse the ordinary owner/FIFO-marker service for an inspector UI edit.
@@ -593,6 +639,160 @@ impl Audio {
     }
 }
 
+// All helpers below are off-audio numeric projections, never loaders/services.
+#[derive(Default)]
+struct GraphCaptures { rows:Vec<Value>, bytes:usize, omitted:usize }
+fn graph_size(v:&Value,limit:usize)->bool {
+    struct Count(usize,usize);
+    impl std::io::Write for Count {
+        fn write(&mut self,b:&[u8])->std::io::Result<usize>{self.0=self.0.checked_add(b.len()).ok_or(std::io::ErrorKind::OutOfMemory)?;if self.0>self.1{return Err(std::io::ErrorKind::OutOfMemory.into())}Ok(b.len())}
+        fn flush(&mut self)->std::io::Result<()>{Ok(())}
+    }
+    serde_json::to_writer(&mut Count(0,limit),v).is_ok()
+}
+impl GraphCaptures {
+    fn push(&mut self,mut row:Value) {
+        if self.rows.len()==8 {self.omitted+=1;return}
+        if !graph_size(&row,256<<10) {row=json!({"phase":row["phase"],"status":"refused","reason":"phase_receipt_size"});}
+        // Logical serialized limit; this does not describe allocator RSS.
+        let bytes=serde_json::to_vec(&row).expect("bounded numeric graph receipt").len();
+        if self.bytes.checked_add(bytes).is_none_or(|n|n>(2<<20)) {self.omitted+=1;return}
+        self.bytes+=bytes;self.rows.push(row);
+    }
+}
+fn graph_join(records:&[Value], regions:&Value, complete:bool, group:Option<u64>, expected:Option<(&str,usize)>)->Value {
+    if !complete {return json!({"status":"refused","reason":"incomplete_region_matches"})}
+    let Some(regions)=regions.as_array() else{return json!({"status":"unavailable","reason":"no_region_identity"})};
+    let matches:Vec<_>=records.iter().filter(|r|regions.iter().any(|n|n==&r["region"])
+        && group.is_none_or(|g|r["worker_group"].as_u64()==Some(g))).collect();
+    if matches.len()!=1 {return json!({"status":if matches.is_empty(){"unavailable"}else{"ambiguous"},
+        "reason":if matches.is_empty(){"unavailable_dynamic_or_static_provenance"}else{"multiple_target_recipes"},"matching_count":matches.len()})}
+    let r=matches[0];
+    if expected.is_some_and(|(h,n)|r["location_sha256"]!=h || r["location_utf8_bytes"]!=n) {
+        return json!({"status":"refused","reason":"resource_identity_mismatch","recipe":r});
+    }
+    json!({"status":"joined","recipe":r})
+}
+fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nodes:&[u32])->Result<(Vec<Value>,Value,Vec<(i32,i32,i32)>),&'static str>{
+    use sampler_ir::Processor as P;
+    let ir=owner.instrument.as_ref().ok_or("worker_ir_unavailable")?;
+    if ir.source_indices.sample_targets.len()>262144 || ir.chains.len()>262144 {return Err("worker_ir_scan_bound")}
+    let mut records=Vec::new();let mut chains=std::collections::BTreeSet::new();let mut steps=0usize;let mut bytes=0usize;
+    for &node in &q.player_nodes {
+        let targets:Vec<_>=ir.source_indices.sample_targets.iter().filter(|t|t.node==node).collect();
+        if targets.len()!=1 {return Err("worker_target_missing_or_ambiguous")}
+        if targets[0].zones.len()>64 {return Err("worker_target_region_bound")}
+        for region in &targets[0].zones {
+            let z=ir.zones.get(region.0).ok_or("worker_region_missing")?;
+            let asset=z.asset.and_then(|a|ir.assets.get(a.0));
+            let location=asset.map(|a|a.location.as_bytes());
+            if let Some(b)=location {
+                bytes=bytes.checked_add(b.len()).ok_or("worker_location_budget")?;
+                if b.len()>65536 || bytes>(16<<20) {return Err("worker_location_budget")}
+            }
+            let group=z.group.and_then(|g|ir.groups.get(g.0));
+            for chain in [z.chain,group.and_then(|g|g.chain)].into_iter().flatten(){chains.insert(chain.0);}
+            records.push(json!({"player_node":node,"region":region.0,"worker_group":z.group.map(|g|g.0),
+                "worker_asset":z.asset.map(|a|a.0),"location_sha256":location.map(|b|format!("{:x}",Sha256::digest(b))),
+                "location_utf8_bytes":location.map(|b|b.len()),"low_key":z.keys.low,"high_key":z.keys.high,
+                "low_velocity":z.velocities.low,"high_velocity":z.velocities.high,
+                "zone_gain":z.gain.linear(),"zone_chain":z.chain.map(|c|c.0),
+                "group_muted":group.map(|g|g.muted),"group_gain":group.map(|g|g.gain.linear()),
+                "group_chain":group.and_then(|g|g.chain).map(|c|c.0)}));
+        }
+    }
+    let mut mixes=Vec::new();
+    for(index,c)in ir.chains.iter().enumerate(){for p in c.pre_amplitude.iter().chain(c.post_amplitude.iter()){
+        steps+=1;if steps>262144{return Err("worker_processor_scan_bound")}
+        if let P::Mix{address,..}=p {if u32::try_from(address.generic).ok().is_some_and(|n|nodes.contains(&n)){
+            chains.insert(index);let a=(address.group,address.slot,address.generic);
+            if !mixes.contains(&a){if mixes.len()==32{return Err("worker_mix_bound")}mixes.push(a)}
+        }}
+    }}
+    if chains.len()>32 {return Err("worker_chain_bound")}
+    let mut rows=Vec::new();
+    for index in chains {
+        let c=ir.chains.get(index).ok_or("worker_chain_missing")?;
+        if c.pre_amplitude.len()+c.post_amplitude.len()>32 {return Err("worker_chain_processor_bound")}
+        let processors:Vec<_>=c.pre_amplitude.iter().map(|p|("pre",p)).chain(c.post_amplitude.iter().map(|p|("post",p))).enumerate().map(|(ordinal,(section,p))|{
+            let setting=match p {
+                P::Mix{count,address,dry,wet,bypass}=>json!({"kind":"mix","count":count,"dry":dry,"wet":wet,"bypass":bypass,
+                    "group":address.group,"slot":address.slot,"generic":address.generic}),
+                P::StereoMatrix(m)=>json!({"kind":"truncated_stereo_matrix","matrix":m}),
+                P::Gain(g)=>json!({"kind":"gain","linear":g.linear()}),
+                P::Branch{count,gain,first,last}=>json!({"kind":"branch","count":count,"linear":gain.linear(),"first":first,"last":last}),
+                P::Filter(_)=>json!({"kind":"filter","transfer_not_observed":true}),
+                P::Space(_)=>json!({"kind":"space","transfer_not_observed":true}),
+                P::Dynamics(_)=>json!({"kind":"dynamics","transfer_not_observed":true}),
+                _=>json!({"kind":"other","unsupported_scope_proof":true}),
+            };json!({"ordinal":ordinal,"section":section,"settings":setting})
+        }).collect();
+        let scope=match c.scope {sampler_ir::Scope::Voice=>json!({"kind":"voice"}),sampler_ir::Scope::Group(g)=>json!({"kind":"group","index":g.0}),sampler_ir::Scope::Bus(b)=>json!({"kind":"bus","index":b.0}),sampler_ir::Scope::Master=>json!({"kind":"master"})};
+        rows.push(json!({"chain":index,"scope":scope,"processors":processors}));
+    }
+    Ok((records,json!({"chains":rows,"complete":true,"scope":"Actual initialized submitted worker IR, not full live matrix or native FXPostGain placement"}),mixes))
+}
+fn capture_graph(
+    core:&V2Core,owner:&SwitchOwner,bridge:&Arc<UiBridge>,config:&LiveGraphConfig,
+    phase:&mut Phase,label:&str,frames:usize,captures:&mut GraphCaptures,
+){
+    let graph=phase.report.as_object_mut().and_then(|r|r.remove("live_graph_owner")).unwrap_or(Value::Null);
+    let mut row=json!({"phase":label,"note_relative_output_frames":frames,"owner":graph,
+        "request_id":phase.ack.map(|a|a.request_id),"acknowledgement":phase.ack.map(acknowledgement_value),
+        "status":"partial","owner_identity":{"slot":0,"epoch":owner.request,"arc_guard_required":true},"scope":"Owner command prefix plus bracketed pure core reads, not a cross-thread atomic snapshot or future-state proof"});
+    let observe=||->Result<Value,&'static str>{
+        if !phase.drained(){return Err("owner_or_marker_unavailable")}
+        let a=phase.ack.ok_or("owner_ack_unavailable")?;
+        if row["owner"]["status"]!="observed" || row["owner"]["complete"]!=true {return Err("owner_graph_unavailable")}
+        let nodes:Vec<_>=row["owner"]["nodes"].as_array().ok_or("owner_node_rows_unavailable")?.iter()
+            .filter_map(|n|n["node"].as_u64().and_then(|n|u32::try_from(n).ok())).collect();
+        let(records,compiled,mixes)=graph_worker_ir(owner,&config.query,&nodes)?;
+        let before=core.uvi_diagnostic_progress(0,owner.request,bridge).map_err(|_|"owner_stale_before")?;
+        let runtime=core.diagnostic_live_graph_runtime(0,owner.request,&config.query.player_nodes,&nodes,&mixes)?;
+        let after=core.uvi_diagnostic_progress(0,owner.request,bridge).map_err(|_|"owner_stale_after")?;
+        let agrees=|p:Option<DiagnosticProgress>|p.is_some_and(|p|p.events_executed==a.events_executed
+            &&p.commands_collected==a.commands_collected&&p.commands_pushed==a.commands_pushed
+            &&p.commands_drained==a.commands_pushed&&p.marker_drained>=a.request_id);
+        let mut joins=Vec::new();
+        for t in runtime["targets"].as_array().ok_or("core_target_rows_unavailable")? {
+            let node=t["player_node"].as_u64();let subset:Vec<_>=records.iter().filter(|r|r["player_node"].as_u64()==node).cloned().collect();
+            let expected=(node==Some(u64::from(config.expected_player_node))).then_some((config.expected_location_sha256.as_str(),config.expected_location_utf8_bytes));
+            joins.push(json!({"kind":"current_target","player_node":node,"asset_id":t["current_pcm_revision_asset_id"],
+                "join":graph_join(&subset,&t["matching_regions"],t["region_matches_complete"]==true,None,expected)}));
+        }
+        for v in runtime["voices"].as_array().ok_or("core_voice_rows_unavailable")? {
+            let group=v["gain_state"]["group"].as_u64();
+            let join=if group.is_some(){graph_join(&records,&v["matching_regions"],v["region_matches_complete"]==true,group,None)}
+                else{json!({"status":"unavailable","reason":"voice_group_unavailable"})};
+            joins.push(json!({"kind":"occupied_voice","physical":v["voice"]["voice"],"pinned_asset_id":v["voice"]["asset"],"join":join}));
+        }
+        Ok(json!({"runtime":runtime,"worker_recipes":records,"compiled_topology":compiled,"source_joins":joins,
+            "prefix_counters_agree":agrees(before.progress)&&agrees(after.progress),
+            "sample_counts_conserved":a.sample_counts_conserved(),"sample_tasks_settled":a.samples.pending==0,
+            "ack_health_clean":a.runtime_faults==0 && a.runtime_budgets==0 && a.samples.failed==0 && a.samples.cancelled==0,
+            "progress_before":before.progress.map(progress_value),"progress_after":after.progress.map(progress_value)}))
+    };
+    match observe(){
+        Ok(observation)=>{
+            let coherent=observation["ack_health_clean"]==true&&observation["prefix_counters_agree"]==true&&observation["sample_counts_conserved"]==true
+                &&observation["sample_tasks_settled"]==true&&observation["runtime"]["voices_complete"]==true;
+            let joined=observation["source_joins"].as_array().is_some_and(|j|j.iter().all(|r|r["join"]["status"]=="joined"));
+            row["status"]=json!(if coherent&&joined{"observed_finite_state"}else{"partial_or_incoherent"});
+            row["core"]=observation;
+        },
+        Err(reason)=>{row["reason"]=json!(reason);},
+    }
+    captures.push(row);
+}
+fn request_graph_capture(
+    core:&mut V2Core,owner:&mut SwitchOwner,bridge:&Arc<UiBridge>,bounds:&Bounds,service:&mut Service,
+    config:&LiveGraphConfig,label:&str,frames:usize,captures:&mut GraphCaptures,
+){
+    if captures.rows.len()==8 {captures.omitted+=1;return}
+    let mut phase=acknowledge_query(core,owner,bridge,bounds,bounds.phase_deadline(),service,Some(&config.query));
+    capture_graph(core,owner,bridge,config,&mut phase,label,frames,captures);
+}
+
 /// Called only for an explicitly configured UVI note condition. This function
 /// owns input admission; the parent must not send a second unconditional note.
 pub(super) fn probe_note(
@@ -618,6 +818,8 @@ pub(super) fn probe_note(
     // Allocate the complete finite PCM budget before any note or render.
     let mut output_windows = OutputWindowCapture::new(&config.output_windows);
     let mut issues = Vec::<String>::new();
+    let mut graph_captures = GraphCaptures::default();
+    let mut next_graph_checkpoint = 0usize;
     let mut result = json!({"status":"partial","requested_frames":note_frames,"key":note.key,
         "velocity":velocity,"note_channel":note.channel,"audio_generation":owner.request,
         "config":{"phase_timeout_ms":config.phase_timeout_ms,"total_timeout_ms":config.total_timeout_ms,
@@ -647,15 +849,19 @@ pub(super) fn probe_note(
         });
         result["lua_note_callback_expected"] = json!(handles_notes);
         result["monitoring_before_input"] = progress_value(before);
-        let initial = acknowledge(
+        let mut initial = acknowledge_query(
             core,
             owner,
             &bridge,
             &bounds,
             bounds.phase_deadline(),
             &mut service,
+            config.live_graph.as_ref().map(|g|&g.query),
         );
         let mut proceed = initial.drained();
+        if let Some(g)=&config.live_graph {
+            capture_graph(core,owner,&bridge,g,&mut initial,"installed_initial_ack",0,&mut graph_captures);
+        }
         result["initial_owner_sample_condition"] = initial.report;
         if !config.gain_groups.is_empty() {
             result["gain_after_initial_ack"]=switch_gain_state(core,owner,&config.gain_groups);
@@ -682,13 +888,14 @@ pub(super) fn probe_note(
             for c in &config.controllers {
                 core.play(0, Event::midi1(0xb0 | c.channel, c.cc, c.value));
             }
-            let phase = acknowledge(
+            let mut phase = acknowledge_query(
                 core,
                 owner,
                 &bridge,
                 &bounds,
                 bounds.phase_deadline(),
                 &mut service,
+                config.live_graph.as_ref().map(|g|&g.query),
             );
             let counts = input_counts(before, phase.progress, config.controllers.len());
             proceed = phase.drained() && counts["status"] == "observed";
@@ -700,6 +907,9 @@ pub(super) fn probe_note(
             }) {
                 issues.push("controller_fault_or_sample_conservation_failure".into());
                 proceed = false;
+            }
+            if let Some(g)=&config.live_graph {
+                capture_graph(core,owner,&bridge,g,&mut phase,"controller_ack",0,&mut graph_captures);
             }
             result["controller_phase"] = json!({"status":if proceed {"observed"}else{"partial"},"inputs":result["config"]["controllers"],
                 "input_count":config.controllers.len(),"counts":counts,"owner":phase.report});
@@ -723,13 +933,14 @@ pub(super) fn probe_note(
             );
             owner.held = Some(note);
             result["note_submitted"] = json!(true);
-            let phase = acknowledge(
+            let mut phase = acknowledge_query(
                 core,
                 owner,
                 &bridge,
                 &bounds,
                 bounds.phase_deadline(),
                 &mut service,
+                config.live_graph.as_ref().map(|g|&g.query),
             );
             // Both routes enqueue an owner event. Without authored onNote,
             // the physical attack is forwarded directly; event execution is
@@ -746,6 +957,9 @@ pub(super) fn probe_note(
             }) {
                 issues.push("note_fault_or_sample_conservation_failure".into());
                 note_proven = false;
+            }
+            if let Some(g)=&config.live_graph {
+                capture_graph(core,owner,&bridge,g,&mut phase,"note_ack",0,&mut graph_captures);
             }
             result["note_phase"] = json!({"counts":counts,"owner":phase.report,
                 "physical_host_note_owned":core.owns(note),"lua_note_callback_expected":handles_notes});
@@ -764,6 +978,10 @@ pub(super) fn probe_note(
             if !config.gain_groups.is_empty() {
                 result["gain_before_pcm"]=switch_gain_state(core,owner,&config.gain_groups);
             }
+            if let Some(g)=&config.live_graph {
+                request_graph_capture(core,owner,&bridge,&bounds,&mut service,g,
+                    "samples_settled_before_pcm",0,&mut graph_captures);
+            }
             // A pending task is explicit partial evidence. Ordinary clock
             // advancement may still expose authored future child activity.
             while audio.frames < note_frames && Instant::now() < bounds.deadline {
@@ -771,7 +989,11 @@ pub(super) fn probe_note(
                     issues.push(format!("pcm_owner_unavailable:{e:?}"));
                     break;
                 }
-                let n = (note_frames - audio.frames).min(128);
+                let mut n = (note_frames - audio.frames).min(128);
+                if let Some(checkpoint)=config.live_graph.as_ref().and_then(|g|g.held_checkpoints.get(next_graph_checkpoint)) {
+                    n=n.min(checkpoint.saturating_sub(audio.frames));
+                }
+                if n==0 { issues.push("live_graph_checkpoint_not_advanced".into()); break; }
                 let observer = (!config.output_windows.is_empty()).then_some(&mut output_windows);
                 let block = match switch_render_observed(core, owner, n, observer) {
                     Ok(block) => block,
@@ -797,19 +1019,27 @@ pub(super) fn probe_note(
                     issues.push(format!("pcm:{e}"));
                     break;
                 }
+                if let Some(g)=&config.live_graph {
+                    if g.held_checkpoints.get(next_graph_checkpoint)==Some(&audio.frames) {
+                        request_graph_capture(core,owner,&bridge,&bounds,&mut service,g,
+                            "held_checkpoint",audio.frames,&mut graph_captures);
+                        next_graph_checkpoint+=1;
+                    }
+                }
                 if audio.frames < note_frames {
                     bounds.pause(config.pace_ms, bounds.deadline);
                 }
             }
         }
         if Instant::now() < bounds.deadline {
-            let final_phase = acknowledge(
+            let mut final_phase = acknowledge_query(
                 core,
                 owner,
                 &bridge,
                 &bounds,
                 bounds.phase_deadline(),
                 &mut service,
+                config.live_graph.as_ref().map(|g|&g.query),
             );
             if !final_phase.drained() {
                 issues.push(format!("final:{}", final_phase.status));
@@ -822,6 +1052,9 @@ pub(super) fn probe_note(
                 if a.runtime_faults != 0 || a.runtime_budgets != 0 {
                     issues.push("final_owner_fault_or_budget".into());
                 }
+            }
+            if let Some(g)=&config.live_graph {
+                capture_graph(core,owner,&bridge,g,&mut final_phase,"final_ack",audio.frames,&mut graph_captures);
             }
             result["final_owner_sample_condition"] = final_phase.report;
         } else {
@@ -846,6 +1079,12 @@ pub(super) fn probe_note(
     if audio.frames != note_frames {
         issues.push("pcm_window_incomplete".into());
     }
+    let graph_complete = config.live_graph.as_ref().map(|g| {
+        let expected=4+usize::from(!config.controllers.is_empty())+g.held_checkpoints.len();
+        graph_captures.omitted==0 && graph_captures.rows.len()==expected
+            && graph_captures.rows.iter().all(|r|r["status"]=="observed_finite_state")
+    });
+    if graph_complete==Some(false) {issues.push("live_graph_observation_incomplete".into());}
     let complete = note_proven && audio.frames == note_frames && issues.is_empty();
     result["status"] = json!(if complete { "observed" } else { "partial" });
     result["complete"] = json!(complete);
@@ -875,6 +1114,12 @@ pub(super) fn probe_note(
     }
     result["first_signal"] = json!(audio.first_signal);
     result["runtime_problems"] = json!(problems);
+    if config.live_graph.is_some() {
+        result["live_graph"] = json!({"schema_version":1,"complete":graph_complete,
+            "status":if graph_complete==Some(true){"observed_finite_states"}else{"partial"},"phases":graph_captures.rows,
+            "serialized_phase_bytes":graph_captures.bytes,"omitted":graph_captures.omitted,
+            "admission":"not_decided; finite observed state does not prove native scope or all future states"});
+    }
     result["issues"] = json!(issues);
     result["wall_ms"] = json!(bounds.started.elapsed().as_secs_f64() * 1000.);
     result["zero_output_interpretation"] = json!(if note_proven {
@@ -905,6 +1150,7 @@ mod tests {
             controllers: vec![],
             output_windows: vec![],
             gain_groups: vec![],
+            live_graph: None,
         }
     }
     fn note() -> HostNote {
@@ -1560,4 +1806,34 @@ mod held_note_bound_tests {
         assert_eq!(OUTPUT_WINDOW_FRAMES,96000);
         assert_eq!(OUTPUT_WINDOW_CORRELATION_WORK,128_000_000);
     }
+    #[test]
+    fn live_graph_config_bounds_and_default_off() {
+        let mut c=config(200);assert!(c.live_graph.is_none());
+        c.live_graph=Some(LiveGraphConfig{query:sampler_uvi::script::LiveGraphQuery{
+            keygroup_node:1,matrix_node:2,player_nodes:vec![3,4,5]},expected_player_node:3,
+            expected_location_sha256:"a".repeat(64),expected_location_utf8_bytes:60,held_checkpoints:vec![48000,240000]});
+        assert!(c.validate(288000).is_ok());assert!(c.validate(96000).is_err());
+        c.live_graph.as_mut().unwrap().held_checkpoints=vec![128,128];assert!(c.validate(288000).is_err());
+        c.live_graph.as_mut().unwrap().held_checkpoints=vec![];c.live_graph.as_mut().unwrap().expected_location_sha256="../path".into();
+        assert!(c.validate(288000).is_err());
+    }
+    #[test]
+    fn live_graph_join_never_guesses_missing_ambiguous_or_wrong_resource() {
+        let row=json!({"region":1,"worker_group":7,"location_sha256":"a","location_utf8_bytes":60});
+        assert_eq!(graph_join(&[row.clone()],&json!([1]),true,Some(7),Some(("a",60)))["status"],"joined");
+        assert_eq!(graph_join(&[row.clone()],&json!([1]),false,Some(7),None)["status"],"refused");
+        assert_eq!(graph_join(&[row.clone()],&json!([]),true,Some(7),None)["status"],"unavailable");
+        assert_eq!(graph_join(&[row.clone(),row.clone()],&json!([1]),true,Some(7),None)["status"],"ambiguous");
+        assert_eq!(graph_join(&[row.clone()],&json!([1]),true,Some(8),None)["status"],"unavailable");
+        assert_eq!(graph_join(&[row],&json!([1]),true,Some(7),Some(("b",60)))["reason"],"resource_identity_mismatch");
+    }
+    #[test]
+    fn live_graph_receipt_storage_is_bounded_and_overflow_is_explicit() {
+        let mut captures=GraphCaptures::default();
+        captures.push(json!({"phase":"fixture","numeric":vec![0u8;300000]}));
+        assert_eq!(captures.rows[0]["reason"],"phase_receipt_size");
+        for _ in 0..8 {captures.push(json!({"phase":"fixture"}));}
+        assert_eq!(captures.rows.len(),8);assert_eq!(captures.omitted,1);assert!(captures.bytes<=(2<<20));
+    }
+
 }
