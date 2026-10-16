@@ -396,6 +396,9 @@ impl Prepared {
         mut targets: Vec<SampleTarget>,
         limits: SampleRevisionLimits,
     ) -> Result<Self, Error> {
+        if self.zone_routing.is_some() {
+            return Err(Error::UnsupportedZoneRoutingSampleUpdates);
+        }
         if limits.slots == 0
             || limits.slots > MAX_SAMPLE_REVISIONS
             || limits.resident_bytes == 0

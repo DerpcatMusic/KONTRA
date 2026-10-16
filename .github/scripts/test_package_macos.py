@@ -110,7 +110,7 @@ class Packaging(unittest.TestCase):
         self.assertTrue((self.stage / 'build-info.json').exists())
 
     def test_mismatched_identity_or_resources_never_produces_payload(self):
-        for case in ('revision', 'version', 'profile', 'features', 'resources', 'plist', 'app-types', 'arch', 'binary', 'legal', 'symlink'):
+        for case in ('revision', 'version', 'profile', 'features', 'resources', 'plist', 'app-types', 'arch', 'binary', 'legal', 'assistant-license', 'fastlz-notice', 'buffr-license', 'buffr-provenance', 'symlink'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 sources = fixtures(root)
@@ -137,6 +137,12 @@ class Packaging(unittest.TestCase):
                     path.write_bytes(path.read_bytes().replace(REVISION.encode(), b'e' * 40))
                 elif case == 'legal':
                     (arm / 'assets/OFL.txt').unlink()
+                elif case in ('assistant-license', 'fastlz-notice', 'buffr-license', 'buffr-provenance'):
+                    name = {'assistant-license': 'crates/sampler-uvi/assets/assistant/OFL.txt',
+                            'fastlz-notice': 'crates/sampler-kontakt/FASTLZ_NOTICE.txt',
+                            'buffr-license': 'licenses/BUFFR/LICENSE',
+                            'buffr-provenance': 'licenses/BUFFR/SOURCE.md'}[case]
+                    (arm / name).unlink()
                 elif case == 'symlink':
                     (arm / 'alias').symlink_to('/etc/passwd')
                 output = root / 'universal'

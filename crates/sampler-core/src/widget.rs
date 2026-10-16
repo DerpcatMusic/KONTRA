@@ -30,6 +30,7 @@ pub struct WidgetDefinition {
     pub instance: ScriptInstanceId,
     pub storage: WidgetStorage,
     pub drop: Option<WidgetDropStorage>,
+    pub menu: Option<crate::WidgetMenuStorage>,
     pub program: Option<usize>,
     pub stage: usize,
 }
@@ -169,6 +170,19 @@ impl Prepared {
                     {
                         return Err(Error::InvalidInput);
                     }
+                }
+            }
+            if let Some(menu) = w.menu {
+                if w.storage != WidgetStorage::Control(w.id)
+                    || menu.count_key[0] != w.ui_id
+                    || menu.value_key[0] != w.ui_id
+                    || menu.count_key[2] != -1
+                    || menu.value_key[2] != 0
+                    || menu.count_key[3] != menu.value_key[3]
+                    || menu.count_key[1] == menu.value_key[1]
+                    || !matches!(self.controls[self.control_index(w.id)?].domain, crate::ControlDomain::Integer { .. })
+                {
+                    return Err(Error::InvalidInput);
                 }
             }
             if let Some(drop) = w.drop {

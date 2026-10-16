@@ -79,8 +79,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    # Cold release-profile test executables exhausted the former 40-minute job.
-    timeout-minutes: 90
+    # Cold shipping-profile test compilation exhausted the 90-minute job.
+    # Allow the full release suite more time; keep ordinary CI at 90 minutes.
+    timeout-minutes: ${{ inputs.release_validation && 180 || 90 }}
     concurrency:
       group: ci-linux-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true

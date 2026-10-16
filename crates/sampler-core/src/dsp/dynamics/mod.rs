@@ -18,6 +18,7 @@ mod ballistics;
 mod computer;
 mod detector;
 mod laws;
+mod logarithm;
 mod output;
 mod pipeline;
 #[cfg(test)]

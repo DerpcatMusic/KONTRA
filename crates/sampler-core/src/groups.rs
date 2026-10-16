@@ -5,7 +5,7 @@ impl Prepared {
     /// Assign each authored region to an optional dense group. Ungrouped regions
     /// are always eligible. Empty groups are valid; group identity is plan-local.
     pub fn with_groups(mut self, count: u32, regions: Vec<Option<u32>>) -> Result<Self, Error> {
-        if regions.len() != self.region_count()
+        if self.zone_routing.is_some() || self.source_zone_catalog.is_some() || regions.len() != self.region_count()
             || regions.iter().flatten().any(|&group| group >= count)
         {
             return Err(Error::InvalidInput);
@@ -21,13 +21,16 @@ impl Prepared {
 
     /// Retain physical source group indices without changing dense DSP membership.
     pub fn with_source_groups(mut self, ids: Vec<u32>) -> Result<Self, Error> {
-        if ids.len() != self.group_count as usize || ids.iter().any(|&id| id > i32::MAX as u32) {
+        if self.zone_routing.is_some() || self.source_zone_catalog.is_some() || ids.len() != self.group_count as usize || ids.iter().any(|&id| id > i32::MAX as u32) {
             return Err(Error::InvalidInput);
         }
         self.group_source_ids = ids.into_boxed_slice();
         Ok(self)
     }
 
+    /// Assign the positive source IDs reported by `EventInfo::ZoneId` to regions.
+    /// Native zone commands use an independent identity/home catalog installed
+    /// by `with_source_zone_identities`; these event IDs do not authorize commands.
     pub fn with_source_zones(mut self, ids: Vec<u32>) -> Result<Self, Error> {
         if ids.len() != self.region_count() || ids.contains(&0) {
             return Err(Error::InvalidInput);

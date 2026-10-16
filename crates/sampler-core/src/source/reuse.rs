@@ -37,6 +37,8 @@ impl Hint {
             || c.starvation.is_some()
             || c.fade_in != 0
             || c.cold_hold
+            || c.start_runway != 0
+            || c.bounded_demand
         {
             return None;
         }
@@ -108,6 +110,8 @@ impl CursorKey {
             fade_in,
             fade_frames,
             cold_hold,
+            start_runway,
+            bounded_demand,
             lead,
         } = cursor;
         if wavetable.is_some()
@@ -116,6 +120,8 @@ impl CursorKey {
             || starvation.is_some()
             || fade_in != 0
             || cold_hold
+            || start_runway != 0
+            || bounded_demand
         {
             return None;
         }
@@ -168,6 +174,8 @@ impl CursorKey {
             fade_in: 0,
             fade_frames,
             cold_hold: false,
+            start_runway: 0,
+            bounded_demand: false,
             lead,
         }
     }

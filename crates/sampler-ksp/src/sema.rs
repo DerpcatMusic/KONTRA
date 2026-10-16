@@ -1207,6 +1207,15 @@ impl<'a> Sema<'a, '_> {
                 return fault(span, format!("{} parameter must be {lo}..={hi}", b.name()));
             }
         }
+        // Runtime-owned system arrays are readable operands, not destinations.
+        // The initializer and callback lowerer both need a declared array home.
+        if b == Builtin::GetScale && !matches!(out[1], Arg::Var(..)) {
+            return Err(crate::diag::Fault {
+                span: args[1].span,
+                builtin: Some(b.name()),
+                message: "get_scale requires a declared destination array".into(),
+            });
+        }
         if b == Builtin::GetUiId {
             let Arg::Var(v, s) = out[0] else {
                 unreachable!()

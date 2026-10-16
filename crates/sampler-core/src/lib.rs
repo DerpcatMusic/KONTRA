@@ -32,6 +32,9 @@ struct Siblings {
     next: Option<Index>,
 }
 
+pub use prepare::{MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
+    ZoneRouteVariant, ZoneRouting, ZoneRoutingLimits, ZoneRoutingBuildError,
+    ZoneRoutingFeature, ZoneRoutingRefusal, ZoneRoutingReport};
 mod allocation;
 pub use allocation::{AllocationCounts, AllocationDomainId};
 
@@ -45,6 +48,7 @@ pub use widget::{
 mod control;
 pub use control::{
     NativeSnapshotOverlay, SnapshotOverlayEpoch, SnapshotOverlayFence, SnapshotOverlayRefusal,
+    SnapshotMenuPosition, WidgetMenuStorage,
     SNAPSHOT_OVERLAY_VALUE_CAPACITY,
     BehaviorAdmissionFailure, BehaviorAdmissionOwner,
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
@@ -148,6 +152,7 @@ mod parallel;
 mod release;
 pub use parallel::Threads;
 mod render;
+mod onset;
 pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
     ReleaseStatus, ReleaseVelocity, Trigger,
@@ -355,11 +360,14 @@ pub enum Error {
     RandomBudget,
     /// Candidate preparation was canceled before publication.
     Canceled,
+    /// Routed eligibility is prepared for MIDI-key pitch only.
+    UnsupportedZoneRoutingPitch,
+    UnsupportedZoneRoutingSampleUpdates,
 }
 
 impl Error {
     /// Every variant, so one can travel as its index.
-    pub const ALL: [Error; 13] = [
+    pub const ALL: [Error; 15] = [
         Self::Capacity,
         Self::InvalidInput,
         Self::NotReady,
@@ -373,6 +381,8 @@ impl Error {
         Self::RevisionConflict,
         Self::RandomBudget,
         Self::Canceled,
+        Self::UnsupportedZoneRoutingPitch,
+        Self::UnsupportedZoneRoutingSampleUpdates,
     ];
 }
 
@@ -392,6 +402,8 @@ impl std::fmt::Display for Error {
             Self::RevisionConflict => "the revision changed",
             Self::RandomBudget => "random selection exceeded its draw budget",
             Self::Canceled => "candidate preparation was canceled",
+            Self::UnsupportedZoneRoutingPitch => "absolute pitch with zone routing is unsupported",
+            Self::UnsupportedZoneRoutingSampleUpdates => "dynamic sample updates with zone routing are unsupported",
         })
     }
 }
@@ -431,20 +443,41 @@ impl Limits {
     /// Cap on script callback state per part: 4M cells, 32 MB.
     pub const SCRIPT_CELLS: usize = 1 << 22;
 
+    /// Default callback arena/local/ready/yielded payload budget per part,
+    /// including source-sized completion reservations. Note release queue
+    /// entries are independently bounded by `notes`; the script cell ceiling
+    /// also remains independent. These are KONTRA budgets, not native limits.
+    pub const SCRIPT_CALLBACK_BYTES: usize = 64 << 20;
+
     /// Script callbacks a plan can have running at once: each note of
     /// [`Self::SCRIPT_KEYS`] keys runs a release callback in every stage and
     /// notes the scripts play pass the later stages too (about four per
     /// stage), plus one listener per stage; within [`Self::SCRIPT_CELLS`].
-    /// 16 for a plan without stages.
+    /// Baseline16 for a plan without stages. A routing plan with an async
+    /// callback adds its retained-job budget within the cell and byte ceilings.
+    /// Smaller custom arenas or exhausted ceilings explicitly refuse new jobs.
     pub fn script_capacity(plan: &Prepared) -> usize {
         let stages = plan.stage_count();
-        if stages == 0 {
-            return 16;
+        let locals = plan.behavior_local_count().max(1);
+        let ordinary = if stages == 0 { 16 } else {
+            (4 * stages * Self::SCRIPT_KEYS + stages).clamp(16, 4096)
+                .min(Self::SCRIPT_CELLS / locals).max(16)
+        };
+        let completions = plan.zone_completion_capacity();
+        if completions == 0 {
+            return ordinary;
         }
-        let wanted = (4 * stages * Self::SCRIPT_KEYS + stages).clamp(16, 4096);
-        wanted
-            .min(Self::SCRIPT_CELLS / plan.behavior_local_count().max(1))
-            .max(16)
+        // Every pending completion owns a real future arena slot, locals,
+        // ready entry and numeric ID. Grow all three worker-side; never allocate
+        // or force an authored boundary to make space on the audio thread.
+        let per_callback = std::mem::size_of::<Slot<behavior::Continuation>>()
+            .saturating_add(std::mem::size_of::<behavior::Ready>())
+            .saturating_add(std::mem::size_of::<BehaviorId>())
+            .saturating_add(std::mem::size_of::<u64>())
+            .saturating_add(locals.saturating_mul(std::mem::size_of::<i64>()));
+        let ceiling = (Self::SCRIPT_CELLS / locals)
+            .min(Self::SCRIPT_CALLBACK_BYTES / per_callback);
+        ordinary.saturating_add(completions.min(ceiling.saturating_sub(ordinary)))
     }
 
     /// Capacities for playing `plan`: `notes` held at once and `voices`,
@@ -571,6 +604,8 @@ struct Voice {
     /// v1 audible_voices: applied channel gains at the last render chunk.
     last_gains: [f32; 2],
     started: bool,
+    /// Authored absolute deadline: equal deadlines in one family form an onset cohort.
+    start_at: u64,
     /// Admission order, for oldest-first stealing.
     born: u64,
     /// Fading out after being stolen; no longer counts against polyphony.
@@ -583,6 +618,9 @@ struct Voice {
 }
 
 impl Voice {
+    fn held_onset(&self) -> bool {
+        self.cursor.holding_onset() || self.cursor.pending_start_runway() > 1
+    }
     /// Set this block's pitch step. A stretch voice's cursor is the time axis:
     /// it advances at the speed-scaled rate while the engine plays `pitch`.
     fn set_step(&mut self, pitch: f64) {
@@ -845,10 +883,13 @@ pub struct Runtime {
     source_ids: Vec<(i32, NoteId)>,
     last_source_id: i32,
     last_callback_id: i32,
+    callback_id_reservations: usize,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
+    onsets: onset::Storage,
+    pending_onsets: usize,
     stealing: Option<steal::Stealing>,
     stolen: usize,
     /// Voices stolen since the runtime started.
@@ -864,6 +905,7 @@ pub struct Runtime {
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
+    stream_start_runway: u32,
     stream_admission_errors: [u64; 2],
     stream_reserved: usize,
     voice_drops: u64,
@@ -1042,6 +1084,7 @@ impl Runtime {
                     .map(ops::ScriptInitial::bank)
                     .collect(),
                 midi_object: plan.midi_object.clone(),
+                zone_routing: plan.zone_routing.as_ref().map(prepare::zone_routing::PreparedRouting::state).transpose()?,
                 dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
                 groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
                 controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
@@ -1078,9 +1121,12 @@ impl Runtime {
             source_ids: Vec::with_capacity(limits.notes),
             last_source_id: 0,
             last_callback_id: 0,
+            callback_id_reservations: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
+            onsets: onset::Storage::new(limits.voices),
+            pending_onsets: 0,
             stealing: None,
             stolen: 0,
             steals: 0,
@@ -1093,6 +1139,7 @@ impl Runtime {
             offline: false,
             stream_fault: None,
             stream_horizon: 1,
+            stream_start_runway: 1,
             stream_admission_errors: [0; 2],
             stream_reserved: 0,
             voice_drops: 0,
@@ -1369,6 +1416,7 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.validate_zone_routing_pitch(self.active_plan, pitch)?;
         let performance = self.performance_index(performance)?;
         self.apply_due();
         if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
@@ -1493,6 +1541,12 @@ impl Runtime {
         pitch: NotePitch,
         velocity: f64,
     ) -> Result<NoteId, Error> {
+        let plan = match origin {
+            NoteOrigin::Input(..) => self.active_plan,
+            NoteOrigin::Generated(plan, ..) => plan,
+            NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan,
+        };
+        self.validate_zone_routing_pitch(plan, pitch)?;
         let performance = match origin {
             NoteOrigin::Input(_, _, performance) | NoteOrigin::Generated(_, _, performance) => {
                 performance
@@ -1856,6 +1910,9 @@ impl Runtime {
         if !asset.residency_permitted() {
             return Err(Error::NotReady);
         }
+        // Full conservative geometry is shared by admission, service, and the
+        // pinned cohort release gate. No requested latency is shortened.
+        let cursor = self.stream_start_cursor(note.plan, cursor);
         let cold = self.check_source_ready(asset, cursor, envelope)?;
         let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
@@ -1920,11 +1977,7 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor: if cold && !self.offline {
-                cursor.cold()
-            } else {
-                cursor
-            },
+            cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
             mod_pitch: (f64::NAN, 1.0),
             stream_pages,
@@ -1937,6 +1990,7 @@ impl Runtime {
             gain,
             last_gains: [0.0; 2],
             started: at == self.now,
+            start_at: at,
             born: self.voice_order,
             stolen: false,
             group: None,
@@ -1958,6 +2012,7 @@ impl Runtime {
         if at > self.now {
             self.queue(at, Action::Start(id));
         }
+        self.pending_onsets += usize::from(cursor.pending_start_runway() > 1);
         self.stream_reserved += stream_pages;
         self.cold_started += u64::from(cold);
         self.voice_order += 1;
@@ -2049,6 +2104,7 @@ impl Runtime {
                 c.outcome = Some(Outcome::Cancelled);
             }
         }
+        self.abandon_zone_jobs();
         // Panic hard-stops tails as well as held voices.
         for i in 0..self.voices.slots.len() {
             if self.voices.slots[i].value.is_some() {

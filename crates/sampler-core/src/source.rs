@@ -228,6 +228,8 @@ impl Playback {
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
             cold_hold: false,
+            start_runway: 0,
+            bounded_demand: false,
             lead: 0,
         };
         if let Some(range) = self.loop_range
@@ -376,6 +378,8 @@ impl CursorTemplate {
             fade_in: 0,
             fade_frames: self.fade_frames,
             cold_hold: false,
+            start_runway: 0,
+            bounded_demand: false,
             lead: self.lead,
         };
         if let Some(frames) = self.loop_control_crossfade {
@@ -411,6 +415,11 @@ pub(super) struct Cursor {
     fade_frames: u32,
     /// Initial storage hold; lifecycle events still end an unsounded voice.
     cold_hold: bool,
+    /// Pending first-render runway contract; zero after admission to playback.
+    /// Held cursors use it on scalar/batched/parallel source paths.
+    start_runway: u32,
+    /// Keep bounded streaming geometry after the onset contract is released.
+    bounded_demand: bool,
     /// Frames between this view's start and the zone's sample start, where playback begins:
     /// the view reaches back to a loop that starts before the sample start.
     lead: u64,
@@ -665,6 +674,9 @@ impl Cursor {
     pub(super) fn trace_start(&self) -> u64 {
         self.start as u64
     }
+    pub(super) fn trace_phase(&self) -> (u64, f64, Option<u64>) {
+        (self.position, self.fraction, self.index(self.position as i128).map(|i| i as u64))
+    }
     pub(super) fn trace_position(&self) -> u64 {
         self.index(self.position as i128)
             .map_or(self.start as u64, |i| i as u64)
@@ -821,6 +833,16 @@ impl Cursor {
     pub(super) fn starved(&self) -> bool {
         self.starvation.is_some()
     }
+
+    pub(super) fn with_start_runway(mut self, frames: u32) -> Self {
+        self.start_runway = if frames > 1 { frames } else { 0 };
+        self.bounded_demand = frames > 1;
+        self
+    }
+
+    pub(crate) fn bounded_demand(&self) -> bool { self.bounded_demand }
+    pub(crate) fn pending_start_runway(&self) -> u32 { self.start_runway }
+    pub(crate) fn admit_start_runway(&mut self) { self.start_runway = 0; }
 
     /// Start silent, waiting for its stream window (a cold start).
     pub(super) fn cold(mut self) -> Self {
@@ -2843,6 +2865,11 @@ const GATHER: usize = 1024;
 pub(super) trait ReadFrames {
     fn frame(&self, index: usize) -> Option<Frame>;
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
+    /// Availability only; implementations may check page geometry without
+    /// decoding/copying frames. Never submit requests or partially consume data.
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        range.into_iter().all(|index| self.frame(index).is_some())
+    }
     /// Copy `range` into `out` (its length), across storage boundaries;
     /// `false` if any frame is missing.
     fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
@@ -2870,6 +2897,9 @@ pub(super) struct Resident<'a> {
     pub levels: &'a [Box<[Frame]>],
 }
 impl ReadFrames for Resident<'_> {
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        self.frames.get(range).is_some()
+    }
     fn frame(&self, index: usize) -> Option<Frame> {
         self.frames.frame(index)
     }
@@ -2881,6 +2911,9 @@ impl ReadFrames for Resident<'_> {
     }
 }
 impl ReadFrames for [Frame] {
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        self.get(range).is_some()
+    }
     fn frame(&self, index: usize) -> Option<Frame> {
         self.get(index).copied()
     }
@@ -2903,6 +2936,16 @@ impl PagedFrames<'_> {
     }
 }
 impl ReadFrames for PagedFrames<'_> {
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        crate::prepare::uncovered(self.head, range, |frames| {
+            let page_frames = crate::PAGE_FRAMES;
+            (frames.start / page_frames..=(frames.end - 1) / page_frames).all(|page| {
+                self.cache.span(self.asset,
+                    frames.start.max(page * page_frames)..frames.end.min((page + 1) * page_frames)
+                ).is_some()
+            })
+        })
+    }
     fn frame(&self, index: usize) -> Option<Frame> {
         match self.range(index) {
             Some((start, frames)) => Some(frames.frame(index - start)),

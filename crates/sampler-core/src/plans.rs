@@ -38,6 +38,7 @@ pub struct PlanTransfer {
     controls: super::control::ControlState,
     scripts: Box<[super::ops::ScriptBank]>,
     midi_object: super::MidiObject,
+    zone_routing: Option<super::prepare::zone_routing::State>,
     dsp: super::dsp::DspState,
     groups: super::groups::GroupState,
     controllers: super::controller_event::ControllerState,
@@ -62,6 +63,7 @@ pub(super) struct Generation {
     pub controls: super::control::ControlState,
     pub scripts: Box<[super::ops::ScriptBank]>,
     pub midi_object: super::MidiObject,
+    pub zone_routing: Option<super::prepare::zone_routing::State>,
     pub dsp: super::dsp::DspState,
     pub groups: super::groups::GroupState,
     pub controllers: super::controller_event::ControllerState,
@@ -287,6 +289,10 @@ impl PlanControl {
                     });
                 }
             };
+        let zone_routing = match prepared.zone_routing.as_ref().map(super::prepare::zone_routing::PreparedRouting::state).transpose() {
+            Ok(state) => state,
+            Err(_) => return Err(RejectedPlan { reason: PlanError::Capacity, prepared }),
+        };
         let request = self.sequence + 1;
         let script = super::script_params::EngineLayers::new(&prepared);
         let allocation = super::allocation::AllocationState::new(&prepared);
@@ -312,6 +318,7 @@ impl PlanControl {
             controls,
             scripts,
             midi_object,
+            zone_routing,
             dsp,
             groups,
             controllers,
@@ -477,6 +484,7 @@ impl Runtime {
                 controls: generation.controls,
                 scripts: generation.scripts,
                 midi_object: generation.midi_object,
+                zone_routing: generation.zone_routing,
                 dsp: generation.dsp,
                 groups: generation.groups,
                 controllers: generation.controllers,
@@ -502,6 +510,7 @@ impl Runtime {
                             controls: plan.controls,
                             scripts: plan.scripts,
                             midi_object: plan.midi_object,
+                            zone_routing: plan.zone_routing,
                             dsp: plan.dsp,
                             groups: plan.groups,
                             controllers: plan.controllers,
@@ -564,6 +573,7 @@ impl Runtime {
                     controls: plan.controls,
                     scripts: plan.scripts,
                     midi_object: plan.midi_object,
+                    zone_routing: plan.zone_routing,
                     dsp: plan.dsp,
                     groups: plan.groups,
                     controllers: plan.controllers,

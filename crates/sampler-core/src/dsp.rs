@@ -1809,6 +1809,10 @@ mod tests {
 }
 
 impl PreparedVoiceChain {
+    /// Three voice boundaries, one node per compiled processor and per tap.
+    pub(crate) fn trace_node_count(&self) -> Option<usize> {
+        3usize.checked_add(self.pre.len())?.checked_add(self.post.len())?.checked_add(self.taps.len())
+    }
     pub(crate) fn trace_graph(
         &self,
         plan: &Prepared,
