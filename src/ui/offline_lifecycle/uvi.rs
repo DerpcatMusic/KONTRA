@@ -668,10 +668,18 @@ fn graph_join(records:&[Value], regions:&Value, complete:bool, group:Option<u64>
     if matches.len()!=1 {return json!({"status":if matches.is_empty(){"unavailable"}else{"ambiguous"},
         "reason":if matches.is_empty(){"unavailable_dynamic_or_static_provenance"}else{"multiple_target_recipes"},"matching_count":matches.len()})}
     let r=matches[0];
+    if r["location_sha256"].as_str().is_none() || r["location_utf8_bytes"].as_u64().is_none(){
+        return json!({"status":"unavailable","reason":"unsupported_or_missing_asset_location","recipe":r});
+    }
     if expected.is_some_and(|(h,n)|r["location_sha256"]!=h || r["location_utf8_bytes"]!=n) {
         return json!({"status":"refused","reason":"resource_identity_mismatch","recipe":r});
     }
     json!({"status":"joined","recipe":r})
+}
+// Exact ordinary AssetLocation contract: a Kontakt file-table ID is not a path.
+fn graph_location_bytes(location:&sampler_ir::AssetLocation)->Option<&[u8]>{
+    match location{sampler_ir::AssetLocation::Path(path)=>Some(path.as_bytes()),
+        sampler_ir::AssetLocation::KontaktFile{..}=>None}
 }
 fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nodes:&[u32])->Result<(Vec<Value>,Value,Vec<(i32,i32,i32)>),&'static str>{
     use sampler_ir::Processor as P;
@@ -685,7 +693,7 @@ fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nod
         for region in &targets[0].zones {
             let z=ir.zones.get(region.0).ok_or("worker_region_missing")?;
             let asset=z.asset.and_then(|a|ir.assets.get(a.0));
-            let location=asset.and_then(|a|match &a.location { sampler_ir::AssetLocation::Path(p)=>Some(p.as_bytes()), sampler_ir::AssetLocation::KontaktFile{..}=>None });
+            let location=asset.and_then(|a|graph_location_bytes(&a.location));
             if let Some(b)=location {
                 bytes=bytes.checked_add(b.len()).ok_or("worker_location_budget")?;
                 if b.len()>65536 || bytes>(16<<20) {return Err("worker_location_budget")}
@@ -693,7 +701,8 @@ fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nod
             let group=z.group.and_then(|g|ir.groups.get(g.0));
             for chain in [z.chain,group.and_then(|g|g.chain)].into_iter().flatten(){chains.insert(chain.0);}
             records.push(json!({"player_node":node,"region":region.0,"worker_group":z.group.map(|g|g.0),
-                "worker_asset":z.asset.map(|a|a.0),"location_sha256":location.map(|b|format!("{:x}",Sha256::digest(b))),
+                "worker_asset":z.asset.map(|a|a.0),
+                "location_identity_status":if location.is_some(){"path"}else{"unavailable_nonpath_or_missing_asset"},"location_sha256":location.map(|b|format!("{:x}",Sha256::digest(b))),
                 "location_utf8_bytes":location.map(|b|b.len()),"low_key":z.keys.low,"high_key":z.keys.high,
                 "low_velocity":z.velocities.low,"high_velocity":z.velocities.high,
                 "zone_gain":z.gain.linear(),"zone_chain":z.chain.map(|c|c.0),
@@ -730,7 +739,9 @@ fn graph_worker_ir(owner:&SwitchOwner,q:&sampler_uvi::script::LiveGraphQuery,nod
         let scope=match c.scope {sampler_ir::Scope::Voice=>json!({"kind":"voice"}),sampler_ir::Scope::Group(g)=>json!({"kind":"group","index":g.0}),sampler_ir::Scope::Bus(b)=>json!({"kind":"bus","index":b.0}),sampler_ir::Scope::Master=>json!({"kind":"master"})};
         rows.push(json!({"chain":index,"scope":scope,"processors":processors}));
     }
-    Ok((records,json!({"chains":rows,"complete":true,"scope":"Actual initialized submitted worker IR, not full live matrix or native FXPostGain placement"}),mixes))
+    Ok((records,json!({"chains":rows,"inventory_complete":true,"complete":false,
+        "route_linkage":{"complete":false,"reason":"compiled_route_linkage_unavailable"},
+        "scope":"Bounded initialized chain inventory only; owner-to-compiled send/output/bus linkage is not proved"}),mixes))
 }
 fn capture_graph(
     core:&V2Core,owner:&SwitchOwner,bridge:&Arc<UiBridge>,config:&LiveGraphConfig,
@@ -743,7 +754,7 @@ fn capture_graph(
     let observe=||->Result<Value,&'static str>{
         if !phase.drained(){return Err("owner_or_marker_unavailable")}
         let a=phase.ack.ok_or("owner_ack_unavailable")?;
-        if row["owner"]["status"]!="observed" || row["owner"]["complete"]!=true {return Err("owner_graph_unavailable")}
+        if row["owner"]["status"]!="observed" || row["owner"]["inventory_complete"]!=true {return Err("owner_graph_unavailable")}
         let nodes:Vec<_>=row["owner"]["nodes"].as_array().ok_or("owner_node_rows_unavailable")?.iter()
             .filter_map(|n|n["node"].as_u64().and_then(|n|u32::try_from(n).ok())).collect();
         let(records,compiled,mixes)=graph_worker_ir(owner,&config.query,&nodes)?;
@@ -775,9 +786,13 @@ fn capture_graph(
     match observe(){
         Ok(observation)=>{
             let coherent=observation["ack_health_clean"]==true&&observation["prefix_counters_agree"]==true&&observation["sample_counts_conserved"]==true
-                &&observation["sample_tasks_settled"]==true&&observation["runtime"]["voices_complete"]==true;
+                &&observation["sample_tasks_settled"]==true&&observation["runtime"]["voices_complete"]==true
+                &&observation["compiled_topology"]["complete"]==true&&row["owner"]["complete"]==true;
             let joined=observation["source_joins"].as_array().is_some_and(|j|j.iter().all(|r|r["join"]["status"]=="joined"));
             row["status"]=json!(if coherent&&joined{"observed_finite_state"}else{"partial_or_incoherent"});
+            if observation["compiled_topology"]["complete"]!=true {
+                row["reason"]=json!("compiled_route_linkage_unavailable");
+            }
             row["core"]=observation;
         },
         Err(reason)=>{row["reason"]=json!(reason);},
@@ -1808,7 +1823,9 @@ mod held_note_bound_tests {
     }
     #[test]
     fn live_graph_config_bounds_and_default_off() {
-        let mut c=config(200);assert!(c.live_graph.is_none());
+        let mut c:Config=serde_json::from_value(json!({
+            "phase_timeout_ms":200,"total_timeout_ms":2000,"pace_ms":1,
+        })).unwrap();assert!(c.live_graph.is_none());
         c.live_graph=Some(LiveGraphConfig{query:sampler_uvi::script::LiveGraphQuery{
             keygroup_node:1,matrix_node:2,player_nodes:vec![3,4,5]},expected_player_node:3,
             expected_location_sha256:"a".repeat(64),expected_location_utf8_bytes:60,held_checkpoints:vec![48000,240000]});
@@ -1834,6 +1851,33 @@ mod held_note_bound_tests {
         assert_eq!(captures.rows[0]["reason"],"phase_receipt_size");
         for _ in 0..8 {captures.push(json!({"phase":"fixture"}));}
         assert_eq!(captures.rows.len(),8);assert_eq!(captures.omitted,1);assert!(captures.bytes<=(2<<20));
+    }
+
+    #[test]
+    fn live_graph_asset_location_path_is_exact_and_nonpath_never_joins() {
+        let path=sampler_ir::AssetLocation::Path("exact/path".into());
+        assert_eq!(graph_location_bytes(&path),Some(&b"exact/path"[..]));
+        let table=sampler_ir::AssetLocation::KontaktFile{id:41};
+        assert!(graph_location_bytes(&table).is_none());
+        let record=json!({"region":1,"worker_group":7,"location_sha256":null,"location_utf8_bytes":null});
+        assert_eq!(graph_join(&[record],&json!([1]),true,Some(7),None)["reason"],"unsupported_or_missing_asset_location");
+    }
+    #[test]
+    fn live_graph_chain_inventory_cannot_claim_unprojected_send_linkage_complete() {
+        let mut ir=sampler_ir::Instrument::default();
+        ir.groups.push(sampler_ir::Group::default());
+        ir.buses.push(sampler_ir::Bus{name:"authored route fixture".into(),chain:None,sends:vec![],
+            output:sampler_ir::Output::Master,gain:sampler_ir::Gain::Linear(1.)});
+        ir.zones.push(sampler_ir::Zone{group:Some(sampler_ir::GroupRef(0)),..Default::default()});
+        ir.source_indices.sample_targets.push(sampler_ir::SourceSampleTarget{node:3,zones:vec![sampler_ir::ZoneRef(0)]});
+        let q=sampler_uvi::script::LiveGraphQuery{keygroup_node:1,matrix_node:2,player_nodes:vec![3]};
+        for pre_fader in [false,true] {
+            ir.groups[0].sends=vec![sampler_ir::GroupSend{to:sampler_ir::BusRef(0),gain:sampler_ir::Gain::Linear(1.),pre_fader}];
+            let owner=SwitchOwner{instrument:Some(Arc::new(ir.clone())),..Default::default()};
+            let(_,topology,_)=graph_worker_ir(&owner,&q,&[]).unwrap();
+            assert_eq!(topology["inventory_complete"],true);assert_eq!(topology["complete"],false);
+            assert_eq!(topology["route_linkage"]["reason"],"compiled_route_linkage_unavailable");
+        }
     }
 
 }
