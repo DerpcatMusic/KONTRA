@@ -109,5 +109,5 @@ Causal receipts are `doctor-d-r10-causal01` and
 `doctor-d-r10-uncorrected-fresh01`; the former explicitly marks its reused
 uncorrected executable invalid. The successful GPU receipt remains
 `gpu-owner09-01/receipt.json`. Applied changes are committed separately from
-the installed0.3.503 binaries. Final combined validation, binary replacement
+the installed 0.3.503 binaries. Final combined validation, binary replacement
 and release remain pending.
