@@ -224,7 +224,7 @@ impl ScriptHost{
             if !same_table(t,&part,b)?{return Err("synthetic_parent_alias")}
         }
         let mut rows=Vec::new();let mut matrices=Vec::new();let mut inserts=Vec::new();let mut routes=Vec::new();
-        for i in selected{
+        for &i in &selected{
             b.step(1)?;let e=&all[&i];let mut collections=serde_json::Map::new();let mut collection_members=Vec::new();
             for collection in ["inserts","auxs","sends","connections","oscillators"]{
                 let mut ids=Vec::new();
@@ -236,8 +236,17 @@ impl ScriptHost{
                     if collection=="inserts"{if inserts.len()==32{return Err("insert_budget")}inserts.push(row);}
                     else if matches!(collection,"auxs"|"sends"){
                         if routes.len()==16{return Err("route_budget")}
-                        let mut fields=serde_json::Map::new();for name in ["PreFader","Bypass","Gain","Destination"]{fields.insert(name.into(),scalar(self,&t,j,name,b)?);}
-                        row["fields"]=json!(fields);row["compiled_linkage"]=json!("unavailable");routes.push(row);
+                        // Inventoried descendants outside the one-hop selection
+                        // retain identity/order only. Their scalar state is not
+                        // a prerequisite for the required owner facts.
+                        b.step(1)?;
+                        if selected.contains(&j){
+                            let mut fields=serde_json::Map::new();for name in ["PreFader","Bypass","Gain","Destination"]{fields.insert(name.into(),scalar(self,&t,j,name,b)?);}
+                            row["fields"]=json!(fields);row["scalar_projection"]=json!("selected_current_fields");
+                        }else{
+                            row["scalar_projection"]=json!("omitted_unselected_member");
+                        }
+                        row["compiled_linkage"]=json!("unavailable");routes.push(row);
                     }
                 }
                 if !ids.is_empty(){b.step(1)?;collections.insert(collection.into(),json!(ids));}
@@ -533,6 +542,86 @@ mod tests{
         assert_eq!(h.observe_live_graph(&q).value["reason"],"inconsistent_parent");
         let(h,q)=large_descendant_fixture();let mut b=Budget{steps:STEPS-32,..Default::default()};
         assert!(matches!(h.live_graph_inner(&q,&mut b),Err("field_budget")));assert!(b.exhausted);
+    }
+
+    fn nested_route_fixture(collection:&str)->(ScriptHost,LiveGraphQuery){
+        let child=match collection{
+            "auxs"=>"<Auxs><AuxEffect PreFader='0' Gain='0.2'/></Auxs>",
+            "sends"=>"<BusRouters><BusRouter PreFader='0' Gain='0.2'/></BusRouters>",
+            _=>panic!("unsupported authored fixture collection"),
+        };
+        let extra=format!("<Auxs><AuxEffect>{child}</AuxEffect></Auxs>");
+        selection_fixture("<GainMatrix Gain_3_1='-0.25' Gain_12_7='0.4'/>",
+            "<BusRouters><BusRouter PreFader='1' Gain='0.4'/></BusRouters>",&extra)
+    }
+    #[test]
+    fn omitted_nested_aux_and_send_have_no_scalar_fields_or_overlay_callbacks(){
+        for collection in ["auxs","sends"]{for unsupported in [false,true]{
+            let(h,q)=nested_route_fixture(collection);let p:Table=h.lua.globals().raw_get("Program").unwrap();
+            let aux=list(&p,"auxs").unwrap().remove(0);let child=list(&aux,collection).unwrap().remove(0);
+            let calls=std::rc::Rc::new(std::cell::Cell::new(0));let seen=calls.clone();
+            let hook=h.lua.create_function(move|_,_:mlua::MultiValue|{seen.set(seen.get()+1);Ok(Value::Nil)}).unwrap();
+            let mt=h.lua.create_table().unwrap();mt.raw_set("__index",hook.clone()).unwrap();
+            let overlay=h.lua.create_table().unwrap();overlay.raw_set("PreFader",false).unwrap();overlay.raw_set("Gain",0.875).unwrap();
+            if unsupported{overlay.set_metatable(Some(mt.clone())).unwrap();}
+            child.raw_set("__set",overlay).unwrap();child.raw_set("getParameter",hook).unwrap();
+            let v=h.observe_live_graph(&q).value;assert_eq!(v["status"],"observed");
+            assert_eq!(v["selection"]["required_facts_complete"],true);
+            assert_eq!(v["selection"]["selected_model_nodes"],9);
+            assert_eq!(v["selection"]["unprojected_model_nodes"],1);
+            assert_eq!(v["selection"]["unexpanded_child_edges"],1);
+            assert_eq!(v["inventory_complete"],false);assert_eq!(v["complete"],false);
+            let child_id:usize=child.raw_get("__id").unwrap();let aux_id:usize=aux.raw_get("__id").unwrap();
+            let(child_node,aux_node)={let nodes=h.shared.nodes.borrow();(nodes[child_id].0.unwrap(),nodes[aux_id].0.unwrap())};
+            let route=v["routes"].as_array().unwrap().iter().find(|r|r["node"]==child_node).unwrap();
+            assert_eq!(route["owner_node"],aux_node);assert_eq!(route["collection"],collection);assert_eq!(route["ordinal"],0);
+            assert_eq!(route["kind"],if collection=="auxs"{"AuxEffect"}else{"BusRouter"});
+            assert_eq!(route["compiled_linkage"],"unavailable");
+            assert_eq!(route["scalar_projection"],"omitted_unselected_member");assert!(route.get("fields").is_none());
+            assert!(!v["nodes"].as_array().unwrap().iter().any(|n|n["node"]==child_node));
+            let direct=v["routes"].as_array().unwrap().iter().find(|r|r["owner_node"]==q.keygroup_node).unwrap();
+            assert_eq!(direct["fields"]["PreFader"]["current"]["type"],"boolean");
+            assert_eq!(direct["fields"]["PreFader"]["current"]["value"],true);
+            assert_eq!(direct["scalar_projection"],"selected_current_fields");
+            assert_eq!(v["matrices"][0]["node"],q.matrix_node);
+            assert_eq!(v["matrices"][0]["cells"][0][2]["current"]["value"],-0.25);
+            assert_eq!(v["matrices"][0]["cells"][6][11]["current"]["value"],0.4);
+            let k=v["nodes"].as_array().unwrap().iter().find(|n|n["node"]==q.keygroup_node).unwrap();
+            assert_eq!(k["fields"]["FXPostGain"]["current"]["value"],true);
+            assert_eq!(v["oscillator_order"].as_array().unwrap().len(),3);assert_eq!(calls.get(),0);
+            // Selected route overlays still refuse; omission is not a weakening
+            // of the scalar helper or the selected-node metatable contract.
+            let k=keygroup(&h);let selected=list(&k,"sends").unwrap().remove(0);
+            let overlay=h.lua.create_table().unwrap();overlay.set_metatable(Some(mt)).unwrap();selected.raw_set("__set",overlay).unwrap();
+            assert_eq!(h.observe_live_graph(&q).value["reason"],"overlay_metatable_unsupported");assert_eq!(calls.get(),0);
+        }}
+    }
+    #[test]
+    fn omitted_nested_aux_and_send_canonical_copies_still_refuse(){
+        for collection in ["auxs","sends"]{
+            let(h,q)=nested_route_fixture(collection);let p:Table=h.lua.globals().raw_get("Program").unwrap();
+            let aux=list(&p,"auxs").unwrap().remove(0);let child=list(&aux,collection).unwrap().remove(0);
+            let copy=shallow(&h,&child);let calls=std::rc::Rc::new(std::cell::Cell::new(0));let seen=calls.clone();
+            let hook=h.lua.create_function(move|_,_:mlua::MultiValue|{seen.set(seen.get()+1);Ok(Value::Nil)}).unwrap();
+            let mt=h.lua.create_table().unwrap();mt.raw_set("__index",hook).unwrap();
+            let overlay=h.lua.create_table().unwrap();overlay.set_metatable(Some(mt)).unwrap();copy.raw_set("__set",overlay).unwrap();
+            let entries:Table=aux.raw_get(collection).unwrap();entries.raw_set(1,copy).unwrap();
+            let v=h.observe_live_graph(&q).value;assert_eq!(v["reason"],"collection_identity_mismatch");
+            assert_eq!(v["complete"],false);assert_eq!(calls.get(),0);
+        }
+    }
+    #[test]
+    fn omitted_nested_route_references_still_consume_the_sixteen_route_cap(){
+        for children in [15,16]{
+            let extra=format!("<Auxs><AuxEffect><BusRouters>{}</BusRouters></AuxEffect></Auxs>","<BusRouter/>".repeat(children));
+            let(h,q)=selection_fixture("<GainMatrix/>","",&extra);
+            let v=h.observe_live_graph(&q).value;
+            if children==15{
+                assert_eq!(v["status"],"observed");assert_eq!(v["routes"].as_array().unwrap().len(),16);
+                assert_eq!(v["routes"].as_array().unwrap().iter().filter(|r|r["scalar_projection"]=="omitted_unselected_member").count(),15);
+                assert_eq!(v["selection"]["required_facts_complete"],true);assert_eq!(v["complete"],false);
+            }else{assert_eq!(v["reason"],"route_budget");}
+        }
     }
 
 }
