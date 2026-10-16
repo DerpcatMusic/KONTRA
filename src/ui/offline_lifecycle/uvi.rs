@@ -1246,7 +1246,7 @@ mod tests {
             assert!(cfg.validate(4800).is_err());
         }
         assert!(valid.validate(127).is_err());
-        assert!(valid.validate(96001).is_err());
+        assert!(valid.validate(MAX_NOTE_FRAMES + 1).is_err());
         let mut unknown = base.clone();
         unknown["seed"] = json!(1);
         assert!(serde_json::from_value::<Config>(unknown).is_err());
