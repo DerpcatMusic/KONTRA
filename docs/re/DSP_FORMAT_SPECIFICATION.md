@@ -461,6 +461,17 @@ dispatch, complete matrix execution, keygroup voice grouping or downstream
 projection. No target function was executed. The retained extraction/limitation
 receipts are in `PluginArtifacts/kontra-vwinds-parity-reference-20261016-r17/`.
 
+A separate bounded Unicorn witness executes the unmodified 528-byte dynamic
+accumulation branch at `0x1413387e1..0x1413389f1` from caller-authored register
+and memory snapshots, after destination initialization. Thirty cases cover
+0/1/3/4/15/16/17/31/32/33 frames with signed coefficients and cancellation.
+All 614,400 compared caller bytes match the independent multiply-then-add
+binary32 model, including unchanged source, coefficient and guard bytes. A
+single-round float64 product/sum differs at 214 sample positions. This is branch
+emulation, not native host execution: no entrypoint, constructor, resolver,
+constant-route helper, bank or complete matrix is called. Its receipt is
+`matrix-dynamic-accumulation-witness01/receipt.json` under the same private root.
+
 ## XML hierarchy and named modulation topology
 
 The [runnable topology extractor](../artifacts/engine-analysis-2026-10-07/uvi-workstation/trace_format_topology.py) verifies each factory member's hash against the retained ZIP and both official program-file hashes. Its 507 documents contain 1,312 nodes. Every non-root node has a resolved parent and ordered sibling index. The graph preserves all observed attribute values, 80 distinct parent/child pairs and distinct ordered child layouts.
