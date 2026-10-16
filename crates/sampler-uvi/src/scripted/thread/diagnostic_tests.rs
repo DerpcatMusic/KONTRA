@@ -220,7 +220,25 @@ fn requests_are_bounded_cancel_timeout_and_disconnect_without_blocking() {
         thread.drain(&mut commands);
         !commands.is_empty()
     });
-    until(|| loaded.ui.diagnostic_progress().unwrap().phase == DiagnosticPhase::Parked);
+    // A parked phase is an independent observation, not a queue-empty fence:
+    // it may precede the turn which consumes the abandoned requests above.
+    // Enqueue behind them and observe the real owner/command FIFO boundary.
+    let mut retirement = None;
+    until(|| match loaded.ui.request_diagnostics(Duration::from_secs(3)) {
+        Ok(request) => {
+            retirement = Some(request);
+            true
+        }
+        Err(DiagnosticRequestError::QueueFull) => false,
+        Err(error) => panic!("unexpected retirement barrier error {error:?}"),
+    });
+    let mut retirement = retirement.unwrap();
+    let ack = acknowledged(&mut retirement);
+    assert_eq!((ack.commands_collected, ack.commands_pushed), (1, 1));
+    thread.drain(&mut commands);
+    assert!(retirement.commands_drained());
+    assert_eq!(commands.len(), 1);
+    assert_eq!(loaded.ui.value(control_id(1, 0)), Some(1.));
     let face = loaded.ui.face.lock().unwrap();
     assert!(loaded.ui.edit(control_id(1, 0), 0.));
     until(|| loaded.ui.diagnostic_progress().unwrap().phase == DiagnosticPhase::UiExport);
