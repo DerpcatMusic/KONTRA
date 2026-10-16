@@ -337,7 +337,9 @@ mod tests{
         let fallback=h.lua.create_function(move|_,(_t,_key):(Table,Value)|{seen.set(seen.get()+1);Ok(0.625)}).unwrap();
         let mt=h.lua.create_table().unwrap();mt.raw_set("__index",fallback).unwrap();
         let overlay=h.lua.create_table().unwrap();overlay.set_metatable(Some(mt)).unwrap();m.raw_set("__set",overlay).unwrap();
-        let getter:mlua::Function=m.get("getParameter").unwrap();assert_eq!(getter.call::<f64>((m.clone(),"Gain_3_1")).unwrap(),0.625);assert_eq!(calls.get(),1);
+        let getter:mlua::Function=m.get("getParameter").unwrap();assert_eq!(getter.call::<f64>((m.clone(),"Gain_3_1")).unwrap(),0.625);
+        // The ordinary getter indexes once for its nil check and once to return.
+        assert_eq!(calls.get(),2);
         calls.set(0);let v=h.observe_live_graph(&q).value;
         assert_eq!(v["reason"],"overlay_metatable_unsupported");assert_eq!(v["complete"],false);assert_eq!(calls.get(),0);
     }
