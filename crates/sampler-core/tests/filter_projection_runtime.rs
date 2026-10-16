@@ -332,6 +332,7 @@ fn mixed_generations_keep_pcm_state_and_all_thread_heap_across_filter_shape_chan
             got.pooled
         );
     }
+    kontakt_generations_keep_exact_pcm_state_and_all_thread_heap();
 }
 
 // Use all three actual Kontakt color kernels in every generation. The existing
@@ -364,15 +365,14 @@ fn kontakt_plan(first: bool) -> Prepared {
         .with_voice_chains(chains, (0..NOTES).map(|i| Some(i % 3)).collect())
         .unwrap()
         .with_voice_modulation(
-            vec![route(ModTarget::ProcessorCutoff(0), 0.125),
-                 route(ModTarget::ProcessorResonance(1), -0.0625),
+            vec![route(ModTarget::ProcessorNativeCutoff(0), 0.125),
+                 route(ModTarget::ProcessorNativeResonance(1), -0.0625),
                  route(ModTarget::Decibels, -3.)],
             (0..NOTES).map(|i| Some(i % 3)).collect(),
             vec![0; NOTES],
         )
         .unwrap()
 }
-#[test]
 fn kontakt_generations_keep_exact_pcm_state_and_all_thread_heap() {
     let reference = run_with(1, kontakt_plan);
     assert!(reference.pcm.iter().flatten().any(|bits| f32::from_bits(*bits) != 0.));
