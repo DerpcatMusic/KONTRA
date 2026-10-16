@@ -845,3 +845,68 @@ mod tests {
         assert!(parse(&flac(&[oneshot]), 16).unwrap().looping.is_none());
     }
 }
+
+
+/// Initial file metadata must be representable by IR without approximation.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(crate) enum InitialPlaybackError {
+    Metadata(MetadataError), Geometry, UnsupportedFiniteLoop, UnsupportedLoopShape,
+}
+impl SampleMetadata {
+    pub(crate) fn initial_ir_playback(self)->std::result::Result<sampler_ir::Playback,InitialPlaybackError> {
+        use sampler_ir::{Looping,LoopRange,Span};
+        use InitialPlaybackError as E;
+        if let Some(error)=self.geometry_error {return Err(E::Metadata(error));}
+        let playback=self.playback();
+        // Only convert geometry representable by the existing IR/lower path.
+        // The actual cursor performs its final source/rate validation in lower.
+        let source_end=playback.end.unwrap_or(self.frames);
+        if playback.start>=source_end || source_end>self.frames {return Err(E::Geometry);}
+        let start=u64::try_from(playback.start).map_err(|_|E::Geometry)?;
+        let end=playback.end.map(u64::try_from).transpose().map_err(|_|E::Geometry)?;
+        let looping=if let Some(looping)=playback.loop_range {
+            if looping.passes.is_some() {return Err(E::UnsupportedFiniteLoop);}
+            if looping.start<playback.start || looping.start>=looping.end || looping.end>source_end {return Err(E::Geometry);}
+            if let LoopShape::Crossfade {frames}=looping.shape {
+                // Directional guard validation is deferred to lower, which still
+                // owns the oscillator Reverse parameter. Do not assume forward here.
+                if frames==0 || frames>looping.end-looping.start {return Err(E::Geometry);}
+            }
+            let (crossfade,alternating)=match looping.shape {
+                LoopShape::Wrap=>(Span::ZERO,false),
+                LoopShape::PingPong=>(Span::ZERO,true),
+                LoopShape::Crossfade {frames}=>(Span::Frames(u64::try_from(frames).map_err(|_|E::Geometry)?),false),
+                LoopShape::EqualPowerCrossfade {..}=>return Err(E::UnsupportedLoopShape),
+            };
+            let range=LoopRange {start:u64::try_from(looping.start).map_err(|_|E::Geometry)?,
+                end:u64::try_from(looping.end).map_err(|_|E::Geometry)?,crossfade,alternating};
+            match looping.mode {LoopMode::Continuous=>Looping::Continuous(range),LoopMode::UntilRelease=>Looping::UntilRelease(range)}
+        } else {Looping::None};
+        Ok(sampler_ir::Playback {start,end,looping,..Default::default()})
+    }
+}
+
+#[cfg(test)]
+mod initial_ir_tests {
+    use super::*;
+    fn metadata(shape:LoopShape)->SampleMetadata {
+        SampleMetadata {format:Format::Wav,base_note:64,fine_tune:25.,frames:128,
+            looping:Some(Loop {start:16,end:96,mode:LoopMode::Continuous,shape,passes:None}),
+            geometry_error:None,channels:Some(1),bits:Some(16),tempo:0.}
+    }
+    #[test]
+    fn initial_ir_conversion_preserves_supported_shapes_and_refuses_approximations() {
+        for (shape,fade,alternating) in [(LoopShape::Wrap,0,false),(LoopShape::PingPong,0,true),(LoopShape::Crossfade {frames:4},4,false)] {
+            let converted=metadata(shape).initial_ir_playback().unwrap();
+            let sampler_ir::Looping::Continuous(range)=converted.looping else {panic!("continuous loop lost");};
+            assert_eq!((converted.start,converted.end,range.start,range.end),(0,Some(128),16,96));
+            assert_eq!(range.crossfade,sampler_ir::Span::Frames(fade));assert_eq!(range.alternating,alternating);
+        }
+        assert_eq!(metadata(LoopShape::EqualPowerCrossfade {frames:4}).initial_ir_playback(),Err(InitialPlaybackError::UnsupportedLoopShape));
+        let mut finite=metadata(LoopShape::Wrap);finite.looping.as_mut().unwrap().passes=std::num::NonZeroU32::new(2);
+        assert_eq!(finite.initial_ir_playback(),Err(InitialPlaybackError::UnsupportedFiniteLoop));
+        let mut vendor=metadata(LoopShape::Wrap);vendor.geometry_error=Some(MetadataError::UnsupportedVendorSamplerData);
+        assert_eq!(vendor.initial_ir_playback(),Err(InitialPlaybackError::Metadata(MetadataError::UnsupportedVendorSamplerData)));
+        assert_eq!(metadata(LoopShape::Crossfade {frames:81}).initial_ir_playback(),Err(InitialPlaybackError::Geometry));
+    }
+}
