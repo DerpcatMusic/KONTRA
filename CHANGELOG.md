@@ -6,6 +6,12 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.502
+
+Adds one reviewed loader correction to the 0.3.501 source checkpoint: changing a translated instrument's public script roster or changing a script to KSP invalidates the cached initializer shape. Valid unchanged scripts still initialize once; malformed replacements and source-identity changes retain explicit diagnostics. Six authored regressions cover these boundaries.
+
+The complete static audit, using a pinned private resolver correction, has zero producer errors and retains 69 reviewed error-level findings. Its tool gate remains failed; no rule, severity or finding was suppressed. Contextual review and executable/native checks remain required. Hosted shipping, signing/notarization, notice and publication checks bind the actual merged source. The compatibility, finite-loading and performance limits described below still apply.
+
 ## 0.3.501
 
 This experimental checkpoint carries the accepted 0.3.490 changes and eleven additional reviewed fixes. Loading remains bounded; UVI/Falcon and Kontakt compatibility remain partial.
