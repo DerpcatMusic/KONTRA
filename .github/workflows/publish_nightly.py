@@ -163,10 +163,7 @@ def main():
             else:
                 binaries = ("KONTRA.clap", "KONTRA.vst3/Contents/x86_64-linux/KONTRA.so", "kontakto-standalone")
             if platform.startswith("macos-"):
-                for name in (*binaries, "LICENSE", "NOTICE", "THIRD_PARTY.md", "assets/OFL.txt",
-                             "docs/LEGAL.md", "licenses/THIRD_PARTY_NOTICES.txt", "licenses/MUI/LICENSE",
-                             "licenses/MOOSE/LICENSE", "licenses/MOOSE/LICENSE-MIT",
-                             "licenses/MOOSE/LICENSE-APACHE", "licenses/MOOSE/NOTICE"):
+                for name in (*binaries, *LEGAL, *("licenses/" + name for name in BUNDLE_LEGAL)):
                     assert archive.getinfo(prefix + name).file_size > 0, (p.name, name)
                 notices = archive.read(prefix + "licenses/THIRD_PARTY_NOTICES.txt").decode()
                 sources = re.findall(r"^(\S+) (\S+): .*MPL-2\.0.*$", notices, re.MULTILINE)

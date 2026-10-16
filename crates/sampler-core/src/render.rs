@@ -28,8 +28,9 @@ pub struct RuntimeStats {
     pub refused_starts: u64,
     /// Time-stretch voices that found no free engine and played as a sampler.
     pub stretch_fallbacks: u64,
-    /// Voices started silent because their first frames were not resident
-    /// (`set_cold_starts`); they fade in when their pages arrive.
+    /// Voices started silent because their admitted startup runway was not
+    /// resident (`set_cold_starts`; one frame unless explicitly configured);
+    /// they fade in when the runway is available.
     pub cold_starts: u64,
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
@@ -215,6 +216,7 @@ impl Runtime {
         let _ = self.poll_sample_update();
         self.start_plan_programs();
         self.service_residency()?;
+        self.drain_behavior();
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();
@@ -330,6 +332,14 @@ impl Runtime {
     }
 
     fn render_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
+        if !self.offline { self.prepare_onsets(at, output.len()); }
+        self.render_prepared_voices::<TRACE>(output, at);
+        // Every worker has joined. Source owners remain in live/retired plans;
+        // releasing the reader count cannot destroy PCM on this callback.
+        self.onsets.clear();
+    }
+
+    pub(super) fn render_prepared_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
         if self.offline {
             // Modulation advance is cached on the absolute control grid. Prepare
             // the exact steps before requesting pages; rendering at the same
@@ -346,6 +356,10 @@ impl Runtime {
                 self.stream_fault = Some(error);
                 return;
             }
+            // Voices admitted during realtime can still carry a pending cohort
+            // when the host switches to offline. Service has now completed; use
+            // the same pinned gate before dispatching their first source read.
+            self.prepare_onsets(at, output.len());
         }
         if TRACE {
             for word in 0..self.voice_activity.len() {
@@ -402,7 +416,8 @@ impl Runtime {
     pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
         let v = self.voices.slots[i].value.as_ref()?;
         let chain = v.chain?;
-        if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting() {
+        if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting()
+            || v.cursor.pending_start_runway() > 1 {
             return None;
         }
         let f = self.families.get(v.family.0).unwrap();
@@ -463,7 +478,20 @@ impl Runtime {
             starved[lane] = v.cursor.starved();
             batch.expressions[lane] = Some((n.expression, expression.value));
             let mut planar = [[0.; super::dsp::BLOCK]; 2];
-            begun[lane] = if let Some(frames) = asset.resident_frames() {
+            begun[lane] = if let Some(head) = &self.onsets.heads[i] {
+                let pcm = super::source::PagedFrames {
+                    cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
+                    asset: asset.asset_id(), head,
+                };
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+            } else if let Some(frames) = &self.onsets.residents[i] {
+                asset.want_levels(v.cursor.step(), at);
+                let guard = asset.try_levels();
+                let pcm = super::source::Resident {
+                    frames, levels: guard.as_deref().map_or(&[], |l| l),
+                };
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+            } else if let Some(frames) = asset.resident_frames() {
                 asset.want_levels(v.cursor.step(), at);
                 let guard = asset.try_levels();
                 if reuse_mask & (1 << lane) != 0 {
@@ -717,6 +745,9 @@ impl Runtime {
         let modulated = prelude.modulated;
         let stop = prelude.stop;
         let filter = prelude.filter;
+        let trace_voice = if TRACE {
+            Some(crate::trace::onset::PhysicalVoice::from(crate::VoiceId(self.voices.id(i))))
+        } else { None };
         let v = self.voices.slots[i].value.as_mut().unwrap();
         // Retention invariant: live voice -> counted family -> counted note
         // -> expression owner. Each owner retires only after its dependents.
@@ -790,6 +821,7 @@ impl Runtime {
                             nodes,
                             envelope_parameters: v.envelope.trace_parameters(),
                             identity: crate::trace::TraceIdentity {
+                                voice: trace_voice,
                                 zone: v.source_zone,
                                 sample: v.sample,
                                 family: v.family.0.index,
@@ -891,7 +923,20 @@ impl Runtime {
             at,
             feeds: &mut plan.dsp.feeds,
         };
-        let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+        let (produced, done, faults, underrun) = if let Some(head) = &self.onsets.heads[i] {
+            let source = super::source::PagedFrames {
+                cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
+                asset: asset.asset_id(), head,
+            };
+            render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
+        } else if let Some(frames) = &self.onsets.residents[i] {
+            asset.want_levels(v.cursor.step(), at);
+            let guard = asset.try_levels();
+            let pcm = super::source::Resident {
+                frames, levels: guard.as_deref().map_or(&[], |l| l),
+            };
+            render_source::<TRACE>(v, &pcm, segment, chain, states, context, &self.kernel)
+        } else if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
@@ -997,6 +1042,10 @@ pub(super) fn render_source<const TRACE: bool>(
     mut context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,
 ) -> (usize, bool, u64, bool) {
+    // A cohort decision happens before any source, envelope or voice DSP work.
+    if voice.cursor.pending_start_runway() > 1 {
+        return (0, voice.envelope.done(), 0, false);
+    }
     let was_starved = voice.cursor.starved();
     let (produced, done, faults) = if let Some(chain) = chain {
         let (produced, faults) =

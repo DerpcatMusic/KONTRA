@@ -26,6 +26,10 @@ mod control_diagnostics;
 pub mod uvi_diagnostics;
 #[cfg(feature = "shots")]
 mod residency_diagnostics;
+#[cfg(feature = "shots")]
+pub mod onset_diagnostics;
+#[cfg(feature = "shots")]
+mod source_diagnostics;
 pub(crate) mod load_wait;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -90,7 +94,7 @@ pub struct Part {
     tone: sampler_core::OutputLowPass,
     tone_history: [[[f64; 2]; 2]; BUSES + 1],
     pub(crate) epoch: u64,
-    pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
+    pub(crate) waveform_sources: super::waveform::Sources,
     pub(crate) ui_controls: Option<ControlIngress>,
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
     uvi_meter_buses: Arc<[sampler_uvi::meters::Binding]>,
@@ -3151,6 +3155,20 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
 
 /// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
+/// Preserve the legacy stretch path: sampler taps do not certify grains or
+/// pre-roll. Requested latency and service horizon are checked as one pair.
+fn sampler_stream_contract(head: usize, instrument: Option<&ir::Instrument>)
+    -> Result<(u32, Option<u32>), CoreError>
+{
+    let invalid = || CoreError::Invalid("streaming horizon exceeds output-frame domain".into());
+    let horizon = head.max(PAGE_FRAMES).checked_add(MAX_BLOCK).ok_or_else(invalid)?;
+    let horizon = u32::try_from(horizon).map_err(|_| invalid())?;
+    let requested = u32::try_from(head).map_err(|_| invalid())?;
+    if requested == 0 { return Err(invalid()); }
+    let sampler = instrument.is_some_and(|i| i.groups.iter().all(|g| g.time_stretch.is_none()));
+    Ok((horizon, sampler.then_some(requested)))
+}
+
 fn render_threads(request: &LoadRequest) -> Threads {
     match std::env::var("KONTRA_THREADS").as_deref() {
         Ok("auto") => Threads::Auto,
@@ -3696,6 +3714,16 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
 /// caller's thread (a UI or test thread) may only have 2 MB.
 const LOADER_STACK: usize = 16 << 20;
 
+#[derive(Clone, Copy, Default)]
+enum PrepareOption {
+    #[default]
+    Normal,
+    #[cfg(feature = "shots")]
+    SignalTrace { capacity: usize, scope: sampler_core::trace::SignalTraceScope },
+}
+
+type PreparedLoad = (Loaded<Option<Box<Part>>>, Option<sampler_core::trace::TraceReader>);
+
 impl V2Loader {
     /// Product loader only: keep the committed owner's host services moving
     /// while this caller waits for its private preparation worker.
@@ -3703,20 +3731,20 @@ impl V2Loader {
         &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync), service: &mut dyn FnMut(),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        self.prepare_waiting(request, progress, canceled, Some(service))
+        self.prepare_waiting(request, progress, canceled, Some(service), PrepareOption::Normal).map(|loaded| loaded.0)
     }
 
     fn prepare_waiting(
         &self, request: &LoadRequest, progress: &mut dyn FnMut(Progress),
-        canceled: &(dyn Fn() -> bool + Sync), service: Option<&mut dyn FnMut()>,
-    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        canceled: &(dyn Fn() -> bool + Sync), service: Option<&mut dyn FnMut()>, option: PrepareOption,
+    ) -> Result<PreparedLoad, CoreError> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             let worker = std::thread::Builder::new()
                 .name("sampler-load".into())
                 .stack_size(LOADER_STACK)
                 .spawn_scoped(scope, move || {
-                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled, option)
                 })
                 .map_err(|e| CoreError::Invalid(e.to_string()))?;
             load_wait::relay(rx, progress, service);
@@ -3729,7 +3757,8 @@ impl V2Loader {
         request: &LoadRequest,
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
-    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        option: PrepareOption,
+    ) -> Result<PreparedLoad, CoreError> {
         let core = |e: sampler_core::Error| match e {
             sampler_core::Error::Canceled => CoreError::Canceled,
             e => CoreError::Invalid(format!("{e:?}")),
@@ -3795,13 +3824,14 @@ impl V2Loader {
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
-        let mut waveform_sources = std::collections::HashMap::new();
+        let mut waveform_sources = super::waveform::Sources::default();
         // Both Original waveform widgets and the chrome Mapping view use this worker.
         if let Some(inst) = &instrument {
             for (zone, id) in super::waveform::source_ids(inst).into_iter().enumerate() {
                 // Lowering keeps one region per IR zone in order; IDs remain physical where present.
                 if let Some(pcm) = prepared.region_asset(zone) {
-                    waveform_sources.insert(
+                    waveform_sources.insert_region(
+                        zone,
                         id,
                         super::waveform::Source {
                             pcm: pcm.clone(),
@@ -3813,6 +3843,14 @@ impl V2Loader {
                 }
             }
         }
+        let (prepared, trace_reader) = match option {
+            PrepareOption::Normal => (prepared, None),
+            #[cfg(feature = "shots")]
+            PrepareOption::SignalTrace { capacity, scope } => {
+                let (prepared, reader) = prepared.with_scoped_signal_trace_reader(capacity, scope).map_err(core)?;
+                (prepared, Some(reader))
+            }
+        };
         let (runtime, control) = Runtime::with_plan_updates_and_note_capacity_cancelable(
             prepared,
             limits,
@@ -3837,14 +3875,15 @@ impl V2Loader {
         // render() rescales it to 128 per frame for longer blocks.
         runtime.set_behavior_block_fuel(8192);
         let streams = cache.is_some();
+        let stream_contract = stream.as_ref().map(|s| sampler_stream_contract(
+            s.report.head_frames, instrument.as_deref())).transpose()?;
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
-            if let Some(stream) = &stream {
-                runtime
-                    .set_stream_horizon(
-                        (stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32,
-                    )
-                    .map_err(core)?;
+            if let Some((horizon, runway)) = stream_contract {
+                runtime.set_stream_horizon(horizon).map_err(core)?;
+                if let Some(runway) = runway {
+                    runtime.set_stream_start_runway(runway).map_err(core)?;
+                }
             }
         }
         // Full polyphony steals (released, then quietest) rather than refusing notes.
@@ -3900,11 +3939,11 @@ impl V2Loader {
             });
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
-            part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
+            part.horizon = stream_contract.map(|(horizon, _)| horizon);
             part._stream = Some(stream.clone());
         }
         progress(Progress::DONE);
-        Ok(Loaded {
+        Ok((Loaded {
             part: Some(Box::new(part)),
             tree,
             report,
@@ -3913,7 +3952,7 @@ impl V2Loader {
             instrument,
             scripts,
             stream,
-        })
+        }, trace_reader))
     }
 }
 
@@ -3928,7 +3967,7 @@ impl CoreLoader for V2Loader {
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
-        self.prepare_waiting(request, progress, canceled, None)
+        self.prepare_waiting(request, progress, canceled, None, PrepareOption::Normal).map(|loaded| loaded.0)
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
@@ -8208,5 +8247,28 @@ mod timing_parity_tests {
             r.buses[0][0][0] > 0.1,
             "audio starts exactly after 480 held frames"
         );
+    }
+}
+
+#[cfg(test)]
+mod sampler_stream_contract_tests {
+    use super::*;
+    #[test]
+    fn requested_latency_activates_only_instruments_without_stretch_groups() {
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap(),
+            ((PAGE_FRAMES + MAX_BLOCK) as u32, Some(1019)));
+        instrument.groups[0].time_stretch = Some(ir::TimeStretch::new(ir::StretchKind::TimeMachine2, 1.));
+        assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, None);
+        assert_eq!(sampler_stream_contract(1019, None).unwrap().1, None);
+    }
+    #[test]
+    fn both_requested_and_service_horizons_are_checked_without_clamping() {
+        let instrument = ir::Instrument::default();
+        assert!(sampler_stream_contract(0, Some(&instrument)).is_err());
+        assert!(sampler_stream_contract(usize::MAX, Some(&instrument)).is_err());
+        assert!(sampler_stream_contract(u32::MAX as usize, Some(&instrument)).is_err());
+        assert_eq!(sampler_stream_contract(1019, Some(&instrument)).unwrap().1, Some(1019));
     }
 }

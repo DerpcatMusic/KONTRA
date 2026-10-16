@@ -252,6 +252,36 @@ fn active_notes_refuse_purely_then_queue_explicit_full_load_fallback() {
 }
 
 #[test]
+fn explicit_snapshot_replacement_does_not_replay_an_old_project_capture() {
+    let mut h = harness();
+    h.queue(&h.a);
+    h.audio();
+    h.poll();
+    assert!(h.params.shared.set_control(0, h.value, 333.));
+    h.audio();
+    h.params.capture_ui_controls();
+    assert!(!h.params.selection.read_unpoisoned().parts[0].script_state.is_empty());
+
+    // Recalling B does not require the host to save the project again. An old
+    // captured A state must not supersede A's authored values on a later recall.
+    h.queue(&h.b);
+    h.audio();
+    h.poll();
+    assert_eq!(h.core.control_value(0, h.value), Some(100.));
+    let part = h.params.selection.read_unpoisoned().parts[0].clone();
+    assert!(h.params.shared.queue_snapshot(0, &part, h.a.clone()));
+    h.params.shared.snapshot_request.lock_unpoisoned().as_mut().unwrap().allow_reuse = false;
+    let (slot, _, candidate) = prepare_snapshot(&h.params).expect("full replacement prepared");
+    assert!(load_part(&h.params, slot, Some(candidate)));
+    let (slot, _, part) = h.params.shared.ready.pop().unwrap();
+    h.core.install(slot, part);
+    h.audio();
+    assert_eq!(h.selected(), h.a);
+    assert_eq!(h.core.control_value(0, h.value), Some(800.),
+        "explicit preset recall must apply the snapshot, not replay a stale project capture");
+}
+
+#[test]
 fn stopped_audio_coalesces_gestures_with_at_most_two_owned_payloads() {
     let mut h = harness();
     h.queue(&h.a);

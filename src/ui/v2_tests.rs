@@ -5343,7 +5343,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     assert_eq!(inst.zones.len(), 3);
     assert_eq!(
         crate::sound::waveform::source_ids(&inst),
-        vec![1, 2, 3],
+        vec![Some(1), Some(2), Some(3)],
         "Falcon player source identities match these fixture zones"
     );
     let part = p.shared.part(0).unwrap();
@@ -5610,7 +5610,6 @@ fn mapping_kontakt_worker_probe_skips_when_library_is_missing() {
         sampler_ir::SourceFormat::Kontakt { .. }
     ));
     assert!(!inst.articulations.is_empty());
-    let source_ids = crate::sound::waveform::source_ids(&inst);
     let zone = inst
         .zones
         .iter()
@@ -5619,7 +5618,7 @@ fn mapping_kontakt_worker_probe_skips_when_library_is_missing() {
     let part = p.shared.part(0).unwrap();
     let envelope = (0..400)
         .find_map(|_| {
-            let e = part.zone_waveform(source_ids[zone], epoch, 512);
+            let e = part.mapping_waveform_window(zone, epoch, 512, None);
             if e.is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -6152,13 +6151,12 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
             v.generation,
         )
     };
-    let ids = crate::sound::waveform::source_ids(&inst);
     let part = p.shared.part(0).unwrap();
     assert!(!inst.zones.is_empty());
     let first = 0;
     let envelope = (0..600)
         .find_map(|_| {
-            let e = part.zone_waveform(ids[first], epoch, 512);
+            let e = part.mapping_waveform_window(first, epoch, 512, None);
             if e.is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -6173,7 +6171,7 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     let high = envelope.frames.min(1024);
     let view = (0..600)
         .find_map(|_| {
-            let e = part.zone_waveform_window(ids[first], epoch, 64, Some((0, high)));
+            let e = part.mapping_waveform_window(first, epoch, 64, Some((0, high)));
             if e.is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -6183,7 +6181,7 @@ fn mapping_analog_waveform_worker_probe_skips_only_when_library_is_missing() {
     assert_eq!(view.range, (0, high));
     assert_eq!(view.frames, envelope.frames);
     assert!(
-        part.zone_waveform_window(ids[first], epoch + 1, 64, Some((0, high)))
+        part.mapping_waveform_window(first, epoch + 1, 64, Some((0, high)))
             .is_none()
     );
     for (w, h) in [(1180, 780), (900, 640)] {

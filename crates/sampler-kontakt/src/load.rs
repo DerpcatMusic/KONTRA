@@ -185,7 +185,7 @@ pub fn load_read(
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     progress(Progress::Translated {
         zones: instrument.zones.len(),
         assets: kept.len(),
@@ -280,7 +280,7 @@ pub fn load_read_streamed_cancelable(
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     progress(Progress::Translated {
         zones: instrument.zones.len(),
         assets: kept.len(),
@@ -370,7 +370,7 @@ pub fn stream_instrument_cancelable(
 )->Result<crate::Streamed,LoadError> {
     if canceled(){return Err(LoadError::Canceled);}
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     let listed = kept
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
@@ -530,6 +530,17 @@ fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) 
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
 /// (`ratio` is the asset rate over the output rate). `false` when none remain.
+fn retain_key_window(instrument:&mut ir::Instrument,low:u8,high:u8)->Vec<usize> {
+    let routed:std::collections::BTreeSet<_>=instrument.zone_routing.iter()
+        .flat_map(|route|route.variants.iter().filter_map(|v|v.zone.map(|z|z.0))).collect();
+    let mut index=0usize;
+    instrument.retain_zones(|zone| {
+        let keep=routed.contains(&index)||(zone.keys.low<=high&&zone.keys.high>=low);
+        index+=1;
+        keep
+    })
+}
+
 fn fit_keys(
     zone: &mut ir::Zone,
     group_tune: f64,
@@ -727,25 +738,11 @@ fn script_environment_with_zones(
             })
             .collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
-        zones: metadata.cloned().unwrap_or_else(|| source
-            .zones
-            .iter()
-            .enumerate()
-            .filter_map(|(index, zone)| {
-                let zone = zones.get(zone.as_ref()?.0)?;
-                let group = zone.group.map_or(-1, |group| {
-                    source
-                        .groups
-                        .iter()
-                        .position(|entry| *entry == Some(group))
-                        .map_or(group.0 as i32, |index| index as i32)
-                });
-                Some((
-                    index as u32 + 1,
-                    [group, i32::from(zone.keys.low), i32::from(zone.keys.high)],
-                ))
-            })
-            .collect()),
+        snapshot_mode: Default::default(),
+        zone_catalog: source.zone_catalog.clone(),
+        zones: metadata.cloned().unwrap_or_else(|| source.zone_catalog.iter().filter_map(|z| {
+            Some((z.id?,[i32::try_from(z.home.group).ok()?,i32::from(z.home.low_key),i32::from(z.home.high_key)]))
+        }).collect()),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted,
@@ -785,18 +782,13 @@ pub(crate) struct ScriptInit {
 /// Only final physical source identities, independent of dense IR ordering.
 /// Raw metadata preserves authored keys when playback admission narrows them.
 fn admitted_zone_metadata(instrument: &ir::Instrument) -> std::collections::BTreeMap<u32, [i32; 3]> {
-    instrument.source_indices.zones.iter().enumerate().filter_map(|(index, entry)| {
-        let zone = instrument.zones.get(entry.as_ref()?.0)?;
-        zone.asset?;
-        let values = if let Some(raw) = instrument.kontakt_objects.as_ref().and_then(|o| o.zones.get(index)) {
-            [i32::try_from(raw.group).ok()?, i32::from(raw.low_key), i32::from(raw.high_key)]
-        } else {
-            let group = zone.group.map_or(-1, |group| instrument.source_indices.groups.iter()
-                .position(|entry| *entry == Some(group)).map_or(group.0 as i32, |index| index as i32));
-            [group, i32::from(zone.keys.low), i32::from(zone.keys.high)]
-        };
-        Some((u32::try_from(index).ok()?.checked_add(1)?, values))
-    }).collect()
+    if instrument.source_indices.zone_catalog.len()!=instrument.source_indices.zones.len() {return Default::default();}
+    instrument.source_indices.zone_catalog.iter().zip(&instrument.source_indices.zones)
+        .filter_map(|(source,entry)| {
+            instrument.zones.get(entry.as_ref()?.0)?.asset?;
+            Some((source.id?,[i32::try_from(source.home.group).ok()?,
+                i32::from(source.home.low_key),i32::from(source.home.high_key)]))
+        }).collect()
 }
 
 pub(crate) fn admit_initialized_zone_sources(instrument: &mut ir::Instrument, initialized: &mut ScriptInit) {
@@ -847,6 +839,8 @@ pub(crate) fn initialize_scripts_with_zones(
     let resources = library.map(Resources::of).map(std::cell::RefCell::new);
     let mut views = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
+    let mut zone_parameters = metadata.clone();
+    let mut snapshot_mode = sampler_ksp::model::SnapshotMode::default();
     let mut faults = vec![None; instrument.behaviors.len()];
     let states = instrument
         .behaviors
@@ -885,8 +879,9 @@ pub(crate) fn initialize_scripts_with_zones(
                 &instrument.source_indices,
                 &instrument.zones,
                 performance_view,
-                Some(metadata),
+                Some(&zone_parameters),
             );
+            environment.snapshot_mode = snapshot_mode;
             environment.midi_object = midi_object.clone();
             environment.instrument_persisted =
                 instrument.snapshot_base_state.get(index).map(|state| saved_values(state));
@@ -908,7 +903,12 @@ pub(crate) fn initialize_scripts_with_zones(
                     sampler_ksp::Limits::LIBRARY,
                     &environment,
                 )
-                .inspect(|initialized| midi_object = initialized.midi_object().clone())
+
+                .inspect(|initialized| {
+                    midi_object = initialized.midi_object().clone();
+                    zone_parameters.extend(initialized.zone_parameters().iter().map(|(&id,&home)|(id,home)));
+                    if let Some(write)=initialized.snapshot_mode_write() {snapshot_mode=write.mode;}
+                })
                 .map_err(|e| {
                     faults[index] = Some(e.clone());
                     e.to_string()
@@ -984,8 +984,21 @@ fn compile_ui_initialized(
     Option<Resources>,
 ) {
     let (rate, scripts) = (options.rate, options.scripts);
-    // Reuse translated init only for the same host state; late callers may supply different overrides.
-    let initialized = initialized.filter(|init| init.control_values == options.control_values);
+    // The public instrument may have gained/removed behaviors or changed their
+    // languages since translation. Reuse only a matching initialization shape;
+    // otherwise initialize the current instrument through the ordinary path.
+    // Same-shape KSP source changes still fail compile_initialized's digest check.
+    let initialized = initialized.filter(|init| {
+        init.control_values == options.control_values
+            && init.states.len() == instrument.behaviors.len()
+            && init
+                .states
+                .iter()
+                .zip(&instrument.behaviors)
+                .all(|(state, behavior)| {
+                    state.is_some() == (behavior.language == ir::Language::Ksp)
+                })
+    });
     let mut initialized = initialized.unwrap_or_else(|| {
         let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
         initialize_scripts(instrument, options.library.as_deref(), groups, &options.control_values)
@@ -1756,3 +1769,128 @@ mod diagnostic_tests {
 #[cfg(test)]
 #[path = "zone_init_tests.rs"]
 mod zone_init_tests;
+
+#[cfg(test)]
+mod initialization_shape_tests {
+    use super::*;
+
+    fn behavior(slot: u8, language: ir::Language) -> ir::Behavior {
+        ir::Behavior {
+            name: format!("shape slot {slot}"),
+            language,
+            slot: Some(slot),
+            state: vec![],
+            requires: vec![],
+            source: "on init\n declare ui_knob $Value(0, 127, 1)\nend on".into(),
+        }
+    }
+
+    fn translated(behaviors: Vec<ir::Behavior>) -> Kontakt {
+        let mut instrument = ir::Instrument {
+            behaviors,
+            ..Default::default()
+        };
+        let initialized = initialize_scripts(&mut instrument, None, vec![], &[]);
+        Kontakt {
+            instrument,
+            locations: vec![],
+            samples: crate::Samples::new(Path::new(".")),
+            initialized: Some(initialized),
+        }
+    }
+
+    #[test]
+    fn unchanged_behavior_shape_consumes_existing_initialization_once() {
+        take_script_init_runs();
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        assert_eq!(take_script_init_runs(), 1);
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 3);
+        assert_eq!(take_script_init_runs(), 0);
+        assert!(kontakt.initialized.is_none());
+    }
+
+    #[test]
+    fn appended_ksp_behavior_reinitializes_before_indexing_cached_states() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        kontakt
+            .instrument
+            .behaviors
+            .push(behavior(4, ir::Language::Ksp));
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(
+            scripts
+                .iter()
+                .map(|script| script.slot())
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(take_script_init_runs(), 2);
+    }
+
+    #[test]
+    fn language_change_reinitializes_instead_of_unwrapping_absent_ksp_state() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Lua)]);
+        kontakt.instrument.behaviors[0].language = ir::Language::Ksp;
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 3);
+        assert_eq!(take_script_init_runs(), 1);
+    }
+
+    #[test]
+    fn removed_behavior_invalidates_the_cached_roster() {
+        let mut kontakt = translated(vec![
+            behavior(3, ir::Language::Ksp),
+            behavior(4, ir::Language::Ksp),
+        ]);
+        kontakt.instrument.behaviors.remove(0);
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 4);
+        assert_eq!(take_script_init_runs(), 1);
+    }
+
+    #[test]
+    fn changed_shape_retains_initializer_failure_as_a_script_diagnostic() {
+        let mut kontakt = translated(vec![]);
+        let mut invalid = behavior(3, ir::Language::Ksp);
+        invalid.source = "on init\n get_scale(0, %CC)\nend on".into();
+        kontakt.instrument.behaviors.push(invalid);
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert!(scripts.is_empty());
+        assert!(interfaces.is_empty());
+        assert_eq!(take_script_init_runs(), 1);
+        assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
+            diagnostic.location == "shape slot 3"
+                && diagnostic.feature == "script"
+                && diagnostic.value.contains("get_scale")
+        }));
+    }
+
+    #[test]
+    fn same_shape_source_change_still_reports_source_identity_failure() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        kontakt.instrument.behaviors[0].source.push('\n');
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert!(scripts.is_empty());
+        assert!(interfaces.is_empty());
+        assert_eq!(take_script_init_runs(), 0);
+        assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
+            diagnostic.feature == "script"
+                && diagnostic
+                    .value
+                    .contains("initialized source identity changed")
+        }));
+    }
+}

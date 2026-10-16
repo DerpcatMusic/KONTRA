@@ -199,6 +199,7 @@ pub fn render(
             }
             shots.push(json!({"page":page,"presentation":format!("{mode:?}"),"width":width,"height":height,"scale":scale,
                 "pending_assets":pending,"asset_failures":assets.failures(),"prepared_bytes":assets.bytes(),
+                "manual_wave_views":assets.wave_view_observations(&face),
                 "preparation_ms":preparation_ms,"paint_and_encode_ms":paint_and_encode_ms,
                 "paint_timings":paint_timings,
                 "status":if error.is_some(){"failed"}else if pending!=0 || !assets.failures().is_empty(){"partial"}else{"ok"},
@@ -229,6 +230,7 @@ pub fn render(
         "pages":face.pages.iter().enumerate().map(|(index,p)|json!({"index":index,"name":p.name,"width":p.size.width,"height":p.size.height})).collect::<Vec<_>>(),
         "widgets":widgets,"shots":shots,"omitted_pages":face.pages.len().saturating_sub(PAGE_LIMIT),"passive_value_changes":passive_changes,
         "assets":assets.probes(),"asset_probe_dropped":assets.probe_dropped(),
+        "manual_wave_views":assets.wave_view_observations(&face),
         "asset_scope":"Bounded request history across the rendered pages and presentations, not an existence verdict for unrequested assets",
         "resource_program_ownership":"Explicit selected program through the production asset worker",
         "timings":{"resolve_ms":resolve_ms,"geometry_observations_ms":geometry_ms,"total_ms":started.elapsed().as_secs_f64()*1000.,"resource_discovery_ms":scan.discovery_us as f64/1000.,"resource_read_ms":scan.read_us as f64/1000.,"resource_decode_ms":scan.decode_us as f64/1000.},

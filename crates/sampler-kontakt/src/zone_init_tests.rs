@@ -21,6 +21,13 @@ fn instrument() -> ir::Instrument {
     instrument
 }
 fn admit_reordered_sources(instrument: &mut ir::Instrument) {
+    // Independently authored source IDs, supplied explicitly rather than
+    // inferred from these deliberately sparse/reordered region references.
+    instrument.source_indices.zone_catalog = [
+        (1, 36, 48), (2, 50, 59), (3, 60, 61),
+    ].into_iter().map(|(id, low_key, high_key)| ir::SourceZone {
+        id: Some(id), home: ir::SourceZoneHome { group: 2, low_key, high_key },
+    }).collect();
     instrument.groups.push(ir::Group::default());
     instrument.source_indices.groups = vec![None, None, Some(ir::GroupRef(0))];
     let mut third = ir::Zone::new(ir::AssetRef(0));
@@ -107,6 +114,7 @@ fn owned_instrument_keeps_requested_waveform_source_and_reports_numeric_identity
     let path = std::env::var_os("KONTRA_PROFILE_KONTAKT_ZONE_INIT").expect("owned instrument path");
     let mut converted = crate::read(Path::new(&path)).expect("owned metadata translation");
     let source_zones = converted.instrument.source_indices.zones.clone();
+    let catalog = converted.instrument.source_indices.zone_catalog.clone();
     let raw = converted
         .instrument
         .kontakt_objects
@@ -128,12 +136,14 @@ fn owned_instrument_keeps_requested_waveform_source_and_reports_numeric_identity
             let Some(wave) = widget.waveform else {
                 continue;
             };
-            let id = usize::try_from(wave.zone).unwrap();
+            let id = u32::try_from(wave.zone).unwrap();
+            let ordinal = catalog.iter().position(|source| source.id == Some(id))
+                .expect("verified native source identity in physical catalog");
             let ir = source_zones
-                .get(id - 1)
+                .get(ordinal)
                 .and_then(|r| *r)
                 .expect("exact final source identity");
-            let physical = &raw[id - 1];
+            let physical = &raw[ordinal];
             let zone = &converted.instrument.zones[ir.0];
             assert!(zone.asset.is_some());
             rows.push(serde_json::json!({"requested_id":id,"ir_zone":ir.0,"source_group":physical.group,"source_keys":[physical.low_key,physical.high_key],"admitted_asset":zone.asset.unwrap().0}));

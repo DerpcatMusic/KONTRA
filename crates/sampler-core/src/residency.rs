@@ -644,7 +644,7 @@ impl Runtime {
                 let Some(c) = next else {
                     break;
                 };
-                let callback = self
+                let callback = match self
                     .preflight_async_callback(plan, c.instance)
                     .inspect_err(|_| {
                         let residency = self
@@ -659,7 +659,14 @@ impl Runtime {
                             .shared
                             .counters
                             .bump(&residency.shared.counters.completion_admission_failures);
-                    })?;
+                    }) {
+                    Ok(callback) => callback,
+                    // Keep the ready completion owned by its worker slot. The
+                    // callbacks occupying admission room must resume below in
+                    // render_inner before this job can be delivered next block.
+                    Err(Error::Capacity) => break,
+                    Err(error) => return Err(error),
+                };
                 let generation = self.plans.get_mut(plan.0).unwrap();
                 generation.prepared.residency.as_ref().unwrap().consume(c);
                 generation.callbacks -= 1;

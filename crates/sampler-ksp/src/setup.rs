@@ -11,7 +11,7 @@ use sampler_core::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 mod snapshot;
-pub use snapshot::{SnapshotSavedError, SnapshotSavedLimits, SnapshotSavedRowError, SnapshotSavedSlot, snapshot_saved_state};
+pub use snapshot::{SnapshotSavedError, SnapshotSavedLimits, SnapshotSavedRowError, SnapshotSavedSlot, SnapshotSavedState, snapshot_saved_state, snapshot_saved_state_with_menus};
 
 pub(crate) fn source_digest(source: &str) -> [u8; 32] {
     Sha256::digest(source.as_bytes()).into()
@@ -68,6 +68,7 @@ pub struct SetupLayout {
     pub control_domains: Vec<(ControlId, sampler_core::ControlDomain)>,
     pub private_store_capacity: usize,
     pub shared_initial_entries: usize,
+    pub zone_routing: crate::ZoneRoutingCapability,
 }
 
 impl SetupLayout {
@@ -121,9 +122,11 @@ impl SetupLayout {
             hir.cells, hir.texts, resources.controls, resources.store_capacity
         ));
         let context = digest_fields(format_args!(
-            "KSP setup context 1|{conditions:?}|{:?}|{:?}|{:?}|{:?}",
+            "KSP setup context 2|{conditions:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
             environment.groups,
             environment.zones,
+            environment.zone_catalog,
+            environment.snapshot_mode,
             environment.engine_lookups,
             environment.performance_view
         ));
@@ -142,6 +145,9 @@ impl SetupLayout {
             control_domains: controls.iter().map(|c| (c.0, c.1)).collect(),
             private_store_capacity: resources.store_capacity,
             shared_initial_entries,
+            zone_routing: if crate::zone_routing::requirements(hir).writes {
+                crate::ZoneRoutingCapability::RequiresPreparedRoutes
+            } else { crate::ZoneRoutingCapability::Immutable },
         }
     }
 }

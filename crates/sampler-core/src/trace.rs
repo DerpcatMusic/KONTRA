@@ -1,5 +1,7 @@
 //! Optional signal measurements. Graph construction, draining and file I/O are
 //! control-side; the single render writer uses fixed buffers and a bounded SPSC.
+pub mod onset;
+
 use crate::dsp::{BLOCK, ControlRamp, Planar, PreparedProcessor};
 use crate::{EngineParameterAddress, EngineParameterLaw, Error, Frame, Prepared};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -8,6 +10,31 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+
+/// Diagnostic graph scope uses immutable prepared-region key bounds, not host
+/// input keys. Generated/transposed selection can escape it; births remain global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SignalTraceScope {
+    pub prepared_key_low: u8,
+    pub prepared_key_high: u8,
+    pub max_nodes: usize,
+}
+impl SignalTraceScope {
+    /// Bounds all contribution, bus and host nodes before graph construction.
+    pub fn new(prepared_key_low: u8, prepared_key_high: u8, max_nodes: usize) -> Result<Self, Error> {
+        let scope = Self { prepared_key_low, prepared_key_high, max_nodes };
+        scope.validate()?;
+        Ok(scope)
+    }
+    pub(crate) fn validate(self) -> Result<(), Error> {
+        if self.prepared_key_low > self.prepared_key_high || self.prepared_key_high > 127
+            || !(1..=65536).contains(&self.max_nodes) { return Err(Error::InvalidInput); }
+        Ok(())
+    }
+    pub(crate) fn includes(self, low: u8, high: u8) -> bool {
+        low <= self.prepared_key_high && high >= self.prepared_key_low
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TraceParameter {
@@ -59,6 +86,9 @@ pub(crate) struct BusNodes {
 #[derive(Debug, Serialize)]
 pub struct TraceGraph {
     pub sample_rate: u32,
+    /// None preserves the original complete prepared-region graph behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SignalTraceScope>,
     pub nodes: Vec<TraceNode>,
     pub edges: Vec<TraceEdge>,
     pub order: Vec<usize>,
@@ -73,6 +103,8 @@ pub struct TraceGraph {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceIdentity {
+    /// Physical identity is authoritative only on single-voice contribution rows.
+    pub voice: Option<onset::PhysicalVoice>,
     pub zone: u32,
     pub sample: usize,
     pub family: usize,
@@ -104,6 +136,7 @@ pub struct TraceIdentity {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceMetrics {
+    pub onset: onset::SignalOnset,
     pub peak: [f64; 2],
     pub rms: [f64; 2],
     pub dc: [f64; 2],
@@ -144,18 +177,29 @@ impl Default for Scratch {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CollectionOwner {
+    #[default]
+    Environment,
+    External,
+}
+
 pub(crate) struct TracePrepared {
+    pub(crate) collection_owner: CollectionOwner,
+    onset: onset::Prepared,
     pub graph: Arc<TraceGraph>,
     writer: Mutex<Option<Producer<TraceRecord>>>,
     reader: TraceReader,
 }
 #[derive(Clone)]
 pub struct TraceReader {
+    onset: onset::Reader,
     pub graph: Arc<TraceGraph>,
     consumer: Arc<Mutex<Consumer<TraceRecord>>>,
     dropped: Arc<AtomicU64>,
 }
 impl TraceReader {
+    pub fn onset_reader(&self) -> onset::Reader { self.onset.clone() }
     pub(crate) fn abandoned(&self) -> bool {
         self.consumer
             .lock()
@@ -179,6 +223,7 @@ impl TraceReader {
     }
 }
 pub(crate) struct Recorder {
+    onset: onset::Recorder,
     writer: Mutex<Producer<TraceRecord>>,
     dropped: Arc<AtomicU64>,
     scratch: Box<[Scratch]>,
@@ -192,13 +237,17 @@ impl TracePrepared {
             return Err(Error::InvalidInput);
         }
         let graph = Arc::new(graph);
+        let onset = onset::Prepared::new(capacity.min(65536));
         let (writer, consumer) = RingBuffer::new(capacity);
         let reader = TraceReader {
+            onset: onset.reader.clone(),
             graph: graph.clone(),
             consumer: Arc::new(Mutex::new(consumer)),
             dropped: Arc::new(AtomicU64::new(0)),
         };
         Ok(Self {
+            collection_owner: CollectionOwner::default(),
+            onset,
             graph,
             writer: Mutex::new(Some(writer)),
             reader,
@@ -212,6 +261,7 @@ impl TracePrepared {
             .take()
             .ok_or(Error::InvalidInput)?;
         Ok(Recorder {
+            onset: self.onset.recorder()?,
             writer: Mutex::new(writer),
             dropped: self.reader.dropped.clone(),
             scratch: std::iter::repeat_with(Scratch::default)
@@ -323,8 +373,15 @@ pub(crate) fn metrics(block: &Planar, len: usize) -> TraceMetrics {
     }
     let mut result = TraceMetrics::default();
     for c in 0..2 {
-        for &v in &block[c][..len] {
-            result.peak[c] = result.peak[c].max(v.abs());
+        for (index, &v) in block[c][..len].iter().enumerate() {
+            let amplitude = v.abs();
+            if amplitude > 0. && result.onset.nonzero[c].is_none() {
+                result.onset.nonzero[c] = Some(index as u32);
+            }
+            if amplitude > onset::THRESHOLD && result.onset.above_threshold[c].is_none() {
+                result.onset.above_threshold[c] = Some(index as u32);
+            }
+            result.peak[c] = result.peak[c].max(amplitude);
             result.rms[c] += v * v;
             result.dc[c] += v;
         }
@@ -466,9 +523,16 @@ impl TraceParameter {
 }
 
 impl TraceGraph {
+    /// Existence of a physical contribution node, independent of note input key.
+    /// A missing node requires partial coverage for that birth even with no loss.
+    pub fn contribution_node(&self, zone: u32) -> Option<usize> {
+        self.voices.get(&zone).map(|v| v.output)
+    }
+    pub(crate) const HOST_NODE_COUNT: usize = 3 + 3 * HOST_PORTS;
     pub(crate) fn new(rate: u32) -> Self {
         let mut graph = Self {
             sample_rate: rate,
+            scope: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             order: Vec::new(),
@@ -721,7 +785,9 @@ impl TraceGraph {
                 });
                 TraceParameter {
                     name,
-                    initial: initial[lane].value(0),
+                    initial: if self.scope.is_some() {
+                        crate::dsp::control::initial_parameter(plan, &bindings[lane]).value(0)
+                    } else { initial[lane].value(0) },
                     lane: Some(lane),
                     address,
                     law,

@@ -280,7 +280,7 @@ def universal_fixture(root, version, revision, case="current"):
     if case=="missing-universal": package.unlink()
     if case=="changed-installer": package.write_bytes(b"xar!changed-installer")
 
-cases=("current","first","oversized-notes","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","late-source","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types")
+cases=("current","first","oversized-notes","bad-digest","stale-before","stale-after","upload-fails","missing-asset","bad-checksum","wrong-format","cleanup-fails","late-source","missing-font-license","missing-assistant-font-license","missing-fastlz-notice","missing-buffr-license","missing-buffr-provenance","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types")
 for case in cases:
     with tempfile.TemporaryDirectory(prefix="kontra-nightly-check-") as directory:
         root=Path(directory); root.joinpath("gh").write_text(mock_gh); root.joinpath("gh").chmod(0o755); root.joinpath("dist").mkdir()
@@ -309,10 +309,17 @@ for case in cases:
                     z.writestr(f"KONTRA-nightly-{platform}/KONTRA.app/Contents/Info.plist", plistlib.dumps(app))
                 z.writestr(f"KONTRA-nightly-{platform}/SOURCE_COMMIT.txt", "a"*40+"\n")
                 for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md", "assets/OFL.txt", "docs/LEGAL.md",
+                             "crates/sampler-uvi/assets/assistant/OFL.txt", "crates/sampler-kontakt/FASTLZ_NOTICE.txt",
+                             "licenses/BUFFR/LICENSE", "licenses/BUFFR/SOURCE.md",
                              "licenses/THIRD_PARTY_NOTICES.txt", "licenses/MUI/LICENSE", "licenses/MOOSE/LICENSE",
                              "licenses/MOOSE/LICENSE-MIT", "licenses/MOOSE/LICENSE-APACHE", "licenses/MOOSE/NOTICE",
                              "licenses/sources/symphonia-0.5.5.crate", "licenses/sources/option-ext-0.2.0.crate",
                              "licenses/sources/symphonia-format-riff-0.5.5.crate"):
+                    if platform.startswith("macos-") and (case, name) in (
+                            ("missing-assistant-font-license", "crates/sampler-uvi/assets/assistant/OFL.txt"),
+                            ("missing-fastlz-notice", "crates/sampler-kontakt/FASTLZ_NOTICE.txt"),
+                            ("missing-buffr-license", "licenses/BUFFR/LICENSE"),
+                            ("missing-buffr-provenance", "licenses/BUFFR/SOURCE.md")): continue
                     if (case,name) in (("missing-font-license","assets/OFL.txt"), ("missing-legal-review","docs/LEGAL.md"),
                                      ("missing-notices","licenses/THIRD_PARTY_NOTICES.txt"),
                                      ("missing-mpl-source","licenses/sources/option-ext-0.2.0.crate"),
@@ -373,7 +380,7 @@ for case in cases:
         env=dict(os.environ,PATH=f"{root}:{os.environ['PATH']}",GITHUB_SHA="a"*40,GH_REPO="example/KONTRA",GITHUB_RUN_ID="7",GITHUB_OUTPUT=str(output),TEST_VERSION=version)
         def run(command): return subprocess.run(["bash","--noprofile","--norc","-e","-o","pipefail","-c",command],cwd=root,env=env,capture_output=True,text=True)
         result=run(publish); state=json.loads(root.joinpath("state.json").read_text())
-        assert result.returncode==(1 if case in ("upload-fails","missing-asset","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types") else 0),(case,result.stderr)
+        assert result.returncode==(1 if case in ("upload-fails","missing-asset","bad-digest","bad-checksum","wrong-format","missing-font-license","missing-assistant-font-license","missing-fastlz-notice","missing-buffr-license","missing-buffr-provenance","missing-legal-review","missing-notices","missing-mpl-source","missing-patched-mpl-source","missing-notarization","rejected-notarization","changed-notarized-product","missing-universal","changed-installer","rejected-installer","wrong-installer-source","missing-package-types") else 0),(case,result.stderr)
         promoted=case in ("current","first","oversized-notes","cleanup-fails","late-source","stale-before","stale-after")
         assert state["promoted"]==promoted,(case,state)
         assert state["refs"]["nightly-staging-other"]=="e"*40
