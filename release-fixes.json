@@ -5123,6 +5123,17 @@
       "category": "Fixed",
       "release_note": "Reinitialize changed script rosters instead of indexing stale Kontakt initializer state.",
       "validation": "Causal appended-behavior panic reproduced before the guard; all 279 Kontakt library tests passed after it, including six behavior-shape/source-identity regressions (9 unrelated explicit ignores). Original branch Clippy stopped on older DSP debt already corrected in this release branch. Exact combined-candidate tests/Clippy and hosted shipping checks remain separate required receipts."
+    },
+    {
+      "id": "shipping-integration-target-shards",
+      "summary": "Distribute shipping integration-test compilation across eight runners while requiring exact target and feature coverage.",
+      "source_commits": [
+        "e462be9abdd5c352e8a5cebb2cfc554453157452"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Distribute shipping integration tests across runners without dropping tests or changing the shipping profile.",
+      "validation": "74 workflow safety tests, actionlint and Nightly packaging/signing/install safety checks pass. Real all-fourteen release Cargo proofs pass 26 tests with one explicit manual survey ignored; emitted features, duplicate target names and inspector binary use verified with unchanged source hashes. Final stamped-source planning and actual hosted shipping/native/editor/signing/publication retain separate required identities; cold-time recovery is not yet measured."
     }
   ]
 }
