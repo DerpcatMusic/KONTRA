@@ -86,7 +86,7 @@ list. No target directory or compiler wrapper override was used.
 The corrected source `3eb7067d7` passed broad all-target Clippy, 558 core tests
 with 11 existing ignores, and 168 focused runtime tests with one existing
 modulation-cost benchmark ignore. The complete same-policy Doctor scan has
-zero producer errors but remains FAILED with one error and11,474 warnings.
+zero producer errors but remains FAILED with one error and 11,474 warnings.
 The remaining error is Kontakt filter state-family pairing. Its private typed
 owner follow-through is not yet applied or validated. No audit rule or severity
 has been waived.
