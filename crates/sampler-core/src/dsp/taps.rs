@@ -72,7 +72,7 @@ impl super::VoiceChain {
     }
 }
 
-impl super::PreparedVoiceChain {
+impl super::PreparedChainRef<'_> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn process_section<const TRACE: bool>(
         &self,
@@ -94,7 +94,7 @@ impl super::PreparedVoiceChain {
         }
         let len = len - held;
         let at = at + held as u64;
-        let stages = if before { &self.pre } else { &self.post };
+        let stages = if before { self.pre } else { self.post };
         let mut first = 0;
         let mut fault = false;
         for (tap_index, tap) in self.taps.iter().enumerate() {
@@ -104,7 +104,7 @@ impl super::PreparedVoiceChain {
                 _ => continue,
             };
             fault |= super::process::<TRACE>(
-                &stages[first..after],
+                stages.slice(first..after),
                 &mut states[first..after],
                 block,
                 len,
@@ -160,7 +160,7 @@ impl super::PreparedVoiceChain {
             }
         }
         fault |= super::process::<TRACE>(
-            &stages[first..],
+            stages.slice(first..stages.len()),
             &mut states[first..],
             block,
             len,

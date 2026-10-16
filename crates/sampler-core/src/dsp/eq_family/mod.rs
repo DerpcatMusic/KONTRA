@@ -136,24 +136,11 @@ pub(crate) enum Stage {
 }
 
 impl Stage {
-    pub(super) fn batches(self) -> bool {
-        matches!(self, Stage::Native { eq, enabled: PreparedParameter::Constant(_) } if eq.batches())
-    }
-
-    pub(super) fn process_lanes(
-        self,
-        cells: &mut super::lanes::Cells<'_>,
-        cell: usize,
-        batch: &super::lanes::Batch,
-        block: &mut super::lanes::LaneBlock,
-        parameters: &[ControlRamp],
-        at: u64,
-    ) {
+    pub(super) fn constant(self) -> Option<ConstantNativeEq> {
         match self {
-            Stage::Native { eq, enabled: PreparedParameter::Constant(enabled) } if eq.batches() => {
-                if enabled >= 0.5 { eq.process_lanes(cells, cell, batch, block, parameters, at); }
-            }
-            _ => unreachable!("only constant native EQ stages batch"),
+            Stage::Native { eq, enabled: PreparedParameter::Constant(enabled) } =>
+                eq.constant().map(|eq| ConstantNativeEq { eq, enabled }),
+            _ => None,
         }
     }
 
@@ -183,6 +170,55 @@ impl Stage {
                 }
             }
             Stage::Generic(g) => g.process(state, parameters, block, len, at),
+        }
+    }
+}
+
+/// A batch owner contains actual constant native arguments, not an enabled
+/// projection of the heterogeneous EQ stage. Values remain f64 for trace and
+/// reach the native f32 conversion only at the original target boundary.
+#[derive(Clone, Copy)]
+pub(crate) struct ConstantNativeEq {
+    eq: legacy::ConstantEq,
+    enabled: f64,
+}
+impl ConstantNativeEq {
+    pub(super) fn into_stage(self) -> Stage {
+        Stage::Native { eq: self.eq.into_native(), enabled: PreparedParameter::Constant(self.enabled) }
+    }
+    pub(super) fn process_lanes(self, cells: &mut super::lanes::Cells<'_>, cell: usize,
+        batch: &super::lanes::Batch, block: &mut super::lanes::LaneBlock,
+        parameters: &[ControlRamp], at: u64) {
+        if self.enabled >= 0.5 { self.eq.process_lanes(cells, cell, batch, block, parameters, at); }
+    }
+    pub(super) fn process(self, state: &mut ProcessorState, parameters: &[ControlRamp],
+        block: &mut Planar, len: usize, at: u64) {
+        if self.enabled >= 0.5 { self.eq.process(state, parameters, block, len, at); }
+    }
+    pub(crate) fn trace_parameters(self) -> Vec<(&'static str, PreparedParameter)> {
+        let mut all = self.eq.trace_parameters().to_vec();
+        all.push(("enabled", PreparedParameter::Constant(self.enabled)));
+        all
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EqRef<'a> {
+    Scalar(&'a Stage),
+    Constant(&'a ConstantNativeEq),
+}
+impl EqRef<'_> {
+    pub(super) fn process(self, state: &mut ProcessorState, parameters: &[ControlRamp],
+        block: &mut Planar, len: usize, at: u64) {
+        match self {
+            Self::Scalar(eq) => eq.process(state, parameters, block, len, at),
+            Self::Constant(eq) => eq.process(state, parameters, block, len, at),
+        }
+    }
+    pub(crate) fn trace_parameters(self) -> Vec<(&'static str, PreparedParameter)> {
+        match self {
+            Self::Scalar(eq) => eq.trace_parameters(),
+            Self::Constant(eq) => eq.trace_parameters(),
         }
     }
 }

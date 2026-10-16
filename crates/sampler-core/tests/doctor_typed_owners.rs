@@ -206,3 +206,160 @@ fn interleaved_bus_rejects_expression_owned_svf_before_publication() {
     }], vec![Some(0)]);
     assert!(matches!(result, Err(Error::InvalidInput)));
 }
+
+// Phase C additions: exercise moved batch owners versus traced scalar views.
+const C_NOTES: usize = 64;
+fn phase_c_chain(scalar: bool, revision: bool) -> VoiceChain {
+    let mut band = EqBand::rbj(sampler_ir::fx::eq::Kind::Peak,
+        f64::from_bits(0x3fe0_0000_0000_0001), 0.3456789012345,
+        if revision { -3.1234567898 } else { 9.1234567898 });
+    band.law = sampler_ir::fx::eq::Law::KontaktLegacy;
+    band.enabled = Parameter::Constant(f64::from_bits(0x3fe0_0000_0000_0001));
+    let mut pre = vec![Processor::Gain(0.8), Processor::Eq(band),
+        Processor::Color(ColorSettings {
+            curve: CurveSettings::Classic(Parameter::Constant(0.3)),
+            gainer: Some(GainerSettings { gain: Parameter::Constant(0.7), dry: 0.2 }),
+            ..ColorSettings::IDENTITY
+        }), svf(Parameter::Constant(if revision { 1700. } else { 900. }))];
+    if scalar {
+        // A valid scalar-only operation after the admitted Color/native EQ
+        // requires preparation to retain all earlier owners and f64 constants.
+        pre.push(Processor::ControlMatrix([Parameter::Constant(1.), Parameter::Constant(0.),
+            Parameter::Constant(0.), Parameter::Constant(1.)]));
+    }
+    VoiceChain::new(pre, vec![Processor::StereoMatrix([[0.7, -0.1], [0.2, 0.8]])], 31).unwrap()
+}
+fn phase_c_plan(traced: bool, revision: bool) -> Prepared {
+    let pcm = (0..4096).map(|i| [(i as f32 * 0.071).sin() * 0.01,
+        (i as f32 * 0.037).cos() * -0.008]).collect::<Vec<_>>().into_boxed_slice();
+    let regions = (0..3).map(|layer| Region {
+        sample: 0, key_low: 60, key_high: 60, root_key: None,
+        velocity_low: 0., velocity_high: 1., gain: 0.03 + layer as f32 * 0.01,
+        envelope: Envelope::new(layer, 3, 31, 0.6, 19 + layer * 3).unwrap(),
+        playback: Playback {
+            loop_range: Some(Loop { start: 0, end: 4096, passes: None,
+                shape: LoopShape::Wrap, mode: LoopMode::Continuous }), ..Playback::default()
+        },
+    }).collect();
+    // Logical chain 0 is scalar. Dense batch 0 belongs to logical chain 1;
+    // revision adds a distinct empty batch owner, shifting the retained key.
+    let mut chains = vec![phase_c_chain(true, revision)];
+    if revision { chains.push(VoiceChain::new(vec![], vec![], 0).unwrap()); }
+    let batch = chains.len(); chains.push(phase_c_chain(false, revision));
+    let p = Prepared::new(48_000, vec![Pcm::new(48_000, pcm).unwrap()], regions, 3).unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant; 3]).unwrap()
+        .with_voice_chains(chains, vec![Some(batch), Some(batch), Some(0)]).unwrap();
+    if traced { p.with_signal_trace(4096).unwrap() } else { p }
+}
+
+#[test]
+fn phase_c_native_batch_constants_retain_exact_f64_trace_values() {
+    let rt = Runtime::new(phase_c_plan(true, false),
+        Limits::for_plan(&phase_c_plan(false, false), 4, 12)).unwrap();
+    let reader = rt.signal_trace_reader().unwrap();
+    let expected = [f64::from_bits(0x3fe0_0000_0000_0001), 0.3456789012345,
+        9.1234567898, f64::from_bits(0x3fe0_0000_0000_0001)].map(f64::to_bits);
+    let eqs = reader.graph.nodes.iter().filter(|node| node.processor == "eq").collect::<Vec<_>>();
+    assert_eq!(eqs.len(), 3);
+    for node in eqs {
+        assert_eq!(node.parameters.iter().map(|p| p.initial.to_bits()).collect::<Vec<_>>(), expected);
+    }
+}
+
+/// Tracing forces the scalar operation view. Compare it with real lane/worker
+/// runs across scalar/batch chain holes, old/new generations, unequal releases,
+/// one-voice runs and recycled slots. Heap guards cover the calling audio thread;
+/// root retains the existing all-thread allocator/worker-witness matrix as well.
+#[test]
+fn phase_c_retained_batch_keys_match_scalar_pcm_across_plan_and_voice_lifecycles() {
+    for threads in [1, 2] {
+        let p = phase_c_plan(false, false);
+        let limits = Limits::for_plan(&p, C_NOTES * 2 + 4, (C_NOTES * 2 + 4) * 3);
+        let (actual, mut ac) = Runtime::with_plan_updates(p, limits, 2, 1).unwrap();
+        let mut actual = actual.with_threads(Threads::Fixed(threads));
+        let (mut expected, mut ec) = Runtime::with_plan_updates(phase_c_plan(true, false), limits, 2, 1).unwrap();
+        support::without_heap(|| {
+            for id in 0..C_NOTES as i32 {
+                actual.trigger(input(id), 60, 0.75).unwrap();
+                expected.trigger(input(id), 60, 0.75).unwrap();
+            }
+        });
+        let mut a = [[0.; 2]; 64]; let mut b = a;
+        for round in 0..16 {
+            if round == 3 {
+                let ar = ac.submit(Box::new(phase_c_plan(false, true))).unwrap();
+                let er = ec.submit(Box::new(phase_c_plan(true, true))).unwrap();
+                support::without_heap(|| {
+                    assert_eq!(actual.poll_plan_update(), Ok(Some(ar)));
+                    assert_eq!(expected.poll_plan_update(), Ok(Some(er)));
+                    for id in C_NOTES as i32..(C_NOTES * 2) as i32 {
+                        actual.trigger(input(id), 60, 0.65).unwrap();
+                        expected.trigger(input(id), 60, 0.65).unwrap();
+                    }
+                });
+            }
+            support::without_heap(|| {
+                if round == 6 {
+                    for id in (0..(C_NOTES * 2) as i32).step_by(2) {
+                        actual.note_off(input(id), None).unwrap(); expected.note_off(input(id), None).unwrap();
+                    }
+                }
+                if round == 10 {
+                    for id in (1..(C_NOTES * 2) as i32).step_by(2) {
+                        actual.note_off(input(id), None).unwrap(); expected.note_off(input(id), None).unwrap();
+                    }
+                }
+                let len = [1, 7, 64, 17, 63, 32][round % 6];
+                actual.render(&mut a[..len]).unwrap(); expected.render(&mut b[..len]).unwrap();
+                assert_eq!(a[..len], b[..len]);
+                actual.flush_ended(|_| true); expected.flush_ended(|_| true);
+            });
+            assert_eq!(actual.voice_count(), expected.voice_count());
+            assert_eq!(actual.note_count(), expected.note_count());
+        }
+        assert_eq!(actual.voice_count(), 0);
+        if threads > 1 { assert!(actual.parallel_blocks() > 0); }
+        support::without_heap(|| {
+            assert_eq!(actual.collect_retired_plans(), 1);
+            assert_eq!(expected.collect_retired_plans(), 1);
+        });
+        drop(ac.retired().unwrap()); drop(ec.retired().unwrap());
+        support::without_heap(|| {
+            actual.trigger(input(1000), 60, 0.5).unwrap(); expected.trigger(input(1000), 60, 0.5).unwrap();
+            actual.render(&mut a).unwrap(); expected.render(&mut b).unwrap();
+        });
+        assert_eq!(a, b);
+        for rt in [&actual, &expected] { assert_eq!(rt.stats().nonfinite_frames, 0); assert_eq!(rt.stats().stream_underruns, 0); }
+    }
+}
+
+#[test]
+fn phase_c_single_eligible_voice_uses_scalar_view_through_slot_reuse() {
+    let make = |traced| {
+        let p = source_plan().with_voice_chains(vec![phase_c_chain(false, false)], vec![Some(0)]).unwrap();
+        if traced { p.with_signal_trace(4096).unwrap() } else { p }
+    };
+    let mut actual = Runtime::new(make(false), limits()).unwrap();
+    let mut expected = Runtime::new(make(true), limits()).unwrap();
+    let mut a = [[0.; 2]; 128]; let mut b = a;
+    for id in 0..4 {
+        support::without_heap(|| {
+            actual.trigger(input(id), 60, 0.75).unwrap(); expected.trigger(input(id), 60, 0.75).unwrap();
+        });
+        assert_eq!(actual.voice_count(), 1);
+        for len in [1, 7, 64, 63] {
+            support::without_heap(|| {
+                actual.render(&mut a[..len]).unwrap(); expected.render(&mut b[..len]).unwrap();
+            });
+            assert_eq!(a[..len], b[..len]);
+        }
+        support::without_heap(|| {
+            actual.note_off(input(id), None).unwrap(); expected.note_off(input(id), None).unwrap();
+            actual.render(&mut a).unwrap(); expected.render(&mut b).unwrap();
+            actual.flush_ended(|_| true); expected.flush_ended(|_| true);
+        });
+        assert_eq!(a, b);
+        assert_eq!(actual.voice_count(), 0);
+        assert_eq!(expected.voice_count(), 0);
+    }
+}
