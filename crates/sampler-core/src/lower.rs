@@ -662,9 +662,43 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
     pcm.admit_legacy_bundles(instrument)?;
     // A physical channel family is not a stereo outlet. This runs before any
     // effect preparation, worker setup, group tap rewriting or behavior callback.
-    if instrument.zones.iter().any(|zone| zone.asset
-        .and_then(|asset| pcm.get(asset.0)).is_some_and(|source| source.stereo().is_none())) {
-        return Err(core(Stage::Regions, "source outlet requires an explicit signal layout")(Error::UnsupportedSourceLayout));
+    for (index, zone) in instrument.zones.iter().enumerate() {
+        let Some(source) = zone.asset.and_then(|asset| pcm.get(asset.0)) else { continue; };
+        let signal = instrument.processing_scopes.iter().find(|scope|
+            scope.members.iter().any(|member| member.0 == index)).and_then(|scope| scope.signal.as_ref());
+        if signal.is_some_and(|signal| signal.input.channels != source.channels().get())
+            || source.stereo().is_none() && signal.is_none() {
+            return Err(core(Stage::Regions, "source outlet requires a matching explicit signal layout")(Error::UnsupportedSourceLayout));
+        }
+        if source.stereo().is_none() && zone.routes.iter().any(|route| !matches!(instrument.routes[route.0].target,
+            ir::Target::Amplitude | ir::Target::Pitch | ir::Target::SampleStart
+                | ir::Target::SourcePhase(_) | ir::Target::SourceRate(_)
+                | ir::Target::LoopStart | ir::Target::LoopLength)) {
+            return Err(core(Stage::Modulation, "source destination requires typed channel ports")(Error::UnsupportedSourceLayout));
+        }
+        if source.stereo().is_none() {
+            // This resident source stage implements width-independent constant
+            // gain sections around ONE source amplitude. Coupled/history/tap
+            // processors need typed N-port kernels; refuse their source homes
+            // before preparing any effect or invoking a behavior binder.
+            let unsupported_chain = zone.chain.is_some_and(|id| {
+                let chain = &instrument.chains[id.0];
+                chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                    .any(|stage| !matches!(stage, ir::Processor::Gain(_)))
+                    || instrument.processor_controls.iter().any(|binding| binding.chain == id)
+                    || instrument.voice_send_taps.iter().any(|tap| tap.chain == id)
+                    || zone.routes.iter().any(|route| matches!(instrument.routes[route.0].target,
+                        ir::Target::Processor { chain, .. } if chain == id))
+            });
+            if zone.pan.position != 0. || unsupported_chain {
+                return Err(core(Stage::VoiceChains, "source section requires typed channel ports")(Error::UnsupportedSourceLayout));
+            }
+        }
+        // Family residency/group mutation is not yet an implemented operation.
+        // A definition's processing owner is separate and remains fully supported.
+        if source.stereo().is_none() && zone.group.is_some() {
+            return Err(core(Stage::Regions, "wide group residency ownership")(Error::UnsupportedSourceLayout));
+        }
     }
     let tapped;
     let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
@@ -695,7 +729,13 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
     let mut chain_of = Vec::with_capacity(instrument.zones.len());
     let mut candidates = 0usize;
     for (i, zone) in instrument.zones.iter().enumerate() {
-        let (region, chain) = lowering.zone(i, zone)?;
+        let (region, mut chain) = lowering.zone(i, zone)?;
+        if chain.is_none() && instrument.processing_scopes.iter().any(|scope|
+            scope.signal.is_some() && scope.members.iter().any(|member| member.0 == i)) {
+            // The explicit source law selects the ordinary f64 amplitude section,
+            // including an identity section when no source processor is authored.
+            chain = Some(VoiceChain::new(vec![], vec![], 0).map_err(core(Stage::VoiceChains, format!("zone {i} source law")))?);
+        }
         // Name the zone whose geometry the runtime would reject as a whole.
         if let Some(source) = pcm.get(region.sample) {
             region.playback.cursor(source.frame_count(), source.sample_rate(), rate)
@@ -959,13 +999,14 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             chain, sum: scope.sum, envelope: region.envelope, has_amplitude: scope.amplitude.is_some(),
             bus: scope.output.or(instrument.input_bus).map(|b| b.0),
             members: scope.members.iter().map(|z| z.0).collect(),
+            signal: scope.signal.clone(),
         });
     }
     plan.processing_source_amplitude = instrument.zones.iter().map(|z| z.amplitude.is_some()
         || z.routes.iter().any(|r| instrument.routes[r.0].target == ir::Target::Amplitude)).collect();
     plan.processing_scopes = processing_scopes.into_boxed_slice();
     plan.region_processing = region_processing.into_boxed_slice();
-    if !chains.is_empty() {
+    if !chains.is_empty() || instrument.processing_scopes.iter().any(|scope| scope.signal.is_some()) {
         plan = plan
             .with_voice_chains(chains, chain_of)
             .map_err(core(Stage::VoiceChains, "zones"))?;

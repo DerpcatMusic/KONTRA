@@ -216,7 +216,7 @@ impl PlanControl {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
             Some(PlanError::SampleRate)
-        } else if prepared.validate_source_ports().is_err() {
+        } else if prepared.validate_signal_execution().is_err() {
             Some(PlanError::SourceLayout)
         } else if prepared.programs.iter().any(|p| p.locals > self.locals) {
             Some(PlanError::LocalCapacity)

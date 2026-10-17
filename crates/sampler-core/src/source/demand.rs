@@ -61,6 +61,11 @@ impl Runtime {
         let v = self.voices.get(voice.0).ok_or(Error::StaleHandle)?;
         let family = self.families.get(v.family.0).unwrap();
         let note = self.notes.get(family.note.0).unwrap();
+        // Resident channel families have no physical page demand. Future streamed
+        // families use one logical cohort request, never a fabricated pack0 key.
+        if self.plans.get(note.plan.0).unwrap().source(v.sample).is_some_and(|s| s.stereo().is_none()) {
+            return Ok(None);
+        }
         let at = if v.started {
             self.now
         } else {

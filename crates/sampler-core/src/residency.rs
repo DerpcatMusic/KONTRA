@@ -201,15 +201,33 @@ impl Residency {
         let mut groups: Vec<Vec<Pcm>> = vec![vec![]; plan.group_count as usize];
         let mut pinned = Vec::new();
         for region in 0..plan.region_count() {
-            let Some(pcm) = plan.region_asset(region) else {
+            let Some(source) = plan.region_source_storage(region) else {
                 continue;
             };
             let members = match plan.region_groups[region] {
                 Some(g) => &mut groups[g as usize],
                 None => &mut pinned,
             };
-            if !members.iter().any(|p| p.asset_id() == pcm.asset_id()) {
-                members.push(pcm.clone());
+            // Logical sources may retain multiple physical assets. Every actual
+            // dependency participates in the existing group/pinned owner count;
+            // an immutable family pin alone must not strand an aliased purge.
+            source.physical_dependencies(|pcm| {
+                if !members.iter().any(|p| p.asset_id() == pcm.asset_id()) {
+                    members.push(pcm.clone());
+                }
+            });
+        }
+        // Even an unreferenced logical family owns immutable resident pins in
+        // this Prepared table. Keep those actual dependencies pinned in the same
+        // residency owner until the whole storage root retires. Stereo tables
+        // retain the old region-driven ownership law unchanged.
+        for sample in 0..plan.sample_count() {
+            if let Some(crate::SourceStorageRef::Channels(source)) = plan.source_storage(sample) {
+                source.as_source().physical_dependencies(|pcm| {
+                    if !pinned.iter().any(|p| p.asset_id() == pcm.asset_id()) {
+                        pinned.push(pcm.clone());
+                    }
+                });
             }
         }
         for pcm in groups.iter().flatten().chain(&pinned) {
@@ -674,5 +692,59 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod logical_source_residency_tests {
+    use super::*;
+    use crate::{ChannelCount, Envelope, Playback, Region, SourceStorageFamily};
+    fn region(sample: usize) -> Region {
+        Region { sample, key_low: 60, key_high: 60, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default() }
+    }
+    #[test]
+    fn pinned_family_dependencies_keep_an_aliased_stereo_group_purge_collectable() {
+        for referenced in [true, false] { check_aliased_family_purge(referenced); }
+    }
+    fn check_aliased_family_purge(referenced: bool) {
+        let packs: Vec<_> = (1..=3).map(|value| Pcm::new(48000,
+            vec![[value as f32, -(value as f32)]; 128].into_boxed_slice()).unwrap()).collect();
+        let alias = packs[1].clone();
+        let family = SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), packs.clone()).unwrap();
+        let mut plan = Prepared::new_sources(48000, vec![family.clone().into(), alias.clone().into()],
+            vec![region(0), region(0), region(1)], 3).unwrap();
+        // The family remains ungrouped; only the independently authored stereo
+        // alias is a mutable group. This does not enable wide group mutation.
+        plan.group_count = 1;
+        plan.region_groups = vec![None, None, Some(0)].into_boxed_slice();
+        if !referenced {
+            // Unreferenced roots still retain pins until this table retires.
+            plan = Prepared::new_sources(48000, vec![family.clone().into(), alias.clone().into()],
+                vec![region(1)], 1).unwrap();
+            plan.group_count = 1;
+            plan.region_groups = vec![Some(0)].into_boxed_slice();
+        }
+        let owner = Residency::new(&plan).unwrap();
+        assert_eq!(owner.shared.pinned.len(), 3);
+        assert_eq!(owner.shared.groups[0].assets.len(), 1);
+        assert_eq!(packs.iter().map(Pcm::residency_owners).collect::<Vec<_>>(), vec![1, 2, 1]);
+        owner.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let completion = loop {
+            if let Some(completion) = owner.peek() { break completion; }
+            assert!(std::time::Instant::now() < deadline, "aliased purge retained by an unregistered family pin");
+            std::thread::yield_now();
+        };
+        assert!(completion.success);
+        owner.consume(completion);
+        assert_eq!(alias.residency_owners(), 1);
+        assert!(alias.pin_resident().is_some());
+        assert_eq!(family.resident_view().sample(2, 127), Some(2.));
+        drop(owner);
+        assert!(packs.iter().all(|pcm| pcm.residency_owners() == 0));
+        // The immutable source cohort is still its own retained revision.
+        assert_eq!(family.resident_view().sample(2, 127), Some(2.));
     }
 }

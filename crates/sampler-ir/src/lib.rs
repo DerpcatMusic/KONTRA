@@ -1922,6 +1922,51 @@ pub struct ProcessingScope {
     pub amplitude: Option<ModulatorRef>,
     /// None emits to the instrument input; Some is the existing bus identity.
     pub output: Option<BusRef>,
+    /// Explicit source/sum layouts and projection before the existing stereo section.
+    /// Absence retains the exact original stereo processing schedule.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub signal: Option<ProcessingSignal>,
+}
+
+/// Ordered discrete-channel port, separate from physical packing and native descriptors.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalLayout { pub channels: usize }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingSignal {
+    /// Existing f32 resampling, f64 source gain/amplitude sections, f32 member outlet.
+    pub source_law: ProcessingSourceLaw,
+    pub input: SignalLayout,
+    pub nodes: Vec<ProcessingSignalNode>,
+    pub controls: Vec<ProcessingCellBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessingSignalNode { Matrix(ChannelMatrix) }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSourceLaw { CoreF64GainAmplitudeF32Outlet }
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMatrix {
+    pub input: SignalLayout,
+    pub output: SignalLayout,
+    /// Row-major cells: output ordinal * input channels + input ordinal.
+    pub cells: Vec<f64>,
+    pub arithmetic: MatrixArithmetic,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatrixArithmetic { SeparateMulAddF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessingCellBinding {
+    pub node: usize,
+    pub input: usize,
+    pub output: usize,
+    pub control: String,
 }
 
 /// The first executable source-edge summation contract. Member blocks have

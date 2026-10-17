@@ -589,6 +589,7 @@ impl Prepared {
         let previous = std::mem::replace(&mut self.controls, controls.into_boxed_slice());
         self.validate_program_controls(&self.programs)?;
         self.validate_dsp_controls()?;
+        self.validate_processing_controls()?;
         for binding in &self.control_programs {
             self.control_index(binding.control)?;
         }

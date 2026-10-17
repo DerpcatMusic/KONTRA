@@ -282,6 +282,13 @@ impl SourceResidentView<'_> {
     pub fn frame_count(&self) -> usize {
         self.frames
     }
+    /// Internal physical read window. Signal/source identities never resolve to a pack alias.
+    pub(crate) fn pair(&self, pair: usize) -> Option<&[crate::Frame]> {
+        match &self.data {
+            ResidentViewData::Stereo(resident) => (pair == 0).then_some(&resident[..]),
+            ResidentViewData::Channels(family) => family.residents.get(pair).map(|p| &p[..]),
+        }
+    }
     pub fn sample(&self, channel: usize, frame: usize) -> Option<f32> {
         if channel >= self.channels.get() || frame >= self.frames {
             return None;
