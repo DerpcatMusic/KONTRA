@@ -50,6 +50,9 @@ struct PcmData {
     residency_managed: AtomicBool,
     residency_loader: std::sync::OnceLock<ResidencyLoader>,
     residency_mutation: std::sync::Mutex<()>,
+    // Off-audio reclamation discovery only. No strong cycle or last-reader
+    // cleanup on audio: any surviving physical alias worker can visit roots.
+    resident_families: std::sync::Mutex<Vec<std::sync::Weak<crate::source::storage::ResidentFamily>>>,
     // Pre-decimated octave levels (level 1 first), built by `Pcm::mipmapped`
     // or `service_mipmaps`. Audio borrows an immutable published generation.
     levels: Levels,
@@ -389,6 +392,7 @@ impl Pcm {
             residency_managed: AtomicBool::new(false),
             residency_loader: std::sync::OnceLock::new(),
             residency_mutation: std::sync::Mutex::new(()),
+            resident_families: std::sync::Mutex::new(Vec::new()),
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
@@ -511,12 +515,35 @@ impl Pcm {
             .load(std::sync::atomic::Ordering::Acquire)
             || self.residency_owners() > 0
     }
+    pub(crate) fn register_resident_family(&self, family: &std::sync::Arc<crate::source::storage::ResidentFamily>) -> Result<(), Error> {
+        let mut roots = self.0.resident_families.lock().unwrap_or_else(|e| e.into_inner());
+        roots.retain(|root| root.strong_count() != 0);
+        roots.try_reserve(1).map_err(|_| Error::Capacity)?;
+        roots.push(std::sync::Arc::downgrade(family));
+        Ok(())
+    }
+    /// Off audio, after a family releases its complete pin cohort. Sibling
+    /// physical assets can have lost their last worker in an older Prepared.
+    pub(crate) fn collect_retired_resident(&self) { self.0.frames.collect(); }
+    fn collect_resident_families(&self) {
+        let mut roots = self.0.resident_families.lock().unwrap_or_else(|e| e.into_inner());
+        roots.retain(|root| {
+            let Some(family) = root.upgrade() else { return false; };
+            // Lock order: physical mutation -> weak registry -> family mutation
+            // -> cohort Snapshot. Family refresh never takes physical mutation,
+            // calls a loader, or visits registries; borrowed reads take neither.
+            let _ = family.refresh_residency();
+            family.collect_residency();
+            true
+        });
+    }
     pub(crate) fn residency_collect(&self) -> bool {
         let _mutation = self
             .0
             .residency_mutation
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        self.collect_resident_families();
         if !self.residency_permitted() {
             if self.0.frames.read().is_some() {
                 self.0.frames.replace(None, |_| ());
