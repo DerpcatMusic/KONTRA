@@ -370,11 +370,13 @@ pub enum Error {
     /// Routed eligibility is prepared for MIDI-key pitch only.
     UnsupportedZoneRoutingPitch,
     UnsupportedZoneRoutingSampleUpdates,
+    /// A source outlet or mutable source operation lacks the required channel layout.
+    UnsupportedSourceLayout,
 }
 
 impl Error {
     /// Every variant, so one can travel as its index.
-    pub const ALL: [Error; 15] = [
+    pub const ALL: [Error; 16] = [
         Self::Capacity,
         Self::InvalidInput,
         Self::NotReady,
@@ -390,6 +392,7 @@ impl Error {
         Self::Canceled,
         Self::UnsupportedZoneRoutingPitch,
         Self::UnsupportedZoneRoutingSampleUpdates,
+        Self::UnsupportedSourceLayout,
     ];
 }
 
@@ -411,6 +414,7 @@ impl std::fmt::Display for Error {
             Self::Canceled => "candidate preparation was canceled",
             Self::UnsupportedZoneRoutingPitch => "absolute pitch with zone routing is unsupported",
             Self::UnsupportedZoneRoutingSampleUpdates => "dynamic sample updates with zone routing are unsupported",
+            Self::UnsupportedSourceLayout => "the source operation has no compatible channel-layout contract",
         })
     }
 }
@@ -1029,6 +1033,7 @@ impl Runtime {
         initial_notes: usize,
         canceled: &dyn Fn()->bool,
     ) -> Result<Self, Error> {
+        plan.validate_source_ports()?;
         trace_report::configure(&mut plan)?;
         if initial_notes == 0 || initial_notes > limits.notes {
             return Err(Error::InvalidInput);
@@ -1855,6 +1860,11 @@ impl Runtime {
         at: u64,
         gain: f32,
     ) -> Result<VoiceId, Error> {
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let generation = self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?;
+        if generation.source(sample).is_some_and(|s| s.stereo().is_none()) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
         let family = self.create_family(note)?;
         let result = self.start_family(
             family,
@@ -1892,12 +1902,12 @@ impl Runtime {
             .get(self.notes.get(f.note.0).unwrap().plan.0)
             .unwrap()
             .prepared;
-        if sample >= plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
-            return Err(Error::InvalidInput);
-        }
+        if !gain.is_finite() || !(0.0..=1.0).contains(&gain) { return Err(Error::InvalidInput); }
+        let source = plan.source_storage(sample).ok_or(Error::InvalidInput)?;
+        if source.stereo().is_none() { return Err(Error::UnsupportedSourceLayout); }
         let cursor = playback.cursor(
-            plan.pcm[sample].frame_count(),
-            plan.pcm[sample].sample_rate(),
+            source.frame_count(),
+            source.sample_rate(),
             self.rate,
         )?;
         self.admit_voice(family, sample, at, gain, envelope, cursor)

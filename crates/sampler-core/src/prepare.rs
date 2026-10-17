@@ -850,7 +850,9 @@ pub struct Prepared {
     pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
     pub(super) rate: u32,
+    /// Physical dependency collection; logical region indices resolve via source_storage.
     pub(super) pcm: Box<[Pcm]>,
+    pub(super) source_storage: Option<Box<[crate::SourceStorage]>>,
     pub(super) buses: super::bus::PreparedBuses,
     pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
     pub(super) voice_chains: super::dsp::PreparedChains,
@@ -984,7 +986,7 @@ impl Prepared {
         // would intentionally bypass that loop for the actual voice.
         cursor.initial_forward_window(offset, 1.)?;
         cursor.skip(offset).initial_forward_window(0, cursor.step())?;
-        Some(ConstantStartPrefix { asset: self.pcm.get(source.sample)?.asset_id(), template, offset })
+        Some(ConstantStartPrefix { asset: self.source_storage(source.sample)?.stereo()?.asset_id(), template, offset })
     }
 
     /// One response per authored region, in its original order. Selection always
@@ -1036,14 +1038,36 @@ impl Prepared {
         max_candidates: usize,
         tuning: &Tuning,
     ) -> Result<Self, Error> {
-        if rate == 0 {
-            return Err(Error::InvalidInput);
+        Self::new_tuned_storage(rate, pcm, None, regions, max_candidates, tuning)
+    }
+
+    /// Source-aware control construction. One logical source per region sample index.
+    /// Runtime publication additionally validates each source outlet's signal layout.
+    pub fn new_sources(rate: u32, sources: Vec<crate::SourceStorage>, regions: Vec<Region>,
+        max_candidates: usize) -> Result<Self, Error> {
+        Self::new_sources_tuned(rate, sources, regions, max_candidates, &Tuning::default())
+    }
+    pub fn new_sources_tuned(rate: u32, sources: Vec<crate::SourceStorage>, regions: Vec<Region>,
+        max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
+        let mut pcm = Vec::new();
+        for source in &sources {
+            source.as_source().physical_dependencies(|pack| pcm.push(pack.clone()));
         }
+        Self::new_tuned_storage(rate, pcm, Some(sources.into_boxed_slice()), regions, max_candidates, tuning)
+    }
+    fn new_tuned_storage(rate: u32, pcm: Vec<Pcm>, source_storage: Option<Box<[crate::SourceStorage]>>,
+        regions: Vec<Region>, max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
+        if rate == 0 { return Err(Error::InvalidInput); }
+        let source_count = source_storage.as_ref().map_or(pcm.len(), |s| s.len());
+        let source_at = |index: usize| match &source_storage {
+            Some(sources) => sources.get(index).map(crate::SourceStorage::as_source),
+            None => pcm.get(index).map(crate::SourceStorageRef::Stereo),
+        };
         let mut count = 0usize;
         let mut prepared_regions = Vec::new();
         let mut cursor_loops = Vec::new();
         for r in &regions {
-            if (r.sample != DORMANT_SAMPLE && r.sample >= pcm.len())
+            if (r.sample != DORMANT_SAMPLE && r.sample >= source_count)
                 || r.key_low > r.key_high
                 || r.key_high >= 128
                 || r.root_key.is_some_and(|key| key >= 128)
@@ -1073,7 +1097,8 @@ impl Prepared {
                 }
                 None
             } else {
-                Some(playback.cursor(pcm[r.sample].frame_count(), pcm[r.sample].sample_rate(), rate)?)
+                Some(playback.cursor(source_at(r.sample).ok_or(Error::InvalidInput)?.frame_count(),
+                    source_at(r.sample).ok_or(Error::InvalidInput)?.sample_rate(), rate)?)
             };
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
@@ -1121,7 +1146,7 @@ impl Prepared {
                         let mut playback = r.playback;
                         playback.transpose_semitones +=
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
-                        playback.step(if r.sample == DORMANT_SAMPLE { rate } else { pcm[r.sample].sample_rate() }, rate)
+                        playback.step(if r.sample == DORMANT_SAMPLE { rate } else { source_at(r.sample).ok_or(Error::InvalidInput)?.sample_rate() }, rate)
                     } else {
                         prepared_regions[region].cursor.map_or_else(
                             || r.playback.step(rate, rate),
@@ -1160,6 +1185,7 @@ impl Prepared {
             parameter_registry: Default::default(),
             rate,
             pcm: pcm.into_boxed_slice(),
+            source_storage,
             buses: super::bus::PreparedBuses::default(),
             impulses: Vec::new(),
             voice_chains: super::dsp::PreparedChains::default(),
@@ -1362,8 +1388,8 @@ impl Prepared {
                         super::voice_mod::CompiledTarget::LoopStart
                             | super::voice_mod::CompiledTarget::LoopLength
                     )
-                ) && region.cursor.is_some_and(|c| !c.cursor(&self.cursor_loops)
-                    .supports_loop_control(self.pcm[region.sample].frame_count()))
+                ) && region.cursor.is_some_and(|c| self.source_storage(region.sample).is_none_or(|source|
+                    !c.cursor(&self.cursor_loops).supports_loop_control(source.frame_count())))
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -1532,7 +1558,26 @@ impl Prepared {
             }
     }
     pub fn sample_count(&self) -> usize {
-        self.pcm.len()
+        self.source_storage.as_ref().map_or(self.pcm.len(), |s| s.len())
+    }
+    /// Resolve a logical sample index. Physical family packs are never sample aliases.
+    pub fn source_storage(&self, sample: usize) -> Option<crate::SourceStorageRef<'_>> {
+        match &self.source_storage {
+            Some(sources) => sources.get(sample).map(crate::SourceStorage::as_source),
+            None => self.pcm.get(sample).map(crate::SourceStorageRef::Stereo),
+        }
+    }
+    pub fn region_source_storage(&self, region: usize) -> Option<crate::SourceStorageRef<'_>> {
+        self.source_storage(self.regions.get(region)?.sample)
+    }
+    /// Current undeclared region outlets are stereo. A later explicit scope signal
+    /// compiler supplies a matching wide outlet; storage packing is not that signal.
+    pub(super) fn validate_source_ports(&self) -> Result<(), Error> {
+        if self.regions.iter().any(|region| region.sample != DORMANT_SAMPLE
+            && self.source_storage(region.sample).is_some_and(|s| s.stereo().is_none())) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
+        Ok(())
     }
     pub fn region_count(&self) -> usize {
         self.regions.len()
@@ -1565,9 +1610,7 @@ impl Prepared {
 
     /// The immutable prepared sample asset behind a region, for control-side peak work.
     pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
-        self.regions
-            .get(region)
-            .and_then(|r| self.pcm.get(r.sample))
+        self.region_source_storage(region).and_then(crate::SourceStorageRef::stereo)
     }
 
     pub fn candidate_count(&self) -> usize {
@@ -1582,7 +1625,7 @@ impl Prepared {
                 if r.cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()) {
                     440. * 2048. / f64::from(self.rate) * super::pitch::ratio(semitones)
                 } else {
-                    self.pcm.get(r.sample).map_or(1., |pcm| f64::from(pcm.sample_rate()) / f64::from(self.rate))
+                    self.source_storage(r.sample).map_or(1., |source| f64::from(source.sample_rate()) / f64::from(self.rate))
                         * super::pitch::ratio(semitones)
                 }
             }
@@ -2053,6 +2096,7 @@ impl Prepared {
         chains: Vec<super::VoiceChain>,
         bindings: Vec<Option<usize>>,
     ) -> Result<Self, Error> {
+        self.validate_source_ports()?;
         if bindings.len() != self.regions.len()
             || self.processing_scopes.iter().any(|s| s.chain.is_some_and(|c| c >= chains.len()))
             || bindings
@@ -2109,6 +2153,7 @@ impl Prepared {
         buses: Vec<super::Bus>,
         bindings: Vec<Option<usize>>,
     ) -> Result<Self, Error> {
+        self.validate_source_ports()?;
         if bindings.len() != self.regions.len()
             || self.processing_scopes.iter().any(|s| s.bus.is_some_and(|b| b >= buses.len()))
             || bindings.iter().flatten().any(|i| *i >= buses.len())
@@ -2430,5 +2475,81 @@ mod publication_tests {
         publisher.join().unwrap();
         assert!(published, "publication must not block on the audio reader");
         assert_eq!(pcm.try_head().unwrap()[0].1.frame(0), [0.5; 2]);
+    }
+}
+
+
+#[cfg(test)]
+mod logical_source_tests {
+    use super::*;
+    use crate::{ChannelCount, Limits, SourceStorage, SourceStorageFamily};
+    fn pcm(value: f32) -> Pcm { Pcm::new(48000, vec![[value, -value]; 256].into_boxed_slice()).unwrap() }
+    fn region(sample: usize) -> Region {
+        Region { sample, key_low: 60, key_high: 60, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default() }
+    }
+    fn family() -> SourceStorageFamily {
+        SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), vec![pcm(1.), pcm(2.), pcm(3.)]).unwrap()
+    }
+    #[test]
+    fn logical_source_indices_do_not_address_physical_family_packs() {
+        let family = family(); let id = family.id(); let stereo = pcm(0.25); let stereo_id = stereo.asset_id();
+        let plan = Prepared::new_sources(48000, vec![family.into(), stereo.into()], vec![region(1)], 1).unwrap();
+        assert_eq!(plan.sample_count(), 2);
+        assert_eq!(plan.pcm.len(), 4); // complete physical dependencies, a different namespace
+        assert_eq!(plan.source_storage(0).unwrap().id(), id);
+        assert!(plan.source_storage(0).unwrap().stereo().is_none());
+        assert_eq!(plan.region_asset(0).unwrap().asset_id(), stereo_id);
+        assert_eq!(plan.region_source_storage(0).unwrap().stereo().unwrap().asset_id(), stereo_id);
+        assert!(plan.source_storage(2).is_none());
+        let samples = sample_revision::SampleState::new(&plan);
+        assert!(samples.asset(&plan, 0).is_none());
+        assert_eq!(samples.asset(&plan, 1).unwrap().asset_id(), stereo_id);
+        assert!(samples.asset(&plan, 2).is_none());
+    }
+    #[test]
+    fn unused_family_does_not_change_a_legacy_stereo_region_execution() {
+        let stereo = Pcm::new(44100, (0..256).map(|i| {
+            let x = i as f32 / 1024.; [x, -x]
+        }).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+        let normal = Prepared::new(48000, vec![stereo.clone()], vec![region(0)], 1).unwrap();
+        let mixed = Prepared::new_sources(48000, vec![family().into(), stereo.into()], vec![region(1)], 1).unwrap();
+        let a = Limits::for_plan(&normal, 4, 8); let b = Limits::for_plan(&mixed, 4, 8);
+        let mut a = crate::Runtime::new(normal, a).unwrap(); let mut b = crate::Runtime::new(mixed, b).unwrap();
+        let input = crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0, channel: 0,
+            key: 60, external_id: Some(1) };
+        a.trigger(input, 60, 1.).unwrap(); let note = b.trigger(input, 60, 1.).unwrap();
+        let before = (b.family_count(), b.voice_count());
+        assert_eq!(b.start(note, 0, b.now(), 1.), Err(Error::UnsupportedSourceLayout));
+        assert_eq!((b.family_count(), b.voice_count()), before);
+        let mut x = [[0.; 2]; 300]; let mut y = x;
+        a.render(&mut x).unwrap(); b.render(&mut y).unwrap();
+        assert_eq!(x.map(|f| f.map(f32::to_bits)), y.map(|f| f.map(f32::to_bits)));
+        assert!(x.iter().flatten().any(|v| *v != 0.));
+    }
+    #[test]
+    fn unprojected_family_outlets_cannot_publish_an_old_stereo_executor() {
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        assert_eq!(plan.validate_source_ports(), Err(Error::UnsupportedSourceLayout));
+        let limits = Limits::for_plan(&plan, 4, 8);
+        assert!(matches!(crate::Runtime::new(plan, limits), Err(Error::UnsupportedSourceLayout)));
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        assert!(matches!(plan.with_voice_chains(vec![], vec![None]), Err(Error::UnsupportedSourceLayout)));
+    }
+    #[test]
+    fn wide_residency_and_one_pcm_target_builders_refuse_before_ownership() {
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        assert!(matches!(plan.with_groups(1, vec![Some(0)]), Err(Error::UnsupportedSourceLayout)));
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        assert!(matches!(plan.with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
+            SampleRevisionLimits { slots: 1, resident_bytes: 4096 }), Err(Error::UnsupportedSourceLayout)));
+        let stereo = pcm(0.25); let stereo_id = stereo.asset_id();
+        let plan = Prepared::new_sources(48000, vec![family().into(), SourceStorage::Stereo(stereo)], vec![region(1)], 1).unwrap()
+            .with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
+                SampleRevisionLimits { slots: 1, resident_bytes: 4096 }).unwrap();
+        let limits = Limits::for_plan(&plan, 4, 8); let runtime = crate::Runtime::new(plan, limits).unwrap();
+        assert_eq!(runtime.sample_target_asset(SampleTargetId(1)).unwrap().asset_id(), stereo_id);
+        assert_eq!(runtime.sample_target_source_storage(SampleTargetId(1)).unwrap().stereo().unwrap().asset_id(), stereo_id);
     }
 }
