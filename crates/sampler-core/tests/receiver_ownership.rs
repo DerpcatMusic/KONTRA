@@ -61,3 +61,368 @@ fn deep_manual_child_retirement_is_bounded_and_performs_no_heap_work() {
     assert_eq!((rt.note_count(),rt.expression_count()),(0,0));
     assert_eq!(rt.expression(source),Err(Error::StaleHandle));
 }
+fn external_plan(note:bool)->Prepared {
+    use sampler_ir as ir;
+    use sampler_core::{Instruction as I,Program,WaitLifetime};
+    let processor=ir::SourceEventProcessorId::UviNode(11);
+    let owner=ir::SourceOwnerId::UviNode(10);
+    let mut instrument=ir::Instrument{
+        source:ir::SourceFormat::Uvi,
+        assets:vec![ir::Asset{location:ir::AssetLocation::Path("authored.wav".into()),encoding:ir::Encoding::Wav,
+            residency:Default::default(),root_key:None,loops:vec![]}],
+        zones:vec![ir::Zone{keys:ir::KeyRange{low:60,high:60},pitch:ir::KeyTracking::Fixed,
+            velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(0))}],
+        ..ir::Instrument::default()
+    };
+    instrument.source_indices.owners.push(ir::SourceOwner{id:owner,parent:None,kind:ir::SourceOwnerKind::Instrument,
+        children:vec![],groups:vec![],zones:vec![ir::ZoneRef(0)],predicates:vec![],bypass:None,mute:None,
+        event_processors:vec![ir::SourceEventProcessor{id:processor,owner,ordinal:0,kind:"ScriptProcessor".into(),
+            bypass:ir::SourceSwitch{saved:false,control:None}},
+            ir::SourceEventProcessor{id:ir::SourceEventProcessorId::UviNode(12),owner,ordinal:1,kind:"ScriptProcessor".into(),
+                bypass:ir::SourceSwitch{saved:false,control:None}}]});
+    let plan=sampler_core::lower::lower(&instrument,48000,
+        vec![Pcm::new(48000,Box::from([[0.25;2];4096])).unwrap()],|_,_|unreachable!("no source behaviors"))
+        .unwrap();
+    assert_eq!(plan.source_owners().rows().len(),1);
+    let index=plan.source_owner_index(owner).unwrap();
+    assert_eq!(plan.source_owners().get(index).unwrap().regions.as_ref(),[0]);
+    assert_eq!(plan.source_owners().processor(processor).unwrap().owner,index);
+    let program=Program::new(vec![I::AwaitExternal{processor},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback);
+    let plan=plan.with_programs(vec![program],note.then_some(0)).unwrap();
+    if note{plan}else{plan.with_controller_program(0).unwrap()}
+}
+fn external_runtime(note:bool)->Runtime {
+    let plan=external_plan(note);let limits=Limits::for_plan(&plan,16,16);
+    Runtime::new(plan,limits).unwrap()
+}
+
+#[test]
+fn external_controller_turn_consumes_or_transparently_posts_full_precision_once() {
+    use sampler_core::{ChannelAddress,ExternalEvent,ExternalOutput,ExternalOutputResult};
+    let mut rt=external_runtime(false);let perf=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    let value=0x8192_a5b7;
+    let callback=rt.dispatch_controller(perf,address,1<<13,1,value).unwrap().unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();
+    assert_eq!(turn.input.behavior(),callback);assert_eq!(turn.original_frame,0);assert_eq!(turn.resume_frame,0);
+    assert!(matches!(turn.event,ExternalEvent::Controller{source,number:1,value:v,poly_key:None}if source==address&&v==value));
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0);
+    rt.begin_external_turn(turn.input).unwrap();
+    assert_eq!(rt.post_external_output(turn.input,ExternalOutput::Original).unwrap(),ExternalOutputResult::Forwarded);
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),value);
+    rt.complete_external_segment(turn.input,None).unwrap();
+    assert!(rt.pending_external_turn().unwrap().is_none());
+    assert!(matches!(rt.begin_external_turn(turn.input),Err(Error::StaleHandle)));
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_5678).unwrap();
+    let consumed=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(consumed.input).unwrap();
+    rt.complete_external_segment(consumed.input,None).unwrap();
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),value,"defined external callback does not implicitly forward");
+    assert_eq!(rt.channel_input_controller(perf,address,1).unwrap(),0x1234_5678);
+}
+
+#[test]
+fn external_segment_wait_retains_real_creator_after_physical_keyup_and_posts_manual_voice() {
+    use sampler_core::{ExternalEvent,ExternalOutput,ExternalOutputResult};
+    let mut rt=external_runtime(true);
+    let original=input(91);let parent=rt.trigger(original,60,1.).unwrap();
+    let first=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(first.input).unwrap();
+    rt.complete_external_segment(first.input,Some(32)).unwrap();
+    rt.note_off_exact(parent,Some(0.)).unwrap();rt.flush_ended(|_|true);
+    assert!(rt.note(parent).is_ok(),"actual continuation owns note work through physical key-up");
+    let mut silence=[[7.;2];32];rt.render(&mut silence).unwrap();
+    assert!(silence.iter().all(|frame|*frame==[0.;2]));assert_eq!(rt.now(),32);
+    let next=rt.service_external_boundary().unwrap().unwrap();
+    assert_ne!(next.input,first.input);assert_eq!((next.original_frame,next.resume_frame),(0,32));
+    assert!(matches!(next.event,ExternalEvent::Note{note,source,..}if note==parent&&source==original));
+    assert!(matches!(rt.begin_external_turn(first.input),Err(Error::StaleHandle)));
+    rt.begin_external_turn(next.input).unwrap();
+    let child=match rt.post_external_output(next.input,ExternalOutput::Original).unwrap(){ExternalOutputResult::Note(child)=>child,_=>panic!("expected actual note")};
+    assert_ne!(child,parent);rt.complete_external_segment(next.input,None).unwrap();
+    assert!(!rt.note(parent).unwrap().2);assert!(rt.note(child).unwrap().2);
+    let mut output=[[0.;2];128];rt.render(&mut output).unwrap();
+    let reference_plan=external_plan(true).with_programs(vec![],None).unwrap();
+    let reference_limits=Limits::for_plan(&reference_plan,16,16);
+    let mut reference=Runtime::new(reference_plan,reference_limits).unwrap();
+    reference.trigger(input(92),60,1.).unwrap();
+    let mut reference_output=[[0.;2];128];reference.render(&mut reference_output).unwrap();
+    assert!(output.iter().any(|frame|frame[0]!=0.));
+    assert_eq!(output,reference_output,"late manual source must render the independently admitted ordinary source, not only be nonzero");
+    rt.key_up(child,None).unwrap();rt.render(&mut [[0.;2];128]).unwrap();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+}
+
+#[test]
+fn external_segment_wrong_sequence_and_rejected_future_ack_leave_the_real_turn_unchanged() {
+    let mut rt=external_runtime(false);let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi1,port:1,group:0,channel:2};
+    rt.dispatch_controller(perf,address,1<<2,11,0x9876_5432).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let before=(rt.now(),rt.channel_controller(perf,address,11).unwrap());
+    assert_eq!(rt.complete_external_segment(turn.input,Some(rt.now())),Err(Error::PastEvent));
+    assert_eq!((rt.now(),rt.channel_controller(perf,address,11).unwrap()),before);
+    assert_eq!(rt.pending_external_turn().unwrap().unwrap().input,turn.input);
+    rt.complete_external_segment(turn.input,None).unwrap();
+    rt.flush_behaviors(|_,_,_|true);
+    rt.dispatch_controller(perf,address,1<<2,11,0x1234_5678).unwrap();
+    let fresh=rt.pending_external_turn().unwrap().unwrap();assert_ne!(fresh.input,turn.input);
+    assert!(matches!(rt.begin_external_turn(turn.input),Err(Error::StaleHandle)));
+    rt.begin_external_turn(fresh.input).unwrap();rt.complete_external_segment(fresh.input,None).unwrap();
+}
+
+#[test]
+fn external_wait_capacity_refusal_preserves_current_turn_and_callback_has_no_heap_work() {
+    use sampler_core::{ChannelAddress,Event,ExternalOutput};
+    let mut rt=external_runtime(false);let perf=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:1,group:2,channel:3};
+    rt.dispatch_controller(perf,address,1<<3,1,0xa123_4567).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();
+    // Occupy the actual bounded scheduler through its ordinary public API.
+    let mut queued=0usize;
+    loop {
+        match rt.schedule_event(100,Event::Articulation(perf,0)) {
+            Ok(())=>{queued+=1;assert!(queued<1_000_000);}
+            Err(Error::Capacity)=>break,
+            Err(error)=>panic!("unexpected scheduler setup refusal: {error:?}"),
+        }
+    }
+    support::without_heap(||{
+        rt.begin_external_turn(turn.input).unwrap();
+        assert_eq!(rt.complete_external_segment(turn.input,Some(1)),Err(Error::Capacity));
+        assert_eq!(rt.now(),0);assert_eq!(rt.pending_external_turn().unwrap().unwrap().input,turn.input);
+        assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0);
+        rt.post_external_output(turn.input,ExternalOutput::Original).unwrap();
+        assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0xa123_4567);
+        rt.complete_external_segment(turn.input,None).unwrap();
+    });
+}
+
+#[test]
+fn external_capture_keeps_original_frame_after_native_wait_and_blocks_later_equal_frame_work() {
+    use sampler_core::{ChannelAddress,Event,Instruction as I,Program,WaitLifetime};
+    let wait=Program::new(vec![I::Wait(4),I::ForwardController,I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback);
+    let external=Program::new(vec![I::AwaitExternal{processor:sampler_ir::SourceEventProcessorId::UviNode(11)},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback);
+    let plan=external_plan(false).with_programs(vec![wait,external],None).unwrap().with_controller_programs(vec![0,1]).unwrap();
+    let limits=Limits::for_plan(&plan,16,16);let mut rt=Runtime::new(plan,limits).unwrap();
+    let perf=rt.performance(0).unwrap();let address=ChannelAddress{protocol:Protocol::Midi2,port:3,group:1,channel:6};
+    rt.dispatch_controller(perf,address,1<<6,1,0x8765_4321).unwrap();
+    rt.schedule_event(4,Event::Controller(perf,11,0x1234_5678)).unwrap();
+    rt.render(&mut [[0.;2];4]).unwrap();assert_eq!(rt.now(),4);
+    let turn=rt.service_external_boundary().unwrap().unwrap();
+    assert_eq!((turn.original_frame,turn.resume_frame),(0,4));
+    assert_eq!(rt.next_scheduled_frame(),Some(4),"later equal-time operation must remain in its real queue");
+    assert_eq!(rt.controller(perf,11).unwrap(),u32::MAX);
+    rt.begin_external_turn(turn.input).unwrap();
+    assert_eq!(rt.service_external_boundary().unwrap().unwrap().input,turn.input);
+    assert_eq!(rt.controller(perf,11).unwrap(),u32::MAX);
+    rt.complete_external_segment(turn.input,None).unwrap();
+    assert!(rt.service_external_boundary().unwrap().is_none());
+    assert_eq!(rt.controller(perf,11).unwrap(),0x1234_5678);
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0,"unposted original remains consumed");
+}
+
+#[test]
+fn external_intentional_repeated_original_posts_have_distinct_real_next_stage_owners() {
+    use sampler_core::{ChannelAddress,ExternalEvent,ExternalOutput,Instruction as I,Program,WaitLifetime};
+    let programs=[11,12].map(|id|Program::new(vec![I::AwaitExternal{processor:sampler_ir::SourceEventProcessorId::UviNode(id)},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback)).to_vec();
+    let plan=external_plan(false).with_programs(programs,None).unwrap().with_controller_programs(vec![0,1]).unwrap();
+    let limits=Limits::for_plan(&plan,16,16);let mut rt=Runtime::new(plan,limits).unwrap();
+    let perf=rt.performance(0).unwrap();let address=ChannelAddress{protocol:Protocol::Midi2,port:4,group:2,channel:7};
+    let value=0x9234_b5c6;rt.dispatch_controller(perf,address,1<<7,1,value).unwrap();
+    let first=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(first.input).unwrap();
+    rt.post_external_output(first.input,ExternalOutput::Original).unwrap();
+    rt.post_external_output(first.input,ExternalOutput::Original).unwrap();
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0,"neither downstream callback has forwarded");
+    rt.complete_external_segment(first.input,None).unwrap();
+    let a=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(a.input).unwrap();
+    assert_eq!(a.processor,sampler_ir::SourceEventProcessorId::UviNode(12));
+    assert!(matches!(a.event,ExternalEvent::Controller{source,value:v,..}if source==address&&v==value));
+    rt.complete_external_segment(a.input,None).unwrap();
+    let b=rt.pending_external_turn().unwrap().unwrap();assert_ne!(a.input,b.input);
+    assert_ne!(a.input.behavior(),b.input.behavior(),"each intentional post owns actual bounded continuation capacity");
+    rt.begin_external_turn(b.input).unwrap();rt.post_external_output(b.input,ExternalOutput::Original).unwrap();
+    rt.complete_external_segment(b.input,None).unwrap();
+    assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!(rt.channel_controller(perf,address,1).unwrap(),value);
+}
+#[test]
+fn pending_external_turn_refuses_pcm_before_output_clock_or_cursor_advance() {
+    use sampler_core::{ExternalOutput,ExternalOutputResult};
+    let mut rt=external_runtime(true);let parent=rt.trigger(input(201),60,1.).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();
+    let before=(rt.now(),rt.note(parent).unwrap(),rt.expression(rt.expression_id(parent).unwrap()).unwrap());
+    let mut output=[[71.;2];16];
+    support::without_heap(||{
+        assert_eq!(rt.external_render_frames(16),Err(Error::Busy));
+        assert_eq!(rt.render(&mut output),Err(Error::Busy));
+        assert_eq!(output,[[71.;2];16]);
+        assert_eq!((rt.now(),rt.note(parent).unwrap(),rt.expression(rt.expression_id(parent).unwrap()).unwrap()),before);
+        rt.begin_external_turn(turn.input).unwrap();
+        let child=match rt.post_external_output(turn.input,ExternalOutput::Original).unwrap(){ExternalOutputResult::Note(note)=>note,_=>panic!("actual note expected")};
+        assert_eq!(rt.render(&mut output),Err(Error::Busy));assert_eq!(output,[[71.;2];16]);
+        assert_eq!(rt.now(),0);assert_eq!(rt.note(child).unwrap().0,60);
+        rt.complete_external_segment(turn.input,None).unwrap();
+        rt.render(&mut output).unwrap();assert_eq!(rt.now(),16);
+    });
+    let reference_plan=external_plan(true).with_programs(vec![],None).unwrap();
+    let limits=Limits::for_plan(&reference_plan,16,16);let mut reference=Runtime::new(reference_plan,limits).unwrap();
+    reference.trigger(input(202),60,1.).unwrap();let mut expected=[[0.;2];16];reference.render(&mut expected).unwrap();
+    assert_eq!(output,expected,"Busy attempts must not consume one source/envelope sample");
+}
+
+#[test]
+fn external_render_prefix_stops_before_real_due_frame_and_zero_frame_phase_discovers_turn() {
+    use sampler_core::{ChannelAddress,Instruction as I,Program,WaitLifetime};
+    let program=Program::new(vec![I::Wait(1),I::AwaitExternal{processor:sampler_ir::SourceEventProcessorId::UviNode(11)},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback);
+    let plan=external_plan(false).with_programs(vec![program],None).unwrap().with_controller_program(0).unwrap();
+    let limits=Limits::for_plan(&plan,16,16);let mut rt=Runtime::new(plan,limits).unwrap();
+    let perf=rt.performance(0).unwrap();let address=ChannelAddress{protocol:Protocol::Midi2,port:2,group:4,channel:9};
+    rt.dispatch_controller(perf,address,1<<9,1,0x8765_4321).unwrap();
+    assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!(rt.external_render_frames(8).unwrap(),1);
+    let mut full=[[37.;2];8];assert_eq!(rt.render(&mut full),Err(Error::Busy));
+    assert_eq!(rt.now(),0);assert_eq!(full,[[37.;2];8]);
+    let mut prefix=[[0.;2];1];rt.render(&mut prefix).unwrap();assert_eq!(rt.now(),1);
+    assert_eq!(rt.render(&mut []),Err(Error::Busy),"zero-frame startup/due phase must expose Await without advancing PCM");
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!((turn.original_frame,turn.resume_frame),(0,1));
+    rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    assert_eq!(rt.external_render_frames(8).unwrap(),8);rt.render(&mut full).unwrap();assert_eq!(rt.now(),9);
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0);
+}
+fn external_physical_receiver(rt:&mut Runtime,notes:usize)->sampler_core::ReceiverId {
+    let mut receiver=sampler_core::OwnedReceiver::new(rt,0,0,sampler_core::ReceiverZone::Lower,15,notes).unwrap();
+    receiver.enable_host_channel_projection().unwrap();rt.bind_receiver(receiver).unwrap()
+}
+fn physical_native(id:i32)->(Input,Input){
+    (Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(id)},
+     Input{protocol:Protocol::Clap,port:7,group:3,channel:13,key:60,external_id:Some(id)})
+}
+fn physical_raw()->Input{Input{protocol:Protocol::Midi1,port:0,group:0,channel:1,key:60,external_id:None}}
+fn raw_off(rt:&mut Runtime,receiver:sampler_core::ReceiverId,source:Input){
+    use sampler_core::{ReceiverAttribute,ReceiverChannelVoice,ReceiverMessage,ReceiverValue,ReceiverVersion};
+    rt.apply_receiver(receiver,Some(ReceiverChannelVoice{version:ReceiverVersion::Midi1,group:0,channel:source.channel,
+        message:ReceiverMessage::NoteOff{key:60,velocity:Some(ReceiverValue::Bits7(0)),attribute:ReceiverAttribute{kind:0,data:0}}}),true,Some(source)).unwrap();
+}
+
+#[test]
+fn physical_event_retains_the_real_old_plan_after_note_end_and_creates_a_plan_owned_release_turn(){
+    use sampler_core::{ExternalEvent,ExternalOutput,ExternalOutputResult,NotePitch};
+    let old=external_plan(false);let limits=Limits::for_plan(&old,16,16);
+    let (rt,mut control)=Runtime::with_plan_updates(old,limits,2,1).unwrap();
+    let mut rt=rt.with_receiver_capacity(1).unwrap();let receiver=external_physical_receiver(&mut rt,4);
+    let old_plan=rt.active_plan();let (execution,source)=physical_native(701);
+    let note=rt.trigger_receiver(receiver,0,execution,Some(source),1.,0.,true).unwrap();
+    assert_eq!(rt.plan_physical_event_count(old_plan),Ok(1));
+    rt.cancel_input_note(note).unwrap();let mut ended=0;rt.flush_ended(|input|{assert_eq!(input,execution);ended+=1;true});
+    assert_eq!(ended,1,"physical debt must NOT delay actual note-end");assert!(matches!(rt.note(note),Err(Error::StaleHandle)));
+    let replacement=external_plan(false).with_programs(vec![],None).unwrap();
+    let request=control.submit(Box::new(replacement)).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+    assert_ne!(rt.active_plan(),old_plan);assert_eq!(rt.collect_retired_plans(),0);
+    assert_eq!(rt.release_receiver_native(receiver,|id,input|id==note&&input==source,Some(0.25)),Ok(1));
+    assert!(rt.receiver_has_native_note(receiver,note),"the exact pending receipt still owns its callback suppression");
+    let delivery=rt.next_receiver_terminal(receiver).unwrap().unwrap();
+    assert_eq!((delivery.release.note,delivery.release.source,delivery.release.velocity),(note,source,Some(0.25)));
+    assert_eq!(rt.receiver_terminal_plan(delivery),Ok(Some(old_plan)));
+    assert_eq!(rt.plan_physical_event_count(old_plan),Ok(1),"row reference transfers into receipt, never copied on actual Off");
+    let behavior=rt.start_receiver_release_behavior(delivery,0,0).unwrap();
+    assert_eq!(rt.start_receiver_release_behavior(delivery,0,0),Err(Error::Busy));
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),behavior);assert_eq!(turn.plan,old_plan);
+    match turn.event {ExternalEvent::PhysicalRelease(event)=>{assert_eq!(event.plan,old_plan);assert_eq!(event.source,source);assert_eq!(event.execution,execution);assert_eq!(event.velocity,Some(0.25));},_=>panic!("release is a new physical Event creator, not a stale Note creator")}
+    rt.complete_receiver_terminal(delivery).unwrap();assert_eq!(rt.plan_physical_event_count(old_plan),Ok(0));
+    assert_eq!(rt.collect_retired_plans(),0,"actual generation callback owns the plan after receipt ACK");
+    rt.begin_external_turn(turn.input).unwrap();
+    let child=match rt.post_external_output(turn.input,ExternalOutput::Note{pitch:NotePitch::Key(60),velocity:1.}).unwrap(){ExternalOutputResult::Note(note)=>note,_=>panic!()};
+    assert_eq!(rt.note_plan(child),Ok(old_plan));rt.complete_external_segment(turn.input,None).unwrap();
+    let mut actual=[[0.;2];128];rt.render(&mut actual).unwrap();
+    let reference_plan=external_plan(false).with_programs(vec![],None).unwrap();let reference_limits=Limits::for_plan(&reference_plan,16,16);
+    let mut reference=Runtime::new(reference_plan,reference_limits).unwrap();reference.trigger(input(702),60,1.).unwrap();
+    let mut expected=[[0.;2];128];reference.render(&mut expected).unwrap();assert_eq!(actual,expected,"plan-owned late play must equal ordinary real source PCM");
+    rt.release(child).unwrap();rt.render(&mut [[0.;2];128]).unwrap();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+    assert_eq!(rt.collect_retired_plans(),1);assert!(matches!(rt.plan_physical_event_count(old_plan),Err(Error::StaleHandle)));
+    assert_eq!(rt.complete_receiver_terminal(delivery),Err(Error::StaleHandle));
+    assert!(matches!(rt.start_receiver_release_behavior(delivery,0,0),Err(Error::StaleHandle)));
+}
+
+#[test]
+fn pending_real_physical_event_blocks_pcm_and_explicit_dead_owner_cancel_releases_only_its_plan_ref(){
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,4,4);let mut rt=Runtime::new(plan,limits).unwrap().with_receiver_capacity(1).unwrap();
+    let receiver=external_physical_receiver(&mut rt,2);let plan=rt.active_plan();let (execution,source)=physical_native(801);
+    let note=rt.trigger_receiver(receiver,0,execution,Some(source),1.,0.,true).unwrap();
+    rt.cancel_input_note(note).unwrap();rt.flush_ended(|_|true);rt.release_receiver_native(receiver,|_,input|input==source,Some(0.)).unwrap();
+    let mut sentinel=[[19.;2];8];let now=rt.now();
+    support::without_heap(||{
+        assert_eq!(rt.render(&mut sentinel),Err(Error::Busy));assert_eq!(sentinel,[[19.;2];8]);assert_eq!(rt.now(),now);
+        let delivery=rt.next_receiver_terminal(receiver).unwrap().unwrap();
+        assert_eq!(rt.start_receiver_release_behavior(delivery,usize::MAX,0),Err(Error::InvalidInput));
+        assert_eq!(rt.plan_physical_event_count(plan),Ok(1));
+        rt.cancel_receiver_physical_event(delivery).unwrap();assert_eq!(rt.plan_physical_event_count(plan),Ok(0));
+        assert_eq!(rt.cancel_receiver_physical_event(delivery),Err(Error::StaleHandle));
+        rt.render(&mut sentinel).unwrap();assert_eq!(sentinel,[[0.;2];8]);
+    });
+}
+
+#[test]
+fn physical_event_terminal_union_capacity_refuses_before_any_new_row_or_core_gate_changes(){
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,8,8);let mut rt=Runtime::new(plan,limits).unwrap().with_receiver_capacity(1).unwrap();
+    let receiver=external_physical_receiver(&mut rt,1);let plan=rt.active_plan();let raw=physical_raw();
+    let (execution,source)=physical_native(901);
+    let first=rt.trigger_receiver(receiver,0,execution,Some(source),1.,0.,true).unwrap();
+    let raw_first=rt.trigger_receiver(receiver,1,raw,None,1.,0.,true).unwrap();
+    assert_eq!(rt.queue_receiver_all_releases(receiver),Ok(2));
+    rt.release_receiver_native(receiver,|_,input|input==source,None).unwrap();raw_off(&mut rt,receiver,raw);
+    assert_eq!(rt.plan_physical_event_count(plan),Ok(2),"two queued receipts remain after actual row acknowledgment");
+    let (execution2,source2)=physical_native(902);
+    let second=rt.trigger_receiver(receiver,0,execution2,Some(source2),1.,0.,true).unwrap();
+    let raw_second=rt.trigger_receiver(receiver,1,raw,None,1.,0.,true).unwrap();
+    let before=(rt.now(),rt.note_count(),rt.plan_physical_event_count(plan));
+    support::without_heap(||{
+        assert_eq!(rt.queue_receiver_all_releases(receiver),Err(Error::Capacity));
+        assert_eq!((rt.now(),rt.note_count(),rt.plan_physical_event_count(plan)),before);
+        assert!(rt.note(second).unwrap().2&&rt.note(raw_second).unwrap().2);
+        let a=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(a.release.note,first);rt.cancel_receiver_physical_event(a).unwrap();
+        let b=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(b.release.note,raw_first);rt.cancel_receiver_physical_event(b).unwrap();
+        assert_eq!(rt.queue_receiver_all_releases(receiver),Ok(2));
+        assert_eq!(rt.plan_physical_event_count(plan),Ok(4),"synthetic copy owns a separate checked plan ref beside each physical row");
+        rt.release_receiver_native(receiver,|_,input|input==source2,None).unwrap();raw_off(&mut rt,receiver,raw);
+        assert_eq!(rt.plan_physical_event_count(plan),Ok(2));
+        for _ in 0..2{let delivery=rt.next_receiver_terminal(receiver).unwrap().unwrap();rt.cancel_receiver_physical_event(delivery).unwrap();}
+        assert_eq!(rt.plan_physical_event_count(plan),Ok(0));assert!(rt.next_receiver_terminal(receiver).unwrap().is_none());
+    });
+}
+#[test]
+fn fatal_external_execution_never_advances_or_replays_and_real_terminal_plan_debt_still_drains(){
+    use sampler_core::{Event,ExternalOutput,ExternalOutputResult,NotePitch};
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,8,8);
+    let mut rt=Runtime::new(plan,limits).unwrap().with_receiver_capacity(1).unwrap();let receiver=external_physical_receiver(&mut rt,4);
+    let plan=rt.active_plan();let (execution,source)=physical_native(1001);
+    let parent=rt.trigger_receiver(receiver,0,execution,Some(source),1.,0.,true).unwrap();
+    rt.start_behavior(parent,0).unwrap();let attack=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(attack.input).unwrap();
+    let child=match rt.post_external_output(attack.input,ExternalOutput::Note{pitch:NotePitch::Key(60),velocity:1.}).unwrap(){ExternalOutputResult::Note(note)=>note,_=>panic!()};
+    rt.complete_external_segment(attack.input,Some(32)).unwrap();assert!(rt.voice_count()>0);
+    rt.release_receiver_native(receiver,|_,input|input==source,Some(1.)).unwrap();
+    let delivery=rt.next_receiver_terminal(receiver).unwrap().unwrap();rt.start_receiver_release_behavior(delivery,0,0).unwrap();
+    let release=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(release.input).unwrap();
+    let recovered=rt.active_receiver_terminal(receiver).unwrap().unwrap();
+    assert_eq!(recovered.release.note,delivery.release.note);assert_eq!(recovered.release.source,delivery.release.source);
+    let
+perf=rt.performance(0).unwrap();let before=rt.now();
+    support::without_heap(||{
+        let report=rt.abort_external_execution();assert_eq!((report.callbacks_cancelled,report.external_turns_cancelled),(2,2));
+        assert!(rt.external_execution_aborted());assert_eq!(rt.now(),before);assert_eq!(rt.voice_count(),0);
+        assert_eq!(rt.abort_external_execution().callbacks_cancelled,0);
+        assert_eq!(rt.external_render_frames(128),Err(Error::Canceled));
+        let mut sentinel=[[23.;2];128];assert_eq!(rt.render(&mut sentinel),Err(Error::Canceled));assert_eq!(sentinel,[[23.;2];128]);assert_eq!(rt.now(),before);
+        assert!(matches!(rt.pending_external_turn(),Err(Error::Canceled)));
+        assert!(matches!(rt.post_external_output(attack.input,ExternalOutput::Original),Err(Error::Canceled)));
+        assert_eq!(rt.complete_external_segment(release.input,None),Err(Error::Canceled));
+        assert_eq!(rt.schedule_event(64,Event::Articulation(perf,1)),Err(Error::Canceled));
+        let (new_execution,new_source)=physical_native(1002);
+        assert_eq!(rt.trigger_receiver(receiver,0,new_execution,Some(new_source),1.,0.,true),Err(Error::Canceled));
+        assert_eq!(rt.start(child,0,before,1.),Err(Error::Canceled));
+        // A real already-started physical receipt is still ACKable after its
+        // actual callback is cancelled. No fake key-up or note ID is fabricated.
+        rt.cancel_receiver_physical_event(recovered).unwrap();assert_eq!(rt.plan_physical_event_count(plan),Ok(0));
+        assert!(rt.active_receiver_terminal(receiver).unwrap().is_none());
+        assert_eq!(rt.cancel_receiver_physical_event(delivery),Err(Error::StaleHandle));
+        rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+        assert_eq!(rt.note_count(),0);assert_eq!(rt.receiver(receiver).unwrap().native_physical_slots(),0);
+        assert!(rt.next_receiver_terminal(receiver).unwrap().is_none());
+        assert_eq!(rt.now(),before);
+    });
+}

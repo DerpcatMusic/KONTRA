@@ -200,6 +200,7 @@ impl Runtime {
         if outs.iter().any(|o| o.len() < output.len()) {
             return Err(Error::InvalidInput);
         }
+        self.validate_external_render_prefix(output.len())?;
         let start = std::time::Instant::now();
         self.stream_fault = None;
         if self.signal_trace {
@@ -225,7 +226,11 @@ impl Runtime {
             .now
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
-        output.fill([0.0; 2]);
+        let external=self.has_external_programs();
+        // Preserve the old no-external output/error order exactly. An external
+        // prefix services current-frame work before touching PCM, so a newly
+        // discovered turn can return Busy at the SAME sample frame.
+        if !external {output.fill([0.0; 2]);}
         let _ = self.poll_sample_update();
         self.start_plan_programs();
         self.service_residency()?;
@@ -233,9 +238,14 @@ impl Runtime {
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();
+        if external {
+            self.validate_external_render_prefix(output.len())?;
+            output.fill([0.0;2]);
+        }
         let mut offset = 0;
         while self.now < end {
             self.apply_due();
+            if external && self.external_clock_blocked(){return Err(Error::Busy);}
             let boundary = self.commands.first().map_or(end, |c| c.at.min(end));
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
