@@ -18,7 +18,7 @@ impl Zone {
         }
     }
     fn contains(self, channel: u8, members: u8) -> bool {
-        channel.abs_diff(self.manager()) <= members
+        channel < 16 && channel.abs_diff(self.manager()) <= members
     }
 }
 
@@ -27,6 +27,8 @@ struct Binding {
     note: NoteId,
     channel: u8,
     member: Controls,
+    /// Transport's per-note tuning, independent of zone bends and part transpose.
+    tuning: f64,
 }
 
 /// Pressure and timbre at 32 bits (MIDI 1.0 values upscaled, MIDI 2.0 as sent).
@@ -313,6 +315,7 @@ impl Mpe {
                     velocity.normalized()
                 },
                 silent,
+                0.0,
             )?),
             Message::NoteOff {
                 key,
@@ -437,22 +440,67 @@ impl Mpe {
     /// reach it. `input` must lie in this zone's MIDI 1.0 port and group for
     /// pedals to hold it; its `external_id` keeps it distinct from wire notes.
     pub fn trigger(
-        &mut self,
-        runtime: &mut Runtime,
-        channel: u8,
-        input: Input,
-        velocity: f64,
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64,
     ) -> Result<NoteId, ApplyError> {
-        if runtime.id() != self.runtime {
-            return Err(Error::StaleHandle.into());
-        }
-        if !self.zone.contains(channel, self.members) {
+        self.trigger_with_attack(runtime, channel, input, velocity, 0.0, false)
+    }
+
+    /// Host-owned attack with its initial per-note tuning, composed independently
+    /// with member/manager bends and the part's transpose.
+    pub fn trigger_with_tuning(
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64, tuning: f64,
+    ) -> Result<NoteId, ApplyError> {
+        self.trigger_with_attack(runtime, channel, input, velocity, tuning, false)
+    }
+
+    /// Host-owned physical gate whose authored script will select the attack.
+    pub fn trigger_silent(
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64,
+    ) -> Result<NoteId, ApplyError> {
+        self.trigger_with_attack(runtime, channel, input, velocity, 0.0, true)
+    }
+
+    /// The same silent host admission with initial native note tuning present
+    /// before the authored script can create expression-linked child notes.
+    pub fn trigger_silent_with_tuning(
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64, tuning: f64,
+    ) -> Result<NoteId, ApplyError> {
+        self.trigger_with_attack(runtime, channel, input, velocity, tuning, true)
+    }
+
+    fn trigger_with_attack(
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64,
+        tuning: f64, silent: bool,
+    ) -> Result<NoteId, ApplyError> {
+        if runtime.id() != self.runtime { return Err(Error::StaleHandle.into()); }
+        if !self.zone.contains(channel, self.members) || !tuning.is_finite() {
             return Err(Error::InvalidInput.into());
         }
         runtime.render(&mut [])?;
-        self.bindings
-            .retain(|binding| runtime.note(binding.note).is_ok());
-        Ok(self.admit(runtime, channel, input, velocity, false)?)
+        self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
+        Ok(self.admit(runtime, channel, input, velocity, silent, tuning)?)
+    }
+
+    /// Update one exact host note's retained tuning component. Later member or
+    /// manager bends preserve it; this never retargets another note on a reused
+    /// channel, and all unrelated expression dimensions remain unchanged.
+    pub fn set_note_tuning(
+        &mut self, runtime: &mut Runtime, note: NoteId, tuning: f64,
+    ) -> Result<(), Error> {
+        if runtime.id() != self.runtime { return Err(Error::StaleHandle); }
+        if !tuning.is_finite() { return Err(Error::InvalidInput); }
+        runtime.render(&mut [])?;
+        self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
+        let index = self.bindings.iter().position(|binding| binding.note == note)
+            .ok_or(Error::StaleHandle)?;
+        let binding = self.bindings[index];
+        let combined = binding.member.expression(self.controls[usize::from(self.zone.manager())]);
+        let owner = runtime.expression_id(note)?;
+        let mut expression = runtime.expression(owner)?;
+        expression.pitch_semitones = combined.pitch_semitones + self.transpose + tuning;
+        runtime.set_expression(owner, expression)?;
+        self.bindings[index].tuning = tuning;
+        Ok(())
     }
 
     /// Offset every note of the zone, held or not, by `semitones` on top of its
@@ -485,7 +533,9 @@ impl Mpe {
         input: Input,
         velocity: f64,
         silent: bool,
+        tuning: f64,
     ) -> Result<NoteId, Error> {
+        if !tuning.is_finite() { return Err(Error::InvalidInput); }
         if self.bindings.len() == self.limit {
             return Err(Error::Capacity);
         }
@@ -496,6 +546,7 @@ impl Mpe {
         };
         let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
         expression.pitch_semitones += self.transpose;
+        expression.pitch_semitones += tuning;
         let note = if silent {
             runtime.note_on_pitched_in(
                 self.performance,
@@ -517,6 +568,7 @@ impl Mpe {
             note,
             channel,
             member,
+            tuning,
         });
         Ok(note)
     }
@@ -569,6 +621,7 @@ impl Mpe {
                 };
                 let mut combined = member.expression(manager_controls);
                 combined.pitch_semitones += self.transpose;
+                combined.pitch_semitones += binding.tuning;
                 // Each gesture owns only its dimension. Preserve native gain,
                 // pan and all expression fields not addressed by this control.
                 match control {
