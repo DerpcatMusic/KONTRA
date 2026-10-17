@@ -307,6 +307,7 @@ impl Runtime {
                     }
                     super::BehaviorOwner::Plan(_) => match callback.context {
                         super::behavior::PlanContext::Controller(event)=>event.origin==address,
+                        super::behavior::PlanContext::Program(event)=>event.origin==address,
                         super::behavior::PlanContext::NoteControllers(context)=>context.origin==address,
                         // Parameter/signal fanout preserves captured physical epochs
                         // inside Control. Global startup/widget Control stays alive.

@@ -11,6 +11,8 @@ pub struct Stage {
     /// Polyphonic aftertouch has its own callback and captured key, while
     /// retaining the same ordered, suppressible input-event ownership.
     pub poly_at: Option<usize>,
+    /// A true channel Program Change callback, independent of CC callbacks.
+    pub program_change: Option<usize>,
 }
 
 impl Prepared {
@@ -33,6 +35,7 @@ impl Prepared {
                         p.requires_note || p.wait_lifetime != WaitLifetime::Callback
                     })
                 })
+                || stage.program_change.is_some_and(|id| self.programs.get(id).is_none_or(|p|p.requires_note||p.requires_controller||p.wait_lifetime!=WaitLifetime::Callback))
             {
                 return Err(Error::InvalidInput);
             }
@@ -182,6 +185,7 @@ mod tests {
                 release: Some(1),
                 controller: Some(2),
                 poly_at: None,
+                program_change: None,
             }]
         );
         let plan = plan.with_controller_programs(vec![]).unwrap();
@@ -192,6 +196,7 @@ mod tests {
                 release: Some(1),
                 controller: None,
                 poly_at: None,
+                program_change: None,
             }]
         );
         for stage in [

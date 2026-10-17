@@ -1027,6 +1027,7 @@ pub(super) enum PlanContext {
     Bare,
     NoteControllers(NoteControllerContext),
     Controller(super::controller_event::ControllerEvent),
+    Program(super::receiver::channel_event::ProgramEvent),
     Control(super::control::ControlEvent),
 }
 impl PlanContext {
@@ -1036,6 +1037,7 @@ impl PlanContext {
             Self::Control(event)=>event.receiver.map(|capture|capture.receiver),
             Self::NoteControllers(context)=>context.receiver,
             Self::Controller(event)=>event.receiver.map(|target|target.receiver),
+            Self::Program(event)=>event.receiver,
         }
     }
     pub(super) fn stage(self) -> Option<usize> {
@@ -1043,6 +1045,7 @@ impl PlanContext {
             Self::Bare => None,
             Self::NoteControllers(context)=>Some(context.stage),
             Self::Controller(event) => Some(event.stage),
+            Self::Program(event) => Some(event.stage),
             Self::Control(event) => Some(event.stage),
         }
     }
@@ -2666,7 +2669,12 @@ outcome.is_none()
             }
             Instruction::StartProgram { program } => {
                 let plan = self.behavior_plan(owner)?;
-                let context = self.behaviors.get(id.0).unwrap().context;
+                let context = match self.behaviors.get(id.0).unwrap().context {
+                    // A fork inherits provenance/epochs, never ownership of its
+                    // parent's already-reserved original forwarding path.
+                    PlanContext::Program(event)=>PlanContext::Program(crate::receiver::channel_event::ProgramEvent{pending:false,reserved:0,..event}),
+                    context=>context,
+                };
                 match self.start_plan_context(plan, program as usize, context) {
                     Ok(_) | Err(Error::Capacity) => {}
                     Err(error) => return Err(error),
@@ -3034,6 +3042,8 @@ outcome.is_none()
                 let (origin, performance) = if let PlanContext::Controller(event) = callback.context
                 {
                     (event.origin, event.performance)
+                } else if let PlanContext::Program(event) = callback.context {
+                    (event.origin,event.performance)
                 } else if let PlanContext::Control(event) = callback.context {
                     (event.origin, event.performance)
                 } else if let PlanContext::NoteControllers(context)=callback.context {

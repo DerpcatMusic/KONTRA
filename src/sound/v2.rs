@@ -4,7 +4,8 @@
 //! Wired: host notes (exact CLAP/VST3 ownership and NOTE_END, layered parts)
 //! with per-note tuning, gain, pan, pressure and brightness; MIDI 1.0 and 2.0
 //! channel voice packets (notes, sustain and sostenuto, controllers, pitch bend
-//! with RPN sensitivity, channel and polyphonic pressure, all notes/sound off);
+//! with RPN sensitivity, channel and polyphonic pressure, bank/program selection
+//! state, all notes/sound off);
 //! the mixer's part gain, pan, tune, mute, solo, output pair and aux send, pair
 //! faders, peaks and the scope tap; every tree node's gain, pan, mute, solo and
 //! output (its parent or a DAW pair). Loading: Kontakt instruments through
@@ -16,8 +17,8 @@
 //! A part plays its MIDI on the zone's manager channel, or as an MPE lower
 //! zone with member channels at its bend range.
 //!
-//! Not yet: per-note controllers and program changes without a selector (counted), a sample-rate change
-//! without reloading.
+//! Not yet: a factory preset catalog behind Program Change, every per-note
+//! controller, or a sample-rate change without reloading.
 
 use anyhow::{Context, ensure};
 mod uvi_meters;
@@ -1620,9 +1621,9 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
     if !articulated(part, words) {
         return;
     }
-    // Program selectors consume this above; the note adapter has no program sink.
-    if words[0] & 0x00f0_0000 == 0x00c0_0000 {
-        if !already_selected { part.problems.ignored_input += 1; }
+    // An aligned Program selector was already consumed by its captured
+    // articulation action. Other Program packets now have a real Core sink.
+    if already_selected && words[0] & 0x00f0_0000 == 0x00c0_0000 {
         return;
     }
     let source_word = words[0];
@@ -5272,11 +5273,13 @@ mod tests {
         }
         assert_eq!(ended, [note]);
         core.event(0, Event::Ump([0x40c3_0000, 0]));
-        assert_eq!(
-            core.problems(0).ignored_input,
-            1,
-            "program change is counted, not dropped silently"
-        );
+        let part=core.parts[0].as_ref().unwrap();
+        let address=sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi2,port:WIRE.port,group:0,channel:3};
+        assert_eq!(part.runtime.program_selection(part.runtime.performance(0).unwrap(),address).unwrap(),Some(sampler_core::ProgramSelection{program:0,bank:[0,0]}));
+        assert_eq!(core.problems(0).ignored_input,0,"accepted Program selection is real state, not an unsupported input");
+        // A genuinely unsupported relative registered control remains visible.
+        core.event(0,Event::Ump([0x4043_0000,1]));
+        assert_eq!(core.problems(0).ignored_input,1);
     }
 
     #[test]
@@ -7884,8 +7887,8 @@ mod tests {
     #[cfg(feature = "library-access")]
     fn uvi_program_change_callbacks_decode_each_wire_format_at_the_real_product_boundary() {
         // The callback creates a source-bearing child whose note and velocity
-        // encode the documented program and physical channel fields. No fake
-        // preset selector is installed: the unchanged Core refusal is checked.
+        // encode the documented program and physical channel fields. Accepted
+        // Core selection state does not invent a factory preset reload.
         for (event, expected_program, expected_channel) in [
             (Event::midi1(0xc4, 12, 0), 12u8, 4u8),
             (Event::Ump([0x40ca_0500, 0x1f00_0304]), 31, 10),
@@ -7934,7 +7937,14 @@ mod tests {
             assert_eq!(key, 48 + expected_program, "reserved first-word bytes cannot supply the MIDI 2.0 program");
             assert_eq!(velocity, f64::from(101 + expected_channel) / 127.);
             assert!(core.held.is_empty(), "script output is not a fabricated physical key press");
-            assert_eq!(core.problems(0).ignored_input, 1, "the original program still has no Core preset selector");
+            assert_eq!(core.problems(0).ignored_input, 0, "the receiver accepts selection state without inventing a preset reload");
+            let part=core.parts[0].as_ref().unwrap();
+            let protocol=if expected_program==12 {sampler_core::Protocol::Midi1}else{sampler_core::Protocol::Midi2};
+            let address=sampler_core::ChannelAddress{protocol,port:WIRE.port,group:0,
+                channel:if protocol==sampler_core::Protocol::Midi1{part.mpe.manager_channel()}else{expected_channel}};
+            let bank=if expected_channel==15{[127,1]}else{[0,0]};
+            assert_eq!(runtime.program_selection(runtime.performance(0).unwrap(),address).unwrap(),Some(sampler_core::ProgramSelection{program:expected_program,bank}));
+            assert_eq!(runtime.program_playback_capability(runtime.active_plan()).unwrap(),sampler_core::ProgramPlaybackCapability::NoPresetCatalog);
             assert_eq!(core.problems(0).capacity_drops, 0);
             assert_eq!(core.problems(0).underruns, 0);
             assert!(core.scan_runtime_faults(0).is_empty());
@@ -8947,6 +8957,31 @@ mod timing_parity_tests {
         c.set_mix(&mix);
         c
     }
+    #[test]
+    fn program_selector_remains_consumed_through_direct_and_aligned_product_paths() {
+        for aligned in [false,true] {
+            let mut core=aligned_core();
+            if !aligned {let mut mix=core.mix.clone();mix.timing=Arc::new(crate::timing::Plan::default());core.set_mix(&mix);}
+            let part=core.parts[0].as_mut().unwrap();
+            let switching=sampler_core::Switching::new(sampler_core::Driver::Program,sampler_core::SwitchKeys::Keep,[],
+                vec![sampler_core::Selector{controller:0,low:12,high:12,switch:sampler_core::Switch::Articulation(7)}]).unwrap();
+            part.runtime.set_switching_table(switching,&[]).unwrap();
+            let performance=part.runtime.performance(0).unwrap();
+            part.articulator=Some(Articulator::new(&part.runtime,performance,WIRE.port).unwrap());
+            part.source_actions=vec![Some(sampler_core::Switch::Articulation(7))];
+            core.begin_block(&BlockInfo{frames:64,offline:true,..Default::default()});
+            assert_eq!(crate::plugin::tests::allocations(||core.event(0,Event::midi1(0xc4,12,0))),0);
+            for _ in 0..10 {core.render(64);core.end_block(64,&mut |_|true);}
+            let part=core.parts[0].as_ref().unwrap();
+            assert_eq!(part.runtime.articulation(performance).unwrap(),7,"the actual configured selector must run");
+            for protocol in [sampler_core::Protocol::Midi1,sampler_core::Protocol::Midi2] {
+                for channel in 0..16 {assert_eq!(part.runtime.program_selection(performance,sampler_core::ChannelAddress{protocol,port:WIRE.port,group:0,channel}).unwrap(),None,"a consumed selector must not also publish Program state");}
+            }
+            assert_eq!(core.problems(0).ignored_input,0);assert_eq!(core.problems(0).capacity_drops,0);
+            assert_eq!((part.runtime.note_count(),part.runtime.voice_count()),(0,0));
+        }
+    }
+
     #[test]
     fn v1_auto_align_transport_flush_and_replacement_keep_exact_note_end() {
         let mut core = aligned_core();
