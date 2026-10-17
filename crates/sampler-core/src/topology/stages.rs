@@ -6,6 +6,7 @@ use sampler_ir as ir;
 
 pub(crate) enum Stage {
     Rectifier(crate::dsp::Rectifier),
+    StaticPan([f64;2]),
     Pan { position:StageParameter, offset:f64, law:ir::PanLaw, expression:bool },
     Gain {
         gain: StageParameter,
@@ -92,8 +93,12 @@ impl Stage {
                 ir::Rectifier::Full=>crate::dsp::Rectifier::Full,ir::Rectifier::Half=>crate::dsp::Rectifier::Half}),0)),
             ir::ProcessingSignalNode::Pan(pan) => {
                 if channels!=2 || !pan.offset.is_finite() || pan.offset.abs()>f64::from(f32::MAX) || pan.position.expression.is_some() {return Err(Error::InvalidInput);}
-                Ok((Self::Pan {position:parameter(plan,&pan.position,parameters,domains,
-                    |value|value.is_finite() && (-1. ..=1.).contains(&value),false)?,offset:pan.offset,law:pan.law,expression:pan.expression},0))
+                let position=parameter(plan,&pan.position,parameters,domains,
+                    |value|value.is_finite() && (-1. ..=1.).contains(&value),false)?;
+                if pan.position.control.is_none() && !pan.expression {
+                    return Ok((Self::StaticPan(pan.law.gains((pan.position.constant+pan.offset).clamp(-1.,1.))),0));
+                }
+                Ok((Self::Pan {position,offset:pan.offset,law:pan.law,expression:pan.expression},0))
             }
             ir::ProcessingSignalNode::Gain(gain) => {
                 match gain.arithmetic {
@@ -151,12 +156,20 @@ impl Stage {
         at.checked_add(frames.saturating_sub(1) as u64)
             .ok_or(Error::ClockOverflow)?;
         match *self {
+            Self::StaticPan(gains) => {
+                if channels!=2{return Err(Error::InvalidInput);}
+                for channel in 0..2{for frame in 0..frames{let index=channel*stride+frame;
+                    block[index]=(f64::from(block[index])*gains[channel])as f32;
+                    if !block[index].is_finite(){return Err(Error::InvalidInput);}
+                }}
+            }
             Self::Pan { position,offset,law,expression:home } => {
                 if channels!=2 {return Err(Error::InvalidInput);}
+                let mut curve=crate::dsp::control::PanCoefficients::new(law);
                 for frame in 0..frames {
                     let value=(position.base.value(parameters,at+frame as u64,None)
                         + offset + if home {expression.pan}else{0.}).clamp(-1.,1.);
-                    let gains=law.gains(value);
+                    let gains=curve.at(value);
                     for channel in 0..2 {let index=channel*stride+frame;
                         block[index]=(f64::from(block[index])*gains[channel]) as f32;
                         if !block[index].is_finite(){return Err(Error::InvalidInput);}
@@ -221,5 +234,25 @@ impl Stage {
             }
         }
         Ok(())
+    }
+}
+
+
+#[cfg(test)]
+mod pan_preparation_work_tests {
+    use super::*;
+    #[test]
+    fn unbound_signal_pan_precomputes_curve_before_render() {
+        let plan=crate::Prepared::new(48000,vec![],vec![],0).unwrap();
+        let definition=ir::ProcessingSignalNode::Pan(ir::ChannelPan{offset:0.125,position:ir::SignalParameter{constant:0.25,control:None,expression:None},law:ir::PanLaw::RaisedCosineCoreF64,expression:false});
+        let mut words=0;let mut parameters=Vec::new();let mut domains=Vec::new();
+        let(stage,tail)=Stage::compile(&plan,&definition,2,&mut words,&mut parameters,&mut domains).unwrap();
+        let Stage::StaticPan(gains)=stage else{panic!("unbound signal Pan retained a render-time curve")};
+        assert_eq!(tail,0);assert_eq!(words,0);assert!(parameters.is_empty()&&domains.is_empty());
+        let expected=(0.375*std::f64::consts::FRAC_PI_2).cos().powi(2);
+        assert!((gains[0]-expected).abs()<1e-15);assert_eq!(gains[1],1.);
+        let mut block=[0.25f32;128];block[64..].fill(-0.125);
+        Stage::StaticPan(gains).render(&mut block,2,64,64,&mut[],&[],48000,0,&Default::default()).unwrap();
+        for frame in 0..64{assert!((block[frame]-((0.25*expected)as f32)).abs()<1e-7);assert_eq!(block[64+frame],-0.125);}
     }
 }
