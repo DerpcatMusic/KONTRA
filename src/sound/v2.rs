@@ -3371,7 +3371,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .chain(&chain.post_amplitude)
         .map(|p| match p {
             ir::Processor::Gain(_) => "Gain",
-            ir::Processor::Pan(_) => "Pan",
+            ir::Processor::Pan(_) | ir::Processor::ExpressionPan(_) => "Pan",
             ir::Processor::LiveFormant { .. } => "Formant",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Space(c) => if c.impulse.is_some() { "Convolution" } else { "Reverb" },

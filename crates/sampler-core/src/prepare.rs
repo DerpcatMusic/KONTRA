@@ -2396,6 +2396,15 @@ impl Prepared {
             return Err(Error::InvalidInput);
         }
         self.validate_processing_controls()?;
+        // An expression Pan stage is the sole explicit canonical home, never
+        // an arbitrary source insert that would double the ordinary note pan.
+        for (index,chain) in chains.iter().enumerate() {
+            let homes=chain.expression_pan_count();
+            if homes>1 || !chain.expression_pan_home_valid() || homes!=0 && (bindings.contains(&Some(index))
+                || !self.processing_scopes.iter().any(|scope|scope.chain==Some(index))) {
+                return Err(Error::InvalidInput);
+            }
+        }
         let needs_wide = self.regions.iter().any(|r| self.source_storage(r.sample).is_some_and(|s| s.stereo().is_none()));
         let wide_gain_sections = if needs_wide {
             chains.iter().map(super::VoiceChain::wide_gain_sections).collect::<Vec<_>>()
@@ -2418,6 +2427,9 @@ impl Prepared {
         self.processing_signals = super::topology::signal::compile(&self, &mut parameters)?;
         for (scope, signal) in self.processing_scopes.iter().zip(self.processing_signals.iter()) {
             if let Some(signal) = signal {
+                if signal.expression_pan && scope.chain.is_some_and(|index|self.voice_chains.view(index).expression_pan) {
+                    return Err(Error::InvalidInput);
+                }
                 let tail = scope.chain.map_or(0, |index| self.voice_chains.view(index).owner_tail_frames());
                 tail.checked_add(signal.tail_frames).ok_or(Error::Capacity)?;
             }

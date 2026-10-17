@@ -130,6 +130,7 @@ pub(crate) fn encode(
         w.u8(match z.pan.law {
             ir::PanLaw::Balance => 0,
             ir::PanLaw::EqualPower => 1,
+            ir::PanLaw::RaisedCosineCoreF64 => 2,
         });
         match z.pitch {
             ir::KeyTracking::Fixed => w.u8(0),
@@ -253,6 +254,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
         let law = match r.u8()? {
             0 => ir::PanLaw::Balance,
             1 => ir::PanLaw::EqualPower,
+            2 => ir::PanLaw::RaisedCosineCoreF64,
             _ => return None,
         };
         let pitch = match r.u8()? {
@@ -452,6 +454,14 @@ mod tests {
         let mut bad = bytes.clone();
         bad[..8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode(&bad).is_none());
+    }
+    #[test]
+    fn all_stable_pan_law_tags_roundtrip() {
+        for law in [ir::PanLaw::Balance,ir::PanLaw::EqualPower,ir::PanLaw::RaisedCosineCoreF64] {
+            let mut zone=ir::Zone::new(ir::AssetRef(0));zone.pan.law=law;
+            let mut bytes=Vec::new();encode(&[zone.clone()],&[],&mut bytes).unwrap();
+            assert_eq!(decode(&bytes).unwrap().0,vec![zone]);
+        }
     }
     #[test]
     fn physical_zone_record_preserves_all_versioned_metadata_and_loops() {
