@@ -3,7 +3,7 @@
 //! carried over is returned with the plan, never dropped silently.
 
 use crate::{Kontakt, LoadError, Resources};
-use sampler_core::{Pcm, Prepared, lower::LowerError};
+use sampler_core::{Pcm, Prepared, SourceStorage, lower::LowerError};
 use sampler_ir as ir;
 use sampler_ksp::model::Value;
 use std::{ops::RangeInclusive, path::Path};
@@ -190,37 +190,25 @@ pub fn load_read(
         zones: instrument.zones.len(),
         assets: kept.len(),
     });
-    let mut pcm = Vec::with_capacity(kept.len());
+    let mut sources = Vec::with_capacity(kept.len());
     for (done, &asset) in kept.iter().enumerate() {
-        if canceled() {
-            return Err(LoadError::Canceled);
+        if canceled() {return Err(LoadError::Canceled);}
+        let sample=&locations[asset];
+        progress(Progress::Decoding{done,total:kept.len(),sample});
+        let storage=samples.decode_source(sample).map_err(|e|e.at(crate::Stage::SampleResolve))?;
+        if let SourceStorage::Stereo(pcm)=&storage {
+            // The old stereo residency recipe and actual AssetId are unchanged.
+            let source=samples.source(sample).map_err(|e|e.at(crate::Stage::SampleResolve))?;
+            let length=pcm.frame_count();
+            pcm.set_residency_loader(move || {
+                let mut reader=crate::SampleReader::open(&source).map_err(|_|sampler_core::Error::NotReady)?;
+                let mut frames=vec![[0.;2];length];reader.read(0,&mut frames).map_err(|_|sampler_core::Error::NotReady)?;
+                Ok(vec![(0,frames.into_boxed_slice())])
+            }).map_err(|e|LoadError::Invalid{path:sample.clone(),reason:e.to_string()})?;
         }
-        let sample = &locations[asset];
-        progress(Progress::Decoding {
-            done,
-            total: kept.len(),
-            sample,
-        });
-        let decoded = samples
-            .decode(sample)
-            .map_err(|e| e.at(crate::Stage::SampleResolve))?;
-        let frames = decoded.frames.into_boxed_slice();
-        pcm.push(Pcm::new(decoded.rate, frames).map_err(|e| {
-            LoadError::Invalid {
-                path: sample.clone(),
-                reason: e.to_string(),
-            }
-            .at(crate::Stage::SampleResolve)
-        })?);
-        // Keep a reopenable source recipe, never a backup of decoded PCM.
-        let source = samples.source(sample).map_err(|e| e.at(crate::Stage::SampleResolve))?;
-        let length = pcm.last().unwrap().frame_count();
-        pcm.last().unwrap().set_residency_loader(move || {
-            let mut reader = crate::SampleReader::open(&source).map_err(|_| sampler_core::Error::NotReady)?;
-            let mut frames = vec![[0.; 2]; length];
-            reader.read(0, &mut frames).map_err(|_| sampler_core::Error::NotReady)?;
-            Ok(vec![(0, frames.into_boxed_slice())])
-        }).map_err(|e| LoadError::Invalid { path: sample.clone(), reason: e.to_string() })?;
+        // A resident family retains the complete immutable cohort. Existing
+        // normal group/target admission still decides whether it can publish.
+        sources.push(storage);
     }
     if canceled() {
         return Err(LoadError::Canceled);
@@ -230,7 +218,7 @@ pub fn load_read(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    finish_kept(instrument, pcm, labels, options, initialized).map(|(loaded, _)| loaded)
+    finish_sources_kept(instrument, sources, labels, options, initialized).map(|(loaded, _)| loaded)
 }
 
 /// Load the Kontakt instrument at `path` streamed: only the frames where
@@ -398,17 +386,37 @@ pub fn finish(
 
 /// [`finish`], also returning the assets the plan kept, in its order.
 fn finish_kept(
-    mut instrument: ir::Instrument,
-    pcm: Vec<Pcm>,
-    labels: Vec<String>,
-    options: &Options,
+    instrument: ir::Instrument, pcm: Vec<Pcm>, labels: Vec<String>, options: &Options,
     initialized: Option<ScriptInit>,
 ) -> Result<(Loaded, Vec<Pcm>), LoadError> {
+    let (loaded,kept)=finish_sources_kept(instrument,pcm.into_iter().map(SourceStorage::Stereo).collect(),labels,options,initialized)?;
+    let kept=kept.into_iter().map(|source|match source {SourceStorage::Stereo(pcm)=>Ok(pcm),SourceStorage::Channels(_)=>Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"stereo finish retained a channel family".into()})}).collect::<Result<Vec<_>,_>>()?;
+    Ok((loaded,kept))
+}
+
+/// Finish ordinary resident logical sources. Entry i remains exactly asset i;
+/// physical packs never become aliases, extra zones, or implicit projections.
+/// Scripts, key/playback fitting and controls use the same pipeline as finish.
+pub fn finish_sources(instrument:ir::Instrument,sources:Vec<SourceStorage>,labels:Vec<String>,options:&Options)
+    ->Result<Loaded,LoadError> {
+    finish_sources_kept(instrument,sources,labels,options,None).map(|(loaded,_)|loaded)
+}
+fn finish_sources_kept(
+    mut instrument:ir::Instrument,sources:Vec<SourceStorage>,labels:Vec<String>,options:&Options,
+    initialized:Option<ScriptInit>,
+)->Result<(Loaded,Vec<SourceStorage>),LoadError> {
+    if sources.len()!=instrument.assets.len() || labels.len()!=sources.len() {
+        return Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"logical source/asset/label count mismatch".into()});
+    }
+    if instrument.zones.iter().any(|zone|zone.asset.is_some_and(|asset|asset.0>=sources.len())
+        || zone.group.is_some_and(|group|group.0>=instrument.groups.len())) {
+        return Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"logical zone refers to an absent source or group".into()});
+    }
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
         let mut report = Vec::new();
         let Some(asset) = zone.asset else { continue; };
-        let audio = &pcm[asset.0];
+        let audio = sources[asset.0].as_source();
         let group_tune = zone
             .group
             .map_or(0.0, |g| instrument.groups[g.0].tune.semitones());
@@ -446,15 +454,15 @@ fn finish_kept(
         index += 1;
         playable[index - 1]
     });
-    let pcm = pcm
+    let sources = sources
         .into_iter()
         .enumerate()
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
         .collect::<Vec<_>>();
-    let kept = pcm.clone();
+    let kept = sources.clone();
     Ok((
-        prepare_inner(instrument, pcm, options, initialized)
+        prepare_sources_inner(instrument, sources, options, initialized)
             .map_err(|e| e.at(crate::Stage::Prepare))?,
         kept,
     ))
@@ -1101,12 +1109,12 @@ fn compile_ui_initialized(
     )
 }
 
-fn prepare_inner(
-    mut instrument: ir::Instrument,
-    pcm: Vec<Pcm>,
-    options: &Options,
-    initialized: Option<ScriptInit>,
-) -> Result<Loaded, LoadError> {
+fn prepare_inner(instrument:ir::Instrument,pcm:Vec<Pcm>,options:&Options,initialized:Option<ScriptInit>) ->Result<Loaded,LoadError> {
+    prepare_sources_inner(instrument,pcm.into_iter().map(SourceStorage::Stereo).collect(),options,initialized)
+}
+fn prepare_sources_inner(
+    mut instrument:ir::Instrument,sources:Vec<SourceStorage>,options:&Options,initialized:Option<ScriptInit>,
+)->Result<Loaded,LoadError> {
     let rate = options.rate;
     host_volume(&mut instrument);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
@@ -1130,7 +1138,7 @@ fn prepare_inner(
             Default::default()
         };
         let lowered =
-            sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+            sampler_core::lower::lower_sources_with(&instrument, rate, sources, &lower_options, |_, plan| {
                 Ok(plan)
             });
         instrument.behaviors = behaviors;
@@ -1203,7 +1211,7 @@ fn prepare_inner(
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
     let lower_span = crate::audit::Span::new("core_lower_bindings");
     let lowered =
-        sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+        sampler_core::lower::lower_sources_with(&instrument, rate, sources, &lower_options, |_, plan| {
             sampler_ksp::bind_modules(compiled, plan)
                 .and_then(|plan| plan.with_automation_bindings(automation))
                 .map_err(|e| LowerError::Behavior {

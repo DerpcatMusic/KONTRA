@@ -15,6 +15,73 @@ use symphonia::core::{
     probe::Hint,
 };
 
+/// Pack already-decoded original channel ordinals into one immutable logical
+/// resident source. No matrix/speaker-layout conversion is performed. The
+/// limit covers output PCM plus the caller's retained interleaved f32 input;
+/// codec workspace/encoded storage are separate caller admission obligations.
+pub fn resident_storage_from_interleaved(rate: u32, channels: usize, samples: &[f32],
+    byte_limit: usize) -> io::Result<SourceStorage> {
+    let count = ChannelCount::new(channels).map_err(resident_error)?;
+    if rate == 0 || samples.is_empty() || samples.len() % channels != 0 {
+        return Err(invalid_input("incomplete resident channel geometry"));
+    }
+    let frames = samples.len() / channels;
+    let output_bytes = frames.checked_mul(size_of::<Frame>()).and_then(|n|n.checked_mul(count.pack_count()))
+        .ok_or_else(||invalid_input("resident channel output overflow"))?;
+    let input_bytes = samples.len().checked_mul(size_of::<f32>()).ok_or_else(||invalid_input("resident input overflow"))?;
+    if output_bytes > isize::MAX as usize || input_bytes.checked_add(output_bytes).is_none_or(|n|n>byte_limit) {
+        return Err(io::Error::new(io::ErrorKind::OutOfMemory,"resident channel staging limit exceeded"));
+    }
+    let allocate=|e:std::collections::TryReserveError|io::Error::new(io::ErrorKind::OutOfMemory,e);
+    let mut packs=Vec::new();packs.try_reserve_exact(count.pack_count()).map_err(allocate)?;
+    for pack in 0..count.pack_count() {
+        let mut pcm=Vec::new();pcm.try_reserve_exact(frames).map_err(allocate)?;
+        for frame in samples.chunks_exact(channels) {
+            let left=frame[pack*2];
+            let right=if channels==1 {left} else {frame.get(pack*2+1).copied().unwrap_or(0.)};
+            pcm.push([left,right]);
+        }
+        packs.push(Pcm::new(rate,pcm.into_boxed_slice()).map_err(resident_error)?);
+    }
+    if channels<=2 {Ok(SourceStorage::Stereo(packs.pop().ok_or_else(||invalid_input("resident pack absent"))?))}
+    else {SourceStorageFamily::new_resident(count,packs).map(SourceStorage::Channels).map_err(resident_error)}
+}
+
+/// Install normal immutable-origin reload recipes on an unpublished resident
+/// source. Every physical target retains its real AssetId. Each invocation
+/// decodes a complete logical source, validates its geometry, and stages only
+/// that target's original ordinal. No one-Pcm revision can relabel a family.
+///
+/// Off audio, initial construction only. Discard the unpublished source if any
+/// installation fails. A worker may repeat the full decode once per pack;
+/// retained packs + largest full decode + one extracted pack need admission.
+pub fn install_resident_source_reload(source:&SourceStorage,
+    reload:impl Fn()->Result<SourceStorage,sampler_core::Error>+Send+Sync+'static)->Result<(),sampler_core::Error> {
+    let view=source.as_source();let channels=view.channels().get();let frames=view.frame_count();let rate=view.sample_rate();
+    if view.resident_view().is_none() {return Err(sampler_core::Error::NotReady);}
+    let mut packs=Vec::new();view.physical_dependencies(|pcm|packs.push(pcm.clone()));
+    if packs.len()!=channels.div_ceil(2) {return Err(sampler_core::Error::InvalidInput);}
+    let reload=std::sync::Arc::new(reload);
+    for (ordinal,pcm) in packs.into_iter().enumerate() {
+        let reload=reload.clone();
+        pcm.set_residency_loader(move || {
+            let decoded=reload()?;let logical=decoded.as_source();
+            if logical.channels().get()!=channels || logical.sample_rate()!=rate || logical.frame_count()!=frames {
+                return Err(sampler_core::Error::InvalidInput);
+            }
+            let view=logical.resident_view().ok_or(sampler_core::Error::NotReady)?;
+            let mut out=Vec::new();out.try_reserve_exact(frames).map_err(|_|sampler_core::Error::Capacity)?;
+            for frame in 0..frames {
+                let left=view.sample(ordinal*2,frame).ok_or(sampler_core::Error::InvalidInput)?;
+                let right=if ordinal*2+1<channels {view.sample(ordinal*2+1,frame).ok_or(sampler_core::Error::InvalidInput)?} else {0.};
+                out.push([left,right]);
+            }
+            Ok(vec![(0,out.into_boxed_slice())])
+        })?;
+    }
+    Ok(())
+}
+
 const SKIP_FRAMES: u64 = 16384;
 
 fn invalid(error: impl ToString) -> io::Error {

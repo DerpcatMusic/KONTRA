@@ -391,6 +391,21 @@ impl Samples {
         })
     }
 
+    /// Resident logical source using the same normal immutable source recipe,
+    /// preserving every encoded channel. Legacy decode remains a stereo API.
+    pub fn decode_source(&mut self, location: &Path) -> Result<sampler_core::SourceStorage, LoadError> {
+        let source=self.source(location)?;
+        let bytes=crate::stream::read_encoded_resident(&source,1<<30).map_err(|e|LoadError::io(location,e))?;
+        let storage=decode_source(&bytes).map_err(|reason|LoadError::Invalid{path:location.into(),reason})?;
+        if matches!(&storage,sampler_core::SourceStorage::Channels(_)) {
+            crate::install_resident_source_reload(&storage,move || {
+                let bytes=crate::stream::read_encoded_resident(&source,1<<30).map_err(|_|sampler_core::Error::NotReady)?;
+                decode_source(&bytes).map_err(|_|sampler_core::Error::NotReady)
+            }).map_err(|e|LoadError::Invalid{path:location.into(),reason:e.to_string()})?;
+        }
+        Ok(storage)
+    }
+
     /// Where a resolved sample's bytes live, for random-access streaming.
     pub fn source(&mut self, location: &Path) -> Result<Source, LoadError> {
         if let Some(source) = self.embedded.get(location) {
@@ -923,6 +938,48 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     })
 }
 
+/// Same normal WAV/AIFF/NCW decoder arithmetic, retaining all original
+/// channels in a resident logical asset. The new wide path is not a speaker
+/// layout or native projection and cannot fall back to its first stereo pair.
+pub fn decode_source(bytes: &[u8]) -> Result<sampler_core::SourceStorage,String> {
+    const LIMIT:usize=512<<20;
+    if bytes.starts_with(b"RIFF") || bytes.starts_with(b"FORM") {
+        // Preserve the complete established mono/stereo conversion exactly.
+        let layout=wav_layout(bytes)?;
+        if layout.channels<=2 {let d=wav(bytes)?;return sampler_core::Pcm::new(d.rate,d.frames.into_boxed_slice()).map(Into::into).map_err(|e|e.to_string());}
+        if bytes.starts_with(b"FORM") {
+            let end=bytes.get(4..8).map(|b|8u64+u64::from(u32::from_be_bytes(b.try_into().unwrap()))).ok_or("truncated AIFF FORM")?;
+            if end>bytes.len() as u64 {return Err("truncated AIFF FORM".into());}
+        }
+        if layout.data.end>bytes.len() {return Err("truncated PCM sample data".into());}
+        let align=layout.width.checked_mul(layout.channels).ok_or("PCM channel alignment overflow")?;
+        let data=&bytes[layout.data.clone()];
+        if data.len()%align!=0 {return Err("incomplete PCM source frame".into());}
+        let samples=data.len()/layout.width;
+        let output=(data.len()/align).checked_mul(layout.channels.div_ceil(2)).and_then(|n|n.checked_mul(8)).ok_or("resident PCM output overflow")?;
+        if samples.checked_mul(4).and_then(|n|n.checked_add(output)).is_none_or(|n|n>LIMIT) {return Err("resident channel staging exceeds 512 MiB".into());}
+        let mut interleaved=Vec::new();interleaved.try_reserve_exact(samples).map_err(|e|e.to_string())?;
+        for frame in data.chunks_exact(align) {for channel in 0..layout.channels {
+            interleaved.push(layout.sample(&frame[channel*layout.width..][..layout.width]));
+        }}
+        return crate::resident_storage_from_interleaved(layout.rate,layout.channels,&interleaved,LIMIT).map_err(|e|e.to_string());
+    }
+    let mut reader=ncw::NcwReader::read(Cursor::new(bytes)).map_err(|e|format!("not WAV or NCW: {e}"))?;
+    let channels=reader.header.channels as usize;let frames=reader.header.num_samples as usize;
+    if channels==0 || frames==0 {return Err("invalid NCW source geometry".into());}
+    if channels<=2 {let d=decode(bytes)?;return sampler_core::Pcm::new(d.rate,d.frames.into_boxed_slice()).map(Into::into).map_err(|e|e.to_string());}
+    // NcwReader decodes i32 samples; charge that retained input as well as
+    // converted f32 input and packed output before decode_samples allocates.
+    let samples=frames.checked_mul(channels).ok_or("NCW source dimensions overflow")?;
+    let output=frames.checked_mul(channels.div_ceil(2)).and_then(|n|n.checked_mul(8)).ok_or("NCW resident output overflow")?;
+    if samples.checked_mul(8).and_then(|n|n.checked_add(output)).is_none_or(|n|n>LIMIT) {return Err("NCW resident staging exceeds 512 MiB".into());}
+    let convert=ncw_sample(reader.sample_format,reader.header.bits_per_sample);let rate=reader.header.sample_rate;
+    let decoded=reader.decode_samples().map_err(|e|format!("NCW: {e}"))?;
+    if decoded.len()!=samples {return Err("NCW decoded dimensions differ from header".into());}
+    let converted:Vec<_>=decoded.into_iter().map(convert).collect();
+    crate::resident_storage_from_interleaved(rate,channels,&converted,LIMIT).map_err(|e|e.to_string())
+}
+
 /// NCW integer or float-bit samples to f32.
 pub(crate) fn ncw_sample(format: ncw::SampleFormat, bits: u16) -> impl Fn(i32) -> f32 {
     let float = format == ncw::SampleFormat::Float;
@@ -954,7 +1011,11 @@ impl Wav {
     /// One interleaved frame's bytes to a stereo frame (mono duplicated).
     pub fn frame(&self, frame: &[u8]) -> [f32; 2] {
         let width = self.width;
-        let sample = |s: &[u8]| match (self.tag, width) {
+        [self.sample(&frame[..width]),self.sample(&frame[(self.channels.min(2)-1)*width..][..width])]
+    }
+    fn sample(&self,s:&[u8])->f32 {
+        let width=self.width;
+        match (self.tag, width) {
             (3, _) => {
                 let b = [s[0], s[1], s[2], s[3]];
                 if self.big_endian {
@@ -975,11 +1036,7 @@ impl Wav {
                 };
                 value as f32 / 2_147_483_648.0
             }
-        };
-        [
-            sample(&frame[..width]),
-            sample(&frame[(self.channels.min(2) - 1) * width..][..width]),
-        ]
+        }
     }
 }
 

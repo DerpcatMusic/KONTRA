@@ -1457,10 +1457,7 @@ pub fn assemble_translated(
         .locations
         .iter()
         .enumerate().map(|(asset,location)| match &t.bank {
-            Some((bank, program_path)) => bank
-                .resource(program_path, location)
-                .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode_initial(&parts,inherit[asset])),
+            Some((bank, program_path)) => initial_bank_decoded(bank,program_path,location,inherit[asset]),
             None => decode_initial_file(Path::new(location),inherit[asset]).map_err(|e| e.to_string()),
         })
         .collect();
@@ -1526,6 +1523,13 @@ pub fn decode_sample(path: &Path) -> Result<sampler_kontakt::Decoded, Error> {
             path: path.into(),
             reason,
         })
+}
+
+/// Decode one loose initial sample through the normal UVI resident reader,
+/// retaining all original channel ordinals. This does not infer a signal
+/// layout, install a sampler graph or silently project a wide sample to stereo.
+pub fn decode_source(path:&Path)->Result<sampler_core::SourceStorage,Error> {
+    decode_initial_file(path,false).map(|decoded|decoded.source)
 }
 
 /// Load a clear `.uvip` program streamed: only the frames where zones start
@@ -1662,12 +1666,32 @@ fn apply_initial_playbacks(instrument:&mut ir::Instrument,playbacks:&[Result<Opt
     Ok(())
 }
 
-fn decode_initial_file(path:&Path,inherit:bool)->Result<audio::InitialDecoded,Error> {
+fn initial_bank_decoded(bank:&Bank,program_path:&str,location:&str,inherit:bool)->Result<audio::InitialDecoded,String> {
+    #[cfg(feature="library-access")]
+    {bank.initial_resident_sample(program_path,location,inherit)}
+    #[cfg(not(feature="library-access"))]
+    {let _=(bank,program_path,location,inherit);Err("bank samples need the library-access feature".into())}
+}
+fn read_initial_snapshot(path:&Path,identity:&sampler_kontakt::FileIdentity)->Result<Vec<u8>,Error> {
     use std::io::Read;
-    let mut bytes=Vec::new();
-    std::fs::File::open(path).and_then(|file|file.take((512<<20)+1).read_to_end(&mut bytes))
-        .map_err(|error|Error::Io {path:path.into(),error})?;
-    audio::decode_initial(&[bytes],inherit).map_err(|reason|Error::Invalid {path:path.into(),reason})
+    let mut file=std::fs::File::open(path).map_err(|error|Error::Io{path:path.into(),error})?;
+    identity.check(&file).map_err(|error|Error::Io{path:path.into(),error})?;
+    let mut bytes=Vec::new();file.by_ref().take((512<<20)+1).read_to_end(&mut bytes).map_err(|error|Error::Io{path:path.into(),error})?;
+    identity.check(&file).map_err(|error|Error::Io{path:path.into(),error})?;
+    Ok(bytes)
+}
+fn decode_initial_file(path:&Path,inherit:bool)->Result<audio::InitialDecoded,Error> {
+    let file=std::fs::File::open(path).map_err(|error|Error::Io{path:path.into(),error})?;
+    let metadata=file.metadata().map_err(|error|Error::Io{path:path.into(),error})?;
+    let identity=sampler_kontakt::FileIdentity::capture(&metadata).map_err(|error|Error::Io{path:path.into(),error})?;
+    let bytes=read_initial_snapshot(path,&identity)?;
+    let decoded=audio::decode_initial(&[bytes],inherit).map_err(|reason|Error::Invalid{path:path.into(),reason})?;
+    let path=path.to_owned();let error_path=path.clone();
+    sampler_kontakt::install_resident_source_reload(&decoded.source,move || {
+        let bytes=read_initial_snapshot(&path,&identity).map_err(|_|sampler_core::Error::NotReady)?;
+        audio::decode_initial(&[bytes],false).map(|d|d.source).map_err(|_|sampler_core::Error::NotReady)
+    }).map_err(|e|Error::Invalid{path:error_path,reason:e.to_string()})?;
+    Ok(decoded)
 }
 
 /// A failed initial file must not erase an authored dynamic target's mapping.
@@ -1779,9 +1803,7 @@ pub fn load_program_with_options(
     }
     let (locations, decoded) =
         decode_selected_bank_assets(&mut instrument, locations, options, |authored,inherit| {
-            bank.resource(&program_path, authored)
-                .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode_initial(&parts,inherit))
+            initial_bank_decoded(bank,&program_path,authored,inherit)
         })?;
     assemble(instrument, locations, decoded, options)
 }
@@ -1816,9 +1838,7 @@ pub fn load_program_scripted_with_options(
             .map_err(ScriptedTranslationFailure::into_error)?;
     let (locations, decoded) =
         decode_selected_bank_assets(&mut instrument, locations, options, |authored,inherit| {
-            bank.resource(&program_path, authored)
-                .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode_initial(&parts,inherit))
+            initial_bank_decoded(bank,&program_path,authored,inherit)
         })?;
     let loaded = assemble(instrument, locations, decoded, options)?;
     let mut instrument = loaded.instrument;
@@ -2131,7 +2151,7 @@ fn decode_selected_bank_assets(
 ) -> Result<(Vec<String>, Vec<Result<audio::InitialDecoded, String>>),sampler_kontakt::LoadError> {
     initial_playback_assets(instrument,locations.len())?;
     inserts::fill_impulses(instrument, &locations, |asset| {
-        decode(&locations[asset],false).map(|decoded| (decoded.audio.rate, decoded.audio.frames))
+        decode(&locations[asset],false).and_then(|decoded|decoded.stereo_audio().map(|audio|(audio.rate,audio.frames)))
     });
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
@@ -2193,10 +2213,7 @@ mod narrowed_impulse_tests {
             },
             |location,_| {
                 reads.push(location.to_owned());
-                Ok(audio::InitialDecoded {audio:sampler_kontakt::Decoded {
-                    rate: 48000,
-                    frames: vec![[0.5, -0.5]],
-                },playback:Ok(None)})
+                Ok(audio::InitialDecoded {source:sampler_core::Pcm::new(48000,vec![[0.5,-0.5]].into_boxed_slice()).unwrap().into(),playback:Ok(None)})
             },
         ).unwrap();
         assert_eq!(reads, ["room.wav", "low.wav"]);
@@ -2427,21 +2444,21 @@ fn assemble(
         }
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| match &decoded[a] {
-        Ok(d) => Ok((d.audio.rate, d.audio.frames.clone())),
+        Ok(d) => d.stereo_audio().map(|audio|(audio.rate,audio.frames)),
         Err(e) => Err(e.clone()),
     });
     let usable: Vec<bool> = decoded.iter().map(Result::is_ok).collect();
     retain_failed_sample_targets(&mut instrument, &usable);
     let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
-    let mut pcm = Vec::with_capacity(kept.len());
+    let mut sources = Vec::with_capacity(kept.len());
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {
         let d = decoded[asset].take().unwrap().unwrap();
-        pcm.push(sampler_core::Pcm::new(d.audio.rate, d.audio.frames.into_boxed_slice())?);
+        sources.push(d.source);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
     let bindings = engine_parameters::bindings(&instrument);
-    let mut loaded = sampler_kontakt::finish(instrument, pcm, labels, options)?;
+    let mut loaded = sampler_kontakt::finish_sources(instrument, sources, labels, options)?;
     loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
     Ok(loaded)
 }
