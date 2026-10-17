@@ -979,9 +979,10 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             }
             region_processing[zone.0] = Some((index, ordinal));
         }
-        if instrument.source_indices.sample_targets.iter().any(|target| {
-            target.zones.iter().any(|z| scope.members.contains(z))
-        }) || !instrument.zone_routing.is_empty() {
+        // Dynamic stereo revisions preserve the member's compiled input width;
+        // logical family targets retain identity but reject one-Pcm writes at
+        // producer and commit preflight. Routing variants need their own join.
+        if !instrument.zone_routing.is_empty() {
             return Err(core(Stage::Regions, owner.clone())(Error::InvalidInput));
         }
         if scope.amplitude.is_some_and(|amplitude| instrument.source_indices.modulators.iter()
