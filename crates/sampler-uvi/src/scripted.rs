@@ -158,8 +158,6 @@ pub struct Stream {
     pub _keep: (sampler_kontakt::Streamer, Vec<sampler_core::Pcm>),
 }
 
-/// Plays made once their originating note was released sound at most this long.
-const DETACHED_MS: f64 = 5000.0;
 /// Gliding script modulations are stepped this often.
 const GLIDE_STEP_MS: f64 = 5.0;
 /// Script wake-ups handled at one instant before time is forced forward.
@@ -758,7 +756,9 @@ impl<S: Script> Driver<S> {
             // generated note after driver pruning or input cancellation.
             return Ok(());
         }
-        let open = parent.is_some() && !closing && play.duration_ms.is_none();
+        let follows_creator = matches!(play.creator, crate::script::PlayCreator::NoteOn(_));
+        let parent_open = parent.is_some_and(|note| rt.note(note).is_ok_and(|(_, _, gate)| gate));
+        let open = parent_open && follows_creator && !closing && play.duration_ms.is_none();
         let note = match parent {
             Some(parent) => (|| {
                 // UVI callbacks report the physical input key. The MIDI2
@@ -812,10 +812,13 @@ impl<S: Script> Driver<S> {
         match play.duration_ms {
             Some(ms) if ms > 0.0 => self.release(rt, note, now + ms)?,
             Some(_) => {}
-            None if parent.is_none() || closing => self.release(rt, note, now + DETACHED_MS)?,
+            None if play.origin == crate::script::PlayOrigin::PostedEvent => {},
+            None if play.creator == crate::script::PlayCreator::None => self.release(rt, note, now)?,
+            None if follows_creator && (!parent_open || closing) => self.release(rt, note, now)?,
             None => {}
         }
-        if play.duration_ms == Some(0.0) {
+        if play.duration_ms == Some(0.0)
+            || (play.duration_ms.is_none() && play.creator == crate::script::PlayCreator::Event) {
             rt.retire_when_silent(note)?;
         }
         Ok(())
@@ -993,5 +996,80 @@ mod midi_output_batch_tests {
         assert_eq!(delivered[64], expected[64]);
         assert_eq!(delivered.last(), expected.last());
         assert!(driver.midi.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod detached_lifetime_tests {
+    use super::*;
+
+    fn fixture(looping: bool) -> (Runtime, Driver<ScriptHost>) {
+        let playback = sampler_core::Playback {
+            end: Some(256),
+            loop_range: looping.then_some(sampler_core::Loop {
+                start: 0, end: 128, mode: sampler_core::LoopMode::UntilRelease,
+                shape: sampler_core::LoopShape::Wrap, passes: None,
+            }),
+            ..Default::default()
+        };
+        let plan = Prepared::new(48000,
+            vec![sampler_core::Pcm::new(48000, vec![[0.25; 2]; 256].into_boxed_slice()).unwrap()],
+            vec![sampler_core::Region {
+                sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+                velocity_low: 0., velocity_high: 1., gain: 1.,
+                envelope: sampler_core::Envelope::new(0, 0, 0, 1., 64).unwrap(), playback,
+            }], 1).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 8);
+        let host = ScriptHost::new(r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            local voice
+            function onController(e)
+              if e.controller == 1 then voice = playNote(60, 100, -1)
+              elseif e.controller == 2 then releaseVoice(voice) end
+            end
+        ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#, (), Default::default()).unwrap();
+        (Runtime::new(plan, limits).unwrap(), Driver::new(host, vec![], 48000))
+    }
+
+    #[test]
+    fn non_note_creator_negative_duration_loop_survives_five_seconds_until_explicit_release() {
+        let (mut runtime, mut driver) = fixture(true);
+        driver.input(&runtime, HostInput::Controller { cc: 1, value: 127, channel: 4 });
+        driver.wake(&mut runtime).unwrap();
+        assert_eq!(runtime.voice_count(), 1);
+        let mut last = [[0.; 2]; 128];
+        for _ in 0..2000 {
+            driver.wake(&mut runtime).unwrap();
+            runtime.render(&mut last).unwrap();
+        }
+        assert!(runtime.now() > 5 * 48000);
+        assert_eq!(runtime.voice_count(), 1, "non-note playNote(-1) has no five-second automatic release");
+        assert!(last.iter().flatten().any(|value| value.abs() > 0.01));
+        assert_eq!(runtime.note_count(), 1);
+        assert!(runtime.live_notes().all(|note| runtime.input_source(note).unwrap().is_none()),
+            "a generated loop does not invent a physical input source");
+        driver.input(&runtime, HostInput::Controller { cc: 2, value: 127, channel: 4 });
+        driver.wake(&mut runtime).unwrap();
+        for _ in 0..8 { runtime.render(&mut last).unwrap(); }
+        runtime.flush_ended(|_| true);
+        assert_eq!(runtime.voice_count(), 0);
+        assert_eq!(runtime.note_count(), 0);
+        assert!(last.iter().flatten().all(|value| *value == 0.));
+        assert!(driver.unmodeled().is_empty());
+    }
+
+    #[test]
+    fn non_note_creator_negative_duration_one_shot_retires_when_its_source_finishes() {
+        let (mut runtime, mut driver) = fixture(false);
+        driver.input(&runtime, HostInput::Controller { cc: 1, value: 127, channel: 0 });
+        driver.wake(&mut runtime).unwrap();
+        let mut output = [[0.; 2]; 128];
+        runtime.render(&mut output).unwrap();
+        assert!(output.iter().flatten().any(|value| value.abs() > 0.01));
+        for _ in 0..8 { runtime.render(&mut output).unwrap(); }
+        runtime.flush_ended(|_| true);
+        assert!(runtime.now() < 5 * 48000);
+        assert_eq!(runtime.voice_count(), 0);
+        assert_eq!(runtime.note_count(), 0, "manual generated ownership ends at natural EOF without an invented timeout");
+        assert!(driver.unmodeled().is_empty());
     }
 }

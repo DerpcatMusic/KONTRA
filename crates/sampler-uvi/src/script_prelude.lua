@@ -93,7 +93,7 @@ local function same_presentation_scalar(d, k, v)
 end
 local function notify(w, index)
   local f = data(w).changed
-  if rawtype(f) == "function" then f(w, index) end
+  if rawtype(f) == "function" then native.widgetChanged(f, w, index) end
 end
 local value_kinds = {Table=true,Menu=true,MultiStateButton=true,Knob=true,Slider=true,NumBox=true,OnOffButton=true,
   ParamKnob=true,ParamSlider=true,ParamNumBox=true,ParamMenu=true,ParamOnOffButton=true,ParameterValue=true}
@@ -162,7 +162,7 @@ function methods.push(w, callChangedCallback, mods)
   local p = data(w)
   if p.kind ~= 'Button' or rawtype(callChangedCallback) ~= 'boolean' then error('UVI Button push requires a boolean callback flag') end
   if callChangedCallback and rawtype(p.changed) == 'function' then
-    if mods then p.changed(w,mods) else p.changed(w) end
+    if mods then native.widgetChanged(p.changed,w,mods) else native.widgetChanged(p.changed,w) end
   end
 end
 function methods.setRange(w, lo, hi) w.min, w.max = lo, hi end

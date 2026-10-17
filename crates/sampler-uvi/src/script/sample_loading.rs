@@ -537,7 +537,7 @@ impl SampleLoads {
             shared.deferred.borrow_mut().push((
                 thread,
                 MultiValue::from_vec(vec![Value::UserData(task)]),
-                None,
+                super::PlayCreator::None,
             ));
         }
     }

@@ -190,7 +190,7 @@ impl DataLoads {
             shared
                 .deferred
                 .borrow_mut()
-                .push((pending.thread, args, None));
+                .push((pending.thread, args, super::PlayCreator::None));
         }
         Ok(())
     }
