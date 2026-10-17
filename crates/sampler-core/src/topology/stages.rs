@@ -6,14 +6,30 @@ use sampler_ir as ir;
 
 pub(crate) enum Stage {
     Gain {
-        gain: PreparedParameter,
+        gain: StageParameter,
     },
     OnePole {
-        cutoff: PreparedParameter,
+        cutoff: StageParameter,
         high: bool,
         history: usize,
         channels: usize,
     },
+}
+/// Immutable routing metadata: the base is still the ordinary generation lane.
+#[derive(Clone, Copy)]
+pub(crate) struct StageParameter {
+    base: PreparedParameter,
+    expression: Option<ExpressionFactor>,
+}
+#[derive(Clone, Copy)]
+struct ExpressionFactor { mapping: PreparedParameter, octaves: bool }
+impl StageParameter {
+    fn factor(self, parameters: &[ControlRamp], at: u64, expression: &crate::Expression) -> f64 {
+        self.expression.map_or(1., |factor| {
+            let value = factor.mapping.value(parameters, at, Some(expression));
+            if factor.octaves { value.exp2() } else { value }
+        })
+    }
 }
 fn parameter(
     plan: &Prepared,
@@ -21,31 +37,43 @@ fn parameter(
     parameters: &mut Vec<ControlRange>,
     domains: &mut Vec<(ControlId, ControlDomain)>,
     valid: impl Fn(f64) -> bool,
-) -> Result<PreparedParameter, Error> {
-    if !valid(definition.constant) {
-        return Err(Error::InvalidInput);
-    }
-    let Some(key) = &definition.control else {
-        return Ok(PreparedParameter::Constant(definition.constant));
-    };
-    let id = crate::lower::ir_control_id(key);
-    let domain = plan.controls[plan.control_index(id)?].domain;
-    let ControlDomain::Real { min, max } = domain else {
-        return Err(Error::InvalidInput);
-    };
-    if !valid(min) || !valid(max) {
-        return Err(Error::InvalidInput);
-    }
-    plan.real_control(id)?;
-    let lane = parameters.len();
-    parameters.push(ControlRange {
-        control: id,
-        low: min,
-        high: max,
-        ramp_frames: 0,
-    });
-    domains.push((id, domain));
-    Ok(PreparedParameter::Control(lane))
+    cutoff: bool,
+) -> Result<StageParameter, Error> {
+    if !valid(definition.constant) { return Err(Error::InvalidInput); }
+    let (base, bounds) = if let Some(key) = &definition.control {
+        let id = crate::lower::ir_control_id(key);
+        let domain = plan.controls[plan.control_index(id)?].domain;
+        let ControlDomain::Real { min, max } = domain else { return Err(Error::InvalidInput); };
+        if !valid(min) || !valid(max) { return Err(Error::InvalidInput); }
+        plan.real_control(id)?;
+        let lane = parameters.len();
+        parameters.push(ControlRange { control: id, low: min, high: max, ramp_frames: 0 });
+        domains.push((id, domain));
+        (PreparedParameter::Control(lane), [min, max])
+    } else { (PreparedParameter::Constant(definition.constant), [definition.constant; 2]) };
+    let expression = definition.expression.map(|binding| {
+        let (zero, one, octaves) = match (cutoff, binding.law) {
+            (false, ir::SignalExpressionLaw::LinearFactor { zero, one }) if zero >= 0. && one >= 0. => (zero, one, false),
+            (true, ir::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
+            _ => return Err(Error::InvalidInput),
+        };
+        if !zero.is_finite() || !one.is_finite() || !(one - zero).is_finite() { return Err(Error::InvalidInput); }
+        // Full constant/control-domain x expression-endpoint admission, including
+        // the actual sample-rate cutoff bound supplied by the caller. No clamp.
+        for endpoint in [zero, one] {
+            let factor = if octaves { endpoint.exp2() } else { endpoint };
+            if !factor.is_finite() || (octaves && factor <= 0.) { return Err(Error::InvalidInput); }
+            for base in [definition.constant, bounds[0], bounds[1]] {
+                if !valid(base * factor) { return Err(Error::InvalidInput); }
+            }
+        }
+        let source = match binding.source {
+            ir::SignalExpressionSource::Pressure => crate::ExpressionSource::Pressure,
+            ir::SignalExpressionSource::Timbre => crate::ExpressionSource::Timbre,
+        };
+        Ok(ExpressionFactor { mapping: PreparedParameter::Expression { source, low: zero, high: one }, octaves })
+    }).transpose()?;
+    Ok(StageParameter { base, expression })
 }
 impl Stage {
     pub(crate) fn compile(
@@ -64,7 +92,7 @@ impl Stage {
                 }
                 Ok((
                     Self::Gain {
-                        gain: parameter(plan, &gain.gain, parameters, domains, finite)?,
+                        gain: parameter(plan, &gain.gain, parameters, domains, finite, false)?,
                     },
                     0,
                 ))
@@ -75,7 +103,7 @@ impl Stage {
                 }
                 let valid =
                     |value: f64| finite(value) && value > 0. && value < f64::from(plan.rate) * 0.5;
-                let cutoff = parameter(plan, &filter.cutoff_hz, parameters, domains, valid)?;
+                let cutoff = parameter(plan, &filter.cutoff_hz, parameters, domains, valid, true)?;
                 let history = *histories;
                 *histories = history.checked_add(channels).ok_or(Error::Capacity)?;
                 Ok((
@@ -101,6 +129,7 @@ impl Stage {
         parameters: &[ControlRamp],
         rate: u32,
         at: u64,
+        expression: &crate::Expression,
     ) -> Result<(), Error> {
         let end = channels
             .checked_sub(1)
@@ -114,8 +143,9 @@ impl Stage {
             .ok_or(Error::ClockOverflow)?;
         match *self {
             Self::Gain { gain } => {
+                let factor = gain.factor(parameters, at, expression);
                 for frame in 0..frames {
-                    let gain = gain.value(parameters, at + frame as u64, None);
+                    let gain = gain.base.value(parameters, at + frame as u64, None) * factor;
                     for channel in 0..channels {
                         let value = (f64::from(block[channel * stride + frame]) * gain) as f32;
                         if !value.is_finite() {
@@ -136,10 +166,11 @@ impl Stage {
                 }
                 let end = history.checked_add(channels).ok_or(Error::Capacity)?;
                 let state = histories.get_mut(history..end).ok_or(Error::InvalidInput)?;
+                let factor = cutoff.factor(parameters, at, expression);
                 let mut previous = None;
                 let mut b = 0.;
                 for frame in 0..frames {
-                    let hz = cutoff.value(parameters, at + frame as u64, None);
+                    let hz = cutoff.base.value(parameters, at + frame as u64, None) * factor;
                     if previous != Some(hz) {
                         b = core_one_pole_coefficient(f64::from(rate), hz);
                         previous = Some(hz);
