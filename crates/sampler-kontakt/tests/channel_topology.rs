@@ -2112,3 +2112,281 @@ fn checked_aiff_rate_domain_is_validated_before_the_normal_probe_and_keeps_44100
         let at=frame*5+channel;assert_eq!(actual[at].to_bits(),expected[at].to_bits());assert_eq!(actual[at].to_bits(),value(3+frame,channel,false).to_bits());
     }}
 }
+
+fn f_crc8(bytes:&[u8])->u8 {let mut crc=0u8;for byte in bytes {crc^=*byte;for _ in 0..8 {crc=if crc&0x80!=0 {(crc<<1)^7}else{crc<<1};}}crc}
+fn f_crc16(bytes:&[u8])->u16 {let mut crc=0u16;for byte in bytes {crc^=u16::from(*byte)<<8;for _ in 0..8 {crc=if crc&0x8000!=0 {(crc<<1)^0x8005}else{crc<<1};}}crc}
+fn f_number(value:u64)->Vec<u8> {
+    if value<128 {return vec![value as u8];}
+    let count=(2usize..=7).find(|&n|value<(1u64<<(5*n+1))).expect("authored FLAC coded-number range");
+    let mut bytes=vec![((0xffu16<<(8-count)) as u8)|((value>>(6*(count-1))) as u8)];
+    for shift in (0..count-1).rev() {bytes.push(0x80|((value>>(6*shift)) as u8&63));}bytes
+}
+fn f_flac(channels:usize,blocks:&[usize],variable:bool,metadata:&[(u8,Vec<u8>)],raw:impl Fn(usize,usize)->i16)->Vec<u8> {
+    assert!((1..=8).contains(&channels));assert!(!blocks.is_empty());assert!(blocks.iter().all(|n|(16..=65535).contains(n)));
+    if !variable {assert!(blocks.iter().all(|n|*n==blocks[0]));}
+    let frames=blocks.iter().sum::<usize>();let mut audio=Vec::new();let mut lengths=Vec::new();let mut at=0;
+    for (ordinal,&count) in blocks.iter().enumerate() {
+        let mut frame=vec![0xff,if variable {0xf9}else{0xf8},0x70,(((channels-1)<<4)|8) as u8];
+        frame.extend(f_number(if variable {at as u64}else{ordinal as u64}));frame.extend(((count-1) as u16).to_be_bytes());frame.push(f_crc8(&frame));
+        for channel in 0..channels {frame.push(2);for i in 0..count {frame.extend(raw(at+i,channel).to_be_bytes());}}
+        frame.extend(f_crc16(&frame).to_be_bytes());lengths.push(frame.len());audio.extend(frame);at+=count;
+    }
+    let mut info=vec![0;34];info[..2].copy_from_slice(&(*blocks.iter().min().unwrap() as u16).to_be_bytes());info[2..4].copy_from_slice(&(*blocks.iter().max().unwrap() as u16).to_be_bytes());
+    for (at,n) in [(4,*lengths.iter().min().unwrap()),(7,*lengths.iter().max().unwrap())] {assert!(n<1<<24);info[at..at+3].copy_from_slice(&(n as u32).to_be_bytes()[1..]);}
+    let packed=(48000u64<<44)|(((channels-1) as u64)<<41)|(15u64<<36)|frames as u64;info[10..18].copy_from_slice(&packed.to_be_bytes());
+    let mut bytes=b"fLaC".to_vec();bytes.extend([if metadata.is_empty(){128}else{0},0,0,34]);bytes.extend(info);
+    for (i,(kind,body)) in metadata.iter().enumerate() {assert!(body.len()<1<<24);bytes.push(*kind|if i+1==metadata.len(){128}else{0});bytes.extend(&(body.len() as u32).to_be_bytes()[1..]);bytes.extend(body);}
+    bytes.extend(audio);bytes
+}
+
+#[test]
+fn checked_flac_normal_variable_packets_original_ordinals_and_seek_reset_match_legacy_exactly() {
+    use sampler_kontakt::FlacStreamAdmission;
+    for channels in [3usize,5,6,8] {
+        let mut comment=0u32.to_le_bytes().to_vec();comment.extend(1u32.to_le_bytes());let tag=b"ARTIST=authored";comment.extend((tag.len() as u32).to_le_bytes());comment.extend(tag);
+        let bytes=f_flac(channels,&[128,512,256,1024,128,512],true,&[(4,comment)],|f,c|sample(f,c,false));
+        let owned=bytes.clone();let external=owned.capacity()+size_of::<Cursor<Vec<u8>>>();let mut source=Cursor::new(owned);
+        let profile=FlacStreamAdmission::inspect(&mut source,external).unwrap();assert_eq!((profile.channels(),profile.frames(),profile.block_frames()),(channels,2560,1024));
+        assert!(profile.process_metadata_workspace_bytes()>0);
+        assert_eq!(profile.accounted_workspace_bytes(),profile.verified_codec_workspace_bytes()+profile.process_metadata_workspace_bytes()+external);
+        let bound=profile.accounted_workspace_bytes();let mut checked=EncodedChannelReader::open_checked_flac(Box::new(source),profile,bound).unwrap();
+        assert_eq!(checked.process_metadata_workspace_bytes(),profile.process_metadata_workspace_bytes());
+        for start in [0usize,120,630,1000,1400,3,512,1920,128] {
+            // Fresh ordinary reference avoids relying on the legacy parser's
+            // retained exact-header backwards-seek state. Checked stays one owner.
+            let mut old=EncodedChannelReader::open_legacy(Box::new(Cursor::new(bytes.clone())),&MetadataOptions::default()).unwrap();
+            let mut a=vec![0.;64*channels];let mut b=a.clone();checked.read_interleaved(start as u64,&mut a).unwrap();old.read_interleaved(start as u64,&mut b).unwrap();
+            for frame in 0..64 {for channel in 0..channels {let at=frame*channels+channel;assert_eq!(a[at].to_bits(),b[at].to_bits(),"{channels}/{start}/{channel}");assert_eq!(a[at].to_bits(),value(start+frame,channel,false).to_bits());}}
+        }
+    }
+}
+#[test]
+fn checked_flac_nested_lengths_and_unknown_frame_bound_refuse_before_allocating_probe() {
+    use sampler_kontakt::FlacStreamAdmission;
+    let mut oversized=0u32.to_le_bytes().to_vec();oversized.extend(1u32.to_le_bytes());oversized.extend(u32::MAX.to_le_bytes());
+    let mut picture=0u32.to_le_bytes().to_vec();picture.extend(1u32.to_le_bytes());let key=b"METADATA_BLOCK_PICTURE=AAAA";picture.extend((key.len() as u32).to_le_bytes());picture.extend(key);
+    for (kind,body) in [(4,oversized),(4,picture),(6,vec![0;4]),(5,vec![0;4])] {
+        let bytes=f_flac(5,&[128,128],false,&[(kind,body)],|f,c|sample(f,c,false));let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();
+        assert!(FlacStreamAdmission::inspect(&mut Cursor::new(bytes),external).is_err());
+    }
+    let mut bytes=f_flac(5,&[128,128],false,&[],|f,c|sample(f,c,false));bytes[15..18].fill(0);let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();
+    assert!(FlacStreamAdmission::inspect(&mut Cursor::new(bytes),external).is_err());
+}
+#[test]
+fn checked_flac_workspace_is_preopen_and_error_owner_cannot_be_reused_after_buffered_failure() {
+    use sampler_kontakt::FlacStreamAdmission;use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    let bytes=f_flac(5,&[128,128,128],false,&[],|f,c|sample(f,c,false));let external=bytes.capacity()+size_of::<WObservedSource>();
+    let profile=FlacStreamAdmission::inspect(&mut Cursor::new(bytes.clone()),external).unwrap();let reads=Arc::new(AtomicUsize::new(0));
+    let source=WObservedSource{bytes:Cursor::new(bytes.clone()),reads:reads.clone(),poison:None,poison_reads:Arc::new(AtomicUsize::new(0))};
+    assert!(EncodedChannelReader::open_checked_flac(Box::new(source),profile,profile.accounted_workspace_bytes()-1).is_err());assert_eq!(reads.load(Ordering::Acquire),0);
+    // First packet is intact; all later raw subframes are corrupted while the
+    // encoded bytes remain in the normal MSS ring. CRC failure must invalidate
+    // the owner, not let a seek resurrect retained builder fragments.
+    let mut bad=bytes;let first=42usize;let packet=(bad.len()-first)/3;bad[first+packet+10]^=0x40;
+    let external=bad.capacity()+size_of::<Cursor<Vec<u8>>>();let mut source=Cursor::new(bad);let profile=FlacStreamAdmission::inspect(&mut source,external).unwrap();
+    let mut checked=EncodedChannelReader::open_checked_flac(Box::new(source),profile,profile.accounted_workspace_bytes()).unwrap();
+    let mut out=vec![0.;128*5];checked.read_interleaved(0,&mut out).unwrap();
+    assert!(checked.read_interleaved(128,&mut out).is_err());
+    let mut sentinel=vec![f32::NAN;16*5];assert!(checked.read_interleaved(0,&mut sentinel).is_err());assert!(sentinel.iter().all(|s|s.is_nan()));
+}
+
+struct FObservedSource {
+    bytes:Cursor<Vec<u8>>, delivered:std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl std::io::Read for FObservedSource {
+    fn read(&mut self,out:&mut [u8])->std::io::Result<usize> {let n=std::io::Read::read(&mut self.bytes,out)?;self.delivered.fetch_add(n,std::sync::atomic::Ordering::Relaxed);Ok(n)}
+}
+impl std::io::Seek for FObservedSource {fn seek(&mut self,to:std::io::SeekFrom)->std::io::Result<u64> {std::io::Seek::seek(&mut self.bytes,to)}}
+impl symphonia::core::io::MediaSource for FObservedSource {fn is_seekable(&self)->bool {true}fn byte_len(&self)->Option<u64> {Some(self.bytes.get_ref().len() as u64)}}
+#[test]
+fn checked_flac_false_small_frame_max_stops_before_growth_and_permanently_poisons_owner() {
+    use sampler_kontakt::FlacStreamAdmission;use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    let mut bytes=f_flac(6,&[16000,16000],false,&[],|f,c|sample(f,c,false));
+    // Actual encoded frames exceed190KiB; lying small STREAMINFO lengths must
+    // not permit the normal parser's first fragment to grow to that size.
+    bytes[12..15].copy_from_slice(&[0,0,16]);bytes[15..18].copy_from_slice(&[0,0,16]);
+    let external=bytes.capacity()+size_of::<FObservedSource>();let profile=FlacStreamAdmission::inspect(&mut Cursor::new(bytes.clone()),external).unwrap();
+    let delivered=Arc::new(AtomicUsize::new(0));let source=FObservedSource{bytes:Cursor::new(bytes),delivered:delivered.clone()};
+    let mut checked=EncodedChannelReader::open_checked_flac(Box::new(source),profile,profile.accounted_workspace_bytes()).unwrap();
+    let before=delivered.load(Ordering::Acquire);let mut out=vec![f32::NAN;16*6];assert!(checked.read_interleaved(0,&mut out).is_err());
+    assert!(delivered.load(Ordering::Acquire)-before<=profile.operation_read_quota());assert!(out.iter().all(|s|s.is_nan()));
+    let after=delivered.load(Ordering::Acquire);assert!(checked.read_interleaved(0,&mut out).is_err());assert_eq!(delivered.load(Ordering::Acquire),after);
+}
+#[test]
+fn checked_flac_seek_index_order_and_relative_extent_are_checked_before_normal_seek() {
+    use sampler_kontakt::FlacStreamAdmission;
+    let point=|ts:u64,offset:u64|{let mut b=ts.to_be_bytes().to_vec();b.extend(offset.to_be_bytes());b.extend(128u16.to_be_bytes());b};
+    for table in [
+        [point(128,100),point(0,0)].concat(),
+        [point(0,200),point(128,100)].concat(),
+        point(0,u64::MAX),
+        point(256,0),
+    ] {
+        let bytes=f_flac(5,&[128,128],false,&[(3,table)],|f,c|sample(f,c,false));let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();assert!(FlacStreamAdmission::inspect(&mut Cursor::new(bytes),external).is_err());
+    }
+    let bytes=f_flac(5,&[128,128],false,&[(3,point(0,0))],|f,c|sample(f,c,false));let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();let mut source=Cursor::new(bytes);let profile=FlacStreamAdmission::inspect(&mut source,external).unwrap();let mut checked=EncodedChannelReader::open_checked_flac(Box::new(source),profile,profile.accounted_workspace_bytes()).unwrap();
+    let mut out=vec![0.;32*5];checked.read_interleaved(160,&mut out).unwrap();checked.read_interleaved(0,&mut out).unwrap();for frame in 0..32 {for channel in 0..5 {assert_eq!(out[frame*5+channel].to_bits(),value(frame,channel,false).to_bits());}}
+}
+
+#[test]
+fn checked_flac_metadata_limits_are_derived_before_probe_at_exact_boundaries() {
+    use sampler_kontakt::FlacStreamAdmission;
+    let inspect=|bytes:Vec<u8>|{let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();FlacStreamAdmission::inspect(&mut Cursor::new(bytes),external)};
+    let comments=|count:u32|{let mut body=0u32.to_le_bytes().to_vec();body.extend(count.to_le_bytes());for _ in 0..count {body.extend(0u32.to_le_bytes());}body};
+    assert!(inspect(f_flac(5,&[128],false,&[(4,comments(4096))],|f,c|sample(f,c,false))).is_ok());
+    assert!(inspect(f_flac(5,&[128],false,&[(4,comments(4097))],|f,c|sample(f,c,false))).is_err());
+    let exact=inspect(f_flac(5,&[128],false,&[(1,vec![0;(1<<20)-34])],|f,c|sample(f,c,false))).unwrap();assert_eq!(exact.metadata_bytes(),1<<20);
+    assert!(inspect(f_flac(5,&[128],false,&[(1,vec![0;(1<<20)-33])],|f,c|sample(f,c,false))).is_err());
+}
+#[test]
+fn checked_flac_real_normal_resync_must_start_at_the_admitted_metadata_end() {
+    use sampler_kontakt::FlacStreamAdmission;
+    let mut bytes=f_flac(5,&[128,128],false,&[],|f,c|sample(f,c,false));bytes.insert(42,0);
+    let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();let mut source=Cursor::new(bytes);let profile=FlacStreamAdmission::inspect(&mut source,external).unwrap();assert_eq!(profile.metadata_end(),42);
+    let error=match EncodedChannelReader::open_checked_flac(Box::new(source),profile,profile.accounted_workspace_bytes()) {Ok(_)=>panic!("unproved first-frame offset reached normal seek"),Err(e)=>e};assert!(error.to_string().contains("first frame differs"));
+}
+
+// Append-only F-R1 decoder-boundary witnesses. All bytes are authored here;
+// CRC-valid frames still pass through the real parser and the pinned decoder.
+#[derive(Default, Clone)]
+struct FCSubframeBits { bytes: Vec<u8>, len: usize }
+impl FCSubframeBits {
+    fn put(&mut self, value: u64, width: u32) {
+        for shift in (0..width).rev() {
+            if self.len.is_multiple_of(8) { self.bytes.push(0); }
+            let last = self.bytes.len() - 1;
+            self.bytes[last] |= (((value >> shift) & 1) as u8) << (7 - self.len % 8);
+            self.len += 1;
+        }
+    }
+    fn signed(&mut self, value: i32, width: u32) { self.put(u64::from(value as u32), width); }
+    fn rice(&mut self, residuals: &[i32]) {
+        self.put(1, 2); self.put(0, 4); self.put(30, 5);
+        for &residual in residuals {
+            let word = if residual >= 0 { 2 * i64::from(residual) }
+                else { -2 * i64::from(residual) - 1 } as u64;
+            self.put(0, (word >> 30) as u32); self.put(1, 1);
+            self.put(word & ((1 << 30) - 1), 30);
+        }
+    }
+}
+impl From<Vec<u8>> for FCSubframeBits {
+    fn from(bytes: Vec<u8>) -> Self { let len = bytes.len() * 8; Self { bytes, len } }
+}
+fn fc_fixed(bps: u32, warmup: &[i32], residuals: &[i32]) -> FCSubframeBits {
+    let mut bits = FCSubframeBits::default(); bits.put(0x10 + 2 * warmup.len() as u64, 8);
+    for &s in warmup { bits.signed(s, bps); } bits.rice(residuals); bits
+}
+fn fc_lpc(bps: u32, warmup: &[i32], coefficient: i32, residuals: &[i32]) -> FCSubframeBits {
+    let mut bits = FCSubframeBits::default(); bits.put(0x40 + 2 * (warmup.len() - 1) as u64, 8);
+    for &s in warmup { bits.signed(s, bps); }
+    bits.put(2, 4); bits.put(0, 5); bits.signed(coefficient, 3);
+    for _ in 1..warmup.len() { bits.put(0, 3); }
+    bits.rice(residuals); bits
+}
+fn fc_stream(bps: u32, blocks: &[(usize, FCSubframeBits)]) -> Vec<u8> {
+    let channels = 6usize;
+    let mut audio = Vec::new(); let mut lengths = Vec::new(); let mut at = 0usize;
+    let block_max = blocks.iter().map(|v|v.0).max().unwrap().max(16);
+    let fixed = block_max == 16; // STREAMINFO min16 == max16 requires ByFrame.
+    for (ordinal, (count, body)) in blocks.iter().enumerate() {
+        let mut frame = vec![0xff, if fixed {0xf8} else {0xf9}, 0x70, ((channels - 1) << 4) as u8];
+        frame.extend(f_number(if fixed {ordinal as u64} else {at as u64})); frame.extend(((*count - 1) as u16).to_be_bytes());
+        frame.push(f_crc8(&frame));
+        // FLAC has no inter-subframe padding. Only the entire frame is padded.
+        let mut encoded = FCSubframeBits::default();
+        for _ in 0..channels { for i in 0..body.len {
+            encoded.put(u64::from((body.bytes[i / 8] >> (7 - i % 8)) & 1), 1);
+        }}
+        frame.extend(encoded.bytes);
+        frame.extend(f_crc16(&frame).to_be_bytes()); lengths.push(frame.len()); audio.extend(frame); at += count;
+    }
+    let mut info = [0u8; 34];
+    // The last frame may be shorter than the stored minimum block16.
+    info[..2].copy_from_slice(&16u16.to_be_bytes());
+    info[2..4].copy_from_slice(&(block_max as u16).to_be_bytes());
+    for (pos, n) in [(4, *lengths.iter().min().unwrap()), (7, *lengths.iter().max().unwrap())] {
+        info[pos..pos+3].copy_from_slice(&(n as u32).to_be_bytes()[1..]);
+    }
+    let packed = (48000u64 << 44) | (((channels - 1) as u64) << 41) | (u64::from(bps - 1) << 36) | at as u64;
+    info[10..18].copy_from_slice(&packed.to_be_bytes());
+    let mut bytes = b"fLaC\x80\0\0\x22".to_vec(); bytes.extend(info); bytes.extend(audio); bytes
+}
+fn fc_assert_poisoned(bytes: Vec<u8>, start: u64, frames: usize) {
+    use sampler_kontakt::FlacStreamAdmission;
+    let external = bytes.capacity() + size_of::<Cursor<Vec<u8>>>();
+    let mut source = Cursor::new(bytes);
+    let profile = FlacStreamAdmission::inspect(&mut source, external).unwrap();
+    let mut owner = EncodedChannelReader::open_checked_flac(Box::new(source), profile, profile.accounted_workspace_bytes()).unwrap();
+    if start > 0 {
+        let mut good = vec![0.; start as usize * 6]; owner.read_interleaved(0, &mut good).unwrap();
+    }
+    // A failing first packet must not publish any conversion window, even when
+    // the ordinary demuxer validates the header and CRC. No production unwind
+    // handler is installed; this test observes the actual ordinary boundary.
+    let mut output = vec![f32::NAN; frames * 6];
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.read_interleaved(start, &mut output)));
+    assert!(outcome.is_ok(), "CRC-valid invalid subframe panicked");
+    assert!(outcome.unwrap().is_err()); assert!(output.iter().all(|x|x.is_nan()));
+    assert!(owner.read_interleaved(0, &mut output).is_err());
+    assert!(output.iter().all(|x|x.is_nan()));
+}
+#[test]
+fn checked_flac_crc_valid_short_predictors_and_wasted_bits_return_poisoned_errors() {
+    fc_assert_poisoned(fc_stream(16, &[(16, vec![0x7e].into())]), 0, 16);
+    // A complete constant frame followed by a legal short final frame header;
+    // fixed order4 cannot fit its one-sample body.
+    fc_assert_poisoned(fc_stream(16, &[(16, vec![0, 0, 0].into()), (1, vec![0x18].into())]), 16, 1);
+    let mut bad_wasted = FCSubframeBits::default(); bad_wasted.put(1, 8);
+    bad_wasted.put(0, 16); bad_wasted.put(1, 1);
+    fc_assert_poisoned(fc_stream(16, &[(16, bad_wasted)]), 0, 16);
+}
+#[test]
+fn checked_flac_crc_valid_reconstruction_and_rice_overflow_do_not_publish_audio() {
+    for bps in [16u32, 24, 32] {
+        let max = ((1i64 << (bps - 1)) - 1) as i32;
+        let mut residuals = vec![0; 15]; residuals[0] = 1;
+        fc_assert_poisoned(fc_stream(bps, &[(16, fc_fixed(bps, &[max], &residuals))]), 0, 16);
+        fc_assert_poisoned(fc_stream(bps, &[(16, fc_lpc(bps, &[max], 1, &residuals))]), 0, 16);
+    }
+    let mut bits = FCSubframeBits::default(); bits.put(0x10, 8);
+    bits.put(1, 2); bits.put(0, 4); bits.put(30, 5);
+    bits.put(0, 4); bits.put(1, 1); bits.put(0, 30);
+    fc_assert_poisoned(fc_stream(32, &[(16, bits)]), 0, 16);
+}
+#[test]
+fn checked_flac_real_predictor_frames_match_independent_signed_pcm_and_cancellation() {
+    use sampler_kontakt::FlacStreamAdmission;
+    let check = |bps: u32, expected: Vec<i32>, body: FCSubframeBits| {
+        let bytes = fc_stream(bps, &[(expected.len(), body)]);
+        let external = bytes.capacity() + size_of::<Cursor<Vec<u8>>>();
+        let mut source = Cursor::new(bytes);
+        let profile = FlacStreamAdmission::inspect(&mut source, external).unwrap();
+        let mut reader = EncodedChannelReader::open_checked_flac(Box::new(source), profile, profile.accounted_workspace_bytes()).unwrap();
+        let mut actual = vec![f32::NAN; expected.len() * 6];
+        reader.read_interleaved(0, &mut actual).unwrap();
+        let scale = 2f32.powi(1 - bps as i32);
+        for (frame, &raw) in expected.iter().enumerate() { for channel in 0..6 {
+            assert_eq!(actual[frame * 6 + channel].to_bits(), (raw as f32 * scale).to_bits(), "bps{bps}/frame{frame}/ch{channel}");
+        }}
+    };
+    for bps in [16u32, 24, 32] {
+        let expected: Vec<i32> = (0..64).map(|i| i * 3 - 45).collect();
+        for order in 0..=4 {
+            let residuals: Vec<i32> = expected[order..].iter().map(|&v| match order {0=>v,1=>3,_=>0}).collect();
+            check(bps, expected.clone(), fc_fixed(bps, &expected[..order], &residuals));
+        }
+        for order in [1, 4, 16, 32] {
+            check(bps, expected.clone(), fc_lpc(bps, &expected[..order], 1, &vec![3;64-order]));
+        }
+        let mut bits = FCSubframeBits::default(); bits.put(1, 8);
+        bits.put(0, bps - 2); bits.put(1, 1); bits.put(1, 1);
+        check(bps, vec![-(1i64 << (bps-1)) as i32;16], bits);
+    }
+    let mut expected = vec![2_000_000_000;16]; expected[0] = -1_000_000_000; expected[1] = 1_000_000_000;
+    let mut residuals = vec![0;14]; residuals[0] = -1_000_000_000; residuals[1] = -1_000_000_000;
+    check(32, expected, fc_fixed(32, &[-1_000_000_000,1_000_000_000], &residuals));
+    let mut expected = vec![2_000_000_000;16]; expected[0] = 1_500_000_000;
+    let mut residuals = vec![-2_000_000_000;15]; residuals[0] = -1_000_000_000;
+    check(32, expected, fc_lpc(32, &[1_500_000_000], 2, &residuals));
+}

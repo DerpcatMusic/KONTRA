@@ -280,14 +280,17 @@ impl Sample {
             let origin_cost=CHUNK.checked_add(size_of::<Bytes>()).ok_or_else(||invalid("origin workspace overflow"))?;
             if origin_cost>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"owned UVI header workspace admission"));}
             let mut bytes=part.open(counted)?;
-            let profile=crate::sample_metadata::pcm_stream_admission(&mut bytes,origin_cost)?;
+            let profile=crate::sample_metadata::encoded_stream_admission(&mut bytes,origin_cost)?;
             if let Some(profile)=profile {
                 if self.parts.len()!=1 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI multipart stream needs owned decoder/container admission"));}
                 let reader=(||->io::Result<SampleReader> {
-                    if profile.accounted_workspace_bytes()>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"accounted UVI PCM workspace admission"));}
+                    if profile.accounted_workspace_bytes()>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"accounted UVI encoded workspace admission"));}
                     bytes.seek(SeekFrom::Start(0))?;
                     let metadata=MetadataOptions {limit_metadata_bytes:Limit::Maximum(0),limit_visual_bytes:Limit::Maximum(0)};
-                    let reader=EncodedChannelReader::open_checked_pcm(Box::new(bytes),&metadata,profile,workspace_limit)?;
+                    let reader=match profile {
+                        crate::sample_metadata::StreamAdmission::Pcm(profile)=>EncodedChannelReader::open_checked_pcm(Box::new(bytes),&metadata,profile,workspace_limit)?,
+                        crate::sample_metadata::StreamAdmission::Flac(profile)=>EncodedChannelReader::open_checked_flac(Box::new(bytes),profile,workspace_limit)?,
+                    };
                     SampleReader::accounted_encoded(reader)
                 })().map_err(|error|crate::sample_metadata::wide_stream_refusal(format!("wide UVI owned decoder/container admission: {error}")))?;
                 admitted=Some(reader);
@@ -708,7 +711,7 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
         let mut metadata=None;
         for origin in &sample.parts {
             let mut discovery=origin.open(false).map_err(|e|e.to_string())?;
-            let profile=crate::sample_metadata::pcm_stream_admission(&mut discovery,CHUNK+size_of::<Bytes>()).map_err(|e|e.to_string())?;
+            let profile=crate::sample_metadata::encoded_stream_admission(&mut discovery,CHUNK+size_of::<Bytes>()).map_err(|e|e.to_string())?;
             let channels=if let Some(profile)=profile {
                 if profile.frames()!=frames as u64 {return Err("initial source frame geometry changed".into());}
                 profile.channels()

@@ -468,7 +468,7 @@ impl SampleReader {
     /// cost is a separate contract, not a certified total-owner capability.
     /// Legacy and opaque Custom decoders cannot enter this typed variant.
     pub fn accounted_encoded(reader:crate::EncodedChannelReader)->io::Result<Self> {
-        reader.accounted_workspace_bytes().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"encoded reader has no checked PCM accounting"))?;
+        reader.accounted_workspace_bytes().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"encoded reader has no checked codec accounting"))?;
         let frames=usize::try_from(reader.frames()).map_err(io::Error::other)?;let rate=reader.rate();
         Ok(Self{codec:Codec::Encoded(Box::new(reader)),bytes:None,rate,frames,scratch:Vec::new()})
     }

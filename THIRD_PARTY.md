@@ -146,6 +146,11 @@ MPL-2.0 is file-level copyleft. `vendor/symphonia-format-riff` contains
 Symphonia 0.5.5 sources with a PCM WAVE format-boundary patch; modified
 files retain MPL-2.0 notices and are published with this repository.
 Provenance and patch scope: `vendor/symphonia-format-riff/PATCHES.md`.
+`vendor/symphonia-bundle-flac` contains the published Symphonia 0.5.5 FLAC
+crate with checked decoder subframe/predictor/Rice error boundaries and authored
+regressions. Its original MPL notices remain; the full license and upstream
+archive checksum, source identity and precise patch scope are in
+`vendor/symphonia-bundle-flac/LICENSE-MPL-2.0` and `PATCHES.md`.
 Other Symphonia crates are used unmodified from crates.io. Binary distribution
 also requires informing recipients how to obtain the covered source;
 using unmodified crates does not remove that obligation.
@@ -163,7 +168,8 @@ The original paths identify sections of this file rather than separate files.
 The release asset `KONTRA-nightly-covered-source.zip` supplies the MPL dependency
 source archives; `release-manifest.json` records their checksums. macOS retains
 its license bundle and covered source inside the universal installer. The patched
-`symphonia-format-riff` archive contains the current vendored source;
+`symphonia-format-riff` and `symphonia-bundle-flac` archives contain their
+current vendored preferred sources, including modified files and notices;
 other MPL archives are copied unchanged from the Cargo registry.
 The `.crate` files are gzip-compressed tar archives containing the
 preferred source; extract them with a tar-compatible archive tool.
