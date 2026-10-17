@@ -500,6 +500,167 @@ impl Instrument {
         if let Some(bus) = self.input_bus {
             check.output(Output::Bus(bus))?;
         }
+        // The shared source hierarchy is document identity, not a guess from
+        // processing names. Validate canonical direct membership before either
+        // the event adapter or audio producer can resolve an owner through it.
+        if !self.source_indices.owners.is_empty() {
+            use crate::{SourceEventProcessorId as EventId, SourceInputPredicate as Predicate,
+                SourceOwnerId as Id, SourceOwnerKind as Kind};
+            let owners = &self.source_indices.owners;
+            let invalid = |reason| ValidationError::ZoneRouting {
+                owner: "source owner hierarchy".into(), reason,
+            };
+            let mut identities = std::collections::BTreeMap::new();
+            for (index, owner) in owners.iter().enumerate() {
+                if identities.insert(owner.id, index).is_some() {
+                    return Err(invalid("duplicate native source owner identity"));
+                }
+                let kind_matches = match (owner.id, owner.kind, &self.source) {
+                    (Id::UviNode(_), Kind::Instrument | Kind::Layer | Kind::Keygroup
+                        | Kind::Player | Kind::Aux, crate::SourceFormat::Uvi) => true,
+                    (Id::KontaktInstrument, Kind::Instrument, crate::SourceFormat::Kontakt { .. })
+                    | (Id::KontaktGroup(_), Kind::KontaktGroup, crate::SourceFormat::Kontakt { .. })
+                    | (Id::KontaktZone(_), Kind::KontaktZone, crate::SourceFormat::Kontakt { .. }) => true,
+                    _ => false,
+                };
+                if !kind_matches {
+                    return Err(invalid("native source identity does not match its format and kind"));
+                }
+            }
+            let mut appearances = vec![0usize; owners.len()];
+            let mut roots = Vec::new();
+            let mut event_ids = std::collections::BTreeSet::new();
+            for (index, owner) in owners.iter().enumerate() {
+                if let Some(parent) = owner.parent {
+                    if !identities.contains_key(&parent) || parent == owner.id {
+                        return Err(invalid("dangling or self-parent native source owner"));
+                    }
+                } else {
+                    if owner.kind != Kind::Instrument {
+                        return Err(invalid("only an instrument is a source hierarchy root"));
+                    }
+                    roots.push(index);
+                }
+                for child in &owner.children {
+                    let child = *identities.get(child)
+                        .ok_or_else(|| invalid("dangling source child identity"))?;
+                    if owners[child].parent != Some(owner.id) {
+                        return Err(invalid("source child has a different canonical parent"));
+                    }
+                    appearances[child] = appearances[child].checked_add(1)
+                        .ok_or_else(|| invalid("source child membership overflow"))?;
+                    if appearances[child] != 1 {
+                        return Err(invalid("duplicate source child membership"));
+                    }
+                }
+                for (refs, count, reason) in [
+                    (owner.groups.iter().map(|g| g.0).collect::<Vec<_>>(), self.groups.len(),
+                        "dangling or duplicate source owner group binding"),
+                    (owner.zones.iter().map(|z| z.0).collect::<Vec<_>>(), self.zones.len(),
+                        "dangling or duplicate source owner zone binding"),
+                ] {
+                    let mut seen = std::collections::BTreeSet::new();
+                    for reference in refs {
+                        if reference >= count || !seen.insert(reference) {
+                            return Err(invalid(reason));
+                        }
+                    }
+                }
+                for predicate in &owner.predicates {
+                    let valid = match predicate {
+                        Predicate::Keys(range) => range.low <= range.high && range.high < 128,
+                        Predicate::Velocities(range) => range.low <= range.high && range.high < 128,
+                        Predicate::Channel(channel) => *channel < 16,
+                        Predicate::Unsupported { field } => !field.is_empty(),
+                    };
+                    if !valid { return Err(invalid("invalid retained source input predicate")); }
+                }
+                let mut switches = Vec::with_capacity(owner.event_processors.len() + 2);
+                switches.extend(owner.bypass);
+                switches.extend(owner.mute);
+                for (ordinal, processor) in owner.event_processors.iter().enumerate() {
+                    if processor.owner != owner.id || processor.ordinal as usize != ordinal
+                        || processor.kind.is_empty() || !event_ids.insert(processor.id) {
+                        return Err(invalid("event processor lost original owner, full-list order or identity"));
+                    }
+                    let address_matches = match (owner.id, processor.id) {
+                        (Id::UviNode(_), EventId::UviNode(node)) => !identities.contains_key(&Id::UviNode(node)),
+                        (Id::KontaktInstrument | Id::KontaktGroup(_) | Id::KontaktZone(_),
+                            EventId::KontaktScriptSlot(_)) => true,
+                        _ => false,
+                    };
+                    if !address_matches {
+                        return Err(invalid("event processor address is not in its source namespace"));
+                    }
+                    switches.push(processor.bypass);
+                }
+                for switch in switches {
+                    if let Some(control) = switch.control {
+                        if !matches!(self.controls.get(control.0).map(|c| &c.value),
+                            Some(crate::ControlValue::Toggle { .. })) {
+                            return Err(invalid("source switch requires an actual typed boolean control"));
+                        }
+                    }
+                }
+            }
+            if roots.len() != 1 || owners.iter().enumerate().any(|(index, owner)|
+                appearances[index] != usize::from(owner.parent.is_some())) {
+                return Err(invalid("source hierarchy requires one root and exact direct child membership"));
+            }
+            let mut reached = vec![false; owners.len()];
+            let mut pending = roots;
+            let mut visited = 0usize;
+            while let Some(index) = pending.pop() {
+                if reached[index] { return Err(invalid("cyclic native source hierarchy")); }
+                reached[index] = true;
+                visited += 1;
+                pending.extend(owners[index].children.iter().map(|id| identities[id]));
+            }
+            if visited != owners.len() {
+                return Err(invalid("unreachable or cyclic native source hierarchy"));
+            }
+        }
+        let mut recipe_members = std::collections::BTreeSet::new();
+        let mut recipe_owners = std::collections::BTreeSet::new();
+        for recipe in &self.source_indices.processing {
+            let invalid = |reason| ValidationError::ZoneRouting { owner: "source processing recipe".into(), reason };
+            if !recipe_owners.insert(recipe.owner)
+                || !self.source_indices.owners.iter().any(|owner| owner.id == recipe.owner) {
+                return Err(invalid("processing recipe has absent or duplicate source owner"));
+            }
+            let owner = self.source_indices.owners.iter().find(|owner| owner.id == recipe.owner)
+                .ok_or_else(|| invalid("processing recipe source owner disappeared"))?;
+            match recipe.lifetime {
+                crate::SourceProcessingLifetime::UviKeygroupActivation => {
+                    if !matches!(recipe.owner, crate::SourceOwnerId::UviNode(_))
+                        || owner.kind != crate::SourceOwnerKind::Keygroup
+                        || owner.zones != recipe.members {
+                        return Err(invalid("UVI processing recipe differs from its actual keygroup members"));
+                    }
+                }
+            }
+            if recipe.members.is_empty() || recipe.members.len() > 16 {
+                return Err(invalid("processing recipe member capacity is invalid"));
+            }
+            for member in &recipe.members {
+                check.exists(Reference::Zone(member.0))?;
+                if !recipe_members.insert(member.0) {
+                    return Err(invalid("source zone has multiple source processing recipes"));
+                }
+            }
+            if let Some(chain) = recipe.chain { check.exists(Reference::Chain(chain.0))?; }
+            if let Some(amplitude) = recipe.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
+            if let Some(bus) = recipe.output { check.exists(Reference::Bus(bus.0))?; }
+            if let Some(index) = recipe.compiled {
+                let Some(scope) = self.processing_scopes.get(index) else {
+                    return Err(invalid("source recipe compiled scope is absent"));
+                };
+                if scope.members != recipe.members || scope.chain != recipe.chain
+                    || scope.amplitude != recipe.amplitude || scope.output != recipe.output {
+                    return Err(invalid("source recipe differs from actual compiled scope"));
+                }
+            }
+        }
         if self.processing_scopes.len() > 256 {
             return Err(ValidationError::ZoneRouting { owner: "processing scopes".into(),
                 reason: "processing scope definition capacity exceeded" });

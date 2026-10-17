@@ -322,6 +322,8 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
     out.ir.register_compressor_controls();
+    out.ir.source_indices.owners = source_owners(program, &out.ir)
+        .map_err(Translate::Invalid)?;
     #[cfg(feature = "scan")]
     {
         out.ir.dsp_slots = Some(coverage::slots(&out, program));
@@ -344,6 +346,132 @@ fn routers<'a>(node: Node<'a, 'a>) -> impl Iterator<Item = Node<'a, 'a>> {
     node.children()
         .filter(|n| n.has_tag_name("BusRouters"))
         .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+}
+
+/// Retain the actual source hierarchy once for both audio and event producers.
+/// This does not mark an unknown processor as implemented, execute a callback,
+/// or choose its DSP lifetime from the XML tag's display name.
+fn source_owners(program: Node, instrument: &ir::Instrument) -> Result<Vec<ir::SourceOwner>, String> {
+    fn kind(node: Node) -> Option<ir::SourceOwnerKind> {
+        if !node.is_element() { return None; }
+        Some(match node.tag_name().name() {
+            "Program" => ir::SourceOwnerKind::Instrument,
+            "Layer" => ir::SourceOwnerKind::Layer,
+            "Keygroup" => ir::SourceOwnerKind::Keygroup,
+            "SamplePlayer" => ir::SourceOwnerKind::Player,
+            "AuxEffect" => ir::SourceOwnerKind::Aux,
+            _ if node.is_element() && node.parent().is_some_and(|p| p.has_tag_name("Oscillators")) =>
+                ir::SourceOwnerKind::Player,
+            _ => return None,
+        })
+    }
+    fn identity(node: Node) -> Result<ir::SourceOwnerId, String> {
+        u32::try_from(node.id().get_usize()).map(ir::SourceOwnerId::UviNode)
+            .map_err(|_| "source owner XML node identity exceeds supported range".into())
+    }
+    fn saved_switch(node: Node, field: &str) -> Result<Option<ir::SourceSwitch>, String> {
+        node.attribute(field).map(|_| number(node, field, 0.).map(|value|
+            ir::SourceSwitch { saved: value != 0., control: None })).transpose()
+    }
+    let count = program.descendants().filter(|node| kind(*node).is_some()).count();
+    let mut nodes = Vec::new();
+    nodes.try_reserve_exact(count).map_err(|_| "source owner inventory capacity".to_string())?;
+    nodes.extend(program.descendants().filter(|node| kind(*node).is_some()));
+    let mut positions = HashMap::new();
+    positions.try_reserve(count).map_err(|_| "source owner identity capacity".to_string())?;
+    for (index, node) in nodes.iter().enumerate() {
+        positions.insert(identity(*node)?, index);
+    }
+    let mut targets = HashMap::new();
+    targets.try_reserve(instrument.source_indices.sample_targets.len())
+        .map_err(|_| "source owner target capacity".to_string())?;
+    for target in &instrument.source_indices.sample_targets {
+        if targets.insert(target.node, target.zones.as_slice()).is_some() {
+            return Err("duplicate actual source player target".into());
+        }
+    }
+    let mut owners = Vec::new();
+    owners.try_reserve_exact(nodes.len()).map_err(|_| "source hierarchy capacity".to_string())?;
+    for node in &nodes {
+        let node = *node;
+        let id = identity(node)?;
+        let owner_kind = kind(node).ok_or("source owner kind disappeared")?;
+        let parent = node.ancestors().skip(1).find(|node| kind(*node).is_some())
+            .map(identity).transpose()?;
+        let mut predicates = Vec::new();
+        if matches!(owner_kind, ir::SourceOwnerKind::Layer | ir::SourceOwnerKind::Keygroup) {
+            predicates.push(ir::SourceInputPredicate::Keys(ir::KeyRange {
+                low: midi(node, "LowKey", 0)?, high: midi(node, "HighKey", 127)?,
+            }));
+        }
+        if owner_kind == ir::SourceOwnerKind::Keygroup {
+            predicates.push(ir::SourceInputPredicate::Velocities(ir::VelocityRange {
+                low: midi(node, "LowVelocity", 1)?, high: midi(node, "HighVelocity", 127)?,
+            }));
+        }
+        // Do not guess whether an unjoined native channel field is zero- or
+        // one-based, nor silently turn an unimplemented generator into a sample.
+        for field in ["MidiChannel", "MIDIChannel", "InputChannel"] {
+            if node.attribute(field).is_some() {
+                predicates.push(ir::SourceInputPredicate::Unsupported { field: field.into() });
+            }
+        }
+        if owner_kind == ir::SourceOwnerKind::Player && !node.has_tag_name("SamplePlayer") {
+            predicates.push(ir::SourceInputPredicate::Unsupported {
+                field: format!("source-kind:{}", node.tag_name().name()),
+            });
+        }
+        let zones = match id {
+            ir::SourceOwnerId::UviNode(node) => targets.get(&node).map_or_else(Vec::new, |zones| zones.to_vec()),
+            _ => return Err("UVI source owner namespace changed".into()),
+        };
+        let mut groups = Vec::new();
+        for zone in &zones {
+            let zone = instrument.zones.get(zone.0).ok_or("source owner has dangling translated zone")?;
+            if let Some(group) = zone.group && !groups.contains(&group) { groups.push(group); }
+        }
+        let mut event_processors = Vec::new();
+        for processor in node.children().filter(|n| n.has_tag_name("EventProcessors"))
+            .flat_map(|list| list.children().filter(|node| node.is_element())) {
+            let ordinal = u32::try_from(event_processors.len())
+                .map_err(|_| "source event-list ordinal exceeds supported range")?;
+            let processor_id = u32::try_from(processor.id().get_usize())
+                .map_err(|_| "source event processor identity exceeds supported range")?;
+            event_processors.push(ir::SourceEventProcessor {
+                id: ir::SourceEventProcessorId::UviNode(processor_id), owner: id, ordinal,
+                kind: processor.tag_name().name().into(),
+                bypass: ir::SourceSwitch { saved: number(processor, "Bypass", 0.)? != 0., control: None },
+            });
+        }
+        owners.push(ir::SourceOwner { id, parent, kind: owner_kind,
+            children: Vec::new(), groups, zones, predicates,
+            bypass: saved_switch(node, "Bypass")?, mute: saved_switch(node, "Mute")?,
+            event_processors });
+    }
+    for index in 0..owners.len() {
+        if let Some(parent) = owners[index].parent {
+            let parent_index = *positions.get(&parent).ok_or("source owner parent is outside program")?;
+            let child = owners[index].id;
+            owners[parent_index].children.push(child);
+        }
+    }
+    // A KG's direct source membership is useful to both selection and audio.
+    // Layers/Program retain their direct child graph instead of an unbounded
+    // duplicated descendant-zone cache. All source/event identities stay put.
+    for index in (0..owners.len()).rev() {
+        if owners[index].kind != ir::SourceOwnerKind::Keygroup { continue; }
+        let children = owners[index].children.clone();
+        for child in children {
+            let child = *positions.get(&child).ok_or("source child identity disappeared")?;
+            if owners[child].kind != ir::SourceOwnerKind::Player { continue; }
+            for group in owners[child].groups.clone() {
+                if !owners[index].groups.contains(&group) { owners[index].groups.push(group); }
+            }
+            let child_zones = owners[child].zones.clone();
+            owners[index].zones.extend(child_zones);
+        }
+    }
+    Ok(owners)
 }
 
 /// A node's own `SignalConnection`s.
@@ -633,7 +761,10 @@ impl Translation {
             }
             // Scripts address individual keygroups/oscillators, including
             // single-oscillator keygroups; no two original nodes may alias.
-            self.split = scripted.then(|| (ordinal + 1, base.clone()));
+            // Source identity is independent of whether a Lua processor exists.
+            // Keep every authored oscillator and its own bypass selector; a
+            // muted alternate must never mute a sibling sharing one Group.
+            self.split = Some((ordinal + 1, base.clone()));
             if self.split.is_none() {
                 self.ir.groups.push(base);
             }
@@ -737,12 +868,42 @@ impl Translation {
         }
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
-        let (processors, placed) = self.inserts(
+        let (mut processors, mut placed) = self.inserts(
             keygroup,
             true,
             Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8),
         )?;
-        let chain = (!placed.is_empty()).then(|| {
+        // The keygroup's own insert-bypass is a separate retained owner from
+        // each insert's Bypass and every SamplePlayer enable predicate.
+        let insert_count = u16::try_from(processors.len())
+            .map_err(|_| format!("{at}: keygroup insert count exceeds shared chain capacity"))?;
+        processors.insert(0, ir::Processor::Mix {
+            count: insert_count,
+            address: ir::SlotAddress {
+                group: -1, slot: -1,
+                generic: i32::try_from(keygroup.id().get_usize())
+                    .map_err(|_| format!("{at}: keygroup insert-bypass address exceeds native domain"))?,
+            },
+            dry: 0., wet: 1.,
+            bypass: number(keygroup, "BypassInsertFX", 0.)? != 0.,
+        });
+        for (_, first, _) in &mut placed { *first += 1; }
+        // A keygroup gain is a zero-capable real owner at the KG boundary,
+        // never an epsilon ratio against a gain folded into physical sources.
+        if !gain.is_finite() || gain < 0. || gain > f64::from(f32::MAX) {
+            return Err(format!("{at}: keygroup Gain outside finite source domain"));
+        }
+        let gain_index = if number(keygroup, "FXPostGain", 0.)? != 0. {
+            // Native owner+410 bit2: true means FX follow the gain.
+            processors.insert(0, ir::Processor::Gain(ir::Gain::Linear(gain)));
+            for (_, first, _) in &mut placed { *first += 1; }
+            0
+        } else {
+            let index = processors.len();
+            processors.push(ir::Processor::Gain(ir::Gain::Linear(gain)));
+            index
+        };
+        let chain = {
             self.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
                 pre_amplitude: processors,
@@ -750,8 +911,23 @@ impl Translation {
             });
             let chain = ir::ChainRef(self.ir.chains.len() - 1);
             self.place(chain, placed);
-            chain
-        });
+            let control = ir::ControlRef(self.ir.controls.len());
+            self.ir.controls.push(ir::Control {
+                key: engine_parameters::scope_gain_key(keygroup.id().get_usize()),
+                label: "Keygroup Gain".into(),
+                value: ir::ControlValue::Continuous {
+                    min: 0., max: f64::from(f32::MAX), default: gain,
+                    unit: ir::ControlUnit::None,
+                },
+                automation: ir::Automation::None,
+            });
+            self.ir.processor_controls.push(ir::ProcessorControl {
+                control, chain, index: gain_index,
+                parameter: ir::ProcessorParameter::Gain,
+                ramp: ir::Time::ZERO,
+            });
+            Some(chain)
+        };
         if let Some(chain) = chain {
             for insert in keygroup
                 .children()
@@ -771,15 +947,20 @@ impl Translation {
                 }
             }
         }
+        // One actual keygroup activation owns the insert chain. Source zones
+        // retain their own cursor/amplitude; they do not each instantiate KG DSP.
+        let first_member = self.ir.zones.len();
         for (oscillator, player) in keygroup
-            .descendants()
-            .filter(|n| n.has_tag_name("SamplePlayer"))
+            .children()
+            .filter(|n| n.has_tag_name("Oscillators"))
+            .flat_map(|n| n.children().filter(|n| n.is_element()))
             .enumerate()
         {
-            let bypassed = number(player, "Bypass", 0.0)? != 0.0;
-            if bypassed && self.split.is_none() {
+            if !player.has_tag_name("SamplePlayer") {
+                self.unsupported(&path(player), "oscillator source kind", player.tag_name().name());
                 continue;
             }
+            let bypassed = number(player, "Bypass", 0.0)? != 0.0;
             let group = self.oscillator_group(
                 group,
                 oscillator as u32 + 1,
@@ -879,17 +1060,37 @@ impl Translation {
                         + modulation.pitch
                         + scaling_tune,
                 ),
-                gain: ir::Gain::Linear(gain * number(player, "Gain", 1.0)? * modulation.gain),
+                gain: ir::Gain::Linear(number(player, "Gain", 1.0)? * modulation.gain),
                 velocity,
                 pan: ir::Pan {
                     position: (pan + player_pan + modulation.pan).clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
                 playback,
-                chain,
+                // A player-local chain must be attached here when present;
+                // the keygroup's chain is the shared owner below.
+                chain: None,
                 amplitude,
                 routes: modulation.routes,
                 ..asset.map_or_else(ir::Zone::dormant, ir::Zone::new)
+            });
+        }
+        if first_member < self.ir.zones.len() {
+            self.ir.source_indices.processing.push(ir::SourceProcessingRecipe {
+                name: keygroup.attribute("Name").unwrap_or("Keygroup").to_owned(),
+                owner: ir::SourceOwnerId::UviNode(u32::try_from(keygroup.id().get_usize())
+                    .map_err(|_| "keygroup identity exceeds source address domain".to_owned())?),
+                lifetime: ir::SourceProcessingLifetime::UviKeygroupActivation,
+                members: (first_member..self.ir.zones.len()).map(ir::ZoneRef).collect(),
+                chain,
+                // Source envelopes retain their existing physical ownership.
+                // No independent shared envelope is inferred from ancestry.
+                amplitude: None,
+                output: match self.ir.zones[first_member].group.map(|group| self.ir.groups[group.0].output) {
+                    Some(ir::Output::Bus(bus)) => Some(bus),
+                    Some(ir::Output::Master) | None => None,
+                },
+                compiled: None,
             });
         }
         Ok(())

@@ -133,7 +133,6 @@ pub struct ChannelVoice {
     pub message: Message,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplyError {
     DisabledGroup,
@@ -176,25 +175,37 @@ pub enum Applied {
     Unsupported,
 }
 
-
 impl Value {
-    pub(super) fn valid(self)->bool {
-        match self {Self::Bits7(value)=>value<128,Self::Bits14(value)=>value<16384,Self::Bits16(_)|Self::Bits32(_)=>true}
+    pub(super) fn valid(self) -> bool {
+        match self {
+            Self::Bits7(value) => value < 128,
+            Self::Bits14(value) => value < 16384,
+            Self::Bits16(_) | Self::Bits32(_) => true,
+        }
     }
 }
 impl ChannelVoice {
     /// Public typed calls cannot rely on the four-bit packet decoder's bounds.
-    pub(super) fn valid(self)->bool {
-        if self.group>=16||self.channel>=16 {return false;}
+    pub(super) fn valid(self) -> bool {
+        if self.group >= 16 || self.channel >= 16 {
+            return false;
+        }
         match self.message {
-            Message::NoteOn{key,velocity,..}=>key<128&&velocity.valid(),
-            Message::NoteOff{key,velocity,..}=>key<128&&velocity.is_none_or(Value::valid),
-            Message::PolyPressure{key,value}=>key<128&&value.valid(),
-            Message::Control{index,value}=>index<128&&value.valid(),
-            Message::Program{program,bank}=>program<128&&bank.is_none_or(|bank|bank.into_iter().all(|value|value<128)),
-            Message::ChannelPressure(value)|Message::PitchBend(value)=>value.valid(),
-            Message::PerNotePitch{key,..}|Message::PerNoteControl{key,..}|Message::PerNoteManagement{key,..}=>key<128,
-            Message::ChannelControl{bank,index,..}|Message::RelativeControl{bank,index,..}=>bank<128&&index<128,
+            Message::NoteOn { key, velocity, .. } => key < 128 && velocity.valid(),
+            Message::NoteOff { key, velocity, .. } => {
+                key < 128 && velocity.is_none_or(Value::valid)
+            }
+            Message::PolyPressure { key, value } => key < 128 && value.valid(),
+            Message::Control { index, value } => index < 128 && value.valid(),
+            Message::Program { program, bank } => {
+                program < 128 && bank.is_none_or(|bank| bank.into_iter().all(|value| value < 128))
+            }
+            Message::ChannelPressure(value) | Message::PitchBend(value) => value.valid(),
+            Message::PerNotePitch { key, .. }
+            | Message::PerNoteControl { key, .. }
+            | Message::PerNoteManagement { key, .. } => key < 128,
+            Message::ChannelControl { bank, index, .. }
+            | Message::RelativeControl { bank, index, .. } => bank < 128 && index < 128,
         }
     }
 }

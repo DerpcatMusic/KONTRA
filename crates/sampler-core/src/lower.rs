@@ -656,6 +656,9 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
         return Err(core(Stage::ZoneRouting, "source zone catalog")(Error::Capacity));
     }
     instrument.validate().map_err(LowerError::Invalid)?;
+    if instrument.source_indices.processing.iter().any(|recipe| recipe.compiled.is_none()) {
+        return Err(core(Stage::Regions, "source processing recipe has no actual source geometry binding")(Error::UnsupportedSourceLayout));
+    }
     // This must precede group-tap rewriting, effect preparation, behavior
     // binding and publication. A wide recipe may never become a legacy voice
     // merely because the initial implementation cannot render its layout yet.
@@ -693,6 +696,15 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             if zone.pan.position != 0. || unsupported_chain {
                 return Err(core(Stage::VoiceChains, "source section requires typed channel ports")(Error::UnsupportedSourceLayout));
             }
+        }
+    }
+    // Check source-member sends BEFORE with_group_taps drains them. Captured
+    // source outlets do not feed their individual group taps; admitting the
+    // rewritten empty lists would silently discard authored routes.
+    for scope in &instrument.processing_scopes {
+        if scope.members.iter().any(|member| instrument.zones[member.0].group
+            .is_some_and(|group| !instrument.groups[group.0].sends.is_empty())) {
+            return Err(core(Stage::Regions, "shared source member sends require owner route placement")(Error::UnsupportedSourceLayout));
         }
     }
     let tapped;
@@ -948,24 +960,38 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             )
             .map_err(core(Stage::Regions, "monophonic release"))?;
     }
+    // ONE actual document hierarchy is retained before either event or audio
+    // sections resolve their owner; source list positions are never VM slots.
+    plan = plan.with_source_owners(&instrument.source_indices.owners, instrument.groups.len(), instrument.zones.len(),
+        &instrument.controls.iter().map(|control|ir_control_id(&control.key)).collect::<Vec<_>>())
+        .map_err(core(Stage::Regions, "source owner hierarchy"))?;
     // Compile explicit shared sections into the SAME typed chain owner table.
     // A definition shared by members is not a physical source or a global bus.
     let mut processing_scopes = Vec::with_capacity(instrument.processing_scopes.len());
     let mut region_processing = vec![None; instrument.zones.len()];
     for (index, scope) in instrument.processing_scopes.iter().enumerate() {
         let owner = format!("processing scope {index}");
+        let source_owner = instrument.source_indices.processing.iter()
+            .find(|recipe| recipe.compiled == Some(index))
+            .map(|recipe| plan.source_owner_index(recipe.owner)
+                .ok_or_else(|| core(Stage::Regions, owner.clone())(Error::InvalidInput)))
+            .transpose()?;
         match scope.cadence { ir::ProcessingCadence::CoreCell64 => {} }
+        // Definition admission uses immutable storage identity/geometry. A
+        // required-resident asset may legitimately be cold until the normal
+        // streamer installs its first payload; current readiness belongs to the
+        // all-member onset fence, not this off-audio definition compiler.
         if scope.members.iter().any(|z| {
-            instrument.zones[z.0].asset.is_none_or(|a| pcm.get(a.0).is_none_or(|source| !source.is_paged() && source.resident_view().is_none()))
+            instrument.zones[z.0].asset.is_some_and(|a| pcm.get(a.0).is_none())
         }) {
             return Err(core(Stage::Regions, owner)(Error::InvalidInput));
         }
         // Stage A executes resident independently-clocked members. The graph
-        // declares its final output; members cannot also emit to source buses.
+        // declares its final output. owner_capture suppresses member bus writes,
+        // so their source routing identity does not create a second emission.
         for (ordinal, zone) in scope.members.iter().enumerate() {
             let z = &instrument.zones[zone.0];
-            if z.group.is_some_and(|g| instrument.groups[g.0].output != ir::Output::Master
-                || !instrument.groups[g.0].sends.is_empty()
+            if z.group.is_some_and(|g| !instrument.groups[g.0].sends.is_empty()
                 || instrument.groups[g.0].voice_limit.is_some()
                 || instrument.groups[g.0].source_voice_limit.is_some())
                 || instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty()
@@ -985,13 +1011,18 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             return Err(unsupported(owner.clone(), Feature::Controls));
         }
         let first = scope.members[0];
-        let mut section = ir::Zone::new(instrument.zones[first.0].asset.unwrap());
+        // This temporary section owns only shared processor/envelope lowering.
+        // A dormant first definition has no PCM geometry to invent; retaining
+        // its None is supported by ordinary Lowering::zone and keeps order.
+        let mut section = instrument.zones[first.0].asset
+            .map_or_else(ir::Zone::dormant, ir::Zone::new);
         section.chain = scope.chain;
         section.amplitude = scope.amplitude;
         section.velocity = ir::VelocityResponse::None;
         let (region, chain) = lowering.zone(first.0, &section)?;
         let chain = chain.map(|chain| { let index = chains.len(); chains.push(chain); index });
         processing_scopes.push(crate::topology::PreparedScope {
+            source_owner,
             chain, sum: scope.sum, envelope: region.envelope, has_amplitude: scope.amplitude.is_some(),
             bus: scope.output.or(instrument.input_bus).map(|b| b.0),
             members: scope.members.iter().map(|z| z.0).collect(),

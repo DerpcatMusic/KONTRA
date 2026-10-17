@@ -98,7 +98,9 @@ impl Translation {
             let slot = out.len();
             let id = node.id().get_usize();
             let bypassed = number(node, "Bypass", 0.0)? != 0.0;
-            let mix = scripted && engine_parameters::bypassable(node);
+            // A keygroup chain is retained once even without an initial script.
+            // A saved bypass must not erase the processor/history/control home.
+            let mix = (scripted || voice) && engine_parameters::bypassable(node);
             if bypassed && !mix {
                 // Exactly silent: nothing to translate (a script that enables it
                 // reports its write).

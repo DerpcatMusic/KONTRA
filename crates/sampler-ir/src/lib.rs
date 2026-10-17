@@ -242,6 +242,16 @@ pub enum DspSlotReason {
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
+    /// Original source-owner hierarchy. Identities are document-local native
+    /// addresses, not runtime handles, display names, or processing-owner IDs.
+    /// The compiled plan/actual runtime owner supplies generation fencing.
+    /// Empty is legacy metadata absence, never proof that all scopes coincide.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub owners: Vec<SourceOwner>,
+    /// Source-defined shared processing recipes. No width is guessed during
+    /// XML/container translation; the normal loader binds actual source ports.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing: Vec<SourceProcessingRecipe>,
     /// Original physical order. Empty for caches without native identity metadata.
     #[cfg_attr(feature = "cache", serde(default))]
     pub zone_catalog: Vec<SourceZone>,
@@ -319,6 +329,89 @@ pub struct ZoneRouteVariant {
 pub struct SourceSampleTarget {
     pub node: u32,
     pub zones: Vec<ZoneRef>,
+}
+
+/// A real source address in the importing instrument's document namespace.
+/// Kontakt's physical group/zone indices are deliberately not UVI XML node IDs.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceOwnerId {
+    UviNode(u32),
+    KontaktInstrument,
+    KontaktGroup(u32),
+    KontaktZone(u32),
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceOwnerKind {
+    Instrument,
+    Layer,
+    Keygroup,
+    Player,
+    Aux,
+    KontaktGroup,
+    KontaktZone,
+}
+
+/// A retained source property. A binding is real only when it names a typed
+/// control; the saved value alone does not pretend to implement live updates.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSwitch {
+    pub saved: bool,
+    pub control: Option<ControlRef>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceEventProcessorId {
+    UviNode(u32),
+    KontaktScriptSlot(u32),
+}
+
+/// EVERY direct authored event-list member, including unsupported processors.
+/// `ordinal` counts the original full list, not only ScriptProcessor entries.
+/// This row is source metadata, not a VM, callback token, or execution admission.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEventProcessor {
+    pub id: SourceEventProcessorId,
+    pub owner: SourceOwnerId,
+    pub ordinal: u32,
+    pub kind: String,
+    pub bypass: SourceSwitch,
+}
+
+/// Known native input predicates. An unsupported predicate remains explicit;
+/// its absence from an adapter cannot silently mean "accept every event".
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceInputPredicate {
+    Keys(KeyRange),
+    Velocities(VelocityRange),
+    Channel(u8),
+    Unsupported { field: String },
+}
+
+/// Source topology and semantic membership shared by the audio and event
+/// producers. `children` is direct original order. `zones`/`groups` are actual
+/// translated references within this owner's subtree, not guessed names.
+/// The kind does NOT choose a DSP lifetime: UVI KG activation processing,
+/// Kontakt per-voice groups and instrument buses compile their own proven law.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceOwner {
+    pub id: SourceOwnerId,
+    pub parent: Option<SourceOwnerId>,
+    pub kind: SourceOwnerKind,
+    pub children: Vec<SourceOwnerId>,
+    pub groups: Vec<GroupRef>,
+    pub zones: Vec<ZoneRef>,
+    pub predicates: Vec<SourceInputPredicate>,
+    pub bypass: Option<SourceSwitch>,
+    pub mute: Option<SourceSwitch>,
+    pub event_processors: Vec<SourceEventProcessor>,
 }
 
 /// Initial storage recipe for ONE source/zone, not three selectable voices.
@@ -1022,7 +1115,32 @@ impl Instrument {
                 remap.get(z.0).copied().unwrap_or(Some(*z))
             }).collect();
         }
-        self.processing_scopes.retain(|scope| !scope.members.is_empty());
+        let mut processing_remap = vec![None; self.processing_scopes.len()];
+        let mut processing_old = 0;
+        let mut processing_next = 0;
+        self.processing_scopes.retain(|scope| {
+            let keep = !scope.members.is_empty();
+            if keep { processing_remap[processing_old] = Some(processing_next); processing_next += 1; }
+            processing_old += 1;
+            keep
+        });
+        for recipe in &mut self.source_indices.processing {
+            recipe.members = recipe.members.iter().filter_map(|zone| {
+                remap.get(zone.0).copied().unwrap_or(Some(*zone))
+            }).collect();
+            recipe.compiled = recipe.compiled.and_then(|old| {
+                processing_remap.get(old).copied().unwrap_or(Some(old))
+            });
+        }
+        self.source_indices.processing.retain(|recipe| !recipe.members.is_empty());
+        // Keep every native owner and event-list identity after narrowing.
+        // Only actual translated zone references change. Dangling public refs
+        // remain visible for validate(), rather than becoming a missing owner.
+        for owner in &mut self.source_indices.owners {
+            owner.zones = owner.zones.iter().filter_map(|zone| {
+                remap.get(zone.0).copied().unwrap_or(Some(*zone))
+            }).collect();
+        }
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
         }
@@ -1903,6 +2021,32 @@ pub enum Depth {
 }
 
 // ---------------------------------------------------------------- DSP
+
+/// A native source-owner recipe, resolved on the ordinary loader after actual
+/// SourceStorage geometry is available. This is not a second render engine.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingRecipe {
+    /// Authored display label only; all joins use owner/member identities.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub name: String,
+    pub owner: SourceOwnerId,
+    pub lifetime: SourceProcessingLifetime,
+    /// Authored order, including saved-bypass and dormant source definitions.
+    pub members: Vec<ZoneRef>,
+    pub chain: Option<ChainRef>,
+    pub amplitude: Option<ModulatorRef>,
+    pub output: Option<BusRef>,
+    /// Actual materialized ProcessingScope index; None is untranslated geometry.
+    /// This index is never a source/native identity or runtime liveness token.
+    pub compiled: Option<usize>,
+}
+
+/// Native scope lifetime evidence, separate from numerical sample profiles.
+/// Kontakt Group ownership is deliberately not inferred from its display name.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceProcessingLifetime { UviKeygroupActivation }
 
 /// One per-attack shared processing definition. Only selected members of this
 /// activation contribute, in this authored order. Each member keeps its source

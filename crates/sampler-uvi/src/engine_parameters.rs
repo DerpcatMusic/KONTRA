@@ -561,3 +561,30 @@ pub(crate) fn convolver_slots(
     }
     slots
 }
+
+/// Source-owner identity remains the actual XML node id. Key generation here
+/// is off audio; the callback equivalent below uses only a fixed stack buffer.
+pub(crate) fn scope_gain_key(node: usize) -> String {
+    format!("uvi:scope-gain:{node}")
+}
+pub(crate) fn scope_gain_control(node: usize) -> Result<sampler_core::ControlId, sampler_core::Error> {
+    let mut bytes = [0u8; 64];
+    let prefix = b"uvi:scope-gain:";
+    bytes[..prefix.len()].copy_from_slice(prefix);
+    let mut digits = [0u8; 20];
+    let mut n = node;
+    let mut count = 0;
+    loop {
+        if count == digits.len() { return Err(sampler_core::Error::InvalidInput); }
+        digits[count] = b'0' + (n % 10) as u8;
+        count += 1;
+        n /= 10;
+        if n == 0 { break; }
+    }
+    for (index, byte) in digits[..count].iter().rev().enumerate() {
+        bytes[prefix.len() + index] = *byte;
+    }
+    let key = std::str::from_utf8(&bytes[..prefix.len() + count])
+        .map_err(|_| sampler_core::Error::InvalidInput)?;
+    Ok(sampler_core::lower::ir_control_id(key))
+}

@@ -1255,9 +1255,18 @@ impl super::Prepared {
                 ZoneRoutingFeature::DynamicSampleUpdates,
             ));
         }
-        if routes.iter().flat_map(|route| &route.variants).filter_map(|variant| variant.region)
-            .any(|region| self.region_source_storage(region).is_some_and(|s| s.stereo().is_none())) {
-            return Err(ZoneRoutingBuildError::Unsupported(ZoneRoutingFeature::SourceLayout));
+        if routes
+            .iter()
+            .flat_map(|route| &route.variants)
+            .filter_map(|variant| variant.region)
+            .any(|region| {
+                self.region_source_storage(region)
+                    .is_some_and(|s| s.stereo().is_none())
+            })
+        {
+            return Err(ZoneRoutingBuildError::Unsupported(
+                ZoneRoutingFeature::SourceLayout,
+            ));
         }
         let variant_count = routes
             .iter()
@@ -1340,7 +1349,8 @@ impl super::Prepared {
             for (index, region) in self.regions.iter().enumerate().filter(|(i, _)| routed[*i]) {
                 let cursor = region.cursor.map(|c| c.cursor(&self.cursor_loops));
                 let wave = cursor.and_then(|c| c.wavetable());
-                let source_rate = self.source_storage(region.sample)
+                let source_rate = self
+                    .source_storage(region.sample)
                     .map_or(self.rate, |source| source.sample_rate());
                 let step = if let Some(root) = region.root_key {
                     // SAME root+tuning arithmetic and Playback::step as new_tuned.
@@ -3324,7 +3334,26 @@ mod authored {
 
     #[test]
     fn default_source_completion_slots_respect_local_cell_and_callback_byte_limits() {
-        let p = runtime_plan_with_jobs(MAX_ZONE_BATCH_JOBS);
+        // This fixture exercises callback/cell admission, not the independent
+        // absolute job-count ceiling. Retained callback context is real storage:
+        // derive enough jobs for the actual callback ceiling inside the existing
+        // 32MiB routing budget, rather than demanding 65536 large JobSlots.
+        let bytes_per_slot = size_of::<crate::Slot<crate::behavior::Continuation>>()
+            + size_of::<crate::behavior::Ready>()
+            + size_of::<crate::BehaviorId>()
+            + size_of::<u64>()
+            + 4096 * size_of::<i64>();
+        let callback_ceiling = (crate::Limits::SCRIPT_CELLS / 4096)
+            .min(crate::Limits::SCRIPT_CALLBACK_BYTES / bytes_per_slot);
+        assert!(callback_ceiling > 0 && callback_ceiling < MAX_ZONE_BATCH_JOBS);
+        let p = runtime_plan_with_jobs(callback_ceiling);
+        // The absolute maximum request still refuses before state allocation
+        // when even its independently priced job storage cannot fit.
+        let insufficient = Jobs::storage_bytes(MAX_ZONE_BATCH_JOBS).unwrap() - 1;
+        assert!(matches!(
+            try_bank(60, 60, MAX_ZONE_BATCH_JOBS, insufficient),
+            Err(Error::Capacity)
+        ));
         let program = |instance| {
             crate::Program::new(vec![
                 crate::Instruction::SetLocal {
@@ -3347,16 +3376,12 @@ mod authored {
                 stage: 0,
             }])
             .unwrap();
-        assert_eq!(p.zone_completion_capacity(), MAX_ZONE_BATCH_JOBS);
+        assert_eq!(p.zone_completion_capacity(), callback_ceiling);
         let limits = crate::Limits::for_plan(&p, 4, 4);
-        assert_eq!(limits.behaviors, crate::Limits::SCRIPT_CELLS / 4096);
-        assert_eq!(limits.behavior_cells, crate::Limits::SCRIPT_CELLS);
-        let bytes_per_slot = size_of::<crate::Slot<crate::behavior::Continuation>>()
-            + size_of::<crate::behavior::Ready>()
-            + size_of::<crate::BehaviorId>()
-            + size_of::<u64>()
-            + 4096 * size_of::<i64>();
+        assert_eq!(limits.behaviors, callback_ceiling);
+        assert_eq!(limits.behavior_cells, callback_ceiling * 4096);
+        assert!(limits.behavior_cells <= crate::Limits::SCRIPT_CELLS);
         assert!(limits.behaviors * bytes_per_slot <= crate::Limits::SCRIPT_CALLBACK_BYTES);
-        assert!(limits.behaviors < p.zone_routing_job_capacity());
+        assert!(limits.behaviors < MAX_ZONE_BATCH_JOBS);
     }
 }
