@@ -800,3 +800,129 @@ fn known_wide_admission_failures_never_erase_bad_player_beside_a_valid_sibling()
     }
     let mut out=[[0.;2];64];support::without_heap(||old.render(&mut out).unwrap());assert!(out.iter().flatten().any(|v|*v!=0.));
 }
+
+fn f_crc8(bytes:&[u8])->u8 {let mut crc=0u8;for byte in bytes {crc^=*byte;for _ in 0..8 {crc=if crc&0x80!=0 {(crc<<1)^7}else{crc<<1};}}crc}
+fn f_crc16(bytes:&[u8])->u16 {let mut crc=0u16;for byte in bytes {crc^=u16::from(*byte)<<8;for _ in 0..8 {crc=if crc&0x8000!=0 {(crc<<1)^0x8005}else{crc<<1};}}crc}
+fn f_number(value:u64)->Vec<u8> {
+    if value<128 {return vec![value as u8];}
+    let count=(2usize..=7).find(|&n|value<(1u64<<(5*n+1))).expect("authored FLAC coded-number range");
+    let mut bytes=vec![((0xffu16<<(8-count)) as u8)|((value>>(6*(count-1))) as u8)];
+    for shift in (0..count-1).rev() {bytes.push(0x80|((value>>(6*shift)) as u8&63));}bytes
+}
+fn f_flac(channels:usize,blocks:&[usize],variable:bool,metadata:&[(u8,Vec<u8>)],raw:impl Fn(usize,usize)->i16)->Vec<u8> {
+    assert!((1..=8).contains(&channels));assert!(!blocks.is_empty());assert!(blocks.iter().all(|n|(16..=65535).contains(n)));
+    if !variable {assert!(blocks.iter().all(|n|*n==blocks[0]));}
+    let frames=blocks.iter().sum::<usize>();let mut audio=Vec::new();let mut lengths=Vec::new();let mut at=0;
+    for (ordinal,&count) in blocks.iter().enumerate() {
+        let mut frame=vec![0xff,if variable {0xf9}else{0xf8},0x70,(((channels-1)<<4)|8) as u8];
+        frame.extend(f_number(if variable {at as u64}else{ordinal as u64}));frame.extend(((count-1) as u16).to_be_bytes());frame.push(f_crc8(&frame));
+        for channel in 0..channels {frame.push(2);for i in 0..count {frame.extend(raw(at+i,channel).to_be_bytes());}}
+        frame.extend(f_crc16(&frame).to_be_bytes());lengths.push(frame.len());audio.extend(frame);at+=count;
+    }
+    let mut info=vec![0;34];info[..2].copy_from_slice(&(*blocks.iter().min().unwrap() as u16).to_be_bytes());info[2..4].copy_from_slice(&(*blocks.iter().max().unwrap() as u16).to_be_bytes());
+    for (at,n) in [(4,*lengths.iter().min().unwrap()),(7,*lengths.iter().max().unwrap())] {assert!(n<1<<24);info[at..at+3].copy_from_slice(&(n as u32).to_be_bytes()[1..]);}
+    let packed=(48000u64<<44)|(((channels-1) as u64)<<41)|(15u64<<36)|frames as u64;info[10..18].copy_from_slice(&packed.to_be_bytes());
+    let mut bytes=b"fLaC".to_vec();bytes.extend([if metadata.is_empty(){128}else{0},0,0,34]);bytes.extend(info);
+    for (i,(kind,body)) in metadata.iter().enumerate() {assert!(body.len()<1<<24);bytes.push(*kind|if i+1==metadata.len(){128}else{0});bytes.extend(&(body.len() as u32).to_be_bytes()[1..]);bytes.extend(body);}
+    bytes.extend(audio);bytes
+}
+
+#[test]
+fn normal_uvi_checked_flac_keeps_original_channels_and_all_players_through_late_streamed_pcm() {
+    let fixture=Fixture::new();
+    for channels in [1usize,2,3,5,6,8] {
+        let file=format!("owned-{channels}.flac");let path=fixture.file(&file,&f_flac(channels,&vec![512;160],false,&[],value));
+        let preset=fixture.program("owned-flac.uvip",&file,"");
+        let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
+        let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,channels),48000,&policy).unwrap();
+        assert_eq!(streamed.loaded.instrument.zones.len(),3);assert_eq!(streamed.loaded.instrument.groups.len(),1);
+        let targets=streamed.loaded.instrument.source_indices.sample_targets.iter().map(|t|sampler_core::SampleTargetId(t.node)).collect::<Vec<_>>();assert_eq!(targets.len(),3);
+        let source=streamed.loaded.plan.source_storage(0).unwrap();let source_id=source.id();assert_eq!(source.channels().get(),channels.max(2));assert!(source.is_paged());assert!(source.resident_view().is_none());
+        let mut packs=Vec::new();source.physical_dependencies(|p|packs.push(p.clone()));let ids=packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();assert_eq!(ids.len(),channels.div_ceil(2));
+        let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;
+        let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);let mut expected=runtime(sampler_uvi::assemble_translated(w_uvi_translated(&preset,channels),48000).unwrap());
+        for target in &targets {assert_eq!(actual.sample_target_source_storage(*target).unwrap().id(),source_id);}
+        actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);note(&mut actual);note(&mut expected);
+        let mut energy=0.;for block in 0..258 {
+            actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();let mut a=[[0.;2];64];let mut b=a;
+            support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
+            if block>=16 {for (a,b) in a.iter().zip(b) {for lane in 0..2 {assert!((a[lane]-b[lane]).abs()<=2e-6,"{channels}/{block}: {a:?} != {b:?}");energy+=f64::from(a[lane]).powi(2);}}}
+        }
+        assert!(energy>0.01);assert_eq!((actual.voice_count(),actual.stream_underruns(),actual.nonfinite_frames()),(3,0,0));assert_eq!(actual.processing_owner_count(),usize::from(channels>2));
+        let frame=actual.now() as usize-16;let cache=actual.stream_cache_mut().unwrap().reader();
+        for (pair,id) in ids.iter().copied().enumerate() {
+            let found=cache.frame(id,frame).unwrap_or_else(||{let mut out=[[0.;2];1];packs[pair].copy_resident_range(frame,&mut out).expect("FLAC late original ordinal not in admitted head/page");out[0]});
+            for lane in 0..2 {let ordinal=pair*2+lane;let expected=if channels==1 {f32::from(value(frame,0))/32768.} else if ordinal<channels {f32::from(value(frame,ordinal))/32768.} else {0.};assert_eq!(found[lane].to_bits(),expected.to_bits());}
+        }
+        assert_eq!(packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>(),ids);assert!(keep.head_budget_status().held_bytes<=policy.head_budget);assert!(path.is_file());
+    }
+}
+#[test]
+fn normal_uvi_checked_flac_foreign_loop_options_and_program_root_keep_existing_precedence() {
+    let fixture=Fixture::new();let encoded=wav(5,false,true);
+    // Xiph preserves the RIFF header in one APPLICATION and each original
+    // chunk in a separate APPLICATION. Audio data retains only its header.
+    let mut applications=vec![(2,[b"riff".as_slice(),&encoded[..12]].concat())];
+    let mut at=12;
+    while at<encoded.len() {
+        let bytes=u32::from_le_bytes(encoded[at+4..at+8].try_into().unwrap()) as usize;
+        let end=at+8+bytes+(bytes&1);
+        let preserved=if &encoded[at..at+4]==b"data" {&encoded[at..at+8]} else {&encoded[at..end]};
+        applications.push((2,[b"riff".as_slice(),preserved].concat()));at=end;
+    }
+    assert_eq!(at,encoded.len());
+    fixture.file("loop.flac",&f_flac(5,&[128],false,&applications,value));
+    for (name,options,looped) in [("inherit","",true),("empty","<PlaybackOptions/>",false),("explicit","<PlaybackOptions><Loop Start='32' End='64' Type='0'/></PlaybackOptions>",true)] {
+        let preset=fixture.program(&format!("f-{name}.uvip"),"loop.flac",options);let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,..Default::default()};
+        let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,5),48000,&policy).unwrap();
+        let resident=sampler_uvi::assemble_translated(w_uvi_translated(&preset,5),48000).unwrap();
+        for zone in &streamed.loaded.instrument.zones {assert_eq!(zone.pitch,ir::KeyTracking::Tracked{root:60});assert_eq!(zone.tune.semitones(),0.);match zone.playback.looping {
+            ir::Looping::Continuous(range)=>{assert!(looped);assert_eq!((range.start,range.end),if name=="explicit"{(32,64)}else{(16,96)});},ir::Looping::None=>assert!(!looped),other=>panic!("unexpected FLAC file loop {other:?}")
+        }}
+        let horizon=u32::try_from(streamed.report.head_frames.max(128)).unwrap();let _keep=streamed.streamer;let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);let mut expected=runtime(resident);
+        actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);note(&mut actual);note(&mut expected);let mut energy=0.;
+        for block in 0..32 {actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();let mut a=[[0.;2];64];let mut b=a;support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=16 {for (a,b) in a.iter().zip(b) {for lane in 0..2 {assert!((a[lane]-b[lane]).abs()<=2e-6);energy+=f64::from(a[lane]).powi(2);}}}}
+        if looped {assert!(energy>0.01);assert_eq!(actual.voice_count(),3);} else {assert_eq!(energy,0.);assert_eq!(actual.voice_count(),0);}
+        assert_eq!((actual.stream_underruns(),actual.nonfinite_frames()),(0,0));
+    }
+}
+#[test]
+fn malformed_whole_riff_flac_application_cannot_publish_a_wide_processing_source() {
+    let fixture=Fixture::new();fixture.file("old.wav",&wav(2,false,true));
+    let old=fixture.program("old-foreign.uvip","old.wav","");
+    let mut old=runtime(sampler_uvi::load(&old,48000).unwrap());note(&mut old);
+    old.render(&mut [[0.;2];64]).unwrap();let before=(old.active_plan(),old.now(),old.voice_count());
+    let foreign=[b"riff".as_slice(),wav(5,false,true).as_slice()].concat();
+    fixture.file("malformed-foreign.flac",&f_flac(5,&[128],false,&[(2,foreign)],value));
+    let preset=fixture.program("malformed-foreign.uvip","malformed-foreign.flac","");
+    assert!(sampler_uvi::assemble_translated(w_uvi_translated(&preset,5),48000).is_err());
+    assert!(sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,5),48000,&Default::default()).is_err());
+    assert_eq!((old.active_plan(),old.now(),old.voice_count()),before);
+    let mut output=[[0.;2];64];old.render(&mut output).unwrap();assert!(output.iter().flatten().any(|value|*value!=0.));
+}
+#[test]
+fn normal_uvi_checked_flac_group_reload_reuses_all_real_pack_ids_and_recovers_late_pcm() {
+    let fixture=Fixture::new();fixture.file("family.flac",&f_flac(6,&vec![512;160],false,&[],value));let preset=fixture.program("family-flac.uvip","family.flac","");
+    let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
+    let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,6),48000,&policy).unwrap();let source=streamed.loaded.plan.source_storage(0).unwrap();let identity=source.id();
+    let family=match source {sampler_core::SourceStorageRef::Channels(f)=>f.clone(),_=>panic!("FLAC logical family was narrowed")};let mut packs=Vec::new();source.physical_dependencies(|p|packs.push(p.clone()));let ids=packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();assert_eq!(ids.len(),3);
+    let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);
+    let plan=actual.active_plan();let input=Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(1901)};let first=actual.trigger(input,60,1.).unwrap();actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();actual.render(&mut [[0.;2];64]).unwrap();assert_eq!(actual.voice_count(),3);
+    let settle=|rt:&mut Runtime| {let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);loop {rt.render(&mut [[0.;2];64]).unwrap();if rt.residency_progress(plan).unwrap().pending==0 {break;}assert!(std::time::Instant::now()<deadline);std::thread::yield_now();}};
+    actual.request_group_residency(plan,0,false,sampler_core::ScriptInstanceId(0)).unwrap();settle(&mut actual);assert!(!actual.group_resident(plan,0).unwrap());assert_eq!(actual.voice_count(),0);assert!(actual.input_held(first).unwrap());assert!(packs.iter().all(|p|p.residency_owners()==0 && p.head_bytes()==0));
+    actual.request_group_residency(plan,0,true,sampler_core::ScriptInstanceId(0)).unwrap();settle(&mut actual);assert!(actual.group_resident(plan,0).unwrap());assert_eq!(actual.active_plan(),plan);assert_eq!(family.id(),identity);assert_eq!(packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>(),ids);assert!(packs.iter().all(|p|p.residency_owners()==1));
+    let mut expected=runtime(sampler_uvi::assemble_translated(w_uvi_translated(&preset,6),48000).unwrap());let mut before=actual.now();while before!=0 {let n=before.min(64) as usize;expected.render(&mut [[0.;2];64][..n]).unwrap();before-=n as u64;}
+    let input=Input{external_id:Some(1902),..input};actual.trigger(input,60,1.).unwrap();expected.trigger(input,60,1.).unwrap();let mut energy=0.;
+    for block in 0..128 {actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();let mut a=[[0.;2];64];let mut b=a;support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=16 {for (a,b) in a.iter().zip(b) {for lane in 0..2 {assert!((a[lane]-b[lane]).abs()<=2e-6);energy+=f64::from(a[lane]).powi(2);}}}}
+    assert!(energy>0.01);assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.nonfinite_frames(),actual.stream_underruns()),(3,1,0,0));assert!(keep.head_budget_status().held_bytes<=policy.head_budget);
+}
+#[test]
+fn normal_uvi_unaccounted_flac_metadata_and_cancel_keep_old_plan_and_target_identities() {
+    use std::sync::atomic::{AtomicUsize,Ordering};let fixture=Fixture::new();fixture.file("old.wav",&wav(2,false,true));let old_path=fixture.program("f-old.uvip","old.wav","");let loaded=sampler_uvi::load(&old_path,48000).unwrap();let targets=loaded.instrument.source_indices.sample_targets.iter().map(|t|sampler_core::SampleTargetId(t.node)).collect::<Vec<_>>();let mut old=runtime(loaded);note(&mut old);old.render(&mut [[0.;2];64]).unwrap();let before=(old.active_plan(),old.now(),old.voice_count());let ids=targets.iter().map(|t|old.sample_target_source_storage(*t).unwrap().id()).collect::<Vec<_>>();
+    fixture.file("bad.flac",&f_flac(5,&[128],false,&[(6,vec![0;4])],value));let path=fixture.program("f-bad.uvip","bad.flac","");
+    let error=match sampler_uvi::assemble_translated_streamed(w_uvi_translated(&path,5),48000,&Default::default()) {Ok(_)=>panic!("unaccounted FLAC picture reached ordinary allocation"),Err(e)=>e};assert!(error.to_string().contains("wide UVI"));assert!(error.to_string().contains("picture/cuesheet"));assert_eq!((old.active_plan(),old.now(),old.voice_count()),before);
+    fixture.file("incoming.flac",&f_flac(5,&[128,128],false,&[],value));let path=fixture.program("f-cancel.uvip","incoming.flac","");let calls=AtomicUsize::new(0);
+    assert!(sampler_uvi::assemble_translated_streamed_cancelable(w_uvi_translated(&path,5),48000,&Default::default(),&||calls.fetch_add(1,Ordering::AcqRel)>=2).is_err());assert!(calls.load(Ordering::Acquire)>=3);assert_eq!((old.active_plan(),old.now(),old.voice_count()),before);
+    for (target,id) in targets.iter().zip(ids) {assert_eq!(old.sample_target_source_storage(*target).unwrap().id(),id);}
+    let mut out=[[0.;2];64];support::without_heap(||old.render(&mut out).unwrap());assert!(out.iter().flatten().any(|v|*v!=0.));
+}

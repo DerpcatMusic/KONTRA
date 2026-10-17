@@ -217,6 +217,248 @@ fn validate_pcm_container(source:&mut dyn MediaSource,admission:PcmStreamAdmissi
     source.seek(SeekFrom::Start(0))?;sample_rate.ok_or_else(||invalid("PCM sample rate absent"))
 }
 
+/// Checked native-FLAC container facts and owned codec capacities. External
+/// MediaSource capacity remains a separate caller contract, as for PCM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlacStreamAdmission {
+    extent:u64, metadata_end:u64, channels:usize, rate:u32, frames:u64,
+    bits:u32, block_min:usize, block_max:usize, frame_max:usize,
+    stream_info:[u8;34], metadata_bytes:usize, packet_quota:usize,
+    packet_payload_bound:usize, codec_bound:usize, process_metadata_bound:usize, external_source_bytes:usize,
+    accounted_bound:usize,
+}
+impl FlacStreamAdmission {
+    /// Inspect only bounded headers/metadata before any allocating format open.
+    /// The source must remain immutable across this check and the normal reader.
+    pub fn inspect<R:std::io::Read+std::io::Seek+?Sized>(source:&mut R,external_source_workspace_bytes:usize)->io::Result<Self> {
+        use std::io::SeekFrom;
+        if external_source_workspace_bytes==0 {return Err(invalid_input("FLAC external source contract is empty"));}
+        let extent=source.seek(SeekFrom::End(0))?;source.seek(SeekFrom::Start(0))?;
+        let mut magic=[0;4];source.read_exact(&mut magic)?;if &magic!=b"fLaC" {return Err(invalid("checked source is not native FLAC"));}
+        let mut stream_info=None;let mut at=4u64;let mut metadata_bytes=0usize;
+        let mut comments=0usize;let mut comment_entries=0usize;let mut retained_strings=0usize;let mut comment_temporary=0usize;
+        let mut seek_points=0usize;let mut seek_table=false;let mut seek_ts=0u64;let mut seek_offset=0u64;let mut seek_end=0u64;let mut last_seek=None;let mut application_peak=0usize;
+        let unsupported=|reason|io::Error::new(io::ErrorKind::Unsupported,reason);
+        let overflow=||invalid("FLAC admission arithmetic overflow");
+        for blocks in 0..65536usize {
+            if extent.saturating_sub(at)<4 {return Err(invalid("truncated FLAC metadata header"));}
+            source.seek(SeekFrom::Start(at))?;let mut header=[0;4];source.read_exact(&mut header)?;
+            let kind=header[0]&127;let last=header[0]&128!=0;
+            let length=usize::from(header[1])*65536+usize::from(header[2])*256+usize::from(header[3]);
+            let end=at.checked_add(4).and_then(|n|n.checked_add(length as u64)).ok_or_else(overflow)?;
+            if end>extent {return Err(invalid("FLAC metadata exceeds frozen extent"));}
+            metadata_bytes=metadata_bytes.checked_add(length).ok_or_else(overflow)?;
+            if metadata_bytes>1<<20 {return Err(unsupported("FLAC metadata byte admission"));}
+            if blocks==0 && kind!=0 {return Err(invalid("FLAC STREAMINFO must be first"));}
+            match kind {
+                0=>{
+                    if stream_info.is_some() || length!=34 {return Err(invalid("FLAC STREAMINFO shape"));}
+                    let mut bytes=[0;34];source.read_exact(&mut bytes)?;stream_info=Some(bytes);
+                }
+                1=>{}, // PADDING: skipped by the same bounded normal reader.
+                2=>{
+                    if length<4 {return Err(invalid("truncated FLAC application identifier"));}
+                    // The actual parser immediately drops this VendorData.
+                    // Identifier<=16 escaped bytes, including Vec growth overlap.
+                    application_peak=application_peak.max(length-4+3*16);
+                }
+                3=>{
+                    if seek_table || length%18!=0 {return Err(invalid("FLAC seek table shape"));}seek_table=true;
+                    for _ in 0..length/18 {
+                        let mut point=[0;18];source.read_exact(&mut point)?;
+                        let ts=u64::from_be_bytes(point[..8].try_into().map_err(invalid)?);
+                        if ts!=u64::MAX {
+                            let offset=u64::from_be_bytes(point[8..16].try_into().map_err(invalid)?);let count=u64::from(u16::from_be_bytes([point[16],point[17]]));
+                            if offset>=extent || count==0 || last_seek.is_some_and(|(t,o)|ts<=t || offset<o) {return Err(invalid("FLAC seek point geometry/order"));}
+                            last_seek=Some((ts,offset));seek_end=seek_end.max(ts.checked_add(count).ok_or_else(overflow)?);
+                            seek_points=seek_points.checked_add(1).ok_or_else(overflow)?;seek_ts=seek_ts.max(ts);seek_offset=seek_offset.max(offset);
+                        }
+                    }
+                }
+                4=>{
+                    // Scoped nested lengths are checked BEFORE normal Vorbis
+                    // allocates comment_length bytes. No body Vec is used here.
+                    let mut left=length;
+                    let read_len=|source:&mut R,left:&mut usize|->io::Result<usize> {
+                        if *left<4 {return Err(invalid("truncated FLAC comment length"));}
+                        let mut b=[0;4];source.read_exact(&mut b)?;*left-=4;Ok(u32::from_le_bytes(b) as usize)
+                    };
+                    let vendor=read_len(source,&mut left)?;
+                    if vendor>left {return Err(invalid("FLAC vendor exceeds containing block"));}
+                    source.seek(SeekFrom::Current(vendor as i64))?;left-=vendor;
+                    let count=read_len(source,&mut left)?;
+                    comment_entries=comment_entries.checked_add(count).ok_or_else(overflow)?;
+                    if comment_entries>4096 || count.checked_mul(4).is_none_or(|n|n>left) {return Err(unsupported("FLAC comment count admission"));}
+                    let mut scratch=[0u8;8192];
+                    for _ in 0..count {
+                        let length=read_len(source,&mut left)?;
+                        if length>left {return Err(invalid("FLAC comment exceeds containing block"));}
+                        if length>scratch.len() {return Err(unsupported("FLAC individual comment admission"));}
+                        source.read_exact(&mut scratch[..length])?;left-=length;
+                        let text=std::str::from_utf8(&scratch[..length]).map_err(invalid)?;
+                        comment_temporary=comment_temporary.max(length);
+                        if let Some((key,value))=text.split_once('=') {
+                            if key.bytes().any(|b|!(0x20..=0x7d).contains(&b)) {return Err(unsupported("FLAC comment key encoding admission"));}
+                            if key.eq_ignore_ascii_case("METADATA_BLOCK_PICTURE") {return Err(unsupported("FLAC encoded picture admission"));}
+                            // Pinned alloc::str ASCII lowercasing reserves the
+                            // exact key length. UTF8 is already valid, so
+                            // from_utf8_lossy borrows; only input Vec+lower key
+                            // coexist with the separately charged retained tags.
+                            comment_temporary=comment_temporary.max(length.checked_add(key.len()).ok_or_else(overflow)?);
+                            comments=comments.checked_add(1).ok_or_else(overflow)?;
+                            retained_strings=retained_strings.checked_add(key.len()).and_then(|n|n.checked_add(value.len())).ok_or_else(overflow)?;
+                        }
+                    }
+                    if left!=0 {return Err(invalid("FLAC comment block has trailing fields"));}
+                }
+                5|6=>return Err(unsupported("FLAC picture/cuesheet owner admission")),
+                127=>return Err(invalid("reserved FLAC metadata kind")),
+                _=>{}, // Normal reader skips bounded unknown nonallocating blocks.
+            }
+            at=end;
+            if !last {continue;}
+            let info=stream_info.ok_or_else(||invalid("FLAC STREAMINFO absent"))?;
+            let block_min=usize::from(u16::from_be_bytes([info[0],info[1]]));let block_max=usize::from(u16::from_be_bytes([info[2],info[3]]));
+            let frame_min=usize::from(info[4])*65536+usize::from(info[5])*256+usize::from(info[6]);
+            let frame_max=usize::from(info[7])*65536+usize::from(info[8])*256+usize::from(info[9]);
+            let packed=u64::from_be_bytes(info[10..18].try_into().map_err(invalid)?);
+            let rate=(packed>>44) as u32;let channels=((packed>>41)&7) as usize+1;
+            let bits=((packed>>36)&31) as u32+1;let frames=packed&((1u64<<36)-1);
+            if block_min<16 || block_max<block_min || frame_max==0 || frame_min>frame_max
+                || !(1..=655350).contains(&rate) || !(4..=32).contains(&bits) || frames==0 || at>=extent {
+                return Err(invalid("FLAC fixed geometry admission"));
+            }
+            if usize::try_from(frames).is_err() {return Err(invalid("FLAC frame count exceeds source index domain"));}
+            if channels<=2 {return Err(unsupported("checked FLAC wide profile requires more than two original channels"));}
+            if seek_points!=0 && (seek_ts>=frames || seek_end>frames || seek_offset>=extent-at) {return Err(invalid("FLAC seek index exceeds admitted source"));}
+            // MSS contributes up to its ENTIRE old64KiB ring without an
+            // underlying read. Add max32KiB fetch overshoot to the new quota.
+            let packet_quota=(frame_max.checked_add(1024+16).ok_or_else(overflow)?).max(32784).checked_add(32768).ok_or_else(overflow)?;
+            let total=packet_quota.checked_add(65536).ok_or_else(overflow)?;
+            let grow=total.checked_add(1024).ok_or_else(overflow)?.max(32784);
+            let growth_peak=total.checked_add(grow.checked_mul(3).ok_or_else(overflow)?).ok_or_else(overflow)?;
+            let shrink_peak=total.checked_mul(2).and_then(|n|grow.checked_mul(2).and_then(|g|n.checked_add(g))).ok_or_else(overflow)?;
+            let merge_peak=total.checked_mul(3).ok_or_else(overflow)?;
+            let parser_peak=growth_peak.max(shrink_peak).max(merge_peak);
+            // RawVec pinned1.99 amortized growth <=2*required (minimum4 for
+            // Tag/SeekPoint). Charge old+new overlap <=3*max(4,required).
+            let vec_peak=|count:usize,size:usize|->io::Result<usize> {if count==0 {Ok(0)} else {count.max(4).checked_mul(3).and_then(|n|n.checked_mul(size)).ok_or_else(overflow)}};
+            let metadata_peak=retained_strings.checked_add(comment_temporary)
+                .and_then(|n|n.checked_add(application_peak)).ok_or_else(overflow)?
+                .checked_add(vec_peak(comments,size_of::<symphonia::core::meta::Tag>())?).ok_or_else(overflow)?
+                .checked_add(vec_peak(seek_points,size_of::<symphonia::core::formats::util::SeekPoint>())?).ok_or_else(overflow)?;
+            let align=size_of::<usize>();let round=|n:usize|n.div_ceil(align)*align;
+            let state=round(size_of::<symphonia::core::checksum::Crc16Ansi>())+round(size_of::<usize>());
+            let fragment=round(size_of::<Box<[u8]>>())+round(size_of::<u16>())+round(size_of::<bool>())+round(state);
+            let samples=block_max.checked_mul(channels).ok_or_else(overflow)?;
+            let codec_bound=parser_peak.checked_add(65536).and_then(|n|n.checked_add(metadata_peak))
+                .and_then(|n|n.checked_add(4*fragment))
+                .and_then(|n|n.checked_add(samples.checked_mul(8)?))
+                .and_then(|n|n.checked_add(4*size_of::<symphonia::core::formats::Track>()))
+                .and_then(|n|n.checked_add(4*size_of::<symphonia::core::meta::MetadataRevision>()))
+                .and_then(|n|n.checked_add(3*34))
+                .and_then(|n|n.checked_add(size_of::<symphonia::default::formats::FlacReader>()))
+                .and_then(|n|n.checked_add(size_of::<symphonia::default::codecs::FlacDecoder>()))
+                .and_then(|n|n.checked_add(size_of::<EncodedChannelReader>()))
+                .and_then(|n|n.checked_add(size_of::<FlacReadSource>()))
+                .and_then(|n|n.checked_add(size_of::<FlacReadAuthority>()+2*size_of::<usize>()))
+                .and_then(|n|n.checked_add(channels.checked_mul(2*size_of::<&[f32]>())?))
+                .ok_or_else(overflow)?;
+            // Symphonia0.5.5's immutable Vorbis tag registry has88 static
+            // insert calls (87 keys). Pinned std1.99/hashbrown0.17.1 grows
+            // through64->128 buckets. Charge that shared init old+new peak,
+            // including controls and worst alignment; do not call it owned or
+            // released by this reader. Every active reader conservatively
+            // reserves it; whole-process baseline ownership is separate.
+            let registry_cell=size_of::<(&'static str,symphonia::core::meta::StandardTagKey)>();
+            let registry_align=std::mem::align_of::<(&'static str,symphonia::core::meta::StandardTagKey)>().max(16);
+            let process_metadata_bound=if comments==0 {0} else {(128usize+64).checked_mul(registry_cell+1).and_then(|n|n.checked_add(4*registry_align)).ok_or_else(overflow)?};
+            let accounted_bound=codec_bound.checked_add(process_metadata_bound).and_then(|n|n.checked_add(external_source_workspace_bytes)).ok_or_else(overflow)?;
+            if accounted_bound>isize::MAX as usize {return Err(invalid("FLAC workspace exceeds address space"));}
+            source.seek(SeekFrom::Start(0))?;
+            return Ok(Self{extent,metadata_end:at,channels,rate,frames,bits,block_min,block_max,frame_max,stream_info:info,
+                metadata_bytes,packet_quota,packet_payload_bound:total,codec_bound,process_metadata_bound,external_source_bytes:external_source_workspace_bytes,accounted_bound});
+        }
+        Err(unsupported("FLAC metadata block admission"))
+    }
+    pub fn channels(self)->usize {self.channels}
+    pub fn rate(self)->u32 {self.rate}
+    pub fn frames(self)->u64 {self.frames}
+    pub fn block_frames(self)->usize {self.block_max}
+    pub fn minimum_block_frames(self)->usize {self.block_min}
+    pub fn metadata_end(self)->u64 {self.metadata_end}
+    pub fn metadata_bytes(self)->usize {self.metadata_bytes}
+    pub fn operation_read_quota(self)->usize {self.packet_quota}
+    pub fn maximum_frame_bytes(self)->usize {self.frame_max}
+    pub fn verified_codec_workspace_bytes(self)->usize {self.codec_bound}
+    /// Conservative shared process-global tag-registry initialization peak.
+    /// Its immutable storage survives reader drop; no ownership is fabricated.
+    pub fn process_metadata_workspace_bytes(self)->usize {self.process_metadata_bound}
+    /// Caller contract, NOT verification of an arbitrary MediaSource owner.
+    pub fn external_source_workspace_bytes(self)->usize {self.external_source_bytes}
+    pub fn accounted_workspace_bytes(self)->usize {self.accounted_bound}
+    fn setup_read_quota(self)->io::Result<usize> {
+        usize::try_from(self.extent).ok().and_then(|n|n.checked_mul(128)).and_then(|n|n.checked_add(32768)).ok_or_else(||invalid("FLAC bounded seek/probe work overflow"))
+    }
+}
+
+struct FlacReadAuthority {
+    remaining:std::sync::atomic::AtomicUsize,
+    failed:std::sync::atomic::AtomicBool,
+}
+impl FlacReadAuthority {
+    fn arm(&self,bytes:usize) {
+        use std::sync::atomic::Ordering;
+        self.failed.store(false,Ordering::Relaxed);self.remaining.store(bytes,Ordering::Relaxed);
+    }
+    fn check(&self)->io::Result<()> {
+        if self.failed.load(std::sync::atomic::Ordering::Relaxed) {Err(io::Error::other("FLAC source operation authority failed"))} else {Ok(())}
+    }
+}
+struct FlacReadSource {
+    source:Box<dyn MediaSource>,
+    authority:std::sync::Arc<FlacReadAuthority>,
+    extent:u64, position:u64,
+}
+impl std::io::Read for FlacReadSource {
+    fn read(&mut self,out:&mut [u8])->io::Result<usize> {
+        use std::sync::atomic::Ordering;
+        if out.is_empty() {return Ok(0);}
+        if self.position==self.extent {return Ok(0);}
+        let left=self.authority.remaining.load(Ordering::Relaxed);
+        if left==0 {self.authority.failed.store(true,Ordering::Relaxed);return Err(io::Error::new(io::ErrorKind::OutOfMemory,"FLAC operation byte authority"));}
+        let remaining=self.extent.checked_sub(self.position).ok_or_else(||invalid("FLAC source position exceeds frozen extent"))?;
+        // Only a request-sized bound is needed; this saturating projection is
+        // exact for every possible usize-sized caller buffer.
+        let available=usize::try_from(remaining.min(usize::MAX as u64)).map_err(invalid)?;
+        let n=out.len().min(left).min(available);
+        match self.source.read(&mut out[..n]) {
+            Ok(0)=>{self.authority.failed.store(true,Ordering::Relaxed);Err(io::Error::new(io::ErrorKind::UnexpectedEof,"FLAC source ended before frozen extent"))},
+            Ok(read) if read<=n=>{self.authority.remaining.store(left-read,Ordering::Relaxed);self.position+=read as u64;Ok(read)},
+            Ok(_)=>{self.authority.failed.store(true,Ordering::Relaxed);Err(invalid("FLAC source violated Read contract"))},
+            Err(error)=>{self.authority.failed.store(true,Ordering::Relaxed);Err(error)},
+        }
+    }
+}
+impl std::io::Seek for FlacReadSource {
+    fn seek(&mut self,to:std::io::SeekFrom)->io::Result<u64> {
+        match self.source.seek(to) {
+            Ok(at) if at<=self.extent=>{self.position=at;Ok(at)},
+            Ok(_)=>{self.authority.failed.store(true,std::sync::atomic::Ordering::Relaxed);Err(invalid("FLAC seek exceeds frozen extent"))},
+            Err(error)=>{self.authority.failed.store(true,std::sync::atomic::Ordering::Relaxed);Err(error)},
+        }
+    }
+}
+impl MediaSource for FlacReadSource {
+    fn is_seekable(&self)->bool {self.source.is_seekable()}
+    fn byte_len(&self)->Option<u64> {Some(self.extent)}
+}
+struct CheckedFlac {
+    profile:FlacStreamAdmission,
+    authority:std::sync::Arc<FlacReadAuthority>,
+    poisoned:bool,
+}
+
 const SKIP_FRAMES: u64 = 16384;
 
 fn invalid(error: impl ToString) -> io::Error {
@@ -319,7 +561,7 @@ impl<'destinations, 'samples> ChannelPackDestinations<'destinations, 'samples> {
 /// resident producer returns validated owned storage; it does not install cache
 /// pages, source revisions, or a wider executable instrument into a Runtime.
 pub struct EncodedChannelReader {
-    format: Box<dyn FormatReader>,
+    format: Option<Box<dyn FormatReader>>,
     decoder: Box<dyn Decoder>,
     track: u32,
     channels: usize,
@@ -327,6 +569,7 @@ pub struct EncodedChannelReader {
     frames: u64,
     buffer: Option<SampleBuffer<f32>>,
     checked_pcm: Option<PcmStreamAdmission>,
+    checked_flac: Option<CheckedFlac>,
     // Valid frame extent of buffer.samples(); no second packet copy.
     window_frames: usize,
     start: u64,
@@ -335,6 +578,74 @@ pub struct EncodedChannelReader {
 }
 
 impl EncodedChannelReader {
+    /// Same normal FLAC reader/decoder, with pre-probe nested metadata checks
+    /// and pre-allocation operation authority. External source cost is a caller
+    /// obligation, not a verified capacity for an opaque MediaSource.
+    pub fn open_checked_flac(mut source:Box<dyn MediaSource>,profile:FlacStreamAdmission,workspace_limit:usize)->io::Result<Self> {
+        if profile.accounted_bound>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"FLAC accounted workspace admission"));}
+        if !source.is_seekable() || source.byte_len()!=Some(profile.extent) {return Err(invalid("FLAC frozen seekable extent changed"));}
+        let actual=FlacStreamAdmission::inspect(&mut *source,profile.external_source_bytes)?;
+        if actual!=profile {return Err(invalid("FLAC actual admission facts changed"));}
+        let setup_quota=profile.setup_read_quota()?;
+        let authority=std::sync::Arc::new(FlacReadAuthority{remaining:std::sync::atomic::AtomicUsize::new(0),failed:std::sync::atomic::AtomicBool::new(false)});
+        let source=Box::new(FlacReadSource{source,authority:authority.clone(),extent:profile.extent,position:0});
+        authority.arm(setup_quota);
+        let stream=MediaSourceStream::new(source,Default::default());
+        // Select the exact same public normal FLAC implementation directly:
+        // do not probe unrelated allocating metadata readers after admission.
+        let format=Self::checked_flac_format(stream,profile,&authority)?;
+        let track=Self::validate_flac_format(&*format,profile)?;
+        let params=format.default_track().ok_or_else(||invalid("FLAC track absent"))?.codec_params.clone();
+        let decoder=Box::new(symphonia::default::codecs::FlacDecoder::try_new(&params,&DecoderOptions::default()).map_err(invalid)?);
+        if decoder.codec_params().max_frames_per_packet!=Some(profile.block_max as u64) {return Err(invalid("FLAC decoder block capacity changed"));}
+        let channels=params.channels.ok_or_else(||invalid("FLAC channel assignments absent"))?;
+        let buffer=Some(SampleBuffer::new(profile.block_max as u64,symphonia::core::audio::SignalSpec::new(profile.rate,channels)));
+        Ok(Self{format:Some(format),decoder,track,channels:profile.channels,rate:profile.rate,frames:profile.frames,buffer,checked_pcm:None,
+            checked_flac:Some(CheckedFlac{profile,authority,poisoned:false}),window_frames:0,start:0,#[cfg(test)] decoded_packets:0})
+    }
+    fn checked_flac_format(stream:MediaSourceStream,profile:FlacStreamAdmission,authority:&FlacReadAuthority)->io::Result<Box<dyn FormatReader>> {
+        use std::io::{Seek,SeekFrom};
+        let format=Box::new(symphonia::default::formats::FlacReader::try_new(stream,&FormatOptions::default()).map_err(invalid)?);
+        authority.check()?;
+        // FlacReader's public into_inner preserves its exact logical MSS
+        // position after the normal header resync. A seek-table offset is safe
+        // only if that real first frame starts at the admitted metadata end.
+        // Drop this format's parser/metadata before reconstructing the same
+        // reader over the same MSS/source; no simultaneous format owners.
+        let mut stream=format.into_inner();
+        if stream.stream_position()?!=profile.metadata_end {return Err(invalid("normal FLAC first frame differs from metadata end"));}
+        stream.seek(SeekFrom::Start(0))?;
+        let format=Box::new(symphonia::default::formats::FlacReader::try_new(stream,&FormatOptions::default()).map_err(invalid)?);
+        authority.check()?;Self::validate_flac_format(&*format,profile)?;Ok(format)
+    }
+    fn validate_flac_format(format:&dyn FormatReader,profile:FlacStreamAdmission)->io::Result<u32> {
+        if format.tracks().len()!=1 {return Err(invalid("FLAC track count changed"));}
+        let track=format.default_track().ok_or_else(||invalid("FLAC track absent"))?;let p=&track.codec_params;
+        if p.codec!=symphonia::core::codecs::CODEC_TYPE_FLAC || p.sample_rate!=Some(profile.rate)
+            || p.channels.is_none_or(|c|c.count()!=profile.channels) || p.n_frames!=Some(profile.frames)
+            || p.bits_per_sample!=Some(profile.bits) || p.extra_data.as_deref()!=Some(profile.stream_info.as_slice()) {
+            return Err(invalid("ordinary FLAC probe differs from admitted geometry"));
+        }
+        Ok(track.id)
+    }
+    /// An exact-header seek on Symphonia does not always reset its previous
+    /// packet builder. Reconstruct only the SAME format over its SAME guarded
+    /// MSS/source after dropping old format metadata/parser offaudio. No second
+    /// decoder, source file, origin identity or concurrently retained parser.
+    fn seek_checked_flac(&mut self,at:u64)->io::Result<symphonia::core::formats::SeekedTo> {
+        use std::io::{Seek,SeekFrom};
+        let (profile,authority)={let state=self.checked_flac.as_ref().ok_or_else(||invalid("FLAC checked owner absent"))?;
+            if state.poisoned {return Err(invalid("FLAC owner invalidated"));}(state.profile,state.authority.clone())};
+        authority.arm(profile.setup_read_quota()?);
+        self.window_frames=0;
+        let old=self.format.take().ok_or_else(||invalid("FLAC format invalidated"))?;
+        let mut stream=old.into_inner();stream.seek(SeekFrom::Start(0))?;
+        if FlacStreamAdmission::inspect(&mut stream,profile.external_source_bytes)?!=profile {return Err(invalid("FLAC seek admission facts changed"));}
+        authority.check()?;
+        let mut format=Self::checked_flac_format(stream,profile,&authority)?;
+        let sought=format.seek(SeekMode::Accurate,SeekTo::TimeStamp{ts:at,track_id:self.track}).map_err(invalid)?;
+        authority.check()?;self.format=Some(format);Ok(sought)
+    }
     /// Open the existing, uncertified legacy decoder path.
     ///
     /// MetadataOptions are passed unchanged to the normal probe. They are not a
@@ -360,9 +671,10 @@ impl EncodedChannelReader {
         Self::open_profile(source,metadata,Some(admission),Some(rate))
     }
     /// Includes the explicit external-source obligation, not verified ownership.
-    pub fn accounted_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.accounted_bound)}
-    pub fn verified_codec_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.codec_bound)}
-    pub fn external_source_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.external_source_bytes)}
+    pub fn accounted_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.accounted_bound).or_else(||self.checked_flac.as_ref().map(|f|f.profile.accounted_bound))}
+    pub fn verified_codec_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.codec_bound).or_else(||self.checked_flac.as_ref().map(|f|f.profile.codec_bound))}
+    pub fn external_source_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.external_source_bytes).or_else(||self.checked_flac.as_ref().map(|f|f.profile.external_source_bytes))}
+    pub fn process_metadata_workspace_bytes(&self)->usize {self.checked_flac.as_ref().map_or(0,|f|f.profile.process_metadata_bound)}
 
     fn open_profile(source:Box<dyn MediaSource>,metadata:&MetadataOptions,checked_pcm:Option<PcmStreamAdmission>,checked_rate:Option<u32>)->io::Result<Self> {
         let stream = MediaSourceStream::new(source, Default::default());
@@ -402,7 +714,7 @@ impl EncodedChannelReader {
             .make(&params, &DecoderOptions::default())
             .map_err(invalid)?;
         Ok(Self {
-            format,
+            format:Some(format),
             decoder,
             track: id,
             channels,
@@ -410,6 +722,7 @@ impl EncodedChannelReader {
             frames,
             buffer,
             checked_pcm,
+            checked_flac:None,
             window_frames: 0,
             start: 0,
             #[cfg(test)]
@@ -436,7 +749,9 @@ impl EncodedChannelReader {
 
     fn advance(&mut self) -> io::Result<()> {
         loop {
-            let packet = self.format.next_packet().map_err(invalid)?;
+            if let Some(state)=&self.checked_flac {state.authority.arm(state.profile.packet_quota);}
+            let packet = self.format.as_mut().ok_or_else(||invalid("encoded format invalidated"))?.next_packet().map_err(invalid)?;
+            if let Some(state)=&self.checked_flac {state.authority.check()?;}
             if packet.track_id() != self.track {
                 continue;
             }
@@ -448,7 +763,17 @@ impl EncodedChannelReader {
                     return Err(invalid("ordinary PCM packet exceeds admitted geometry"));
                 }
             }
+            if let Some(state)=&self.checked_flac {
+                let p=state.profile;
+                if packet.dur()==0 || packet.dur()>p.block_max as u64 || packet.data.len()>p.frame_max || packet.data.len()>p.packet_payload_bound
+                    || packet.ts().checked_add(packet.dur()).is_none_or(|end|end>p.frames) {
+                    return Err(invalid("FLAC packet exceeds admitted fixed geometry"));
+                }
+            }
             let decoded = self.decoder.decode(&packet).map_err(invalid)?;
+            if self.checked_flac.as_ref().is_some_and(|s|decoded.capacity()>s.profile.block_max || decoded.frames()>s.profile.block_max) {
+                return Err(invalid("FLAC decoder exceeds admitted fixed capacity"));
+            }
             if self.checked_pcm.is_some() && (decoded.capacity()>1152 || decoded.frames()>1152) {
                 return Err(invalid("ordinary PCM decoder exceeds admitted fixed capacity"));
             }
@@ -513,6 +838,12 @@ impl EncodedChannelReader {
         end: u64,
         mut consume: impl FnMut(usize, &[f32]),
     ) -> io::Result<()> {
+        if self.checked_flac.as_ref().is_some_and(|s|s.poisoned) {return Err(invalid("FLAC owner invalidated"));}
+        let result=self.read_segments_inner(start,end,&mut consume);
+        if result.is_err() && let Some(state)=&mut self.checked_flac {state.poisoned=true;}
+        result
+    }
+    fn read_segments_inner(&mut self,start:u64,end:u64,consume:&mut impl FnMut(usize,&[f32]))->io::Result<()> {
         let channels = self.channels;
         let mut at = start;
         while at < end {
@@ -532,21 +863,18 @@ impl EncodedChannelReader {
                 continue;
             }
             if !(at >= window_end && at - window_end < SKIP_FRAMES) {
-                let sought = self
-                    .format
-                    .seek(
-                        SeekMode::Accurate,
-                        SeekTo::TimeStamp {
-                            ts: at,
-                            track_id: self.track,
-                        },
-                    )
-                    .map_err(invalid)?;
+                let sought=if self.checked_flac.is_some() {self.seek_checked_flac(at)?} else {
+                    self.format.as_mut().ok_or_else(||invalid("encoded format invalidated"))?
+                        .seek(SeekMode::Accurate,SeekTo::TimeStamp{ts:at,track_id:self.track}).map_err(invalid)?
+                };
                 self.decoder.reset();
                 self.window_frames = 0;
                 self.start = sought.actual_ts;
             }
             self.advance()?;
+            if self.checked_flac.is_some() && at<self.start {
+                return Err(invalid("FLAC parser skipped the requested source frame"));
+            }
         }
         Ok(())
     }
@@ -829,5 +1157,22 @@ mod tests {
         assert_eq!(source.decoded_packets, 1);
         source.read_packs(0, 32, &mut out).unwrap();
         assert_eq!(source.decoded_packets, 1);
+    }
+}
+
+#[cfg(test)]
+mod checked_flac_authority_tests {
+    use super::*;
+    #[test]
+    fn preexisting_mss_bytes_are_not_mistaken_for_new_underlying_read_authority() {
+        use std::io::Read;
+        use std::sync::{Arc,atomic::{AtomicBool,AtomicUsize}};
+        let authority=Arc::new(FlacReadAuthority{remaining:AtomicUsize::new(1024),failed:AtomicBool::new(false)});
+        let source=FlacReadSource{source:Box::new(std::io::Cursor::new(vec![7;4096])),authority:authority.clone(),extent:4096,position:0};
+        let mut stream=MediaSourceStream::new(Box::new(source),Default::default());let mut one=[0;1];stream.read_exact(&mut one).unwrap();assert_eq!(one,[7]);
+        // The normal MSS fetched1024 bytes. Arming zero new bytes cannot hide
+        // its1023 readable old bytes; the certificate separately counts U.
+        authority.arm(0);let mut old=[0;1023];stream.read_exact(&mut old).unwrap();assert_eq!(old,[7;1023]);authority.check().unwrap();
+        assert!(stream.read_exact(&mut one).is_err());assert!(authority.check().is_err());
     }
 }

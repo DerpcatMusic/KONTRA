@@ -473,11 +473,22 @@ pub(crate) fn is_wide_stream_refusal(error:&std::io::Error)->bool {
     error.get_ref().is_some_and(|e|e.is::<UnadmittedWideStream>())
 }
 
-/// Pre-open authority for one new-wide ordinary PCM owner. No audio payload,
+#[derive(Clone,Copy)]
+pub(crate) enum StreamAdmission {
+    Pcm(sampler_kontakt::PcmStreamAdmission),
+    Flac(sampler_kontakt::FlacStreamAdmission),
+}
+impl StreamAdmission {
+    pub(crate) fn frames(self)->u64 {match self {Self::Pcm(p)=>p.frames(),Self::Flac(p)=>p.frames()}}
+    pub(crate) fn channels(self)->usize {match self {Self::Pcm(p)=>p.channels(),Self::Flac(p)=>p.channels()}}
+    pub(crate) fn accounted_workspace_bytes(self)->usize {match self {Self::Pcm(p)=>p.accounted_workspace_bytes(),Self::Flac(p)=>p.accounted_workspace_bytes()}}
+}
+
+/// Pre-open authority for one new-wide ordinary encoded owner. No audio payload,
 /// playback body, foreign metadata, comment or picture is allocated here.
 /// Old mono/stereo decoders retain their existing metadata/format behavior.
-pub(crate) fn pcm_stream_admission(reader:&mut (impl std::io::Read+std::io::Seek),
-    external_source_workspace_bytes:usize)->std::io::Result<Option<sampler_kontakt::PcmStreamAdmission>> {
+pub(crate) fn encoded_stream_admission(reader:&mut (impl std::io::Read+std::io::Seek),
+    external_source_workspace_bytes:usize)->std::io::Result<Option<StreamAdmission>> {
     use std::io::SeekFrom;
     use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};
     let invalid=|e:MetadataError|std::io::Error::new(std::io::ErrorKind::InvalidData,format!("owned PCM container admission: {e:?}"));
@@ -495,7 +506,10 @@ pub(crate) fn pcm_stream_admission(reader:&mut (impl std::io::Read+std::io::Seek
         });
         if channels.is_some_and(|c|c<=2) {return Ok(None);}
         walked.map_err(|e|if channels.is_some_and(|c|c>2) {wide_stream_refusal(format!("wide UVI FLAC container admission: {e:?}"))} else {invalid(e)})?;
-        return Err(wide_stream_refusal("wide UVI FLAC needs owned decoder/container admission"));
+        reader.seek(SeekFrom::Start(0))?;
+        return sampler_kontakt::FlacStreamAdmission::inspect(reader,external_source_workspace_bytes)
+            .map(|profile|Some(StreamAdmission::Flac(profile)))
+            .map_err(|e|wide_stream_refusal(format!("wide UVI FLAC owned decoder/container admission: {e}")));
     }
     let aiff=header.starts_with(b"FORM");
     if !(header.starts_with(b"RIFF") && &header[8..12]==b"WAVE")
@@ -562,7 +576,7 @@ pub(crate) fn pcm_stream_admission(reader:&mut (impl std::io::Read+std::io::Seek
     let decoded_frames=bytes/align;
     if frames.is_some_and(|f|f!=decoded_frames) {return Err(wide_stream_refusal("wide UVI PCM frame count differs from payload"));}
     let encoding=encoding.ok_or_else(||wide_stream_refusal("wide UVI PCM encoding is unsupported"))?;
-    PcmStreamAdmission::new(encoding,c,decoded_frames,physical,external_source_workspace_bytes).map(Some)
+    PcmStreamAdmission::new(encoding,c,decoded_frames,physical,external_source_workspace_bytes).map(|profile|Some(StreamAdmission::Pcm(profile)))
         .map_err(|e|wide_stream_refusal(format!("wide UVI PCM owned decoder/container admission: {e}")))
 }
 

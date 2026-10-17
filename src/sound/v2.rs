@@ -1830,7 +1830,13 @@ fn tell_script(part: &mut Part, kind: u32, status: u8, channel: u8, a: u8, b: u8
             value: high,
             channel,
         },
-        (2 | 4, 0xc0) => Input::Program { value: a, channel },
+        (2, 0xc0) => Input::Program { value: a, channel },
+        (4, 0xc0) => Input::Program {
+            // MIDI 2.0 program is in the second word, not the reserved
+            // first-word byte used by MIDI 1.0 channel voice messages.
+            value: ((data >> 24) & 127) as u8,
+            channel,
+        },
         _ => return,
     };
     script.input(runtime, input);
@@ -2258,16 +2264,15 @@ impl V2Core {
             let audit_start = self.onset_audit.map(|_| std::time::Instant::now());
             if let Some(script) = part.script.as_mut() {
                 let _ = script.wake(&mut part.runtime);
-                // What the scripts generated plays into the part.
+            }
+            // Each copied prefix is attempted exactly once. The driver owns
+            // uncopied outputs, and its fixed logical bound makes this finite.
+            // Core capacity/refusal remains the ordinary wire delivery policy.
+            for _ in 0..sampler_uvi::scripted::MIDI_OUTPUT_CAPACITY.div_ceil(64) {
                 let mut midi = [None; 64];
-                let mut n = 0;
-                script.drain_midi(|out| {
-                    if n < midi.len() {
-                        midi[n] = Some(out);
-                        n += 1;
-                    }
-                });
-                for out in midi.iter().flatten() {
+                let count = part.script.as_mut().map_or(0, |script| script.drain_midi_batch(&mut midi));
+                if count == 0 { break; }
+                for out in midi[..count].iter().flatten() {
                     wire_event(part, out.status, out.a, out.b);
                 }
             }
@@ -7894,6 +7899,115 @@ mod tests {
         assert_eq!(core.problems(0).offline_failures, 0);
         eprintln!("KONTAKT_STREAM_PURGE before={before_trim} after={after_trim} freed={freed} reloaded_audible=yes");
     }
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn uvi_program_change_callbacks_decode_each_wire_format_at_the_real_product_boundary() {
+        // The callback creates a source-bearing child whose note and velocity
+        // encode the documented program and physical channel fields. No fake
+        // preset selector is installed: the unchanged Core refusal is checked.
+        for (event, expected_program, expected_channel) in [
+            (Event::midi1(0xc4, 12, 0), 12u8, 4u8),
+            (Event::Ump([0x40ca_0500, 0x1f00_0304]), 31, 10),
+            (Event::Ump([0x40cf_0901, 0x0000_7f01]), 0, 15),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let wav = tmp.path().join("note.wav");
+            sine(&wav);
+            let bank = tmp.path().join("ProgramCallback.ufs");
+            let xml = r#"<UVI4><Program Name="Program callback"><EventProcessors>
+              <ScriptProcessor Name="Input"><script><![CDATA[
+                function onProgramChange(e)
+                  playNote(48 + e.program, 100 + e.channel, 25)
+                end
+              ]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name="Layer">
+              <Keygroups><Keygroup Name="Keys" LowKey="48" HighKey="84" LowVelocity="1" HighVelocity="127">
+                <Oscillators><SamplePlayer Name="Tone" SamplePath="note.wav" BaseNote="60">
+                  <PlaybackOptions Start="0" Stop="48000"/>
+                </SamplePlayer></Oscillators>
+              </Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#;
+            crate::library::tests::clear_sample_bank_xml(&bank, &std::fs::read(&wav).unwrap(), xml.as_bytes());
+            let loaded = V2Loader.prepare(&LoadRequest {
+                path: bank.join("preset.uvip"), sample_rate: 48000., ..Default::default()
+            }, &mut |_| {}, &|| false).unwrap();
+            assert!(loaded.report.missing.is_empty(), "{:?}", loaded.report.missing);
+            let _ui = loaded.scripts;
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, loaded.part);
+            assert!(core.parts[0].as_ref().unwrap().script.is_some());
+            core.event(0, event);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let child = loop {
+                core.begin_block(&BlockInfo { frames: 64, offline: true, ..Default::default() });
+                core.render(64);
+                let runtime = &core.parts[0].as_ref().unwrap().runtime;
+                let children: Vec<_> = runtime.live_notes().filter(|id|
+                    runtime.note_families(*id).unwrap().any(|family| runtime.family_voice_count(family).unwrap() > 0)
+                ).collect();
+                assert!(children.len() <= 1, "one callback must create one logical child");
+                if let Some(id) = children.first() { break *id; }
+                assert!(std::time::Instant::now() < deadline, "program callback never created a real source voice");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            let runtime = &core.parts[0].as_ref().unwrap().runtime;
+            let (key, velocity, _) = runtime.note(child).unwrap();
+            assert_eq!(key, 48 + expected_program, "reserved first-word bytes cannot supply the MIDI 2.0 program");
+            assert_eq!(velocity, f64::from(101 + expected_channel) / 127.);
+            assert!(core.held.is_empty(), "script output is not a fabricated physical key press");
+            assert_eq!(core.problems(0).ignored_input, 1, "the original program still has no Core preset selector");
+            assert_eq!(core.problems(0).capacity_drops, 0);
+            assert_eq!(core.problems(0).underruns, 0);
+            assert!(core.scan_runtime_faults(0).is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn uvi_threaded_script_midi_outputs_above_sixty_four_reach_the_real_receiver() {
+        for outputs in [70usize, 256] {
+            let tmp = tempfile::tempdir().unwrap();
+            let wav = tmp.path().join("note.wav"); sine(&wav);
+            let bank = tmp.path().join("MidiBurst.ufs");
+            let xml = format!(r#"<UVI4><Program Name="MIDI output burst"><EventProcessors>
+              <ScriptProcessor Name="Input"><script><![CDATA[
+                function onController(e)
+                  if e.controller == 1 then
+                    for i = 1, {outputs} do controlChange(20, (i - 1) % 128, 1) end
+                  end
+                end
+              ]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name="Layer">
+                <Keygroups><Keygroup Name="Keys" LowKey="60" HighKey="60" LowVelocity="1" HighVelocity="127">
+                  <Oscillators><SamplePlayer Name="Tone" SamplePath="note.wav" BaseNote="60">
+                    <PlaybackOptions Start="0" Stop="48000"/>
+                  </SamplePlayer></Oscillators>
+                </Keygroup></Keygroups>
+              </Layer></Layers></Program></UVI4>"#);
+            crate::library::tests::clear_sample_bank_xml(&bank, &std::fs::read(&wav).unwrap(), xml.as_bytes());
+            let loaded = V2Loader.prepare(&LoadRequest {
+                path: bank.join("preset.uvip"), sample_rate: 48000., ..Default::default()
+            }, &mut |_| {}, &|| false).unwrap();
+            assert!(loaded.report.missing.is_empty(), "{:?}", loaded.report.missing);
+            let _ui = loaded.scripts;
+            let mut core = V2Core::with_parts(1, 48000.); core.install(0, loaded.part);
+            core.event(0, Event::midi1(0xb0, 1, 100));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                core.begin_block(&BlockInfo { frames: 64, offline: true, ..Default::default() });
+                core.render(64);
+                let runtime = &core.parts[0].as_ref().unwrap().runtime;
+                let performance = runtime.performance(0).unwrap();
+                let value = runtime.channel_controller(performance, WIRE, 20).unwrap();
+                if value >> 25 == ((outputs - 1) % 128) as u32 { break; }
+                assert!(std::time::Instant::now() < deadline,
+                    "script output #{outputs} disappeared after the first 64: current7bit={}", value >> 25);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(core.problems(0).ignored_input, 0);
+            assert_eq!(core.problems(0).capacity_drops, 0);
+            assert_eq!(core.problems(0).underruns, 0);
+            assert!(core.scan_runtime_faults(0).is_empty());
+        }
+    }
+
     #[test]
     #[cfg(feature = "library-access")]
     fn scripted_host_notes_join_initial_and_held_mpe_gestures_by_exact_identity() {
