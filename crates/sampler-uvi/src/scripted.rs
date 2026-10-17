@@ -175,6 +175,10 @@ struct Glide {
     ms: f64,
 }
 
+/// Maximum accepted pending script MIDI outputs in one driver. This logical
+/// bound is independent of the allocator's reported spare capacity.
+pub const MIDI_OUTPUT_CAPACITY: usize = 256;
+
 /// Plays what the scripts generate (`controlChange`, `postEvent`...) back into
 /// the runtime on channel 0, as a host does with a part's script output.
 pub struct MidiFeed(sampler_midi::Ingress);
@@ -276,7 +280,7 @@ impl<S: Script> Driver<S> {
             glide_at: 0,
             inbox: Vec::with_capacity(256),
             ended: Vec::with_capacity(TRACKED),
-            midi: Vec::with_capacity(256),
+            midi: Vec::with_capacity(MIDI_OUTPUT_CAPACITY),
         }
     }
 
@@ -289,6 +293,18 @@ impl<S: Script> Driver<S> {
     /// The MIDI the scripts generated since the last call.
     pub fn drain_midi(&mut self, mut each: impl FnMut(MidiOut)) {
         self.midi.drain(..).for_each(&mut each);
+    }
+
+    /// Copy and consume only the output prefix that fits. A full or empty
+    /// consumer does not discard a later output; the remaining FIFO stays owned
+    /// by this driver's preallocated queue. No Core acceptance is implied.
+    pub fn drain_midi_batch(&mut self, out: &mut [Option<MidiOut>]) -> usize {
+        out.fill(None);
+        let count = out.len().min(self.midi.len());
+        for (slot, message) in out.iter_mut().zip(self.midi.drain(..count)) {
+            *slot = Some(message);
+        }
+        count
     }
 
     /// Whether the scripts take over note selection.
@@ -543,7 +559,7 @@ impl<S: Script> Driver<S> {
                     self.parameter(rt, scope, param, value, authored)?;
                 }
                 Command::Midi(out) => {
-                    if self.midi.len() < self.midi.capacity() {
+                    if self.midi.len() < MIDI_OUTPUT_CAPACITY {
                         self.midi.push(out);
                     }
                 }
@@ -925,5 +941,57 @@ impl Driver<ScriptThread> {
     }
     pub fn set_control(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool {
         self.host.set_control(id, value)
+    }
+}
+
+#[cfg(test)]
+mod midi_output_batch_tests {
+    use super::*;
+
+    #[test]
+    fn zero_short_and_full_midi_consumers_keep_every_remaining_output_in_fifo_order() {
+        let host = ScriptHost::new("<UVI4><Program/></UVI4>", (), Default::default()).unwrap();
+        let mut driver = Driver::new(host, vec![], 48000);
+        let expected: Vec<_> = (0..MIDI_OUTPUT_CAPACITY).map(|index| MidiOut {
+            status: 0xb0 | ((index / 128) as u8), a: 20, b: (index % 128) as u8,
+        }).collect();
+        driver.midi.extend_from_slice(&expected);
+        let original_capacity = driver.midi.capacity();
+        assert_eq!(driver.drain_midi_batch(&mut []), 0);
+        assert_eq!(driver.midi, expected);
+        let mut seen = Vec::new();
+        for length in [1, 64, 65, 256] {
+            let mut buffer = vec![Some(MidiOut { status: 0xff, a: 127, b: 127 }); length];
+            let before = driver.midi.len();
+            let accepted = driver.drain_midi_batch(&mut buffer);
+            assert_eq!(accepted, length.min(before));
+            assert!(buffer[accepted..].iter().all(Option::is_none));
+            seen.extend(buffer[..accepted].iter().copied().map(Option::unwrap));
+            assert_eq!(driver.midi, expected[seen.len()..]);
+            assert_eq!(driver.midi.capacity(), original_capacity);
+        }
+        assert_eq!(seen, expected);
+        assert_eq!(driver.drain_midi_batch(&mut [None; 64]), 0);
+    }
+
+    #[test]
+    fn four_product_sized_batches_retain_the_sixty_fifth_and_last_accepted_output() {
+        let host = ScriptHost::new("<UVI4><Program/></UVI4>", (), Default::default()).unwrap();
+        let mut driver = Driver::new(host, vec![], 48000);
+        let expected: Vec<_> = (0..MIDI_OUTPUT_CAPACITY).map(|index| MidiOut {
+            status: 0xb0 | ((index / 128) as u8), a: 21, b: (index % 128) as u8,
+        }).collect();
+        driver.midi.extend_from_slice(&expected);
+        let mut delivered = Vec::new();
+        for _ in 0..MIDI_OUTPUT_CAPACITY.div_ceil(64) {
+            let mut batch = [None; 64];
+            let count = driver.drain_midi_batch(&mut batch);
+            assert_eq!(count, 64);
+            delivered.extend(batch.into_iter().flatten());
+        }
+        assert_eq!(delivered, expected);
+        assert_eq!(delivered[64], expected[64]);
+        assert_eq!(delivered.last(), expected.last());
+        assert!(driver.midi.is_empty());
     }
 }

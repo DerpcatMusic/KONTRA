@@ -41,7 +41,12 @@ def render(data):
 def bundle_source(package, sources):
     manifest = Path(package["manifest_path"]).resolve()
     filename = f'{package["name"]}-{package["version"]}.crate'
-    if manifest == ROOT / "vendor/symphonia-format-riff/Cargo.toml":
+    local_mpl = {"symphonia-format-riff": "0.5.5", "symphonia-bundle-flac": "0.5.5"}
+    local_name = next((name for name in local_mpl
+                       if manifest == ROOT / "vendor" / name / "Cargo.toml"), None)
+    if local_name is not None:
+        if (package["name"], package["version"]) != (local_name, local_mpl[local_name]):
+            raise ValueError("Local MPL source identity differs from the pinned override")
         # Ship the patched source compiled into the binary, not an upstream copy.
         epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
         def normalize(member):
@@ -129,34 +134,49 @@ def self_test():
         root = Path(directory)
         output = root / "sources"
         output.mkdir()
-        vendored = ROOT / "vendor/symphonia-format-riff"
-        package = dict(name="symphonia-format-riff", version="0.5.5", manifest_path=str(vendored / "Cargo.toml"))
-        bundle_source(package, output)
-        with tarfile.open(output / "symphonia-format-riff-0.5.5.crate") as archive:
-            for path in vendored.rglob("*"):
-                if path.is_file():
-                    member = "symphonia-format-riff-0.5.5/" + path.relative_to(vendored).as_posix()
-                    assert archive.extractfile(member).read() == path.read_bytes()
-        # Independently checked-out architectures must ship identical sources,
-        # even when checkout times and filesystem ownership/modes differ.
-        copies = []
-        with patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1790962911"}):
-            for index in (1, 2):
-                # Exercise a noncanonical temporary path, as macOS /var does.
-                checkout = root / ".." / root.name / f"checkout-{index}"
-                vendor = checkout / "vendor/symphonia-format-riff"
-                vendor.mkdir(parents=True)
-                for name in ("Cargo.toml", "lib.rs"):
-                    path = vendor / name
-                    path.write_bytes(b"authored deterministic source\n")
-                    os.utime(path, (index * 100, index * 100))
-                    path.chmod(0o600 if index == 1 else 0o644)
-                with patch.dict(globals(), {"ROOT": checkout.resolve()}):
-                    bundle_source(dict(package, manifest_path=str(vendor / "Cargo.toml")), output)
-                copies.append((output / "symphonia-format-riff-0.5.5.crate").read_bytes())
-        assert copies[0] == copies[1], "Source archive depends on architecture checkout metadata"
-        with tarfile.open(output / "symphonia-format-riff-0.5.5.crate") as archive:
-            assert all(m.mtime == 1790962911 and m.uid == m.gid == 0 and not m.uname and not m.gname for m in archive)
+        for name in ("symphonia-format-riff", "symphonia-bundle-flac"):
+            vendored = ROOT / "vendor" / name
+            package = dict(name=name, version="0.5.5", manifest_path=str(vendored / "Cargo.toml"))
+            filename = f"{name}-0.5.5.crate"
+            prefix = filename.removesuffix(".crate") + "/"
+            expected = {prefix + path.relative_to(vendored).as_posix(): path.read_bytes()
+                        for path in vendored.rglob("*") if path.is_file()}
+            assert expected and prefix + "Cargo.toml" in expected
+            with patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1790962911"}):
+                bundle_source(package, output)
+                first = (output / filename).read_bytes()
+                bundle_source(package, output)
+                assert (output / filename).read_bytes() == first
+                with tarfile.open(output / filename) as archive:
+                    actual = {m.name: archive.extractfile(m).read() for m in archive if m.isfile()}
+                    assert actual == expected, f"{name}: covered archive differs from actual preferred source"
+                # Copy only the preferred dependency source into two synthetic
+                # release checkouts; never a workspace or anything built here.
+                copies = []
+                for index in (1, 2):
+                    checkout = root / ".." / root.name / f"{name}-checkout-{index}"
+                    vendor = checkout / "vendor" / name
+                    vendor.mkdir(parents=True)
+                    for member, content in expected.items():
+                        path = vendor / member.removeprefix(prefix)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(content)
+                        os.utime(path, (index * 100, index * 100))
+                        path.chmod(0o600 if index == 1 else 0o644)
+                    with patch.dict(globals(), {"ROOT": checkout.resolve()}):
+                        bundle_source(dict(package, manifest_path=str(vendor / "Cargo.toml")), output)
+                    copies.append((output / filename).read_bytes())
+                assert copies[0] == copies[1] == first, "Source archive depends on checkout metadata"
+            with tarfile.open(output / filename) as archive:
+                assert all(m.mtime == 1790962911 and m.uid == m.gid == 0
+                           and not m.uname and not m.gname for m in archive)
+            for wrong in (dict(package, version="0.5.6"), dict(package, name="unregistered-local-mpl")):
+                try:
+                    bundle_source(wrong, output)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("A local source override must match its exact pinned identity")
         # Registry packages keep their exact upstream archive bytes.
         manifest = root / "registry/src/example-index/example-1.0/Cargo.toml"
         manifest.parent.mkdir(parents=True)
