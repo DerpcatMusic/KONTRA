@@ -34,6 +34,14 @@ pub trait Script {
     fn set_time(&mut self, ms: f64);
     fn note_on(&mut self, id: u64, key: u8, velocity: u8);
     fn note_off(&mut self, id: u64, key: u8);
+    /// Physical callback channel (0-based). Legacy script implementations retain
+    /// their existing callbacks; real UVI owners override this transport boundary.
+    fn note_on_channel(&mut self, id: u64, key: u8, velocity: u8, _channel: u8) {
+        self.note_on(id, key, velocity)
+    }
+    fn note_off_channel(&mut self, id: u64, key: u8, velocity: u8, _channel: u8) {
+        self.note_off_velocity(id, key, velocity)
+    }
     fn note_off_velocity(&mut self, id: u64, key: u8, _velocity: u8) {
         self.note_off(id, key)
     }
@@ -96,6 +104,12 @@ impl Script for ScriptHost {
     }
     fn note_off_velocity(&mut self, id: u64, key: u8, velocity: u8) {
         ScriptHost::note_off(self, id, key, velocity, 0)
+    }
+    fn note_on_channel(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        ScriptHost::note_on(self, id, key, velocity, channel)
+    }
+    fn note_off_channel(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        ScriptHost::note_off(self, id, key, velocity, channel)
     }
     fn advance(&mut self, ms: f64) {
         ScriptHost::advance(self, ms)
@@ -188,12 +202,21 @@ impl MidiFeed {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TrackedNote {
+    note: NoteId,
+    channel: u8,
+    // Preserve callback identity until real key-up, even if core cancellation
+    // already retired its source. This consumes the existing TRACKED budget.
+    physical_down: bool,
+}
+
 pub struct Driver<S: Script> {
     host: S,
     groups: Vec<OscGroup>,
     rate: f64,
     /// Script event / voice id -> core note.
-    notes: HashMap<u64, NoteId>,
+    notes: HashMap<u64, TrackedNote>,
     /// Sounding physical notes by key (script event id).
     held: HashMap<u8, std::collections::VecDeque<u64>>,
     next: u64,
@@ -295,6 +318,7 @@ impl<S: Script> Driver<S> {
         key: u8,
         velocity: f64,
     ) -> Result<(), Error> {
+        let channel = rt.input_source(note)?.ok_or(Error::InvalidInput)?.channel;
         if self.notes.len() >= TRACKED {
             self.prune(rt);
         }
@@ -305,10 +329,10 @@ impl<S: Script> Driver<S> {
         }
         let id = self.next;
         self.next += 1;
-        self.notes.insert(id, note);
+        self.notes.insert(id, TrackedNote { note, channel, physical_down: true });
         held.push_back(id);
         self.host.set_time(self.now_ms(rt));
-        self.host.note_on(id, key, (velocity * 127.0).round() as u8);
+        self.host.note_on_channel(id, key, (velocity * 127.0).round() as u8, channel);
         if !self.host.handles_notes() {
             // No onNote: the program sounds as authored, with the script's
             // standing modulation values.
@@ -342,7 +366,7 @@ impl<S: Script> Driver<S> {
         let Some(ids) = self.held.get_mut(&key) else {
             return Ok(());
         };
-        let Some(at) = ids.iter().position(|id| self.notes.get(id) == Some(&note)) else {
+        let Some(at) = ids.iter().position(|id| self.notes.get(id).map(|entry| entry.note) == Some(note)) else {
             return Ok(());
         };
         let id = ids.remove(at).unwrap();
@@ -351,16 +375,17 @@ impl<S: Script> Driver<S> {
 
     fn release_id(&mut self, rt: &mut Runtime, id: u64, key: u8,
         velocity: Option<f64>) -> Result<(), Error> {
+        let physical = self.notes.get(&id).copied();
         self.host.set_time(self.now_ms(rt));
-        self.host.note_off_velocity(id, key,
-            velocity.map_or(64, |v| (v * 127.).round() as u8));
+        self.host.note_off_channel(id, key,
+            velocity.map_or(64, |v| (v * 127.).round() as u8),
+            physical.map_or(0, |entry| entry.channel));
         // Plays made by onRelease must not be linked to the closing gate.
-        self.apply(rt, true)?;
-        if let Some(note) = self.notes.get(&id).copied() {
-            // A note whose voices already ended is gone; closing it is a no-op.
-            stale_ok(rt.key_up(note, velocity))?;
-        }
-        Ok(())
+        // Callback failure cannot prevent the original physical key-up.
+        let applied = self.apply(rt, true);
+        if let Some(entry) = self.notes.get_mut(&id) { entry.physical_down = false; }
+        let closed = physical.map_or(Ok(()), |entry| stale_ok(rt.key_up(entry.note, velocity)));
+        applied.and(closed)
     }
 
     /// Run what is due now (script wake-ups, glide steps); the frames until
@@ -434,7 +459,7 @@ impl<S: Script> Driver<S> {
                 }
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
-                    if let Some(note) = self.notes.get(&id).copied() {
+                    if let Some(note) = self.notes.get(&id).map(|entry| entry.note) {
                         self.release(rt, note, at_ms)?;
                     }
                 }
@@ -453,7 +478,7 @@ impl<S: Script> Driver<S> {
                     immediate,
                     ..
                 } => {
-                    if let Some(note) = self.notes.get(&id).copied() {
+                    if let Some(note) = self.notes.get(&id).map(|entry| entry.note) {
                         let target = match what {
                             Change::Decibels => ModTarget::Decibels,
                             Change::Pan => ModTarget::Pan,
@@ -463,7 +488,9 @@ impl<S: Script> Driver<S> {
                             .set_note_param_with_immediate(note, target, value, relative, immediate)
                         {
                             Err(Error::StaleHandle) => {
-                                self.notes.remove(&id);
+                                if self.notes.get(&id).is_some_and(|entry| !entry.physical_down) {
+                                    self.notes.remove(&id);
+                                }
                             }
                             other => other?,
                         }
@@ -478,7 +505,7 @@ impl<S: Script> Driver<S> {
                     layer,
                     ..
                 } => {
-                    if let Some(note) = self.notes.get(&id).copied() {
+                    if let Some(note) = self.notes.get(&id).map(|entry| entry.note) {
                         let frames = self.frames(ms);
                         let result = if layer == 0 {
                             rt.fade_note(note, from, to, frames, kill && to <= 0.0)
@@ -499,7 +526,9 @@ impl<S: Script> Driver<S> {
                         };
                         match result {
                             Err(Error::StaleHandle) => {
-                                self.notes.remove(&id);
+                                if self.notes.get(&id).is_some_and(|entry| !entry.physical_down) {
+                                    self.notes.remove(&id);
+                                }
                             }
                             other => other?,
                         }
@@ -593,7 +622,7 @@ impl<S: Script> Driver<S> {
 
     /// Forget notes the runtime no longer holds.
     fn prune(&mut self, rt: &Runtime) {
-        self.notes.retain(|_, note| rt.note(*note).is_ok());
+        self.notes.retain(|_, entry| entry.physical_down || rt.note(entry.note).is_ok());
         let notes = &self.notes;
         self.voice_values.retain(|(v, _), _| notes.contains_key(v));
     }
@@ -661,7 +690,7 @@ impl<S: Script> Driver<S> {
         match voice {
             Some(v) => {
                 self.voice_values.insert((v, id), value);
-                if let Some(note) = self.notes.get(&v).copied() {
+                if let Some(note) = self.notes.get(&v).map(|entry| entry.note) {
                     match rt.set_note_script_value(note, id, value) {
                         Err(Error::StaleHandle) => self.ended.push(v),
                         other => other?,
@@ -671,7 +700,7 @@ impl<S: Script> Driver<S> {
             None => {
                 self.global.insert(id, value);
                 for (v, note) in &self.notes {
-                    match rt.set_note_script_value(*note, id, value) {
+                    match rt.set_note_script_value(note.note, id, value) {
                         Err(Error::StaleHandle) => self.ended.push(*v),
                         other => other?,
                     }
@@ -679,7 +708,9 @@ impl<S: Script> Driver<S> {
             }
         }
         for v in self.ended.drain(..) {
-            self.notes.remove(&v);
+            if self.notes.get(&v).is_some_and(|entry| !entry.physical_down) {
+                self.notes.remove(&v);
+            }
         }
         Ok(())
     }
@@ -696,7 +727,7 @@ impl<S: Script> Driver<S> {
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
         // Forwarding a physical event keeps its identity and reuses its gate.
         if play.parent == Some(play.id) {
-            if let Some(note) = self.notes.get(&play.id).copied() {
+            if let Some(note) = self.notes.get(&play.id).map(|entry| entry.note) {
                 self.select(rt, note, play)?;
                 return stale_ok(rt.forward_attack(note).map(|_| ()));
             }
@@ -705,7 +736,7 @@ impl<S: Script> Driver<S> {
             return Ok(());
         }
         let velocity = f64::from(play.velocity) / 127.0;
-        let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
+        let parent = play.parent.and_then(|p| self.notes.get(&p).map(|entry| entry.note));
         if play.parent.is_some() && parent.is_none() {
             // A retired owner cannot turn its late command into an unlinked
             // generated note after driver pruning or input cancellation.
@@ -730,7 +761,7 @@ impl<S: Script> Driver<S> {
             Err(Error::ClosedNote | Error::StaleHandle) => return Ok(()),
             Err(e) => return Err(e),
         };
-        self.notes.insert(play.id, note);
+        self.notes.insert(play.id, TrackedNote { note, channel: 0, physical_down: false });
         self.select(rt, note, play)?;
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
