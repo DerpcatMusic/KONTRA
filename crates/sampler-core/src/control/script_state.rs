@@ -297,6 +297,7 @@ impl Runtime {
             },
             channels: 1,
             controller_epochs: None,
+                controller_secondary: None,
             stage: usize::from(instance.0),
             interaction: crate::WidgetInteraction::default(),
         })

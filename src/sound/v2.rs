@@ -75,8 +75,9 @@ mod host_contract_tests;
 const HELD: usize = 1024;
 /// [`Held::part`] of a note whose runtime was replaced: ends at the next block.
 const ORPHAN: usize = usize::MAX;
-/// Every input reaches a part's zone as MIDI 1.0 on its manager channel, so a
-/// bend, pedal or controller on any channel reaches every note of the part.
+/// Part-aggregated transport execution address. MIDI1 conventional notes may
+/// map here; ordinary MIDI2 keeps its actual channel and protocol, while
+/// captured native-host bindings use the explicit Native logical domain.
 const WIRE: ChannelAddress = ChannelAddress {
     protocol: Protocol::Midi1,
     port: 0,
@@ -107,6 +108,8 @@ pub struct Part {
     /// Script pitch bend (controller 128) and mono pressure (129) last applied
     /// to the zone: see [`script_controllers`].
     script_controllers: [u32; 2],
+    /// Epoch/revision of real channel-authored virtual writes, not global copies.
+    script_channel_controllers: [[[(u64, u64); 2]; 16]; 3],
     force_articulation_once: bool,
     /// Internal wire identities keep distinct physical host tuples independent
     /// after a part maps their channels to its single musical domain.
@@ -288,6 +291,8 @@ impl Part {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mut mpe =
             Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, runtime.note_capacity().max(1)).map_err(core)?;
+        mpe.enable_host_channel_projection().map_err(core)?;
+        mpe.use_midi2_channel_voice().map_err(core)?;
         mpe.set_manual_active(false);
         // Plans without articulations have nothing to drive.
         let articulator = runtime
@@ -383,6 +388,7 @@ impl Part {
             persistence: None,
             mpe,
             script_controllers: [0x8000_0000, 0],
+            script_channel_controllers: [[[(0, 0); 2]; 16]; 3],
             force_articulation_once: false,
             next_host_id: 0,
             tune: 0.0,
@@ -807,15 +813,8 @@ impl ControlIngress {
                 ControlValue::Toggle(v) => sampler_core::WidgetValue::Integer(i64::from(v)),
             }, interaction: Default::default() }]);
         }
-        let command = sampler_core::ControlRequest {
-            plan: self.plan,
-            expected_revision: None,
-            operation: sampler_core::ControlOperation::Invoke(
-                self.context,
-                ControlWrite { id: d.id, value },
-            ),
-        };
-        match self.client.submit(command) {
+        match self.client.submit(sampler_core::ControlRequest::global_control(self.context.performance, self.plan, None,
+            ControlWrite { id: d.id, value })) {
             Ok(request) => {
                 self.pending.insert(id, (request, number(value)));
                 true
@@ -850,12 +849,7 @@ impl ControlIngress {
             }
             _ => None,
         };
-        let command = sampler_core::ControlRequest {
-            plan: self.plan,
-            expected_revision: None,
-            operation: sampler_core::ControlOperation::InvokeWidget(self.context, edits),
-        };
-        match self.client.submit(command) {
+        match self.client.submit(sampler_core::ControlRequest::global_widgets(self.context.performance, self.plan, None, edits)) {
             Ok(request) => {
                 for (index, value) in preview {
                     if let Some(control) = scalar {
@@ -1015,7 +1009,7 @@ impl ControlIngress {
             }
             // Capture metadata before returning owned buffers to their pools.
             let rejection = control_diagnostics::rejection(&reply);
-            if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
+            if let sampler_core::ControlOperation::Invoke(_, write) | sampler_core::ControlOperation::InvokeGlobal(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
                 if self
                     .pending
@@ -1026,7 +1020,7 @@ impl ControlIngress {
                     changed = true;
                 }
             }
-            if let sampler_core::ControlOperation::InvokeWidget(_, edits) = &reply.command.operation
+            if let sampler_core::ControlOperation::InvokeWidget(_, edits) | sampler_core::ControlOperation::InvokeGlobalWidget(_, edits) = &reply.command.operation
             {
                 for edit in edits {
                     let id = sampler_ui_ir::ControlId(edit.id.0);
@@ -1236,6 +1230,26 @@ fn widget_value(
 }
 
 impl V2Core {
+    /// Publish a host snapshot at the current rendered sample boundary. This
+    /// intentionally does not begin another block or refill callback allowance.
+    pub(crate) fn update_transport(&mut self, transport: super::Transport) {
+        self.transport.update(transport, self.align.clock, self.rate);
+        let values = self.transport.values();
+        for part in self.parts.iter_mut().flatten() {
+            let _ = part.runtime.set_tempo(self.transport.tempo());
+            // sampler-ksp::lower::host_slot owns duration/position/signature/running ABI.
+            for (slot, value) in values.into_iter().enumerate() {
+                let _ = part.runtime.set_host_value(8 + slot, value);
+            }
+        }
+        let holding = self.align.holding(transport.playing);
+        if self.holding && !holding {
+            // Flushed callbacks must observe the new snapshot, as at block start.
+            self.flush_aligned();
+        }
+        self.holding = holding;
+    }
+
     /// Read the loaded part's actual shared-core diagnostic counters.
     /// Available to ordinary offline witnesses as well as scan builds.
     pub fn runtime_stats(&self, part: usize) -> Option<sampler_core::RuntimeStats> {
@@ -1263,14 +1277,32 @@ impl V2Core {
     }
 
     pub(crate) fn release_all_notes(&mut self) {
+        // Reserve the complete raw physical release union across all Parts
+        // before any Native callback, tombstone or Core key/pedal mutation.
+        for part in self.parts.iter_mut().flatten() {
+            if part.mpe.validate_all_physical_releases().is_err() {
+                part.problems.capacity_drops+=1;
+                return;
+            }
+        }
+        for part in self.parts.iter_mut().flatten() {
+            // Only disjoint queues changed since the pure all-Part preflight;
+            // this recheck therefore cannot reject under the owner contract.
+            if part.mpe.queue_all_physical_releases().is_err() {
+                part.problems.capacity_drops+=1;
+                return;
+            }
+        }
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             // Lua note-off services use the same host identities as ordinary release.
             for held in self.held.iter().filter(|h| h.part == index) {
+                if part.mpe.has_native_physical_note(held.id) {continue;}
                 if let Some(script) = part.script.as_mut() {
                     let _ = script.note_off_note(&mut part.runtime, held.id, held.note.key);
                 }
             }
+            drain_terminal_releases(part);
             packet(part, index, &self.held, [0x20b0_4000, 0]); // MIDI 1 CC64 up
             packet(part, index, &self.held, [0x20b0_4200, 0]); // MIDI 1 CC66 up
             part.runtime.release_all_notes();
@@ -1535,13 +1567,15 @@ fn wire(key: u8, external_id: Option<i32>) -> Input {
     }
 }
 
-/// A host note's internal execution owner on the wire, distinct from MIDI
-/// notes. The physical tuple stays in Held; expressive members retain their
+/// A host note's explicit Native logical execution domain, distinct from both
+/// wire protocols. The physical tuple stays in Held; expressive members retain their
 /// channel in an MPE zone even when other input uses the part's manager.
-fn host_input(note: HostNote, mpe: bool, execution_id: i32) -> Input {
+fn host_input(note: HostNote, mpe: bool, manager: u8, execution_id: i32) -> Input {
     Input {
-        channel: if mpe { note.channel & 15 } else { WIRE.channel },
-        ..wire(note.key, Some(execution_id))
+        protocol: sampler_core::Protocol::Native,
+        port: WIRE.port, group: WIRE.group,
+        channel: if mpe { note.channel & 15 } else { manager },
+        key: note.key, external_id: Some(execution_id),
     }
 }
 
@@ -1551,6 +1585,21 @@ fn host_source(note: HostNote) -> Input {
         port: u16::from(note.port), group: 0, channel: note.channel & 15,
         key: note.key, external_id: Some(note.id),
     }
+}
+
+/// Convert only an actual retained native source, never a raw key or synthetic
+/// execution address. Pattern matching keeps protocol, port and host ID.
+fn native_source_note(source:Input)->Option<HostNote> {
+    let clap=match source.protocol {sampler_core::Protocol::Clap=>true,sampler_core::Protocol::Vst3=>false,_=>return None};
+    if source.group!=0||source.channel>=16||source.key>=128 {return None;}
+    Some(HostNote{port:u8::try_from(source.port).ok()?,channel:source.channel,key:source.key,id:source.external_id.unwrap_or(-1),clap})
+}
+fn native_source_matches(pattern:super::event::HostPattern,source:Input)->bool {
+    native_source_note(source).is_some_and(|note|pattern.matches(note))
+}
+fn has_retained_native(part:&Part,pattern:super::event::HostPattern)->bool {
+    (0..part.mpe.native_physical_slots()).any(|index|part.mpe.native_physical_at(index)
+        .is_some_and(|(_,source,_)|native_source_matches(pattern,source)))
 }
 
 fn peak(x: &[f32]) -> f32 {
@@ -1568,15 +1617,38 @@ fn script_controllers(part: &mut Part) {
     let Ok(performance) = part.runtime.performance(0) else { return };
     for (at, number) in [(0, 128), (1, 129)] {
         let Ok(value) = part.runtime.controller(performance, number) else { continue };
-        if std::mem::replace(&mut part.script_controllers[at], value) == value {
-            continue;
+        if std::mem::replace(&mut part.script_controllers[at], value) == value { continue; }
+        if let Err(error) = part.mpe.apply_global_script_controller(&mut part.runtime, number, value) {
+            if error == sampler_core::Error::Capacity { part.problems.capacity_drops += 1; }
+            else { part.problems.ignored_input += 1; }
         }
-        let channel = part.mpe.manager_channel();
-        if number == 128 {
-            let bend = value >> 18;
-            wire_event(part, 0xe0 | channel, (bend & 127) as u8, (bend >> 7) as u8);
-        } else {
-            wire_event(part, 0xd0 | channel, (value >> 25) as u8, 0);
+    }
+    // Fixed three-domain/16-channel/2-property maximum. Enumeration visits only
+    // actual physical rows marked channel-authored; global broadcasts never
+    // manufacture a second member bend, and equal-valued writes still advance.
+    let mut changes = [None; 3 * 16 * 2];
+    let mut count = 0;
+    let _ = part.runtime.visit_channel_script_controllers(performance, |address, number, value, epoch, revision| {
+        let domain = match address.protocol {
+            sampler_core::Protocol::Midi1 => 0,
+            sampler_core::Protocol::Midi2 => 1,
+            sampler_core::Protocol::Native => 2,
+            _ => return,
+        };
+        if address.port != WIRE.port || address.group != WIRE.group { return; }
+        let at = usize::from(number - 128);
+        let stamp = (epoch, revision);
+        if part.script_channel_controllers[domain][usize::from(address.channel)][at] != stamp {
+            changes[count] = Some((domain, address, number, value, stamp));
+            count += 1;
+        }
+    });
+    for (domain, address, number, value, stamp) in changes[..count].iter().flatten().copied() {
+        let result = part.mpe.apply_script_controller(&mut part.runtime, address, number, value);
+        part.script_channel_controllers[domain][usize::from(address.channel)][usize::from(number - 128)] = stamp;
+        if let Err(error) = result {
+            if error == sampler_core::Error::Capacity { part.problems.capacity_drops += 1; }
+            else { part.problems.ignored_input += 1; }
         }
     }
 }
@@ -1591,24 +1663,31 @@ fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
 /// A channel voice packet into `part`'s zone on its group, and on its manager
 /// channel unless the zone is MPE.
 fn wire_packet(part: &mut Part, words: &[u32]) {
+    // Aligned delivery already applied its captured articulation exactly once.
+    let already_selected = part.force_articulation_once;
     if !articulated(part, words) {
         return;
     }
     // Program selectors consume this above; the note adapter has no program sink.
     if words[0] & 0x00f0_0000 == 0x00c0_0000 {
-        part.problems.ignored_input += 1;
+        if !already_selected { part.problems.ignored_input += 1; }
         return;
     }
+    let source_word = words[0];
     let mut words = [words[0], words.get(1).copied().unwrap_or(0)];
     let channel = (words[0] >> 16) as u8 & 15;
     let parameter = words[0] >> 28 == 2 && words[0] & 0x00f0_0000 == 0x00b0_0000
         && matches!(channel, 0 | 15) && matches!((words[0] >> 8) as u8 & 127, 6 | 38 | 96..=101);
     // RPN6 identifies its zone by the original manager channel. Preserve
     // configuration selectors even before an incoming MCM enables the zone.
-    words[0] &= if part.mpe_zone || parameter { 0xf0ff_ffff } else { 0xf0f0_ffff };
+    words[0] = if words[0] >> 28 == 4 || part.mpe_zone || parameter { words[0] & 0xf0ff_ffff }
+        else { (words[0] & 0xf0f0_ffff) | u32::from(part.mpe.manager_channel()) << 16 };
     let words = &words[..if words[0] >> 28 == 4 { 2 } else { 1 }];
+    let source = Input { protocol: if source_word >> 28 == 4 { sampler_core::Protocol::Midi2 } else { sampler_core::Protocol::Midi1 },
+        port: WIRE.port, group: (source_word >> 24) as u8 & 15,
+        channel: (source_word >> 16) as u8 & 15, key: (source_word >> 8) as u8 & 127, external_id: None };
     match Packets::new(words).next() {
-        Some(Ok(packet)) => match part.mpe.apply(&mut part.runtime, packet) {
+        Some(Ok(packet)) => match part.mpe.apply_with_source(&mut part.runtime, packet, source) {
             Ok(sampler_midi::Applied::Unsupported) => part.problems.ignored_input += 1,
             Err(ApplyError::Core(sampler_core::Error::Capacity)) => part.problems.capacity_drops += 1,
             Err(_) => part.problems.ignored_input += 1,
@@ -1616,7 +1695,20 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
         },
         _ => part.problems.ignored_input += 1,
     }
+    drain_terminal_releases(part);
     if part.mpe.configuration().is_some() { part.mpe_zone = true; }
+}
+
+fn drain_terminal_releases(part:&mut Part) {
+    let Part {mpe, runtime, script, problems, ..}=part;
+    mpe.drain_terminal_releases(|release| {
+        if let Some(script)=script.as_mut() {
+            if let Err(error)=script.note_off_note_velocity(runtime,release.note,release.source.key,release.velocity) {
+                if error==sampler_core::Error::Capacity {problems.capacity_drops+=1;}
+                else {problems.ignored_input+=1;}
+            }
+        }
+    });
 }
 
 /// Run the articulation driver on a packet; false when it took the packet.
@@ -1744,8 +1836,8 @@ fn tell_script(part: &mut Part, kind: u32, status: u8, channel: u8, a: u8, b: u8
     script.input(runtime, input);
 }
 
-/// A channel voice packet into one part, MIDI 2.0 values at full precision;
-/// per-note messages reach held host notes.
+/// A channel voice packet into one Part. Raw MIDI2 notes/controllers retain
+/// their receiver domain; native host actions use their captured exact IDs.
 fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
     let [word, data] = words;
     let (kind, status, a, b) = (
@@ -1766,16 +1858,15 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         if !articulated(part, &words[..if kind == 4 { 2 } else { 1 }]) {
             return;
         }
-        words[0] &= if part.mpe_zone {
-            0xf0ff_ffff
-        } else {
-            0xf0f0_ffff
-        };
+        words[0] = if kind == 4 || part.mpe_zone { words[0] & 0xf0ff_ffff }
+            else { (words[0] & 0xf0f0_ffff) | u32::from(part.mpe.manager_channel()) << 16 };
         if let Some(Ok(packet)) = Packets::new(&words[..if kind == 4 { 2 } else { 1 }]).next() {
-            match part.mpe.apply_silent(&mut part.runtime, packet) {
+            let source = Input { protocol: if kind == 4 { sampler_core::Protocol::Midi2 } else { sampler_core::Protocol::Midi1 },
+                port: WIRE.port, group: (word >> 24) as u8 & 15, channel, key: a, external_id: None };
+            match part.mpe.apply_silent_with_source(&mut part.runtime, packet, source) {
                 Ok(sampler_midi::Applied::Started(note)) => {
                     let velocity = if kind == 4 {
-                        (f64::from((data >> 16) as u16) / 65535.).max(1. / 65535.)
+                        f64::from((data >> 16) as u16) / 65535.
                     } else {
                         f64::from(b) / 127.
                     };
@@ -1788,12 +1879,12 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
                         part.problems.capacity_drops += 1;
                     }
                 }
-                Ok(sampler_midi::Applied::Released { note, .. }) => {
+                Ok(sampler_midi::Applied::Released { note, velocity, .. }) => {
                     let _ = part
                         .script
                         .as_mut()
                         .unwrap()
-                        .note_off_note(&mut part.runtime, note, a);
+                        .note_off_note_velocity(&mut part.runtime, note, a, velocity.map(sampler_midi::Value::normalized));
                 }
                 Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
                     part.problems.capacity_drops += 1
@@ -1804,21 +1895,12 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         }
         return;
     }
-    // Per-note messages reach held host notes on the key at full precision.
-    let per_note = |part: &mut Part, expression: NoteExpression| {
-        let mut recipients = 0;
-        for h in held
-            .iter()
-            .filter(|h| h.part == index && h.note.channel == channel && h.note.key == a)
-        {
-            note_expression(part, h.id, expression);
-            recipients += 1;
-        }
-        if recipients == 0 { part.problems.ignored_input += 1; }
-    };
+    // MIDI2 per-note state belongs to its actual raw receiver cohort; native
+    // notes receive only their separately addressed exact host expressions.
     tell_script(part, kind, status, channel, a, b, data);
     match (kind, status) {
-        (2 | 4, 0xa0) => {
+        (4, 0xa0) => wire_packet(part, &words),
+        (2, 0xa0) => {
             let port = ((word >> 24) & 15) as u8;
             let value = if kind == 4 { data } else { unit_scale(f64::from(b) / 127.0) };
             if held.iter().any(|h| h.part == index && h.note.port == port
@@ -1829,20 +1911,9 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
                 wire_packet(part, &words[..if kind == 4 { 2 } else { 1 }]);
             }
         }
-        // Per-note pitch bend: centre 2^31, ±48 semitones full scale.
-        (4, 0x60) => per_note(
-            part,
-            NoteExpression::Tune((f64::from(data) / 2_147_483_648.0 - 1.0) * 48.0),
-        ),
-        (2 | 4, 0xb0) if a == 120 => {
-            let _ = part.runtime.all_sound_off(WIRE);
-        }
-        (2 | 4, 0xb0) if a == 123 => {
-            let _ = part.runtime.all_notes_off(WIRE);
-        }
         (2, 0x80 | 0x90 | 0xb0 | 0xc0 | 0xd0 | 0xe0) => wire_event(part, status | channel, a, b),
         // Notes, controllers, registered controllers (bend range), pressure, bend.
-        (4, 0x80 | 0x90 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word, data]),
+        (4, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50 | 0x60 | 0x80 | 0x90 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0xf0) => wire_packet(part, &[word, data]),
         _ => part.problems.ignored_input += 1,
     }
 }
@@ -1861,7 +1932,8 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 return;
             }
             if note.id != -1 && (held.iter().any(|h| h.part == index && h.note == note)
-                || part.consumed_hosts.contains(&note)) {
+                || part.consumed_hosts.contains(&note)
+                || part.mpe.has_native_physical_source(host_source(note))) {
                 // Duplicate complete host tuples remain owned until NOTE_END.
                 return;
             }
@@ -1886,7 +1958,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 let id = part.next_host_id as i32;
                 part.next_host_id = part.next_host_id.wrapping_add(1) & i32::MAX as u32;
                 if !held.iter().any(|h| h.part == index && h.input.external_id == Some(id)) {
-                    input = Some(host_input(note, part.mpe_zone, id));
+                    input = Some(host_input(note, part.mpe_zone, part.mpe.manager_channel(), id));
                     break;
                 }
             }
@@ -1897,9 +1969,8 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             if let Some(script) = part.script.as_mut() {
                 // The scripts play the part's notes: the physical one is silent.
                 let velocity = velocity.clamp(0.0, 1.0);
-                match part.mpe.trigger_silent_with_tuning(&mut part.runtime, input.channel, input, velocity, tune) {
+                match part.mpe.trigger_silent_with_source(&mut part.runtime, input.channel, input, host_source(note), velocity, tune) {
                     Ok(id) => {
-                        let _ = part.runtime.set_input_source(id, host_source(note));
                         held.push(Held {
                             part: index,
                             note,
@@ -1916,10 +1987,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 }
                 return;
             }
-            let id = match part.mpe.trigger_with_tuning(
+            let id = match part.mpe.trigger_with_source(
                 &mut part.runtime,
                 input.channel,
                 input,
+                host_source(note),
                 velocity.clamp(0.0, 1.0),
                 tune,
             ) {
@@ -1930,7 +2002,6 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 }
                 Err(_) => return,
             };
-            let _ = part.runtime.set_input_source(id, host_source(note));
             held.push(Held {
                 part: index,
                 note,
@@ -1944,6 +2015,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 Event::NoteOffVelocity(_, _) => return,
                 _ => None,
             };
+            if !matches!(event,Event::Choke(_))
+                && let Err(error)=part.mpe.validate_native_physical_releases(|_,source|native_source_matches(pattern,source)) {
+                if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                return;
+            }
             // Release consumed presses by the exact host identity captured at onset,
             // even if the mapping or driver changed while that key was down.
             let mut at = 0;
@@ -1964,6 +2040,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 .iter()
                 .filter(|h| h.part == index && pattern.matches(h.note))
             {
+                if part.mpe.has_native_physical_note(h.id) {continue;}
                 if matches!(event, Event::Choke(_)) {
                     let _ = part.runtime.cancel_input_note(h.id);
                 } else {
@@ -1973,6 +2050,20 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                     let _ = part.runtime.note_off_exact(h.id, velocity);
                 }
             }
+            // Retain source-backed classification through the complete Held
+            // fallback pass, including already-synthesized tombstones. Only
+            // then acknowledge physical debt; the pending receipt owns its
+            // exact callback independently until drain.
+            let native=if matches!(event,Event::Choke(_)) {
+                part.mpe.choke_native_physical(&mut part.runtime,|_,source|native_source_matches(pattern,source))
+            } else {
+                part.mpe.release_native_physical(&mut part.runtime,|_,source|native_source_matches(pattern,source),velocity)
+            };
+            if let Err(error)=native {
+                if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                return;
+            }
+            drain_terminal_releases(part);
         }
         Event::Expression(pattern, expression) => {
             if let NoteExpression::Pressure(value) = expression {
@@ -2416,6 +2507,17 @@ impl V2Core {
         if let Some((pattern, action)) = event.host_action()
             && self.align.parts[slot].hosts().any(|n| pattern.matches(n))
         {
+            // A wildcard may cover both live/aligned owners and a retired
+            // source-backed gate. Admit the entire native terminal queue before
+            // any immediate Held/articulation action can publish a release.
+            if matches!(event, Event::NoteOff(_) | Event::NoteOffVelocity(..)) {
+                if matches!(event, Event::NoteOffVelocity(_, velocity) if !(0.0..=1.0).contains(&velocity)) {return;}
+                if let Some(Some(part))=self.parts.get_mut(slot)
+                    && let Err(error)=part.mpe.validate_native_physical_releases(|_,source|native_source_matches(pattern,source)) {
+                    if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                    return;
+                }
+            }
             self.exact_work.clear();
             for h in self
                 .held
@@ -2461,6 +2563,29 @@ impl V2Core {
                         at += 1;
                     }
                 }
+            }
+            // Source-backed physical gates may outlive both Core and Held.
+            // Scan their own fixed-capacity ledger separately: never combine
+            // this population with HELD-sized scratch, nor steal a tuple still
+            // retained by the scheduler or the live-Held projection.
+            if matches!(event, Event::NoteOff(_) | Event::NoteOffVelocity(..) | Event::Choke(_))
+                && let Some(Some(part))=self.parts.get_mut(slot) {
+                let scheduler=&self.align.parts[slot];
+                let held=&self.held;
+                let retired=|id,source| native_source_matches(pattern,source)
+                    && !held.iter().any(|row|row.part==slot&&row.id==id)
+                    && native_source_note(source).is_some_and(|note|!scheduler.hosts().any(|aligned|aligned==note));
+                let result=if matches!(event,Event::Choke(_)) {
+                    part.mpe.choke_native_physical(&mut part.runtime,retired)
+                } else {
+                    let velocity=if let Event::NoteOffVelocity(_,v)=event {Some(v)} else {None};
+                    part.mpe.release_native_physical(&mut part.runtime,retired,velocity)
+                };
+                if let Err(error)=result {
+                    if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
+                    return;
+                }
+                drain_terminal_releases(part);
             }
         }
         let Some(Some(p)) = self.parts.get_mut(slot) else {
@@ -2596,23 +2721,11 @@ impl Core for V2Core {
         };
         let time = (!block.offline).then(|| std::time::Duration::try_from_secs_f64(
             block.frames as f64 / self.rate * 0.4 / parts as f64).unwrap_or_default());
-        self.transport
-            .update(block.transport, self.align.clock, self.rate);
-        let values = self.transport.values();
         for part in self.parts.iter_mut().flatten() {
             part.runtime.set_offline(block.offline);
             part.runtime.begin_behavior_block(fuel, time);
-            let _ = part.runtime.set_tempo(self.transport.tempo());
-            // sampler-ksp::lower::host_slot: documented duration/position/signature/running ABI.
-            for (slot, value) in values.into_iter().enumerate() {
-                let _ = part.runtime.set_host_value(8 + slot, value);
-            }
         }
-        let holding = self.align.holding(block.transport.playing);
-        if self.holding && !holding {
-            self.flush_aligned();
-        }
-        self.holding = holding;
+        self.update_transport(block.transport);
     }
 
     fn event(&mut self, port: u8, event: Event) {
@@ -2624,7 +2737,8 @@ impl Core for V2Core {
                 let captured = self.held.iter().any(|h| h.part == part && pattern.matches(h.note))
                     || self.align.parts[part].hosts().any(|note| pattern.matches(note))
                     || self.parts[part].as_ref().is_some_and(|p|
-                        p.consumed_hosts.iter().any(|note| pattern.matches(*note)));
+                        p.consumed_hosts.iter().any(|note| pattern.matches(*note))
+                        ||matches!(event,Event::NoteOff(_)|Event::NoteOffVelocity(..)|Event::Choke(_))&&has_retained_native(p,pattern));
                 if captured {
                     if self.holding { self.enqueue(part, event); }
                     else { self.deliver(part, event); }
@@ -3116,12 +3230,7 @@ impl Core for V2Core {
         let Ok(performance) = rt.performance(0) else {
             return false;
         };
-        let context = ControlContext {
-            performance,
-            origin: WIRE,
-            channels: 1,
-        };
-        rt.invoke_control(context, plan, None, ControlWrite { id, value })
+        rt.invoke_global_control(performance, plan, None, ControlWrite { id, value })
             .is_ok()
     }
 
@@ -3254,6 +3363,8 @@ fn budgeted_limits(plan: &Prepared, stream_voices: Option<usize>) -> (Limits, us
     // Capped: script cells are allocated per note.
     let notes = INITIAL_NOTE_PARAMS;
     let mut limits = Limits {
+        // Separate Midi1/Midi2 wire and Native logical host pedal ownership.
+        channels: 3 * 16,
         families: notes,
         decisions: notes,
         ..Limits::for_plan(plan, notes, voices)
@@ -3957,6 +4068,8 @@ impl V2Loader {
         if request.mpe_upper {
             part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, part.runtime.note_capacity().max(1))
                 .map_err(core)?;
+            part.mpe.enable_host_channel_projection().map_err(core)?;
+            part.mpe.use_midi2_channel_voice().map_err(core)?;
         }
         part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
@@ -5125,8 +5238,11 @@ mod tests {
             (expression(&core).pitch_semitones - 2.0).abs() < 1e-3,
             "bend on any channel moves the part"
         );
-        // MIDI 2.0 polyphonic pressure reaches the host note at full precision.
+        // A raw MIDI2 per-key message cannot borrow a Native host identity.
+        // The exact native host expression retains full pressure precision.
         core.event(0, Event::Ump([0x40a3_3c00, 0x8000_0000]));
+        assert_eq!(expression(&core).pressure,0);
+        core.event(0,Event::Expression(HostPattern{port:i32::from(note.port),channel:i32::from(note.channel),key:i32::from(note.key),id:note.id,clap:note.clap},NoteExpression::Pressure(f64::from(0x8000_0000u32)/f64::from(u32::MAX))));
         assert_eq!(expression(&core).pressure, 0x8000_0000);
         core.event(0, off);
         for _ in 0..20 {
@@ -5737,7 +5853,14 @@ mod tests {
                 core.event(0, Event::Ump([0x40a0_3c00, 123]));
                 let runtime = &core.parts[0].as_ref().unwrap().runtime;
                 for h in &core.held {
-                    assert_eq!(runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure, 123);
+                    assert_eq!(runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure, 0, "raw Midi2 cannot address Native host owners");
+                }
+                core.event(0, Event::Expression(super::super::event::HostPattern {
+                    port: -1, channel: -1, key: -1, id: -1, clap: true,
+                }, NoteExpression::Pressure(0.5)));
+                let runtime = &core.parts[0].as_ref().unwrap().runtime;
+                for h in &core.held {
+                    assert_eq!(runtime.expression(runtime.expression_id(h.id).unwrap()).unwrap().pressure, unit_scale(0.5));
                 }
                 core.event(0, Event::NoteOff(super::super::event::HostPattern {
                     port: -1, channel: -1, key: -1, id: -1, clap: true,
@@ -5778,16 +5901,16 @@ mod tests {
             runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0).unwrap()
         };
         core.event(0, Event::Ump([0x40a3_3c00, u32::MAX]));
-        assert_eq!(calls(&core), 1, "overlapping host IDs share one physical pressure callback");
+        assert_eq!(calls(&core), 1, "raw pressure invokes one core callback, not one per Native host ID");
         assert_eq!(values(&core), [0, 0, 0], "ignore_controller suppresses downstream pressure");
         core.event(0, Event::Ump([0x40a3_3c00, 0x4000_0000]));
         assert_eq!(calls(&core), 2);
-        assert_eq!(values(&core), [0x4000_0000, 0x4000_0000, 0], "physical channel survives wire mapping");
+        assert_eq!(values(&core), [0, 0, 0], "raw Midi2 pressure cannot alias same-key Native owners");
         core.event(0, Event::Expression(super::super::event::HostPattern {
             port: -1, channel: -1, key: -1, id: 12, clap: true,
         }, NoteExpression::Pressure(0.5)));
         assert_eq!(calls(&core), 3);
-        assert_eq!(values(&core), [0x4000_0000, unit_scale(0.5), 0], "CLAP exact ID reaches the same callback path");
+        assert_eq!(values(&core), [0, unit_scale(0.5), 0], "CLAP exact ID reaches its own callback path");
     }
 
     #[test]
@@ -5813,10 +5936,13 @@ mod tests {
             .runtime
             .expression(part.runtime.expression_id(core.held[0].id).unwrap())
             .unwrap();
-        assert!(
-            (e.pitch_semitones - 24.0).abs() < 1e-6,
-            "three quarters of full scale is +24"
-        );
+        assert_eq!(e.pitch_semitones, 0., "raw PN bend must not target a same-key Native host owner");
+        core.event(0, Event::Expression(super::super::event::HostPattern {
+            port: -1, channel: -1, key: -1, id: 1, clap: true,
+        }, NoteExpression::Tune(24.)));
+        let part = core.parts[0].as_ref().unwrap();
+        let e = part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap();
+        assert_eq!(e.pitch_semitones, 24., "the exact native ID still receives native tuning");
         assert_eq!(core.problems(0).ignored_input, 0);
         // CLAP gain expression up to +12 dB, unclamped.
         core.event(
@@ -7874,11 +8000,11 @@ mod tests {
             assert_follows(&core, parent_12, child_12);
             assert_eq!(child_value(&core, child_13), other_child_before);
             assert_eq!((child_value(&core, child_11).gain, child_value(&core, child_11).pan), (1., 0.));
-            // UMP per-key pitch still addresses both overlapping IDs on this
-            // key/channel, while a native host expression addresses one ID.
+            // Raw UMP PN pitch addresses only its own Midi2 cohort. These
+            // overlapping Native IDs retain independently captured host tuning.
             core.event(0, Event::Ump([0x4060_3c00 | u32::from(member) << 16, 0x9000_0000]));
-            assert_eq!(value(&core, 11).pitch_semitones, base + 6.);
-            assert_eq!(value(&core, 12).pitch_semitones, base + 6.);
+            assert_eq!(value(&core, 11).pitch_semitones, base + 0.75);
+            assert_eq!(value(&core, 12).pitch_semitones, base + 1.25);
             assert_eq!(value(&core, 13), other_before);
             assert_follows(&core, parent, child_11);
             assert_follows(&core, parent_12, child_12);
@@ -8019,17 +8145,415 @@ mod tests {
         let runtime = Runtime::new(plan, limits).unwrap();
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("protocol reporting")).unwrap())));
-        // Registered Controller3:17 has no represented receiver law. Per-key
-        // pitch without a native-host recipient is likewise not a successful no-op.
+        // Registered Controller3:17 has no represented receiver law. Raw per-key
+        // pitch instead prepares its own future raw-note cohort, never Native.
         core.event(0, Event::Ump([0x4020_0311, 123]));
         core.event(0, Event::Ump([0x4060_3c00, 0x9000_0000]));
-        assert_eq!(core.problems(0).ignored_input, 2);
+        assert_eq!(core.problems(0).ignored_input, 1);
         // MIDI2 expressly deprecated CC6 must not become an RPN transaction,
         // script callback or an unsupported-message diagnostic.
         core.event(0, Event::Ump([0x40b0_0600, u32::MAX]));
-        assert_eq!(core.problems(0).ignored_input, 2);
+        assert_eq!(core.problems(0).ignored_input, 1);
+        // The earlier per-note bend must be observable on a later real raw note.
+        core.event(0,Event::Ump([0x4090_3c00,0xffff_0000]));
+        let runtime=&core.parts[0].as_ref().unwrap().runtime;
+        let note=runtime.live_notes().find(|id|runtime.input_source(*id).unwrap().is_some_and(|source|source.protocol==sampler_core::Protocol::Midi2&&source.key==60)).unwrap();
+        let value=runtime.expression(runtime.expression_id(note).unwrap()).unwrap();
+        let expected=48.*(f64::from(0x9000_0000u32)-2147483648.)/2147483647.;
+        assert!((value.pitch_semitones-expected).abs()<1e-12);
+        assert_eq!(core.problems(0).ignored_input,1);
         assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), None);
         assert_eq!(core.problems(0).capacity_drops, 0);
+    }
+
+    #[test]
+    fn global_ui_virtual_bend_is_once_per_zone_and_identical_member_write_is_still_authored() {
+        let make = || {
+            let source = "on init declare ui_knob $bend(0,127,1) end on on ui_control($bend) set_controller($VCC_PITCH_BEND,-8192) end on";
+            let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let control = sampler_ui_ir::ControlId(script.controls().iter().find(|c| c.variable.ends_with("$bend")).unwrap().definition.id.0);
+            let pcm = Pcm::new(48000, (0..96000).map(|i| {
+                let phase = f64::from(i) * std::f64::consts::TAU * 0.017;
+                [phase.cos() as f32 * 0.1, phase.sin() as f32 * 0.1]
+            }).collect()).unwrap();
+            let prepared = script.bind(Prepared::new(48000, vec![pcm], vec![Region {
+                sample: 0, key_low: 60, key_high: 60, root_key: None, velocity_low: 0., velocity_high: 1.,
+                gain: 1., envelope: Envelope::new(0,0,0,1.,256).unwrap(), playback: Playback::default(),
+            }], 1).unwrap()).unwrap();
+            let limits = Limits::for_plan(&prepared, 32, 8);
+            let mut core = V2Core::with_parts(1, 48000.);
+            let mut mix = Mix::default(); mix.parts[0].mpe = true; mix.parts[0].channel = -1; mix.parts[0].bend_range = 2;
+            core.set_mix(&mix);
+            core.install(0, Some(Box::new(Part::new(Runtime::new(prepared, limits).unwrap(), MixTree::instrument("bend")).unwrap())));
+            (core, control)
+        };
+        let (mut core, control) = make(); let (mut left, _) = make(); let (mut right, _) = make();
+        for channel in [1,2] { core.event(0, Event::midi1(0x90 | channel, 60, 100)); }
+        left.event(0, Event::midi1(0x91, 60, 100)); right.event(0, Event::midi1(0x92, 60, 100));
+        let ids: Vec<_> = core.parts[0].as_ref().unwrap().runtime.live_notes().collect(); assert_eq!(ids.len(), 2);
+        let set_reference = |core: &mut V2Core, pitch: f64| {
+            let runtime = &mut core.parts[0].as_mut().unwrap().runtime;
+            let note = runtime.live_notes().next().unwrap();
+            let owner = runtime.expression_id(note).unwrap(); let mut e = runtime.expression(owner).unwrap();
+            e.pitch_semitones = pitch; runtime.set_expression(owner, e).unwrap();
+        };
+        assert!(core.set_control(0, control, 127.));
+        // Drain the accepted synthetic UI work, then run its ordinary adapter bridge.
+        core.parts[0].as_mut().unwrap().runtime.render(&mut []).unwrap();
+        script_controllers(core.parts[0].as_mut().unwrap());
+        for note in &ids {
+            let runtime = &core.parts[0].as_ref().unwrap().runtime;
+            assert_eq!(runtime.expression(runtime.expression_id(*note).unwrap()).unwrap().pitch_semitones, -2.,
+                "global broadcast copies cannot add a second member bend");
+        }
+        set_reference(&mut left, -2.); set_reference(&mut right, -2.);
+        let check = |core: &mut V2Core, left: &mut V2Core, right: &mut V2Core| {
+            let got: Vec<_> = { let r = core.render(128); (0..128).map(|i| [r.buses[0][0][i],r.buses[0][1][i]]).collect() };
+            let a: Vec<_> = { let r = left.render(128); (0..128).map(|i| [r.buses[0][0][i],r.buses[0][1][i]]).collect() };
+            let b = right.render(128);
+            assert!(got.iter().flatten().any(|x| x.abs() > 0.01));
+            for i in 0..128 { for c in 0..2 { assert!((got[i][c] - (a[i][c] + b.buses[0][c][i])).abs() < 3e-6); } }
+        };
+        check(&mut core, &mut left, &mut right);
+        let part = core.parts[0].as_mut().unwrap(); let performance = part.runtime.performance(0).unwrap();
+        part.runtime.dispatch_controller(performance, sampler_core::ChannelAddress { protocol: sampler_core::Protocol::Midi1,
+            port: WIRE.port, group: WIRE.group, channel: 1 }, 1 << 1, 128, 0).unwrap();
+        script_controllers(part);
+        let e = |note| part.runtime.expression(part.runtime.expression_id(note).unwrap()).unwrap().pitch_semitones;
+        assert_eq!((e(ids[0]), e(ids[1])), (-4., -2.), "same value as global is nevertheless an independent real member write");
+        set_reference(&mut left, -4.);
+        check(&mut core, &mut left, &mut right);
+        assert_eq!(core.problems(0).ignored_input, 0);
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.voice_count(), 2);
+    }
+
+    #[test]
+    fn physical_source_channel_is_present_before_the_first_ksp_note_callback() {
+        let source = "on init declare $observed := -1 end on on note $observed := get_event_par($EVENT_ID, $EVENT_PAR_MIDI_CHANNEL) end on";
+        let make = || {
+            let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+            let prepared = script.bind(Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap();
+            let limits = Limits::for_plan(&prepared, 32, 8);
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, Some(Box::new(Part::new(Runtime::new(prepared, limits).unwrap(), MixTree::instrument("source")).unwrap())));
+            core
+        };
+        let mut core = make();
+        let source = HostNote { port: 0, channel: 13, key: 60, id: 317, clap: true };
+        core.event(0, on(source));
+        let runtime = &core.parts[0].as_ref().unwrap().runtime;
+        assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(13),
+            "posthoc source repair cannot satisfy a synchronous KSP callback");
+        let note = core.held.iter().find(|h| h.note == source).unwrap();
+        assert_eq!(note.input.protocol, sampler_core::Protocol::Native);
+        assert_eq!(note.input.channel, 0, "logical conventional execution domain stays independent");
+        assert_eq!(runtime.input_source(note.id), Ok(Some(host_source(source))));
+        let mut wire = make(); wire.event(0, Event::midi1(0x9d, 60, 100));
+        let runtime = &wire.parts[0].as_ref().unwrap().runtime;
+        assert_eq!(runtime.script_cell(runtime.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(13));
+        let note = runtime.live_notes().next().unwrap();
+        assert_eq!(runtime.input_source(note).unwrap().unwrap().channel, 13);
+        assert_eq!(wire.problems(0).ignored_input, 0);
+    }
+
+    #[test]
+    fn product_ordinary_midi2_keeps_channel_zero_and_outside_mpe_zone_owners_independent() {
+        let pcm = Pcm::new(48000, (0..48000).map(|i| { let phase = f64::from(i) * 0.017 * std::f64::consts::TAU;
+            [phase.sin() as f32, phase.cos() as f32] }).collect()).unwrap();
+        let prepared = Prepared::new(48000, vec![pcm], vec![Region { sample: 0, key_low: 60, key_high: 60,
+            root_key: None, velocity_low: 0., velocity_high: 1., gain: 1., envelope: Envelope::new(0,0,0,1.,256).unwrap(), playback: Playback::default() }], 1).unwrap();
+        let limits = Limits::for_plan(&prepared, 32, 8);
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(Part::new(Runtime::new(prepared, limits).unwrap(), MixTree::instrument("protocol")).unwrap())));
+        // Negotiate a one-member MIDI1 zone; this is not a MIDI2 channel filter.
+        for (cc, value) in [(101,0), (100,6), (6,1)] { core.event(0, Event::midi1(0xb0, cc, value)); }
+        core.event(0, Event::Ump([0x4090_3c00, 0xffff_0000]));
+        core.event(0, Event::Ump([0x409e_3c00, 0xffff_0000]));
+        core.event(0, Event::midi1(0x90, 60, 127));
+        let ids: Vec<_> = core.parts[0].as_ref().unwrap().runtime.live_notes().collect(); assert_eq!(ids.len(), 3);
+        let sources: Vec<_> = ids.iter().map(|id| core.parts[0].as_ref().unwrap().runtime.input_source(*id).unwrap().unwrap()).collect();
+        let by_source = |protocol, channel| ids[sources.iter().position(|s| s.protocol == protocol && s.channel == channel).unwrap()];
+        let first = by_source(sampler_core::Protocol::Midi2, 0); let other = by_source(sampler_core::Protocol::Midi2, 14);
+        let legacy = by_source(sampler_core::Protocol::Midi1, 0);
+        let value = |core: &V2Core, note| { let rt = &core.parts[0].as_ref().unwrap().runtime; rt.expression(rt.expression_id(note).unwrap()).unwrap() };
+        let first_owner = core.parts[0].as_ref().unwrap().runtime.expression_id(first).unwrap();
+        core.event(0, Event::Ump([0x40e0_0000, 0xa000_0000]));
+        assert_eq!(value(&core, first).pitch_semitones, 2. * 536_870_912. / 2_147_483_647.);
+        assert_eq!(value(&core, other).pitch_semitones, 0.);
+        assert_eq!(value(&core, legacy).pitch_semitones, 0.);
+        core.event(0, Event::Ump([0x40de_0000, 0x1234_5678]));
+        assert_eq!(value(&core, other).pressure, 0x1234_5678);
+        assert_eq!(value(&core, first).pressure, 0);
+        core.event(0, Event::Ump([0x408e_3c00, 0]));
+        let runtime = &core.parts[0].as_ref().unwrap().runtime;
+        assert!(!runtime.input_held(other).unwrap()); assert!(runtime.input_held(first).unwrap()); assert!(runtime.input_held(legacy).unwrap());
+        assert_eq!(runtime.expression_id(first), Ok(first_owner));
+        let output = core.render(128); assert!(output.buses[0][0][..128].iter().any(|x| x.abs() > 0.01));
+        assert_eq!(core.problems(0).ignored_input, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn raw_midi2_script_children_follow_only_their_real_per_note_owner_and_release_velocity() {
+        for mapping in [0,12] {
+        let tmp = tempfile::tempdir().unwrap(); let wav = tmp.path().join("note.wav"); sine(&wav);
+        let bank = tmp.path().join("RawPN.ufs");
+        let xml = include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace(
+            "function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end",
+            "function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end\nfunction onRelease(e) label.text='Released '..e.velocity end");
+        let xml=xml.replace("playNote(e.note,e.velocity,-1)",&format!("playNote(e.note+{mapping},e.velocity,-1)"));
+        crate::library::tests::clear_sample_bank_xml(&bank, &std::fs::read(&wav).unwrap(), xml.as_bytes());
+        let loaded = V2Loader.prepare(&LoadRequest {path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+        let mut ui = loaded.scripts; let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+        let raw=|status:u8,key:u8,field:u8,data:u32|Event::Ump([0x4000_0000|u32::from(status|3)<<16|u32::from(key)<<8|u32::from(field),data]);
+        let parent_value=|core:&V2Core,note| {let rt=&core.parts[0].as_ref().unwrap().runtime;rt.expression(rt.expression_id(note).unwrap()).unwrap()};
+        let dimensions=|e:Expression|(e.pitch_semitones,e.pressure,e.timbre,e.bend);
+        // Absolute one-note base plus mapped authored key must survive the
+        // real script child, independently of live PN/channel components.
+        core.event(0,raw(0x90,60,3,0xffff_0000|(60*512+128)));
+        let rt=&core.parts[0].as_ref().unwrap().runtime;
+        let parent=rt.live_notes().find(|note|rt.input_held(*note).unwrap_or(false)&&rt.input_source(*note).ok().flatten().is_some_and(|input|input.protocol==sampler_core::Protocol::Midi2&&input.channel==3&&input.key==60)).expect("actual raw parent missing");
+        assert!(core.held.is_empty(),"raw MIDI2 must never fabricate a Native host-ID binding");
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let child=loop {
+            core.render(64);
+            let rt=&core.parts[0].as_ref().unwrap().runtime;
+            let child=rt.live_notes().find(|note|*note!=parent&&!rt.input_held(*note).unwrap_or(false)&&rt.note_families(*note).is_ok_and(|mut families|families.any(|family|rt.family_voice_count(family).unwrap()>0)));
+            if let Some(child)=child {break child;}
+            assert!(std::time::Instant::now()<deadline,"authored raw MIDI2 child never acquired its normal source");std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        let rt=&core.parts[0].as_ref().unwrap().runtime;
+        let identity=rt.expression_id(child).unwrap();assert_ne!(identity,rt.expression_id(parent).unwrap());
+        let voices=rt.voice_count();assert!(voices>0);
+        assert_eq!(rt.note_pitch(child),Ok(sampler_core::NotePitch::Absolute(60.25+f64::from(mapping))));
+        core.event(0,raw(0xe0,0,0,0xa000_0000));
+        core.event(0,raw(0x60,60,0,0x9000_0000));
+        core.event(0,raw(0xa0,60,0,0x1234_5678));
+        let expected=48.*268_435_456f64/2_147_483_647.+2.*536_870_912f64/2_147_483_647.;
+        assert!((parent_value(&core,parent).pitch_semitones-expected).abs()<1e-12);
+        assert_eq!(parent_value(&core,parent).pressure,0x1234_5678);
+        assert_eq!(dimensions(parent_value(&core,child)),dimensions(parent_value(&core,parent)));
+        let rt=&core.parts[0].as_ref().unwrap().runtime;assert_eq!(rt.expression_id(child),Ok(identity));assert_eq!(rt.voice_count(),voices);
+        let wrong=HostPattern{port:-1,channel:3,key:60,id:-1,clap:true};
+        core.event(0,Event::Expression(wrong,NoteExpression::Tune(-12.)));
+        core.event(0,Event::NoteOff(wrong));
+        assert!(core.parts[0].as_ref().unwrap().runtime.input_held(parent).unwrap());
+        assert!((parent_value(&core,child).pitch_semitones-expected).abs()<1e-12);
+        let mut peak=0f32;for _ in 0..16 {let output=core.render(64);for value in &output.buses[0][0][..64] {peak=peak.max(value.abs());}}
+        assert!(peak>0.01,"normal script child did not reach output");
+        // Independent known-source pitch witness after attack: measure positive
+        // zero crossings in real product PCM, not the receiver's own numbers.
+        let mut samples=Vec::with_capacity(16384);
+        for _ in 0..128 {let output=core.render(128);samples.extend_from_slice(&output.buses[0][0][..128]);}
+        let mut first=None;let mut last=0.;let mut crossings=0usize;
+        for (frame,pair) in samples.windows(2).enumerate() {if pair[0]<=0.&&pair[1]>0. {let at=frame as f64+f64::from(-pair[0])/f64::from(pair[1]-pair[0]);if first.is_none(){first=Some(at);}last=at;crossings+=1;}}
+        assert!(crossings>8);let hz=(crossings-1) as f64*48000./(last-first.unwrap());
+        let expected_hz=440.*((f64::from(mapping)+0.25+expected)/12.).exp2();
+        assert!((hz-expected_hz).abs()<expected_hz*0.002,"mapped scripted attr/PN/channel source {hz}Hz != {expected_hz}Hz");
+        core.event(0,raw(0x80,60,0,0));
+        assert!(!core.parts[0].as_ref().unwrap().runtime.input_held(parent).unwrap_or(false));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Released 0") {break;}assert!(std::time::Instant::now()<deadline,"raw zero release velocity was replaced by default64");std::thread::sleep(std::time::Duration::from_millis(1));}
+        core.event(0,raw(0x90,60,0,0xffff_0000));
+        for _ in 0..16 {core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
+        core.event(0,raw(0x80,60,0,0xffff_0000));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Released 127") {break;}assert!(std::time::Instant::now()<deadline,"raw maximum release velocity lost its ordinary UVI seven-bit callback projection");std::thread::sleep(std::time::Duration::from_millis(1));}
+        for _ in 0..200 {core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert_eq!(core.voices().active,0);assert_eq!(core.problems(0).capacity_drops,0);assert_eq!(core.problems(0).underruns,0);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn canceled_native_physical_sources_release_after_note_end_and_filter_remap_once() {
+        let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("NativePhysical.ufs");
+        let script="local gate=p:Label{'Gate',bounds={10,90,300,25},text='W:0'}\nlocal down=p:Label{'Down',bounds={10,120,300,25},text='Up'}\nlocal attacks=0; local releases=0; local wakes=0\nfunction onNote(e) attacks=attacks+1; label.text='A:'..attacks; down.text='Held'; releaseVoice(e.id); waitForRelease(); wakes=wakes+1; gate.text='W:'..wakes end\nfunction onRelease(e) releases=releases+1; label.text='R:'..releases..':'..e.velocity; down.text=isKeyDown(e.note) and 'Held' or 'Up' end";
+        let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end",script);
+        crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+        let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+        let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+        let mut mix=core.mix.clone();mix.parts[0].port=2;mix.parts[0].channel=3;core.set_mix(&mix);
+        let clap=HostNote{port:2,channel:3,key:60,id:71,clap:true};let vst=HostNote{id:72,clap:false,..clap};
+        core.event(2,Event::NoteOn{note:clap,velocity:1.,tune:0.});core.event(2,Event::NoteOn{note:vst,velocity:1.,tune:0.});
+        let mut ended=Vec::with_capacity(8);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});if ended==[clap]&&core.held.is_empty()&&ui.interfaces()[0].widgets.iter().any(|w|w.text=="A:2") {break;}assert!(std::time::Instant::now()<deadline,"Core NOTE_END and physical gates must have independent lifetimes");std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert!(core.held.is_empty());assert_eq!(ended,[clap],"CLAP alone owns the external NOTE_END notification; both internal Held rows retired");
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.native_physical_slots(),2);
+        mix.parts[0].port=4;mix.parts[0].channel=7;core.set_mix(&mix);
+        let pattern=HostPattern{port:2,channel:3,key:60,id:71,clap:true};
+        core.event(0,Event::NoteOffVelocity(HostPattern{port:3,..pattern},1.));
+        core.event(0,Event::NoteOffVelocity(HostPattern{clap:false,..pattern},1.));
+        core.event(0,Event::Choke(pattern));
+        for _ in 0..8 {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="W:0"),"neither wrong source nor choke is physical key-up");
+        core.event(0,Event::NoteOffVelocity(pattern,0.));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:1:0")&&rows[0].widgets.iter().any(|w|w.text=="W:1") {break;}assert!(std::time::Instant::now()<deadline,"retained exact Native source did not reach the original callback");std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="Held"),"the VST source at the same key remains physically held");
+        core.release_all_notes();let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:2:64")&&rows[0].widgets.iter().any(|w|w.text=="W:2")&&rows[0].widgets.iter().any(|w|w.text=="Up") {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+        core.event(0,Event::NoteOffVelocity(HostPattern{clap:false,id:72,..pattern},1.));core.release_all_notes();
+        for _ in 0..16 {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert_eq!(ended,[clap],"physical release never manufactures another NOTE_END or a CLAP acknowledgment for VST3");
+        assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="R:2:64"));assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="W:2"));
+        assert_eq!(core.problems(0).capacity_drops,0);assert_eq!(core.problems(0).ignored_input,0);
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn native_synthetic_release_then_physical_ack_before_held_drain_calls_lua_once() {
+        let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("NativeSynthetic.ufs");
+        let script="local gate=p:Label{'Gate',bounds={10,90,300,25},text='W:0'}\nlocal releases=0; local wakes=0\nfunction onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1); waitForRelease(); wakes=wakes+1; gate.text='W:'..wakes end\nfunction onRelease(e) releases=releases+1; label.text='R:'..releases..':'..e.velocity end";
+        let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end",script);
+        crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+        let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+        let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+        let note=HostNote{port:0,channel:3,key:60,id:91,clap:true};core.event(0,Event::NoteOn{note,velocity:1.,tune:0.});
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);if ui.interfaces()[0].widgets.iter().any(|w|w.text=="Played") {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+        let id=core.held.iter().find(|row|row.note==note).unwrap().id;
+        core.release_all_notes();
+        assert!(core.held.iter().any(|row|row.id==id),"NOTE_END/Held projection has deliberately not been drained");
+        assert!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));
+        core.event(0,Event::NoteOffVelocity(HostPattern{port:0,channel:3,key:60,id:91,clap:true},0.));
+        assert!(core.held.iter().any(|row|row.id==id),"physical acknowledgment cannot manufacture NOTE_END");
+        assert!(!core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));
+        let mut ended=Vec::with_capacity(4);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:1:64")&&rows[0].widgets.iter().any(|w|w.text=="W:1")&&!ended.is_empty() {break;}assert!(std::time::Instant::now()<deadline,"synthetic release must retain its velocity and execute exactly once before realOff acknowledgment");std::thread::sleep(std::time::Duration::from_millis(1));}
+        for _ in 0..16 {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert_eq!(ended,vec![note]);assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="R:1:64"));assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="W:1"));assert_eq!(core.problems(0).capacity_drops,0);
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn global_transport_stop_releases_raw_canceled_and_native_lua_gates_once_without_same_key_alias() {
+        for cancel in [false,true] {
+            let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("GlobalTerminal.ufs");
+            let play=if cancel {"releaseVoice(e.id)"} else {"playNote(e.note,e.velocity,-1)"};
+            let script=format!("local gate=p:Label{{'Gate',bounds={{10,90,300,25}},text='W:0'}}\nlocal down=p:Label{{'Down',bounds={{10,120,300,25}},text='Up'}}\nlocal attacks=0; local releases=0; local wakes=0\nfunction onNote(e) attacks=attacks+1; label.text='A:'..attacks; down.text='Held'; {play}; waitForRelease(); wakes=wakes+1; gate.text='W:'..wakes end\nfunction onRelease(e) releases=releases+1; label.text='R:'..releases; down.text=isKeyDown(e.note) and 'Held' or 'Up' end");
+            let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end",&script);
+            crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+            let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+            let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+            // Conventional MIDI1 channels1/2 collapse to one logical manager;
+            // their original physical pairs must nevertheless remain distinct.
+            core.event(0,Event::Ump([0x2091_3c7f,0]));core.event(0,Event::Ump([0x2092_3c7f,0]));
+            core.event(0,Event::Ump([0x4093_3c00,0xffff_0000]));
+            core.event(0,Event::NoteOn{note:HostNote{port:0,channel:3,key:60,id:71,clap:true},velocity:1.,tune:0.});
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {core.render(64);core.end_block(64,&mut |_|true);if ui.interfaces()[0].widgets.iter().any(|w|w.text=="A:4") {break;}assert!(std::time::Instant::now()<deadline,"actual raw/native callbacks never admitted");std::thread::sleep(std::time::Duration::from_millis(1));}
+            for _ in 0..64 {core.render(64);core.end_block(64,&mut |_|true);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="W:0"));
+            core.release_all_notes();
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {core.render(64);core.end_block(64,&mut |_|true);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:4")&&rows[0].widgets.iter().any(|w|w.text=="W:4")&&rows[0].widgets.iter().any(|w|w.text=="Up") {break;}assert!(std::time::Instant::now()<deadline,"global stop stranded raw/canceled physical gates cancel={cancel}");std::thread::sleep(std::time::Duration::from_millis(1));}
+            core.release_all_notes();core.event(0,Event::Ump([0x2091_3c7f,0]));
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {core.render(64);if ui.interfaces()[0].widgets.iter().any(|w|w.text=="A:5") {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+            core.event(0,Event::Ump([0x2081_3c00,0]));core.event(0,Event::Ump([0x2082_3c00,0]));core.event(0,Event::Ump([0x4083_3c00,0]));
+            core.event(0,Event::NoteOff(HostPattern{port:0,channel:3,key:60,id:71,clap:true}));
+            for _ in 0..32 {core.render(64);core.end_block(64,&mut |_|true);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="A:5"),"old tuple stole the new same-key release");
+            assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="W:4"));assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="Held"));
+            core.event(0,Event::Ump([0x2081_3c00,0]));
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {core.render(64);core.end_block(64,&mut |_|true);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:5")&&rows[0].widgets.iter().any(|w|w.text=="W:5")&&rows[0].widgets.iter().any(|w|w.text=="Up") {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(core.problems(0).ignored_input,0);assert_eq!(core.problems(0).capacity_drops,0);assert_eq!(core.problems(0).underruns,0);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn raw_script_cancellation_and_channel_terminals_preserve_exact_lua_physical_release() {
+        for mode in [0,120,123] {
+            let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("Terminal.ufs");
+            let play=if mode==0 {"releaseVoice(e.id)"} else {"playNote(e.note,e.velocity,-1)"};
+            let script=format!("local gate=p:Label{{'Gate',bounds={{10,90,300,25}},text='Blocked'}}\nlocal releases=0\nfunction onNote(e) label.text='Played'; {play}; waitForRelease(); gate.text='Unblocked' end\nfunction onRelease(e) releases=releases+1; label.text='Release '..releases..':'..e.velocity end");
+            let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end",&script);
+            crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+            let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+            let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+            core.event(0,Event::Ump([0x4093_3c00,0xffff_0000]));
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {core.render(64);core.end_block(64,&mut |_|true);if ui.interfaces()[0].widgets.iter().any(|w|w.text=="Played") {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+            if mode!=0 {core.event(0,Event::Ump([0x40b3_0000|(mode as u32)<<8,0]));}
+            // Give hard kill/cancellation normal cleanup time, actually retiring
+            // Core ownership before physical Off; Lua's captured pair remains.
+            for _ in 0..64 {core.render(64);core.end_block(64,&mut |_|true);std::thread::sleep(std::time::Duration::from_millis(1));}
+            if mode==123 {
+                let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+                loop {core.render(64);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="Unblocked")&&rows[0].widgets.iter().any(|w|w.text=="Release 1:64") {break;}assert!(std::time::Instant::now()<deadline,"CC123 must synthesize one unspecified-velocity release");std::thread::sleep(std::time::Duration::from_millis(1));}
+            } else {
+                assert!(ui.interfaces()[0].widgets.iter().any(|w|w.text=="Blocked"),"hard kill is not physical key-up");
+            }
+            core.event(0,Event::Ump([0x4083_3c00,0]));
+            let expected=if mode==123 {"Release 1:64"} else {"Release 1:0"};
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {core.render(64);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="Unblocked")&&rows[0].widgets.iter().any(|w|w.text==expected) {break;}assert!(std::time::Instant::now()<deadline,"terminal physical release was lost or duplicated mode{mode}");std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(core.problems(0).ignored_input,0);assert_eq!(core.problems(0).capacity_drops,0);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn raw_midi2_zero_midpoint_and_max_attack_keep_full_core_velocity_and_declared_uvi_projection() {
+        let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("Velocity.ufs");
+        let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end","function onNote(e) label.text='Attack '..e.velocity end");
+        crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+        let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+        let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+        for (velocity,projection) in [(0u16,0),(32769,64),(65535,127)] {
+            core.event(0,Event::Ump([0x4093_3c00,u32::from(velocity)<<16]));
+            let rt=&core.parts[0].as_ref().unwrap().runtime;
+            let note=rt.live_notes().find(|note|rt.input_held(*note).unwrap_or(false)).expect("velocity0 is NoteOn, not NoteOff");
+            assert_eq!(rt.note(note).unwrap().1,f64::from(velocity)/65535.);
+            let expected=format!("Attack {projection}");let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            loop {let output=core.render(64);assert!(output.buses[0][0][..64].iter().all(|sample|*sample==0.),"the authored handler plays no child");if ui.interfaces()[0].widgets.iter().any(|widget|widget.text==expected) {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert!(core.parts[0].as_ref().unwrap().runtime.input_held(note).unwrap());
+            core.event(0,Event::Ump([0x4083_3c00,0]));core.render(64);core.end_block(64,&mut |_|true);
+            assert!(!core.parts[0].as_ref().unwrap().runtime.input_held(note).unwrap_or(false));
+        }
+        assert_eq!(core.problems(0).ignored_input,0);assert_eq!(core.problems(0).capacity_drops,0);
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn explicit_host_channel_all_notes_off_releases_raw_and_native_lua_owners_once() {
+        let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("MixedTerminal.ufs");
+        let script="local gate=p:Label{'Gate',bounds={10,90,300,25},text='W:0'}\nlocal releases=0; local wakes=0\nfunction onNote(e) waitForRelease(); wakes=wakes+1; gate.text='W:'..wakes end\nfunction onRelease(e) releases=releases+1; label.text='R:'..releases end";
+        let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("function onNote(e) label.text='Played'; playNote(e.note,e.velocity,-1) end",script);
+        crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+        let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+        let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+        core.event(0,Event::Ump([0x4093_3c00,0xffff_0000]));
+        core.event(0,Event::NoteOn{note:HostNote{port:0,channel:3,key:60,id:71,clap:true},velocity:1.,tune:0.});
+        for _ in 0..32 {core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
+        assert_eq!(core.held.len(),1);assert!(ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="W:0"));
+        core.event(0,Event::Ump([0x40b3_7b00,0]));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {core.render(64);let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:2")&&rows[0].widgets.iter().any(|w|w.text=="W:2") {break;}assert!(std::time::Instant::now()<deadline,"explicit host projection failed an exact synthetic release");std::thread::sleep(std::time::Duration::from_millis(1));}
+        core.event(0,Event::Ump([0x4083_3c00,0]));
+        core.event(0,Event::NoteOff(HostPattern{port:0,channel:3,key:60,id:71,clap:true}));
+        for _ in 0..32 {core.render(64);core.end_block(64,&mut |_|true);std::thread::sleep(std::time::Duration::from_millis(1));}
+        let rows=ui.interfaces();assert!(rows[0].widgets.iter().any(|w|w.text=="R:2"));assert!(rows[0].widgets.iter().any(|w|w.text=="W:2"));assert_eq!(core.problems(0).capacity_drops,0);
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn uvi_absolute_child_remap_refuses_out_of_range_before_publishing_an_owner() {
+        let tmp=tempfile::tempdir().unwrap();let wav=tmp.path().join("note.wav");sine(&wav);let bank=tmp.path().join("RemapRefusal.ufs");
+        let xml=include_str!("../../tests/fixtures/uvi-clear-features.uvip").replace("playNote(e.note,e.velocity,-1)","playNote(e.note+44,e.velocity,-1)");
+        crate::library::tests::clear_sample_bank_xml(&bank,&std::fs::read(&wav).unwrap(),xml.as_bytes());
+        let loaded=V2Loader.prepare(&LoadRequest{path:bank.join("preset.uvip"),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).unwrap();
+        let mut ui=loaded.scripts;let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);
+        core.event(0,Event::Ump([0x4093_3c03,0xffff_0000|(84*512+128)]));
+        let rt=&core.parts[0].as_ref().unwrap().runtime;let parent=rt.live_notes().find(|note|rt.input_held(*note).unwrap_or(false)).unwrap();let identity=rt.expression_id(parent).unwrap();let before=rt.expression(identity).unwrap();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop {let output=core.render(64);assert!(output.buses[0][0][..64].iter().all(|value|*value==0.));if ui.interfaces()[0].widgets.iter().any(|widget|widget.text=="Played") {break;}assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(1));}
+        for _ in 0..16 {core.render(64);std::thread::sleep(std::time::Duration::from_millis(1));}
+        let rt=&core.parts[0].as_ref().unwrap().runtime;assert_eq!(rt.note_count(),1,"K104+P84.25-B60=128.25 must refuse before child owner publication");assert_eq!(rt.voice_count(),0);assert_eq!(rt.expression_id(parent),Ok(identity));assert_eq!(rt.expression(identity),Ok(before));assert!(rt.input_held(parent).unwrap());
+        core.event(0,Event::Ump([0x4083_3c00,0]));assert!(!core.parts[0].as_ref().unwrap().runtime.input_held(parent).unwrap_or(false));
     }
 
 }
@@ -8678,6 +9202,33 @@ mod timing_parity_tests {
         }
     }
 
+    #[test]
+    fn aligned_wildcard_terminals_also_reach_retired_native_source_rows_without_held_scratch() {
+        for choke in [false,true] {
+            let mut core=aligned_core();let mut mix=core.mix.clone();mix.timing=core.align.plan.clone();mix.parts[0].port=2;mix.parts[0].channel=3;core.set_mix(&mix);
+            let retired=HostNote{port:2,channel:3,key:60,id:71,clap:true};let pending=HostNote{id:72,..retired};
+            core.event(2,Event::NoteOn{note:retired,velocity:1.,tune:0.});
+            let id=core.held.iter().find(|row|row.note==retired).unwrap().id;
+            core.parts[0].as_mut().unwrap().runtime.cancel_input_note(id).unwrap();
+            core.render(64);let mut ended=Vec::with_capacity(8);core.end_block(64,&mut |note|{ended.push(note);true});
+            assert_eq!(ended,vec![retired]);assert!(core.held.is_empty());
+            assert!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));
+            core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});assert!(core.holding);assert_eq!(core.latency(),480);
+            let due=core.align.clock+480;core.event(2,Event::NoteOn{note:pending,velocity:1.,tune:0.});
+            assert_eq!(core.align.next_due(),Some(due));assert!(core.align.parts[0].hosts().any(|note|note==pending));assert!(core.held.is_empty());
+            mix.parts[0].port=4;mix.parts[0].channel=7;core.set_mix(&mix);
+            let pattern=super::super::event::HostPattern{port:2,channel:3,key:60,id:-1,clap:true};
+            let terminal=if choke {Event::Choke(pattern)} else {Event::NoteOffVelocity(pattern,0.25)};
+            let scratch=core.exact_work.capacity();assert_eq!(crate::plugin::tests::allocations(||core.event(0,terminal)),0);assert_eq!(core.exact_work.capacity(),scratch);
+            assert_eq!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id),choke,"the retired physical row must be handled separately from the pending scheduler tuple");
+            for _ in 0..12 {core.render(128);core.end_block(128,&mut |note|{ended.push(note);true});}
+            assert_eq!(ended,vec![retired,pending],"the scheduled terminal and retired physical row must not duplicate NOTE_END");
+            assert!(!core.owns(pending));
+            if choke {core.event(0,Event::NoteOff(pattern));assert!(!core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));}
+            assert_eq!(core.problems(0).capacity_drops,0);assert_eq!(core.problems(0).ignored_input,0);
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -8703,4 +9254,64 @@ mod sampler_stream_contract_tests {
     }
 
 
+}
+
+#[cfg(test)]
+mod timestamped_transport_contract_tests {
+    use super::*;
+    fn core(source:&str)->V2Core {
+        let script=sampler_ksp::compile(source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let plan=script.bind(Prepared::new(48000,vec![],vec![],128).unwrap()).unwrap();
+        let limits=Limits{channels:48,..Limits::for_plan(&plan,16,16)};
+        let part=Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("timestamped host")).unwrap();
+        let mut core=V2Core::with_parts(1,48000.);core.install(0,Some(Box::new(part)));core
+    }
+    fn cell(core:&V2Core,index:u32)->i64 {
+        let rt=&core.parts[0].as_ref().unwrap().runtime;
+        rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),index).unwrap()
+    }
+    fn render_to(core:&mut V2Core,until:u64) {
+        while core.clock(0)<until {core.render((until-core.clock(0)).min(128) as usize);}
+        assert_eq!(core.problems(0).fault_program,0);
+    }
+    #[test]
+    fn transport_events_never_refill_the_spent_shared_callback_allowance() {
+        let mut core=core("on init declare $saved end on on note while ($saved<10000) inc($saved) end while end on");
+        core.begin_block(&BlockInfo{frames:32,offline:true,..Default::default()});
+        core.parts[0].as_mut().unwrap().runtime.begin_behavior_block(64,None);
+        core.play(0,Event::midi1(0x90,60,100));core.render(1);
+        let before=cell(&core,0);assert!(before>0&&before<10000);
+        for value in 0..8 {
+            core.update_transport(super::super::Transport{playing:true,tempo:60.+f64::from(value),beats:f64::from(value),signature:(3,8)});
+            core.render(1);
+            assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(),64);
+            assert_eq!(cell(&core,0),before,"an event cannot restart a spent block allowance");
+        }
+        assert_eq!(core.clock(0),9);
+        core.begin_block(&BlockInfo{frames:32,offline:true,..Default::default()});core.render(1);
+        assert_eq!(cell(&core,0),10000,"the next actual host block supplies the next allowance");
+    }
+    #[test]
+    fn timestamped_tempo_keeps_existing_wait_deadlines_and_sets_new_waits() {
+        let mut core=core("on init declare $done end on on note wait_ticks(960) inc($done) end on");
+        core.begin_block(&BlockInfo{frames:128,offline:true,transport:super::super::Transport{playing:true,tempo:240.,beats:0.,signature:(4,4)}});
+        core.play(0,Event::midi1(0x90,60,100));render_to(&mut core,1024);
+        core.update_transport(super::super::Transport{playing:true,tempo:60.,beats:1.,signature:(4,4)});
+        render_to(&mut core,11936);assert_eq!(cell(&core,0),0);render_to(&mut core,12064);assert_eq!(cell(&core,0),1);
+        core.play(0,Event::midi1(0x90,61,100));render_to(&mut core,60000);assert_eq!(cell(&core,0),1);
+        render_to(&mut core,60128);assert_eq!(cell(&core,0),2);assert_eq!(core.clock(0),60128);
+    }
+    #[test]
+    fn timestamped_holding_transition_flushes_with_the_new_snapshot_without_a_new_block() {
+        let mut core=core("on init declare $running declare $quarter end on on note $running:=$NI_TRANSPORT_RUNNING $quarter:=$DURATION_QUARTER end on");
+        let mut mix=Mix::default();mix.timing=Arc::new(crate::timing::Plan{on:true,transport_only:true,latency_ms:10.,parts:vec![Arc::new(crate::timing::Holds::of(&crate::timing::Timing{override_ms:Some(0.),..Default::default()},&[],10.))],..Default::default()});core.set_mix(&mix);
+        core.begin_block(&BlockInfo{frames:128,offline:true,transport:super::super::Transport{playing:true,tempo:120.,beats:0.,signature:(4,4)}});
+        assert!(core.holding);core.event(0,Event::midi1(0x90,60,100));core.render(64);
+        assert_eq!(cell(&core,1),0,"the note is still held in the alignment queue");
+        let fuel=core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel();
+        core.update_transport(super::super::Transport{playing:false,tempo:240.,beats:2.,signature:(7,8)});
+        assert!(!core.holding);assert_eq!(cell(&core,0),0);assert_eq!(cell(&core,1),250000);
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(),fuel);
+        assert_eq!(core.clock(0),64);assert!(core.host_block);
+    }
 }

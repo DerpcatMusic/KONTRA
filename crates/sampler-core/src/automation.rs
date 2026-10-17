@@ -90,6 +90,7 @@ impl Runtime {
             AutomationSource::HostParameter(address),
             value,
             0,
+            None,
         )?;
         self.control_revision(plan)
     }
@@ -101,6 +102,7 @@ impl Runtime {
         source: AutomationSource,
         input: f64,
         reserved_callbacks: usize,
+        controller_secondary: Option<crate::controller_event::CapturedControllerTarget>,
     ) -> Result<(), Error> {
         let performance = self.performance_index(context.performance)?;
         if !input.is_finite()
@@ -204,7 +206,7 @@ impl Runtime {
                     remaining -= 1;
                 }
                 if state.latched {
-                    self.invoke_widget(
+                    self.invoke_widget_with_targets(
                         context,
                         plan,
                         None,
@@ -214,6 +216,7 @@ impl Runtime {
                             value,
                             interaction: Default::default(),
                         }],
+                        controller_secondary,
                     )?;
                     state.applied = Some(self.widget_value(plan, id, 0)?);
                 }

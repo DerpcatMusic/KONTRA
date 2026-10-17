@@ -65,6 +65,24 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.trigger_in_with_source(performance, input, input, pitch, velocity, expression)
+    }
+
+    /// Keep the original physical tuple before the first authored callback,
+    /// independently of the logical execution/pedal/controller address.
+    pub fn trigger_in_with_source(
+        &mut self, performance: crate::PerformanceId, input: Input, source: Input,
+        pitch: NotePitch, velocity: f64, expression: Expression,
+    ) -> Result<NoteId, Error> {
+        if source.group >= 16 || source.channel >= 16 || source.key >= 128
+            || input.group >= 16 || input.channel >= 16 || input.key >= 128 { return Err(Error::InvalidInput); }
+        self.trigger_in_source(performance, input, pitch, velocity, expression, source)
+    }
+
+    fn trigger_in_source(
+        &mut self, performance: crate::PerformanceId, input: Input,
+        pitch: NotePitch, velocity: f64, expression: Expression, source: Input,
+    ) -> Result<NoteId, Error> {
         self.validate_zone_routing_pitch(self.active_plan, pitch)?;
         let index = self.performance_index(performance)?;
         self.apply_due();
@@ -82,6 +100,7 @@ impl Runtime {
             .flatten()
         {
             let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+            self.set_input_source(note, source)?;
             if !self
                 .plans
                 .get(self.active_plan.0)
@@ -115,14 +134,11 @@ impl Runtime {
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
         let on_note = prepared.stages.iter().any(|stage| stage.note.is_some());
         if !on_note {
-            return self.select(
-                NoteOrigin::Input(input, expression, index),
-                pitch,
-                velocity,
-                0,
-                None,
-                None,
-            );
+            let note = self.select(
+                NoteOrigin::Input(input, expression, index), pitch, velocity, 0, None, None,
+            )?;
+            self.set_input_source(note, source)?;
+            return Ok(note);
         }
         let callbacks = prepared
             .stages
@@ -138,6 +154,7 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+        self.set_input_source(note, source)?;
         self.reserve_release_callbacks(note, 0);
         self.begin_note_stages(note, 0);
         Ok(note)
@@ -615,6 +632,7 @@ impl Runtime {
         let groups = groups.map(|(index, view)| generation.groups.view(index, view));
         let mut required = ReleaseReserve::default();
         let mut processing_scopes = [false; 256];
+        let mut stream_pages=0usize;
         let mut from = range.start;
         while from < range.end {
             let until = prepared.group_end(from, range.end);
@@ -643,9 +661,13 @@ impl Runtime {
                         }
                         let cursor=cursor.with_offset(offset_micros,source.sample_rate()).with_step(step);
                         let cursor = self.stream_start_cursor(plan, cursor);
-                        if let Some(asset) = source.stereo() {
-                            self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
-                        } else if source.resident_view().is_none() { return Err(Error::NotReady); }
+                        let envelope=self.region_envelope(r.envelope,r.fallback_envelope);
+                        let (cold,streamed)=self.check_logical_source_ready(source,cursor,envelope)?;
+                        if streamed {
+                            let pages=self.admit_source_streaming(source,cursor,cold).map_err(|e|if e==crate::StreamError::Capacity {Error::Capacity}else{Error::NotReady})?;
+                            stream_pages=stream_pages.checked_add(pages).ok_or(Error::Capacity)?;
+                            self.check_stream_selection_pages(stream_pages)?;
+                        }
                         if let Some((scope, _)) = prepared.region_processing.get(c.region).copied().flatten() {
                             processing_scopes[scope] = true;
                         }

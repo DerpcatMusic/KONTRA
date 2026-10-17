@@ -234,6 +234,12 @@ impl Runtime {
         self.select_input_expressions(Some(selector), None, update)
     }
 
+    /// Pure whole-input projection using existing preallocated expression
+    /// scratch; no due work, controller mutation or expression publication.
+    pub fn validate_input_expressions(&mut self,address:super::ChannelAddress,key:Option<u8>,update:impl Fn(Expression)->Expression)->Result<usize,Error> {
+        self.project_input_expressions(None,Some((address,key)),update,false)
+    }
+
     fn select_input_expressions(
         &mut self,
         source: Option<InputSelector>,
@@ -241,6 +247,14 @@ impl Runtime {
         update: impl Fn(Expression) -> Expression,
     ) -> Result<usize, Error> {
         self.apply_due();
+        self.project_input_expressions(source,execution,update,true)
+    }
+
+    fn project_input_expressions(
+        &mut self,source:Option<InputSelector>,execution:Option<(super::ChannelAddress,Option<u8>)>,
+        update:impl Fn(Expression)->Expression,publish:bool,
+    )->Result<usize,Error> {
+        if execution.is_some_and(|(address,key)|address.group>=16||address.channel>=16||key.is_some_and(|key|key>=128)) {return Err(Error::InvalidInput);}
         self.expression_changes.fill(None);
         let mut pitch_changed = false;
         let mut changed = 0;
@@ -275,6 +289,7 @@ impl Runtime {
                 self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
             })?;
         }
+        if !publish {return Ok(changed);}
         for index in 0..self.expression_changes.len() {
             if let Some(rendered) = self.expression_changes[index] {
                 // `update` is pure over the unchanged owner value.

@@ -210,13 +210,13 @@ fn physical_bank_capacity_refuses_before_input_or_callback_publication_and_reset
     let mut rt = runtime(prepared);
     support::without_heap(|| {
         let domain = rt.performance(0).unwrap();
-        // Explicit minimum 16 physical rows per Performance; two performances
-        // provide 32 Runtime slots, without any callback-side growth.
-        for port in 0..2 {
+        // Explicit reserve: two Performances * max(aggregate pedal budget,48)
+        // =96 controller keys; no callback-side growth.
+        for port in 0..6 {
             let origin = address(Protocol::Midi1, port, 0, 0);
             rt.dispatch_controller(domain, origin, u16::MAX, 1, 100 + u32::from(port)).unwrap();
         }
-        let missing = address(Protocol::Midi1, 2, 0, 0);
+        let missing = address(Protocol::Midi1, 6, 0, 0);
         assert_eq!(rt.dispatch_controller(domain, missing, 1, 1, 999), Err(Error::Capacity));
         assert_eq!(rt.channel_input_controller(domain, missing, 1), Ok(0));
         assert_eq!(rt.channel_controller(domain, missing, 1), Ok(0));
@@ -252,5 +252,158 @@ fn a_waiting_note_callback_keeps_its_admitted_controller_epoch_even_without_an_i
         rt.render(&mut [[0.; 2]; 5]).unwrap();
         assert_eq!(rt.channel_controller(domain, origin, 1), Ok(888));
         rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); true });
+    });
+}
+
+#[test]
+fn joint_wire_and_native_target_capacity_is_checked_before_any_raw_or_callback_publication() {
+    let prepared = empty();
+    let mut limits = budget(&prepared); limits.performances = 1;
+    let mut rt = Runtime::new(prepared, limits).unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        for port in 0..2 { let origin = address(Protocol::Midi1, port, 0, 0);
+            rt.dispatch_controller(domain, origin, u16::MAX, 1, 10).unwrap(); }
+        let origin = address(Protocol::Midi1, 2, 0, 0);
+        rt.dispatch_controller(domain, origin, (1 << 14) - 1, 1, 10).unwrap();
+        //46 keys exist. Each new two-channel scope fits separately; their
+        // union needs4keys and MUST fail against the actual48-row reserve.
+        let primary = ChannelAddress { channel: 14, ..origin };
+        let native = address(Protocol::Native, 0, 0, 0);
+        assert_eq!(rt.dispatch_controller_with_host_targets(domain, primary, (1 << 14) | (1 << 15), 1, 123,
+            Some(scope(native, 3))), Err(Error::Capacity));
+        for address in [primary, ChannelAddress { channel: 15, ..primary }, native,
+            ChannelAddress { channel: 1, ..native }] {
+            assert_eq!(rt.channel_input_controller(domain, address, 1), Ok(0));
+            assert_eq!(rt.channel_controller(domain, address, 1), Ok(0));
+        }
+        assert_eq!(rt.channel_controller(domain, origin, 1), Ok(10));
+        assert_eq!(rt.now(), 0); assert_eq!(rt.pending_commands(), 0);
+        // The failed union consumed no key; the two-row primary alone fits.
+        rt.dispatch_controller(domain, primary, (1 << 14) | (1 << 15), 1, 123).unwrap();
+        assert_eq!(rt.dispatch_controller(domain, native, 1, 1, 999), Err(Error::Capacity));
+    });
+}
+
+#[test]
+fn one_transformed_callback_projects_to_native_and_wire_with_independent_reset_epochs() {
+    for reset_native in [false, true] {
+        let prepared = empty().with_programs(vec![Program::new(vec![
+            I::Wait(4), I::SetLocal { local: 0, value: 11 }, I::SetLocal { local: 1, value: 777 },
+            I::WriteController { controller: 0, value: 1 }, I::SuppressController]).unwrap()
+            .with_wait_lifetime(WaitLifetime::Callback)], None).unwrap().with_controller_program(0).unwrap();
+        let mut rt = runtime(prepared);
+        let wire = address(Protocol::Midi2, 7, 3, 1);
+        let native = address(Protocol::Native, 0, 0, 1);
+        support::without_heap(|| {
+            let domain = rt.performance(0).unwrap();
+            let pending = rt.dispatch_controller_with_host_targets(domain, wire, 1 << 1, 1, 99,
+                Some(scope(native, 1 << 1))).unwrap().unwrap();
+            assert_eq!(rt.channel_input_controller(domain, wire, 1), Ok(99));
+            assert_eq!(rt.channel_input_controller(domain, native, 1), Ok(99));
+            let reset = if reset_native { native } else { wire };
+            rt.reset_channel_controllers(domain, scope(reset, 1 << 1)).unwrap();
+            rt.render(&mut [[0.; 2]; 5]).unwrap();
+            assert_eq!(rt.behavior_outcome(pending), Ok(Some(Outcome::Finished)));
+            assert_eq!(rt.channel_controller(domain, wire, 11), Ok(if reset_native { 777 } else { u32::MAX }));
+            assert_eq!(rt.channel_controller(domain, native, 11), Ok(if reset_native { u32::MAX } else { 777 }));
+            let future = rt.note_on(input(native, 90), 60, 1.).unwrap();
+            assert_eq!(rt.note_controller(future, 11), Ok(if reset_native { u32::MAX } else { 777 }));
+            let mut callbacks = 0;
+            rt.flush_behaviors(|_, _, outcome| { assert_eq!(outcome, Outcome::Finished); callbacks += 1; true });
+            assert_eq!(callbacks, 1, "secondary target must not run the source callback twice");
+            assert_eq!(rt.controller(domain, 11), Ok(u32::MAX));
+        });
+    }
+}
+
+#[test]
+fn joint_pedal_preflight_cannot_publish_only_the_wire_half() {
+    let prepared = empty(); let mut limits = budget(&prepared); limits.channels = 1;
+    let mut rt = Runtime::new(prepared, limits).unwrap();
+    let wire = address(Protocol::Midi1, 7, 3, 1); let native = address(Protocol::Native, 0, 0, 1);
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let note = rt.note_on(input(wire, 1), 60, 1.).unwrap();
+        assert_eq!(rt.dispatch_controller_with_host_targets(domain, wire, 1 << 1, 64, u32::MAX,
+            Some(scope(native, 1 << 1))), Err(Error::Capacity));
+        for address in [wire, native] {
+            assert_eq!(rt.channel_controller(domain, address, 64), Ok(0));
+            assert_eq!(rt.channel_input_controller(domain, address, 64), Ok(0));
+        }
+        assert!(rt.input_held(note).unwrap()); assert_eq!(rt.now(), 0);
+        let available = rt.register_channel(native).unwrap();
+        assert_eq!(rt.pedals(available), Ok((false, false)));
+    });
+}
+
+#[test]
+fn script_virtual_provenance_distinguishes_global_broadcast_from_identical_channel_writes() {
+    let mut rt = runtime(empty());
+    let origin = address(Protocol::Midi1, 7, 3, 1);
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_controller(domain, origin, 1 << 1, 1, 0).unwrap();
+        rt.set_controller(domain, 128, 0).unwrap(); rt.render(&mut []).unwrap();
+        let mut count = 0;
+        rt.visit_channel_script_controllers(domain, |_, _, _, _, _| count += 1).unwrap();
+        assert_eq!(count, 0, "global copies are not member gestures");
+        rt.dispatch_controller(domain, origin, 1 << 1, 128, 0).unwrap();
+        let mut first = None;
+        rt.visit_channel_script_controllers(domain, |address, number, value, epoch, revision| {
+            assert_eq!((address, number, value), (origin, 128, 0)); first = Some((epoch, revision));
+        }).unwrap();
+        assert!(first.is_some(), "same numeric value must retain a real authored write");
+        rt.dispatch_controller(domain, origin, 1 << 1, 128, 0).unwrap();
+        rt.visit_channel_script_controllers(domain, |_, _, _, epoch, revision| {
+            assert_eq!(epoch, first.unwrap().0); assert!(revision > first.unwrap().1);
+        }).unwrap();
+        rt.set_controller(domain, 128, 0).unwrap(); rt.render(&mut []).unwrap();
+        count = 0; rt.visit_channel_script_controllers(domain, |_, _, _, _, _| count += 1).unwrap();
+        assert_eq!(count, 0);
+        rt.reset_channel_controllers(domain, scope(origin, 1 << 1)).unwrap();
+        rt.dispatch_controller(domain, origin, 1 << 1, 128, 0).unwrap();
+        rt.visit_channel_script_controllers(domain, |_, _, _, epoch, revision| {
+            assert!(epoch > first.unwrap().0); assert!(revision > first.unwrap().1);
+        }).unwrap();
+        assert_eq!(rt.controller(domain, 128), Ok(0));
+    });
+}
+
+#[test]
+fn explicitly_global_ui_writes_remain_global_without_relabeling_captured_native_controls() {
+    let control = ControlId(0x12345);
+    let prepared = empty().with_programs(vec![Program::new(vec![I::Wait(4),
+        I::SetLocal { local: 0, value: 1 }, I::SetLocal { local: 1, value: 777 },
+        I::WriteController { controller: 0, value: 1 }]).unwrap()
+        .with_wait_lifetime(WaitLifetime::Callback)], None).unwrap()
+        .with_controls(vec![ControlDefinition { id: control,
+            domain: ControlDomain::Integer { min: 0, max: 10 }, default: ControlValue::Integer(0) }]).unwrap()
+        .with_control_programs(vec![ControlCallback { control, program: 0, stage: 0 }]).unwrap();
+    let (mut rt, mut client) = runtime(prepared).with_control_updates(2, 1).unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let native = address(Protocol::Native, 0, 0, 0);
+        let request = client.submit(ControlRequest::global_control(domain, rt.active_plan(), None,
+            ControlWrite { id: control, value: ControlValue::Integer(1) })).unwrap();
+        assert_eq!(rt.poll_control_update(), Ok(Some(request)));
+        let reply = client.reply().unwrap();
+        assert!(matches!(reply.command.operation, ControlOperation::InvokeGlobal(_, _)));
+        assert!(reply.result.is_ok());
+        let pending = reply.behavior.unwrap();
+        // The exact address used as global UI metadata is also a real host
+        // address. Reset it: it cannot retroactively relabel the global callback.
+        rt.reset_channel_controllers(domain, scope(native, 1)).unwrap();
+        rt.render(&mut [[0.; 2]; 5]).unwrap();
+        assert_eq!(rt.behavior_outcome(pending), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.controller(domain, 1), Ok(777));
+        rt.flush_behaviors(|_, _, _| true);
+        let physical = rt.invoke_control(ControlContext { performance: domain, origin: native, channels: 1 },
+            rt.active_plan(), None, ControlWrite { id: control, value: ControlValue::Integer(2) }).unwrap().1.unwrap();
+        rt.reset_channel_controllers(domain, scope(native, 1)).unwrap();
+        rt.render(&mut [[0.; 2]; 5]).unwrap();
+        assert_eq!(rt.behavior_outcome(physical), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.channel_controller(domain, native, 1), Ok(0));
+        assert_eq!(rt.controller(domain, 1), Ok(777));
     });
 }

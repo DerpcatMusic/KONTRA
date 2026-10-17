@@ -174,6 +174,7 @@ impl Runtime {
         };
         // Keep the captured physical address, not a guessed channel from a mask.
         let (performance, origin, channels) = match callback.context {
+            PlanContext::NoteControllers(context)=>(context.performance,context.origin,1<<context.origin.channel),
             PlanContext::Controller(event) => (event.performance, event.origin, event.channels),
             PlanContext::Control(event) => (event.performance, event.origin, event.channels),
             PlanContext::Bare => {
@@ -234,6 +235,7 @@ impl Runtime {
                 origin,
                 channels,
                 controller_epochs: self.controller_target_epochs(id)?,
+                controller_secondary: self.controller_secondary_target(id)?,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
@@ -257,6 +259,8 @@ impl Runtime {
     ) -> Result<(), Error> {
         let performance = self.behavior_performance(id).ok();
         let controller_epochs = self.controller_target_epochs(id)?;
+        let controller_origin = self.controller_origin(id)?;
+        let controller_secondary = self.controller_secondary_target(id)?;
         let count = self
             .plans
             .get(plan.0)
@@ -272,14 +276,15 @@ impl Runtime {
             let context = performance.map_or(PlanContext::Bare, |(performance, scope)| {
                 PlanContext::Control(crate::control::ControlEvent {
                     performance,
-                    origin: crate::ChannelAddress {
+                    origin: controller_origin.unwrap_or(crate::ChannelAddress {
                         protocol: scope.protocol,
                         port: scope.port,
                         group: scope.group,
                         channel: scope.channels.trailing_zeros().min(15) as u8,
-                    },
+                    }),
                     channels: scope.channels,
                     controller_epochs,
+                    controller_secondary,
                     stage: p.stage,
                     interaction: crate::WidgetInteraction::default(),
                 })
@@ -315,6 +320,7 @@ impl Runtime {
                 },
                 channels: 1,
                 controller_epochs: None,
+                controller_secondary: None,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });

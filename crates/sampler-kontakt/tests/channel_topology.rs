@@ -1806,3 +1806,309 @@ fn ordinary_source_aware_finish_keeps_one_logical_asset_and_the_existing_runtime
     let mut expected=runtime(&authored,decode(wav(6,false,false,&[])));actual.trigger(input(1),60,1.).unwrap();expected.trigger(input(1),60,1.).unwrap();
     exact(&render(&mut actual,1024,17),&render(&mut expected,1024,64));assert_eq!((actual.voice_count(),actual.processing_owner_count()),(1,1));
 }
+
+
+// S paged backing uses the SAME channel graph/cursor, not a streamed renderer.
+fn authored_paged_source(frames:usize,head:usize,mask:u8)->(SourceStorage,Vec<sampler_core::Pcm>) {
+    let packs=(0..3).map(|pair| {
+        let pcm=sampler_core::Pcm::streamed(48000,frames).unwrap();
+        if mask&(1<<pair)!=0 && head!=0 {pcm.set_ranges(vec![(0,(0..head).map(|i|[value(i,pair*2,false),value(i,pair*2+1,false)]).collect())]).unwrap();}
+        pcm
+    }).collect::<Vec<_>>();
+    let source=sampler_core::SourceStorageFamily::new_paged(sampler_core::ChannelCount::new(6).unwrap(),packs.clone()).unwrap();
+    (source.into(),packs)
+}
+fn authored_long_resident(frames:usize)->SourceStorage {
+    let packs=(0..3).map(|pair|sampler_core::Pcm::new(48000,(0..frames).map(|i|[value(i,pair*2,false),value(i,pair*2+1,false)]).collect()).unwrap()).collect();
+    sampler_core::SourceStorageFamily::new_resident(sampler_core::ChannelCount::new(6).unwrap(),packs).unwrap().into()
+}
+#[test]
+fn a_missing_middle_pack_holds_the_whole_source_and_recovers_without_retrigger_or_heap() {
+    let cells=vec![0.,0.,1.,0.,0.,0.,0.,0.,0.,0.,0.,1.];
+    let mut authored=instrument(cells.clone(),false);authored.assets[0].residency=ir::AssetResidency::Streamable;
+    let (source,packs)=authored_paged_source(N,N,0b101);
+    let prepared=prepare(&authored,source);let limits=Limits::for_plan(&prepared,8,16);
+    let (cache,worker)=sampler_core::StreamCache::new(24).unwrap();
+    let mut actual=Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);actual.set_cold_starts(true);actual.set_stream_horizon(64).unwrap();
+    let held=actual.trigger(input(1901),60,1.).unwrap();
+    let mut out=[[0.;2];64];support::without_heap(||actual.render(&mut out).unwrap());assert!(out.iter().flatten().all(|v|*v==0.));
+    let mut demands=Vec::new();actual.visit_stream_demand(64,|d|{demands.push(d);true}).unwrap();
+    assert!(!demands.is_empty());assert!(demands.iter().all(|d|d.source_frame==0));
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(1,1));
+    packs[1].set_ranges(vec![(0,(0..N).map(|i|[value(i,2,false),value(i,3,false)]).collect())]).unwrap();
+    let mut expected=reference(&cells,false);expected.render(&mut [[0.;2];64]).unwrap();expected.trigger(input(1901),60,1.).unwrap();
+    let mut b=[[0.;2];64];
+    for block in 0..12 {support::without_heap(||{actual.render(&mut out).unwrap();expected.render(&mut b).unwrap();});if block>=4 {close(&out,&b);}}
+    assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.stream_underruns(),actual.nonfinite_frames()),(1,1,0,0));
+    assert!(actual.key_down(held).unwrap());drop(worker);
+}
+#[test]
+fn paged_pitch_and_horizon_over_capacity_refuse_before_retention_across_old_and_new_generations() {
+    let frames=sampler_core::PAGE_FRAMES*16;
+    let mut cells=vec![0.;12];cells[3]=0.25;cells[11]=1.;
+    let mut authored=instrument(cells,true);authored.assets[0].residency=ir::AssetResidency::Streamable;authored.zones[0].playback.looping=ir::Looping::None;
+    let (source,packs)=authored_paged_source(frames,sampler_core::PAGE_FRAMES*2,0b111);
+    let (incoming_source,incoming_packs)=authored_paged_source(frames,sampler_core::PAGE_FRAMES*2,0b111);
+    let resident=authored_long_resident(frames);
+    let prepared=prepare(&authored,source.clone());let reference_plan=prepare(&authored,resident.clone());
+    let limits=Limits::for_plan(&prepared,8,8);
+    let (actual,mut updates)=Runtime::with_plan_updates(prepared,limits,2,1).unwrap();
+    assert_eq!(updates.voice_capacity(),8);
+    let (mut expected,mut reference_updates)=Runtime::with_plan_updates(reference_plan,limits,2,1).unwrap();
+    let (cache,mut worker)=sampler_core::StreamCache::new(18).unwrap();let mut actual=actual.with_stream_cache(cache);actual.set_stream_horizon(4096).unwrap();
+    let old=actual.active_plan();let mut notes=Vec::new();
+    for id in [2001] {notes.push(actual.trigger(input(id),60,1.).unwrap());expected.trigger(input(id),60,1.).unwrap();}
+    let mut a=[[0.;2];64];let mut b=a;actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();close(&a,&b);
+    let mut incoming=authored.clone();if let ir::ControlValue::Continuous{default,..}=&mut incoming.controls[0].value {*default=-0.5;}
+    updates.submit(Box::new(prepare(&incoming,incoming_source))).unwrap();reference_updates.submit(Box::new(prepare(&incoming,resident))).unwrap();
+    support::without_heap(||{actual.poll_plan_update().unwrap();expected.poll_plan_update().unwrap();});
+    let new=actual.active_plan();assert_ne!(old,new);
+    for id in [2003] {notes.push(actual.trigger(input(id),60,1.).unwrap());expected.trigger(input(id),60,1.).unwrap();}
+    actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();close(&a,&b);
+    assert_eq!((actual.note_plan(notes[0]),actual.note_plan(notes[1])),(Ok(old),Ok(new)));
+    // Distinct actual source IDs across retained generations. Retire heads
+    // and populate only the exact two-page baseline through the ordinary
+    // owned-fixture StreamWorker endpoint. The proposed 4x note needs five
+    // pages for one family plus two for its sibling: 21 real keys > pool18.
+    let all_packs=packs.iter().chain(&incoming_packs).collect::<Vec<_>>();
+    for pack in &all_packs {pack.set_ranges(Vec::new()).unwrap();}
+    let deadline=actual.now();{let cache=actual.stream_cache_mut().unwrap();for pack in &all_packs {for page in 0..2 {cache.request(pack,page,deadline).unwrap();}}}
+    while let Some(mut job)=worker.next_job() {
+        let pair=all_packs.iter().position(|p|p.asset_id()==job.key().asset).unwrap()%3;let start=job.range().start;
+        for (frame,out) in job.frames_mut().iter_mut().enumerate() {*out=[value(start+frame,pair*2,false),value(start+frame,pair*2+1,false)];}
+        worker.complete(job,Ok(())).unwrap();
+    }
+    assert_eq!(actual.service_streaming(4096),Ok(true));assert!(5*3+2*3>18);
+    let mut source_before=Vec::new();actual.visit_stream_demand(4096,|d|{source_before.push((d.key,d.frames,d.source_frame,d.deadline));true}).unwrap();
+    let expressions=notes.iter().map(|&n|actual.expression(actual.expression_id(n).unwrap()).unwrap()).collect::<Vec<_>>();
+    let target=actual.expression_id(notes[0]).unwrap();let mut changed=expressions[0];changed.pitch_semitones=24.;
+    let before=(actual.now(),actual.pending_commands(),actual.voice_count(),actual.processing_owner_count(),actual.control_revision(old).unwrap(),actual.control_revision(new).unwrap(),actual.stream_cache_mut().unwrap().bytes());
+    let mut result=Ok(());support::without_heap(||{result=actual.set_expression(target,changed);});assert_eq!(result,Err(Error::Capacity));
+    let mut queued=Ok(());support::without_heap(||{queued=actual.schedule_event(actual.now()+32,sampler_core::Event::Expression(notes[0],changed));});assert_eq!(queued,Err(Error::Capacity));
+    let mut horizon=Ok(());support::without_heap(||{horizon=actual.set_stream_horizon(16384);});assert_eq!(horizon,Err(Error::Capacity));
+    assert_eq!((actual.now(),actual.pending_commands(),actual.voice_count(),actual.processing_owner_count(),actual.control_revision(old).unwrap(),actual.control_revision(new).unwrap(),actual.stream_cache_mut().unwrap().bytes()),before);
+    let mut source_after=Vec::new();actual.visit_stream_demand(4096,|d|{source_after.push((d.key,d.frames,d.source_frame,d.deadline));true}).unwrap();assert_eq!(source_after,source_before);
+    for (&note,&expression) in notes.iter().zip(&expressions) {assert_eq!(actual.expression(actual.expression_id(note).unwrap()),Ok(expression));}
+    assert!(all_packs.iter().all(|p|p.residency_permitted()));
+    support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});close(&a,&b);
+    assert_eq!(updates.grow_voices(16),Ok(16));support::without_heap(||actual.render(&mut []).unwrap());assert_eq!(actual.voice_capacity(),16);
+    support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});close(&a,&b);
+    assert_eq!((actual.nonfinite_frames(),actual.stream_underruns()),(0,0));
+    support::without_heap(||{actual.panic();actual.render(&mut a).unwrap();actual.flush_ended(|_|true);});
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(0,0));drop(worker);
+}
+
+#[test]
+fn a_partial_head_cannot_hide_later_same_page_logical_demand() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;
+    let mut authored=instrument(cells,false);authored.assets[0].residency=ir::AssetResidency::Streamable;
+    let (source,packs)=authored_paged_source(sampler_core::PAGE_FRAMES*4,32,0b111);
+    let prepared=prepare(&authored,source);let limits=Limits::for_plan(&prepared,8,16);
+    let (cache,mut worker)=sampler_core::StreamCache::new(12).unwrap();
+    let mut actual=Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);
+    actual.set_cold_starts(true);actual.set_stream_horizon(64).unwrap();
+    let held=actual.trigger(input(1902),60,1.).unwrap();let clock=actual.now();
+    // The first interpolation subrange is in the 32-frame head. The same
+    // actual page's later subranges are not: deduplication must not call it ready.
+    assert_eq!(actual.service_streaming(64),Ok(false));
+    assert_eq!(actual.now(),clock);assert!(actual.key_down(held).unwrap());
+    let mut jobs=0;while let Some(mut job)=worker.next_job() {
+        assert_eq!(job.key().index,0);let pair=packs.iter().position(|p|p.asset_id()==job.key().asset).unwrap();
+        for (frame,out) in job.frames_mut().iter_mut().enumerate() {*out=[value(frame,pair*2,false),value(frame,pair*2+1,false)];}
+        worker.complete(job,Ok(())).unwrap();jobs+=1;
+    }
+    assert_eq!(jobs,3);assert_eq!(actual.service_streaming(64),Ok(true));assert_eq!(actual.now(),clock);
+    let mut out=[[0.;2];64];support::without_heap(||actual.render(&mut out).unwrap());
+    assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.stream_underruns(),actual.nonfinite_frames()),(1,1,0,0));
+}
+
+#[test]
+fn a_ready_wide_member_waits_for_its_siblings_future_runway_before_shared_stages() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;
+    let mut authored=stage_graph(cells,false,true,false);
+    authored.modulators.push(ir::Modulator {scope:ir::Scope::Voice,source:ir::ModulationSource::Envelope(ir::Envelope {
+        attack:ir::Time::Milliseconds(4.),release:ir::Time::Milliseconds(1.),..Default::default()
+    })});
+    authored.processing_scopes[0].amplitude=Some(ir::ModulatorRef(0));
+    let mut sibling=asset();sibling.residency=ir::AssetResidency::Streamable;authored.assets.push(sibling);
+    let mut sibling_zone=zone();sibling_zone.asset=Some(ir::AssetRef(1));sibling_zone.gain=ir::Gain::Linear(0.125);authored.zones.push(sibling_zone);
+    let held_pcm=sampler_core::Pcm::streamed(48000,N).unwrap();
+    held_pcm.set_ranges(vec![(0,(0..64).map(|i|[value(i,0,false),value(i,1,false)]).collect())]).unwrap();
+    let reference_pcm=sampler_core::Pcm::new(48000,(0..N).map(|i|[value(i,0,false),value(i,1,false)]).collect()).unwrap();
+    let wide=authored_long_resident(N);
+    let prepared=lower_sources(&authored,48000,vec![wide.clone(),held_pcm.clone().into()],|_,p|Ok::<_,LowerError>(p)).unwrap();
+    let expected_plan=lower_sources(&authored,48000,vec![wide,reference_pcm.into()],|_,p|Ok::<_,LowerError>(p)).unwrap();
+    let limits=Limits::for_plan(&prepared,8,16);let mut expected=Runtime::new(expected_plan,limits).unwrap();
+    let (cache,worker)=sampler_core::StreamCache::new(24).unwrap();let mut actual=Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);
+    actual.set_stream_horizon(128).unwrap();actual.set_stream_start_runway(128).unwrap();actual.set_cold_starts(true);
+    let held=actual.trigger(input(1903),60,1.).unwrap();let mut a=[[0.;2];64];let mut b=a;
+    for _ in 0..2 {support::without_heap(||actual.render(&mut a).unwrap());assert!(a.iter().flatten().all(|v|*v==0.));}
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(2,1));assert!(actual.key_down(held).unwrap());
+    let mut demanded=Vec::new();actual.visit_stream_demand(128,|d|{demanded.push(d);true}).unwrap();
+    assert!(!demanded.is_empty());assert!(demanded.iter().all(|d|d.source_frame==0));
+    // A separate fresh reference at the same absolute control clock proves
+    // source, shared attack and OnePole state did not advance while held.
+    expected.render(&mut [[0.;2];128]).unwrap();let reference=expected.trigger(input(1903),60,1.).unwrap();
+    held_pcm.set_ranges(vec![(0,(0..N).map(|i|[value(i,0,false),value(i,1,false)]).collect())]).unwrap();
+    for block in 0..12 {support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=4 {close(&a,&b);}}
+    assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.stream_underruns(),actual.nonfinite_frames()),(2,1,0,0));
+    actual.note_off_exact(held,None).unwrap();expected.note_off_exact(reference,None).unwrap();
+    for _ in 0..4 {support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});close(&a,&b);}
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(0,0));drop(worker);
+}
+
+#[test]
+fn default_one_cold_admission_waits_for_every_wide_owner_member_then_recovers_without_retrigger() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;let mut authored=instrument(cells,false);
+    authored.assets[0].residency=ir::AssetResidency::Streamable;authored.assets.push(authored.assets[0].clone());
+    let mut second=zone();second.asset=Some(ir::AssetRef(1));authored.zones.push(second);
+    authored.processing_scopes[0].members.push(ir::ZoneRef(1));
+    let (first,first_packs)=authored_paged_source(N,N,0b111);let (second,second_packs)=authored_paged_source(N,N,0b101);
+    let prepared=lower_sources(&authored,48000,vec![first,second],|_,p|Ok::<_,LowerError>(p)).unwrap();
+    let reference=lower_sources(&authored,48000,vec![authored_long_resident(N),authored_long_resident(N)],|_,p|Ok::<_,LowerError>(p)).unwrap();
+    let limits=Limits::for_plan(&prepared,8,16);let (cache,worker)=sampler_core::StreamCache::new(24).unwrap();
+    let mut actual=Runtime::new(prepared,limits).unwrap().with_stream_cache(cache);actual.set_cold_starts(true);actual.set_stream_horizon(64).unwrap();
+    let mut expected=Runtime::new(reference,limits).unwrap();let held=actual.trigger(input(1904),60,1.).unwrap();
+    let mut a=[[0.;2];64];let mut b=a;support::without_heap(||actual.render(&mut a).unwrap());
+    assert!(a.iter().flatten().all(|v|*v==0.));assert_eq!((actual.voice_count(),actual.processing_owner_count()),(2,1));
+    let mut before=Vec::new();actual.visit_stream_demand(64,|d|{before.push((d.key.asset,d.source_frame));true}).unwrap();
+    assert!(!before.is_empty());assert!(before.iter().all(|(_,frame)|*frame==0));
+    assert!(first_packs.iter().all(|p|before.iter().any(|(id,_)|*id==p.asset_id())));
+    expected.render(&mut [[0.;2];64]).unwrap();expected.trigger(input(1904),60,1.).unwrap();
+    second_packs[1].set_ranges(vec![(0,(0..N).map(|i|[value(i,2,false),value(i,3,false)]).collect())]).unwrap();
+    for block in 0..12 {support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=4 {close(&a,&b);}}
+    assert!(actual.key_down(held).unwrap());assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.nonfinite_frames(),actual.stream_underruns()),(2,1,0,0));
+    actual.note_off_exact(held,None).unwrap();for _ in 0..4 {support::without_heap(||actual.render(&mut a).unwrap());}
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(0,0));drop(worker);
+}
+
+// Checked W packet owner: generated PCM, original ordinals, no sampler-native
+// DSP interpretation or custom decoder-cost override.
+fn w_pcm_wave(channels:usize,bits:u16,floating:bool,frames:usize)->Vec<u8> {
+    let width=usize::from(bits/8);let payload=frames*channels*width;let padding=payload&1;let mut bytes=b"RIFF".to_vec();bytes.extend(((36+payload+padding) as u32).to_le_bytes());bytes.extend(b"WAVEfmt ");bytes.extend(16u32.to_le_bytes());bytes.extend((if floating {3u16} else {1}).to_le_bytes());bytes.extend((channels as u16).to_le_bytes());bytes.extend(48000u32.to_le_bytes());bytes.extend(((48000*channels*width) as u32).to_le_bytes());bytes.extend(((channels*width) as u16).to_le_bytes());bytes.extend(bits.to_le_bytes());bytes.extend(b"data");bytes.extend(((frames*channels*width) as u32).to_le_bytes());
+    for frame in 0..frames {for channel in 0..channels {let raw=sample(frame,channel,false);if floating {bytes.extend((f32::from(raw)/32768.).to_le_bytes());} else {match bits {16=>bytes.extend(raw.to_le_bytes()),24=>bytes.extend((i32::from(raw)<<8).to_le_bytes()[..3].iter().copied()),32=>bytes.extend((i32::from(raw)<<16).to_le_bytes()),_=>panic!("authored PCM width")}}}}
+    if padding!=0 {bytes.push(0);}
+    bytes
+}
+#[test]
+fn checked_encoded_pcm_owner_keeps_original_ordinals_and_exact_legacy_pcm_conversion_across_seeks() {
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding,ChannelPackDestinations,SampleReader};
+    const FRAMES:usize=1152*3+17;
+    for channels in [3,5,8] {for (bits,floating) in [(16,false),(24,false),(32,false),(32,true)] {
+        let bytes=w_pcm_wave(channels,bits,floating,FRAMES);let encoding=if floating {PcmStreamEncoding::WavFloat32} else {PcmStreamEncoding::WavSigned(bits)};
+        let payload=FRAMES*channels*usize::from(bits/8);assert_eq!(bytes.len(),44+payload+(payload&1));
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()) as usize,payload);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize+8,bytes.len());
+        if payload&1!=0 {assert_eq!(bytes.last().copied(),Some(0));}
+        let owned=bytes.clone();let external=owned.capacity()+size_of::<Cursor<Vec<u8>>>();
+        let admission=PcmStreamAdmission::new(encoding,channels,FRAMES as u64,owned.len() as u64,external).unwrap();let bound=admission.accounted_workspace_bytes();
+        assert_eq!(admission.external_source_workspace_bytes(),external);assert_eq!(bound,external+admission.verified_codec_workspace_bytes());
+        let checked=EncodedChannelReader::open_checked_pcm(Box::new(Cursor::new(owned)),&MetadataOptions::default(),admission,bound).unwrap();assert_eq!(checked.accounted_workspace_bytes(),Some(bound));let mut checked=SampleReader::accounted_encoded(checked).unwrap();
+        let mut old=EncodedChannelReader::open_legacy(Box::new(Cursor::new(bytes)),&MetadataOptions::default()).unwrap();
+        for start in [0usize,1140,2500,3,3000] {
+            let mut physical=vec![vec![[f32::NAN;2];64];channels.div_ceil(2)];let mut planes=physical.iter_mut().map(Vec::as_mut_slice).collect::<Vec<_>>();let mut out=ChannelPackDestinations::new(channels,64,&mut planes).unwrap();
+            checked.read_packs(start,&mut out,bound).unwrap();let mut reference=vec![0.;64*channels];old.read_interleaved(start as u64,&mut reference).unwrap();
+            for frame in 0..64 {for channel in 0..channels {let actual=physical[channel/2][frame][channel%2];assert_eq!(actual.to_bits(),reference[frame*channels+channel].to_bits(),"{bits}/{floating}/{channels}/{start}/{channel}");assert_eq!(actual.to_bits(),value(start+frame,channel,false).to_bits());}if channels%2!=0 {assert_eq!(physical.last().unwrap()[frame][1].to_bits(),0f32.to_bits());}}
+        }
+    }}
+}
+struct WObservedSource {
+    bytes:Cursor<Vec<u8>>, reads:std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    poison:Option<std::ops::Range<u64>>, poison_reads:std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl std::io::Read for WObservedSource {fn read(&mut self,out:&mut [u8])->std::io::Result<usize> {
+    use std::sync::atomic::Ordering;self.reads.fetch_add(1,Ordering::Relaxed);let at=self.bytes.position();
+    if self.poison.as_ref().is_some_and(|r|at<r.end && at.saturating_add(out.len() as u64)>r.start) {self.poison_reads.fetch_add(1,Ordering::Relaxed);return Err(std::io::Error::other("unaccounted metadata body read"));}
+    std::io::Read::read(&mut self.bytes,out)
+}}
+impl std::io::Seek for WObservedSource {fn seek(&mut self,to:std::io::SeekFrom)->std::io::Result<u64> {std::io::Seek::seek(&mut self.bytes,to)}}
+impl symphonia::core::io::MediaSource for WObservedSource {fn is_seekable(&self)->bool {true}fn byte_len(&self)->Option<u64> {Some(self.bytes.get_ref().len() as u64)}}
+#[test]
+fn checked_pcm_workspace_refusal_happens_before_any_source_read() {
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    let bytes=w_pcm_wave(5,16,false,128);let external=bytes.capacity()+size_of::<WObservedSource>();let admission=PcmStreamAdmission::new(PcmStreamEncoding::WavSigned(16),5,128,bytes.len() as u64,external).unwrap();
+    let reads=Arc::new(AtomicUsize::new(0));let source=WObservedSource{bytes:Cursor::new(bytes),reads:reads.clone(),poison:None,poison_reads:Arc::new(AtomicUsize::new(0))};
+    let result=EncodedChannelReader::open_checked_pcm(Box::new(source),&MetadataOptions::default(),admission,admission.accounted_workspace_bytes()-1);
+    assert!(result.is_err());assert_eq!(reads.load(Ordering::Acquire),0);
+}
+#[test]
+fn caller_numeric_pcm_facts_cannot_bypass_actual_allocating_metadata_preflight() {
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    let mut bytes=w_pcm_wave(5,16,false,128);let mut list=b"LIST".to_vec();list.extend(16u32.to_le_bytes());list.extend(b"INFOINAM");list.extend((1u32<<20).to_le_bytes());list.extend([0;4]);bytes.splice(36..36,list);let n=(bytes.len()-8) as u32;bytes[4..8].copy_from_slice(&n.to_le_bytes());
+    // Geometry/cost facts are deliberately supplied without the UVI walker.
+    // The shared opener itself still refuses before reading nested INFO data.
+    let external=bytes.capacity()+size_of::<WObservedSource>();let admission=PcmStreamAdmission::new(PcmStreamEncoding::WavSigned(16),5,128,bytes.len() as u64,external).unwrap();let poison_reads=Arc::new(AtomicUsize::new(0));let reads=Arc::new(AtomicUsize::new(0));
+    let source=WObservedSource{bytes:Cursor::new(bytes),reads:reads.clone(),poison:Some(44..60),poison_reads:poison_reads.clone()};
+    let result=EncodedChannelReader::open_checked_pcm(Box::new(source),&MetadataOptions::default(),admission,admission.accounted_workspace_bytes());
+    let error=match result {Ok(_)=>panic!("numeric facts bypassed container admission"),Err(e)=>e};assert_eq!(error.kind(),std::io::ErrorKind::Unsupported);assert!(reads.load(Ordering::Acquire)>0);assert_eq!(poison_reads.load(Ordering::Acquire),0);
+}
+#[test]
+fn checked_pcm_actual_payload_geometry_and_encoding_must_match_before_decode() {
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};
+    let bytes=w_pcm_wave(5,16,false,128);
+    for (channels,frames,encoding) in [(3,128,PcmStreamEncoding::WavSigned(16)),(5,129,PcmStreamEncoding::WavSigned(16)),(5,128,PcmStreamEncoding::WavFloat32)] {
+        let owned=bytes.clone();let external=owned.capacity()+size_of::<Cursor<Vec<u8>>>();let admission=PcmStreamAdmission::new(encoding,channels,frames,owned.len() as u64,external).unwrap();assert!(EncodedChannelReader::open_checked_pcm(Box::new(Cursor::new(owned)),&MetadataOptions::default(),admission,admission.accounted_workspace_bytes()).is_err());
+    }
+    assert!(PcmStreamAdmission::new(PcmStreamEncoding::WavSigned(8),5,128,bytes.len() as u64,bytes.capacity()+size_of::<Cursor<Vec<u8>>>()).is_err());
+}
+
+#[test]
+fn checked_pcm_accounting_separates_verified_codec_from_external_source_contract() {
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};
+    let mut bytes=w_pcm_wave(5,16,false,128);bytes.reserve_exact(1<<20);
+    let actual=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();
+    let accounted=PcmStreamAdmission::new(PcmStreamEncoding::WavSigned(16),5,128,bytes.len() as u64,actual).unwrap();
+    let unverified_claim=PcmStreamAdmission::new(PcmStreamEncoding::WavSigned(16),5,128,bytes.len() as u64,1).unwrap();
+    assert_eq!(accounted.verified_codec_workspace_bytes(),unverified_claim.verified_codec_workspace_bytes());
+    assert_eq!(accounted.external_source_workspace_bytes(),actual);assert_eq!(unverified_claim.external_source_workspace_bytes(),1);
+    assert_eq!(accounted.accounted_workspace_bytes(),actual+accounted.verified_codec_workspace_bytes());
+    // No assertion pretends the container verified the1-byte source claim.
+    // This concrete test owner is charged by its real Vec capacity before open.
+    let checked=EncodedChannelReader::open_checked_pcm(Box::new(Cursor::new(bytes)),&MetadataOptions::default(),accounted,accounted.accounted_workspace_bytes()).unwrap();
+    assert_eq!(checked.external_source_workspace_bytes(),Some(actual));assert_eq!(checked.verified_codec_workspace_bytes(),Some(accounted.verified_codec_workspace_bytes()));
+}
+
+
+#[test]
+fn checked_aiff_rate_domain_is_validated_before_the_normal_probe_and_keeps_44100_pcm() {
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};
+    let rate_bytes=|exponent:u16,mantissa:u64| {
+        let mut bytes=[0;10];bytes[..2].copy_from_slice(&exponent.to_be_bytes());bytes[2..].copy_from_slice(&mantissa.to_be_bytes());bytes
+    };
+    let aiff=|rate:[u8;10]| {
+        let mut body=b"AIFFCOMM".to_vec();body.extend(18u32.to_be_bytes());body.extend(5u16.to_be_bytes());body.extend(128u32.to_be_bytes());body.extend(16u16.to_be_bytes());body.extend(rate);
+        body.extend(b"SSND");body.extend((8u32+128*5*2).to_be_bytes());body.extend([0;8]);
+        for frame in 0..128 {for channel in 0..5 {body.extend(sample(frame,channel,false).to_be_bytes());}}
+        let mut bytes=b"FORM".to_vec();bytes.extend((body.len() as u32).to_be_bytes());bytes.extend(body);bytes
+    };
+    for (exponent,mantissa) in [
+        (0u16,0u64),                          // zero, formerly TimeBase panic
+        (0xc00e,0xbb80000000000000),          // negative 48000
+        (0x7fff,0xc000000000000000),          // NaN
+        (0x7fff,0),                           // infinity
+        (0x3ffe,0x8000000000000000),          // positive but below 1Hz
+        (0x401f,0x8000000000000000),          // 2^32, outside u32 rate domain
+    ] {
+        let rate=rate_bytes(exponent,mantissa);
+        assert!(PcmStreamAdmission::validate_aiff_sample_rate(rate).is_err());
+        let bytes=aiff(rate);let external=bytes.capacity()+size_of::<Cursor<Vec<u8>>>();
+        let admission=PcmStreamAdmission::new(PcmStreamEncoding::AiffSigned(16),5,128,bytes.len() as u64,external).unwrap();
+        let error=match EncodedChannelReader::open_checked_pcm(Box::new(Cursor::new(bytes)),&MetadataOptions::default(),admission,admission.accounted_workspace_bytes()) {
+            Ok(_)=>panic!("invalid AIFF80 rate entered the normal probe"),Err(error)=>error,
+        };
+        assert_eq!(error.kind(),std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("invalid AIFF sample rate"));
+    }
+    assert_eq!(PcmStreamAdmission::validate_aiff_sample_rate(rate_bytes(0x3fff,0x8000000000000000)).unwrap(),1);
+    assert_eq!(PcmStreamAdmission::validate_aiff_sample_rate(rate_bytes(0x401e,0xffffffff00000000)).unwrap(),u32::MAX);
+    let rate=rate_bytes(0x400e,0xac44000000000000);assert_eq!(PcmStreamAdmission::validate_aiff_sample_rate(rate).unwrap(),44100);
+    let bytes=aiff(rate);let owned=bytes.clone();let external=owned.capacity()+size_of::<Cursor<Vec<u8>>>();
+    let admission=PcmStreamAdmission::new(PcmStreamEncoding::AiffSigned(16),5,128,owned.len() as u64,external).unwrap();
+    let mut checked=EncodedChannelReader::open_checked_pcm(Box::new(Cursor::new(owned)),&MetadataOptions::default(),admission,admission.accounted_workspace_bytes()).unwrap();
+    let mut old=EncodedChannelReader::open_legacy(Box::new(Cursor::new(bytes)),&MetadataOptions::default()).unwrap();
+    assert_eq!((checked.rate(),checked.channels(),checked.frames()),(44100,5,128));
+    let mut actual=vec![0.;64*5];let mut expected=actual.clone();checked.read_interleaved(3,&mut actual).unwrap();old.read_interleaved(3,&mut expected).unwrap();
+    for frame in 0..64 {for channel in 0..5 {
+        let at=frame*5+channel;assert_eq!(actual[at].to_bits(),expected[at].to_bits());assert_eq!(actual[at].to_bits(),value(3+frame,channel,false).to_bits());
+    }}
+}

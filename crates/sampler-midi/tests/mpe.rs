@@ -193,6 +193,12 @@ fn failed_gestures_and_binding_pressure_do_not_publish_partial_state() {
             Err(ApplyError::Core(Error::Capacity))
         );
         rt.flush_ended(|_| true);
+        assert_eq!(apply(&mut mpe,&mut rt,packet(0x90,1,61,127)),Err(ApplyError::Core(Error::Capacity)),
+            "Core NOTE_END does not acknowledge the two still-held physical wire keys");
+        for (channel,owner) in [(1,a),(2,b)] {
+            let Applied::Released{note,..}=apply(&mut mpe,&mut rt,packet(0x80,channel,60,0)).unwrap() else {panic!("actual physical terminal lost")};
+            assert_eq!(note,owner,"a retired Core slot keeps its original wire terminal identity");
+        }
         let replacement = start(&mut mpe, &mut rt, 1, 60);
         // The failed manager gesture did not change idle controller state.
         assert_eq!(expression(&rt, replacement).pitch_semitones, 0.0);
@@ -1086,7 +1092,11 @@ fn midi2_messages_play_the_zone_at_full_precision() {
     assert_eq!(expression(&rt, note).pressure, 0x1234_5678);
     // Registered Controller 0:0 sets the bend range: 12 semitones.
     midi2(&mut mpe, &mut rt, 0x20, 0, 0, 12 << 25).unwrap();
-    assert_eq!(mpe.pitch_ranges().0, 12);
+    assert_eq!(mpe.pitch_sensitivities_for(sampler_midi::Version::Midi2).0, 12.);
+    assert_eq!(mpe.pitch_ranges().0, 2, "a MIDI2 RC does not replace MIDI1 RPN state");
+    let expected=12.0*f64::from(0x2000_0000u32)/f64::from(0x7fff_ffffu32);
+    assert!((expression(&rt,note).pitch_semitones-expected).abs()<1e-12);
+    assert_eq!(expression(&rt,note).pressure,0x1234_5678);
 }
 
 #[test]
@@ -1185,8 +1195,10 @@ fn midi2_registered_sensitivity_retains_cents_and_legacy_parameter_ccs_do_not_re
         let words = [0x4321_0000, data];
         mpe.apply(&mut rt, Packets::new(&words).next().unwrap().unwrap())
             .unwrap();
-        assert_eq!(mpe.pitch_sensitivities(), (2., 12.5));
-        assert_eq!(expression(&rt, note).pitch_semitones, -1.5625);
+        assert_eq!(mpe.pitch_sensitivities(), (2., 48.));
+        assert_eq!(mpe.pitch_sensitivities_for(sampler_midi::Version::Midi2), (2., 12.5));
+        assert_eq!(expression(&rt, note).pitch_semitones, -6.,
+            "a MIDI2 Registered Controller cannot retune a retained MIDI1 owner");
         for cc in [0u8, 6, 32, 38, 98, 99, 100, 101] {
             let words = [0x43b1_0000 | u32::from(cc) << 8, u32::MAX];
             assert_eq!(
@@ -1194,8 +1206,10 @@ fn midi2_registered_sensitivity_retains_cents_and_legacy_parameter_ccs_do_not_re
                 Ok(Applied::Ignored)
             );
         }
-        assert_eq!(mpe.pitch_sensitivities(), (2., 12.5));
-        assert_eq!(expression(&rt, note).pitch_semitones, -1.5625);
+        assert_eq!(mpe.pitch_sensitivities(), (2., 48.));
+        assert_eq!(mpe.pitch_sensitivities_for(sampler_midi::Version::Midi2), (2., 12.5));
+        assert_eq!(expression(&rt, note).pitch_semitones, -6.,
+            "a MIDI2 Registered Controller cannot retune a retained MIDI1 owner");
     });
 }
 
@@ -1595,4 +1609,128 @@ fn mcm_classifies_the_actual_physical_controller_address_before_committing_survi
     assert!(!matches!(rt.input_held(note), Ok(true)), "actual physical channel3 changes roles even if gesture channel1 was separately supplied");
     let next = start(&mut mpe, &mut rt, 1, 60);
     assert!(rt.input_held(next).unwrap());
+}
+
+fn apply_midi2(mpe: &mut Mpe, rt: &mut Runtime, channel: u8, status: u8, a: u8, b: u8, data: u32) -> Result<Applied, ApplyError> {
+    let words = [0x4300_0000 | u32::from(status | channel) << 16 | u32::from(a) << 8 | u32::from(b), data];
+    mpe.apply(rt, Packets::new(&words).next().unwrap().unwrap())
+}
+
+#[test]
+fn ordinary_midi2_channels_are_not_midi1_mpe_members_and_keep_independent_ranges_and_rich_pcm() {
+    let mut actual = rich_voice_runtime(); let mut a = rich_voice_runtime(); let mut b = rich_voice_runtime();
+    let mut am = Mpe::new(&actual, 7, 3, Zone::Lower, 1, 8).unwrap();
+    let mut fm = Mpe::new(&a, 7, 3, Zone::Lower, 1, 8).unwrap();
+    let mut sm = Mpe::new(&b, 7, 3, Zone::Lower, 1, 8).unwrap();
+    for receiver in [&mut am, &mut fm, &mut sm] { receiver.use_midi2_channel_voice().unwrap(); }
+    let Applied::Started(first) = apply_midi2(&mut am, &mut actual, 0, 0x90, 60, 0, 0xffff_0000).unwrap() else { panic!() };
+    let Applied::Started(other) = apply_midi2(&mut am, &mut actual, 14, 0x90, 60, 0, 0xffff_0000).unwrap() else { panic!() };
+    apply_midi2(&mut fm, &mut a, 0, 0x90, 60, 0, 0xffff_0000).unwrap();
+    apply_midi2(&mut sm, &mut b, 14, 0x90, 60, 0, 0xffff_0000).unwrap();
+    let first_id = actual.expression_id(first).unwrap(); let other_id = actual.expression_id(other).unwrap();
+    let mut out = [[0.; 2]; 64]; let mut left = out; let mut right = out;
+    support::without_heap(|| {
+        // Even after a narrow negotiatedMIDI1 zone, actualMIDI2channel14
+        // remains admitted and source0 bend cannot become a global manager.
+        assert_eq!(configure_mcm(&mut am, &mut actual, 0, 1), Applied::Configuration);
+        assert!(actual.input_held(first).unwrap()); assert!(actual.input_held(other).unwrap());
+        for (channel, status, a1, b1, value) in [(0, 0xe0, 0, 0, 0xa000_0000),
+            (14, 0xd0, 0, 0, 0x1234_5678), (0, 0xb0, 74, 0, 0x1000_0000),
+            (14, 0x20, 0, 0, (12 << 25) | (50 << 18)), (14, 0xe0, 0, 0, 0xc000_0000)] {
+            let before = if channel == 0 { expression(&actual, other) } else { expression(&actual, first) };
+            apply_midi2(&mut am, &mut actual, channel, status, a1, b1, value).unwrap();
+            if channel == 0 { apply_midi2(&mut fm, &mut a, channel, status, a1, b1, value).unwrap(); }
+            else { apply_midi2(&mut sm, &mut b, channel, status, a1, b1, value).unwrap(); }
+            assert_eq!(if channel == 0 { expression(&actual, other) } else { expression(&actual, first) }, before);
+            actual.render(&mut out).unwrap(); a.render(&mut left).unwrap(); b.render(&mut right).unwrap();
+            rich_sum(&out, &left, &right);
+            assert_eq!(actual.expression_id(first), Ok(first_id)); assert_eq!(actual.expression_id(other), Ok(other_id));
+            assert_eq!(actual.voice_count(), 2);
+        }
+        assert_eq!(am.channel_pitch_sensitivity(sampler_midi::Version::Midi2, 0), Ok(2.));
+        assert_eq!(am.channel_pitch_sensitivity(sampler_midi::Version::Midi2, 14), Ok(12.5));
+        assert_eq!(expression(&actual, first).pitch_semitones, 2. * 536_870_912. / 2_147_483_647.);
+        assert_eq!(expression(&actual, other).pitch_semitones, 12.5 * 1_073_741_824. / 2_147_483_647.);
+        apply_midi2(&mut am, &mut actual, 14, 0x80, 60, 0, 0).unwrap();
+        apply_midi2(&mut sm, &mut b, 14, 0x80, 60, 0, 0).unwrap();
+        apply_midi2(&mut am, &mut actual, 14, 0xe0, 0, 0, 0xa000_0000).unwrap();
+        apply_midi2(&mut sm, &mut b, 14, 0xe0, 0, 0, 0xa000_0000).unwrap();
+        assert_eq!(expression(&actual, other).pitch_semitones, 12.5 * 536_870_912. / 2_147_483_647.,
+            "ordinary channel expression reaches releasingMIDI2notes; it is not the MPE memberfreeze law");
+        actual.render(&mut out).unwrap(); a.render(&mut left).unwrap(); b.render(&mut right).unwrap(); rich_sum(&out, &left, &right);
+    });
+}
+
+#[test]
+fn strict_wire_protocols_and_explicit_host_domain_coexist_without_property_replacement() {
+    let mut rt = runtime_with_channels(48); let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    mpe.enable_host_channel_projection().unwrap(); mpe.use_midi2_channel_voice().unwrap();
+    apply(&mut mpe, &mut rt, bend(0, 12288)).unwrap();
+    apply(&mut mpe, &mut rt, bend(1, 9216)).unwrap();
+    apply_midi2(&mut mpe, &mut rt, 1, 0xd0, 0, 0, 0x1234_5678).unwrap();
+    let wire1 = start(&mut mpe, &mut rt, 1, 60);
+    let Applied::Started(wire2) = apply_midi2(&mut mpe, &mut rt, 1, 0x90, 60, 0, 0xffff_0000).unwrap() else { panic!() };
+    let native = |id| sampler_core::Input { protocol: Protocol::Native, port: 7, group: 3,
+        channel: 1, key: 60, external_id: Some(id) };
+    // Independent serialized-value endpoint law: positive14-bit denominator
+    //8191, positive32-bit denominator2^31-1; centre and negative endpoints exact.
+    let manager = 2. * 4096. / 8191.; let member = 48. * 1024. / 8191.;
+    let host_after_wire2 = manager + 48. * 536_870_912. / 2_147_483_647.;
+    let wire2_after = 2. * 536_870_912. / 2_147_483_647.;
+    let host = mpe.trigger_with_tuning(&mut rt, 1, native(101), 1., 0.25).unwrap();
+    assert_eq!(expression(&rt, host).pitch_semitones, manager + member + 0.25);
+    assert_eq!(expression(&rt, host).pressure, 0x1234_5678);
+    assert_eq!(expression(&rt, wire1).pitch_semitones, manager + member);
+    assert_eq!(expression(&rt, wire2).pitch_semitones, 0.);
+    assert_eq!(expression(&rt, wire1).pressure, 0);
+    support::without_heap(|| {
+        apply_midi2(&mut mpe, &mut rt, 1, 0xe0, 0, 0, 0xa000_0000).unwrap();
+        assert_eq!(expression(&rt, wire1).pitch_semitones, manager + member);
+        assert_eq!(expression(&rt, wire2).pitch_semitones, wire2_after);
+        assert_eq!(expression(&rt, host).pitch_semitones, host_after_wire2 + 0.25,
+            "HostChannel retains its own48member range and priorMidi1managerbend");
+        apply(&mut mpe, &mut rt, packet(0xd0, 1, 127, 0)).unwrap();
+        assert_eq!(expression(&rt, host).pitch_semitones, host_after_wire2 + 0.25);
+        assert_eq!(expression(&rt, host).pressure, u32::MAX);
+        assert_eq!(expression(&rt, wire2).pressure, 0x1234_5678);
+        let future = mpe.trigger(&mut rt, 1, native(102), 1.).unwrap();
+        assert_eq!(expression(&rt, future).pitch_semitones, host_after_wire2);
+        assert_eq!(expression(&rt, future).pressure, u32::MAX);
+        mpe.set_note_tuning(&mut rt, host, 0.5).unwrap();
+        let frozen_wire2 = expression(&rt, wire2);
+        apply(&mut mpe, &mut rt, packet(0x80, 1, 60, 0)).unwrap();
+        assert!(!rt.input_held(wire1).unwrap());
+        assert!(rt.input_held(wire2).unwrap()); assert!(rt.input_held(host).unwrap());
+        assert_eq!(expression(&rt, wire2), frozen_wire2);
+        rt.note_off_exact(host, None).unwrap(); let released = expression(&rt, host);
+        apply(&mut mpe, &mut rt, bend(1, 10240)).unwrap();
+        assert_eq!(expression(&rt, host), released, "host member reuse must not change releasedidentity");
+        assert_eq!(expression(&rt, wire2), frozen_wire2);
+        apply_midi2(&mut mpe, &mut rt, 1, 0x80, 60, 0, 0).unwrap();
+        assert!(!rt.input_held(wire2).unwrap()); assert!(rt.input_held(future).unwrap());
+    });
+}
+
+#[test]
+fn rejected_secondary_host_controller_admission_does_not_change_wire_or_future_host_gestures() {
+    let mut rt = runtime_with_channels(4); let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 1, 8).unwrap();
+    mpe.enable_host_channel_projection().unwrap(); mpe.use_midi2_channel_voice().unwrap(); mpe.set_timbre_controller(Some(11));
+    let domain = rt.performance(0).unwrap();
+    for port in 0..2 { rt.dispatch_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port,
+        group: 0, channel: 0 }, u16::MAX, 1, 7).unwrap(); }
+    rt.dispatch_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 2, group: 0, channel: 0 }, (1 << 14) - 1, 1, 7).unwrap();
+    let native = |id| sampler_core::Input { protocol: Protocol::Native, port: 7, group: 3,
+        channel: 0, key: 60, external_id: Some(id) };
+    let note = mpe.trigger(&mut rt, 0, native(101), 1.).unwrap(); let before = expression(&rt, note);
+    support::without_heap(|| {
+        //46existingkeys: wire2manager needs1, separateNativeHostzone2.
+        // Eachscopefits2free rows alone, theiruniondoesnot.
+        assert_eq!(apply_midi2(&mut mpe, &mut rt, 0, 0xb0, 74, 0, u32::MAX), Err(ApplyError::Core(Error::Capacity)));
+        assert_eq!(expression(&rt, note), before);
+        assert_eq!(rt.channel_input_controller(domain, native(101).channel_address(), 11), Ok(u32::MAX));
+        assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi2, port: 7, group: 3, channel: 0 }, 11), Ok(u32::MAX));
+        let future = mpe.trigger(&mut rt, 0, native(102), 1.).unwrap();
+        assert_eq!(expression(&rt, future), before);
+        assert_eq!(rt.now(), 0); assert_eq!(rt.voice_count(), 2);
+    });
 }

@@ -171,6 +171,9 @@ pub(super) fn prepare(
             Ok((Vec::new(), budget.status().held_bytes))
         };
     }
+    if selected.iter().any(|(pcm,_)|sources.get(&pcm.asset_id()).is_some_and(|s|s.channel_pack().is_some())) {
+        return prepare_logical(selected,sources,budget,canceled);
+    }
     // Mandatory full buffers reserve first, before any ordinary packed work.
     // These exact reservations cannot lose a race to optional attack storage.
     let resident = selected
@@ -330,4 +333,73 @@ pub(super) fn prepare(
         .map(|p| p.ok_or_else(|| io::Error::other("incomplete sample head preparation")))
         .collect::<io::Result<Vec<_>>>()?;
     Ok((ranges, budget.status().held_bytes))
+}
+
+/// The normal initial transaction, grouped by immutable logical reader recipe.
+/// Every physical result is staged before the caller publishes any head.
+fn prepare_logical(selected:&[(&Pcm,&[Range<usize>])],sources:&HashMap<AssetId,Arc<dyn AssetSource>>,
+    budget:&HeadBudget,canceled:&(dyn Fn()->bool+Sync))->io::Result<(Vec<Prepared>,usize)> {
+    let mut full=selected.iter().map(|(pcm,_)|if pcm.requires_resident() {
+        ResidentBuffer::new(pcm.sample_rate(),pcm.frame_count(),budget).map(Some).map_err(io::Error::other)
+    } else {Ok(None)}).collect::<io::Result<Vec<_>>>()?;
+    let mut result:Vec<Option<Prepared>>=(0..selected.len()).map(|_|None).collect();
+    for index in 0..selected.len() {
+        if canceled(){return Err(canceled_head());}
+        if result[index].is_some(){continue;}
+        let (pcm,ranges)=selected[index];
+        let source=sources.get(&pcm.asset_id()).ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"missing logical head source"))?;
+        if let Some((recipe,_))=source.channel_pack() {
+            let mut members=Vec::new();members.try_reserve_exact(recipe.packs.len()).map_err(io::Error::other)?;
+            for id in &recipe.packs {
+                let i=selected.iter().position(|(p,_)|p.asset_id()==*id).ok_or_else(||io::Error::new(io::ErrorKind::InvalidInput,"incomplete logical initial head selection"))?;
+                if selected[i].0.requires_resident() || selected[i].1!=ranges {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,"logical head ranges/requirements differ"));
+                }
+                members.push(i);
+            }
+            let mut reader=recipe.open_initial()?;let mut scratch=recipe.scratch()?;
+            let mut builders=members.iter().map(|&i|selected[i].0.head_preparer().builder()).collect::<Vec<_>>();
+            for range in ranges {
+                let mut at=range.start;
+                while at<range.end {
+                    if canceled(){return Err(canceled_head());}
+                    let count=(range.end-at).min(sampler_core::PAGE_FRAMES);
+                    recipe.read(&mut reader,at,count,&mut scratch)?;
+                    for (ordinal,builder) in builders.iter_mut().enumerate() {
+                        let head=selected[members[ordinal]].0.head_preparer();
+                        builder.push(at,&scratch[ordinal][..count]).map_err(|error|super::head_prepare_error(&head,error))?;
+                    }
+                    at+=count;
+                }
+            }
+            for (i,builder) in members.into_iter().zip(builders) {result[i]=Some(Prepared::Head(builder.finish()));}
+        } else {
+            let mut reader=source.open()?;
+            if pcm.requires_resident() {
+                let buffer=full[index].take().ok_or_else(||io::Error::other("missing mandatory resident reservation"))?;
+                result[index]=Some(Prepared::Resident(fill_resident(pcm.sample_rate(),pcm.frame_count(),buffer,&mut reader,canceled,None)?));
+            } else {
+                let mut page=vec![[0.;2];sampler_core::PAGE_FRAMES];
+                result[index]=Some(Prepared::Head(prepare_head_ranges(&pcm.head_preparer(),&mut reader,ranges,&mut page,canceled,None)?));
+            }
+        }
+    }
+    if canceled(){return Err(canceled_head());}
+    Ok((result.into_iter().map(|r|r.ok_or_else(||io::Error::other("incomplete logical head transaction"))).collect::<io::Result<_>>()?,budget.status().held_bytes))
+}
+/// Existing per-Pcm residency worker recipe. It may repeat one full logical
+/// range decode per physical member; that cost is explicit, never a hidden
+/// resident backup/cache. Runtime source clocks and IDs are unaffected.
+pub(super) fn prepare_logical_pack(recipe:&super::LogicalStreamRecipe,ordinal:usize,head:&sampler_core::HeadPreparer,
+    ranges:&[Range<usize>],canceled:&dyn Fn()->bool)->io::Result<sampler_core::PreparedRanges> {
+    if recipe.packs.get(ordinal).is_none() || head.sample_rate()!=recipe.rate || head.frame_count()!=recipe.frames {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,"logical reload geometry mismatch"));
+    }
+    let mut reader=recipe.open()?;let mut scratch=recipe.scratch()?;let mut builder=head.builder();
+    for range in ranges {let mut at=range.start;while at<range.end {
+        if canceled(){return Err(canceled_head());}
+        let count=(range.end-at).min(sampler_core::PAGE_FRAMES);recipe.read(&mut reader,at,count,&mut scratch)?;
+        builder.push(at,&scratch[ordinal][..count]).map_err(|error|super::head_prepare_error(head,error))?;at+=count;
+    }}
+    if canceled(){return Err(canceled_head());}Ok(builder.finish())
 }

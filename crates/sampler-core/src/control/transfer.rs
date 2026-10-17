@@ -10,8 +10,10 @@ pub enum ControlOperation {
     MidiComplete(crate::MidiCompletion),
     MidiCapture(crate::MidiCompletion),
     Invoke(super::ControlContext, ControlWrite),
+    InvokeGlobal(crate::PerformanceId, ControlWrite),
     HostParameter(super::ControlContext, u16, f64),
     InvokeWidget(super::ControlContext, Vec<crate::WidgetEdit>),
+    InvokeGlobalWidget(crate::PerformanceId, Vec<crate::WidgetEdit>),
     CaptureWidget(Vec<crate::WidgetEdit>),
     CaptureScriptState(crate::ScriptStateBuffer),
     RestoreScriptState(crate::ScriptStateBuffer),
@@ -29,9 +31,10 @@ impl ControlOperation {
             | Self::MidiComplete(..)
             | Self::MidiCapture(..)
             | Self::Invoke(..)
+            | Self::InvokeGlobal(..)
             | Self::HostParameter(..)
             | Self::CaptureSnapshotFence(..) => 1,
-            Self::InvokeWidget(_, v) | Self::CaptureWidget(v) => v.len(),
+            Self::InvokeWidget(_, v) | Self::InvokeGlobalWidget(_, v) | Self::CaptureWidget(v) => v.len(),
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
             Self::CaptureScriptState(v) | Self::RestoreScriptState(v) => {
                 v.values.len().saturating_add(v.callbacks.len())
@@ -49,6 +52,19 @@ pub struct ControlRequest {
     pub expected_revision: Option<u64>,
     pub operation: ControlOperation,
 }
+impl ControlRequest {
+    /// Explicit global UI command for the existing bounded submit/reply queue.
+    /// Captured physical inputs keep using Invoke/InvokeWidget unchanged.
+    pub fn global_control(performance: crate::PerformanceId, plan: PlanId,
+        expected_revision: Option<u64>, write: ControlWrite) -> Self {
+        Self { plan, expected_revision, operation: ControlOperation::InvokeGlobal(performance, write) }
+    }
+    pub fn global_widgets(performance: crate::PerformanceId, plan: PlanId,
+        expected_revision: Option<u64>, edits: Vec<crate::WidgetEdit>) -> Self {
+        Self { plan, expected_revision, operation: ControlOperation::InvokeGlobalWidget(performance, edits) }
+    }
+}
+
 #[derive(Debug)]
 pub struct ControlReply {
     pub request: u64,
@@ -224,6 +240,12 @@ impl Runtime {
                     reply.behavior = behavior;
                     (1, revision)
                 }),
+            ControlOperation::InvokeGlobal(performance, write) => self
+                .invoke_global_control(*performance, command.plan, command.expected_revision, *write)
+                .map(|(revision, behavior)| { reply.behavior = behavior; (1, revision) }),
+            ControlOperation::InvokeGlobalWidget(performance, edits) => self
+                .invoke_global_widget(*performance, command.plan, command.expected_revision, edits)
+                .map(|(revision, behavior)| { reply.behavior = behavior; (edits.len(), revision) }),
             ControlOperation::InvokeWidget(context, edits) => self
                 .invoke_widget(*context, command.plan, command.expected_revision, edits)
                 .map(|(revision, behavior)| {

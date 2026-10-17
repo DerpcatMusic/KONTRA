@@ -956,7 +956,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
         let owner = format!("processing scope {index}");
         match scope.cadence { ir::ProcessingCadence::CoreCell64 => {} }
         if scope.members.iter().any(|z| {
-            instrument.zones[z.0].asset.is_none_or(|a| pcm.get(a.0).is_none_or(|source| source.resident_view().is_none()))
+            instrument.zones[z.0].asset.is_none_or(|a| pcm.get(a.0).is_none_or(|source| !source.is_paged() && source.resident_view().is_none()))
         }) {
             return Err(core(Stage::Regions, owner)(Error::InvalidInput));
         }

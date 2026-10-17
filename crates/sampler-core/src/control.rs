@@ -167,6 +167,7 @@ pub(super) struct ControlEvent {
     /// None is an explicitly channel-less plan callback; Some carries the
     /// original physical target revisions through every wait/fanout.
     pub controller_epochs: Option<[u64; 16]>,
+    pub controller_secondary: Option<crate::controller_event::CapturedControllerTarget>,
     pub stage: usize,
     pub interaction: crate::WidgetInteraction,
 }
@@ -881,6 +882,24 @@ impl Runtime {
         expected_revision: Option<u64>,
         write: ControlWrite,
     ) -> Result<(u64, Option<super::BehaviorId>), Error> {
+        self.invoke_control_domain(context, plan, expected_revision, write, true)
+    }
+
+    /// An explicitly channel-less UI action. Its generated controller writes
+    /// use the existing global API domain, never a guessed physical address.
+    pub fn invoke_global_control(
+        &mut self, performance: crate::PerformanceId, plan: PlanId,
+        expected_revision: Option<u64>, write: ControlWrite,
+    ) -> Result<(u64, Option<super::BehaviorId>), Error> {
+        self.invoke_control_domain(ControlContext { performance, origin: crate::ChannelAddress {
+            protocol: crate::Protocol::Native, port: 0, group: 0, channel: 0 }, channels: 1 },
+            plan, expected_revision, write, false)
+    }
+
+    fn invoke_control_domain(
+        &mut self, context: ControlContext, plan: PlanId, expected_revision: Option<u64>,
+        write: ControlWrite, captured: bool,
+    ) -> Result<(u64, Option<super::BehaviorId>), Error> {
         let performance = self.performance_index(context.performance)?;
         if context.origin.group >= 16 || context.origin.channel >= 16 || context.channels == 0 {
             return Err(Error::InvalidInput);
@@ -897,8 +916,9 @@ impl Runtime {
                 performance,
                 origin: context.origin,
                 channels: context.channels,
-                controller_epochs: Some(self.performance_state.epochs(performance, crate::ChannelScope {
+                controller_epochs: captured.then(|| self.performance_state.epochs(performance, crate::ChannelScope {
                     protocol: context.origin.protocol, port: context.origin.port, group: context.origin.group, channels: context.channels })),
+                controller_secondary: None,
                 stage: binding.stage,
                 interaction: crate::WidgetInteraction::default(),
             })

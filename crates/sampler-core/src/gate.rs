@@ -305,8 +305,14 @@ impl Runtime {
                     super::BehaviorOwner::Note(note) => {
                         self.notes.get(note.0).is_some_and(|n| n.address == address)
                     }
-                    super::BehaviorOwner::Plan(_) => matches!(callback.context,
-                        super::behavior::PlanContext::Controller(event) if event.origin == address),
+                    super::BehaviorOwner::Plan(_) => match callback.context {
+                        super::behavior::PlanContext::Controller(event)=>event.origin==address,
+                        super::behavior::PlanContext::NoteControllers(context)=>context.origin==address,
+                        // Parameter/signal fanout preserves captured physical epochs
+                        // inside Control. Global startup/widget Control stays alive.
+                        super::behavior::PlanContext::Control(event)=>event.controller_epochs.is_some()&&event.origin==address,
+                        _=>false,
+                    },
                 }
             {
                 callback.outcome = Some(super::Outcome::Cancelled);

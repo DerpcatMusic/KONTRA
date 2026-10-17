@@ -944,3 +944,93 @@ fn reset_all_controllers_preserves_other_physical_poly_pressure_domains() {
         });
     }
 }
+
+
+fn range_admission_runtime() -> Runtime {
+    let pcm = Pcm::new(48000, (0..8192).map(|frame| {
+        let phase = f64::from(frame) * 0.017 * std::f64::consts::TAU;
+        [phase.sin() as f32 * 0.1, phase.cos() as f32 * 0.1]
+    }).collect()).unwrap();
+    let prepared = Prepared::new(48000, vec![pcm], vec![Region { sample: 0, key_low: 60, key_high: 60,
+        root_key: None, velocity_low: 0., velocity_high: 1., gain: 1.,
+        envelope: Envelope::new(0,0,0,1.,128).unwrap(), playback: Playback::default() }], 1).unwrap();
+    let limits = Limits::for_plan(&prepared, 8, 8);
+    Runtime::new(prepared, limits).unwrap()
+}
+
+#[test]
+fn rejected_midi2_range_projection_keeps_previous_config_for_the_next_real_note() {
+    let mut rt = range_admission_runtime(); let mut reference = range_admission_runtime();
+    let mut groups = [None; 16]; groups[3] = Some(Version::Midi2);
+    let mut ingress = Ingress::new(7, groups); let mut reference_ingress = Ingress::new(7, groups);
+    let seed = |ingress: &mut Ingress, runtime: &mut Runtime| {
+        assert_eq!(apply(ingress, runtime, &[0x4321_0000, 0]), Ok(Applied::Configuration));
+        apply(ingress, runtime, &[0x43e1_0000, u32::MAX]).unwrap();
+        let Applied::Started(note) = apply(ingress, runtime, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+        note
+    };
+    let note = seed(&mut ingress, &mut rt); seed(&mut reference_ingress, &mut reference);
+    let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
+    support::without_heap(|| {
+        let clock = rt.now(); let counts = (rt.note_count(), rt.expression_count(), rt.voice_count(), rt.pending_commands());
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x4321_0000, 96u32 << 25]),
+            Err(ApplyError::Core(sampler_core::Error::InvalidInput)));
+        assert_eq!(rt.expression(owner), Ok(before)); assert_eq!(rt.expression_id(note), Ok(owner));
+        assert_eq!(rt.now(), clock); assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count(),rt.pending_commands()), counts);
+        assert!(rt.input_held(note).unwrap());
+        let mut actual = [[0.;2]; 128]; let mut expected = actual;
+        rt.render(&mut actual).unwrap(); reference.render(&mut expected).unwrap(); assert_eq!(actual, expected);
+        let Applied::Started(future) = apply(&mut ingress, &mut rt, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+        let Applied::Started(reference_future) = apply(&mut reference_ingress, &mut reference, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+        assert_ne!(future, note); assert_eq!(rt.expression(rt.expression_id(future).unwrap()).unwrap().pitch_semitones, 0.);
+        assert_eq!(reference.expression(reference.expression_id(reference_future).unwrap()).unwrap().pitch_semitones, 0.);
+        rt.render(&mut actual).unwrap(); reference.render(&mut expected).unwrap(); assert_eq!(actual, expected);
+        assert_eq!(rt.voice_count(), 2); assert!(actual.iter().flatten().any(|value| value.abs() > 0.01));
+    });
+}
+
+#[test]
+fn rejected_midi1_rpn_range_is_not_retained_but_the_received_cc_remains_an_admitted_input() {
+    let mut rt = range_admission_runtime(); let mut groups = [None;16]; groups[3] = Some(Version::Midi1);
+    let mut ingress = Ingress::new(7, groups);
+    for (cc,value) in [(101u8,0u8),(100,0),(6,0)] {
+        apply(&mut ingress, &mut rt, &[0x23b1_0000 | u32::from(cc)<<8 | u32::from(value)]).unwrap();
+    }
+    apply(&mut ingress, &mut rt, &[0x23e1_7f7f]).unwrap();
+    let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x2391_3c7f]).unwrap() else { panic!() };
+    let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
+    support::without_heap(|| {
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x23b1_0660]), Err(ApplyError::Core(sampler_core::Error::InvalidInput)));
+        assert_eq!(rt.expression(owner), Ok(before)); assert!(rt.input_held(note).unwrap());
+        let domain = rt.performance(0).unwrap(); let address = sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: 1 };
+        // Existing boundary: the data-entry CC is forwarded before configuration
+        // projection. Do not pretend its raw/callback side effects rolled back.
+        assert_ne!(rt.channel_input_controller(domain, address, 6).unwrap(), 0);
+        let Applied::Started(future) = apply(&mut ingress, &mut rt, &[0x2391_3c7f]).unwrap() else { panic!() };
+        assert_eq!(rt.expression(rt.expression_id(future).unwrap()).unwrap().pitch_semitones, 0.);
+        assert_eq!(rt.voice_count(), 2); assert_eq!(rt.now(), 0);
+    });
+}
+
+#[test]
+fn explicit_bend_override_still_retains_hidden_rpn_without_reprojecting_the_held_note() {
+    let mut rt = range_admission_runtime(); let mut groups = [None;16]; groups[3] = Some(Version::Midi2);
+    let mut ingress = Ingress::new(7, groups);
+    apply(&mut ingress, &mut rt, &[0x4321_0000, 0]).unwrap();
+    apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]).unwrap();
+    let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+    let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
+    support::without_heap(|| {
+        ingress.set_bend_range(Some(1.));
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x4321_0000, 96u32<<25]), Ok(Applied::Configuration));
+        assert_eq!(rt.expression(owner), Ok(before), "explicit override leaves held pitch alone until a bend");
+        apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]).unwrap();
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 1.);
+        ingress.set_bend_range(None);
+        apply(&mut ingress, &mut rt, &[0x43e1_0000, 0x8000_0000]).unwrap();
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]), Err(ApplyError::Core(sampler_core::Error::InvalidInput)),
+            "previously accepted hidden96 range must remain after removing the override");
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
+    });
+}

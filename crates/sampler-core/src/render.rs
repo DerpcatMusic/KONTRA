@@ -349,7 +349,7 @@ impl Runtime {
         self.render_prepared_voices::<TRACE>(output, at);
         // Every worker has joined. Source owners remain in live/retired plans;
         // releasing the reader count cannot destroy PCM on this callback.
-        self.onsets.clear();
+        self.clear_onsets();
     }
 
     pub(super) fn render_prepared_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {

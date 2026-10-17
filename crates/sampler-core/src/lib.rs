@@ -1943,16 +1943,10 @@ impl Runtime {
         // Full conservative geometry is shared by admission, service, and the
         // pinned cohort release gate. No requested latency is shortened.
         let cursor = self.stream_start_cursor(note.plan, cursor);
-        let (cold, streamed) = if let Some(asset) = source.stereo() {
-            if !asset.residency_permitted() { return Err(Error::NotReady); }
-            (self.check_source_ready(asset, cursor, envelope)?, asset.resident_frames().is_none())
-        } else {
-            if source.resident_view().is_none() { return Err(Error::NotReady); }
-            (false, false)
-        };
+        let (cold,streamed)=self.check_logical_source_ready(source,cursor,envelope)?;
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
         let stream_pages = if streamed && self.stream_cache.is_some() {
-            match self.admit_streaming(cursor, cold) {
+            match self.admit_source_streaming(source, cursor, cold) {
                 Ok(pages) => pages,
                 Err(error) => {
                     if matches!(error, StreamError::Capacity | StreamError::Disconnected) {

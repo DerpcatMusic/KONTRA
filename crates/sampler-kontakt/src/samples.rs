@@ -1013,7 +1013,7 @@ impl Wav {
         let width = self.width;
         [self.sample(&frame[..width]),self.sample(&frame[(self.channels.min(2)-1)*width..][..width])]
     }
-    fn sample(&self,s:&[u8])->f32 {
+    pub(crate) fn sample(&self,s:&[u8])->f32 {
         let width=self.width;
         match (self.tag, width) {
             (3, _) => {
@@ -1128,6 +1128,17 @@ fn aiff_layout(bytes: &[u8]) -> Result<Wav, String> {
     aiff_reader(&mut Cursor::new(bytes))
 }
 
+/// Shared checked AIFF80 rate arithmetic. Keep the legacy reader's rounding
+/// decision at its own callsite; the checked Symphonia path uses its normal
+/// truncating u32 conversion only after these finite/domain checks.
+pub(crate) fn aiff_sample_rate(exponent: u16, mantissa: u64) -> Result<f64, String> {
+    let rate = mantissa as f64 * 2f64.powi(i32::from(exponent & 0x7fff) - 16383 - 63);
+    if exponent & 0x8000 != 0 || !rate.is_finite() || rate < 1.0 || rate > u32::MAX as f64 {
+        return Err("invalid AIFF sample rate".into());
+    }
+    Ok(rate)
+}
+
 pub(crate) fn aiff_reader<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<Wav, String> {
     use std::io::SeekFrom;
     let base = reader.stream_position().map_err(|e| e.to_string())?;
@@ -1201,10 +1212,7 @@ pub(crate) fn aiff_reader<R: std::io::Read + std::io::Seek>(reader: &mut R) -> R
     let bits = u16::from_be_bytes(fmt[6..8].try_into().unwrap()) as usize;
     let exponent = u16::from_be_bytes(fmt[8..10].try_into().unwrap());
     let mantissa = u64::from_be_bytes(fmt[10..18].try_into().unwrap());
-    let rate = mantissa as f64 * 2f64.powi(i32::from(exponent & 0x7fff) - 16383 - 63);
-    if exponent & 0x8000 != 0 || !rate.is_finite() || rate < 1.0 || rate > u32::MAX as f64 {
-        return Err("invalid AIFF sample rate".into());
-    }
+    let rate = aiff_sample_rate(exponent, mantissa)?;
     let codec = if aifc { &fmt[18..22] } else { b"NONE" };
     let (tag, big_endian) = match codec {
         b"NONE" | b"twos" => (1, true),

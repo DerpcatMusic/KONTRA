@@ -49,6 +49,15 @@ pub(super) struct ProcessingOwner {
     pub(super) published: bool,
 }
 
+#[cfg(test)]
+impl ProcessingOwner {
+    /// Read exact owner timing in sibling-module admission tests without
+    /// exposing mutable envelope state to production code.
+    pub(super) fn envelope_remaining_for_test(&self) -> usize {
+        self.envelope.remaining()
+    }
+}
+
 impl Prepared {
     pub fn processing_scope_count(&self) -> usize {
         self.processing_scopes.len()
@@ -298,8 +307,9 @@ impl Runtime {
             let explicit = self.plans.get(before.plan.0).is_some_and(|generation|
                 generation.prepared.processing_scopes[before.template].signal.is_some());
             if explicit && before.failed { self.end_processing_owner(id); continue; }
+            if explicit && !self.prepare_processing_cold_start(&before,at,output.len()) {continue;}
             if explicit && before.members.iter().flatten().any(|voice|
-                self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.holding_onset())) {
+                self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.holding_onset() || v.cursor.pending_start_runway() > 1)) {
                 // Processing ownership is independent of take/Family startup
                 // cohorts. Shared envelope and DSP state rest until all members.
                 continue;

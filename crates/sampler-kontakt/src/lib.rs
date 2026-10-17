@@ -14,7 +14,7 @@ mod cache;
 mod cache_zones;
 mod container;
 mod channel_reader;
-pub use channel_reader::{ChannelPackDestinations, EncodedChannelReader, install_resident_source_reload, resident_storage_from_interleaved};
+pub use channel_reader::{ChannelPackDestinations, EncodedChannelReader, PcmStreamAdmission, PcmStreamEncoding, install_resident_source_reload, resident_storage_from_interleaved};
 mod diagnostics;
 pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
@@ -74,7 +74,7 @@ pub use snapshot::{
     snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
 pub use stream::{
-    AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+    LogicalStreamRecipe, logical_stream_source, AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
 };
 mod source_identity;
 pub use source_identity::{FileIdentity, SourceChanged};

@@ -2860,6 +2860,28 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
         };
     let unit = |v: f64| (0.0..=1.0).contains(&v).then_some(v);
     Some(match *exact.body() {
+        ExactEventBody::Ump { port, packet } => {
+            let Ok(port)=u8::try_from(port) else { return Some(ExactInput::Unsupported); };
+            if port>=<Plugin as moose::core::PluginRuntime>::info().midi_input_ports { return Some(ExactInput::Unsupported); }
+            let words=packet.storage();
+            let expected=match words[0]>>28 {1|2=>1,4=>2,_=>return Some(ExactInput::Unsupported)};
+            if packet.word_count()!=expected { return Some(ExactInput::Unsupported); }
+            ExactInput::Routed(CoreEvent::Ump([words[0],if expected==2 {words[1]} else {0}]),port)
+        }
+        ExactEventBody::Midi1 { port, message } => {
+            let Ok(port)=u8::try_from(port) else { return Some(ExactInput::Unsupported); };
+            if port>=<Plugin as moose::core::PluginRuntime>::info().midi_input_ports { return Some(ExactInput::Unsupported); }
+            let bytes=message.bytes();let status=bytes[0];
+            let count=match status {0x80..=0xbf|0xe0..=0xef|0xf2=>3,0xc0..=0xdf|0xf1|0xf3=>2,
+                0xf6|0xf8|0xfa..=0xfc|0xfe|0xff=>1,_=>return Some(ExactInput::Unsupported)};
+            // CLAP carries a fixed three-byte storage object even when this
+            // status has only one or two semantic bytes. Trailing storage is
+            // neither another message nor an additional MIDI data byte.
+            if bytes.len()<count || bytes[1..count].iter().any(|b|*b>=128) {return Some(ExactInput::Unsupported);}
+            let a=if count>1 {u32::from(bytes[1])} else {0};let b=if count>2 {u32::from(bytes[2])} else {0};
+            let kind=if status<0xf0 {2} else {1};
+            ExactInput::Routed(CoreEvent::Ump([kind<<28|u32::from(status)<<16|a<<8|b,0]),port)
+        }
         ExactEventBody::Note {
             kind,
             address,
@@ -2948,30 +2970,10 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
     }
 }
 
-/// A typed host MIDI event: shown on the keyboard and wheels, played as UMP.
-fn feed_typed_input(
-    s: &mut Dsp,
-    p: &SamplerParams,
-    e: &Event,
-    cx: &mut ProcessContext,
-    thru: bool,
-) {
-    if let EventBody::ParamChange { id, value } = e.body {
-        if let Some(address) = automation::HostAutomation::address(id) {
-            if !s.core.host_parameter(address, value) {
-                s.unsupported += 1;
-            }
-        } else if [p.attack.id(), p.release.id(), p.cutoff.id()].contains(&id) {
-            p.set_plain(id, value);
-            s.core.set_performance(
-                p.attack.raw_target(),
-                p.release.raw_target(),
-                p.cutoff.raw_target(),
-            );
-        }
-        return;
-    }
-    relay_typed_input(e, cx, thru);
+/// Semantic-only UI observation; it never admits a note or invokes a script.
+/// Exact packets use it for their bounded typed companions, then route the
+/// original packet once rather than re-encoding each semantic companion.
+fn observe_typed_input(s:&mut Dsp,p:&SamplerParams,e:&Event) {
     let shared = &p.shared;
     s.held_keys.typed(e);
     s.held_keys.publish(shared);
@@ -2998,6 +3000,63 @@ fn feed_typed_input(
         }
         _ => {}
     }
+}
+
+/// The same host start/stop law at block start and timestamped transitions.
+/// Stop preserves ordinary release callbacks and tails; panic remains a hard cut.
+fn host_playing_transition(s: &mut Dsp, shared: &Shared, playing: bool, panic: bool) {
+    let stopped = s.playing && !playing;
+    s.playing = playing;
+    if panic {
+        shared.reset_midi();
+        s.held_keys.clear();
+        s.core.panic();
+        s.audition.fill((0, 0));
+    } else if stopped {
+        shared.reset_midi();
+        s.held_keys.clear();
+        s.core.release_all_notes();
+        s.audition.fill((0, 0));
+    }
+}
+
+fn core_transport(host: &TransportInfo) -> Transport {
+    Transport { playing: host.playing, tempo: host.tempo, beats: host.position_beats,
+        signature: (host.time_sig_num, host.time_sig_den) }
+}
+
+/// A typed host MIDI event: shown on the keyboard and wheels, played as UMP.
+fn feed_typed_input(
+    s: &mut Dsp,
+    p: &SamplerParams,
+    e: &Event,
+    cx: &mut ProcessContext,
+    thru: bool,
+ ) {
+    if let EventBody::Transport(host) = &e.body {
+        // The process loop has already rendered to e.sample_offset. A host
+        // snapshot is not a MIDI packet and must never enter channel encoding.
+        s.core.update_transport(core_transport(host));
+        host_playing_transition(s, &p.shared, host.playing, false);
+        return;
+    }
+    if let EventBody::ParamChange { id, value } = e.body {
+        if let Some(address) = automation::HostAutomation::address(id) {
+            if !s.core.host_parameter(address, value) {
+                s.unsupported += 1;
+            }
+        } else if [p.attack.id(), p.release.id(), p.cutoff.id()].contains(&id) {
+            p.set_plain(id, value);
+            s.core.set_performance(
+                p.attack.raw_target(),
+                p.release.raw_target(),
+                p.cutoff.raw_target(),
+            );
+        }
+        return;
+    }
+    relay_typed_input(e, cx, thru);
+    observe_typed_input(s,p,e);
     let words = moose::core::ump::encode_ump_channel_voice_1(&e.body)
         .or_else(|| moose::core::ump::encode_ump_channel_voice_2(&e.body));
     match words {
@@ -3330,26 +3389,10 @@ impl PluginLogic for Sampler {
         s.core.begin_block(&BlockInfo {
             frames,
             offline: cx.process_mode.is_offline(),
-            transport: Transport {
-                playing: cx.transport.playing,
-                tempo: cx.transport.tempo,
-                beats: cx.transport.position_beats,
-                signature: (cx.transport.time_sig_num, cx.transport.time_sig_den),
-            },
+            transport: core_transport(cx.transport),
         });
-        let stopped = s.playing && !cx.transport.playing;
-        s.playing = cx.transport.playing;
-        if shared.panic.swap(false, Ordering::AcqRel) {
-            shared.reset_midi();
-            s.held_keys.clear();
-            s.core.panic();
-            s.audition.fill((0, 0));
-        } else if stopped {
-            shared.reset_midi();
-            s.held_keys.clear();
-            s.core.release_all_notes();
-            s.audition.fill((0, 0));
-        }
+        host_playing_transition(s, shared, cx.transport.playing,
+            shared.panic.swap(false, Ordering::AcqRel));
         while let Some((slot, articulation)) = shared.articulation_edits.pop() {
             s.core.select_articulation(slot, articulation);
         }
@@ -3393,6 +3436,7 @@ impl PluginLogic for Sampler {
                         Some(ExactInput::Routed(event, port)) => {
                             for e in exact.fallback().into_iter().chain(exact.companions()) {
                                 relay_typed_input(e, cx, thru);
+                                if matches!(event,CoreEvent::Ump(_)) { observe_typed_input(s,p,e); }
                             }
                             feed_exact_input(s, p, event, port, exact.sample_offset(), cx);
                         }
@@ -5240,3 +5284,9 @@ mod timing_loader_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+mod exact_packet_tests;
+
+#[cfg(test)]
+mod transport_event_tests;

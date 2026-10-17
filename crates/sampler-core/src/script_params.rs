@@ -965,7 +965,8 @@ impl Runtime {
             }
             crate::EventInfo::Source => i64::from(self.note_events[note.0.index].creator_slot),
             crate::EventInfo::MidiChannel => {
-                i64::from(self.notes.get(note.0).unwrap().address.channel)
+                let note = self.notes.get(note.0).unwrap();
+                i64::from(note.input_source.map_or(note.address.channel, |source| source.channel))
             }
             crate::EventInfo::ZoneId => {
                 let mut highest = -1;

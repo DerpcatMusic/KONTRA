@@ -1723,6 +1723,16 @@ fn assemble_streamed_cancelable(
     if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     initial_playback_assets(&instrument,locations.len())?;
     if sources.len()!=locations.len() {return Err(initial_playback_error("stream/source count mismatch").into());}
+    // A new-wide decoder refusal is fatal admission, never unreadable-zone
+    // filtering. Inspect only actual initial sample uses; unrelated impulses
+    // keep their existing reader domain. This precedes all playback/IR edits.
+    for (asset,source) in sources.iter().enumerate() {
+        if instrument.zones.iter().any(|zone|zone.asset==Some(ir::AssetRef(asset)))
+            && let Ok(source)=source
+            && let Err(reason)=&source.admission {
+            return Err(initial_playback_error(reason.clone()).into());
+        }
+    }
     let playbacks:Vec<_>=sources.iter().map(|s|match s {Ok(s)=>s.playback.clone(),Err(_)=>Ok(None)}).collect();
     apply_initial_playbacks(&mut instrument,&playbacks,&sources.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&sources) {

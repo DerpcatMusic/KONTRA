@@ -266,6 +266,12 @@ impl crate::Runtime {
             .ok_or(Error::NotReady)?;
         let stereo = source.stereo().is_some();
         let channel_count = source.channels().get();
+        if !stereo && value.cursor.pending_start_runway() > 1 {
+            // Ordinary render_source observes the same cohort decision. A
+            // current complete row is not admission of the required future
+            // runway or a missing sibling in the note's startup cohort.
+            return Ok(0);
+        }
         if stereo {
             let mut output = [[0.; 2]; crate::dsp::BLOCK];
             let produced = self
@@ -296,8 +302,8 @@ impl crate::Runtime {
             let v = self.voices.get_mut(voice.0).ok_or(Error::StaleHandle)?;
             let generation = self.plans.get_mut(plan_id.0).ok_or(Error::StaleHandle)?;
             let source = generation.source(v.sample).ok_or(Error::NotReady)?;
-            let view = source.resident_view().ok_or(Error::NotReady)?;
-            let channels = view.channels();
+            let channels = source.channels();
+            let mut heads = generation.dsp.channel_heads.claim(voice.0.index);
             let count = frames.min(v.envelope.remaining());
             let mut block = generation.dsp.channel_sources.claim(voice.0.index);
             let mut row = generation.dsp.channel_row.claim(0);
@@ -310,13 +316,32 @@ impl crate::Runtime {
                 count,
                 crate::dsp::BLOCK,
             )?;
-            let produced = v.cursor.render_channels_raw(
-                &view,
-                &mut output,
-                &mut row[..channels.get()],
-                &mut last[..channels.get()],
-                &self.kernel,
-            )?;
+            let was_starved = v.cursor.starved();
+            let produced = match source {
+                crate::SourceStorageRef::Channels(family) if family.is_paged() => {
+                    let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+                    if heads.len() < family.packs().len() { return Err(Error::Capacity); }
+                    if heads[..family.packs().len()].iter().any(Option::is_none) {
+                        // No retained cohort prepass for this source. Pin all
+                        // current heads together; never mix an admitted old
+                        // member publication with a newly acquired sibling.
+                        heads.fill_with(|| None);
+                        for (slot, pack) in heads.iter_mut().zip(family.packs()) { *slot = Some(pack.pin_head()); }
+                    }
+                    let view = crate::source::channels::PagedChannels {
+                        family, heads: &heads[..family.packs().len()], cache: cache.reader(),
+                    };
+                    v.cursor.render_channels_raw(&view, &mut output, &mut row[..channels.get()],
+                        &mut last[..channels.get()], &self.kernel)?
+                }
+                _ => {
+                    let view = source.resident_view().ok_or(Error::NotReady)?;
+                    v.cursor.render_channels_raw(&view, &mut output, &mut row[..channels.get()],
+                        &mut last[..channels.get()], &self.kernel)?
+                }
+            };
+            heads.fill_with(|| None);
+            self.stream_underruns = self.stream_underruns.saturating_add(u64::from(!was_starved && v.cursor.starved()));
             let levels = crate::dsp::levels(v, produced, 0);
             let ramp = prelude.points.map(|r| r.prepare_gains());
             let gains = v
