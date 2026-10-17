@@ -762,135 +762,8 @@ impl Instrument {
                 }
             }
             if let Some(signal) = &scope.signal {
-                let invalid = |reason| ValidationError::ZoneRouting { owner: check.owner.clone(), reason };
-                match signal.source_law { crate::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {} }
-                if signal.input.channels == 0 || signal.nodes.is_empty() {
-                    return Err(invalid("signal graph requires a nonempty input and executable nodes"));
-                }
-                let mut channels = signal.input.channels;
-                let mut spans: Vec<(usize, usize)> = Vec::new();
-                let mut expression_pan = false;
-                for (node_index, node) in signal.nodes.iter().enumerate() {
-                    while spans.last().is_some_and(|&(end, _)| end == node_index) {
-                        let (_, width) = spans.pop().ok_or_else(|| invalid("missing channel mix span"))?;
-                        if channels != width { return Err(invalid("channel mix must preserve its input width")); }
-                    }
-                    if let crate::ProcessingSignalNode::Mix(mix) = node {
-                        let end = node_index.checked_add(1).and_then(|index| index.checked_add(usize::from(mix.count)))
-                            .ok_or_else(|| invalid("channel mix span overflow"))?;
-                        if end > signal.nodes.len() || spans.last().is_some_and(|&(parent,_)| end > parent)
-                            || spans.len() == 16 || !mix.dry.is_finite() || !mix.wet.is_finite()
-                            || !(0. ..=16.).contains(&mix.dry) || !(0. ..=16.).contains(&mix.wet) {
-                            return Err(invalid("channel mix geometry, depth or default is invalid"));
-                        }
-                        spans.push((end, channels));
-                    }
-                    match node {
-                        crate::ProcessingSignalNode::Matrix(matrix) => {
-                            match matrix.arithmetic { crate::MatrixArithmetic::SeparateMulAddF32 => {} }
-                            if matrix.input.channels != channels || matrix.output.channels == 0
-                                || matrix.input.channels.checked_mul(matrix.output.channels) != Some(matrix.cells.len())
-                                || matrix.cells.iter().any(|v| !v.is_finite() || v.abs() > f64::from(f32::MAX)) {
-                                return Err(invalid("matrix layout, cell geometry or coefficient domain is invalid"));
-                            }
-                            channels = matrix.output.channels;
-                        }
-                        crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => {},
-                        crate::ProcessingSignalNode::Pan(pan) => {
-                            if channels!=2 || !pan.offset.is_finite() || pan.offset.abs()>f64::from(f32::MAX) || pan.position.expression.is_some() {return Err(invalid("Pan requires a stereo boundary and one scalar position"));}
-                            if pan.expression {
-                                if expression_pan || !spans.is_empty() || scope.chain.is_some_and(|chain|self.chains.get(chain.0).is_some_and(|chain|chain.pre_amplitude.iter().chain(&chain.post_amplitude).any(|stage|matches!(stage,crate::Processor::ExpressionPan(_))))) {
-                                    return Err(invalid("expression Pan requires one unsuppressed shared home"));
-                                }
-                                expression_pan=true;
-                            }
-                        }
-                        crate::ProcessingSignalNode::Gain(gain) => {
-                            match gain.arithmetic { crate::ChannelGainArithmetic::CoreGainF64ThenF32 => {} }
-                        }
-                        crate::ProcessingSignalNode::OnePole(filter) => {
-                            match filter.arithmetic { crate::ChannelOnePoleArithmetic::CoreOnePoleF64 => {} }
-                        }
-                    }
-                }
-                while let Some((end, width)) = spans.pop() {
-                    if end != signal.nodes.len() || width != channels { return Err(invalid("channel mix must preserve its input width")); }
-                }
-                if channels != 2 { return Err(invalid("signal graph must feed its declared stereo scope outlet")); }
-                let mut tail = 0u32;
-                for node in &signal.nodes {
-                    let parameter = match node {
-                        crate::ProcessingSignalNode::Matrix(_) | crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => continue,
-                        crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
-                        crate::ProcessingSignalNode::Pan(pan) => &pan.position,
-                        crate::ProcessingSignalNode::OnePole(filter) => {
-                            tail = tail.checked_add(filter.tail_frames)
-                                .ok_or_else(|| invalid("signal stage tail budget overflow"))?;
-                            &filter.cutoff_hz
-                        }
-                    };
-                    if !parameter.constant.is_finite() || parameter.constant.abs() > f64::from(f32::MAX) {
-                        return Err(invalid("signal stage constant is outside its finite domain"));
-                    }
-                    let bounds = if let Some(key) = &parameter.control {
-                        let control = self.controls.iter().find(|c| &c.key == key)
-                            .ok_or_else(|| invalid("signal stage control is missing"))?;
-                        match &control.value {
-                            crate::ControlValue::Continuous { min, max, .. }
-                                if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
-                                    && max.abs() <= f64::from(f32::MAX) => [*min, *max],
-                            _ => return Err(invalid("signal stages require a bounded real control")),
-                        }
-                    } else { [parameter.constant; 2] };
-                    if let Some(expression) = parameter.expression {
-                        let (zero, one, octaves) = match (node, expression.law) {
-                            (crate::ProcessingSignalNode::Gain(_), crate::SignalExpressionLaw::LinearFactor { zero, one })
-                                if zero >= 0. && one >= 0. => (zero, one, false),
-                            (crate::ProcessingSignalNode::OnePole(_), crate::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
-                            _ => return Err(invalid("expression law does not match its stage destination")),
-                        };
-                        if !zero.is_finite() || !one.is_finite() || !(one - zero).is_finite() {
-                            return Err(invalid("expression endpoint domain is not finite"));
-                        }
-                        for endpoint in [zero, one] {
-                            let factor = if octaves { endpoint.exp2() } else { endpoint };
-                            if !factor.is_finite() || (octaves && factor <= 0.) {
-                                return Err(invalid("expression factor is outside the finite destination domain"));
-                            }
-                            for base in [parameter.constant, bounds[0], bounds[1]] {
-                                let value = base * factor;
-                                if !value.is_finite() || value.abs() > f64::from(f32::MAX) || (octaves && value <= 0.) {
-                                    return Err(invalid("base and expression endpoint product is outside its destination domain"));
-                                }
-                            }
-                        }
-                    }
-                    if matches!(node,crate::ProcessingSignalNode::Pan(_)) && bounds.iter().any(|v|!(-1. ..=1.).contains(v)) {
-                        return Err(invalid("Pan scalar domain is outside minus-one to one"));
-                    }
-                    if matches!(node, crate::ProcessingSignalNode::OnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
-                        return Err(invalid("OnePole cutoff must be positive"));
-                    }
-                }
-                let mut cells = std::collections::BTreeSet::new();
-                for binding in &signal.controls {
-                    let Some(crate::ProcessingSignalNode::Matrix(matrix)) = signal.nodes.get(binding.node) else {
-                        return Err(invalid("matrix binding has no executable node"));
-                    };
-                    if binding.input >= matrix.input.channels || binding.output >= matrix.output.channels
-                        || !cells.insert((binding.node, binding.input, binding.output)) {
-                        return Err(invalid("matrix binding cell is outside the layout or duplicated"));
-                    }
-                    let Some(control) = self.controls.iter().find(|c| c.key == binding.control) else {
-                        return Err(invalid("matrix binding control is missing"));
-                    };
-                    match &control.value {
-                        crate::ControlValue::Continuous { min, max, .. }
-                            if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
-                                && max.abs() <= f64::from(f32::MAX) => {}
-                        _ => return Err(invalid("matrix cells require a bounded real coefficient domain")),
-                    }
-                }
+                let output=scope.output.and_then(|bus|self.processing_buses.iter().find(|row|row.bus==bus)).map_or(2,|row|row.signal.input.channels);
+                self.validate_processing_signal(signal,output,true,scope.chain,&mut check)?;
             }
             if let Some(chain) = scope.chain { check.exists(Reference::Chain(chain.0))?; }
             if let Some(amplitude) = scope.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
@@ -1371,6 +1244,32 @@ impl Instrument {
                 return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"expression Pan requires one actual shared source home"});
             }
         }
+        let mut channel_buses=std::collections::BTreeSet::new();
+        for row in &self.processing_buses {
+            check.owner=format!("processing bus {}",row.bus.0);check.exists(Reference::Bus(row.bus.0))?;
+            let invalid=|reason|ValidationError::ZoneRouting{owner:check.owner.clone(),reason};
+            if !channel_buses.insert(row.bus) || row.output.channels==0{return Err(invalid("channel program must bind one existing global bus"));}
+            let marker_count=row.signal.nodes.iter().filter(|node|matches!(node,crate::ProcessingSignalNode::BusChain)).count();
+            let chain=if let Some(chain)=self.buses[row.bus.0].chain {
+                check.exists(Reference::Chain(chain.0))?;
+                let chain=&self.chains[chain.0];
+                if chain.scope!=crate::Scope::Bus(row.bus){return Err(invalid("channel marker must own the same actual bus chain"));}
+                Some(chain)
+            }else{None};
+            let active_chain=chain.is_some_and(|chain|!chain.pre_amplitude.is_empty()||!chain.post_amplitude.is_empty());
+            if marker_count!=usize::from(active_chain){return Err(invalid("channel program requires one exact nonempty bus chain marker"));}
+            if row.owner.is_some_and(|owner|!self.source_indices.owners.iter().any(|row|row.id==owner)){return Err(invalid("global bus source owner is absent"));}
+            self.validate_processing_signal(&row.signal,row.output.channels,false,None,&mut check)?;
+        }
+        for(index,bus)in self.buses.iter().enumerate(){
+            check.owner=format!("bus {index}");
+            let output=self.processing_buses.iter().find(|row|row.bus.0==index).map_or(2,|row|row.output.channels);
+            for(target,position)in std::iter::once((bus.output,crate::SendPosition::PostChain)).chain(bus.sends.iter().map(|send|(send.to,send.position))){
+                let input=match target{crate::Output::Master=>2,crate::Output::Bus(bus)=>self.processing_buses.iter().find(|row|row.bus==bus).map_or(2,|row|row.signal.input.channels)};
+                let source=if position==crate::SendPosition::PreChain{self.processing_buses.iter().find(|row|row.bus.0==index).map_or(2,|row|row.signal.input.channels)}else{output};
+                if input!=source{return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"bus edge requires an explicit layout conversion"});}
+            }
+        }
         for (i, bus) in self.buses.iter().enumerate() {
             check.owner = format!("bus {i}");
             if let Some(chain) = bus.chain {
@@ -1693,4 +1592,158 @@ mod tests {
         ir.source_indices.file_playback_zones=vec![ZoneRef(99)];assert!(matches!(ir.validate(),Err(ValidationError::Dangling {..})));
     }
 
+}
+
+impl Instrument {
+    fn validate_processing_signal(&self,signal:&crate::ProcessingSignal,output:usize,
+        allow_expression:bool,chain:Option<crate::ChainRef>,check:&mut Check)->Result<(),ValidationError>{
+        let invalid = |reason| ValidationError::ZoneRouting { owner: check.owner.clone(), reason };
+        match signal.source_law { crate::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {} }
+        if signal.input.channels == 0 || signal.nodes.is_empty() {
+            return Err(invalid("signal graph requires a nonempty input and executable nodes"));
+        }
+        let mut channels = signal.input.channels;
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut expression_pan = false;
+        for (node_index, node) in signal.nodes.iter().enumerate() {
+            if !allow_expression && match node {
+                crate::ProcessingSignalNode::Gain(gain)=>gain.gain.expression.is_some(),
+                crate::ProcessingSignalNode::OnePole(filter)=>filter.cutoff_hz.expression.is_some(),
+                crate::ProcessingSignalNode::Pan(pan)=>pan.expression || pan.position.expression.is_some(),
+                _=>false,
+            } {return Err(invalid("global processing bus has no per-note expression owner"));}
+            while spans.last().is_some_and(|&(end, _)| end == node_index) {
+                let (_, width) = spans.pop().ok_or_else(|| invalid("missing channel mix span"))?;
+                if channels != width { return Err(invalid("channel mix must preserve its input width")); }
+            }
+            if let crate::ProcessingSignalNode::Mix(mix) = node {
+                let end = node_index.checked_add(1).and_then(|index| index.checked_add(usize::from(mix.count)))
+                    .ok_or_else(|| invalid("channel mix span overflow"))?;
+                if end > signal.nodes.len() || spans.last().is_some_and(|&(parent,_)| end > parent)
+                    || spans.len() == 16 || !mix.dry.is_finite() || !mix.wet.is_finite()
+                    || !(0. ..=16.).contains(&mix.dry) || !(0. ..=16.).contains(&mix.wet) {
+                    return Err(invalid("channel mix geometry, depth or default is invalid"));
+                }
+                spans.push((end, channels));
+            }
+            match node {
+                crate::ProcessingSignalNode::BusChain => {
+                    if allow_expression || channels!=2 || !spans.is_empty() {return Err(invalid("bus chain requires an unsuppressed stereo global boundary"));}
+                }
+                crate::ProcessingSignalNode::Matrix(matrix) => {
+                    match matrix.arithmetic { crate::MatrixArithmetic::SeparateMulAddF32 => {} }
+                    if matrix.input.channels != channels || matrix.output.channels == 0
+                        || matrix.input.channels.checked_mul(matrix.output.channels) != Some(matrix.cells.len())
+                        || matrix.cells.iter().any(|v| !v.is_finite() || v.abs() > f64::from(f32::MAX)) {
+                        return Err(invalid("matrix layout, cell geometry or coefficient domain is invalid"));
+                    }
+                    channels = matrix.output.channels;
+                }
+                crate::ProcessingSignalNode::Mute(mute) => {
+                    if let Some(key)=&mute.control {
+                        let control=self.controls.iter().find(|control|&control.key==key)
+                            .ok_or_else(||invalid("outlet Mute Toggle control is missing"))?;
+                        if !matches!(control.value,crate::ControlValue::Toggle{..}) {
+                            return Err(invalid("outlet Mute requires a canonical Toggle control"));
+                        }
+                    }
+                }
+                crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => {},
+                crate::ProcessingSignalNode::Pan(pan) => {
+                    if channels!=2 || !pan.offset.is_finite() || pan.offset.abs()>f64::from(f32::MAX) || pan.position.expression.is_some() {return Err(invalid("Pan requires a stereo boundary and one scalar position"));}
+                    if pan.expression {
+                        if expression_pan || !spans.is_empty() || chain.is_some_and(|chain|self.chains.get(chain.0).is_some_and(|chain|chain.pre_amplitude.iter().chain(&chain.post_amplitude).any(|stage|matches!(stage,crate::Processor::ExpressionPan(_))))) {
+                            return Err(invalid("expression Pan requires one unsuppressed shared home"));
+                        }
+                        expression_pan=true;
+                    }
+                }
+                crate::ProcessingSignalNode::Gain(gain) => {
+                    match gain.arithmetic { crate::ChannelGainArithmetic::CoreGainF64ThenF32 => {} }
+                }
+                crate::ProcessingSignalNode::OnePole(filter) => {
+                    match filter.arithmetic { crate::ChannelOnePoleArithmetic::CoreOnePoleF64 => {} }
+                }
+            }
+        }
+        while let Some((end, width)) = spans.pop() {
+            if end != signal.nodes.len() || width != channels { return Err(invalid("channel mix must preserve its input width")); }
+        }
+        if channels != output { return Err(invalid("signal graph output differs from its declared destination layout")); }
+        let mut tail = 0u32;
+        for node in &signal.nodes {
+            let parameter = match node {
+                crate::ProcessingSignalNode::Matrix(_) | crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) | crate::ProcessingSignalNode::BusChain | crate::ProcessingSignalNode::Mute(_) => continue,
+                crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
+                crate::ProcessingSignalNode::Pan(pan) => &pan.position,
+                crate::ProcessingSignalNode::OnePole(filter) => {
+                    tail = tail.checked_add(filter.tail_frames)
+                        .ok_or_else(|| invalid("signal stage tail budget overflow"))?;
+                    &filter.cutoff_hz
+                }
+            };
+            if !parameter.constant.is_finite() || parameter.constant.abs() > f64::from(f32::MAX) {
+                return Err(invalid("signal stage constant is outside its finite domain"));
+            }
+            let bounds = if let Some(key) = &parameter.control {
+                let control = self.controls.iter().find(|c| &c.key == key)
+                    .ok_or_else(|| invalid("signal stage control is missing"))?;
+                match &control.value {
+                    crate::ControlValue::Continuous { min, max, .. }
+                        if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
+                            && max.abs() <= f64::from(f32::MAX) => [*min, *max],
+                    _ => return Err(invalid("signal stages require a bounded real control")),
+                }
+            } else { [parameter.constant; 2] };
+            if let Some(expression) = parameter.expression {
+                let (zero, one, octaves) = match (node, expression.law) {
+                    (crate::ProcessingSignalNode::Gain(_), crate::SignalExpressionLaw::LinearFactor { zero, one })
+                        if zero >= 0. && one >= 0. => (zero, one, false),
+                    (crate::ProcessingSignalNode::OnePole(_), crate::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
+                    _ => return Err(invalid("expression law does not match its stage destination")),
+                };
+                if !zero.is_finite() || !one.is_finite() || !(one - zero).is_finite() {
+                    return Err(invalid("expression endpoint domain is not finite"));
+                }
+                for endpoint in [zero, one] {
+                    let factor = if octaves { endpoint.exp2() } else { endpoint };
+                    if !factor.is_finite() || (octaves && factor <= 0.) {
+                        return Err(invalid("expression factor is outside the finite destination domain"));
+                    }
+                    for base in [parameter.constant, bounds[0], bounds[1]] {
+                        let value = base * factor;
+                        if !value.is_finite() || value.abs() > f64::from(f32::MAX) || (octaves && value <= 0.) {
+                            return Err(invalid("base and expression endpoint product is outside its destination domain"));
+                        }
+                    }
+                }
+            }
+            if matches!(node,crate::ProcessingSignalNode::Pan(_)) && bounds.iter().any(|v|!(-1. ..=1.).contains(v)) {
+                return Err(invalid("Pan scalar domain is outside minus-one to one"));
+            }
+            if matches!(node, crate::ProcessingSignalNode::OnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
+                return Err(invalid("OnePole cutoff must be positive"));
+            }
+        }
+        let mut cells = std::collections::BTreeSet::new();
+        for binding in &signal.controls {
+            let Some(crate::ProcessingSignalNode::Matrix(matrix)) = signal.nodes.get(binding.node) else {
+                return Err(invalid("matrix binding has no executable node"));
+            };
+            if binding.input >= matrix.input.channels || binding.output >= matrix.output.channels
+                || !cells.insert((binding.node, binding.input, binding.output)) {
+                return Err(invalid("matrix binding cell is outside the layout or duplicated"));
+            }
+            let Some(control) = self.controls.iter().find(|c| c.key == binding.control) else {
+                return Err(invalid("matrix binding control is missing"));
+            };
+            match &control.value {
+                crate::ControlValue::Continuous { min, max, .. }
+                    if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
+                        && max.abs() <= f64::from(f32::MAX) => {}
+                _ => return Err(invalid("matrix cells require a bounded real coefficient domain")),
+            }
+        }
+        Ok(())
+    }
 }

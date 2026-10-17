@@ -89,7 +89,7 @@ pub use source::storage::{
 };
 pub use source::bundle::SourceBundleRefusal;
 mod bus;
-pub use bus::{Bus, BusMix, BusPeakTap, BusSend, GroupFader};
+pub use bus::{Bus, BusMix, BusPeakTap, BusSend, ChannelBus, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
@@ -1391,12 +1391,13 @@ impl Runtime {
             .swap_convolution(&g.prepared.buses, slot, upload)
     }
 
-    /// Each bus of the active plan's peak level since the last call, after
-    /// its mix gain; taking them resets them.
+    /// Stereo-output buses of the active plan, after mix gain; taking resets
+    /// their peaks. Wide outputs have no fabricated two-channel peak row;
+    /// exact bus_peak queries report UnsupportedSourceLayout for those taps.
     pub fn take_bus_peaks(&mut self, mut each: impl FnMut(usize, [f32; 2])) {
         if let Some(g) = self.plans.get_mut(self.active_plan.0) {
             for (bus, peak) in g.dsp.buses.peaks.iter_mut().enumerate() {
-                each(bus, std::mem::take(peak));
+                if g.prepared.buses.output_channels(bus)==Ok(2){each(bus, std::mem::take(peak));}
             }
         }
     }
@@ -1405,16 +1406,19 @@ impl Runtime {
     /// No allocation or sample scan occurs for an unobserved input. Changing
     /// interest clears its previous observation; old generations are untouched.
     pub fn enable_bus_input_peak(&mut self, bus: usize, enabled: bool) -> Result<(), Error> {
-        self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?
-            .dsp.buses.enable_input_peak(bus, enabled)
+        let generation=self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?;
+        if enabled && generation.prepared.buses.input_channels(bus)?!=2{return Err(Error::UnsupportedSourceLayout);}
+        generation.dsp.buses.enable_input_peak(bus, enabled)
     }
 
     /// Raw linear stereo peak of an exact runtime bus since last taken.
     /// Input must have been enabled before rendering. This does not map native
     /// element identities or approximate their meter display laws.
     pub fn bus_peak(&self, bus: usize, tap: BusPeakTap) -> Result<[f32; 2], Error> {
-        self.plans.get(self.active_plan.0).ok_or(Error::StaleHandle)?
-            .dsp.buses.peak(bus, tap)
+        let generation=self.plans.get(self.active_plan.0).ok_or(Error::StaleHandle)?;
+        let channels=match tap {BusPeakTap::Input=>generation.prepared.buses.input_channels(bus)?,BusPeakTap::Output=>generation.prepared.buses.output_channels(bus)?};
+        if channels!=2{return Err(Error::UnsupportedSourceLayout);}
+        generation.dsp.buses.peak(bus, tap)
     }
 
     /// Take enabled input taps independently of the existing output taps.
@@ -1434,6 +1438,12 @@ impl Runtime {
             .plans
             .get_mut(self.active_plan.0)
             .ok_or(Error::StaleHandle)?;
+        if generation.prepared.buses.output_channels(bus)?!=2 && mix.gain[0]!=mix.gain[1] {
+            return Err(Error::UnsupportedSourceLayout);
+        }
+        if mix.output.is_some() && generation.prepared.buses.main_send_channels(bus)?!=2 {
+            return Err(Error::UnsupportedSourceLayout);
+        }
         *generation
             .dsp
             .buses

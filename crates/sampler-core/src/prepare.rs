@@ -1800,6 +1800,9 @@ programs = programs.into_boxed_slice();
     pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
         self.regions[region].chain
     }
+    pub(crate) fn region_bus(&self, region: usize) -> Option<usize> {
+        self.regions[region].bus
+    }
 
     /// Required cells per logical note across all script-instance namespaces.
     pub fn note_cell_count(&self) -> usize {
@@ -2508,7 +2511,8 @@ impl Prepared {
         if bus >= self.buses.len() {
             return Err(Error::InvalidInput);
         }
-        self.buses.input = Some(bus);
+        self.buses.select_input_bus(bus)?;
+        self.validate_bus_signal_edges()?;
         Ok(self)
     }
 
