@@ -46,12 +46,14 @@ enum Message {
         id: u64,
         key: u8,
         velocity: u8,
+        channel: u8,
         at_ms: f64,
     },
     Off {
         id: u64,
         key: u8,
         velocity: u8,
+        channel: u8,
         at_ms: f64,
     },
     In {
@@ -122,14 +124,15 @@ fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>,
                 id,
                 key,
                 velocity,
+                channel,
                 at_ms,
             } => {
                 host.set_time(at_ms);
-                host.note_on(id, key, velocity, 0);
+                host.note_on(id, key, velocity, channel);
             }
-            Message::Off { id, key, velocity, at_ms } => {
+            Message::Off { id, key, velocity, channel, at_ms } => {
                 host.set_time(at_ms);
-                host.note_off(id, key, velocity, 0);
+                host.note_off(id, key, velocity, channel);
             }
             Message::In { input, at_ms } => {
                 host.set_time(at_ms);
@@ -655,23 +658,21 @@ impl Script for ScriptThread {
     }
 
     fn note_on(&mut self, id: u64, key: u8, velocity: u8) {
-        let at_ms = self.time_ms;
-        self.enqueue(Message::On {
-            id,
-            key,
-            velocity,
-            at_ms,
-        });
+        self.note_on_channel(id, key, velocity, 0);
     }
-
     fn note_off(&mut self, id: u64, key: u8) {
-        let at_ms = self.time_ms;
-        self.enqueue(Message::Off { id, key, velocity: 64, at_ms });
+        self.note_off_channel(id, key, 64, 0);
     }
-
     fn note_off_velocity(&mut self, id: u64, key: u8, velocity: u8) {
+        self.note_off_channel(id, key, velocity, 0);
+    }
+    fn note_on_channel(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
         let at_ms = self.time_ms;
-        self.enqueue(Message::Off { id, key, velocity, at_ms });
+        self.enqueue(Message::On { id, key, velocity, channel, at_ms });
+    }
+    fn note_off_channel(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        let at_ms = self.time_ms;
+        self.enqueue(Message::Off { id, key, velocity, channel, at_ms });
     }
 
     fn input(&mut self, input: HostInput) {
