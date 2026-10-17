@@ -1046,6 +1046,8 @@ impl PreparedSourceOwners {
 }
 
 pub struct Prepared {
+    /// Immutable actual tuning of this generation; children never consult a replacement plan.
+    tuning: Tuning,
     pub(super) source_owners: PreparedSourceOwners,
     pub(super) external_programs: bool,
     pub(
@@ -1395,6 +1397,7 @@ impl Prepared {
             );
         }
         Ok(Self {
+            tuning:tuning.clone(),
             source_owners: PreparedSourceOwners::default(),
             external_programs: false,
             sample_targets: Box::new([]),
@@ -1895,6 +1898,13 @@ programs = programs.into_boxed_slice();
         self.candidates.len()
     }
 
+    /// Actual inherent pitch authority, before receiver-relative bend/tuning.
+    pub fn inherent_pitch(&self,pitch:NotePitch)->Result<f64,Error>{
+        if !pitch.valid(){return Err(Error::InvalidInput);}
+        let value=match pitch{NotePitch::Key(key)=>f64::from(key)+self.tuning.0[usize::from(key)],NotePitch::Absolute(value)=>value};
+        if !value.is_finite(){return Err(Error::InvalidInput);}Ok(value)
+    }
+
     fn step(&self, candidate: Candidate, pitch: NotePitch) -> f64 {
         let r = &self.regions[candidate.region];
         match (pitch, r.root_key) {
@@ -2256,6 +2266,7 @@ programs = programs.into_boxed_slice();
         pitch: NotePitch,
         trigger: super::Trigger,
         range: super::pitch::PitchRange,
+        intrinsic_ratio:f64,
         velocity: Option<f64>,
         state: Option<&super::performance::State>,
     ) -> Result<(), Error> {
@@ -2275,7 +2286,7 @@ programs = programs.into_boxed_slice();
                     continue;
                 }
                 range.apply_source(
-                    self.step(candidate, pitch),
+                    self.step(candidate, pitch)*if self.regions[candidate.region].root_key.is_some(){intrinsic_ratio}else{1.},
                     self.regions[candidate.region].cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()),
                 )?;
             }

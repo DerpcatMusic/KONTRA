@@ -162,8 +162,12 @@ impl Ingress {
                 if state.is_some() && self.polyphonic.as_ref().is_some_and(|polyphonic| polyphonic.owners.len() == polyphonic.limit) {
                     return Err(Error::Capacity.into());
                 }
-                let note = runtime.trigger_in(performance, Input { key, ..input },
-                    if attribute.kind == 3 { NotePitch::Absolute(f64::from(attribute.data) / 512.) } else { NotePitch::Key(key) },
+                let intrinsic=if voice.version==Version::Midi2&&attribute.kind!=3{
+                    self.polyphonic.as_ref().map(|poly|poly.controls.key(voice.group,voice.channel,key).map(|(_,state)|state.absolute.map(|value|f64::from(value)/33_554_432.))).transpose()?.flatten()
+                }else{None};
+                let physical=Input{key,..input};
+                let note = runtime.trigger_in_with_pitch_base(performance,physical,physical,
+                    if attribute.kind == 3 { NotePitch::Absolute(f64::from(attribute.data) / 512.) } else { NotePitch::Key(key) },intrinsic,
                     velocity.normalized(), Expression { pitch_semitones: channel.bend * range + state.map_or(0., |state| state.pitch),
                         bend: channel.bend, pressure: channel.pressure, ..Expression::default() })?;
                 if let (Some(polyphonic), Some(state)) = (self.polyphonic.as_mut(), state) {
@@ -215,6 +219,9 @@ impl Ingress {
                 Applied::Expression {
                     owners,
                 }
+            }
+            Message::PerNoteControl{space:Controllers::Registered,key,index:3,value} if voice.version==Version::Midi2&&self.polyphonic.is_some()=>{
+                self.per_note_absolute(runtime,input.channel_address(),key,value)?
             }
             Message::PerNotePitch { key, value } if voice.version == Version::Midi2 && self.polyphonic.is_some() => {
                 self.per_note_bend(runtime, input.channel_address(), key, value)?
@@ -346,12 +353,35 @@ impl Ingress {
         Ok(Applied::Expression { owners: polyphonic.changes.len() })
     }
 
+    fn per_note_absolute(&mut self,runtime:&mut Runtime,address:sampler_core::ChannelAddress,key:u8,value:u32)->Result<Applied,Error>{
+        let poly=self.polyphonic.as_mut().ok_or(Error::InvalidInput)?;let (id,before)=poly.controls.key(address.group,address.channel,key)?;
+        poly.changes.clear();
+        for owner in &poly.owners{
+            if owner.address!=address||owner.key!=key||owner.state.cohort!=before.cohort{continue;}
+            let expression=runtime.expression_id(owner.note)?;poly.changes.push((expression,runtime.expression(expression)?));
+        }
+        runtime.set_intrinsic_pitch(&poly.changes,Some(f64::from(value)/33_554_432.))?;
+        poly.controls.commit_key(id,crate::per_note::KeyState{absolute:Some(value),..before});
+        Ok(Applied::Expression{owners:poly.changes.len()})
+    }
+
     fn per_note_management(&mut self, runtime: &mut Runtime, address: sampler_core::ChannelAddress, key: u8, detach: bool, reset: bool) -> Result<Applied, Error> {
         if !detach && !reset { return Ok(Applied::Ignored); }
         let polyphonic = self.polyphonic.as_mut().ok_or(Error::InvalidInput)?;
         let (id, before) = polyphonic.controls.key(address.group, address.channel, key)?;
         let next = crate::per_note::PerNoteState::managed(before, detach, reset)?;
-        if !detach && reset { Self::project_note_bend(polyphonic, runtime, address, key, crate::per_note::CENTER)?; }
+        if !detach&&reset{
+            let channel=polyphonic.controls.channel(address.group,address.channel)?;
+            let projected=crate::per_note::PerNoteState::project(next,polyphonic.controls.range(channel));
+            polyphonic.changes.clear();polyphonic.retained.clear();
+            for (index,owner) in polyphonic.owners.iter().enumerate(){
+                if owner.address!=address||owner.key!=key||owner.state.cohort!=before.cohort{continue;}
+                let expression=runtime.expression_id(owner.note)?;let mut value=runtime.expression(expression)?;value.pitch_semitones+=projected.pitch-owner.state.pitch;
+                polyphonic.changes.push((expression,value));polyphonic.retained.push((index,projected));
+            }
+            runtime.set_intrinsic_pitch(&polyphonic.changes,None)?;
+            for (index,state) in polyphonic.retained.drain(..){polyphonic.owners[index].state=state;}
+        }
         // Combined D+S changes only the future cohort; previous owners freeze.
         polyphonic.controls.commit_key(id, next);
         Ok(Applied::Configuration)

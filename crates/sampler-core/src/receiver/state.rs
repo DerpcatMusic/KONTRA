@@ -1092,6 +1092,9 @@ impl OwnedReceiver {
                     self.channel_terminal(runtime, domain, voice.channel, index == 120)?
                 }
             }
+            Message::PerNoteControl{space:Controllers::Registered,key,index:3,value} if midi2=>{
+                self.per_note_absolute(runtime,voice.channel,key,value)?
+            }
             Message::PerNotePitch { key, value } if midi2 => {
                 self.per_note_bend(runtime, voice.channel, key, value)?
             }
@@ -1486,25 +1489,13 @@ impl OwnedReceiver {
         expression.pitch_semitones += self.transpose;
         expression.pitch_semitones += tuning;
         expression.pitch_semitones += per_note.map_or(0., |state| state.pitch);
+        let intrinsic=if domain==ChannelDomain::Midi2&&!matches!(note_pitch,NotePitch::Absolute(_)){
+            self.per_note.key(self.group,input.channel,input.key)?.1.absolute.map(|value|f64::from(value)/33_554_432.)
+        }else{None};
         let note = if silent {
-            let note = runtime.note_on_pitched_in(
-                self.performance,
-                input,
-                note_pitch,
-                velocity,
-                expression,
-            )?;
-            runtime.set_input_source(note, source)?;
-            note
+            runtime.note_on_in_with_pitch_base(self.performance,input,source,note_pitch,intrinsic,velocity,expression)?
         } else {
-            runtime.trigger_in_with_source(
-                self.performance,
-                input,
-                source,
-                note_pitch,
-                velocity,
-                expression,
-            )?
+            runtime.trigger_in_with_pitch_base(self.performance,input,source,note_pitch,intrinsic,velocity,expression)?
         };
         if let Some(kind) = kind {
             self.physical.push(PhysicalPair {
@@ -2024,6 +2015,20 @@ impl OwnedReceiver {
         })
     }
 
+    pub(super) fn per_note_absolute(&mut self,runtime:&mut Runtime,channel:u8,key:u8,value:u32)->Result<Applied,Error>{
+        let (id,before)=self.per_note.key(self.group,channel,key)?;
+        self.changes.clear();
+        for binding in &self.bindings{
+            if binding.domain!=ChannelDomain::Midi2||binding.channel!=channel||binding.key!=key
+                ||!binding.per_note.is_some_and(|snapshot|snapshot.cohort==before.cohort){continue;}
+            let expression=runtime.expression_id(binding.note)?;
+            self.changes.push((expression,runtime.expression(expression)?));
+        }
+        runtime.set_intrinsic_pitch(&self.changes,Some(f64::from(value)/33_554_432.))?;
+        self.per_note.commit_key(id,super::per_note::KeyState{absolute:Some(value),..before});
+        Ok(Applied::Expression{owners:self.changes.len()})
+    }
+
     pub(super) fn per_note_management(
         &mut self,
         runtime: &mut Runtime,
@@ -2038,7 +2043,19 @@ impl OwnedReceiver {
         let (id, before) = self.per_note.key(self.group, channel, key)?;
         let next = super::per_note::PerNoteState::managed(before, detach, reset)?;
         if !detach && reset {
-            self.per_note_bend(runtime, channel, key, super::per_note::CENTER)?;
+            let channel_id=self.per_note.channel(self.group,channel)?;
+            let projected=super::per_note::PerNoteState::project(next,self.per_note.range(channel_id));
+            self.changes.clear();
+            for binding in &self.bindings{
+                if binding.domain!=ChannelDomain::Midi2||binding.channel!=channel||binding.key!=key{continue;}
+                let Some(previous)=binding.per_note.filter(|state|state.cohort==before.cohort)else{continue;};
+                let expression=runtime.expression_id(binding.note)?;let mut value=runtime.expression(expression)?;
+                value.pitch_semitones+=projected.pitch-previous.pitch;self.changes.push((expression,value));
+            }
+            runtime.set_intrinsic_pitch(&self.changes,None)?;
+            for binding in &mut self.bindings{
+                if binding.domain==ChannelDomain::Midi2&&binding.channel==channel&&binding.key==key&&binding.per_note.is_some_and(|state|state.cohort==before.cohort){binding.per_note=Some(projected);}
+            }
         }
         // D precedes S: no old owner is reset/rebound when both are set.
         self.per_note.commit_key(id, next);

@@ -7,6 +7,7 @@ use crate::{
 struct Selection {
     plan: PlanId,
     note_pitch: NotePitch,
+    intrinsic_ratio:f64,
     velocity: f64,
     offset_micros: u32,
     address: crate::ChannelAddress,
@@ -93,6 +94,13 @@ impl Runtime {
         pitch: NotePitch, velocity: f64, expression: Expression,
         receiver: Option<crate::receiver::components::ReceiverComponents>,
     ) -> Result<NoteId, Error> {
+        self.trigger_owned_pitch_base(performance,input,source,pitch,None,velocity,expression,receiver)
+    }
+    pub fn trigger_in_with_pitch_base(&mut self,performance:crate::PerformanceId,input:Input,source:Input,pitch:NotePitch,intrinsic:Option<f64>,velocity:f64,expression:Expression)->Result<NoteId,Error>{
+        self.trigger_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,None)
+    }
+    pub(crate) fn trigger_owned_pitch_base(&mut self,performance:crate::PerformanceId,input:Input,source:Input,pitch:NotePitch,intrinsic:Option<f64>,velocity:f64,expression:Expression,receiver:Option<crate::receiver::components::ReceiverComponents>)->Result<NoteId,Error>{
+        if intrinsic.is_some_and(|value|!NotePitch::Absolute(value).valid()){return Err(Error::InvalidInput);}
         if self.external_execution_aborted{return Err(Error::Canceled);}
         if
 input.group>=16||input.channel>=16||input.key>=128
@@ -114,7 +122,7 @@ input.group>=16||input.channel>=16||input.key>=128
             .copied()
             .flatten()
         {
-            let note = self.note_on_owned_input(performance, input, source, pitch, velocity, expression, receiver)?;
+            let note = self.note_on_owned_pitch_base(performance, input, source, pitch,intrinsic, velocity, expression, receiver)?;
             if !self
                 .plans
                 .get(self.active_plan.0)
@@ -148,13 +156,13 @@ input.group>=16||input.channel>=16||input.key>=128
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
         if prepared.source_owners.note_root.is_some(){
             if !self.behavior_room(1){return Err(Error::Capacity);}
-            let note=self.note_on_owned_input(performance,input,source,pitch,velocity,expression,receiver)?;
+            let note=self.note_on_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,receiver)?;
             self.start_source_note(note,source.channel)?;return Ok(note);
         }
         let on_note = prepared.stages.iter().any(|stage| stage.note.is_some());
         if !on_note {
             let note = self.select(
-                NoteOrigin::Input(crate::InputOrigin {input,source,expression,performance:index,receiver}), pitch, velocity, 0, None, None,
+                NoteOrigin::Input(crate::InputOrigin {input,source,expression,intrinsic,performance:index,receiver}), pitch, velocity, 0, None, None,
             )?;
             return Ok(note);
         }
@@ -171,7 +179,7 @@ input.group>=16||input.channel>=16||input.key>=128
         if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
-        let note = self.note_on_owned_input(performance, input, source, pitch, velocity, expression, receiver)?;
+        let note = self.note_on_owned_pitch_base(performance, input, source, pitch,intrinsic, velocity, expression, receiver)?;
         self.reserve_release_callbacks(note, 0);
         self.begin_note_stages(note, 0);
         Ok(note)
@@ -262,6 +270,11 @@ input.group>=16||input.channel>=16||input.key>=128
                 self.pitch_range(owner, inheritance == crate::Inheritance::Linked)?
             }
         };
+        let intrinsic_ratio=match origin{
+            NoteOrigin::Input(input)=>crate::pitch::IntrinsicPitch{reference:self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.inherent_pitch(note_pitch)?,absolute:input.intrinsic}.ratio(),
+            NoteOrigin::Child(parent,_,inheritance) if inheritance!=crate::Inheritance::Independent=>self.intrinsic_pitch(self.notes.get(parent.0).ok_or(Error::StaleHandle)?.expression)?.ratio(),
+            _=>1.,
+        };
         let address = match origin {
             NoteOrigin::Input(input) => input.input.channel_address(),
             NoteOrigin::Generated(_, address, _) => address,
@@ -299,6 +312,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 Selection {
                     plan,
                     note_pitch,
+                    intrinsic_ratio,
                     velocity,
                     address,
                     offset_micros,
@@ -323,9 +337,9 @@ input.group>=16||input.channel>=16||input.key>=128
             return Err(Error::Capacity);
         }
         let note = match origin {
-            NoteOrigin::Input(input) => self.note_on_owned_input(
+            NoteOrigin::Input(input) => self.note_on_owned_pitch_base(
                 self.performance(input.performance).unwrap(), input.input, input.source,
-                note_pitch, velocity, input.expression, input.receiver,
+                note_pitch, input.intrinsic, velocity, input.expression, input.receiver,
             )?,
             NoteOrigin::Generated(..) => self.admit(origin, note_pitch, velocity)?,
             NoteOrigin::Child(parent, linked, inheritance) => {
@@ -427,6 +441,7 @@ input.group>=16||input.channel>=16||input.key>=128
             .ok_or(Error::InvalidInput)?;
         let selection = Selection {
             plan: n.plan,
+            intrinsic_ratio:self.intrinsic_pitch(n.expression)?.ratio(),
             note_pitch: event.pitch,
             velocity: event.velocity,
             offset_micros: self.note_events[note.0.index].source_offset_micros,
@@ -489,6 +504,7 @@ input.group>=16||input.channel>=16||input.key>=128
         let Selection {
             plan,
             note_pitch,
+            intrinsic_ratio,
             velocity,
             address,
             snapshot,
@@ -505,6 +521,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     note_pitch,
                     trigger,
                     pitch,
+                    intrinsic_ratio,
                     prepared.release_velocity(trigger, velocity, false, None),
                     prepared.pending_selection(trigger, &self.performance_state.states[snapshot]),
                 )?;
@@ -632,6 +649,7 @@ input.group>=16||input.channel>=16||input.key>=128
         let Selection {
             plan,
             note_pitch,
+            intrinsic_ratio,
             velocity,
             address,
             trigger,
@@ -666,7 +684,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 if prepared.regions[c.region].take == chosen {
                     let r = prepared.regions[c.region];
                     if let Some((sample,cursor))=generation.samples.source(prepared,c,note_pitch) {
-                        let step=pitch.apply_source(cursor.step(),cursor.wavetable().is_some())?;
+                        let step=pitch.apply_source(cursor.step()*if r.root_key.is_some(){intrinsic_ratio}else{1.},cursor.wavetable().is_some())?;
                         let source=generation.source(sample).ok_or(Error::NotReady)?;
                         if source.stereo().is_none() {
                             // A pending event can change key after a legal stereo
@@ -1050,6 +1068,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
                     envelope,
                     cursor.with_step(step),
+                    r.root_key.is_some(),
                 );
                 self.processing_admission = false;
                 // Preflight reserved this start, but a page can be evicted or
@@ -1183,6 +1202,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     Selection {
                         plan,
                         note_pitch,
+                        intrinsic_ratio:self.intrinsic_pitch(owner)?.ratio(),
                         velocity,
                         address,
                         trigger,

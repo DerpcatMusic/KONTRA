@@ -533,6 +533,7 @@ struct InputOrigin {
     input: Input,
     source: Input,
     expression: Expression,
+    intrinsic:Option<f64>,
     performance: usize,
     receiver: Option<receiver::components::ReceiverComponents>,
 }
@@ -625,6 +626,9 @@ struct Voice {
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
+    /// Immutable source rate/pitch at birth, including old-plan MTS and revision.
+    inherent_step:f64,
+    pitch_tracked:bool,
     /// v1 Voice::pitch: cache the exact modulation exponent and its ratio.
     mod_pitch: (f64, f64),
     stream_pages: usize,
@@ -1068,6 +1072,7 @@ impl Runtime {
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
+        std::alloc::Layout::array::<Slot<Voice>>(limits.voices).map_err(|_|Error::Capacity)?;
         std::alloc::Layout::array::<Slot<topology::ProcessingOwner>>(limits.voices)
             .map_err(|_| Error::Capacity)?;
         receiver::allocation_bytes(limits.expressions,limits.performances,limits.expressions,limits.performances)?;
@@ -1496,6 +1501,10 @@ impl Runtime {
         pitch: NotePitch, velocity: f64, expression: Expression,
         receiver: Option<receiver::components::ReceiverComponents>,
     ) -> Result<NoteId, Error> {
+        self.note_on_owned_pitch_base(performance,input,source,pitch,None,velocity,expression,receiver)
+    }
+    fn note_on_owned_pitch_base(&mut self,performance:PerformanceId,input:Input,source:Input,pitch:NotePitch,intrinsic:Option<f64>,velocity:f64,expression:Expression,receiver:Option<receiver::components::ReceiverComponents>)->Result<NoteId,Error>{
+        if intrinsic.is_some_and(|value|!NotePitch::Absolute(value).valid()){return Err(Error::InvalidInput);}
         if self.external_execution_aborted{return Err(Error::Canceled);}
         if
 input.channel >= 16 || input.group >= 16 || input.key >= 128
@@ -1509,8 +1518,14 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             return Err(Error::DuplicateInput);
         }
         self.admit(NoteOrigin::Input(InputOrigin {
-            input, source, expression, performance, receiver,
+            input, source, expression, intrinsic, performance, receiver,
         }), pitch, velocity)
+    }
+
+    /// Admit a protocol-owned absolute intrinsic base independently of selection
+    /// and physical source. None retains the actual inherent Key/MTS/Attribute base.
+    pub fn note_on_in_with_pitch_base(&mut self,performance:PerformanceId,input:Input,source:Input,pitch:NotePitch,intrinsic:Option<f64>,velocity:f64,expression:Expression)->Result<NoteId,Error>{
+        self.note_on_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,None)
     }
 
     /// Retained terminal owners still reserve their identity. Traverse the
@@ -1709,7 +1724,12 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
                     let source=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
                     Ok::<_,Error>((id,source.followers.checked_add(1).ok_or(Error::Capacity)?))
                 }).transpose()?;
+                let intrinsic=match (policy,parent){
+                    (Inheritance::Expression|Inheritance::Snapshot,Some(parent))=>self.intrinsic_pitch(parent)?,
+                    _=>crate::pitch::IntrinsicPitch{reference:self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.inherent_pitch(pitch)?,absolute:match origin{NoteOrigin::Input(input)=>input.intrinsic,_=>None}},
+                };
                 let expression=ExpressionId(self.expressions.insert(ExpressionOwner {
+                    intrinsic,
                     value,
                     rendered,
                     program,
@@ -1989,7 +2009,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             source.sample_rate(),
             self.rate,
         )?;
-        self.admit_voice(family, sample, at, gain, envelope, cursor)
+        self.admit_voice(family, sample, at, gain, envelope, cursor,false)
     }
 
     // Inputs and cursor are validated either by Prepared or start_family. Both
@@ -2002,6 +2022,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
         gain: f32,
         envelope: Envelope,
         cursor: source::Cursor,
+        pitch_tracked:bool,
     ) -> Result<VoiceId, Error> {
         if self.external_execution_aborted{return Err(Error::Canceled);}
         let f = self.families.get(family.0).ok_or(Error::StaleHandle)?;
@@ -2009,7 +2030,8 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             return Err(Error::ClosedFamily);
         }
         let owner = self.notes.get(f.note.0).unwrap().expression;
-        let base_step = cursor.step();
+        let inherent_step=cursor.step();
+        let base_step=inherent_step*if pitch_tracked{self.intrinsic_pitch(owner)?.ratio()}else{1.};
         let step = self
             .pitch_range(owner, true)?
             .apply_source(base_step, cursor.wavetable().is_some())?;
@@ -2089,6 +2111,8 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             sample,
             cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
+            inherent_step,
+            pitch_tracked,
             mod_pitch: (f64::NAN, 1.0),
             stream_pages,
             chain: None,
