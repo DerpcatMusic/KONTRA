@@ -1576,6 +1576,8 @@ impl Prepared {
             + size_of::<crate::Slot<crate::topology::ProcessingOwner>>()
             + size_of::<u64>() // conservative arena free-word/claim overhead
             + self.signal_channels().saturating_mul(3 * super::dsp::BLOCK + 2).saturating_mul(size_of::<f32>())
+            + self.signal_history_words().saturating_mul(size_of::<f64>())
+            + if self.signal_history_words() == 0 { 0 } else { size_of::<std::sync::atomic::AtomicBool>() }
             + self.signal_channels().saturating_mul(size_of::<[f64; 2]>())
             + if self.processing_scopes.is_empty() { 0 } else {
                 stages * size_of::<crate::dsp::ProcessorState>()
@@ -2171,6 +2173,12 @@ impl Prepared {
             .map(|chain| chain.compile(self.rate, &mut parameters, &mut filters))
             .collect::<Result<Vec<_>, _>>()?);
         self.processing_signals = super::topology::signal::compile(&self, &mut parameters)?;
+        for (scope, signal) in self.processing_scopes.iter().zip(self.processing_signals.iter()) {
+            if let Some(signal) = signal {
+                let tail = scope.chain.map_or(0, |index| self.voice_chains.view(index).owner_tail_frames());
+                tail.checked_add(signal.tail_frames).ok_or(Error::Capacity)?;
+            }
+        }
         let mut controls: Vec<_> = parameters
             .iter()
             .enumerate()
