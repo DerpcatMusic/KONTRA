@@ -426,3 +426,71 @@ perf=rt.performance(0).unwrap();let before=rt.now();
         assert_eq!(rt.now(),before);
     });
 }
+
+fn source_frontier_plan(layer_key:u8,external:bool)->Prepared{
+    use sampler_ir as ir;
+    let ids=[10,20,30,40].map(ir::SourceOwnerId::UviNode);let processor=ir::SourceEventProcessorId::UviNode(211);
+    let make_owner=|at:usize,parent:Option<usize>,kind,children:Vec<usize>,zones:Vec<usize>|ir::SourceOwner{
+        id:ids[at],parent:parent.map(|at|ids[at]),kind,children:children.into_iter().map(|at|ids[at]).collect(),
+        groups:zones.iter().map(|&zone|ir::GroupRef(zone)).collect(),zones:zones.into_iter().map(ir::ZoneRef).collect(),
+        predicates:if at==1{vec![ir::SourceInputPredicate::Keys(ir::KeyRange{low:layer_key,high:layer_key}),ir::SourceInputPredicate::Channel(1)]}else{vec![]},
+        bypass:None,mute:None,event_processors:if at==1{vec![ir::SourceEventProcessor{id:processor,owner:ids[at],ordinal:0,kind:"ScriptProcessor".into(),bypass:ir::SourceSwitch{saved:false,control:None}}]}else{vec![]}};
+    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,
+        groups:vec![ir::Group::default(),ir::Group::default()],
+        assets:(0..2).map(|index|ir::Asset{location:ir::AssetLocation::Path(format!("authored{index}.wav").into()),encoding:ir::Encoding::Wav,residency:Default::default(),root_key:None,loops:vec![]}).collect(),
+        zones:(0..2).map(|index|ir::Zone{keys:ir::KeyRange{low:60,high:60},group:Some(ir::GroupRef(index)),pitch:ir::KeyTracking::Fixed,velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(index))}).collect(),
+        ..ir::Instrument::default()};
+    instrument.source_indices.owners=vec![
+        make_owner(0,None,ir::SourceOwnerKind::Instrument,vec![1],vec![0,1]),
+        make_owner(1,Some(0),ir::SourceOwnerKind::Layer,vec![2,3],vec![0,1]),
+        make_owner(2,Some(1),ir::SourceOwnerKind::Keygroup,vec![],vec![0]),
+        make_owner(3,Some(1),ir::SourceOwnerKind::Keygroup,vec![],vec![1])];
+    let plan=sampler_core::lower::lower(&instrument,48000,vec![Pcm::new(48000,Box::from([[0.125;2];4096])).unwrap(),Pcm::new(48000,Box::from([[0.5;2];4096])).unwrap()],|_,_|unreachable!("no native behavior")).unwrap();
+    let plan=plan.with_variation(vec![sampler_core::Sequence{takes:2,policy:sampler_core::TakePolicy::Sequential,scope:sampler_core::SequenceScope::Global,capacity:1}],vec![Some(sampler_core::Take{sequence:0,index:0}),Some(sampler_core::Take{sequence:0,index:1})],1,2).unwrap();
+    if external{plan.with_programs(vec![sampler_core::Program::new(vec![sampler_core::Instruction::AwaitExternal{processor},sampler_core::Instruction::End]).unwrap().with_wait_lifetime(sampler_core::WaitLifetime::Callback)],None).unwrap()}else{plan}
+}
+
+#[test]
+fn actual_source_frontier_retains_the_chosen_kg_and_take_across_wait_and_audio_does_not_choose_twice(){
+    use sampler_core::{ExternalEvent,Trigger};
+    let plan=source_frontier_plan(60,true);let layer=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(20)).unwrap();
+    let a=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(30)).unwrap();let b=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(40)).unwrap();
+    let mut limits=Limits::for_plan(&plan,8,8);limits.decisions=16;let mut rt=Runtime::new(plan,limits).unwrap();
+    let first=rt.note_on(input(1101),60,1.).unwrap();
+    support::without_heap(||{
+        assert_eq!(rt.commit_source_frontier(first,layer,0,1),Ok(1));assert_eq!(rt.note_take(first,Trigger::Attack,0),Ok(Some(0)));
+        assert_eq!(rt.source_child_selected(first,a),Ok(true));assert_eq!(rt.source_child_selected(first,b),Ok(false));
+        let count=rt.decision_count();assert_eq!(rt.commit_source_frontier(first,layer,0,1),Ok(1));assert_eq!(rt.decision_count(),count);
+    });
+    rt.start_behavior(first,0).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();
+    assert!(matches!(turn.event,ExternalEvent::Note{note,..}if note==first));rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(32)).unwrap();
+    let second=rt.trigger(input(1102),60,1.).unwrap();assert_eq!(rt.note_take(second,Trigger::Attack,0),Ok(Some(1)),"the real sequence advanced at frontier commit");
+    rt.cancel_input_note(second).unwrap();rt.flush_ended(|_|true);
+    let mut silence=[[1.;2];32];rt.render(&mut silence).unwrap();assert_eq!(silence,[[0.;2];32]);
+    let resumed=rt.service_external_boundary().unwrap().unwrap();rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+    assert_eq!(rt.forward_attack(first),Ok(true));assert_eq!(rt.note_take(first,Trigger::Attack,0),Ok(Some(0)));
+    let third=rt.note_on(input(1103),60,1.).unwrap();assert_eq!(rt.commit_source_frontier(third,layer,0,1),Ok(1));
+    assert_eq!(rt.note_take(third,Trigger::Attack,0),Ok(Some(0)),"final audio must NOT advance the selected sequence a second time");
+    assert_eq!(rt.source_child_selected(third,a),Ok(true));
+    let reference_plan=source_frontier_plan(60,false);let reference_limits=Limits::for_plan(&reference_plan,8,8);
+    let mut reference=Runtime::new(reference_plan,reference_limits).unwrap();let reference_note=reference.trigger(input(1199),60,1.).unwrap();assert_eq!(reference.note_take(reference_note,Trigger::Attack,0),Ok(Some(0)));
+    let mut got=[[0.;2];128];let mut expected=[[0.;2];128];rt.render(&mut got).unwrap();reference.render(&mut expected).unwrap();
+    assert!(expected.iter().any(|frame|frame[0]!=0.));assert_eq!(got,expected,"the frozen native take must render the independent ordinary selection PCM");
+}
+
+#[test]
+fn source_frontier_refusal_is_transactional_and_empty_completion_is_distinct_from_no_choice(){
+    use sampler_core::Trigger;
+    let plan=source_frontier_plan(60,false);let layer=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(20)).unwrap();let kg=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(30)).unwrap();
+    let mut limits=Limits::for_plan(&plan,4,4);limits.decisions=2;let mut rt=Runtime::new(plan,limits).unwrap();let pending=rt.note_on(input(1201),60,1.).unwrap();
+    let before=(rt.now(),rt.note_count(),rt.decision_count());
+    support::without_heap(||{
+        assert_eq!(rt.commit_source_frontier(pending,layer,0,1),Err(Error::Capacity));assert_eq!((rt.now(),rt.note_count(),rt.decision_count()),before);
+        assert_eq!(rt.source_selection_frontier(pending),Ok(None));assert_eq!(rt.source_child_selected(pending,kg),Err(Error::NotReady));
+        let ordinary=rt.trigger(input(1202),60,1.).unwrap();assert_eq!(rt.note_take(ordinary,Trigger::Attack,0),Ok(Some(0)),"rejected frontier cannot advance the native sequence");
+    });
+    let plan=source_frontier_plan(61,false);let layer=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(20)).unwrap();let kg=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(30)).unwrap();
+    let limits=Limits::for_plan(&plan,4,4);let mut empty=Runtime::new(plan,limits).unwrap();let note=empty.note_on(input(1203),60,1.).unwrap();
+    assert_eq!(empty.commit_source_frontier(note,layer,0,1),Ok(0));assert_eq!(empty.source_selection_frontier(note),Ok(Some((layer,0))));assert_eq!(empty.source_child_selected(note,kg),Ok(false));
+    assert_eq!(empty.forward_attack(note),Ok(true));assert_eq!(empty.voice_count(),0);assert_eq!(empty.note_take(note,Trigger::Attack,0),Ok(None));
+}
