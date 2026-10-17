@@ -1135,37 +1135,155 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
         path: options.library.clone().unwrap_or_default(), reason: reason.into(),
     };
     instrument.validate().map_err(|error| invalid(&error.to_string()))?;
-    // Preflight the entire recipe batch before changing its scope roster.
-    let mut resolved = Vec::with_capacity(instrument.source_indices.processing.len());
+    // Entire graph and capability batch is pure before changing any roster.
+    let mut resolved=Vec::with_capacity(instrument.source_indices.processing.len());
+    let mut matrices=Vec::new();
+    // This off-audio schema batch is independent of the live Instrument until
+    // every owner, source and signal definition has been checked.
+    let mut control_definitions=instrument.controls.clone();
+    let mut next=instrument.processing_scopes.len();
     for recipe in &instrument.source_indices.processing {
-        let mut width = None;
+        let mut width=None;
         for member in &recipe.members {
-            let Some(asset) = instrument.zones[member.0].asset else { continue; };
-            let actual = sources.get(asset.0).ok_or_else(|| invalid("source processing asset is absent"))?.as_source().channels().get();
-            if width.replace(actual).is_some_and(|previous| previous != actual) {
-                return Err(invalid("mixed source layouts require an explicit native conversion edge"));
+            let Some(asset)=instrument.zones[member.0].asset else {continue;};
+            let actual=sources.get(asset.0).ok_or_else(||invalid("source processing asset is absent"))?.as_source().channels().get();
+            if width.replace(actual).is_some_and(|previous|previous!=actual) {
+                return Err(invalid("mixed source layouts require explicit per-member layout edges"));
             }
         }
-        // This first executable legacy-chain port is stereo. Wide ports must
-        // retain their real graph and receive typed channel stages, never fold.
-        if width.is_some_and(|width| width != 2) {
-            return Err(invalid("source processing requires its actual typed channel stage graph"));
+        let scope=if let Some(index)=recipe.compiled {index}else{let index=next;next=next.checked_add(1).ok_or_else(||invalid("source scope capacity overflow"))?;index};
+        let mut definition=ir::ProcessingScope {members:recipe.members.clone(),sum:ir::ProcessingSumLaw::OrderedF32,
+            cadence:ir::ProcessingCadence::CoreCell64,chain:recipe.chain,amplitude:recipe.amplitude,output:recipe.output,signal:None};
+        if let Some(width)=width.filter(|width|*width!=2) {
+            let (signal,bindings)=source_processing_signal(instrument,recipe,scope,width,&mut control_definitions).map_err(|reason|invalid(&reason))?;
+            definition.chain=None;
+            definition.signal=Some(signal);
+            matrices.extend(bindings);
+        } else if width==Some(2) {
+            for (index,matrix) in instrument.source_indices.processing_matrices.iter().enumerate().filter(|(_,matrix)|matrix.owner==recipe.owner) {
+                if Some(matrix.chain)!=recipe.chain {return Err(invalid("source matrix has no actual chain coordinate"));}
+                matrices.push((index,ir::SourceProcessingMatrixBinding{scope,signal_node:None,layout:ir::SignalLayout{channels:2},
+                    cells:source_matrix_cells(matrix,2,&mut control_definitions).map_err(|reason|invalid(&reason))?}));
+            }
         }
-        resolved.push(ir::ProcessingScope {
-            members: recipe.members.clone(), sum: ir::ProcessingSumLaw::OrderedF32,
-            cadence: ir::ProcessingCadence::CoreCell64, chain: recipe.chain,
-            amplitude: recipe.amplitude, output: recipe.output, signal: None,
-        });
+        resolved.push((scope,definition));
     }
-    for (recipe, scope) in instrument.source_indices.processing.iter_mut().zip(resolved) {
-        if let Some(index) = recipe.compiled {
-            instrument.processing_scopes[index] = scope;
+    // Check the complete destination roster before publishing any schema row.
+    // New indices must be the checked append sequence; old bindings must still
+    // address an existing scope. Keep malformed plans on the typed error path.
+    let existing_scopes=instrument.processing_scopes.len();
+    let mut append_scope=existing_scopes;
+    for (recipe,(index,_)) in instrument.source_indices.processing.iter().zip(&resolved) {
+        if recipe.compiled.is_some() {
+            if *index>=existing_scopes {return Err(invalid("compiled source processing scope is absent"));}
         } else {
-            recipe.compiled = Some(instrument.processing_scopes.len());
-            instrument.processing_scopes.push(scope);
+            if *index!=append_scope {return Err(invalid("source processing append roster is inconsistent"));}
+            append_scope=append_scope.checked_add(1).ok_or_else(||invalid("source scope capacity overflow"))?;
         }
+    }
+    instrument.controls=control_definitions;
+    for (recipe,(index,definition)) in instrument.source_indices.processing.iter_mut().zip(resolved) {
+        if recipe.compiled.is_some() {instrument.processing_scopes[index]=definition;}
+        else {instrument.processing_scopes.push(definition);}
+        recipe.compiled=Some(index);
+    }
+    for matrix in &mut instrument.source_indices.processing_matrices {matrix.compiled=None;}
+    for (index,binding) in matrices {
+        instrument.source_indices.processing_matrices[index].controls=binding.cells.clone();
+        instrument.source_indices.processing_matrices[index].compiled=Some(binding);
     }
     Ok(())
+}
+
+fn source_matrix_cells(
+    matrix:&ir::SourceProcessingMatrix,width:usize,controls:&mut Vec<ir::Control>,
+)->Result<Vec<ir::SourceProcessingCell>,String> {
+    let mut cells=Vec::new();
+    for cell in matrix.control_definitions.iter().filter(|cell|cell.input<width && cell.output<width) {
+        let control=if let Some(index)=controls.iter().position(|control|control.key==cell.control.key) {
+            if controls[index]!=cell.control {
+                return Err("source matrix control schema differs from the retained authored definition".into());
+            }
+            index
+        } else {
+            let index=controls.len();controls.push(cell.control.clone());index
+        };
+        cells.push(ir::SourceProcessingCell{input:cell.input,output:cell.output,control:ir::ControlRef(control)});
+    }
+    Ok(cells)
+}
+
+/// The source adapter retains raw coordinates; this ordinary materializer
+/// chooses actual geometry. No decoder fold and no source-count/native-enum
+/// equivalence is implicit in the concrete caller-supplied output matrix.
+fn source_processing_signal(
+    instrument:&ir::Instrument,recipe:&ir::SourceProcessingRecipe,scope:usize,width:usize,control_definitions:&mut Vec<ir::Control>,
+)->Result<(ir::ProcessingSignal,Vec<(usize,ir::SourceProcessingMatrixBinding)>),String> {
+    if !(1..=12).contains(&width) {return Err("source graph width is outside its admitted channel domain".into());}
+    let ports:Vec<_>=instrument.source_indices.processing_ports.iter().filter(|port|port.owner==recipe.owner).collect();
+    if ports.len()!=1 {return Err("wide source owner requires one explicit caller output matrix and layout provenance".into());}
+    let port=&ports[0].conversion;
+    if port.input.channels!=width || port.output.channels!=2 {return Err("caller output matrix differs from actual source working layout".into());}
+    let mut nodes=Vec::new();let mut controls=Vec::new();let mut matrices=Vec::new();
+    if let Some(chain_id)=recipe.chain {
+        let chain=&instrument.chains[chain_id.0];
+        if chain.scope!=ir::Scope::Voice || !chain.post_amplitude.is_empty() {
+            return Err("source channel graph requires its explicit amplitude boundary".into());
+        }
+        if instrument.routes.iter().any(|route|matches!(route.target,ir::Target::Processor{chain,..} if chain==chain_id)) {
+            return Err("source channel processor modulation requires a compiled owner parameter binding".into());
+        }
+        for (index,processor) in chain.pre_amplitude.iter().enumerate() {
+            let parameter=|constant,role|->Result<ir::SignalParameter,String>{
+                let bindings:Vec<_>=instrument.processor_controls.iter().filter(|binding|binding.chain==chain_id && binding.index==index).collect();
+                if bindings.len()>1 || bindings.first().is_some_and(|binding|binding.parameter!=role) {
+                    return Err("source channel parameter has an unsupported or ambiguous control binding".into());
+                }
+                Ok(ir::SignalParameter{constant,control:bindings.first().map(|binding|instrument.controls[binding.control.0].key.clone()),expression:None})
+            };
+            let node=match *processor {
+                ir::Processor::Mix{count,address,dry,wet,bypass}=>ir::ProcessingSignalNode::Mix(ir::ChannelMix{count,address,dry,wet,bypass}),
+                ir::Processor::Gain(gain)=>ir::ProcessingSignalNode::Gain(ir::ChannelGain{
+                    gain:parameter(gain.linear(),ir::ProcessorParameter::Gain)?,arithmetic:ir::ChannelGainArithmetic::CoreGainF64ThenF32}),
+                ir::Processor::Color(config) if matches!(config.curve,ir::fx::color::Curve::Rectifier(_))=>{
+                    let ir::fx::color::Curve::Rectifier(mode)=config.curve else {return Err("source rectifier type is absent".into());};
+                    if config!=ir::fx::color::Config::rectifier(mode) {
+                        return Err("source rectifier has additional stages requiring their actual N-port kernels".into());
+                    }
+                    ir::ProcessingSignalNode::Rectifier(mode)
+                }
+                ir::Processor::Filter(ir::Filter{kind,cutoff:ir::Frequency::Hertz(hz),..})=>{
+                    let mode=match kind {ir::FilterKind::LowPass{poles:1}=>ir::ChannelOnePoleMode::LowPass,
+                        ir::FilterKind::HighPass{poles:1}=>ir::ChannelOnePoleMode::HighPass,
+                        _=>return Err("source channel filter requires its actual N-port kernel".into())};
+                    // Preserve ordinary voice-chain's explicit zero added tail
+                    // for this processor. This is not a claim that a native IIR
+                    // physically has finite duration.
+                    ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:parameter(hz,ir::ProcessorParameter::Cutoff)?,mode,
+                        arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:0})
+                }
+                ir::Processor::StereoMatrix(_)=>{
+                    let found:Vec<_>=instrument.source_indices.processing_matrices.iter().enumerate()
+                        .filter(|(_,matrix)|matrix.owner==recipe.owner && matrix.chain==chain_id && matrix.index==index).collect();
+                    if found.len()!=1 {return Err("wide matrix has no unique full authored source definition".into());}
+                    let (matrix_index,matrix)=found[0];
+                    if width>matrix.matrix.input.channels || width>matrix.matrix.output.channels {return Err("source matrix is narrower than its actual working port".into());}
+                    let mut cells=Vec::with_capacity(width*width);
+                    for output in 0..width {for input in 0..width {cells.push(matrix.matrix.cells[output*matrix.matrix.input.channels+input]);}}
+                    let bound=source_matrix_cells(matrix,width,control_definitions)?;
+                    for cell in &bound {controls.push(ir::ProcessingCellBinding{node:nodes.len(),input:cell.input,output:cell.output,
+                        control:control_definitions[cell.control.0].key.clone()});}
+                    matrices.push((matrix_index,ir::SourceProcessingMatrixBinding{scope,signal_node:Some(nodes.len()),layout:ir::SignalLayout{channels:width},cells:bound}));
+                    ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:width},output:ir::SignalLayout{channels:width},cells,
+                        arithmetic:matrix.matrix.arithmetic})
+                }
+                _=>return Err("source channel processor requires its actual N-port kernel".into()),
+            };
+            nodes.push(node);
+        }
+    }
+    nodes.push(ir::ProcessingSignalNode::Matrix(port.clone()));
+    Ok((ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:width},nodes,controls},matrices))
 }
 
 fn prepare_sources_inner(

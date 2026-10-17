@@ -147,7 +147,10 @@ impl Translation {
                             }
                         }
                     }
-                    if beyond {
+                    // A keygroup's complete matrix is retained by the normal
+                    // source recipe. Geometry resolves after decode, then the
+                    // actual N-port graph must compile or loading fails.
+                    if beyond && !voice {
                         self.unsupported(&at, "GainMatrix beyond the first two channels", "");
                     }
                 }

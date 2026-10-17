@@ -1592,6 +1592,7 @@ pub(super) struct DspState {
     pub channel_heads: Slab<Option<sampler_pool::SnapshotPin<crate::prepare::Ranges>>>,
     pub channel_row: Slab<f32>,
     pub channel_work: Slab<f32>,
+    pub channel_mix: Slab<f32>,
     pub parameters: Box<[ControlRamp]>,
     pub modulated_parameters: Slab<ControlRamp>,
     pub delay_samples: Slab<[f64; 2]>,
@@ -1666,6 +1667,11 @@ impl DspState {
             channel_row: {
                 let stride = plan.signal_channels();
                 Slab::new(allocate(stride)?, stride)
+            },
+            channel_mix: {
+                let stride=plan.signal_channels().checked_mul(BLOCK)
+                    .and_then(|n|n.checked_mul(plan.signal_mix_depth())).ok_or(Error::Capacity)?;
+                Slab::new(allocate(stride)?,stride)
             },
             channel_work: {
                 let stride = plan.signal_channels().checked_mul(BLOCK).and_then(|n| n.checked_mul(2)).ok_or(Error::Capacity)?;
