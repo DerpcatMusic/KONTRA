@@ -103,6 +103,8 @@ pub(super) struct ExpressionOwner {
     pub notes: usize,
     /// Real expression-owner references, independent of NoteId lifetime.
     pub followers:usize,
+    /// Real retained original-value references, independently priced on every slot.
+    pub captures:usize,
     /// The expression whose pitch, pressure, timbre and bend this one copies.
     pub follows: Option<ExpressionId>,
     pub receiver:Option<super::receiver::components::ReceiverComponents>,
@@ -490,7 +492,7 @@ impl Runtime {
             rendered: owner.rendered,
             program: owner.program,
             notes: 1,
-            followers:0,
+            followers:0,captures:0,
             follows: owner.follows,
             receiver:owner.receiver,
         })?);
@@ -516,10 +518,10 @@ impl Runtime {
     /// Each owner has at most one follows edge. Release actual references
     /// iteratively, bounded by the real arena; never recurse or allocate/free
     /// protocol state on a rendering callback.
-    fn retire_expression_chain(&mut self,mut id:ExpressionId) {
+    pub(crate) fn retire_expression_chain(&mut self,mut id:ExpressionId) {
         for _ in 0..self.expressions.slots.len() {
             let Some(owner)=self.expressions.get(id.0).copied() else {return;};
-            if owner.notes!=0||owner.followers!=0 {return;}
+            if owner.notes!=0||owner.followers!=0||owner.captures!=0 {return;}
             self.expressions.remove(id.0);
             let Some(from)=owner.follows else {return;};
             let Some(source)=self.expressions.get_mut(from.0) else {return;};
