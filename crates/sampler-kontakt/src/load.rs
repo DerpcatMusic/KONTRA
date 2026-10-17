@@ -1224,7 +1224,7 @@ fn source_processing_signal(
     if ports.len()!=1 {return Err("wide source owner requires one explicit caller output matrix and layout provenance".into());}
     let port=&ports[0].conversion;
     if port.input.channels!=width || port.output.channels!=2 {return Err("caller output matrix differs from actual source working layout".into());}
-    let mut nodes=Vec::new();let mut controls=Vec::new();let mut matrices=Vec::new();
+    let mut nodes=Vec::new();let mut controls=Vec::new();let mut matrices=Vec::new();let mut boundary_pan=None;
     if let Some(chain_id)=recipe.chain {
         let chain=&instrument.chains[chain_id.0];
         if chain.scope!=ir::Scope::Voice || !chain.post_amplitude.is_empty() {
@@ -1241,6 +1241,11 @@ fn source_processing_signal(
                 }
                 Ok(ir::SignalParameter{constant,control:bindings.first().map(|binding|instrument.controls[binding.control.0].key.clone()),expression:None})
             };
+            if let ir::Processor::ExpressionPan(pan)=*processor {
+                if boundary_pan.is_some(){return Err("source owner has multiple expression Pan homes".into());}
+                boundary_pan=Some(ir::ChannelPan{position:parameter(pan.pan.position,ir::ProcessorParameter::Pan)?,offset:pan.offset,law:pan.pan.law,expression:true});
+                continue;
+            }
             let node=match *processor {
                 ir::Processor::Mix{count,address,dry,wet,bypass}=>ir::ProcessingSignalNode::Mix(ir::ChannelMix{count,address,dry,wet,bypass}),
                 ir::Processor::Gain(gain)=>ir::ProcessingSignalNode::Gain(ir::ChannelGain{
@@ -1283,6 +1288,9 @@ fn source_processing_signal(
         }
     }
     nodes.push(ir::ProcessingSignalNode::Matrix(port.clone()));
+    // This is an explicit caller-declared stereo outlet law. Native wide
+    // descriptor-specific Pan admission remains a separate adapter contract.
+    if let Some(pan)=boundary_pan {nodes.push(ir::ProcessingSignalNode::Pan(pan));}
     Ok((ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:width},nodes,controls},matrices))
 }
 

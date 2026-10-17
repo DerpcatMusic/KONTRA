@@ -401,6 +401,10 @@ impl Runtime {
             let chain = scope
                 .chain
                 .map(|c| generation.prepared.voice_chains.view(c));
+            let pan_home=chain.is_some_and(|chain|chain.expression_pan)
+                || generation.prepared.processing_signals.get(owner.template).and_then(Option::as_ref).is_some_and(|signal|signal.expression_pan);
+            let expression_gains=if pan_home {[expression.rendered.gain as f32;2]}else{expression.rendered.gains};
+            let stage_expression=crate::Expression{pan:if pan_home{expression.rendered.pan}else{expression.value.pan},..expression.value};
             let mut tail_advance = 0usize;
             let len = if let Some(tail) = owner.tail_remaining {
                 tail_advance = output.len().min(tail as usize);
@@ -418,7 +422,7 @@ impl Runtime {
             } else {
                 output.len()
             };
-            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &expression.value).is_err() {
+            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &stage_expression).is_err() {
                 generation.dsp.owner_signal_history.claim(index).fill(0.);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
                 self.end_processing_owner(id);
@@ -436,13 +440,13 @@ impl Runtime {
                 let context = crate::dsp::RenderContext {
                     controls: None,
                     amplifier: None,
-                    expression: expression.rendered.gains,
+                    expression: expression_gains,
                     delay: &mut delay[..chain.delay_frames],
                     parameters: &generation.dsp.parameters,
                     filters: crate::dsp::svf::FilterContext {
                         tempo: self.tempo,
                         bank: filters,
-                        expression: Some((note.expression, expression.value)),
+                        expression: Some((note.expression, stage_expression)),
                         spaces: &mut [],
                     },
                     at,
@@ -463,7 +467,7 @@ impl Runtime {
                         for (i, frame) in target.iter_mut().enumerate() {
                             for c in 0..2 {
                                 frame[c] +=
-                                    (feed[c][i] * f64::from(expression.rendered.gains[c])) as f32;
+                                    (feed[c][i] * f64::from(expression_gains[c])) as f32;
                             }
                         }
                         generation.dsp.buses.fed(bus, len);
@@ -476,7 +480,7 @@ impl Runtime {
                         .constant_level()
                         .unwrap_or_else(|| owner.envelope.next());
                     for c in 0..2 {
-                        frame[c] *= level * expression.rendered.gains[c];
+                        frame[c] *= level * expression_gains[c];
                         fault |= !frame[c].is_finite();
                     }
                 }

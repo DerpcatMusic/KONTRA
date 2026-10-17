@@ -20,6 +20,7 @@ pub(crate) struct Signal {
     pub nodes: Box<[Node]>,
     pub history_words: usize,
     pub mix_depth: usize,
+    pub expression_pan: bool,
     pub tail_frames: u32,
     pub domains: Box<[(ControlId, ControlDomain)]>,
 }
@@ -105,6 +106,7 @@ pub(crate) fn compile(
             let mut domains = Vec::new();
             let mut spans: Vec<(usize, ChannelCount)> = Vec::new();
             let mut mix_depth = 0;
+            let mut expression_pan=false;
             for (node, operation) in definition.nodes.iter().enumerate() {
                 while spans.last().is_some_and(|&(end, _)| end == node) {
                     let (_, expected) = spans.pop().ok_or(Error::InvalidInput)?;
@@ -131,6 +133,10 @@ pub(crate) fn compile(
                     mix_depth = mix_depth.max(spans.len());
                     nodes.push(Node::Mix { count, lanes });
                     continue;
+                }
+                if matches!(operation,ir::ProcessingSignalNode::Pan(ir::ChannelPan{expression:true,..})) {
+                    if expression_pan || !spans.is_empty() {return Err(Error::InvalidInput);}
+                    expression_pan=true;
                 }
                 let ir::ProcessingSignalNode::Matrix(matrix) = operation else {
                     let (stage, tail) = super::stages::Stage::compile(
@@ -228,6 +234,7 @@ pub(crate) fn compile(
                 nodes: nodes.into_boxed_slice(),
                 history_words: histories,
                 mix_depth,
+                expression_pan,
                 tail_frames,
                 domains: domains.into_boxed_slice(),
             }))

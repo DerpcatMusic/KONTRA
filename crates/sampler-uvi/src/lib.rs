@@ -825,9 +825,15 @@ impl Translation {
         let mut amplitude = None;
         let mut shared = modulation::Modulation::default();
         for connection in scoped {
+            if connection.attribute("Destination")==Some("Pan") {return Err(format!("{}: Program/Layer Pan connection requires its retained global processing owner; no per-player fallback",path(*connection)));}
             self.connect_scoped(*connection, &mut shared)?;
         }
         for connection in connections(keygroup) {
+            let pan_connection=connection.attribute("Destination")==Some("Pan");
+            if pan_connection && !modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default()).is_some_and(|source|source.has_tag_name("ConstantModulation") && source.attribute("ScriptLive").is_none()) {
+                return Err(format!("{}: live keygroup Pan connection requires per-activation shared modulator state; no per-player fallback",path(connection)));
+            }
+            let previous_gaps=self.ir.unsupported.len();
             let plain = number(connection, "Ratio", 1.0)? == 1.0
                 && number(connection, "Bypass", 0.0)? == 0.0
                 && number(connection, "Inverted", 0.0)? == 0.0
@@ -853,7 +859,11 @@ impl Translation {
                 }
                 _ => self.connect(connection, &mut shared)?,
             }
+            if pan_connection && (self.ir.unsupported.len()!=previous_gaps || shared.routes.iter().any(|route|self.ir.routes[route.0].target==ir::Target::Pan)) {
+                return Err(format!("{}: keygroup Pan connection has no supported constant shared operand; no partial translation",path(connection)));
+            }
         }
+        let shared_pan_offset=std::mem::replace(&mut shared.pan,0.);
         let (amplitude, velocity) = match amplitude {
             Some((modulator, velocity)) => (Some(modulator), velocity),
             None => (None, ir::VelocityResponse::None),
@@ -904,6 +914,14 @@ impl Translation {
             processors.push(ir::Processor::Gain(ir::Gain::Linear(gain)));
             index
         };
+        // Native f2cc80 resolves the KG Pan at the outgoing boundary, after
+        // shared inserts and either FXPostGain branch. This is one scalar
+        // control/home; source-local player pan remains a separate operation.
+        if !pan.is_finite() || !(-1. ..=1.).contains(&pan) {
+            return Err(format!("{at}: keygroup Pan outside its real domain"));
+        }
+        let pan_index=processors.len();
+        processors.push(ir::Processor::ExpressionPan(ir::OwnedPan{pan:ir::Pan{position:pan,law:ir::PanLaw::RaisedCosineCoreF64},offset:shared_pan_offset}));
         let chain = {
             self.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
@@ -927,6 +945,11 @@ impl Translation {
                 parameter: ir::ProcessorParameter::Gain,
                 ramp: ir::Time::ZERO,
             });
+            let control=ir::ControlRef(self.ir.controls.len());
+            self.ir.controls.push(ir::Control{key:engine_parameters::scope_pan_key(keygroup.id().get_usize()),
+                label:"Keygroup Pan".into(),value:ir::ControlValue::Continuous{min:-1.,max:1.,default:pan,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+            self.ir.processor_controls.push(ir::ProcessorControl{control,chain,index:pan_index,
+                parameter:ir::ProcessorParameter::Pan,ramp:ir::Time::ZERO});
             Some(chain)
         };
         if let Some(chain) = chain {
@@ -999,13 +1022,6 @@ impl Translation {
                 }
             };
             let player_pan = number(player, "Pan", 0.0)?;
-            if player_pan != 0.0 && pan != 0.0 {
-                self.unsupported(
-                    &at,
-                    "pan at both keygroup and player (summed)",
-                    format!("{pan} + {player_pan}"),
-                );
-            }
             let playback = self.playback(player)?;
             let mut modulation = shared.clone();
             for connection in connections(player) {
@@ -1064,7 +1080,7 @@ impl Translation {
                 gain: ir::Gain::Linear(number(player, "Gain", 1.0)? * modulation.gain),
                 velocity,
                 pan: ir::Pan {
-                    position: (pan + player_pan + modulation.pan).clamp(-1.0, 1.0),
+                    position: (player_pan + modulation.pan).clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
                 playback,

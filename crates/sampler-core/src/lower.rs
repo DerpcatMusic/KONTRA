@@ -2461,6 +2461,7 @@ fn bind_role(processor: &mut Processor, role: ir::ProcessorParameter, parameter:
             (Processor::Dynamics(c), Release) => c.release_seconds = parameter,
             (Processor::Color(crate::ColorSettings { stereo: Some(s), .. }), Width) => s.width = parameter,
             (Processor::Color(crate::ColorSettings { stereo: Some(s), .. }), Pan) => s.pan = parameter,
+            (Processor::Pan { position, .. }, Pan) => *position=parameter,
             (Processor::ControlMatrix(cells), CellLL) => cells[0] = parameter,
             (Processor::ControlMatrix(cells), CellLR) => cells[1] = parameter,
             (Processor::ControlMatrix(cells), CellRL) => cells[2] = parameter,
@@ -2713,7 +2714,8 @@ impl Lowering<'_> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
             ir::Processor::Color(c) => Processor::Color(color_settings(c)),
-            ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
+            ir::Processor::Pan(pan) => Processor::Pan { position:Parameter::Constant(pan.position),offset:0.,law:pan.law,expression:false },
+            ir::Processor::ExpressionPan(pan) => Processor::Pan { position:Parameter::Constant(pan.pan.position),offset:pan.offset,law:pan.pan.law,expression:true },
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
             ir::Processor::Space(config) => match live_knobs(processor) {
                 Some(knobs) => Processor::LiveSpace(config, knobs),
@@ -3312,15 +3314,8 @@ fn previous_key(trigger: ir::Trigger) -> Option<ControllerCondition> {
 
 /// Per-channel gains for a stereo source.
 fn stereo(pan: ir::Pan) -> [[f64; 2]; 2] {
-    let p = pan.position;
-    let (left, right) = match pan.law {
-        ir::PanLaw::Balance => (1.0 - p.max(0.0), 1.0 + p.min(0.0)),
-        ir::PanLaw::EqualPower => {
-            let angle = (p + 1.0) * std::f64::consts::FRAC_PI_4;
-            (angle.cos(), angle.sin())
-        }
-    };
-    [[left, 0.0], [0.0, right]]
+    let [left,right]=pan.law.gains(pan.position);
+    [[left,0.],[0.,right]]
 }
 
 /// `x` at `to` Hz instead of `from`: Blackman-windowed sinc, lowpassed below

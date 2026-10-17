@@ -1390,6 +1390,34 @@ mod tests {
         crate::translate_bank(&xml).unwrap().0
     }
 
+    /// Parser-only owner-faithful harness. It does not run the normal audio
+    /// producer or claim an unsupported KG Pan plan can publish. Raw XML,
+    /// actual connection ancestors, source resolution and connect() are retained.
+    fn translate_connections(sources:&str,keygroup:&str,player:&str)->ir::Instrument {
+        let xml=format!(r#"<Program Name="t"><ControlSignalSources>{sources}</ControlSignalSources>
+            <Mappers><ControlSignalMapper Name="Tent" Min="0" Max="1">0,0 1,0 0,0</ControlSignalMapper></Mappers>
+            <Layers><Layer Name="L"><Keygroups><Keygroup Name="K"><Connections>{keygroup}</Connections>
+            <Oscillators><SamplePlayer Name="P" SamplePath="a.wav"><Connections>{player}</Connections></SamplePlayer></Oscillators>
+            </Keygroup></Keygroups></Layer></Layers></Program>"#);
+        let doc=roxmltree::Document::parse(&xml).unwrap();
+        let mut out=crate::Translation{ir:ir::Instrument::default(),source:crate::Source::Bank,
+            assets:Default::default(),locations:Vec::new(),envelopes:Default::default(),
+            modulator_index:Default::default(),route_index:Default::default(),shape_index:Default::default(),
+            shared_sources:Default::default(),used:Default::default(),
+            #[cfg(feature="scan")] dropped_connections:Default::default(),
+            #[cfg(feature="scan")] visited_connections:Default::default(),
+            #[cfg(feature="scan")] native_player_ids:Default::default(),
+            osc_groups:Vec::new(),insert_nodes:Vec::new(),split:None};
+        let kg=doc.descendants().find(|node|node.has_tag_name("Keygroup")).unwrap();
+        let player=doc.descendants().find(|node|node.has_tag_name("SamplePlayer")).unwrap();
+        let mut shared=super::Modulation::default();
+        for connection in crate::connections(kg){out.connect(connection,&mut shared).unwrap();}
+        let mut voice=shared;
+        for connection in crate::connections(player){out.connect(connection,&mut voice).unwrap();}
+        let mut zone=ir::Zone::dormant();zone.routes=voice.routes;
+        out.ir.zones.push(zone);out.ir
+    }
+
     fn only_route(ir: &ir::Instrument) -> (&ir::Route, &ir::ModulationSource) {
         assert_eq!(ir.zones[0].routes.len(), 1, "{:?}", ir.unsupported);
         let route = &ir.routes[ir.zones[0].routes[0].0];
@@ -1665,7 +1693,7 @@ mod tests {
 
     #[test]
     fn key_follow_is_exact_at_every_key() {
-        let ir = translate(
+        let ir = translate_connections(
             "",
             r#"<SignalConnection Source="@VoiceParam LinearKeyFollow" Destination="Pan" Ratio="0.5"/>"#,
             "",
@@ -1681,7 +1709,7 @@ mod tests {
 
     #[test]
     fn inert_connections_vanish_and_shared_ones_are_one_route() {
-        let ir = translate(
+        let ir = translate_connections(
             r#"<StepEnvelope Name="S"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="0"/>
                <SignalConnection Source="$Program/S" Destination="Pan" Ratio="1" Bypass="1"/>
@@ -1803,7 +1831,7 @@ mod tests {
 
     #[test]
     fn untranslatable_connections_are_reported() {
-        let ir = translate(
+        let ir = translate_connections(
             r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="8"/><LFO Name="V"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
                <SignalConnection Source="$Program/W" Destination="Pan" Ratio="1"/>
@@ -1897,7 +1925,7 @@ mod tests {
             assert!((route.smoothing.seconds() - 0.1 * 100f64.ln()).abs() < 1e-12);
         }
         // A sum cannot pass the gain law, nor can unmeasured waveform mixes.
-        let ir = translate(
+        let ir = translate_connections(
             r#"<MultiLFO Name="M" SineDepth="1" NoiseDepth="0.5"/><MultiLFO Name="T" TriangleDepth="1"/>"#,
             r#"<SignalConnection Source="$Program/M" Destination="Gain" Ratio="1"/>
                <SignalConnection Source="$Program/T" Destination="Pan" Ratio="1"/>"#,

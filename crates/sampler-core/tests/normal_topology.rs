@@ -111,3 +111,71 @@ fn n_port_matrix_mix_onepole_callbacks_and_live_edits_use_no_heap() {
     rt.flush_ended(|_|true);assert_eq!(rt.voice_count(),0);assert_eq!(rt.processing_owner_count(),0);
     let health=rt.stats();assert_eq!(health.nonfinite_frames,0);assert_eq!(health.stream_underruns,0);assert_eq!(health.refused_starts,0);assert_eq!(health.voice_drops,0);
 }
+
+
+fn scalar_pan_graph(expression_home:bool,ramp_frames:u32)->ir::Instrument {
+    let mut instrument=graph(true);let pan=ir::Pan{position:0.25,law:ir::PanLaw::RaisedCosineCoreF64};
+    instrument.chains.push(ir::Chain{scope:ir::Scope::Voice,pre_amplitude:vec![if expression_home{ir::Processor::ExpressionPan(ir::OwnedPan{pan,offset:0.})}else{ir::Processor::Pan(pan)}],post_amplitude:vec![]});
+    instrument.controls.push(ir::Control{key:"scalar-pan".into(),label:"Pan".into(),value:ir::ControlValue::Continuous{min:-1.,max:1.,default:0.25,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+    instrument.processor_controls.push(ir::ProcessorControl{control:ir::ControlRef(0),chain:ir::ChainRef(0),index:0,parameter:ir::ProcessorParameter::Pan,ramp:ir::Time::Seconds(f64::from(ramp_frames)/48000.)});
+    instrument.processing_scopes[0].chain=Some(ir::ChainRef(0));instrument.source_indices.processing[0].chain=Some(ir::ChainRef(0));instrument
+}
+fn scalar_pan_runtime(home:bool,ramp:u32)->sampler_core::Runtime {
+    let instrument=scalar_pan_graph(home,ramp);
+    let sources=(0..2).map(|_|Pcm::new(48000,vec![[0.1,0.2];2048].into_boxed_slice()).unwrap()).collect();
+    let plan=lower(&instrument,48000,sources,|_,plan|Ok(plan)).unwrap();let limits=sampler_core::Limits::for_plan(&plan,8,16);sampler_core::Runtime::new(plan,limits).unwrap()
+}
+fn pan_input(external_id:i32)->sampler_core::Input {sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(external_id)}}
+fn pan_oracle(position:f64,gain:f64)->[f32;2] {
+    let far=(position.abs()*std::f64::consts::FRAC_PI_2).cos().powi(2);
+    let coefficients=if position>0. {[far,1.]}else if position<0. {[1.,far]}else{[1.;2]};
+    std::array::from_fn(|channel|((f64::from([0.2f32,0.4][channel])*coefficients[channel]) as f32)*gain as f32)
+}
+#[test]
+fn shared_scalar_pan_ramps_position_before_curve_and_complete_recall() {
+    use sampler_core::{ControlValue,ControlWrite,Expression};
+    let mut rt=scalar_pan_runtime(true,4);let note=rt.trigger(pan_input(20),60,1.).unwrap();let expression=rt.expression_id(note).unwrap();rt.set_expression(expression,Expression{pan:0.2,..Default::default()}).unwrap();
+    let plan=rt.active_plan();let id=sampler_core::lower::ir_control_id("scalar-pan");let empty=ControlWrite{id,value:ControlValue::Real(0.)};let mut snapshot=vec![empty;rt.control_definitions(plan).unwrap().len()];let (count,revision)=rt.capture_controls(plan,&mut snapshot).unwrap();assert_eq!(count,snapshot.len());
+    let mut output=[[0.;2];8];support::without_heap(||{rt.edit_controls(plan,Some(revision),&[ControlWrite{id,value:ControlValue::Real(-0.5)}]).unwrap();rt.render(&mut output).unwrap();});
+    for (frame,value) in output.iter().enumerate(){let p=0.25+(-0.75)*(frame.min(4) as f64/4.)+0.2;let expected=pan_oracle(p,1.);for channel in 0..2{assert!((value[channel]-expected[channel]).abs()<2e-6,"frame={frame} channel={channel}: {} vs {}",value[channel],expected[channel]);}}
+    support::without_heap(||{rt.recall_controls(plan,None,&snapshot).unwrap();rt.render(&mut output).unwrap();});
+    for (frame,value) in output.iter().enumerate(){let p=-0.5+0.75*(frame.min(4) as f64/4.)+0.2;let expected=pan_oracle(p,1.);for channel in 0..2{assert!((value[channel]-expected[channel]).abs()<2e-6);}}
+    let revision=rt.control_revision(plan).unwrap();let now=rt.now();assert_eq!(rt.edit_controls(plan,None,&[ControlWrite{id,value:ControlValue::Real(1.01)}]),Err(Error::InvalidInput));assert_eq!(rt.now(),now);assert_eq!(rt.control_revision(plan).unwrap(),revision);
+    rt.release(note).unwrap();rt.render(&mut [[0.;2];128]).unwrap();assert_eq!(rt.stats().nonfinite_frames,0);
+}
+#[test]
+fn shared_pan_home_keeps_same_key_expression_ids_independent() {
+    use sampler_core::Expression;
+    let mut rt=scalar_pan_runtime(true,0);let a=rt.trigger(pan_input(21),60,1.).unwrap();let b=rt.trigger(pan_input(22),60,1.).unwrap();let a_expr=rt.expression_id(a).unwrap();let b_expr=rt.expression_id(b).unwrap();assert_ne!(a_expr,b_expr);
+    rt.set_expressions(&[(a_expr,Expression{pan:0.25,..Default::default()}),(b_expr,Expression{pan:-0.5,..Default::default()})]).unwrap();let mut output=[[0.;2];64];support::without_heap(||rt.render(&mut output).unwrap());let x=pan_oracle(0.5,1.);let y=pan_oracle(-0.25,1.);
+    for value in output{for channel in 0..2{assert!((value[channel]-(x[channel]+y[channel])).abs()<2e-6);}}
+    rt.release(a).unwrap();rt.render(&mut [[0.;2];64]).unwrap();rt.set_expression(b_expr,Expression{pan:0.5,..Default::default()}).unwrap();rt.render(&mut output).unwrap();let expected=pan_oracle(0.75,1.);for value in output{for channel in 0..2{assert!((value[channel]-expected[channel]).abs()<2e-6);}}
+    rt.release(b).unwrap();rt.render(&mut [[0.;2];128]).unwrap();assert_eq!(rt.stats().nonfinite_frames,0);
+}
+#[test]
+fn ordinary_pan_insert_does_not_claim_canonical_expression_home() {
+    use sampler_core::Expression;
+    let mut rt=scalar_pan_runtime(false,0);let note=rt.trigger(pan_input(23),60,1.).unwrap();let expression=rt.expression_id(note).unwrap();rt.set_expression(expression,Expression{pan:0.25,..Default::default()}).unwrap();let mut out=[[0.;2];8];rt.render(&mut out).unwrap();let pan=pan_oracle(0.25,1.);for frame in out{assert!((frame[0]-pan[0]*0.75).abs()<2e-6);assert!((frame[1]-pan[1]).abs()<2e-6);}
+    let mut instrument=scalar_pan_graph(true,0);let duplicate=instrument.chains[0].pre_amplitude[0];instrument.chains[0].pre_amplitude.push(duplicate);assert!(instrument.validate().is_err());
+    let mut instrument=scalar_pan_graph(true,0);instrument.processing_scopes.clear();instrument.source_indices.processing.clear();instrument.zones[0].chain=Some(ir::ChainRef(0));assert!(instrument.validate().is_err());
+}
+
+
+#[test]
+fn constant_pan_offset_and_base_are_independent_across_sibling_scopes() {
+    use sampler_core::{ControlValue,ControlWrite};
+    let mut instrument=scalar_pan_graph(true,0);
+    instrument.source_indices.processing.clear();instrument.source_indices.owners.clear();
+    let ir::Processor::ExpressionPan(home)=&mut instrument.chains[0].pre_amplitude[0] else{panic!("actual home")};home.offset=0.2;
+    instrument.groups.push(ir::Group::default());
+    for index in 0..2 {let mut asset=instrument.assets[index].clone();asset.location=ir::AssetLocation::Path(format!("sibling{index}.wav"));instrument.assets.push(asset);let mut zone=instrument.zones[index].clone();zone.asset=Some(ir::AssetRef(index+2));zone.group=Some(ir::GroupRef(1));zone.keys=ir::KeyRange{low:61,high:61};zone.pitch=ir::KeyTracking::Fixed;instrument.zones.push(zone);}
+    let mut chain=instrument.chains[0].clone();let ir::Processor::ExpressionPan(home)=&mut chain.pre_amplitude[0] else{panic!("actual sibling home")};home.pan.position=-0.25;home.offset=-0.1;instrument.chains.push(chain);
+    instrument.controls.push(ir::Control{key:"sibling-pan".into(),label:"Sibling Pan".into(),value:ir::ControlValue::Continuous{min:-1.,max:1.,default:-0.25,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+    instrument.processor_controls.push(ir::ProcessorControl{control:ir::ControlRef(1),chain:ir::ChainRef(1),index:0,parameter:ir::ProcessorParameter::Pan,ramp:ir::Time::ZERO});
+    let mut scope=instrument.processing_scopes[0].clone();scope.members=vec![ir::ZoneRef(2),ir::ZoneRef(3)];scope.chain=Some(ir::ChainRef(1));instrument.processing_scopes.push(scope);
+    let sources=(0..4).map(|_|Pcm::new(48000,vec![[0.1,0.2];2048].into_boxed_slice()).unwrap()).collect();let plan=lower(&instrument,48000,sources,|_,p|Ok(p)).unwrap();let limits=sampler_core::Limits::for_plan(&plan,8,16);let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
+    let a=rt.trigger(pan_input(31),60,1.).unwrap();let b=rt.trigger(sampler_core::Input{key:61,..pan_input(32)},61,1.).unwrap();let mut out=[[0.;2];64];
+    support::without_heap(||rt.render(&mut out).unwrap());let check=|out:&[[f32;2]],left:f64,right:f64|{let a=pan_oracle(left,1.);let b=pan_oracle(right,1.);for frame in out{for c in 0..2{assert!((frame[c]-a[c]-b[c]).abs()<2e-6);}}};check(&out,0.45,-0.35);
+    let active=rt.active_plan();let id=sampler_core::lower::ir_control_id("scalar-pan");support::without_heap(||{rt.edit_controls(active,None,&[ControlWrite{id,value:ControlValue::Real(-0.5)}]).unwrap();rt.render(&mut out).unwrap();});check(&out,-0.3,-0.35);
+    rt.release(a).unwrap();rt.render(&mut [[0.;2];64]).unwrap();rt.render(&mut out).unwrap();let expected=pan_oracle(-0.35,1.);for frame in out{for c in 0..2{assert!((frame[c]-expected[c]).abs()<2e-6);}}rt.release(b).unwrap();rt.render(&mut [[0.;2];128]).unwrap();assert_eq!(rt.stats().nonfinite_frames,0);
+}

@@ -286,7 +286,7 @@ pub(crate) fn binding(node: usize, kind: &str, name: &str) -> Option<EngineParam
 }
 
 pub(crate) fn bindings(instrument: &ir::Instrument) -> Vec<EngineParameterBinding> {
-    instrument
+    let mut bindings:Vec<_>=instrument
         .controls
         .iter()
         .filter_map(|c| {
@@ -305,7 +305,16 @@ pub(crate) fn bindings(instrument: &ir::Instrument) -> Vec<EngineParameterBindin
             }
             binding(node, kind, name)
         })
-        .collect()
+        .collect();
+    for control in &instrument.controls {
+        let Some(node)=control.key.strip_prefix("uvi:scope-pan:").and_then(|node|node.parse::<usize>().ok()) else {continue;};
+        let Some(parameter)=sampler_core::engine_parameter_id("ENGINE_PAR_PAN") else {continue;};
+        if let Ok(generic)=i32::try_from(node) {
+            bindings.push(EngineParameterBinding{address:EngineParameterAddress{parameter,group:-1,slot:-1,generic},
+                control:sampler_core::lower::ir_control_id(&control.key),law:EngineParameterLaw::Linear{low:-1.,high:1.}});
+        }
+    }
+    bindings
 }
 
 pub(crate) fn register(
@@ -605,9 +614,15 @@ pub(crate) fn convolver_slots(
 pub(crate) fn scope_gain_key(node: usize) -> String {
     format!("uvi:scope-gain:{node}")
 }
+pub(crate) fn scope_pan_key(node:usize)->String {format!("uvi:scope-pan:{node}")}
+pub(crate) fn scope_pan_control(node:usize)->Result<sampler_core::ControlId,sampler_core::Error> {
+    scope_control(node,b"uvi:scope-pan:")
+}
 pub(crate) fn scope_gain_control(node: usize) -> Result<sampler_core::ControlId, sampler_core::Error> {
+    scope_control(node,b"uvi:scope-gain:")
+}
+fn scope_control(node:usize,prefix:&[u8])->Result<sampler_core::ControlId,sampler_core::Error> {
     let mut bytes = [0u8; 64];
-    let prefix = b"uvi:scope-gain:";
     bytes[..prefix.len()].copy_from_slice(prefix);
     let mut digits = [0u8; 20];
     let mut n = node;

@@ -6,6 +6,7 @@ use sampler_ir as ir;
 
 pub(crate) enum Stage {
     Rectifier(crate::dsp::Rectifier),
+    Pan { position:StageParameter, offset:f64, law:ir::PanLaw, expression:bool },
     Gain {
         gain: StageParameter,
     },
@@ -89,6 +90,11 @@ impl Stage {
         match definition {
             ir::ProcessingSignalNode::Rectifier(mode) => Ok((Self::Rectifier(match mode {
                 ir::Rectifier::Full=>crate::dsp::Rectifier::Full,ir::Rectifier::Half=>crate::dsp::Rectifier::Half}),0)),
+            ir::ProcessingSignalNode::Pan(pan) => {
+                if channels!=2 || !pan.offset.is_finite() || pan.offset.abs()>f64::from(f32::MAX) || pan.position.expression.is_some() {return Err(Error::InvalidInput);}
+                Ok((Self::Pan {position:parameter(plan,&pan.position,parameters,domains,
+                    |value|value.is_finite() && (-1. ..=1.).contains(&value),false)?,offset:pan.offset,law:pan.law,expression:pan.expression},0))
+            }
             ir::ProcessingSignalNode::Gain(gain) => {
                 match gain.arithmetic {
                     ir::ChannelGainArithmetic::CoreGainF64ThenF32 => {}
@@ -145,6 +151,18 @@ impl Stage {
         at.checked_add(frames.saturating_sub(1) as u64)
             .ok_or(Error::ClockOverflow)?;
         match *self {
+            Self::Pan { position,offset,law,expression:home } => {
+                if channels!=2 {return Err(Error::InvalidInput);}
+                for frame in 0..frames {
+                    let value=(position.base.value(parameters,at+frame as u64,None)
+                        + offset + if home {expression.pan}else{0.}).clamp(-1.,1.);
+                    let gains=law.gains(value);
+                    for channel in 0..2 {let index=channel*stride+frame;
+                        block[index]=(f64::from(block[index])*gains[channel]) as f32;
+                        if !block[index].is_finite(){return Err(Error::InvalidInput);}
+                    }
+                }
+            }
             Self::Rectifier(mode) => {
                 for channel in 0..channels {for frame in 0..frames {
                     let i=channel*stride+frame;

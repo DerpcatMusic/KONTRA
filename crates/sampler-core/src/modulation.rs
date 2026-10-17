@@ -109,6 +109,10 @@ impl Modulation {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RenderedExpression {
     pub gains: [f32; 2],
+    /// Same canonical projection owner as gains; shared Pan homes need the
+    /// scalar components, rather than deriving/reprojecting a second cache.
+    pub gain: f64,
+    pub pan: f64,
     pub pitch: f64,
     pub ratio: f64,
 }
@@ -144,6 +148,8 @@ impl Runtime {
             None => value,
         };
         Ok(RenderedExpression {
+            gain: projected.gain,
+            pan: projected.pan,
             gains: match previous {
                 Some(previous)
                     if program.is_none()

@@ -837,6 +837,12 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
+            ProcessorRef::Pan { position,offset,law,expression } => (
+                "pan",vec![parameter("position",*position),constant("law",match law {
+                    sampler_ir::PanLaw::Balance=>0.,sampler_ir::PanLaw::EqualPower=>1.,
+                    sampler_ir::PanLaw::RaisedCosineCoreF64=>2.,
+                }),constant("canonical_expression_home",f64::from(*expression)),constant("offset",*offset)],0,
+            ),
             ProcessorRef::StereoMatrix(m) => (
                 "stereo_matrix",
                 vec![

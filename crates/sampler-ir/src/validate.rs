@@ -313,6 +313,7 @@ impl Check<'_> {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Color(c) => self.color(&c)?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::ExpressionPan(pan) => {self.pan(pan.pan,"pan")?;self.within(pan.offset,-f64::from(f32::MAX)..=f64::from(f32::MAX),"Pan constant offset")?;},
                 Processor::Eq(eq) => {
                     self.finite(f64::from(eq.output_gain_db), "EQ output gain")?;
                     self.within(f64::from(eq.count), 1.0..=crate::fx::eq::MAX_BANDS as f64, "EQ band count")?;
@@ -768,6 +769,7 @@ impl Instrument {
                 }
                 let mut channels = signal.input.channels;
                 let mut spans: Vec<(usize, usize)> = Vec::new();
+                let mut expression_pan = false;
                 for (node_index, node) in signal.nodes.iter().enumerate() {
                     while spans.last().is_some_and(|&(end, _)| end == node_index) {
                         let (_, width) = spans.pop().ok_or_else(|| invalid("missing channel mix span"))?;
@@ -794,6 +796,15 @@ impl Instrument {
                             channels = matrix.output.channels;
                         }
                         crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => {},
+                        crate::ProcessingSignalNode::Pan(pan) => {
+                            if channels!=2 || !pan.offset.is_finite() || pan.offset.abs()>f64::from(f32::MAX) || pan.position.expression.is_some() {return Err(invalid("Pan requires a stereo boundary and one scalar position"));}
+                            if pan.expression {
+                                if expression_pan || !spans.is_empty() || scope.chain.is_some_and(|chain|self.chains.get(chain.0).is_some_and(|chain|chain.pre_amplitude.iter().chain(&chain.post_amplitude).any(|stage|matches!(stage,crate::Processor::ExpressionPan(_))))) {
+                                    return Err(invalid("expression Pan requires one unsuppressed shared home"));
+                                }
+                                expression_pan=true;
+                            }
+                        }
                         crate::ProcessingSignalNode::Gain(gain) => {
                             match gain.arithmetic { crate::ChannelGainArithmetic::CoreGainF64ThenF32 => {} }
                         }
@@ -811,6 +822,7 @@ impl Instrument {
                     let parameter = match node {
                         crate::ProcessingSignalNode::Matrix(_) | crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => continue,
                         crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
+                        crate::ProcessingSignalNode::Pan(pan) => &pan.position,
                         crate::ProcessingSignalNode::OnePole(filter) => {
                             tail = tail.checked_add(filter.tail_frames)
                                 .ok_or_else(|| invalid("signal stage tail budget overflow"))?;
@@ -852,6 +864,9 @@ impl Instrument {
                                 }
                             }
                         }
+                    }
+                    if matches!(node,crate::ProcessingSignalNode::Pan(_)) && bounds.iter().any(|v|!(-1. ..=1.).contains(v)) {
+                        return Err(invalid("Pan scalar domain is outside minus-one to one"));
                     }
                     if matches!(node, crate::ProcessingSignalNode::OnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
                         return Err(invalid("OnePole cutoff must be positive"));
@@ -1346,6 +1361,15 @@ impl Instrument {
         for (i, chain) in self.chains.iter().enumerate() {
             check.owner = format!("chain {i}");
             check.chain(chain)?;
+            let homes=chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .filter(|stage|matches!(stage,crate::Processor::ExpressionPan(_))).count();
+            let hidden_home=[&chain.pre_amplitude[..],&chain.post_amplitude[..]].into_iter().any(|section|section.iter().enumerate().any(|(index,stage)|matches!(stage,crate::Processor::ExpressionPan(_)) && section[..index].iter().enumerate().any(|(start,previous)|matches!(previous,crate::Processor::Mix{count,..}|crate::Processor::Branch{count,..} if index-start<=usize::from(*count)))));
+            if homes>1 || hidden_home || homes!=0 && (self.zones.iter().any(|zone|zone.chain==Some(crate::ChainRef(i)))
+                || chain.scope!=crate::Scope::Voice
+                || !self.processing_scopes.iter().any(|scope|scope.chain==Some(crate::ChainRef(i)))
+                    && !self.source_indices.processing.iter().any(|recipe|recipe.chain==Some(crate::ChainRef(i)))) {
+                return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"expression Pan requires one actual shared source home"});
+            }
         }
         for (i, bus) in self.buses.iter().enumerate() {
             check.owner = format!("bus {i}");
