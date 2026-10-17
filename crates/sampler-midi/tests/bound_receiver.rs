@@ -453,3 +453,47 @@ fn public_physical_dispatch_is_captured_before_consume_or_exact_native_wait() {
         );
     }
 }
+
+
+#[test]
+fn bound_registered_pitch_owns_current_future_detach_attribute_and_manual_followers(){
+    let mut actual=runtime(None);let receiver=bind(&mut actual,0);let mut reference=runtime(None);
+    let mut pitch=wire(0,1,60,69u32<<25);pitch[0]|=3;assert!(matches!(apply(&receiver,&mut actual,pitch),Applied::Expression{..}));
+    let root=start(&receiver,&mut actual,1,60);
+    let expected=reference.trigger_pitched(Input{protocol:Protocol::Native,port:0,group:0,channel:1,key:60,external_id:Some(601)},NotePitch::Absolute(69.),1.,Expression::default()).unwrap();
+    let follower=actual.child(root,72,1.,false,Inheritance::Expression).unwrap();actual.forward_attack(follower).unwrap();
+    let expected_follower=reference.trigger_pitched(Input{external_id:Some(602),key:72,..input_for_registered()},NotePitch::Absolute(81.),1.,Expression::default()).unwrap();
+    support::without_heap(||{
+        let mut a=[[0.;2];64];let mut b=a;actual.render(&mut a).unwrap();reference.render(&mut b).unwrap();for (x,y) in a.iter().zip(b){assert!((x[0]-y[0]).abs()<2e-6);}
+        let mut update=wire(0,1,60,70u32<<25);update[0]|=3;apply(&receiver,&mut actual,update);
+        for note in [expected,expected_follower]{reference.set_expression(reference.expression_id(note).unwrap(),Expression{pitch_semitones:1.,..Expression::default()}).unwrap();}
+        actual.render(&mut a).unwrap();reference.render(&mut b).unwrap();for (x,y) in a.iter().zip(b){assert!((x[0]-y[0]).abs()<2e-6);}
+        let mut management=wire(0xf0,1,60,0);management[0]|=3;apply(&receiver,&mut actual,management);
+        let fresh=start(&receiver,&mut actual,1,60);assert_ne!(actual.expression_id(root).unwrap(),actual.expression_id(fresh).unwrap());
+        assert_eq!(actual.note(fresh).unwrap().0,60,"PNCC3 selection remains the original logical key");
+        assert_eq!(actual.intrinsic_pitch_base(actual.expression_id(fresh).unwrap()),Ok((60.,None)));
+        assert_eq!(actual.intrinsic_pitch_base(actual.expression_id(root).unwrap()),Ok((60.,Some(70.))));
+        assert_eq!(actual.intrinsic_pitch_base(actual.expression_id(follower).unwrap()),Ok((60.,Some(70.))),"actual expression lineage freezes the detached current base");
+    });
+}
+fn input_for_registered()->Input{Input{protocol:Protocol::Native,port:0,group:0,channel:1,key:60,external_id:None}}
+
+
+#[test]
+fn bound_per_note_reset_validates_the_joint_base_and_bend_before_either_publication(){
+    let mut actual=runtime(None);let receiver=bind(&mut actual,0);let mut reference=runtime(None);
+    let mut on=wire(0x90,1,60,0xffff_0000|80*512);on[0]|=3;
+    let Applied::Started(note)=apply(&receiver,&mut actual,on)else{panic!()};
+    let expected=reference.trigger_pitched(Input{external_id:Some(701),..input_for_registered()},NotePitch::Absolute(80.),1.,Expression::default()).unwrap();
+    support::without_heap(||{
+        apply(&receiver,&mut actual,wire(0x60,1,60,0));
+        reference.set_expression(reference.expression_id(expected).unwrap(),Expression{pitch_semitones:-48.,..Expression::default()}).unwrap();
+        let mut pitch=wire(0,1,60,120u32<<25);pitch[0]|=3;apply(&receiver,&mut actual,pitch);
+        reference.set_expression(reference.expression_id(expected).unwrap(),Expression{pitch_semitones:-8.,..Expression::default()}).unwrap();
+        let mut got=[[0.;2];64];let mut oracle=got;actual.render(&mut got).unwrap();reference.render(&mut oracle).unwrap();for (x,y) in got.iter().zip(oracle){assert!((x[0]-y[0]).abs()<2e-6);}
+        let before=actual.now();let mut reset=wire(0xf0,1,60,0);reset[0]|=1;apply(&receiver,&mut actual,reset);
+        assert_eq!(actual.now(),before);assert_eq!(actual.intrinsic_pitch_base(actual.expression_id(note).unwrap()),Ok((80.,None)));
+        reference.set_expression(reference.expression_id(expected).unwrap(),Expression::default()).unwrap();
+        actual.render(&mut got).unwrap();reference.render(&mut oracle).unwrap();for (x,y) in got.iter().zip(oracle){assert!((x[0]-y[0]).abs()<2e-6);}
+    });
+}

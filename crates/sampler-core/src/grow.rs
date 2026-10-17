@@ -58,6 +58,7 @@ pub(crate) struct Growth {
 impl Growth {
     /// Control side: allocates.
     pub fn build(voices: usize, live: &[Dims], parallel: bool) -> Result<Self, Error> {
+        std::alloc::Layout::array::<Slot<Voice>>(voices).map_err(|_|Error::Capacity)?;
         let (slots, free) = Arena::<Voice>::blank(voices);
         let plans = live
             .iter()
@@ -459,5 +460,17 @@ mod tests {
             drop(submit);
             assert_reclaimed(&state, 2);
         }
+    }
+}
+
+#[cfg(test)]
+mod intrinsic_pitch_growth_capacity_tests{
+    use super::*;
+    #[test]
+    fn physical_voice_storage_overflow_is_a_typed_refusal_before_blank_allocation(){
+        let above=(isize::MAX as usize)/std::mem::size_of::<Slot<Voice>>()+1;
+        assert!(matches!(Growth::build(above,&[],false),Err(Error::Capacity)));
+        assert!(matches!(Growth::build(usize::MAX,&[],false),Err(Error::Capacity)));
+        assert_eq!(Growth::build(1,&[],false).unwrap().voices,1);
     }
 }

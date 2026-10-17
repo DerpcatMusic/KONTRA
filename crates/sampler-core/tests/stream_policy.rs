@@ -491,8 +491,17 @@ fn a_horizon_change_updates_live_credits_before_the_next_start() {
     rt.render(&mut [[0.; 2]; 64]).unwrap();
     let second = rt.note_on(input(2), 60, 1.).unwrap();
     support::without_heap(|| {
-        rt.set_stream_horizon(PAGE_FRAMES as u32 * 2).unwrap();
+        // At cursor64, two full output pages reach three physical pages. The
+        // horizon transaction must refuse before consuming the two-page pool.
+        assert_eq!(rt.set_stream_horizon(PAGE_FRAMES as u32 * 2), Err(Error::Capacity));
+        let unchanged = rt.start(second, 1, rt.now(), 1.).unwrap();
+        assert!(rt.voice_active(live));
+        rt.stop_voice(unchanged).unwrap();
+        // This feasible horizon reaches two pages for the first voice, leaving
+        // no credit for another source. No source or clock was advanced.
+        rt.set_stream_horizon(PAGE_FRAMES as u32).unwrap();
         assert_eq!(rt.start(second, 1, rt.now(), 1.), Err(Error::Capacity));
+        assert_eq!(rt.now(), 64);
         assert!(rt.voice_active(live));
     });
 }

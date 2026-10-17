@@ -767,13 +767,16 @@ impl Runtime {
             per_note,
             held: true,
         };
+        let intrinsic=if domain==ChannelDomain::Midi2&&!matches!(pitch,NotePitch::Absolute(_)){
+            state.per_note.key(state.group,input.channel,input.key)?.1.absolute.map(|value|f64::from(value)/33_554_432.)
+        }else{None};
         let performance = state.performance;
         let event_plan=kind.and_then(|_|self.plans.get(self.active_plan.0)
             .filter(|generation|generation.prepared.external_programs).map(|_|self.active_plan));
         if let Some(plan)=event_plan {self.validate_physical_event_add(plan,1)?;}
         self.publish_receiver_transaction(|runtime| {
-            let note=if silent {runtime.note_on_owned_input(performance,input,source,pitch,velocity,expression,Some(component))?}
-                else{runtime.trigger_owned_input(performance,input,source,pitch,velocity,expression,Some(component))?};
+            let note=if silent {runtime.note_on_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,Some(component))?}
+                else{runtime.trigger_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,Some(component))?};
             let expression=runtime.expression_id(note)?;
             if let Some(plan)=event_plan {runtime.retain_physical_event(plan)?;}
             if let Some(kind)=kind {runtime.receiver_state_mut(id)?.physical.push(PhysicalPair{note,expression:Some(expression),execution:input,source,kind,released:false,scripted:silent,terminal_received:false,choked:false,event_plan,
@@ -1083,6 +1086,9 @@ impl Runtime {
             {
                 Applied::Ignored
             }
+            Message::PerNoteControl{space:Controllers::Registered,key,index:3,value} if voice.version==Version::Midi2=>{
+                self.receiver_per_note_absolute(id,voice.channel,key,value)?
+            }
             Message::PerNotePitch { key, value } if voice.version == Version::Midi2 => {
                 self.receiver_per_note_pitch(id, voice.channel, key, value)?
             }
@@ -1120,13 +1126,15 @@ impl Runtime {
 
 impl Runtime {
     fn stage_receiver_note_pitch(
-        &mut self,
-        id: ReceiverId,
-        mut select: impl FnMut(
-            &OwnedReceiver,
-            ReceiverComponents,
-        ) -> Result<Option<ReceiverComponents>, Error>,
-    ) -> Result<bool, Error> {
+        &mut self,id:ReceiverId,
+        select:impl FnMut(&OwnedReceiver,ReceiverComponents)->Result<Option<ReceiverComponents>,Error>,
+    )->Result<bool,Error>{
+        self.stage_receiver_note_pitch_rows(id,select)?;self.prepare_receiver_expression_changes()
+    }
+    fn stage_receiver_note_pitch_rows(
+        &mut self,id:ReceiverId,
+        mut select:impl FnMut(&OwnedReceiver,ReceiverComponents)->Result<Option<ReceiverComponents>,Error>,
+    )->Result<(),Error>{
         self.receiver_changes.clear();
         self.receiver_component_changes.fill(None);
         for index in 0..self.expressions.slots.len() {
@@ -1157,7 +1165,7 @@ impl Runtime {
                 .push((ExpressionId(self.expressions.id(index)), value));
             self.receiver_component_changes[index] = Some(next);
         }
-        self.prepare_receiver_expression_changes()
+        Ok(())
     }
 
     fn receiver_per_note_pitch(
@@ -1195,6 +1203,25 @@ impl Runtime {
         })
     }
 
+    fn receiver_per_note_absolute(&mut self,id:ReceiverId,channel:u8,key:u8,value:u32)->Result<Applied,Error>{
+        let state=self.receiver(id)?;let (key_id,before)=state.per_note.key(state.group,channel,key)?;
+        self.receiver_changes.clear();self.receiver_component_changes.fill(None);
+        for index in 0..self.expressions.slots.len(){
+            let Some(owner)=self.expressions.slots[index].value else{continue;};
+            let Some(component)=owner.receiver.filter(|component|component.receiver==id&&component.domain==ChannelDomain::Midi2&&component.channel==channel&&component.key==key&&component.per_note.is_some_and(|snapshot|snapshot.cohort==before.cohort))else{continue;};
+            let _=component; // Absolute base is independent of the accepted relative expression.
+            if self.receiver_changes.len()==self.receiver_changes.capacity(){return Err(Error::Capacity);}
+            self.receiver_changes.push((ExpressionId(self.expressions.id(index)),owner.value));
+        }
+        let absolute=Some(f64::from(value)/33_554_432.);self.prepare_receiver_intrinsic_pitch(absolute)?;
+        let owners=self.receiver_changes.len();
+        self.publish_receiver_transaction(|runtime|{
+            runtime.commit_receiver_intrinsic_pitch(absolute)?;
+            runtime.receiver_state_mut(id)?.per_note.commit_key(key_id,per_note::KeyState{absolute:Some(value),..before});
+            Ok(Applied::Expression{owners})
+        })
+    }
+
     fn receiver_per_note_management(
         &mut self,
         id: ReceiverId,
@@ -1210,12 +1237,16 @@ impl Runtime {
         let (key_id, before) = state.per_note.key(state.group, channel, key)?;
         let next = per_note::PerNoteState::managed(before, detach, reset)?;
         if !detach && reset {
-            self.receiver_per_note_pitch(id, channel, key, per_note::CENTER)?;
+            let channel_id=state.per_note.channel(state.group,channel)?;
+            let projected=per_note::PerNoteState::project(next,state.per_note.range(channel_id));
+            self.stage_receiver_note_pitch_rows(id,|_,component|Ok((component.domain==ChannelDomain::Midi2&&component.channel==channel&&component.key==key&&component.per_note.is_some_and(|snapshot|snapshot.cohort==before.cohort)).then_some(ReceiverComponents{per_note:Some(projected),..component})))?;
+            self.prepare_receiver_intrinsic_pitch(None)?;
+            return self.publish_receiver_transaction(|runtime|{
+                runtime.commit_receiver_intrinsic_pitch(None)?;
+                runtime.receiver_state_mut(id)?.per_note.commit_key(key_id,next);Ok(Applied::Configuration)
+            });
         }
-        self.receiver_state_mut(id)?
-            .per_note
-            .commit_key(key_id, next);
-        Ok(Applied::Configuration)
+        self.receiver_state_mut(id)?.per_note.commit_key(key_id,next);Ok(Applied::Configuration)
     }
 
     fn receiver_per_note_range(
