@@ -161,6 +161,8 @@ pub enum Applied {
     Controller,
     /// A controller selector/state change, not a claim of full device configuration.
     Configuration,
+    /// Accepted selection state/action, not a promise that a preset was loaded.
+    ProgramChange { targets: usize },
     AllNotesOff {
         released: usize,
     },
@@ -198,7 +200,7 @@ impl ChannelVoice {
             Message::PolyPressure { key, value } => key < 128 && value.valid(),
             Message::Control { index, value } => index < 128 && value.valid(),
             Message::Program { program, bank } => {
-                program < 128 && bank.is_none_or(|bank| bank.into_iter().all(|value| value < 128))
+                program < 128 && (self.version==Version::Midi2||bank.is_none()) && bank.is_none_or(|bank| bank.into_iter().all(|value| value < 128))
             }
             Message::ChannelPressure(value) | Message::PitchBend(value) => value.valid(),
             Message::PerNotePitch { key, .. }

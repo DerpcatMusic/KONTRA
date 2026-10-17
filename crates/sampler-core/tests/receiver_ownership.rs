@@ -752,3 +752,197 @@ fn consumed_reposts_retire_generated_inputs_and_preserve_exact_root_event_origin
         assert!(matches!(rt.source_owners(old),Err(Error::StaleHandle)));
     });
 }
+
+fn program_event_runtime()->Runtime {
+    let plan=external_plan(false).with_controller_programs(vec![]).unwrap().with_program_change_programs(vec![0]).unwrap();
+    let mut limits=Limits::for_plan(&plan,16,16);limits.channels=48;
+    Runtime::new(plan,limits).unwrap()
+}
+#[test]
+fn program_turn_has_genuine_payload_preserves_bank_and_consumes_without_controller_callbacks(){
+    use sampler_core::{ChannelAddress,ExternalEvent,ExternalOutput,ProgramBankIntent as Bank,ProgramSelection,ReceiverVersion as Version,SourceEventFamily,SourceEventRouting};
+    let mut rt=program_event_runtime();let perf=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let binding=rt.executable_source_binding(rt.active_plan(),processor,SourceEventFamily::ProgramChange).unwrap().unwrap();
+    assert_eq!(binding.routing,SourceEventRouting::LinearStage);
+    assert!(rt.executable_source_binding(rt.active_plan(),processor,SourceEventFamily::Controller).unwrap().is_none());
+    support::without_heap(||{
+        rt.receive_program_change(perf,address,Version::Midi2,65,Some([3,124])).unwrap();
+        let turn=rt.pending_external_turn().unwrap().unwrap();
+        assert_eq!(turn.logical_channel,Some(13));
+        assert!(matches!(turn.event,ExternalEvent::ProgramChange{source,version:Some(Version::Midi2),program:65,bank:Bank::Select([3,124])}if source==address));
+        assert_eq!(rt.program_selection(perf,address).unwrap(),None);
+        rt.begin_external_turn(turn.input).unwrap();rt.post_external_output(turn.input,ExternalOutput::Original).unwrap();
+        assert_eq!(rt.program_selection(perf,address).unwrap(),Some(ProgramSelection{program:65,bank:[3,124]}));
+        rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+        rt.receive_program_change(perf,address,Version::Midi2,7,None).unwrap();
+        let consumed=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(consumed.input).unwrap();rt.complete_external_segment(consumed.input,None).unwrap();
+        assert_eq!(rt.program_selection(perf,address).unwrap(),Some(ProgramSelection{program:65,bank:[3,124]}));
+        rt.flush_behaviors(|_,_,_|true);
+        rt.receive_program_change(perf,address,Version::Midi2,8,None).unwrap();
+        let preserved=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(preserved.input).unwrap();rt.post_external_output(preserved.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(preserved.input,None).unwrap();
+        assert_eq!(rt.program_selection(perf,address).unwrap(),Some(ProgramSelection{program:8,bank:[3,124]}));
+        assert_eq!(rt.channel_controller(perf,address,0).unwrap(),0,"explicit bank does not fabricate a CC0 event");
+        assert_eq!(rt.channel_controller(perf,address,32).unwrap(),0);
+    });
+}
+#[test]
+fn waited_program_route_uses_original_epochs_and_generation_and_rejects_invalid_post_atomically(){
+    use sampler_core::{ChannelAddress,ExternalOutput,ExternalTarget,ProgramBankIntent as Bank,ProgramSelection,ReceiverVersion as Version};
+    let plan=external_plan(false).with_controller_programs(vec![]).unwrap().with_program_change_programs(vec![0]).unwrap();
+    let mut limits=Limits::for_plan(&plan,16,16);limits.channels=48;
+    let (mut rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();let perf=rt.performance(0).unwrap();let old=rt.active_plan();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:2,group:1,channel:3};
+    rt.receive_program_change(perf,address,Version::Midi2,10,Some([1,2])).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(32)).unwrap();
+    let replacement=external_plan(false).with_programs(vec![],None).unwrap();
+    // A new plan cannot replace the old callback's real route/payload.
+    let request=control.submit(Box::new(replacement)).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+    assert_ne!(rt.active_plan(),old);rt.render(&mut [[0.;2];32]).unwrap();
+    let resumed=rt.service_external_boundary().unwrap().unwrap();assert_eq!(resumed.plan,old);assert_eq!(resumed.original_frame,0);assert_eq!(resumed.resume_frame,32);
+    rt.begin_external_turn(resumed.input).unwrap();
+    assert_eq!(rt.post_external_output(resumed.input,ExternalOutput::ProgramChange{program:128,bank:Bank::KeepSelected,target:ExternalTarget::Captured}),Err(Error::InvalidInput));
+    assert_eq!(rt.program_selection(perf,address).unwrap(),None);
+    rt.post_external_output(resumed.input,ExternalOutput::ProgramChange{program:11,bank:Bank::Select([9,8]),target:ExternalTarget::Channels(1<<5)}).unwrap();
+    let target=ChannelAddress{channel:5,..address};
+    assert_eq!(rt.program_selection(perf,address).unwrap(),None);
+    assert_eq!(rt.program_selection(perf,target).unwrap(),Some(ProgramSelection{program:11,bank:[9,8]}));
+    rt.complete_external_segment(resumed.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+}
+#[test]
+fn value_only_poly_post_preserves_exact_host_ids_but_authored_mask_uses_logical_domains(){
+    use sampler_core::{ChannelAddress,ExternalOutput,InputSelector};
+    let plan=external_plan(false).with_controller_programs(vec![]).unwrap().with_stages(vec![sampler_core::Stage{poly_at:Some(0),..Default::default()}]).unwrap();
+    let limits=Limits::for_plan(&plan,16,16);let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();
+    let physical=|protocol,id,channel,key|Input{protocol,port:7,group:3,channel,key,external_id:id};
+    let a=rt.trigger(physical(Protocol::Clap,Some(1),2,60),60,1.).unwrap();
+    let b=rt.trigger(physical(Protocol::Clap,Some(2),2,60),60,1.).unwrap();
+    let raw=rt.trigger(physical(Protocol::Midi2,None,4,60),60,1.).unwrap();
+    let other_version=rt.trigger(physical(Protocol::Midi1,None,4,60),60,1.).unwrap();
+    let other_key=rt.trigger(physical(Protocol::Midi2,None,4,61),60,1.).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Native,port:7,group:3,channel:2};
+    let selected=InputSelector{protocol:Some(Protocol::Clap),port:Some(7),group:Some(3),channel:Some(2),key:Some(60),external_id:Some(1)};
+    rt.dispatch_poly_pressure_selected(perf,address,60,0x1234_5678,Some(selected)).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    support::without_heap(||{rt.post_external_output(turn.input,ExternalOutput::PolyPressure{value:0x89ab_cdef}).unwrap();rt.complete_external_segment(turn.input,None).unwrap();});
+    let pressure=|rt:&Runtime,note|rt.expression(rt.expression_id(note).unwrap()).unwrap().pressure;
+    assert_eq!(pressure(&rt,a),0x89ab_cdef);for note in [b,raw,other_version,other_key]{assert_eq!(pressure(&rt,note),0);}
+    rt.flush_behaviors(|_,_,_|true);
+    let wire=ChannelAddress{protocol:Protocol::Midi2,channel:2,..address};rt.dispatch_poly_pressure(perf,wire,60,1).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    rt.post_external_output(turn.input,ExternalOutput::RoutedPolyPressure{key:61,value:0x7654_3210,channels:(1<<4)|(1<<5)}).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    assert_eq!(pressure(&rt,other_key),0x7654_3210);assert_eq!(pressure(&rt,raw),0);assert_eq!(pressure(&rt,other_version),0);assert_eq!(pressure(&rt,a),0x89ab_cdef);
+}
+
+#[test]
+fn waited_program_reroute_cannot_revive_reset_destination_epochs(){
+    use sampler_core::{ChannelAddress,ChannelScope,ExternalOutput,ExternalTarget,ProgramBankIntent as Bank,ReceiverVersion as Version};
+    let mut rt=program_event_runtime();let perf=rt.performance(0).unwrap();
+    let source=ChannelAddress{protocol:Protocol::Midi2,port:2,group:1,channel:3};let target=ChannelAddress{channel:5,..source};
+    rt.receive_program_change(perf,source,Version::Midi2,10,Some([1,2])).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(32)).unwrap();
+    rt.reset_channel_controllers(perf,ChannelScope{protocol:target.protocol,port:target.port,group:target.group,channels:1<<target.channel}).unwrap();
+    rt.render(&mut [[0.;2];32]).unwrap();let turn=rt.service_external_boundary().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    rt.post_external_output(turn.input,ExternalOutput::ProgramChange{program:12,bank:Bank::Select([9,8]),target:ExternalTarget::Channels(1<<5)}).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    assert_eq!(rt.program_selection(perf,target).unwrap(),None);assert_eq!(rt.program_selection(perf,source).unwrap(),None);
+    rt.flush_behaviors(|_,_,_|true);
+    // An independently admitted fresh event legitimately owns the new epoch.
+    rt.receive_program_change(perf,target,Version::Midi2,13,None).unwrap();let fresh=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(fresh.input).unwrap();rt.post_external_output(fresh.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(fresh.input,None).unwrap();
+    assert_eq!(rt.program_selection(perf,target).unwrap().unwrap().program,13);
+}
+#[test]
+fn authored_program_mask_capacity_refusal_preserves_every_target_and_turn(){
+    use sampler_core::{ChannelAddress,ExternalOutput,ExternalTarget,ProgramBankIntent as Bank,ReceiverVersion as Version};
+    let mut rt=program_event_runtime();let perf=rt.performance(0).unwrap();
+    // Fill all but one of the actual fixed 48-domain reserve, with real state.
+    let mut index=0usize;
+    while index<47{
+        let address=ChannelAddress{protocol:Protocol::Midi2,port:100+(index/16) as u16,group:0,channel:(index%16) as u8};
+        rt.dispatch_controller(perf,address,1<<address.channel,1,1).unwrap();index+=1;
+    }
+    let source=ChannelAddress{protocol:Protocol::Midi2,port:1,group:0,channel:0};
+    rt.receive_program_change(perf,source,Version::Midi2,1,None).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let before=rt.now();
+    support::without_heap(||{
+        assert_eq!(rt.post_external_output(turn.input,ExternalOutput::ProgramChange{program:2,bank:Bank::Select([3,4]),target:ExternalTarget::Channels(6)}),Err(Error::Capacity));
+        assert_eq!(rt.program_selection(perf,ChannelAddress{channel:1,..source}).unwrap(),None);
+        assert_eq!(rt.program_selection(perf,ChannelAddress{channel:2,..source}).unwrap(),None);
+        assert_eq!(rt.program_selection(perf,source).unwrap(),None);assert_eq!(rt.now(),before);
+        assert_eq!(rt.pending_external_turn().unwrap().unwrap().input,turn.input);
+        rt.post_external_output(turn.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    });
+    assert_eq!(rt.program_selection(perf,source).unwrap().unwrap().program,1);
+}
+
+#[test]
+fn authored_poly_omni_has_sample_exact_independent_pressure_reference_and_keeps_other_protocol(){
+    use sampler_core::{ChannelAddress,Destination,ExpressionSource,ExternalOutput,Modulation,Route,Stage};
+    let modulation=||Modulation::new(vec![Route{source:ExpressionSource::Pressure,destination:Destination::LinearGain{zero:0.25,one:1.}}],1).unwrap();
+    let actual_plan=external_plan(false).with_controller_programs(vec![]).unwrap().with_stages(vec![Stage{poly_at:Some(0),..Default::default()}]).unwrap().with_modulation(modulation());
+    let reference_plan=external_plan(false).with_programs(vec![],None).unwrap().with_modulation(modulation());
+    let actual_limits=Limits::for_plan(&actual_plan,16,16);let reference_limits=Limits::for_plan(&reference_plan,16,16);
+    let mut actual=Runtime::new(actual_plan,actual_limits).unwrap();let mut reference=Runtime::new(reference_plan,reference_limits).unwrap();let perf=actual.performance(0).unwrap();
+    let base=Input{protocol:Protocol::Midi2,port:7,group:3,channel:2,key:60,external_id:None};
+    let mut selected=[None;2];
+    for (at,input) in [base,Input{channel:3,..base},Input{protocol:Protocol::Midi1,..base}].into_iter().enumerate(){
+        actual.trigger(input,60,1.).unwrap();let note=reference.trigger(input,60,1.).unwrap();if at<2{selected[at]=Some(reference.expression_id(note).unwrap());}
+    }
+    let origin=ChannelAddress{channel:0,..base.channel_address()};actual.dispatch_poly_pressure(perf,origin,60,0x1234_5678).unwrap();
+    let turn=actual.pending_external_turn().unwrap().unwrap();actual.begin_external_turn(turn.input).unwrap();
+    support::without_heap(||{
+        actual.post_external_output(turn.input,ExternalOutput::RoutedPolyPressure{key:60,value:0x8765_4321,channels:u16::MAX}).unwrap();actual.complete_external_segment(turn.input,None).unwrap();
+        for id in selected.into_iter().flatten(){reference.set_expression(id,Expression{pressure:0x8765_4321,..Expression::default()}).unwrap();}
+        let mut actual_pcm=[[0.;2];256];let mut reference_pcm=[[0.;2];256];actual.render(&mut actual_pcm).unwrap();reference.render(&mut reference_pcm).unwrap();
+        assert_eq!(actual_pcm,reference_pcm,"normal pressure projection is the independent reference, not a new route-engine oracle");assert!(actual_pcm.iter().any(|frame|frame[0]!=0.));
+    });
+}
+#[test]
+fn metadata_and_unused_external_instruction_are_not_executable_family_proof(){
+    use sampler_core::SourceEventFamily as Family;
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let no_binding=external_plan(false).with_controller_programs(vec![]).unwrap();
+    for family in [Family::Note,Family::Release,Family::Controller,Family::PolyPressure,Family::ProgramChange]{assert!(no_binding.executable_source_binding(processor,family).unwrap().is_none());}
+    let installed=no_binding.with_program_change_programs(vec![0]).unwrap();
+    assert!(installed.executable_source_binding(processor,Family::ProgramChange).unwrap().is_some());
+    assert!(installed.executable_source_binding(processor,Family::Controller).unwrap().is_none());
+}
+
+#[test]
+fn authored_channel_family_change_acquires_its_own_downstream_callbacks_without_borrowing_poly_reserve(){
+    use sampler_core::{ChannelAddress,ExternalEvent,ExternalOutput,Instruction as I,Program,Stage,WaitLifetime};
+    let plan=external_plan(false).with_programs(vec![
+        Program::new(vec![I::AwaitExternal{processor:sampler_ir::SourceEventProcessorId::UviNode(11)},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback),
+        Program::new(vec![I::AwaitExternal{processor:sampler_ir::SourceEventProcessorId::UviNode(12)},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback),
+    ],None).unwrap().with_stages(vec![Stage{poly_at:Some(0),..Default::default()},Stage{controller:Some(1),..Default::default()}]).unwrap();
+    let limits=Limits::for_plan(&plan,8,8);let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:4};
+    rt.dispatch_poly_pressure(perf,address,60,0x1234_5678).unwrap();let first=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(first.input).unwrap();
+    support::without_heap(||{
+        rt.post_external_output(first.input,ExternalOutput::Controller{number:11,value:0x8765_4321}).unwrap();rt.complete_external_segment(first.input,None).unwrap();
+        let next=rt.pending_external_turn().unwrap().unwrap();assert!(matches!(next.event,ExternalEvent::Controller{source,number:11,value:0x8765_4321,poly_key:None}if source==address));
+        rt.begin_external_turn(next.input).unwrap();rt.post_external_output(next.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(next.input,None).unwrap();
+        assert_eq!(rt.channel_controller(perf,address,11).unwrap(),0x8765_4321);assert_eq!(rt.channel_poly_pressure(perf,address,60,false).unwrap(),0);
+        rt.flush_behaviors(|_,_,outcome|{assert_eq!(outcome,sampler_core::Outcome::Finished);true});
+    });
+}
+
+#[test]
+fn program_fork_keeps_old_epochs_without_duplicating_original_future_callback_reservation(){
+    use sampler_core::{ChannelAddress,ExternalOutput,Instruction as I,Program,ReceiverVersion,WaitLifetime};
+    let p11=sampler_ir::SourceEventProcessorId::UviNode(11);let p12=sampler_ir::SourceEventProcessorId::UviNode(12);
+    let program=|code|Program::new(code).unwrap().with_wait_lifetime(WaitLifetime::Callback);
+    let plan=external_plan(false).with_programs(vec![
+        program(vec![I::StartProgram{program:1},I::AwaitExternal{processor:p11},I::End]),
+        program(vec![I::AwaitExternal{processor:p12},I::End]),
+        program(vec![I::AwaitExternal{processor:p11},I::End]),
+    ],None).unwrap().with_program_change_programs(vec![0,2]).unwrap();
+    let limits=Limits::for_plan(&plan,8,8);let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:4};
+    support::without_heap(||{
+        rt.receive_program_change(perf,address,ReceiverVersion::Midi2,77,Some([1,2])).unwrap();
+        let fork=rt.pending_external_turn().unwrap().unwrap();assert_eq!(fork.processor,p12);rt.begin_external_turn(fork.input).unwrap();rt.post_external_output(fork.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(fork.input,None).unwrap();
+        let parent=rt.pending_external_turn().unwrap().unwrap();assert_eq!(parent.processor,p11);rt.begin_external_turn(parent.input).unwrap();rt.complete_external_segment(parent.input,None).unwrap();
+        let downstream=rt.pending_external_turn().unwrap().unwrap();assert_eq!(downstream.processor,p11);rt.begin_external_turn(downstream.input).unwrap();rt.post_external_output(downstream.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(downstream.input,None).unwrap();
+        rt.flush_behaviors(|_,_,outcome|{assert_eq!(outcome,sampler_core::Outcome::Finished);true});assert!(rt.pending_external_turn().unwrap().is_none());
+        assert_eq!(rt.program_selection(perf,address).unwrap().unwrap(),sampler_core::ProgramSelection{program:77,bank:[1,2]});
+    });
+}

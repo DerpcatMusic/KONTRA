@@ -84,9 +84,10 @@ fn fixed_clap_storage_short_messages_reach_the_real_receiver_without_double_call
     let id=|name|sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(0,name).0);
     assert_eq!(s.core.control_value(0,id("$calls")),Some(1.));assert_eq!(s.core.control_value(0,id("$value")),Some(95.));
     assert_eq!(s.unsupported,0,"none of these fixed-storage packets may be rejected at the plugin boundary");
-    // This fixture has no program selector or external MIDI-clock authority.
-    // They reach one truthful core refusal each; neither packet is swallowed
-    // nor replayed through its optional typed companion.
-    assert_eq!(s.core.problems(0).ignored_input,2);assert_eq!(s.core.problems(0).capacity_drops,0);assert_eq!(s.core.problems(0).fault_program,0);
+    // Program Change now updates the actual channel selection without invoking
+    // a controller callback or a preset catalog. The clock still has no owner
+    // in this fixture and contributes exactly one truthful refusal. Optional
+    // semantic companions must not replay either channel event.
+    assert_eq!(s.core.problems(0).ignored_input,1);assert_eq!(s.core.problems(0).capacity_drops,0);assert_eq!(s.core.problems(0).fault_program,0);
     assert_eq!(s.core.clock(0),32);
 }

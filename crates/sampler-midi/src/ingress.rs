@@ -213,6 +213,10 @@ impl Ingress {
                 self.channels[slot].pressure = pressure;
                 Applied::Expression { owners }
             }
+            Message::Program{program,bank}=>{
+                let (_,targets)=runtime.receive_program_change(performance,input.channel_address(),voice.version,program,bank)?;
+                Applied::ProgramChange{targets}
+            }
             Message::PolyPressure { key, value } => {
                 let pressure = value.full_scale();
                 let (_, owners) = runtime.dispatch_poly_pressure(performance, input.channel_address(), key, pressure)?;

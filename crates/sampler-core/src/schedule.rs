@@ -332,9 +332,11 @@ publishing_receiver || self.external_clock_blocked()
             Action::Resume(id) => {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
-                    if let super::behavior::PlanContext::Controller(event) = &mut c.context {
-                        controller_reserves += std::mem::take(&mut event.reserved);
-                    }
+                    controller_reserves += match &mut c.context {
+                        super::behavior::PlanContext::Controller(event)=>std::mem::take(&mut event.reserved),
+                        super::behavior::PlanContext::Program(event)=>std::mem::take(&mut event.reserved),
+                        _=>0,
+                    };
                     false
                 } else {
                     let keep = match c.owner {

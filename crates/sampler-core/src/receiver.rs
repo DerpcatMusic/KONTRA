@@ -2,13 +2,15 @@
 //! state into this Runtime; adapters retain a handle, never a mutable mirror.
 pub(crate) mod external;
 pub(crate) mod hierarchy;
-pub use external::{ExternalInputId,ExternalTurn,ExternalEvent,ExternalOutput,ExternalOutputResult,ExternalAbortReport
+pub use external::{ExternalInputId,ExternalTurn,ExternalEvent,ExternalOutput,ExternalOutputResult,ExternalTarget,ExternalAbortReport
 };
 pub(crate) mod
 components;
 mod per_note;
 mod state;
 mod types;
+pub(crate) mod channel_event;
+pub use channel_event::{ProgramBankIntent,ProgramSelection,ProgramPlaybackCapability};
 
 pub use state::{OwnedReceiver, TerminalRelease, Zone};
 pub use types::{
@@ -1006,14 +1008,25 @@ impl Runtime {
                 value,
                 ReceiverActionKind::Controller,
             )?,
+            Message::Program{program,bank}=>{
+                if self.receiver(id)?.zone_domain(domain)&&voice.channel!=self.receiver(id)?.manager_channel(){Applied::Ignored}
+                else{
+                    let performance=self.receiver(id)?.performance;
+                    let (_,targets)=self.dispatch_program_change_targets(performance,input.channel_address(),source.unwrap_or(input).channel_address(),1<<input.channel,program,
+                        if voice.version==Version::Midi1{ProgramBankIntent::UsePendingBankSelect}else{bank.map_or(ProgramBankIntent::KeepSelected,ProgramBankIntent::Select)},None,Some(id),channel_event::ProgramProvenance::Wire(voice.version))?;
+                    Applied::ProgramChange{targets}
+                }
+            }
             Message::PolyPressure { key, value } => {
-                let (_, owners) = self.dispatch_poly_pressure(
-                    self.receiver(id)?.performance,
-                    input.channel_address(),
-                    key,
-                    value.full_scale(),
-                )?;
-                Applied::Expression { owners }
+                let performance=self.receiver(id)?.performance;
+                let at=self.performance_index(performance)?;
+                let address=input.channel_address();
+                let scope=ChannelScope{protocol:address.protocol,port:address.port,group:address.group,channels:1<<address.channel};
+                let capture=CapturedReceiver{receiver:id,kind:ReceiverActionKind::Controller,provenance:ReceiverProvenance::Wire(value),
+                    source:source.unwrap_or(input).channel_address(),policy_epochs:self.performance_state.epochs(at,scope),host_epochs:self.receiver_host_epochs(id,at)?};
+                let recipients=source.map(|source|crate::InputSelector{protocol:Some(source.protocol),port:Some(source.port),group:Some(source.group),channel:Some(source.channel),key:Some(source.key),external_id:source.external_id});
+                let (_,owners)=self.dispatch_poly_pressure_captured(performance,address,key,value.full_scale(),recipients,Some(capture))?;
+                Applied::Expression{owners}
             }
             Message::Control { index: 121, value } if value.full_scale() == 0 => {
                 if self.receiver(id)?.zone_domain(domain)
@@ -2560,5 +2573,19 @@ impl Runtime {
             });
         }
         Ok(found)
+    }
+}
+
+impl Runtime {
+    pub(crate) fn capture_registered_program(&self,performance:usize,origin:ChannelAddress,channels:u16)->Result<Option<ReceiverId>,Error>{
+        let Ok(domain)=OwnedReceiver::domain(origin.protocol)else{return Ok(None);};
+        let performance=self.performance(performance)?;let mut found=None;
+        for (index,slot) in self.receivers.slots.iter().enumerate(){
+            let Some(owner)=slot.value.as_ref()else{continue;};let state=&owner.state;
+            if state.performance!=performance||state.port!=origin.port||state.group!=origin.group||!state.accepts_wire_channel(domain,origin.channel){continue;}
+            if (0..16u8).any(|channel|channels&(1<<channel)!=0&&!state.accepts_wire_channel(domain,channel)){return Err(Error::InvalidInput);}
+            if found.is_some(){return Err(Error::InvalidInput);}
+            found=Some(ReceiverId(self.receivers.id(index)));
+        }Ok(found)
     }
 }

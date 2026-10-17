@@ -545,3 +545,20 @@ fn selective_reset_preflights_primary_secondary_union_without_publishing_rows_or
         rt.render(&mut [[0.;2];5]).unwrap();assert_eq!(rt.channel_controller(performance,first,1),Ok(999));
     });
 }
+
+#[test]
+fn logical_expression_scope_preflights_all_channels_before_any_owner_publication(){
+    let prepared=Prepared::new(48000,vec![],vec![],0).unwrap();let limits=Limits::for_plan(&prepared,4,0);let mut rt=Runtime::new(prepared,limits).unwrap();
+    let source=Input{protocol:Protocol::Midi2,port:7,group:3,channel:4,key:60,external_id:None};
+    let a=rt.note_on(source,60,1.).unwrap();let b=rt.note_on(Input{channel:5,..source},60,1.).unwrap();let other=rt.note_on(Input{protocol:Protocol::Midi1,..source},60,1.).unwrap();
+    let ea=rt.expression_id(a).unwrap();let eb=rt.expression_id(b).unwrap();let eo=rt.expression_id(other).unwrap();
+    rt.set_expression(eb,Expression{pressure:1,..Expression::default()}).unwrap();
+    let before=(rt.expression(ea).unwrap(),rt.expression(eb).unwrap(),rt.expression(eo).unwrap(),rt.now());
+    let scope=ChannelScope{protocol:Protocol::Midi2,port:7,group:3,channels:(1<<4)|(1<<5)};
+    support::without_heap(||{
+        assert_eq!(rt.set_scope_expressions(scope,None,|old|Expression{pitch_semitones:if old.pressure==1{f64::NAN}else{7.},..old}),Err(Error::InvalidInput));
+        assert_eq!((rt.expression(ea).unwrap(),rt.expression(eb).unwrap(),rt.expression(eo).unwrap(),rt.now()),before);
+        assert_eq!(rt.set_scope_expressions(scope,None,|old|Expression{pressure:0x1234_5678,..old}),Ok(2));
+        assert_eq!(rt.expression(ea).unwrap().pressure,0x1234_5678);assert_eq!(rt.expression(eb).unwrap().pressure,0x1234_5678);assert_eq!(rt.expression(eo).unwrap().pressure,0);
+    });
+}

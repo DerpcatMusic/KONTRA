@@ -317,7 +317,12 @@ impl Runtime {
         key: Option<u8>,
         update: impl Fn(Expression) -> Expression,
     ) -> Result<usize, Error> {
-        self.select_input_expressions(None, Some((address, key)), update)
+        self.select_input_expressions(None, Some((crate::ChannelScope{protocol:address.protocol,port:address.port,group:address.group,channels:1u16.checked_shl(u32::from(address.channel)).unwrap_or(0)},key)), update)
+    }
+
+    /// Atomic logical execution mask; it never selects by physical source tuple.
+    pub fn set_scope_expressions(&mut self,scope:crate::ChannelScope,key:Option<u8>,update:impl Fn(Expression)->Expression)->Result<usize,Error>{
+        self.select_input_expressions(None,Some((scope,key)),update)
     }
 
     pub(super) fn set_source_expressions(
@@ -331,13 +336,13 @@ impl Runtime {
     /// Pure whole-input projection using existing preallocated expression
     /// scratch; no due work, controller mutation or expression publication.
     pub fn validate_input_expressions(&mut self,address:super::ChannelAddress,key:Option<u8>,update:impl Fn(Expression)->Expression)->Result<usize,Error> {
-        self.project_input_expressions(None,Some((address,key)),update,false)
+        self.project_input_expressions(None,Some((crate::ChannelScope{protocol:address.protocol,port:address.port,group:address.group,channels:1u16.checked_shl(u32::from(address.channel)).unwrap_or(0)},key)),update,false)
     }
 
     fn select_input_expressions(
         &mut self,
         source: Option<InputSelector>,
-        execution: Option<(super::ChannelAddress, Option<u8>)>,
+        execution: Option<(crate::ChannelScope, Option<u8>)>,
         update: impl Fn(Expression) -> Expression,
     ) -> Result<usize, Error> {
         self.apply_due();
@@ -345,10 +350,10 @@ impl Runtime {
     }
 
     fn project_input_expressions(
-        &mut self,source:Option<InputSelector>,execution:Option<(super::ChannelAddress,Option<u8>)>,
+        &mut self,source:Option<InputSelector>,execution:Option<(crate::ChannelScope,Option<u8>)>,
         update:impl Fn(Expression)->Expression,publish:bool,
     )->Result<usize,Error> {
-        if execution.is_some_and(|(address,key)|address.group>=16||address.channel>=16||key.is_some_and(|key|key>=128)) {return Err(Error::InvalidInput);}
+        if execution.is_some_and(|(scope,key)|scope.group>=16||scope.channels==0||key.is_some_and(|key|key>=128)) {return Err(Error::InvalidInput);}
         self.expression_changes.fill(None);
         let mut pitch_changed = false;
         let mut changed = 0;
@@ -358,8 +363,8 @@ impl Runtime {
             };
             let matches = if let Some(selector) = source {
                 note.input_source.is_some_and(|input| selector.matches(input))
-            } else if let Some((address, key)) = execution {
-                note.input.is_some_and(|input| input.channel_address() == address && key.is_none_or(|key| input.key == key))
+            } else if let Some((scope, key)) = execution {
+                note.input.is_some_and(|input| scope.contains(input.channel_address()) && key.is_none_or(|key| input.key == key))
             } else { false };
             if !matches {
                 continue;

@@ -176,6 +176,7 @@ impl Runtime {
         let (performance, origin, channels) = match callback.context {
             PlanContext::NoteControllers(context)=>(context.performance,context.origin,1<<context.origin.channel),
             PlanContext::Controller(event) => (event.performance, event.origin, event.channels),
+            PlanContext::Program(event) => (event.performance, event.origin, event.channels),
             PlanContext::Control(event) => (event.performance, event.origin, event.channels),
             PlanContext::Bare => {
                 let note = match callback.owner {

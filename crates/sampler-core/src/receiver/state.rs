@@ -1061,12 +1061,21 @@ impl OwnedReceiver {
                     voice.channel,
                     Control::Pressure(value.full_scale()),
                 )?,
+            Message::Program{program,bank}=>{
+                if self.zone_domain(domain)&&voice.channel!=self.zone.manager(){Applied::Ignored}
+                else{
+                    let (_,targets)=runtime.dispatch_program_change_targets(self.performance,input.channel_address(),source.unwrap_or(input).channel_address(),1<<input.channel,program,
+                        if midi2{bank.map_or(crate::ProgramBankIntent::KeepSelected,crate::ProgramBankIntent::Select)}else{crate::ProgramBankIntent::UsePendingBankSelect},None,None,super::channel_event::ProgramProvenance::Wire(voice.version))?;
+                    Applied::ProgramChange{targets}
+                }
+            }
             Message::PolyPressure { key, value } if midi2 => {
-                let (_, owners) = runtime.dispatch_poly_pressure(
+                let recipients=source.map(|source|crate::InputSelector{protocol:Some(source.protocol),port:Some(source.port),group:Some(source.group),channel:Some(source.channel),key:Some(source.key),external_id:source.external_id});
+                let (_, owners) = runtime.dispatch_poly_pressure_selected(
                     self.performance,
                     input.channel_address(),
                     key,
-                    value.full_scale(),
+                    value.full_scale(),recipients,
                 )?;
                 Applied::Expression { owners }
             }

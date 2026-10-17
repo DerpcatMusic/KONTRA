@@ -96,6 +96,8 @@ impl Runtime {
 #[derive(Clone, Copy)]
 pub(super) struct State {
     pub articulation: u32,
+    /// Accepted downstream selection; pending Bank Select remains in CC0/32.
+    pub program: Option<crate::ProgramSelection>,
     pub native_key: Option<u8>,
     pub native_tick: u64,
     pub native_seed: u64,
@@ -196,6 +198,7 @@ impl PerformanceState {
         let mut states = filled(capacity,
             State {
                 articulation: 0,
+                program: None,
                 native_key: None,
                 native_tick: 0,
                 native_seed: 0,
@@ -282,6 +285,21 @@ impl PerformanceState {
         let next = self.detach(self.physical[index].current);
         self.physical[index].current = next;
         &mut self.states[next]
+    }
+
+    /// Caller preflights the full target UNION before this infallible commit.
+    pub fn publish_program(&mut self,performance:usize,scope:crate::ChannelScope,program:u8,bank:crate::ProgramBankIntent) {
+        self.ensure_scope(performance,scope);
+        for index in 0..self.physical.len() {
+            if self.physical[index].performance!=performance || !scope.contains(self.physical[index].address){continue;}
+            let state=self.edit_physical(index);
+            let selected=match bank {
+                crate::ProgramBankIntent::KeepSelected=>state.program.map_or([0;2],|old|old.bank),
+                crate::ProgramBankIntent::UsePendingBankSelect=>[(state.controllers[0]>>25) as u8,(state.controllers[32]>>25) as u8],
+                crate::ProgramBankIntent::Select(bank)=>bank,
+            };
+            state.program=Some(crate::ProgramSelection{program,bank:selected});
+        }
     }
 
     pub fn capture_channel(&mut self, performance: usize, address: crate::ChannelAddress) -> usize {
