@@ -379,6 +379,30 @@ impl<const N: usize> From<[u32; N]> for Layers {
     }
 }
 
+/// Actual coroutine creator, independent of the played voice's optional parent.
+/// A spawned/run coroutine has a manual event creator when launched by any
+/// callback; top-level/init/transport/async completion have no creator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayCreator {
+    #[default]
+    None,
+    NoteOn(u64),
+    Event,
+    Widget,
+}
+
+impl PlayCreator {
+    fn note(self) -> Option<u64> {
+        match self { Self::NoteOn(id) => Some(id), _ => None }
+    }
+    fn independent(self) -> Self {
+        match self { Self::None => Self::None, _ => Self::Event }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayOrigin { Helper, PostedEvent }
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Play {
     /// The voice id `playNote` returned to the script.
@@ -386,9 +410,8 @@ pub struct Play {
     pub at_ms: f64,
     pub key: u8,
     pub velocity: u8,
-    /// Milliseconds until its own release; `Some(0.0)` sends only the note-on
-    /// (the script releases it); `None` (-1, or unset) follows the originating
-    /// note.
+    /// Milliseconds until its own release; `Some(0.0)` is manual. `None`
+    /// (-1 or unset) uses the actual creator branch, never parent absence.
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
     pub layers: Layers,
@@ -398,7 +421,10 @@ pub struct Play {
     pub vol: f64,
     pub pan: f64,
     pub tune: f64,
-    /// The script event that caused it, if any.
+    /// Actual callback/thread provenance; parent absence is not a lifetime law.
+    pub creator: PlayCreator,
+    pub origin: PlayOrigin,
+    /// The physical onNote event that caused it, if any.
     pub parent: Option<u64>,
 }
 
@@ -606,7 +632,7 @@ struct Waiting {
     thread: Thread,
     due: f64,
     seq: u64,
-    note: Option<u64>,
+    creator: PlayCreator,
     release: bool,
 }
 
@@ -639,14 +665,15 @@ struct Shared {
     graph_nodes: Cell<usize>,
     graph_depth: Cell<usize>,
     script_bytes: Cell<usize>,
-    current: Cell<Option<u64>>,
+    creator: Cell<PlayCreator>,
+    in_thread: Cell<bool>,
     commands: RefCell<Vec<Command>>,
     // A batch sent before UI export stays charged until the ordinary collector
     // has rebuilt stale impulses, preserving the authored queue admission limit.
     ready_command_charge: Cell<usize>,
     findings: RefCell<BTreeMap<(String, Option<SetterTypes>), Finding>>,
     waiting: RefCell<Vec<Waiting>>,
-    deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
+    deferred: RefCell<Vec<(Thread, MultiValue, PlayCreator)>>,
     data_loads: RefCell<async_data::DataLoads>,
     sample_loads: RefCell<sample_loading::SampleLoads>,
     params: RefCell<Vec<Vec<(String, String)>>>,
@@ -1448,7 +1475,8 @@ impl ScriptHost {
             graph_nodes: Cell::new(0),
             graph_depth: Cell::new(0),
             script_bytes: Cell::new(PRELUDE.len()),
-            current: Cell::new(None),
+            creator: Cell::new(PlayCreator::None),
+            in_thread: Cell::new(false),
             commands: RefCell::new(Vec::new()),
             ready_command_charge: Cell::new(0),
             findings: RefCell::new(BTreeMap::new()),
@@ -1660,6 +1688,14 @@ impl ScriptHost {
                 Ok(f64::from(value))
             })?,
         )?;
+        let s = shared.clone();
+        native.set("widgetChanged", lua.create_function(move |_, (f, args): (Function, MultiValue)| {
+            let previous = s.creator.get();
+            if !s.in_thread.get() { s.creator.set(PlayCreator::Widget); }
+            let result = f.call::<MultiValue>(args);
+            s.creator.set(previous);
+            result
+        })?)?;
         async_data::install(lua, shared)?;
         let s = shared.clone();
         globals.raw_set(
@@ -1686,7 +1722,7 @@ impl ScriptHost {
                     let thread = lua.create_thread(callback.clone())?;
                     s.deferred
                         .borrow_mut()
-                        .push((thread, MultiValue::from_vec(vec![Value::UserData(task.clone())]), None));
+                        .push((thread, MultiValue::from_vec(vec![Value::UserData(task.clone())]), PlayCreator::None));
                 }
                 Ok(task)
             })?,
@@ -2393,7 +2429,7 @@ impl ScriptHost {
         globals.raw_set(
             "playNote",
             lua.create_function(move |_, args: Variadic<Value>| {
-                let play = parse_play(&s, &args);
+                let play = parse_play(&s, &args, PlayOrigin::Helper)?;
                 let id = play.id;
                 s.voices.borrow_mut().insert(id);
                 s.command(Command::Play(play));
@@ -2404,7 +2440,7 @@ impl ScriptHost {
         native.set(
             "postNote",
             lua.create_function(move |_, event: Table| {
-                let mut play = parse_play(&s, &[Value::Table(event.clone())]);
+                let mut play = parse_play(&s, &[Value::Table(event.clone())], PlayOrigin::PostedEvent)?;
                 play.id = field(&event, "id")
                     .or_else(|| field(&event, "voiceId"))
                     .map_or(play.id, |id| id as u64);
@@ -2448,7 +2484,7 @@ impl ScriptHost {
             "spawn",
             lua.create_function(move |lua, (f, args): (Function, MultiValue)| {
                 let thread = lua.create_thread(f)?;
-                s.deferred.borrow_mut().push((thread, args, None));
+                s.deferred.borrow_mut().push((thread, args, s.creator.get().independent()));
                 Ok(())
             })?,
         )?;
@@ -2459,7 +2495,7 @@ impl ScriptHost {
                 let thread = lua.create_thread(f)?;
                 // Immediate execution does not transfer the calling note's
                 // ownership to this independent coroutine (as with spawn).
-                resume(&s, thread, args, None);
+                resume(&s, thread, args, s.creator.get().independent());
                 Ok(())
             })?,
         )?;
@@ -2515,8 +2551,9 @@ impl ScriptHost {
             Ok(s.held.borrow().values().any(|key| usize::from(*key) % 12 == class))
         });
         define!("isNoteHeld", s, move |_, ()| Ok(s
-            .current
+            .creator
             .get()
+            .note()
             .is_some_and(|id| s.held.borrow().contains_key(&id))));
         define!("getCC", s, move |_, cc: f64| {
             Ok(s.cc.borrow().get(cc as usize).copied().unwrap_or(0))
@@ -2781,7 +2818,7 @@ impl ScriptHost {
             {
                 let _profile = self.shared.profile.span("script_body_and_require");
                 let _span = Span::new("uvi_lua_script_body");
-                resume(&self.shared, thread, MultiValue::new(), None);
+                resume(&self.shared, thread, MultiValue::new(), PlayCreator::None);
                 self.cycle();
             }
             let restored = Span::new("uvi_lua_restore");
@@ -2792,7 +2829,7 @@ impl ScriptHost {
                 self.shared
                     .arm(self.shared.config.load, self.shared.config.load_work);
                 if let Ok(thread) = self.lua.create_thread(f) {
-                    resume(&self.shared, thread, MultiValue::new(), None);
+                    resume(&self.shared, thread, MultiValue::new(), PlayCreator::None);
                     self.cycle();
                 }
             }
@@ -2828,7 +2865,7 @@ impl ScriptHost {
             if batch.is_empty() {
                 break;
             }
-            for (thread, args, note) in batch {
+            for (thread, args, creator) in batch {
                 #[cfg(feature = "scan")]
                 self.owner_count(diagnostics::OwnerCounter::DeferredResumes, 1);
                 if self.shared.consume_work().is_err() {
@@ -2836,7 +2873,7 @@ impl ScriptHost {
                     self.shared.find("lua error", "work budget exceeded");
                     return;
                 }
-                resume(&self.shared, thread, args, note);
+                resume(&self.shared, thread, args, creator);
             }
         }
     }
@@ -2880,12 +2917,12 @@ impl ScriptHost {
         let Ok(thread) = self.lua.create_thread(f) else {
             return;
         };
-        let note = (name == "onNote")
-            .then(|| event.as_ref().and_then(|e| field(e, "id")))
-            .flatten()
-            .map(|id| id as u64);
+        let creator = if name == "onNote" {
+            event.as_ref().and_then(|e| field(e, "id"))
+                .map_or(PlayCreator::None, |id| PlayCreator::NoteOn(id as u64))
+        } else if event.is_some() { PlayCreator::Event } else { PlayCreator::None };
         let args: MultiValue = event.map(Value::Table).into_iter().collect();
-        resume(&self.shared, thread, args, note);
+        resume(&self.shared, thread, args, creator);
         self.cycle();
     }
 
@@ -2928,7 +2965,7 @@ impl ScriptHost {
             let mut waiting = self.shared.waiting.borrow_mut();
             let (woken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiting)
                 .into_iter()
-                .partition(|w| w.release && w.note == Some(id));
+                .partition(|w| w.release && w.creator.note() == Some(id));
             *waiting = rest;
             woken
         };
@@ -2937,7 +2974,7 @@ impl ScriptHost {
                 self.shared.config.callback,
                 self.shared.config.callback_work,
             );
-            resume(&self.shared, w.thread, MultiValue::new(), w.note);
+            resume(&self.shared, w.thread, MultiValue::new(), w.creator);
         }
         let e = self.event(
             2,
@@ -3048,7 +3085,7 @@ impl ScriptHost {
         if let Ok(thread) = self.lua.create_thread(f) {
             let mut args = MultiValue::new();
             args.push_front(Value::Boolean(playing));
-            resume(&self.shared, thread, args, None);
+            resume(&self.shared, thread, args, PlayCreator::None);
             self.cycle();
         }
     }
@@ -3088,7 +3125,7 @@ impl ScriptHost {
                 self.shared.find("lua error", "work budget exceeded");
                 break;
             }
-            resume(&self.shared, w.thread, MultiValue::new(), w.note);
+            resume(&self.shared, w.thread, MultiValue::new(), w.creator);
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
@@ -3306,16 +3343,18 @@ impl ScriptHost {
     }
 }
 
-fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u64>) {
+fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, creator: PlayCreator) {
     #[cfg(feature = "scan")]
     if let Some(audit) = shared.owner_audit.get() { audit.add(diagnostics::OwnerCounter::CoroutineResumes, 1); }
     #[cfg(feature = "scan")]
     if let Some(progress) = &shared.progress {
         progress.resume(shared.now.get());
     }
-    let before = shared.current.replace(note);
+    let before = shared.creator.replace(creator);
+    let was_thread = shared.in_thread.replace(true);
     let result = thread.resume::<MultiValue>(args);
-    shared.current.set(before);
+    shared.in_thread.set(was_thread);
+    shared.creator.set(before);
     match result {
         Err(e) => shared.find("lua error", &lua_error(e)),
         Ok(values) => {
@@ -3332,14 +3371,14 @@ fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u6
                 thread,
                 due,
                 seq: shared.seq.get(),
-                note,
+                creator,
                 release,
             });
         }
     }
 }
 
-fn parse_play(shared: &Shared, args: &[Value]) -> Play {
+fn parse_play(shared: &Shared, args: &[Value], origin: PlayOrigin) -> mlua::Result<Play> {
     let mut values: [Option<Value>; 11] = Default::default();
     match args {
         [Value::Table(t)] => {
@@ -3381,7 +3420,11 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
     // lua.uvi.net: > 0 releases after that long, -1 with the originating note,
     // 0 sends only the note-on (the script ends it with releaseVoice).
     let duration = num(2).filter(|d| *d >= 0.0);
-    Play {
+    let creator = shared.creator.get();
+    if origin == PlayOrigin::Helper && duration.is_none() && creator == PlayCreator::Widget {
+        return Err(mlua::Error::runtime("playNote duration -1 requires a script thread in a widget changed callback"));
+    }
+    Ok(Play {
         id: shared.next_id(),
         at_ms: shared.now.get(),
         key: num(0).unwrap_or(60.0).clamp(0.0, 127.0) as u8,
@@ -3392,8 +3435,10 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
         vol: num(6).unwrap_or(1.0),
         pan: num(7).unwrap_or(0.0),
         tune: num(8).unwrap_or(0.0),
-        parent: shared.current.get(),
-    }
+        creator,
+        origin,
+        parent: creator.note(),
+    })
 }
 
 #[cfg(test)]
@@ -4020,5 +4065,86 @@ mod physical_key_state_regressions {
         h.note_off(42,60,64,15);
         h.lua.load("assert(#resumed==2 and resumed[2][1]==42 and not resumed[2][2] and not resumed[2][3])").exec().unwrap();
         assert!(h.findings().is_empty(),"{:?}",h.findings());
+    }
+}
+
+#[cfg(test)]
+mod play_creator_tests {
+    use super::*;
+
+    fn host(source: &str) -> ScriptHost {
+        let xml = format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors></Program>");
+        ScriptHost::new(&xml, (), Config::default()).unwrap()
+    }
+    fn plays(host: &mut ScriptHost) -> Vec<Play> {
+        host.take_commands().into_iter().filter_map(|c| match c { Command::Play(p) => Some(p), _ => None }).collect()
+    }
+
+    #[test]
+    fn actual_creator_survives_wait_and_spawn_run_get_manual_callback_creator() {
+        let mut host = host(r#"
+            playNote(48,100,-1)
+            spawn(function() playNote(49,100,-1) end)
+            function onInit() playNote(50,100,-1) end
+            function onNote(e)
+                run(function() playNote(61,100,-1) end)
+                spawn(function() wait(2); playNote(62,100,-1) end)
+                wait(10); playNote(63,100,-1)
+            end
+            function onController(e) playNote(64,100,-1) end
+            function onRelease(e) playNote(65,100,-1) end
+            function onTransport(playing) playNote(66,100,-1) end
+        "#);
+        let init = plays(&mut host);
+        assert_eq!(init.iter().map(|p| p.creator).collect::<Vec<_>>(), [PlayCreator::None; 3]);
+        host.note_on(17,60,100,4);
+        let immediate = plays(&mut host);
+        assert_eq!(immediate.len(),1);
+        assert_eq!((immediate[0].key,immediate[0].creator,immediate[0].parent), (61,PlayCreator::Event,None));
+        host.advance(2.);
+        let spawned = plays(&mut host);
+        assert_eq!((spawned[0].key,spawned[0].creator,spawned[0].parent), (62,PlayCreator::Event,None));
+        host.note_off(17,60,64,4);
+        let release = plays(&mut host);
+        assert_eq!((release[0].key,release[0].creator), (65,PlayCreator::Event));
+        host.advance(10.);
+        let late = plays(&mut host);
+        assert_eq!((late[0].key,late[0].creator,late[0].parent), (63,PlayCreator::NoteOn(17),Some(17)));
+        host.controller(1,127,4);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::Event);
+        host.transport(true);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::None);
+        assert!(host.findings().is_empty(),"{:?}",host.findings());
+    }
+
+    #[test]
+    fn widget_negative_duration_errors_outside_thread_but_explicit_duration_and_spawn_remain_valid() {
+        let mut host = host(r#"
+            k=Knob('CreatorWidget',0,0,10)
+            k.changed=function(self) playNote(60,100,-1) end
+        "#);
+        assert!(host.set_control(control_id(1,0),1.).is_err());
+        assert!(plays(&mut host).is_empty());
+        // Reassignment is deliberately observed by the ordinary edit path.
+        host.lua.load("k.changed=function(self) playNote(61,100,0); spawn(function() playNote(62,100,-1) end) end").exec().unwrap();
+        host.set_control(control_id(1,0),2.).unwrap();
+        let commands=plays(&mut host);
+        assert_eq!(commands.len(),2);
+        assert_eq!((commands[0].creator,commands[0].duration_ms),(PlayCreator::Widget,Some(0.)));
+        assert_eq!((commands[1].creator,commands[1].duration_ms),(PlayCreator::Event,None));
+    }
+
+    #[test]
+    fn widget_changed_inside_real_init_thread_has_no_creator_and_inside_note_has_note_creator() {
+        let mut host = host(r#"
+            k=Knob('ThreadWidget',0,0,10)
+            k.changed=function(self) playNote(60,100,-1) end
+            function onInit() k:setValue(1) end
+            function onNote(e) k:setValue(2) end
+        "#);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::None);
+        host.note_on(23,60,100,0);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::NoteOn(23));
+        assert!(host.findings().is_empty(),"{:?}",host.findings());
     }
 }
