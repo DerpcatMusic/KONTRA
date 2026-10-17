@@ -321,7 +321,7 @@ pub fn load_read_streamed_cancelable(
             }
         },
     )?;
-    if !hit && !canceled() {
+    if !hit && !canceled() && opened.logical_sources.is_none() {
         if let Some(preset) = options.library.as_deref() {
             crate::header_cache::store(preset, &listed, &sources, &opened.assets);
         }
@@ -330,14 +330,14 @@ pub fn load_read_streamed_cancelable(
     if canceled() {
         return Err(LoadError::Canceled);
     }
-    let pcm = opened.assets.clone();
+    let logical=opened.logical_sources.clone().unwrap_or_else(||opened.assets.iter().cloned().map(SourceStorage::Stereo).collect());
     progress(Progress::Lowering);
     let labels = kept
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, initialized)?;
-    crate::Streamed::new(loaded, opened, kept, canceled)
+    let (loaded, kept) = finish_sources_kept(instrument, logical, labels, options, initialized)?;
+    crate::Streamed::new_sources(loaded, opened, kept, canceled)
 }
 
 /// Stream an instrument translated by another loader: `sources[i]` and
@@ -365,11 +365,11 @@ pub fn stream_instrument_cancelable(
         .collect();
     let requirements=instrument.assets.iter().map(|a|a.residency).collect::<Vec<_>>();
     let opened=crate::stream::Streamer::open_required(listed,&requirements,options.rate,policy,32,canceled,&mut|_,_|())?;
-    let pcm = opened.assets.clone();
+    let logical=opened.logical_sources.clone().unwrap_or_else(||opened.assets.iter().cloned().map(SourceStorage::Stereo).collect());
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
+    let (loaded, kept) = finish_sources_kept(instrument, logical, labels, options, None)?;
     if canceled(){return Err(LoadError::Canceled);}
-    crate::Streamed::new(loaded, opened, kept, canceled)
+    crate::Streamed::new_sources(loaded, opened, kept, canceled)
 }
 
 /// Fit each zone to its decoded audio (`pcm[i]` and `labels[i]` belong to

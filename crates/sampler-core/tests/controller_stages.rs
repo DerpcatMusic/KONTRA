@@ -416,3 +416,132 @@ fn long_controller_chains_use_bounded_dispatch_storage_instead_of_the_thread_sta
         .join()
         .unwrap();
 }
+
+
+// Callback epochs are captured at callback creation, not immutable note admission.
+fn reset_epoch_plan() -> Prepared {
+    let write=|cc,value| vec![I::SetLocal{local:0,value:cc},I::SetLocal{local:1,value},I::WriteController{controller:0,value:1}];
+    let mut attack=vec![I::StartProgram{program:1},I::Wait(4)];attack.extend(write(1,111));
+    let mut old_fork=vec![I::Wait(4)];old_fork.extend(write(11,222));
+    let mut release=write(1,333);release.push(I::StartProgram{program:3});
+    let mut current_fork=vec![I::Wait(1)];current_fork.extend(write(11,444));
+    plan(vec![program(attack),program(old_fork),program(release),program(current_fork),
+        program(vec![I::ReadScriptCell{local:0,cell:0},I::AddLocal{local:0,value:1},I::WriteScriptCell{cell:0,local:0},I::ForwardController])],vec![],1)
+        .with_stages(vec![Stage{note:Some(0),release:Some(2),..Stage::default()},Stage{controller:Some(4),..Stage::default()}]).unwrap()
+}
+
+#[test]
+fn selective_reset_expires_old_wait_and_fork_but_fresh_release_and_fork_use_current_epochs() {
+    let prepared=reset_epoch_plan();let budget=Limits{notes:4,expressions:4,..limits(&prepared,32)};
+    let mut rt=Runtime::new(prepared,budget).unwrap();
+    support::without_heap(|| {
+        let own=address();let other=ChannelAddress{port:own.port+1,..own};
+        let input=|address:ChannelAddress,key| Input{protocol:address.protocol,port:address.port,group:address.group,channel:address.channel,key,external_id:None};
+        let note=rt.trigger(input(own,60),60,1.).unwrap();let sibling=rt.trigger(input(other,61),61,1.).unwrap();
+        let performance=rt.performance(0).unwrap();
+        let scope=ChannelScope{protocol:own.protocol,port:own.port,group:own.group,channels:1<<own.channel};
+        rt.reset_channel_controllers(performance,scope).unwrap();
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(0),"selective reset invents no six CC callbacks");
+        rt.render(&mut [[0.;2];6]).unwrap();
+        assert_eq!(rt.channel_controller(performance,own,1),Ok(0));
+        assert_eq!(rt.channel_controller(performance,own,11),Ok(u32::MAX));
+        assert_eq!(rt.channel_controller(performance,other,1),Ok(111));
+        assert_eq!(rt.channel_controller(performance,other,11),Ok(222));
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(2));
+        rt.note_off_exact(note,None).unwrap();rt.render(&mut [[0.;2];2]).unwrap();
+        assert_eq!(rt.channel_controller(performance,own,1),Ok(333),"fresh onRelease is not tied to stale note admission epoch");
+        assert_eq!(rt.channel_controller(performance,own,11),Ok(444),"fresh note callback's plan fork carries current physical epoch");
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(4));
+        assert!(rt.input_held(sibling).unwrap());
+        assert_eq!(rt.controller(performance,1),Ok(0),"captured callbacks never become global");
+    });
+}
+
+#[test]
+fn hard_sound_off_cancels_captured_plan_forks_without_touching_other_source_domains() {
+    let prepared=reset_epoch_plan();let budget=Limits{notes:4,expressions:4,..limits(&prepared,32)};
+    let mut rt=Runtime::new(prepared,budget).unwrap();
+    support::without_heap(|| {
+        let own=address();let other=ChannelAddress{group:own.group+1,..own};
+        let input=|address:ChannelAddress,key|Input{protocol:address.protocol,port:address.port,group:address.group,channel:address.channel,key,external_id:None};
+        rt.trigger(input(own,60),60,1.).unwrap();let sibling=rt.trigger(input(other,61),61,1.).unwrap();
+        rt.all_sound_off(own).unwrap();rt.render(&mut [[0.;2];6]).unwrap();
+        let performance=rt.performance(0).unwrap();
+        assert_eq!(rt.channel_controller(performance,own,1),Ok(0));assert_eq!(rt.channel_controller(performance,own,11),Ok(u32::MAX));
+        assert_eq!(rt.channel_controller(performance,other,1),Ok(111));assert_eq!(rt.channel_controller(performance,other,11),Ok(222));
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(2));assert!(rt.input_held(sibling).unwrap());
+    });
+}
+
+
+
+#[test]
+fn hard_sound_off_cancels_note_parameter_fanout_but_preserves_sibling_and_uncaptured_plan_work() {
+    let send=program(vec![I::SetLocal{local:0,value:42},I::SetLocal{local:1,value:7},
+        I::SendParameter{kind:ParameterKind::Rpn,address:0,value:1}])
+        .with_script_instance(ScriptInstanceId(0));
+    let captured=program(vec![I::Wait(4),I::SetLocal{local:0,value:1},
+        I::SetLocal{local:1,value:777},I::WriteController{controller:0,value:1}])
+        .with_script_instance(ScriptInstanceId(1));
+    // Ordinary startup Control has epochs=None even when its origin happens
+    // to equal the hard-killed physical address. Its global write must survive.
+    let startup=program(vec![I::Wait(4),I::SetLocal{local:0,value:2},
+        I::SetLocal{local:1,value:888},I::WriteController{controller:0,value:1}])
+        .with_script_instance(ScriptInstanceId(0));
+    let bare=program(vec![I::Wait(4),I::SetLocal{local:0,value:999},
+        I::WriteScriptCell{cell:0,local:0}])
+        .with_script_instance(ScriptInstanceId(0));
+    let prepared=Prepared::new(48000,vec![],vec![],0).unwrap()
+        .with_script_instances(vec![vec![0],vec![]]).unwrap()
+        .with_programs(vec![send,captured,startup,bare],None).unwrap()
+        .with_stages(vec![Stage{note:Some(0),..Stage::default()},Stage::default()]).unwrap()
+        .with_parameter_programs(vec![ParameterProgram{kind:ParameterKind::Rpn,program:1,stage:1}]).unwrap()
+        .with_plan_programs(vec![PlanProgram{program:2,stage:0}]).unwrap();
+    let budget=Limits{notes:4,expressions:4,..limits(&prepared,32)};
+    let mut rt=Runtime::new(prepared,budget).unwrap();
+    support::without_heap(|| {
+        let own=ChannelAddress{protocol:Protocol::Native,port:0,group:0,channel:0};
+        let other=ChannelAddress{protocol:Protocol::Midi2,..own};
+        let input=|address:ChannelAddress|Input{protocol:address.protocol,port:address.port,
+            group:address.group,channel:address.channel,key:60,external_id:None};
+        rt.start_plan_behavior(rt.active_plan(),3).unwrap();
+        rt.trigger(input(own),60,1.).unwrap();
+        let sibling=rt.trigger(input(other),60,1.).unwrap();
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.now(),0);
+        rt.all_sound_off(own).unwrap();
+        rt.render(&mut [[0.;2];6]).unwrap();
+        let performance=rt.performance(0).unwrap();
+        assert_eq!(rt.channel_controller(performance,own,1),Ok(0),
+            "captured parameter receiver must not resurrect a hard-killed address");
+        assert_eq!(rt.channel_controller(performance,other,1),Ok(777),
+            "same port/group/channel/key in a different protocol remains independent");
+        assert_eq!(rt.controller(performance,1),Ok(0));
+        assert_eq!(rt.controller(performance,2),Ok(888),
+            "uncaptured startup Control must not be canceled by coincident origin");
+        assert_eq!(rt.script_cell(rt.active_plan(),ScriptInstanceId(0),0),Ok(999),
+            "genuine Bare plan work remains global and live");
+        assert!(rt.input_held(sibling).unwrap());
+        assert_eq!(rt.take_fault(),None);
+    });
+}
+
+#[test]
+fn selective_reset_preflights_primary_secondary_union_without_publishing_rows_or_reviving_waits() {
+    let prepared=plan(vec![program(vec![I::Wait(4),I::ForwardController])],vec![0],0);
+    let budget=Limits{performances:1,..limits(&prepared,64)};let mut rt=Runtime::new(prepared,budget).unwrap();
+    support::without_heap(|| {
+        let performance=rt.performance(0).unwrap();
+        for port in 0..47u16 {let source=ChannelAddress{port,..address()};rt.dispatch_controller(performance,source,1<<source.channel,1,u32::from(port)+1).unwrap();}
+        let first=ChannelAddress{port:100,..address()};let second=ChannelAddress{protocol:Protocol::Native,port:101,..address()};
+        let scope=|source:ChannelAddress|ChannelScope{protocol:source.protocol,port:source.port,group:source.group,channels:1<<source.channel};
+        assert_eq!(rt.reset_protocol_controller_targets(performance,scope(first),Some(scope(second))),Err(Error::Capacity));
+        assert_eq!(rt.now(),0);assert_eq!(rt.channel_input_controller(performance,first,1),Ok(0));
+        rt.render(&mut [[0.;2];5]).unwrap();
+        for port in 0..47u16 {assert_eq!(rt.channel_controller(performance,ChannelAddress{port,..address()},1),Ok(u32::from(port)+1),"rejected reset cannot invalidate waiting epochs");}
+        rt.flush_behaviors(|_,_,_|true);
+        rt.dispatch_controller(performance,first,1<<first.channel,1,999).unwrap();
+        assert_eq!(rt.dispatch_controller(performance,second,1<<second.channel,1,1000),Err(Error::Capacity),"exactly one row remained; failed union consumed none");
+        rt.render(&mut [[0.;2];5]).unwrap();assert_eq!(rt.channel_controller(performance,first,1),Ok(999));
+    });
+}

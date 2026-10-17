@@ -82,6 +82,141 @@ pub fn install_resident_source_reload(source:&SourceStorage,
     Ok(())
 }
 
+/// Exact ordinary PCM codec family admitted by the guarded UVI chunk walker.
+/// Compressed containers and arbitrary custom decoder closures are not covered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PcmStreamEncoding { WavSigned(u16), WavFloat32, AiffSigned(u16) }
+/// Untrusted immutable container facts, never container authority by themselves.
+/// The checked opener validates the actual fixed PCM container before the
+/// ordinary allocating probe, then checks its actual codec/geometry again.
+/// The origin owner supplies its audited retained buffer/box capacity; this is
+/// not a cost override for an opaque SampleReader::custom closure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PcmStreamAdmission {
+    encoding: PcmStreamEncoding,
+    channels: usize,
+    frames: u64,
+    extent: u64,
+    codec_bound: usize,
+    external_source_bytes:usize,
+    accounted_bound:usize,
+}
+impl PcmStreamAdmission {
+    pub fn new(encoding:PcmStreamEncoding,channels:usize,frames:u64,extent:u64,external_source_workspace_bytes:usize)->io::Result<Self> {
+        use symphonia::default::{codecs::PcmDecoder,formats::{AiffReader,WavReader}};
+        if !(1..=26).contains(&channels) || frames==0 || extent<12 || external_source_workspace_bytes==0 {
+            return Err(invalid_input("invalid guarded PCM stream admission"));
+        }
+        let width=match encoding {PcmStreamEncoding::WavSigned(b)|PcmStreamEncoding::AiffSigned(b) if matches!(b,16|24|32)=>usize::from(b/8),
+            PcmStreamEncoding::WavFloat32=>4,_=>return Err(invalid_input("uncertified PCM encoding"))};
+        let samples=1152usize.checked_mul(channels).ok_or_else(||invalid_input("PCM packet sample overflow"))?;
+        // One64KiB source ring; encoded packet plus a possible short-packet
+        // Vec-to-Box shrink overlap on failure; one fixed decoder plane
+        // buffer (i24 occupies4B); one fixed f32 conversion buffer; bounded
+        // plane-reference temporaries for widths beyond the inline stack case.
+        // RIFF/AIFF format/decoder structs include their inline Vec/metadata
+        // owners; the sole Track allocation is additionally charged.
+        let format=match encoding {PcmStreamEncoding::AiffSigned(_)=>size_of::<AiffReader>(),_=>size_of::<WavReader>()};
+        let codec_bound=Some(64usize<<10)
+            .and_then(|n|samples.checked_mul(width).and_then(|p|p.checked_mul(2)).and_then(|p|n.checked_add(p)))
+            .and_then(|n|samples.checked_mul(8).and_then(|p|n.checked_add(p)))
+            .and_then(|n|channels.checked_mul(2*size_of::<&[f32]>()).and_then(|p|n.checked_add(p)))
+            .and_then(|n|n.checked_add(format))
+            .and_then(|n|n.checked_add(size_of::<PcmDecoder>()))
+            .and_then(|n|n.checked_add(size_of::<symphonia::core::formats::Track>()))
+            .and_then(|n|n.checked_add(size_of::<EncodedChannelReader>()))
+            .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"PCM owned workspace overflow"))?;
+        let accounted_bound=codec_bound.checked_add(external_source_workspace_bytes).ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"external source workspace sum overflow"))?;
+        if accounted_bound>isize::MAX as usize {return Err(invalid_input("PCM accounted workspace exceeds address space"));}
+        Ok(Self{encoding,channels,frames,extent,codec_bound,external_source_bytes:external_source_workspace_bytes,accounted_bound})
+    }
+    /// Validate an actual AIFF80 COMM sample-rate field before the ordinary
+    /// format probe can construct TimeBase. Reuses the normal Kontakt parser's
+    /// finite/domain checks. The final truncation is the pinned Symphonia
+    /// CommonChunk law, not the legacy Kontakt reader's round-to-nearest law.
+    pub fn validate_aiff_sample_rate(bytes:[u8;10])->io::Result<u32> {
+        let [s0,s1,m0,m1,m2,m3,m4,m5,m6,m7]=bytes;
+        let rate=crate::samples::aiff_sample_rate(u16::from_be_bytes([s0,s1]),u64::from_be_bytes([m0,m1,m2,m3,m4,m5,m6,m7])).map_err(invalid)?;
+        Ok(rate as u32)
+    }
+    pub fn channels(self)->usize {self.channels}
+    pub fn frames(self)->u64 {self.frames}
+    /// Verified fixed codec/container capacities for this exact PCM profile.
+    /// The arbitrary MediaSource owner's retained storage is NOT verified here.
+    pub fn verified_codec_workspace_bytes(self)->usize {self.codec_bound}
+    /// Caller contract, not a verified source-owner capability. Normal UVI
+    /// supplies its audited concrete Bytes CHUNK + object size.
+    pub fn external_source_workspace_bytes(self)->usize {self.external_source_bytes}
+    /// Contractual sum, not a certified total for an opaque MediaSource.
+    pub fn accounted_workspace_bytes(self)->usize {self.accounted_bound}
+    fn codec(self)->symphonia::core::codecs::CodecType {
+        use symphonia::core::codecs::*;
+        match self.encoding {PcmStreamEncoding::WavSigned(16)=>CODEC_TYPE_PCM_S16LE,
+            PcmStreamEncoding::WavSigned(24)=>CODEC_TYPE_PCM_S24LE,PcmStreamEncoding::WavSigned(_)=>CODEC_TYPE_PCM_S32LE,
+            PcmStreamEncoding::WavFloat32=>CODEC_TYPE_PCM_F32LE,PcmStreamEncoding::AiffSigned(16)=>CODEC_TYPE_PCM_S16BE,
+            PcmStreamEncoding::AiffSigned(24)=>CODEC_TYPE_PCM_S24BE,PcmStreamEncoding::AiffSigned(_)=>CODEC_TYPE_PCM_S32BE}
+    }
+}
+
+/// Revalidate the actual supplied source, not only a caller's numeric facts.
+/// This narrow structural admission allocates no chunk bodies and permits only
+/// the exact nonallocating RIFF/AIFF PCM format-reader domain. Playback semantics
+/// still belong to the adapter's existing metadata parser. In particular a
+/// forged public descriptor cannot make LIST/INFO or FLAC metadata affordable.
+fn validate_pcm_container(source:&mut dyn MediaSource,admission:PcmStreamAdmission)->io::Result<u32> {
+    use std::io::SeekFrom;
+    source.seek(SeekFrom::Start(0))?;let mut header=[0u8;12];source.read_exact(&mut header)?;
+    let aiff=matches!(admission.encoding,PcmStreamEncoding::AiffSigned(_));
+    if (aiff && (&header[..4]!=b"FORM" || &header[8..]!=b"AIFF"))
+        || (!aiff && (&header[..4]!=b"RIFF" || &header[8..]!=b"WAVE")) {return Err(invalid("PCM container differs from descriptor"));}
+    let u32_at=|b:&[u8],at:usize|->io::Result<u32> {let raw:[u8;4]=b.get(at..at+4).ok_or_else(||invalid("truncated PCM field"))?.try_into().map_err(invalid)?;Ok(if aiff {u32::from_be_bytes(raw)} else {u32::from_le_bytes(raw)})};
+    let u16_at=|b:&[u8],at:usize|->io::Result<u16> {let raw:[u8;2]=b.get(at..at+2).ok_or_else(||invalid("truncated PCM field"))?.try_into().map_err(invalid)?;Ok(if aiff {u16::from_be_bytes(raw)} else {u16::from_le_bytes(raw)})};
+    let end=u64::from(u32_at(&header,4)?)+8;
+    if end<12 || end>admission.extent {return Err(invalid("PCM container extent mismatch"));}
+    let mut at=12u64;let mut count=0usize;let mut format=false;let mut data=false;let mut sample_rate=None;
+    while at<end {
+        count=count.checked_add(1).ok_or_else(||invalid("PCM chunk count overflow"))?;
+        if count>65536 || end-at<8 {return Err(invalid("PCM chunk header bound"));}
+        source.seek(SeekFrom::Start(at))?;let mut h=[0u8;8];source.read_exact(&mut h)?;let n=u32_at(&h,4)?;
+        let next=at.checked_add(8+u64::from(n)+(u64::from(n)&1)).ok_or_else(||invalid("PCM chunk extent overflow"))?;
+        if next>end {return Err(invalid("PCM chunk exceeds container"));}
+        let id=&h[..4];
+        if id==(if aiff {b"COMM"} else {b"fmt "}) {
+            if format {return Err(invalid("duplicate PCM format"));}format=true;
+            let need=if aiff {18usize} else {16};if n as usize!=need {return Err(invalid("uncertified PCM format extension"));}
+            let mut body=[0u8;18];source.read_exact(&mut body[..need])?;
+            let channels=u16_at(&body,if aiff {0} else {2})?;let bits=u16_at(&body,if aiff {6} else {14})?;
+            let expected_bits=match admission.encoding {PcmStreamEncoding::WavSigned(bits)|PcmStreamEncoding::AiffSigned(bits)=>bits,PcmStreamEncoding::WavFloat32=>32};
+            if usize::from(channels)!=admission.channels || bits!=expected_bits {return Err(invalid("PCM sample layout changed"));}
+            let rate=if aiff {
+                if u64::from(u32_at(&body,2)?)!=admission.frames {return Err(invalid("AIFF declared frame count changed"));}
+                PcmStreamAdmission::validate_aiff_sample_rate(body[8..18].try_into().map_err(invalid)?)?
+            } else {
+                let code=u16_at(&body,0)?;let expected=if matches!(admission.encoding,PcmStreamEncoding::WavFloat32){3}else{1};
+                let rate=u32_at(&body,4)?;let align=u16_at(&body,12)?;
+                if code!=expected || rate==0 || usize::from(align)!=admission.channels*usize::from(bits/8)
+                    || u64::from(u32_at(&body,8)?)!=u64::from(rate)*u64::from(align) {return Err(invalid("PCM rate/alignment changed"));}
+                rate
+            };
+            sample_rate=Some(rate);
+        } else if id==(if aiff {b"SSND"} else {b"data"}) {
+            if data {return Err(invalid("duplicate PCM data"));}data=true;
+            let payload=if aiff {
+                if n<8 {return Err(invalid("truncated AIFF sound prefix"));}let mut prefix=[0u8;8];source.read_exact(&mut prefix)?;
+                if prefix!=[0;8] {return Err(invalid("uncertified AIFF sound offset/block size"));}u64::from(n-8)
+            } else {u64::from(n)};
+            let bits=match admission.encoding {PcmStreamEncoding::WavSigned(bits)|PcmStreamEncoding::AiffSigned(bits)=>bits,PcmStreamEncoding::WavFloat32=>32};
+            let expected=admission.frames.checked_mul(admission.channels as u64).and_then(|v|v.checked_mul(u64::from(bits/8))).ok_or_else(||invalid("PCM payload extent overflow"))?;
+            if payload!=expected {return Err(invalid("PCM payload geometry changed"));}
+        } else if !matches!(id,b"smpl"|b"inst"|b"INST"|b"MARK"|b"acid"|b"JUNK"|b"PAD "|b"FLLR") {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,"uncertified allocating PCM metadata"));
+        }
+        at=next;
+    }
+    if !format || !data {return Err(invalid("PCM format/data absent"));}
+    source.seek(SeekFrom::Start(0))?;sample_rate.ok_or_else(||invalid("PCM sample rate absent"))
+}
+
 const SKIP_FRAMES: u64 = 16384;
 
 fn invalid(error: impl ToString) -> io::Error {
@@ -158,6 +293,12 @@ impl<'destinations, 'samples> ChannelPackDestinations<'destinations, 'samples> {
         })
     }
 
+    pub(crate) fn channels(&self) -> usize { self.channels }
+    pub(crate) fn frames(&self) -> usize { self.frames }
+    pub(crate) fn put(&mut self, frame: usize, channel: usize, value: f32) {
+        self.packs[channel / 2][frame][channel % 2] = value;
+    }
+    pub(crate) fn clear(&mut self) { for pack in self.packs.iter_mut() { pack.fill([0.; 2]); } }
     fn write(&mut self, offset: usize, samples: &[f32]) {
         for (frame, original) in samples.chunks_exact(self.channels).enumerate() {
             for (pack, output) in self.packs.iter_mut().enumerate() {
@@ -185,6 +326,7 @@ pub struct EncodedChannelReader {
     rate: u32,
     frames: u64,
     buffer: Option<SampleBuffer<f32>>,
+    checked_pcm: Option<PcmStreamAdmission>,
     // Valid frame extent of buffer.samples(); no second packet copy.
     window_frames: usize,
     start: u64,
@@ -203,6 +345,26 @@ impl EncodedChannelReader {
         source: Box<dyn MediaSource>,
         metadata: &MetadataOptions,
     ) -> io::Result<Self> {
+        Self::open_profile(source,metadata,None,None)
+    }
+
+    /// Checked ordinary PCM container/codec plus an EXTERNAL SOURCE COST
+    /// CONTRACT. This does not verify an arbitrary MediaSource's retained
+    /// capacity; callers must separately admit its actual owner. Normal UVI
+    /// uses its concrete guarded Bytes path. No Custom decoder exemption.
+    pub fn open_checked_pcm(mut source:Box<dyn MediaSource>,metadata:&MetadataOptions,
+        admission:PcmStreamAdmission,workspace_limit:usize)->io::Result<Self> {
+        if source.byte_len()!=Some(admission.extent) {return Err(invalid("guarded PCM extent changed"));}
+        if admission.accounted_bound>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"guarded PCM workspace admission"));}
+        let rate=validate_pcm_container(&mut *source,admission)?;
+        Self::open_profile(source,metadata,Some(admission),Some(rate))
+    }
+    /// Includes the explicit external-source obligation, not verified ownership.
+    pub fn accounted_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.accounted_bound)}
+    pub fn verified_codec_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.codec_bound)}
+    pub fn external_source_workspace_bytes(&self)->Option<usize> {self.checked_pcm.map(|p|p.external_source_bytes)}
+
+    fn open_profile(source:Box<dyn MediaSource>,metadata:&MetadataOptions,checked_pcm:Option<PcmStreamAdmission>,checked_rate:Option<u32>)->io::Result<Self> {
         let stream = MediaSourceStream::new(source, Default::default());
         let mut format = symphonia::default::get_probe()
             .format(&Hint::new(), stream, &FormatOptions::default(), metadata)
@@ -225,6 +387,17 @@ impl EncodedChannelReader {
         if rate == 0 || channels == 0 || frames == 0 {
             return Err(invalid("invalid audio dimensions"));
         }
+        if let Some(admission)=checked_pcm {
+            if Some(rate)!=checked_rate || params.codec!=admission.codec() || channels!=admission.channels || frames!=admission.frames
+                || params.max_frames_per_packet!=Some(1152) || params.frames_per_block!=Some(1)
+                || params.extra_data.is_some() {
+                return Err(invalid("ordinary PCM probe differs from admitted container"));
+            }
+        }
+        let buffer=if checked_pcm.is_some() {
+            let assignments=params.channels.ok_or_else(||invalid("PCM channel assignments missing"))?;
+            Some(SampleBuffer::new(1152,symphonia::core::audio::SignalSpec::new(rate,assignments)))
+        } else {None};
         let decoder = symphonia::default::get_codecs()
             .make(&params, &DecoderOptions::default())
             .map_err(invalid)?;
@@ -235,7 +408,8 @@ impl EncodedChannelReader {
             channels,
             rate,
             frames,
-            buffer: None,
+            buffer,
+            checked_pcm,
             window_frames: 0,
             start: 0,
             #[cfg(test)]
@@ -266,7 +440,18 @@ impl EncodedChannelReader {
             if packet.track_id() != self.track {
                 continue;
             }
+            if let Some(admission)=self.checked_pcm {
+                let width=match admission.encoding {PcmStreamEncoding::WavSigned(b)|PcmStreamEncoding::AiffSigned(b)=>usize::from(b/8),PcmStreamEncoding::WavFloat32=>4};
+                let align=admission.channels.checked_mul(width).ok_or_else(||invalid("PCM packet alignment overflow"))?;
+                if packet.dur()>1152 || packet.data.len()>1152*align || !packet.data.len().is_multiple_of(align)
+                    || packet.ts().checked_add(packet.dur()).is_none_or(|end|end>admission.frames) {
+                    return Err(invalid("ordinary PCM packet exceeds admitted geometry"));
+                }
+            }
             let decoded = self.decoder.decode(&packet).map_err(invalid)?;
+            if self.checked_pcm.is_some() && (decoded.capacity()>1152 || decoded.frames()>1152) {
+                return Err(invalid("ordinary PCM decoder exceeds admitted fixed capacity"));
+            }
             if decoded.spec().channels.count() != self.channels || decoded.spec().rate != self.rate
             {
                 return Err(invalid("decoded signal geometry changed"));

@@ -3,6 +3,34 @@
 use super::{Cursor, storage::SourceResidentView};
 use crate::{ChannelCount, Error, resample::Kernel};
 
+/// Borrowed read authority. No decoder, cache mutation or additional source
+/// clock can be hidden behind this interface.
+pub(crate) trait ChannelRead {
+    fn channels(&self) -> ChannelCount;
+    fn sample_pair(&self, pair: usize, cursor: &Cursor, kernel: &Kernel) -> Option<[f32; 2]>;
+}
+impl ChannelRead for SourceResidentView<'_> {
+    fn channels(&self) -> ChannelCount { self.channels() }
+    fn sample_pair(&self, pair: usize, cursor: &Cursor, kernel: &Kernel) -> Option<[f32; 2]> {
+        cursor.sample(self.pair(pair)?, kernel)
+    }
+}
+/// All original heads are pinned before reading any pair. Cache reads borrow
+/// the same immutable service epoch; complete original rows commit together.
+pub(crate) struct PagedChannels<'a> {
+    pub family: &'a super::storage::SourceStorageFamily,
+    pub heads: &'a [Option<sampler_pool::SnapshotPin<crate::prepare::Ranges>>],
+    pub cache: crate::stream::PageReader<'a>,
+}
+impl ChannelRead for PagedChannels<'_> {
+    fn channels(&self) -> ChannelCount { self.family.channels() }
+    fn sample_pair(&self, pair: usize, cursor: &Cursor, kernel: &Kernel) -> Option<[f32; 2]> {
+        let asset = self.family.packs().get(pair)?;
+        let head = self.heads.get(pair)?.as_ref()?;
+        cursor.sample(&super::PagedFrames { cache: self.cache, asset: asset.asset_id(), head }, kernel)
+    }
+}
+
 /// Checked borrowed channel-major scratch. Construct before any cursor/output mutation.
 pub(crate) struct ChannelBlock<'a> {
     pub(crate) values: &'a mut [f32],
@@ -39,7 +67,7 @@ impl Cursor {
     /// Source/output shape, row scratch and last history are preflighted in full.
     pub(crate) fn render_channels_raw(
         &mut self,
-        source: &SourceResidentView<'_>,
+        source: &(impl ChannelRead + ?Sized),
         output: &mut ChannelBlock<'_>,
         row: &mut [f32],
         last: &mut [f32],
@@ -49,8 +77,6 @@ impl Cursor {
         if output.channels != source.channels()
             || row.len() != channels
             || last.len() != channels
-            || self.starved()
-            || self.holding_onset()
         {
             return Err(Error::InvalidInput);
         }
@@ -59,10 +85,36 @@ impl Cursor {
             // The phase and virtual loop/crossfade address belong to this one
             // Cursor. Existing pair kernel arithmetic reads its immutable view;
             // no copy of Cursor is advanced or retained per physical pair.
+            let mut available = true;
             for (pair, destination) in row.chunks_mut(2).enumerate() {
-                let frames = source.pair(pair).ok_or(Error::NotReady)?;
-                let sample = self.sample(frames, kernel).ok_or(Error::NotReady)?;
-                destination.copy_from_slice(&sample[..destination.len()]);
+                if let Some(sample) = source.sample_pair(pair, self, kernel) {
+                    destination.copy_from_slice(&sample[..destination.len()]);
+                } else { available = false; break; }
+            }
+            if self.cold_hold {
+                // The entire logical onset, not just the missing pair, stays at
+                // its requested source offset until every interpolation leg is ready.
+                if !available { break; }
+                self.cold_hold = false;
+            }
+            if !available && self.starvation.is_none() { self.starvation = Some(self.fade_frames); }
+            if let Some(remaining) = self.starvation {
+                if remaining != 0 {
+                    let next = remaining - 1;
+                    self.starvation = Some(next);
+                    let fade = next as f32 / self.fade_frames as f32;
+                    for channel in 0..channels {
+                        output.values[channel * output.stride + rendered] = last[channel] * fade;
+                    }
+                    self.advance(); rendered += 1; continue;
+                }
+                if !available {
+                    // The existing post-fade streaming law advances silently.
+                    // Every original channel shares that one advance.
+                    last.fill(0.); self.last = [0.; 2];
+                    self.advance(); rendered += 1; continue;
+                }
+                self.starvation = None; self.fade_in = self.fade_frames;
             }
             if self.fade_in > 0 {
                 self.fade_in -= 1;

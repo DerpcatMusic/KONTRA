@@ -23,14 +23,46 @@ impl Zone {
     }
 }
 
+/// Two physical wire domains and one explicit Part-aggregated native-host
+/// execution domain. The actual host source tuple remains in Runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChannelDomain { Midi1, Midi2, HostChannel }
+impl ChannelDomain {
+    const ALL: [Self; 3] = [Self::Midi1, Self::Midi2, Self::HostChannel];
+    fn index(self) -> usize { match self { Self::Midi1 => 0, Self::Midi2 => 1, Self::HostChannel => 2 } }
+    fn bit(self) -> u8 { 1 << self.index() }
+    fn protocol(self) -> Protocol { match self { Self::Midi1 => Protocol::Midi1,
+        Self::Midi2 => Protocol::Midi2, Self::HostChannel => Protocol::Native } }
+}
+
+/// An exact raw physical terminal owed to a script after a synthetic
+/// all-notes-off. The original source is not the Part's collapsed execution
+/// address. Storage is reserved by Mpe::new; draining never allocates.
+#[derive(Clone, Copy, Debug)]
+pub struct TerminalRelease { pub note: NoteId, pub source: Input, pub velocity:Option<f64> }
+
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum PhysicalKind { Wire,Native }
+#[derive(Clone, Copy)]
+struct PhysicalPair { note: NoteId, execution: Input, source: Input, kind:PhysicalKind,
+    released: bool, scripted: bool, terminal_received:bool, choked:bool }
+fn native_source(source:Input)->bool {matches!(source.protocol,Protocol::Clap|Protocol::Vst3)}
+
 #[derive(Clone, Copy)]
 struct Binding {
     note: NoteId,
     channel: u8,
     address: sampler_core::ChannelAddress,
+    /// Captured wire protocol; never inferred from later channel traffic.
+    domain: ChannelDomain,
     member: Controls,
     /// Transport's per-note tuning, independent of zone bends and part transpose.
     tuning: f64,
+    key: u8,
+    per_note: Option<crate::per_note::Snapshot>,
+    source: Input,
+    scripted: bool,
+    terminal_released: bool,
 }
 
 /// Pressure and timbre at 32 bits (MIDI 1.0 values upscaled, MIDI 2.0 as sent).
@@ -125,6 +157,23 @@ impl Sensitivity {
     }
 }
 
+#[derive(Clone, Copy)]
+struct WireState {
+    controls: [Controls; 16],
+    bends: [Value; 16],
+    ranges: [Sensitivity; 2],
+    channel_ranges: [Sensitivity; 16],
+    parameters: [Parameter; 16],
+}
+impl Default for WireState {
+    fn default() -> Self {
+        Self { controls: [Controls::default(); 16], bends: [Value::Bits14(8192); 16],
+            ranges: [Sensitivity { coarse: 2, cents: 0 }, Sensitivity { coarse: 48, cents: 0 }],
+            channel_ranges: [Sensitivity { coarse: 2, cents: 0 }; 16],
+            parameters: [Parameter::default(); 16] }
+    }
+}
+
 /// One explicitly configured zone in one runtime/port/group domain. MIDI 1.0
 /// and 2.0 channel voice messages both play it; 2.0 values keep their
 /// precision (velocity, controllers, pressure, pitch bend).
@@ -143,19 +192,27 @@ pub struct Mpe {
     group: u8,
     zone: Zone,
     members: u8,
+    fixed_members: u8,
     zones: [u8; 2],
     manual_active: bool,
     configured: bool,
     limit: usize,
-    controls: [Controls; 16],
-    bends: [Value; 16],
-    ranges: [Sensitivity; 2],
+    wire: [WireState; 3],
+    host_projection: bool,
+    host_mpe_active: bool,
+    midi2_channel_voice: bool,
     bend_override: Option<u8>,
-    parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
     transpose: f64,
     timbre_controller: Option<u8>,
+    per_note: crate::per_note::PerNoteState,
+    note_changes: Vec<(usize, crate::per_note::Snapshot)>,
+    physical: Vec<PhysicalPair>,
+    physical_limit:usize,
+    terminal_releases: Vec<TerminalRelease>,
+    terminal_limit: usize,
+    reset_members: Vec<usize>,
 }
 impl Mpe {
     pub fn new(
@@ -191,6 +248,19 @@ impl Mpe {
         if group >= 16 || !(1..=15).contains(&members) || notes == 0 {
             return Err(Error::InvalidInput);
         }
+        // Registry and expression work capacity are fixed before any attack.
+        let reset_bytes=std::alloc::Layout::array::<usize>(notes).map_err(|_|Error::Capacity)?.size();
+        let bindings_bytes = std::alloc::Layout::array::<Binding>(notes).map_err(|_| Error::Capacity)?.size();
+        let changes_bytes = std::alloc::Layout::array::<(ExpressionId, Expression)>(notes).map_err(|_| Error::Capacity)?.size();
+        let note_changes_bytes = std::alloc::Layout::array::<(usize, crate::per_note::Snapshot)>(notes).map_err(|_| Error::Capacity)?.size();
+        let physical_limit=notes.checked_mul(2).ok_or(Error::Capacity)?;
+        let physical_bytes = std::alloc::Layout::array::<PhysicalPair>(physical_limit).map_err(|_| Error::Capacity)?.size();
+        let terminal_limit=notes.checked_mul(2).ok_or(Error::Capacity)?;
+        let terminal_bytes = std::alloc::Layout::array::<TerminalRelease>(terminal_limit).map_err(|_| Error::Capacity)?.size();
+        bindings_bytes.checked_add(reset_bytes).and_then(|n|n.checked_add(changes_bytes)).and_then(|n| n.checked_add(note_changes_bytes))
+            .and_then(|n| n.checked_add(physical_bytes)).and_then(|n| n.checked_add(terminal_bytes))
+            .and_then(|n| n.checked_add(crate::per_note::PerNoteState::required_bytes(1<<group).ok()?)).ok_or(Error::Capacity)?;
+        let per_note = crate::per_note::PerNoteState::new(1 << group)?;
         let mut bindings = Vec::new();
         bindings
             .try_reserve_exact(notes)
@@ -199,6 +269,16 @@ impl Mpe {
         changes
             .try_reserve_exact(notes)
             .map_err(|_| Error::Capacity)?;
+        let mut note_changes = Vec::new(); note_changes.try_reserve_exact(notes).map_err(|_| Error::Capacity)?;
+        let mut reset_members=Vec::new();reset_members.try_reserve_exact(notes).map_err(|_|Error::Capacity)?;
+        let mut physical = Vec::new(); physical.try_reserve_exact(physical_limit).map_err(|_| Error::Capacity)?;
+        let mut terminal_releases = Vec::new(); terminal_releases.try_reserve_exact(terminal_limit).map_err(|_| Error::Capacity)?;
+        let bytes=std::alloc::Layout::array::<Binding>(bindings.capacity()).map_err(|_|Error::Capacity)?.size();
+        let bytes=bytes.checked_add(std::alloc::Layout::array::<(ExpressionId,Expression)>(changes.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+        let bytes=bytes.checked_add(std::alloc::Layout::array::<(usize,crate::per_note::Snapshot)>(note_changes.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+        let bytes=bytes.checked_add(std::alloc::Layout::array::<PhysicalPair>(physical.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+        let bytes=bytes.checked_add(std::alloc::Layout::array::<usize>(reset_members.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+        bytes.checked_add(std::alloc::Layout::array::<TerminalRelease>(terminal_releases.capacity()).map_err(|_|Error::Capacity)?.size()).and_then(|n|n.checked_add(per_note.retained_bytes().ok()?)).ok_or(Error::Capacity)?;
         Ok(Self {
             runtime: runtime.id(),
             performance,
@@ -206,28 +286,27 @@ impl Mpe {
             group,
             zone,
             members,
+            fixed_members: members,
             zones: match zone { Zone::Lower => [members, 0], Zone::Upper => [0, members] },
             manual_active: true,
             configured: false,
             limit: notes,
-            controls: [Controls::default(); 16],
-            bends: [Value::Bits14(8192); 16],
-            ranges: [
-                Sensitivity {
-                    coarse: 2,
-                    cents: 0,
-                },
-                Sensitivity {
-                    coarse: 48,
-                    cents: 0,
-                },
-            ],
+            wire: [WireState::default(); 3],
+            host_projection: false,
+            host_mpe_active: true,
+            midi2_channel_voice: false,
             bend_override: None,
-            parameters: [Parameter::default(); 16],
             bindings,
             changes,
             transpose: 0.0,
             timbre_controller: None,
+            per_note,
+            note_changes,
+            physical,
+            physical_limit,
+            terminal_releases,
+            terminal_limit,
+            reset_members,
         })
     }
 
@@ -235,7 +314,7 @@ impl Mpe {
     /// A product using this adapter for ordinary manager-channel MIDI can keep
     /// that mode distinct from a manually selected MPE zone. Never overrides MCM.
     pub fn set_manual_active(&mut self, active: bool) {
-        if !self.configured { self.manual_active = active; }
+        if !self.configured { self.manual_active = active; self.host_mpe_active = active; }
     }
 
     /// Actual received MCM state, independent of the synth's selected zone.
@@ -254,6 +333,77 @@ impl Mpe {
         self.zone.contains(channel, self.members)
     }
 
+    /// Explicit setup-time native-host projection. Wire-only adapters keep
+    /// strict independent protocols without paying for logical host pedal slots.
+    pub fn enable_host_channel_projection(&mut self) -> Result<(), Error> {
+        if !self.bindings.is_empty() { return Err(Error::InvalidInput); }
+        self.host_projection = true;
+        Ok(())
+    }
+
+    /// Ordinary MIDI2 channel-voice receiver mode. Existing explicit Mpe
+    /// adapters retain their selected-zone compatibility mode by default;
+    /// the product selects this real receiver law before any input owners.
+    pub fn use_midi2_channel_voice(&mut self) -> Result<(), Error> {
+        if !self.bindings.is_empty() { return Err(Error::InvalidInput); }
+        self.midi2_channel_voice = true;
+        Ok(())
+    }
+
+    fn zone_domain(&self, domain: ChannelDomain) -> bool {
+        domain != ChannelDomain::Midi2 || !self.midi2_channel_voice
+    }
+
+    fn accepts_wire_channel(&self, domain: ChannelDomain, channel: u8) -> bool {
+        match domain {
+            ChannelDomain::Midi1 => self.accepts_channel(channel),
+            ChannelDomain::Midi2 => channel < 16 && (self.midi2_channel_voice || self.zone.contains(channel, self.fixed_members)),
+            ChannelDomain::HostChannel => self.host_projection && self.accepts_channel(channel)
+                && (self.host_mpe_active || channel == self.zone.manager()),
+        }
+    }
+
+    fn domain(protocol: Protocol) -> Result<ChannelDomain, Error> {
+        match protocol { Protocol::Midi1 => Ok(ChannelDomain::Midi1), Protocol::Midi2 => Ok(ChannelDomain::Midi2),
+            Protocol::Native => Ok(ChannelDomain::HostChannel), _ => Err(Error::InvalidInput) }
+    }
+
+    fn control_rows(&self) -> [[Controls; 16]; 3] { self.wire.map(|wire| wire.controls) }
+
+    fn host_channel(&self, channel: u8) -> u8 { if self.host_mpe_active { channel } else { self.zone.manager() } }
+
+    fn gesture_channels(&self, channel: u8) -> [Option<u8>; 3] {
+        [Some(channel), Some(channel), Some(self.host_channel(channel))]
+    }
+
+    fn affected_domains(&self, source: ChannelDomain, channel: u8) -> u8 {
+        source.bit() | if self.host_projection && self.accepts_wire_channel(ChannelDomain::HostChannel, self.host_channel(channel)) { ChannelDomain::HostChannel.bit() } else { 0 }
+    }
+
+    fn host_targets(&self, channel: u8, per_note: bool) -> Option<ChannelScope> {
+        let channel = self.host_channel(channel);
+        if !self.host_projection || !self.accepts_wire_channel(ChannelDomain::HostChannel, channel)
+            || (!per_note && channel != self.zone.manager()) { return None; }
+        Some(ChannelScope { protocol: Protocol::Native, port: self.port, group: self.group,
+            channels: if channel == self.zone.manager() { self.manager_scope(ChannelDomain::HostChannel).channels }
+                else { 1 << channel } })
+    }
+
+    fn controller_channels(&self, domain: ChannelDomain, channel: u8) -> u16 {
+        if self.zone_domain(domain) && channel == self.zone.manager() { self.manager_scope(domain).channels }
+        else { 1 << channel }
+    }
+
+    fn sensitivity(&self, domain: ChannelDomain, channel: u8) -> Sensitivity {
+        if domain == ChannelDomain::Midi2 && self.midi2_channel_voice { self.wire[domain.index()].channel_ranges[usize::from(channel)] }
+        else { self.wire[domain.index()].ranges[usize::from(channel != self.zone.manager())] }
+    }
+
+    fn expression_for(&self, domain: ChannelDomain, member: Controls, rows: &[[Controls; 16]; 3]) -> Expression {
+        if self.zone_domain(domain) { member.expression(rows[domain.index()][usize::from(self.zone.manager())]) }
+        else { member.expression(Controls::default()) }
+    }
+
     /// Also write each note's timbre (CC74) to its own member channel as this
     /// controller, so an instrument's dynamics position follows Y per note.
     pub fn set_timbre_controller(&mut self, controller: Option<u8>) {
@@ -269,12 +419,27 @@ impl Mpe {
 
     /// Stored coarse manager and shared member bend sensitivities.
     pub fn pitch_ranges(&self) -> (u8, u8) {
-        (self.ranges[0].coarse, self.ranges[1].coarse)
+        (self.wire[0].ranges[0].coarse, self.wire[0].ranges[1].coarse)
     }
 
     /// Effective manager/member sensitivities, including RPN 0 cents.
     pub fn pitch_sensitivities(&self) -> (f64, f64) {
-        (self.ranges[0].semitones(), self.ranges[1].semitones())
+        (self.wire[0].ranges[0].semitones(), self.wire[0].ranges[1].semitones())
+    }
+
+    /// Sensitivity in the actual wire protocol domain; MIDI1 RPN and MIDI2
+    /// Registered Controllers cannot overwrite each other's retained ranges.
+    pub fn pitch_sensitivities_for(&self, version: Version) -> (f64, f64) {
+        let domain = if version == Version::Midi2 { ChannelDomain::Midi2 } else { ChannelDomain::Midi1 };
+        (self.wire[domain.index()].ranges[0].semitones(), self.wire[domain.index()].ranges[1].semitones())
+    }
+
+    /// Actual channel range; ordinary MIDI2 has sixteen independent ranges,
+    /// rather than borrowing the selected MIDI1 zone's member sensitivity.
+    pub fn channel_pitch_sensitivity(&self, version: Version, channel: u8) -> Result<f64, Error> {
+        if channel >= 16 { return Err(Error::InvalidInput); }
+        let domain = if version == Version::Midi2 { ChannelDomain::Midi2 } else { ChannelDomain::Midi1 };
+        Ok(self.sensitivity(domain, channel).semitones())
     }
 
     /// Manager channel for a part's keyboard and shared performance controls.
@@ -289,7 +454,7 @@ impl Mpe {
         runtime: &mut Runtime,
         packet: Packet<'_>,
     ) -> Result<Applied, ApplyError> {
-        self.apply_with_attack(runtime, packet, false)
+        self.apply_with_attack(runtime, packet, false, None)
     }
 
     /// Preserve MIDI pairing and gestures, leaving note attacks to a script owner.
@@ -298,7 +463,19 @@ impl Mpe {
         runtime: &mut Runtime,
         packet: Packet<'_>,
     ) -> Result<Applied, ApplyError> {
-        self.apply_with_attack(runtime, packet, true)
+        self.apply_with_attack(runtime, packet, true, None)
+    }
+
+    /// Preserve a transport's physical tuple before the first normal note
+    /// callback, independently of the adapter's execution channel mapping.
+    pub fn apply_with_source(&mut self, runtime: &mut Runtime, packet: Packet<'_>, source: Input) -> Result<Applied, ApplyError> {
+        if source.group >= 16 || source.channel >= 16 || source.key >= 128 { return Err(Error::InvalidInput.into()); }
+        self.apply_with_attack(runtime, packet, false, Some(source))
+    }
+
+    pub fn apply_silent_with_source(&mut self, runtime: &mut Runtime, packet: Packet<'_>, source: Input) -> Result<Applied, ApplyError> {
+        if source.group >= 16 || source.channel >= 16 || source.key >= 128 { return Err(Error::InvalidInput.into()); }
+        self.apply_with_attack(runtime, packet, true, Some(source))
     }
 
     fn apply_with_attack(
@@ -306,10 +483,12 @@ impl Mpe {
         runtime: &mut Runtime,
         packet: Packet<'_>,
         silent: bool,
+        source: Option<Input>,
     ) -> Result<Applied, ApplyError> {
         if runtime.id() != self.runtime {
             return Err(Error::StaleHandle.into());
         }
+        if source.is_some_and(|source|source.group>=16||source.channel>=16||source.key>=128) {return Err(Error::InvalidInput.into());}
         let Some(voice) = packet.channel_voice() else {
             return Ok(Applied::Unsupported);
         };
@@ -317,10 +496,11 @@ impl Mpe {
             return Err(ApplyError::DisabledGroup);
         }
         let midi2 = voice.version == Version::Midi2;
+        let domain = if midi2 { ChannelDomain::Midi2 } else { ChannelDomain::Midi1 };
         if !midi2
             && let Message::Control { index, value: Value::Bits7(value) } = voice.message
         {
-            let selected = self.parameters[usize::from(voice.channel)];
+            let selected = self.wire[0].parameters[usize::from(voice.channel)];
             if selected.registered && selected.rpn == [0, 6] {
                 match index {
                     6 => return self.configure_zone(runtime, voice.channel, value).map_err(Into::into),
@@ -332,21 +512,29 @@ impl Mpe {
             }
             // The other zone manager must be able to configure overlap even
             // when it is currently outside this selected instrument's range.
-            if !self.accepts_channel(voice.channel)
+            if !self.accepts_wire_channel(domain, voice.channel)
                 && matches!(voice.channel, 0 | 15)
                 && matches!(index, 98..=101)
             {
                 return self.parameter(runtime, voice.channel, index, value).map_err(Into::into);
             }
         }
-        if !self.accepts_channel(voice.channel) {
-            return Ok(if self.configured { Applied::Ignored } else { Applied::Unsupported });
+        let terminal_source = if let Message::NoteOff { key, .. } = voice.message {
+            Some(source.unwrap_or(Input { protocol: domain.protocol(), port:self.port, group:self.group,
+                channel:voice.channel, key, external_id:None }))
+        } else { None };
+        let captured_terminal = terminal_source.is_some_and(|source|self.physical.iter().any(|pair|pair.kind==PhysicalKind::Wire&&pair.source==source));
+        if !self.accepts_wire_channel(domain, voice.channel) && !captured_terminal {
+            return Ok(if self.configured || terminal_source.is_some() { Applied::Ignored } else { Applied::Unsupported });
         }
         runtime.render(&mut [])?;
         self.bindings
             .retain(|binding| runtime.note(binding.note).is_ok());
+        // Preserve the accepted-input due-work boundary even for a harmless
+        // unmatched terminal; it cannot invent a recipient or a callback.
+        if terminal_source.is_some()&&!captured_terminal {return Ok(Applied::Ignored);}
         let input = Input {
-            protocol: Protocol::Midi1,
+            protocol: domain.protocol(),
             port: self.port,
             group: self.group,
             channel: voice.channel,
@@ -358,16 +546,15 @@ impl Mpe {
                 key,
                 velocity,
                 attribute,
-            } if attribute.kind == 0 => Applied::Started(self.admit(
+            } if attribute.kind == 0 || midi2 => Applied::Started(self.admit(
                 runtime,
                 voice.channel,
-                Input { key, ..input },
-                // A MIDI 2.0 velocity of 0 still starts a note.
-                if midi2 {
-                    velocity.normalized().max(1.0 / 65535.0)
-                } else {
-                    velocity.normalized()
-                },
+                (Input { key, ..input }, source, if midi2 && attribute.kind == 3 {
+                    NotePitch::Absolute(f64::from(attribute.data) / 512.)
+                } else { NotePitch::Key(key) }),
+                // Native MIDI2 velocity0 remains a real silent gate; the MIDI1
+                // translation minimum does not belong to this receiver.
+                velocity.normalized(),
                 silent,
                 0.0,
             )?),
@@ -376,32 +563,38 @@ impl Mpe {
                 velocity,
                 attribute,
             } => Applied::Released {
-                note: runtime.note_off_in(
-                    self.performance,
-                    Input { key, ..input },
-                    velocity.map(crate::Value::normalized),
-                )?,
+                note: self.release_physical(runtime, source.unwrap_or(Input { key, ..input }),
+                    velocity.map(crate::Value::normalized))?,
                 velocity,
                 attribute,
             },
-            Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) => {
-                let range = self.bend_override.map(f64::from).unwrap_or_else(|| {
-                    self.ranges[usize::from(voice.channel != self.zone.manager())].semitones()
-                });
-                let applied = self.control(
-                    runtime,
-                    voice.channel,
-                    Control::Pitch(pitch(value, range), pitch(value, 1.0)),
-                )?;
-                self.bends[usize::from(voice.channel)] = value;
-                applied
-            }
+            Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) =>
+                self.bend(runtime, domain, voice.channel, value)?,
             Message::ChannelPressure(value @ (Value::Bits7(_) | Value::Bits32(_))) => self
                 .control(
                     runtime,
+                    domain,
                     voice.channel,
                     Control::Pressure(value.full_scale()),
                 )?,
+            Message::PolyPressure { key, value } if midi2 => {
+                let (_, owners) = runtime.dispatch_poly_pressure(self.performance, input.channel_address(), key, value.full_scale())?;
+                Applied::Expression { owners }
+            }
+            Message::Control{index:121,value:Value::Bits7(0)|Value::Bits32(0)}=>{
+                // The supported MPE1.1 selected-zone profile handles this
+                // zone-wide message on its manager, like pedals/AllNotesOff.
+                if self.zone_domain(domain)&&voice.channel!=self.zone.manager() {Applied::Ignored}
+                else {self.reset_channel(runtime,domain,voice.channel)?}
+            }
+            Message::Control { index: index @ (120 | 123), value: Value::Bits7(0) | Value::Bits32(0) } => {
+                if self.zone_domain(domain) && voice.channel != self.zone.manager() { Applied::Ignored }
+                else { self.channel_terminal(runtime, domain, voice.channel, index == 120)? }
+            }
+            Message::PerNotePitch { key, value } if midi2 => self.per_note_bend(runtime, voice.channel, key, value)?,
+            Message::PerNoteManagement { key, detach, reset } if midi2 => self.per_note_management(runtime, voice.channel, key, detach, reset)?,
+            Message::ChannelControl { space: crate::Controllers::Registered, bank: 0, index: 7, value } if midi2 =>
+                self.per_note_range(runtime, voice.channel, f64::from(value) / 33_554_432.)?,
             // MIDI 2.0 Registered Controller 0:0, pitch bend sensitivity
             // (semitones in the top 7 bits, cents in the next 7).
             Message::ChannelControl {
@@ -411,6 +604,7 @@ impl Mpe {
                 value,
             } => self.range(
                 runtime,
+                domain,
                 voice.channel,
                 Sensitivity {
                     coarse: (value >> 25) as u8,
@@ -421,16 +615,17 @@ impl Mpe {
                 index: index @ (64 | 66),
                 value: value @ (Value::Bits7(_) | Value::Bits32(_)),
             } => {
-                if voice.channel != self.zone.manager() {
+                if self.zone_domain(domain) && voice.channel != self.zone.manager() {
                     Applied::Ignored
                 } else {
-                    let scope = self.manager_scope();
-                    runtime.dispatch_controller(
-                        self.performance,
+                    let channels = self.controller_channels(domain, voice.channel);
+                    self.dispatch_controller(
+                        runtime,
                         input.channel_address(),
-                        scope.channels,
+                        channels,
                         index,
                         value.full_scale(),
+                        false,
                     )?;
                     Applied::Pedal
                 }
@@ -438,17 +633,29 @@ impl Mpe {
             Message::Control {
                 index: 74,
                 value: value @ (Value::Bits7(_) | Value::Bits32(_)),
+            } if !self.zone_domain(domain) => {
+                // Ordinary MIDI2 CC74 is channel Sound Controller5, not an
+                // MPE member gesture. Preserve its actual number/precision and
+                // captured script consume/transform/forward boundary.
+                self.dispatch_controller(runtime,input.channel_address(),
+                    self.controller_channels(domain,voice.channel),74,value.full_scale(),false)?;
+                Applied::Controller
+            }
+            Message::Control {
+                index: 74,
+                value: value @ (Value::Bits7(_) | Value::Bits32(_)),
             } => {
                 if let Some(cc) = self.timbre_controller {
-                    runtime.dispatch_controller(
-                        self.performance,
+                    self.dispatch_controller(
+                        runtime,
                         input.channel_address(),
-                        1 << voice.channel,
+                        self.controller_channels(domain, voice.channel),
                         cc,
                         value.full_scale(),
+                        true,
                     )?;
                 }
-                self.control(runtime, voice.channel, Control::Timbre(value))?
+                self.control(runtime, domain, voice.channel, Control::Timbre(value))?
             }
             // MIDI 2.0 carries RPNs as Registered Controllers, not CC 6/38/98..=101.
             Message::Control { index, .. } if midi2 && crate::is_midi2_legacy_control(index) => {
@@ -458,30 +665,28 @@ impl Mpe {
                 index: index @ (6 | 38 | 96..=101),
                 value: Value::Bits7(value),
             } => {
-                runtime.dispatch_controller(
-                    self.performance,
+                self.dispatch_controller(
+                    runtime,
                     input.channel_address(),
-                    if voice.channel == self.zone.manager() {
-                        self.manager_scope().channels
-                    } else {
-                        1 << voice.channel
-                    },
+                    self.controller_channels(domain, voice.channel),
                     index,
                     Value::Bits7(value).full_scale(),
+                    true,
                 )?;
                 self.parameter(runtime, voice.channel, index, value)?
             }
             Message::Control { index, value }
                 if index < 120
                     && !matches!(index, 96 | 97)
-                    && voice.channel == self.zone.manager() =>
+                    && (!self.zone_domain(domain) || voice.channel == self.zone.manager()) =>
             {
-                runtime.dispatch_controller(
-                    self.performance,
+                self.dispatch_controller(
+                    runtime,
                     input.channel_address(),
-                    self.manager_scope().channels,
+                    self.controller_channels(domain, voice.channel),
                     index,
                     value.full_scale(),
+                    false,
                 )?;
                 Applied::Controller
             }
@@ -496,7 +701,7 @@ impl Mpe {
     pub fn trigger(
         &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64,
     ) -> Result<NoteId, ApplyError> {
-        self.trigger_with_attack(runtime, channel, input, velocity, 0.0, false)
+        self.trigger_with_attack(runtime, channel, (input, None), velocity, 0.0, false)
     }
 
     /// Host-owned attack with its initial per-note tuning, composed independently
@@ -504,14 +709,14 @@ impl Mpe {
     pub fn trigger_with_tuning(
         &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64, tuning: f64,
     ) -> Result<NoteId, ApplyError> {
-        self.trigger_with_attack(runtime, channel, input, velocity, tuning, false)
+        self.trigger_with_attack(runtime, channel, (input, None), velocity, tuning, false)
     }
 
     /// Host-owned physical gate whose authored script will select the attack.
     pub fn trigger_silent(
         &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64,
     ) -> Result<NoteId, ApplyError> {
-        self.trigger_with_attack(runtime, channel, input, velocity, 0.0, true)
+        self.trigger_with_attack(runtime, channel, (input, None), velocity, 0.0, true)
     }
 
     /// The same silent host admission with initial native note tuning present
@@ -519,20 +724,42 @@ impl Mpe {
     pub fn trigger_silent_with_tuning(
         &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64, tuning: f64,
     ) -> Result<NoteId, ApplyError> {
-        self.trigger_with_attack(runtime, channel, input, velocity, tuning, true)
+        self.trigger_with_attack(runtime, channel, (input, None), velocity, tuning, true)
+    }
+
+    /// Host transport source retained before synchronous native/KSP callbacks.
+    pub fn trigger_with_source(
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, source: Input,
+        velocity: f64, tuning: f64,
+    ) -> Result<NoteId, ApplyError> {
+        self.trigger_with_attack(runtime, channel, (input, Some(source)), velocity, tuning, false)
+    }
+
+    /// The same source-bearing admission when an external script owns attack.
+    pub fn trigger_silent_with_source(
+        &mut self, runtime: &mut Runtime, channel: u8, input: Input, source: Input,
+        velocity: f64, tuning: f64,
+    ) -> Result<NoteId, ApplyError> {
+        self.trigger_with_attack(runtime, channel, (input, Some(source)), velocity, tuning, true)
     }
 
     fn trigger_with_attack(
-        &mut self, runtime: &mut Runtime, channel: u8, input: Input, velocity: f64,
+        &mut self, runtime: &mut Runtime, channel: u8, inputs: (Input, Option<Input>), velocity: f64,
         tuning: f64, silent: bool,
     ) -> Result<NoteId, ApplyError> {
+        let (input, source) = inputs;
+        if source.is_some_and(|source| source.group >= 16 || source.channel >= 16 || source.key >= 128) {
+            return Err(Error::InvalidInput.into());
+        }
         if runtime.id() != self.runtime { return Err(Error::StaleHandle.into()); }
-        if !self.accepts_channel(channel) || !tuning.is_finite() {
+        let domain = Self::domain(input.protocol)?;
+        if !self.accepts_wire_channel(domain, channel) || !tuning.is_finite()
+            || (domain == ChannelDomain::HostChannel && (input.port != self.port || input.group != self.group || input.channel != channel)) {
             return Err(Error::InvalidInput.into());
         }
         runtime.render(&mut [])?;
         self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
-        Ok(self.admit(runtime, channel, input, velocity, silent, tuning)?)
+        Ok(self.admit(runtime, channel, (input, source, NotePitch::Key(input.key)), velocity, silent, tuning)?)
     }
 
     /// Update one exact host note's retained tuning component. Later member or
@@ -548,10 +775,10 @@ impl Mpe {
         let index = self.bindings.iter().position(|binding| binding.note == note)
             .ok_or(Error::StaleHandle)?;
         let binding = self.bindings[index];
-        let combined = binding.member.expression(self.controls[usize::from(self.zone.manager())]);
+        let combined = self.expression_for(binding.domain, binding.member, &self.control_rows());
         let owner = runtime.expression_id(note)?;
         let mut expression = runtime.expression(owner)?;
-        expression.pitch_semitones = combined.pitch_semitones + self.transpose + tuning;
+        expression.pitch_semitones = combined.pitch_semitones + self.transpose + tuning + binding.per_note.map_or(0., |state| state.pitch);
         runtime.set_expression(owner, expression)?;
         self.bindings[index].tuning = tuning;
         Ok(())
@@ -574,8 +801,7 @@ impl Mpe {
         self.bindings
             .retain(|binding| runtime.note(binding.note).is_ok());
         let previous = std::mem::replace(&mut self.transpose, semitones);
-        let manager = Some(self.zone.manager());
-        self.project(runtime, self.controls, manager, Control::Pitch(0.0, 0.0))
+        self.project(runtime, self.control_rows(), 0b111, [None; 3], true, Control::Pitch(0.0, 0.0))
             .inspect_err(|_| self.transpose = previous)
             .map_err(Into::into)
     }
@@ -584,129 +810,472 @@ impl Mpe {
         &mut self,
         runtime: &mut Runtime,
         channel: u8,
-        input: Input,
+        inputs: (Input, Option<Input>, NotePitch),
         velocity: f64,
         silent: bool,
         tuning: f64,
     ) -> Result<NoteId, Error> {
+        let (input, source, note_pitch) = inputs;
+        let source = source.unwrap_or(input);
+        if source.group >= 16 || source.channel >= 16 || source.key >= 128 { return Err(Error::InvalidInput); }
         if !tuning.is_finite() { return Err(Error::InvalidInput); }
-        if self.bindings.len() == self.limit {
-            return Err(Error::Capacity);
-        }
-        let member = if channel == self.zone.manager() {
+        let domain = Self::domain(input.protocol)?;
+        let kind=if domain!=ChannelDomain::HostChannel {Some(PhysicalKind::Wire)}
+            else if native_source(source) {Some(PhysicalKind::Native)} else {None};
+        if kind==Some(PhysicalKind::Native)&&source.external_id.is_some_and(|id|id>=0)
+            &&self.physical.iter().any(|pair|pair.kind==PhysicalKind::Native&&pair.source==source&&!pair.terminal_received) {return Err(Error::DuplicateInput);}
+        if self.bindings.len()==self.limit {return Err(Error::Capacity);}
+        let wire_debt=self.physical.iter().filter(|pair|pair.kind==PhysicalKind::Wire).count();
+        let native_debt=self.physical.iter().filter(|pair|pair.kind==PhysicalKind::Native).count()
+            +self.bindings.iter().filter(|binding|binding.domain==ChannelDomain::HostChannel&&!native_source(binding.source)).count();
+        if kind==Some(PhysicalKind::Wire)&&wire_debt==self.limit
+            ||domain==ChannelDomain::HostChannel&&native_debt==self.limit
+            ||kind.is_some()&&self.physical.len()==self.physical_limit {return Err(Error::Capacity);}
+        let member = if self.zone_domain(domain) && channel == self.zone.manager() {
             Controls::default()
         } else {
-            self.controls[usize::from(channel)]
+            self.wire[domain.index()].controls[usize::from(channel)]
         };
-        let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
+        let per_note = if domain == ChannelDomain::Midi2 {
+            Some(self.per_note.snapshot(self.group, input.channel, input.key)?)
+        } else { None };
+        let mut expression = self.expression_for(domain, member, &self.control_rows());
         expression.pitch_semitones += self.transpose;
         expression.pitch_semitones += tuning;
+        expression.pitch_semitones += per_note.map_or(0., |state| state.pitch);
         let note = if silent {
-            runtime.note_on_pitched_in(
-                self.performance,
-                input,
-                NotePitch::Key(input.key),
-                velocity,
-                expression,
-            )
+            let note = runtime.note_on_pitched_in(self.performance, input, note_pitch, velocity, expression)?;
+            runtime.set_input_source(note, source)?;
+            note
         } else {
-            runtime.trigger_in(
-                self.performance,
-                input,
-                NotePitch::Key(input.key),
-                velocity,
-                expression,
-            )
-        }?;
+            runtime.trigger_in_with_source(self.performance, input, source, note_pitch, velocity, expression)?
+        };
+        if let Some(kind)=kind {
+            self.physical.push(PhysicalPair { note, execution:input, source, kind,
+                released:false, scripted:silent,terminal_received:false,choked:false });
+        }
         self.bindings.push(Binding {
             note,
             channel,
             address: input.channel_address(),
+            domain,
             member,
             tuning,
+            key: input.key,
+            per_note,
+            source,
+            scripted:silent,
+            terminal_released:false,
         });
         Ok(note)
     }
 
-    fn manager_scope(&self) -> ChannelScope {
-        let width = (1u32 << (self.members + 1)) - 1;
+    /// Physical pair ownership survives Core cancellation/retirement. Never
+    /// borrow a different source's earlier same-key note in a collapsed Part.
+    fn release_physical(&mut self, runtime: &mut Runtime, source: Input, velocity:Option<f64>) -> Result<NoteId,Error> {
+        if source.group>=16 || source.channel>=16 || source.key>=128 { return Err(Error::InvalidInput); }
+        let at=self.physical.iter().position(|pair|pair.kind==PhysicalKind::Wire&&pair.source==source).ok_or(Error::InvalidInput)?;
+        let note=self.physical[at].note;
+        match runtime.note_off_exact(note,velocity) {
+            Ok(())|Err(Error::StaleHandle)|Err(Error::ClosedNote)=>{},
+            Err(error)=>return Err(error),
+        }
+        self.physical.remove(at);
+        Ok(note)
+    }
+
+    /// Deliver queued synthetic physical releases exactly once. A later real
+    /// key-up consumes its retained tombstone, not another source's owner.
+    pub fn drain_terminal_releases(&mut self, mut receive:impl FnMut(TerminalRelease)) {
+        self.terminal_releases.drain(..).for_each(&mut receive);
+        self.physical.retain(|pair|!pair.terminal_received);
+    }
+
+    /// Full slot count, including raw rows; native_physical_at is an O(1)
+    /// generation-fenced query. Callers never collect this population in HELD scratch.
+    pub fn native_physical_slots(&self)->usize {self.physical.len()}
+    pub fn native_physical_at(&self,index:usize)->Option<(NoteId,Input,bool)> {
+        self.physical.get(index).filter(|pair|pair.kind==PhysicalKind::Native&&!pair.terminal_received)
+            .map(|pair|(pair.note,pair.source,pair.released))
+    }
+    pub fn has_native_physical_note(&self,note:NoteId)->bool {
+        self.physical.iter().any(|pair|pair.kind==PhysicalKind::Native&&pair.note==note)
+            ||self.terminal_releases.iter().any(|release|native_source(release.source)&&release.note==note)
+    }
+    pub fn has_native_physical_source(&self,source:Input)->bool {
+        self.physical.iter().any(|pair|pair.kind==PhysicalKind::Native&&pair.source==source&&!pair.terminal_received)
+    }
+    pub fn validate_native_physical_releases(&self,matches:impl Fn(NoteId,Input)->bool)->Result<(),Error> {
+        let needed=self.physical.iter().filter(|pair|pair.kind==PhysicalKind::Native&&!pair.terminal_received&&!pair.released&&pair.scripted&&matches(pair.note,pair.source)).count();
+        if self.terminal_releases.len().checked_add(needed).is_none_or(|n|n>self.terminal_limit) {return Err(Error::Capacity);}
+        Ok(())
+    }
+    /// Operate exact retained rows selected by a pure full-tuple predicate.
+    /// Generation identity survives Core retirement; no source/key fallback exists.
+    pub fn release_native_physical(&mut self,runtime:&mut Runtime,matches:impl Fn(NoteId,Input)->bool,velocity:Option<f64>)->Result<usize,Error> {
+        if runtime.id()!=self.runtime {return Err(Error::StaleHandle);}
+        if velocity.is_some_and(|v|!(0.0..=1.0).contains(&v)) {return Err(Error::InvalidInput);}
+        self.validate_native_physical_releases(&matches)?;
+        let mut count=0;
+        for index in 0..self.physical.len() {
+            let pair=self.physical[index];
+            if pair.kind!=PhysicalKind::Native||pair.terminal_received||!matches(pair.note,pair.source) {continue;}
+            match runtime.note_off_exact(pair.note,velocity) {Ok(())|Err(Error::StaleHandle)|Err(Error::ClosedNote)=>{},Err(error)=>return Err(error)}
+            if !pair.released&&pair.scripted {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity});}
+            self.physical[index].released=true;self.physical[index].terminal_received=true;count+=1;
+        }
+        // The exact pending receipt owns its own captured NoteId/source/value.
+        // Physical acknowledgment frees debt even if that receipt has not yet
+        // reached the application callback boundary.
+        self.physical.retain(|pair|!pair.terminal_received);
+        Ok(count)
+    }
+    pub fn choke_native_physical(&mut self,runtime:&mut Runtime,matches:impl Fn(NoteId,Input)->bool)->Result<usize,Error> {
+        if runtime.id()!=self.runtime {return Err(Error::StaleHandle);}
+        let mut count=0;
+        for index in 0..self.physical.len() {
+            let pair=self.physical[index];
+            if pair.kind!=PhysicalKind::Native||pair.terminal_received||pair.choked||!matches(pair.note,pair.source) {continue;}
+            match runtime.cancel_input_note(pair.note) {Ok(())|Err(Error::StaleHandle)|Err(Error::ClosedNote)=>{},Err(error)=>return Err(error)}
+            self.physical[index].choked=true;count+=1;
+        }
+        Ok(count)
+    }
+
+    /// Pure complete queue admission for transport stop. Physical pairs retain
+    /// exact source tuples even when their original Core generation has retired.
+    pub fn validate_all_physical_releases(&self)->Result<(),Error> {
+        let needed=self.physical.iter().filter(|pair|pair.scripted&&!pair.released).count();
+        if self.terminal_releases.len().checked_add(needed).is_none_or(|total|total>self.terminal_limit) {return Err(Error::Capacity);}
+        Ok(())
+    }
+
+    /// Queue musical physical key-ups for the ordinary owner boundary, including
+    /// actual source-backed Native owners after their Core roots have retired.
+    /// No live Core lookup or key-only fallback is used here. The caller then
+    /// drains the queue and invokes the existing global Core key/pedal release.
+    pub fn queue_all_physical_releases(&mut self)->Result<usize,Error> {
+        self.validate_all_physical_releases()?;
+        let mut count=0;
+        for pair in &mut self.physical {
+            if pair.released {continue;}
+            if pair.scripted {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity:None});}
+            pair.released=true;count+=1;
+        }
+        Ok(count)
+    }
+
+    fn channel_terminal(&mut self, runtime: &mut Runtime, domain: ChannelDomain, channel: u8, sound_off: bool) -> Result<Applied, Error> {
+        let channels = self.controller_channels(domain, channel);
+        // This is the same explicitly enabled Part HostChannel projection as
+        // accepted channel gestures, never a raw key-only Native lookup.
+        let host=if sound_off {None} else {self.host_targets(channel,false)};
+        let raw=self.physical.iter().filter(|pair|pair.scripted&&!pair.released&&(
+            pair.kind==PhysicalKind::Wire&&pair.execution.protocol==domain.protocol()&&channels&(1<<pair.execution.channel)!=0
+            ||pair.kind==PhysicalKind::Native&&host.is_some_and(|scope|scope.channels&(1<<pair.execution.channel)!=0))).count();
+        let host_count=host.map_or(0,|scope|self.bindings.iter().filter(|binding|binding.domain==ChannelDomain::HostChannel&&!native_source(binding.source)&&binding.scripted&&!binding.terminal_released&&scope.channels&(1<<binding.channel)!=0&&runtime.input_held(binding.note).unwrap_or(false)).count());
+        if !sound_off&&self.terminal_releases.len().checked_add(raw).and_then(|n|n.checked_add(host_count)).is_none_or(|n|n>self.terminal_limit) {return Err(Error::Capacity);}
+        // Capture exact native IDs/sources before all_notes_off can retire
+        // them. Queue rows remain private until success; refusal rolls back.
+        let pending=self.terminal_releases.len();
+        if let Some(scope)=host {
+            for binding in &self.bindings {
+                if binding.domain==ChannelDomain::HostChannel&&!native_source(binding.source)&&binding.scripted&&!binding.terminal_released&&scope.channels&(1<<binding.channel)!=0&&runtime.input_held(binding.note).unwrap_or(false) {
+                    self.terminal_releases.push(TerminalRelease{note:binding.note,source:binding.source,velocity:None});
+                }
+            }
+        }
+        let result=(|| {
+            let mut count=0;
+            for channel in 0..16u8 {
+                if channels&(1<<channel)!=0 {
+                    let address=sampler_core::ChannelAddress{protocol:domain.protocol(),port:self.port,group:self.group,channel};
+                    count+=if sound_off {runtime.all_sound_off(address)?} else {runtime.all_notes_off(address)?};
+                }
+                if let Some(scope)=host&&scope.channels&(1<<channel)!=0 {
+                    count+=runtime.all_notes_off(sampler_core::ChannelAddress{protocol:scope.protocol,port:scope.port,group:scope.group,channel})?;
+                }
+            }
+            Ok::<usize,Error>(count)
+        })();
+        let count=match result {Ok(count)=>count,Err(error)=>{self.terminal_releases.truncate(pending);return Err(error);}};
+        if !sound_off {
+            for pair in &mut self.physical {
+                if !pair.released&&(pair.kind==PhysicalKind::Wire&&pair.execution.protocol==domain.protocol()&&channels&(1<<pair.execution.channel)!=0
+                    ||pair.kind==PhysicalKind::Native&&host.is_some_and(|scope|scope.channels&(1<<pair.execution.channel)!=0)) {
+                    if pair.scripted {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity:None});}
+                    pair.released=true;
+                }
+            }
+            if let Some(scope)=host {
+                for binding in &mut self.bindings {
+                    if binding.domain==ChannelDomain::HostChannel&&scope.channels&(1<<binding.channel)!=0 {binding.terminal_released=true;}
+                }
+            }
+        }
+        // CC120 is a hard raw-domain sound kill, not a fictional physical
+        // key release. Its Lua gate remains until actual NoteOff.
+        Ok(if sound_off {Applied::AllSoundOff{stopped:count}} else {Applied::AllNotesOff{released:count}})
+    }
+
+    fn reset_channel(&mut self,runtime:&mut Runtime,domain:ChannelDomain,channel:u8)->Result<Applied,Error> {
+        // apply_with_attack already drained due work and pruned stale owners.
+        let primary=ChannelScope{protocol:domain.protocol(),port:self.port,group:self.group,channels:self.controller_channels(domain,channel)};
+        let secondary=self.host_targets(channel,false);
+        runtime.validate_protocol_controller_reset_targets(self.performance,primary,secondary)?;
+        let mut controls=self.control_rows();
+        for (target,scope) in [(domain,Some(primary)),(ChannelDomain::HostChannel,secondary)] {
+            if let Some(scope)=scope {
+                for channel in 0..16u8 {if scope.channels&(1<<channel)!=0 {
+                    let value=&mut controls[target.index()][usize::from(channel)];
+                    value.pitch=0.;value.bend=0.;value.pressure=0;
+                }}
+            }
+        }
+        self.changes.clear();self.reset_members.clear();
+        for (index,binding) in self.bindings.iter().enumerate() {
+            let scope=if binding.domain==domain {Some(primary)}
+                else if binding.domain==ChannelDomain::HostChannel {secondary} else {None};
+            let Some(scope)=scope else {continue;};
+            if scope.channels&(1<<binding.channel)==0 {continue;}
+            let held=runtime.input_held(binding.note)?;
+            let zone=self.zone_domain(binding.domain);
+            let member=if zone&&binding.channel==self.zone.manager() {Controls::default()}
+                else if zone&&!held {binding.member}
+                else {controls[binding.domain.index()][usize::from(binding.channel)]};
+            let combined=self.expression_for(binding.domain,member,&controls);
+            let owner=runtime.expression_id(binding.note)?;let old=runtime.expression(owner)?;
+            self.changes.push((owner,Expression{pitch_semitones:combined.pitch_semitones+self.transpose+binding.tuning+binding.per_note.map_or(0.,|value|value.pitch),bend:combined.bend,pressure:combined.pressure,..old}));
+            if (!zone||binding.channel!=self.zone.manager())&&(!zone||held) {self.reset_members.push(index);}
+        }
+        runtime.validate_expressions(&self.changes)?;
+        runtime.set_expressions(&self.changes)?;
+        // No callback/admission lies between the union preflight and bank
+        // commit; expression publication does not alter any reset epoch/row.
+        runtime.reset_protocol_controller_targets(self.performance,primary,secondary)?;
+        for (target,scope) in [(domain,Some(primary)),(ChannelDomain::HostChannel,secondary)] {
+            if let Some(scope)=scope {
+                self.wire[target.index()].controls=controls[target.index()];
+                for channel in 0..16u8 {if scope.channels&(1<<channel)!=0 {
+                    self.wire[target.index()].bends[usize::from(channel)]=if target==ChannelDomain::Midi1 {Value::Bits14(8192)} else {Value::Bits32(CENTER)};
+                    self.wire[target.index()].parameters[usize::from(channel)]=Parameter::default();
+                }}
+            }
+        }
+        for index in self.reset_members.drain(..) {let binding=&mut self.bindings[index];binding.member=controls[binding.domain.index()][usize::from(binding.channel)];}
+        Ok(Applied::ResetControllers)
+    }
+
+    fn per_note_bend(&mut self, runtime: &mut Runtime, channel: u8, key: u8, bend: u32) -> Result<Applied, Error> {
+        let (id, before) = self.per_note.key(self.group, channel, key)?;
+        let channel_id = self.per_note.channel(self.group, channel)?;
+        let next = crate::per_note::KeyState { bend, ..before };
+        let projected = crate::per_note::PerNoteState::project(next, self.per_note.range(channel_id));
+        self.changes.clear();
+        for binding in &self.bindings {
+            if binding.domain != ChannelDomain::Midi2 || binding.channel != channel || binding.key != key { continue; }
+            let Some(previous) = binding.per_note.filter(|state| state.cohort == before.cohort) else { continue; };
+            let owner = runtime.expression_id(binding.note)?; let mut value = runtime.expression(owner)?;
+            value.pitch_semitones += projected.pitch - previous.pitch;
+            self.changes.push((owner, value));
+        }
+        runtime.set_expressions(&self.changes)?;
+        for binding in &mut self.bindings {
+            if binding.domain == ChannelDomain::Midi2 && binding.channel == channel && binding.key == key
+                && binding.per_note.is_some_and(|state| state.cohort == before.cohort) { binding.per_note = Some(projected); }
+        }
+        self.per_note.commit_key(id, next);
+        Ok(Applied::Expression { owners: self.changes.len() })
+    }
+
+    fn per_note_management(&mut self, runtime: &mut Runtime, channel: u8, key: u8, detach: bool, reset: bool) -> Result<Applied, Error> {
+        if !detach && !reset { return Ok(Applied::Ignored); }
+        let (id, before) = self.per_note.key(self.group, channel, key)?;
+        let next = crate::per_note::PerNoteState::managed(before, detach, reset)?;
+        if !detach && reset { self.per_note_bend(runtime, channel, key, crate::per_note::CENTER)?; }
+        // D precedes S: no old owner is reset/rebound when both are set.
+        self.per_note.commit_key(id, next);
+        Ok(Applied::Configuration)
+    }
+
+    fn per_note_range(&mut self, runtime: &mut Runtime, channel: u8, range: f64) -> Result<Applied, Error> {
+        let id = self.per_note.channel(self.group, channel)?;
+        self.changes.clear(); self.note_changes.clear();
+        for (index, binding) in self.bindings.iter().enumerate() {
+            if binding.domain != ChannelDomain::Midi2 || binding.channel != channel { continue; }
+            let (_, key) = self.per_note.key(self.group, channel, binding.key)?;
+            let Some(previous) = binding.per_note.filter(|state| state.cohort == key.cohort) else { continue; };
+            let next = crate::per_note::PerNoteState::project(key, range);
+            let owner = runtime.expression_id(binding.note)?; let mut value = runtime.expression(owner)?;
+            value.pitch_semitones += next.pitch - previous.pitch; self.changes.push((owner, value));
+            self.note_changes.push((index, next));
+        }
+        runtime.set_expressions(&self.changes)?;
+        for (index, next) in self.note_changes.drain(..) { self.bindings[index].per_note = Some(next); }
+        self.per_note.commit_range(id, range);
+        Ok(Applied::Configuration)
+    }
+
+    fn dispatch_controller(&self, runtime: &mut Runtime, origin: sampler_core::ChannelAddress,
+        channels: u16, number: u8, value: u32, native_per_note: bool) -> Result<(), Error> {
+        runtime.dispatch_controller_with_host_targets(self.performance, origin, channels, number, value,
+            self.host_targets(origin.channel, native_per_note))?;
+        Ok(())
+    }
+
+    fn manager_scope(&self, domain: ChannelDomain) -> ChannelScope {
+        let members = if domain == ChannelDomain::Midi2 { self.fixed_members } else { self.members };
+        let width = (1u32 << (members + 1)) - 1;
         ChannelScope {
-            protocol: Protocol::Midi1,
+            protocol: domain.protocol(),
             port: self.port,
             group: self.group,
             channels: match self.zone {
                 Zone::Lower => width as u16,
-                Zone::Upper => (width << (15 - self.members)) as u16,
+                Zone::Upper => (width << (15 - members)) as u16,
             },
         }
     }
 
-    fn control(
-        &mut self,
-        runtime: &mut Runtime,
-        channel: u8,
-        control: Control,
-    ) -> Result<Applied, Error> {
-        let mut controls = self.controls;
-        controls[usize::from(channel)] = controls[usize::from(channel)].with(control);
-        self.project(runtime, controls, Some(channel), control)
+    fn control(&mut self, runtime: &mut Runtime, domain: ChannelDomain, channel: u8, control: Control) -> Result<Applied, Error> {
+        let mut controls = self.control_rows();
+        let domains = self.affected_domains(domain, channel);
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() != 0 {
+                let channel = if target == ChannelDomain::HostChannel { self.host_channel(channel) } else { channel };
+                controls[target.index()][usize::from(channel)] = controls[target.index()][usize::from(channel)].with(control);
+            }
+        }
+        self.project(runtime, controls, domains, self.gesture_channels(channel), false, control)
     }
 
-    fn project(
-        &mut self,
-        runtime: &mut Runtime,
-        controls: [Controls; 16],
-        channel: Option<u8>,
-        control: Control,
+    /// Project an already accepted script virtual-controller write in its real
+    /// logical channel domain, without synthesizing input or rerunning callbacks.
+    pub fn apply_script_controller(
+        &mut self, runtime: &mut Runtime, address: sampler_core::ChannelAddress,
+        number: u8, value: u32,
     ) -> Result<Applied, Error> {
-        let manager = channel == Some(self.zone.manager());
-        let manager_controls = controls[usize::from(self.zone.manager())];
+        if runtime.id() != self.runtime { return Err(Error::StaleHandle); }
+        if address.port != self.port || address.group != self.group || !matches!(number, 128 | 129) {
+            return Err(Error::InvalidInput);
+        }
+        let domain = Self::domain(address.protocol)?;
+        if !self.accepts_wire_channel(domain, address.channel) { return Err(Error::InvalidInput); }
+        runtime.render(&mut [])?;
+        self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
+        let mut controls = self.control_rows();
+        let channel = usize::from(address.channel);
+        let control = if number == 128 {
+            let raw = Value::Bits14((value >> 18) as u16);
+            let range = self.bend_override.map(f64::from).unwrap_or_else(|| self.sensitivity(domain, address.channel).semitones());
+            Control::Pitch(pitch(raw, range), pitch(raw, 1.))
+        } else { Control::Pressure(value) };
+        controls[domain.index()][channel] = controls[domain.index()][channel].with(control);
+        let mut channels = [None; 3]; channels[domain.index()] = Some(address.channel);
+        let result = self.project(runtime, controls, domain.bit(), channels, false, control)?;
+        if number == 128 { self.wire[domain.index()].bends[channel] = Value::Bits14((value >> 18) as u16); }
+        Ok(result)
+    }
+
+    /// One channel-less instrument gesture. Each zone receives its manager
+    /// component once; ordinary MIDI2 channels retain their own sensitivities.
+    pub fn apply_global_script_controller(&mut self, runtime: &mut Runtime, number: u8, value: u32) -> Result<Applied, Error> {
+        if runtime.id() != self.runtime { return Err(Error::StaleHandle); }
+        if !matches!(number, 128 | 129) { return Err(Error::InvalidInput); }
+        runtime.render(&mut [])?;
+        self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
+        let mut controls = self.control_rows();
+        let raw = Value::Bits14((value >> 18) as u16);
+        let mut domains = 0;
+        for domain in ChannelDomain::ALL {
+            if domain == ChannelDomain::HostChannel && !self.host_projection { continue; }
+            domains |= domain.bit();
+            for channel in 0..16u8 {
+                if self.zone_domain(domain) && channel != self.zone.manager() { continue; }
+                let control = if number == 128 {
+                    let range = self.bend_override.map(f64::from).unwrap_or_else(|| self.sensitivity(domain, channel).semitones());
+                    Control::Pitch(pitch(raw, range), pitch(raw, 1.))
+                } else { Control::Pressure(value) };
+                controls[domain.index()][usize::from(channel)] = controls[domain.index()][usize::from(channel)].with(control);
+            }
+        }
+        let dimension = if number == 128 { Control::Pitch(0., 0.) } else { Control::Pressure(0) };
+        let result = self.project(runtime, controls, domains, [None; 3], true, dimension)?;
+        if number == 128 {
+            for domain in ChannelDomain::ALL {
+                if domains & domain.bit() == 0 { continue; }
+                for channel in 0..16u8 {
+                    if !self.zone_domain(domain) || channel == self.zone.manager() {
+                        self.wire[domain.index()].bends[usize::from(channel)] = raw;
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn bend(&mut self, runtime: &mut Runtime, domain: ChannelDomain, channel: u8, value: Value) -> Result<Applied, Error> {
+        let domains = self.affected_domains(domain, channel);
+        let mut controls = self.control_rows();
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() == 0 { continue; }
+            let channel = if target == ChannelDomain::HostChannel { self.host_channel(channel) } else { channel };
+            let range = self.bend_override.map(f64::from).unwrap_or_else(||
+                self.sensitivity(target, channel).semitones());
+            controls[target.index()][usize::from(channel)] = controls[target.index()][usize::from(channel)]
+                .with(Control::Pitch(pitch(value, range), pitch(value, 1.)));
+        }
+        let applied = self.project(runtime, controls, domains, self.gesture_channels(channel), false, Control::Pitch(0., 0.))?;
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() != 0 {
+                let channel = if target == ChannelDomain::HostChannel { self.host_channel(channel) } else { channel };
+                self.wire[target.index()].bends[usize::from(channel)] = value;
+            }
+        }
+        Ok(applied)
+    }
+
+    fn project(&mut self, runtime: &mut Runtime, controls: [[Controls; 16]; 3], domains: u8,
+        channels: [Option<u8>; 3], all_notes: bool, control: Control) -> Result<Applied, Error> {
         self.changes.clear();
         for binding in &self.bindings {
-            let active_member = binding.channel != self.zone.manager()
-                && channel.is_none_or(|channel| binding.channel == channel)
-                && runtime.input_held(binding.note)?;
-            if manager || active_member {
+            if domains & binding.domain.bit() == 0 { continue; }
+            let zone = self.zone_domain(binding.domain);
+            let channel = channels[binding.domain.index()];
+            let manager = zone && channel == Some(self.zone.manager());
+            let matching = channel.is_none_or(|channel| binding.channel == channel);
+            let member = zone && binding.channel != self.zone.manager();
+            let held = runtime.input_held(binding.note)?;
+            if all_notes || manager || (matching && ((!zone) || (member && held))) {
                 let owner = runtime.expression_id(binding.note)?;
                 let mut expression = runtime.expression(owner)?;
-                let member = if !manager && active_member {
-                    controls[usize::from(binding.channel)]
-                } else {
-                    binding.member
-                };
-                let mut combined = member.expression(manager_controls);
-                combined.pitch_semitones += self.transpose;
-                combined.pitch_semitones += binding.tuning;
-                // Each gesture owns only its dimension. Preserve native gain,
-                // pan and all expression fields not addressed by this control.
+                let value = if zone && binding.channel == self.zone.manager() { Controls::default() }
+                    else if matching && (!zone || held) { controls[binding.domain.index()][usize::from(binding.channel)] }
+                    else { binding.member };
+                let mut combined = self.expression_for(binding.domain, value, &controls);
+                combined.pitch_semitones += self.transpose + binding.tuning + binding.per_note.map_or(0., |state| state.pitch);
                 match control {
-                    Control::Pitch(..) => {
-                        expression.pitch_semitones = combined.pitch_semitones;
-                        expression.bend = combined.bend;
-                    }
+                    Control::Pitch(..) => { expression.pitch_semitones = combined.pitch_semitones; expression.bend = combined.bend; }
                     Control::Pressure(_) => expression.pressure = combined.pressure,
                     Control::Timbre(_) => expression.timbre = combined.timbre,
                 }
                 self.changes.push((owner, expression));
             }
         }
-        // Controller state and per-note snapshots commit only after every owner
-        // accepts the gesture. Rejected pitch must not leak into the next note.
         runtime.set_expressions(&self.changes)?;
-        self.controls = controls;
-        if !manager {
-            for binding in &mut self.bindings {
-                if binding.channel != self.zone.manager()
-                    && channel.is_none_or(|channel| binding.channel == channel)
-                    && runtime.input_held(binding.note)?
-                {
-                    binding.member = controls[usize::from(binding.channel)];
-                }
+        for (wire, controls) in self.wire.iter_mut().zip(controls) { wire.controls = controls; }
+        let ordinary_midi2 = self.midi2_channel_voice;
+        for binding in &mut self.bindings {
+            if domains & binding.domain.bit() == 0 { continue; }
+            let zone = binding.domain != ChannelDomain::Midi2 || !ordinary_midi2;
+            let channel = channels[binding.domain.index()];
+            if (!zone || binding.channel != self.zone.manager())
+                && channel.is_none_or(|channel| binding.channel == channel)
+                && (!zone || runtime.input_held(binding.note)?) {
+                binding.member = controls[binding.domain.index()][usize::from(binding.channel)];
             }
         }
-        Ok(Applied::Expression {
-            owners: self.changes.len(),
-        })
+        Ok(Applied::Expression { owners: self.changes.len() })
     }
     fn configure_zone(&mut self, runtime: &mut Runtime, channel: u8, members: u8) -> Result<Applied, Error> {
         let zone = match channel { 0 => Zone::Lower, 15 => Zone::Upper, _ => return Ok(Applied::Ignored) };
@@ -734,90 +1303,88 @@ impl Mpe {
             mask | if role(previous, channel) != role(zones, channel) { 1 << channel } else { 0 });
         runtime.render(&mut [])?;
         let scope = ChannelScope { protocol: Protocol::Midi1, port: self.port, group: self.group, channels: changed };
-        if changed != 0 { runtime.validate_channel_controller_reset(self.performance, scope)?; }
+        let host_scope = self.host_projection.then_some(ChannelScope { protocol: Protocol::Native,
+            port: self.port, group: self.group, channels: changed });
+        if changed != 0 { runtime.validate_channel_controller_reset_targets(self.performance, scope, host_scope)?; }
+        let domains = ChannelDomain::Midi1.bit() | if self.host_projection { ChannelDomain::HostChannel.bit() } else { 0 };
         self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
-        let changed_owner = |binding: &Binding| changed & (1 << binding.channel) != 0
-            || (binding.address.protocol == scope.protocol && binding.address.port == scope.port
-                && binding.address.group == scope.group && changed & (1 << binding.address.channel) != 0);
-        let mut controls = self.controls;
-        for channel in 0..16usize {
-            if changed & (1 << channel) != 0 {
-                controls[channel] = Controls::default();
-            }
-        }
+        let port = self.port; let group = self.group;
+        let changed_owner = |binding: &Binding| domains & binding.domain.bit() != 0
+            && (changed & (1 << binding.channel) != 0 || (binding.address.protocol == binding.domain.protocol()
+                && binding.address.port == port && binding.address.group == group
+                && changed & (1 << binding.address.channel) != 0));
+        let mut controls = self.control_rows();
         let reset_sensitivity = zone == self.zone;
-        if reset_sensitivity {
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() == 0 { continue; }
             for channel in 0..16u8 {
-                if self.zone.contains(channel, zones[self.zone.index()]) {
-                    let range = if channel == self.zone.manager() { 2.0 } else { 48.0 };
-                    controls[usize::from(channel)].pitch = pitch(
-                        if changed & (1 << channel) != 0 { Value::Bits14(8192) } else { self.bends[usize::from(channel)] }, range,
-                    );
+                if changed & (1 << channel) != 0 { controls[target.index()][usize::from(channel)] = Controls::default(); }
+                if reset_sensitivity && self.zone.contains(channel, zones[self.zone.index()]) {
+                    let range = if channel == self.zone.manager() { 2. } else { 48. };
+                    let bend = if changed & (1 << channel) != 0 { Value::Bits14(8192) }
+                        else { self.wire[target.index()].bends[usize::from(channel)] };
+                    controls[target.index()][usize::from(channel)].pitch = pitch(bend, range);
                 }
             }
         }
         self.changes.clear();
         for binding in &self.bindings {
-            if changed_owner(binding) || runtime.note(binding.note).is_err() { continue; }
-            let manager = controls[usize::from(self.zone.manager())];
+            if domains & binding.domain.bit() == 0 || changed_owner(binding)
+                || runtime.note(binding.note).is_err() { continue; }
+            let row = &controls[binding.domain.index()];
+            let manager = row[usize::from(self.zone.manager())];
             let member = if binding.channel == self.zone.manager() { Controls::default() }
-                else if runtime.input_held(binding.note)? { controls[usize::from(binding.channel)] }
+                else if runtime.input_held(binding.note)? { row[usize::from(binding.channel)] }
                 else { binding.member };
             let combined = member.expression(manager);
             let owner = runtime.expression_id(binding.note)?;
             let old = runtime.expression(owner)?;
-            let mut value = Expression { pitch_semitones: combined.pitch_semitones, bend: combined.bend,
-                pressure: combined.pressure, timbre: combined.timbre, ..old };
-            value.pitch_semitones += self.transpose;
-            value.pitch_semitones += binding.tuning;
-            self.changes.push((owner, value));
+            self.changes.push((owner, Expression { pitch_semitones: combined.pitch_semitones + self.transpose + binding.tuning + binding.per_note.map_or(0., |state| state.pitch),
+                bend: combined.bend, pressure: combined.pressure, timbre: combined.timbre, ..old }));
         }
-        // Every surviving pitch/source projection must be admitted before a
-        // changed channel can lose its keys, voices or controller state.
         runtime.validate_expressions(&self.changes)?;
-        // No callback/due work occurs between the drained batch construction
-        // and this validated publication. Cleanup follows the accepted gesture.
         runtime.set_expressions(&self.changes)?;
-        // Terminal cleanup never requires a new input/command slot. Do not
-        // leave host execution owners down after their channel changes roles.
         for binding in &self.bindings {
             if changed_owner(binding) {
                 match runtime.cancel_input_note(binding.note) {
-                    Ok(()) | Err(Error::StaleHandle) => {}
-                    Err(error) => return Err(error),
+                    Ok(()) | Err(Error::StaleHandle) => {}, Err(error) => return Err(error),
                 }
             }
         }
-        if changed != 0 { runtime.reset_channel_controllers(self.performance, scope)?; }
+        if changed != 0 { runtime.reset_channel_controller_targets(self.performance, scope, host_scope)?; }
         for channel in 0..16u8 {
-            if changed & (1 << channel) != 0 {
-                runtime.all_sound_off(sampler_core::ChannelAddress {
-                    protocol: Protocol::Midi1, port: self.port, group: self.group, channel,
-                })?;
+            if changed & (1 << channel) == 0 { continue; }
+            for target in ChannelDomain::ALL {
+                if domains & target.bit() == 0 { continue; }
+                runtime.all_sound_off(sampler_core::ChannelAddress { protocol: target.protocol(),
+                    port: self.port, group: self.group, channel })?;
             }
         }
         self.bindings.retain(|binding| !changed_owner(binding) && runtime.note(binding.note).is_ok());
         for binding in &mut self.bindings {
-            if binding.channel != self.zone.manager() && runtime.input_held(binding.note)? {
-                binding.member = controls[usize::from(binding.channel)];
+            if domains & binding.domain.bit() != 0 && binding.channel != self.zone.manager() && runtime.input_held(binding.note)? {
+                binding.member = controls[binding.domain.index()][usize::from(binding.channel)];
             }
         }
-        self.controls = controls;
-        let selector = self.parameters[usize::from(channel)];
-        for channel in 0..16usize {
-            if changed & (1 << channel) != 0 {
-                self.bends[channel] = Value::Bits14(8192);
-                self.parameters[channel] = Parameter::default();
+        let selector = self.wire[0].parameters[usize::from(channel)];
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() == 0 { continue; }
+            let wire = &mut self.wire[target.index()];
+            wire.controls = controls[target.index()];
+            for channel in 0..16usize {
+                if changed & (1 << channel) != 0 {
+                    wire.bends[channel] = Value::Bits14(8192);
+                    wire.parameters[channel] = Parameter::default();
+                }
             }
+            if reset_sensitivity { wire.ranges = [Sensitivity { coarse: 2, cents: 0 }, Sensitivity { coarse: 48, cents: 0 }]; }
         }
-        self.parameters[usize::from(channel)] = selector;
-        if reset_sensitivity {
-            self.ranges = [Sensitivity { coarse: 2, cents: 0 }, Sensitivity { coarse: 48, cents: 0 }];
-            self.bend_override = None;
-        }
+        self.wire[0].parameters[usize::from(channel)] = selector;
+        if reset_sensitivity { self.bend_override = None; }
         self.zones = zones;
         self.members = zones[self.zone.index()];
         self.configured = true;
+        self.host_mpe_active = true;
         Ok(Applied::Configuration)
     }
 
@@ -828,7 +1395,7 @@ impl Mpe {
         index: u8,
         value: u8,
     ) -> Result<Applied, Error> {
-        let parameter = &mut self.parameters[usize::from(channel)];
+        let parameter = &mut self.wire[0].parameters[usize::from(channel)];
         match index {
             100 | 101 => {
                 parameter.rpn[usize::from(index == 100)] = value;
@@ -841,6 +1408,7 @@ impl Mpe {
             }
             6 if parameter.registered && parameter.rpn == [0, 0] => self.range(
                 runtime,
+                ChannelDomain::Midi1,
                 channel,
                 Sensitivity {
                     coarse: value,
@@ -848,9 +1416,10 @@ impl Mpe {
                 },
             ),
             38 if parameter.registered && parameter.rpn == [0, 0] => {
-                let coarse = self.ranges[usize::from(channel != self.zone.manager())].coarse;
+                let coarse = self.wire[0].ranges[usize::from(channel != self.zone.manager())].coarse;
                 self.range(
                     runtime,
+                    ChannelDomain::Midi1,
                     channel,
                     Sensitivity {
                         coarse,
@@ -860,45 +1429,43 @@ impl Mpe {
             }
             96 | 97 if parameter.registered && parameter.rpn == [0, 0] => {
                 let value =
-                    self.ranges[usize::from(channel != self.zone.manager())].relative(index == 96);
-                self.range(runtime, channel, value)
+                    self.wire[0].ranges[usize::from(channel != self.zone.manager())].relative(index == 96);
+                self.range(runtime, ChannelDomain::Midi1, channel, value)
             }
             _ => Ok(Applied::Unsupported),
         }
     }
 
-    fn range(
-        &mut self,
-        runtime: &mut Runtime,
-        channel: u8,
-        value: Sensitivity,
-    ) -> Result<Applied, Error> {
-        if value.semitones() > 96. {
-            return Err(Error::InvalidInput);
-        }
-        let manager = channel == self.zone.manager();
-        if self.bend_override.is_some() {
-            self.ranges[usize::from(!manager)] = value;
-            return Ok(Applied::Configuration);
-        }
-        let mut controls = self.controls;
-        for (index, control) in controls.iter_mut().enumerate() {
-            let channel = index as u8;
-            if (manager && channel == self.zone.manager())
-                || (!manager
-                    && channel != self.zone.manager()
-                    && self.zone.contains(channel, self.members))
-            {
-                control.pitch = pitch(self.bends[index], value.semitones());
+    fn range(&mut self, runtime: &mut Runtime, domain: ChannelDomain, channel: u8, value: Sensitivity) -> Result<Applied, Error> {
+        if value.semitones() > 96. { return Err(Error::InvalidInput); }
+        let domains = self.affected_domains(domain, channel);
+        let mut controls = self.control_rows();
+        let mut channels = [None; 3];
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() == 0 { continue; }
+            let target_channel = if target == ChannelDomain::HostChannel { self.host_channel(channel) } else { channel };
+            let manager = target_channel == self.zone.manager();
+            let zone = self.zone_domain(target);
+            channels[target.index()] = if zone { manager.then_some(target_channel) } else { Some(target_channel) };
+            if self.bend_override.is_some() { continue; }
+            for (index, control) in controls[target.index()].iter_mut().enumerate() {
+                let ch = index as u8;
+                if (!zone && ch == target_channel) || (zone && ((manager && ch == self.zone.manager())
+                    || (!manager && ch != self.zone.manager() && self.accepts_wire_channel(target, ch)))) {
+                    control.pitch = pitch(self.wire[target.index()].bends[index], value.semitones());
+                }
             }
         }
-        let applied = self.project(
-            runtime,
-            controls,
-            manager.then_some(channel),
-            Control::Pitch(0.0, 0.0),
-        )?;
-        self.ranges[usize::from(!manager)] = value;
+        let applied = if self.bend_override.is_none() {
+            self.project(runtime, controls, domains, channels, false, Control::Pitch(0., 0.))?
+        } else { Applied::Configuration };
+        for target in ChannelDomain::ALL {
+            if domains & target.bit() == 0 { continue; }
+            let target_channel = if target == ChannelDomain::HostChannel { self.host_channel(channel) } else { channel };
+            if target == ChannelDomain::Midi2 && self.midi2_channel_voice {
+                self.wire[target.index()].channel_ranges[usize::from(target_channel)] = value;
+            } else { self.wire[target.index()].ranges[usize::from(target_channel != self.zone.manager())] = value; }
+        }
         Ok(applied)
     }
 }

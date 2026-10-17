@@ -393,6 +393,44 @@ impl StreamCache {
     }
     /// Request one validated decoded page. Hits share storage across notes/views.
     /// A failed page remains failed until evicted or a new asset revision is used.
+    fn request_family(&mut self, source: crate::SourceStorageRef<'_>, page: usize, deadline: u64, needed:Range<usize>) -> Result<bool, StreamError> {
+        let mut missing = 0usize;
+        let mut work = 0usize;
+        for i in 0..source.physical_count() {
+            let asset = source.physical(i).ok_or(StreamError::InvalidRange)?;
+            let start = page.checked_mul(PAGE_FRAMES).ok_or(StreamError::InvalidRange)?;
+            let end = start.checked_add(PAGE_FRAMES).ok_or(StreamError::InvalidRange)?.min(asset.frame_count());
+            if start >= end { return Err(StreamError::InvalidRange); }
+            if needed.start<start || needed.end>end || needed.start>=needed.end {return Err(StreamError::InvalidRange);}
+            if asset.resident_covers(needed.clone()) {continue;}
+            match self.find(PageKey{asset:asset.asset_id(),index:page}).and_then(|slot|self.entries[slot].as_ref()) {
+                None=>{work+=1;missing+=1;},
+                Some(entry)=>match entry.state {
+                    State::Pending if deadline<entry.request.deadline=>work+=1,
+                    State::Failed(error)=>{
+                        if error!=DecodeFailure::Unavailable || entry.retries==3 {return Err(StreamError::DecodeFailed(error));}
+                        work+=1;
+                    }
+                    _=>{}
+                }
+            }
+        }
+        if work!=0 && self.requests.is_abandoned() { return Err(StreamError::Disconnected); }
+        self.serial.checked_add(work as u64).ok_or(StreamError::SequenceExhausted)?;
+        // Conservatively reserve queue/result/eviction authority for every
+        // physical member before any new request mutates this logical batch.
+        if self.requests.slots() < work || self.entries.len().saturating_sub(self.protected) < missing
+            || self.recycled.slots() < missing.saturating_sub(self.vacant.len()) {
+            return Err(StreamError::Capacity);
+        }
+        let mut ready = true;
+        for i in 0..source.physical_count() {
+            let asset = source.physical(i).ok_or(StreamError::InvalidRange)?;
+            if asset.resident_covers(needed.clone()) { continue; }
+            ready &= self.request_retry(asset, page, deadline)? == PageStatus::Ready;
+        }
+        Ok(ready)
+    }
     pub fn request(
         &mut self,
         asset: &Pcm,
@@ -746,6 +784,19 @@ impl StreamWorker {
         samples[..request.len].fill([0.; 2]);
         Some(DecodeJob { request, samples })
     }
+    pub fn page_capacity(&self) -> usize { self.pending.len() }
+    /// Worker coordinator only, called while holding the same lock as the
+    /// preceding next_job. No extra page storage or source identity is minted.
+    pub fn next_related_job(&mut self, page:usize, assets:&[AssetId]) -> Option<DecodeJob> {
+        if self.free.is_empty() {return None;}
+        let slot=self.pending.iter().position(|r|r.is_some_and(|r|r.key.index==page && assets.contains(&r.key.asset)))?;
+        let request=self.pending[slot].take()?;
+        if request.serial<=self.launched[slot] {return None;}
+        self.launched[slot]=request.serial;
+        let mut samples=self.free.pop()?;samples.resize(PAGE_FRAMES,[0.;2]);
+        let mut samples=samples.into_boxed_slice();samples[..request.len].fill([0.;2]);
+        Some(DecodeJob{request,samples})
+    }
     /// Validate the decoded page off audio. Rejection retains ownership for retry;
     /// failed/invalid decodes publish a visible failure and recycle their buffer.
     pub fn complete(
@@ -814,9 +865,9 @@ impl crate::Runtime {
             let id = crate::VoiceId(self.voices.id(index));
             let family = self.families.get(voice.family.0).unwrap();
             let note = self.notes.get(family.note.0).unwrap();
-            let Some(asset) = self.plans.get(note.plan.0).unwrap().source(voice.sample)
-                .and_then(crate::SourceStorageRef::stereo) else { continue; };
+            let Some(source) = self.plans.get(note.plan.0).unwrap().source(voice.sample) else { continue; };
             let complete = self.visit_voice_demand(id, frames, |demand| {
+                let Some(asset) = source.physical_id(demand.asset) else { return false; };
                 if demand.frames.is_empty() { return true; }
                 for page in demand.frames.start / PAGE_FRAMES..=(demand.frames.end - 1) / PAGE_FRAMES {
                     let range = demand.frames.start.max(page * PAGE_FRAMES)
@@ -843,6 +894,20 @@ impl crate::Runtime {
     pub fn set_stream_horizon(&mut self, frames: u32) -> Result<(), Error> {
         if frames < self.stream_start_runway {
             return Err(Error::InvalidInput);
+        }
+        if let Some(cache)=&self.stream_cache {
+            let mut total=0usize;
+            for voice in self.voices.slots.iter().filter_map(|slot|slot.value.as_ref()).filter(|v|v.stream_pages!=0) {
+                let family=self.families.get(voice.family.0).ok_or(Error::StaleHandle)?;
+                let note=self.notes.get(family.note.0).ok_or(Error::StaleHandle)?;
+                let source=self.plans.get(note.plan.0).ok_or(Error::StaleHandle)?.source(voice.sample).ok_or(Error::NotReady)?;
+                let ratio=self.expressions.get(note.expression.0).ok_or(Error::StaleHandle)?.rendered.ratio;
+                let next=voice.cursor.with_step(voice.base_step*ratio);
+                let pages=if source.stereo().is_some() {voice.cursor.reservation_pages(frames).max(next.reservation_pages(frames)).max(1)}
+                    else {voice.cursor.family_reservation_pages(frames).max(next.family_reservation_pages(frames)).max(1)};
+                total=total.checked_add(pages.checked_mul(source.physical_count()).ok_or(Error::Capacity)?).ok_or(Error::Capacity)?;
+            }
+            if total>cache.entries.len() {return Err(Error::Capacity);}
         }
         self.stream_horizon = frames;
         self.refresh_stream_reservations();
@@ -951,22 +1016,81 @@ impl crate::Runtime {
         Ok(pages)
     }
 
+    pub(crate) fn projected_voice_stream_pages(&self,index:usize,step:f64)->Result<usize,Error> {
+        let voice=self.voices.slots.get(index).and_then(|s|s.value.as_ref()).ok_or(Error::StaleHandle)?;
+        if voice.stream_pages==0 {return Ok(0);}
+        let family=self.families.get(voice.family.0).ok_or(Error::StaleHandle)?;
+        let note=self.notes.get(family.note.0).ok_or(Error::StaleHandle)?;
+        let source=self.plans.get(note.plan.0).ok_or(Error::StaleHandle)?.source(voice.sample).ok_or(Error::NotReady)?;
+        let next=voice.cursor.with_step(step);
+        let pages=if source.stereo().is_some() {
+            voice.cursor.reservation_pages(self.stream_horizon).max(next.reservation_pages(self.stream_horizon)).max(1)
+        } else {voice.cursor.family_reservation_pages(self.stream_horizon).max(next.family_reservation_pages(self.stream_horizon)).max(1)};
+        Ok(pages.checked_mul(source.physical_count()).ok_or(Error::Capacity)?.max(voice.stream_pages))
+    }
+    pub(crate) fn check_stream_projection(&self,pages:usize)->Result<(),Error> {
+        match &self.stream_cache {
+            Some(cache) if pages<=cache.entries.len()=>Ok(()),
+            None if pages==0=>Ok(()),
+            _=>Err(Error::Capacity),
+        }
+    }
+    pub(crate) fn check_stream_selection_pages(&self,pages:usize)->Result<(),Error> {
+        let cache=self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+        if self.stream_reserved.checked_add(pages).is_none_or(|n|n>cache.entries.len()) {return Err(Error::Capacity);}
+        Ok(())
+    }
+    pub(crate) fn admit_source_streaming(&self, source: crate::SourceStorageRef<'_>, cursor: crate::source::Cursor, cold: bool) -> Result<usize, StreamError> {
+        if source.stereo().is_some() { return self.admit_streaming(cursor, cold); }
+        let cache = self.stream_cache.as_ref().ok_or(StreamError::NotConfigured)?;
+        if cold && cache.requests.is_abandoned() { return Err(StreamError::Disconnected); }
+        let pages = cursor.family_reservation_pages(self.stream_horizon).max(1)
+            .checked_mul(source.physical_count()).ok_or(StreamError::Capacity)?;
+        if self.stream_reserved.checked_add(pages).is_none_or(|n| n > cache.entries.len()) { return Err(StreamError::Capacity); }
+        Ok(pages)
+    }
+    pub(crate) fn check_logical_source_ready(&self, source: crate::SourceStorageRef<'_>, cursor: crate::source::Cursor,
+        envelope: crate::Envelope) -> Result<(bool, bool), Error> {
+        if let Some(asset) = source.stereo() {
+            if !asset.residency_permitted() { return Err(Error::NotReady); }
+            return Ok((self.check_source_ready(asset, cursor, envelope)?, asset.resident_frames().is_none()));
+        }
+        if !source.is_paged() { return source.resident_view().map(|_| (false,false)).ok_or(Error::NotReady); }
+        let cache=self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+        let mut ready=true;
+        for i in 0..source.physical_count() {
+            let asset=source.physical(i).ok_or(Error::InvalidInput)?;
+            if !asset.residency_permitted() {return Err(Error::NotReady);}
+            let head=asset.try_head();let head=head.as_deref().map_or(&[][..],|h|h);
+            let frames=crate::source::PagedFrames {cache:cache.reader(),asset:asset.asset_id(),head};
+            ready &= cursor.runway_ready(cursor.pending_start_runway().max(1),crate::EnvelopeState::new(envelope),
+                |range|crate::source::ReadFrames::covers(&frames,range));
+        }
+        // Pure preflight: no mark_cold/head/queue/clock mutation. The normal
+        // all-pack service supplies missing pages after a cold start is admitted.
+        if !ready && !self.cold_starts {return Err(Error::NotReady);}
+        self.admit_source_streaming(source,cursor,!ready).map_err(|e|if e==StreamError::Capacity {Error::Capacity}else{Error::NotReady})?;
+        Ok((!ready,true))
+    }
     /// Called in the existing render completion loop, and after pitch edits.
     /// Starts only read the total; they never walk the other voices.
     pub(super) fn refresh_stream_reservation(&mut self, index: usize, step: f64) {
+        let v = self.voices.slots[index].value.as_ref().unwrap();
+        let f = self.families.get(v.family.0).unwrap();
+        let n = self.notes.get(f.note.0).unwrap();
+        let source=self.plans.get(n.plan.0).unwrap().source(v.sample).expect("live voice source");
+        let pack_count=source.physical_count();let family_source=source.stereo().is_none();
         let voice = self.voices.slots[index].value.as_mut().unwrap();
         if voice.stream_pages == 0 {
             return;
         }
-        let mut pages = voice.cursor.reservation_pages(self.stream_horizon).max(1);
-        if step != voice.cursor.step() {
-            pages = pages.max(
-                voice
-                    .cursor
-                    .with_step(step)
-                    .reservation_pages(self.stream_horizon),
-            );
+        let mut pages=if family_source {voice.cursor.family_reservation_pages(self.stream_horizon)}else{voice.cursor.reservation_pages(self.stream_horizon)}.max(1);
+        if step!=voice.cursor.step() {
+            let next=voice.cursor.with_step(step);
+            pages=pages.max(if family_source {next.family_reservation_pages(self.stream_horizon)}else{next.reservation_pages(self.stream_horizon)});
         }
+        // Accepted pitch range/initial admission proved this complete bound.
+        pages = pages.checked_mul(pack_count).expect("admitted physical page bound");
         self.stream_reserved = self.stream_reserved - voice.stream_pages + pages;
         voice.stream_pages = pages;
     }
@@ -1047,8 +1171,43 @@ impl crate::Runtime {
                 };
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
-                let Some(asset) = self.plans.get(note.plan.0).unwrap().source(voice.sample)
-                    .and_then(crate::SourceStorageRef::stereo) else { continue; };
+                let Some(source) = self.plans.get(note.plan.0).unwrap().source(voice.sample) else { continue; };
+                if source.stereo().is_none() {
+                    if !source.is_paged() { continue; }
+                    let checked = if frames != 0 { frames.max(voice.cursor.pending_start_runway()) } else { 0 };
+                    let Some(demand) = self.voice_demand(crate::VoiceId(self.voices.id(index)), checked).expect("validated logical demand") else { continue; };
+                    let mut failure = None;
+                    let mut last = None;
+                    let mut visit = |offset: u32, range: std::ops::Range<usize>| {
+                        if range.is_empty() { return true; }
+                        for page in range.start/PAGE_FRAMES..=(range.end-1)/PAGE_FRAMES {
+                            if last.replace(page) == Some(page) { continue; }
+                            if requesting {
+                                let start=page*PAGE_FRAMES;
+                                let needed=start..(start+PAGE_FRAMES).min(source.frame_count());
+                                match cache.request_family(source,page,demand.at+u64::from(offset),needed) {
+                                    Ok(r) => ready &= r,
+                                    Err(e) => { failure=Some(e); return false; }
+                                }
+                            } else {
+                                for ordinal in 0..source.physical_count() {
+                                    let asset = source.physical(ordinal).expect("validated physical source");
+                                    let start=page*PAGE_FRAMES;
+                                    if !asset.resident_covers(start..(start+PAGE_FRAMES).min(asset.frame_count())) {
+                                        cache.protect(asset,start..(start+PAGE_FRAMES).min(asset.frame_count())).expect("validated source demand");
+                                    }
+                                }
+                            }
+                        }
+                        true
+                    };
+                    if demand.cursor.bounded_demand() && demand.frames > 0 {
+                        for (range,offset) in demand.cursor.runway_reach(demand.frames).into_iter().flatten() { if !visit(offset,range) {break;} }
+                    } else { demand.cursor.visit_demand(demand.frames,demand.envelope,&mut visit); }
+                    if let Some(e)=failure {first_error.get_or_insert(e);ready=false;}
+                    continue;
+                }
+                let asset = source.stereo().expect("stereo branch");
                 if asset.resident_frames().is_some() {
                     continue;
                 }

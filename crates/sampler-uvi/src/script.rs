@@ -678,9 +678,9 @@ struct Shared {
     files: Box<dyn Files>,
     config: Config,
     tempo: Cell<f64>,
-    /// When each key went down (ms), if it is down.
-    down: RefCell<[Option<f64>; 128]>,
-    held: RefCell<std::collections::BTreeSet<u64>>,
+    /// Last physical note-on time per key, retained through release callbacks.
+    last_note_on: RefCell<[Option<f64>; 128]>,
+    held: RefCell<BTreeMap<u64, u8>>,
     voices: RefCell<std::collections::BTreeSet<u64>>,
     playing: Cell<bool>,
     beat_anchor: Cell<(f64, f64)>,
@@ -1471,7 +1471,7 @@ impl ScriptHost {
             files: Box::new(files),
             config,
             tempo: Cell::new(120.0),
-            down: RefCell::new([None; 128]),
+            last_note_on: RefCell::new([None; 128]),
             held: RefCell::new(Default::default()),
             voices: RefCell::new(Default::default()),
             playing: Cell::new(false),
@@ -2500,7 +2500,7 @@ impl ScriptHost {
             s.now.get() / beat(&s)
         ));
         define!("getNoteDuration", s, move |_, note: f64| {
-            let down = s.down.borrow();
+            let down = s.last_note_on.borrow();
             Ok(down
                 .get(note as usize)
                 .copied()
@@ -2508,23 +2508,16 @@ impl ScriptHost {
                 .map_or(0.0, |at| (s.now.get() - at).max(0.0)))
         });
         define!("isKeyDown", s, move |_, note: f64| {
-            Ok(s.down
-                .borrow()
-                .get(note as usize)
-                .is_some_and(Option::is_some))
+            Ok(s.held.borrow().values().any(|key| usize::from(*key) == note as usize))
         });
         define!("isOctaveKeyDown", s, move |_, note: f64| {
             let class = (note as usize) % 12;
-            Ok(s.down
-                .borrow()
-                .iter()
-                .enumerate()
-                .any(|(k, d)| k % 12 == class && d.is_some()))
+            Ok(s.held.borrow().values().any(|key| usize::from(*key) % 12 == class))
         });
         define!("isNoteHeld", s, move |_, ()| Ok(s
             .current
             .get()
-            .is_some_and(|id| s.held.borrow().contains(&id))));
+            .is_some_and(|id| s.held.borrow().contains_key(&id))));
         define!("getCC", s, move |_, cc: f64| {
             Ok(s.cc.borrow().get(cc as usize).copied().unwrap_or(0))
         });
@@ -2910,9 +2903,9 @@ impl ScriptHost {
 
     /// A note-on the host received, as the script's `onNote(e)`.
     pub fn note_on(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
-        self.shared.held.borrow_mut().insert(id);
+        self.shared.held.borrow_mut().insert(id, key & 127);
         self.shared.voices.borrow_mut().insert(id);
-        self.shared.down.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
+        self.shared.last_note_on.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
         let e = self.event(
             1,
             &[
@@ -2931,7 +2924,6 @@ impl ScriptHost {
     /// A note-off for the note-on `id`: `onRelease(e)`, and wakes `waitForRelease`.
     pub fn note_off(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
         self.shared.held.borrow_mut().remove(&id);
-        self.shared.down.borrow_mut()[usize::from(key & 127)] = None;
         let woken: Vec<Waiting> = {
             let mut waiting = self.shared.waiting.borrow_mut();
             let (woken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiting)
@@ -3984,3 +3976,49 @@ end
 #[cfg(test)]
 #[path = "script/ready_command_tests.rs"]
 mod ready_command_tests;
+
+#[cfg(test)]
+mod physical_key_state_regressions {
+    use super::*;
+    fn host(script:&str)->ScriptHost {
+        let xml=format!("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor Name='S'><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+        ScriptHost::new(&xml,(),Config::default()).unwrap()
+    }
+    #[test]
+    fn key_state_keeps_overlapping_physical_owners_and_last_note_on_duration() {
+        let mut h=host(r#"
+            releases={}
+            function onRelease(e)
+                table.insert(releases,{getNoteDuration(e.note),isKeyDown(e.note),isOctaveKeyDown(e.note)})
+            end
+        "#);
+        h.set_time(10.);h.note_on(1,60,100,1);
+        h.set_time(30.);h.note_on(2,60,90,12);
+        h.set_time(40.);h.note_on(3,72,80,8);
+        h.set_time(80.);h.note_off(1,60,11,1);
+        h.lua.load("assert(releases[1][1]==50 and releases[1][2] and releases[1][3])").exec().unwrap();
+        h.set_time(110.);h.note_off(2,60,22,12);
+        h.lua.load("assert(releases[2][1]==80 and not releases[2][2] and releases[2][3])").exec().unwrap();
+        h.set_time(115.);h.note_off(999,72,0,8);
+        h.lua.load("assert(releases[3][1]==75 and releases[3][2] and releases[3][3])").exec().unwrap();
+        h.set_time(120.);h.note_off(3,72,33,8);
+        h.lua.load("assert(releases[4][1]==80 and not releases[4][2] and not releases[4][3])").exec().unwrap();
+        assert!(h.findings().is_empty(),"{:?}",h.findings());
+    }
+    #[test]
+    fn releasing_one_same_key_owner_wakes_only_its_own_release_waiter() {
+        let mut h=host(r#"
+            resumed={}
+            function onNote(e)
+                waitForRelease()
+                table.insert(resumed,{e.id,isNoteHeld(),isKeyDown(e.note)})
+            end
+        "#);
+        h.note_on(41,60,100,0);h.note_on(42,60,100,15);
+        h.note_off(41,60,64,0);
+        h.lua.load("assert(#resumed==1 and resumed[1][1]==41 and not resumed[1][2] and resumed[1][3])").exec().unwrap();
+        h.note_off(42,60,64,15);
+        h.lua.load("assert(#resumed==2 and resumed[2][1]==42 and not resumed[2][2] and not resumed[2][3])").exec().unwrap();
+        assert!(h.findings().is_empty(),"{:?}",h.findings());
+    }
+}

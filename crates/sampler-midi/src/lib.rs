@@ -4,10 +4,11 @@
 mod articulation;
 mod ingress;
 mod mpe;
+mod per_note;
 mod probe;
 pub use articulation::{Articulator, Intercept};
 pub use ingress::{Applied, ApplyError, BlockError, Ingress, TimedPacket};
-pub use mpe::{Mpe, Zone};
+pub use mpe::{Mpe, Zone, TerminalRelease};
 pub use probe::{MpeResponse, centroid, mpe_response, spectral_ratio};
 
 /// MIDI 2.0 uses Program Change bank fields and Registered/Assignable
