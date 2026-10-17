@@ -609,6 +609,41 @@ impl Runtime {
             .unwrap_or_default()
     }
 
+    /// Whether this exact note owns an authored-deadline-admitted voice. This
+    /// reads Voice.started only: not first PCM, audibility, gain/mute, envelope,
+    /// decoded source width or a cold-onset policy. Release tails stay included.
+    /// Work follows only this note's actual family/voice lists, with no source
+    /// scan, allocation, scheduling, clock advancement or last-value cache.
+    pub fn note_has_started_voices(&self,note:NoteId)->Result<bool,Error>{
+        let mut family=self.notes.get(note.0).ok_or(Error::StaleHandle)?.first_family;
+        let mut families_seen=0usize;let mut voices_seen=0usize;
+        while let Some(index)=family{
+            if families_seen==self.families.count(){return Err(Error::InvalidInput);}families_seen+=1;
+            let current=self.families.slots.get(index.get()).and_then(|slot|slot.value.as_ref()).ok_or(Error::InvalidInput)?;
+            if current.note!=note{return Err(Error::InvalidInput);}
+            let expected=crate::FamilyId(self.families.id(index.get()));
+            let mut voice=current.first_voice;
+            while let Some(index)=voice{
+                if voices_seen==self.voices.count(){return Err(Error::InvalidInput);}voices_seen+=1;
+                let current=self.voices.slots.get(index.get()).and_then(|slot|slot.value.as_ref()).ok_or(Error::InvalidInput)?;
+                if current.family!=expected{return Err(Error::InvalidInput);}
+                if current.started{return Ok(true);}
+                voice=current.siblings.next;
+            }
+            family=current.siblings.next;
+        }
+        Ok(false)
+    }
+
+    /// Read the accepted quantized script-modulation value on this exact live
+    /// note. This is the existing stored target, not an instantaneous smoothed
+    /// DSP/source projection, default inference, or another frontend value bank.
+    pub fn note_script_value(&self,note:NoteId,id:u16)->Result<f64,Error>{
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let value=self.note_params[note.0.index].mods.values.get(usize::from(id)).copied().ok_or(Error::InvalidInput)?;
+        Ok(f64::from(value)/1_000_000.)
+    }
+
     /// Set a note's "from script" modulator `id` for a frontend that drives
     /// the runtime directly (the Falcon Lua host); `value` clamps to ±1.
     /// Voices of the note read it on their next chunk.
