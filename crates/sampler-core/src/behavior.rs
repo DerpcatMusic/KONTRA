@@ -1025,6 +1025,7 @@ pub(super) struct NoteControllerContext {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlanContext {
     Bare,
+    Task(super::receiver::task::TaskContext),
     NoteControllers(NoteControllerContext),
     Controller(super::controller_event::ControllerEvent),
     Program(super::receiver::channel_event::ProgramEvent),
@@ -1034,6 +1035,7 @@ impl PlanContext {
     pub(super) fn receiver(self)->Option<super::ReceiverId> {
         match self {
             Self::Bare=>None,
+            Self::Task(task)=>task.domain.receiver(),
             Self::Control(event)=>event.receiver.map(|capture|capture.receiver),
             Self::NoteControllers(context)=>context.receiver,
             Self::Controller(event)=>event.receiver.map(|target|target.receiver),
@@ -1043,6 +1045,7 @@ impl PlanContext {
     pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
+            Self::Task(task)=>task.domain.stage(),
             Self::NoteControllers(context)=>Some(context.stage),
             Self::Controller(event) => Some(event.stage),
             Self::Program(event) => Some(event.stage),
@@ -1341,6 +1344,7 @@ impl Runtime {
             }
             self.cancel_zone_parameters(id);
             self.cancel_closed_work();
+            self.release_task_run_parent(id)?;
         }
         Ok(())
     }
@@ -1385,6 +1389,7 @@ impl Runtime {
             if !accept(id, c.owner, outcome, c.program) {
                 return;
             }
+            let _=self.release_task_run_parent(id);
             self.release_controller_reserve(id);
             self.record_script_state_outcome(id);
             self.behaviors.remove(id.0);
@@ -1429,6 +1434,7 @@ impl Runtime {
                 && c.outcome == Some(Outcome::Finished)
             {
                 let id = BehaviorId(self.behaviors.id(i));
+                let _=self.release_task_run_parent(id);
                 self.release_controller_reserve(id);
                 self.record_script_state_outcome(id);
                 self.behaviors.remove(id.0);
@@ -3140,6 +3146,7 @@ outcome.is_none()
 
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
         self.cancel_zone_parameters(id);
+        let _=self.release_task_run_parent(id);
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
         if let Outcome::Fault(error) = outcome {

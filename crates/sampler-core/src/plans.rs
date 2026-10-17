@@ -49,6 +49,7 @@ pub struct PlanTransfer {
     samples: super::prepare::sample_revision::SampleState,
     initial_residency: super::residency::startup::State,
     start_cursor: usize,
+    source_tasks:super::receiver::task::TaskState,
 }
 
 pub(super) struct Generation {
@@ -58,6 +59,8 @@ pub(super) struct Generation {
     pub notes: usize,
     pub callbacks: usize,
     pub physical_events:usize,
+    pub event_values:usize,
+    pub source_tasks:super::receiver::task::TaskState,
     pub
 allocation: super::allocation::AllocationState,
     pub sequences: super::variation::SequenceState,
@@ -219,7 +222,7 @@ impl PlanControl {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
             Some(PlanError::SampleRate)
-        } else if prepared.validate_signal_execution().is_err() {
+        } else if prepared.validate_signal_execution().is_err()||prepared.validate_source_tasks().is_err() {
             Some(PlanError::SourceLayout)
         } else if prepared.programs.iter().any(|p| p.locals > self.locals) {
             Some(PlanError::LocalCapacity)
@@ -302,6 +305,7 @@ impl PlanControl {
             Ok(state) => state,
             Err(_) => return Err(RejectedPlan { reason: PlanError::Capacity, prepared }),
         };
+        let source_tasks=match super::receiver::task::TaskState::new(&prepared){Ok(state)=>state,Err(_)=>return Err(RejectedPlan{reason:PlanError::Capacity,prepared})};
         let request = self.sequence + 1;
         let script = super::script_params::EngineLayers::new(&prepared);
         let allocation = super::allocation::AllocationState::new(&prepared);
@@ -336,7 +340,7 @@ impl PlanControl {
             script,
             samples,
             initial_residency,
-            start_cursor: 0,
+            start_cursor: 0,source_tasks,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -473,6 +477,7 @@ impl Runtime {
                     g.notes == 0
                         && g.callbacks == 0
                         && g.physical_events == 0
+                        && g.event_values == 0
                         && g.
 controls.pending == 0
                         && !g.dsp.buses.active()
@@ -505,7 +510,7 @@ controls.pending == 0
                 script: generation.script,
                 samples: generation.samples,
                 initial_residency: generation.initial_residency,
-                start_cursor: generation.start_cursor,
+                start_cursor: generation.start_cursor,source_tasks:generation.source_tasks,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -534,7 +539,7 @@ controls.pending == 0
                             start_cursor: plan.start_cursor,
                             notes: 0,
                             callbacks: 0,
-                            physical_events:0,
+                            physical_events:0,event_values:0,source_tasks:plan.source_tasks,
                         },
                     );
                     break;
@@ -597,7 +602,7 @@ controls.pending == 0
                     samples: plan.samples,
                     notes: 0,
                     callbacks: plan.initial_residency.pending(),
-                    physical_events:0,
+                    physical_events:0,event_values:0,source_tasks:plan.source_tasks,
                     initial_residency: plan.initial_residency,
                     start_cursor: plan.start_cursor,
                 })

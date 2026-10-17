@@ -946,3 +946,411 @@ fn program_fork_keeps_old_epochs_without_duplicating_original_future_callback_re
         assert_eq!(rt.program_selection(perf,address).unwrap().unwrap(),sampler_core::ProgramSelection{program:77,bank:[1,2]});
     });
 }
+
+fn task25_plan()->Prepared{
+    use sampler_core::{PreparedSourceTaskBinding as Binding,SourceTaskFamily as Family};
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    external_plan(false).with_source_tasks([Family::Init,Family::Transport,Family::Spawned,Family::Run].into_iter()
+        .map(|family|Binding{processor,family,program:0}).collect()).unwrap()
+}
+fn task25_runtime()->Runtime{
+    let plan=task25_plan();let limits=Limits::for_plan(&plan,16,16);
+    Runtime::new(plan,limits).unwrap().with_event_value_capacity(8,8).unwrap()
+}
+#[test]
+fn real_processor_init_is_once_per_plan_and_wait_does_not_block_independent_controller_turns(){
+    use sampler_core::{ExternalEvent,SourceTaskCreator,SourceTaskHostContext,SourceTaskReason};
+    let mut rt=task25_runtime();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let host=SourceTaskHostContext{frame:0,tempo:137.,playing:true};
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Transport(host),perf),Ok(1));
+    let transport=rt.pending_external_turn().unwrap().unwrap();
+    assert!(matches!(transport.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Transport(host)&&event.creator==SourceTaskCreator::None));
+    rt.begin_external_turn(transport.input).unwrap();rt.complete_external_segment(transport.input,None).unwrap();
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(host),perf),Ok(1));
+    let init=rt.pending_external_turn().unwrap().unwrap();
+    assert!(matches!(init.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Init(host)));
+    rt.begin_external_turn(init.input).unwrap();rt.complete_external_segment(init.input,Some(32)).unwrap();
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(host),perf),Ok(0));
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0xabc1_2345).unwrap();
+    let controller=rt.pending_external_turn().unwrap().unwrap();assert!(matches!(controller.event,ExternalEvent::Controller{value:0xabc1_2345,..}));
+    rt.begin_external_turn(controller.input).unwrap();rt.complete_external_segment(controller.input,None).unwrap();
+    assert_eq!(rt.now(),0);rt.render(&mut [[0.;2];32]).unwrap();assert_eq!(rt.now(),32);
+    let resumed=rt.service_external_boundary().unwrap().unwrap();assert_eq!(resumed.input.behavior(),init.input.behavior());assert_ne!(resumed.input,init.input);
+    assert_eq!((resumed.original_frame,resumed.resume_frame),(0,32));
+    rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(SourceTaskHostContext{frame:32,..host}),perf),Ok(0));
+}
+#[test]
+fn immediate_run_uses_an_independent_plan_owner_and_releases_its_actual_parent_at_first_wait(){
+    use sampler_core::{BehaviorOwner,ExternalEvent,SourceTaskCreator,SourceTaskReason};
+    let mut rt=task25_runtime();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();
+    let parent=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(parent.input).unwrap();
+    let child=rt.spawn_source_task(parent.input,true).unwrap();assert_ne!(child,parent.input.behavior());
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),child);
+    assert!(matches!(turn.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Run&&event.creator==SourceTaskCreator::Event));
+    assert_eq!(rt.post_external_output(parent.input,sampler_core::ExternalOutput::Original),Err(Error::StaleHandle));
+    rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(32)).unwrap();
+    let resumed=rt.pending_external_turn().unwrap().unwrap();assert_eq!(resumed.input.behavior(),parent.input.behavior());assert_ne!(resumed.input,parent.input);
+    assert_eq!(rt.now(),0);assert!(resumed.order>turn.order);
+    rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+    rt.render(&mut [[0.;2];32]).unwrap();let sleeping=rt.service_external_boundary().unwrap().unwrap();assert_eq!(sleeping.input.behavior(),child);
+    rt.begin_external_turn(sleeping.input).unwrap();rt.complete_external_segment(sleeping.input,None).unwrap();
+    let mut child_finished=false;rt.flush_behaviors(|id,owner,_|{if id==child{assert_eq!(owner,BehaviorOwner::Plan(plan));child_finished=true;}true});assert!(child_finished);
+}
+#[test]
+fn deferred_task_keeps_event_creator_but_not_the_callers_pending_forward_reservation(){
+    use sampler_core::{ExternalEvent,ExternalOutput,SourceTaskCreator,SourceTaskReason};
+    let mut rt=task25_runtime();let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let parent=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(parent.input).unwrap();
+    let child=rt.spawn_source_task(parent.input,false).unwrap();
+    // The real original parent remains Running until its own segment ACK.
+    assert_eq!(rt.pending_external_turn().unwrap().unwrap().input,parent.input);
+    rt.complete_external_segment(parent.input,None).unwrap();
+    let deferred=rt.pending_external_turn().unwrap().unwrap();assert_eq!(deferred.input.behavior(),child);
+    assert!(matches!(deferred.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Spawned&&event.creator==SourceTaskCreator::Event));
+    rt.begin_external_turn(deferred.input).unwrap();
+    assert_eq!(rt.post_external_output(deferred.input,ExternalOutput::Original),Err(Error::InvalidInput));
+    rt.post_external_output(deferred.input,ExternalOutput::Controller{number:1,value:0x4321_abcd}).unwrap();
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0x4321_abcd);
+    rt.complete_external_segment(deferred.input,None).unwrap();
+}
+#[test]
+fn cancel_run_child_unparks_parent_without_recursive_execution_or_clock_advance(){
+    let mut rt=task25_runtime();let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let parent=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(parent.input).unwrap();
+    let child=rt.spawn_source_task(parent.input,true).unwrap();
+    support::without_heap(||{rt.cancel_behavior(child).unwrap();});
+    let resumed=rt.pending_external_turn().unwrap().unwrap();assert_eq!(resumed.input.behavior(),parent.input.behavior());assert_ne!(resumed.input,parent.input);assert_eq!(rt.now(),0);
+    rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+}
+#[test]
+fn original_value_capture_retains_expression_generation_after_real_note_and_callback_retire(){
+    let plan=external_plan(true);let limits=Limits::for_plan(&plan,16,16);
+    let mut rt=Runtime::new(plan,limits).unwrap().with_event_value_capacity(2,2).unwrap();
+    let note=rt.trigger(input(777),60,1.).unwrap();let expression=rt.expression_id(note).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let value=rt.capture_external_value(turn.input).unwrap();let snapshot=rt.event_value(value).unwrap();assert_eq!(snapshot.expression,Some(expression));assert_eq!(snapshot.event_origin,Some(note));
+    rt.complete_external_segment(turn.input,None).unwrap();rt.note_off_exact(note,Some(0.)).unwrap();
+    rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+    assert!(matches!(rt.note(note),Err(Error::StaleHandle)));assert!(rt.expression(expression).is_ok());assert_eq!(rt.expression_count(),1);
+    // Native retained-original expression/frontier policy is not inferred from
+    // this mechanical lease; unsupported note posting cannot create any owner.
+    assert_eq!(rt.schedule_event_value(value,rt.now()),Err(Error::InvalidInput));assert_eq!(rt.note_count(),0);
+    support::without_heap(||{rt.release_event_value(value).unwrap();});
+    assert_eq!(rt.expression(expression),Err(Error::StaleHandle));assert_eq!(rt.expression_count(),0);
+    assert!(matches!(rt.event_value(value),Err(Error::StaleHandle)));
+}
+#[test]
+fn queued_original_value_owns_its_old_plan_after_gc_and_full_precision_post_until_exact_ack(){
+    use sampler_core::EventPostOutcome;
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,16,16);
+    let (rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();
+    let mut rt=rt.with_event_value_capacity(2,2).unwrap();let old=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};let expected=0x9876_abcd;
+    rt.dispatch_controller(perf,address,1<<13,1,expected).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let value=rt.capture_external_value(turn.input).unwrap();let post=rt.schedule_event_value(value,32).unwrap();
+    assert_eq!(rt.acknowledge_event_post(post),Err(Error::Busy));rt.release_event_value(value).unwrap();assert_eq!(rt.release_event_value(value),Err(Error::StaleHandle));
+    rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    let request=control.submit(Box::new(Prepared::new(48000,vec![],vec![],0).unwrap())).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+    assert_ne!(rt.active_plan(),old);assert_eq!(rt.collect_retired_plans(),0,"actual semantic value retains old plan independent of ended callback");
+    rt.render(&mut [[0.;2];32]).unwrap();rt.service_external_boundary().unwrap();assert_eq!(rt.now(),32);assert_eq!(rt.event_post_outcome(post),Ok(EventPostOutcome::Committed));
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),expected);
+    rt.flush_behaviors(|_,_,_|true);
+    support::without_heap(||{rt.acknowledge_event_post(post).unwrap();});
+    assert!(matches!(rt.event_value(value),Err(Error::StaleHandle)));assert_eq!(rt.acknowledge_event_post(post),Err(Error::StaleHandle));
+    assert_eq!(rt.collect_retired_plans(),1);
+}
+#[test]
+fn retained_value_capacity_and_reserve_growth_do_not_revive_stale_generations(){
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,16,16);
+    let mut rt=Runtime::new(plan,limits).unwrap().with_event_value_capacity(1,1).unwrap();let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_5678).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let old=rt.capture_external_value(turn.input).unwrap();assert_eq!(rt.capture_external_value(turn.input),Err(Error::Capacity));
+    rt.release_event_value(old).unwrap();rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    let mut rt=rt.with_event_value_capacity(4,4).unwrap();
+    rt.dispatch_controller(perf,address,1<<13,1,0xabcd_5678).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let fresh=rt.capture_external_value(turn.input).unwrap();assert_ne!(old,fresh);
+    assert_eq!(rt.release_event_value(old),Err(Error::StaleHandle));assert_eq!(rt.schedule_event_value(old,32),Err(Error::StaleHandle));
+    rt.release_event_value(fresh).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+}
+#[test]
+fn source_revocation_cancels_actual_queued_values_and_keeps_receipts_until_owner_ack(){
+    use sampler_core::EventPostOutcome;
+    let mut rt=task25_runtime();let perf=rt.performance(0).unwrap();let plan=rt.active_plan();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_5678).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let value=rt.capture_external_value(turn.input).unwrap();let post=rt.schedule_event_value(value,32).unwrap();
+    assert_eq!(rt.revoke_event_values(plan),Ok(1));assert_eq!(rt.revoke_event_values(plan),Ok(0));
+    assert_eq!(rt.schedule_event_value(value,32),Err(Error::Canceled));assert_eq!(rt.event_post_outcome(post),Ok(EventPostOutcome::Cancelled));
+    assert_eq!(rt.release_revoked_event_values(plan),Ok(1));assert!(rt.event_value(value).is_ok(),"pending receipt retains actual original value");
+    rt.complete_external_segment(turn.input,None).unwrap();
+    support::without_heap(||{assert_eq!(rt.flush_event_posts(|id,outcome|{assert_eq!(id,post);assert_eq!(outcome,EventPostOutcome::Cancelled);true}),1);});
+    assert!(matches!(rt.event_value(value),Err(Error::StaleHandle)));
+    rt.render(&mut [[0.;2];32]).unwrap();assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0);
+}
+#[test]
+fn init_batch_late_capacity_and_invalid_host_context_refuse_before_the_first_processor_publication(){
+    use sampler_core::{Instruction as I,Program,PreparedSourceTaskBinding as Binding,SourceTaskFamily as Family,SourceTaskHostContext,SourceTaskReason,WaitLifetime};
+    let first=sampler_ir::SourceEventProcessorId::UviNode(11);let second=sampler_ir::SourceEventProcessorId::UviNode(12);
+    let programs=[first,second].into_iter().map(|processor|Program::new(vec![I::AwaitExternal{processor},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback)).collect();
+    let plan=external_plan(false).with_programs(programs,None).unwrap().with_controller_program(0).unwrap().with_source_tasks(vec![Binding{processor:first,family:Family::Init,program:0},Binding{processor:second,family:Family::Init,program:1}]).unwrap();
+    let mut limits=Limits::for_plan(&plan,16,16);limits.behaviors=1;limits.behavior_cells=0;
+    let mut rt=Runtime::new(plan,limits).unwrap();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let host=SourceTaskHostContext{frame:0,tempo:120.,playing:false};
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(SourceTaskHostContext{tempo:f64::NAN,..host}),perf),Err(Error::InvalidInput));
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(SourceTaskHostContext{frame:1,..host}),perf),Err(Error::PastEvent));
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(host),perf),Err(Error::Capacity));
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(host),perf),Err(Error::Capacity),"refusal must not mark either processor initialized");
+    assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!((rt.note_count(),rt.voice_count(),rt.now()),(0,0,0));
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x4321_abcd).unwrap();assert!(rt.pending_external_turn().unwrap().is_some(),"full refused task batch did not consume the only callback slot");
+}
+#[test]
+fn independent_task_keeps_old_target_epochs_through_wait_but_fresh_task_uses_current_epochs(){
+    use sampler_core::{ChannelScope,ExternalOutput};
+    let mut rt=task25_runtime();let perf=rt.performance(0).unwrap();
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    let scope=ChannelScope{protocol:address.protocol,port:address.port,group:address.group,channels:1<<address.channel};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let parent=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(parent.input).unwrap();
+    let child=rt.spawn_source_task(parent.input,false).unwrap();rt.complete_external_segment(parent.input,None).unwrap();
+    let task=rt.pending_external_turn().unwrap().unwrap();assert_eq!(task.input.behavior(),child);rt.begin_external_turn(task.input).unwrap();rt.complete_external_segment(task.input,Some(32)).unwrap();
+    rt.reset_channel_controllers(perf,scope).unwrap();rt.render(&mut [[0.;2];32]).unwrap();
+    let old=rt.service_external_boundary().unwrap().unwrap();rt.begin_external_turn(old.input).unwrap();
+    rt.post_external_output(old.input,ExternalOutput::Controller{number:1,value:0xf123_abcd}).unwrap();assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0);
+    rt.complete_external_segment(old.input,None).unwrap();
+    rt.dispatch_controller(perf,address,1<<13,1,0x2345_abcd).unwrap();let parent=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(parent.input).unwrap();
+    let fresh=rt.spawn_source_task(parent.input,false).unwrap();rt.complete_external_segment(parent.input,None).unwrap();
+    let task=rt.pending_external_turn().unwrap().unwrap();assert_eq!(task.input.behavior(),fresh);rt.begin_external_turn(task.input).unwrap();
+    rt.post_external_output(task.input,ExternalOutput::Controller{number:1,value:0xf123_abcd}).unwrap();assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0xf123_abcd);
+    rt.complete_external_segment(task.input,None).unwrap();
+}
+#[test]
+fn task_binding_cannot_be_claimed_after_a_later_program_builder_removes_its_real_entry(){
+    use sampler_core::{SourceEventFamily,SourceTaskFamily};
+    let plan=task25_plan().with_programs(vec![],None).unwrap();
+    assert!(matches!(plan.executable_source_binding(sampler_ir::SourceEventProcessorId::UviNode(11),SourceEventFamily::Task(SourceTaskFamily::Init)),Err(Error::InvalidInput)));
+    let limits=Limits::for_plan(&plan,16,16);assert!(matches!(Runtime::new(plan,limits),Err(Error::InvalidInput)));
+}
+
+#[test]
+fn prepared_root_spawn_and_run_residuals_have_real_plan_owners_none_creator_and_independent_waits(){
+    use sampler_core::{BehaviorOwner,ExternalEvent,SourceTaskCreator,SourceTaskFamily,SourceTaskReason};
+    let mut rt=task25_runtime();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let mut spawned=None;let mut run=None;
+    support::without_heap(||{
+        let id=rt.start_prepared_source_task(plan,processor,SourceTaskFamily::Spawned,perf).unwrap();spawned=Some(id);
+        let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),id);
+        assert_eq!((turn.original_frame,turn.resume_frame,turn.event_origin),(0,0,None));
+        assert!(matches!(turn.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Spawned&&event.creator==SourceTaskCreator::None&&event.source.is_none()));
+        rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(48)).unwrap();
+        let id=rt.start_prepared_source_task(plan,processor,SourceTaskFamily::Run,perf).unwrap();run=Some(id);
+        let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),id);
+        assert!(matches!(turn.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Run&&event.creator==SourceTaskCreator::None&&event.source.is_none()));
+        rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+        rt.render(&mut [[0.;2];48]).unwrap();assert_eq!(rt.now(),48);
+        let turn=rt.service_external_boundary().unwrap().unwrap();assert_eq!(turn.input.behavior(),spawned.unwrap());
+        assert_eq!((turn.original_frame,turn.resume_frame),(0,48));
+        rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    });
+    assert_ne!(spawned,run);let mut finished=0;
+    rt.flush_behaviors(|id,owner,outcome|{assert!(Some(id)==spawned||Some(id)==run);assert_eq!(owner,BehaviorOwner::Plan(plan));assert_eq!(outcome,sampler_core::Outcome::Finished);finished+=1;true});
+    assert_eq!(finished,2);assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));
+}
+#[test]
+fn prepared_root_task_rejects_unbound_families_and_capacity_without_consuming_or_relabeling_init(){
+    use sampler_core::{SourceTaskFamily,SourceTaskHostContext,SourceTaskReason};
+    let plan=task25_plan();let mut limits=Limits::for_plan(&plan,16,16);limits.behaviors=1;limits.behavior_cells=0;
+    let mut rt=Runtime::new(plan,limits).unwrap();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    for family in [SourceTaskFamily::Init,SourceTaskFamily::Transport]{
+        assert_eq!(rt.start_prepared_source_task(plan,processor,family,perf),Err(Error::InvalidInput));
+    }
+    assert_eq!(rt.start_prepared_source_task(plan,sampler_ir::SourceEventProcessorId::UviNode(999),SourceTaskFamily::Spawned,perf),Err(Error::InvalidInput));
+    assert!(rt.pending_external_turn().unwrap().is_none());
+    let id=rt.start_prepared_source_task(plan,processor,SourceTaskFamily::Spawned,perf).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),id);
+    assert_eq!(rt.start_prepared_source_task(plan,processor,SourceTaskFamily::Run,perf),Err(Error::Capacity));
+    assert_eq!(rt.pending_external_turn().unwrap().unwrap().input,turn.input);
+    assert_eq!((rt.note_count(),rt.voice_count(),rt.now()),(0,0,0));
+    rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(SourceTaskHostContext{frame:0,tempo:120.,playing:false}),perf),Ok(1),"prepared root task did not fabricate or consume the once-only Init binding");
+    let init=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(init.input).unwrap();rt.complete_external_segment(init.input,None).unwrap();
+}
+
+#[test]
+fn ordinary_panic_cancels_real_pending_value_posts_then_ack_reclaims_old_plan_and_receiver(){
+    use sampler_core::{ChannelAddress,EventPostOutcome};
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,16,16);
+    let (rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();
+    let mut rt=rt.with_event_value_capacity(1,1).unwrap().with_receiver_capacity(1).unwrap();
+    let old_plan=rt.active_plan();let perf=rt.performance(0).unwrap();let receiver=external_physical_receiver(&mut rt,4);
+    let address=ChannelAddress{protocol:Protocol::Midi1,port:0,group:0,channel:1};
+    rt.dispatch_controller(perf,address,1<<1,1,0x9876_abcd).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.receiver,Some(receiver));rt.begin_external_turn(turn.input).unwrap();
+    let value=rt.capture_external_value(turn.input).unwrap();let post=rt.schedule_event_value(value,32).unwrap();
+    rt.release_event_value(value).unwrap();rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    let request=control.submit(Box::new(external_plan(false))).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+    assert_ne!(rt.active_plan(),old_plan);assert_eq!(rt.collect_retired_plans(),0);
+    assert!(matches!(rt.unbind_receiver(receiver),Err(Error::Busy)));
+    let now=rt.now();support::without_heap(||{rt.panic();});assert_eq!(rt.now(),now);
+    assert_eq!(rt.event_post_outcome(post),Ok(EventPostOutcome::Cancelled),"direct panic must terminalize the removed actual queued post");
+    assert!(rt.event_value(value).is_ok(),"owner ACK, not queue cancellation, releases the semantic value");
+    assert!(matches!(rt.unbind_receiver(receiver),Err(Error::Busy)));assert_eq!(rt.collect_retired_plans(),0);
+    rt.render(&mut [[0.;2];64]).unwrap();assert!(rt.pending_external_turn().unwrap().is_none());
+    assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0,"cancelled post must not dispatch after its original due frame");
+    support::without_heap(||{rt.acknowledge_event_post(post).unwrap();});
+    assert_eq!(rt.acknowledge_event_post(post),Err(Error::StaleHandle));assert!(matches!(rt.event_value(value),Err(Error::StaleHandle)));
+    assert_eq!(rt.collect_retired_plans(),1);let state=rt.unbind_receiver(receiver).unwrap();
+    let fresh_receiver=rt.bind_receiver(state).unwrap();assert_ne!(receiver,fresh_receiver);assert!(matches!(rt.receiver(receiver),Err(Error::StaleHandle)));
+    rt.dispatch_controller(perf,address,1<<1,1,0x1234_5678).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let fresh_value=rt.capture_external_value(turn.input).unwrap();assert_ne!(value,fresh_value);
+    let fresh_post=rt.schedule_event_value(fresh_value,rt.now()+32).unwrap();assert_ne!(post,fresh_post);
+    assert_eq!(rt.cancel_event_post(post),Err(Error::StaleHandle));assert_eq!(rt.release_event_value(value),Err(Error::StaleHandle));
+    rt.cancel_event_post(fresh_post).unwrap();rt.release_event_value(fresh_value).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    rt.acknowledge_event_post(fresh_post).unwrap();
+}
+#[test]
+fn panic_keeps_committed_and_refused_post_outcomes_while_cancelling_only_queued_work(){
+    use sampler_core::{ChannelAddress,EventPostOutcome,ExternalOutput,Instruction as I,Program,WaitLifetime};
+    let programs=[11,12].map(|id|Program::new(vec![I::AwaitExternal{processor:sampler_ir::SourceEventProcessorId::UviNode(id)},I::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback)).to_vec();
+    let plan=external_plan(false).with_programs(programs,None).unwrap().with_controller_programs(vec![0,1]).unwrap();
+    let mut limits=Limits::for_plan(&plan,16,16);limits.behaviors=2;limits.behavior_cells=0;
+    let mut rt=Runtime::new(plan,limits).unwrap().with_event_value_capacity(2,2).unwrap();let perf=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1111_aaaa).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let value1=rt.capture_external_value(turn.input).unwrap();let committed=rt.schedule_event_value(value1,0).unwrap();rt.release_event_value(value1).unwrap();
+    rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    let downstream=rt.service_external_boundary().unwrap().unwrap();assert_eq!(downstream.processor,sampler_ir::SourceEventProcessorId::UviNode(12));
+    rt.begin_external_turn(downstream.input).unwrap();rt.post_external_output(downstream.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(downstream.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    assert_eq!(rt.event_post_outcome(committed),Ok(EventPostOutcome::Committed));assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0x1111_aaaa);
+    rt.dispatch_controller(perf,address,1<<13,1,0x2222_bbbb).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    let value2=rt.capture_external_value(turn.input).unwrap();let refused=rt.schedule_event_value(value2,32).unwrap();rt.release_event_value(value2).unwrap();
+    rt.complete_external_segment(turn.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    // ACK of a sleeping external segment releases its unused downstream reserve.
+    // Occupy BOTH actual callback rows instead of assuming that old reserve lives.
+    rt.dispatch_controller(perf,address,1<<13,1,0x3333_cccc).unwrap();let blocker=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(blocker.input).unwrap();rt.complete_external_segment(blocker.input,Some(64)).unwrap();
+    let independent=rt.start_plan_behavior(rt.active_plan(),1).unwrap();
+    let second=rt.pending_external_turn().unwrap().unwrap();assert_eq!(second.input.behavior(),independent);
+    rt.begin_external_turn(second.input).unwrap();rt.complete_external_segment(second.input,Some(64)).unwrap();
+    rt.render(&mut [[0.;2];32]).unwrap();rt.service_external_boundary().unwrap();assert_eq!(rt.now(),32);assert_eq!(rt.event_post_outcome(refused),Ok(EventPostOutcome::Refused(Error::Capacity)));
+    let now=rt.now();support::without_heap(||{rt.panic();});assert_eq!(rt.now(),now);
+    assert_eq!(rt.event_post_outcome(committed),Ok(EventPostOutcome::Committed));assert_eq!(rt.event_post_outcome(refused),Ok(EventPostOutcome::Refused(Error::Capacity)));
+    rt.flush_behaviors(|_,_,_|true);support::without_heap(||{assert_eq!(rt.flush_event_posts(|_,_|true),2);});
+    assert!(matches!(rt.event_value(value1),Err(Error::StaleHandle)));assert!(matches!(rt.event_value(value2),Err(Error::StaleHandle)));
+    assert_eq!(rt.acknowledge_event_post(committed),Err(Error::StaleHandle));assert_eq!(rt.acknowledge_event_post(refused),Err(Error::StaleHandle));
+}
+#[test]
+fn ordinary_panic_does_not_revoke_vm_values_or_lose_their_real_expression_capture(){
+    let plan=external_plan(true);let limits=Limits::for_plan(&plan,16,16);let mut rt=Runtime::new(plan,limits).unwrap().with_event_value_capacity(1,1).unwrap();
+    let note=rt.trigger(input(9001),60,1.).unwrap();let expression=rt.expression_id(note).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();let value=rt.capture_external_value(turn.input).unwrap();
+    rt.complete_external_segment(turn.input,None).unwrap();
+    support::without_heap(||{rt.panic();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);});
+    assert!(matches!(rt.note(note),Err(Error::StaleHandle)));assert!(rt.expression(expression).is_ok());
+    assert_eq!(rt.event_value(value).unwrap().expression,Some(expression));assert_eq!(rt.event_value(value).unwrap().event_origin,Some(note));
+    support::without_heap(||{rt.release_event_value(value).unwrap();});
+    assert_eq!(rt.expression(expression),Err(Error::StaleHandle));assert_eq!(rt.release_event_value(value),Err(Error::StaleHandle));
+    let fresh=rt.trigger(input(9002),60,1.).unwrap();assert_ne!(fresh,note);assert_ne!(rt.expression_id(fresh).unwrap(),expression,"panic must not abort otherwise reusable execution or revive old expression generations");
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();let fresh_value=rt.capture_external_value(turn.input).unwrap();assert_ne!(fresh_value,value);
+    rt.release_event_value(fresh_value).unwrap();rt.complete_external_segment(turn.input,None).unwrap();rt.panic();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+}
+
+#[test]
+fn running_turn_query_refuses_pending_same_frame_cancel_and_reused_callback_generation(){
+    use sampler_core::ChannelAddress;
+    let plan=external_plan(false);let mut limits=Limits::for_plan(&plan,16,16);limits.behaviors=1;limits.behavior_cells=0;
+    let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let old=rt.pending_external_turn().unwrap().unwrap();
+    assert!(matches!(rt.running_external_turn(old.input),Err(Error::StaleHandle)),"Pending is not a Running command lease");
+    rt.begin_external_turn(old.input).unwrap();
+    support::without_heap(||{
+        let live=rt.running_external_turn(old.input).unwrap();assert_eq!((live.input,live.plan,live.original_frame,live.resume_frame),(old.input,old.plan,0,0));
+        rt.cancel_external_input(old.input).unwrap();
+        assert!(matches!(rt.running_external_turn(old.input),Err(Error::StaleHandle)),"a retained descriptor cannot authorize even a no-op owner write after same-F cancellation");
+    });
+    assert_eq!(rt.now(),0);assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0);rt.flush_behaviors(|_,_,_|true);
+    rt.dispatch_controller(perf,address,1<<13,1,0x9876_4321).unwrap();let fresh=rt.pending_external_turn().unwrap().unwrap();assert_ne!(fresh.input.behavior(),old.input.behavior());
+    rt.begin_external_turn(fresh.input).unwrap();
+    support::without_heap(||{assert!(matches!(rt.running_external_turn(old.input),Err(Error::StaleHandle)));assert_eq!(rt.running_external_turn(fresh.input).unwrap().input,fresh.input);});
+    rt.complete_external_segment(fresh.input,None).unwrap();assert!(matches!(rt.running_external_turn(fresh.input),Err(Error::StaleHandle)));assert_eq!(rt.now(),0);
+}
+#[test]
+fn running_turn_query_keeps_actual_old_plan_but_never_refreshes_a_waited_segment_sequence(){
+    use sampler_core::ChannelAddress;
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,16,16);let (mut rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();
+    let old_plan=rt.active_plan();let perf=rt.performance(0).unwrap();let address=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let first=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(first.input).unwrap();
+    assert_eq!(rt.running_external_turn(first.input).unwrap().plan,old_plan);rt.complete_external_segment(first.input,Some(32)).unwrap();
+    assert!(matches!(rt.running_external_turn(first.input),Err(Error::StaleHandle)));
+    let request=control.submit(Box::new(external_plan(false).with_programs(vec![],None).unwrap())).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));assert_ne!(rt.active_plan(),old_plan);assert_eq!(rt.collect_retired_plans(),0);
+    assert!(matches!(rt.running_external_turn(first.input),Err(Error::StaleHandle)));assert_eq!(rt.now(),0,"query must not apply pending due work");
+    rt.render(&mut [[0.;2];32]).unwrap();let resumed=rt.service_external_boundary().unwrap().unwrap();assert_eq!(resumed.input.behavior(),first.input.behavior());assert_ne!(resumed.input,first.input);
+    assert!(matches!(rt.running_external_turn(resumed.input),Err(Error::StaleHandle)),"new Pending sequence must be explicitly delivered");rt.begin_external_turn(resumed.input).unwrap();
+    support::without_heap(||{
+        assert!(matches!(rt.running_external_turn(first.input),Err(Error::StaleHandle)));
+        let live=rt.running_external_turn(resumed.input).unwrap();assert_eq!((live.plan,live.original_frame,live.resume_frame),(old_plan,0,32));
+    });
+    rt.complete_external_segment(resumed.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);assert_eq!(rt.collect_retired_plans(),1);
+    assert!(matches!(rt.running_external_turn(resumed.input),Err(Error::StaleHandle)));assert_eq!(rt.now(),32);
+}
+
+#[test]
+fn task_entry_compiler_appends_real_programs_without_activating_note_or_replacing_controller(){
+    use sampler_core::{ExternalEvent,ExternalOutput,SourceEventFamily,SourceEventRouting,SourceTaskCreator,SourceTaskFamily as F,SourceTaskHostContext,SourceTaskReason};
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);let mut plan=external_plan(false);
+    let old=plan.executable_source_binding(processor,SourceEventFamily::Controller).unwrap().unwrap();assert_eq!(old.program,0);
+    assert!(plan.executable_source_binding(processor,SourceEventFamily::Note).unwrap().is_none());
+    let entries=[(processor,F::Init),(processor,F::Transport),(processor,F::Spawned),(processor,F::Run)];
+    plan.append_source_task_entries(&entries,4).unwrap();assert_eq!(plan.source_tasks().len(),4);
+    assert_eq!(plan.executable_source_binding(processor,SourceEventFamily::Controller).unwrap().unwrap(),old);
+    assert!(plan.executable_source_binding(processor,SourceEventFamily::Note).unwrap().is_none());
+    for (index,(_,family))in entries.into_iter().enumerate(){let bound=plan.executable_source_binding(processor,SourceEventFamily::Task(family)).unwrap().unwrap();assert_eq!(bound.program,index+1);assert_eq!(bound.routing,SourceEventRouting::PlanTask);assert_eq!(bound.stage,None);}
+    let limits=Limits::for_plan(&plan,16,16);let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();let plan=rt.active_plan();
+    let reference=external_plan(false);let reference_limits=Limits::for_plan(&reference,16,16);let mut reference=Runtime::new(reference,reference_limits).unwrap();
+    rt.trigger(input(9101),60,1.).unwrap();reference.trigger(input(9101),60,1.).unwrap();assert!(rt.pending_external_turn().unwrap().is_none(),"task entries cannot silently create a Note callback");
+    let mut out=[[0.;2];64];let mut expected=out;rt.render(&mut out).unwrap();reference.render(&mut expected).unwrap();assert_eq!(out,expected);assert!(out.iter().any(|frame|frame[0]!=0.));
+    let host=SourceTaskHostContext{frame:64,tempo:137.,playing:true};assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Transport(host),perf),Ok(1));let transport=rt.pending_external_turn().unwrap().unwrap();
+    assert!(matches!(transport.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Transport(host)&&event.creator==SourceTaskCreator::None));rt.begin_external_turn(transport.input).unwrap();rt.complete_external_segment(transport.input,None).unwrap();
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(host),perf),Ok(1));let init=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(init.input).unwrap();rt.complete_external_segment(init.input,Some(112)).unwrap();assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(host),perf),Ok(0));
+    let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let controller=rt.pending_external_turn().unwrap().unwrap();assert!(matches!(controller.event,ExternalEvent::Controller{value:0x1234_abcd,..}));
+    rt.begin_external_turn(controller.input).unwrap();rt.post_external_output(controller.input,ExternalOutput::Original).unwrap();rt.complete_external_segment(controller.input,None).unwrap();assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0x1234_abcd);
+    rt.render(&mut [[0.;2];48]).unwrap();let resumed=rt.service_external_boundary().unwrap().unwrap();assert_eq!(resumed.input.behavior(),init.input.behavior());rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+    for family in [F::Spawned,F::Run]{let behavior=rt.start_prepared_source_task(plan,processor,family,perf).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),behavior);assert!(matches!(turn.event,ExternalEvent::Task(event)if event.reason.family()==family&&event.creator==SourceTaskCreator::None));rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();}
+}
+#[test]
+fn task_entry_compiler_preserves_source_note_hierarchy_and_live_spawn_run_parent_order(){
+    use sampler_core::{SourceEventFamily,SourceTaskFamily as F,ExternalEvent,SourceTaskReason,SourceTaskCreator};
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(101);let mut plan=hierarchy_note_plan(true,false);
+    let before=plan.executable_source_binding(processor,SourceEventFamily::Note).unwrap().unwrap();
+    plan.append_source_task_entries(&[(processor,F::Spawned),(processor,F::Run)],2).unwrap();assert_eq!(plan.executable_source_binding(processor,SourceEventFamily::Note).unwrap().unwrap(),before);
+    let limits=Limits::for_plan(&plan,32,16);let mut rt=Runtime::new(plan,limits).unwrap();let(execution,source)=hierarchy_source(9102);rt.trigger_in_with_source(rt.performance(0).unwrap(),execution,source,sampler_core::NotePitch::Key(60),1.,Expression::default()).unwrap();
+    let parent=rt.pending_external_turn().unwrap().unwrap();assert_eq!(parent.processor,processor);rt.begin_external_turn(parent.input).unwrap();
+    let deferred=rt.spawn_source_task(parent.input,false).unwrap();let run=rt.spawn_source_task(parent.input,true).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),run);
+    assert!(matches!(turn.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Run&&event.creator==SourceTaskCreator::Event));rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(48)).unwrap();
+    let resumed=rt.pending_external_turn().unwrap().unwrap();assert_eq!(resumed.input.behavior(),parent.input.behavior());assert_ne!(resumed.input,parent.input);rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),deferred);assert!(matches!(turn.event,ExternalEvent::Task(event)if event.reason==SourceTaskReason::Spawned&&event.creator==SourceTaskCreator::Event));rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    rt.render(&mut [[0.;2];48]).unwrap();let turn=rt.service_external_boundary().unwrap().unwrap();assert_eq!(turn.input.behavior(),run);rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();assert_eq!(rt.voice_count(),0,"consumed genuine source callback must not be reactivated by appending task programs");
+}
+#[test]
+fn task_entry_compiler_refusals_are_transactional_and_existing_bindings_keep_indices(){
+    use sampler_core::{SourceEventFamily,SourceTaskFamily as F};
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);let mut plan=external_plan(false);
+    let original=plan.executable_source_binding(processor,SourceEventFamily::Controller).unwrap().unwrap();
+    assert_eq!(plan.append_source_task_entries(&[(processor,F::Init)],0),Err(Error::Capacity));assert!(plan.source_tasks().is_empty());assert_eq!(plan.executable_source_binding(processor,SourceEventFamily::Controller).unwrap().unwrap(),original);
+    assert_eq!(plan.append_source_task_entries(&[(sampler_ir::SourceEventProcessorId::UviNode(999),F::Init)],1),Err(Error::InvalidInput));assert!(plan.source_tasks().is_empty());
+    assert_eq!(plan.append_source_task_entries(&[(processor,F::Init),(processor,F::Init)],2),Err(Error::InvalidInput));assert!(plan.source_tasks().is_empty());
+    plan.append_source_task_entries(&[(processor,F::Init)],1).unwrap();let old=plan.source_tasks().to_vec();assert_eq!(old[0].program,1,"refused compilation must not consume a real program index");
+    assert_eq!(plan.append_source_task_entries(&[(processor,F::Init)],1),Err(Error::InvalidInput));assert_eq!(plan.source_tasks(),old.as_slice());
+    plan.append_source_task_entries(&[(processor,F::Transport)],1).unwrap();assert_eq!(plan.source_tasks()[0],old[0]);assert_eq!(plan.source_tasks()[1].program,2);assert_eq!(plan.executable_source_binding(processor,SourceEventFamily::Controller).unwrap().unwrap(),original);
+    plan.append_source_task_entries(&[],0).unwrap();assert_eq!(plan.source_tasks().len(),2);
+    let limits=Limits::for_plan(&plan,8,8);let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
+    rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();rt.post_external_output(turn.input,sampler_core::ExternalOutput::Original).unwrap();rt.complete_external_segment(turn.input,None).unwrap();assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0x1234_abcd);
+}

@@ -140,7 +140,7 @@ mod ownership;
 mod receiver;
 pub const RECEIVER_PER_NOTE_CENTER:u32=0x8000_0000;
 pub use receiver::{PerNoteState as ReceiverPerNoteState,KeyState as ReceiverKeyState,Snapshot as ReceiverSnapshot};
-pub use receiver::{ProgramBankIntent,ProgramSelection,ProgramPlaybackCapability,PhysicalReleaseEvent,
+pub use receiver::{EventValueId,EventPostId,EventValueSnapshot,EventPostOutcome,EventValueMemory,SourceTaskFamily,SourceTaskHostContext,SourceTaskReason,SourceTaskCreator,PreparedSourceTaskBinding,SourceTaskEvent,ProgramBankIntent,ProgramSelection,ProgramPlaybackCapability,PhysicalReleaseEvent,
 ExternalInputId, ExternalTurn, ExternalEvent, ExternalOutput, ExternalOutputResult, ExternalTarget,
 ExternalAbortReport,
 ReceiverId,ReceiverMemory,ReceiverTerminalDelivery,OwnedReceiver,Zone as ReceiverZone,TerminalRelease as ReceiverTerminalRelease,Applied as ReceiverApplied,ApplyError as ReceiverApplyError,Attribute as ReceiverAttribute,ChannelVoice as ReceiverChannelVoice,Controllers as ReceiverControllers,Message as ReceiverMessage,Value as ReceiverValue,Version as ReceiverVersion};
@@ -721,6 +721,21 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Fallible offaudio reserve for opt-in owner arenas. Actual capacities are
+    /// checked before initialization; published callbacks never call this.
+    fn try_blank(capacity:usize)->Result<(Box<[Slot<T>]>,Box<[u64]>),Error>{
+        std::alloc::Layout::array::<Slot<T>>(capacity).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<u64>(capacity.div_ceil(64)).map_err(|_|Error::Capacity)?;
+        let mut slots=Vec::new();slots.try_reserve_exact(capacity).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<Slot<T>>(slots.capacity()).map_err(|_|Error::Capacity)?;
+        let mut free=Vec::new();free.try_reserve_exact(capacity.div_ceil(64)).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<u64>(free.capacity()).map_err(|_|Error::Capacity)?;
+        slots.resize_with(capacity,||Slot{previous:None,next:None,generation:0,value:None});
+        free.resize(capacity.div_ceil(64),u64::MAX);
+        if !capacity.is_multiple_of(64)&&let Some(last)=free.last_mut(){*last=(1u64<<(capacity%64))-1;}
+        Ok((slots.into_boxed_slice(),free.into_boxed_slice()))
+    }
+
     /// Empty slots and an all-free bitmap for `capacity` entries.
     fn blank(capacity: usize) -> (Box<[Slot<T>]>, Box<[u64]>) {
         let mut free = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
@@ -922,7 +937,11 @@ pub struct Runtime {
     last_source_id: i32,
     last_callback_id: i32,
     next_external_turn_order:u64,
+    reserved_external_turn_orders:u64,
     external_execution_aborted:bool,
+    source_task_scratch:Vec<BehaviorId>,
+    event_values:Arena<receiver::event_value::EventValue>,
+    event_posts:Arena<receiver::event_value::EventPost>,
     callback_id_reservations: usize,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
@@ -1065,6 +1084,7 @@ impl Runtime {
         canceled: &dyn Fn()->bool,
     ) -> Result<Self, Error> {
         plan.validate_signal_execution()?;
+        plan.validate_source_tasks()?;
         trace_report::configure(&mut plan)?;
         if initial_notes == 0 || initial_notes > limits.notes {
             return Err(Error::InvalidInput);
@@ -1102,6 +1122,10 @@ impl Runtime {
         if plan.programs.iter().any(|p| p.locals > behavior_stride) {
             return Err(Error::Capacity);
         }
+        std::alloc::Layout::array::<BehaviorId>(limits.behaviors).map_err(|_|Error::Capacity)?;
+        let mut source_task_scratch=Vec::new();
+        source_task_scratch.try_reserve_exact(limits.behaviors).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<BehaviorId>(source_task_scratch.capacity()).map_err(|_|Error::Capacity)?;
         let cells = behavior_stride
             .checked_mul(limits.behaviors)
             .ok_or(Error::Capacity)?;
@@ -1133,6 +1157,7 @@ impl Runtime {
         let rate = plan.rate;
         let initial_residency=plan.prepare_initial_residency(canceled)?;
         let initial_callbacks=initial_residency.pending();
+        let source_tasks=receiver::task::TaskState::new(&plan)?;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(
             plans.insert(Generation {
@@ -1162,7 +1187,8 @@ impl Runtime {
                 prepared: Box::new(plan),
                 notes: 0,
                 callbacks: initial_callbacks,
-                physical_events:0
+                physical_events:0,
+                source_tasks,event_values:0
             })?,
         );
         let signal_trace = plans
@@ -1188,7 +1214,11 @@ impl Runtime {
             last_source_id: 0,
             last_callback_id: 0,
             next_external_turn_order:0,
+            reserved_external_turn_orders:0,
             external_execution_aborted:false,
+            source_task_scratch,
+            event_values:Arena::new(id,0),
+            event_posts:Arena::new(id,0),
             callback_id_reservations: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
@@ -1744,7 +1774,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
                     rendered,
                     program,
                     notes: 1,
-                    followers:0,
+                    followers:0,captures:0,
                     follows,
                     receiver:match origin { NoteOrigin::Input(input)=>input.receiver, _=>None },
                 })?);
@@ -2277,6 +2307,7 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             generation.dsp.buses.reset();
         }
         self.cleanup_closed_notes();
+        self.cancel_queued_event_value_posts_for_panic();
         for command in &self.commands {
             if let Action::Event(Event::Control(plan, _)) = command.action {
                 self.plans.get_mut(plan.0).unwrap().controls.pending -= 1;
