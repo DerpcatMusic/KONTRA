@@ -5,6 +5,7 @@ fn main() {
     for source in [
         "src",
         "../sampler-ir/src",
+        "../sampler-uvi/src",
         "../sampler-ksp/src",
         "../sampler-core/src",
         "../../vendor/ni-file/src",
