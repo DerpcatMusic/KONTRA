@@ -27,6 +27,10 @@ pub struct ExternalTurn {
     pub order:u64,
     pub event:ExternalEvent,
     pub receiver:Option<crate::ReceiverId>,
+    /// Authored logical channel is independent of immutable physical provenance.
+    pub logical_channel:Option<u8>,
+    /// Genuine root event ID for VM mapping only, never implicit creator authority.
+    pub event_origin:Option<NoteId>,
 }
 #[derive(Clone,Copy,Debug)]
 pub enum ExternalOutput {
@@ -37,6 +41,8 @@ pub enum ExternalOutput {
     Controller { number:u8,value:u32 },
     /// Manual gate distinct from the actual physical input gate.
     Note { pitch:NotePitch,velocity:f64 },
+    /// An authored logical reroute does not replace original physical provenance.
+    RoutedNote { pitch:NotePitch,velocity:f64,channel:u8 },
     /// Exact previously returned child, never a key-only recipient search.
     Release { note:NoteId,velocity:Option<f64> },
 }
@@ -88,7 +94,7 @@ impl Runtime {
                     _=>match callback.owner {
                         BehaviorOwner::Note(note)=>{
                             let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;
-                            let source=n.input_source.or(n.input).ok_or(Error::InvalidInput)?;
+                            let source=self.note_events[note.0.index].source_route.map(|route|route.source).or(n.input_source).or(n.input).ok_or(Error::InvalidInput)?;
                             ExternalEvent::Note{note,source,pitch:n.pitch,velocity:n.velocity,
                                 release_velocity:self.release_times[note.0.index].velocity,
                                 released:matches!(callback.note_stage,Some(crate::behavior::NoteStage::Release(_)))}
@@ -123,7 +129,9 @@ impl Runtime {
     fn external_turn(&self,id:BehaviorId,c:&Continuation,state:ExternalState)->Result<ExternalTurn,Error>{
         Ok(ExternalTurn{input:ExternalInputId{callback:id,sequence:state.sequence},
             plan:self.behavior_plan(c.owner)?,processor:state.processor,owner:state.owner,
-            original_frame:state.original_frame,resume_frame:state.resume_frame,order:state.order,event:state.event,receiver:c.context.receiver()})
+            original_frame:state.original_frame,resume_frame:state.resume_frame,order:state.order,event:state.event,receiver:c.context.receiver(),
+            logical_channel:match c.owner{BehaviorOwner::Note(note)=>self.note_events[note.0.index].source_route.map(|route|route.channel),_=>None},
+            event_origin:match state.event{ExternalEvent::Note{note,..}=>Some(self.note_events[note.0.index].source_route.map_or(note,|route|route.event_origin)),ExternalEvent::PhysicalRelease(event)=>Some(event.physical_note),_=>None}})
     }
     /// Actual parked owners remain visible while the external owner runs. Actual
     /// segment admission order, not old capture timestamps, selects the next turn.
@@ -179,7 +187,8 @@ impl Runtime {
                     ExternalOutputResult::Forwarded
                 }
                 ExternalEvent::Note{pitch,velocity,released:false,..}=>ExternalOutputResult::Note(
-                    self.play_behavior(id.callback,pitch,velocity,crate::Inheritance::Expression,crate::Duration::UntilSilent,0)?),
+                    if self.source_note_callback(id.callback)?{self.post_source_note(id.callback,pitch,velocity,None)?}
+                    else{self.play_behavior(id.callback,pitch,velocity,crate::Inheritance::Expression,crate::Duration::UntilSilent,0)?}),
                 // An original release must carry its actual forwarded child ID;
                 // no physical-gate or same-key guess may release unrelated notes.
                 ExternalEvent::Note{released:true,..}|ExternalEvent::PhysicalRelease(_)|ExternalEvent::
@@ -200,7 +209,10 @@ Plan=>return Err(Error::InvalidInput),
                 ExternalOutputResult::Forwarded
             }
             ExternalOutput::Note{pitch,velocity}=>ExternalOutputResult::Note(
-                self.play_behavior(id.callback,pitch,velocity,crate::Inheritance::Expression,crate::Duration::UntilSilent,0)?),
+                if self.source_note_callback(id.callback)?{self.post_source_note(id.callback,pitch,velocity,None)?}
+                else{self.play_behavior(id.callback,pitch,velocity,crate::Inheritance::Expression,crate::Duration::UntilSilent,0)?}),
+            ExternalOutput::RoutedNote{pitch,velocity,channel}=>ExternalOutputResult::Note(
+                self.post_source_note(id.callback,pitch,velocity,Some(channel))?),
             ExternalOutput::Release{note,velocity}=>{
                 match callback.owner {
                     BehaviorOwner::Note(parent)=>{
@@ -233,7 +245,7 @@ Plan=>return Err(Error::InvalidInput),
     /// ACK current F. None consumes unposted original and finishes; Some(F')
     /// keeps this SAME callback/NoteId lease until its actual scheduled resume.
     pub fn complete_external_segment(&mut self,id:ExternalInputId,next_resume:Option<u64>)->Result<(),Error>{
-        let (_,state)=self.validate_external_segment(id,Phase::Running)?;
+        let (callback,state)=self.validate_external_segment(id,Phase::Running)?;
         if let Some(at)=next_resume {
             if at<=self.now{return Err(Error::PastEvent);}
             if self.available_commands()==0{return Err(Error::Capacity);}
@@ -245,6 +257,12 @@ Plan=>return Err(Error::InvalidInput),
         if next_resume.is_some() { self.reserved_commands-=1; }
         if let Ok(event)=self.controller_event_mut(id.callback){event.pending=false;}
         self.release_controller_reserve(id.callback);
+        if next_resume.is_none()&&self.source_note_callback(id.callback)?{
+            if let BehaviorOwner::Note(note)=callback.owner{
+                self.suppress_attack(note)?;
+                if self.notes.get(note.0).ok_or(Error::StaleHandle)?.input.is_none(){self.retire_when_silent(note)?;}
+            }
+        }
         let c=self.behaviors.get_mut(id.callback.0).ok_or(Error::StaleHandle)?;
         if c.outcome.is_some(){return Ok(());}
         match next_resume {
