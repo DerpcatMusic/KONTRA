@@ -56,47 +56,7 @@ impl Default for Channel {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApplyError {
-    DisabledGroup,
-    ProtocolMismatch,
-    Core(Error),
-}
-impl From<Error> for ApplyError {
-    fn from(value: Error) -> Self {
-        Self::Core(value)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Applied {
-    Started(NoteId),
-    Expression {
-        owners: usize,
-    },
-    Released {
-        note: NoteId,
-        velocity: Option<Value>,
-        attribute: Attribute,
-    },
-    Pedal,
-    /// Accepted effective selection CC; no implicit note or modulation is generated.
-    Controller,
-    /// A controller selector/state change, not a claim of full device configuration.
-    Configuration,
-    AllNotesOff {
-        released: usize,
-    },
-    AllSoundOff {
-        stopped: usize,
-    },
-    /// Reset All Controllers (CC121): the channel's controllers are back at
-    /// their RP-015 reset values.
-    ResetControllers,
-    /// A recognized message intentionally has no effect in this receiver mode.
-    Ignored,
-    Unsupported,
-}
+pub use sampler_core::{ReceiverApplied as Applied, ReceiverApplyError as ApplyError};
 
 impl Ingress {
     pub fn new(port: u16, groups: [Option<Version>; 16]) -> Self {

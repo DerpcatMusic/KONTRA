@@ -236,6 +236,7 @@ impl Runtime {
                 channels,
                 controller_epochs: self.controller_target_epochs(id)?,
                 controller_secondary: self.controller_secondary_target(id)?,
+                receiver:self.behavior_receiver_capture(id)?,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
@@ -261,6 +262,7 @@ impl Runtime {
         let controller_epochs = self.controller_target_epochs(id)?;
         let controller_origin = self.controller_origin(id)?;
         let controller_secondary = self.controller_secondary_target(id)?;
+        let receiver=self.behavior_receiver_capture(id)?;
         let count = self
             .plans
             .get(plan.0)
@@ -285,6 +287,7 @@ impl Runtime {
                     channels: scope.channels,
                     controller_epochs,
                     controller_secondary,
+                    receiver,
                     stage: p.stage,
                     interaction: crate::WidgetInteraction::default(),
                 })
@@ -321,6 +324,7 @@ impl Runtime {
                 channels: 1,
                 controller_epochs: None,
                 controller_secondary: None,
+                receiver:None,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });

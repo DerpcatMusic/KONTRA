@@ -168,6 +168,7 @@ pub(super) struct ControlEvent {
     /// original physical target revisions through every wait/fanout.
     pub controller_epochs: Option<[u64; 16]>,
     pub controller_secondary: Option<crate::controller_event::CapturedControllerTarget>,
+    pub receiver:Option<crate::receiver::components::CapturedReceiver>,
     pub stage: usize,
     pub interaction: crate::WidgetInteraction,
 }
@@ -919,6 +920,7 @@ impl Runtime {
                 controller_epochs: captured.then(|| self.performance_state.epochs(performance, crate::ChannelScope {
                     protocol: context.origin.protocol, port: context.origin.port, group: context.origin.group, channels: context.channels })),
                 controller_secondary: None,
+                receiver:None,
                 stage: binding.stage,
                 interaction: crate::WidgetInteraction::default(),
             })

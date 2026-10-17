@@ -137,6 +137,10 @@ pub use voice_mod::{
     ModTarget, MORE_SCALES,
 };
 mod ownership;
+mod receiver;
+pub const RECEIVER_PER_NOTE_CENTER:u32=0x8000_0000;
+pub use receiver::{PerNoteState as ReceiverPerNoteState,KeyState as ReceiverKeyState,Snapshot as ReceiverSnapshot};
+pub use receiver::{ReceiverId,ReceiverMemory,ReceiverTerminalDelivery,OwnedReceiver,Zone as ReceiverZone,TerminalRelease as ReceiverTerminalRelease,Applied as ReceiverApplied,ApplyError as ReceiverApplyError,Attribute as ReceiverAttribute,ChannelVoice as ReceiverChannelVoice,Controllers as ReceiverControllers,Message as ReceiverMessage,Value as ReceiverValue,Version as ReceiverVersion};
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
@@ -372,11 +376,13 @@ pub enum Error {
     UnsupportedZoneRoutingSampleUpdates,
     /// A source outlet or mutable source operation lacks the required channel layout.
     UnsupportedSourceLayout,
+    /// A real receiver ownership reference has not drained.
+    Busy,
 }
 
 impl Error {
     /// Every variant, so one can travel as its index.
-    pub const ALL: [Error; 16] = [
+    pub const ALL: [Error; 17] = [
         Self::Capacity,
         Self::InvalidInput,
         Self::NotReady,
@@ -393,12 +399,14 @@ impl Error {
         Self::UnsupportedZoneRoutingPitch,
         Self::UnsupportedZoneRoutingSampleUpdates,
         Self::UnsupportedSourceLayout,
+        Self::Busy,
     ];
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Busy => "the receiver still owns live references",
             Self::Capacity => "a prepared capacity is exhausted",
             Self::InvalidInput => "invalid input",
             Self::NotReady => "required source data is not resident",
@@ -518,8 +526,17 @@ impl Limits {
 }
 
 #[derive(Clone, Copy)]
+struct InputOrigin {
+    input: Input,
+    source: Input,
+    expression: Expression,
+    performance: usize,
+    receiver: Option<receiver::components::ReceiverComponents>,
+}
+
+#[derive(Clone, Copy)]
 enum NoteOrigin {
-    Input(Input, Expression, usize),
+    Input(InputOrigin),
     Child(NoteId, bool, Inheritance),
     Generated(PlanId, ChannelAddress, usize),
 }
@@ -946,6 +963,11 @@ pub struct Runtime {
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
+    receivers:Arena<receiver::ReceiverOwner>,
+    publishing_receiver:bool,
+    receiver_changes:Vec<(ExpressionId,Expression)>,
+    receiver_policy_changes:Vec<(receiver::ReceiverId,receiver::components::GestureProposal)>,
+    receiver_component_changes:Box<[Option<receiver::components::ReceiverComponents>]>,
     /// Some expression follows another, so changes must propagate.
     expression_followers: bool,
     expression_changes: Box<[Option<RenderedExpression>]>,
@@ -1043,6 +1065,19 @@ impl Runtime {
         }
         std::alloc::Layout::array::<Slot<topology::ProcessingOwner>>(limits.voices)
             .map_err(|_| Error::Capacity)?;
+        receiver::allocation_bytes(limits.expressions,limits.performances,limits.expressions,limits.performances)?;
+        // Price canonical component payload on EVERY expression slot, including
+        // future detach/follower slots, before any arena allocation.
+        std::alloc::Layout::array::<Slot<ExpressionOwner>>(limits.expressions).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<Slot<receiver::ReceiverOwner>>(limits.performances).map_err(|_|Error::Capacity)?;
+        let mut receiver_policy_changes=Vec::new();
+        receiver_policy_changes.try_reserve_exact(limits.performances).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<(receiver::ReceiverId,receiver::components::GestureProposal)>(receiver_policy_changes.capacity()).map_err(|_|Error::Capacity)?;
+        let mut receiver_changes=Vec::new();
+        receiver_changes.try_reserve_exact(limits.expressions).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<(ExpressionId,Expression)>(receiver_changes.capacity()).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<Option<receiver::components::ReceiverComponents>>(limits.expressions).map_err(|_|Error::Capacity)?;
+        receiver::allocation_bytes(limits.expressions,limits.performances,receiver_changes.capacity(),receiver_policy_changes.capacity())?;
         let initial_controllers = plan.initial_controllers.clone();
         let note_stride = limits.note_cells / limits.notes;
         if plan.note_cells > note_stride {
@@ -1182,6 +1217,10 @@ impl Runtime {
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
             expressions: Arena::new(id, limits.expressions),
+            receivers:Arena::new(id,limits.performances),
+            publishing_receiver:false,
+            receiver_changes,receiver_policy_changes,
+            receiver_component_changes:vec![None;limits.expressions].into_boxed_slice(),
             expression_followers: false,
             expression_changes: vec![None; limits.expressions].into_boxed_slice(),
             poly_pressure_owners: 0,
@@ -1439,21 +1478,29 @@ impl Runtime {
         velocity: f64,
         expression: Expression,
     ) -> Result<NoteId, Error> {
+        self.note_on_owned_input(performance, input, input, pitch, velocity, expression, None)
+    }
+
+    /// Source and receiver ownership are present when the note is constructed,
+    /// before any fresh callback captures its controller/receiver context.
+    fn note_on_owned_input(
+        &mut self, performance: PerformanceId, input: Input, source: Input,
+        pitch: NotePitch, velocity: f64, expression: Expression,
+        receiver: Option<receiver::components::ReceiverComponents>,
+    ) -> Result<NoteId, Error> {
+        if input.channel >= 16 || input.group >= 16 || input.key >= 128
+            || source.channel >= 16 || source.group >= 16 || source.key >= 128
+            || !expression.valid() { return Err(Error::InvalidInput); }
+        if let Some(component)=receiver { self.receiver(component.receiver)?; }
         self.validate_zone_routing_pitch(self.active_plan, pitch)?;
         let performance = self.performance_index(performance)?;
         self.apply_due();
-        if input.channel >= 16 || input.group >= 16 || input.key >= 128 || !expression.valid() {
-            return Err(Error::InvalidInput);
-        }
-        if input.external_id.is_some() && self.owns_input(performance, input)
-        {
+        if input.external_id.is_some() && self.owns_input(performance, input) {
             return Err(Error::DuplicateInput);
         }
-        self.admit(
-            NoteOrigin::Input(input, expression, performance),
-            pitch,
-            velocity,
-        )
+        self.admit(NoteOrigin::Input(InputOrigin {
+            input, source, expression, performance, receiver,
+        }), pitch, velocity)
     }
 
     /// Retained terminal owners still reserve their identity. Traverse the
@@ -1571,21 +1618,20 @@ impl Runtime {
         };
         self.validate_zone_routing_pitch(plan, pitch)?;
         let performance = match origin {
-            NoteOrigin::Input(_, _, performance) | NoteOrigin::Generated(_, _, performance) => {
-                performance
-            }
+            NoteOrigin::Input(input) => input.performance,
+            NoteOrigin::Generated(_, _, performance) => performance,
             NoteOrigin::Child(parent, ..) => {
                 self.notes.get(parent.0).ok_or(Error::StaleHandle)?;
                 self.selections[parent.0.index].performance
             }
         };
         let (input, parent, linked_release, inheritance, initial) = match origin {
-            NoteOrigin::Input(input, expression, _) => (
-                Some(input),
+            NoteOrigin::Input(input) => (
+                Some(input.input),
                 None,
                 false,
                 Inheritance::Independent,
-                expression,
+                input.expression,
             ),
             NoteOrigin::Generated(..) => (
                 None,
@@ -1610,7 +1656,7 @@ impl Runtime {
             .map(|p| self.notes.get(p.0).ok_or(Error::StaleHandle))
             .transpose()?;
         let address = match origin {
-            NoteOrigin::Input(input, ..) => input.channel_address(),
+            NoteOrigin::Input(input) => input.input.channel_address(),
             NoteOrigin::Child(..) => parent_note.unwrap().address,
             NoteOrigin::Generated(_, address, _) => address,
         };
@@ -1648,13 +1694,29 @@ impl Runtime {
                         (initial, self.project_expression(program, initial, None)?)
                     };
                 self.expression_followers |= follows.is_some();
-                ExpressionId(self.expressions.insert(ExpressionOwner {
+                let retained=follows.map(|id| {
+                    let source=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+                    Ok::<_,Error>((id,source.followers.checked_add(1).ok_or(Error::Capacity)?))
+                }).transpose()?;
+                let expression=ExpressionId(self.expressions.insert(ExpressionOwner {
                     value,
                     rendered,
                     program,
                     notes: 1,
+                    followers:0,
                     follows,
-                })?)
+                    receiver:match origin { NoteOrigin::Input(input)=>input.receiver, _=>None },
+                })?);
+                if let Some(component)=self.expressions.get_mut(expression.0).and_then(|owner|owner.receiver.as_mut()) {
+                    component.origin=Some(expression);
+                }
+                if let Some((from,count))=retained {
+                    let Some(source)=self.expressions.get_mut(from.0) else {
+                        self.expressions.remove(expression.0);return Err(Error::StaleHandle);
+                    };
+                    source.followers=count;
+                }
+                expression
             }
         };
         if let Some(input) = input {
@@ -1664,7 +1726,7 @@ impl Runtime {
         let id = match self.notes.insert_below(
             Note {
                 input,
-                input_source: input,
+                input_source: match origin { NoteOrigin::Input(input)=>Some(input.source), _=>None },
                 input_down: input.is_some(),
                 address,
                 plan,

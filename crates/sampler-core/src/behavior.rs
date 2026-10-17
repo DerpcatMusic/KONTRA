@@ -1010,8 +1010,12 @@ impl NoteStage {
 pub(super) struct NoteControllerContext {
     pub performance:usize,
     pub origin:super::ChannelAddress,
+    pub source:super::ChannelAddress,
     pub epoch:u64,
     pub stage:usize,
+    pub receiver:Option<super::ReceiverId>,
+    pub policy_epochs:[u64;16],
+    pub host_epochs:Option<[u64;16]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1022,6 +1026,14 @@ pub(super) enum PlanContext {
     Control(super::control::ControlEvent),
 }
 impl PlanContext {
+    pub(super) fn receiver(self)->Option<super::ReceiverId> {
+        match self {
+            Self::Bare=>None,
+            Self::Control(event)=>event.receiver.map(|capture|capture.receiver),
+            Self::NoteControllers(context)=>context.receiver,
+            Self::Controller(event)=>event.receiver.map(|target|target.receiver),
+        }
+    }
     pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
@@ -1103,20 +1115,27 @@ impl Runtime {
         if !self.behavior_room(1) {
             return Err(Error::Capacity);
         }
-        let n = self.notes.get_mut(note.0).unwrap();
+        let n = self.notes.get(note.0).unwrap();
         let work = n.work + 1;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
+        let entry = plan.programs[program].entry;
+        let locals = plan.programs[program].locals;
         let performance=self.selections[note.0.index].performance;
         let origin=n.address;
+        let source=n.input_source.map_or(origin,|source|source.channel_address());
+        let expression=n.expression;
         let epoch=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:1<<origin.channel})[usize::from(origin.channel)];
-        let context=NoteControllerContext{performance,origin,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index)};
+        let receiver=self.expression_receiver(expression).map(|component|component.receiver);
+        let policy_epochs=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:u16::MAX});
+        let host_epochs=receiver.map(|receiver|self.receiver_host_epochs(receiver,performance)).transpose()?.flatten();
+        let context=NoteControllerContext{performance,origin,source,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index),receiver,policy_epochs,host_epochs};
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             context: PlanContext::NoteControllers(context),
             parameter: None,
             note_stage,
             program,
-            pc: plan.programs[program].entry,
+            pc: entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -1130,9 +1149,9 @@ impl Runtime {
             async_result: None,
             async_wait: None,
         })?);
-        n.work = work;
+        self.notes.get_mut(note.0).unwrap().work = work;
         let begin = id.0.index * self.behavior_stride;
-        self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
+        self.behavior_locals[begin..begin + locals].fill(0);
         Ok(id)
     }
 
@@ -1435,7 +1454,7 @@ impl Runtime {
     }
 
     pub(super) fn drain_behavior(&mut self) {
-        if self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
+        if self.publishing_receiver || self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
             return;
         }
         let time = self.behavior_time_left;
@@ -1834,15 +1853,18 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerPort { local } => {
-                let value = self.controller_event_mut(id)?.origin.port;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).port;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerGroup { local } => {
-                let value = self.controller_event_mut(id)?.origin.group;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).group;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerChannel { local } => {
-                let value = self.controller_event_mut(id)?.origin.channel;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).channel;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerValue { local } => {
