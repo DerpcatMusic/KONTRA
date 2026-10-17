@@ -96,6 +96,7 @@ impl Expression {
 
 #[derive(Clone, Copy)]
 pub(super) struct ExpressionOwner {
+    pub intrinsic:super::pitch::IntrinsicPitch,
     pub value: Expression,
     pub rendered: super::RenderedExpression,
     pub program: Option<super::PlanId>,
@@ -245,6 +246,64 @@ impl Runtime {
             self.refresh_stream_reservations();
         }
         Ok(())
+    }
+
+    /// Set a real intrinsic absolute base for these expression origins, together
+    /// with their relative expression values. None restores each origin's actual
+    /// admitted base. The complete source/release/stream projection precedes all
+    /// publication. Selection, voice age and cursor phase are unchanged.
+    pub fn set_intrinsic_pitch(&mut self,changes:&[(ExpressionId,Expression)],absolute:Option<f64>)->Result<(),Error>{
+        self.apply_due();self.prepare_intrinsic_pitch_rows(absolute,changes.len(),|_,at|changes[at])?;
+        self.commit_intrinsic_pitch_rows(absolute,changes.len(),|_,at|changes[at])
+    }
+    fn projected_intrinsic_row(&self,id:ExpressionId,absolute:Option<f64>,count:usize,row:&impl Fn(&Self,usize)->(ExpressionId,Expression))->Result<Option<(super::RenderedExpression,f64)>,Error>{
+        let origin=self.intrinsic_origin(id)?;
+        let Some((_,value))=(0..count).map(|at|row(self,at)).find(|(actual,_)|*actual==origin)else{return Ok(None);};
+        let owner=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+        let value=if id==origin{value}else{Expression{pitch_semitones:value.pitch_semitones,pressure:value.pressure,timbre:value.timbre,bend:value.bend,..owner.value}};
+        let rendered=self.project_expression(owner.program,value,Some(owner))?;
+        let inherent=self.expressions.get(origin.0).ok_or(Error::StaleHandle)?.intrinsic;
+        Ok(Some((rendered,super::pitch::IntrinsicPitch{absolute,..inherent}.ratio())))
+    }
+    fn prepare_intrinsic_pitch_rows(&mut self,absolute:Option<f64>,count:usize,row:impl Fn(&Self,usize)->(ExpressionId,Expression))->Result<(),Error>{
+        if absolute.is_some_and(|pitch|!super::NotePitch::Absolute(pitch).valid()){return Err(Error::InvalidInput);}
+        self.expression_changes.fill(None);
+        for at in 0..count{
+            let (id,value)=row(self,at);let owner=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            // A follower is not an independent receiver component origin.
+            if owner.follows.is_some(){return Err(Error::InvalidInput);}
+            self.prepare_expression_row(id,value)?;
+        }
+        self.validate_source_pitch_bases(|id|Ok(self.projected_intrinsic_row(id,absolute,count,&row)?.map(|(rendered,base)|(rendered.ratio,base))))
+    }
+    fn commit_intrinsic_pitch_rows(&mut self,absolute:Option<f64>,count:usize,row:impl Fn(&Self,usize)->(ExpressionId,Expression))->Result<(),Error>{
+        for at in 0..count{
+            let (id,value)=row(self,at);let rendered=self.expression_changes[id.0.index].ok_or(Error::StaleHandle)?;
+            let owner=self.expressions.get_mut(id.0).ok_or(Error::StaleHandle)?;
+            owner.intrinsic.absolute=absolute;owner.value=value;owner.rendered=rendered;
+        }
+        self.follow_expression();
+        // Update source base only; do not reconstruct/seek/retrigger any cursor.
+        for index in 0..self.voices.slots.len(){
+            let Some(voice)=self.voices.slots[index].value.as_ref()else{continue;};
+            if !voice.pitch_tracked{continue;}
+            let note=self.families.get(voice.family.0).ok_or(Error::StaleHandle)?.note;
+            let expression=self.notes.get(note.0).ok_or(Error::StaleHandle)?.expression;
+            let origin=self.intrinsic_origin(expression)?;
+            if !(0..count).any(|at|row(self,at).0==origin){continue;}
+            let base=voice.inherent_step*self.intrinsic_pitch(expression)?.ratio();
+            self.voices.slots[index].value.as_mut().ok_or(Error::StaleHandle)?.base_step=base;
+        }
+        self.refresh_stream_reservations();Ok(())
+    }
+    pub(super) fn prepare_receiver_intrinsic_pitch(&mut self,absolute:Option<f64>)->Result<(),Error>{
+        self.prepare_intrinsic_pitch_rows(absolute,self.receiver_changes.len(),|runtime,at|runtime.receiver_changes[at])
+    }
+    pub(super) fn commit_receiver_intrinsic_pitch(&mut self,absolute:Option<f64>)->Result<(),Error>{
+        self.commit_intrinsic_pitch_rows(absolute,self.receiver_changes.len(),|runtime,at|runtime.receiver_changes[at])?;
+        for index in 0..self.receiver_changes.len(){let id=self.receiver_changes[index].0;
+            if let Some(component)=self.receiver_component_changes[id.0.index]{self.expressions.get_mut(id.0).ok_or(Error::StaleHandle)?.receiver=Some(component);}
+        }Ok(())
     }
 
     /// Rewrite every expression owner of a live note (held or releasing)
@@ -421,6 +480,7 @@ impl Runtime {
             Ok::<_,Error>((id,from.followers.checked_add(1).ok_or(Error::Capacity)?))
         }).transpose()?;
         let new = ExpressionId(self.expressions.insert(ExpressionOwner {
+            intrinsic:owner.intrinsic,
             value: owner.value,
             rendered: owner.rendered,
             program: owner.program,

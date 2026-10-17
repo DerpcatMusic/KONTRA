@@ -17,12 +17,15 @@ pub struct ChannelId(usize);
 pub struct KeyState {
     pub cohort: u64,
     pub bend: u32,
+    /// Persistent future-note Q7.25 default; actual current bases live in Core expression owners.
+    pub absolute:Option<u32>,
 }
 impl Default for KeyState {
     fn default() -> Self {
         Self {
             cohort: 1,
             bend: CENTER,
+            absolute:None,
         }
     }
 }
@@ -144,6 +147,7 @@ impl PerNoteState {
                 state.cohort
             },
             bend: if reset { CENTER } else { state.bend },
+            absolute:if reset{None}else{state.absolute},
         })
     }
     pub fn commit_key(&mut self, id: KeyId, state: KeyState) {
