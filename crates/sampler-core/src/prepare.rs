@@ -2602,12 +2602,14 @@ mod logical_source_tests {
         assert!(matches!(plan.with_voice_chains(vec![], vec![None]), Err(Error::UnsupportedSourceLayout)));
     }
     #[test]
-    fn wide_residency_and_one_pcm_target_builders_refuse_before_ownership() {
+    fn wide_residency_refuses_and_logical_targets_retain_their_complete_source() {
         let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
         assert!(matches!(plan.with_groups(1, vec![Some(0)]), Err(Error::UnsupportedSourceLayout)));
         let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
-        assert!(matches!(plan.with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
-            SampleRevisionLimits { slots: 1, resident_bytes: 4096 }), Err(Error::UnsupportedSourceLayout)));
+        let plan = plan.with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
+            SampleRevisionLimits { slots: 1, resident_bytes: 4096 }).unwrap();
+        assert_eq!(plan.sample_targets[0].id, SampleTargetId(1));
+        assert!(plan.region_source_storage(plan.sample_targets[0].regions[0]).unwrap().stereo().is_none());
         let stereo = pcm(0.25); let stereo_id = stereo.asset_id();
         let plan = Prepared::new_sources(48000, vec![family().into(), SourceStorage::Stereo(stereo)], vec![region(1)], 1).unwrap()
             .with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
