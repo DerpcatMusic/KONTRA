@@ -857,6 +857,8 @@ pub struct Prepared {
     pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
     pub(super) voice_chains: super::dsp::PreparedChains,
     pub(super) processing_scopes: Box<[super::topology::PreparedScope]>,
+    pub(super) processing_signals: Box<[Option<super::topology::signal::Signal>]>,
+    pub(super) wide_gain_sections: Box<[Option<super::dsp::WideGainSections>]>,
     pub(super) region_processing: Box<[Option<(usize, usize)>]>,
     pub(super) processing_source_amplitude: Box<[bool]>,
     pub(super) filters: super::dsp::svf::PreparedFilters,
@@ -1051,7 +1053,11 @@ impl Prepared {
         max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
         let mut pcm = Vec::new();
         for source in &sources {
-            source.as_source().physical_dependencies(|pack| pcm.push(pack.clone()));
+            source.as_source().physical_dependencies(|pack| {
+                if !pcm.iter().any(|old: &Pcm| old.asset_id() == pack.asset_id()) {
+                    pcm.push(pack.clone());
+                }
+            });
         }
         Self::new_tuned_storage(rate, pcm, Some(sources.into_boxed_slice()), regions, max_candidates, tuning)
     }
@@ -1190,6 +1196,8 @@ impl Prepared {
             impulses: Vec::new(),
             voice_chains: super::dsp::PreparedChains::default(),
             processing_scopes: Box::new([]),
+            processing_signals: Box::new([]),
+            wide_gain_sections: Box::new([]),
             region_processing: Box::new([]),
             processing_source_amplitude: Box::new([]),
             signal_trace: None,
@@ -1378,10 +1386,26 @@ impl Prepared {
             let Some(program) = program else {
                 continue;
             };
+            if self.source_storage(region.sample).is_some_and(|source| source.stereo().is_none())
+                && native.get(*program).is_some_and(Option::is_some) {
+                return Err(Error::UnsupportedSourceLayout);
+            }
             let Some(program) = programs.get(*program) else {
                 return Err(Error::InvalidInput);
             };
             for route in &program.routes {
+                if self.source_storage(region.sample).is_some_and(|source| source.stereo().is_none()) {
+                    use super::voice_mod::CompiledTarget;
+                    // The wide source primitive owns scalar gain/pitch/phase
+                    // and source-address laws. Existing stereo filter/native
+                    // DSP destinations require explicit typed N-port stages.
+                    if !matches!(route.target.compiled(), Some(CompiledTarget::Attenuate
+                        | CompiledTarget::Decibels | CompiledTarget::Pitch | CompiledTarget::SampleStart
+                        | CompiledTarget::Tone | CompiledTarget::SourcePhase(_) | CompiledTarget::SourceRate(_)
+                        | CompiledTarget::LoopStart | CompiledTarget::LoopLength)) {
+                        return Err(Error::UnsupportedSourceLayout);
+                    }
+                }
                 if matches!(
                     route.target.compiled(),
                     Some(
@@ -1551,6 +1575,8 @@ impl Prepared {
             // legacy generation can adopt an incoming explicit-scope plan.
             + size_of::<crate::Slot<crate::topology::ProcessingOwner>>()
             + size_of::<u64>() // conservative arena free-word/claim overhead
+            + self.signal_channels().saturating_mul(3 * super::dsp::BLOCK + 2).saturating_mul(size_of::<f32>())
+            + self.signal_channels().saturating_mul(size_of::<[f64; 2]>())
             + if self.processing_scopes.is_empty() { 0 } else {
                 stages * size_of::<crate::dsp::ProcessorState>()
                     + delay * size_of::<[f64; 2]>()
@@ -1573,11 +1599,29 @@ impl Prepared {
     /// Current undeclared region outlets are stereo. A later explicit scope signal
     /// compiler supplies a matching wide outlet; storage packing is not that signal.
     pub(super) fn validate_source_ports(&self) -> Result<(), Error> {
-        if self.regions.iter().any(|region| region.sample != DORMANT_SAMPLE
-            && self.source_storage(region.sample).is_some_and(|s| s.stereo().is_none())) {
-            return Err(Error::UnsupportedSourceLayout);
+        for (index, region) in self.regions.iter().enumerate() {
+            if region.sample == DORMANT_SAMPLE { continue; }
+            let source = self.source_storage(region.sample).ok_or(Error::InvalidInput)?;
+            let signal = self.region_processing.get(index).copied().flatten()
+                .and_then(|(scope, _)| self.processing_scopes.get(scope))
+                .and_then(|scope| scope.signal.as_ref());
+            if let Some(signal) = signal {
+                if signal.input.channels != source.channels().get() { return Err(Error::UnsupportedSourceLayout); }
+            } else if source.stereo().is_none() { return Err(Error::UnsupportedSourceLayout); }
         }
         Ok(())
+    }
+
+    /// Legacy source pan is a two-lane operand. Retained definitions, rather
+    /// than the current voice/bypass snapshot, define future note eligibility.
+    pub(crate) fn source_pan_key_supported(&self, key: u8) -> bool {
+        self.regions.iter().filter(|region| region.bounds[0] <= key && key <= region.bounds[1])
+            .all(|region| self.source_storage(region.sample).is_none_or(|source| source.channels().get() == 2))
+    }
+    pub(crate) fn source_pan_group_supported(&self, group: i64) -> bool {
+        self.regions.iter().enumerate().filter(|(index, _)| group < 0
+            || self.region_groups.get(*index).copied().flatten().is_some_and(|g| i64::from(g) == group))
+            .all(|(_, region)| self.source_storage(region.sample).is_none_or(|source| source.channels().get() == 2))
     }
     pub fn region_count(&self) -> usize {
         self.regions.len()
@@ -2106,6 +2150,17 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
+        self.validate_processing_controls()?;
+        let needs_wide = self.regions.iter().any(|r| self.source_storage(r.sample).is_some_and(|s| s.stereo().is_none()));
+        let wide_gain_sections = if needs_wide {
+            chains.iter().map(super::VoiceChain::wide_gain_sections).collect::<Vec<_>>()
+        } else { Vec::new() };
+        if self.regions.iter().zip(&bindings).any(|(region, chain)|
+            self.source_storage(region.sample).is_some_and(|s| s.stereo().is_none())
+            && chain.is_some_and(|chain| wide_gain_sections[chain].is_none())) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
+        self.wide_gain_sections = wide_gain_sections.into_boxed_slice();
         for (region, chain) in self.regions.iter_mut().zip(bindings) {
             region.chain = chain;
         }
@@ -2115,6 +2170,7 @@ impl Prepared {
             .into_iter()
             .map(|chain| chain.compile(self.rate, &mut parameters, &mut filters))
             .collect::<Result<Vec<_>, _>>()?);
+        self.processing_signals = super::topology::signal::compile(&self, &mut parameters)?;
         let mut controls: Vec<_> = parameters
             .iter()
             .enumerate()

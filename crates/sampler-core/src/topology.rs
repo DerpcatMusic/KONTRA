@@ -7,6 +7,8 @@ use crate::{
     VoiceId,
 };
 
+pub(crate) mod signal;
+
 const MAX_MEMBERS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub(super) struct PreparedScope {
     pub has_amplitude: bool,
     pub bus: Option<usize>,
     pub members: Box<[usize]>,
+    pub signal: Option<sampler_ir::ProcessingSignal>,
 }
 
 #[derive(Clone, Copy)]
@@ -258,6 +261,12 @@ impl Runtime {
             }
         }
     }
+    pub(crate) fn mark_processing_onset_failed(&mut self, index: usize) {
+        let Some((owner, _)) = self.voices.slots.get(index).and_then(|s| s.value.as_ref()).and_then(|v| v.processing) else { return; };
+        let explicit = self.processing_owners.get(owner.0).and_then(|owner|
+            self.plans.get(owner.plan.0).map(|plan| plan.prepared.processing_scopes[owner.template].signal.is_some())).unwrap_or(false);
+        if explicit && let Some(owner) = self.processing_owners.get_mut(owner.0) { owner.failed = true; }
+    }
     fn end_processing_owner(&mut self, id: ProcessingOwnerId) {
         let Some(owner) = self.processing_owners.get(id.0).copied() else {
             return;
@@ -284,6 +293,15 @@ impl Runtime {
                 continue;
             }
             let id = ProcessingOwnerId(self.processing_owners.id(index));
+            let explicit = self.plans.get(before.plan.0).is_some_and(|generation|
+                generation.prepared.processing_scopes[before.template].signal.is_some());
+            if explicit && before.failed { self.end_processing_owner(id); continue; }
+            if explicit && before.members.iter().flatten().any(|voice|
+                self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.holding_onset())) {
+                // Processing ownership is independent of take/Family startup
+                // cohorts. Shared envelope and DSP state rest until all members.
+                continue;
+            }
             let Some(law) = self
                 .plans
                 .get(before.plan.0)
@@ -298,6 +316,16 @@ impl Runtime {
                 output.len().min(before.envelope.remaining())
             };
             let mut produced = 0usize;
+            if explicit {
+                match self.render_signal_sources(&before, source_len, at, &mut sum[..source_len]) {
+                    Ok(count) => produced = count,
+                    Err(_) => {
+                        self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+                        self.end_processing_owner(id);
+                        continue;
+                    }
+                }
+            } else {
             // Member order, not physical slot order. No note-to-note state sharing.
             for source in before.members.into_iter().flatten() {
                 if self.voices.get(source.0).is_none() {
@@ -323,6 +351,7 @@ impl Runtime {
                         }
                     }
                 }
+            }
             }
             // Stop source reads exactly at the owning amplitude's termination;
             // shared post-amplitude state may still render its zero-input tail.

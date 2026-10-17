@@ -158,6 +158,8 @@ impl Layer {
         }
     }
 
+    pub(crate) fn has_source_pan(self) -> bool { self.pan != 0. }
+
     pub fn semitones(self) -> f64 {
         self.pitch
     }
@@ -465,6 +467,14 @@ impl std::ops::IndexMut<usize> for NoteParamsPool {
 }
 
 impl NoteParams {
+    /// A candidate admitted to a wide source must not inherit an old stereo
+    /// source-pan operand, including a transition still straddling the grid.
+    pub(crate) fn has_source_pan(&self, now: u64) -> bool {
+        let begin = now - now % super::voice_mod::CELL;
+        self.layer.has_source_pan()
+            || self.layer_at(begin).has_source_pan()
+            || self.layer_at(begin.saturating_add(super::voice_mod::CELL)).has_source_pan()
+    }
     pub fn layer_at(&self, now: u64) -> Layer {
         let Some((from, start)) = self.transition else {
             return self.layer;
@@ -648,6 +658,12 @@ impl Runtime {
         if !value.is_finite() {
             return Err(Error::InvalidInput);
         }
+        if target == ModTarget::Pan && (value * scale).round() as i64 != 0 {
+            let note = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+            if !self.plans.get(note.plan.0).ok_or(Error::StaleHandle)?.prepared.source_pan_key_supported(note.pitch.key()) {
+                return Err(Error::UnsupportedSourceLayout);
+            }
+        }
         self.script_params = true;
         let params = &mut self.note_params[note.0.index];
         let from = params.layer_at(self.now);
@@ -821,6 +837,29 @@ impl Runtime {
         })
     }
 
+    fn validate_source_pan_write(&mut self, plan: crate::PlanId, scope: ParamScope, index: i64) -> Result<(), Error> {
+        match scope {
+            ParamScope::Group => {
+                if !self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_pan_group_supported(index) {
+                    return Err(Error::UnsupportedSourceLayout);
+                }
+            }
+            ParamScope::Note => {
+                let Ok(event) = i32::try_from(index) else { return Ok(()); };
+                let range = self.event_targets(plan, event)?;
+                // Preflight every matching row before the first retained layer write.
+                for slot in range {
+                    if self.event_selected(plan, event, slot) {
+                        let note = self.notes.slots[slot].value.as_ref().ok_or(Error::StaleHandle)?;
+                        if !self.plans.get(note.plan.0).ok_or(Error::StaleHandle)?.prepared.source_pan_key_supported(note.pitch.key()) {
+                            return Err(Error::UnsupportedSourceLayout);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn write_param(
         &mut self,
         plan: crate::PlanId,
@@ -830,6 +869,7 @@ impl Runtime {
         value: i64,
         relative: bool,
     ) -> Result<(), Error> {
+        if target == ModTarget::Pan && value != 0 { self.validate_source_pan_write(plan, scope, index)?; }
         self.script_params = true;
         if let Some(log) = &mut self.write_log {
             log.push(format!(
