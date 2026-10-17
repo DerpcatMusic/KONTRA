@@ -1586,6 +1586,8 @@ impl DspState {
         expressions: usize,
         lanes: usize,
     ) -> Result<Self, Error> {
+        // Unprojected region outlets are stereo until an explicit signal schedule binds them.
+        plan.validate_source_ports()?;
         let (stride, delay_stride) = Self::shape(plan);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
         let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
