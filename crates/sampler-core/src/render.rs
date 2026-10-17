@@ -655,7 +655,7 @@ impl Runtime {
             let inputs = super::voice_mod::Inputs::new(
                 n,
                 expression.value,
-                &self.performance_state.current(performance).controllers,
+                &self.performance_state.channel_current(performance, n.address).controllers,
                 self.release_times[f.note.0.index].counter(n.key_down(), at),
                 &self.note_params[f.note.0.index].mods,
                 plan.controls.base_reals(),
@@ -786,7 +786,7 @@ impl Runtime {
             if TRACE {
                 ((u64::from(
                     self.performance_state
-                        .current(self.selections[f.note.0.index].performance)
+                        .channel_current(self.selections[f.note.0.index].performance, n.address)
                         .controllers[controller],
                 ) * 127
                     + u64::from(u32::MAX) / 2)

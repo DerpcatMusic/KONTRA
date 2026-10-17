@@ -606,31 +606,31 @@ fn manager_selection_controls_and_member_expression_have_separate_owners() {
                 apply(&mut mpe, &mut rt, packet(0xb0, manager, 1, 127)),
                 Ok(Applied::Controller)
             );
-            assert_eq!(rt.controller(domain, 1).unwrap(), u32::MAX);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 1).unwrap(), u32::MAX);
             assert_eq!(
                 apply(&mut mpe, &mut rt, packet(0xb0, member, 1, 0)),
                 Ok(Applied::Unsupported)
             );
-            assert_eq!(rt.controller(domain, 1).unwrap(), u32::MAX);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 1).unwrap(), u32::MAX);
             let note = start(&mut mpe, &mut rt, member, 60);
             apply(&mut mpe, &mut rt, packet(0xb0, member, 74, 127)).unwrap();
             assert_eq!(expression(&rt, note).timbre, u32::MAX);
-            assert_eq!(rt.controller(domain, 74).unwrap(), 0);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 74).unwrap(), 0);
             assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
             apply(&mut mpe, &mut rt, packet(0xb0, manager, 1, 0)).unwrap();
             assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
-            assert_eq!(rt.controller(domain, 1).unwrap(), 0);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 1).unwrap(), 0);
             assert_eq!(
                 apply(&mut mpe, &mut rt, packet(0xb0, member, 64, 127)),
                 Ok(Applied::Ignored)
             );
-            assert_eq!(rt.controller(domain, 64).unwrap(), 0);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 64).unwrap(), 0);
             apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 127)).unwrap();
-            assert_eq!(rt.controller(domain, 64).unwrap(), u32::MAX);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 64).unwrap(), u32::MAX);
             apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)).unwrap();
             assert!(rt.note(note).unwrap().2);
             apply(&mut mpe, &mut rt, packet(0xb0, manager, 64, 0)).unwrap();
-            assert_eq!(rt.controller(domain, 64).unwrap(), 0);
+            assert_eq!(rt.channel_controller(domain, ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: member }, 64).unwrap(), 0);
             assert!(!rt.note(note).unwrap().2);
             rt.panic();
             rt.flush_ended(|_| true);
@@ -1389,4 +1389,210 @@ fn rich_authored_voice_chain_keeps_mpe_host_identities_and_held_member_isolation
         actual.render(&mut x).unwrap();first.render(&mut y).unwrap();second.render(&mut z).unwrap();
     });
     assert_eq!((actual.nonfinite_frames(),actual.stream_underruns()),(0,0));
+}
+
+
+fn configure_mcm(mpe: &mut Mpe, rt: &mut Runtime, manager: u8, members: u8) -> Applied {
+    apply(mpe, rt, packet(0xb0, manager, 101, 0)).unwrap();
+    apply(mpe, rt, packet(0xb0, manager, 100, 6)).unwrap();
+    apply(mpe, rt, packet(0xb0, manager, 6, members)).unwrap()
+}
+
+#[test]
+fn mcm_shrink_stops_only_changed_channel_owners_and_resets_their_real_cc_banks() {
+    for (zone, manager, kept, removed) in [(Zone::Lower, 0, 1, 3), (Zone::Upper, 15, 14, 12)] {
+        let mut rt = runtime_with_channels(16);
+        let mut reference = runtime_with_channels(16);
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 15, 8).unwrap();
+        let mut other = Mpe::new(&reference, 7, 3, zone, 2, 8).unwrap();
+        let domain = rt.performance(0).unwrap();
+        apply(&mut mpe, &mut rt, packet(0xb0, manager, 1, 127)).unwrap();
+        apply(&mut other, &mut reference, packet(0xb0, manager, 1, 127)).unwrap();
+        apply(&mut mpe, &mut rt, bend(kept, 9216)).unwrap();
+        apply(&mut other, &mut reference, bend(kept, 9216)).unwrap();
+        let retained = start(&mut mpe, &mut rt, kept, 60);
+        let retained_reference = start(&mut other, &mut reference, kept, 60);
+        let stopped = start(&mut mpe, &mut rt, removed, 61);
+        rt.render(&mut [[0.; 2]; 64]).unwrap(); reference.render(&mut [[0.; 2]; 64]).unwrap();
+        let before = expression(&rt, retained);
+        support::without_heap(|| {
+            assert_eq!(configure_mcm(&mut mpe, &mut rt, manager, 2), Applied::Configuration);
+            assert_eq!(expression(&rt, retained), before);
+            assert!(!matches!(rt.input_held(stopped), Ok(true)));
+            assert_eq!(rt.voice_count(), 1);
+            let address = |channel| ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel };
+            assert_eq!(rt.channel_controller(domain, address(kept), 1), Ok(u32::MAX));
+            assert_eq!(rt.channel_controller(domain, address(removed), 1), Ok(0));
+            assert_eq!(rt.channel_controller(domain, address(removed), 11), Ok(u32::MAX));
+            assert_eq!(rt.controller(domain, 1), Ok(0), "explicit global state is not a copy of the last channel");
+            assert_eq!(expression(&rt, retained), expression(&reference, retained_reference));
+            let mut actual = [[0.; 2]; 128]; let mut expected = [[0.; 2]; 128];
+            rt.render(&mut actual).unwrap(); reference.render(&mut expected).unwrap();
+            assert_eq!(actual, expected, "same retained source/cursor must equal the independent narrow-zone runtime");
+        });
+    }
+}
+
+#[test]
+fn mcm_newest_overlap_wins_and_zero_disables_the_selected_zone_without_stranding_owners() {
+    let mut rt = runtime_with_channels(16);
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 15, 8).unwrap();
+    let kept = start(&mut mpe, &mut rt, 6, 60);
+    let moved = start(&mut mpe, &mut rt, 14, 61);
+    assert_eq!(configure_mcm(&mut mpe, &mut rt, 15, 7), Applied::Configuration);
+    assert_eq!(mpe.configuration(), Some([7, 7]));
+    assert!(rt.input_held(kept).unwrap());
+    assert!(!matches!(rt.input_held(moved), Ok(true)));
+    assert_eq!(apply(&mut mpe, &mut rt, packet(0x90, 14, 60, 127)), Ok(Applied::Ignored));
+    assert_eq!(configure_mcm(&mut mpe, &mut rt, 0, 15), Applied::Configuration);
+    assert_eq!(mpe.configuration(), Some([15, 0]));
+    assert!(rt.input_held(kept).unwrap());
+    assert_eq!(configure_mcm(&mut mpe, &mut rt, 0, 0), Applied::Configuration);
+    assert_eq!(mpe.configuration(), Some([0, 0]));
+    assert!(!matches!(rt.input_held(kept), Ok(true)));
+    assert_eq!(rt.voice_count(), 0);
+    // With both zones off, this selected instrument deliberately falls back
+    // to conventional manager-channel reception; no member is still MPE.
+    assert!(!mpe.accepts_channel(1)); assert!(mpe.accepts_channel(0));
+    let conventional = start(&mut mpe, &mut rt, 0, 60);
+    assert_eq!(expression(&rt, conventional).pitch_semitones, 0.);
+}
+
+#[test]
+fn mcm_data_lsb_and_invalid_members_do_not_resize_or_leak_into_controller_state() {
+    for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+        let mut rt = runtime_with_channels(16);
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        assert_eq!(configure_mcm(&mut mpe, &mut rt, manager, 1), Applied::Configuration);
+        let configured = mpe.configuration();
+        let domain = rt.performance(0).unwrap();
+        let address = ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: manager };
+        let old_lsb = rt.channel_controller(domain, address, 38).unwrap();
+        for index in [38, 96, 97] {
+            assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, manager, index, 127)), Ok(Applied::Ignored));
+            assert_eq!(mpe.configuration(), configured);
+        }
+        assert_eq!(rt.channel_controller(domain, address, 38), Ok(old_lsb));
+        // CC38 is unused ONLY while RPN6 is selected; RPN0 cents retain
+        // their ordinary meaning and cannot accidentally resize a zone.
+        for (cc, value) in [(101, 0), (100, 0), (6, 12), (38, 50)] {
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, cc, value)).unwrap();
+        }
+        assert_eq!(mpe.pitch_sensitivities().0, 12.5);
+        assert_eq!(mpe.configuration(), configured);
+        for (cc, value) in [(101, 0), (100, 6)] {
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, cc, value)).unwrap();
+        }
+        assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, manager, 6, 16)), Ok(Applied::Ignored));
+        assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, manager, 6, 127)), Ok(Applied::Ignored));
+        assert_eq!(mpe.configuration(), configured);
+        // RPN selection is physical-channel local. A member cannot resize a zone.
+        assert_eq!(configure_mcm(&mut mpe, &mut rt, member, 15), Applied::Ignored);
+        assert_eq!(mpe.configuration(), configured);
+        // Null and NRPN selection cancel MCM interpretation without mutating it.
+        for (index, value) in [(101,127), (100,127), (6,2), (99,0), (98,6), (6,2)] {
+            apply(&mut mpe, &mut rt, packet(0xb0, manager, index, value)).unwrap();
+            assert_eq!(mpe.configuration(), configured);
+        }
+    }
+}
+
+#[test]
+fn each_selected_mcm_restores_sensitivity_and_preserves_released_member_snapshots() {
+    for (zone, manager, member) in [(Zone::Lower,0,1),(Zone::Upper,15,14)] {
+        let mut rt = runtime_with_channels(16);
+        let mut mpe = Mpe::new(&rt,7,3,zone,2,8).unwrap();
+        for channel in [manager,member] {
+            for (cc,value) in [(101,0),(100,0),(6,12)] { apply(&mut mpe,&mut rt,packet(0xb0,channel,cc,value)).unwrap(); }
+        }
+        apply(&mut mpe,&mut rt,bend(manager,12288)).unwrap();
+        apply(&mut mpe,&mut rt,bend(member,9216)).unwrap();
+        let tail = start(&mut mpe,&mut rt,member,60);
+        apply(&mut mpe,&mut rt,packet(0x80,member,60,0)).unwrap();
+        let held = start(&mut mpe,&mut rt,member,61);
+        mpe.set_bend_range(Some(24));
+        assert_eq!(configure_mcm(&mut mpe,&mut rt,manager,2),Applied::Configuration);
+        assert_eq!(mpe.pitch_sensitivities(),(2.,48.));
+        assert_eq!(expression(&rt,held).pitch_semitones,pitch(12288,2.)+pitch(9216,48.));
+        assert_eq!(expression(&rt,tail).pitch_semitones,pitch(12288,2.)+pitch(9216,12.));
+        apply(&mut mpe,&mut rt,bend(member,10240)).unwrap();
+        assert_eq!(expression(&rt,held).pitch_semitones,pitch(12288,2.)+pitch(10240,48.));
+        assert_eq!(expression(&rt,tail).pitch_semitones,pitch(12288,2.)+pitch(9216,12.));
+    }
+}
+
+#[test]
+fn mcm_from_conventional_mode_stops_old_mapped_owners_and_is_domain_checked() {
+    let mut rt = runtime_with_channels(16);
+    let mut mpe = Mpe::new(&rt,7,3,Zone::Lower,15,8).unwrap();
+    mpe.set_manual_active(false);
+    let old = start(&mut mpe,&mut rt,0,60);
+    assert_eq!(configure_mcm(&mut mpe,&mut rt,0,2),Applied::Configuration);
+    assert!(!matches!(rt.input_held(old),Ok(true)));
+    assert_eq!(mpe.configuration(),Some([2,0]));
+    let before = mpe.configuration();
+    assert_eq!(apply(&mut mpe,&mut rt,packet(0xb0,0,6,7)^0x0100_0000),Err(ApplyError::DisabledGroup));
+    assert_eq!(mpe.configuration(),before);
+    let mut foreign = runtime_with_channels(16);
+    assert_eq!(apply(&mut mpe,&mut foreign,packet(0xb0,0,6,7)),Err(ApplyError::Core(Error::StaleHandle)));
+    assert_eq!(mpe.configuration(),before);
+}
+
+#[test]
+fn rejected_mcm_pitch_reset_preserves_configuration_held_siblings_controllers_and_pcm() {
+    fn prepared_pair() -> (Runtime, Mpe, NoteId, NoteId) {
+        let mut rt = runtime_with_channels(16);
+        let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 15, 8).unwrap();
+        for (cc, value) in [(101, 0), (100, 0), (6, 0)] {
+            apply(&mut mpe, &mut rt, packet(0xb0, 1, cc, value)).unwrap();
+        }
+        apply(&mut mpe, &mut rt, bend(1, 16383)).unwrap();
+        apply(&mut mpe, &mut rt, packet(0xb0, 0, 1, 127)).unwrap();
+        let held = mpe.trigger_with_tuning(&mut rt, 1, sampler_core::Input {
+            protocol: Protocol::Midi1, port: 7, group: 3, channel: 1, key: 60, external_id: Some(91),
+        }, 1., 47.).unwrap();
+        let sibling = start(&mut mpe, &mut rt, 3, 61);
+        // PreselectRPN6 before the tested Data Entry message: selector input
+        // itself is a separate accepted input, not part of refused membership.
+        for (cc, value) in [(101, 0), (100, 6)] {
+            apply(&mut mpe, &mut rt, packet(0xb0, 0, cc, value)).unwrap();
+        }
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        (rt, mpe, held, sibling)
+    }
+    let (mut rt, mut mpe, held, sibling) = prepared_pair();
+    let (mut reference, _, _, _) = prepared_pair();
+    let before = (rt.now(), rt.note_count(), rt.voice_count(), rt.expression_count(),
+        rt.pending_commands(), expression(&rt, held), expression(&rt, sibling), mpe.pitch_sensitivities());
+    support::without_heap(|| {
+        // Oldrange0 admits tuning47. Resetting to48 with retained positive
+        // bend would require95semitones, beyond the normal source step16.
+        assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, 0, 6, 2)), Err(ApplyError::Core(Error::InvalidInput)));
+        assert_eq!(mpe.configuration(), None);
+        assert_eq!((rt.now(), rt.note_count(), rt.voice_count(), rt.expression_count(),
+            rt.pending_commands(), expression(&rt, held), expression(&rt, sibling), mpe.pitch_sensitivities()), before);
+        assert!(rt.input_held(held).unwrap()); assert!(rt.input_held(sibling).unwrap());
+        let domain = rt.performance(0).unwrap();
+        for channel in [1, 3] { assert_eq!(rt.channel_controller(domain,
+            ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel }, 1), Ok(u32::MAX)); }
+        let mut actual = [[0.; 2]; 128]; let mut expected = actual;
+        rt.render(&mut actual).unwrap(); reference.render(&mut expected).unwrap();
+        assert_eq!(actual, expected, "rejection cannot cancel sibling or change source cursor/history");
+        mpe.set_note_tuning(&mut rt, held, 0.).unwrap();
+        assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, 0, 6, 2)), Ok(Applied::Configuration));
+        assert_eq!(mpe.configuration(), Some([2, 0]));
+        assert!(!matches!(rt.input_held(sibling), Ok(true)));
+    });
+}
+
+#[test]
+fn mcm_classifies_the_actual_physical_controller_address_before_committing_surviving_expressions() {
+    let mut rt = runtime_with_channels(16); let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 15, 8).unwrap();
+    let note = mpe.trigger(&mut rt, 1, sampler_core::Input { protocol: Protocol::Midi1,
+        port: 7, group: 3, channel: 3, key: 60, external_id: Some(73) }, 1.).unwrap();
+    assert_eq!(configure_mcm(&mut mpe, &mut rt, 0, 2), Applied::Configuration);
+    assert_eq!(mpe.configuration(), Some([2, 0]));
+    assert!(!matches!(rt.input_held(note), Ok(true)), "actual physical channel3 changes roles even if gesture channel1 was separately supplied");
+    let next = start(&mut mpe, &mut rt, 1, 60);
+    assert!(rt.input_held(next).unwrap());
 }

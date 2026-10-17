@@ -233,6 +233,7 @@ impl Runtime {
                 performance,
                 origin,
                 channels,
+                controller_epochs: self.controller_target_epochs(id)?,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
@@ -255,6 +256,7 @@ impl Runtime {
         signal: u16,
     ) -> Result<(), Error> {
         let performance = self.behavior_performance(id).ok();
+        let controller_epochs = self.controller_target_epochs(id)?;
         let count = self
             .plans
             .get(plan.0)
@@ -277,6 +279,7 @@ impl Runtime {
                         channel: scope.channels.trailing_zeros().min(15) as u8,
                     },
                     channels: scope.channels,
+                    controller_epochs,
                     stage: p.stage,
                     interaction: crate::WidgetInteraction::default(),
                 })
@@ -311,6 +314,7 @@ impl Runtime {
                     channel: 0,
                 },
                 channels: 1,
+                controller_epochs: None,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });

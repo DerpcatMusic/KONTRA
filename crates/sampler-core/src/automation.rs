@@ -135,8 +135,11 @@ impl Runtime {
         if let AutomationSource::Controller(number) = source
             && needed != 0
         {
-            self.performance_state.input_controllers[performance][usize::from(number)] =
-                (input * f64::from(u32::MAX)).round() as u32;
+            let scope = crate::ChannelScope { protocol: context.origin.protocol,
+                port: context.origin.port, group: context.origin.group, channels: context.channels };
+            self.performance_state.prepare_scope(performance, scope)?;
+            self.performance_state.scoped_input(performance, scope, number,
+                (input * f64::from(u32::MAX)).round() as u32);
         }
         self.behaviors.reserve(reserved);
         let mut remaining = needed;

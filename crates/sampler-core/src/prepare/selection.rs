@@ -103,10 +103,11 @@ impl Runtime {
                 .is_empty()
             {
                 self.performance_state.edit(index).native_key = Some(input.key);
+                self.performance_state.sync_metadata(index);
             }
             self.performance_state
                 .release(self.selections[note.0.index].snapshot);
-            self.selections[note.0.index].snapshot = self.performance_state.capture(index);
+            self.selections[note.0.index].snapshot = self.performance_state.capture_channel(index, input.channel_address());
             self.selections[note.0.index].consumed_switch = true;
             self.notes.get_mut(note.0).unwrap().attack = crate::AttackStatus::Suppressed;
             return Ok(note);
@@ -159,6 +160,7 @@ impl Runtime {
             .max_by_key(|(_, n)| n.order)
             .map(|(_, n)| i16::from(key) - i16::from(n.pitch.key()));
         self.performance_state.edit(performance).previous = crate::previous_key_value(held);
+        self.performance_state.sync_metadata(performance);
     }
 
     pub(crate) fn select(
@@ -254,8 +256,9 @@ impl Runtime {
             let state = self.performance_state.edit(performance);
             state.native_tick = generation.native_cycle;
             state.native_seed = generation.native_seed;
+            self.performance_state.sync_metadata(performance);
         }
-        let snapshot = self.performance_state.current[performance];
+        let snapshot = self.performance_state.channel_current_index(performance, address);
         let release = if routed {
             ReleaseReserve::default()
         } else {
