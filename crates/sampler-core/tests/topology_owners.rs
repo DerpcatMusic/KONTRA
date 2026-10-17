@@ -722,3 +722,80 @@ fn native_amplitude_provenance_refuses_owner_migration_but_preserves_source_law(
         })
     ));
 }
+
+fn width_owner_signal(filter: bool) -> ir::ProcessingSignal {
+    let mut nodes = Vec::new();
+    if filter { nodes.push(ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole {
+        cutoff_hz: ir::SignalParameter { constant: 1379., control: None },
+        mode: ir::ChannelOnePoleMode::LowPass,
+        arithmetic: ir::ChannelOnePoleArithmetic::CoreOnePoleF64, tail_frames: 0,
+    })); }
+    nodes.push(ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix {
+        input: ir::SignalLayout { channels: 2 }, output: ir::SignalLayout { channels: 2 },
+        cells: vec![1.,0.,0.,1.], arithmetic: ir::MatrixArithmetic::SeparateMulAddF32,
+    }));
+    ir::ProcessingSignal { source_law: ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,
+        input: ir::SignalLayout { channels: 2 }, nodes, controls: vec![] }
+}
+#[test]
+fn core_onepole_width_stage_preserves_the_existing_stereo_helper_law_and_segmentation() {
+    for high in [false, true] {
+        let legacy = graph(2, ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                kind: if high { ir::FilterKind::HighPass { poles: 1 } } else { ir::FilterKind::LowPass { poles: 1 } },
+                cutoff: ir::Frequency::Hertz(1379.), resonance: ir::Resonance::Q(1.),
+            })], post_amplitude: vec![] });
+        let mut authored = legacy.clone();
+        authored.processing_scopes[0].chain = None;
+        authored.chains.clear(); authored.processing_scopes[0].signal = Some(width_owner_signal(true));
+        if let ir::ProcessingSignalNode::OnePole(filter) = &mut authored.processing_scopes[0].signal.as_mut().unwrap().nodes[0] {
+            filter.mode = if high { ir::ChannelOnePoleMode::HighPass } else { ir::ChannelOnePoleMode::LowPass };
+        }
+        let mut expected = runtime(&legacy, vec![wave(48000, 4096, 1.), wave(48000, 4096, -0.5)]);
+        let mut actual = runtime(&authored, vec![wave(48000, 4096, 1.), wave(48000, 4096, -0.5)]);
+        actual.trigger(input(1), 60, 1.).unwrap(); expected.trigger(input(1), 60, 1.).unwrap();
+        for count in [0,1,3,4,31,32,63,64,65,129] {
+            let a = render(&mut actual, count, 17); let b = render(&mut expected, count, 17);
+            for (a,b) in a.iter().zip(&b) { assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits)); }
+        }
+        assert_eq!((actual.nonfinite_frames(), actual.stream_underruns()), (0,0));
+    }
+}
+#[test]
+fn matrix_only_and_gain_only_scopes_have_no_additional_owner_history_charge() {
+    let empty_chain = ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![], post_amplitude: vec![] };
+    let mut base = graph(1, empty_chain); base.processing_scopes[0].chain = None; base.chains.clear();
+    base.processing_scopes[0].signal = Some(width_owner_signal(false));
+    let matrix = prepare(&base, vec![wave(48000, 512, 1.)]).voice_state_bytes();
+    let mut gain = base.clone();
+    gain.processing_scopes[0].signal.as_mut().unwrap().nodes.insert(0, ir::ProcessingSignalNode::Gain(ir::ChannelGain {
+        gain: ir::SignalParameter { constant: 0.375, control: None },
+        arithmetic: ir::ChannelGainArithmetic::CoreGainF64ThenF32,
+    }));
+    assert_eq!(prepare(&gain, vec![wave(48000, 512, 1.)]).voice_state_bytes(), matrix);
+    base.processing_scopes[0].signal = Some(width_owner_signal(true));
+    let filtered = prepare(&base, vec![wave(48000, 512, 1.)]).voice_state_bytes();
+    assert_eq!(filtered - matrix, 2 * std::mem::size_of::<f64>() + std::mem::size_of::<std::sync::atomic::AtomicBool>());
+}
+#[test]
+fn zero_length_render_and_retained_generation_keep_the_original_owner_filter_history() {
+    let empty_chain = ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![], post_amplitude: vec![] };
+    let mut authored = graph(1, empty_chain); authored.processing_scopes[0].chain = None; authored.chains.clear();
+    authored.processing_scopes[0].signal = Some(width_owner_signal(true));
+    let prepared = prepare(&authored, vec![wave(48000, 4096, 1.)]);
+    let limits = Limits::for_plan(&prepared, 8, 16);
+    let (mut actual, mut control) = Runtime::with_plan_updates(prepared, limits, 2, 1).unwrap();
+    let mut reference = runtime(&authored, vec![wave(48000, 4096, 1.)]);
+    let old = actual.active_plan(); let note = actual.trigger(input(1), 60, 1.).unwrap(); reference.trigger(input(1), 60, 1.).unwrap();
+    close(&render(&mut actual, 97, 13), &render(&mut reference, 97, 31));
+    support::without_heap(|| { for _ in 0..8 { actual.render(&mut []).unwrap(); } });
+    let mut incoming = authored.clone();
+    if let ir::ProcessingSignalNode::OnePole(filter) = &mut incoming.processing_scopes[0].signal.as_mut().unwrap().nodes[0] {
+        filter.cutoff_hz.constant = 6000.;
+    }
+    control.submit(Box::new(prepare(&incoming, vec![wave(48000, 4096, 1.)]))).unwrap();
+    support::without_heap(|| { actual.poll_plan_update().unwrap(); });
+    assert_eq!(actual.note_plan(note), Ok(old)); assert_ne!(actual.active_plan(), old);
+    close(&render(&mut actual, 1024, 1), &render(&mut reference, 1024, 64));
+    assert_eq!((actual.processing_owner_count(), actual.collect_retired_plans()), (1,0));
+}

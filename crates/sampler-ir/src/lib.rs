@@ -1943,7 +1943,47 @@ pub struct ProcessingSignal {
 }
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
-pub enum ProcessingSignalNode { Matrix(ChannelMatrix) }
+pub enum ProcessingSignalNode {
+    Matrix(ChannelMatrix),
+    /// Width-preserving generic core-law stage, before the explicit projection.
+    Gain(ChannelGain),
+    /// One independent history per processing owner and original channel.
+    OnePole(ChannelOnePole),
+}
+/// A typed real stage parameter. A control binds to the existing generation's
+/// value/ramp owner; the constant is used only in the absence of a binding.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignalParameter {
+    pub constant: f64,
+    pub control: Option<String>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelGain { pub gain: SignalParameter, pub arithmetic: ChannelGainArithmetic }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelGainArithmetic { CoreGainF64ThenF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelOnePole {
+    pub cutoff_hz: SignalParameter,
+    pub mode: ChannelOnePoleMode,
+    pub arithmetic: ChannelOnePoleArithmetic,
+    /// Explicit bounded zero-input continuation after the last source ends.
+    /// This is an authored truncation policy, not the exact finite life of an IIR.
+    pub tail_frames: u32,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleMode { LowPass, HighPass }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleArithmetic {
+    /// Existing core f64 recurrence/Hertz conversion/segment-end history flush.
+    /// This does not select either native UVI f32 sample kernel.
+    CoreOnePoleF64,
+}
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessingSourceLaw { CoreF64GainAmplitudeF32Outlet }

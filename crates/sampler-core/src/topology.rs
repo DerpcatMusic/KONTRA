@@ -8,6 +8,7 @@ use crate::{
 };
 
 pub(crate) mod signal;
+pub(crate) mod stages;
 
 const MAX_MEMBERS: usize = 16;
 
@@ -145,6 +146,7 @@ impl Runtime {
             .claim(id.0.index)
             .fill(crate::dsp::ProcessorState::default());
         generation.dsp.owner_delays.claim(id.0.index).fill([0.; 2]);
+        generation.dsp.owner_signal_history.claim(id.0.index).fill(0.);
         Ok(Some((id, ordinal, gate)))
     }
 
@@ -317,7 +319,7 @@ impl Runtime {
             };
             let mut produced = 0usize;
             if explicit {
-                match self.render_signal_sources(&before, source_len, at, &mut sum[..source_len]) {
+                match self.render_signal_sources(&before, source_len, at) {
                     Ok(count) => produced = count,
                     Err(_) => {
                         self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
@@ -384,7 +386,10 @@ impl Runtime {
                 tail_advance = output.len().min(tail as usize);
                 tail_advance
             } else if owner.members.iter().all(Option::is_none) {
-                let tail = chain.map_or(0, |c| c.owner_tail_frames());
+                let signal_tail = generation.prepared.processing_signals.get(owner.template)
+                    .and_then(Option::as_ref).map_or(0, |signal| signal.tail_frames);
+                // The sum is admitted during preparation; no wrapping lifetime.
+                let tail = chain.map_or(0, |c| c.owner_tail_frames()) + signal_tail;
                 let prefix = produced.min(output.len());
                 let len = output.len().min(prefix.saturating_add(tail as usize));
                 tail_advance = len - prefix;
@@ -393,6 +398,12 @@ impl Runtime {
             } else {
                 output.len()
             };
+            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len]).is_err() {
+                generation.dsp.owner_signal_history.claim(index).fill(0.);
+                self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+                self.end_processing_owner(id);
+                continue;
+            }
             let mut cells = generation.dsp.owner_cells.claim(index);
             let mut delay = generation.dsp.owner_delays.claim(index);
             let filters = &mut generation.dsp.filters.as_mut_slice()[0];
