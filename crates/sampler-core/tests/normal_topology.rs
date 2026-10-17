@@ -1,4 +1,5 @@
 //! Structural/early-admission proof for source-native recipes. No native data.
+mod support;
 use sampler_core::{Pcm,Error,lower::{lower,LowerError,Stage}};
 use sampler_ir as ir;
 fn owner(id:u32,parent:Option<u32>,kind:ir::SourceOwnerKind,children:&[u32],zones:&[usize])->ir::SourceOwner{
@@ -51,4 +52,62 @@ fn pcm()->Vec<Pcm>{(0..2).map(|_|Pcm::new(48000,vec![[0.1;2];128].into_boxed_sli
 }
 #[test]fn generic_scope_has_no_invented_source_owner_identity(){
     let mut ir=graph(true);ir.source_indices.processing.clear();ir.source_indices.owners.clear();let plan=lower(&ir,48000,pcm(),|_,plan|Ok(plan)).unwrap();assert_eq!(plan.processing_scope_count(),1);assert_eq!(plan.processing_scope_source_owner(0),None);
+}
+
+
+/// The UVI crate forbids unsafe allocator hooks. Its seven normal-reader PCM
+/// causals stay functional; this existing Core harness owns callback counting.
+#[test]
+fn n_port_matrix_mix_onepole_callbacks_and_live_edits_use_no_heap() {
+    use sampler_core::{ChannelCount,SourceStorageFamily,ControlValue,ControlWrite,Input,Limits,Protocol,Runtime,SlotKind};
+    let mut instrument=graph(true);
+    let outer=ir::SlotAddress{group:-1,slot:-1,generic:1200};
+    let matrix_mix=ir::SlotAddress{group:-1,slot:-1,generic:1201};
+    // These are ordinary real slot definitions, not fabricated registration.
+    instrument.chains.push(ir::Chain{scope:ir::Scope::Voice,pre_amplitude:vec![
+        ir::Processor::Mix{count:0,address:outer,dry:0.,wet:1.,bypass:false},
+        ir::Processor::Mix{count:0,address:matrix_mix,dry:0.,wet:1.,bypass:false},
+    ],post_amplitude:vec![]});
+    instrument.controls.push(ir::Control{key:"heap:upper".into(),label:"upper matrix cell".into(),
+        value:ir::ControlValue::Continuous{min:-1.,max:1.,default:0.,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+    let mut cells=vec![0.;36];for channel in 0..6{cells[channel*6+channel]=1.;}
+    instrument.processing_scopes[0].signal=Some(ir::ProcessingSignal{
+        source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:6},
+        nodes:vec![
+            ir::ProcessingSignalNode::Mix(ir::ChannelMix{count:4,address:outer,dry:0.,wet:1.,bypass:false}),
+            ir::ProcessingSignalNode::Mix(ir::ChannelMix{count:1,address:matrix_mix,dry:0.,wet:1.,bypass:false}),
+            ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:6},output:ir::SignalLayout{channels:6},cells,arithmetic:ir::MatrixArithmetic::SeparateMulAddF32}),
+            ir::ProcessingSignalNode::Rectifier(ir::Rectifier::Full),
+            ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:ir::SignalParameter{constant:1800.,control:None,expression:None},mode:ir::ChannelOnePoleMode::LowPass,arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:0}),
+            ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:6},output:ir::SignalLayout{channels:2},cells:vec![1.,0.,0.,0.,0.5,0.,0.,1.,0.,0.,0.,0.5],arithmetic:ir::MatrixArithmetic::SeparateMulAddF32}),
+        ],controls:vec![ir::ProcessingCellBinding{node:2,input:2,output:4,control:"heap:upper".into()}],
+    });
+    let sources=(0..2).map(|member|{
+        let packs=(0..3).map(|pack|Pcm::new(48000,(0..2048).map(|frame|{
+            let sign=if frame%32<16{1.}else{-1.};
+            [sign*(member+1) as f32*(pack*2+1) as f32/64.,sign*(member+1) as f32*(pack*2+2) as f32/64.]
+        }).collect::<Vec<_>>().into_boxed_slice()).unwrap()).collect();
+        SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(),packs).unwrap().into()
+    }).collect();
+    let plan=sampler_core::lower::lower_sources(&instrument,48000,sources,|_,plan|Ok(plan)).unwrap();
+    let limits=Limits::for_plan(&plan,8,16);let mut rt=Runtime::new(plan,limits).unwrap();
+    let input=Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(10)};
+    let mut note=None;support::without_heap(||note=Some(rt.trigger(input,60,0.75).unwrap()));let note=note.unwrap();
+    let plan=rt.active_plan();let upper=sampler_core::lower::ir_control_id("heap:upper");
+    let inner=sampler_core::slot_control(SlotKind::Bypass,-1,-1,1201);
+    let outer=sampler_core::slot_control(SlotKind::Bypass,-1,-1,1200);
+    let mut block=[[0.;2];128];support::without_heap(||rt.render(&mut block).unwrap());
+    assert!(block.iter().flatten().any(|sample|sample.abs()>1e-5));
+    let mut owners=Vec::new();rt.visit_processing_owners(|owner|owners.push((owner.id,owner.note,owner.plan,owner.template,owner.sources)));
+    for (id,value) in [(upper,0.25),(inner,1.),(inner,0.),(outer,1.),(outer,0.),(upper,-0.25)] {
+        support::without_heap(||{
+            rt.edit_controls(plan,None,&[ControlWrite{id,value:ControlValue::Real(value)}]).unwrap();
+            for size in [31,64,33]{rt.render(&mut block[..size]).unwrap();}
+        });
+        assert!(block.iter().flatten().all(|sample|sample.is_finite()));
+    }
+    let mut after=Vec::new();rt.visit_processing_owners(|owner|after.push((owner.id,owner.note,owner.plan,owner.template,owner.sources)));assert_eq!(owners,after);
+    support::without_heap(||{rt.release(note).unwrap();for _ in 0..32{rt.render(&mut block).unwrap();}});
+    rt.flush_ended(|_|true);assert_eq!(rt.voice_count(),0);assert_eq!(rt.processing_owner_count(),0);
+    let health=rt.stats();assert_eq!(health.nonfinite_frames,0);assert_eq!(health.stream_underruns,0);assert_eq!(health.refused_starts,0);assert_eq!(health.voice_drops,0);
 }

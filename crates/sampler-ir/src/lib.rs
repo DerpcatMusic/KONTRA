@@ -252,6 +252,14 @@ pub struct SourceIndices {
     /// XML/container translation; the normal loader binds actual source ports.
     #[cfg_attr(feature = "cache", serde(default))]
     pub processing: Vec<SourceProcessingRecipe>,
+    /// Full authored matrices, before actual source geometry is known. These
+    /// cells are not an early decoder fold or a guessed two-channel graph.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_matrices: Vec<SourceProcessingMatrix>,
+    /// Explicit caller-supplied conversion at the source-owner output port.
+    /// Absent is not permission to drop wide channels or infer native enums.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_ports: Vec<SourceProcessingPort>,
     /// Original physical order. Empty for caches without native identity metadata.
     #[cfg_attr(feature = "cache", serde(default))]
     pub zone_catalog: Vec<SourceZone>,
@@ -1133,6 +1141,13 @@ impl Instrument {
             });
         }
         self.source_indices.processing.retain(|recipe| !recipe.members.is_empty());
+        for matrix in &mut self.source_indices.processing_matrices {
+            if let Some(binding)=&mut matrix.compiled {
+                if let Some(scope)=processing_remap.get(binding.scope).copied().flatten() {
+                    binding.scope=scope;
+                } else { matrix.compiled=None; }
+            }
+        }
         // Keep every native owner and event-list identity after narrowing.
         // Only actual translated zone references change. Dangling public refs
         // remain visible for validate(), rather than becoming a missing owner.
@@ -2042,6 +2057,57 @@ pub struct SourceProcessingRecipe {
     pub compiled: Option<usize>,
 }
 
+/// An original matrix node and its original ordered chain coordinate. Native
+/// source addresses identify definitions only; PlanId/Arc owns their liveness.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingMatrix {
+    pub owner: SourceOwnerId,
+    pub node: u32,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub matrix: ChannelMatrix,
+    /// Bounded immutable schemas retained by the source adapter; only cells in
+    /// the actual admitted working layout become mutable IR controls.
+    pub control_definitions: Vec<SourceProcessingCellDefinition>,
+    /// Actual shared IR control references, never a consumer-reconstructed native name.
+    pub controls: Vec<SourceProcessingCell>,
+    /// Actual postdecode binding, absent until ordinary materialization.
+    pub compiled: Option<SourceProcessingMatrixBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingMatrixBinding {
+    pub scope: usize,
+    /// None denotes the retained ordinary stereo chain coordinate above.
+    pub signal_node: Option<usize>,
+    pub layout: SignalLayout,
+    pub cells: Vec<SourceProcessingCell>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingCellDefinition {
+    pub input: usize,
+    pub output: usize,
+    pub control: Control,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceProcessingCell {
+    pub input: usize,
+    pub output: usize,
+    pub control: ControlRef,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingPort {
+    pub owner: SourceOwnerId,
+    /// Concrete caller matrix; its input count is checked against actual
+    /// SourceStorage. Choosing this is an explicit Core graph contract, never
+    /// automatic native descriptor provenance from a file channel count.
+    pub conversion: ChannelMatrix,
+}
+
 /// Native scope lifetime evidence, separate from numerical sample profiles.
 /// Kontakt Group ownership is deliberately not inferred from its display name.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -2089,6 +2155,11 @@ pub struct ProcessingSignal {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProcessingSignalNode {
     Matrix(ChannelMatrix),
+    /// A width-preserving ordered span, sharing the ordinary slot controls and
+    /// their ramp law. Fully bypassed spans hold the inner processor histories.
+    Mix(ChannelMix),
+    /// Existing memoryless Core rectifier applied independently to each retained channel.
+    Rectifier(Rectifier),
     /// Width-preserving generic core-law stage, before the explicit projection.
     Gain(ChannelGain),
     /// One independent history per processing owner and original channel.
@@ -2122,6 +2193,16 @@ pub enum SignalExpressionLaw {
     LinearFactor { zero: f64, one: f64 },
     /// OnePole Hertz base times 2^mapped_octaves. No hidden destination clamp.
     Octaves { zero: f64, one: f64 },
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMix {
+    /// Number of following nodes, including nested Mix markers.
+    pub count: u16,
+    pub address: SlotAddress,
+    pub dry: f64,
+    pub wet: f64,
+    pub bypass: bool,
 }
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]

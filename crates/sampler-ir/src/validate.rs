@@ -655,10 +655,91 @@ impl Instrument {
                 let Some(scope) = self.processing_scopes.get(index) else {
                     return Err(invalid("source recipe compiled scope is absent"));
                 };
-                if scope.members != recipe.members || scope.chain != recipe.chain
+                if scope.members != recipe.members || (scope.chain != recipe.chain && !(scope.chain.is_none() && scope.signal.is_some()))
                     || scope.amplitude != recipe.amplitude || scope.output != recipe.output {
                     return Err(invalid("source recipe differs from actual compiled scope"));
                 }
+            }
+        }
+        let mut source_matrices=std::collections::BTreeSet::new();
+        for matrix in &self.source_indices.processing_matrices {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:format!("source matrix {}",matrix.node),reason};
+            check.exists(Reference::Chain(matrix.chain.0))?;
+            if !source_matrices.insert((matrix.owner,matrix.node)) || matrix.matrix.input.channels!=12 || matrix.matrix.output.channels!=12
+                || matrix.matrix.cells.len()!=144 || matrix.matrix.cells.iter().any(|value|!value.is_finite() || value.abs()>f64::from(f32::MAX)) {
+                return Err(invalid("source matrix identity, geometry or coefficient is invalid"));
+            }
+            let chain=&self.chains[matrix.chain.0];
+            if !matches!(chain.pre_amplitude.get(matrix.index),Some(crate::Processor::StereoMatrix(_)))
+                || !self.source_indices.owners.iter().any(|owner|owner.id==matrix.owner) {
+                return Err(invalid("source matrix has no actual owner or chain coordinate"));
+            }
+            let mut definitions=std::collections::BTreeSet::new();
+            let mut definition_keys=std::collections::BTreeSet::new();
+            for cell in &matrix.control_definitions {
+                if cell.input>=12 || cell.output>=12 || !definitions.insert((cell.input,cell.output))
+                    || !definition_keys.insert(&cell.control.key) || cell.control.key.is_empty() {
+                    return Err(invalid("source matrix control schema is duplicated or outside its layout"));
+                }
+                let coefficient=matrix.matrix.cells[cell.output*12+cell.input];
+                if !matches!(cell.control.value,crate::ControlValue::Continuous{min,max,default,..}
+                    if min.is_finite() && max.is_finite() && min<=max
+                    && min.abs()<=f64::from(f32::MAX) && max.abs()<=f64::from(f32::MAX)
+                    && default==coefficient && (min..=max).contains(&default)) {
+                    return Err(invalid("source matrix control schema differs from its exact authored coefficient"));
+                }
+            }
+            let mut raw_cells=std::collections::BTreeSet::new();
+            for cell in &matrix.controls {
+                check.exists(Reference::Control(cell.control.0))?;
+                if cell.input>=12 || cell.output>=12 || !raw_cells.insert((cell.input,cell.output)) {
+                    return Err(invalid("raw source matrix control is duplicated or outside its layout"));
+                }
+                if !matches!(self.controls[cell.control.0].value,crate::ControlValue::Continuous{min,max,..}
+                    if min.is_finite() && max.is_finite() && min.abs()<=f64::from(f32::MAX) && max.abs()<=f64::from(f32::MAX)) {
+                    return Err(invalid("raw source matrix control requires a bounded real domain"));
+                }
+            }
+            if let Some(binding)=&matrix.compiled {
+                let Some(recipe)=self.source_indices.processing.iter().find(|recipe|recipe.owner==matrix.owner && recipe.compiled==Some(binding.scope)) else {
+                    return Err(invalid("source matrix capability has no compiled owner"));
+                };
+                if recipe.chain!=Some(matrix.chain) || !(1..=12).contains(&binding.layout.channels) {return Err(invalid("source matrix capability differs from its owner"));}
+                let scope=self.processing_scopes.get(binding.scope).ok_or_else(||invalid("source matrix capability has no scope"))?;
+                if let Some(node)=binding.signal_node {
+                    let Some(crate::ProcessingSignalNode::Matrix(operation))=scope.signal.as_ref().and_then(|signal|signal.nodes.get(node)) else {
+                        return Err(invalid("source matrix capability has no executable matrix"));
+                    };
+                    if operation.input!=binding.layout || operation.output!=binding.layout {return Err(invalid("source matrix capability layout differs from executable node"));}
+                } else if scope.signal.is_some() || binding.layout.channels!=2 || scope.chain!=Some(matrix.chain) {
+                    return Err(invalid("source matrix legacy capability has no actual stereo chain"));
+                }
+                let mut cells=std::collections::BTreeSet::new();
+                for cell in &binding.cells {
+                    check.exists(Reference::Control(cell.control.0))?;
+                    if !matrix.controls.contains(cell) {return Err(invalid("compiled matrix cell differs from its actual source control"));}
+                    if let Some(node)=binding.signal_node {
+                        if !scope.signal.as_ref().is_some_and(|signal|signal.controls.iter().any(|candidate|
+                            candidate.node==node && candidate.input==cell.input && candidate.output==cell.output
+                            && candidate.control==self.controls[cell.control.0].key)) {
+                            return Err(invalid("compiled matrix cell differs from actual signal control binding"));
+                        }
+                    }
+                    if cell.input>=binding.layout.channels || cell.output>=binding.layout.channels || !cells.insert((cell.input,cell.output)) {
+                        return Err(invalid("source matrix capability cell is out of bounds or duplicated"));
+                    }
+                }
+            }
+        }
+        let mut source_ports=std::collections::BTreeSet::new();
+        for port in &self.source_indices.processing_ports {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:"source processing port".into(),reason};
+            let matrix=&port.conversion;
+            if !source_ports.insert(port.owner) || !self.source_indices.owners.iter().any(|owner|owner.id==port.owner)
+                || matrix.input.channels==0 || matrix.output.channels!=2
+                || matrix.input.channels.checked_mul(matrix.output.channels)!=Some(matrix.cells.len())
+                || matrix.cells.iter().any(|value|!value.is_finite() || value.abs()>f64::from(f32::MAX)) {
+                return Err(invalid("source output port identity or explicit matrix is invalid"));
             }
         }
         if self.processing_scopes.len() > 256 {
@@ -686,7 +767,22 @@ impl Instrument {
                     return Err(invalid("signal graph requires a nonempty input and executable nodes"));
                 }
                 let mut channels = signal.input.channels;
-                for node in &signal.nodes {
+                let mut spans: Vec<(usize, usize)> = Vec::new();
+                for (node_index, node) in signal.nodes.iter().enumerate() {
+                    while spans.last().is_some_and(|&(end, _)| end == node_index) {
+                        let (_, width) = spans.pop().ok_or_else(|| invalid("missing channel mix span"))?;
+                        if channels != width { return Err(invalid("channel mix must preserve its input width")); }
+                    }
+                    if let crate::ProcessingSignalNode::Mix(mix) = node {
+                        let end = node_index.checked_add(1).and_then(|index| index.checked_add(usize::from(mix.count)))
+                            .ok_or_else(|| invalid("channel mix span overflow"))?;
+                        if end > signal.nodes.len() || spans.last().is_some_and(|&(parent,_)| end > parent)
+                            || spans.len() == 16 || !mix.dry.is_finite() || !mix.wet.is_finite()
+                            || !(0. ..=16.).contains(&mix.dry) || !(0. ..=16.).contains(&mix.wet) {
+                            return Err(invalid("channel mix geometry, depth or default is invalid"));
+                        }
+                        spans.push((end, channels));
+                    }
                     match node {
                         crate::ProcessingSignalNode::Matrix(matrix) => {
                             match matrix.arithmetic { crate::MatrixArithmetic::SeparateMulAddF32 => {} }
@@ -697,6 +793,7 @@ impl Instrument {
                             }
                             channels = matrix.output.channels;
                         }
+                        crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => {},
                         crate::ProcessingSignalNode::Gain(gain) => {
                             match gain.arithmetic { crate::ChannelGainArithmetic::CoreGainF64ThenF32 => {} }
                         }
@@ -705,11 +802,14 @@ impl Instrument {
                         }
                     }
                 }
+                while let Some((end, width)) = spans.pop() {
+                    if end != signal.nodes.len() || width != channels { return Err(invalid("channel mix must preserve its input width")); }
+                }
                 if channels != 2 { return Err(invalid("signal graph must feed its declared stereo scope outlet")); }
                 let mut tail = 0u32;
                 for node in &signal.nodes {
                     let parameter = match node {
-                        crate::ProcessingSignalNode::Matrix(_) => continue,
+                        crate::ProcessingSignalNode::Matrix(_) | crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => continue,
                         crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
                         crate::ProcessingSignalNode::OnePole(filter) => {
                             tail = tail.checked_add(filter.tail_frames)

@@ -321,6 +321,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         }
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    engine_parameters::register_source_matrices(&mut out.ir);
     out.ir.register_compressor_controls();
     out.ir.source_indices.owners = source_owners(program, &out.ir)
         .map_err(Translate::Invalid)?;
@@ -1076,6 +1077,29 @@ impl Translation {
             });
         }
         if first_member < self.ir.zones.len() {
+            if let Some(chain)=chain {
+                // Preserve every cell at the real chain coordinate. Decode and
+                // ordinary materialization choose the actual processing width.
+                for insert in keygroup.children().filter(|n|n.has_tag_name("Inserts"))
+                    .flat_map(|n|n.descendants()).filter(|n|n.has_tag_name("GainMatrix")) {
+                    let Some(placement)=self.insert_nodes.iter().find(|entry|
+                        entry.node==insert.id().get_usize() && entry.chain==chain && entry.count>0) else {continue;};
+                    let mut cells=Vec::with_capacity(144);
+                    for output in 1..=12 {
+                        for input in 1..=12 {
+                            cells.push(number(insert,&format!("Gain_{input}_{output}"),f64::from(u8::from(input==output)))?);
+                        }
+                    }
+                    self.ir.source_indices.processing_matrices.push(ir::SourceProcessingMatrix {
+                        owner:ir::SourceOwnerId::UviNode(u32::try_from(keygroup.id().get_usize())
+                            .map_err(|_|"keygroup identity exceeds source address domain".to_owned())?),
+                        node:u32::try_from(insert.id().get_usize()).map_err(|_|"matrix identity exceeds source address domain".to_owned())?,
+                        chain,index:placement.first,
+                        matrix:ir::ChannelMatrix {input:ir::SignalLayout{channels:12},output:ir::SignalLayout{channels:12},cells,
+                            arithmetic:ir::MatrixArithmetic::SeparateMulAddF32},control_definitions:Vec::new(),controls:Vec::new(),compiled:None,
+                    });
+                }
+            }
             self.ir.source_indices.processing.push(ir::SourceProcessingRecipe {
                 name: keygroup.attribute("Name").unwrap_or("Keygroup").to_owned(),
                 owner: ir::SourceOwnerId::UviNode(u32::try_from(keygroup.id().get_usize())
@@ -1972,13 +1996,10 @@ fn assemble_streamed_cancelable(
         scripts: true,
         ..Default::default()
     };
-    let bindings = engine_parameters::bindings(&instrument);
     let mut streamed =
         sampler_kontakt::stream_instrument_cancelable(instrument, sources, labels, &options, policy,canceled)?;
-    streamed.loaded.plan = streamed
-        .loaded
-        .plan
-        .with_engine_parameters(bindings, Vec::new())?;
+    let bindings=engine_parameters::bindings(&streamed.loaded.instrument);
+    streamed.loaded.plan = streamed.loaded.plan.with_engine_parameters(bindings, Vec::new())?;
     Ok(streamed)
 }
 
@@ -2668,8 +2689,8 @@ fn assemble(
         sources.push(d.source);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    let bindings = engine_parameters::bindings(&instrument);
     let mut loaded = sampler_kontakt::finish_sources(instrument, sources, labels, options)?;
+    let bindings=engine_parameters::bindings(&loaded.instrument);
     loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
     Ok(loaded)
 }

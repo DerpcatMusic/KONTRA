@@ -165,7 +165,7 @@ pub(crate) fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
 /// translator's folded cutoff.
 fn node_lanes(node: roxmltree::Node, name: &str) -> Vec<(usize, P)> {
     let kind = node.tag_name().name();
-    if !matches!(kind, "Gain" | "OnePole") && !bus_scope(node) {
+    if !matches!(kind, "Gain" | "OnePole" | "GainMatrix") && !bus_scope(node) {
         return Vec::new();
     }
     let number = |n: &str, d: f64| node.attribute(n).and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -227,7 +227,8 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
 /// older Gain and OnePole fields keep slot -1; the rest are told apart by
 /// their catalog position. The engine name only has to be a valid id.
 fn address(kind: &str, name: &str) -> Option<(&'static str, i32)> {
-    let first = lanes(kind, name).first().map(|l| l.1)?;
+    let first = if kind=="GainMatrix" && matrix_cell(name).is_some() {P::CellLL}
+        else {lanes(kind,name).first().map(|lane|lane.1)?};
     let engine = if matches!(first, P::Cutoff | P::Frequency) {
         "ENGINE_PAR_CUTOFF"
     } else {
@@ -244,8 +245,15 @@ fn address(kind: &str, name: &str) -> Option<(&'static str, i32)> {
     Some((engine, slot))
 }
 
-fn key(node: usize, kind: &str, name: &str) -> String {
+pub(crate) fn key(node: usize, kind: &str, name: &str) -> String {
     format!("{PREFIX}{node}:{kind}:{name}")
+}
+
+fn matrix_cell(name:&str)->Option<(usize,usize)> {
+    let mut parts=name.strip_prefix("Gain_")?.split('_');
+    let input=parts.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+    let output=parts.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+    (parts.next().is_none() && input<12 && output<12).then_some((input,output))
 }
 
 pub(crate) fn binding(node: usize, kind: &str, name: &str) -> Option<EngineParameterBinding> {
@@ -288,6 +296,12 @@ pub(crate) fn bindings(instrument: &ir::Instrument) -> Vec<EngineParameterBindin
             let name = parts.next()?;
             if parts.next().is_some() {
                 return None;
+            }
+            if kind=="GainMatrix" && let Some(matrix)=instrument.source_indices.processing_matrices.iter().find(|matrix|matrix.node as usize==node) {
+                let (input,output)=matrix_cell(name)?;
+                let compiled=matrix.compiled.as_ref()?;
+                if !compiled.cells.iter().any(|cell|cell.input==input && cell.output==output
+                    && instrument.controls.get(cell.control.0).is_some_and(|control|control.key==c.key)) {return None;}
             }
             binding(node, kind, name)
         })
@@ -363,6 +377,30 @@ pub(crate) fn register(
                     parameter,
                     ramp: ir::Time::Seconds(0.),
                 });
+            }
+        }
+    }
+}
+
+/// Retain full immutable cell schemas, not 144 mutable runtime controls. The
+/// normal materializer resolves only cells in the actual decoded working port.
+pub(crate) fn register_source_matrices(instrument:&mut ir::Instrument) {
+    for matrix in &mut instrument.source_indices.processing_matrices {
+        for output in 0..matrix.matrix.output.channels {
+            for input in 0..matrix.matrix.input.channels {
+                let name=format!("Gain_{}_{}",input+1,output+1);
+                let Some(parameter)=parameters::definitions("GainMatrix").iter().find(|p|p.name==name) else {continue;};
+                let key=key(matrix.node as usize,"GainMatrix",&name);
+                let value=matrix.matrix.cells[output*matrix.matrix.input.channels+input];
+                // Static authored coefficients remain exact even when no live
+                // catalog domain can represent that value; never clamp them.
+                if value<parameter.min || value>parameter.max {continue;}
+                let definition=ir::Control{key:key.clone(),label:name,value:ir::ControlValue::Continuous{
+                    min:parameter.min,max:parameter.max,default:value,unit:ir::ControlUnit::None},automation:ir::Automation::None};
+                if let Some(index)=instrument.controls.iter().position(|control|control.key==key) {
+                    matrix.controls.push(ir::SourceProcessingCell{input,output,control:ir::ControlRef(index)});
+                }
+                matrix.control_definitions.push(ir::SourceProcessingCellDefinition{input,output,control:definition});
             }
         }
     }
