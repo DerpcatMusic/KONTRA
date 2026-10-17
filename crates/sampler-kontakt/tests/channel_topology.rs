@@ -1795,3 +1795,14 @@ fn queued_and_scheduled_global_bases_keep_both_note_expression_factors_live() {
     assert!(snapshot.iter().any(|w|w.id==gain&&w.value==ControlValue::Real(0.75)));
     assert!(snapshot.iter().any(|w|w.id==cutoff&&w.value==ControlValue::Real(5000.)));
 }
+
+#[test]
+fn ordinary_source_aware_finish_keeps_one_logical_asset_and_the_existing_runtime_laws() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=-0.5;let authored=instrument(cells.clone(),false);
+    let source=decode(wav(6,false,false,&[]));let id=source.as_source().id();
+    let loaded=sampler_kontakt::finish_sources(authored.clone(),vec![source],vec!["owned.wav".into()],&sampler_kontakt::Options::default()).unwrap();
+    assert_eq!(loaded.instrument.assets.len(),1);assert_eq!(loaded.instrument.zones.len(),1);assert_eq!(loaded.plan.source_storage(0).unwrap().id(),id);
+    let limits=Limits::for_plan(&loaded.plan,8,16);let mut actual=Runtime::new(loaded.plan,limits).unwrap();
+    let mut expected=runtime(&authored,decode(wav(6,false,false,&[])));actual.trigger(input(1),60,1.).unwrap();expected.trigger(input(1),60,1.).unwrap();
+    exact(&render(&mut actual,1024,17),&render(&mut expected,1024,64));assert_eq!((actual.voice_count(),actual.processing_owner_count()),(1,1));
+}

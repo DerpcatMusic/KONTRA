@@ -65,6 +65,18 @@ impl Bytes {
     }
 }
 
+/// Control-side complete encoded resident read through the ordinary immutable
+/// Source recipe. This does not create a new decryption or path resolver.
+pub(crate) fn read_encoded_resident(source: &Source, byte_limit: usize) -> io::Result<Vec<u8>> {
+    let len=usize::try_from(source.size).map_err(|_|io::Error::new(io::ErrorKind::InvalidData,"encoded sample length overflow"))?;
+    if len==0 || len>byte_limit {return Err(io::Error::new(io::ErrorKind::InvalidData,"encoded resident sample limit exceeded"));}
+    let mut input=Bytes::open(source,false)?;
+    let mut bytes=Vec::new();bytes.try_reserve_exact(len).map_err(|e|io::Error::new(io::ErrorKind::OutOfMemory,e))?;
+    bytes.resize(len,0);input.read_exact(&mut bytes)?;
+    source.check_snapshot(&input.file)?;
+    Ok(bytes)
+}
+
 impl Read for Bytes {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let end = self.at + self.buffer.len() as u64;

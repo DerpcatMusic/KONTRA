@@ -427,6 +427,24 @@ impl Bank {
         read().map_err(|e| AccessError::Resource(access::failure_reason(&e)))
     }
 
+    /// Initial resident read through the ordinary resource resolver, bounded
+    /// before any member bytes are read. No decoder/access revision changes.
+    pub(crate) fn initial_resident_resource(&self,program_path:&str,path:&str)->Result<Vec<Vec<u8>>,AccessError> {
+        self.resource_bounded(program_path,path,128<<20)
+    }
+
+    pub(crate) fn initial_resident_sample(&self,program_path:&str,path:&str,inherit:bool)
+        ->Result<crate::audio::InitialDecoded,String> {
+        let parts=self.initial_resident_resource(program_path,path).map_err(|e|e.to_string())?;
+        let decoded=crate::audio::decode_initial(&parts,inherit)?;
+        let bank=self.clone();let program_path=program_path.to_owned();let path=path.to_owned();
+        sampler_kontakt::install_resident_source_reload(&decoded.source,move || {
+            let parts=bank.initial_resident_resource(&program_path,&path).map_err(|_|sampler_core::Error::NotReady)?;
+            crate::audio::decode_initial(&parts,false).map(|d|d.source).map_err(|_|sampler_core::Error::NotReady)
+        }).map_err(|e|e.to_string())?;
+        Ok(decoded)
+    }
+
     /// Decode a resource or mono-channel bundle without translating the program.
     pub fn decode_resource(
         &self,
