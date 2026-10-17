@@ -437,6 +437,7 @@ pub(crate) fn render_stages(
     frames: usize,
     at: u64,
     stereo: &mut [crate::Frame],
+    expression: &crate::Expression,
 ) -> Result<(), Error> {
     let signal = generation
         .prepared
@@ -475,6 +476,7 @@ pub(crate) fn render_stages(
                 &generation.dsp.parameters,
                 generation.prepared.rate,
                 at,
+                expression,
             )?,
         }
     }

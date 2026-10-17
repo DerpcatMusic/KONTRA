@@ -398,7 +398,7 @@ impl Runtime {
             } else {
                 output.len()
             };
-            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len]).is_err() {
+            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &expression.value).is_err() {
                 generation.dsp.owner_signal_history.claim(index).fill(0.);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
                 self.end_processing_owner(id);

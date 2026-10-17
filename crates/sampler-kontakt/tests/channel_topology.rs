@@ -411,6 +411,7 @@ fn shared_chain() -> ir::Chain {
         post_amplitude: vec![],
     }
 }
+#[track_caller]
 fn close(actual: &[[f32; 2]], expected: &[[f32; 2]]) {
     assert_eq!(actual.len(), expected.len());
     for (frame, (a, b)) in actual.iter().zip(expected).enumerate() {
@@ -1028,6 +1029,7 @@ fn stage_parameter(value: f64, control: Option<&str>) -> ir::SignalParameter {
     ir::SignalParameter {
         constant: value,
         control: control.map(str::to_owned),
+        expression: None,
     }
 }
 fn owner_gain(value: f64, controlled: bool) -> ir::ProcessingSignalNode {
@@ -1575,4 +1577,221 @@ fn owner_gain_keeps_f64_coefficient_until_the_declared_f32_outlet() {
     let mut actual = runtime(&authored, decode(wav(6, false, false, &[])));
     actual.trigger(input(1), 60, 1.).unwrap();
     exact(&render(&mut actual, 256, 17), &expected);
+}
+
+fn expressive_bases(rt: &mut Runtime, gain: f64, cutoff: f64) {
+    let mut writes=[
+        ControlWrite{id:ir_control_id("wide-gain"),value:ControlValue::Real(gain)},
+        ControlWrite{id:ir_control_id("wide-cutoff"),value:ControlValue::Real(cutoff)},
+    ];
+    writes.sort_unstable_by_key(|write|write.id);
+    rt.edit_controls(rt.active_plan(),None,&writes).unwrap();
+}
+
+fn expressive_graph(cells: Vec<f64>) -> ir::Instrument {
+    let mut authored = instrument(cells, false);
+    // Explicit enhancement after the authored matrix/projection; this fixture
+    // has no subsequent legacy stereo scope.chain to mislabel as post-authored.
+    let signal = authored.processing_scopes[0].signal.as_mut().unwrap();
+    let mut filter = owner_filter(false, 0, true);
+    if let ir::ProcessingSignalNode::OnePole(node) = &mut filter {
+        node.cutoff_hz.expression = Some(ir::SignalExpressionBinding {
+            source: ir::SignalExpressionSource::Timbre,
+            law: ir::SignalExpressionLaw::Octaves { zero: -1., one: 1. },
+        });
+    }
+    let mut gain = owner_gain(0.375, true);
+    if let ir::ProcessingSignalNode::Gain(node) = &mut gain {
+        node.gain.expression = Some(ir::SignalExpressionBinding {
+            source: ir::SignalExpressionSource::Pressure,
+            law: ir::SignalExpressionLaw::LinearFactor { zero: 0.25, one: 1.75 },
+        });
+    }
+    signal.nodes.extend([filter, gain]);
+    for (key, min, max, default) in [("wide-gain", 0., 2., 0.375), ("wide-cutoff", 500., 8000., 1379.)] {
+        authored.controls.push(ir::Control { key: key.into(), label: key.into(),
+            value: ir::ControlValue::Continuous { min, max, default, unit: ir::ControlUnit::None },
+            automation: ir::Automation::None });
+    }
+    authored.modulators.push(ir::Modulator { scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Envelope(ir::Envelope { release: ir::Time::Milliseconds(1.), ..Default::default() }) });
+    authored.processing_scopes[0].amplitude = Some(ir::ModulatorRef(0));
+    authored
+}
+fn stage_expression(rt: &mut Runtime, note: sampler_core::NoteId, pressure: u32, timbre: u32, tune: f64) {
+    let id = rt.expression_id(note).unwrap(); let mut value = rt.expression(id).unwrap();
+    value.pressure = pressure; value.timbre = timbre; value.pitch_semitones = tune;
+    rt.set_expression(id, value).unwrap();
+}
+fn sum_note_outputs(a: &[[f32; 2]], b: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    a.iter().zip(b).map(|(a,b)| [a[0]+b[0], a[1]+b[1]]).collect()
+}
+fn expression_map(bits: u32, zero: f64, one: f64) -> f64 {
+    if bits == 0 { zero } else if bits == u32::MAX { one }
+    else { (zero + (one-zero) * (f64::from(bits) / f64::from(u32::MAX))).clamp(zero.min(one),zero.max(one)) }
+}
+fn expressive_oracle(raw: &[[f32; 2]], state: &mut [f64; 2], pressure: u32, timbre: u32,
+    base_gain: f64, base_hz: f64) -> Vec<[f32; 2]> {
+    let gain = base_gain * expression_map(pressure, 0.25, 1.75);
+    let hz = base_hz * expression_map(timbre, -1., 1.).exp2();
+    let b = -(-std::f64::consts::TAU * hz / 48000.).exp_m1();
+    raw.iter().map(|frame| {
+        let mut out = [0.; 2];
+        for channel in 0..2 {
+            state[channel] += (f64::from(frame[channel])-state[channel]) * b;
+            let filtered = state[channel] as f32;
+            out[channel] = (f64::from(filtered) * gain) as f32;
+        }
+        out
+    }).collect()
+}
+#[test]
+fn expressive_stages_match_independent_note_expression_matched_input_oracle() {
+    let mut cells = vec![0.; 12]; cells[3] = 1.; cells[11] = 1.;
+    let authored = expressive_graph(cells);
+    let mut input_ir = authored.clone(); input_ir.processing_scopes[0].signal.as_mut().unwrap().nodes.truncate(1);
+    let mut actual = runtime(&authored, decode(wav(6, false, false, &[])));
+    let mut input_ref = runtime(&input_ir, decode(wav(6, false, false, &[])));
+    let a = actual.trigger(input(1), 60, 1.).unwrap(); let b = input_ref.trigger(input(1), 60, 1.).unwrap();
+    let mut state = [0.; 2];
+    for (frames, pressure, timbre, tune, base_gain, base_hz) in [
+        (97, 0x2000_0123, 0x6000_4567, -1.25, 0.375, 1379.),
+        (511, 0xe000_4567, 0xc000_0123, 2.5, 0.5, 3000.),
+        (129, u32::MAX, 0, 0., 0.25, 2000.),
+    ] {
+        stage_expression(&mut actual,a,pressure,timbre,tune); stage_expression(&mut input_ref,b,pressure,timbre,tune);
+        expressive_bases(&mut actual,base_gain,base_hz);
+        let raw = render(&mut input_ref,frames,64);
+        let expected = expressive_oracle(&raw,&mut state,pressure,timbre,base_gain,base_hz);
+        close(&render(&mut actual,frames,17),&expected);
+        let expression = actual.expression(actual.expression_id(a).unwrap()).unwrap();
+        assert_eq!((expression.pressure,expression.timbre,expression.pitch_semitones),(pressure,timbre,tune));
+        assert_eq!(actual.control_value(actual.active_plan(),ir_control_id("wide-gain")),Ok(ControlValue::Real(base_gain)));
+        assert_eq!(actual.control_value(actual.active_plan(),ir_control_id("wide-cutoff")),Ok(ControlValue::Real(base_hz)));
+    }
+}
+#[test]
+fn overlapping_same_key_expressive_notes_keep_independent_filters_and_global_bases() {
+    let mut cells = vec![0.; 12]; cells[2] = 1.; cells[11] = 1.; let authored = expressive_graph(cells);
+    let mut actual = runtime(&authored,decode(wav(6,false,false,&[])));
+    let mut first = runtime(&authored,decode(wav(6,false,false,&[])));
+    let mut second = runtime(&authored,decode(wav(6,false,false,&[])));
+    let a = actual.trigger(input(101),60,1.).unwrap(); let b = actual.trigger(input(202),60,1.).unwrap();
+    let ar = first.trigger(input(101),60,1.).unwrap(); let br = second.trigger(input(202),60,1.).unwrap();
+    assert_ne!(actual.expression_id(a),actual.expression_id(b));
+    stage_expression(&mut actual,a,0x2000_0123,0x4000_4567,-2.); stage_expression(&mut first,ar,0x2000_0123,0x4000_4567,-2.);
+    stage_expression(&mut actual,b,0xe000_4567,0xd000_0123,3.); stage_expression(&mut second,br,0xe000_4567,0xd000_0123,3.);
+    let plan = actual.active_plan(); let revision = actual.control_revision(plan).unwrap();
+    let second_expression = actual.expression(actual.expression_id(b).unwrap()).unwrap();
+    close(&render(&mut actual,97,17),&sum_note_outputs(&render(&mut first,97,64),&render(&mut second,97,31)));
+    stage_expression(&mut actual,a,0xa000_0001,0x1000_0001,1.); stage_expression(&mut first,ar,0xa000_0001,0x1000_0001,1.);
+    assert_eq!(actual.expression(actual.expression_id(b).unwrap()).unwrap(),second_expression);
+    assert_eq!(actual.control_revision(plan),Ok(revision));
+    assert_eq!(actual.control_value(plan,ir_control_id("wide-gain")),Ok(ControlValue::Real(0.375)));
+    assert_eq!(actual.control_value(plan,ir_control_id("wide-cutoff")),Ok(ControlValue::Real(1379.)));
+    for rt in [&mut actual,&mut first,&mut second] {
+        expressive_bases(rt,0.75,4000.);
+    }
+    close(&render(&mut actual,511,3),&sum_note_outputs(&render(&mut first,511,64),&render(&mut second,511,17)));
+    actual.note_off_exact(a,None).unwrap(); first.note_off_exact(ar,None).unwrap();
+    close(&render(&mut actual,96,7),&sum_note_outputs(&render(&mut first,96,64),&render(&mut second,96,31)));
+    assert_eq!((actual.voice_count(),actual.processing_owner_count()),(1,1));
+    assert_eq!(actual.note_plan(b),Ok(plan));
+}
+#[test]
+fn expressive_owner_retains_its_generation_mapping_after_new_plan_publication() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;let authored=expressive_graph(cells);
+    let p=prepare(&authored,decode(wav(6,false,false,&[])));let limits=Limits::for_plan(&p,8,16);
+    let (mut actual,mut control)=Runtime::with_plan_updates(p,limits,2,1).unwrap();
+    let old=actual.active_plan();let note=actual.trigger(input(1),60,1.).unwrap();
+    let mut first=runtime(&authored,decode(wav(6,false,false,&[])));let first_note=first.trigger(input(1),60,1.).unwrap();
+    stage_expression(&mut actual,note,0x4000_0001,0x2000_0001,-1.);stage_expression(&mut first,first_note,0x4000_0001,0x2000_0001,-1.);
+    close(&render(&mut actual,97,17),&render(&mut first,97,64));
+    let mut incoming=authored.clone();
+    if let ir::ProcessingSignalNode::OnePole(filter)=&mut incoming.processing_scopes[0].signal.as_mut().unwrap().nodes[1] {
+        filter.cutoff_hz.expression.as_mut().unwrap().law=ir::SignalExpressionLaw::Octaves{zero:-2.,one:0.};
+    }
+    control.submit(Box::new(prepare(&incoming,decode(wav(6,false,false,&[]))))).unwrap();
+    support::without_heap(||{actual.poll_plan_update().unwrap();});let new=actual.active_plan();assert_ne!(old,new);
+    assert_eq!(actual.note_plan(note),Ok(old));assert_eq!(actual.collect_retired_plans(),0);
+    let next=actual.trigger(input(2),60,1.).unwrap();let mut second=runtime(&incoming,decode(wav(6,false,false,&[])));
+    // Match the absolute modulation grid before this reference voice starts.
+    // The real new generation starts at 97, not at this fresh Runtime's zero.
+    assert_eq!(actual.now(),97);assert_eq!(second.now(),0);
+    let silence=render(&mut second,97,31);assert!(silence.iter().flatten().all(|v|*v==0.));
+    assert_eq!(second.now(),actual.now());assert_eq!(second.voice_count(),0);
+    let second_note=second.trigger(input(2),60,1.).unwrap();
+    stage_expression(&mut actual,next,0xf000_0001,0xf000_0001,2.);stage_expression(&mut second,second_note,0xf000_0001,0xf000_0001,2.);
+    stage_expression(&mut actual,note,0x8000_0001,0x6000_0001,-0.5);stage_expression(&mut first,first_note,0x8000_0001,0x6000_0001,-0.5);
+    close(&render(&mut actual,400,31),&sum_note_outputs(&render(&mut first,400,64),&render(&mut second,400,17)));
+    actual.note_off_exact(note,None).unwrap();render(&mut actual,96,7);actual.flush_ended(|_|true);
+    assert_eq!(actual.collect_retired_plans(),1);assert_eq!((actual.voice_count(),actual.processing_owner_count()),(1,1));
+}
+#[test]
+fn expressive_endpoints_cross_the_full_global_base_domain_before_publication() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;
+    for case in 0..5 {
+        let mut authored=expressive_graph(cells.clone());
+        let signal=authored.processing_scopes[0].signal.as_mut().unwrap();
+        if case==3 {
+            if let ir::ProcessingSignalNode::Gain(node)=&mut signal.nodes[2] {
+                node.gain.expression.as_mut().unwrap().law=ir::SignalExpressionLaw::Octaves{zero:-1.,one:1.};
+            }
+        } else if case==4 {
+            if let ir::ProcessingSignalNode::Gain(node)=&mut signal.nodes[2] {
+                node.gain.expression.as_mut().unwrap().law=ir::SignalExpressionLaw::LinearFactor{zero:0.,one:f64::from(f32::MAX)};
+            }
+        } else if let ir::ProcessingSignalNode::OnePole(node)=&mut signal.nodes[1] {
+            node.cutoff_hz.expression.as_mut().unwrap().law=match case {
+                0=>ir::SignalExpressionLaw::Octaves{zero:0.,one:2.}, // 8000*4 exceeds actual Nyquist.
+                1=>ir::SignalExpressionLaw::Octaves{zero:-2000.,one:-1999.},
+                _=>ir::SignalExpressionLaw::Octaves{zero:-f64::MAX,one:f64::MAX},
+            };
+        }
+        let called=std::cell::Cell::new(false);
+        let result=lower_sources(&authored,48000,vec![decode(wav(6,false,false,&[]))],|_,p|{called.set(true);Ok::<_,LowerError>(p)});
+        assert!(result.is_err());assert!(!called.get());
+    }
+}
+#[test]
+fn expressive_two_note_updates_base_capture_release_and_render_are_heap_free() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;let authored=expressive_graph(cells);
+    let mut actual=runtime(&authored,decode(wav(6,false,false,&[])));let plan=actual.active_plan();
+    support::without_heap(||{
+        let a=actual.trigger(input(1),60,1.).unwrap();let b=actual.trigger(input(2),60,1.).unwrap();
+        stage_expression(&mut actual,a,0x2000_0001,0x3000_0001,-1.);stage_expression(&mut actual,b,0xe000_0001,0xc000_0001,2.);
+        actual.render(&mut [[0.;2];97]).unwrap();
+        actual.edit_controls(plan,None,&[ControlWrite{id:ir_control_id("wide-cutoff"),value:ControlValue::Real(3000.)}]).unwrap();
+        let mut captured=[ControlWrite{id:ir_control_id("wide-cutoff"),value:ControlValue::Real(0.)};2];
+        assert_eq!(actual.capture_controls(plan,&mut captured),Ok((2,1)));
+        stage_expression(&mut actual,a,0xa000_0001,0x8000_0001,0.5);actual.render(&mut [[0.;2];65]).unwrap();
+        actual.note_off_exact(a,None).unwrap();actual.note_off_exact(b,None).unwrap();actual.render(&mut [[0.;2];96]).unwrap();
+    });
+    assert_eq!((actual.voice_count(),actual.processing_owner_count(),actual.nonfinite_frames(),actual.stream_underruns()),(0,0,0,0));
+}
+#[test]
+fn queued_and_scheduled_global_bases_keep_both_note_expression_factors_live() {
+    let mut cells=vec![0.;12];cells[3]=1.;cells[11]=1.;let authored=expressive_graph(cells);
+    let rt=runtime(&authored,decode(wav(6,false,false,&[])));let (mut actual,mut queue)=rt.with_control_updates(1,2).unwrap();
+    let mut first=runtime(&authored,decode(wav(6,false,false,&[])));let mut second=runtime(&authored,decode(wav(6,false,false,&[])));
+    let a=actual.trigger(input(1),60,1.).unwrap();let b=actual.trigger(input(2),60,1.).unwrap();
+    let ar=first.trigger(input(1),60,1.).unwrap();let br=second.trigger(input(2),60,1.).unwrap();
+    stage_expression(&mut actual,a,0x2000_0001,0x3000_0001,-1.);stage_expression(&mut first,ar,0x2000_0001,0x3000_0001,-1.);
+    stage_expression(&mut actual,b,0xe000_0001,0xc000_0001,2.);stage_expression(&mut second,br,0xe000_0001,0xc000_0001,2.);
+    close(&render(&mut actual,64,13),&sum_note_outputs(&render(&mut first,64,64),&render(&mut second,64,31)));
+    let plan=actual.active_plan();let gain=ir_control_id("wide-gain");let cutoff=ir_control_id("wide-cutoff");
+    let mut recall=[ControlWrite{id:gain,value:ControlValue::Real(0.)};2];
+    assert_eq!(actual.capture_controls(plan,&mut recall),Ok((2,0)));
+    recall.iter_mut().find(|write|write.id==gain).unwrap().value=ControlValue::Real(0.75);
+    queue.submit(sampler_core::ControlRequest{plan,expected_revision:Some(0),operation:sampler_core::ControlOperation::Recall(Box::from(recall))}).unwrap();
+    assert_eq!(actual.poll_control_update(),Ok(Some(1)));assert_eq!(queue.reply().unwrap().result,Ok((2,1)));
+    for rt in [&mut first,&mut second] { rt.edit_controls(rt.active_plan(),None,&[ControlWrite{id:gain,value:ControlValue::Real(0.75)}]).unwrap(); }
+    for rt in [&mut actual,&mut first,&mut second] {
+        rt.schedule_event(160,sampler_core::Event::Control(rt.active_plan(),ControlWrite{id:cutoff,value:ControlValue::Real(5000.)})).unwrap();
+    }
+    close(&render(&mut actual,256,17),&sum_note_outputs(&render(&mut first,256,64),&render(&mut second,256,31)));
+    let mut snapshot=[ControlWrite{id:gain,value:ControlValue::Real(0.)};2];
+    assert_eq!(actual.capture_controls(plan,&mut snapshot),Ok((2,2)));
+    assert!(snapshot.iter().any(|w|w.id==gain&&w.value==ControlValue::Real(0.75)));
+    assert!(snapshot.iter().any(|w|w.id==cutoff&&w.value==ControlValue::Real(5000.)));
 }

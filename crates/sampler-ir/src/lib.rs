@@ -1957,6 +1957,27 @@ pub enum ProcessingSignalNode {
 pub struct SignalParameter {
     pub constant: f64,
     pub control: Option<String>,
+    /// Optional per-note factor on the retained global base. Absence preserves
+    /// the original authored sound and does not install an enhancement node.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub expression: Option<SignalExpressionBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalExpressionSource { Pressure, Timbre }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SignalExpressionBinding {
+    pub source: SignalExpressionSource,
+    pub law: SignalExpressionLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SignalExpressionLaw {
+    /// Gain base times an event-rate linear, nonnegative factor.
+    LinearFactor { zero: f64, one: f64 },
+    /// OnePole Hertz base times 2^mapped_octaves. No hidden destination clamp.
+    Octaves { zero: f64, one: f64 },
 }
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
