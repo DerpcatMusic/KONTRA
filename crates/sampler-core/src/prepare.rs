@@ -884,9 +884,9 @@ pub struct PreparedSourceSwitch {
 
 /// Actual installed executable family, independent of retained source metadata.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SourceEventFamily {Note,Release,Controller,PolyPressure,ProgramChange}
+pub enum SourceEventFamily {Note,Release,Controller,PolyPressure,ProgramChange,Task(crate::SourceTaskFamily)}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SourceEventRouting {SourceHierarchy,LinearStage}
+pub enum SourceEventRouting {SourceHierarchy,LinearStage,PlanTask}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ExecutableSourceBinding {
     pub processor:sampler_ir::SourceEventProcessorId,
@@ -902,6 +902,10 @@ impl Prepared {
     pub fn executable_source_binding(&self,processor:sampler_ir::SourceEventProcessorId,family:SourceEventFamily)->Result<Option<ExecutableSourceBinding>,Error>{
         let row=self.source_owners.processor(processor).ok_or(Error::InvalidInput)?;
         if row.kind.as_ref()!="ScriptProcessor"{return Ok(None);}
+        if let SourceEventFamily::Task(family)=family{
+            self.validate_source_tasks()?;
+            return Ok(self.source_tasks.iter().find(|binding|binding.processor==processor&&binding.family==family).map(|binding|ExecutableSourceBinding{processor,owner:row.owner,family:SourceEventFamily::Task(family),program:binding.program,stage:None,routing:SourceEventRouting::PlanTask}));
+        }
         let entry_matches=|index:usize|self.programs.get(index).is_some_and(|program|
             matches!(program.code.get(program.entry),Some(crate::Instruction::AwaitExternal{processor:bound}) if *bound==processor));
         if family==SourceEventFamily::Note&&self.source_owners.note_root.is_some(){
@@ -912,7 +916,7 @@ impl Prepared {
         let mut binding=None;
         for (stage,callbacks) in self.stages.iter().enumerate(){
             let program=match family{SourceEventFamily::Note=>callbacks.note,SourceEventFamily::Release=>callbacks.release,
-                SourceEventFamily::Controller=>callbacks.controller,SourceEventFamily::PolyPressure=>callbacks.poly_at,SourceEventFamily::ProgramChange=>callbacks.program_change};
+                SourceEventFamily::Controller=>callbacks.controller,SourceEventFamily::PolyPressure=>callbacks.poly_at,SourceEventFamily::ProgramChange=>callbacks.program_change,SourceEventFamily::Task(_)=>None};
             let Some(program)=program else{continue;};
             if !entry_matches(program){
                 if self.programs.get(program).is_some_and(|body|body.code.iter().any(|instruction|matches!(instruction,crate::Instruction::AwaitExternal{processor:bound}if *bound==processor))){return Err(Error::InvalidInput);}
@@ -1097,6 +1101,7 @@ pub struct Prepared {
     tuning: Tuning,
     pub(super) source_owners: PreparedSourceOwners,
     pub(super) external_programs: bool,
+    pub(crate) source_tasks:Box<[crate::PreparedSourceTaskBinding]>,
     pub(
 crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(crate) zone_routing: Option<zone_routing::PreparedRouting>,
@@ -1447,6 +1452,7 @@ impl Prepared {
             tuning:tuning.clone(),
             source_owners: PreparedSourceOwners::default(),
             external_programs: false,
+            source_tasks:Box::new([]),
             sample_targets: Box::new([]),
             sample_limits: None,
             source_zone_catalog: None,

@@ -1,6 +1,10 @@
 //! Canonical typed receiver ownership. Explicit offaudio binding moves actual
 //! state into this Runtime; adapters retain a handle, never a mutable mirror.
 pub(crate) mod external;
+pub(crate) mod task;
+pub(crate) mod event_value;
+pub use event_value::{EventValueId,EventPostId,EventValueSnapshot,EventPostOutcome,EventValueMemory};
+pub use task::{SourceTaskFamily,SourceTaskHostContext,SourceTaskReason,SourceTaskCreator,PreparedSourceTaskBinding,SourceTaskEvent};
 pub(crate) mod hierarchy;
 pub use external::{ExternalInputId,ExternalTurn,ExternalEvent,ExternalOutput,ExternalOutputResult,ExternalTarget,ExternalAbortReport
 };
@@ -33,6 +37,7 @@ pub(crate) struct ReceiverOwner {
     state: OwnedReceiver,
     /// External terminal delivery owns a real callback reference until return.
     callback_references: usize,
+    event_value_references:usize,
     terminal_sequence: u64,
     terminal_delivery: Option<(u64, state::QueuedTerminal,bool)>,
 }
@@ -159,6 +164,7 @@ impl Runtime {
         let id = ReceiverId(self.receivers.insert(ReceiverOwner {
             state,
             callback_references: 0,
+            event_value_references:0,
             terminal_sequence: 0,
             terminal_delivery: None,
         })?);
@@ -181,6 +187,7 @@ impl Runtime {
         let owner = self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
         if self.publishing_receiver
             || owner.callback_references != 0
+            || owner.event_value_references != 0
             || !owner.state.physical.is_empty()
             || !owner.state.terminal_releases.is_empty()
             || !owner.state.bindings.is_empty()
@@ -1616,7 +1623,7 @@ mod expression_reference_tests {
                     .expressions
                     .insert(crate::ExpressionOwner {
                         notes: usize::from(index == 3999),
-                        followers: 0,
+                        followers: 0,captures:0,
                         follows: Some(previous),
                         receiver: None,
                         ..template

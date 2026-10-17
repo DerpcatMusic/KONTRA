@@ -8,7 +8,7 @@ use sampler_ir::SourceEventProcessorId;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ExternalInputId { callback:BehaviorId, sequence:u64 }
-impl ExternalInputId { pub fn behavior(self)->BehaviorId {self.callback} }
+impl ExternalInputId { pub fn behavior(self)->BehaviorId {self.callback} pub(crate) fn sequence(self)->u64{self.sequence} }
 #[derive(Clone,Copy,Debug)]
 pub enum ExternalEvent {
     Controller { source:crate::ChannelAddress, number:u8, value:u32, poly_key:Option<u8> },
@@ -16,6 +16,7 @@ pub enum ExternalEvent {
     ProgramChange{source:crate::ChannelAddress,version:Option<super::Version>,program:u8,bank:crate::ProgramBankIntent},
     PhysicalRelease(super::PhysicalReleaseEvent),
     Plan,
+    Task(super::task::SourceTaskEvent),
 }
 #[derive(Clone,Copy,Debug)]
 pub struct ExternalTurn {
@@ -62,25 +63,26 @@ pub enum ExternalOutput {
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum ExternalOutputResult { Forwarded,Note(NoteId) }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-enum Phase { Pending,Running,Sleeping }
+pub(super) enum Phase { Pending,Running,Sleeping,WaitingRunChild }
 #[derive(Clone,Copy,Debug)]
-enum CapturedChannelAction {None,Controller(ControllerEvent),Program(ProgramEvent)}
+pub(super) enum CapturedChannelAction {None,Controller(ControllerEvent),Program(ProgramEvent)}
 impl CapturedChannelAction {
     fn controller(self)->Result<ControllerEvent,Error>{match self{Self::Controller(event)=>Ok(event),_=>Err(Error::InvalidInput)}}
     fn program(self)->Result<ProgramEvent,Error>{match self{Self::Program(event)=>Ok(event),_=>Err(Error::InvalidInput)}}
 }
 #[derive(Clone,Copy,Debug)]
 pub(crate) struct ExternalState {
-    processor:SourceEventProcessorId,
+    pub(super) processor:SourceEventProcessorId,
     owner:crate::PreparedSourceOwnerIndex,
     original_frame:u64,
-    resume_frame:u64,
-    order:u64,
-    sequence:u64,
+    pub(super) resume_frame:u64,
+    pub(super) order:u64,
+    pub(super) priority:u32,
+    pub(super) sequence:u64,
     await_pc:usize,
-    phase:Phase,
+    pub(super) phase:Phase,
     event:ExternalEvent,
-    captured:CapturedChannelAction,
+    pub(super) captured:CapturedChannelAction,
     channel_path_used:bool,
 }
 impl ExternalState {
@@ -105,6 +107,7 @@ impl Runtime {
             Some(_)=>return Err(Error::Busy),
             None=>{
                 let event=match callback.context {
+                    PlanContext::Task(task)=>{if task.processor!=processor{return Err(Error::InvalidInput);}ExternalEvent::Task(super::task::SourceTaskEvent{reason:task.reason,creator:task.creator,source:task.domain.source()})},
                     PlanContext::Program(event)=>ExternalEvent::ProgramChange{source:event.source,
                         version:match event.provenance{ProgramProvenance::Wire(version)=>Some(version),ProgramProvenance::Script=>None},program:event.program,bank:event.bank},
                     PlanContext::Controller(event)=>ExternalEvent::Controller{
@@ -125,6 +128,7 @@ impl Runtime {
                 };
                 let captured=match callback.context{PlanContext::Controller(event)=>CapturedChannelAction::Controller(event),PlanContext::Program(event)=>CapturedChannelAction::Program(event),_=>CapturedChannelAction::None};
                 let original_frame=match callback.context {
+                    PlanContext::Task(task)=>task.original_frame,
                     PlanContext::Controller(event)=>event.original_frame,
                     PlanContext::Program(event)=>event.original_frame,
                     PlanContext::NoteControllers(context) if context.physical_event.is_some()=>
@@ -140,19 +144,20 @@ impl Runtime {
                 (original_frame,event,captured)
             }
         };
+        self.next_external_turn_order.checked_add(self.reserved_external_turn_orders).and_then(|order|order.checked_add(1)).ok_or(Error::Capacity)?;
         let order=self.next_external_turn_order.checked_add(1).ok_or(Error::Capacity)?;
         self.next_external_turn_order=order;
         let c=self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
         c.external_sequence=sequence;
-        c.external=Some(ExternalState{processor,owner,original_frame,resume_frame:self.now,order,sequence,
+        c.external=Some(ExternalState{processor,owner,original_frame,resume_frame:self.now,order,priority:0,sequence,
             await_pc:c.pc.checked_sub(1).ok_or(Error::InvalidInput)?,phase:Phase::Pending,event,captured,channel_path_used:false});
         c.waiting=true;Ok(())
     }
-    fn external_turn(&self,id:BehaviorId,c:&Continuation,state:ExternalState)->Result<ExternalTurn,Error>{
+    pub(super) fn external_turn(&self,id:BehaviorId,c:&Continuation,state:ExternalState)->Result<ExternalTurn,Error>{
         Ok(ExternalTurn{input:ExternalInputId{callback:id,sequence:state.sequence},
             plan:self.behavior_plan(c.owner)?,processor:state.processor,owner:state.owner,
             original_frame:state.original_frame,resume_frame:state.resume_frame,order:state.order,event:state.event,receiver:c.context.receiver(),
-            logical_channel:match state.captured{CapturedChannelAction::Controller(event)=>Some(event.origin.channel),CapturedChannelAction::Program(event)=>Some(event.origin.channel),CapturedChannelAction::None=>match c.owner{BehaviorOwner::Note(note)=>self.note_events[note.0.index].source_route.map(|route|route.channel),_=>None}},
+            logical_channel:match state.captured{CapturedChannelAction::Controller(event)=>Some(event.origin.channel),CapturedChannelAction::Program(event)=>Some(event.origin.channel),CapturedChannelAction::None=>match c.context{PlanContext::Task(task)=>match task.domain{super::task::TaskDomain::Captured{origin,..}=>Some(origin.channel),_=>None},_=>match c.owner{BehaviorOwner::Note(note)=>self.note_events[note.0.index].source_route.map(|route|route.channel),_=>None}}},
             event_origin:match state.event{ExternalEvent::Note{note,..}=>Some(self.note_events[note.0.index].source_route.map_or(note,|route|route.event_origin)),ExternalEvent::PhysicalRelease(event)=>Some(event.physical_note),_=>None}})
     }
     /// Actual parked owners remain visible while the external owner runs. Actual
@@ -161,19 +166,19 @@ impl Runtime {
         if self.external_execution_aborted{return Err(Error::Canceled);}
         if
 !self.has_external_programs(){return Ok(None);}
-        let mut first:Option<(u64,ExternalTurn)>=None;
+        let mut first:Option<(u32,u64,ExternalTurn)>=None;
         for (index,slot) in self.behaviors.slots.iter().enumerate(){
             let Some(c)=slot.value.as_ref() else{continue;};
             let Some(state)=c.external else{continue;};
-            if c.outcome.is_some()||state.phase==Phase::Sleeping{continue;}
+            if c.outcome.is_some()||matches!(state.phase,Phase::Sleeping|Phase::WaitingRunChild){continue;}
             if state.resume_frame<self.now{return Err(Error::PastEvent);}
             if state.resume_frame!=self.now{continue;}
             let turn=self.external_turn(BehaviorId(self.behaviors.id(index)),c,state)?;
-            if first.as_ref().is_none_or(|old|state.order<old.0){first=Some((state.order,turn));}
+            if first.as_ref().is_none_or(|old|state.priority>old.0||(state.priority==old.0&&state.order<old.1)){first=Some((state.priority,state.order,turn));}
         }
-        Ok(first.map(|row|row.1))
+        Ok(first.map(|row|row.2))
     }
-    fn validate_external_segment(&self,id:ExternalInputId,phase:Phase)->Result<(Continuation,ExternalState),Error>{
+    pub(super) fn validate_external_segment(&self,id:ExternalInputId,phase:Phase)->Result<(Continuation,ExternalState),Error>{
         if self.external_execution_aborted{return Err(Error::Canceled);}
         let c=*self.behaviors.get(id.callback.0).ok_or(Error::StaleHandle)?;
         let state=c.external.ok_or(Error::StaleHandle)?;
@@ -190,6 +195,15 @@ impl Runtime {
         self.behaviors.get_mut(id.callback.0).ok_or(Error::StaleHandle)?.external.as_mut().ok_or(Error::StaleHandle)?.phase=Phase::Running;
         Ok(turn)
     }
+    /// Pure real execution lease for an externally delivered command. A
+    /// frontend's retained turn is routing context, never liveness authority.
+    /// Validate BEFORE any owner write, including a seeming no-op: cancellation,
+    /// a new segment or callback-slot reuse can invalidate a same-F descriptor.
+    /// This applies no due work and does not refresh epochs, sequence or frame.
+    pub fn running_external_turn(&self,id:ExternalInputId)->Result<ExternalTurn,Error>{
+        let (callback,state)=self.validate_external_segment(id,Phase::Running)?;
+        self.external_turn(id.behavior(),&callback,state)
+    }
     /// Each successful intentional post is a musical side effect. A later post
     /// refusing does not roll it back, as with existing synchronous callbacks.
     pub fn post_external_output(&mut self,id:ExternalInputId,output:ExternalOutput)->Result<ExternalOutputResult,Error>{
@@ -201,7 +215,7 @@ impl Runtime {
                 ExternalEvent::Note{pitch,velocity,released:false,..}=>ExternalOutputResult::Note(
                     if self.source_note_callback(id.callback)?{self.post_source_note(id.callback,pitch,velocity,None)?}
                     else{self.play_behavior(id.callback,pitch,velocity,crate::Inheritance::Expression,crate::Duration::UntilSilent,0)?}),
-                ExternalEvent::Note{released:true,..}|ExternalEvent::PhysicalRelease(_)|ExternalEvent::Plan=>return Err(Error::InvalidInput),
+                ExternalEvent::Note{released:true,..}|ExternalEvent::PhysicalRelease(_)|ExternalEvent::Plan|ExternalEvent::Task(_)=>return Err(Error::InvalidInput),
             },
             ExternalOutput::Controller{number,value}|ExternalOutput::RoutedController{number,value,..}=>{
                 if number>=130{return Err(Error::InvalidInput);}
@@ -349,6 +363,7 @@ impl Runtime {
                 if self.notes.get(note.0).ok_or(Error::StaleHandle)?.input.is_none(){self.retire_when_silent(note)?;}
             }
         }
+        self.release_task_run_parent(id.callback)?;
         let c=self.behaviors.get_mut(id.callback.0).ok_or(Error::StaleHandle)?;
         if c.outcome.is_some(){return Ok(());}
         match next_resume {
@@ -428,7 +443,7 @@ impl Runtime {
         for slot in &self.behaviors.slots{if let Some(callback)=&slot.value&&callback.outcome.is_none(){
             report.callbacks_cancelled+=1;report.external_turns_cancelled+=usize::from(callback.external.is_some());
         }}
-        self.external_execution_aborted=true;self.panic();
+        self.external_execution_aborted=true;self.cancel_event_values_for_abort();self.panic();
         // Their real notes were closed by panic; no delayed authored output may
         // survive the fault and replay when a canceled callback is acknowledged.
         self.deferred.clear();report

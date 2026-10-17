@@ -174,6 +174,7 @@ impl Runtime {
         };
         // Keep the captured physical address, not a guessed channel from a mask.
         let (performance, origin, channels) = match callback.context {
+            PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{performance,origin,channels,..}=>(performance,origin,channels),_=>return Err(Error::InvalidInput)},
             PlanContext::NoteControllers(context)=>(context.performance,context.origin,1<<context.origin.channel),
             PlanContext::Controller(event) => (event.performance, event.origin, event.channels),
             PlanContext::Program(event) => (event.performance, event.origin, event.channels),

@@ -33,6 +33,7 @@ pub(super) enum Action {
     Start(VoiceId),
     Event(Event),
     Resume(super::BehaviorId),
+    EventValuePost(super::EventPostId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -302,6 +303,7 @@ publishing_receiver || self.external_clock_blocked()
         while self.commands.first().is_some_and(|c| c.at <= self.now) {
             match self.commands.remove(0).action {
                 Action::Resume(id) => self.resume_behavior(id),
+                Action::EventValuePost(id)=>self.apply_event_value_post(id),
                 Action::Start(id) => {
                     self.voices.get_mut(id.0).unwrap().started = true;
                 }
@@ -355,6 +357,7 @@ publishing_receiver || self.external_clock_blocked()
                     keep
                 }
             }
+            Action::EventValuePost(id)=>self.event_posts.get(id.0).is_some_and(|post|post.is_pending()),
             Action::Start(v) => self.voices.get(v.0).is_some(),
             Action::Event(Event::ChokeFamily(id, _)) => self.families.get(id.0).is_some(),
             Action::Event(Event::ReleaseFamily(id)) => {
@@ -407,7 +410,9 @@ publishing_receiver || self.external_clock_blocked()
         // cancel_behavior call. Preserve every accepted async job as a failure.
         for index in 0..self.behaviors.slots.len() {
             if self.behaviors.slots[index].value.is_some_and(|c| c.outcome.is_some()) {
-                self.cancel_zone_parameters(super::BehaviorId(self.behaviors.id(index)));
+                let id=super::BehaviorId(self.behaviors.id(index));
+                self.cancel_zone_parameters(id);
+                let _=self.release_task_run_parent(id);
             }
         }
     }

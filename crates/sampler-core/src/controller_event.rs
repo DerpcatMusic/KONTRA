@@ -312,6 +312,7 @@ impl Runtime {
     ) -> Result<Option<ChannelAddress>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
+            super::behavior::PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{origin,..}=>Some(origin),_=>None},
             super::behavior::PlanContext::NoteControllers(context) => Some(context.origin),
             super::behavior::PlanContext::Controller(event) => Some(event.origin),
             super::behavior::PlanContext::Program(event) => Some(event.origin),
@@ -333,6 +334,7 @@ impl Runtime {
     ) -> Result<Option<[u64; 16]>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
+            super::behavior::PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{epochs,..}=>Some(epochs),_=>None},
             super::behavior::PlanContext::NoteControllers(context) => {
                 let mut epochs = [0; 16];
                 epochs[usize::from(context.origin.channel)] = context.epoch;
@@ -368,6 +370,7 @@ impl Runtime {
     ) -> Result<Option<crate::receiver::components::CapturedReceiver>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
+            super::behavior::PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{receiver,..}=>receiver,_=>None},
             super::behavior::PlanContext::Controller(event) => event.receiver,
             super::behavior::PlanContext::Control(event) => event.receiver,
             super::behavior::PlanContext::Program(event) => event.controller_capture(),
@@ -393,6 +396,7 @@ impl Runtime {
     ) -> Result<Option<CapturedControllerTarget>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
+            super::behavior::PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{secondary,..}=>secondary,_=>None},
             super::behavior::PlanContext::Controller(event) => event.secondary,
             super::behavior::PlanContext::Program(event) => event.secondary,
             super::behavior::PlanContext::Control(event) => event.controller_secondary,
@@ -543,7 +547,7 @@ impl Runtime {
         }
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let stage = self.behavior_stage(id)?;
-        let (performance, _) = self.behavior_performance(id)?;
+        let performance=match callback.context{super::behavior::PlanContext::Task(task)=>task.domain.performance(),_=>self.behavior_performance(id)?.0};
         let origin = self.controller_origin(id)?;
         if stage != 0 {
             let plan = self.behavior_plan(callback.owner)?;
@@ -576,7 +580,12 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-        if let super::behavior::PlanContext::Controller(mut event) = callback.context {
+        if let super::behavior::PlanContext::Task(task)=callback.context{
+            match task.domain{
+                super::receiver::task::TaskDomain::Global{performance}=>self.set_controller(self.performance(performance)?,number,value),
+                domain=>{let event=domain.event(number,value,self.now).ok_or(Error::InvalidInput)?;self.admit_controller(self.behavior_plan(callback.owner)?,event)?;Ok(())}
+            }
+        } else if let super::behavior::PlanContext::Controller(mut event) = callback.context {
             event.stage += 1;
             event.number = number;
             event.poly_key = None;
@@ -764,6 +773,9 @@ impl Runtime {
         id: BehaviorId,
     ) -> Result<(usize, ChannelScope), Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        if let super::behavior::PlanContext::Task(task)=callback.context{
+            return match task.domain{super::receiver::task::TaskDomain::Captured{performance,origin,channels,..}=>Ok((performance,ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels})),_=>Err(Error::InvalidInput)};
+        }
         if let super::behavior::PlanContext::NoteControllers(context) = callback.context {
             return Ok((
                 context.performance,
@@ -950,7 +962,7 @@ impl Runtime {
         }
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let stage = self.behavior_stage(id)?;
-        let (performance, _) = self.behavior_performance(id)?;
+        let performance=match callback.context{super::behavior::PlanContext::Task(task)=>task.domain.performance(),_=>self.behavior_performance(id)?.0};
         let origin = self.controller_origin(id)?;
         if stage == 0 {
             return Ok(origin.map_or(
