@@ -18,6 +18,7 @@ pub(super) struct ControllerEvent {
     /// Captured target-bank revisions survive controller waits and plan changes.
     pub epochs: [u64; 16],
     pub secondary: Option<CapturedControllerTarget>,
+    pub receiver:Option<super::receiver::components::CapturedReceiver>,
     pub number: u8,
     pub poly_key: Option<u8>,
     pub poly_recipients: Option<crate::InputSelector>,
@@ -31,7 +32,7 @@ impl ControllerEvent {
     fn program(self, stage: &crate::Stage) -> Option<usize> {
         if self.poly_key.is_some() { stage.poly_at } else { stage.controller }
     }
-    fn scope(self) -> ChannelScope {
+    pub(crate) fn scope(self) -> ChannelScope {
         ChannelScope {
             protocol: self.origin.protocol,
             port: self.origin.port,
@@ -113,6 +114,7 @@ impl Runtime {
             channels,
             epochs: self.performance_state.epochs(performance, ChannelScope {
                 protocol: origin.protocol, port: origin.port, group: origin.group, channels }),
+            receiver:None,
             secondary: host_targets.map(|scope| CapturedControllerTarget {
                 scope, epochs: self.performance_state.epochs(performance, scope) }),
             number,
@@ -143,6 +145,7 @@ impl Runtime {
             f64::from(value) / f64::from(u32::MAX),
             needed,
             event.secondary,
+            event.receiver,
         )?;
         self.admit_controller(self.active_plan, event)
     }
@@ -183,6 +186,7 @@ impl Runtime {
             epochs: self.performance_state.epochs(performance, ChannelScope {
                 protocol: origin.protocol, port: origin.port, group: origin.group, channels: 1 << origin.channel }),
             secondary: None,
+            receiver:None,
             number: 130,
             poly_key: Some(key), poly_recipients: recipients, value, pending: true, stage: 0, reserved: 0,
         })?;
@@ -190,7 +194,7 @@ impl Runtime {
         Ok((callback, owners))
     }
 
-    fn validate_controller_event(&self, plan: PlanId, event: ControllerEvent) -> Result<(), Error> {
+    pub(crate) fn validate_controller_event(&self, plan: PlanId, event: ControllerEvent) -> Result<(), Error> {
         let scope = ChannelScope { channels: event.channels | (1 << event.origin.channel), ..event.scope() };
         let secondary = event.secondary.map(|target| target.scope);
         self.performance_state.validate_scopes(event.performance, scope, secondary)?;
@@ -239,6 +243,18 @@ impl Runtime {
         })
     }
 
+    pub(crate) fn behavior_receiver_capture(&self,id:BehaviorId)->Result<Option<crate::receiver::components::CapturedReceiver>,Error>{
+        let callback=self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        Ok(match callback.context {
+            super::behavior::PlanContext::Controller(event)=>event.receiver,
+            super::behavior::PlanContext::Control(event)=>event.receiver,
+            super::behavior::PlanContext::NoteControllers(context)=>context.receiver.map(|receiver|crate::receiver::components::CapturedReceiver{
+                receiver,kind:crate::receiver::components::ReceiverActionKind::Controller,provenance:crate::receiver::components::ReceiverProvenance::Script,source:context.source,host_epochs:context.host_epochs,policy_epochs:context.policy_epochs,
+            }),
+            super::behavior::PlanContext::Bare=>None,
+        })
+    }
+
     pub(super) fn controller_secondary_target(&self, id: BehaviorId) -> Result<Option<CapturedControllerTarget>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
@@ -248,14 +264,14 @@ impl Runtime {
         })
     }
 
-    fn live_secondary(&self, performance: usize, target: Option<CapturedControllerTarget>) -> Option<CapturedControllerTarget> {
+    pub(crate) fn live_secondary(&self, performance: usize, target: Option<CapturedControllerTarget>) -> Option<CapturedControllerTarget> {
         target.and_then(|target| {
             let scope = self.performance_state.surviving_scope(performance, target.scope, target.epochs);
             (scope.channels != 0).then_some(CapturedControllerTarget { scope, ..target })
         })
     }
 
-    fn admit_controller(
+    pub(crate) fn admit_controller(
         &mut self,
         plan: PlanId,
         mut event: ControllerEvent,
@@ -382,6 +398,7 @@ impl Runtime {
             event.poly_key = None;
             event.poly_recipients = None;
             event.value = value;
+            if let Some(receiver)=event.receiver.as_mut() {receiver.provenance=super::receiver::components::ReceiverProvenance::Script;receiver.kind=super::receiver::components::ReceiverActionKind::Controller;}
             event.pending = true;
             event.reserved = 0;
             self.admit_controller(self.behavior_plan(callback.owner)?, event)?;
@@ -398,6 +415,7 @@ impl Runtime {
                     channels: event.channels,
                     epochs,
                     secondary: event.controller_secondary,
+                    receiver:event.receiver.map(|mut receiver|{receiver.provenance=super::receiver::components::ReceiverProvenance::Script;receiver.kind=super::receiver::components::ReceiverActionKind::Controller;receiver}),
                     number,
                     poly_key: None,
                     poly_recipients: None,
@@ -412,6 +430,7 @@ impl Runtime {
             self.admit_controller(self.behavior_plan(callback.owner)?,ControllerEvent{
                 performance:context.performance,origin:context.origin,channels:1<<context.origin.channel,
                 epochs:self.controller_target_epochs(id)?.ok_or(Error::InvalidInput)?,secondary:None,
+                receiver:context.receiver.map(|receiver|super::receiver::components::CapturedReceiver{receiver,kind:super::receiver::components::ReceiverActionKind::Controller,provenance:super::receiver::components::ReceiverProvenance::Script,source:context.source,host_epochs:context.host_epochs,policy_epochs:context.policy_epochs}),
                 number,poly_key:None,poly_recipients:None,value,stage:context.stage+1,pending:true,reserved:0,
             })?;
             Ok(())
@@ -426,6 +445,7 @@ impl Runtime {
                     channels: 1 << n.address.channel,
                     epochs: self.controller_target_epochs(id)?.ok_or(Error::InvalidInput)?,
                     secondary: None,
+            receiver:None,
                     number,
                     poly_key: None,
                     poly_recipients: None,
@@ -438,6 +458,9 @@ impl Runtime {
             Ok(())
         } else {
             let (performance, scope) = self.behavior_performance(id)?;
+            if self.controller_target_epochs(id)?.is_none(){
+                return self.set_controller(self.performance(performance)?,number,value);
+            }
             let scope = match self.controller_target_epochs(id)? {
                 Some(epochs) => self.performance_state.surviving_scope(performance, scope, epochs),
                 None => scope,
@@ -587,7 +610,7 @@ impl Runtime {
         self.performance_state.scoped_controller(performance, scope, number, value)
     }
 
-    fn validate_controller_pedals(&self, primary: Option<ChannelScope>, secondary: Option<ChannelScope>, number: u8, value: u32) -> Result<(), Error> {
+    pub(crate) fn validate_controller_pedals(&self, primary: Option<ChannelScope>, secondary: Option<ChannelScope>, number: u8, value: u32) -> Result<(), Error> {
         if !matches!(number, 64 | 66) || value < 0x8000_0000 { return Ok(()); }
         let mut needed = 0usize;
         for scope in [primary, secondary].into_iter().flatten() {
@@ -602,6 +625,7 @@ impl Runtime {
         let secondary = self.live_secondary(event.performance, event.secondary).map(|target| target.scope);
         if scope.channels == 0 && secondary.is_none() { return Ok(()); }
         self.validate_controller_pedals((scope.channels != 0).then_some(scope), secondary, event.number, event.value)?;
+        if event.receiver.is_some() { return self.publish_receiver_controller(event,scope,secondary); }
         if let Some(key) = event.poly_key {
             let update = |e| crate::Expression { pressure: event.value, ..e };
             let owners = if let Some(selector) = event.poly_recipients {

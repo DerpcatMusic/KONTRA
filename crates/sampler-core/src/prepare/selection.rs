@@ -83,6 +83,17 @@ impl Runtime {
         &mut self, performance: crate::PerformanceId, input: Input,
         pitch: NotePitch, velocity: f64, expression: Expression, source: Input,
     ) -> Result<NoteId, Error> {
+        self.trigger_owned_input(performance, input, source, pitch, velocity, expression, None)
+    }
+
+    pub(crate) fn trigger_owned_input(
+        &mut self, performance: crate::PerformanceId, input: Input, source: Input,
+        pitch: NotePitch, velocity: f64, expression: Expression,
+        receiver: Option<crate::receiver::components::ReceiverComponents>,
+    ) -> Result<NoteId, Error> {
+        if input.group>=16||input.channel>=16||input.key>=128
+            ||source.group>=16||source.channel>=16||source.key>=128 {return Err(Error::InvalidInput);}
+        if let Some(component)=receiver {self.receiver(component.receiver)?;}
         self.validate_zone_routing_pitch(self.active_plan, pitch)?;
         let index = self.performance_index(performance)?;
         self.apply_due();
@@ -99,8 +110,7 @@ impl Runtime {
             .copied()
             .flatten()
         {
-            let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
-            self.set_input_source(note, source)?;
+            let note = self.note_on_owned_input(performance, input, source, pitch, velocity, expression, receiver)?;
             if !self
                 .plans
                 .get(self.active_plan.0)
@@ -135,9 +145,8 @@ impl Runtime {
         let on_note = prepared.stages.iter().any(|stage| stage.note.is_some());
         if !on_note {
             let note = self.select(
-                NoteOrigin::Input(input, expression, index), pitch, velocity, 0, None, None,
+                NoteOrigin::Input(crate::InputOrigin {input,source,expression,performance:index,receiver}), pitch, velocity, 0, None, None,
             )?;
-            self.set_input_source(note, source)?;
             return Ok(note);
         }
         let callbacks = prepared
@@ -153,8 +162,7 @@ impl Runtime {
         if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
-        let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
-        self.set_input_source(note, source)?;
+        let note = self.note_on_owned_input(performance, input, source, pitch, velocity, expression, receiver)?;
         self.reserve_release_callbacks(note, 0);
         self.begin_note_stages(note, 0);
         Ok(note)
@@ -231,8 +239,8 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         let pitch = match origin {
-            NoteOrigin::Input(_, expression, _) => crate::pitch::PitchRange::constant(
-                self.project_expression(self.modulation_plan(plan), expression, None)?
+            NoteOrigin::Input(input) => crate::pitch::PitchRange::constant(
+                self.project_expression(self.modulation_plan(plan), input.expression, None)?
                     .ratio,
             ),
             NoteOrigin::Child(_, _, crate::Inheritance::Independent)
@@ -246,14 +254,13 @@ impl Runtime {
             }
         };
         let address = match origin {
-            NoteOrigin::Input(input, ..) => input.channel_address(),
+            NoteOrigin::Input(input) => input.input.channel_address(),
             NoteOrigin::Generated(_, address, _) => address,
             NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).unwrap().address,
         };
         let performance = match origin {
-            NoteOrigin::Input(_, _, performance) | NoteOrigin::Generated(_, _, performance) => {
-                performance
-            }
+            NoteOrigin::Input(input) => input.performance,
+            NoteOrigin::Generated(_, _, performance) => performance,
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
         if matches!(origin, NoteOrigin::Input(..))
@@ -306,12 +313,9 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         let note = match origin {
-            NoteOrigin::Input(input, expression, performance) => self.note_on_pitched_in(
-                self.performance(performance).unwrap(),
-                input,
-                note_pitch,
-                velocity,
-                expression,
+            NoteOrigin::Input(input) => self.note_on_owned_input(
+                self.performance(input.performance).unwrap(), input.input, input.source,
+                note_pitch, velocity, input.expression, input.receiver,
             )?,
             NoteOrigin::Generated(..) => self.admit(origin, note_pitch, velocity)?,
             NoteOrigin::Child(parent, linked, inheritance) => {

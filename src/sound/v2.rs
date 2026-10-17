@@ -104,12 +104,7 @@ pub struct Part {
     uvi_meter_started_at: u64,
     pub(crate) host_bindings: Arc<[super::HostBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
-    mpe: Mpe,
-    /// Script pitch bend (controller 128) and mono pressure (129) last applied
-    /// to the zone: see [`script_controllers`].
-    script_controllers: [u32; 2],
-    /// Epoch/revision of real channel-authored virtual writes, not global copies.
-    script_channel_controllers: [[[(u64, u64); 2]; 16]; 3],
+    mpe: sampler_midi::BoundMpe,
     force_articulation_once: bool,
     /// Internal wire identities keep distinct physical host tuples independent
     /// after a part maps their channels to its single musical domain.
@@ -288,12 +283,17 @@ impl Part {
     }
 
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
+        Self::new_profile(runtime,tree,Zone::Lower)
+    }
+
+    fn new_profile(mut runtime: Runtime, tree: MixTree, zone:Zone) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mut mpe =
-            Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, runtime.note_capacity().max(1)).map_err(core)?;
+            Mpe::new(&runtime, WIRE.port, WIRE.group, zone, 15, runtime.note_capacity().max(1)).map_err(core)?;
         mpe.enable_host_channel_projection().map_err(core)?;
         mpe.use_midi2_channel_voice().map_err(core)?;
         mpe.set_manual_active(false);
+        let mpe=mpe.bind(&mut runtime).map_err(core)?;
         // Plans without articulations have nothing to drive.
         let articulator = runtime
             .performance(0)
@@ -387,8 +387,6 @@ impl Part {
             editor_offsets: None,
             persistence: None,
             mpe,
-            script_controllers: [0x8000_0000, 0],
-            script_channel_controllers: [[[(0, 0); 2]; 16]; 3],
             force_articulation_once: false,
             next_host_id: 0,
             tune: 0.0,
@@ -460,12 +458,12 @@ impl Part {
                 let _ = self.runtime.set_switching_table(switching.clone(), keys);
             }
         }
-        self.mpe.set_manual_active(c.mpe);
-        self.mpe_zone = c.mpe || self.mpe.configuration().is_some();
+        if self.mpe.set_manual_active(&mut self.runtime,c.mpe).is_err(){self.problems.ignored_input+=1;}
+        self.mpe_zone = c.mpe || self.mpe.configuration(&self.runtime).is_some();
         if self.bend_range != c.bend_range {
             // 0 keeps what the instrument and the player's controller say.
             self.mpe
-                .set_bend_range((c.bend_range > 0).then_some(c.bend_range));
+                .set_bend_range(&mut self.runtime,(c.bend_range > 0).then_some(c.bend_range)).unwrap_or_else(|_|{self.problems.ignored_input+=1;});
             self.bend_range = c.bend_range;
         }
     }
@@ -1280,7 +1278,7 @@ impl V2Core {
         // Reserve the complete raw physical release union across all Parts
         // before any Native callback, tombstone or Core key/pedal mutation.
         for part in self.parts.iter_mut().flatten() {
-            if part.mpe.validate_all_physical_releases().is_err() {
+            if part.mpe.validate_all_physical_releases(&part.runtime).is_err() {
                 part.problems.capacity_drops+=1;
                 return;
             }
@@ -1288,7 +1286,7 @@ impl V2Core {
         for part in self.parts.iter_mut().flatten() {
             // Only disjoint queues changed since the pure all-Part preflight;
             // this recheck therefore cannot reject under the owner contract.
-            if part.mpe.queue_all_physical_releases().is_err() {
+            if part.mpe.queue_all_physical_releases(&mut part.runtime).is_err() {
                 part.problems.capacity_drops+=1;
                 return;
             }
@@ -1297,7 +1295,7 @@ impl V2Core {
             let Some(part) = part else { continue };
             // Lua note-off services use the same host identities as ordinary release.
             for held in self.held.iter().filter(|h| h.part == index) {
-                if part.mpe.has_native_physical_note(held.id) {continue;}
+                if part.mpe.has_native_physical_note(&part.runtime,held.id) {continue;}
                 if let Some(script) = part.script.as_mut() {
                     let _ = script.note_off_note(&mut part.runtime, held.id, held.note.key);
                 }
@@ -1598,7 +1596,7 @@ fn native_source_matches(pattern:super::event::HostPattern,source:Input)->bool {
     native_source_note(source).is_some_and(|note|pattern.matches(note))
 }
 fn has_retained_native(part:&Part,pattern:super::event::HostPattern)->bool {
-    (0..part.mpe.native_physical_slots()).any(|index|part.mpe.native_physical_at(index)
+    (0..part.mpe.native_physical_slots(&part.runtime)).any(|index|part.mpe.native_physical_at(&part.runtime,index)
         .is_some_and(|(_,source,_)|native_source_matches(pattern,source)))
 }
 
@@ -1606,52 +1604,6 @@ fn peak(x: &[f32]) -> f32 {
     x.iter().fold(0.0, |p, x| p.max(x.abs()))
 }
 
-/// A MIDI 1.0 channel voice message into `part`'s zone, on its manager
-/// channel, or in an MPE zone on its own.
-/// A KSP `set_controller($VCC_PITCH_BEND | $VCC_MONO_AT, v)` is the channel's
-/// bend or pressure, as if it came in as MIDI: sounding voices and later notes
-/// follow it (Conflux's Bend wheel only forwards its value this way). The core
-/// keeps scripts' controller 128/129 apart from the zone's per-note expression,
-/// which only MIDI ingress set before.
-fn script_controllers(part: &mut Part) {
-    let Ok(performance) = part.runtime.performance(0) else { return };
-    for (at, number) in [(0, 128), (1, 129)] {
-        let Ok(value) = part.runtime.controller(performance, number) else { continue };
-        if std::mem::replace(&mut part.script_controllers[at], value) == value { continue; }
-        if let Err(error) = part.mpe.apply_global_script_controller(&mut part.runtime, number, value) {
-            if error == sampler_core::Error::Capacity { part.problems.capacity_drops += 1; }
-            else { part.problems.ignored_input += 1; }
-        }
-    }
-    // Fixed three-domain/16-channel/2-property maximum. Enumeration visits only
-    // actual physical rows marked channel-authored; global broadcasts never
-    // manufacture a second member bend, and equal-valued writes still advance.
-    let mut changes = [None; 3 * 16 * 2];
-    let mut count = 0;
-    let _ = part.runtime.visit_channel_script_controllers(performance, |address, number, value, epoch, revision| {
-        let domain = match address.protocol {
-            sampler_core::Protocol::Midi1 => 0,
-            sampler_core::Protocol::Midi2 => 1,
-            sampler_core::Protocol::Native => 2,
-            _ => return,
-        };
-        if address.port != WIRE.port || address.group != WIRE.group { return; }
-        let at = usize::from(number - 128);
-        let stamp = (epoch, revision);
-        if part.script_channel_controllers[domain][usize::from(address.channel)][at] != stamp {
-            changes[count] = Some((domain, address, number, value, stamp));
-            count += 1;
-        }
-    });
-    for (domain, address, number, value, stamp) in changes[..count].iter().flatten().copied() {
-        let result = part.mpe.apply_script_controller(&mut part.runtime, address, number, value);
-        part.script_channel_controllers[domain][usize::from(address.channel)][usize::from(number - 128)] = stamp;
-        if let Err(error) = result {
-            if error == sampler_core::Error::Capacity { part.problems.capacity_drops += 1; }
-            else { part.problems.ignored_input += 1; }
-        }
-    }
-}
 
 fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
     wire_packet(
@@ -1696,19 +1648,21 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
         _ => part.problems.ignored_input += 1,
     }
     drain_terminal_releases(part);
-    if part.mpe.configuration().is_some() { part.mpe_zone = true; }
+    if part.mpe.configuration(&part.runtime).is_some() { part.mpe_zone = true; }
 }
 
 fn drain_terminal_releases(part:&mut Part) {
     let Part {mpe, runtime, script, problems, ..}=part;
-    mpe.drain_terminal_releases(|release| {
+    while let Ok(Some(delivery))=mpe.next_terminal_release(runtime) {
+        let release=delivery.release;
         if let Some(script)=script.as_mut() {
             if let Err(error)=script.note_off_note_velocity(runtime,release.note,release.source.key,release.velocity) {
                 if error==sampler_core::Error::Capacity {problems.capacity_drops+=1;}
                 else {problems.ignored_input+=1;}
             }
         }
-    });
+        if mpe.complete_terminal_release(runtime,delivery).is_err(){problems.ignored_input+=1;break;}
+    }
 }
 
 /// Run the articulation driver on a packet; false when it took the packet.
@@ -1939,7 +1893,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             }
             if note.id != -1 && (held.iter().any(|h| h.part == index && h.note == note)
                 || part.consumed_hosts.contains(&note)
-                || part.mpe.has_native_physical_source(host_source(note))) {
+                || part.mpe.has_native_physical_source(&part.runtime,host_source(note))) {
                 // Duplicate complete host tuples remain owned until NOTE_END.
                 return;
             }
@@ -1988,7 +1942,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                             _ => {}
                         }
                     }
-                    Err(ApplyError::Core(sampler_core::Error::Capacity)) => part.problems.capacity_drops += 1,
+                    Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
                     Err(_) => {}
                 }
                 return;
@@ -2002,7 +1956,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 tune,
             ) {
                 Ok(id) => id,
-                Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
+                Err(sampler_core::Error::Capacity) => {
                     part.problems.capacity_drops += 1;
                     return;
                 }
@@ -2022,7 +1976,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 _ => None,
             };
             if !matches!(event,Event::Choke(_))
-                && let Err(error)=part.mpe.validate_native_physical_releases(|_,source|native_source_matches(pattern,source)) {
+                && let Err(error)=part.mpe.validate_native_physical_releases(&part.runtime,|_,source|native_source_matches(pattern,source)) {
                 if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
                 return;
             }
@@ -2046,7 +2000,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 .iter()
                 .filter(|h| h.part == index && pattern.matches(h.note))
             {
-                if part.mpe.has_native_physical_note(h.id) {continue;}
+                if part.mpe.has_native_physical_note(&part.runtime,h.id) {continue;}
                 if matches!(event, Event::Choke(_)) {
                     let _ = part.runtime.cancel_input_note(h.id);
                 } else {
@@ -2276,7 +2230,6 @@ impl V2Core {
                     wire_event(part, out.status, out.a, out.b);
                 }
             }
-            script_controllers(part);
             #[cfg(test)]
             if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
                 a[1] += t.elapsed().as_nanos() as u64;
@@ -2518,7 +2471,7 @@ impl V2Core {
             if matches!(event, Event::NoteOff(_) | Event::NoteOffVelocity(..)) {
                 if matches!(event, Event::NoteOffVelocity(_, velocity) if !(0.0..=1.0).contains(&velocity)) {return;}
                 if let Some(Some(part))=self.parts.get_mut(slot)
-                    && let Err(error)=part.mpe.validate_native_physical_releases(|_,source|native_source_matches(pattern,source)) {
+                    && let Err(error)=part.mpe.validate_native_physical_releases(&part.runtime,|_,source|native_source_matches(pattern,source)) {
                     if error==sampler_core::Error::Capacity {part.problems.capacity_drops+=1;} else {part.problems.ignored_input+=1;}
                     return;
                 }
@@ -4067,16 +4020,10 @@ impl V2Loader {
         }
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
-        let mut part = Part::new(runtime, tree.clone())?;
+        let mut part = Part::new_profile(runtime, tree.clone(),if request.mpe_upper{Zone::Upper}else{Zone::Lower})?;
         part.install_uvi_meter_buses(scripts.uvi_meter_buses.clone(), &interfaces);
         part.waveform_sources = waveform_sources;
-        if request.mpe_upper {
-            part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, part.runtime.note_capacity().max(1))
-                .map_err(core)?;
-            part.mpe.enable_host_channel_projection().map_err(core)?;
-            part.mpe.use_midi2_channel_voice().map_err(core)?;
-        }
-        part.mpe.set_timbre_controller(timbre);
+        part.mpe.set_timbre_controller(&mut part.runtime,timbre).map_err(core)?;
         part.grower = Some(grower);
         part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
@@ -8223,31 +8170,31 @@ mod tests {
         mix.parts[0].port = 2; mix.parts[0].channel = -1;
         mix.parts[1].port = 3; mix.parts[1].channel = -1;
         core.set_mix(&mix);
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), None);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(&core.parts[0].as_ref().unwrap().runtime), None);
         send_mcm(&mut core, 2, 0, 3);
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([3, 0]));
-        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(), None);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(&core.parts[0].as_ref().unwrap().runtime), Some([3, 0]));
+        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(&core.parts[1].as_ref().unwrap().runtime), None);
         let held = HostNote { port: 2, channel: 1, key: 60, id: 71, clap: true };
         core.event(2, on(held));
         let id = core.held.iter().find(|h| h.note == held).unwrap().id;
         core.event(2, Event::midi1(0xb0, 38, 127));
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([3, 0]),
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(&core.parts[0].as_ref().unwrap().runtime), Some([3, 0]),
             "MCM Data Entry LSB does not resize the zone");
         // The other manager lies outside Lower3. Its selector and MCM still
         // reach this selected-zone receiver and win the overlap arbitration.
         send_mcm(&mut core, 2, 15, 14);
         let part = core.parts[0].as_ref().unwrap();
-        assert_eq!(part.mpe.configuration(), Some([0, 14]));
+        assert_eq!(part.mpe.configuration(&part.runtime), Some([0, 14]));
         assert!(!matches!(part.runtime.input_held(id), Ok(true)));
-        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(), None);
+        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(&core.parts[1].as_ref().unwrap().runtime), None);
         send_mcm(&mut core, 3, 15, 2);
-        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(), Some([0, 2]));
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([0, 14]));
+        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(&core.parts[1].as_ref().unwrap().runtime), Some([0, 2]));
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(&core.parts[0].as_ref().unwrap().runtime), Some([0, 14]));
         // Existing explicit Part channel admission remains authoritative.
         let mut filtered = mix.clone(); filtered.parts[0].channel = 5;
         core.set_mix(&filtered);
         send_mcm(&mut core, 2, 0, 15);
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([0, 14]));
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(&core.parts[0].as_ref().unwrap().runtime), Some([0, 14]));
         assert_eq!(core.problems(0).capacity_drops, 0);
         assert_eq!(core.problems(1).capacity_drops, 0);
     }
@@ -8276,7 +8223,7 @@ mod tests {
         let expected=48.*(f64::from(0x9000_0000u32)-2147483648.)/2147483647.;
         assert!((value.pitch_semitones-expected).abs()<1e-12);
         assert_eq!(core.problems(0).ignored_input,1);
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), None);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(&core.parts[0].as_ref().unwrap().runtime), None);
         assert_eq!(core.problems(0).capacity_drops, 0);
     }
 
@@ -8314,7 +8261,6 @@ mod tests {
         assert!(core.set_control(0, control, 127.));
         // Drain the accepted synthetic UI work, then run its ordinary adapter bridge.
         core.parts[0].as_mut().unwrap().runtime.render(&mut []).unwrap();
-        script_controllers(core.parts[0].as_mut().unwrap());
         for note in &ids {
             let runtime = &core.parts[0].as_ref().unwrap().runtime;
             assert_eq!(runtime.expression(runtime.expression_id(*note).unwrap()).unwrap().pitch_semitones, -2.,
@@ -8332,7 +8278,6 @@ mod tests {
         let part = core.parts[0].as_mut().unwrap(); let performance = part.runtime.performance(0).unwrap();
         part.runtime.dispatch_controller(performance, sampler_core::ChannelAddress { protocol: sampler_core::Protocol::Midi1,
             port: WIRE.port, group: WIRE.group, channel: 1 }, 1 << 1, 128, 0).unwrap();
-        script_controllers(part);
         let e = |note| part.runtime.expression(part.runtime.expression_id(note).unwrap()).unwrap().pitch_semitones;
         assert_eq!((e(ids[0]), e(ids[1])), (-4., -2.), "same value as global is nevertheless an independent real member write");
         set_reference(&mut left, -4.);
@@ -8493,7 +8438,7 @@ mod tests {
         let mut ended=Vec::with_capacity(8);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
         loop {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});if ended==[clap]&&core.held.is_empty()&&ui.interfaces()[0].widgets.iter().any(|w|w.text=="A:2") {break;}assert!(std::time::Instant::now()<deadline,"Core NOTE_END and physical gates must have independent lifetimes");std::thread::sleep(std::time::Duration::from_millis(1));}
         assert!(core.held.is_empty());assert_eq!(ended,[clap],"CLAP alone owns the external NOTE_END notification; both internal Held rows retired");
-        assert_eq!(core.parts[0].as_ref().unwrap().mpe.native_physical_slots(),2);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.native_physical_slots(&core.parts[0].as_ref().unwrap().runtime),2);
         mix.parts[0].port=4;mix.parts[0].channel=7;core.set_mix(&mix);
         let pattern=HostPattern{port:2,channel:3,key:60,id:71,clap:true};
         core.event(0,Event::NoteOffVelocity(HostPattern{port:3,..pattern},1.));
@@ -8529,10 +8474,10 @@ mod tests {
         let id=core.held.iter().find(|row|row.note==note).unwrap().id;
         core.release_all_notes();
         assert!(core.held.iter().any(|row|row.id==id),"NOTE_END/Held projection has deliberately not been drained");
-        assert!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));
+        assert!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(&core.parts[0].as_ref().unwrap().runtime,id));
         core.event(0,Event::NoteOffVelocity(HostPattern{port:0,channel:3,key:60,id:91,clap:true},0.));
         assert!(core.held.iter().any(|row|row.id==id),"physical acknowledgment cannot manufacture NOTE_END");
-        assert!(!core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));
+        assert!(!core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(&core.parts[0].as_ref().unwrap().runtime,id));
         let mut ended=Vec::with_capacity(4);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
         loop {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});let rows=ui.interfaces();if rows[0].widgets.iter().any(|w|w.text=="R:1:64")&&rows[0].widgets.iter().any(|w|w.text=="W:1")&&!ended.is_empty() {break;}assert!(std::time::Instant::now()<deadline,"synthetic release must retain its velocity and execute exactly once before realOff acknowledgment");std::thread::sleep(std::time::Duration::from_millis(1));}
         for _ in 0..16 {core.render(64);core.end_block(64,&mut |note|{ended.push(note);true});std::thread::sleep(std::time::Duration::from_millis(1));}
@@ -9326,7 +9271,7 @@ mod timing_parity_tests {
             core.parts[0].as_mut().unwrap().runtime.cancel_input_note(id).unwrap();
             core.render(64);let mut ended=Vec::with_capacity(8);core.end_block(64,&mut |note|{ended.push(note);true});
             assert_eq!(ended,vec![retired]);assert!(core.held.is_empty());
-            assert!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));
+            assert!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(&core.parts[0].as_ref().unwrap().runtime,id));
             core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});assert!(core.holding);assert_eq!(core.latency(),480);
             let due=core.align.clock+480;core.event(2,Event::NoteOn{note:pending,velocity:1.,tune:0.});
             assert_eq!(core.align.next_due(),Some(due));assert!(core.align.parts[0].hosts().any(|note|note==pending));assert!(core.held.is_empty());
@@ -9334,11 +9279,11 @@ mod timing_parity_tests {
             let pattern=super::super::event::HostPattern{port:2,channel:3,key:60,id:-1,clap:true};
             let terminal=if choke {Event::Choke(pattern)} else {Event::NoteOffVelocity(pattern,0.25)};
             let scratch=core.exact_work.capacity();assert_eq!(crate::plugin::tests::allocations(||core.event(0,terminal)),0);assert_eq!(core.exact_work.capacity(),scratch);
-            assert_eq!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id),choke,"the retired physical row must be handled separately from the pending scheduler tuple");
+            assert_eq!(core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(&core.parts[0].as_ref().unwrap().runtime,id),choke,"the retired physical row must be handled separately from the pending scheduler tuple");
             for _ in 0..12 {core.render(128);core.end_block(128,&mut |note|{ended.push(note);true});}
             assert_eq!(ended,vec![retired,pending],"the scheduled terminal and retired physical row must not duplicate NOTE_END");
             assert!(!core.owns(pending));
-            if choke {core.event(0,Event::NoteOff(pattern));assert!(!core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(id));}
+            if choke {core.event(0,Event::NoteOff(pattern));assert!(!core.parts[0].as_ref().unwrap().mpe.has_native_physical_note(&core.parts[0].as_ref().unwrap().runtime,id));}
             assert_eq!(core.problems(0).capacity_drops,0);assert_eq!(core.problems(0).ignored_input,0);
         }
     }

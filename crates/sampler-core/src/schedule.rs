@@ -66,6 +66,15 @@ impl Runtime {
         if at == self.now {
             self.apply_due();
         }
+        if let Event::Controller(id,number,value)=event {
+            let performance=self.performance_index(id)?;
+            if matches!(number,128|129)&&self.has_receiver_performance(performance){
+                // Future global virtual writes need a retained typed receiver
+                // action, not a silently infallible legacy Event projection.
+                if at!=self.now{return Err(Error::InvalidInput);}
+                return self.publish_global_receiver_controller(performance,number,value);
+            }
+        }
         match event {
             Event::Control(plan, write) => {
                 self.validate_controls(plan, None, &[write])?;
@@ -277,6 +286,7 @@ impl Runtime {
     }
 
     pub(super) fn apply_due(&mut self) {
+        if self.publishing_receiver {return;}
         if self.executing_due {
             return;
         }

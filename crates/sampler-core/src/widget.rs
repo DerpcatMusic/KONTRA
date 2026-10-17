@@ -344,7 +344,7 @@ impl Runtime {
         expected_revision: Option<u64>,
         edits: &[WidgetEdit],
     ) -> Result<(u64, Option<BehaviorId>), Error> {
-        self.invoke_widget_with_targets(context, plan, expected_revision, edits, None)
+        self.invoke_widget_with_targets(context, plan, expected_revision, edits, None, None)
     }
 
     /// Explicitly global UI action; captured controller callbacks must use
@@ -355,19 +355,20 @@ impl Runtime {
     ) -> Result<(u64, Option<BehaviorId>), Error> {
         self.invoke_widget_domain(ControlContext { performance, origin: crate::ChannelAddress {
             protocol: crate::Protocol::Native, port: 0, group: 0, channel: 0 }, channels: 1 },
-            plan, expected_revision, edits, None, false)
+            plan, expected_revision, edits, None, None, false)
     }
 
     pub(super) fn invoke_widget_with_targets(
         &mut self, context: ControlContext, plan: PlanId, expected_revision: Option<u64>,
         edits: &[WidgetEdit], controller_secondary: Option<crate::controller_event::CapturedControllerTarget>,
+        receiver:Option<crate::receiver::components::CapturedReceiver>,
     ) -> Result<(u64, Option<BehaviorId>), Error> {
-        self.invoke_widget_domain(context, plan, expected_revision, edits, controller_secondary, true)
+        self.invoke_widget_domain(context, plan, expected_revision, edits, controller_secondary, receiver, true)
     }
 
     fn invoke_widget_domain(
         &mut self, context: ControlContext, plan: PlanId, expected_revision: Option<u64>,
-        edits: &[WidgetEdit], controller_secondary: Option<crate::controller_event::CapturedControllerTarget>, captured: bool,
+        edits: &[WidgetEdit], controller_secondary: Option<crate::controller_event::CapturedControllerTarget>, receiver:Option<crate::receiver::components::CapturedReceiver>,captured: bool,
     ) -> Result<(u64, Option<BehaviorId>), Error> {
         if edits.is_empty()
             || edits.len() > WIDGET_EDIT_CAPACITY
@@ -477,6 +478,7 @@ impl Runtime {
             controller_epochs: captured.then(|| self.performance_state.epochs(performance, crate::ChannelScope {
                 protocol: context.origin.protocol, port: context.origin.port, group: context.origin.group, channels: context.channels })),
             controller_secondary,
+            receiver,
             stage: w.stage,
             interaction: WidgetInteraction {
                 index: edits[0].index,
