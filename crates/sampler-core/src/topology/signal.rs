@@ -12,12 +12,14 @@ pub(crate) struct Matrix {
 pub(crate) enum Node {
     Matrix(Matrix),
     Stage(super::stages::Stage),
+    Mix { count: usize, lanes: [usize; 3] },
 }
 pub(crate) struct Signal {
     pub input: ChannelCount,
     pub max_channels: usize,
     pub nodes: Box<[Node]>,
     pub history_words: usize,
+    pub mix_depth: usize,
     pub tail_frames: u32,
     pub domains: Box<[(ControlId, ControlDomain)]>,
 }
@@ -30,6 +32,9 @@ impl Prepared {
             .map(|s| s.max_channels)
             .max()
             .unwrap_or(0)
+    }
+    pub(crate) fn signal_mix_depth(&self) -> usize {
+        self.processing_signals.iter().flatten().map(|s| s.mix_depth).max().unwrap_or(0)
     }
     pub(crate) fn signal_history_words(&self) -> usize {
         self.processing_signals
@@ -98,7 +103,35 @@ pub(crate) fn compile(
             let mut histories = 0usize;
             let mut tail_frames = 0u32;
             let mut domains = Vec::new();
+            let mut spans: Vec<(usize, ChannelCount)> = Vec::new();
+            let mut mix_depth = 0;
             for (node, operation) in definition.nodes.iter().enumerate() {
+                while spans.last().is_some_and(|&(end, _)| end == node) {
+                    let (_, expected) = spans.pop().ok_or(Error::InvalidInput)?;
+                    if previous != expected { return Err(Error::InvalidInput); }
+                }
+                if let ir::ProcessingSignalNode::Mix(mix) = operation {
+                    let count = usize::from(mix.count);
+                    let end = node.checked_add(1).and_then(|index| index.checked_add(count)).ok_or(Error::Capacity)?;
+                    if end > definition.nodes.len() || spans.len() == 16
+                        || spans.last().is_some_and(|&(parent,_)| end > parent) {
+                        return Err(Error::InvalidInput);
+                    }
+                    let mut lanes = [0; 3];
+                    for (index, kind) in [crate::SlotKind::Dry, crate::SlotKind::Output, crate::SlotKind::Bypass].into_iter().enumerate() {
+                        let id = crate::slot_control(kind, mix.address.group, mix.address.slot, mix.address.generic);
+                        let domain = plan.controls[plan.control_index(id)?].domain;
+                        if domain != (ControlDomain::Real { min: 0., max: kind.max() }) { return Err(Error::InvalidInput); }
+                        plan.real_control(id)?;
+                        lanes[index] = parameters.len();
+                        parameters.push(ControlRange { control:id, low:0., high:kind.max(), ramp_frames:plan.rate/100 });
+                        domains.push((id,domain));
+                    }
+                    spans.push((end, previous));
+                    mix_depth = mix_depth.max(spans.len());
+                    nodes.push(Node::Mix { count, lanes });
+                    continue;
+                }
                 let ir::ProcessingSignalNode::Matrix(matrix) = operation else {
                     let (stage, tail) = super::stages::Stage::compile(
                         plan,
@@ -168,6 +201,9 @@ pub(crate) fn compile(
                 }));
                 previous = output;
             }
+            while let Some((end, expected)) = spans.pop() {
+                if end != nodes.len() || previous != expected { return Err(Error::InvalidInput); }
+            }
             if nodes.is_empty() || previous.get() != 2 {
                 return Err(Error::UnsupportedSourceLayout);
             }
@@ -181,6 +217,8 @@ pub(crate) fn compile(
                         .and_then(|tone| bytes.checked_add(tone))
                 })
                 .ok_or(Error::Capacity)?;
+            maximum.checked_mul(crate::dsp::BLOCK).and_then(|n| n.checked_mul(mix_depth))
+                .and_then(|n| n.checked_mul(size_of::<f32>())).ok_or(Error::Capacity)?;
             histories
                 .checked_mul(size_of::<f64>())
                 .ok_or(Error::Capacity)?;
@@ -189,6 +227,7 @@ pub(crate) fn compile(
                 max_channels: maximum,
                 nodes: nodes.into_boxed_slice(),
                 history_words: histories,
+                mix_depth,
                 tail_frames,
                 domains: domains.into_boxed_slice(),
             }))
@@ -475,38 +514,80 @@ pub(crate) fn render_stages(
         .checked_mul(crate::dsp::BLOCK)
         .ok_or(Error::Capacity)?;
     let mut work = generation.dsp.channel_work.claim(0);
-    let (mut input, mut output) = work.split_at_mut(width);
     let mut histories = generation.dsp.owner_signal_history.claim(index);
-    let mut channels = signal.input.get();
-    for node in &signal.nodes {
-        match node {
-            Node::Matrix(matrix) => {
-                matrix.render(
-                    input,
-                    output,
-                    frames,
-                    crate::dsp::BLOCK,
-                    &generation.dsp.parameters,
-                    at,
-                )?;
-                channels = matrix.output.get();
-                std::mem::swap(&mut input, &mut output);
-            }
-            Node::Stage(stage) => stage.render(
-                input,
-                channels,
-                frames,
-                crate::dsp::BLOCK,
-                &mut histories,
-                &generation.dsp.parameters,
-                generation.prepared.rate,
-                at,
-                expression,
-            )?,
-        }
-    }
+    let mut dry = generation.dsp.channel_mix.claim(0);
+    let mut alternate = false;
+    SignalRenderer { signal, work:&mut work, histories:&mut histories,
+        parameters:&generation.dsp.parameters, rate:generation.prepared.rate, at,
+        expression, frames, width }.range(0,signal.nodes.len(),&mut alternate,signal.input.get(),&mut dry)?;
+    let offset = if alternate { width } else { 0 };
     for (i, frame) in stereo.iter_mut().take(frames).enumerate() {
-        *frame = [input[i], input[crate::dsp::BLOCK + i]];
+        *frame = [work[offset+i], work[offset+crate::dsp::BLOCK+i]];
     }
     Ok(())
+}
+
+
+/// At most sixteen nested spans, admitted at compile time. Scratch belongs to
+/// the existing serial signal render owner; no per-block allocation or cache.
+struct SignalRenderer<'a> {
+    signal:&'a Signal, work:&'a mut [f32], histories:&'a mut [f64],
+    parameters:&'a [ControlRamp], rate:u32, at:u64, expression:&'a crate::Expression,
+    frames:usize, width:usize,
+}
+impl SignalRenderer<'_> {
+fn range(&mut self, begin:usize, end:usize, alternate:&mut bool,
+    mut channels:usize, scratch:&mut [f32]) -> Result<usize,Error> {
+    let stride=crate::dsp::BLOCK;
+    let mut index=begin;
+    while index < end {
+        match &self.signal.nodes[index] {
+            Node::Matrix(matrix) => {
+                let (first,second)=self.work.split_at_mut(self.width);
+                if *alternate { matrix.render(second,first,self.frames,stride,self.parameters,self.at)?; }
+                else { matrix.render(first,second,self.frames,stride,self.parameters,self.at)?; }
+                *alternate=!*alternate;
+                channels=matrix.output.get();
+                index+=1;
+            }
+            Node::Stage(stage) => {
+                let offset=if *alternate {self.width}else{0};
+                stage.render(&mut self.work[offset..offset+self.width],channels,self.frames,stride,self.histories,self.parameters,self.rate,self.at,self.expression)?;
+                index+=1;
+            }
+            Node::Mix {count,lanes} => {
+                let count=*count;
+                let lanes=*lanes;
+                let inner=index+1;
+                let after=inner.checked_add(count).ok_or(Error::Capacity)?;
+                if after > end || scratch.len() < self.width {return Err(Error::InvalidInput);}
+                let (dry,remaining)=scratch.split_at_mut(self.width);
+                let offset=if *alternate {self.width}else{0};
+                dry.copy_from_slice(&self.work[offset..offset+self.width]);
+                let [direct,wet,bypass]=lanes.map(|lane| self.parameters[lane]);
+                let last=self.at+self.frames.saturating_sub(1) as u64;
+                let off=bypass.value(self.at)>=1. && bypass.value(last)>=1.;
+                if !off && self.range(inner,after,alternate,channels,remaining)? != channels {
+                    return Err(Error::InvalidInput);
+                }
+                let offset=if *alternate {self.width}else{0};
+                for frame in 0..self.frames {
+                    let time=self.at+frame as u64;
+                    let b=bypass.value(time);
+                    let d=direct.value(time)*(1.-b)+b;
+                    let w=wet.value(time)*(1.-b);
+                    for channel in 0..channels {
+                        let i=channel*stride+frame;
+                        let processed=if off {0.}else{w*f64::from(self.work[offset+i])};
+                        let value=(d*f64::from(dry[i])+processed) as f32;
+                        if !value.is_finite(){return Err(Error::InvalidInput);}
+                        self.work[offset+i]=value;
+                    }
+                }
+                index=after;
+            }
+        }
+    }
+    Ok(channels)
+}
 }

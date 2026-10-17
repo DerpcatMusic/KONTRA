@@ -5,6 +5,7 @@ use crate::{ControlDomain, ControlId, ControlRange, Error, Prepared};
 use sampler_ir as ir;
 
 pub(crate) enum Stage {
+    Rectifier(crate::dsp::Rectifier),
     Gain {
         gain: StageParameter,
     },
@@ -86,6 +87,8 @@ impl Stage {
     ) -> Result<(Self, u32), Error> {
         let finite = |value: f64| value.is_finite() && value.abs() <= f64::from(f32::MAX);
         match definition {
+            ir::ProcessingSignalNode::Rectifier(mode) => Ok((Self::Rectifier(match mode {
+                ir::Rectifier::Full=>crate::dsp::Rectifier::Full,ir::Rectifier::Half=>crate::dsp::Rectifier::Half}),0)),
             ir::ProcessingSignalNode::Gain(gain) => {
                 match gain.arithmetic {
                     ir::ChannelGainArithmetic::CoreGainF64ThenF32 => {}
@@ -116,7 +119,7 @@ impl Stage {
                     filter.tail_frames,
                 ))
             }
-            ir::ProcessingSignalNode::Matrix(_) => Err(Error::InvalidInput),
+            ir::ProcessingSignalNode::Matrix(_) | ir::ProcessingSignalNode::Mix(_) => Err(Error::InvalidInput),
         }
     }
     pub(crate) fn render(
@@ -142,6 +145,12 @@ impl Stage {
         at.checked_add(frames.saturating_sub(1) as u64)
             .ok_or(Error::ClockOverflow)?;
         match *self {
+            Self::Rectifier(mode) => {
+                for channel in 0..channels {for frame in 0..frames {
+                    let i=channel*stride+frame;
+                    block[i]=mode.apply(f64::from(block[i])) as f32;
+                }}
+            }
             Self::Gain { gain } => {
                 let factor = gain.factor(parameters, at, expression);
                 for frame in 0..frames {
