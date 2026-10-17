@@ -1,7 +1,8 @@
 //! Immutable logical source storage, separate from oscillator clocks and signal layouts.
 //!
-//! This first constructor admits complete resident families. It does not bind a
-//! family to Runtime, mutate residency, or provide independently published heads.
+//! Resident geometry and physical identities are immutable. The existing group
+//! worker publishes or retires a complete resident cohort; audio borrows one
+//! coherent publication and never acquires independent pack generations.
 use crate::{
     AssetId, Error, Pcm,
     prepare::{ResidentFrames, ResidentPin},
@@ -9,7 +10,7 @@ use crate::{
 use std::{
     num::NonZeroUsize,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -61,14 +62,16 @@ struct ResidentFamily {
     rate: u32,
     frames: usize,
     packs: Box<[Pcm]>,
-    // One immutable complete cohort, pinned off audio. A borrowed read view
+    // Each complete cohort is pinned and published off audio. A borrowed view
     // never reacquires independently changing pack publications.
-    residents: Box<[ResidentPin]>,
+    residents: sampler_pool::Snapshot<Option<Box<[ResidentPin]>>>,
+    residency_mutation: Mutex<()>,
 }
 
-/// One immutable resident source revision, physically packed in original order.
-/// Construct, clone and drop on control. Audio only borrows SourceResidentView.
-/// Cloning retains this same logical identity and immutable resident cohort.
+/// One resident logical source with immutable geometry and physical pack IDs.
+/// Construct, clone and drop on control. Audio borrows one complete cohort.
+/// Clones retain the same source identity and residency publication. Group purge
+/// retires its cohort; reload publishes all packs before the group is eligible.
 #[derive(Clone)]
 pub struct SourceStorageFamily(Arc<ResidentFamily>);
 impl std::fmt::Debug for SourceStorageFamily {
@@ -128,8 +131,52 @@ impl SourceStorageFamily {
             rate,
             frames,
             packs: packs.into_boxed_slice(),
-            residents: residents.into_boxed_slice(),
+            residents: sampler_pool::Snapshot::new(Some(residents.into_boxed_slice())),
+            residency_mutation: Mutex::new(()),
         })))
+    }
+    /// Residency worker only. Geometry and physical identity never change;
+    /// publication contains every original pack or no pack. No reader can see
+    /// a successful prefix while a group reload is being staged.
+    pub(crate) fn refresh_residency(&self) -> Result<(), Error> {
+        let _mutation = self
+            .0
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let permitted = self.0.packs.iter().all(Pcm::residency_permitted);
+        let resident = self.0.residents.read().is_some();
+        if !permitted && resident {
+            self.0.residents.replace(None, |_| ());
+        } else if permitted && !resident {
+            let mut pins = Vec::new();
+            pins.try_reserve_exact(self.0.packs.len())
+                .map_err(|_| Error::Capacity)?;
+            for (index, pack) in self.0.packs.iter().enumerate() {
+                let pin = pack.pin_resident().ok_or(Error::NotReady)?;
+                if pin.len() != self.frame_count()
+                    || index + 1 == self.0.packs.len()
+                        && self.channels().get() % 2 != 0
+                        && pin.iter().any(|frame| frame[1].to_bits() != 0)
+                {
+                    return Err(Error::InvalidInput);
+                }
+                pins.push(pin);
+            }
+            // A racing purge may have revoked ownership while pins were staged.
+            if !self.0.packs.iter().all(Pcm::residency_permitted) {
+                return Err(Error::NotReady);
+            }
+            self.0
+                .residents
+                .replace(Some(pins.into_boxed_slice()), |_| ());
+        }
+        self.0.residents.collect();
+        Ok(())
+    }
+    /// Reclaim old cohorts only on the existing residency worker/control side.
+    pub(crate) fn collect_residency(&self) {
+        self.0.residents.collect();
     }
     pub fn id(&self) -> SourceStorageId {
         self.0.id
@@ -146,15 +193,16 @@ impl SourceStorageFamily {
     pub fn as_source(&self) -> SourceStorageRef<'_> {
         SourceStorageRef::Channels(self)
     }
-    /// Borrow the constructor's complete immutable resident cohort. No allocation,
-    /// reader acquisition, decoder call, or owned Arc enters this read view.
+    /// Borrow one complete resident cohort, or an unavailable publication after
+    /// group purge. Metadata remains queryable; sample reads then return None.
+    /// No allocation, decoder call, or owned Arc enters this read view.
     pub fn resident_view(&self) -> SourceResidentView<'_> {
         SourceResidentView {
             id: self.id(),
             channels: self.channels(),
             rate: self.sample_rate(),
             frames: self.frame_count(),
-            data: ResidentViewData::Channels(&self.0),
+            data: ResidentViewData::Channels(self.0.residents.read()),
         }
     }
 }
@@ -249,14 +297,17 @@ impl<'a> SourceStorageRef<'a> {
                     data: ResidentViewData::Stereo(resident),
                 })
             }
-            Self::Channels(family) => Some(family.resident_view()),
+            Self::Channels(family) => {
+                let view = family.resident_view();
+                if view.ready() { Some(view) } else { None }
+            }
         }
     }
 }
 
 enum ResidentViewData<'a> {
     Stereo(ResidentFrames<'a>),
-    Channels(&'a ResidentFamily),
+    Channels(sampler_pool::SnapshotRead<'a, Option<Box<[ResidentPin]>>>),
 }
 
 /// Borrowed original-channel PCM from one complete immutable resident cohort.
@@ -270,6 +321,12 @@ pub struct SourceResidentView<'a> {
     data: ResidentViewData<'a>,
 }
 impl SourceResidentView<'_> {
+    fn ready(&self) -> bool {
+        match &self.data {
+            ResidentViewData::Stereo(_) => true,
+            ResidentViewData::Channels(pins) => pins.is_some(),
+        }
+    }
     pub fn id(&self) -> SourceStorageId {
         self.id
     }
@@ -286,7 +343,7 @@ impl SourceResidentView<'_> {
     pub(crate) fn pair(&self, pair: usize) -> Option<&[crate::Frame]> {
         match &self.data {
             ResidentViewData::Stereo(resident) => (pair == 0).then_some(&resident[..]),
-            ResidentViewData::Channels(family) => family.residents.get(pair).map(|p| &p[..]),
+            ResidentViewData::Channels(pins) => pins.as_ref()?.get(pair).map(|p| &p[..]),
         }
     }
     pub fn sample(&self, channel: usize, frame: usize) -> Option<f32> {
@@ -295,7 +352,7 @@ impl SourceResidentView<'_> {
         }
         Some(match &self.data {
             ResidentViewData::Stereo(resident) => resident[frame][channel],
-            ResidentViewData::Channels(family) => family.residents[channel / 2][frame][channel % 2],
+            ResidentViewData::Channels(pins) => pins.as_ref()?[channel / 2][frame][channel % 2],
         })
     }
     /// Validate the entire request before writing any destination element.
@@ -310,11 +367,9 @@ impl SourceResidentView<'_> {
                     *to = frame[channel];
                 }
             }
-            ResidentViewData::Channels(family) => {
-                for (to, frame) in out
-                    .iter_mut()
-                    .zip(&family.residents[channel / 2][start..end])
-                {
+            ResidentViewData::Channels(pins) => {
+                let pins = pins.as_ref().ok_or(Error::NotReady)?;
+                for (to, frame) in out.iter_mut().zip(&pins[channel / 2][start..end]) {
                     *to = frame[channel % 2];
                 }
             }
@@ -328,9 +383,10 @@ impl SourceResidentView<'_> {
         }
         match &self.data {
             ResidentViewData::Stereo(resident) => out.copy_from_slice(&resident[frame]),
-            ResidentViewData::Channels(family) => {
+            ResidentViewData::Channels(pins) => {
+                let pins = pins.as_ref().ok_or(Error::NotReady)?;
                 for (channel, to) in out.iter_mut().enumerate() {
-                    *to = family.residents[channel / 2][frame][channel % 2];
+                    *to = pins[channel / 2][frame][channel % 2];
                 }
             }
         }

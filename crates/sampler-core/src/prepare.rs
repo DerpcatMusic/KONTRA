@@ -2602,9 +2602,11 @@ mod logical_source_tests {
         assert!(matches!(plan.with_voice_chains(vec![], vec![None]), Err(Error::UnsupportedSourceLayout)));
     }
     #[test]
-    fn wide_residency_refuses_and_logical_targets_retain_their_complete_source() {
+    fn wide_group_and_target_builders_retain_their_complete_source() {
         let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
-        assert!(matches!(plan.with_groups(1, vec![Some(0)]), Err(Error::UnsupportedSourceLayout)));
+        let plan = plan.with_groups(1, vec![Some(0)]).unwrap();
+        assert_eq!(plan.group_count, 1);
+        assert_eq!(plan.region_groups[0], Some(0));
         let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
         let plan = plan.with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
             SampleRevisionLimits { slots: 1, resident_bytes: 4096 }).unwrap();
