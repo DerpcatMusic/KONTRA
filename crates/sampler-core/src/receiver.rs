@@ -4,7 +4,7 @@ pub(crate) mod external;
 pub(crate) mod task;
 pub(crate) mod event_value;
 pub use event_value::{EventValueId,EventPostId,EventValueSnapshot,EventPostOutcome,EventValueMemory};
-pub use task::{SourceTaskFamily,SourceTaskHostContext,SourceTaskReason,SourceTaskCreator,PreparedSourceTaskBinding,SourceTaskEvent};
+pub use task::{SourceTaskFamily,SourceTaskHostContext,SourceTaskReason,SourceTaskCreator,NonMusicalTaskOrigin,PreparedGlobalTaskOrigin,PreparedGlobalSourceTask,PreparedSourceTaskBinding,SourceTaskEvent};
 pub(crate) mod hierarchy;
 pub use external::{ExternalInputId,ExternalTurn,ExternalEvent,ExternalOutput,ExternalOutputResult,ExternalTarget,ExternalAbortReport
 };

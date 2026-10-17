@@ -28,7 +28,24 @@ impl SourceTaskReason {
 /// A task has no triggering physical note. Event means its invocation genuinely
 /// came from an event callback; it is not a lease or an expression identity.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SourceTaskCreator {None,Event}
+pub enum SourceTaskCreator {None,Event,NonMusicalEvent(NonMusicalTaskOrigin)}
+/// Precise nonmusical callback provenance; never a physical Note/Receiver lease.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum NonMusicalTaskOrigin {RestoredWidget}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PreparedGlobalTaskOrigin {None,RestoredWidgetEvent}
+impl PreparedGlobalTaskOrigin {
+    fn creator(self)->SourceTaskCreator{match self{
+        Self::None=>SourceTaskCreator::None,
+        Self::RestoredWidgetEvent=>SourceTaskCreator::NonMusicalEvent(NonMusicalTaskOrigin::RestoredWidget),
+    }}
+}
+/// One actual retained coroutine's compiled entry request. Equal processor and
+/// family rows are valid independent coroutines, not duplicate VM task IDs.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct PreparedGlobalSourceTask {
+    pub processor:SourceEventProcessorId,pub family:SourceTaskFamily,pub origin:PreparedGlobalTaskOrigin,
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct PreparedSourceTaskBinding {pub processor:SourceEventProcessorId,pub family:SourceTaskFamily,pub program:usize}
 #[derive(Clone,Copy,Debug)]
@@ -175,8 +192,15 @@ impl Runtime {
             }
         })
     }
-    fn validate_task_cost(&self,count:usize,bindings:usize)->Result<usize,Error>{
-        let cost=self.behaviors.slots.len().checked_add(2).and_then(|n|n.checked_mul(count)).and_then(|n|n.checked_add(bindings.checked_mul(4)?)).ok_or(Error::Capacity)?;
+    fn validate_task_cost(&self,plan:PlanId,count:usize,bindings:usize)->Result<usize,Error>{
+        let lookup=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.processor_lookup_work_bound()?;
+        // Parent validation plus actual AwaitExternal parking each resolve the
+        // real table: few executable task bindings do not make unused rows free.
+        let per_task=self.behaviors.slots.len().checked_mul(2)
+            .and_then(|n|n.checked_add(self.behavior_stride))
+            .and_then(|n|n.checked_add(2))
+            .and_then(|n|n.checked_add(lookup.checked_mul(2)?)).ok_or(Error::Capacity)?;
+        let cost=per_task.checked_mul(count).and_then(|n|n.checked_add(bindings.checked_mul(4)?)).ok_or(Error::Capacity)?;
         if cost>self.behavior_fuel||cost>self.block_fuel_left{return Err(Error::Capacity);}Ok(cost)
     }
     // Execute the actual validated first AwaitExternal entry directly under
@@ -202,12 +226,12 @@ impl Runtime {
         if self.external_execution_aborted{return Err(Error::Canceled);}
         self.apply_due();
         let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        self.validate_task_cost(0,generation.prepared.source_tasks.len())?;
+        self.validate_task_cost(plan,0,generation.prepared.source_tasks.len())?;
         let count=generation.prepared.source_tasks.iter().enumerate().filter(|(index,binding)|binding.family==reason.family()&&(!matches!(reason,SourceTaskReason::Init(_))||!generation.source_tasks.initialized[*index])).count();
         if count==0{return Ok(0);}
         generation.callbacks.checked_add(count).ok_or(Error::Capacity)?;
         self.next_external_turn_order.checked_add(self.reserved_external_turn_orders).and_then(|order|order.checked_add(count as u64)).ok_or(Error::Capacity)?;
-        let cost=self.validate_task_cost(count,generation.prepared.source_tasks.len())?;
+        let cost=self.validate_task_cost(plan,count,generation.prepared.source_tasks.len())?;
         // Every program was validated offaudio. Check callback/locals and all
         // aggregate arena/Ready/ID room before the first task owner is inserted.
         if count>self.source_task_scratch.capacity()||!self.behavior_room(count){return Err(Error::Capacity);}
@@ -238,49 +262,107 @@ impl Runtime {
         for index in 0..self.source_task_scratch.len(){self.park_source_task(self.source_task_scratch[index])?;}
         self.source_task_scratch.clear();Ok(count)
     }
-    /// Adopt one genuine staged main/restore spawn/run residual at current F.
-    /// The frontend retains its actual Lua coroutine; this starts the prepared
-    /// continuation entry, not the already executed main/restore prefix. There
-    /// is no event caller, no borrowed note, and no fabricated Init parent.
-    /// `Run` here has no parent segment to suspend; its original synchronous
-    /// prefix already ran offaudio and this entry owns only the residual task.
+    /// Compatibility entry for a genuine main/restore residual with no creator.
     pub fn start_prepared_source_task(
         &mut self,plan:PlanId,processor:SourceEventProcessorId,
         family:SourceTaskFamily,performance:PerformanceId,
     )->Result<BehaviorId,Error>{
-        let reason=match family{
-            SourceTaskFamily::Spawned=>SourceTaskReason::Spawned,
-            SourceTaskFamily::Run=>SourceTaskReason::Run,
-            _=>return Err(Error::InvalidInput),
-        };
+        self.start_prepared_global_source_task(plan,processor,family,performance,PreparedGlobalTaskOrigin::None)
+    }
+    /// One prepared global residual. A restored Widget child is manual/nonmusical;
+    /// it never receives a fabricated physical key, expression or capture epoch.
+    pub fn start_prepared_global_source_task(
+        &mut self,plan:PlanId,processor:SourceEventProcessorId,family:SourceTaskFamily,
+        performance:PerformanceId,origin:PreparedGlobalTaskOrigin,
+    )->Result<BehaviorId,Error>{
+        let mut output=[None];
+        self.start_prepared_global_source_tasks(plan,performance,
+            &[PreparedGlobalSourceTask{processor,family,origin}],&mut output)?;
+        output[0].ok_or(Error::InvalidInput)
+    }
+    /// Admit a complete actual prepared-root batch before any root can run.
+    /// Caller storage is prepared offaudio. On admission refusal it is unchanged;
+    /// retained VM rows must not move until this actual BehaviorId batch succeeds.
+    pub fn start_prepared_global_source_tasks(
+        &mut self,plan:PlanId,performance:PerformanceId,
+        requests:&[PreparedGlobalSourceTask],outputs:&mut[Option<BehaviorId>],
+    )->Result<usize,Error>{
+        let count=requests.len();
+        if outputs.len()<count||outputs[..count].iter().any(Option::is_some){return Err(Error::InvalidInput);}
+        for request in requests{Self::prepared_root_reason(request.family)?;}
         let performance=self.performance_index(performance)?;
         if self.external_execution_aborted{return Err(Error::Canceled);}
         self.apply_due();
         let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        let cost=self.validate_task_cost(1,generation.prepared.source_tasks.len())?;
-        let binding=generation.prepared.source_tasks.iter()
-            .find(|binding|binding.processor==processor&&binding.family==family)
-            .copied().ok_or(Error::InvalidInput)?;
+        if count==0{return Ok(0);}
+        let bindings=generation.prepared.source_tasks.len();
+        // Every row performs real binding lookup in both validation/admission.
+        // Charge that product, not a single scan hidden behind batch length.
+        let scans=bindings.checked_mul(count).ok_or(Error::Capacity)?;
+        let cost=self.validate_task_cost(plan,count,scans)?;
+        generation.callbacks.checked_add(count).ok_or(Error::Capacity)?;
+        let count64=u64::try_from(count).map_err(|_|Error::Capacity)?;
         self.next_external_turn_order.checked_add(self.reserved_external_turn_orders)
-            .and_then(|order|order.checked_add(1)).ok_or(Error::Capacity)?;
-        let context=TaskContext{processor,reason,creator:SourceTaskCreator::None,
-            domain:TaskDomain::Global{performance},original_frame:self.now,run_parent:None};
-        // Existing admitted Plan-context validation checks callback/ID/locals
-        // capacity before publication. The validated first AwaitExternal cannot
-        // run an authored prefix or allocate; its turn credit is checked above.
-        let id=self.admit_plan_context(plan,binding.program,PlanContext::Task(context))?;
+            .and_then(|order|order.checked_add(count64)).ok_or(Error::Capacity)?;
+        if count>self.source_task_scratch.capacity(){return Err(Error::Capacity);}
+        // Schema of ALL real entries is checked before behavior_room can reclaim
+        // a finished slot and before the first new Plan callback is inserted.
+        for request in requests{
+            let binding=generation.prepared.source_tasks.iter()
+                .find(|binding|binding.processor==request.processor&&binding.family==request.family)
+                .ok_or(Error::InvalidInput)?;
+            let program=generation.prepared.programs.get(binding.program).ok_or(Error::InvalidInput)?;
+            if program.requires_note||program.requires_controller||program.requires_performance
+                ||program.wait_lifetime!=crate::WaitLifetime::Callback
+                ||!matches!(program.code.get(program.entry),Some(crate::Instruction::AwaitExternal{processor})if *processor==request.processor)
+                ||!matches!(program.code.get(program.entry+1),Some(crate::Instruction::End)){
+                return Err(Error::InvalidInput);
+            }
+        }
+        if !self.behavior_room(count){return Err(Error::Capacity);}
+        self.source_task_scratch.clear();
+        for request in requests{
+            let binding=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_tasks.iter()
+                .find(|binding|binding.processor==request.processor&&binding.family==request.family)
+                .copied().ok_or(Error::InvalidInput)?;
+            let context=TaskContext{processor:request.processor,reason:Self::prepared_root_reason(request.family)?,
+                creator:request.origin.creator(),domain:TaskDomain::Global{performance},
+                original_frame:self.now,run_parent:None};
+            match self.admit_plan_context(plan,binding.program,PlanContext::Task(context)){
+                Ok(id)=>self.source_task_scratch.push(id),
+                Err(error)=>{
+                    // No authored prefix or external entry has run yet.
+                    for at in 0..self.source_task_scratch.len(){
+                        self.behaviors.remove(self.source_task_scratch[at].0);
+                        self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.callbacks-=1;
+                    }
+                    self.source_task_scratch.clear();return Err(error);
+                }
+            }
+        }
         self.block_fuel_left-=cost;
-        self.park_source_task(id)?;
-        Ok(id)
+        // Actual first AwaitExternal has a validated shape and aggregate order
+        // credit. It parks the SAME continuations without executing a Lua prefix.
+        for index in 0..count{self.park_source_task(self.source_task_scratch[index])?;}
+        for (slot,id)in outputs[..count].iter_mut().zip(&self.source_task_scratch){*slot=Some(*id);}
+        self.source_task_scratch.clear();Ok(count)
     }
+    fn prepared_root_reason(family:SourceTaskFamily)->Result<SourceTaskReason,Error>{match family{
+        SourceTaskFamily::Spawned=>Ok(SourceTaskReason::Spawned),
+        SourceTaskFamily::Run=>Ok(SourceTaskReason::Run),
+        _=>Err(Error::InvalidInput),
+    }}
     /// Spawn/run is a real independent Plan continuation. It never copies a
     /// pending forwarding reservation or gives a task its caller's note pin.
     pub fn spawn_source_task(&mut self,parent:ExternalInputId,immediate:bool)->Result<BehaviorId,Error>{
-        let (callback,state)=self.validate_external_segment(parent,Phase::Running)?;
+        let callback=self.behaviors.get(parent.behavior().0).copied().ok_or(Error::StaleHandle)?;
         let plan=self.behavior_plan(callback.owner)?;
-        let reason=if immediate{SourceTaskReason::Run}else{SourceTaskReason::Spawned};
         let bindings=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_tasks.len();
-        let cost=self.validate_task_cost(1,bindings)?;
+        // Price the actual potentially long processor lookup before doing it.
+        // The complete Running/sequence/source check below is still authority.
+        let cost=self.validate_task_cost(plan,1,bindings)?;
+        let (callback,state)=self.validate_external_segment(parent,Phase::Running)?;
+        let reason=if immediate{SourceTaskReason::Run}else{SourceTaskReason::Spawned};
         let binding=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_tasks.iter().find(|binding|binding.processor==state.processor&&binding.family==reason.family()).copied().ok_or(Error::InvalidInput)?;
         let creator=match callback.context{PlanContext::Task(task)=>task.creator,PlanContext::Bare=>SourceTaskCreator::None,_=>SourceTaskCreator::Event};
         let domain=self.task_domain(callback.context)?;

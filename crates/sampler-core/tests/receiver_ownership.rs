@@ -1354,3 +1354,112 @@ fn task_entry_compiler_refusals_are_transactional_and_existing_bindings_keep_ind
     let limits=Limits::for_plan(&plan,8,8);let mut rt=Runtime::new(plan,limits).unwrap();let perf=rt.performance(0).unwrap();let address=sampler_core::ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:13};
     rt.dispatch_controller(perf,address,1<<13,1,0x1234_abcd).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();rt.post_external_output(turn.input,sampler_core::ExternalOutput::Original).unwrap();rt.complete_external_segment(turn.input,None).unwrap();assert_eq!(rt.channel_controller(perf,address,1).unwrap(),0x1234_abcd);
 }
+
+
+fn task_lookup_roster_plan()->Prepared{
+    use sampler_ir as ir;
+    use sampler_core::SourceTaskFamily;
+        let owner=ir::SourceOwnerId::UviNode(10);
+        let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,..ir::Instrument::default()};
+        instrument.source_indices.owners.push(ir::SourceOwner{id:owner,parent:None,kind:ir::SourceOwnerKind::Instrument,
+            children:vec![],groups:vec![],zones:vec![],predicates:vec![],bypass:None,mute:None,
+            event_processors:(0..256).map(|ordinal|ir::SourceEventProcessor{
+                id:ir::SourceEventProcessorId::UviNode(1000+ordinal),owner,ordinal,kind:"ScriptProcessor".into(),
+                bypass:ir::SourceSwitch{saved:false,control:None}}).collect()});
+        sampler_core::lower::lower(&instrument,48000,vec![],|_,_|unreachable!("authored fixture has no source behaviors")).unwrap()
+            .with_source_task_entries(vec![(ir::SourceEventProcessorId::UviNode(1255),SourceTaskFamily::Init)],1).unwrap()
+}
+
+#[test]
+fn task_admission_prices_real_processor_roster_even_with_one_executable_family(){
+    use sampler_core::{SourceTaskHostContext,SourceTaskReason};
+    let plan=task_lookup_roster_plan();let mut limits=Limits::for_plan(&plan,4,4);limits.behavior_fuel=64;
+    let mut rt=Runtime::new(plan,limits).unwrap();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    let reason=SourceTaskReason::Init(SourceTaskHostContext{frame:0,tempo:120.,playing:false});
+    support::without_heap(||{
+        assert_eq!(rt.start_source_tasks(plan,reason,perf),Err(Error::Capacity),"one task binding cannot make its actual 256-row processor lookup free");
+        assert_eq!(rt.start_source_tasks(plan,reason,perf),Err(Error::Capacity),"work refusal must not consume the once-only Init entry");
+        assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!((rt.now(),rt.note_count(),rt.expression_count()),(0,0,0));
+    });
+}
+
+#[test]
+fn task_processor_roster_high_work_control_uses_real_last_processor_entry(){
+    use sampler_ir as ir;
+    use sampler_core::{SourceTaskHostContext,SourceTaskReason};
+    let reason=SourceTaskReason::Init(SourceTaskHostContext{frame:0,tempo:120.,playing:false});
+    let plan=task_lookup_roster_plan();let mut limits=Limits::for_plan(&plan,4,4);limits.behavior_fuel=4096;
+    let mut rt=Runtime::new(plan,limits).unwrap();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+    support::without_heap(||assert_eq!(rt.start_source_tasks(plan,reason,perf),Ok(1)));
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.processor,ir::SourceEventProcessorId::UviNode(1255));
+    rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    assert_eq!(rt.start_source_tasks(plan,reason,perf),Ok(0));
+}
+
+
+#[test]
+fn prepared_nonmusical_batch_preserves_distinct_roots_and_origin_through_wait_and_nested_run(){
+    use sampler_core::{PreparedGlobalSourceTask as Request,PreparedGlobalTaskOrigin as Origin,NonMusicalTaskOrigin,SourceTaskFamily as Family,SourceTaskCreator,ExternalEvent,ExternalOutput,BehaviorOwner};
+    let mut rt=task25_runtime();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let requests=[Request{processor,family:Family::Spawned,origin:Origin::RestoredWidgetEvent},Request{processor,family:Family::Spawned,origin:Origin::None},Request{processor,family:Family::Run,origin:Origin::RestoredWidgetEvent}];
+    let mut outputs=[None;3];
+    support::without_heap(||assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&requests,&mut outputs),Ok(3)));
+    assert_ne!(outputs[0],outputs[1]);assert_ne!(outputs[0],outputs[2]);assert_ne!(outputs[1],outputs[2]);
+    for (index,expected)in requests.iter().enumerate(){
+        let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(Some(turn.input.behavior()),outputs[index]);assert_eq!(turn.plan,plan);assert_eq!((turn.receiver,turn.logical_channel,turn.event_origin),(None,None,None));
+        let creator=if expected.origin==Origin::None{SourceTaskCreator::None}else{SourceTaskCreator::NonMusicalEvent(NonMusicalTaskOrigin::RestoredWidget)};
+        assert!(matches!(turn.event,ExternalEvent::Task(event)if event.creator==creator&&event.source.is_none()&&event.reason.family()==expected.family));
+        rt.begin_external_turn(turn.input).unwrap();assert_eq!(rt.post_external_output(turn.input,ExternalOutput::Original),Err(Error::InvalidInput));
+        rt.complete_external_segment(turn.input,if index==0{Some(48)}else{None}).unwrap();
+    }
+    assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));
+    support::without_heap(||rt.render(&mut [[0.;2];48]).unwrap());assert_eq!(rt.now(),48);
+    let parent=rt.service_external_boundary().unwrap().unwrap();assert_eq!(Some(parent.input.behavior()),outputs[0]);assert_eq!((parent.original_frame,parent.resume_frame),(0,48));
+    rt.begin_external_turn(parent.input).unwrap();let child=rt.spawn_source_task(parent.input,true).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),child);
+    assert!(matches!(turn.event,ExternalEvent::Task(event)if event.creator==SourceTaskCreator::NonMusicalEvent(NonMusicalTaskOrigin::RestoredWidget)&&event.source.is_none()));
+    rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();
+    let resumed=rt.pending_external_turn().unwrap().unwrap();assert_eq!(resumed.input.behavior(),parent.input.behavior());assert_ne!(resumed.input,parent.input);
+    rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();
+    let mut finished=0;support::without_heap(||rt.flush_behaviors(|_,owner,outcome|{assert_eq!(owner,BehaviorOwner::Plan(plan));assert_eq!(outcome,sampler_core::Outcome::Finished);finished+=1;true}));assert_eq!(finished,4);
+    assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count(),rt.now()),(0,0,0,48));
+}
+
+#[test]
+fn prepared_nonmusical_batch_late_invalid_entry_leaves_outputs_and_all_callback_ownership_unpublished(){
+    use sampler_core::{PreparedGlobalSourceTask as Request,PreparedGlobalTaskOrigin as Origin,SourceTaskFamily as Family};
+    let mut rt=task25_runtime();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let valid=Request{processor,family:Family::Spawned,origin:Origin::RestoredWidgetEvent};let mut requests=[valid;3];requests[2].processor=sampler_ir::SourceEventProcessorId::UviNode(999);
+    let mut outputs=[None;3];support::without_heap(||assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&requests,&mut outputs),Err(Error::InvalidInput)));
+    assert_eq!(outputs,[None;3]);assert!(rt.pending_external_turn().unwrap().is_none());let mut seen=0;rt.flush_behaviors(|_,_,_|{seen+=1;true});assert_eq!(seen,0);assert_eq!((rt.now(),rt.note_count(),rt.expression_count()),(0,0,0));
+    for family in [Family::Init,Family::Transport]{let mut request=valid;request.family=family;assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&[request],&mut outputs),Err(Error::InvalidInput));}
+    assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&[valid],&mut []),Err(Error::InvalidInput));
+    let other=task25_runtime();assert!(rt.start_prepared_global_source_tasks(plan,other.performance(0).unwrap(),&[valid],&mut outputs).is_err());assert!(rt.start_prepared_global_source_tasks(other.active_plan(),perf,&[valid],&mut outputs).is_err());
+    requests[2]=valid;assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&requests,&mut outputs),Ok(3),"late refusal consumed no callback/turn capacity; equal bindings are real distinct coroutines");
+    for expected in outputs{let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(Some(turn.input.behavior()),expected);rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,None).unwrap();}
+}
+
+#[test]
+fn prepared_nonmusical_batch_full_room_refuses_whole_batch_but_existing_none_and_init_stay_usable(){
+    use sampler_core::{PreparedGlobalSourceTask as Request,PreparedGlobalTaskOrigin as Origin,SourceTaskFamily as Family,SourceTaskHostContext,SourceTaskReason};
+    let plan=task25_plan();let mut limits=Limits::for_plan(&plan,16,16);limits.behaviors=1;limits.behavior_cells=0;
+    let mut rt=Runtime::new(plan,limits).unwrap();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let request=Request{processor,family:Family::Spawned,origin:Origin::RestoredWidgetEvent};let mut outputs=[None;2];
+    assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&[request;2],&mut outputs),Err(Error::Capacity));assert_eq!(outputs,[None;2]);assert!(rt.pending_external_turn().unwrap().is_none());
+    let id=rt.start_prepared_source_task(plan,processor,Family::Spawned,perf).unwrap();let first=rt.pending_external_turn().unwrap().unwrap();assert_eq!(first.input.behavior(),id);
+    assert_eq!(rt.start_prepared_global_source_tasks(plan,perf,&[request],&mut outputs),Err(Error::Capacity));assert_eq!(rt.pending_external_turn().unwrap().unwrap().input,first.input);assert_eq!(outputs,[None;2]);
+    rt.begin_external_turn(first.input).unwrap();rt.complete_external_segment(first.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);
+    assert_eq!(rt.start_source_tasks(plan,SourceTaskReason::Init(SourceTaskHostContext{frame:0,tempo:120.,playing:false}),perf),Ok(1));let init=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(init.input).unwrap();rt.complete_external_segment(init.input,None).unwrap();
+    assert_eq!((rt.now(),rt.note_count(),rt.expression_count()),(0,0,0));
+}
+
+#[test]
+fn prepared_nonmusical_wait_holds_old_plan_until_real_task_completion_then_releases_it_once(){
+    use sampler_core::{PreparedGlobalTaskOrigin as Origin,SourceTaskFamily as Family,ExternalEvent,SourceTaskCreator,NonMusicalTaskOrigin};
+    let plan=task25_plan();let limits=Limits::for_plan(&plan,16,16);let(mut rt,mut updates)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();let old=rt.active_plan();let perf=rt.performance(0).unwrap();let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    let id=rt.start_prepared_global_source_task(old,processor,Family::Spawned,perf,Origin::RestoredWidgetEvent).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();rt.complete_external_segment(turn.input,Some(48)).unwrap();
+    let request=updates.submit(Box::new(task25_plan())).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));assert_ne!(rt.active_plan(),old);assert_eq!(rt.collect_retired_plans(),0);
+    rt.render(&mut [[0.;2];48]).unwrap();let resumed=rt.service_external_boundary().unwrap().unwrap();assert_eq!(resumed.plan,old);assert_eq!(resumed.input.behavior(),id);assert_eq!((resumed.receiver,resumed.logical_channel,resumed.event_origin),(None,None,None));
+    assert!(matches!(resumed.event,ExternalEvent::Task(event)if event.creator==SourceTaskCreator::NonMusicalEvent(NonMusicalTaskOrigin::RestoredWidget)&&event.source.is_none()));
+    rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);assert_eq!(rt.collect_retired_plans(),1);
+    assert!(rt.running_external_turn(resumed.input).is_err());assert_eq!(rt.collect_retired_plans(),0);assert_eq!((rt.note_count(),rt.expression_count()),(0,0));
+}
