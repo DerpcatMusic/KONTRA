@@ -56,7 +56,7 @@ impl SourceStorageId {
     }
 }
 
-struct ResidentFamily {
+pub(crate) struct ResidentFamily {
     id: SourceStorageId,
     channels: ChannelCount,
     rate: u32,
@@ -66,6 +66,64 @@ struct ResidentFamily {
     // never reacquires independently changing pack publications.
     residents: sampler_pool::Snapshot<Option<Box<[ResidentPin]>>>,
     residency_mutation: Mutex<()>,
+}
+
+impl ResidentFamily {
+    /// Residency worker only. Geometry and physical identity never change;
+    /// publication contains every original pack or no pack. No reader can see
+    /// a successful prefix while a group reload is being staged.
+    pub(crate) fn refresh_residency(&self) -> Result<(), Error> {
+        let _mutation = self
+            .residency_mutation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let permitted = self.packs.iter().all(Pcm::residency_permitted);
+        let resident = self.residents.read().is_some();
+        if !permitted && resident {
+            self.residents.replace(None, |_| ());
+        } else if permitted && !resident {
+            let mut pins = Vec::new();
+            pins.try_reserve_exact(self.packs.len())
+                .map_err(|_| Error::Capacity)?;
+            for (index, pack) in self.packs.iter().enumerate() {
+                let pin = pack.pin_resident().ok_or(Error::NotReady)?;
+                if pin.len() != self.frames
+                    || index + 1 == self.packs.len()
+                        && self.channels.get() % 2 != 0
+                        && pin.iter().any(|frame| frame[1].to_bits() != 0)
+                {
+                    return Err(Error::InvalidInput);
+                }
+                pins.push(pin);
+            }
+            // A racing purge may have revoked ownership while pins were staged.
+            if !self.packs.iter().all(Pcm::residency_permitted) {
+                return Err(Error::NotReady);
+            }
+            self.residents
+                .replace(Some(pins.into_boxed_slice()), |_| ());
+        }
+        self.residents.collect();
+        Ok(())
+    }
+    /// Reclaim old cohorts only on the existing residency worker/control side.
+    pub(crate) fn collect_residency(&self) {
+        self.residents.collect();
+        // Clearing a retired cohort releases all physical Snapshot pins. Some
+        // sibling assets may no longer have a worker of their own; reclaim
+        // their retired buffers here, after releasing the cohort mutex.
+        for pack in &self.packs { pack.collect_retired_resident(); }
+    }
+}
+impl std::fmt::Debug for ResidentFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResidentFamily")
+            .field("id", &self.id)
+            .field("channels", &self.channels)
+            .field("rate", &self.rate)
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One resident logical source with immutable geometry and physical pack IDs.
@@ -125,7 +183,7 @@ impl SourceStorageFamily {
         }
         // Mint only after every geometry, identity and resident-payload check.
         let id = SourceStorageId::new_family()?;
-        Ok(Self(Arc::new(ResidentFamily {
+        let family = Arc::new(ResidentFamily {
             id,
             channels,
             rate,
@@ -133,50 +191,21 @@ impl SourceStorageFamily {
             packs: packs.into_boxed_slice(),
             residents: sampler_pool::Snapshot::new(Some(residents.into_boxed_slice())),
             residency_mutation: Mutex::new(()),
-        })))
-    }
-    /// Residency worker only. Geometry and physical identity never change;
-    /// publication contains every original pack or no pack. No reader can see
-    /// a successful prefix while a group reload is being staged.
-    pub(crate) fn refresh_residency(&self) -> Result<(), Error> {
-        let _mutation = self
-            .0
-            .residency_mutation
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let permitted = self.0.packs.iter().all(Pcm::residency_permitted);
-        let resident = self.0.residents.read().is_some();
-        if !permitted && resident {
-            self.0.residents.replace(None, |_| ());
-        } else if permitted && !resident {
-            let mut pins = Vec::new();
-            pins.try_reserve_exact(self.0.packs.len())
-                .map_err(|_| Error::Capacity)?;
-            for (index, pack) in self.0.packs.iter().enumerate() {
-                let pin = pack.pin_resident().ok_or(Error::NotReady)?;
-                if pin.len() != self.frame_count()
-                    || index + 1 == self.0.packs.len()
-                        && self.channels().get() % 2 != 0
-                        && pin.iter().any(|frame| frame[1].to_bits() != 0)
-                {
-                    return Err(Error::InvalidInput);
-                }
-                pins.push(pin);
-            }
-            // A racing purge may have revoked ownership while pins were staged.
-            if !self.0.packs.iter().all(Pcm::residency_permitted) {
-                return Err(Error::NotReady);
-            }
-            self.0
-                .residents
-                .replace(Some(pins.into_boxed_slice()), |_| ());
+        });
+        // A physical alias may outlive every Prepared that contains this family.
+        // Its ordinary worker must still discover and retire this cohort's pins.
+        // Weak-only registration is fallible and entirely off audio. Failure
+        // leaves only dead prunable entries, never a published partial family.
+        for pack in &family.packs {
+            pack.register_resident_family(&family)?;
         }
-        self.0.residents.collect();
-        Ok(())
+        Ok(Self(family))
     }
-    /// Reclaim old cohorts only on the existing residency worker/control side.
+    pub(crate) fn refresh_residency(&self) -> Result<(), Error> {
+        self.0.refresh_residency()
+    }
     pub(crate) fn collect_residency(&self) {
-        self.0.residents.collect();
+        self.0.collect_residency();
     }
     pub fn id(&self) -> SourceStorageId {
         self.0.id
@@ -538,21 +567,20 @@ mod tests {
         middle.residency_acquire();
         let family =
             SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), packs).unwrap();
+        let captured = family.resident_view();
         middle.residency_release();
-        // A pack alias can retire its current publication, but cannot alter
-        // this immutable source revision's complete captured generation.
+        // A physical alias can retire the current publication, but cannot
+        // change the complete cohort that an existing audio/read borrow holds.
         assert!(!middle.residency_collect());
         assert!(middle.resident_frames().is_none());
-        {
-            let view = family.resident_view();
-            let mut frame = [0.; 6];
-            view.copy_frame(0, &mut frame).unwrap();
-            assert_eq!(frame, [1., 2., 3., 4., 5., 6.]);
-        }
-        // Reclaim only after the immutable family owner is released on control.
-        // This is not a Runtime group-purge implementation or completion claim.
-        drop(family);
+        let mut frame = [0.; 6];
+        captured.copy_frame(0, &mut frame).unwrap();
+        assert_eq!(frame, [1., 2., 3., 4., 5., 6.]);
+        // New reads see unavailable, never a mix of old and new physical packs.
+        assert!(family.as_source().resident_view().is_none());
+        drop(captured);
         assert!(middle.residency_collect());
+        assert!(family.as_source().resident_view().is_none());
     }
     #[test]
     fn resident_view_does_not_create_a_stereo_fallback_for_missing_storage() {

@@ -886,4 +886,43 @@ mod logical_source_residency_tests {
         assert!(packs.iter().all(|p| p.residency_owners() == 1));
     }
 
+    #[test]
+    fn retired_family_cohort_is_reclaimed_by_a_surviving_stereo_alias_residency_owner() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        let alias = packs[1].clone();
+        let mut stereo = Prepared::new(48000, vec![alias.clone()], vec![region(0)], 1).unwrap()
+            .with_groups(1, vec![Some(0)]).unwrap();
+        let surviving = stereo.residency.take().unwrap();
+        assert!(surviving.shared.groups[0].families.is_empty());
+        let borrowed = family.resident_view();
+        drop(owner); // Its worker is gone while the old cohort is still borrowed.
+        assert_eq!(borrowed.sample(2, 127), Some(2. / 8.));
+        assert!(family.as_source().resident_view().is_none());
+        drop(borrowed); // Audio/read drop must do no reclamation, locking, or I/O.
+        // Keep family alive externally. The surviving owner knows only Pcm;
+        // it must still be able to reclaim retired family pins that retain it.
+        surviving.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        assert!(finish(&surviving).success);
+        assert_eq!(alias.resident_non_head_bytes(), 0);
+        assert!(family.as_source().resident_view().is_none());
+    }
+
+    #[test]
+    fn current_family_cohort_is_reclaimed_by_surviving_all_pack_stereo_aliases() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        let mut aliases = Prepared::new(48000, packs.clone(), (0..3).map(region).collect(), 3).unwrap()
+            .with_groups(1, vec![Some(0); 3]).unwrap();
+        let surviving = aliases.residency.take().unwrap();
+        assert!(surviving.shared.groups[0].families.is_empty());
+        drop(owner);
+        // Every physical pack has a surviving independent alias owner, so A's
+        // family still publishes a current cohort after its own worker retires.
+        assert!(family.as_source().resident_view().is_some());
+        assert!(packs.iter().all(|p| p.residency_owners() == 1));
+        surviving.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        assert!(finish(&surviving).success);
+        assert!(family.as_source().resident_view().is_none());
+        assert!(packs.iter().all(|p| p.resident_non_head_bytes() == 0));
+    }
+
 }
