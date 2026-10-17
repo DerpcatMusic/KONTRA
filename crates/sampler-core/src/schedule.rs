@@ -54,6 +54,8 @@ impl Scheduled {
 }
 
 impl Runtime {
+    pub fn next_scheduled_frame(&self)->Option<u64>{self.commands.first().map(|command|command.at)}
+
     pub(super) fn available_commands(&self) -> usize {
         self.command_limit - self.commands.len() - self.reserved_commands
     }
@@ -62,6 +64,7 @@ impl Runtime {
     /// drain previously submitted work due now. Future capacity failure is explicit;
     /// immediate key/pedal release never requires a free queue entry.
     pub fn schedule_event(&mut self, at: u64, event: Event) -> Result<(), Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         self.check_time(at)?;
         if at == self.now {
             self.apply_due();
@@ -286,7 +289,10 @@ impl Runtime {
     }
 
     pub(super) fn apply_due(&mut self) {
-        if self.publishing_receiver {return;}
+        if self.external_execution_aborted{return;}
+        if self.
+publishing_receiver || self.external_clock_blocked()
+{return;}
         if self.executing_due {
             return;
         }
@@ -314,6 +320,7 @@ impl Runtime {
                     self.apply_event(event);
                 }
             }
+        if self.external_clock_blocked(){break;}
         }
         self.executing_due = false;
     }

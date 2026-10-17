@@ -1,6 +1,10 @@
 //! Canonical typed receiver ownership. Explicit offaudio binding moves actual
 //! state into this Runtime; adapters retain a handle, never a mutable mirror.
-pub(crate) mod components;
+pub(crate) mod external;
+pub use external::{ExternalInputId,ExternalTurn,ExternalEvent,ExternalOutput,ExternalOutputResult,ExternalAbortReport
+};
+pub(crate) mod
+components;
 mod per_note;
 mod state;
 mod types;
@@ -27,7 +31,7 @@ pub(crate) struct ReceiverOwner {
     /// External terminal delivery owns a real callback reference until return.
     callback_references: usize,
     terminal_sequence: u64,
-    terminal_delivery: Option<(u64, TerminalRelease)>,
+    terminal_delivery: Option<(u64, state::QueuedTerminal,bool)>,
 }
 
 /// Actual generational receipt lease. Completing a different/reused sequence
@@ -281,7 +285,8 @@ use components::{
     CapturedReceiver, Gesture, GestureProposal, ReceiverActionKind, ReceiverComponents,
     ReceiverProvenance,
 };
-use state::{ChannelDomain, Controls, PhysicalKind, PhysicalPair};
+use state::{ChannelDomain, Controls, PhysicalKind, PhysicalPair,PhysicalEventContext,QueuedTerminal
+};
 
 impl Runtime {
     pub(crate) fn receiver_host_epochs(
@@ -405,6 +410,7 @@ impl Runtime {
             state.host_targets(input.channel, native_per_note)
         };
         let event = crate::controller_event::ControllerEvent {
+            original_frame:self.now,
             performance,
             origin,
             channels,
@@ -761,40 +767,15 @@ impl Runtime {
             held: true,
         };
         let performance = state.performance;
+        let event_plan=kind.and_then(|_|self.plans.get(self.active_plan.0)
+            .filter(|generation|generation.prepared.external_programs).map(|_|self.active_plan));
+        if let Some(plan)=event_plan {self.validate_physical_event_add(plan,1)?;}
         self.publish_receiver_transaction(|runtime| {
-            let note = if silent {
-                runtime.note_on_owned_input(
-                    performance,
-                    input,
-                    source,
-                    pitch,
-                    velocity,
-                    expression,
-                    Some(component),
-                )?
-            } else {
-                runtime.trigger_owned_input(
-                    performance,
-                    input,
-                    source,
-                    pitch,
-                    velocity,
-                    expression,
-                    Some(component),
-                )?
-            };
-            let expression = runtime.expression_id(note)?;
-            if let Some(kind) = kind {
-                runtime.receiver_state_mut(id)?.physical.push(PhysicalPair {
-                    note,
-                    expression: Some(expression),
-                    execution: input,
-                    source,
-                    kind,
-                    released: false,
-                    scripted: silent,
-                    terminal_received: false,
-                    choked: false,
+            let note=if silent {runtime.note_on_owned_input(performance,input,source,pitch,velocity,expression,Some(component))?}
+                else{runtime.trigger_owned_input(performance,input,source,pitch,velocity,expression,Some(component))?};
+            let expression=runtime.expression_id(note)?;
+            if let Some(plan)=event_plan {runtime.retain_physical_event(plan)?;}
+            if let Some(kind)=kind {runtime.receiver_state_mut(id)?.physical.push(PhysicalPair{note,expression:Some(expression),execution:input,source,kind,released:false,scripted:silent,terminal_received:false,choked:false,event_plan,
                 });
             }
             Ok(note)
@@ -833,12 +814,19 @@ impl Runtime {
             return Ok(None);
         };
         let pair = self.receiver(id)?.physical[at];
+        let queued=pair.event_plan.is_some()&&!pair.released;
+        if queued&&self.receiver(id)?.terminal_releases.len()==self.receiver(id)?.terminal_limit{return Err(Error::Capacity);}
+        self.validate_physical_event_row(pair)?;
         self.publish_receiver_transaction(|runtime| {
             match runtime.note_off_exact(pair.note, velocity) {
                 Ok(()) | Err(Error::StaleHandle) | Err(Error::ClosedNote) => {}
                 Err(error) => return Err(error),
             }
             runtime.freeze_receiver_expression(id, pair.expression);
+            if queued{
+                let receipt=runtime.physical_terminal(pair,velocity);
+                runtime.receiver_state_mut(id)?.terminal_releases.push(receipt);
+            }else if let Some(plan)=pair.event_plan{runtime.release_physical_event(plan)?;}
             runtime.receiver_state_mut(id)?.physical.remove(at);
             Ok(Some(pair.note))
         })
@@ -893,7 +881,9 @@ impl Runtime {
         let Some(voice) = voice else {
             return Ok(Applied::Unsupported);
         };
-        if !voice.valid()
+        if self.external_execution_aborted&&!matches!(voice.message,Message::NoteOff{..}){return Err(Error::Canceled.into());}
+        if
+!voice.valid()
             || source
                 .is_some_and(|value| value.group >= 16 || value.channel >= 16 || value.key >= 128)
         {
@@ -1335,7 +1325,8 @@ impl Runtime {
     pub fn receiver_has_native_note(&self, id: ReceiverId, note: NoteId) -> bool {
         self.receivers.get(id.0).is_some_and(|owner| {
             owner.state.has_native_physical_note(note)
-                || owner.terminal_delivery.is_some_and(|(_, release)| {
+                || owner.terminal_delivery.is_some_and(|(_, release,_
+)| {
                     state::native_source(release.source) && release.note == note
                 })
         })
@@ -1358,6 +1349,9 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         self.validate_receiver_native_releases(id, &matches)?;
+        for pair in &self.receiver(id)?.physical {
+            if pair.kind==PhysicalKind::Native&&!pair.terminal_received&&matches(pair.note,pair.source){self.validate_physical_event_row(*pair)?;}
+        }
         self.publish_receiver_transaction(|runtime| {
             let mut count = 0;
             let length = runtime.receiver(id)?.physical.len();
@@ -1374,14 +1368,11 @@ impl Runtime {
                     Err(error) => return Err(error),
                 }
                 runtime.freeze_receiver_expression(id, pair.expression);
-                let state = runtime.receiver_state_mut(id)?;
-                if !pair.released && pair.scripted {
-                    state.terminal_releases.push(TerminalRelease {
-                        note: pair.note,
-                        source: pair.source,
-                        velocity,
-                    });
-                }
+                let transfer=!pair.released&&(pair.scripted||pair.event_plan.is_some());
+                if transfer {let receipt=runtime.physical_terminal(pair,velocity);runtime.receiver_state_mut(id)?.terminal_releases.push(receipt);}
+                else if let Some(plan)=pair.event_plan {runtime.release_physical_event(plan)?;}
+                let state=runtime.receiver_state_mut(id)?;
+                state.physical[at].event_plan=None;
                 state.physical[at].released = true;
                 state.physical[at].terminal_received = true;
                 count += 1;
@@ -1423,27 +1414,18 @@ impl Runtime {
     }
     pub fn validate_receiver_all_releases(&self, id: ReceiverId) -> Result<(), Error> {
         self.receiver(id)?.validate_all_physical_releases()
+    ?;self.validate_physical_terminal_copies(id,|pair|!pair.released)
     }
-    pub fn queue_receiver_all_releases(&mut self, id: ReceiverId) -> Result<usize, Error> {
+    pub fn queue_receiver_all_releases(&mut self,id:ReceiverId)->Result<usize,Error>{
         self.receiver(id)?.validate_all_physical_releases()?;
+        self.validate_physical_terminal_copies(id,|pair|!pair.released)?;
         self.publish_receiver_transaction(|runtime| {
-            let length = runtime.receiver(id)?.physical.len();
-            let mut count = 0;
+            let length=runtime.receiver(id)?.physical.len();let mut count=0;
             for at in 0..length {
-                let pair = runtime.receiver(id)?.physical[at];
-                if pair.released {
-                    continue;
-                }
-                runtime.freeze_receiver_expression(id, pair.expression);
-                let state = runtime.receiver_state_mut(id)?;
-                if pair.scripted {
-                    state.terminal_releases.push(TerminalRelease {
-                        note: pair.note,
-                        source: pair.source,
-                        velocity: None,
-                    });
-                }
-                state.physical[at].released = true;
+                let pair=runtime.receiver(id)?.physical[at];if pair.released{continue;}
+                runtime.freeze_receiver_expression(id,pair.expression);
+                if pair.scripted||pair.event_plan.is_some() {runtime.queue_physical_terminal_copy(id,pair,None)?;}
+                runtime.receiver_state_mut(id)?.physical[at].released = true;
                 count += 1;
             }
             Ok(count)
@@ -1474,27 +1456,14 @@ impl Runtime {
         let release = owner.state.terminal_releases.remove(0);
         owner.terminal_sequence = sequence;
         owner.callback_references = references;
-        owner.terminal_delivery = Some((sequence, release));
-        Ok(Some(ReceiverTerminalDelivery {
-            release,
-            receiver: id,
-            sequence,
-        }))
+        owner.terminal_delivery = Some((sequence, release,false));
+        Ok(Some(ReceiverTerminalDelivery{release:release.release,receiver:id,sequence}))
     }
-    pub fn complete_receiver_terminal(
-        &mut self,
-        delivery: ReceiverTerminalDelivery,
-    ) -> Result<(), Error> {
-        let owner = self
-            .receivers
-            .get_mut(delivery.receiver.0)
-            .ok_or(Error::StaleHandle)?;
-        if owner
-            .terminal_delivery
-            .is_none_or(|(sequence, _)| sequence != delivery.sequence)
-        {
-            return Err(Error::StaleHandle);
-        }
+    pub fn complete_receiver_terminal(&mut self,delivery:ReceiverTerminalDelivery)->Result<(),Error>{
+        let owner=self.receivers.get_mut(delivery.receiver.0).ok_or(Error::StaleHandle)?;
+        let (_,receipt,_)=owner.terminal_delivery.filter(|(sequence,_,_)|*sequence==delivery.sequence).ok_or(Error::StaleHandle)?;
+        if let Some(event)=receipt.event {self.release_physical_event(event.plan)?;}
+        let owner=self.receivers.get_mut(delivery.receiver.0).ok_or(Error::StaleHandle)?;
         owner.terminal_delivery = None;
         owner.callback_references -= 1;
         Ok(())
@@ -1521,19 +1490,10 @@ impl Runtime {
         let needed = state
             .physical
             .iter()
-            .filter(|&&pair| !pair.released && pair.scripted && matches(pair))
-            .count();
-        if !sound_off
-            && state
-                .terminal_releases
-                .len()
-                .checked_add(needed)
-                .is_none_or(|count| count > state.terminal_limit)
-        {
-            return Err(Error::Capacity);
-        }
-        let port = state.port;
-        let group = state.group;
+            .filter(|&&pair| !pair.released && (pair.scripted||pair.event_plan.is_some())&&matches(pair)).count();
+        if !sound_off&&state.terminal_releases.len().checked_add(needed).is_none_or(|count|count>state.terminal_limit){return Err(Error::Capacity);}
+        let port=state.port;let group=state.group;
+        if !sound_off {self.validate_physical_terminal_copies(id,|pair|!pair.released&&matches(pair))?;}
         self.publish_receiver_transaction(|runtime| {
             let mut count = 0;
             for channel in 0..16u8 {
@@ -1569,15 +1529,8 @@ impl Runtime {
                         continue;
                     }
                     runtime.freeze_receiver_expression(id, pair.expression);
-                    let state = runtime.receiver_state_mut(id)?;
-                    if pair.scripted {
-                        state.terminal_releases.push(TerminalRelease {
-                            note: pair.note,
-                            source: pair.source,
-                            velocity: None,
-                        });
-                    }
-                    state.physical[at].released = true;
+                    if pair.scripted||pair.event_plan.is_some() {runtime.queue_physical_terminal_copy(id,pair,None)?;}
+                    runtime.receiver_state_mut(id)?.physical[at].released = true;
                 }
             }
             Ok(if sound_off {
@@ -2325,7 +2278,7 @@ impl Runtime {
             ),
             (
                 state.terminal_releases.capacity(),
-                std::mem::size_of::<TerminalRelease>(),
+                std::mem::size_of::<QueuedTerminal>(),
             ),
             (state.reset_members.capacity(), std::mem::size_of::<usize>()),
         ] {
@@ -2375,6 +2328,114 @@ impl Runtime {
     }
 }
 
+impl Runtime {
+    fn validate_physical_event_add(&self,plan:crate::PlanId,count:usize)->Result<(),Error>{
+        self.plans.get(plan.0).ok_or(Error::StaleHandle)?.physical_events.checked_add(count).ok_or(Error::Capacity)?;Ok(())
+    }
+    fn retain_physical_event(&mut self,plan:crate::PlanId)->Result<(),Error>{
+        let generation=self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        generation.physical_events=generation.physical_events.checked_add(1).ok_or(Error::Capacity)?;Ok(())
+    }
+    fn release_physical_event(&mut self,plan:crate::PlanId)->Result<(),Error>{
+        let generation=self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        generation.physical_events=generation.physical_events.checked_sub(1).ok_or(Error::InvalidInput)?;Ok(())
+    }
+    fn validate_physical_event_row(&self,pair:PhysicalPair)->Result<(),Error>{
+        if let Some(plan)=pair.event_plan {
+            if self.plans.get(plan.0).ok_or(Error::StaleHandle)?.physical_events==0{return Err(Error::InvalidInput);}
+        }Ok(())
+    }
+    fn physical_terminal(&self,pair:PhysicalPair,velocity:Option<f64>)->QueuedTerminal {
+        QueuedTerminal{release:TerminalRelease{note:pair.note,source:pair.source,velocity},event:pair.event_plan.map(|plan|
+            PhysicalEventContext{plan,execution:pair.execution,original_frame:self.now})}
+    }
+    /// Synthetic receipts copy references; actual Off transfers the row's one
+    /// reference. Preflight the full per-generation sum, never independent fits.
+    fn validate_physical_terminal_copies(&self,id:ReceiverId,matches:impl Fn(PhysicalPair)->bool)->Result<(),Error>{
+        let state=self.receiver(id)?;
+        for (index,slot) in self.plans.slots.iter().enumerate(){
+            let Some(generation)=slot.value.as_ref()else{continue;};let plan=crate::PlanId(self.plans.id(index));
+            let count=state.physical.iter().filter(|pair|pair.event_plan==Some(plan)&&matches(**pair)).count();
+            generation.physical_events.checked_add(count).ok_or(Error::Capacity)?;
+        }
+        for pair in &state.physical{if matches(*pair){self.validate_physical_event_row(*pair)?;}}Ok(())
+    }
+    fn queue_physical_terminal_copy(&mut self,id:ReceiverId,pair:PhysicalPair,velocity:Option<f64>)->Result<(),Error>{
+        let receipt=self.physical_terminal(pair,velocity);
+        if let Some(event)=receipt.event{self.retain_physical_event(event.plan)?;}
+        self.receiver_state_mut(id)?.terminal_releases.push(receipt);Ok(())
+    }
+}
+
+impl Runtime {
+    fn receiver_physical_delivery(&self,delivery:ReceiverTerminalDelivery)->Result<(QueuedTerminal,bool),Error>{
+        let owner=self.receivers.get(delivery.receiver.0).ok_or(Error::StaleHandle)?;
+        let (_,receipt,started)=owner.terminal_delivery.filter(|(sequence,_,_)|*sequence==delivery.sequence).ok_or(Error::StaleHandle)?;
+        Ok((receipt,started))
+    }
+    /// Actual retained generation; None identifies the existing nonexternal
+    /// legacy receipt. Caller-visible release fields are diagnostic only: the
+    /// checked receipt sequence remains the authority.
+    pub fn receiver_terminal_plan(&self,delivery:ReceiverTerminalDelivery)->Result<Option<crate::PlanId>,Error>{
+        Ok(self.receiver_physical_delivery(delivery)?.0.event.map(|event|event.plan))
+    }
+    /// Begin one real plan-owned physical Event callback after the input NoteId
+    /// may already have retired. No note is resurrected and no old expression
+    /// inheritance is implied. Fresh controller epochs are captured NOW.
+    pub fn start_receiver_release_behavior(&mut self,delivery:ReceiverTerminalDelivery,program:usize,stage:usize)->Result<crate::BehaviorId,Error>{
+        if self.external_execution_aborted{return Err(Error::Canceled);}
+        let (receipt,started)=self.receiver_physical_delivery(delivery)?;
+        if started{return Err(Error::Busy);}
+        let event=receipt.event.ok_or(Error::InvalidInput)?;
+        if event.original_frame!=self.now{return Err(Error::PastEvent);}
+        if stage>=self.plans.get(event.plan.0).ok_or(Error::StaleHandle)?.prepared.stage_count(){return Err(Error::InvalidInput);}
+        let state=self.receiver(delivery.receiver)?;
+        let performance=self.performance_index(state.performance)?;
+        let origin=event.execution.channel_address();let source=receipt.source.channel_address();
+        let scope=ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:u16::MAX};
+        let policy_epochs=self.performance_state.epochs(performance,scope);
+        let context=crate::behavior::NoteControllerContext{performance,origin,source,epoch:policy_epochs[usize::from(origin.channel)],stage,
+            receiver:Some(delivery.receiver),policy_epochs,host_epochs:self.receiver_host_epochs(delivery.receiver,performance)?,
+            physical_event:Some(PhysicalReleaseEvent{plan:event.plan,source:receipt.source,execution:event.execution,
+                original_frame:event.original_frame,velocity:receipt.velocity})};
+        // validate/admit uses the real preallocated behavior arena and reserves
+        // normal generation.callbacks before the physical receipt can be ACKed.
+        let behavior=self.admit_plan_context(event.plan,program,crate::behavior::PlanContext::NoteControllers(context))?;
+        let owner=self.receivers.get_mut(delivery.receiver.0).ok_or(Error::StaleHandle)?;
+        let active=owner.terminal_delivery.as_mut().ok_or(Error::StaleHandle)?;
+        active.2=true;
+        self.resume_behavior(behavior);Ok(behavior)
+    }
+    /// A dead/replaced external owner explicitly cancels this real receipt by
+    /// completing it. It must never resolve the old processor in a new plan.
+    pub fn cancel_receiver_physical_event(&mut self,delivery:ReceiverTerminalDelivery)->Result<(),Error>{
+        let (_,started)=self.receiver_physical_delivery(delivery)?;
+        if started&&!self.external_execution_aborted
+{return Err(Error::Busy);}
+        self.complete_receiver_terminal(delivery)
+    }
+    pub(crate) fn pending_physical_event_frame(&self)->Option<u64>{
+        self.receivers.slots.iter().filter_map(|slot|slot.value.as_ref()).flat_map(|owner|
+            owner.state.terminal_releases.iter().filter_map(|receipt|receipt.event.map(|event|event.original_frame))
+                .chain(owner.terminal_delivery.iter().filter_map(|(_,receipt,_)|receipt.event.map(|event|event.original_frame))))
+            .min()
+    }
+}
+/// Plan-owned physical Event creator. It carries actual immutable input metadata
+/// without treating a historical NoteId as a live parent or expression owner.
+#[derive(Clone,Copy,Debug)]
+pub struct PhysicalReleaseEvent {
+    pub plan:crate::PlanId,pub source:Input,pub execution:Input,pub original_frame:u64,pub velocity:Option<f64>,
+}
+impl Runtime {
+    /// Recover the actual in-flight sequence receipt after worker fault/cancel.
+    /// This reads the real delivery Slot; diagnostic NoteId/source fields never
+    /// reconstruct a receipt or a physical key-up obligation.
+    pub fn active_receiver_terminal(&self,id:ReceiverId)->Result<Option<ReceiverTerminalDelivery>,Error>{
+        let owner=self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
+        Ok(owner.terminal_delivery.map(|(sequence,receipt,_)|ReceiverTerminalDelivery{release:receipt.release,receiver:id,sequence}))
+    }
+}
 impl Runtime {
     /// Bind a public physical-controller call to an actual registered owner,
     /// never reconstruct an identity from a port. The declared target mask and

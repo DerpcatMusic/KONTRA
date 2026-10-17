@@ -65,6 +65,7 @@ impl FadeCurve {
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
+    AwaitExternal { processor: sampler_ir::SourceEventProcessorId },
     ForwardAttack,
     ForwardReleaseGroups,
     SuppressAttack,
@@ -1016,6 +1017,7 @@ pub(super) struct NoteControllerContext {
     pub receiver:Option<super::ReceiverId>,
     pub policy_epochs:[u64;16],
     pub host_epochs:Option<[u64;16]>,
+    pub physical_event:Option<super::PhysicalReleaseEvent>
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1064,6 +1066,8 @@ pub(super) struct Continuation {
     pub parameter: Option<super::plan_programs::ParameterMessage>,
     pub async_result: Option<(i32, i32)>,
     pub async_wait: Option<i32>,
+    pub external: Option<super::receiver::external::ExternalState>,
+    pub external_sequence: u64
 }
 
 #[derive(Clone, Copy)]
@@ -1103,6 +1107,7 @@ impl Runtime {
         program: usize,
         note_stage: Option<NoteStage>,
     ) -> Result<BehaviorId, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         if program >= plan.programs.len() || plan.programs[program].requires_controller {
@@ -1128,7 +1133,8 @@ impl Runtime {
         let receiver=self.expression_receiver(expression).map(|component|component.receiver);
         let policy_epochs=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:u16::MAX});
         let host_epochs=receiver.map(|receiver|self.receiver_host_epochs(receiver,performance)).transpose()?.flatten();
-        let context=NoteControllerContext{performance,origin,source,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index),receiver,policy_epochs,host_epochs};
+        let context=NoteControllerContext{performance,origin,source,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index),receiver,policy_epochs,host_epochs,physical_event:None
+};
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             context: PlanContext::NoteControllers(context),
@@ -1148,6 +1154,8 @@ impl Runtime {
             disable_wait: false,
             async_result: None,
             async_wait: None,
+            external:None,
+            external_sequence:0,
         })?);
         self.notes.get_mut(note.0).unwrap().work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -1172,6 +1180,7 @@ impl Runtime {
         program: usize,
         context: PlanContext,
     ) -> Result<(), Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let program = generation
             .prepared
@@ -1241,6 +1250,8 @@ impl Runtime {
             disable_wait: false,
             async_result: None,
             async_wait: None,
+            external: None,
+            external_sequence: 0
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1437,6 +1448,7 @@ impl Runtime {
 
     pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
         // Behind a preempted callback of the same instrument: keep event order.
+        if self.behaviors.get(id.0).is_some_and(|c|c.external.is_some_and(|state|state.blocks_dispatch())) { return; }
         let plan = self.behaviors.get(id.0).map(|c| c.owner);
         let plan = plan.and_then(|o| self.behavior_plan(o).ok());
         if self
@@ -1840,7 +1852,12 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
-            Instruction::ForwardController => {
+            Instruction::AwaitExternal { processor } => {
+                self.await_external_input(id, processor)?;
+                return Ok(true);
+            }
+            Instruction::
+ForwardController => {
                 self.forward_controller(id)?;
                 self.flush_deferred(id);
             }
@@ -2130,7 +2147,9 @@ impl Runtime {
                         let c = slot.value?;
                         (i64::from(c.callback_id) == callback
                             && c.waiting
-                            && c.outcome.is_none()
+                            && c.external.is_none()
+                            && c.
+outcome.is_none()
                             && self.behavior_plan(c.owner).ok() == Some(plan))
                         .then(|| BehaviorId(self.behaviors.id(index)))
                     });
@@ -2840,6 +2859,7 @@ impl Runtime {
     /// Start the notes `id` played since it last waited, with the group
     /// selection it left them (Kontakt starts played notes when the callback
     /// yields, so scripts adjust them right after `play_note`).
+    pub(super)
     fn flush_deferred(&mut self, id: BehaviorId) {
         while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
             let (_, note, entry) = self.deferred.remove(at);
@@ -2958,6 +2978,7 @@ impl Runtime {
         Ok(true)
     }
 
+    pub(super)
     fn play_behavior(
         &mut self,
         id: BehaviorId,
