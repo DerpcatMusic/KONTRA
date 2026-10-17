@@ -221,6 +221,11 @@ impl Runtime {
         value: u32,
         recipients: Option<crate::InputSelector>,
     ) -> Result<(Option<BehaviorId>, usize), Error> {
+        self.dispatch_poly_pressure_captured(performance,origin,key,value,recipients,None)
+    }
+
+    pub(crate) fn dispatch_poly_pressure_captured(&mut self,performance:PerformanceId,origin:ChannelAddress,key:u8,value:u32,
+        recipients:Option<crate::InputSelector>,receiver:Option<crate::receiver::components::CapturedReceiver>)->Result<(Option<BehaviorId>,usize),Error>{
         let performance = self.performance_index(performance)?;
         if key >= 128
             || origin.group >= 16
@@ -252,7 +257,7 @@ impl Runtime {
                     },
                 ),
                 secondary: None,
-                receiver: None,
+                receiver,
                 number: 130,
                 poly_key: Some(key),
                 poly_recipients: recipients,
@@ -309,6 +314,7 @@ impl Runtime {
         Ok(match callback.context {
             super::behavior::PlanContext::NoteControllers(context) => Some(context.origin),
             super::behavior::PlanContext::Controller(event) => Some(event.origin),
+            super::behavior::PlanContext::Program(event) => Some(event.origin),
             super::behavior::PlanContext::Control(event) => {
                 event.controller_epochs.map(|_| event.origin)
             }
@@ -333,6 +339,7 @@ impl Runtime {
                 Some(epochs)
             }
             super::behavior::PlanContext::Controller(event) => Some(event.epochs),
+            super::behavior::PlanContext::Program(event) => Some(event.epochs),
             super::behavior::PlanContext::Control(event) => event.controller_epochs,
             super::behavior::PlanContext::Bare => match callback.owner {
                 crate::BehaviorOwner::Note(note) => {
@@ -363,6 +370,7 @@ impl Runtime {
         Ok(match callback.context {
             super::behavior::PlanContext::Controller(event) => event.receiver,
             super::behavior::PlanContext::Control(event) => event.receiver,
+            super::behavior::PlanContext::Program(event) => event.controller_capture(),
             super::behavior::PlanContext::NoteControllers(context) => {
                 context
                     .receiver
@@ -386,6 +394,7 @@ impl Runtime {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
             super::behavior::PlanContext::Controller(event) => event.secondary,
+            super::behavior::PlanContext::Program(event) => event.secondary,
             super::behavior::PlanContext::Control(event) => event.controller_secondary,
             super::behavior::PlanContext::Bare
             | super::behavior::PlanContext::NoteControllers(_) => None,
@@ -516,12 +525,12 @@ impl Runtime {
     }
 
     pub(super) fn release_controller_reserve(&mut self, id: BehaviorId) {
-        if let super::behavior::PlanContext::Controller(event) =
-            &mut self.behaviors.get_mut(id.0).unwrap().context
-        {
-            let reserved = std::mem::take(&mut event.reserved);
-            self.behaviors.unreserve(reserved);
-        }
+        let reserved=match &mut self.behaviors.get_mut(id.0).unwrap().context {
+            super::behavior::PlanContext::Controller(event)=>std::mem::take(&mut event.reserved),
+            super::behavior::PlanContext::Program(event)=>std::mem::take(&mut event.reserved),
+            _=>0,
+        };
+        self.behaviors.unreserve(reserved);
     }
 
     pub(super) fn behavior_input_controller(
@@ -581,6 +590,12 @@ impl Runtime {
             event.reserved = 0;
             self.admit_controller(self.behavior_plan(callback.owner)?, event)?;
             Ok(())
+        } else if let super::behavior::PlanContext::Program(event) = callback.context {
+            self.admit_controller(self.behavior_plan(callback.owner)?,ControllerEvent{
+                original_frame:self.now,performance:event.performance,origin:event.origin,channels:event.channels,epochs:event.epochs,
+                secondary:event.secondary,receiver:event.controller_capture(),number,poly_key:None,poly_recipients:None,value,
+                stage:event.stage+1,pending:true,reserved:0,
+            })?;Ok(())
         } else if let super::behavior::PlanContext::Control(event) = callback.context {
             let Some(epochs) = event.controller_epochs else {
                 return self.set_controller(self.performance(event.performance)?, number, value);
@@ -763,6 +778,9 @@ impl Runtime {
         if let super::behavior::PlanContext::Controller(event) = callback.context {
             return Ok((event.performance, event.scope()));
         }
+        if let super::behavior::PlanContext::Program(event) = callback.context {
+            return Ok((event.performance,event.scope()));
+        }
         if let super::behavior::PlanContext::Control(event) = callback.context {
             return Ok((event.performance, event.scope()));
         }
@@ -896,7 +914,7 @@ impl Runtime {
             event.number,
             event.value,
         )?;
-        if event.receiver.is_some() {
+        if event.receiver.is_some() && event.poly_key.is_none() {
             return self.publish_receiver_controller(event, scope, secondary);
         }
         if let Some(key) = event.poly_key {
@@ -907,7 +925,7 @@ impl Runtime {
             let owners = if let Some(selector) = event.poly_recipients {
                 self.set_source_expressions(selector, update)?
             } else {
-                self.set_input_expressions(event.origin, Some(key), update)?
+                self.set_scope_expressions(scope, Some(key), update)?
             };
             self.poly_pressure_owners = self.poly_pressure_owners.wrapping_add(owners);
             self.performance_state

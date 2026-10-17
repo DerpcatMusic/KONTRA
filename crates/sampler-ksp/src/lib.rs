@@ -745,6 +745,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             release: script.routed(EntryKind::Release).map(|p| base + p),
             controller: script.routed(EntryKind::Controller).map(|p| base + p),
             poly_at: script.routed(EntryKind::PolyAt).map(|p| base + p),
+            program_change: None,
         });
         for w in &script.model.interface.widgets {
             use model::{Location, WidgetValue};

@@ -882,6 +882,53 @@ pub struct PreparedSourceSwitch {
     pub control: Option<crate::ControlId>,
 }
 
+/// Actual installed executable family, independent of retained source metadata.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceEventFamily {Note,Release,Controller,PolyPressure,ProgramChange}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceEventRouting {SourceHierarchy,LinearStage}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ExecutableSourceBinding {
+    pub processor:sampler_ir::SourceEventProcessorId,
+    pub owner:PreparedSourceOwnerIndex,
+    pub family:SourceEventFamily,
+    pub program:usize,
+    pub stage:Option<usize>,
+    pub routing:SourceEventRouting,
+}
+impl Prepared {
+    /// Proves an actual installed entry. An unused instruction or source row
+    /// cannot turn off a frontend's established input path.
+    pub fn executable_source_binding(&self,processor:sampler_ir::SourceEventProcessorId,family:SourceEventFamily)->Result<Option<ExecutableSourceBinding>,Error>{
+        let row=self.source_owners.processor(processor).ok_or(Error::InvalidInput)?;
+        if row.kind.as_ref()!="ScriptProcessor"{return Ok(None);}
+        let entry_matches=|index:usize|self.programs.get(index).is_some_and(|program|
+            matches!(program.code.get(program.entry),Some(crate::Instruction::AwaitExternal{processor:bound}) if *bound==processor));
+        if family==SourceEventFamily::Note&&self.source_owners.note_root.is_some(){
+            if let Some(program)=row.note_program.filter(|&program|entry_matches(program)){
+                return Ok(Some(ExecutableSourceBinding{processor,owner:row.owner,family,program,stage:None,routing:SourceEventRouting::SourceHierarchy}));
+            }
+        }
+        let mut binding=None;
+        for (stage,callbacks) in self.stages.iter().enumerate(){
+            let program=match family{SourceEventFamily::Note=>callbacks.note,SourceEventFamily::Release=>callbacks.release,
+                SourceEventFamily::Controller=>callbacks.controller,SourceEventFamily::PolyPressure=>callbacks.poly_at,SourceEventFamily::ProgramChange=>callbacks.program_change};
+            let Some(program)=program else{continue;};
+            if !entry_matches(program){
+                if self.programs.get(program).is_some_and(|body|body.code.iter().any(|instruction|matches!(instruction,crate::Instruction::AwaitExternal{processor:bound}if *bound==processor))){return Err(Error::InvalidInput);}
+                continue;
+            }
+            if binding.is_some(){return Err(Error::InvalidInput);}
+            binding=Some(ExecutableSourceBinding{processor,owner:row.owner,family,program,stage:Some(stage),routing:SourceEventRouting::LinearStage});
+        }Ok(binding)
+    }
+}
+impl crate::Runtime {
+    pub fn executable_source_binding(&self,plan:crate::PlanId,processor:sampler_ir::SourceEventProcessorId,family:SourceEventFamily)->Result<Option<ExecutableSourceBinding>,Error>{
+        self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.executable_source_binding(processor,family)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PreparedSourceEventProcessor {
     pub id: sampler_ir::SourceEventProcessorId,

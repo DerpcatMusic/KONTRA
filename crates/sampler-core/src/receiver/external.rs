@@ -3,6 +3,7 @@
 use crate::{BehaviorId,BehaviorOwner,Error,Input,NoteId,NotePitch,PlanId,Runtime};
 use crate::behavior::{Continuation,PlanContext};
 use crate::controller_event::ControllerEvent;
+use super::channel_event::{ProgramEvent,ProgramProvenance};
 use sampler_ir::SourceEventProcessorId;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -12,6 +13,7 @@ impl ExternalInputId { pub fn behavior(self)->BehaviorId {self.callback} }
 pub enum ExternalEvent {
     Controller { source:crate::ChannelAddress, number:u8, value:u32, poly_key:Option<u8> },
     Note { note:NoteId, source:Input, pitch:NotePitch, velocity:f64, release_velocity:Option<f64>, released:bool },
+    ProgramChange{source:crate::ChannelAddress,version:Option<super::Version>,program:u8,bank:crate::ProgramBankIntent},
     PhysicalRelease(super::PhysicalReleaseEvent),
     Plan,
 }
@@ -32,6 +34,11 @@ pub struct ExternalTurn {
     /// Genuine root event ID for VM mapping only, never implicit creator authority.
     pub event_origin:Option<NoteId>,
 }
+/// An explicit logical destination in the same admitted protocol/port/group.
+/// Adapter input/layer selectors require a separately compiled route; this mask
+/// never changes the immutable physical source tuple.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ExternalTarget {Captured,Channels(u16)}
 #[derive(Clone,Copy,Debug)]
 pub enum ExternalOutput {
     /// Transparent event: retains original wire precision/provenance.
@@ -39,6 +46,12 @@ pub enum ExternalOutput {
     /// Explicit normalized full-resolution authored replacement. A Lua adapter
     /// performs its declared seven-bit conversion before this API.
     Controller { number:u8,value:u32 },
+    RoutedController { number:u8,value:u32,channels:u16 },
+    /// Value-only poly edit retains the captured key AND exact physical selector.
+    PolyPressure {value:u32},
+    /// Explicit new logical key/mask reselects execution owners, never host IDs.
+    RoutedPolyPressure {key:u8,value:u32,channels:u16},
+    ProgramChange {program:u8,bank:crate::ProgramBankIntent,target:ExternalTarget},
     /// Manual gate distinct from the actual physical input gate.
     Note { pitch:NotePitch,velocity:f64 },
     /// An authored logical reroute does not replace original physical provenance.
@@ -51,6 +64,12 @@ pub enum ExternalOutputResult { Forwarded,Note(NoteId) }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum Phase { Pending,Running,Sleeping }
 #[derive(Clone,Copy,Debug)]
+enum CapturedChannelAction {None,Controller(ControllerEvent),Program(ProgramEvent)}
+impl CapturedChannelAction {
+    fn controller(self)->Result<ControllerEvent,Error>{match self{Self::Controller(event)=>Ok(event),_=>Err(Error::InvalidInput)}}
+    fn program(self)->Result<ProgramEvent,Error>{match self{Self::Program(event)=>Ok(event),_=>Err(Error::InvalidInput)}}
+}
+#[derive(Clone,Copy,Debug)]
 pub(crate) struct ExternalState {
     processor:SourceEventProcessorId,
     owner:crate::PreparedSourceOwnerIndex,
@@ -61,8 +80,8 @@ pub(crate) struct ExternalState {
     await_pc:usize,
     phase:Phase,
     event:ExternalEvent,
-    controller:Option<ControllerEvent>,
-    controller_path_used:bool,
+    captured:CapturedChannelAction,
+    channel_path_used:bool,
 }
 impl ExternalState {
     pub(crate) fn blocks_dispatch(self)->bool {self.phase!=Phase::Sleeping}
@@ -78,14 +97,16 @@ impl Runtime {
         // Lookup is actual source identity; the compiled stage must establish
         // executable kind/bypass and hierarchical branch admission beforehand.
         let sequence=callback.external_sequence.checked_add(1).ok_or(Error::Capacity)?;
-        let (original_frame,event,controller)=match callback.external {
+        let (original_frame,event,captured)=match callback.external {
             Some(state) if state.phase==Phase::Sleeping && state.processor==processor => {
                 if state.resume_frame!=self.now{return Err(Error::PastEvent);}
-                (state.original_frame,state.event,state.controller)
+                (state.original_frame,state.event,state.captured)
             }
             Some(_)=>return Err(Error::Busy),
             None=>{
                 let event=match callback.context {
+                    PlanContext::Program(event)=>ExternalEvent::ProgramChange{source:event.source,
+                        version:match event.provenance{ProgramProvenance::Wire(version)=>Some(version),ProgramProvenance::Script=>None},program:event.program,bank:event.bank},
                     PlanContext::Controller(event)=>ExternalEvent::Controller{
                         source:event.receiver.map_or(event.origin,|capture|capture.source),
                         number:event.number,value:event.value,poly_key:event.poly_key},
@@ -102,9 +123,10 @@ impl Runtime {
                         BehaviorOwner::Plan(_)=>ExternalEvent::Plan,
                     },
                 };
-                let controller=match callback.context{PlanContext::Controller(event)=>Some(event),_=>None};
+                let captured=match callback.context{PlanContext::Controller(event)=>CapturedChannelAction::Controller(event),PlanContext::Program(event)=>CapturedChannelAction::Program(event),_=>CapturedChannelAction::None};
                 let original_frame=match callback.context {
                     PlanContext::Controller(event)=>event.original_frame,
+                    PlanContext::Program(event)=>event.original_frame,
                     PlanContext::NoteControllers(context) if context.physical_event.is_some()=>
                         context.physical_event.ok_or(Error::InvalidInput)?.original_frame,
                     _=>match callback.owner {
@@ -115,7 +137,7 @@ impl Runtime {
                         BehaviorOwner::Plan(_)=>self.now,
                     },
                 };
-                (original_frame,event,controller)
+                (original_frame,event,captured)
             }
         };
         let order=self.next_external_turn_order.checked_add(1).ok_or(Error::Capacity)?;
@@ -123,14 +145,14 @@ impl Runtime {
         let c=self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
         c.external_sequence=sequence;
         c.external=Some(ExternalState{processor,owner,original_frame,resume_frame:self.now,order,sequence,
-            await_pc:c.pc.checked_sub(1).ok_or(Error::InvalidInput)?,phase:Phase::Pending,event,controller,controller_path_used:false});
+            await_pc:c.pc.checked_sub(1).ok_or(Error::InvalidInput)?,phase:Phase::Pending,event,captured,channel_path_used:false});
         c.waiting=true;Ok(())
     }
     fn external_turn(&self,id:BehaviorId,c:&Continuation,state:ExternalState)->Result<ExternalTurn,Error>{
         Ok(ExternalTurn{input:ExternalInputId{callback:id,sequence:state.sequence},
             plan:self.behavior_plan(c.owner)?,processor:state.processor,owner:state.owner,
             original_frame:state.original_frame,resume_frame:state.resume_frame,order:state.order,event:state.event,receiver:c.context.receiver(),
-            logical_channel:match c.owner{BehaviorOwner::Note(note)=>self.note_events[note.0.index].source_route.map(|route|route.channel),_=>None},
+            logical_channel:match state.captured{CapturedChannelAction::Controller(event)=>Some(event.origin.channel),CapturedChannelAction::Program(event)=>Some(event.origin.channel),CapturedChannelAction::None=>match c.owner{BehaviorOwner::Note(note)=>self.note_events[note.0.index].source_route.map(|route|route.channel),_=>None}},
             event_origin:match state.event{ExternalEvent::Note{note,..}=>Some(self.note_events[note.0.index].source_route.map_or(note,|route|route.event_origin)),ExternalEvent::PhysicalRelease(event)=>Some(event.physical_note),_=>None}})
     }
     /// Actual parked owners remain visible while the external owner runs. Actual
@@ -174,39 +196,48 @@ impl Runtime {
         let (callback,state)=self.validate_external_segment(id,Phase::Running)?;
         let result=match output {
             ExternalOutput::Original=>match state.event {
-                ExternalEvent::Controller{..}=>{
-                    let mut event=state.controller.ok_or(Error::InvalidInput)?;
-                    let still_pending=matches!(callback.context,PlanContext::Controller(current) if current.pending);
-                    if !state.controller_path_used && still_pending {
-                        self.post_external_owned_controller(id.callback,event)?;
-                    }else{
-                        event.stage=event.stage.checked_add(1).ok_or(Error::Capacity)?;
-                        event.pending=true;event.reserved=0;
-                        self.admit_controller(self.behavior_plan(callback.owner)?,event)?;
-                    }
-                    ExternalOutputResult::Forwarded
-                }
+                ExternalEvent::Controller{..}=>{self.post_external_controller(id.callback,state,state.captured.controller()?)?;ExternalOutputResult::Forwarded}
+                ExternalEvent::ProgramChange{..}=>{self.post_external_program(id.callback,state,state.captured.program()?)?;ExternalOutputResult::Forwarded}
                 ExternalEvent::Note{pitch,velocity,released:false,..}=>ExternalOutputResult::Note(
                     if self.source_note_callback(id.callback)?{self.post_source_note(id.callback,pitch,velocity,None)?}
                     else{self.play_behavior(id.callback,pitch,velocity,crate::Inheritance::Expression,crate::Duration::UntilSilent,0)?}),
-                // An original release must carry its actual forwarded child ID;
-                // no physical-gate or same-key guess may release unrelated notes.
-                ExternalEvent::Note{released:true,..}|ExternalEvent::PhysicalRelease(_)|ExternalEvent::
-Plan=>return Err(Error::InvalidInput),
+                ExternalEvent::Note{released:true,..}|ExternalEvent::PhysicalRelease(_)|ExternalEvent::Plan=>return Err(Error::InvalidInput),
             },
-            ExternalOutput::Controller{number,value}=>{
-                let still_pending=matches!(callback.context,PlanContext::Controller(current) if current.pending);
+            ExternalOutput::Controller{number,value}|ExternalOutput::RoutedController{number,value,..}=>{
                 if number>=130{return Err(Error::InvalidInput);}
-                if !state.controller_path_used && still_pending {
-                    let mut event=state.controller.ok_or(Error::InvalidInput)?;
+                if let CapturedChannelAction::None=state.captured{
+                    if matches!(output,ExternalOutput::RoutedController{..}){return Err(Error::InvalidInput);}
+                    self.write_behavior_controller(id.callback,number,value)?;
+                }else{
+                    let mut event=self.external_controller_template(state)?;
                     event.number=number;event.value=value;event.poly_key=None;event.poly_recipients=None;
-                    if let Some(capture)=event.receiver.as_mut(){
-                        capture.provenance=super::components::ReceiverProvenance::Script;
-                        capture.kind=super::components::ReceiverActionKind::Controller;
-                    }
-                    self.post_external_owned_controller(id.callback,event)?;
-                }else{self.write_behavior_controller(id.callback,number,value)?;}
+                    self.mark_script_controller(&mut event);
+                    if let ExternalOutput::RoutedController{channels,..}=output{self.route_external_controller(&mut event,channels)?;}
+                    self.post_external_controller(id.callback,state,event)?;
+                }
                 ExternalOutputResult::Forwarded
+            }
+            ExternalOutput::PolyPressure{value}|ExternalOutput::RoutedPolyPressure{value,..}=>{
+                let mut event=self.external_controller_template(state)?;
+                if matches!(output,ExternalOutput::PolyPressure{..})&&event.poly_key.is_none(){return Err(Error::InvalidInput);}
+                event.number=130;event.value=value;self.mark_script_controller(&mut event);
+                if let ExternalOutput::RoutedPolyPressure{key,channels,..}=output{
+                    if key>=128{return Err(Error::InvalidInput);}
+                    event.poly_key=Some(key);event.poly_recipients=None;
+                    self.route_external_controller(&mut event,channels)?;
+                }
+                self.post_external_controller(id.callback,state,event)?;
+                ExternalOutputResult::Forwarded
+            }
+            ExternalOutput::ProgramChange{program,bank,target}=>{
+                let mut event=self.external_program_template(state)?;
+                if program>=128||!bank.valid(){return Err(Error::InvalidInput);}
+                event.program=program;event.bank=bank;event.provenance=ProgramProvenance::Script;
+                if let ExternalTarget::Channels(channels)=target{
+                    if channels==0{return Err(Error::InvalidInput);}
+                    event.channels=channels;event.origin.channel=channels.trailing_zeros() as u8;event.secondary=None;
+                }
+                self.post_external_program(id.callback,state,event)?;ExternalOutputResult::Forwarded
             }
             ExternalOutput::Note{pitch,velocity}=>ExternalOutputResult::Note(
                 if self.source_note_callback(id.callback)?{self.post_source_note(id.callback,pitch,velocity,None)?}
@@ -228,10 +259,60 @@ Plan=>return Err(Error::InvalidInput),
                 ExternalOutputResult::Forwarded
             }
         };
-        if matches!(output,ExternalOutput::Original|ExternalOutput::Controller{..}) && state.controller.is_some(){
-            self.behaviors.get_mut(id.callback.0).ok_or(Error::StaleHandle)?.external.as_mut().ok_or(Error::StaleHandle)?.controller_path_used=true;
-        }
         Ok(result)
+    }
+    fn mark_script_controller(&self,event:&mut ControllerEvent){
+        if let Some(capture)=event.receiver.as_mut(){capture.provenance=super::components::ReceiverProvenance::Script;capture.kind=super::components::ReceiverActionKind::Controller;}
+    }
+    fn route_external_controller(&self,event:&mut ControllerEvent,channels:u16)->Result<(),Error>{
+        if channels==0{return Err(Error::InvalidInput);}
+        event.channels=channels;event.origin.channel=channels.trailing_zeros() as u8;event.secondary=None;
+        if let Some(capture)=event.receiver{
+            let state=self.receiver(capture.receiver)?;let domain=super::state::OwnedReceiver::domain(event.origin.protocol)?;
+            if (0..16u8).any(|channel|channels&(1<<channel)!=0&&!state.accepts_wire_channel(domain,channel)){return Err(Error::InvalidInput);}
+        }Ok(())
+    }
+    fn external_controller_template(&self,state:ExternalState)->Result<ControllerEvent,Error>{
+        match state.captured{
+            CapturedChannelAction::Controller(event)=>Ok(event),
+            CapturedChannelAction::Program(event)=>Ok(ControllerEvent{original_frame:event.original_frame,performance:event.performance,origin:event.origin,
+                channels:event.channels,epochs:event.epochs,secondary:event.secondary,receiver:event.controller_capture(),number:0,poly_key:None,poly_recipients:None,value:0,stage:event.stage,pending:true,reserved:0}),
+            CapturedChannelAction::None=>Err(Error::InvalidInput),
+        }
+    }
+    fn external_program_template(&self,state:ExternalState)->Result<ProgramEvent,Error>{
+        match state.captured{
+            CapturedChannelAction::Program(event)=>Ok(event),
+            CapturedChannelAction::Controller(event)=>Ok(ProgramEvent{original_frame:event.original_frame,performance:event.performance,origin:event.origin,
+                source:event.receiver.map_or(event.origin,|capture|capture.source),channels:event.channels,epochs:event.epochs,secondary:event.secondary,
+                receiver:event.receiver.map(|capture|capture.receiver),host_epochs:event.receiver.and_then(|capture|capture.host_epochs),provenance:ProgramProvenance::Script,
+                program:0,bank:crate::ProgramBankIntent::KeepSelected,stage:event.stage,pending:true,reserved:0}),
+            CapturedChannelAction::None=>Err(Error::InvalidInput),
+        }
+    }
+    fn post_external_controller(&mut self,id:BehaviorId,state:ExternalState,mut event:ControllerEvent)->Result<(),Error>{
+        let callback=*self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let still_pending=matches!(callback.context,PlanContext::Controller(current) if current.pending);
+        let same_family=matches!(state.captured,CapturedChannelAction::Controller(original) if original.poly_key.is_some()==event.poly_key.is_some());
+        if !state.channel_path_used&&still_pending&&same_family{self.post_external_owned_controller(id,event)?;}
+        else{event.stage=event.stage.checked_add(1).ok_or(Error::Capacity)?;event.pending=true;event.reserved=0;self.admit_controller(self.behavior_plan(callback.owner)?,event)?;}
+        if same_family{
+            self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.external.as_mut().ok_or(Error::StaleHandle)?.channel_path_used=true;
+        }Ok(())
+    }
+    fn post_external_program(&mut self,id:BehaviorId,state:ExternalState,mut event:ProgramEvent)->Result<(),Error>{
+        let callback=*self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let still_pending=matches!(callback.context,PlanContext::Program(current) if current.pending);
+        if !state.channel_path_used&&still_pending{
+            let PlanContext::Program(before)=callback.context else{return Err(Error::InvalidInput);};
+            event.reserved=before.reserved;event.pending=true;
+            self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.context=PlanContext::Program(event);
+            if let Err(error)=self.forward_program_event(id){self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.context=PlanContext::Program(before);return Err(error);}
+            self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.context=PlanContext::Program(ProgramEvent{pending:false,reserved:0,..before});
+        }else{event.stage=event.stage.checked_add(1).ok_or(Error::Capacity)?;event.pending=true;event.reserved=0;self.admit_program_event(self.behavior_plan(callback.owner)?,event)?;}
+        if matches!(state.captured,CapturedChannelAction::Program(_)){
+            self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.external.as_mut().ok_or(Error::StaleHandle)?.channel_path_used=true;
+        }Ok(())
     }
     fn post_external_owned_controller(&mut self,id:BehaviorId,mut event:ControllerEvent)->Result<(),Error>{
         let before=*self.controller_event_mut(id)?;
@@ -240,6 +321,10 @@ Plan=>return Err(Error::InvalidInput),
         if let Err(error)=self.forward_controller(id){
             *self.controller_event_mut(id)?=before;return Err(error);
         }
+        let remaining=self.controller_event_mut(id)?.reserved;
+        // Final-stage forwarding leaves no reserved future slot; downstream
+        // handoff already transferred all of them to its genuine continuation.
+        *self.controller_event_mut(id)?=ControllerEvent{pending:false,reserved:remaining,..before};
         Ok(())
     }
     /// ACK current F. None consumes unposted original and finishes; Some(F')
@@ -256,6 +341,7 @@ Plan=>return Err(Error::InvalidInput),
         self.flush_deferred(id.callback);
         if next_resume.is_some() { self.reserved_commands-=1; }
         if let Ok(event)=self.controller_event_mut(id.callback){event.pending=false;}
+        if let PlanContext::Program(event)=&mut self.behaviors.get_mut(id.callback.0).ok_or(Error::StaleHandle)?.context{event.pending=false;}
         self.release_controller_reserve(id.callback);
         if next_resume.is_none()&&self.source_note_callback(id.callback)?{
             if let BehaviorOwner::Note(note)=callback.owner{

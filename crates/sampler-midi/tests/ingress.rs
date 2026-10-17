@@ -1034,3 +1034,26 @@ fn explicit_bend_override_still_retains_hidden_rpn_without_reprojecting_the_held
         assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
     });
 }
+
+#[test]
+fn program_change_preserves_pending_vs_selected_bank_per_wire_domain_without_heap(){
+    use sampler_core::{ChannelAddress,ProgramSelection,ProgramPlaybackCapability};
+    let mut rt=runtime();let performance=rt.performance(0).unwrap();
+    let mut groups=[None;16];groups[1]=Some(Version::Midi1);groups[3]=Some(Version::Midi2);let mut ingress=Ingress::new(7,groups);
+    let midi1=ChannelAddress{protocol:Protocol::Midi1,port:7,group:1,channel:2};let midi2=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:2};
+    support::without_heap(||{
+        // Independent literal packet bytes: MIDI1 MSB=4, LSB=126, program=63.
+        apply(&mut ingress,&mut rt,&[0x21b2_0004]).unwrap();apply(&mut ingress,&mut rt,&[0x21b2_207e]).unwrap();
+        assert_eq!(rt.program_selection(performance,midi1).unwrap(),None,"Bank Select is pending, not a preset switch");
+        assert!(matches!(apply(&mut ingress,&mut rt,&[0x21c2_3f00]).unwrap(),Applied::ProgramChange{targets:1}));
+        assert_eq!(rt.program_selection(performance,midi1).unwrap(),Some(ProgramSelection{program:63,bank:[4,126]}));
+        // MIDI2 Bank Valid=1 takes bytes from data, not word1 reserved bytes.
+        assert!(matches!(apply(&mut ingress,&mut rt,&[0x43c2_0001,0x4100_037c]).unwrap(),Applied::ProgramChange{targets:1}));
+        assert_eq!(rt.program_selection(performance,midi2).unwrap(),Some(ProgramSelection{program:65,bank:[3,124]}));
+        apply(&mut ingress,&mut rt,&[0x43c2_0000,0x0700_0000]).unwrap();
+        assert_eq!(rt.program_selection(performance,midi2).unwrap(),Some(ProgramSelection{program:7,bank:[3,124]}));
+        assert_eq!(rt.program_selection(performance,midi1).unwrap(),Some(ProgramSelection{program:63,bank:[4,126]}));
+        assert_eq!(rt.program_selection(performance,ChannelAddress{channel:3,..midi2}).unwrap(),None);
+        assert_eq!(rt.program_playback_capability(rt.active_plan()).unwrap(),ProgramPlaybackCapability::NoPresetCatalog);
+    });
+}

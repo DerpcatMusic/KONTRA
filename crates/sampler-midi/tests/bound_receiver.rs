@@ -497,3 +497,20 @@ fn bound_per_note_reset_validates_the_joint_base_and_bend_before_either_publicat
         actual.render(&mut got).unwrap();reference.render(&mut oracle).unwrap();for (x,y) in got.iter().zip(oracle){assert!((x[0]-y[0]).abs()<2e-6);}
     });
 }
+
+#[test]
+fn bound_program_state_is_canonical_and_has_no_native_host_or_other_version_alias(){
+    let mut rt=runtime(None);let owner=bind(&mut rt,0);let performance=rt.performance(0).unwrap();
+    let address=ChannelAddress{protocol:Protocol::Midi2,port:0,group:0,channel:3};
+    let first=start(&owner,&mut rt,3,69);let before=expression(&rt,first);
+    support::without_heap(||{
+        assert!(matches!(apply(&owner,&mut rt,[0x40c3_0001,0x7f00_057e]),Applied::ProgramChange{targets:1}));
+        assert_eq!(rt.program_selection(performance,address).unwrap(),Some(ProgramSelection{program:127,bank:[5,126]}));
+        assert_eq!(rt.program_selection(performance,ChannelAddress{protocol:Protocol::Native,..address}).unwrap(),None);
+        assert_eq!(rt.program_selection(performance,ChannelAddress{protocol:Protocol::Midi1,..address}).unwrap(),None);
+        assert_eq!(expression(&rt,first),before,"Program receipt does not invent a preset reload or voice reset");
+        apply(&owner,&mut rt,[0x40c3_0000,0x0000_0000]);
+        assert_eq!(rt.program_selection(performance,address).unwrap(),Some(ProgramSelection{program:0,bank:[5,126]}));
+    });
+    let mut reference=runtime(None);let reference_owner=bind(&mut reference,0);start(&reference_owner,&mut reference,3,69);assert_pcm(&mut rt,&mut reference,256);
+}

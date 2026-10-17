@@ -32,7 +32,7 @@ struct Siblings {
     next: Option<Index>,
 }
 
-pub use prepare::{PreparedSourceOwners, PreparedSourceOwner, PreparedSourceOwnerIndex, PreparedSourceEventProcessor, PreparedSourceSwitch, MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
+pub use prepare::{SourceEventFamily,SourceEventRouting,ExecutableSourceBinding,PreparedSourceOwners, PreparedSourceOwner, PreparedSourceOwnerIndex, PreparedSourceEventProcessor, PreparedSourceSwitch, MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
     ZoneRouteVariant, ZoneRouting, ZoneRoutingLimits, ZoneRoutingBuildError,
     ZoneRoutingFeature, ZoneRoutingRefusal, ZoneRoutingReport};
 mod allocation;
@@ -140,8 +140,8 @@ mod ownership;
 mod receiver;
 pub const RECEIVER_PER_NOTE_CENTER:u32=0x8000_0000;
 pub use receiver::{PerNoteState as ReceiverPerNoteState,KeyState as ReceiverKeyState,Snapshot as ReceiverSnapshot};
-pub use receiver::{PhysicalReleaseEvent,
-ExternalInputId, ExternalTurn, ExternalEvent, ExternalOutput, ExternalOutputResult,
+pub use receiver::{ProgramBankIntent,ProgramSelection,ProgramPlaybackCapability,PhysicalReleaseEvent,
+ExternalInputId, ExternalTurn, ExternalEvent, ExternalOutput, ExternalOutputResult, ExternalTarget,
 ExternalAbortReport,
 ReceiverId,ReceiverMemory,ReceiverTerminalDelivery,OwnedReceiver,Zone as ReceiverZone,TerminalRelease as ReceiverTerminalRelease,Applied as ReceiverApplied,ApplyError as ReceiverApplyError,Attribute as ReceiverAttribute,ChannelVoice as ReceiverChannelVoice,Controllers as ReceiverControllers,Message as ReceiverMessage,Value as ReceiverValue,Version as ReceiverVersion};
 use modulation::RenderedExpression;
