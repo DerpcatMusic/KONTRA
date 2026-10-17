@@ -10,10 +10,6 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
-        if regions.iter().enumerate().any(|(region, group)| group.is_some()
-            && self.region_source_storage(region).is_some_and(|s| s.stereo().is_none())) {
-            return Err(Error::UnsupportedSourceLayout);
-        }
         self.group_count = count;
         self.group_mutes = (0..count)
             .map(|_| std::sync::atomic::AtomicBool::new(false))
