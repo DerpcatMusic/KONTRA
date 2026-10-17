@@ -65,22 +65,25 @@ pub struct TerminalRelease {
     pub velocity: Option<f64>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum PhysicalKind {
-    Wire,
-    Native,
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PhysicalEventContext {
+    pub plan:crate::PlanId, pub execution:Input, pub original_frame:u64,
 }
+#[derive(Clone,Copy,Debug)]
+pub(crate) struct QueuedTerminal {
+    pub release:TerminalRelease, pub event:Option<PhysicalEventContext>,
+}
+impl From<TerminalRelease> for QueuedTerminal {
+    fn from(release:TerminalRelease)->Self{Self{release,event:None}}
+}
+impl std::ops::Deref for QueuedTerminal {
+    type Target=TerminalRelease;fn deref(&self)->&TerminalRelease{&self.release}
+}
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub(super) enum PhysicalKind { Wire,Native }
 #[derive(Clone, Copy)]
-pub(super) struct PhysicalPair {
-    pub(super) note: NoteId,
-    pub(super) expression: Option<ExpressionId>,
-    pub(super) execution: Input,
-    pub(super) source: Input,
-    pub(super) kind: PhysicalKind,
-    pub(super) released: bool,
-    pub(super) scripted: bool,
-    pub(super) terminal_received: bool,
-    pub(super) choked: bool,
+pub(super) struct PhysicalPair { pub(super) note: NoteId, pub(super) expression:Option<ExpressionId>, pub(super) execution: Input, pub(super) source: Input, pub(super) kind:PhysicalKind,
+    pub(super) released: bool, pub(super) scripted: bool, pub(super) terminal_received:bool, pub(super) choked:bool, pub(super) event_plan:Option<crate::PlanId>,
 }
 pub(super) fn native_source(source: Input) -> bool {
     matches!(source.protocol, Protocol::Clap | Protocol::Vst3)
@@ -282,7 +285,7 @@ pub struct OwnedReceiver {
     pub(super) note_changes: Vec<(usize, super::per_note::Snapshot)>,
     pub(super) physical: Vec<PhysicalPair>,
     pub(super) physical_limit: usize,
-    pub(super) terminal_releases: Vec<TerminalRelease>,
+    pub(super) terminal_releases: Vec<QueuedTerminal>,
     pub(super) terminal_limit: usize,
     pub(super) reset_members: Vec<usize>,
 }
@@ -339,7 +342,7 @@ impl OwnedReceiver {
             .map_err(|_| Error::Capacity)?
             .size();
         let terminal_limit = notes.checked_mul(2).ok_or(Error::Capacity)?;
-        let terminal_bytes = std::alloc::Layout::array::<TerminalRelease>(terminal_limit)
+        let terminal_bytes = std::alloc::Layout::array::<QueuedTerminal>(terminal_limit)
             .map_err(|_| Error::Capacity)?
             .size();
         bindings_bytes
@@ -415,7 +418,7 @@ impl OwnedReceiver {
             .ok_or(Error::Capacity)?;
         bytes
             .checked_add(
-                std::alloc::Layout::array::<TerminalRelease>(terminal_releases.capacity())
+                std::alloc::Layout::array::<QueuedTerminal>(terminal_releases.capacity())
                     .map_err(|_| Error::Capacity)?
                     .size(),
             )
@@ -1513,7 +1516,7 @@ impl OwnedReceiver {
                 released: false,
                 scripted: silent,
                 terminal_received: false,
-                choked: false,
+                choked: false,event_plan:None
             });
         }
         self.bindings.push(Binding {
@@ -1560,7 +1563,7 @@ impl OwnedReceiver {
     /// Deliver queued synthetic physical releases exactly once. A later real
     /// key-up consumes its retained tombstone, not another source's owner.
     pub fn drain_terminal_releases(&mut self, mut receive: impl FnMut(TerminalRelease)) {
-        self.terminal_releases.drain(..).for_each(&mut receive);
+        self.terminal_releases.drain(..).for_each(|queued|receive(queued.release));
         self.physical.retain(|pair| !pair.terminal_received);
     }
 
@@ -1600,7 +1603,7 @@ impl OwnedReceiver {
                 pair.kind == PhysicalKind::Native
                     && !pair.terminal_received
                     && !pair.released
-                    && pair.scripted
+                    && (pair.scripted||pair.event_plan.is_some())
                     && matches(pair.note, pair.source)
             })
             .count();
@@ -1642,12 +1645,7 @@ impl OwnedReceiver {
                 Ok(()) | Err(Error::StaleHandle) | Err(Error::ClosedNote) => {}
                 Err(error) => return Err(error),
             }
-            if !pair.released && pair.scripted {
-                self.terminal_releases.push(TerminalRelease {
-                    note: pair.note,
-                    source: pair.source,
-                    velocity,
-                });
+            if !pair.released && (pair.scripted||pair.event_plan.is_some()) {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity}.into());
             }
             self.physical[index].released = true;
             self.physical[index].terminal_received = true;
@@ -1693,7 +1691,7 @@ impl OwnedReceiver {
         let needed = self
             .physical
             .iter()
-            .filter(|pair| pair.scripted && !pair.released)
+            .filter(|pair| (pair.scripted||pair.event_plan.is_some()) && !pair.released)
             .count();
         if self
             .terminal_releases
@@ -1717,12 +1715,7 @@ impl OwnedReceiver {
             if pair.released {
                 continue;
             }
-            if pair.scripted {
-                self.terminal_releases.push(TerminalRelease {
-                    note: pair.note,
-                    source: pair.source,
-                    velocity: None,
-                });
+            if (pair.scripted||pair.event_plan.is_some()) {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity:None}.into());
             }
             pair.released = true;
             count += 1;
@@ -1749,7 +1742,7 @@ impl OwnedReceiver {
             .physical
             .iter()
             .filter(|pair| {
-                pair.scripted
+                (pair.scripted||pair.event_plan.is_some())
                     && !pair.released
                     && (pair.kind == PhysicalKind::Wire
                         && pair.execution.protocol == domain.protocol()
@@ -1799,7 +1792,8 @@ impl OwnedReceiver {
                         note: binding.note,
                         source: binding.source,
                         velocity: None,
-                    });
+                    }.into()
+);
                 }
             }
         }
@@ -1850,12 +1844,7 @@ impl OwnedReceiver {
                                 scope.channels & (1 << pair.execution.channel) != 0
                             }))
                 {
-                    if pair.scripted {
-                        self.terminal_releases.push(TerminalRelease {
-                            note: pair.note,
-                            source: pair.source,
-                            velocity: None,
-                        });
+                    if (pair.scripted||pair.event_plan.is_some()) {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity:None}.into());
                     }
                     pair.released = true;
                 }

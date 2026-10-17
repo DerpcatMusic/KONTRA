@@ -57,7 +57,9 @@ pub(super) struct Generation {
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub callbacks: usize,
-    pub allocation: super::allocation::AllocationState,
+    pub physical_events:usize,
+    pub
+allocation: super::allocation::AllocationState,
     pub sequences: super::variation::SequenceState,
     pub native_cycle: u64,
     pub native_seed: u64,
@@ -470,7 +472,9 @@ impl Runtime {
                 || !slot.value.as_ref().is_some_and(|g| {
                     g.notes == 0
                         && g.callbacks == 0
-                        && g.controls.pending == 0
+                        && g.physical_events == 0
+                        && g.
+controls.pending == 0
                         && !g.dsp.buses.active()
                 })
             {
@@ -530,6 +534,7 @@ impl Runtime {
                             start_cursor: plan.start_cursor,
                             notes: 0,
                             callbacks: 0,
+                            physical_events:0,
                         },
                     );
                     break;
@@ -550,6 +555,7 @@ impl Runtime {
     /// retain their generation. Backpressure leaves the pending plan and active plan
     /// untouched; call again after retirements/terminals are consumed.
     pub fn poll_plan_update(&mut self) -> Result<Option<u64>, PlanError> {
+        if self.external_execution_aborted{return Err(PlanError::Canceled);}
         self.apply_due();
         self.collect_retired_plans();
         let queues = self.plan_queues.as_mut().ok_or(PlanError::Disabled)?;
@@ -591,6 +597,7 @@ impl Runtime {
                     samples: plan.samples,
                     notes: 0,
                     callbacks: plan.initial_residency.pending(),
+                    physical_events:0,
                     initial_residency: plan.initial_residency,
                     start_cursor: plan.start_cursor,
                 })
@@ -604,5 +611,11 @@ impl Runtime {
                 .store(request, std::sync::atomic::Ordering::Release);
         }
         Ok(Some(request))
+    }
+}
+impl Runtime {
+    /// Pure generation reference accounting, including queued/in-flight physical receipts.
+    pub fn plan_physical_event_count(&self,plan:PlanId)->Result<usize,Error>{
+        Ok(self.plans.get(plan.0).ok_or(Error::StaleHandle)?.physical_events)
     }
 }

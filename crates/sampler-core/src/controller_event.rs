@@ -12,7 +12,9 @@ pub(super) struct CapturedControllerTarget {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ControllerEvent {
-    pub performance: usize,
+    pub original_frame:u64,
+    pub
+performance: usize,
     pub origin: ChannelAddress,
     pub channels: u16,
     /// Captured target-bank revisions survive controller waits and plan changes.
@@ -140,6 +142,7 @@ impl Runtime {
             host_targets,
         )?;
         let event = ControllerEvent {
+            original_frame:self.now,
             performance,
             origin,
             channels,
@@ -235,6 +238,7 @@ impl Runtime {
         let callback = self.admit_controller(
             self.active_plan,
             ControllerEvent {
+                original_frame:self.now,
                 performance,
                 origin,
                 channels: 1 << origin.channel,
@@ -406,6 +410,7 @@ impl Runtime {
         plan: PlanId,
         mut event: ControllerEvent,
     ) -> Result<Option<BehaviorId>, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled); }
         event.channels = self
             .performance_state
             .surviving_scope(event.performance, event.scope(), event.epochs)
@@ -583,6 +588,7 @@ impl Runtime {
             self.admit_controller(
                 self.behavior_plan(callback.owner)?,
                 ControllerEvent {
+                    original_frame:self.now,
                     performance: event.performance,
                     origin: event.origin,
                     channels: event.channels,
@@ -608,6 +614,7 @@ impl Runtime {
             self.admit_controller(
                 self.behavior_plan(callback.owner)?,
                 ControllerEvent {
+                    original_frame:self.now,
                     performance: context.performance,
                     origin: context.origin,
                     channels: 1 << context.origin.channel,
@@ -641,6 +648,7 @@ impl Runtime {
             self.admit_controller(
                 n.plan,
                 ControllerEvent {
+                    original_frame:self.now,
                     performance: self.selections[note.0.index].performance,
                     origin: n.address,
                     channels: 1 << n.address.channel,

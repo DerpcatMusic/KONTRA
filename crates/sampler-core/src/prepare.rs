@@ -1026,7 +1026,9 @@ impl PreparedSourceOwners {
 
 pub struct Prepared {
     pub(super) source_owners: PreparedSourceOwners,
-    pub(crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
+    pub(super) external_programs: bool,
+    pub(
+crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(crate) zone_routing: Option<zone_routing::PreparedRouting>,
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
@@ -1373,6 +1375,7 @@ impl Prepared {
         }
         Ok(Self {
             source_owners: PreparedSourceOwners::default(),
+            external_programs: false,
             sample_targets: Box::new([]),
             sample_limits: None,
             source_zone_catalog: None,
@@ -1476,6 +1479,16 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
+        for program in &programs {
+            for op in program.code.iter() {
+                if let super::Instruction::AwaitExternal{processor}=op {
+                    if program.wait_lifetime!=super::WaitLifetime::Callback
+                        || self.source_owners.processor(*processor).is_none() {
+                        return Err(Error::InvalidInput);
+                    }
+                }
+            }
+        }
         self.validate_program_controls(&programs)?;
         self.validate_program_scripts(&programs)?;
         super::plan_programs::validate_starts(&programs)?;
@@ -1496,7 +1509,9 @@ impl Prepared {
             p.note_base = bases[bank(p)];
         }
         self.note_cells = cells;
-        self.programs = programs.into_boxed_slice();
+        self.external_programs=programs.iter().any(|program|program.code.iter().any(|op|matches!(op,super::Instruction::AwaitExternal{..})));
+        self.
+programs = programs.into_boxed_slice();
         self.stages = Box::new([super::Stage {
             note: note_program,
             ..super::Stage::default()

@@ -91,7 +91,9 @@ impl Runtime {
         pitch: NotePitch, velocity: f64, expression: Expression,
         receiver: Option<crate::receiver::components::ReceiverComponents>,
     ) -> Result<NoteId, Error> {
-        if input.group>=16||input.channel>=16||input.key>=128
+        if self.external_execution_aborted{return Err(Error::Canceled);}
+        if
+input.group>=16||input.channel>=16||input.key>=128
             ||source.group>=16||source.channel>=16||source.key>=128 {return Err(Error::InvalidInput);}
         if let Some(component)=receiver {self.receiver(component.receiver)?;}
         self.validate_zone_routing_pitch(self.active_plan, pitch)?;

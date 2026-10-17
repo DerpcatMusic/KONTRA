@@ -140,7 +140,10 @@ mod ownership;
 mod receiver;
 pub const RECEIVER_PER_NOTE_CENTER:u32=0x8000_0000;
 pub use receiver::{PerNoteState as ReceiverPerNoteState,KeyState as ReceiverKeyState,Snapshot as ReceiverSnapshot};
-pub use receiver::{ReceiverId,ReceiverMemory,ReceiverTerminalDelivery,OwnedReceiver,Zone as ReceiverZone,TerminalRelease as ReceiverTerminalRelease,Applied as ReceiverApplied,ApplyError as ReceiverApplyError,Attribute as ReceiverAttribute,ChannelVoice as ReceiverChannelVoice,Controllers as ReceiverControllers,Message as ReceiverMessage,Value as ReceiverValue,Version as ReceiverVersion};
+pub use receiver::{PhysicalReleaseEvent,
+ExternalInputId, ExternalTurn, ExternalEvent, ExternalOutput, ExternalOutputResult,
+ExternalAbortReport,
+ReceiverId,ReceiverMemory,ReceiverTerminalDelivery,OwnedReceiver,Zone as ReceiverZone,TerminalRelease as ReceiverTerminalRelease,Applied as ReceiverApplied,ApplyError as ReceiverApplyError,Attribute as ReceiverAttribute,ChannelVoice as ReceiverChannelVoice,Controllers as ReceiverControllers,Message as ReceiverMessage,Value as ReceiverValue,Version as ReceiverVersion};
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
@@ -914,6 +917,8 @@ pub struct Runtime {
     source_ids: Vec<(i32, NoteId)>,
     last_source_id: i32,
     last_callback_id: i32,
+    next_external_turn_order:u64,
+    external_execution_aborted:bool,
     callback_id_reservations: usize,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
@@ -1152,6 +1157,7 @@ impl Runtime {
                 prepared: Box::new(plan),
                 notes: 0,
                 callbacks: initial_callbacks,
+                physical_events:0
             })?,
         );
         let signal_trace = plans
@@ -1176,6 +1182,8 @@ impl Runtime {
             source_ids: Vec::with_capacity(limits.notes),
             last_source_id: 0,
             last_callback_id: 0,
+            next_external_turn_order:0,
+            external_execution_aborted:false,
             callback_id_reservations: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
@@ -1488,7 +1496,9 @@ impl Runtime {
         pitch: NotePitch, velocity: f64, expression: Expression,
         receiver: Option<receiver::components::ReceiverComponents>,
     ) -> Result<NoteId, Error> {
-        if input.channel >= 16 || input.group >= 16 || input.key >= 128
+        if self.external_execution_aborted{return Err(Error::Canceled);}
+        if
+input.channel >= 16 || input.group >= 16 || input.key >= 128
             || source.channel >= 16 || source.group >= 16 || source.key >= 128
             || !expression.valid() { return Err(Error::InvalidInput); }
         if let Some(component)=receiver { self.receiver(component.receiver)?; }
@@ -1616,6 +1626,7 @@ impl Runtime {
             NoteOrigin::Generated(plan, ..) => plan,
             NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan,
         };
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         self.validate_zone_routing_pitch(plan, pitch)?;
         let performance = match origin {
             NoteOrigin::Input(input) => input.performance,
@@ -1926,6 +1937,7 @@ impl Runtime {
         at: u64,
         gain: f32,
     ) -> Result<VoiceId, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let generation = self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?;
         if generation.source(sample).is_some_and(|s| s.stereo().is_none()) {
@@ -1955,6 +1967,7 @@ impl Runtime {
         envelope: Envelope,
         playback: Playback,
     ) -> Result<VoiceId, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         self.check_time(at)?;
         if at == self.now {
             self.apply_due();
@@ -1990,6 +2003,7 @@ impl Runtime {
         envelope: Envelope,
         cursor: source::Cursor,
     ) -> Result<VoiceId, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let f = self.families.get(family.0).ok_or(Error::StaleHandle)?;
         if !f.open {
             return Err(Error::ClosedFamily);
