@@ -286,8 +286,9 @@ impl Part {
 
     pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let mpe =
+        let mut mpe =
             Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, runtime.note_capacity().max(1)).map_err(core)?;
+        mpe.set_manual_active(false);
         // Plans without articulations have nothing to drive.
         let articulator = runtime
             .performance(0)
@@ -453,7 +454,8 @@ impl Part {
                 let _ = self.runtime.set_switching_table(switching.clone(), keys);
             }
         }
-        self.mpe_zone = c.mpe;
+        self.mpe.set_manual_active(c.mpe);
+        self.mpe_zone = c.mpe || self.mpe.configuration().is_some();
         if self.bend_range != c.bend_range {
             // 0 keeps what the instrument and the player's controller say.
             self.mpe
@@ -1598,18 +1600,23 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
         return;
     }
     let mut words = [words[0], words.get(1).copied().unwrap_or(0)];
-    words[0] &= if part.mpe_zone {
-        0xf0ff_ffff
-    } else {
-        0xf0f0_ffff
-    };
+    let channel = (words[0] >> 16) as u8 & 15;
+    let parameter = words[0] >> 28 == 2 && words[0] & 0x00f0_0000 == 0x00b0_0000
+        && matches!(channel, 0 | 15) && matches!((words[0] >> 8) as u8 & 127, 6 | 38 | 96..=101);
+    // RPN6 identifies its zone by the original manager channel. Preserve
+    // configuration selectors even before an incoming MCM enables the zone.
+    words[0] &= if part.mpe_zone || parameter { 0xf0ff_ffff } else { 0xf0f0_ffff };
     let words = &words[..if words[0] >> 28 == 4 { 2 } else { 1 }];
-    if let Some(Ok(packet)) = Packets::new(words).next()
-        && let Err(ApplyError::Core(sampler_core::Error::Capacity)) =
-            part.mpe.apply(&mut part.runtime, packet)
-    {
-        part.problems.capacity_drops += 1;
+    match Packets::new(words).next() {
+        Some(Ok(packet)) => match part.mpe.apply(&mut part.runtime, packet) {
+            Ok(sampler_midi::Applied::Unsupported) => part.problems.ignored_input += 1,
+            Err(ApplyError::Core(sampler_core::Error::Capacity)) => part.problems.capacity_drops += 1,
+            Err(_) => part.problems.ignored_input += 1,
+            Ok(_) => {}
+        },
+        _ => part.problems.ignored_input += 1,
     }
+    if part.mpe.configuration().is_some() { part.mpe_zone = true; }
 }
 
 /// Run the articulation driver on a packet; false when it took the packet.
@@ -1791,19 +1798,23 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
                 Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
                     part.problems.capacity_drops += 1
                 }
-                _ => {}
+                Ok(sampler_midi::Applied::Unsupported) | Err(_) => part.problems.ignored_input += 1,
+                Ok(_) => {}
             }
         }
         return;
     }
     // Per-note messages reach held host notes on the key at full precision.
     let per_note = |part: &mut Part, expression: NoteExpression| {
+        let mut recipients = 0;
         for h in held
             .iter()
             .filter(|h| h.part == index && h.note.channel == channel && h.note.key == a)
         {
             note_expression(part, h.id, expression);
+            recipients += 1;
         }
+        if recipients == 0 { part.problems.ignored_input += 1; }
     };
     tell_script(part, kind, status, channel, a, b, data);
     match (kind, status) {
@@ -7948,6 +7959,76 @@ mod tests {
         core.event(0, Event::Choke(exact(b)));
         assert!(!matches!(core.parts[1].as_ref().unwrap().runtime.input_held(held_id(&core, b)), Ok(true)));
         assert!(core.parts[0].as_ref().unwrap().runtime.input_held(raw).unwrap());
+        assert_eq!(core.problems(0).capacity_drops, 0);
+    }
+
+    #[test]
+    fn incoming_mcm_preserves_manager_identity_and_part_admission_before_and_after_enable() {
+        fn send_mcm(core: &mut V2Core, port: u8, manager: u8, members: u8) {
+            for (cc, value) in [(101, 0), (100, 6), (6, members)] {
+                core.event(port, Event::midi1(0xb0 | manager, cc, value));
+            }
+        }
+        let mut core = V2Core::with_parts(2, 48000.);
+        for part in 0..2 {
+            let plan = Prepared::new(48000, vec![Pcm::new(48000, vec![[0.25; 2]; 8192].into_boxed_slice()).unwrap()],
+                vec![Region { sample: 0, key_low: 60, key_high: 60, root_key: None,
+                    velocity_low: 0., velocity_high: 1., gain: 1.,
+                    envelope: Envelope::new(0, 0, 0, 1., 64).unwrap(), playback: Playback::default() }], 1).unwrap();
+            let limits = Limits::for_plan(&plan, 16, 16);
+            let runtime = Runtime::new(plan, limits).unwrap();
+            core.install(part, Some(Box::new(Part::new(runtime, MixTree::instrument("MCM ingress")).unwrap())));
+        }
+        let mut mix = Mix::default();
+        mix.parts[0].port = 2; mix.parts[0].channel = -1;
+        mix.parts[1].port = 3; mix.parts[1].channel = -1;
+        core.set_mix(&mix);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), None);
+        send_mcm(&mut core, 2, 0, 3);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([3, 0]));
+        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(), None);
+        let held = HostNote { port: 2, channel: 1, key: 60, id: 71, clap: true };
+        core.event(2, on(held));
+        let id = core.held.iter().find(|h| h.note == held).unwrap().id;
+        core.event(2, Event::midi1(0xb0, 38, 127));
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([3, 0]),
+            "MCM Data Entry LSB does not resize the zone");
+        // The other manager lies outside Lower3. Its selector and MCM still
+        // reach this selected-zone receiver and win the overlap arbitration.
+        send_mcm(&mut core, 2, 15, 14);
+        let part = core.parts[0].as_ref().unwrap();
+        assert_eq!(part.mpe.configuration(), Some([0, 14]));
+        assert!(!matches!(part.runtime.input_held(id), Ok(true)));
+        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(), None);
+        send_mcm(&mut core, 3, 15, 2);
+        assert_eq!(core.parts[1].as_ref().unwrap().mpe.configuration(), Some([0, 2]));
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([0, 14]));
+        // Existing explicit Part channel admission remains authoritative.
+        let mut filtered = mix.clone(); filtered.parts[0].channel = 5;
+        core.set_mix(&filtered);
+        send_mcm(&mut core, 2, 0, 15);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), Some([0, 14]));
+        assert_eq!(core.problems(0).capacity_drops, 0);
+        assert_eq!(core.problems(1).capacity_drops, 0);
+    }
+
+    #[test]
+    fn unsupported_midi2_messages_are_reported_while_deprecated_controls_stay_ignored() {
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 0);
+        let runtime = Runtime::new(plan, limits).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(Part::new(runtime, MixTree::instrument("protocol reporting")).unwrap())));
+        // Registered Controller3:17 has no represented receiver law. Per-key
+        // pitch without a native-host recipient is likewise not a successful no-op.
+        core.event(0, Event::Ump([0x4020_0311, 123]));
+        core.event(0, Event::Ump([0x4060_3c00, 0x9000_0000]));
+        assert_eq!(core.problems(0).ignored_input, 2);
+        // MIDI2 expressly deprecated CC6 must not become an RPN transaction,
+        // script callback or an unsupported-message diagnostic.
+        core.event(0, Event::Ump([0x40b0_0600, u32::MAX]));
+        assert_eq!(core.problems(0).ignored_input, 2);
+        assert_eq!(core.parts[0].as_ref().unwrap().mpe.configuration(), None);
         assert_eq!(core.problems(0).capacity_drops, 0);
     }
 

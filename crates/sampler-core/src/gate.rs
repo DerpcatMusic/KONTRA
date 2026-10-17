@@ -19,7 +19,7 @@ pub struct ChannelScope {
     pub channels: u16,
 }
 impl ChannelScope {
-    fn contains(self, address: ChannelAddress) -> bool {
+    pub(super) fn contains(self, address: ChannelAddress) -> bool {
         self.protocol == address.protocol
             && self.port == address.port
             && self.group == address.group

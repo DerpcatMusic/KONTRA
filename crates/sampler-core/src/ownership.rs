@@ -129,6 +129,12 @@ impl Runtime {
         Ok(())
     }
 
+    /// Captured physical source, distinct from the adapter execution address.
+    /// Generated notes have no physical input source. The returned tuple is a copy.
+    pub fn input_source(&self, id: NoteId) -> Result<Option<Input>, Error> {
+        Ok(self.notes.get(id.0).ok_or(Error::StaleHandle)?.input_source)
+    }
+
     pub fn family_count(&self) -> usize {
         self.families.count()
     }
@@ -151,14 +157,16 @@ impl Runtime {
         self.set_expression_now(id, value)
     }
 
-    /// Apply one controller gesture to several owners without partial updates.
-    /// Due work runs first, as with other immediate mutations. Every entry must
-    /// be valid and each owner may occur once. The caller bounds the slice.
-    pub fn set_expressions(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<(), Error> {
-        self.apply_due();
-        if changes.is_empty() {
-            return Ok(());
-        }
+    /// Read-only semantic admission for the entire expression batch. This uses
+    /// existing private scratch but neither drains due work nor publishes values,
+    /// callbacks, cursor changes or stream reservations. Callers that need the
+    /// immediate mutation boundary must first drain due work explicitly.
+    pub fn validate_expressions(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<(), Error> {
+        self.prepare_expression_changes(changes).map(|_| ())
+    }
+
+    fn prepare_expression_changes(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<bool, Error> {
+        if changes.is_empty() { return Ok(false); }
         // Scratch is private, allocated with the expression arena, and cleared
         // before every batch. An error never mutates an expression owner.
         self.expression_changes.fill(None);
@@ -180,6 +188,18 @@ impl Runtime {
                 self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
             })?;
         }
+        Ok(pitch_changed)
+    }
+
+    /// Apply one controller gesture to several owners without partial updates.
+    /// Due work runs first, as with other immediate mutations. Every entry must
+    /// be valid and each owner may occur once. The caller bounds the slice.
+    pub fn set_expressions(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<(), Error> {
+        self.apply_due();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let pitch_changed = self.prepare_expression_changes(changes)?;
         for &(id, value) in changes {
             let owner = self.expressions.get_mut(id.0).unwrap();
             owner.rendered = self.expression_changes[id.0.index].unwrap();

@@ -1,4 +1,4 @@
-use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
 use sampler_midi::{Applied, ApplyError, Ingress, Packets, Version};
 #[path = "../../sampler-core/tests/support/mod.rs"]
 mod support;
@@ -783,7 +783,7 @@ fn midi1_controllers_upscale_to_exact_center_and_full_scale() {
     for (value, expected) in [(64, 0x8000_0000), (127, u32::MAX)] {
         apply(&mut ingress, &mut rt, &[0x20b0_0100 | value]).unwrap();
         assert_eq!(
-            rt.controller(rt.performance(0).unwrap(), 1).unwrap(),
+            rt.channel_controller(rt.performance(0).unwrap(), sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 0, group: 0, channel: 0 }, 1).unwrap(),
             expected
         );
     }
@@ -796,6 +796,8 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
         let mut ingress = Ingress::new(0, [Some(version); 16]);
         support::without_heap(|| {
             let domain = rt.performance(1).unwrap();
+            let address = sampler_core::ChannelAddress { protocol: if version == Version::Midi1 { Protocol::Midi1 } else { Protocol::Midi2 },
+                port: 0, group: 0, channel: 0 };
             let values = if version == Version::Midi1 {
                 [0, 1, 63, 64, 126, 127]
             } else {
@@ -818,7 +820,9 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
                 } else {
                     value
                 };
-                assert_eq!(rt.controller(domain, 1).unwrap(), expected);
+                assert_eq!(rt.channel_controller(domain, address, 1).unwrap(), expected);
+                assert_eq!(rt.controller(domain, 1).unwrap(), 0);
+                assert_eq!(rt.channel_controller(rt.performance(0).unwrap(), address, 1).unwrap(), 0);
                 assert_eq!(rt.controller(rt.performance(0).unwrap(), 1).unwrap(), 0);
             }
             let on = if version == Version::Midi1 {
@@ -871,6 +875,7 @@ fn reset_all_controllers_follows_rp015() {
     let mut rt = runtime();
     let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
     let p = rt.performance(0).unwrap();
+    let address = sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 0, group: 0, channel: 0 };
     for (cc, value) in [(64, 127), (66, 127), (1, 100), (11, 20), (7, 90), (10, 30)] {
         apply(&mut ingress, &mut rt, &[0x20b0_0000 | cc << 8 | value]).unwrap();
     }
@@ -882,7 +887,8 @@ fn reset_all_controllers_follows_rp015() {
         rt.release_context(note).unwrap().gate.is_none(),
         "sustained"
     );
-    let (volume, pan) = (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap());
+    let (volume, pan) = (rt.channel_controller(p, address, 7).unwrap(), rt.channel_controller(p, address, 10).unwrap());
+    assert_eq!((volume, pan), (spec7(90), spec7(30)));
     assert_eq!(
         apply(&mut ingress, &mut rt, &[0x20b0_7900]),
         Ok(Applied::ResetControllers)
@@ -892,11 +898,11 @@ fn reset_all_controllers_follows_rp015() {
         "pedal released"
     );
     for cc in [1, 64, 65, 66, 67] {
-        assert_eq!(rt.controller(p, cc).unwrap(), 0, "CC{cc}");
+        assert_eq!(rt.channel_controller(p, address, cc).unwrap(), 0, "CC{cc}");
     }
-    assert_eq!(rt.controller(p, 11).unwrap(), u32::MAX);
+    assert_eq!(rt.channel_controller(p, address, 11).unwrap(), u32::MAX);
     assert_eq!(
-        (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()),
+        (rt.channel_controller(p, address, 7).unwrap(), rt.channel_controller(p, address, 10).unwrap()),
         (volume, pan)
     );
     // A non-zero value is not a channel mode message.
@@ -904,4 +910,37 @@ fn reset_all_controllers_follows_rp015() {
         apply(&mut ingress, &mut rt, &[0x20b0_7901]),
         Ok(Applied::Unsupported)
     );
+}
+
+#[test]
+fn reset_all_controllers_preserves_other_physical_poly_pressure_domains() {
+    use sampler_core::ChannelAddress;
+    for version in [Version::Midi1, Version::Midi2] {
+        let mut rt = runtime();
+        let mut ingress = Ingress::new(7, [Some(version); 16]);
+        let domain = rt.performance(0).unwrap();
+        let other_performance = rt.performance(1).unwrap();
+        let address = ChannelAddress { protocol: if version == Version::Midi1 { Protocol::Midi1 } else { Protocol::Midi2 },
+            port: 7, group: 3, channel: 1 };
+        let others = [ChannelAddress { channel: 2, ..address }, ChannelAddress { port: 9, ..address },
+            ChannelAddress { group: 4, ..address }, ChannelAddress { protocol: Protocol::Clap, ..address }];
+        support::without_heap(|| {
+            for key in [60, 61] { rt.dispatch_poly_pressure(domain, address, key, 0x8000_0000).unwrap(); }
+            for (i, &other) in others.iter().enumerate() {
+                rt.dispatch_poly_pressure(domain, other, 60, 0x9000_0000 + i as u32).unwrap();
+            }
+            rt.dispatch_poly_pressure(other_performance, address, 60, 0xa000_0000).unwrap();
+            let words = if version == Version::Midi1 { [0x23b1_7900, 0] } else { [0x43b1_7900, 0] };
+            let len = if version == Version::Midi1 { 1 } else { 2 };
+            assert_eq!(ingress.apply_in(&mut rt, domain, Packets::new(&words[..len]).next().unwrap().unwrap()), Ok(Applied::ResetControllers));
+            for input in [false, true] {
+                for key in [60, 61] { assert_eq!(rt.channel_poly_pressure(domain, address, key, input), Ok(0)); }
+                for (i, &other) in others.iter().enumerate() {
+                    assert_eq!(rt.channel_poly_pressure(domain, other, 60, input), Ok(0x9000_0000 + i as u32));
+                }
+                assert_eq!(rt.channel_poly_pressure(other_performance, address, 60, input), Ok(0xa000_0000));
+            }
+            assert_eq!(rt.now(), 0); assert_eq!(rt.pending_commands(), 0);
+        });
+    }
 }

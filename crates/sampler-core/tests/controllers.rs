@@ -865,12 +865,14 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
             .unwrap()
             .unwrap();
         assert_eq!(rt.controller(domain, 1), Ok(0));
-        assert_eq!(rt.input_controller(domain, 1), Ok(0x12345679));
+        assert_eq!(rt.channel_input_controller(domain, origin, 1), Ok(0x12345678));
+        assert_eq!(rt.channel_input_controller(domain, other, 1), Ok(0x12345679));
         assert_eq!(
             rt.dispatch_controller(domain, origin, 1 << origin.channel, 1, 99),
             Err(Error::Capacity)
         );
-        assert_eq!(rt.input_controller(domain, 1), Ok(0x12345679));
+        assert_eq!(rt.channel_input_controller(domain, origin, 1), Ok(0x12345678));
+        assert_eq!(rt.channel_input_controller(domain, other, 1), Ok(0x12345679));
         callbacks = Some([a, b]);
     });
     let [a, b] = callbacks.unwrap();
@@ -884,14 +886,16 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
             Ok(None)
         );
         rt.render(&mut [[0.; 2]; 4]).unwrap();
-        assert_eq!(rt.controller(domain, 1), Ok(0x87654321));
+        assert_eq!(rt.channel_controller(domain, origin, 1), Ok(0x87654321));
         rt.render(&mut []).unwrap();
-        assert_eq!(rt.controller(domain, 1), Ok(0x12345679));
+        assert_eq!(rt.channel_controller(domain, origin, 1), Ok(0x12345678));
+        assert_eq!(rt.channel_controller(domain, other, 1), Ok(0x12345679));
+        assert_eq!(rt.controller(domain, 1), Ok(0));
         assert_eq!(rt.controller(rt.performance(0).unwrap(), 1), Ok(0));
         for (id, value, address) in [(a, 0x12345678, origin), (b, 0x12345679, other)] {
             assert_eq!(rt.behavior_local(id, 0), Ok(1));
             assert_eq!(rt.behavior_local(id, 1), Ok(value));
-            assert_eq!(rt.behavior_local(id, 2), Ok(0x87654321));
+            assert_eq!(rt.behavior_local(id, 2), Ok(if address == origin { 0x87654321 } else { 0x12345679 }));
             assert_eq!(rt.behavior_local(id, 3), Ok(i64::from(address.port)));
             assert_eq!(rt.behavior_local(id, 4), Ok(i64::from(address.group)));
             assert_eq!(rt.behavior_local(id, 5), Ok(i64::from(address.channel)));
@@ -976,8 +980,8 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
                 rt.panic();
             }
             rt.render(&mut [[0.; 2]; 8]).unwrap();
-            assert_eq!(rt.input_controller(domain, 64), Ok(u32::MAX));
-            assert_eq!(rt.controller(domain, 64), Ok(0));
+            assert_eq!(rt.channel_input_controller(domain, origin, 64), Ok(u32::MAX));
+            assert_eq!(rt.channel_controller(domain, origin, 64), Ok(0));
             assert_eq!(rt.behavior_outcome(id), Ok(Some(expected)));
             rt.flush_behaviors(|_, _, _| true);
             assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
@@ -996,7 +1000,7 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
             rt.dispatch_controller(domain, origin, 1 << origin.channel, 64, u32::MAX),
             Err(Error::Capacity)
         );
-        assert_eq!(rt.input_controller(domain, 64), Ok(0));
+        assert_eq!(rt.channel_input_controller(domain, origin, 64), Ok(0));
         assert_eq!(
             rt.dispatch_controller(domain, origin, 1 << origin.channel, 130, 0),
             Err(Error::InvalidInput)
@@ -1020,7 +1024,7 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
                 Err(Error::InvalidInput)
             );
         }
-        assert_eq!(rt.input_controller(domain, 1), Ok(0));
+        assert_eq!(rt.channel_input_controller(domain, origin, 1), Ok(0));
     });
 }
 
