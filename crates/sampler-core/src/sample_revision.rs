@@ -340,6 +340,12 @@ impl SampleState {
             return Err(Error::StaleHandle);
         }
         let mapping = &prepared.sample_targets[target];
+        // This queue publishes exactly one two-lane Pcm. A logical original-
+        // channel target remains queryable, but cannot change source kind here.
+        // Defend the actual commit before slots, bindings, or the task CAS.
+        if !prepared.sample_target_accepts_pcm(target) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
         for &index in &mapping.regions {
             let r = &prepared.regions[index];
             if r.cursor
@@ -396,7 +402,13 @@ impl SampleState {
 }
 
 impl Prepared {
+    fn sample_target_accepts_pcm(&self, index: usize) -> bool {
+        self.sample_targets[index].regions.iter().all(|&region|
+            self.region_source_storage(region).is_none_or(|source| source.stereo().is_some()))
+    }
     /// Mapping and all queue/slot allocations happen before audio construction.
+    /// Targets retain their logical source identity, including channel families;
+    /// the single-Pcm update API admits only dormant or stereo source targets.
     pub fn with_sample_targets(
         mut self,
         mut targets: Vec<SampleTarget>,
@@ -420,9 +432,6 @@ impl Prepared {
                 return Err(Error::InvalidInput);
             }
             for &r in &t.regions {
-                if self.region_source_storage(r).is_some_and(|s| s.stereo().is_none()) {
-                    return Err(Error::UnsupportedSourceLayout);
-                }
                 if r >= self.regions.len() || !seen.insert(r) {
                     return Err(Error::InvalidInput);
                 }
@@ -443,6 +452,9 @@ pub struct SampleControl {
     sequence: u64,
     queued_bytes: usize,
     byte_limit: usize,
+    // Sorted immutable capabilities of the exact producer PlanId. No callback
+    // lookup/allocation or implicit first-pack source substitution.
+    targets: Box<[(SampleTargetId, bool)]>,
     head_budget: HeadBudget,
     wake: Arc<OnceLock<std::thread::Thread>>,
 }
@@ -467,12 +479,23 @@ impl SampleControl {
     pub fn plan(&self) -> PlanId {
         self.plan
     }
+    /// Off audio, before source preparation: validate this producer's target and
+    /// whether its one-Pcm publication preserves the compiled source layout.
+    pub fn validate_target(&self, target: SampleTargetId) -> Result<(), Error> {
+        let index = self.targets.binary_search_by_key(&target, |entry| entry.0)
+            .map_err(|_| Error::InvalidInput)?;
+        if !self.targets[index].1 { return Err(Error::UnsupportedSourceLayout); }
+        Ok(())
+    }
     #[allow(clippy::result_large_err)]
     pub fn submit(
         &mut self,
         revision: PreparedSampleRevision,
         task: Arc<SampleTask>,
     ) -> Result<u64, (Error, PreparedSampleRevision, Arc<SampleTask>)> {
+        if let Err(error) = self.validate_target(revision.target) {
+            return Err((error, revision, task));
+        }
         if revision.bytes > self.byte_limit {
             return Err((Error::InvalidInput, revision, task));
         }
@@ -591,6 +614,10 @@ impl Runtime {
             .sample_limits
             .unwrap()
             .resident_bytes;
+        let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let targets = prepared.sample_targets.iter().enumerate()
+            .map(|(index, target)| (target.id, prepared.sample_target_accepts_pcm(index)))
+            .collect();
         let head_budget=HeadBudget::new(byte_limit);
         self.sample_queues = Some(SampleQueues {
             wake: wake.clone(),
@@ -608,6 +635,7 @@ impl Runtime {
                 sequence: 0,
                 queued_bytes: 0,
                 byte_limit,
+                targets,
                 head_budget,
                 wake,
             },

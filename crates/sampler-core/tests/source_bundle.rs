@@ -237,3 +237,61 @@ fn legacy_source_still_reaches_ordinary_runtime() {
     runtime.render(&mut [[0.; 2]; 8]).unwrap();
     assert_eq!(runtime.voice_count(), 1);
 }
+
+// A logical target identifies its whole original-channel source. The legacy
+// single-Pcm transaction must never reinterpret that identity as pack zero.
+#[test]
+fn resident_family_target_retains_identity_and_refuses_single_pcm_before_queue_or_task_mutation() {
+    use sampler_core::{ChannelCount, Error, Input, Limits, Playback, PreparedSampleRevision,
+        Protocol, Runtime, SampleTargetId, SampleTask, SourceStorageFamily};
+    use std::sync::Arc;
+    let family = SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), pcm()).unwrap();
+    let id = family.id();
+    let mut instrument = ir::Instrument { assets: vec![asset(0)],
+        zones: vec![ir::Zone { pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(0)) }],
+        processing_scopes: vec![ir::ProcessingScope {
+            members: vec![ir::ZoneRef(0)], sum: ir::ProcessingSumLaw::OrderedF32,
+            cadence: ir::ProcessingCadence::CoreCell64, chain: None, amplitude: None, output: None,
+            signal: Some(ir::ProcessingSignal {
+                source_law: ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,
+                input: ir::SignalLayout { channels: 6 },
+                nodes: vec![ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix {
+                    input: ir::SignalLayout { channels: 6 }, output: ir::SignalLayout { channels: 2 },
+                    cells: vec![0.,0.,1.,0.,0.,0., 0.,0.,0.,0.,1.,0.],
+                    arithmetic: ir::MatrixArithmetic::SeparateMulAddF32 })], controls: vec![] }) }],
+        ..Default::default() };
+    instrument.source_indices.sample_targets.push(ir::SourceSampleTarget {
+        node: 711, zones: vec![ir::ZoneRef(0)] });
+    let prepared = sampler_core::lower::lower_sources(&instrument, 48000, vec![family.clone().into()],
+        |_, plan| Ok::<_, LowerError>(plan)).unwrap();
+    let limits = Limits::for_plan(&prepared, 4, 8);
+    let (mut runtime, mut control) = Runtime::new(prepared, limits).unwrap().with_sample_updates(2).unwrap();
+    assert_eq!(runtime.sample_target_count(), 1);
+    let target = SampleTargetId(711);
+    assert_eq!(runtime.sample_target_source_storage(target).unwrap().id(), id);
+    assert_eq!(runtime.sample_target_asset(target).unwrap_err(), Error::UnsupportedSourceLayout);
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(55) };
+    runtime.trigger(input, 60, 1.).unwrap();
+    let before = (runtime.now(), runtime.note_count(), runtime.voice_count(),
+        runtime.sample_physical_budget_status());
+    let incoming = Pcm::new(48000, vec![[0.75, -0.75]; 64].into_boxed_slice()).unwrap();
+    let incoming_id = incoming.asset_id();
+    let task = Arc::new(SampleTask::default());
+    let revision = PreparedSampleRevision::new(target, incoming, Playback::default(), 48000).unwrap();
+    let (error, returned, returned_task) = control.submit(revision, task.clone()).unwrap_err();
+    assert_eq!(error, Error::UnsupportedSourceLayout);
+    assert_eq!(returned.asset().asset_id(), incoming_id);
+    assert!(Arc::ptr_eq(&task, &returned_task));
+    assert!(!task.finished());
+    assert!(task.cancel(), "refusal must happen before the commit CAS");
+    assert!(!runtime.poll_sample_update().unwrap());
+    assert!(control.reply().is_none());
+    assert_eq!((runtime.now(), runtime.note_count(), runtime.voice_count(),
+        runtime.sample_physical_budget_status()), before);
+    assert_eq!(runtime.sample_target_source_storage(target).unwrap().id(), id);
+    let mut output = [[0.; 2]; 32]; runtime.render(&mut output).unwrap();
+    assert!(output.iter().flatten().any(|x| *x != 0.));
+    // Both selected upper inputs survive; no old first-pack stereo substitute.
+    assert!(output.iter().all(|frame| frame[1] > frame[0] && frame[0] > 0.));
+}
