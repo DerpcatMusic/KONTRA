@@ -1583,6 +1583,7 @@ pub(super) struct DspState {
     pub cells: Slab<ProcessorState>,
     pub owner_cells: Slab<ProcessorState>,
     pub owner_delays: Slab<[f64; 2]>,
+    pub owner_signal_history: Slab<f64>,
     pub channel_sources: Slab<f32>,
     pub channel_last: Slab<f32>,
     /// Existing core Tone: two integrators per original channel and source slot.
@@ -1639,6 +1640,10 @@ impl DspState {
             owner_delays: {
                 let n = if plan.processing_scopes.is_empty() { 0 } else { voices };
                 Slab::new(allocate(delay_stride.checked_mul(n).ok_or(Error::Capacity)?)?, delay_stride)
+            },
+            owner_signal_history: {
+                let stride = plan.signal_history_words();
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
             },
             channel_sources: {
                 let stride = plan.signal_channels().checked_mul(BLOCK).ok_or(Error::Capacity)?;

@@ -536,9 +536,43 @@ impl Instrument {
                             }
                             channels = matrix.output.channels;
                         }
+                        crate::ProcessingSignalNode::Gain(gain) => {
+                            match gain.arithmetic { crate::ChannelGainArithmetic::CoreGainF64ThenF32 => {} }
+                        }
+                        crate::ProcessingSignalNode::OnePole(filter) => {
+                            match filter.arithmetic { crate::ChannelOnePoleArithmetic::CoreOnePoleF64 => {} }
+                        }
                     }
                 }
                 if channels != 2 { return Err(invalid("signal graph must feed its declared stereo scope outlet")); }
+                let mut tail = 0u32;
+                for node in &signal.nodes {
+                    let parameter = match node {
+                        crate::ProcessingSignalNode::Matrix(_) => continue,
+                        crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
+                        crate::ProcessingSignalNode::OnePole(filter) => {
+                            tail = tail.checked_add(filter.tail_frames)
+                                .ok_or_else(|| invalid("signal stage tail budget overflow"))?;
+                            &filter.cutoff_hz
+                        }
+                    };
+                    if !parameter.constant.is_finite() || parameter.constant.abs() > f64::from(f32::MAX) {
+                        return Err(invalid("signal stage constant is outside its finite domain"));
+                    }
+                    let bounds = if let Some(key) = &parameter.control {
+                        let control = self.controls.iter().find(|c| &c.key == key)
+                            .ok_or_else(|| invalid("signal stage control is missing"))?;
+                        match &control.value {
+                            crate::ControlValue::Continuous { min, max, .. }
+                                if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
+                                    && max.abs() <= f64::from(f32::MAX) => [*min, *max],
+                            _ => return Err(invalid("signal stages require a bounded real control")),
+                        }
+                    } else { [parameter.constant; 2] };
+                    if matches!(node, crate::ProcessingSignalNode::OnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
+                        return Err(invalid("OnePole cutoff must be positive"));
+                    }
+                }
                 let mut cells = std::collections::BTreeSet::new();
                 for binding in &signal.controls {
                     let Some(crate::ProcessingSignalNode::Matrix(matrix)) = signal.nodes.get(binding.node) else {

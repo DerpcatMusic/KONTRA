@@ -228,7 +228,7 @@ impl Coefficients {
             return Self {
                 a1: 0.,
                 a2: 0.,
-                a3: -(-std::f64::consts::TAU * hz / rate).exp_m1(),
+                a3: core_one_pole_coefficient(rate, hz),
                 k: 0.,
             };
         }
@@ -345,6 +345,14 @@ impl FilterCache {
     }
 }
 
+/// The existing core-law conversion, reused by explicit width-preserving stages.
+/// Callers validate 0 < hz < rate/2 before publishing a plan.
+pub(crate) fn core_one_pole_coefficient(rate: f64, hz: f64) -> f64 {
+    -(-std::f64::consts::TAU * hz / rate).exp_m1()
+}
+/// Existing segment-end denormal history policy, shared without changing cadence.
+pub(crate) fn core_one_pole_history(value: f64) -> f64 { flush(value) }
+
 /// `y += (x - y) b` per channel in `state[0]`; the band-state row stays zero.
 #[inline(always)]
 pub(crate) fn one_pole_sample(input: f64, state: f64, b: f64, high: bool) -> (f64, f64) {
@@ -383,7 +391,7 @@ fn one_pole(
         (*l, yl) = one_pole_sample(*l, yl, b, high);
         (*r, yr) = one_pole_sample(*r, yr, b, high);
     }
-    state[0] = [yl, yr].map(flush);
+    state[0] = [yl, yr].map(core_one_pole_history);
 }
 
 #[inline(always)]
