@@ -2939,9 +2939,6 @@ impl Lowering<'_> {
                 gain: if tapped { 1.0 } else { bus.gain.linear() },
             }];
             for send in &bus.sends {
-                if send.position == ir::SendPosition::PreChain {
-                    return Err(unsupported(owner, Feature::PreChainSend));
-                }
                 sends.push(BusSend {
                     bus: target(send.to),
                     gain: send.gain.linear(),
@@ -2998,12 +2995,15 @@ impl Lowering<'_> {
             .with_impulses(impulses)
             .with_buses(buses, bindings)
             .map_err(core(Stage::Buses, "buses"))?;
-        let plan = if let Some(bus) = self.ir.input_bus {
-            plan.with_input_bus(bus.0)
-                .map_err(core(Stage::Buses, "instrument input"))?
-        } else {
-            plan
-        };
+        let pre_sends=self.ir.buses.iter().enumerate().flat_map(|(bus,definition)|definition.sends.iter().enumerate().filter_map(move |(index,send)|
+            (send.position==ir::SendPosition::PreChain).then_some((bus,index+1)))).collect();
+        let definitions=self.ir.processing_buses.iter().map(|row|Ok(crate::ChannelBus{
+            bus:row.bus.0,owner:row.owner,signal:row.signal.clone(),output:crate::ChannelCount::new(row.output.channels)?,
+        })).collect::<Result<Vec<_>,Error>>().map_err(core(Stage::Buses,"global channel definitions"))?;
+        // One owned offaudio graph transaction: no incomplete legacy2 bus
+        // geometry is published or mistaken for the final scope destination.
+        let plan=plan.with_channel_bus_graph(definitions,64*1024*1024,pre_sends,
+            self.ir.input_bus.map(|bus|bus.0)).map_err(core(Stage::Buses,"complete bus graph"))?;
         let plan = plan.with_bus_addresses(
             self.ir
                 .bus_addresses

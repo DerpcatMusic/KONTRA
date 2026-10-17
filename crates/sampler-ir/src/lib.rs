@@ -96,6 +96,9 @@ pub struct Instrument {
     #[cfg_attr(feature = "cache", serde(default))]
     pub processing_scopes: Vec<ProcessingScope>,
     pub buses: Vec<Bus>,
+    /// Explicit channel programs on existing GLOBAL bus owners, never voice activations.
+    #[cfg_attr(feature="cache",serde(default))]
+    pub processing_buses:Vec<ProcessingBus>,
     /// Sum entering the instrument/program inserts, after upstream group buses.
     /// Direct outputs before this point bypass instrument-level processing.
     pub input_bus: Option<BusRef>,
@@ -2167,6 +2170,19 @@ pub enum ProcessingSignalNode {
     /// One scalar Pan at a declared stereo boundary. Its explicit expression
     /// home consumes canonical note pan exactly once; other Pan stages do not.
     Pan(ChannelPan),
+    /// Invoke the enclosing global bus's actual existing stereo processor
+    /// chain at this exact top-level point. No source or foreign-chain target.
+    BusChain,
+    /// Silence only this explicit signal outlet while upstream processors and
+    /// source clocks continue. The canonical Toggle never overwrites Gain.
+    Mute(ChannelMute),
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMute {
+    pub muted: bool,
+    /// Actual canonical Toggle control; no real-valued surrogate or ramp.
+    pub control: Option<String>,
 }
 /// A typed real stage parameter. A control binds to the existing generation's
 /// value/ramp owner; the constant is used only in the absence of a binding.
@@ -2552,6 +2568,17 @@ pub enum Output {
     #[default]
     Master,
     Bus(BusRef),
+}
+
+/// One channel graph bound to an existing BusRef. Output layout is explicit;
+/// source cardinality never implies a native descriptor or conversion matrix.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct ProcessingBus {
+    pub bus:BusRef,
+    pub owner:Option<SourceOwnerId>,
+    pub signal:ProcessingSignal,
+    pub output:SignalLayout,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

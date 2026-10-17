@@ -6,6 +6,8 @@ use sampler_ir as ir;
 
 pub(crate) enum Stage {
     Rectifier(crate::dsp::Rectifier),
+    /// Existing typed Toggle projection, inverted only at this outlet.
+    Mute { gain:PreparedParameter },
     StaticPan([f64;2]),
     Pan { position:StageParameter, offset:f64, law:ir::PanLaw, expression:bool },
     Gain {
@@ -89,6 +91,18 @@ impl Stage {
     ) -> Result<(Self, u32), Error> {
         let finite = |value: f64| value.is_finite() && value.abs() <= f64::from(f32::MAX);
         match definition {
+            ir::ProcessingSignalNode::Mute(mute) => {
+                let gain=if let Some(key)=&mute.control {
+                    let id=crate::lower::ir_control_id(key);
+                    let domain=plan.controls[plan.control_index(id)?].domain;
+                    if domain!=ControlDomain::Toggle {return Err(Error::InvalidInput);}
+                    let lane=parameters.len();
+                    parameters.push(ControlRange{control:id,low:1.,high:0.,ramp_frames:0});
+                    domains.push((id,domain));
+                    PreparedParameter::Control(lane)
+                }else{PreparedParameter::Constant(if mute.muted{0.}else{1.})};
+                Ok((Self::Mute{gain},0))
+            }
             ir::ProcessingSignalNode::Rectifier(mode) => Ok((Self::Rectifier(match mode {
                 ir::Rectifier::Full=>crate::dsp::Rectifier::Full,ir::Rectifier::Half=>crate::dsp::Rectifier::Half}),0)),
             ir::ProcessingSignalNode::Pan(pan) => {
@@ -130,7 +144,7 @@ impl Stage {
                     filter.tail_frames,
                 ))
             }
-            ir::ProcessingSignalNode::Matrix(_) | ir::ProcessingSignalNode::Mix(_) => Err(Error::InvalidInput),
+            ir::ProcessingSignalNode::Matrix(_) | ir::ProcessingSignalNode::Mix(_) | ir::ProcessingSignalNode::BusChain => Err(Error::InvalidInput),
         }
     }
     pub(crate) fn render(
@@ -156,6 +170,13 @@ impl Stage {
         at.checked_add(frames.saturating_sub(1) as u64)
             .ok_or(Error::ClockOverflow)?;
         match *self {
+            Self::Mute{gain} => {
+                for frame in 0..frames {
+                    let value=gain.value(parameters,at+frame as u64,None);
+                    if value!=0. && value!=1. {return Err(Error::InvalidInput);}
+                    if value==0. {for channel in 0..channels {block[channel*stride+frame]=0.;}}
+                }
+            }
             Self::StaticPan(gains) => {
                 if channels!=2{return Err(Error::InvalidInput);}
                 for channel in 0..2{for frame in 0..frames{let index=channel*stride+frame;
