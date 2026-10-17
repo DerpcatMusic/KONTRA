@@ -55,23 +55,46 @@ fn decode_channels_with_limit(bytes:&[u8],decoded_byte_limit:usize)->Result<(Vec
             continue;
         }
         let decoded = decoder.decode(&packet).map_err(|e| e.to_string())?;
-        if decoded.spec().rate!=rate || decoded.spec().channels.count()!=channels {return Err("decoded signal geometry changed".into());}
-        let capacity=decoded.capacity().checked_mul(channels).and_then(|n|n.checked_mul(4)).ok_or("decoded capacity overflow")?;
-        if capacity>decoded_byte_limit || capacity>isize::MAX as usize {return Err("decoded conversion capacity exceeds resident budget".into());}
-        let samples_needed=decoded.frames().checked_mul(channels).ok_or("decoded sample count overflow")?;
-        let buffer = buffer
-            .get_or_insert_with(|| SampleBuffer::new(decoded.capacity() as u64, *decoded.spec()));
-        if samples_needed>buffer.capacity() {return Err("decoded packet exceeds initial conversion capacity".into());}
-        buffer.copy_interleaved_ref(decoded);
-        if samples.len().checked_add(buffer.samples().len()).and_then(|n|n.checked_mul(4)).is_none_or(|n|n>decoded_byte_limit) {
-            return Err("decoded audio exceeds 512 MiB".into());
-        }
-        samples.extend_from_slice(buffer.samples());
+        append_initial_packet(&mut samples,&mut buffer,decoded,rate,channels,decoded_byte_limit)?;
     }
     if rate == 0 || channels == 0 || samples.is_empty() {
         return Err("invalid audio dimensions".into());
     }
     Ok((samples, channels, rate))
+}
+
+/// Ordinary decode-loop packet conversion, also used by the authored variable
+/// capacity witness below. All completed packet samples already live in samples.
+/// Replacing the offaudio conversion buffer cannot lose those earlier frames.
+fn append_initial_packet(samples:&mut Vec<f32>,buffer:&mut Option<SampleBuffer<f32>>,
+    decoded:symphonia::core::audio::AudioBufferRef<'_>,rate:u32,channels:usize,byte_limit:usize)->Result<(),String> {
+    if decoded.spec().rate!=rate || decoded.spec().channels.count()!=channels {return Err("decoded signal geometry changed".into());}
+    let desired=decoded.capacity().checked_mul(channels).ok_or("decoded capacity overflow")?;
+    let needed=decoded.frames().checked_mul(channels).ok_or("decoded sample count overflow")?;
+    if needed>desired {return Err("decoded frames exceed packet capacity".into());}
+    let replace=buffer.as_ref().is_none_or(|current|needed>current.capacity());
+    let conversion=if replace {desired} else {buffer.as_ref().map_or(0,SampleBuffer::capacity)};
+    let output_len=samples.len().checked_add(needed).ok_or("decoded output length overflow")?;
+    let retained_capacity=samples.capacity().max(output_len);
+    let fits=|retained:usize|retained.checked_add(conversion).and_then(|n|n.checked_mul(4))
+        .is_some_and(|bytes|bytes<=byte_limit&&bytes<=isize::MAX as usize);
+    if !fits(retained_capacity) {return Err("decoded conversion plus retained samples exceed resident budget".into());}
+    // Reserve the exact logical append before replacing the conversion buffer.
+    // Any allocator overcapacity is checked; these are userspace capacities,
+    // not a claim about codec internals, allocator/RSS or transient realloc.
+    samples.try_reserve_exact(needed).map_err(|e|e.to_string())?;
+    if !fits(samples.capacity()) {return Err("retained decoder capacity exceeds resident budget".into());}
+    if replace {
+        // The old conversion buffer no longer owns unique PCM. Drop it first
+        // rather than hold old+new conversion capacity across this allocation.
+        drop(buffer.take());
+        *buffer=Some(SampleBuffer::new(decoded.capacity() as u64,*decoded.spec()));
+    }
+    let conversion=buffer.as_mut().ok_or("missing initial conversion buffer")?;
+    conversion.copy_interleaved_ref(decoded);
+    if conversion.samples().len()!=needed {return Err("decoded conversion length changed".into());}
+    samples.extend_from_slice(conversion.samples());
+    Ok(())
 }
 
 /// One sample, or a channel bundle of mono members, as stereo frames: mono
@@ -201,4 +224,46 @@ pub(crate) fn decode_initial(parts:&[Vec<u8>],inherit:bool)->Result<InitialDecod
         sampler_kontakt::resident_storage_from_interleaved(rate,channels,&interleaved,MEMORY_LIMIT).map_err(|e|e.to_string())?
     };
     Ok(InitialDecoded{source,playback})
+}
+
+#[cfg(test)]
+mod initial_packet_growth_tests {
+    use super::*;
+    use symphonia::core::audio::{AsAudioBufferRef,AudioBuffer,Channels,Signal,SignalSpec};
+    fn packet(capacity:usize,frames:usize,rate:u32,start:usize)->AudioBuffer<f32> {
+        let mut packet=AudioBuffer::new(capacity as u64,SignalSpec::new(rate,Channels::FRONT_LEFT|Channels::FRONT_RIGHT));
+        packet.render_reserved(Some(frames));
+        for channel in 0..2 {for (frame,to) in packet.chan_mut(channel).iter_mut().enumerate() {*to=(start+frame*2+channel)as f32*0.125;}}
+        packet
+    }
+    #[test]
+    fn initial_variable_packet_capacities_append_every_sample_without_resetting_prior_pcm() {
+        let mut samples=Vec::new();let mut buffer=None;let mut expected=Vec::new();
+        for (capacity,frames,start) in [(8,4,0),(40,32,8),(12,3,72)] {
+            let packet=packet(capacity,frames,48000,start);
+            for frame in 0..frames {for channel in 0..2 {expected.push((start+frame*2+channel)as f32*0.125);}}
+            append_initial_packet(&mut samples,&mut buffer,packet.as_audio_buffer_ref(),48000,2,65536).unwrap();
+            assert_eq!(samples,expected);
+        }
+        assert_eq!(samples.len(),78);assert_eq!(buffer.unwrap().capacity(),80);
+    }
+    #[test]
+    fn initial_packet_growth_refuses_before_replacing_buffer_when_joint_budget_is_short() {
+        let mut samples=Vec::new();let mut buffer=None;
+        let first=packet(8,4,48000,0);append_initial_packet(&mut samples,&mut buffer,first.as_audio_buffer_ref(),48000,2,128).unwrap();
+        let prior=samples.clone();let capacity=buffer.as_ref().unwrap().capacity();let second=packet(40,32,48000,8);
+        // 72 retained samples +80 conversion samples =608 bytes.
+        assert!(append_initial_packet(&mut samples,&mut buffer,second.as_audio_buffer_ref(),48000,2,607).is_err());
+        assert_eq!(samples,prior);assert_eq!(buffer.as_ref().unwrap().capacity(),capacity);
+        append_initial_packet(&mut samples,&mut buffer,second.as_audio_buffer_ref(),48000,2,608).unwrap();
+        assert_eq!(samples.len(),72);assert_eq!(buffer.unwrap().capacity(),80);
+    }
+    #[test]
+    fn initial_packet_rate_change_refuses_without_losing_completed_samples() {
+        let mut samples=Vec::new();let mut buffer=None;
+        let first=packet(8,4,48000,0);append_initial_packet(&mut samples,&mut buffer,first.as_audio_buffer_ref(),48000,2,4096).unwrap();
+        let prior=samples.clone();let capacity=buffer.as_ref().unwrap().capacity();let wrong=packet(40,32,44100,8);
+        assert!(append_initial_packet(&mut samples,&mut buffer,wrong.as_audio_buffer_ref(),48000,2,4096).is_err());
+        assert_eq!(samples,prior);assert_eq!(buffer.as_ref().unwrap().capacity(),capacity);
+    }
 }
