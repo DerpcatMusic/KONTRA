@@ -577,6 +577,19 @@ impl<S: Script> Driver<S> {
         value: f64,
         authored: f64,
     ) -> Result<(), Error> {
+        if param == Param::Gain && let Scope::Keygroup(node) = scope {
+            let id = crate::engine_parameters::scope_gain_control(node)?;
+            let plan = rt.active_plan();
+            if rt.control_definition(plan, id).is_ok() {
+                // Exact absolute KG control; zero opens/closes without a dB
+                // epsilon or callback key allocation. Missing is a legacy plan,
+                // whose existing group-offset path remains explicit below.
+                rt.edit_controls(plan, None, &[sampler_core::ControlWrite {
+                    id, value: sampler_core::ControlValue::Real(value),
+                }])?;
+                return Ok(());
+            }
+        }
         if scope != Scope::Program {
             for i in 0..self.groups.len() {
                 let g = self.groups[i];

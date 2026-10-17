@@ -867,7 +867,165 @@ impl ConstantStartPrefix {
     }
 }
 
+/// Dense immutable index into ONE prepared document-owner table. The actual
+/// importing document ID remains in the addressed row; this index is plan-local.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedSourceOwnerIndex(pub(crate) u32);
+impl PreparedSourceOwnerIndex {
+    pub fn index(self) -> usize { self.0 as usize }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedSourceSwitch {
+    pub saved: bool,
+    /// An actual prepared control identity, not a cached live boolean.
+    pub control: Option<crate::ControlId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedSourceEventProcessor {
+    pub id: sampler_ir::SourceEventProcessorId,
+    pub owner: PreparedSourceOwnerIndex,
+    pub ordinal: u32,
+    pub kind: Box<str>,
+    pub bypass: PreparedSourceSwitch,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedSourceOwner {
+    pub id: sampler_ir::SourceOwnerId,
+    pub parent: Option<PreparedSourceOwnerIndex>,
+    pub kind: sampler_ir::SourceOwnerKind,
+    pub children: Box<[PreparedSourceOwnerIndex]>,
+    /// Actual runtime group/region coordinates, preserved by ordinary lowering.
+    pub groups: Box<[u32]>,
+    pub regions: Box<[u32]>,
+    pub predicates: Box<[sampler_ir::SourceInputPredicate]>,
+    pub bypass: Option<PreparedSourceSwitch>,
+    pub mute: Option<PreparedSourceSwitch>,
+    pub event_processors: Box<[PreparedSourceEventProcessor]>,
+}
+
+/// Shared immutable authority for audio processing ownership and external event
+/// compilation. Retaining a predicate/processor does not assert it is executable.
+#[derive(Default, Debug)]
+pub struct PreparedSourceOwners {
+    rows: Box<[PreparedSourceOwner]>,
+    by_id: Box<[(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)]>,
+    processors: Box<[(sampler_ir::SourceEventProcessorId, PreparedSourceOwnerIndex, u32)]>,
+    bytes: usize,
+}
+impl PreparedSourceOwners {
+    pub fn rows(&self) -> &[PreparedSourceOwner] { &self.rows }
+    pub fn get(&self, index: PreparedSourceOwnerIndex) -> Option<&PreparedSourceOwner> {
+        self.rows.get(index.index())
+    }
+    pub fn index(&self, id: sampler_ir::SourceOwnerId) -> Option<PreparedSourceOwnerIndex> {
+        self.by_id.binary_search_by_key(&id, |row| row.0).ok().map(|i| self.by_id[i].1)
+    }
+    pub fn processor(&self, id: sampler_ir::SourceEventProcessorId) -> Option<&PreparedSourceEventProcessor> {
+        let i = self.processors.binary_search_by_key(&id, |row| row.0).ok()?;
+        let (_, owner, ordinal) = self.processors[i];
+        self.get(owner)?.event_processors.iter().find(|row| row.ordinal == ordinal && row.id == id)
+    }
+    pub fn memory_bytes(&self) -> usize { self.bytes }
+
+    fn compile(owners: &[sampler_ir::SourceOwner], groups: usize, regions: usize,
+        controls: &[crate::ControlId]) -> Result<Self, Error> {
+        use std::mem::size_of;
+        if !owners.is_empty() && owners.iter().filter(|owner|owner.parent.is_none()).count()!=1 {return Err(Error::InvalidInput);}
+        let mut bytes = owners.len().checked_mul(size_of::<PreparedSourceOwner>()
+            + size_of::<(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)>()).ok_or(Error::Capacity)?;
+        let mut processors = 0usize;
+        for owner in owners {
+            let add = owner.children.len().checked_mul(size_of::<PreparedSourceOwnerIndex>())
+                .and_then(|n| owner.groups.len().checked_add(owner.zones.len()).and_then(|m|m.checked_mul(size_of::<u32>())).and_then(|m|n.checked_add(m)))
+                .and_then(|n| owner.predicates.len().checked_mul(size_of::<sampler_ir::SourceInputPredicate>()).and_then(|m|n.checked_add(m)))
+                .and_then(|n| owner.event_processors.len().checked_mul(size_of::<PreparedSourceEventProcessor>() + size_of::<(sampler_ir::SourceEventProcessorId, PreparedSourceOwnerIndex, u32)>()).and_then(|m|n.checked_add(m)))
+                .ok_or(Error::Capacity)?;
+            bytes = bytes.checked_add(add).ok_or(Error::Capacity)?;
+            processors = processors.checked_add(owner.event_processors.len()).ok_or(Error::Capacity)?;
+            for processor in &owner.event_processors { bytes = bytes.checked_add(processor.kind.len()).ok_or(Error::Capacity)?; }
+            for predicate in &owner.predicates {
+                if let sampler_ir::SourceInputPredicate::Unsupported{field} = predicate {
+                    bytes = bytes.checked_add(field.len()).ok_or(Error::Capacity)?;
+                }
+            }
+        }
+        if bytes > isize::MAX as usize || owners.len() > u32::MAX as usize { return Err(Error::Capacity); }
+        fn reserved<T>(n: usize) -> Result<Vec<T>, Error> {
+            let mut v = Vec::new(); v.try_reserve_exact(n).map_err(|_| Error::Capacity)?; Ok(v)
+        }
+        fn text(s: &str) -> Result<Box<str>, Error> {
+            let mut v = String::new(); v.try_reserve_exact(s.len()).map_err(|_|Error::Capacity)?; v.push_str(s); Ok(v.into_boxed_str())
+        }
+        let mut by_id = reserved(owners.len())?;
+        for (index, owner) in owners.iter().enumerate() {
+            by_id.push((owner.id, PreparedSourceOwnerIndex(index as u32)));
+        }
+        by_id.sort_unstable_by_key(|row|row.0);
+        if by_id.windows(2).any(|w|w[0].0==w[1].0) { return Err(Error::InvalidInput); }
+        let resolve = |id| by_id.binary_search_by_key(&id, |row|row.0).ok().map(|i|by_id[i].1).ok_or(Error::InvalidInput);
+        let switch = |s: sampler_ir::SourceSwitch| -> Result<PreparedSourceSwitch,Error> {
+            let control = s.control.map(|r| controls.get(r.0).copied().ok_or(Error::InvalidInput)).transpose()?;
+            Ok(PreparedSourceSwitch{saved:s.saved,control})
+        };
+        let mut rows = reserved(owners.len())?;
+        let mut processor_ids = reserved(processors)?;
+        for (index, owner) in owners.iter().enumerate() {
+            let own = PreparedSourceOwnerIndex(index as u32);
+            let parent = owner.parent.map(resolve).transpose()?;
+            if parent==Some(own) {return Err(Error::InvalidInput);}
+            let mut children = reserved(owner.children.len())?;
+            for &child in &owner.children {
+                let child = resolve(child)?;
+                if children.contains(&child) || owners[child.index()].parent!=Some(owner.id) {return Err(Error::InvalidInput);}
+                children.push(child);
+            }
+            if let Some(parent) = parent {
+                if owners[parent.index()].children.iter().filter(|&&id|id==owner.id).count()!=1 {return Err(Error::InvalidInput);}
+            }
+            let mut group_ids = reserved(owner.groups.len())?;
+            for group in &owner.groups {
+                if group.0>=groups || group.0>u32::MAX as usize || group_ids.contains(&(group.0 as u32)) {return Err(Error::InvalidInput);}
+                group_ids.push(group.0 as u32);
+            }
+            let mut region_ids = reserved(owner.zones.len())?;
+            for zone in &owner.zones {
+                if zone.0>=regions || zone.0>u32::MAX as usize || region_ids.contains(&(zone.0 as u32)) {return Err(Error::InvalidInput);}
+                region_ids.push(zone.0 as u32);
+            }
+            let mut predicates = reserved(owner.predicates.len())?;
+            for predicate in &owner.predicates {
+                predicates.push(match predicate {
+                    sampler_ir::SourceInputPredicate::Unsupported{field} => sampler_ir::SourceInputPredicate::Unsupported{field:text(field)?.into()},
+                    other=>other.clone(),
+                });
+            }
+            let mut event_processors = reserved(owner.event_processors.len())?;
+            for (ordinal,processor) in owner.event_processors.iter().enumerate() {
+                if processor.owner!=owner.id || processor.ordinal as usize!=ordinal {return Err(Error::InvalidInput);}
+                processor_ids.push((processor.id,own,processor.ordinal));
+                event_processors.push(PreparedSourceEventProcessor{id:processor.id,owner:own,ordinal:processor.ordinal,kind:text(&processor.kind)?,bypass:switch(processor.bypass)?});
+            }
+            rows.push(PreparedSourceOwner{id:owner.id,parent,kind:owner.kind,children:children.into_boxed_slice(),groups:group_ids.into_boxed_slice(),regions:region_ids.into_boxed_slice(),predicates:predicates.into_boxed_slice(),bypass:owner.bypass.map(switch).transpose()?,mute:owner.mute.map(switch).transpose()?,event_processors:event_processors.into_boxed_slice()});
+        }
+        processor_ids.sort_unstable_by_key(|row|row.0);
+        if processor_ids.windows(2).any(|w|w[0].0==w[1].0) {return Err(Error::InvalidInput);}
+        // A canonical parent edge may never form a cycle, even with disconnected roots.
+        for row in &rows {
+            let mut parent=row.parent;let mut remaining=rows.len();
+            while let Some(index)=parent {
+                if remaining==0 {return Err(Error::InvalidInput);}
+                remaining-=1;parent=rows[index.index()].parent;
+            }
+        }
+        Ok(Self{rows:rows.into_boxed_slice(),by_id:by_id.into_boxed_slice(),processors:processor_ids.into_boxed_slice(),bytes})
+    }
+}
+
 pub struct Prepared {
+    pub(super) source_owners: PreparedSourceOwners,
     pub(crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(crate) zone_routing: Option<zone_routing::PreparedRouting>,
     pub(super) sample_targets: Box<[SampleTarget]>,
@@ -967,6 +1125,12 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    pub fn source_owners(&self) -> &PreparedSourceOwners { &self.source_owners }
+    pub fn source_owner_index(&self, id: sampler_ir::SourceOwnerId) -> Option<PreparedSourceOwnerIndex> { self.source_owners.index(id) }
+    pub(crate) fn with_source_owners(mut self, owners: &[sampler_ir::SourceOwner], groups: usize, regions: usize, controls: &[crate::ControlId]) -> Result<Self,Error> {
+        self.source_owners=PreparedSourceOwners::compile(owners,groups,regions,controls)?;Ok(self)
+    }
+
     /// Initial sample-start modulation offset, in source frames, when every
     /// contributing source and depth assignment is Constant. `None` means an
     /// input-dependent route or an invalid region; a region without such routes
@@ -1208,6 +1372,7 @@ impl Prepared {
             );
         }
         Ok(Self {
+            source_owners: PreparedSourceOwners::default(),
             sample_targets: Box::new([]),
             sample_limits: None,
             source_zone_catalog: None,
@@ -2647,5 +2812,49 @@ mod logical_source_tests {
         let limits = Limits::for_plan(&plan, 4, 8); let runtime = crate::Runtime::new(plan, limits).unwrap();
         assert_eq!(runtime.sample_target_asset(SampleTargetId(1)).unwrap().asset_id(), stereo_id);
         assert_eq!(runtime.sample_target_source_storage(SampleTargetId(1)).unwrap().stereo().unwrap().asset_id(), stereo_id);
+    }
+}
+
+#[cfg(test)]
+mod prepared_source_owner_tests {
+    use super::*;
+    use sampler_ir::{SourceOwner as Owner,SourceOwnerId as Id,SourceOwnerKind as Kind,
+        SourceEventProcessor as Processor,SourceEventProcessorId as Event,SourceSwitch as Switch};
+    fn owner(id:u32,parent:Option<u32>,children:&[u32])->Owner {
+        Owner{id:Id::UviNode(id),parent:parent.map(Id::UviNode),kind:if parent.is_none(){Kind::Instrument}else{Kind::Layer},
+            children:children.iter().copied().map(Id::UviNode).collect(),groups:vec![],zones:vec![],predicates:vec![],
+            bypass:None,mute:None,event_processors:vec![]}
+    }
+    #[test]
+    fn source_owner_table_retains_real_ids_direct_order_all_processors_and_unimplemented_predicates() {
+        let mut root=owner(100,None,&[7,9]);
+        root.groups=vec![sampler_ir::GroupRef(1)];root.zones=vec![sampler_ir::ZoneRef(2)];
+        root.predicates=vec![sampler_ir::SourceInputPredicate::Unsupported{field:"native selector".into()}];
+        root.bypass=Some(Switch{saved:true,control:Some(sampler_ir::ControlRef(0))});
+        root.event_processors=vec![Processor{id:Event::UviNode(110),owner:root.id,ordinal:0,kind:"UnknownProcessor".into(),bypass:Switch{saved:false,control:None}},
+            Processor{id:Event::UviNode(111),owner:root.id,ordinal:1,kind:"ScriptProcessor".into(),bypass:Switch{saved:false,control:None}}];
+        let table=PreparedSourceOwners::compile(&[owner(9,Some(100),&[]),root,owner(7,Some(100),&[])],2,3,&[crate::ControlId(91)]).unwrap();
+        let root_index=table.index(Id::UviNode(100)).unwrap();let row=table.get(root_index).unwrap();
+        assert_eq!(root_index.index(),1);
+        assert_eq!(row.children.iter().map(|&id|table.get(id).unwrap().id).collect::<Vec<_>>(),[Id::UviNode(7),Id::UviNode(9)]);
+        assert_eq!(row.groups.as_ref(),[1]);assert_eq!(row.regions.as_ref(),[2]);
+        assert_eq!(row.bypass.unwrap().control,Some(crate::ControlId(91)));
+        assert!(matches!(&row.predicates[0],sampler_ir::SourceInputPredicate::Unsupported{field}if field=="native selector"));
+        let script=table.processor(Event::UviNode(111)).unwrap();
+        assert_eq!((script.owner,script.ordinal),(root_index,1));
+        assert_eq!(table.processor(Event::UviNode(110)).unwrap().kind.as_ref(),"UnknownProcessor");
+        assert!(table.memory_bytes()>=3*std::mem::size_of::<PreparedSourceOwner>());
+    }
+    #[test]
+    fn source_owner_table_rejects_dangling_duplicate_cycle_and_physical_coordinate_errors() {
+        let root=owner(1,None,&[2]);let child=owner(2,Some(1),&[]);
+        assert!(PreparedSourceOwners::compile(&[root.clone(),child.clone()],0,0,&[]).is_ok());
+        assert!(matches!(PreparedSourceOwners::compile(&[root.clone()],0,0,&[]),Err(Error::InvalidInput)));
+        assert!(matches!(PreparedSourceOwners::compile(&[root.clone(),root.clone(),child.clone()],0,0,&[]),Err(Error::InvalidInput)));
+        let mut cycle_root=root.clone();cycle_root.parent=Some(child.id);
+        let mut cycle_child=child.clone();cycle_child.children.push(root.id);
+        assert!(matches!(PreparedSourceOwners::compile(&[cycle_root,cycle_child],0,0,&[]),Err(Error::InvalidInput)));
+        let mut bad=root;bad.zones.push(sampler_ir::ZoneRef(0));
+        assert!(matches!(PreparedSourceOwners::compile(&[bad,child],0,0,&[]),Err(Error::InvalidInput)));
     }
 }

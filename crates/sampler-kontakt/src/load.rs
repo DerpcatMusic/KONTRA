@@ -412,6 +412,11 @@ fn finish_sources_kept(
         || zone.group.is_some_and(|group|group.0>=instrument.groups.len())) {
         return Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"logical zone refers to an absent source or group".into()});
     }
+    if !instrument.source_indices.processing.is_empty() {
+        instrument.validate().map_err(|error| LoadError::Invalid {
+            path: options.library.clone().unwrap_or_default(), reason: error.to_string(),
+        })?;
+    }
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
         let mut report = Vec::new();
@@ -448,6 +453,17 @@ fn finish_sources_kept(
                 value,
                 reason: ir::Reason::InvalidValue,
             }));
+    }
+    // A source-native shared section is one authored operation. Fitting away a
+    // failed member would alter the sum before its nonlinear/shared state and
+    // erase the very identity needed to diagnose it. Dormant players (no asset)
+    // remain valid; existing unowned legacy zone-drop policy is unchanged.
+    if instrument.source_indices.processing.iter().any(|recipe| recipe.members.iter()
+        .any(|member| !playable[member.0])) {
+        return Err(LoadError::Invalid {
+            path: options.library.clone().unwrap_or_default(),
+            reason: "shared source member could not preserve its authored playback geometry".into(),
+        });
     }
     let mut index = 0;
     let used = instrument.retain_zones(|_| {
@@ -1112,10 +1128,51 @@ fn compile_ui_initialized(
 fn prepare_inner(instrument:ir::Instrument,pcm:Vec<Pcm>,options:&Options,initialized:Option<ScriptInit>) ->Result<Loaded,LoadError> {
     prepare_sources_inner(instrument,pcm.into_iter().map(SourceStorage::Stereo).collect(),options,initialized)
 }
+/// Bind source-native recipes only after ordinary readers supplied actual
+/// immutable source geometry. Both resident and streamed loaders reach here.
+fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStorage], options: &Options) -> Result<(), LoadError> {
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: options.library.clone().unwrap_or_default(), reason: reason.into(),
+    };
+    instrument.validate().map_err(|error| invalid(&error.to_string()))?;
+    // Preflight the entire recipe batch before changing its scope roster.
+    let mut resolved = Vec::with_capacity(instrument.source_indices.processing.len());
+    for recipe in &instrument.source_indices.processing {
+        let mut width = None;
+        for member in &recipe.members {
+            let Some(asset) = instrument.zones[member.0].asset else { continue; };
+            let actual = sources.get(asset.0).ok_or_else(|| invalid("source processing asset is absent"))?.as_source().channels().get();
+            if width.replace(actual).is_some_and(|previous| previous != actual) {
+                return Err(invalid("mixed source layouts require an explicit native conversion edge"));
+            }
+        }
+        // This first executable legacy-chain port is stereo. Wide ports must
+        // retain their real graph and receive typed channel stages, never fold.
+        if width.is_some_and(|width| width != 2) {
+            return Err(invalid("source processing requires its actual typed channel stage graph"));
+        }
+        resolved.push(ir::ProcessingScope {
+            members: recipe.members.clone(), sum: ir::ProcessingSumLaw::OrderedF32,
+            cadence: ir::ProcessingCadence::CoreCell64, chain: recipe.chain,
+            amplitude: recipe.amplitude, output: recipe.output, signal: None,
+        });
+    }
+    for (recipe, scope) in instrument.source_indices.processing.iter_mut().zip(resolved) {
+        if let Some(index) = recipe.compiled {
+            instrument.processing_scopes[index] = scope;
+        } else {
+            recipe.compiled = Some(instrument.processing_scopes.len());
+            instrument.processing_scopes.push(scope);
+        }
+    }
+    Ok(())
+}
+
 fn prepare_sources_inner(
     mut instrument:ir::Instrument,sources:Vec<SourceStorage>,options:&Options,initialized:Option<ScriptInit>,
 )->Result<Loaded,LoadError> {
     let rate = options.rate;
+    bind_source_processing(&mut instrument, &sources, options)?;
     host_volume(&mut instrument);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let ui_span = crate::audit::Span::new("script_ui_prepare");

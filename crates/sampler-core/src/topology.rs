@@ -27,6 +27,9 @@ pub struct ProcessingOwnerSnapshot {
 }
 
 pub(super) struct PreparedScope {
+    /// The canonical prepared owner table is shared with event dispatch.
+    /// None is an explicit hand-authored generic scope, never a guessed source ID.
+    pub source_owner: Option<crate::prepare::PreparedSourceOwnerIndex>,
     pub chain: Option<usize>,
     pub sum: sampler_ir::ProcessingSumLaw,
     pub envelope: Envelope,
@@ -61,6 +64,12 @@ impl ProcessingOwner {
 impl Prepared {
     pub fn processing_scope_count(&self) -> usize {
         self.processing_scopes.len()
+    }
+    /// Actual source definition identity joined by the ordinary compiler.
+    /// Liveness remains fenced by this Prepared generation's real PlanId.
+    pub fn processing_scope_source_owner(&self, scope: usize) -> Option<sampler_ir::SourceOwnerId> {
+        let owner = self.processing_scopes.get(scope)?.source_owner?;
+        Some(self.source_owners().get(owner)?.id)
     }
 }
 
@@ -274,9 +283,7 @@ impl Runtime {
     }
     pub(crate) fn mark_processing_onset_failed(&mut self, index: usize) {
         let Some((owner, _)) = self.voices.slots.get(index).and_then(|s| s.value.as_ref()).and_then(|v| v.processing) else { return; };
-        let explicit = self.processing_owners.get(owner.0).and_then(|owner|
-            self.plans.get(owner.plan.0).map(|plan| plan.prepared.processing_scopes[owner.template].signal.is_some())).unwrap_or(false);
-        if explicit && let Some(owner) = self.processing_owners.get_mut(owner.0) { owner.failed = true; }
+        if let Some(owner) = self.processing_owners.get_mut(owner.0) { owner.failed = true; }
     }
     fn end_processing_owner(&mut self, id: ProcessingOwnerId) {
         let Some(owner) = self.processing_owners.get(id.0).copied() else {
@@ -306,9 +313,12 @@ impl Runtime {
             let id = ProcessingOwnerId(self.processing_owners.id(index));
             let explicit = self.plans.get(before.plan.0).is_some_and(|generation|
                 generation.prepared.processing_scopes[before.template].signal.is_some());
-            if explicit && before.failed { self.end_processing_owner(id); continue; }
-            if explicit && !self.prepare_processing_cold_start(&before,at,output.len()) {continue;}
-            if explicit && before.members.iter().flatten().any(|voice|
+            // Shared history belongs to the activation, including ordinary
+            // stereo imported chains. No member may advance it alone merely
+            // because this owner does not use a wide signal stage.
+            if before.failed { self.end_processing_owner(id); continue; }
+            if !self.prepare_processing_cold_start(&before,at,output.len()) {continue;}
+            if before.members.iter().flatten().any(|voice|
                 self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.holding_onset() || v.cursor.pending_start_runway() > 1)) {
                 // Processing ownership is independent of take/Family startup
                 // cohorts. Shared envelope and DSP state rest until all members.
