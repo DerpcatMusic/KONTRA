@@ -346,3 +346,52 @@ mod projection_tests {
         );
     }
 }
+
+
+/// Render-call-local curve reuse. This value is never retained in a plan,
+/// processor, expression owner, snapshot or control publication.
+pub(crate) struct PanCoefficients {
+    law:sampler_ir::PanLaw,
+    previous:Option<f64>,
+    gains:[f64;2],
+    #[cfg(test)]
+    evaluations:usize,
+}
+impl PanCoefficients {
+    pub(crate) fn new(law:sampler_ir::PanLaw)->Self {
+        Self{law,previous:None,gains:[1.;2],#[cfg(test)]evaluations:0}
+    }
+    pub(crate) fn at(&mut self,position:f64)->[f64;2] {
+        if self.previous!=Some(position) {
+            self.gains=self.law.gains(position);
+            self.previous=Some(position);
+            #[cfg(test)]
+            {self.evaluations+=1;}
+        }
+        self.gains
+    }
+}
+
+#[cfg(test)]
+mod pan_coefficient_work_tests {
+    use super::*;
+    #[test]
+    fn pan_coefficient_work_is_bounded_by_changed_combined_positions() {
+        for law in [sampler_ir::PanLaw::Balance,sampler_ir::PanLaw::EqualPower,sampler_ir::PanLaw::RaisedCosineCoreF64] {
+            let mut fixed=PanCoefficients::new(law);
+            for _ in 0..4096{assert_eq!(fixed.at(0.375),law.gains(0.375));}
+            assert_eq!(fixed.evaluations,1);
+            let mut ramp=PanCoefficients::new(law);
+            for frame in 0..64 {
+                // Same scalar addition/clamp sequence used by the actual
+                // renderers; the saturated suffix has only one curve value.
+                let value=(-0.75+(frame as f64)*0.25+0.125+0.125).clamp(-1.,1.);
+                assert_eq!(ramp.at(value),law.gains(value));
+            }
+            assert_eq!(ramp.evaluations,7);
+            let mut next_call=PanCoefficients::new(law);
+            assert_eq!(next_call.at(0.375),law.gains(0.375));
+            assert_eq!(next_call.evaluations,1);
+        }
+    }
+}

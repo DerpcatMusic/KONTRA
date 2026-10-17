@@ -179,3 +179,44 @@ fn constant_pan_offset_and_base_are_independent_across_sibling_scopes() {
     let active=rt.active_plan();let id=sampler_core::lower::ir_control_id("scalar-pan");support::without_heap(||{rt.edit_controls(active,None,&[ControlWrite{id,value:ControlValue::Real(-0.5)}]).unwrap();rt.render(&mut out).unwrap();});check(&out,-0.3,-0.35);
     rt.release(a).unwrap();rt.render(&mut [[0.;2];64]).unwrap();rt.render(&mut out).unwrap();let expected=pan_oracle(-0.35,1.);for frame in out{for c in 0..2{assert!((frame[c]-expected[c]).abs()<2e-6);}}rt.release(b).unwrap();rt.render(&mut [[0.;2];128]).unwrap();assert_eq!(rt.stats().nonfinite_frames,0);
 }
+
+#[test]
+fn static_unbound_pan_keeps_independent_matrix_pcm_and_no_heap() {
+    for law in [ir::PanLaw::Balance,ir::PanLaw::EqualPower,ir::PanLaw::RaisedCosineCoreF64] {
+        let position=0.375;
+        let gains=match law{
+            ir::PanLaw::Balance=>[1.-position,1.],
+            ir::PanLaw::EqualPower=>{let angle=(position+1.)*std::f64::consts::FRAC_PI_4;[angle.cos(),angle.sin()]},
+            ir::PanLaw::RaisedCosineCoreF64=>[(position*std::f64::consts::FRAC_PI_2).cos().powi(2),1.],
+        };
+        let runtime=|reference:bool|{
+            let mut instrument=scalar_pan_graph(false,0);
+            instrument.controls.clear();instrument.processor_controls.clear();
+            instrument.chains[0].pre_amplitude[0]=if reference{ir::Processor::StereoMatrix([[gains[0],0.],[0.,gains[1]]])}else{ir::Processor::Pan(ir::Pan{position,law})};
+            let sources=(0..2).map(|_|Pcm::new(48000,(0..2048).map(|frame|{let x=if frame%7<3{0.1}else{-0.2};[x,-x*0.5]}).collect::<Vec<_>>().into_boxed_slice()).unwrap()).collect();
+            let plan=lower(&instrument,48000,sources,|_,p|Ok(p)).unwrap();let limits=sampler_core::Limits::for_plan(&plan,8,16);sampler_core::Runtime::new(plan,limits).unwrap()
+        };
+        let mut actual=runtime(false);let mut reference=runtime(true);let a=actual.trigger(pan_input(51),60,1.).unwrap();let b=reference.trigger(pan_input(51),60,1.).unwrap();
+        let mut output=[[0.;2];128];let mut expected=[[0.;2];128];
+        support::without_heap(||{actual.render(&mut output).unwrap();reference.render(&mut expected).unwrap();});
+        for(a,b)in output.iter().zip(expected){for channel in 0..2{assert!((a[channel]-b[channel]).abs()<2e-6);}}
+        assert!(output.iter().flatten().any(|value|value.abs()>0.01));
+        support::without_heap(||{actual.release(a).unwrap();reference.release(b).unwrap();actual.render(&mut output).unwrap();reference.render(&mut expected).unwrap();});
+        assert_eq!(actual.stats().nonfinite_frames,0);assert_eq!(reference.stats().nonfinite_frames,0);
+    }
+}
+
+#[test]
+fn pan_curve_reuse_preserves_exact_ramp_plateau_and_next_expression_event() {
+    use sampler_core::{ControlValue,ControlWrite,Expression};
+    let mut rt=scalar_pan_runtime(true,8);let note=rt.trigger(pan_input(52),60,1.).unwrap();let expression=rt.expression_id(note).unwrap();
+    rt.set_expression(expression,Expression{pan:0.125,..Default::default()}).unwrap();
+    let plan=rt.active_plan();let id=sampler_core::lower::ir_control_id("scalar-pan");let mut out=[[0.;2];64];
+    support::without_heap(||{rt.edit_controls(plan,None,&[ControlWrite{id,value:ControlValue::Real(0.75)}]).unwrap();rt.render(&mut out).unwrap();});
+    for(frame,value)in out.iter().enumerate(){let p=0.25+(0.5)*(frame.min(8)as f64/8.)+0.125;let expected=pan_oracle(p,1.);for channel in 0..2{assert!((value[channel]-expected[channel]).abs()<2e-6);}}
+    // A fresh render call must read the new canonical expression, never reuse
+    // the former call's last combined scalar or retain a mutable target cache.
+    support::without_heap(||{rt.set_expression(expression,Expression{pan:-0.5,..Default::default()}).unwrap();rt.render(&mut out).unwrap();});
+    let expected=pan_oracle(0.25,1.);for value in out{for channel in 0..2{assert!((value[channel]-expected[channel]).abs()<2e-6);}}
+    rt.release(note).unwrap();rt.render(&mut [[0.;2];128]).unwrap();assert_eq!(rt.stats().nonfinite_frames,0);
+}

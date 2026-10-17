@@ -859,6 +859,12 @@ pub(super) fn compile_processors(
                 Processor::Gain(gain) => PreparedProcessor::Gain(gain),
                 Processor::Pan { position, offset, law, expression } => {
                     if expression && spaces.is_some() {return Err(Error::InvalidInput);}
+                    if let Parameter::Constant(value)=position {
+                        if !expression {
+                            let [left,right]=law.gains((value+offset).clamp(-1.,1.));
+                            return Ok(PreparedProcessor::StereoMatrix([[left,0.],[0.,right]]));
+                        }
+                    }
                     PreparedProcessor::Pan { position:position.compile(bindings),offset,law,expression }
                 }
                 Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
@@ -1523,9 +1529,10 @@ pub(super) fn process<'a, const TRACE: bool>(
                     match filters.expression {Some((_,value))=>value.pan,None=>{fault=true;0.}}
                 }else{0.};
                 let [left,right]=block;
+                let mut curve=control::PanCoefficients::new(*law);
                 for (frame,(left,right)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
                     let position=(position.value(parameters,at+frame as u64,None)+*offset+note_pan).clamp(-1.,1.);
-                    let gains=law.gains(position);
+                    let gains=curve.at(position);
                     *left=kernels::gain(*left,gains[0]);*right=kernels::gain(*right,gains[1]);
                 }
             }
@@ -2468,5 +2475,31 @@ impl PreparedChainRef<'_> {
         }
         if fault { states.fill(ProcessorState::default()); input.fill([0.; 2]); }
         fault
+    }
+}
+
+#[cfg(test)]
+mod pan_preparation_work_tests {
+    use super::*;
+    fn compile(position:Parameter,expression:bool)->PreparedChains {
+        let chain=VoiceChain::new(vec![Processor::Pan{position,offset:0.125,law:sampler_ir::PanLaw::RaisedCosineCoreF64,expression}],vec![],0).unwrap()
+            .compile(48000,&mut Vec::new(),&mut svf::FilterRegistryBuilder::default()).unwrap();
+        PreparedChains::from_compiled(vec![chain])
+    }
+    #[test]
+    fn static_unbound_pan_uses_the_existing_batch_matrix_owner() {
+        let chains=compile(Parameter::Constant(0.25),false);
+        assert!(chains[0].batch_index().is_some());
+        let ProcessorRef::StereoMatrix(matrix)=chains.view(0).pre.get(0) else{panic!("static Pan lost precomputed owner")};
+        let expected=(0.375*std::f64::consts::FRAC_PI_2).cos().powi(2);
+        assert!((matrix[0][0]-expected).abs()<1e-15);
+        assert_eq!([matrix[0][1],matrix[1][0],matrix[1][1]],[0.,0.,1.]);
+    }
+    #[test]
+    fn actual_control_and_expression_pan_remain_scalar_owners() {
+        let control=compile(Parameter::Control(ControlRange{control:crate::ControlId(0xbeef),low:-1.,high:1.,ramp_frames:64}),false);
+        assert!(control[0].batch_index().is_none());assert!(matches!(control.view(0).pre.get(0),ProcessorRef::Pan{..}));
+        let expression=compile(Parameter::Constant(0.25),true);
+        assert!(expression[0].batch_index().is_none());assert!(matches!(expression.view(0).pre.get(0),ProcessorRef::Pan{..}));
     }
 }
