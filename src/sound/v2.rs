@@ -3421,10 +3421,24 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
                 .collect(),
         });
     }
+    // A normal source processing owner captures its member outputs before bus
+    // routing. Do not move those member gains/sends onto buses it never emits
+    // through. Membership comes from actual source recipe references, not names.
+    let mut source_scoped = vec![false; instrument.groups.len()];
+    for recipe in &instrument.source_indices.processing {
+        for member in &recipe.members {
+            if let Some(group) = instrument.zones.get(member.0).and_then(|zone| zone.group) {
+                if let Some(owned) = source_scoped.get_mut(group.0) { *owned = true; }
+            }
+        }
+    }
     // Microphone positions: a source bus the groups already play through, else
     // a bus made for the position; groups play through their mic.
     let mut mic_of = vec![None; instrument.groups.len()];
     for (name, groups) in super::mics::infer(instrument) {
+        // An owner may combine these source definitions. A source-label-based
+        // microphone guess cannot retarget or split that actual topology.
+        if groups.iter().any(|&group| source_scoped.get(group).copied().unwrap_or(false)) { continue; }
         let existing = match instrument.groups[groups[0]].output {
             ir::Output::Bus(b) if instrument.buses[b.0].name == name => Some(b.0 + 1),
             _ => None,
@@ -3452,7 +3466,27 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
             mic_of[g] = Some(at);
         }
     }
+    // One physical bus/node for each actual shared section. This bus applies
+    // only product mixer settings after the section; its authored gain remains
+    // in the compiled scope chain, while each source keeps its own factors.
+    for index in 0..instrument.source_indices.processing.len() {
+        let recipe = &instrument.source_indices.processing[index];
+        let name = if recipe.name.is_empty() { "Keygroup".to_owned() } else { recipe.name.clone() };
+        let output = recipe.output.map_or(ir::Output::Master, ir::Output::Bus);
+        let inserts = insert_names(instrument, recipe.chain);
+        let compiled = recipe.compiled;
+        let bus = ir::BusRef(instrument.buses.len());
+        instrument.buses.push(ir::Bus { name: name.clone(), chain: None,
+            sends: Vec::new(), output, gain: ir::Gain::UNITY });
+        tree.nodes.push(MixNode { name, kind: NodeKind::Group,
+            parent: Some(node(output)), inserts, sends: Vec::new() });
+        instrument.source_indices.processing[index].output = Some(bus);
+        if let Some(scope) = compiled.and_then(|at| instrument.processing_scopes.get_mut(at)) {
+            scope.output = Some(bus);
+        }
+    }
     for index in 0..instrument.groups.len() {
+        if source_scoped[index] { continue; }
         let group = &instrument.groups[index];
         let name = if group.name.is_empty() {
             format!("Group {}", index + 1)
@@ -9372,5 +9406,33 @@ mod timestamped_transport_contract_tests {
         assert!(!core.holding);assert_eq!(cell(&core,0),0);assert_eq!(cell(&core,1),250000);
         assert_eq!(core.parts[0].as_ref().unwrap().runtime.behavior_block_fuel(),fuel);
         assert_eq!(core.clock(0),64);assert!(core.host_block);
+    }
+}
+
+#[cfg(test)]
+mod source_processing_mixer_tests {
+    use super::*;
+    fn owner(id:u32,parent:Option<u32>,kind:ir::SourceOwnerKind,children:&[u32],zones:&[usize])->ir::SourceOwner{
+        ir::SourceOwner{id:ir::SourceOwnerId::UviNode(id),parent:parent.map(ir::SourceOwnerId::UviNode),kind,children:children.iter().map(|id|ir::SourceOwnerId::UviNode(*id)).collect(),groups:if zones.is_empty(){vec![]}else{zones.iter().map(|&zone|ir::GroupRef(zone)).collect()},zones:zones.iter().map(|&zone|ir::ZoneRef(zone)).collect(),predicates:vec![],bypass:None,mute:None,event_processors:vec![]}
+    }
+    fn instrument()->ir::Instrument {
+        let mut ir=ir::Instrument{source:ir::SourceFormat::Uvi,name:"authored owners".into(),..Default::default()};
+        for (index,gain) in [0.25,0.5,0.75].into_iter().enumerate(){
+            ir.assets.push(ir::Asset{location:ir::AssetLocation::Path(format!("source{index}.wav")),encoding:ir::Encoding::Wav,residency:ir::AssetResidency::Resident,root_key:None,loops:vec![]});
+            ir.groups.push(ir::Group{name:format!("source{index}"),gain:ir::Gain::Linear(gain),..Default::default()});
+            let mut zone=ir::Zone::new(ir::AssetRef(index));zone.keys=ir::KeyRange{low:60,high:60};zone.group=Some(ir::GroupRef(index));zone.velocity=ir::VelocityResponse::None;if index==2 {zone.keys=ir::KeyRange{low:61,high:61};}ir.zones.push(zone);
+        }
+        ir.source_indices.owners=vec![owner(0,None,ir::SourceOwnerKind::Instrument,&[1,4],&[]),owner(1,Some(0),ir::SourceOwnerKind::Keygroup,&[2,3],&[0,1]),owner(2,Some(1),ir::SourceOwnerKind::Player,&[],&[0]),owner(3,Some(1),ir::SourceOwnerKind::Player,&[],&[1]),owner(4,Some(0),ir::SourceOwnerKind::Player,&[],&[2])];
+        ir.source_indices.processing.push(ir::SourceProcessingRecipe{name:"shared keygroup".into(),owner:ir::SourceOwnerId::UviNode(1),lifetime:ir::SourceProcessingLifetime::UviKeygroupActivation,members:vec![ir::ZoneRef(0),ir::ZoneRef(1)],chain:None,amplitude:None,output:None,compiled:None});ir
+    }
+    fn pcm(instrument:ir::Instrument)->Vec<[f32;2]>{
+        let pcm=(0..3).map(|index|sampler_core::Pcm::new(48000,vec![[0.125*(index+1)as f32;2];512].into_boxed_slice()).unwrap()).collect();
+        let loaded=sampler_kontakt::prepare(instrument,pcm,&sampler_kontakt::Options{rate:48000,scripts:false,..Default::default()}).unwrap();let limits=sampler_core::Limits::for_plan(&loaded.plan,8,8);let mut rt=sampler_core::Runtime::new(loaded.plan,limits).unwrap();let note=rt.trigger(sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();let mut out=vec![[0.;2];128];rt.render(&mut out).unwrap();assert_eq!(rt.processing_owner_count(),1);rt.release(note).unwrap();out
+    }
+    #[test] fn shared_owner_has_one_mixer_bus_and_preserves_member_factors(){
+        let mut ir=instrument();let before:Vec<_>=ir.groups.iter().map(|group|group.gain).collect();let tree=nest(&mut ir);assert_eq!(tree.nodes.iter().filter(|node|node.kind==NodeKind::Group).count(),2);let bus=ir.source_indices.processing[0].output.unwrap();assert_eq!(tree.nodes[bus.0+1].name,"shared keygroup");assert_eq!(ir.buses[bus.0].gain,ir::Gain::UNITY);assert!(ir.groups[0].tap.is_none());assert!(ir.groups[1].tap.is_none());assert_eq!(ir.groups[0].gain,before[0]);assert_eq!(ir.groups[1].gain,before[1]);assert!(ir.groups[2].tap.is_some());assert!(ir.validate().is_ok());
+    }
+    #[test] fn graph_aware_nest_preserves_normal_owner_pcm(){
+        let original=instrument();let reference=pcm(original.clone());assert!(reference.iter().flatten().any(|sample|sample.abs()>0.01));let mut nested=original;nest(&mut nested);let actual=pcm(nested);assert_eq!(actual,reference,"product graph handoff must not move source gains to an unobserved member bus");
     }
 }

@@ -201,8 +201,11 @@ mod tests {
         assert!(native.zones[0].muted);
         assert_eq!(
             ir.source_indices.zones,
-            vec![None, Some(sampler_ir::ZoneRef(0))]
+            vec![Some(sampler_ir::ZoneRef(0)), Some(sampler_ir::ZoneRef(1))]
         );
+        assert_ne!(ir.zones[0].group, ir.zones[1].group);
+        assert!(ir.groups[ir.zones[0].group.unwrap().0].muted);
+        assert!(!ir.groups[ir.zones[1].group.unwrap().0].muted);
     }
 
     #[test]
@@ -216,8 +219,7 @@ mod tests {
                 .all(|r| r.disposition == D::Dropped(R::TargetsDropped))
         );
         assert!(rows.iter().all(|r| {
-            r.targets.len() == 1
-                && r.targets[0].disposition == D::Dropped(R::TargetsDropped)
+            r.targets.len() == 1 && r.targets[0].disposition == D::Dropped(R::TargetsDropped)
         }));
     }
 

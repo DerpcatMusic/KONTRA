@@ -32,7 +32,7 @@ struct Siblings {
     next: Option<Index>,
 }
 
-pub use prepare::{MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
+pub use prepare::{PreparedSourceOwners, PreparedSourceOwner, PreparedSourceOwnerIndex, PreparedSourceEventProcessor, PreparedSourceSwitch, MAX_ZONE_BATCH_JOBS, source_zone_job_capacity, SourceZoneHome, SourceZoneIdentity,
     ZoneRouteVariant, ZoneRouting, ZoneRoutingLimits, ZoneRoutingBuildError,
     ZoneRoutingFeature, ZoneRoutingRefusal, ZoneRoutingReport};
 mod allocation;

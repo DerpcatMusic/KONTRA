@@ -370,6 +370,7 @@ fn translate(
     )
     .map_err(|e| decode("group list", e))?;
     let mut resources = None;
+    let mut source_event_processors = Vec::new();
     for (slot, chunk) in program
         .0
         .children
@@ -394,6 +395,20 @@ fn translate(
                 }
             }
         }
+        // Preserve the complete native SCRIPT chunk order, including empty and
+        // saved-bypass slots. Runtime Behavior ordinals are not source IDs.
+        let source_slot = u32::try_from(slot).map_err(|_| invalid("script source ordinal exceeds source identity domain"))?;
+        source_event_processors.push(ir::SourceEventProcessor {
+            id: ir::SourceEventProcessorId::KontaktScriptSlot(source_slot),
+            owner: ir::SourceOwnerId::KontaktInstrument,
+            ordinal: source_slot,
+            kind: if script.text.as_ref().is_some_and(|text| !text.trim().is_empty()) {
+                "KspScript"
+            } else if script.textfile_name.as_ref().is_some_and(|name| !name.is_empty()) {
+                "UnresolvedKspScript"
+            } else { "EmptyKspSlot" }.into(),
+            bypass: ir::SourceSwitch { saved: script.bypass, control: None },
+        });
         let location = format!("script slot {slot}");
         match script.text {
             _ if script.bypass => {}
@@ -670,6 +685,8 @@ fn translate(
     out.apply_intensity_scales();
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.register_compressor_controls();
+    retain_kontakt_source_owners(&mut out.ir, source_event_processors)
+        .map_err(|reason| invalid(&reason))?;
     out.ir.unsupported.dedup();
     #[cfg(feature = "scan")]
     {
@@ -711,6 +728,86 @@ fn translate(
         crate::cache::store(&path, program, &mut kontakt, &recipes);
     }
     Ok(kontakt)
+}
+
+/// Retain actual native document addresses independently of DSP admission.
+/// Kontakt Group effects already have their native per-voice ownership below;
+/// this common hierarchy does not turn them into a UVI shared keygroup sum.
+fn retain_kontakt_source_owners(
+    instrument: &mut ir::Instrument,
+    event_processors: Vec<ir::SourceEventProcessor>,
+) -> Result<(), String> {
+    use ir::{SourceOwner, SourceOwnerId as Id, SourceOwnerKind as Kind,
+        SourceInputPredicate as Predicate};
+    let group_count = instrument.source_indices.groups.len();
+    let catalog = &instrument.source_indices.zone_catalog;
+    if catalog.len() != instrument.source_indices.zones.len()
+        || group_count > u32::MAX as usize || catalog.len() > u32::MAX as usize {
+        return Err("Kontakt source hierarchy coordinate range is invalid".into());
+    }
+    let mut owners = Vec::with_capacity(1 + group_count + catalog.len());
+    owners.push(SourceOwner { id: Id::KontaktInstrument, parent: None,
+        kind: Kind::Instrument,
+        children: (0..group_count).map(|group| Id::KontaktGroup(group as u32)).collect(),
+        groups: vec![], zones: vec![], predicates: vec![], bypass: None, mute: None,
+        event_processors });
+    for group in 0..group_count {
+        let runtime = instrument.source_indices.groups[group];
+        let mut predicates = Vec::new();
+        if runtime.is_none() {
+            predicates.push(Predicate::Unsupported { field: "kontakt-group-not-compiled".into() });
+        } else if runtime.is_some_and(|runtime| !instrument.groups[runtime.0].start.is_empty()) {
+            // The actual criterion/RR program remains the existing native
+            // group owner. A copied keys-only predicate must not bypass it.
+            predicates.push(Predicate::Unsupported { field: "kontakt-group-start-criteria".into() });
+        }
+        owners.push(SourceOwner { id: Id::KontaktGroup(group as u32),
+            parent: Some(Id::KontaktInstrument), kind: Kind::KontaktGroup,
+            children: catalog.iter().enumerate().filter(|(_, zone)| zone.home.group as usize == group)
+                .map(|(zone, _)| Id::KontaktZone(zone as u32)).collect(),
+            groups: runtime.into_iter().collect(), zones: vec![], predicates,
+            // Native group mute lives in the existing GroupParams owner, not a
+            // new cached boolean or an invented ControlId in this document row.
+            bypass: None, mute: None, event_processors: vec![] });
+    }
+    for (index, source) in catalog.iter().enumerate() {
+        if source.home.group as usize >= group_count {
+            return Err("Kontakt source zone has an absent native home group".into());
+        }
+        let primary = instrument.source_indices.zones[index];
+        let mut zones: Vec<_> = primary.into_iter().collect();
+        if let Some(id) = source.id {
+            for routing in instrument.zone_routing.iter().filter(|routing| routing.source_zone == id) {
+                for zone in routing.variants.iter().filter_map(|variant| variant.zone) {
+                    if !zones.contains(&zone) { zones.push(zone); }
+                }
+            }
+        }
+        let mut groups: Vec<_> = instrument.source_indices.groups[source.home.group as usize].into_iter().collect();
+        for zone in &zones {
+            if let Some(group) = instrument.zones[zone.0].group && !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        let mut predicates = vec![Predicate::Keys(ir::KeyRange {
+            low: source.home.low_key, high: source.home.high_key })];
+        if let Some(zone) = primary {
+            predicates.push(Predicate::Velocities(instrument.zones[zone.0].velocities));
+        } else {
+            predicates.push(Predicate::Unsupported { field: "kontakt-zone-not-compiled".into() });
+        }
+        if source.id.is_some_and(|id| instrument.zone_routing.iter().any(|routing| routing.source_zone == id)) {
+            // home is initialized source provenance. Later routing is resolved
+            // by the real zone-routing registry, not this immutable parent edge.
+            predicates.push(Predicate::Unsupported { field: "kontakt-dynamic-zone-routing".into() });
+        }
+        owners.push(SourceOwner { id: Id::KontaktZone(index as u32),
+            parent: Some(Id::KontaktGroup(source.home.group)), kind: Kind::KontaktZone,
+            children: vec![], groups, zones, predicates, bypass: None, mute: None,
+            event_processors: vec![] });
+    }
+    instrument.source_indices.owners = owners;
+    Ok(())
 }
 
 /// Group settings every zone of the group inherits.
