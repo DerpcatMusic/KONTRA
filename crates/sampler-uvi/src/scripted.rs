@@ -163,10 +163,19 @@ const GLIDE_STEP_MS: f64 = 5.0;
 /// Script wake-ups handled at one instant before time is forced forward.
 const SPIN: usize = 64;
 
-/// A `sendScriptModulation` gliding to its value.
+/// Fixed logical upper bound, independent of allocator spare capacity. Every
+/// recipient is priced before replacing any current glide or stored value.
+pub const SCRIPT_MODULATION_GLIDE_CAPACITY:usize=65_536;
+
+#[derive(Clone,Copy)]
+struct ModulationRecipient {voice:u64,note:NoteId,from:f64,broadcast:bool}
+
+/// A ramp owns one exact admitted recipient, never a future broadcast query.
 struct Glide {
     id: u16,
-    voice: Option<u64>,
+    voice: u64,
+    note: NoteId,
+    require_sounding:bool,
     from: f64,
     to: f64,
     start_ms: f64,
@@ -224,10 +233,9 @@ pub struct Driver<S: Script> {
     next: u64,
     /// Plays that asked for something the runtime does not model.
     unmodeled: Vec<&'static str>,
-    /// Script event modulation values: for all voices (also given to later
-    /// ones) and per voice.
-    global: HashMap<u16, f64>,
-    voice_values: HashMap<(u64, u16), f64>,
+    /// No standing broadcast default or duplicate script-value bank. Values
+    /// live on the actual Core note; scratch retains only a command snapshot.
+    modulation_recipients:Vec<ModulationRecipient>,
     glides: Vec<Glide>,
     /// Frame of the next glide step.
     glide_at: u64,
@@ -272,9 +280,8 @@ impl<S: Script> Driver<S> {
                 .collect(),
             next: 1,
             unmodeled: Vec::with_capacity(32),
-            global: HashMap::with_capacity(32),
-            voice_values: HashMap::with_capacity(TRACKED * 2),
-            glides: Vec::with_capacity(64),
+            modulation_recipients:Vec::with_capacity(TRACKED),
+            glides: Vec::with_capacity(SCRIPT_MODULATION_GLIDE_CAPACITY),
             glide_at: 0,
             inbox: Vec::with_capacity(256),
             ended: Vec::with_capacity(TRACKED),
@@ -333,6 +340,7 @@ impl<S: Script> Driver<S> {
         velocity: f64,
     ) -> Result<(), Error> {
         let channel = rt.input_source(note)?.ok_or(Error::InvalidInput)?.channel;
+        if self.notes.values().any(|entry|entry.note==note){return Err(Error::DuplicateInput);}
         if self.notes.len() >= TRACKED {
             self.prune(rt);
         }
@@ -348,11 +356,8 @@ impl<S: Script> Driver<S> {
         self.host.set_time(self.now_ms(rt));
         self.host.note_on_channel(id, key, (velocity * 127.0).round() as u8, channel);
         if !self.host.handles_notes() {
-            // No onNote: the program sounds as authored, with the script's
-            // standing modulation values.
-            for (id, value) in &self.global {
-                rt.set_note_script_value(note, *id, *value)?;
-            }
+            // A prior broadcast reaches only its then-sounding recipients.
+            // A new source starts from its own authored initial value.
             rt.forward_attack(note)?;
         }
         self.apply(rt, false)
@@ -411,7 +416,7 @@ impl<S: Script> Driver<S> {
         self.apply(rt, false)?;
         loop {
             if !self.glides.is_empty() && rt.now() >= self.glide_at {
-                self.step_glides(rt);
+                self.step_glides(rt)?;
             }
             let glide = (!self.glides.is_empty()).then(|| self.glide_at - rt.now());
             let host = self
@@ -479,11 +484,12 @@ impl<S: Script> Driver<S> {
                 }
                 Command::Modulation {
                     id,
+                    start,
                     value,
                     glide_ms,
                     voice,
                     at_ms,
-                } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
+                } => self.modulate(rt, id, start, value, glide_ms, voice, at_ms)?,
                 Command::Change {
                     id,
                     what,
@@ -658,95 +664,96 @@ impl<S: Script> Driver<S> {
     /// Forget notes the runtime no longer holds.
     fn prune(&mut self, rt: &Runtime) {
         self.notes.retain(|_, entry| entry.physical_down || rt.note(entry.note).is_ok());
-        let notes = &self.notes;
-        self.voice_values.retain(|(v, _), _| notes.contains_key(v));
+        self.glides.retain(|glide|self.notes.get(&glide.voice).is_some_and(|entry|entry.note==glide.note)&&rt.note(glide.note).is_ok());
     }
 
-    fn modulate(
-        &mut self,
-        rt: &mut Runtime,
-        id: u16,
-        value: f64,
-        glide_ms: f64,
-        voice: Option<u64>,
-        at_ms: f64,
-    ) -> Result<(), Error> {
-        self.glides.retain(|g| !(g.id == id && g.voice == voice));
-        if glide_ms <= 0.0 {
-            return self.set_value(rt, id, voice, value);
+    fn note_sounding(rt:&Runtime,note:NoteId)->Result<bool,Error>{rt.note_has_started_voices(note)}
+
+    fn modulate(&mut self,rt:&mut Runtime,id:u16,start:Option<f64>,value:f64,glide_ms:f64,voice:Option<u64>,at_ms:f64)->Result<(),Error>{
+        if start.is_some_and(|value|!value.is_finite())||!value.is_finite()||!glide_ms.is_finite()||glide_ms<0.||!at_ms.is_finite()||at_ms<0.{return Err(Error::InvalidInput);}
+        if glide_ms>0.{
+            let end=(at_ms+glide_ms)*self.rate/1000.;
+            if !end.is_finite()||end>=u64::MAX as f64{return Err(Error::ClockOverflow);}
+            rt.now().checked_add(self.frames(GLIDE_STEP_MS).max(1)).ok_or(Error::ClockOverflow)?;
         }
-        let from = match voice {
-            Some(v) => self.voice_values.get(&(v, id)),
-            None => self.global.get(&id),
+        self.modulation_recipients.clear();
+        // Pure full-batch admission first. No retain, replacement, stored-value
+        // write or current-glide mutation occurs until all recipients validate.
+        if let Some(voice)=voice{
+            if let Some(entry)=self.notes.get(&voice){
+                match rt.note_script_value(entry.note,id){
+                    Ok(from)=>self.modulation_recipients.push(ModulationRecipient{voice,note:entry.note,from,broadcast:false}),
+                    Err(Error::StaleHandle)=>return Ok(()),Err(error)=>return Err(error),
+                }
+            }
+        }else{
+            for (&voice,entry) in &self.notes{
+                match Self::note_sounding(rt,entry.note){
+                    Ok(true)=>{},Ok(false)|Err(Error::StaleHandle)=>continue,Err(error)=>return Err(error),
+                }
+                if self.modulation_recipients.len()==TRACKED{return Err(Error::Capacity);}
+                let from=rt.note_script_value(entry.note,id)?;
+                self.modulation_recipients.push(ModulationRecipient{voice,note:entry.note,from,broadcast:true});
+            }
+            // Admission owns one Lua physical identity per actual note; all
+            // generated admissions create a distinct real note. Refuse any
+            // violated alias invariant before changing an existing batch.
+            self.modulation_recipients.sort_unstable_by_key(|recipient|recipient.voice);
+            for (index,next) in self.modulation_recipients.iter().enumerate(){
+                if self.modulation_recipients[..index].iter().any(|old|old.note==next.note){return Err(Error::DuplicateInput);}
+            }
         }
-        .copied()
-        .unwrap_or(0.0);
-        if self.glides.is_empty() {
-            self.glide_at = rt.now();
+        let recipients=&self.modulation_recipients;
+        let replacing=self.glides.iter().filter(|glide|glide.id==id&&recipients.binary_search_by_key(&glide.voice,|row|row.voice)
+            .is_ok_and(|at|recipients[at].note==glide.note)).count();
+        let additions=if glide_ms>0.{recipients.len()}else{0};
+        let required=self.glides.len().checked_sub(replacing).and_then(|old|old.checked_add(additions)).ok_or(Error::Capacity)?;
+        if required>SCRIPT_MODULATION_GLIDE_CAPACITY{return Err(Error::Capacity);}
+        self.glides.retain(|glide|!(glide.id==id&&recipients.binary_search_by_key(&glide.voice,|row|row.voice)
+            .is_ok_and(|at|recipients[at].note==glide.note)));
+        if glide_ms==0.{
+            // Same exclusive Runtime owner, with no intervening service/apply_due:
+            // each exact generation and ID has already passed the pure read.
+            for recipient in recipients{rt.set_note_script_value(recipient.note,id,value)?;}
+        }else{
+            if self.glides.is_empty(){self.glide_at=rt.now();}
+            // The complete recipient/capacity/time preflight above admits
+            // BOTH explicit start and ramp. No partial start on refusal.
+            for recipient in recipients{
+                let from=if let Some(start)=start{
+                    rt.set_note_script_value(recipient.note,id,start)?;
+                    // Read the canonical accepted quantization/clamp, never
+                    // reproduce that law in a frontend value cache.
+                    rt.note_script_value(recipient.note,id)?
+                }else{recipient.from};
+                self.glides.push(Glide{id,voice:recipient.voice,note:recipient.note,require_sounding:recipient.broadcast,
+                    from,to:value,start_ms:at_ms,ms:glide_ms});
+            }
         }
-        self.glides.push(Glide {
-            id,
-            voice,
-            from,
-            to: value,
-            start_ms: at_ms,
-            ms: glide_ms,
-        });
         Ok(())
     }
 
-    fn step_glides(&mut self, rt: &mut Runtime) {
-        let now = self.now_ms(rt);
-        let mut i = 0;
-        while i < self.glides.len() {
-            let g = &self.glides[i];
-            let (id, voice) = (g.id, g.voice);
-            let t = ((now - g.start_ms) / g.ms).clamp(0.0, 1.0);
-            let value = g.from + (g.to - g.from) * t;
-            let _ = self.set_value(rt, id, voice, value);
-            if t < 1.0 {
-                i += 1;
-            } else {
-                self.glides.swap_remove(i);
-            }
-        }
-        self.glide_at = rt.now() + self.frames(GLIDE_STEP_MS).max(1);
-    }
-
-    /// Set Script Event Modulation `id` now. Voices that ended are forgotten.
-    fn set_value(
-        &mut self,
-        rt: &mut Runtime,
-        id: u16,
-        voice: Option<u64>,
-        value: f64,
-    ) -> Result<(), Error> {
-        self.ended.clear();
-        match voice {
-            Some(v) => {
-                self.voice_values.insert((v, id), value);
-                if let Some(note) = self.notes.get(&v).map(|entry| entry.note) {
-                    match rt.set_note_script_value(note, id, value) {
-                        Err(Error::StaleHandle) => self.ended.push(v),
-                        other => other?,
-                    }
+    fn step_glides(&mut self,rt:&mut Runtime)->Result<(),Error>{
+        let now=self.now_ms(rt);
+        let next=rt.now().checked_add(self.frames(GLIDE_STEP_MS).max(1)).ok_or(Error::ClockOverflow)?;
+        let mut i=0;
+        while i<self.glides.len(){
+            let glide=&self.glides[i];
+            if self.notes.get(&glide.voice).is_none_or(|entry|entry.note!=glide.note){self.glides.swap_remove(i);continue;}
+            let gate=match rt.note(glide.note){Ok((_,_,gate))=>gate,Err(Error::StaleHandle)=>{self.glides.swap_remove(i);continue;},Err(error)=>return Err(error)};
+            if glide.require_sounding||!gate{
+                match Self::note_sounding(rt,glide.note){
+                    Ok(true)=>{},Ok(false)|Err(Error::StaleHandle)=>{self.glides.swap_remove(i);continue;},Err(error)=>return Err(error),
                 }
             }
-            None => {
-                self.global.insert(id, value);
-                for (v, note) in &self.notes {
-                    match rt.set_note_script_value(note.note, id, value) {
-                        Err(Error::StaleHandle) => self.ended.push(*v),
-                        other => other?,
-                    }
-                }
+            let t=((now-glide.start_ms)/glide.ms).clamp(0.,1.);
+            let value=glide.from+(glide.to-glide.from)*t;
+            match rt.set_note_script_value(glide.note,glide.id,value){
+                Ok(())=>{},Err(Error::StaleHandle)=>{self.glides.swap_remove(i);continue;},Err(error)=>return Err(error),
             }
+            if t<1.{i+=1;}else{self.glides.swap_remove(i);}
         }
-        for v in self.ended.drain(..) {
-            if self.notes.get(&v).is_some_and(|entry| !entry.physical_down) {
-                self.notes.remove(&v);
-            }
-        }
+        self.glide_at=next;
         Ok(())
     }
 
@@ -824,9 +831,6 @@ impl<S: Script> Driver<S> {
         if expression != Expression::default() {
             let id = rt.expression_id(note)?;
             rt.set_expression(id, expression)?;
-        }
-        for (id, value) in &self.global {
-            rt.set_note_script_value(note, *id, *value)?;
         }
         rt.forward_attack(note)?;
         let now = self.now_ms(rt);
