@@ -694,11 +694,6 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
                 return Err(core(Stage::VoiceChains, "source section requires typed channel ports")(Error::UnsupportedSourceLayout));
             }
         }
-        // Family residency/group mutation is not yet an implemented operation.
-        // A definition's processing owner is separate and remains fully supported.
-        if source.stereo().is_none() && zone.group.is_some() {
-            return Err(core(Stage::Regions, "wide group residency ownership")(Error::UnsupportedSourceLayout));
-        }
     }
     let tapped;
     let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
