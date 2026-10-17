@@ -13,6 +13,8 @@ struct Selection {
     trigger: Trigger,
     snapshot: usize,
     groups: Option<(usize, crate::groups::GroupView)>,
+    /// Reuse only an explicit native frontier on THIS existing pending note.
+    selection_owner:Option<NoteId>,
 }
 
 impl Runtime {
@@ -297,6 +299,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     offset_micros,
                     trigger: Trigger::Attack,
                     snapshot,
+                    selection_owner:None,
                     groups: match origin {
                         NoteOrigin::Input(..) | NoteOrigin::Generated(..) => None,
                         NoteOrigin::Child(parent, ..) => Some((
@@ -426,6 +429,7 @@ input.group>=16||input.channel>=16||input.key>=128
             trigger: Trigger::Attack,
             snapshot,
             groups: Some((note.0.index, crate::groups::GroupView::Note(stage))),
+            selection_owner:Some(note),
         };
         let pitch = self.pitch_range(n.expression, true)?;
         // Preflight may reclaim idle notes; this one has no voices yet, so pin it.
@@ -629,6 +633,7 @@ input.group>=16||input.channel>=16||input.key>=128
             snapshot,
             groups,
             offset_micros,
+            selection_owner,
         } = selection;
         let key = note_pitch.key();
         let generation = self.plans.get(plan.0).unwrap();
@@ -645,12 +650,15 @@ input.group>=16||input.channel>=16||input.key>=128
             let state = &self.performance_state.states[snapshot];
             let ranges = prepared.active_ranges(from..until, state.articulation);
             let mut matching = super::Matching::new(ranges);
-            let first = matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref());
-            let choice = prepared.choose(first, address, key, &generation.sequences)?;
+            let first=self.next_source_selected_candidate(selection_owner,&mut matching,plan,snapshot,velocity,groups);
+            let retained=selection_owner.filter(|note|self.source_frontier(*note).is_some()).and_then(|note|
+                first.and_then(|candidate|prepared.regions[candidate.region].take).and_then(|take|self.source_take(note,trigger,take.sequence)));
+            let choice=if retained.is_some(){None}else{prepared.choose(first,address,key,&generation.sequences)?};
+            let chosen=retained.map(|(_,take)|take).or(choice.map(|pending|pending.take));
             let mut candidate = first;
             let mut count = 0;
             while let Some(c) = candidate {
-                if prepared.regions[c.region].take == choice.map(|c| c.take) {
+                if prepared.regions[c.region].take == chosen {
                     let r = prepared.regions[c.region];
                     if let Some((sample,cursor))=generation.samples.source(prepared,c,note_pitch) {
                         let step=pitch.apply_source(cursor.step(),cursor.wavetable().is_some())?;
@@ -680,7 +688,7 @@ input.group>=16||input.channel>=16||input.key>=128
                         count+=1;
                     }
                 }
-                candidate = matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref());
+                candidate=self.next_source_selected_candidate(selection_owner,&mut matching,plan,snapshot,velocity,groups);
             }
             required.voices += count;
             required.families += usize::from(count != 0);
@@ -768,7 +776,8 @@ input.group>=16||input.channel>=16||input.key>=128
                 Some(Rejection::Condition)
             } else if !(r.velocity_low <= velocity && velocity <= r.velocity_high) {
                 Some(Rejection::Velocity)
-            } else if group.is_some_and(|g| mask[g as usize / 64] & (1 << (g % 64)) == 0) {
+            } else if group.is_some_and(|g| mask[g as usize / 64] & (1 << (g % 64)) == 0)
+                ||!self.selected_source_region(note,c.region) {
                 Some(Rejection::Group)
             } else {
                 generation.samples.rejection(prepared,c,n.pitch)
@@ -865,6 +874,7 @@ input.group>=16||input.channel>=16||input.key>=128
             if verdict.is_none()
                 && let Some(take) = prepared.regions[c.region].take
             {
+                let take=if self.source_frontier(note).is_some(){self.source_take(note,trigger,take.sequence).map_or(take,|(_,chosen)|chosen)}else{take};
                 chosen.entry(take.sequence).or_insert(take);
             }
         }
@@ -941,11 +951,12 @@ input.group>=16||input.channel>=16||input.key>=128
                     .groups
                     .view(note.0.index, crate::groups::GroupView::Committed),
             );
-            let mut first = matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref());
-            let choice = prepared
-                .choose(first, address, key, &generation.sequences)
-                .expect("preflighted take decision");
-            let decision = choice.map(|c| self.record_take(note, trigger, c.take));
+            let mut first=self.next_source_selected_candidate(Some(note),&mut matching,plan,snapshot,velocity,groups);
+            let retained=self.source_frontier(note).and_then(|_|first.and_then(|candidate|prepared.regions[candidate.region].take))
+                .and_then(|take|self.source_take(note,trigger,take.sequence));
+            let choice=if retained.is_some(){None}else{prepared.choose(first,address,key,&generation.sequences).expect("preflighted take decision")};
+            let chosen=retained.map(|(_,take)|take).or(choice.map(|pending|pending.take));
+            let decision=retained.map(|(index,_)|index).or_else(||choice.map(|pending|self.record_take(note,trigger,pending.take)));
             let mut family = None;
             loop {
                 let generation = self.plans.get(plan.0).unwrap();
@@ -958,7 +969,7 @@ input.group>=16||input.channel>=16||input.key>=128
                 let state = &self.performance_state.states[snapshot];
                 let Some(candidate) = first
                     .take()
-                    .or_else(|| matching.next_in_groups(prepared, state, velocity, groups, generation.zone_routing.as_ref()))
+                    .or_else(||self.next_source_selected_candidate(Some(note),&mut matching,plan,snapshot,velocity,groups))
                 else {
                     break;
                 };
@@ -969,7 +980,7 @@ input.group>=16||input.channel>=16||input.key>=128
                     r.bounds[0] = low;
                     r.bounds[1] = high;
                 }
-                if r.take != choice.map(|c| c.take) {
+                if r.take != chosen {
                     continue;
                 }
                 let group = prepared
@@ -1173,6 +1184,7 @@ input.group>=16||input.channel>=16||input.key>=128
                         offset_micros: 0,
                         snapshot,
                         groups: Some((note.0.index, crate::groups::GroupView::Committed)),
+                        selection_owner:Some(note),
                     },
                     pitch,
                 )
@@ -1191,5 +1203,136 @@ input.group>=16||input.channel>=16||input.key>=128
                 ReleaseStatus::Selected
             }
         };
+    }
+}
+
+impl Runtime {
+    fn next_source_selected_candidate(&self,note:Option<NoteId>,matching:&mut super::Matching,plan:PlanId,snapshot:usize,velocity:f64,groups:Option<&[u64]>)->Option<super::Candidate>{
+        let generation=self.plans.get(plan.0)?;let prepared=&generation.prepared;
+        loop{let candidate=matching.next_in_groups(prepared,&self.performance_state.states[snapshot],velocity,groups,generation.zone_routing.as_ref())?;
+            if note.is_none_or(|note|self.selected_source_region(note,candidate.region)){return Some(candidate);}
+        }
+    }
+}
+
+impl Runtime {
+    /// Pure input eligibility in the actual prepared source-owner table. This
+    /// deliberately does not claim native KG/take selection or advance it.
+    /// `channel` is the current authored logical event channel, independently
+    /// of the original physical source tuple retained by its real creator.
+    pub fn source_owner_input_eligible(&self,plan:PlanId,owner:crate::PreparedSourceOwnerIndex,properties:crate::NoteProperties,channel:u8)->Result<bool,Error>{
+        if channel>=16||!properties.pitch.valid()||!properties.velocity.is_finite()||!(0.0..=1.0).contains(&properties.velocity){return Err(Error::InvalidInput);}
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let row=generation.prepared.source_owners.get(owner).ok_or(Error::InvalidInput)?;
+        let mut active=true;
+        for switch in [row.bypass,row.mute].into_iter().flatten(){
+            let value=if let Some(control)=switch.control {match self.control_value(plan,control)?{crate::ControlValue::Toggle(value)=>value,_=>return Err(Error::InvalidInput)}}else{switch.saved};
+            active&=!value;
+        }
+        for predicate in &row.predicates {use sampler_ir::SourceInputPredicate as P;
+            active&=match predicate {
+                P::Keys(keys)=>keys.low<=properties.pitch.key()&&properties.pitch.key()<=keys.high,
+                P::Velocities(range)=>f64::from(range.low)/127.<=properties.velocity&&properties.velocity<=f64::from(range.high)/127.,
+                P::Channel(expected)=>*expected==channel,
+                P::Unsupported{..}=>return Err(Error::InvalidInput),
+            };
+        }Ok(active)
+    }
+    fn frontier_candidate_owner(&self,note:NoteId,parent:crate::PreparedSourceOwnerIndex,stage:usize,channel:u8,region:usize)->Result<Option<crate::PreparedSourceOwnerIndex>,Error>{
+        let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let properties=self.note_event_at(note,stage)?.ok_or(Error::InvalidInput)?;
+        if !self.source_owner_input_eligible(n.plan,parent,properties,channel)?{return Ok(None);}
+        let row=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?;
+        let mut found=None;
+        for &child in &row.children{
+            let child_row=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(child).ok_or(Error::InvalidInput)?;
+            if child_row.kind!=sampler_ir::SourceOwnerKind::Keygroup||!child_row.regions.contains(&(region as u32)){continue;}
+            if self.source_owner_input_eligible(n.plan,child,properties,channel)?{
+                if found.is_some(){return Err(Error::InvalidInput);}
+                found=Some(child);
+            }
+        }Ok(found)
+    }
+    fn next_frontier_candidate(&self,note:NoteId,parent:crate::PreparedSourceOwnerIndex,stage:usize,channel:u8,matching:&mut super::Matching)->Result<Option<super::Candidate>,Error>{
+        let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;let generation=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?;
+        let properties=self.note_event_at(note,stage)?.ok_or(Error::InvalidInput)?;
+        let snapshot=self.selections[note.0.index].snapshot;let state=&self.performance_state.states[snapshot];
+        let groups=Some(generation.groups.view(note.0.index,crate::groups::GroupView::Note(stage)));
+        loop{let Some(candidate)=matching.next_in_groups(&generation.prepared,state,properties.velocity,groups,generation.zone_routing.as_ref())else{return Ok(None);};
+            if self.frontier_candidate_owner(note,parent,stage,channel,candidate.region)?.is_some(){return Ok(Some(candidate));}
+        }
+    }
+    fn frontier_child_chosen(&self,note:NoteId,parent:crate::PreparedSourceOwnerIndex,child:crate::PreparedSourceOwnerIndex,stage:usize,channel:u8,recorded:bool)->Result<bool,Error>{
+        let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;let generation=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?;let prepared=&generation.prepared;
+        let properties=self.note_event_at(note,stage)?.ok_or(Error::InvalidInput)?;let state=&self.performance_state.states[self.selections[note.0.index].snapshot];
+        let range=prepared.range(properties.pitch.key(),Trigger::Attack);let mut from=range.start;
+        while from<range.end{
+            let until=prepared.group_end(from,range.end);let mut matching=super::Matching::new(prepared.active_ranges(from..until,state.articulation));
+            let first=self.next_frontier_candidate(note,parent,stage,channel,&mut matching)?;
+            let retained=first.and_then(|candidate|prepared.regions[candidate.region].take).and_then(|take|self.source_take(note,Trigger::Attack,take.sequence));
+            let choice=if recorded{None}else{prepared.choose(first,n.address,properties.pitch.key(),&generation.sequences)?};
+            let chosen=retained.map(|(_,take)|take).or(choice.map(|pending|pending.take));let mut candidate=first;
+            while let Some(current)=candidate{
+                if prepared.regions[current.region].take==chosen&&self.frontier_candidate_owner(note,parent,stage,channel,current.region)?==Some(child){return Ok(true);}
+                candidate=self.next_frontier_candidate(note,parent,stage,channel,&mut matching)?;
+            }from=until;
+        }Ok(false)
+    }
+    /// Commit Layer->KG native selection ONCE on this real pending event owner,
+    /// before a KG/audio branch can park or change its source. The SAME Take
+    /// decisions and chosen owner records remain in the normal Decision arena.
+    /// Final native audio consumes them; it never chooses/advances RR twice.
+    pub fn commit_source_frontier(&mut self,note:NoteId,parent:crate::PreparedSourceOwnerIndex,stage:usize,channel:u8)->Result<usize,Error>{
+        if self.external_execution_aborted{return Err(Error::Canceled);}
+        self.apply_due();
+        if channel>=16{return Err(Error::InvalidInput);}
+        let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if let Some((existing,at))=self.source_frontier(note){
+            if existing!=parent||at!=stage{return Err(Error::InvalidInput);}
+            let row=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?;
+            return row.children.iter().try_fold(0usize,|count,&child|Ok(count+usize::from(self.source_child_selected(note,child)?)));
+        }
+        if n.attack!=crate::AttackStatus::Pending{return Err(Error::InvalidInput);}
+        if !n.gate()||!n.key_down(){return Err(Error::ClosedNote);}
+        let plan=n.plan;let address=n.address;let properties=self.note_event_at(note,stage)?.ok_or(Error::InvalidInput)?;
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;let prepared=&generation.prepared;
+        let row=prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?;
+        if row.kind!=sampler_ir::SourceOwnerKind::Layer{return Err(Error::InvalidInput);}
+        self.source_owner_input_eligible(plan,parent,properties,channel)?;
+        let mut selected=0usize;
+        for &child in &row.children{
+            let child_row=prepared.source_owners.get(child).ok_or(Error::InvalidInput)?;
+            if !matches!(child_row.kind,sampler_ir::SourceOwnerKind::Keygroup|sampler_ir::SourceOwnerKind::Aux){return Err(Error::InvalidInput);}
+            if child_row.kind==sampler_ir::SourceOwnerKind::Keygroup{
+                self.source_owner_input_eligible(plan,child,properties,channel)?;
+                selected=selected.checked_add(usize::from(self.frontier_child_chosen(note,parent,child,stage,channel,false)?)).ok_or(Error::Capacity)?;
+            }
+        }
+        let state=&self.performance_state.states[self.selections[note.0.index].snapshot];let range=prepared.range(properties.pitch.key(),Trigger::Attack);
+        let mut required=selected.checked_add(1).ok_or(Error::Capacity)?;let mut from=range.start;
+        while from<range.end{let until=prepared.group_end(from,range.end);let mut matching=super::Matching::new(prepared.active_ranges(from..until,state.articulation));
+            let first=self.next_frontier_candidate(note,parent,stage,channel,&mut matching)?;
+            let choice=prepared.choose(first,address,properties.pitch.key(),&generation.sequences)?;
+            required=required.checked_add(usize::from(choice.is_some())).ok_or(Error::Capacity)?;from=until;
+        }
+        if required>self.decisions.available(){return Err(Error::Capacity);}
+        // Pure full preflight above completed. No callbacks/due work run below;
+        // sequence cells are disjoint and choose is deterministic without commit.
+        let mut from=range.start;
+        while from<range.end{
+            let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;let prepared=&generation.prepared;
+            let state=&self.performance_state.states[self.selections[note.0.index].snapshot];
+            let until=prepared.group_end(from,range.end);let mut matching=super::Matching::new(prepared.active_ranges(from..until,state.articulation));
+            let first=self.next_frontier_candidate(note,parent,stage,channel,&mut matching)?;
+            let choice=prepared.choose(first,address,properties.pitch.key(),&generation.sequences)?;
+            if let Some(choice)=choice{self.record_source_decision(note,crate::variation::DecisionValue::Take(choice.take))?;self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.sequences.commit(choice);}
+            from=until;
+        }
+        let children=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?.children.len();
+        for ordinal in 0..children{
+            let child=self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?.children[ordinal];
+            if self.frontier_child_chosen(note,parent,child,stage,channel,true)?{self.record_source_decision(note,crate::variation::DecisionValue::SourceOwner(child))?;}
+        }
+        self.record_source_decision(note,crate::variation::DecisionValue::SourceFrontier{parent,stage})?;Ok(selected)
     }
 }

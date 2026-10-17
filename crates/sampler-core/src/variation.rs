@@ -311,8 +311,17 @@ impl SequenceState {
 #[derive(Clone, Copy)]
 pub(super) struct Decision {
     pub trigger: super::Trigger,
-    pub take: Take,
+    pub value:DecisionValue,
     pub next: Option<Index>,
+}
+
+#[derive(Clone,Copy)]
+pub(super) enum DecisionValue {
+    Take(Take),
+    /// Native KG choice belongs to the SAME real decision/selection owner.
+    SourceOwner(crate::PreparedSourceOwnerIndex),
+    /// A completed frontier, including a legitimate empty selected set.
+    SourceFrontier{parent:crate::PreparedSourceOwnerIndex,stage:usize},
 }
 
 impl Runtime {
@@ -343,8 +352,8 @@ impl Runtime {
         let mut next = note.first_decision;
         while let Some(index) = next {
             let decision = self.decisions.slots[index.get()].value.unwrap();
-            if decision.trigger == trigger && decision.take.sequence == sequence {
-                return Ok(Some(decision.take.index));
+            if decision.trigger == trigger {
+                if let DecisionValue::Take(take)=decision.value && take.sequence==sequence{return Ok(Some(take.index));}
             }
             next = decision.next;
         }
@@ -353,9 +362,8 @@ impl Runtime {
 
     pub fn family_take(&self, family: FamilyId) -> Result<Option<Take>, Error> {
         let family = self.families.get(family.0).ok_or(Error::StaleHandle)?;
-        Ok(family
-            .decision
-            .map(|index| self.decisions.slots[index.get()].value.unwrap().take))
+        Ok(family.decision.and_then(|index|
+            match self.decisions.slots[index.get()].value.unwrap().value {DecisionValue::Take(take)=>Some(take),_=>None}))
     }
 
     pub(super) fn record_take(
@@ -369,7 +377,7 @@ impl Runtime {
             .decisions
             .insert(Decision {
                 trigger,
-                take,
+                value:DecisionValue::Take(take),
                 next: note.first_decision,
             })
             .expect("preflighted take decision capacity");
@@ -448,5 +456,56 @@ mod tests {
         assert_eq!(values.next(), None);
         assert_eq!(bounded(|| u32::MAX, u32::MAX), Ok(0));
         assert_eq!(bounded(|| 0, 1), Ok(0));
+    }
+}
+
+impl Runtime {
+    pub(crate) fn source_frontier(&self,note:NoteId)->Option<(crate::PreparedSourceOwnerIndex,usize)>{
+        let mut next=self.notes.get(note.0)?.first_decision;
+        while let Some(index)=next{let decision=self.decisions.slots.get(index.get())?.value?;
+            if let DecisionValue::SourceFrontier{parent,stage}=decision.value{return Some((parent,stage));}
+            next=decision.next;
+        }None
+    }
+    pub(crate) fn source_take(&self,note:NoteId,trigger:crate::Trigger,sequence:usize)->Option<(Index,Take)>{
+        let mut next=self.notes.get(note.0)?.first_decision;
+        while let Some(index)=next{let decision=self.decisions.slots.get(index.get())?.value?;
+            if decision.trigger==trigger && let DecisionValue::Take(take)=decision.value && take.sequence==sequence{return Some((index,take));}
+            next=decision.next;
+        }None
+    }
+    pub(crate) fn record_source_decision(&mut self,note:NoteId,value:DecisionValue)->Result<Index,Error>{
+        let first=self.notes.get(note.0).ok_or(Error::StaleHandle)?.first_decision;
+        let id=self.decisions.insert(Decision{trigger:crate::Trigger::Attack,value,next:first})?;
+        let index=Index::new(id.index);self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?.first_decision=Some(index);Ok(index)
+    }
+    /// Actual selected KG ownership, not GROUPS_AFFECTED eligibility. The empty
+    /// completed frontier is distinguishable from an uncommitted selection.
+    pub fn source_child_selected(&self,note:NoteId,owner:crate::PreparedSourceOwnerIndex)->Result<bool,Error>{
+        let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(owner).ok_or(Error::InvalidInput)?;
+        if self.source_frontier(note).is_none(){return Err(Error::NotReady);}
+        let mut next=n.first_decision;
+        while let Some(index)=next{let decision=self.decisions.slots.get(index.get()).and_then(|slot|slot.value).ok_or(Error::StaleHandle)?;
+            if matches!(decision.value,DecisionValue::SourceOwner(selected) if selected==owner){return Ok(true);}
+            next=decision.next;
+        }Ok(false)
+    }
+    pub(crate) fn selected_source_region(&self,note:NoteId,region:usize)->bool{
+        if self.source_frontier(note).is_none(){return true;}
+        let Some(n)=self.notes.get(note.0) else{return false;};
+        let Some(generation)=self.plans.get(n.plan.0)else{return false;};
+        let mut next=n.first_decision;
+        while let Some(index)=next{
+            let Some(decision)=self.decisions.slots.get(index.get()).and_then(|slot|slot.value)else{return false;};
+            if let DecisionValue::SourceOwner(owner)=decision.value && generation.prepared.source_owners.get(owner).is_some_and(|owner|owner.regions.contains(&(region as u32))){return true;}
+            next=decision.next;
+        }false
+    }
+}
+
+impl Runtime {
+    pub fn source_selection_frontier(&self,note:NoteId)->Result<Option<(crate::PreparedSourceOwnerIndex,usize)>,Error>{
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;Ok(self.source_frontier(note))
     }
 }
