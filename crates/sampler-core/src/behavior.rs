@@ -66,6 +66,8 @@ impl FadeCurve {
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
     AwaitExternal { processor: sampler_ir::SourceEventProcessorId },
+    /// Compiled native document router, executed under normal callback fuel/outcome.
+    AdvanceSourceNote,
     ForwardAttack,
     ForwardReleaseGroups,
     SuppressAttack,
@@ -607,7 +609,7 @@ impl Program {
         let requires_note = instructions.clone().any(|op| {
             matches!(
                 op,
-                Instruction::ForwardAttack
+                Instruction::AdvanceSourceNote | Instruction::ForwardAttack
                     | Instruction::ForwardReleaseGroups
                     | Instruction::SuppressAttack
                     | Instruction::SuppressRelease
@@ -1127,7 +1129,7 @@ impl Runtime {
         let locals = plan.programs[program].locals;
         let performance=self.selections[note.0.index].performance;
         let origin=n.address;
-        let source=n.input_source.map_or(origin,|source|source.channel_address());
+        let source=self.note_events[note.0.index].source_route.map(|route|route.source).or(n.input_source).map_or(origin,|source|source.channel_address());
         let expression=n.expression;
         let epoch=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:1<<origin.channel})[usize::from(origin.channel)];
         let receiver=self.expression_receiver(expression).map(|component|component.receiver);
@@ -1541,9 +1543,19 @@ impl Runtime {
                     };
                     continue;
                 }
-                time_check_steps += 1;
-                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
-                self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
+                let cost=if matches!(op,Instruction::AdvanceSourceNote){
+                    match c.owner.note().and_then(|note|self.source_note_work_cost(note)){
+                        Ok(cost) if cost<=self.behavior_fuel=>cost,
+                        Ok(_)=>{self.fail_behavior(id,Outcome::Fault(Error::Capacity));self.behavior_ready.remove(index);continue;}
+                        Err(error)=>{self.fail_behavior(id,Outcome::Fault(error));self.behavior_ready.remove(index);continue;}
+                    }
+                }else{1};
+                if cost>fuel||cost>self.block_fuel_left{
+                    self.behavior_ready.remove(index);self.yield_behavior(id);continue;
+                }
+                time_check_steps=time_check_steps.saturating_add(cost);
+                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - cost };
+                self.block_fuel_left = self.block_fuel_left.saturating_sub(cost);
                 self.behaviors.get_mut(id.0).unwrap().pc += 1;
                 let stepped = self.behavior_step(id, c.owner, op);
                 if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
@@ -1852,6 +1864,7 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
+            Instruction::AdvanceSourceNote=>{self.advance_source_note(owner.note()?)?;}
             Instruction::AwaitExternal { processor } => {
                 self.await_external_input(id, processor)?;
                 return Ok(true);

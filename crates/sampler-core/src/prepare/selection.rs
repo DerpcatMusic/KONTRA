@@ -146,6 +146,11 @@ input.group>=16||input.channel>=16||input.key>=128
             return Ok(note);
         }
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
+        if prepared.source_owners.note_root.is_some(){
+            if !self.behavior_room(1){return Err(Error::Capacity);}
+            let note=self.note_on_owned_input(performance,input,source,pitch,velocity,expression,receiver)?;
+            self.start_source_note(note,source.channel)?;return Ok(note);
+        }
         let on_note = prepared.stages.iter().any(|stage| stage.note.is_some());
         if !on_note {
             let note = self.select(
@@ -1241,12 +1246,13 @@ impl Runtime {
     fn frontier_candidate_owner(&self,note:NoteId,parent:crate::PreparedSourceOwnerIndex,stage:usize,channel:u8,region:usize)->Result<Option<crate::PreparedSourceOwnerIndex>,Error>{
         let n=self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let properties=self.note_event_at(note,stage)?.ok_or(Error::InvalidInput)?;
-        if !self.source_owner_input_eligible(n.plan,parent,properties,channel)?{return Ok(None);}
-        let row=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?;
+        if !self.source_note_owner_entered(note,parent) && !self.source_owner_input_eligible(n.plan,parent,properties,channel)?{return Ok(None);}
+        self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(parent).ok_or(Error::InvalidInput)?;
         let mut found=None;
-        for &child in &row.children{
-            let child_row=self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners.get(child).ok_or(Error::InvalidInput)?;
-            if child_row.kind!=sampler_ir::SourceOwnerKind::Keygroup||!child_row.regions.contains(&(region as u32)){continue;}
+        let table=&self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners;
+        for &(_,child) in table.keygroups_for_region(region){
+            let child_row=table.get(child).ok_or(Error::InvalidInput)?;
+            if child_row.parent!=Some(parent){continue;}
             if self.source_owner_input_eligible(n.plan,child,properties,channel)?{
                 if found.is_some(){return Err(Error::InvalidInput);}
                 found=Some(child);

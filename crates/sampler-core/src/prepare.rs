@@ -889,6 +889,7 @@ pub struct PreparedSourceEventProcessor {
     pub ordinal: u32,
     pub kind: Box<str>,
     pub bypass: PreparedSourceSwitch,
+    pub(crate) note_program:Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -914,9 +915,13 @@ pub struct PreparedSourceOwners {
     by_id: Box<[(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)]>,
     processors: Box<[(sampler_ir::SourceEventProcessorId, PreparedSourceOwnerIndex, u32)]>,
     bytes: usize,
+    pub(crate) note_root:Option<PreparedSourceOwnerIndex>,
+    pub(crate) note_entry:Option<usize>,
+    keygroups_by_region:Box<[(u32,PreparedSourceOwnerIndex)]>,
 }
 impl PreparedSourceOwners {
     pub fn rows(&self) -> &[PreparedSourceOwner] { &self.rows }
+    pub(crate) fn rows_mut(&mut self)->&mut [PreparedSourceOwner]{&mut self.rows}
     pub fn get(&self, index: PreparedSourceOwnerIndex) -> Option<&PreparedSourceOwner> {
         self.rows.get(index.index())
     }
@@ -928,6 +933,12 @@ impl PreparedSourceOwners {
         let (_, owner, ordinal) = self.processors[i];
         self.get(owner)?.event_processors.iter().find(|row| row.ordinal == ordinal && row.id == id)
     }
+    pub(crate) fn keygroups_for_region(&self,region:usize)->&[(u32,PreparedSourceOwnerIndex)]{
+        let Ok(region)=u32::try_from(region)else{return &[];};
+        let low=self.keygroups_by_region.partition_point(|row|row.0<region);
+        let high=self.keygroups_by_region.partition_point(|row|row.0<=region);
+        &self.keygroups_by_region[low..high]
+    }
     pub fn memory_bytes(&self) -> usize { self.bytes }
 
     fn compile(owners: &[sampler_ir::SourceOwner], groups: usize, regions: usize,
@@ -937,7 +948,9 @@ impl PreparedSourceOwners {
         let mut bytes = owners.len().checked_mul(size_of::<PreparedSourceOwner>()
             + size_of::<(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)>()).ok_or(Error::Capacity)?;
         let mut processors = 0usize;
+        let mut keygroup_members=0usize;
         for owner in owners {
+            if owner.kind==sampler_ir::SourceOwnerKind::Keygroup {keygroup_members=keygroup_members.checked_add(owner.zones.len()).ok_or(Error::Capacity)?;}
             let add = owner.children.len().checked_mul(size_of::<PreparedSourceOwnerIndex>())
                 .and_then(|n| owner.groups.len().checked_add(owner.zones.len()).and_then(|m|m.checked_mul(size_of::<u32>())).and_then(|m|n.checked_add(m)))
                 .and_then(|n| owner.predicates.len().checked_mul(size_of::<sampler_ir::SourceInputPredicate>()).and_then(|m|n.checked_add(m)))
@@ -952,6 +965,7 @@ impl PreparedSourceOwners {
                 }
             }
         }
+        bytes=bytes.checked_add(keygroup_members.checked_mul(size_of::<(u32,PreparedSourceOwnerIndex)>()).ok_or(Error::Capacity)?).ok_or(Error::Capacity)?;
         if bytes > isize::MAX as usize || owners.len() > u32::MAX as usize { return Err(Error::Capacity); }
         fn reserved<T>(n: usize) -> Result<Vec<T>, Error> {
             let mut v = Vec::new(); v.try_reserve_exact(n).map_err(|_| Error::Capacity)?; Ok(v)
@@ -1006,7 +1020,7 @@ impl PreparedSourceOwners {
             for (ordinal,processor) in owner.event_processors.iter().enumerate() {
                 if processor.owner!=owner.id || processor.ordinal as usize!=ordinal {return Err(Error::InvalidInput);}
                 processor_ids.push((processor.id,own,processor.ordinal));
-                event_processors.push(PreparedSourceEventProcessor{id:processor.id,owner:own,ordinal:processor.ordinal,kind:text(&processor.kind)?,bypass:switch(processor.bypass)?});
+                event_processors.push(PreparedSourceEventProcessor{id:processor.id,owner:own,ordinal:processor.ordinal,kind:text(&processor.kind)?,bypass:switch(processor.bypass)?,note_program:None});
             }
             rows.push(PreparedSourceOwner{id:owner.id,parent,kind:owner.kind,children:children.into_boxed_slice(),groups:group_ids.into_boxed_slice(),regions:region_ids.into_boxed_slice(),predicates:predicates.into_boxed_slice(),bypass:owner.bypass.map(switch).transpose()?,mute:owner.mute.map(switch).transpose()?,event_processors:event_processors.into_boxed_slice()});
         }
@@ -1020,7 +1034,14 @@ impl PreparedSourceOwners {
                 remaining-=1;parent=rows[index.index()].parent;
             }
         }
-        Ok(Self{rows:rows.into_boxed_slice(),by_id:by_id.into_boxed_slice(),processors:processor_ids.into_boxed_slice(),bytes})
+        let mut keygroups_by_region=reserved(keygroup_members)?;
+        for (index,row) in rows.iter().enumerate(){
+            if row.kind==sampler_ir::SourceOwnerKind::Keygroup{
+                for &region in &row.regions{keygroups_by_region.push((region,PreparedSourceOwnerIndex(index as u32)));}
+            }
+        }
+        keygroups_by_region.sort_unstable_by_key(|row|(row.0,row.1.index()));
+        Ok(Self{rows:rows.into_boxed_slice(),by_id:by_id.into_boxed_slice(),processors:processor_ids.into_boxed_slice(),bytes,note_root:None,note_entry:None,keygroups_by_region:keygroups_by_region.into_boxed_slice()})
     }
 }
 
@@ -1509,6 +1530,9 @@ impl Prepared {
             p.note_base = bases[bank(p)];
         }
         self.note_cells = cells;
+        self.source_owners.note_root=None;
+        self.source_owners.note_entry=None;
+        for owner in self.source_owners.rows_mut(){for processor in &mut owner.event_processors{processor.note_program=None;}}
         self.external_programs=programs.iter().any(|program|program.code.iter().any(|op|matches!(op,super::Instruction::AwaitExternal{..})));
         self.
 programs = programs.into_boxed_slice();

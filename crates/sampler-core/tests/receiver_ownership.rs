@@ -494,3 +494,261 @@ fn source_frontier_refusal_is_transactional_and_empty_completion_is_distinct_fro
     assert_eq!(empty.commit_source_frontier(note,layer,0,1),Ok(0));assert_eq!(empty.source_selection_frontier(note),Ok(Some((layer,0))));assert_eq!(empty.source_child_selected(note,kg),Ok(false));
     assert_eq!(empty.forward_attack(note),Ok(true));assert_eq!(empty.voice_count(),0);assert_eq!(empty.note_take(note,Trigger::Attack,0),Ok(None));
 }
+
+fn hierarchy_note_plan(compiled:bool,both_layers:bool)->Prepared{
+    use sampler_ir as ir;
+    let ids=[100,200,210,300,310,400,410].map(ir::SourceOwnerId::UviNode);
+    let processor=|id,owner,ordinal,saved|ir::SourceEventProcessor{id:ir::SourceEventProcessorId::UviNode(id),owner,ordinal,kind:"ScriptProcessor".into(),bypass:ir::SourceSwitch{saved,control:None}};
+    let owner=|index:usize,parent:Option<usize>,kind,children:Vec<usize>,zones:Vec<usize>,key:Option<u8>,channel:Option<u8>,event_processors|ir::SourceOwner{
+        id:ids[index],parent:parent.map(|index|ids[index]),kind,children:children.into_iter().map(|index|ids[index]).collect(),
+        groups:zones.iter().copied().map(ir::GroupRef).collect(),zones:zones.into_iter().map(ir::ZoneRef).collect(),
+        predicates:key.map(|key|ir::SourceInputPredicate::Keys(ir::KeyRange{low:key,high:key})).into_iter()
+            .chain(channel.map(ir::SourceInputPredicate::Channel)).collect(),bypass:None,mute:None,event_processors};
+    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,
+        groups:vec![ir::Group::default();3],
+        assets:(0..3).map(|index|ir::Asset{location:ir::AssetLocation::Path(format!("layer{index}.wav").into()),encoding:ir::Encoding::Wav,residency:Default::default(),root_key:None,loops:vec![]}).collect(),
+        zones:[62,if both_layers{62}else{60},61].into_iter().enumerate().map(|(index,key)|ir::Zone{
+            keys:ir::KeyRange{low:key,high:key},group:Some(ir::GroupRef(index)),pitch:ir::KeyTracking::Fixed,
+            velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(index))}).collect(),..ir::Instrument::default()};
+    instrument.source_indices.owners=vec![
+        owner(0,None,ir::SourceOwnerKind::Instrument,vec![1,3,5],vec![0,1,2],None,None,
+            vec![processor(101,ids[0],0,false),processor(102,ids[0],1,true)]),
+        owner(1,Some(0),ir::SourceOwnerKind::Layer,vec![2],vec![0],Some(61),Some(2),vec![processor(201,ids[1],0,false)]),
+        owner(2,Some(1),ir::SourceOwnerKind::Keygroup,vec![],vec![0],None,None,vec![]),
+        owner(3,Some(0),ir::SourceOwnerKind::Layer,vec![4],vec![1],Some(if both_layers{61}else{60}),Some(2),vec![processor(301,ids[3],0,false)]),
+        owner(4,Some(3),ir::SourceOwnerKind::Keygroup,vec![],vec![1],None,None,vec![]),
+        owner(5,Some(0),ir::SourceOwnerKind::Layer,vec![6],vec![2],Some(61),Some(3),vec![processor(401,ids[5],0,false)]),
+        owner(6,Some(5),ir::SourceOwnerKind::Keygroup,vec![],vec![2],None,None,vec![])];
+    let pcm=[0.125,0.5,0.25].into_iter().map(|level|Pcm::new(48000,Box::from([[level;2];4096])).unwrap()).collect();
+    let prepared=sampler_core::lower::lower(&instrument,48000,pcm,|_,_|unreachable!("no native behavior")).unwrap();
+    if compiled{prepared.with_source_note_hierarchy().unwrap()}else{prepared}
+}
+fn hierarchy_runtime(both:bool)->Runtime{
+    let plan=hierarchy_note_plan(true,both);let limits=Limits::for_plan(&plan,32,16);Runtime::new(plan,limits).unwrap()
+}
+fn hierarchy_source(id:i32)->(Input,Input){
+    (Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(id)},
+     Input{protocol:Protocol::Clap,port:7,group:3,channel:13,key:60,external_id:Some(id)})
+}
+fn hierarchy_begin(rt:&mut Runtime,id:u32)->sampler_core::ExternalTurn{
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.processor,sampler_ir::SourceEventProcessorId::UviNode(id));
+    rt.begin_external_turn(turn.input).unwrap()
+}
+fn hierarchy_post(rt:&mut Runtime,turn:sampler_core::ExternalTurn,output:sampler_core::ExternalOutput)->sampler_core::NoteId{
+    let note=match rt.post_external_output(turn.input,output).unwrap(){sampler_core::ExternalOutputResult::Note(note)=>note,_=>panic!("actual note output required")};
+    rt.complete_external_segment(turn.input,None).unwrap();note
+}
+
+#[test]
+fn normal_source_note_hierarchy_runs_program_before_layer_filter_then_reuses_actual_kg_for_pcm(){
+    use sampler_core::{ExternalEvent,ExternalOutput,NotePitch};
+    let plan=hierarchy_note_plan(true,false);let layer_owner=plan.source_owner_index(sampler_ir::SourceOwnerId::UviNode(200)).unwrap();
+    let limits=Limits::for_plan(&plan,32,16);let mut rt=Runtime::new(plan,limits).unwrap();let (execution,source)=hierarchy_source(1301);let perf=rt.performance(0).unwrap();
+    let physical=rt.trigger_in_with_source(perf,execution,source,NotePitch::Key(60),1.,Expression::default()).unwrap();
+    assert_eq!(rt.voice_count(),0);
+    let first=hierarchy_begin(&mut rt,101);assert_eq!(first.logical_channel,Some(13));
+    match first.event{ExternalEvent::Note{note,source:actual,pitch,..}=>{assert_eq!((note,actual,pitch),(physical,source,NotePitch::Key(60)));},_=>panic!()}
+    support::without_heap(||{hierarchy_post(&mut rt,first,ExternalOutput::RoutedNote{pitch:NotePitch::Key(61),velocity:0.5,channel:2});});
+    let second=hierarchy_begin(&mut rt,102);
+    assert_eq!(second.logical_channel,Some(2),"authored channel is logical metadata, not rewritten physical provenance");
+    match second.event{ExternalEvent::Note{source:actual,pitch,velocity,..}=>{assert_eq!(actual,source);assert_eq!(pitch,NotePitch::Key(61));assert_eq!(velocity,0.5);},_=>panic!()}
+    // Its saved bypass=true has no bound signal. The real owner must still
+    // receive this turn and make its accepted delivery-time bypass decision.
+    hierarchy_post(&mut rt,second,ExternalOutput::Original);
+    let layer=hierarchy_begin(&mut rt,201);assert_eq!(layer.owner,layer_owner);
+    let voice=hierarchy_post(&mut rt,layer,ExternalOutput::Note{pitch:NotePitch::Key(62),velocity:0.375});
+    assert!(rt.pending_external_turn().unwrap().is_none(),"ineligible sibling Layers never run");
+    assert_eq!(rt.input_source(voice),Ok(None),"generated output is not a second physical input");
+    assert_eq!(rt.input_source(physical),Ok(Some(source)));
+    assert_eq!(rt.voice_count(),1);
+    let reference_plan=hierarchy_note_plan(false,false);let limits=Limits::for_plan(&reference_plan,32,16);let mut reference=Runtime::new(reference_plan,limits).unwrap();
+    reference.trigger(input(1399),62,0.375).unwrap();
+    let mut actual=[[0.;2];128];let mut expected=[[0.;2];128];
+    support::without_heap(||{rt.render(&mut actual).unwrap();reference.render(&mut expected).unwrap();});
+    assert!(expected.iter().any(|frame|frame[0]!=0.));assert_eq!(actual,expected,"normal native source PCM is the independent reference");
+}
+
+#[test]
+fn source_note_hierarchy_consumes_before_branching_and_each_selected_layer_has_its_own_turn(){
+    use sampler_core::{ExternalOutput,NotePitch};
+    let mut rt=hierarchy_runtime(true);let (execution,source)=hierarchy_source(1401);let perf=rt.performance(0).unwrap();
+    rt.trigger_in_with_source(perf,execution,source,NotePitch::Key(60),1.,Expression::default()).unwrap();
+    let consumed=hierarchy_begin(&mut rt,101);rt.complete_external_segment(consumed.input,None).unwrap();
+    assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!(rt.voice_count(),0);
+    let mut silent=[[9.;2];32];rt.render(&mut silent).unwrap();assert_eq!(silent,[[0.;2];32]);
+    let (execution,source)=hierarchy_source(1402);rt.trigger_in_with_source(perf,execution,source,NotePitch::Key(60),1.,Expression::default()).unwrap();
+    let first=hierarchy_begin(&mut rt,101);hierarchy_post(&mut rt,first,ExternalOutput::RoutedNote{pitch:NotePitch::Key(61),velocity:0.375,channel:2});
+    let second=hierarchy_begin(&mut rt,102);hierarchy_post(&mut rt,second,ExternalOutput::Original);
+    let a=hierarchy_begin(&mut rt,201);hierarchy_post(&mut rt,a,ExternalOutput::Note{pitch:NotePitch::Key(62),velocity:0.375});
+    let b=hierarchy_begin(&mut rt,301);assert_ne!(a.owner,b.owner);assert!(b.order>a.order);
+    rt.complete_external_segment(b.input,None).unwrap();assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!(rt.voice_count(),1,"consuming one Layer cannot replay or suppress its sibling output");
+    // The untouched ordinary reference admits only the source that Layer A
+    // selected, so the PCM oracle does not call the new hierarchy interpreter.
+    let reference_plan=hierarchy_note_plan(false,false);let limits=Limits::for_plan(&reference_plan,32,16);let mut reference=Runtime::new(reference_plan,limits).unwrap();reference.trigger(input(1499),62,0.375).unwrap();
+    let mut actual=[[0.;2];128];let mut expected=[[0.;2];128];rt.render(&mut actual).unwrap();reference.render(&mut expected).unwrap();assert_eq!(actual,expected);
+}
+
+fn channel_frontier_plan(compiled:bool)->Prepared{
+    let plan=source_frontier_plan(60,false).with_variation(vec![sampler_core::Sequence{takes:2,
+        policy:sampler_core::TakePolicy::Sequential,scope:sampler_core::SequenceScope::Channel,capacity:16}],
+        vec![Some(sampler_core::Take{sequence:0,index:0}),Some(sampler_core::Take{sequence:0,index:1})],16,0).unwrap();
+    if compiled{plan.with_source_note_hierarchy().unwrap()}else{plan}
+}
+#[test]
+fn authored_logical_channel_owns_rr_while_repeated_original_physical_tuple_stays_immutable(){
+    use sampler_core::{ExternalEvent,ExternalOutput,NotePitch,Trigger};
+    let plan=channel_frontier_plan(true);let limits=Limits::for_plan(&plan,32,16);let mut actual=Runtime::new(plan,limits).unwrap();
+    let source=Input{protocol:Protocol::Midi1,port:0,group:0,channel:1,key:60,external_id:None};
+    let mut outputs=[None;3];
+    for (at,channel) in [2,3,2].into_iter().enumerate(){
+        actual.trigger(source,60,1.).unwrap();let turn=hierarchy_begin(&mut actual,211);
+        match turn.event{ExternalEvent::Note{source:original,..}=>assert_eq!(original,source),_=>panic!()}
+        outputs[at]=Some(hierarchy_post(&mut actual,turn,ExternalOutput::RoutedNote{pitch:NotePitch::Key(60),velocity:1.,channel}));
+    }
+    assert_eq!(actual.note_take(outputs[0].unwrap(),Trigger::Attack,0),Ok(Some(0)));
+    assert_eq!(actual.note_take(outputs[1].unwrap(),Trigger::Attack,0),Ok(Some(0)),"different authored channel begins its own real sequence owner");
+    assert_eq!(actual.note_take(outputs[2].unwrap(),Trigger::Attack,0),Ok(Some(1)),"same authored channel advances its retained sequence");
+    let plan=channel_frontier_plan(false);let limits=Limits::for_plan(&plan,32,16);let mut reference=Runtime::new(plan,limits).unwrap();
+    for channel in [2,3,2]{reference.trigger(Input{channel,..source},60,1.).unwrap();}
+    let mut got=[[0.;2];128];let mut expected=[[0.;2];128];
+    support::without_heap(||{actual.render(&mut got).unwrap();reference.render(&mut expected).unwrap();});
+    assert!(expected.iter().any(|frame|frame[0]!=0.));assert_eq!(got,expected);
+}
+
+#[test]
+fn source_note_output_invalid_channel_and_exhausted_note_capacity_do_not_publish_a_child(){
+    use sampler_core::{ExternalOutput,NotePitch};
+    let plan=channel_frontier_plan(true);let mut limits=Limits::for_plan(&plan,2,4);limits.expressions=2;
+    let mut rt=Runtime::new(plan,limits).unwrap();let physical=rt.trigger(input(1601),60,1.).unwrap();
+    let turn=hierarchy_begin(&mut rt,211);let before=(rt.now(),rt.note_count(),rt.expression_count(),rt.decision_count(),rt.voice_count());
+    support::without_heap(||{
+        assert_eq!(rt.post_external_output(turn.input,ExternalOutput::RoutedNote{pitch:NotePitch::Key(60),velocity:1.,channel:255}),Err(Error::InvalidInput));
+        assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.decision_count(),rt.voice_count()),before);
+        assert_eq!(rt.post_external_output(turn.input,ExternalOutput::RoutedNote{pitch:NotePitch::Key(60),velocity:1.,channel:2}),Err(Error::Capacity));
+        assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.decision_count(),rt.voice_count()),before);
+        rt.complete_external_segment(turn.input,None).unwrap();rt.note_off_exact(physical,None).unwrap();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+    });
+}
+
+#[test]
+fn identical_raw_physical_tuples_keep_distinct_historical_event_ids_across_note_and_plan_retirement(){
+    use sampler_core::{ExternalEvent,ExternalOutput,ExternalOutputResult,NotePitch};
+    let old=external_plan(false);let limits=Limits::for_plan(&old,16,16);let (rt,mut control)=Runtime::with_plan_updates(old,limits,2,1).unwrap();
+    let mut rt=rt.with_receiver_capacity(1).unwrap();let receiver=external_physical_receiver(&mut rt,4);let old_plan=rt.active_plan();let source=physical_raw();
+    let first=rt.trigger_receiver(receiver,1,source,None,1.,0.,true).unwrap();
+    let second=rt.trigger_receiver(receiver,1,source,None,1.,0.,true).unwrap();assert_ne!(first,second);
+    rt.cancel_input_note(first).unwrap();rt.cancel_input_note(second).unwrap();let mut ended=0;rt.flush_ended(|actual|{assert_eq!(actual,source);ended+=1;true});assert_eq!(ended,2);
+    assert!(matches!(rt.note(first),Err(Error::StaleHandle)));assert!(matches!(rt.note(second),Err(Error::StaleHandle)));
+    let replacement=external_plan(false).with_programs(vec![],None).unwrap();let request=control.submit(Box::new(replacement)).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));assert_ne!(rt.active_plan(),old_plan);
+    raw_off(&mut rt,receiver,source);raw_off(&mut rt,receiver,source);assert_eq!(rt.plan_physical_event_count(old_plan),Ok(2));
+    let mut mapped=[None;2];
+    for (at,historical) in [first,second].into_iter().enumerate(){
+        let receipt=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(receipt.release.note,historical);assert_eq!(receipt.release.source,source);
+        rt.start_receiver_release_behavior(receipt,0,0).unwrap();let turn=rt.pending_external_turn().unwrap().unwrap();
+        match turn.event{ExternalEvent::PhysicalRelease(event)=>{
+            assert_eq!(event.physical_note,historical);assert_eq!(event.plan,old_plan);assert_eq!(event.source,source);
+            assert!(matches!(rt.note(event.physical_note),Err(Error::StaleHandle)),"historical identity must NOT become a live Note parent");
+        },_=>panic!("actual plan-owned physical event required")}
+        rt.complete_receiver_terminal(receipt).unwrap();rt.begin_external_turn(turn.input).unwrap();
+        let child=match rt.post_external_output(turn.input,ExternalOutput::Note{pitch:NotePitch::Key(60),velocity:1.}).unwrap(){ExternalOutputResult::Note(note)=>note,_=>panic!()};
+        assert_eq!(rt.note_plan(child),Ok(old_plan));assert_eq!(rt.input_source(child),Ok(None));mapped[at]=Some((historical,child));
+        rt.complete_external_segment(turn.input,None).unwrap();
+    }
+    assert_ne!(mapped[0].unwrap().1,mapped[1].unwrap().1,"each historical VM event can retain its OWN actual returned manual child");
+    assert_eq!(rt.plan_physical_event_count(old_plan),Ok(0));assert_eq!(rt.collect_retired_plans(),0);
+    let first_child=mapped[0].unwrap().1;let second_child=mapped[1].unwrap().1;
+    rt.release(first_child).unwrap();assert!(rt.note(second_child).unwrap().2,"exact first returned voice release cannot close the same-key sibling");
+    rt.release(second_child).unwrap();rt.render(&mut [[0.;2];128]).unwrap();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);assert_eq!(rt.collect_retired_plans(),1);
+}
+
+#[test]
+fn source_owner_query_borrows_the_actual_retained_generation_and_never_aliases_replacement(){
+    let plan=external_plan(false);let limits=Limits::for_plan(&plan,8,8);let (mut rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();
+    let old=rt.active_plan();let note=rt.note_on(input(1801),60,1.).unwrap();
+    let empty=Prepared::new(48000,vec![],vec![],0).unwrap();let request=control.submit(Box::new(empty)).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));let new=rt.active_plan();assert_ne!(old,new);
+    let processor=sampler_ir::SourceEventProcessorId::UviNode(11);
+    support::without_heap(||{
+        let table=rt.source_owners(old).unwrap();let actual=table.processor(processor).unwrap();
+        assert_eq!(table.get(actual.owner).unwrap().id,sampler_ir::SourceOwnerId::UviNode(10));assert_eq!(actual.ordinal,0);
+        assert!(rt.source_owners(new).unwrap().rows().is_empty());assert_eq!(rt.collect_retired_plans(),0);
+        rt.cancel_input_note(note).unwrap();rt.flush_ended(|_|true);assert_eq!(rt.collect_retired_plans(),1);
+        assert!(matches!(rt.source_owners(old),Err(Error::StaleHandle)));assert!(rt.source_owners(new).unwrap().rows().is_empty());
+    });
+}
+
+
+fn hierarchy_two_layer_callbacks()->Prepared{
+    use sampler_ir as ir;
+    let ids=[10,20,21,30,31].map(ir::SourceOwnerId::UviNode);
+    let owner=|at:usize,parent:Option<usize>,kind,children:Vec<usize>,zones:Vec<usize>,script:Option<u32>|ir::SourceOwner{
+        id:ids[at],parent:parent.map(|i|ids[i]),kind,children:children.into_iter().map(|i|ids[i]).collect(),
+        groups:zones.iter().copied().map(ir::GroupRef).collect(),zones:zones.into_iter().map(ir::ZoneRef).collect(),
+        predicates:vec![],bypass:None,mute:None,event_processors:script.into_iter().map(|id|ir::SourceEventProcessor{
+            id:ir::SourceEventProcessorId::UviNode(id),owner:ids[at],ordinal:0,kind:"ScriptProcessor".into(),
+            bypass:ir::SourceSwitch{saved:false,control:None}}).collect()};
+    let mut instrument=ir::Instrument{source:ir::SourceFormat::Uvi,groups:vec![ir::Group::default();2],
+        assets:(0..2).map(|i|ir::Asset{location:ir::AssetLocation::Path(format!("sibling{i}.wav").into()),encoding:ir::Encoding::Wav,residency:Default::default(),root_key:None,loops:vec![]}).collect(),
+        zones:(0..2).map(|i|ir::Zone{keys:ir::KeyRange{low:60,high:60},group:Some(ir::GroupRef(i)),pitch:ir::KeyTracking::Fixed,velocity:ir::VelocityResponse::None,..ir::Zone::new(ir::AssetRef(i))}).collect(),..ir::Instrument::default()};
+    instrument.source_indices.owners=vec![
+        owner(0,None,ir::SourceOwnerKind::Instrument,vec![1,3],vec![0,1],None),
+        owner(1,Some(0),ir::SourceOwnerKind::Layer,vec![2],vec![0],Some(201)),
+        owner(2,Some(1),ir::SourceOwnerKind::Keygroup,vec![],vec![0],None),
+        owner(3,Some(0),ir::SourceOwnerKind::Layer,vec![4],vec![1],Some(301)),
+        owner(4,Some(3),ir::SourceOwnerKind::Keygroup,vec![],vec![1],None)];
+    sampler_core::lower::lower(&instrument,48000,vec![Pcm::new(48000,Box::from([[0.25;2];128])).unwrap(),Pcm::new(48000,Box::from([[0.5;2];128])).unwrap()],|_,_|unreachable!("no native behavior")).unwrap().with_source_note_hierarchy().unwrap()
+}
+#[test]
+fn later_layer_callback_capacity_cancels_only_unpublished_pending_batch_and_retains_physical_key(){
+    let plan=hierarchy_two_layer_callbacks();let mut limits=Limits::for_plan(&plan,16,8);limits.behaviors=2;
+    let (mut rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();let old=rt.active_plan();
+    let physical=rt.trigger(input(1901),60,1.).unwrap();
+    support::without_heap(||{
+        assert_eq!(rt.take_fault().map(|(_,error)|error),Some(Error::Capacity));
+        assert!(rt.pending_external_turn().unwrap().is_none(),"first Layer's callback-lifetime work must not survive a later sibling admission fault");
+        assert_eq!(rt.voice_count(),0);assert_eq!(rt.input_held(physical),Ok(true),"a callback fault is not physical key-up");
+        rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+        assert_eq!((rt.note_count(),rt.expression_count()),(1,1),"only the actual still-held physical owner remains");
+    });
+    let request=control.submit(Box::new(Prepared::new(48000,vec![],vec![],0).unwrap())).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+    support::without_heap(||{
+        assert_eq!(rt.collect_retired_plans(),0);rt.note_off_exact(physical,None).unwrap();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);
+        assert_eq!((rt.note_count(),rt.expression_count()),(0,0));assert_eq!(rt.collect_retired_plans(),1);assert!(matches!(rt.source_owners(old),Err(Error::StaleHandle)));
+    });
+}
+
+#[test]
+fn hierarchy_structural_work_is_charged_before_sibling_note_or_callback_publication(){
+    let plan=hierarchy_two_layer_callbacks();let mut limits=Limits::for_plan(&plan,16,8);limits.behaviors=8;limits.behavior_fuel=2;
+    let mut rt=Runtime::new(plan,limits).unwrap();
+    support::without_heap(||{
+        let physical=rt.trigger(input(1902),60,1.).unwrap();
+        assert_eq!(rt.take_fault().map(|(_,error)|error),Some(Error::Capacity));
+        assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count()),(1,1,0));assert!(rt.pending_external_turn().unwrap().is_none());
+        assert_eq!(rt.input_held(physical),Ok(true));rt.flush_behaviors(|_,_,_|true);rt.note_off_exact(physical,None).unwrap();rt.flush_ended(|_|true);
+        assert_eq!((rt.note_count(),rt.expression_count()),(0,0));
+    });
+}
+#[test]
+fn consumed_reposts_retire_generated_inputs_and_preserve_exact_root_event_origin_for_same_tuple(){
+    use sampler_core::{ExternalOutput,NotePitch};
+    let plan=hierarchy_note_plan(true,false);let limits=Limits::for_plan(&plan,32,16);let (mut rt,mut control)=Runtime::with_plan_updates(plan,limits,2,1).unwrap();let old=rt.active_plan();
+    let raw=Input{protocol:Protocol::Midi1,port:2,group:0,channel:1,key:60,external_id:None};
+    let mut roots=[None;2];
+    for slot in &mut roots{
+        let root=rt.trigger(raw,60,1.).unwrap();*slot=Some(root);
+        let first=hierarchy_begin(&mut rt,101);assert_eq!(first.event_origin,Some(root));
+        let repost=hierarchy_post(&mut rt,first,ExternalOutput::Note{pitch:NotePitch::Key(61),velocity:1.});
+        let second=hierarchy_begin(&mut rt,102);assert_eq!(second.event_origin,Some(root));
+        support::without_heap(||{rt.complete_external_segment(second.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);});
+        assert!(matches!(rt.note(repost),Err(Error::StaleHandle)),"consumed generated input must retire after its actual callback completes");
+        assert_eq!(rt.input_held(root),Ok(true));
+    }
+    assert_ne!(roots[0],roots[1]);assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count()),(2,2,0));
+    let request=control.submit(Box::new(Prepared::new(48000,vec![],vec![],0).unwrap())).unwrap();assert_eq!(rt.poll_plan_update(),Ok(Some(request)));
+    support::without_heap(||{
+        assert_eq!(rt.collect_retired_plans(),0);
+        for root in roots.into_iter().flatten(){rt.note_off_exact(root,None).unwrap();}
+        rt.flush_behaviors(|_,_,_|true);rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.expression_count()),(0,0));assert_eq!(rt.collect_retired_plans(),1);
+        assert!(matches!(rt.source_owners(old),Err(Error::StaleHandle)));
+    });
+}
