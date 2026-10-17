@@ -1573,6 +1573,7 @@ pub(crate) struct ChannelVoiceStorage {
     sources: Slab<f32>,
     last: Slab<f32>,
     tone: Slab<[f64; 2]>,
+    heads: Slab<Option<sampler_pool::SnapshotPin<crate::prepare::Ranges>>>,
 }
 
 pub(super) struct DspState {
@@ -1588,6 +1589,7 @@ pub(super) struct DspState {
     pub channel_last: Slab<f32>,
     /// Existing core Tone: two integrators per original channel and source slot.
     pub channel_tone: Slab<[f64; 2]>,
+    pub channel_heads: Slab<Option<sampler_pool::SnapshotPin<crate::prepare::Ranges>>>,
     pub channel_row: Slab<f32>,
     pub channel_work: Slab<f32>,
     pub parameters: Box<[ControlRamp]>,
@@ -1655,6 +1657,10 @@ impl DspState {
             },
             channel_tone: {
                 let stride = plan.signal_channels();
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
+            },
+            channel_heads: {
+                let stride = plan.signal_channels().div_ceil(2);
                 Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
             },
             channel_row: {
@@ -1742,9 +1748,14 @@ impl DspState {
             sources: Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride),
             last: Slab::new(allocate(channels.checked_mul(voices).ok_or(Error::Capacity)?)?, channels),
             tone: Slab::new(allocate(channels.checked_mul(voices).ok_or(Error::Capacity)?)?, channels),
+            heads: { let stride = channels.div_ceil(2);
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride) },
         })
     }
     pub(crate) fn adopt_channel_voices(&mut self, storage: &mut ChannelVoiceStorage) {
+        let count = self.channel_heads.len();
+        storage.heads.as_mut_slice()[..count].swap_with_slice(self.channel_heads.as_mut_slice());
+        std::mem::swap(&mut self.channel_heads, &mut storage.heads);
         let count = self.channel_sources.len();
         storage.sources.as_mut_slice()[..count].swap_with_slice(self.channel_sources.as_mut_slice());
         std::mem::swap(&mut self.channel_sources, &mut storage.sources);

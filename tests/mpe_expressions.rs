@@ -197,3 +197,118 @@ fn each_held_axis_is_audible(format:Format) {
 }
 #[test] fn kontakt_each_normal_held_mpe_axis_changes_rich_chain_audio(){each_held_axis_is_audible(Format::Kontakt);}
 #[test] fn uvi_each_normal_held_mpe_axis_changes_rich_chain_audio(){each_held_axis_is_audible(Format::Uvi);}
+
+// MIDI2 PN reference is deliberately an ordinary independently addressed core
+// note, not another instance of the receiver/key/cohort implementation.
+fn raw_per_note_rich_chain(format:Format) {
+    use sampler_core::{Input,NotePitch,Protocol};
+    let fixture=Fixture::new();let mut actual=fixture.runtime(format);let mut reference=fixture.runtime(format);
+    let mut receiver=Mpe::new(&actual,7,3,Zone::Lower,2,16).unwrap();receiver.use_midi2_channel_voice().unwrap();
+    let send=|receiver:&mut Mpe,runtime:&mut Runtime,status:u8,a:u8,b:u8,data:u32| {
+        let words=[0x4300_0000|u32::from(status|1)<<16|u32::from(a)<<8|u32::from(b),data];
+        receiver.apply(runtime,Packets::new(&words).next().unwrap().unwrap()).unwrap()
+    };
+    // Exact Q7.25 sensitivity4.25; PN and channel bend are independent.
+    send(&mut receiver,&mut actual,0x20,0,7,142_606_336);
+    send(&mut receiver,&mut actual,0x60,60,0,0xa000_0000);
+    send(&mut receiver,&mut actual,0xe0,0,0,0xa000_0000);
+    let quarter=536_870_912f64/2_147_483_647.;
+    let channel=quarter*2.;let initial=0.25+quarter*4.25+channel;
+    let Applied::Started(owner)=send(&mut receiver,&mut actual,0x90,60,3,(65535u32<<16)|(60*512+128)) else {panic!("raw note not admitted")};
+    let source=Input{protocol:Protocol::Native,port:7,group:3,channel:1,key:60,external_id:None};
+    let ref_note=reference.trigger_pitched(source,NotePitch::Key(60),1.,Expression{pitch_semitones:initial,..Expression::default()}).unwrap();
+    let identity=actual.expression_id(owner).unwrap();let reference_id=reference.expression_id(ref_note).unwrap();
+    assert_eq!(actual.note_pitch(owner),Ok(NotePitch::Absolute(60.25)));
+    assert!((expression(&actual,owner).pitch_semitones-(initial-0.25)).abs()<1e-12);
+    let first=render(&mut actual,512,64);active_audio(&first);close(&first,&render(&mut reference,512,64));
+    support::without_heap(|| {
+        send(&mut receiver,&mut actual,0x60,60,0,0x4000_0000);
+        reference.set_expression(reference_id,Expression{pitch_semitones:0.25-2.125+channel,..Expression::default()}).unwrap();
+    });
+    assert_eq!(actual.expression_id(owner),Ok(identity));assert_eq!(actual.voice_count(),1);assert!(actual.input_held(owner).unwrap());
+    close(&render(&mut actual,512,37),&render(&mut reference,512,37));
+    support::without_heap(|| {
+        send(&mut receiver,&mut actual,0xa0,60,0,0x1234_5678);
+        reference.set_expression(reference_id,Expression{pitch_semitones:0.25-2.125+channel,pressure:0x1234_5678,..Expression::default()}).unwrap();
+    });
+    close(&render(&mut actual,512,64),&render(&mut reference,512,64));
+    assert_eq!(expression(&actual,owner).pressure,0x1234_5678);
+    let Applied::Released{note,velocity,..}=send(&mut receiver,&mut actual,0x80,60,0,0xffff_0000) else {panic!("raw release lost")};
+    assert_eq!(note,owner);assert_eq!(velocity.map(sampler_midi::Value::normalized),Some(1.));reference.note_off_exact(ref_note,Some(1.)).unwrap();
+    close(&render(&mut actual,4096,64),&render(&mut reference,4096,64));
+    assert!(!matches!(actual.input_held(owner),Ok(true)));assert!(!matches!(reference.input_held(ref_note),Ok(true)));
+    assert_eq!((actual.nonfinite_frames(),actual.stream_underruns()),(0,0));
+}
+#[test] fn kontakt_raw_midi2_attribute_per_note_bend_and_pressure_match_independent_rich_chain_pcm(){raw_per_note_rich_chain(Format::Kontakt);}
+#[test] fn uvi_raw_midi2_attribute_per_note_bend_and_pressure_match_independent_rich_chain_pcm(){raw_per_note_rich_chain(Format::Uvi);}
+
+#[test]
+fn kontakt_normal_loaded_ksp_play_note_keeps_absolute_fraction_with_live_channel_and_per_note_components() {
+    use sampler_core::{Input,NotePitch,Protocol};
+    for mapped in [0u8,1] {
+    let fixture=Fixture::new();
+    let source=format!("on note ignore_event($EVENT_ID) play_note($EVENT_NOTE+{mapped},$EVENT_VELOCITY,0,-1) end on");
+    let script=sampler_ksp::compile(&source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let plan=script.bind(fixture.loaded(Format::Kontakt).plan).unwrap();
+    let limits=Limits::for_plan(&plan,16,32);let mut actual=Runtime::new(plan,limits).unwrap();
+    let mut reference=fixture.runtime(Format::Kontakt);let mut receiver=Mpe::new(&actual,7,3,Zone::Lower,2,16).unwrap();receiver.use_midi2_channel_voice().unwrap();
+    let send=|receiver:&mut Mpe,runtime:&mut Runtime,status:u8,a:u8,b:u8,data:u32| {
+        let words=[0x4300_0000|u32::from(status|1)<<16|u32::from(a)<<8|u32::from(b),data];
+        receiver.apply(runtime,Packets::new(&words).next().unwrap().unwrap()).unwrap()
+    };
+    let Applied::Started(parent)=send(&mut receiver,&mut actual,0x90,60,3,0xffff_0000|(60*512+128)) else {panic!()};
+    actual.render(&mut []).unwrap();
+    let child=actual.live_notes().find(|note|*note!=parent&&actual.note_families(*note).is_ok_and(|mut families|families.any(|family|actual.family_voice_count(family).unwrap()>0))).expect("real compiled KSP child missing");
+    assert_eq!(actual.note_pitch(child),Ok(NotePitch::Absolute(60.25+f64::from(mapped))));
+    assert_ne!(actual.expression_id(child),actual.expression_id(parent));
+    let plain=reference.trigger_pitched(Input{protocol:Protocol::Native,port:7,group:3,channel:1,key:60+mapped,external_id:None},NotePitch::Key(60+mapped),1.,Expression{pitch_semitones:0.25,..Expression::default()}).unwrap();
+    let reference_id=reference.expression_id(plain).unwrap();
+    let got=render(&mut actual,512,64);let expected=render(&mut reference,512,64);
+    eprintln!("KSP_SOURCE_DIAG mapped={mapped} actual_note={:?} reference_note={:?} child_expression={:?} reference_expression={:?} actual_taps={:?} reference_taps={:?} first_actual={:?} first_expected={:?}",actual.note(child),reference.note(plain),expression(&actual,child),expression(&reference,plain),actual.voice_taps(),reference.voice_taps(),&got[..8],&expected[..8]);
+    close(&got,&expected);
+    send(&mut receiver,&mut actual,0xe0,0,0,0xa000_0000);send(&mut receiver,&mut actual,0x60,60,0,0x9000_0000);
+    let offset=2.*536_870_912f64/2_147_483_647.+48.*268_435_456f64/2_147_483_647.;
+    reference.set_expression(reference_id,Expression{pitch_semitones:0.25+offset,bend:536_870_912f64/2_147_483_647.,..Expression::default()}).unwrap();
+    assert!((expression(&actual,child).pitch_semitones-offset).abs()<1e-12);
+    close(&render(&mut actual,512,64),&render(&mut reference,512,64));
+    send(&mut receiver,&mut actual,0x80,60,0,0xffff_0000);reference.note_off_exact(plain,Some(1.)).unwrap();
+    close(&render(&mut actual,4096,64),&render(&mut reference,4096,64));
+    assert!(!actual.input_held(parent).unwrap_or(false));assert_eq!((actual.nonfinite_frames(),actual.stream_underruns()),(0,0));
+    }
+}
+
+
+fn ordinary_midi2_reset_rich_chain(format:Format) {
+    use sampler_core::{Input,NotePitch,Protocol};
+    let fixture=Fixture::new();let mut actual=fixture.runtime(format);let mut reference=fixture.runtime(format);
+    let mut receiver=Mpe::new(&actual,7,3,Zone::Lower,2,16).unwrap();receiver.use_midi2_channel_voice().unwrap();
+    let send=|receiver:&mut Mpe,runtime:&mut Runtime,status:u8,a:u8,b:u8,data:u32| {
+        let words=[0x4300_0000|u32::from(status|1)<<16|u32::from(a)<<8|u32::from(b),data];
+        receiver.apply(runtime,Packets::new(&words).next().unwrap().unwrap()).unwrap()
+    };
+    send(&mut receiver,&mut actual,0x20,0,7,142_606_336); // PN4.25
+    send(&mut receiver,&mut actual,0x60,60,0,0xa000_0000);
+    send(&mut receiver,&mut actual,0xe0,0,0,0xa000_0000);
+    send(&mut receiver,&mut actual,0xd0,0,0,0x1234_5678);
+    let Applied::Started(owner)=send(&mut receiver,&mut actual,0x90,60,0,0xffff_0000) else {panic!()};
+    let fraction=536_870_912f64/2_147_483_647.;
+    let plain=reference.trigger_pitched(Input{protocol:Protocol::Midi2,port:7,group:3,channel:1,key:60,external_id:None},NotePitch::Key(60),1.,
+        Expression{pitch_semitones:fraction*(4.25+2.),bend:fraction,pressure:0x1234_5678,..Expression::default()}).unwrap();
+    let identity=actual.expression_id(owner).unwrap();let reference_id=reference.expression_id(plain).unwrap();
+    let first=render(&mut actual,512,64);active_audio(&first);close(&first,&render(&mut reference,512,64));
+    support::without_heap(|| {
+        assert_eq!(send(&mut receiver,&mut actual,0xb0,121,0,0),Applied::ResetControllers);
+        reference.set_expression(reference_id,Expression{pitch_semitones:fraction*4.25,..Expression::default()}).unwrap();
+    });
+    assert_eq!(actual.expression_id(owner),Ok(identity));assert_eq!(actual.voice_count(),1);assert!(actual.input_held(owner).unwrap());
+    close(&render(&mut actual,1024,37),&render(&mut reference,1024,37));
+    support::without_heap(|| {
+        send(&mut receiver,&mut actual,0x60,60,0,0x4000_0000);
+        reference.set_expression(reference_id,Expression{pitch_semitones:-2.125,..Expression::default()}).unwrap();
+    });
+    close(&render(&mut actual,512,64),&render(&mut reference,512,64));
+    send(&mut receiver,&mut actual,0x80,60,0,0xffff_0000);reference.note_off_exact(plain,Some(1.)).unwrap();
+    close(&render(&mut actual,4096,64),&render(&mut reference,4096,64));
+}
+#[test] fn kontakt_normal_rich_chain_cc121_retains_per_note_pitch_and_updates_held_source_without_retrigger(){ordinary_midi2_reset_rich_chain(Format::Kontakt);}
+#[test] fn uvi_normal_rich_chain_cc121_retains_per_note_pitch_and_updates_held_source_without_retrigger(){ordinary_midi2_reset_rich_chain(Format::Uvi);}

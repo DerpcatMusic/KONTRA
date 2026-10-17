@@ -247,6 +247,12 @@ pub(crate) struct Sample {
 }
 
 impl AssetSource for Sample {
+    fn open_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        self.open_accounted_channels(false,workspace_limit)
+    }
+    fn open_stream_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        self.open_accounted_channels(true,workspace_limit)
+    }
     fn open(&self) -> io::Result<SampleReader> {
         self.open_counted(false)
     }
@@ -263,6 +269,36 @@ impl Sample {
                 .map(FrozenOrigin::admit)
                 .collect::<io::Result<_>>()?,
         })
+    }
+    fn open_accounted_channels(&self,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        if self.parts.len()>2 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI multipart stream needs owned decoder/container admission"));}
+        let mut admitted=None;
+        for part in &self.parts {
+            // The bounded header-discovery owner precedes the ordinary format
+            // probe. It is the same one CHUNK32KiB guarded Bytes buffer retained
+            // by a successful new-wide decoder, not an encoded source copy.
+            let origin_cost=CHUNK.checked_add(size_of::<Bytes>()).ok_or_else(||invalid("origin workspace overflow"))?;
+            if origin_cost>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"owned UVI header workspace admission"));}
+            let mut bytes=part.open(counted)?;
+            let profile=crate::sample_metadata::pcm_stream_admission(&mut bytes,origin_cost)?;
+            if let Some(profile)=profile {
+                if self.parts.len()!=1 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI multipart stream needs owned decoder/container admission"));}
+                let reader=(||->io::Result<SampleReader> {
+                    if profile.accounted_workspace_bytes()>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"accounted UVI PCM workspace admission"));}
+                    bytes.seek(SeekFrom::Start(0))?;
+                    let metadata=MetadataOptions {limit_metadata_bytes:Limit::Maximum(0),limit_visual_bytes:Limit::Maximum(0)};
+                    let reader=EncodedChannelReader::open_checked_pcm(Box::new(bytes),&metadata,profile,workspace_limit)?;
+                    SampleReader::accounted_encoded(reader)
+                })().map_err(|error|crate::sample_metadata::wide_stream_refusal(format!("wide UVI owned decoder/container admission: {error}")))?;
+                admitted=Some(reader);
+            } else {
+                // Preserve the legacy mono/stereo owner and its existing
+                // conversion, metadata and bundle rules exactly.
+                let reader=Stream::open_counted(part,counted)?;
+                if reader.channels>2 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI stream needs owned decoder/container admission"));}
+            }
+        }
+        Ok(admitted)
     }
     fn open_counted(&self, counted: bool) -> io::Result<SampleReader> {
         let mut streams = self
@@ -434,7 +470,12 @@ pub(crate) fn loose_sample_resource(
 /// The source of a loose file or bundle, checked by opening it once.
 pub(crate) fn source(parts: Vec<Origin>) -> Result<Arc<dyn AssetSource>, String> {
     let sample = Sample::new(parts).map_err(|e| e.to_string())?;
-    sample.open().map_err(|e| e.to_string())?;
+    // New-wide sources must pass their normal guarded preprobe before the
+    // legacy allocating probe is considered. Header discovery does not create
+    // or publish Runtime storage and its bounded owner is dropped offaudio.
+    if sample.open_channels(8<<20).map_err(|e|e.to_string())?.is_none() {
+        sample.open().map_err(|e| e.to_string())?;
+    }
     Ok(Arc::new(sample))
 }
 
@@ -643,24 +684,47 @@ mod tests {
 pub(crate) struct InitialSource {
     pub source:Arc<dyn AssetSource>,
     pub playback:Result<Option<sampler_ir::Playback>,String>,
+    /// Fatal only for an actual initial sample-zone use. Impulse-only readers
+    /// retain their prior domain; no recipe or dummy playback is fabricated.
+    pub admission:Result<(),String>,
 }
 /// Same frozen normal source as `source`, plus optional initial file playback.
 /// No dynamic-sample admission or channel-routing policy is changed here.
 pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSource,String> {
     let sample=Sample::new(parts).map_err(|e|e.to_string())?;
-    let reader=sample.open().map_err(|e|e.to_string())?;
+    let reader=match sample.open_channels(8<<20) {
+        Ok(Some(reader))=>reader,
+        Ok(None)=>sample.open().map_err(|e|e.to_string())?,
+        Err(error) if crate::sample_metadata::is_wide_stream_refusal(&error)=> {
+            // No legacy probe or decoder is constructed to carry this frozen
+            // recipe. The initial sample-source gate refuses it before any
+            // playback/instrument mutation; impulse-only uses remain separate.
+            return Ok(InitialSource {source:Arc::new(sample),playback:Ok(None),admission:Err(error.to_string())});
+        }
+        Err(error)=>return Err(error.to_string()),
+    };
+    let frames=reader.frames();let rate=reader.rate();drop(reader);
     let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
         let mut metadata=None;
         for origin in &sample.parts {
-            let header=Stream::open_counted(origin,false).map_err(|e|e.to_string())?;
-            if header.frames!=reader.frames()as u64 || header.rate!=reader.rate() {
-                return Err("channel bundle has inconsistent initial source geometry".into());
-            }
+            let mut discovery=origin.open(false).map_err(|e|e.to_string())?;
+            let profile=crate::sample_metadata::pcm_stream_admission(&mut discovery,CHUNK+size_of::<Bytes>()).map_err(|e|e.to_string())?;
+            let channels=if let Some(profile)=profile {
+                if profile.frames()!=frames as u64 {return Err("initial source frame geometry changed".into());}
+                profile.channels()
+            } else {
+                let header=Stream::open_counted(origin,false).map_err(|e|e.to_string())?;
+                if header.frames!=frames as u64 || header.rate!=rate {
+                    return Err("channel bundle has inconsistent initial source geometry".into());
+                }
+                header.channels
+            };
+            drop(discovery);
             let mut bytes=origin.open(false).map_err(|e|e.to_string())?;
             bytes.repair_riff=false;
-            let found=crate::sample_metadata::parse_reader(&mut bytes,reader.frames(),false)
+            let found=crate::sample_metadata::parse_reader(&mut bytes,frames,false)
                 .map_err(|e|format!("initial sample playback metadata {e:?}"))?;
-            if found.channels.map(usize::from)!=Some(header.channels) {
+            if found.channels.map(usize::from)!=Some(channels) {
                 return Err("initial playback channel metadata differs from decoder".into());
             }
             let playback=found.initial_ir_playback().map_err(|e|format!("initial sample playback conversion {e:?}"))?;
@@ -669,5 +733,5 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
         }
         Ok(metadata)
     } else {Ok(None)} })();
-    Ok(InitialSource {source:Arc::new(sample),playback})
+    Ok(InitialSource {source:Arc::new(sample),playback,admission:Ok(())})
 }

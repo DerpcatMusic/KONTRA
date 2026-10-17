@@ -9,11 +9,15 @@ pub(super) fn rejection(reply: &ControlReply) -> Option<serde_json::Value> {
         Op::MidiCapture(_) => ("midi_capture", 1, None),
         Op::MidiComplete(_) => ("midi_complete", 1, None),
         Op::Invoke(_, write) => ("invoke", 1, Some((write.id.0, 0))),
+        Op::InvokeGlobal(_, write) => ("invoke_global", 1, Some((write.id.0, 0))),
         Op::HostParameter(_, _, _) => ("host_parameter", 1, None),
         Op::InvokeWidget(_, edits) => (
             "invoke_widget",
             edits.len(),
             edits.first().map(|e| (e.id.0, e.index)),
+        ),
+        Op::InvokeGlobalWidget(_, edits) => (
+            "invoke_global_widget", edits.len(), edits.first().map(|e| (e.id.0, e.index)),
         ),
         Op::CaptureWidget(edits) => (
             "capture_widget",
@@ -37,7 +41,7 @@ pub(super) fn rejection(reply: &ControlReply) -> Option<serde_json::Value> {
         Op::Capture(edits) => ("capture", edits.len(), edits.first().map(|e| (e.id.0, 0))),
     };
     let value_kind = match &reply.command.operation {
-        Op::InvokeWidget(_, edits) | Op::CaptureWidget(edits) => {
+        Op::InvokeWidget(_, edits) | Op::InvokeGlobalWidget(_, edits) | Op::CaptureWidget(edits) => {
             edits.first().map(|edit| match edit.value {
                 sampler_core::WidgetValue::Integer(_) => "integer",
                 sampler_core::WidgetValue::Real(_) => "real",

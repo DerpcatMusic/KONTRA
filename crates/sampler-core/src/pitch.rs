@@ -131,6 +131,9 @@ impl Runtime {
         &self,
         mut proposed: impl FnMut(ExpressionId) -> Option<f64>,
     ) -> Result<(), Error> {
+        // Includes every retained generation and delayed source already charged
+        // to this Runtime's ONE pool; unchanged owners retain exact reservations.
+        let mut stream_pages=self.stream_reserved;
         // Walk occupied words rather than every reserved Voice record. This is
         // bounded by the admitted voices and bitmap size, not source duration.
         for (word, &bits) in self.voice_activity.iter().enumerate() {
@@ -144,9 +147,24 @@ impl Runtime {
                 if let Some(ratio) = proposed(owner) {
                     PitchRange::constant(ratio)
                         .apply_source(voice.base_step, voice.cursor.wavetable().is_some())?;
+                    if voice.stream_pages!=0 {
+                        // Preserve already accepted future expression bounds as
+                        // well as this write. No expression/base/source changes
+                        // occur until the aggregate physical bound is accepted.
+                        let pending=self.pitch_range(owner,true)?;
+                        let mut pages=voice.stream_pages;
+                        for ratio in [ratio,pending.minimum,pending.maximum] {
+                            let step=voice.base_step*ratio*voice.mod_pitch.1;
+                            if !step.is_finite() || step<=0. {return Err(Error::InvalidInput);}
+                            pages=pages.max(self.projected_voice_stream_pages(index,step)?);
+                        }
+                        stream_pages=stream_pages.checked_sub(voice.stream_pages)
+                            .and_then(|n|n.checked_add(pages)).ok_or(Error::Capacity)?;
+                    }
                 }
             }
         }
+        self.check_stream_projection(stream_pages)?;
         if self.voices.reserved != 0 {
             for (index, slot) in self.notes.slots.iter().enumerate() {
                 let Some(note) = &slot.value else {

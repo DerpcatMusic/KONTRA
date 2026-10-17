@@ -1603,6 +1603,7 @@ impl Prepared {
             + size_of::<crate::Slot<crate::topology::ProcessingOwner>>()
             + size_of::<u64>() // conservative arena free-word/claim overhead
             + self.signal_channels().saturating_mul(3 * super::dsp::BLOCK + 2).saturating_mul(size_of::<f32>())
+            + self.signal_channels().div_ceil(2).saturating_mul(size_of::<Option<sampler_pool::SnapshotPin<Ranges>>>())
             + self.signal_history_words().saturating_mul(size_of::<f64>())
             + if self.signal_history_words() == 0 { 0 } else { size_of::<std::sync::atomic::AtomicBool>() }
             + self.signal_channels().saturating_mul(size_of::<[f64; 2]>())

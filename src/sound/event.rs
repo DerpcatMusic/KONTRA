@@ -64,8 +64,8 @@ pub enum Event {
     NoteOffVelocity(HostPattern, f64),
     Choke(HostPattern),
     Expression(HostPattern, NoteExpression),
-    /// A MIDI 1.0 (message type 2, one word used) or MIDI 2.0 (type 4)
-    /// channel voice packet, its group the host port's.
+    /// Original one-word System/MIDI1 or two-word MIDI2 packet.
+    /// The UMP group is independent of the physical host input port.
     Ump([u32; 2]),
 }
 
@@ -89,7 +89,7 @@ impl Event {
             | Self::NoteOffVelocity(p, _)
             | Self::Choke(p)
             | Self::Expression(p, _) => u8::try_from(p.channel).ok(),
-            Self::Ump([word, _]) => Some((word >> 16) as u8 & 15),
+            Self::Ump([word, _]) => matches!(word>>28,2|4).then_some((word >> 16) as u8 & 15),
         }
     }
 }

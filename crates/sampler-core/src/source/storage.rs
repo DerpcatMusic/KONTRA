@@ -61,6 +61,7 @@ pub(crate) struct ResidentFamily {
     channels: ChannelCount,
     rate: u32,
     frames: usize,
+    paged: bool,
     packs: Box<[Pcm]>,
     // Each complete cohort is pinned and published off audio. A borrowed view
     // never reacquires independently changing pack publications.
@@ -73,6 +74,7 @@ impl ResidentFamily {
     /// publication contains every original pack or no pack. No reader can see
     /// a successful prefix while a group reload is being staged.
     pub(crate) fn refresh_residency(&self) -> Result<(), Error> {
+        if self.paged { return Ok(()); }
         let _mutation = self
             .residency_mutation
             .lock()
@@ -188,6 +190,7 @@ impl SourceStorageFamily {
             channels,
             rate,
             frames,
+            paged: false,
             packs: packs.into_boxed_slice(),
             residents: sampler_pool::Snapshot::new(Some(residents.into_boxed_slice())),
             residency_mutation: Mutex::new(()),
@@ -201,6 +204,26 @@ impl SourceStorageFamily {
         }
         Ok(Self(family))
     }
+    /// Adopt one immutable, frozen-generation paged logical source. Physical
+    /// pack identities are real page-cache keys, never additional IR assets.
+    /// Decoder recipes and their identity guards stay with the normal Streamer.
+    pub fn new_paged(channels: ChannelCount, packs: Vec<Pcm>) -> Result<Self, Error> {
+        if channels.get() <= 2 || packs.len() != channels.pack_count() { return Err(Error::InvalidInput); }
+        let first = packs.first().ok_or(Error::InvalidInput)?;
+        let (rate, frames) = (first.sample_rate(), first.frame_count());
+        if rate == 0 || frames == 0 || packs.iter().enumerate().any(|(i, p)|
+            p.requires_resident() || p.sample_rate() != rate || p.frame_count() != frames
+            || packs[..i].iter().any(|old| old.asset_id() == p.asset_id())) {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self(Arc::new(ResidentFamily {
+            id: SourceStorageId::new_family()?, channels, rate, frames, paged: true,
+            packs: packs.into_boxed_slice(), residents: sampler_pool::Snapshot::new(None),
+            residency_mutation: Mutex::new(()),
+        })))
+    }
+    pub fn is_paged(&self) -> bool { self.0.paged }
+    pub(crate) fn packs(&self) -> &[Pcm] { &self.0.packs }
     pub(crate) fn refresh_residency(&self) -> Result<(), Error> {
         self.0.refresh_residency()
     }
@@ -306,6 +329,18 @@ impl<'a> SourceStorageRef<'a> {
                 }
             }
         }
+    }
+    pub(crate) fn physical(self, ordinal: usize) -> Option<&'a Pcm> {
+        match self { Self::Stereo(p) => (ordinal == 0).then_some(p), Self::Channels(f) => f.packs().get(ordinal) }
+    }
+    pub(crate) fn physical_id(self, id: AssetId) -> Option<&'a Pcm> {
+        (0..self.physical_count()).find_map(|i| self.physical(i).filter(|p| p.asset_id() == id))
+    }
+    pub fn is_paged(self) -> bool {
+        match self { Self::Stereo(p) => !p.requires_resident(), Self::Channels(f) => f.is_paged() }
+    }
+    pub fn physical_count(self) -> usize {
+        match self { Self::Stereo(_) => 1, Self::Channels(f) => f.0.packs.len() }
     }
     /// Legacy-only view. A wide family never silently resolves to pack zero.
     pub fn stereo(self) -> Option<&'a Pcm> {

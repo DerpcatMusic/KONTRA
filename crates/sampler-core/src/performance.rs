@@ -137,6 +137,14 @@ pub fn previous_key_value(interval: Option<i16>) -> u32 {
     interval.map_or(0, |i| (i.clamp(-127, 127) + 128) as u32)
 }
 
+/// Minimum reserve for the two wire protocols and the Part's explicit logical
+/// native-host domain. More Protocol/port/group keys still require budget and
+/// are refused when this fixed pool is exhausted.
+pub(super) fn controller_domain_capacity(performances: usize, channels: usize) -> Result<usize, Error> {
+    const INGRESS_CHANNELS: usize = 3 * 16;
+    performances.checked_mul(channels.max(INGRESS_CHANNELS)).ok_or(Error::Capacity)
+}
+
 /// A bounded physical controller domain retains its real address for the
 /// Runtime lifetime. Its current version is owned independently of global API
 /// state and of every note's immutable onset version.
@@ -145,6 +153,10 @@ struct PhysicalControllers {
     address: crate::ChannelAddress,
     current: usize,
     epoch: u64,
+    /// A global/default broadcast is not a member-authored gesture. Revisions
+    /// advance even for equal numeric writes; epochs fence controller resets.
+    script_virtual_revisions: [u64; 2],
+    script_virtual_authored: [bool; 2],
     input: [u32; 130],
     input_poly: [u32; 128],
     poly: [u32; 128],
@@ -163,7 +175,7 @@ pub(super) struct PerformanceState {
 
 impl PerformanceState {
     pub fn validate(notes: usize, performances: usize, channels: usize) -> Result<usize, Error> {
-        let domains = performances.checked_mul(channels.max(16)).ok_or(Error::Capacity)?;
+        let domains = controller_domain_capacity(performances, channels)?;
         let capacity = notes.checked_add(performances).and_then(|n| n.checked_add(domains)).ok_or(Error::Capacity)?;
         std::alloc::Layout::array::<PhysicalControllers>(domains).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<State>(capacity).map_err(|_| Error::Capacity)?;
@@ -177,7 +189,7 @@ impl PerformanceState {
             let mut rows = Vec::new(); rows.try_reserve_exact(count).map_err(|_| Error::Capacity)?;
             rows.resize(count, value); Ok(rows.into_boxed_slice())
         }
-        let domains = performances.checked_mul(channels.max(16)).ok_or(Error::Capacity)?;
+        let domains = controller_domain_capacity(performances, channels)?;
         let mut physical = Vec::new(); physical.try_reserve_exact(domains).map_err(|_| Error::Capacity)?;
         let mut free = Vec::new(); free.try_reserve_exact(capacity.saturating_sub(1)).map_err(|_| Error::Capacity)?;
         free.extend((1..capacity).rev());
@@ -219,11 +231,19 @@ impl PerformanceState {
     }
 
     pub fn validate_scope(&self, performance: usize, scope: crate::ChannelScope) -> Result<(), Error> {
-        if performance >= self.current.len() || scope.group >= 16 || scope.channels == 0 { return Err(Error::InvalidInput); }
-        let missing = (0..16u8).filter(|&channel| scope.channels & (1 << channel) != 0
-            && self.physical_index(performance, crate::ChannelAddress { protocol: scope.protocol,
-                port: scope.port, group: scope.group, channel }).is_none()).count();
-        if missing > self.physical_limit - self.physical.len() { return Err(Error::Capacity); }
+        self.validate_scopes(performance, scope, None)
+    }
+
+    pub fn validate_scopes(&self, performance: usize, scope: crate::ChannelScope, secondary: Option<crate::ChannelScope>) -> Result<(), Error> {
+        if performance >= self.current.len() || scope.group >= 16 || scope.channels == 0
+            || secondary.is_some_and(|s| s.group >= 16 || s.channels == 0) { return Err(Error::InvalidInput); }
+        let missing = |target: crate::ChannelScope, exclude: Option<crate::ChannelScope>| (0..16u8).filter(|&channel| {
+            let address = crate::ChannelAddress { protocol: target.protocol, port: target.port, group: target.group, channel };
+            target.channels & (1 << channel) != 0 && !exclude.is_some_and(|s| s.contains(address))
+                && self.physical_index(performance, address).is_none()
+        }).count();
+        let needed = missing(scope, None).checked_add(secondary.map_or(0, |target| missing(target, Some(scope)))).ok_or(Error::Capacity)?;
+        if needed > self.physical_limit - self.physical.len() { return Err(Error::Capacity); }
         Ok(())
     }
 
@@ -235,6 +255,7 @@ impl PerformanceState {
             let current = self.current[performance];
             self.states[current].owners += 1;
             self.physical.push(PhysicalControllers { performance, address, current, epoch: 1,
+                script_virtual_revisions: [0; 2], script_virtual_authored: [false; 2],
                 input: self.input_controllers[performance],
                 input_poly: self.input_poly_pressure[performance], poly: self.poly_pressure[performance] });
         }
@@ -269,13 +290,28 @@ impl PerformanceState {
         index
     }
 
+    pub fn validate_virtual_write(&self, performance: usize, scope: crate::ChannelScope, number: u8) -> Result<(), Error> {
+        if number >= 130 { return Err(Error::InvalidInput); }
+        if number >= 128 && self.physical.iter().any(|row| row.performance == performance
+            && scope.contains(row.address) && row.script_virtual_revisions[usize::from(number - 128)] == u64::MAX) {
+            return Err(Error::Capacity);
+        }
+        Ok(())
+    }
+
     pub fn scoped_controller(&mut self, performance: usize, scope: crate::ChannelScope, number: u8, value: u32) -> Result<(), Error> {
+        self.validate_virtual_write(performance, scope, number)?;
         self.prepare_scope(performance, scope)?;
         for i in 0..self.physical.len() {
             if self.physical[i].performance != performance || !scope.contains(self.physical[i].address) { continue; }
             let state = self.edit_physical(i);
             if number < 128 { state.controllers[usize::from(number)] = value; }
-            else { state.script_virtual[usize::from(number - 128)] = value; }
+            else {
+                let virtual_index = usize::from(number - 128);
+                state.script_virtual[virtual_index] = value;
+                self.physical[i].script_virtual_revisions[virtual_index] += 1;
+                self.physical[i].script_virtual_authored[virtual_index] = true;
+            }
         }
         Ok(())
     }
@@ -285,7 +321,11 @@ impl PerformanceState {
             if self.physical[i].performance != performance { continue; }
             let state = self.edit_physical(i);
             if number < 128 { state.controllers[usize::from(number)] = value; }
-            else { state.script_virtual[usize::from(number - 128)] = value; }
+            else {
+                let virtual_index = usize::from(number - 128);
+                state.script_virtual[virtual_index] = value;
+                self.physical[i].script_virtual_authored[virtual_index] = false;
+            }
         }
     }
 
@@ -367,6 +407,25 @@ impl PerformanceState {
             state.controllers = RESET_CONTROLLERS; state.script_virtual = [0x8000_0000, 0];
             let row = &mut self.physical[i]; row.input = RESET_INPUT_CONTROLLERS;
             row.input_poly.fill(0); row.poly.fill(0); row.epoch += 1;
+            row.script_virtual_authored = [false; 2];
+        }
+        Ok(())
+    }
+
+    /// Selective protocol reset; a full MCM role reset uses reset_scope instead.
+    pub fn protocol_reset_scope(&mut self, performance:usize, scope:crate::ChannelScope)->Result<(),Error> {
+        self.validate_reset(performance,scope)?;
+        self.ensure_scope(performance,scope);
+        for index in 0..self.physical.len() {
+            if self.physical[index].performance!=performance||!scope.contains(self.physical[index].address) {continue;}
+            let state=self.edit_physical(index);
+            for (number,value) in PROTOCOL_RESET_VALUES {state.controllers[usize::from(number)]=value;}
+            state.script_virtual=[0x8000_0000,0];
+            let row=&mut self.physical[index];
+            for (number,value) in PROTOCOL_RESET_VALUES {row.input[usize::from(number)]=value;}
+            row.input[128]=0x8000_0000;row.input[129]=0;
+            row.input_poly.fill(0);row.poly.fill(0);row.epoch+=1;
+            row.script_virtual_authored=[false;2];
         }
         Ok(())
     }
@@ -412,24 +471,76 @@ impl Runtime {
 
     /// Pure admission check for a channel-local protocol reset.
     pub fn validate_channel_controller_reset(&self, id: PerformanceId, scope: crate::ChannelScope) -> Result<(), Error> {
-        self.performance_state.validate_reset(self.performance_index(id)?, scope)
+        self.validate_channel_controller_reset_targets(id, scope, None)
+    }
+
+    /// Pure union admission for one wire role change and its optional logical
+    /// native-host targets. Both scopes must fit before either reset publishes.
+    pub fn validate_channel_controller_reset_targets(&self, id: PerformanceId, primary: crate::ChannelScope, secondary: Option<crate::ChannelScope>) -> Result<(), Error> {
+        if secondary.is_some_and(|scope| scope.protocol != crate::Protocol::Native
+            || !matches!(primary.protocol, crate::Protocol::Midi1 | crate::Protocol::Midi2)) { return Err(Error::InvalidInput); }
+        let performance = self.performance_index(id)?;
+        self.performance_state.validate_scopes(performance, primary, secondary)?;
+        self.performance_state.validate_reset(performance, primary)?;
+        if let Some(scope) = secondary { self.performance_state.validate_reset(performance, scope)?; }
+        Ok(())
     }
 
     /// Reset only these physical controller domains and invalidate prior captured
     /// controller work for those targets. Global APIs and other channels retain
     /// their values. This does not synthesize callbacks or physical key releases.
     pub fn reset_channel_controllers(&mut self, id: PerformanceId, scope: crate::ChannelScope) -> Result<(), Error> {
+        self.reset_channel_controller_targets(id, scope, None)
+    }
+
+    pub fn reset_channel_controller_targets(&mut self, id: PerformanceId, primary: crate::ChannelScope, secondary: Option<crate::ChannelScope>) -> Result<(), Error> {
         let performance = self.performance_index(id)?;
         self.apply_due();
-        self.performance_state.validate_reset(performance, scope)?;
-        // Controller reset publishes before pedal-up can invoke any downstream
-        // release work. The remaining validated pedal-up needs no admission.
-        self.performance_state.reset_scope(performance, scope)?;
-        for slot in &mut self.plans.slots {
-            if let Some(generation) = &mut slot.value { generation.controllers.reset_scope(performance, scope); }
+        self.validate_channel_controller_reset_targets(id, primary, secondary)?;
+        // Publish every reset domain before any pedal-up can run downstream
+        // release work. No callback or resource admission occurs between rows.
+        for scope in [Some(primary), secondary].into_iter().flatten() {
+            self.performance_state.reset_scope(performance, scope)?;
+            for slot in &mut self.plans.slots {
+                if let Some(generation) = &mut slot.value { generation.controllers.reset_scope(performance, scope); }
+            }
         }
-        self.sustain_scope(scope, false)?;
-        self.sostenuto_scope(scope, false)?;
+        for scope in [Some(primary), secondary].into_iter().flatten() {
+            self.sustain_scope(scope, false)?;
+            self.sostenuto_scope(scope, false)?;
+        }
+        Ok(())
+    }
+
+    /// Pure selective CC121 admission. The union must fit every retained
+    /// generation before any expression, raw CC, epoch or pedal publication.
+    pub fn validate_protocol_controller_reset_targets(&self,id:PerformanceId,primary:crate::ChannelScope,secondary:Option<crate::ChannelScope>)->Result<(),Error> {
+        self.validate_channel_controller_reset_targets(id,primary,secondary)?;
+        let performance=self.performance_index(id)?;
+        for slot in &self.plans.slots {
+            if let Some(generation)=&slot.value {generation.controllers.validate_scopes(performance,primary,secondary)?;}
+        }
+        Ok(())
+    }
+
+    /// Selectively reset protocol controller/pressure state with no fabricated
+    /// input callbacks. Caller-owned expression/cache changes are preflighted
+    /// separately. Global and MCM full-role-reset APIs retain their own laws.
+    pub fn reset_protocol_controller_targets(&mut self,id:PerformanceId,primary:crate::ChannelScope,secondary:Option<crate::ChannelScope>)->Result<(),Error> {
+        self.apply_due();
+        self.validate_protocol_controller_reset_targets(id,primary,secondary)?;
+        let performance=self.performance_index(id)?;
+        for scope in [Some(primary),secondary].into_iter().flatten() {
+            self.performance_state.protocol_reset_scope(performance,scope)?;
+            for slot in &mut self.plans.slots {
+                if let Some(generation)=&mut slot.value {generation.controllers.protocol_reset_scope(performance,scope);}
+            }
+        }
+        // All target banks/epochs exist before pedal-up invokes release work.
+        // Pedal-up requires no free domain, event, snapshot or command capacity.
+        for scope in [Some(primary),secondary].into_iter().flatten() {
+            self.sustain_scope(scope,false)?;self.sostenuto_scope(scope,false)?;
+        }
         Ok(())
     }
 
@@ -441,6 +552,25 @@ impl Runtime {
         state
             .script_controller(controller)
             .ok_or(Error::InvalidInput)
+    }
+
+    /// Read actual channel-authored virtual writes without projecting global
+    /// broadcast copies into member gestures. No source lookup or allocation.
+    pub fn visit_channel_script_controllers(
+        &self, performance: PerformanceId,
+        mut visit: impl FnMut(crate::ChannelAddress, u8, u32, u64, u64),
+    ) -> Result<(), Error> {
+        let performance = self.performance_index(performance)?;
+        for row in &self.performance_state.physical {
+            if row.performance != performance { continue; }
+            for at in 0..2 {
+                if row.script_virtual_authored[at] {
+                    let value = self.performance_state.states[row.current].script_virtual[at];
+                    visit(row.address, 128 + at as u8, value, row.epoch, row.script_virtual_revisions[at]);
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn set_controller(
@@ -515,3 +645,7 @@ const RESET_INPUT_CONTROLLERS: [u32; 130] = {
     values[128] = 0x8000_0000;
     values
 };
+
+/// Declared RP-015-style selective reset. Preserve bank, volume, pan, sound
+/// controls, effects and parameter values; null only transaction selectors.
+pub(super) const PROTOCOL_RESET_VALUES:[(u8,u32);10]=[(1,0),(11,u32::MAX),(64,0),(65,0),(66,0),(67,0),(98,u32::MAX),(99,u32::MAX),(100,u32::MAX),(101,u32::MAX)];

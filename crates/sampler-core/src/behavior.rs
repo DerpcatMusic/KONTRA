@@ -1004,9 +1004,20 @@ impl NoteStage {
     }
 }
 
+/// Capture belongs to a callback instance, not the note's admission snapshot.
+/// Forked plan work retains this exact origin/epoch/stage through waits.
+#[derive(Clone,Copy,Debug)]
+pub(super) struct NoteControllerContext {
+    pub performance:usize,
+    pub origin:super::ChannelAddress,
+    pub epoch:u64,
+    pub stage:usize,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlanContext {
     Bare,
+    NoteControllers(NoteControllerContext),
     Controller(super::controller_event::ControllerEvent),
     Control(super::control::ControlEvent),
 }
@@ -1014,6 +1025,7 @@ impl PlanContext {
     pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
+            Self::NoteControllers(context)=>Some(context.stage),
             Self::Controller(event) => Some(event.stage),
             Self::Control(event) => Some(event.stage),
         }
@@ -1094,9 +1106,13 @@ impl Runtime {
         let n = self.notes.get_mut(note.0).unwrap();
         let work = n.work + 1;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
+        let performance=self.selections[note.0.index].performance;
+        let origin=n.address;
+        let epoch=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:1<<origin.channel})[usize::from(origin.channel)];
+        let context=NoteControllerContext{performance,origin,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index)};
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
-            context: PlanContext::Bare,
+            context: PlanContext::NoteControllers(context),
             parameter: None,
             note_stage,
             program,
@@ -2748,6 +2764,18 @@ impl Runtime {
                 if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
                     return Err(Error::InvalidInput);
                 }
+                let key=u8::try_from(key).map_err(|_|Error::InvalidInput)?;
+                // KSP reports the effective integer selection key, unlike
+                // UVI's physical callback key. Keep an inherited absolute
+                // parent's fractional pitch when play_note remaps that key.
+                let pitch = if let (BehaviorOwner::Note(parent), Inheritance::Expression) = (owner, inheritance) {
+                    match self.notes.get(parent.0).ok_or(Error::StaleHandle)?.pitch {
+                        super::NotePitch::Absolute(parent) =>
+                            super::NotePitch::Absolute(f64::from(key) + parent - f64::from(super::NotePitch::Absolute(parent).key())),
+                        super::NotePitch::Key(_) => super::NotePitch::Key(key),
+                    }
+                } else { super::NotePitch::Key(key) };
+                if !pitch.valid() { return Err(Error::InvalidInput); }
                 // Reserve the external identity before publishing any child/audio.
                 // Failed admission may leave a numeric gap, never a reused ID.
                 let source_id = result
@@ -2755,7 +2783,7 @@ impl Runtime {
                     .transpose()?;
                 let child = self.play_behavior(
                     id,
-                    super::NotePitch::Key(key as u8),
+                    pitch,
                     velocity as f64 / 127.,
                     inheritance,
                     duration,
@@ -2952,6 +2980,8 @@ impl Runtime {
                     (event.origin, event.performance)
                 } else if let PlanContext::Control(event) = callback.context {
                     (event.origin, event.performance)
+                } else if let PlanContext::NoteControllers(context)=callback.context {
+                    (context.origin,context.performance)
                 } else {
                     return Err(Error::InvalidInput);
                 };

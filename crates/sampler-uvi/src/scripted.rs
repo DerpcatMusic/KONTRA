@@ -12,7 +12,7 @@ mod thread;
 use crate::OscGroup;
 use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use sampler_core::{
-    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol,
+    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, NotePitch, Prepared, Protocol,
     Runtime, Stealing,
 };
 use std::collections::HashMap;
@@ -744,7 +744,19 @@ impl<S: Script> Driver<S> {
         }
         let open = parent.is_some() && !closing && play.duration_ms.is_none();
         let note = match parent {
-            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),
+            Some(parent) => (|| {
+                // UVI callbacks report the physical input key. The MIDI2
+                // one-note absolute pitch is a separate base component: keep
+                // its offset when the authored script maps/transposes that key.
+                // Channel/PN expressions still follow through the ordinary
+                // Expression inheritance path and must not be added here.
+                let pitch = match (rt.note_pitch(parent)?, rt.input_source(parent)?) {
+                    (NotePitch::Absolute(pitch), Some(source)) =>
+                        NotePitch::Absolute(f64::from(play.key) + pitch - f64::from(source.key)),
+                    _ => NotePitch::Key(play.key),
+                };
+                rt.child_pitched(parent, pitch, velocity, open, Inheritance::Expression)
+            })(),
             None => {
                 let address = sampler_core::ChannelAddress {
                     protocol: Protocol::Native,

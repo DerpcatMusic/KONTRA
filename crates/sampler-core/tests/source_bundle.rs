@@ -295,3 +295,21 @@ fn resident_family_target_retains_identity_and_refuses_single_pcm_before_queue_o
     // Both selected upper inputs survive; no old first-pack stereo substitute.
     assert!(output.iter().all(|frame| frame[1] > frame[0] && frame[0] > 0.));
 }
+
+
+#[test]
+fn paged_logical_family_keeps_real_physical_identity_and_rejects_partial_or_resident_members() {
+    use sampler_core::{ChannelCount,SourceStorageFamily};
+    let channels=ChannelCount::new(5).unwrap();
+    let packs=(0..3).map(|_|Pcm::streamed(48000,8193).unwrap()).collect::<Vec<_>>();
+    let ids=packs.iter().map(Pcm::asset_id).collect::<Vec<_>>();
+    let family=SourceStorageFamily::new_paged(channels,packs.clone()).unwrap();let clone=family.clone();
+    assert!(family.is_paged());assert_eq!((family.channels().get(),family.sample_rate(),family.frame_count()),(5,48000,8193));
+    assert_eq!(family.id(),clone.id());assert!(family.as_source().resident_view().is_none());assert!(family.as_source().stereo().is_none());
+    let mut retained=Vec::new();family.as_source().physical_dependencies(|p|retained.push(p.asset_id()));assert_eq!(retained,ids);
+    assert!(SourceStorageFamily::new_paged(channels,packs[..2].to_vec()).is_err());
+    assert!(SourceStorageFamily::new_paged(channels,vec![packs[0].clone(),packs[0].clone(),packs[2].clone()]).is_err());
+    assert!(SourceStorageFamily::new_paged(channels,vec![packs[0].clone(),Pcm::streamed(44100,8193).unwrap(),packs[2].clone()]).is_err());
+    assert!(SourceStorageFamily::new_paged(channels,vec![packs[0].clone(),Pcm::new(48000,vec![[0.;2];8193].into_boxed_slice()).unwrap(),packs[2].clone()]).is_err());
+    assert_eq!(family.id(),clone.id());
+}

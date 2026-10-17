@@ -2,6 +2,14 @@ use crate::{
     BehaviorId, ChannelAddress, ChannelScope, Error, PerformanceId, PlanId, Prepared, Runtime,
 };
 
+/// One explicit additional logical projection of the SAME admitted input.
+/// No second callback chain, source tuple reinterpretation or mutable cache.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CapturedControllerTarget {
+    pub scope: ChannelScope,
+    pub epochs: [u64; 16],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ControllerEvent {
     pub performance: usize,
@@ -9,6 +17,7 @@ pub(super) struct ControllerEvent {
     pub channels: u16,
     /// Captured target-bank revisions survive controller waits and plan changes.
     pub epochs: [u64; 16],
+    pub secondary: Option<CapturedControllerTarget>,
     pub number: u8,
     pub poly_key: Option<u8>,
     pub poly_recipients: Option<crate::InputSelector>,
@@ -66,12 +75,23 @@ impl Runtime {
     /// leaves both input and downstream values unchanged. Callback faults are retained
     /// outcomes, and do not roll back already-published musical side effects.
     pub fn dispatch_controller(
+        &mut self, performance: PerformanceId, origin: ChannelAddress, channels: u16,
+        number: u8, value: u32,
+    ) -> Result<Option<BehaviorId>, Error> {
+        self.dispatch_controller_with_host_targets(performance, origin, channels, number, value, None)
+    }
+
+    /// One wire input and one optional explicitly declared Native logical host
+    /// projection. Controller stages execute once; their accepted/transformed
+    /// value reaches each still-valid target scope after the same callbacks.
+    pub fn dispatch_controller_with_host_targets(
         &mut self,
         performance: PerformanceId,
         origin: ChannelAddress,
         channels: u16,
         number: u8,
         value: u32,
+        host_targets: Option<ChannelScope>,
     ) -> Result<Option<BehaviorId>, Error> {
         let context = crate::ControlContext {
             performance,
@@ -82,6 +102,10 @@ impl Runtime {
         if number >= 130 || origin.group >= 16 || origin.channel >= 16 || channels == 0 {
             return Err(Error::InvalidInput);
         }
+        if host_targets.is_some_and(|s| s.protocol != crate::Protocol::Native || s.group >= 16 || s.channels == 0)
+            || (host_targets.is_some() && !matches!(origin.protocol, crate::Protocol::Midi1 | crate::Protocol::Midi2)) {
+            return Err(Error::InvalidInput);
+        }
         self.apply_due();
         let event = ControllerEvent {
             performance,
@@ -89,6 +113,8 @@ impl Runtime {
             channels,
             epochs: self.performance_state.epochs(performance, ChannelScope {
                 protocol: origin.protocol, port: origin.port, group: origin.group, channels }),
+            secondary: host_targets.map(|scope| CapturedControllerTarget {
+                scope, epochs: self.performance_state.epochs(performance, scope) }),
             number,
             poly_key: None,
             poly_recipients: None,
@@ -108,7 +134,7 @@ impl Runtime {
             .filter(|s| s.controller.is_some())
             .count();
         if needed == 0 && matches!(number, 64 | 66) && value >= 0x8000_0000 {
-            self.missing_pedal_channels(event.scope())?;
+            self.validate_controller_pedals(Some(event.scope()), event.secondary.map(|target| target.scope), number, value)?;
         }
         self.dispatch_automation(
             context,
@@ -116,6 +142,7 @@ impl Runtime {
             crate::AutomationSource::Controller(number),
             f64::from(value) / f64::from(u32::MAX),
             needed,
+            event.secondary,
         )?;
         self.admit_controller(self.active_plan, event)
     }
@@ -155,6 +182,7 @@ impl Runtime {
             performance, origin, channels: 1 << origin.channel,
             epochs: self.performance_state.epochs(performance, ChannelScope {
                 protocol: origin.protocol, port: origin.port, group: origin.group, channels: 1 << origin.channel }),
+            secondary: None,
             number: 130,
             poly_key: Some(key), poly_recipients: recipients, value, pending: true, stage: 0, reserved: 0,
         })?;
@@ -164,13 +192,23 @@ impl Runtime {
 
     fn validate_controller_event(&self, plan: PlanId, event: ControllerEvent) -> Result<(), Error> {
         let scope = ChannelScope { channels: event.channels | (1 << event.origin.channel), ..event.scope() };
-        self.performance_state.validate_scope(event.performance, scope)?;
-        self.plans.get(plan.0).ok_or(Error::StaleHandle)?.controllers.validate_scope(event.performance, scope)
+        let secondary = event.secondary.map(|target| target.scope);
+        self.performance_state.validate_scopes(event.performance, scope, secondary)?;
+        // Poly pressure owns its separate key bank and uses internal number130;
+        // only actual controller/virtual writes consume virtual revisions.
+        if event.poly_key.is_none() {
+            self.performance_state.validate_virtual_write(event.performance, scope, event.number)?;
+            if let Some(secondary) = secondary {
+                self.performance_state.validate_virtual_write(event.performance, secondary, event.number)?;
+            }
+        }
+        self.plans.get(plan.0).ok_or(Error::StaleHandle)?.controllers.validate_scopes(event.performance, scope, secondary)
     }
 
-    fn controller_origin(&self, id: BehaviorId) -> Result<Option<ChannelAddress>, Error> {
+    pub(super) fn controller_origin(&self, id: BehaviorId) -> Result<Option<ChannelAddress>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
+            super::behavior::PlanContext::NoteControllers(context)=>Some(context.origin),
             super::behavior::PlanContext::Controller(event) => Some(event.origin),
             super::behavior::PlanContext::Control(event) => event.controller_epochs.map(|_| event.origin),
             _ => match callback.owner {
@@ -183,6 +221,9 @@ impl Runtime {
     pub(super) fn controller_target_epochs(&self, id: BehaviorId) -> Result<Option<[u64; 16]>, Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(match callback.context {
+            super::behavior::PlanContext::NoteControllers(context)=>{
+                let mut epochs=[0;16];epochs[usize::from(context.origin.channel)]=context.epoch;Some(epochs)
+            },
             super::behavior::PlanContext::Controller(event) => Some(event.epochs),
             super::behavior::PlanContext::Control(event) => event.controller_epochs,
             super::behavior::PlanContext::Bare => match callback.owner {
@@ -198,13 +239,30 @@ impl Runtime {
         })
     }
 
+    pub(super) fn controller_secondary_target(&self, id: BehaviorId) -> Result<Option<CapturedControllerTarget>, Error> {
+        let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        Ok(match callback.context {
+            super::behavior::PlanContext::Controller(event) => event.secondary,
+            super::behavior::PlanContext::Control(event) => event.controller_secondary,
+            super::behavior::PlanContext::Bare|super::behavior::PlanContext::NoteControllers(_)=>None,
+        })
+    }
+
+    fn live_secondary(&self, performance: usize, target: Option<CapturedControllerTarget>) -> Option<CapturedControllerTarget> {
+        target.and_then(|target| {
+            let scope = self.performance_state.surviving_scope(performance, target.scope, target.epochs);
+            (scope.channels != 0).then_some(CapturedControllerTarget { scope, ..target })
+        })
+    }
+
     fn admit_controller(
         &mut self,
         plan: PlanId,
         mut event: ControllerEvent,
     ) -> Result<Option<BehaviorId>, Error> {
         event.channels = self.performance_state.surviving_scope(event.performance, event.scope(), event.epochs).channels;
-        if event.channels == 0 { return Ok(None); }
+        event.secondary = self.live_secondary(event.performance, event.secondary);
+        if event.channels == 0 && event.secondary.is_none() { return Ok(None); }
         self.validate_controller_event(plan, event)?;
         let stages = &self
             .plans
@@ -252,21 +310,21 @@ impl Runtime {
 
     fn receive_controller_path(&mut self, plan: PlanId, event: ControllerEvent, end: usize) {
         let scope = self.performance_state.surviving_scope(event.performance, event.scope(), event.epochs);
-        if scope.channels == 0 { return; }
         let origin_live = self.performance_state.epochs(event.performance, scope)[usize::from(event.origin.channel)]
             == event.epochs[usize::from(event.origin.channel)];
         let observed = ChannelScope { channels: scope.channels |
             if origin_live { 1 << event.origin.channel } else { 0 }, ..scope };
-        if event.stage == 0 {
-            if let Some(key) = event.poly_key {
-                self.performance_state.scoped_poly(event.performance, observed, key, event.value, true);
-            } else {
-                self.performance_state.scoped_input(event.performance, observed, event.number, event.value);
+        let secondary = self.live_secondary(event.performance, event.secondary).map(|target| target.scope);
+        for scope in [Some(observed).filter(|scope| scope.channels != 0), secondary].into_iter().flatten() {
+            if event.stage == 0 {
+                if let Some(key) = event.poly_key {
+                    self.performance_state.scoped_poly(event.performance, scope, key, event.value, true);
+                } else {
+                    self.performance_state.scoped_input(event.performance, scope, event.number, event.value);
+                }
             }
-        }
-        let state = &mut self.plans.get_mut(plan.0).unwrap().controllers;
-        for stage in event.stage.max(1)..end {
-            state.receive(ControllerEvent { stage, channels: observed.channels, ..event });
+            let state = &mut self.plans.get_mut(plan.0).unwrap().controllers;
+            for stage in event.stage.max(1)..end { state.receive_scope(event, stage, scope); }
         }
     }
 
@@ -339,6 +397,7 @@ impl Runtime {
                     origin: event.origin,
                     channels: event.channels,
                     epochs,
+                    secondary: event.controller_secondary,
                     number,
                     poly_key: None,
                     poly_recipients: None,
@@ -348,6 +407,13 @@ impl Runtime {
                     reserved: 0,
                 },
             )?;
+            Ok(())
+        } else if let super::behavior::PlanContext::NoteControllers(context)=callback.context {
+            self.admit_controller(self.behavior_plan(callback.owner)?,ControllerEvent{
+                performance:context.performance,origin:context.origin,channels:1<<context.origin.channel,
+                epochs:self.controller_target_epochs(id)?.ok_or(Error::InvalidInput)?,secondary:None,
+                number,poly_key:None,poly_recipients:None,value,stage:context.stage+1,pending:true,reserved:0,
+            })?;
             Ok(())
         } else if let Some(stage) = callback.note_stage {
             let note = callback.owner.note()?;
@@ -359,6 +425,7 @@ impl Runtime {
                     origin: n.address,
                     channels: 1 << n.address.channel,
                     epochs: self.controller_target_epochs(id)?.ok_or(Error::InvalidInput)?,
+                    secondary: None,
                     number,
                     poly_key: None,
                     poly_recipients: None,
@@ -423,6 +490,9 @@ impl Runtime {
         id: BehaviorId,
     ) -> Result<(usize, ChannelScope), Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        if let super::behavior::PlanContext::NoteControllers(context)=callback.context {
+            return Ok((context.performance,ChannelScope{protocol:context.origin.protocol,port:context.origin.port,group:context.origin.group,channels:1<<context.origin.channel}));
+        }
         if let super::behavior::PlanContext::Controller(event) = callback.context {
             return Ok((event.performance, event.scope()));
         }
@@ -517,9 +587,21 @@ impl Runtime {
         self.performance_state.scoped_controller(performance, scope, number, value)
     }
 
+    fn validate_controller_pedals(&self, primary: Option<ChannelScope>, secondary: Option<ChannelScope>, number: u8, value: u32) -> Result<(), Error> {
+        if !matches!(number, 64 | 66) || value < 0x8000_0000 { return Ok(()); }
+        let mut needed = 0usize;
+        for scope in [primary, secondary].into_iter().flatten() {
+            needed = needed.checked_add(self.missing_pedal_channels(scope)?.count_ones() as usize).ok_or(Error::Capacity)?;
+        }
+        if needed > self.channels.available() { return Err(Error::Capacity); }
+        Ok(())
+    }
+
     fn publish_input_event(&mut self, event: ControllerEvent) -> Result<(), Error> {
         let scope = self.performance_state.surviving_scope(event.performance, event.scope(), event.epochs);
-        if scope.channels == 0 { return Ok(()); }
+        let secondary = self.live_secondary(event.performance, event.secondary).map(|target| target.scope);
+        if scope.channels == 0 && secondary.is_none() { return Ok(()); }
+        self.validate_controller_pedals((scope.channels != 0).then_some(scope), secondary, event.number, event.value)?;
         if let Some(key) = event.poly_key {
             let update = |e| crate::Expression { pressure: event.value, ..e };
             let owners = if let Some(selector) = event.poly_recipients {
@@ -531,7 +613,9 @@ impl Runtime {
             self.performance_state.scoped_poly(event.performance, scope, key, event.value, false);
             Ok(())
         } else {
-            self.publish_controller(event.performance, scope, event.number, event.value)
+            if scope.channels != 0 { self.publish_controller(event.performance, scope, event.number, event.value)?; }
+            if let Some(scope) = secondary { self.publish_controller(event.performance, scope, event.number, event.value)?; }
+            Ok(())
         }
     }
 
@@ -598,7 +682,7 @@ impl ControllerState {
     pub fn new(prepared: &Prepared, performances: usize, channels: usize) -> Result<Self, Error> {
         let stages = prepared.stages.len().saturating_sub(1);
         let count = stages.checked_mul(performances).ok_or(Error::Capacity)?;
-        let domains = performances.checked_mul(channels.max(16)).ok_or(Error::Capacity)?;
+        let domains = crate::performance::controller_domain_capacity(performances, channels)?;
         let physical = stages.checked_mul(domains).ok_or(Error::Capacity)?;
         std::alloc::Layout::array::<[u32; 130]>(count).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<[u32; 128]>(count).map_err(|_| Error::Capacity)?;
@@ -618,10 +702,16 @@ impl ControllerState {
     fn index(&self, performance: usize, address: ChannelAddress) -> Option<usize> {
         self.physical.iter().position(|row| *row == (performance, address))
     }
-    pub fn validate_scope(&self, performance: usize, scope: ChannelScope) -> Result<(), Error> {
-        let missing = (0..16u8).filter(|&channel| scope.channels & (1 << channel) != 0
-            && self.index(performance, ChannelAddress { protocol: scope.protocol, port: scope.port, group: scope.group, channel }).is_none()).count();
-        if missing > self.domains - self.physical.len() { return Err(Error::Capacity); }
+    pub fn validate_scopes(&self, performance: usize, scope: ChannelScope, secondary: Option<ChannelScope>) -> Result<(), Error> {
+        if performance >= self.performances || scope.group >= 16 || scope.channels == 0
+            || secondary.is_some_and(|s| s.group >= 16 || s.channels == 0) { return Err(Error::InvalidInput); }
+        let missing = |target: ChannelScope, exclude: Option<ChannelScope>| (0..16u8).filter(|&channel| {
+            let address = ChannelAddress { protocol: target.protocol, port: target.port, group: target.group, channel };
+            target.channels & (1 << channel) != 0 && !exclude.is_some_and(|s| s.contains(address))
+                && self.index(performance, address).is_none()
+        }).count();
+        let needed = missing(scope, None).checked_add(secondary.map_or(0, |target| missing(target, Some(scope)))).ok_or(Error::Capacity)?;
+        if needed > self.domains - self.physical.len() { return Err(Error::Capacity); }
         Ok(())
     }
     fn ensure_scope(&mut self, performance: usize, scope: ChannelScope) {
@@ -637,12 +727,12 @@ impl ControllerState {
             None => &self.banks[(stage - 1) * self.performances + performance],
         }
     }
-    pub fn receive(&mut self, event: ControllerEvent) {
-        self.ensure_scope(event.performance, event.scope());
+    pub fn receive_scope(&mut self, event: ControllerEvent, stage: usize, scope: ChannelScope) {
+        self.ensure_scope(event.performance, scope);
         for index in 0..self.physical.len() {
             let (performance,address) = self.physical[index];
-            if performance != event.performance || !event.scope().contains(address) { continue; }
-            let index = (event.stage - 1) * self.domains + index;
+            if performance != event.performance || !scope.contains(address) { continue; }
+            let index = (stage - 1) * self.domains + index;
             if let Some(key) = event.poly_key { self.physical_poly[index][usize::from(key)] = event.value; }
             else { self.physical_banks[index][usize::from(event.number)] = event.value; }
         }
@@ -664,6 +754,27 @@ impl ControllerState {
             }
         }
     }
+    pub fn protocol_reset_scope(&mut self,performance:usize,scope:ChannelScope) {
+        // Missing physical rows previously read the stage-global fallback.
+        // Materialize that exact baseline before resetting only selected CCs.
+        let before=self.physical.len();self.ensure_scope(performance,scope);
+        for index in before..self.physical.len() {
+            for stage in 0..self.stages {
+                self.physical_banks[stage*self.domains+index]=self.banks[stage*self.performances+performance];
+                self.physical_poly[stage*self.domains+index]=self.poly_banks[stage*self.performances+performance];
+            }
+        }
+        for (index,(domain,address)) in self.physical.iter().enumerate() {
+            if *domain!=performance||!scope.contains(*address) {continue;}
+            for stage in 0..self.stages {
+                let bank=&mut self.physical_banks[stage*self.domains+index];
+                for (number,value) in crate::performance::PROTOCOL_RESET_VALUES {bank[usize::from(number)]=value;}
+                bank[128]=0x8000_0000;bank[129]=0;
+                self.physical_poly[stage*self.domains+index].fill(0);
+            }
+        }
+    }
+
     fn reset_poly(&mut self, performance: usize) {
         for bank in self.poly_banks.iter_mut().skip(performance).step_by(self.performances) { bank.fill(0); }
         for (index,(domain,_)) in self.physical.iter().enumerate() {
