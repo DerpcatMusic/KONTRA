@@ -100,8 +100,11 @@ pub(super) struct ExpressionOwner {
     pub rendered: super::RenderedExpression,
     pub program: Option<super::PlanId>,
     pub notes: usize,
+    /// Real expression-owner references, independent of NoteId lifetime.
+    pub followers:usize,
     /// The expression whose pitch, pressure, timbre and bend this one copies.
     pub follows: Option<ExpressionId>,
+    pub receiver:Option<super::receiver::components::ReceiverComponents>,
 }
 
 #[derive(Clone, Copy)]
@@ -152,6 +155,10 @@ impl Runtime {
 
     /// Changes the owner, including all explicitly linked children. Adapters retain
     /// this handle per admitted note; they must never retarget tails by channel alone.
+    /// This is a full effective-expression write, not a request to infer hidden
+    /// source components. A later accepted receiver update of one dimension
+    /// recomputes that dimension from its known canonical source components;
+    /// every other effective dimension remains as explicitly written.
     pub fn set_expression(&mut self, id: ExpressionId, value: Expression) -> Result<(), Error> {
         self.apply_due();
         self.set_expression_now(id, value)
@@ -165,30 +172,58 @@ impl Runtime {
         self.prepare_expression_changes(changes).map(|_| ())
     }
 
-    fn prepare_expression_changes(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<bool, Error> {
-        if changes.is_empty() { return Ok(false); }
-        // Scratch is private, allocated with the expression arena, and cleared
-        // before every batch. An error never mutates an expression owner.
-        self.expression_changes.fill(None);
-        let mut pitch_changed = false;
-        for &(id, value) in changes {
-            if !value.valid() {
-                return Err(Error::InvalidInput);
-            }
-            let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
-            if self.expression_changes[id.0.index].is_some() {
-                return Err(Error::InvalidInput);
-            }
-            let rendered = self.project_expression(owner.program, value, Some(owner))?;
-            pitch_changed |= rendered.ratio != owner.rendered.ratio;
-            self.expression_changes[id.0.index] = Some(rendered);
-        }
-        if pitch_changed {
-            self.validate_source_pitches(|id| {
-                self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
-            })?;
-        }
+    fn prepare_expression_row(&mut self,id:ExpressionId,value:Expression)->Result<bool,Error> {
+        if !value.valid() {return Err(Error::InvalidInput);}
+        let owner=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+        if self.expression_changes[id.0.index].is_some() {return Err(Error::InvalidInput);}
+        let rendered=self.project_expression(owner.program,value,Some(owner))?;
+        let pitch_changed=rendered.ratio!=owner.rendered.ratio;
+        self.expression_changes[id.0.index]=Some(rendered);
         Ok(pitch_changed)
+    }
+
+    fn validate_prepared_expression_pitches(&self,pitch_changed:bool)->Result<(),Error> {
+        if pitch_changed {
+            self.validate_source_pitches(|id|self.expression_changes[id.0.index].map(|rendered|rendered.ratio))?;
+        }
+        Ok(())
+    }
+
+    fn prepare_expression_changes(&mut self,changes:&[(ExpressionId,Expression)])->Result<bool,Error> {
+        if changes.is_empty() {return Ok(false);}
+        self.expression_changes.fill(None);let mut pitch_changed=false;
+        for &(id,value) in changes {pitch_changed|=self.prepare_expression_row(id,value)?;}
+        self.validate_prepared_expression_pitches(pitch_changed)?;
+        Ok(pitch_changed)
+    }
+
+    /// Same validator and private scratch as the public slice API. The staged
+    /// rows are copied one at a time so no mutable receiver/arena borrow spans
+    /// source-budget validation or any eventual callback publication.
+    pub(super) fn prepare_receiver_expression_changes(&mut self)->Result<bool,Error> {
+        self.expression_changes.fill(None);let mut pitch_changed=false;
+        for index in 0..self.receiver_changes.len() {
+            let (id,value)=self.receiver_changes[index];
+            pitch_changed|=self.prepare_expression_row(id,value)?;
+        }
+        self.validate_prepared_expression_pitches(pitch_changed)?;
+        Ok(pitch_changed)
+    }
+
+    pub(super) fn commit_receiver_expression_changes(&mut self,pitch_changed:bool)->Result<(),Error> {
+        // The caller validated this exact batch and holds the Ready/due guard.
+        // No admission, callback, generation adoption or arena retirement can
+        // intervene; every actual handle remains the validated generation.
+        for index in 0..self.receiver_changes.len() {
+            let (id,value)=self.receiver_changes[index];
+            let rendered=self.expression_changes[id.0.index].ok_or(Error::StaleHandle)?;
+            let owner=self.expressions.get_mut(id.0).ok_or(Error::StaleHandle)?;
+            owner.value=value;owner.rendered=rendered;
+            if let Some(component)=self.receiver_component_changes[id.0.index] {owner.receiver=Some(component);}
+        }
+        self.follow_expression();
+        if pitch_changed {self.refresh_stream_reservations();}
+        Ok(())
     }
 
     /// Apply one controller gesture to several owners without partial updates.
@@ -361,6 +396,17 @@ impl Runtime {
         }
     }
 
+    /// Resolve the real single-follows ownership graph, bounded by its arena.
+    /// This is a query of actual generational references, never a note/key map.
+    pub(crate) fn expression_receiver(&self,mut id:ExpressionId)->Option<crate::receiver::components::ReceiverComponents>{
+        for _ in 0..self.expressions.slots.len(){
+            let owner=self.expressions.get(id.0)?;
+            if let Some(component)=owner.receiver{return Some(component);}
+            id=owner.follows?;
+        }
+        None
+    }
+
     /// Freeze a shared note at its current expression. Capacity failure leaves its
     /// previous link intact; a uniquely owned expression needs no replacement slot.
     pub fn detach_expression(&mut self, note: NoteId) -> Result<ExpressionId, Error> {
@@ -370,13 +416,27 @@ impl Runtime {
         if owner.notes == 1 {
             return Ok(old);
         }
+        let retained=owner.follows.map(|id| {
+            let from=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            Ok::<_,Error>((id,from.followers.checked_add(1).ok_or(Error::Capacity)?))
+        }).transpose()?;
         let new = ExpressionId(self.expressions.insert(ExpressionOwner {
             value: owner.value,
             rendered: owner.rendered,
             program: owner.program,
             notes: 1,
+            followers:0,
             follows: owner.follows,
+            receiver:owner.receiver,
         })?);
+        if let Some((from,count))=retained {
+            // Both generations were checked before insertion; no callback or
+            // retirement intervenes. Keep a typed rollback for a stale owner.
+            let Some(source)=self.expressions.get_mut(from.0) else {
+                self.expressions.remove(new.0);return Err(Error::StaleHandle);
+            };
+            source.followers=count;
+        }
         self.expressions.get_mut(old.0).unwrap().notes -= 1;
         self.notes.get_mut(note.0).unwrap().expression = new;
         Ok(new)
@@ -385,8 +445,21 @@ impl Runtime {
     pub(super) fn drop_expression(&mut self, id: ExpressionId) {
         let owner = self.expressions.get_mut(id.0).unwrap();
         owner.notes -= 1;
-        if owner.notes == 0 {
+        self.retire_expression_chain(id);
+    }
+
+    /// Each owner has at most one follows edge. Release actual references
+    /// iteratively, bounded by the real arena; never recurse or allocate/free
+    /// protocol state on a rendering callback.
+    fn retire_expression_chain(&mut self,mut id:ExpressionId) {
+        for _ in 0..self.expressions.slots.len() {
+            let Some(owner)=self.expressions.get(id.0).copied() else {return;};
+            if owner.notes!=0||owner.followers!=0 {return;}
             self.expressions.remove(id.0);
+            let Some(from)=owner.follows else {return;};
+            let Some(source)=self.expressions.get_mut(from.0) else {return;};
+            source.followers-=1;
+            id=from;
         }
     }
 

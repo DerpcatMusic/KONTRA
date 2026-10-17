@@ -91,6 +91,7 @@ impl Runtime {
             value,
             0,
             None,
+            None,
         )?;
         self.control_revision(plan)
     }
@@ -103,6 +104,7 @@ impl Runtime {
         input: f64,
         reserved_callbacks: usize,
         controller_secondary: Option<crate::controller_event::CapturedControllerTarget>,
+        receiver:Option<crate::receiver::components::CapturedReceiver>,
     ) -> Result<(), Error> {
         let performance = self.performance_index(context.performance)?;
         if !input.is_finite()
@@ -217,6 +219,7 @@ impl Runtime {
                             interaction: Default::default(),
                         }],
                         controller_secondary,
+                        receiver,
                     )?;
                     state.applied = Some(self.widget_value(plan, id, 0)?);
                 }
