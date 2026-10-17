@@ -87,3 +87,90 @@ impl Script for Commands{
     let mut reopen=Driver::new(Commands(vec![Command::Parameter{scope:Scope::Keygroup(owner),param:Param::Gain,value:1.,authored:0.}]),groups,RATE);reopen.wake(&mut actual.rt).unwrap();
     compare(&actual.render(2048),&expected.render(2048));assert_eq!(actual.rt.voice_count(),2);assert_eq!(actual.rt.processing_owner_count(),1);actual.close();expected.close();
 }
+
+
+// Pan oracle uses cos² rather than the production (1+cos(pi*p))/2 form.
+fn pan_reference(mut frames:Vec<[f32;2]>,position:f64)->Vec<[f32;2]> {
+    let far=(std::f64::consts::FRAC_PI_2*position.abs()).cos().powi(2);
+    for frame in &mut frames {if position>0. {frame[0]=(f64::from(frame[0])*far) as f32;}
+        else if position<0. {frame[1]=(f64::from(frame[1])*far) as f32;}}
+    frames
+}
+const PAN_COUPLED:&str=r#"<GainMatrix Gain_1_1="0" Gain_2_1="1" Gain_1_2="1" Gain_2_2="0"/><WaveShaper Mode="6" InputGain="0" OutputGain="0"/><OnePole Freq="1800" Mode="0" Bypass="0"/>"#;
+fn pan_paths(f:&Fixture,position:f64)->(PathBuf,PathBuf) {
+    let(a,b,c,sum)=sources();let target=f.program("pan-members",&[("pan-a",a,false),("pan-b",b,false),("pan-c",c,true)],1.,false,PAN_COUPLED);
+    let xml=std::fs::read_to_string(&target).unwrap().replace("<Keygroup Gain=",&format!("<Keygroup Pan=\"{position}\" Gain="));std::fs::write(&target,xml).unwrap();
+    let reference=f.program("pan-reference",&[("pan-sum",sum,false)],1.,false,PAN_COUPLED);(target,reference)
+}
+fn pan_boundary_case(stream:bool) {
+    let f=Fixture::new();let(target,reference)=pan_paths(&f,0.25);let mut actual=Session::new(&target,stream);let mut expected=Session::new(&reference,stream);
+    compare(&actual.render(8192)[4096..],&pan_reference(expected.render(8192),0.25)[4096..]);
+    assert!(actual.ir.zones.iter().all(|zone|zone.pan.position==0.));assert_eq!(actual.rt.processing_owner_count(),1);assert_eq!(actual.rt.voice_count(),2);
+    actual.close();expected.close();
+}
+#[test]fn normal_keygroup_pan_is_after_shared_coupled_nonlinear_full(){pan_boundary_case(false);}
+#[test]fn normal_keygroup_pan_is_after_shared_coupled_nonlinear_streamed(){pan_boundary_case(true);}
+#[test]fn normal_keygroup_pan_has_one_live_scalar_for_driver_and_public_engine() {
+    let f=Fixture::new();let(target,reference)=pan_paths(&f,0.25);let translated=sampler_uvi::translate_path(&target).unwrap();let owner=translated.groups[0].keygroup;
+    let mut actual=Session::new(&target,false);let mut expected=Session::new(&reference,false);
+    compare(&actual.render(4123),&pan_reference(expected.render(4123),0.25));
+    let mut identities=Vec::new();actual.rt.visit_processing_owners(|owner|identities.push((owner.id,owner.note,owner.plan,owner.template,owner.sources)));
+    let address=sampler_core::EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_PAN").unwrap(),group:-1,slot:-1,generic:i32::try_from(owner).unwrap()};
+    assert_eq!(actual.rt.engine_parameter(address).unwrap(),625000);
+    actual.rt.set_engine_parameter(address,375000).unwrap();
+    compare(&actual.render(2048),&pan_reference(expected.render(2048),-0.25));
+    let mut driver=Driver::new(Commands(vec![Command::Parameter{scope:Scope::Keygroup(owner),param:Param::Pan,value:0.5,authored:-0.25}]),translated.groups,RATE);
+    driver.wake(&mut actual.rt).unwrap();assert_eq!(actual.rt.engine_parameter(address).unwrap(),750000);
+    compare(&actual.render(2048),&pan_reference(expected.render(2048),0.5));
+    let mut after=Vec::new();actual.rt.visit_processing_owners(|owner|after.push((owner.id,owner.note,owner.plan,owner.template,owner.sources)));assert_eq!(identities,after);
+    actual.close();expected.close();
+}
+
+
+fn constant_pan_path(f:&Fixture,name:&str,base:f64,offset:f64)->(PathBuf,PathBuf) {
+    let(target,reference)=pan_paths(f,base);
+    let xml=std::fs::read_to_string(&target).unwrap().replace("<Inserts>",&format!(r#"<ControlSignalSources><ConstantModulation Name="SharedPan" Value="{offset}" Bipolar="0"/></ControlSignalSources><Connections><SignalConnection Source="$Keygroup/SharedPan" Destination="Pan" Ratio="1"/></Connections><Inserts>"#));
+    let distinct=f.0.join(format!("{name}.uvip"));std::fs::write(&distinct,xml).unwrap();(distinct,reference)
+}
+#[test]
+fn constant_keygroup_pan_offset_survives_public_absolute_writes() {
+    let f=Fixture::new();let(target,reference)=constant_pan_path(&f,"offset",0.25,0.2);
+    let translated=sampler_uvi::translate_path(&target).unwrap();let owner=translated.groups[0].keygroup;
+    let mut actual=Session::new(&target,false);let mut expected=Session::new(&reference,false);
+    compare(&actual.render(4123),&pan_reference(expected.render(4123),0.45));
+    assert!(actual.ir.zones.iter().all(|zone|zone.pan.position==0.));
+    let address=sampler_core::EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_PAN").unwrap(),group:-1,slot:-1,generic:i32::try_from(owner).unwrap()};
+    // The public value remains the raw authored base, not base+constant.
+    assert_eq!(actual.rt.engine_parameter(address).unwrap(),625000);
+    actual.rt.set_engine_parameter(address,250000).unwrap();
+    compare(&actual.render(2048),&pan_reference(expected.render(2048),-0.3));
+    let mut driver=Driver::new(Commands(vec![Command::Parameter{scope:Scope::Keygroup(owner),param:Param::Pan,value:0.9,authored:-0.5}]),translated.groups,RATE);
+    driver.wake(&mut actual.rt).unwrap();
+    // Clamp once after .9 + .2, not the independent control or coefficient.
+    compare(&actual.render(2048),&pan_reference(expected.render(2048),1.));
+    actual.close();expected.close();
+}
+#[test]
+fn unsupported_shared_pan_refuses_normal_translation_without_partial_plan() {
+    let f=Fixture::new();let(a,b,c,_)=sources();let path=f.program("live-pan",&[("a",a,false),("b",b,false),("c",c,true)],1.,false,PAN_COUPLED);
+    let original=std::fs::read_to_string(&path).unwrap();
+    for connection in [
+        r#"<SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1"/>"#,
+        r#"<SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1" Bypass="1"/>"#,
+        r#"<SignalConnection Source="@VoiceParam LinearKeyFollow" Destination="Pan" Ratio="1"/>"#,
+    ] {
+        let xml=original.replace("<Inserts>",&format!("<Connections>{connection}</Connections><Inserts>"));std::fs::write(&path,xml).unwrap();
+        let error=sampler_uvi::translate_path(&path).err().expect("no partial shared-Pan plan");assert!(error.to_string().contains("live keygroup Pan connection"),"{error}");
+    }
+    for tag in ["Program","Layer"] {
+        let old=format!("<{tag} Gain=\"1\">");let replacement=format!("{old}<Connections><SignalConnection Source=\"@MIDI CC 1\" Destination=\"Pan\" Ratio=\"1\"/></Connections>");
+        let xml=original.replace(&old,&replacement);assert_ne!(xml,original);std::fs::write(&path,xml).unwrap();
+        let error=sampler_uvi::translate_path(&path).err().expect("no per-player global-Pan fallback");assert!(error.to_string().contains("Program/Layer Pan connection"),"{error}");
+    }
+}
+#[test]
+fn player_local_pan_connection_retains_its_original_route_home() {
+    let f=Fixture::new();let(a,_,_,_)=sources();let path=f.program("player-pan",&[("player",a,false)],1.,false,"");
+    let xml=std::fs::read_to_string(&path).unwrap().replace("<PlaybackOptions",r#"<Connections><SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="0.5"/></Connections><PlaybackOptions"#);std::fs::write(&path,xml).unwrap();
+    let translated=sampler_uvi::translate_path(&path).unwrap();let zone=&translated.instrument.zones[0];assert_eq!(zone.routes.len(),1);let route=&translated.instrument.routes[zone.routes[0].0];assert_eq!(route.target,sampler_ir::Target::Pan);
+}

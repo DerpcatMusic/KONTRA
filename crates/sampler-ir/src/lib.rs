@@ -2164,6 +2164,9 @@ pub enum ProcessingSignalNode {
     Gain(ChannelGain),
     /// One independent history per processing owner and original channel.
     OnePole(ChannelOnePole),
+    /// One scalar Pan at a declared stereo boundary. Its explicit expression
+    /// home consumes canonical note pan exactly once; other Pan stages do not.
+    Pan(ChannelPan),
 }
 /// A typed real stage parameter. A control binds to the existing generation's
 /// value/ramp owner; the constant is used only in the absence of a binding.
@@ -2207,6 +2210,15 @@ pub struct ChannelMix {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelGain { pub gain: SignalParameter, pub arithmetic: ChannelGainArithmetic }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelPan {
+    /// Immutable source connection offset, separate from the mutable scalar base.
+    pub offset: f64,
+    pub position: SignalParameter,
+    pub law: PanLaw,
+    pub expression: bool,
+}
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelGainArithmetic { CoreGainF64ThenF32 }
@@ -2342,7 +2354,17 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+    /// The single explicit canonical note-Pan home of a shared source owner.
+    /// Its scalar/control value is combined with projected note Pan before
+    /// evaluating the declared law. Not valid on an ordinary source chain.
+    ExpressionPan(OwnedPan),
 }
+
+/// Canonical shared Pan home: its base remains the public Pan/control value.
+/// Constant source connections add after the base trajectory and before one clamp.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct OwnedPan {pub pan:Pan,pub offset:f64}
 
 impl Processor {
     /// The same unit addressed by a script slot, so [`Processor::lanes`] are

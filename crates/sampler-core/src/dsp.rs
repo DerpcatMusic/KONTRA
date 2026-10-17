@@ -211,6 +211,9 @@ pub enum Processor {
         wet: ControlRange,
         bypass: ControlRange,
     },
+    /// One authoritative scalar evaluated before deriving channel gains. The
+    /// expression flag is admitted only as a shared source owner's sole home.
+    Pan { position: Parameter, offset:f64, law: sampler_ir::PanLaw, expression: bool },
 }
 
 
@@ -236,6 +239,9 @@ impl Processor {
     pub(crate) fn valid(&self) -> bool {
         match self {
             Processor::Gain(gain) => gain.is_finite(),
+            Processor::Pan { position, offset, .. } => offset.is_finite() && offset.abs()<=f64::from(f32::MAX) && position.valid()
+                && !matches!(position, Parameter::Expression { .. })
+                && position.bounds().iter().all(|v|(-1. ..=1.).contains(v)),
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
             Processor::StateVariable(filter) => filter.valid(),
@@ -340,6 +346,7 @@ pub(super) enum PreparedProcessor {
         count: u16,
         lanes: [usize; 3],
     },
+    Pan { position: control::PreparedParameter, offset:f64, law: sampler_ir::PanLaw, expression: bool },
 }
 
 pub(super) struct CompiledVoiceChain {
@@ -350,6 +357,7 @@ pub(super) struct CompiledVoiceChain {
     pub delay_frames: usize,
     taps: Box<[taps::PreparedTap]>,
     pub tap_buses: Box<[usize]>,
+    expression_pan: bool,
 }
 
 /// The exact operation domain accepted by voice lanes. Payloads move here;
@@ -383,7 +391,7 @@ impl PreparedProcessor {
                 color::ColorOwner::Batch(color) => OperationOwner::Batch(BatchOp::Color { color, offset }),
                 color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
             },
-            scalar @ (Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
+            scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
                 | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. }
                 | Self::Branch { .. } | Self::Space(..)) => OperationOwner::Scalar(scalar),
         }
@@ -391,6 +399,7 @@ impl PreparedProcessor {
     pub(super) fn view(&self) -> ProcessorRef<'_> {
         match self {
             Self::Gain(x) => ProcessorRef::Gain(x),
+            Self::Pan { position, offset, law, expression } => ProcessorRef::Pan { position, offset, law, expression },
             Self::StereoMatrix(x) => ProcessorRef::StereoMatrix(x),
             Self::Biquad(x) => ProcessorRef::Biquad(x),
             Self::Eq(x) => ProcessorRef::Eq(eq_family::EqRef::Scalar(x)),
@@ -452,6 +461,7 @@ pub(super) enum ProcessorRef<'a> {
     Branch { count: &'a u16, gain: &'a f64, first: &'a bool, last: &'a bool },
     StateVariable(&'a svf::SvfHandle), Space(&'a usize, &'a PreparedKnobs),
     Mix { count: &'a u16, lanes: &'a [usize; 3] },
+    Pan { position: &'a control::PreparedParameter, offset:&'a f64, law: &'a sampler_ir::PanLaw, expression: &'a bool },
 }
 impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
     fn from(stage: &'a PreparedProcessor) -> Self { stage.view() }
@@ -502,6 +512,7 @@ pub(super) struct PreparedVoiceChain {
     pub delay_frames: usize,
     taps: Box<[taps::PreparedTap]>,
     pub tap_buses: Box<[usize]>,
+    pub(super) expression_pan: bool,
 }
 impl PreparedVoiceChain {
     pub(super) fn batch_index(&self) -> Option<BatchIndex> {
@@ -567,7 +578,7 @@ impl PreparedChains {
         let mut common = Vec::with_capacity(chains.len());
         let mut scalar = Vec::new();
         let mut batch = Vec::new();
-        for CompiledVoiceChain { parameter_span, pre, post, tail_frames, delay_frames, taps, tap_buses } in chains {
+        for CompiledVoiceChain { parameter_span, pre, post, tail_frames, delay_frames, taps, tap_buses, expression_pan } in chains {
             let stage_count = pre.len() + post.len();
             let batchable = if taps.is_empty() {
                 match batch_slice(pre) {
@@ -589,7 +600,7 @@ impl PreparedChains {
                 }
             };
             common.push(PreparedVoiceChain { parameter_span, owner, stage_count, tail_frames,
-                delay_frames, taps, tap_buses });
+                delay_frames, taps, tap_buses, expression_pan });
         }
         Self { chains: common.into_boxed_slice(), scalar: scalar.into_boxed_slice(), batch: batch.into_boxed_slice() }
     }
@@ -611,11 +622,11 @@ impl PreparedChains {
         // descriptors/lists off audio, moving all existing operation owners.
         let mut chains = std::mem::take(&mut self.chains).into_vec();
         let mut batch = std::mem::take(&mut self.batch).into_vec();
-        let CompiledVoiceChain { parameter_span, pre, post, tail_frames, delay_frames, taps, tap_buses } = chain;
+        let CompiledVoiceChain { parameter_span, pre, post, tail_frames, delay_frames, taps, tap_buses, expression_pan } = chain;
         // The caller constructs an empty VoiceChain; classify its actual lists
         // with the same preparation path rather than assert that shape here.
         let appended = Self::from_compiled(vec![CompiledVoiceChain { parameter_span, pre, post,
-            tail_frames, delay_frames, taps, tap_buses }]);
+            tail_frames, delay_frames, taps, tap_buses, expression_pan }]);
         let mut scalar = std::mem::take(&mut self.scalar).into_vec();
         let scalar_offset = scalar.len(); let batch_offset = batch.len(); let logical_offset = chains.len();
         scalar.extend(appended.scalar);
@@ -661,6 +672,18 @@ pub struct VoiceChain {
 /// ordering around one source amplitude. Stereo-coupled/history stages do not fit.
 pub(crate) struct WideGainSections { pub pre: Box<[f64]>, pub post: Box<[f64]> }
 impl VoiceChain {
+    pub(crate) fn expression_pan_count(&self) -> usize {
+        self.pre.iter().chain(&self.post).filter(|stage|
+            matches!(stage, Processor::Pan { expression:true, .. })).count()
+    }
+    pub(crate) fn expression_pan_home_valid(&self) -> bool {
+        [&self.pre[..],&self.post[..]].into_iter().all(|section|
+            section.iter().enumerate().all(|(index,stage)|
+                !matches!(stage,Processor::Pan{expression:true,..})
+                || !section[..index].iter().enumerate().any(|(start,previous)|
+                    matches!(previous,Processor::Mix{count,..}|Processor::Branch{count,..}
+                        if index-start<=usize::from(*count)))))
+    }
     pub(crate) fn wide_gain_sections(&self) -> Option<WideGainSections> {
         if self.tail_frames != 0 || !self.taps.is_empty() { return None; }
         let gains = |processors: &[Processor]| processors.iter().map(|p| match p {
@@ -698,6 +721,8 @@ impl VoiceChain {
         filters: &mut svf::FilterRegistryBuilder,
     ) -> Result<CompiledVoiceChain, Error> {
         let first_parameter = bindings.len();
+        let expression_pan=self.expression_pan_count();
+        if expression_pan>1 {return Err(Error::InvalidInput);}
         let mut delay_frames = 0;
         let mut tap_buses: Vec<_> = self.taps.iter().map(|tap| tap.bus).collect();
         tap_buses.sort_unstable();
@@ -728,6 +753,7 @@ impl VoiceChain {
                 .collect(),
             tap_buses: tap_buses.into_boxed_slice(),
             parameter_span: first_parameter..bindings.len(),
+            expression_pan:expression_pan!=0,
         })
     }
 }
@@ -831,6 +857,10 @@ pub(super) fn compile_processors(
                     PreparedProcessor::Mix { count, lanes }
                 }
                 Processor::Gain(gain) => PreparedProcessor::Gain(gain),
+                Processor::Pan { position, offset, law, expression } => {
+                    if expression && spaces.is_some() {return Err(Error::InvalidInput);}
+                    PreparedProcessor::Pan { position:position.compile(bindings),offset,law,expression }
+                }
                 Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
                 Processor::Biquad(filter) => {
                     if filter.rate != rate {
@@ -1221,6 +1251,7 @@ impl ProcessorState {
             // Native KONTAKTFX filters keep their history in the color slot.
             ProcessorRef::Filter { .. } => self.color.finite(),
             ProcessorRef::Gain(_)
+            | ProcessorRef::Pan { .. }
             | ProcessorRef::StereoMatrix(_)
             | ProcessorRef::Biquad(_)
             | ProcessorRef::ControlGain(_)
@@ -1485,6 +1516,17 @@ pub(super) fn process<'a, const TRACE: bool>(
                     channel[..len]
                         .iter_mut()
                         .for_each(|v| *v = kernels::gain(*v, *gain));
+                }
+            }
+            ProcessorRef::Pan { position, offset, law, expression } => {
+                let note_pan=if *expression {
+                    match filters.expression {Some((_,value))=>value.pan,None=>{fault=true;0.}}
+                }else{0.};
+                let [left,right]=block;
+                for (frame,(left,right)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
+                    let position=(position.value(parameters,at+frame as u64,None)+*offset+note_pan).clamp(-1.,1.);
+                    let gains=law.gains(position);
+                    *left=kernels::gain(*left,gains[0]);*right=kernels::gain(*right,gains[1]);
                 }
             }
             ProcessorRef::StereoMatrix(m) => {

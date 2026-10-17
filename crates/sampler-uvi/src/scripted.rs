@@ -590,6 +590,14 @@ impl<S: Script> Driver<S> {
                 return Ok(());
             }
         }
+        if param == Param::Pan && let Scope::Keygroup(node)=scope {
+            let id=crate::engine_parameters::scope_pan_control(node)?;
+            let plan=rt.active_plan();
+            if rt.control_definition(plan,id).is_ok() {
+                rt.edit_controls(plan,None,&[sampler_core::ControlWrite{id,value:sampler_core::ControlValue::Real(value)}])?;
+                return Ok(());
+            }
+        }
         if scope != Scope::Program {
             for i in 0..self.groups.len() {
                 let g = self.groups[i];
