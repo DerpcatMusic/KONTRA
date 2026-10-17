@@ -726,7 +726,7 @@ fn native_amplitude_provenance_refuses_owner_migration_but_preserves_source_law(
 fn width_owner_signal(filter: bool) -> ir::ProcessingSignal {
     let mut nodes = Vec::new();
     if filter { nodes.push(ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole {
-        cutoff_hz: ir::SignalParameter { constant: 1379., control: None },
+        cutoff_hz: ir::SignalParameter { constant: 1379., control: None, expression: None },
         mode: ir::ChannelOnePoleMode::LowPass,
         arithmetic: ir::ChannelOnePoleArithmetic::CoreOnePoleF64, tail_frames: 0,
     })); }
@@ -769,7 +769,7 @@ fn matrix_only_and_gain_only_scopes_have_no_additional_owner_history_charge() {
     let matrix = prepare(&base, vec![wave(48000, 512, 1.)]).voice_state_bytes();
     let mut gain = base.clone();
     gain.processing_scopes[0].signal.as_mut().unwrap().nodes.insert(0, ir::ProcessingSignalNode::Gain(ir::ChannelGain {
-        gain: ir::SignalParameter { constant: 0.375, control: None },
+        gain: ir::SignalParameter { constant: 0.375, control: None, expression: None },
         arithmetic: ir::ChannelGainArithmetic::CoreGainF64ThenF32,
     }));
     assert_eq!(prepare(&gain, vec![wave(48000, 512, 1.)]).voice_state_bytes(), matrix);
@@ -798,4 +798,53 @@ fn zero_length_render_and_retained_generation_keep_the_original_owner_filter_his
     assert_eq!(actual.note_plan(note), Ok(old)); assert_ne!(actual.active_plan(), old);
     close(&render(&mut actual, 1024, 1), &render(&mut reference, 1024, 64));
     assert_eq!((actual.processing_owner_count(), actual.collect_retired_plans()), (1,0));
+}
+
+#[test]
+fn absent_expression_bindings_and_explicit_identity_factors_preserve_old_owner_output() {
+    let chain=ir::Chain{scope:ir::Scope::Voice,pre_amplitude:vec![],post_amplitude:vec![]};
+    let mut authored=graph(1,chain);authored.processing_scopes[0].chain=None;authored.chains.clear();
+    authored.processing_scopes[0].signal=Some(width_owner_signal(true));
+    authored.processing_scopes[0].signal.as_mut().unwrap().nodes.push(ir::ProcessingSignalNode::Gain(ir::ChannelGain{
+        gain:ir::SignalParameter{constant:0.75,control:None,expression:None},arithmetic:ir::ChannelGainArithmetic::CoreGainF64ThenF32}));
+    let mut identity=authored.clone();
+    let signal=identity.processing_scopes[0].signal.as_mut().unwrap();
+    if let ir::ProcessingSignalNode::OnePole(node)=&mut signal.nodes[0] {
+        node.cutoff_hz.expression=Some(ir::SignalExpressionBinding{source:ir::SignalExpressionSource::Timbre,
+            law:ir::SignalExpressionLaw::Octaves{zero:0.,one:0.}});
+    }
+    if let ir::ProcessingSignalNode::Gain(node)=&mut signal.nodes[2] {
+        node.gain.expression=Some(ir::SignalExpressionBinding{source:ir::SignalExpressionSource::Pressure,
+            law:ir::SignalExpressionLaw::LinearFactor{zero:1.,one:1.}});
+    }
+    let mut old=runtime(&authored,vec![wave(48000,4096,1.)]);let mut new=runtime(&identity,vec![wave(48000,4096,1.)]);
+    let a=old.trigger(input(1),60,1.).unwrap();let b=new.trigger(input(1),60,1.).unwrap();
+    for (pressure,timbre,tune,count) in [(0,0,-1.,97),(0x1234_5678,0x8765_4321,2.,129),(u32::MAX,u32::MAX,0.,65)] {
+        for (rt,note) in [(&mut old,a),(&mut new,b)] {
+            let id=rt.expression_id(note).unwrap();let mut expression=rt.expression(id).unwrap();
+            expression.pressure=pressure;expression.timbre=timbre;expression.pitch_semitones=tune;
+            rt.set_expression(id,expression).unwrap();
+        }
+        let x=render(&mut old,count,17);let y=render(&mut new,count,17);
+        for (x,y) in x.iter().zip(&y) { assert_eq!(x.map(f32::to_bits),y.map(f32::to_bits)); }
+    }
+}
+#[test]
+fn invalid_note_expression_keeps_stage_base_revision_owner_and_pcm_continuation() {
+    let chain=ir::Chain{scope:ir::Scope::Voice,pre_amplitude:vec![],post_amplitude:vec![]};
+    let mut authored=graph(1,chain);authored.processing_scopes[0].chain=None;authored.chains.clear();
+    authored.processing_scopes[0].signal=Some(width_owner_signal(true));
+    if let ir::ProcessingSignalNode::OnePole(node)=&mut authored.processing_scopes[0].signal.as_mut().unwrap().nodes[0] {
+        node.cutoff_hz.expression=Some(ir::SignalExpressionBinding{source:ir::SignalExpressionSource::Timbre,
+            law:ir::SignalExpressionLaw::Octaves{zero:-1.,one:1.}});
+    }
+    let mut actual=runtime(&authored,vec![wave(48000,4096,1.)]);let mut reference=runtime(&authored,vec![wave(48000,4096,1.)]);
+    let note=actual.trigger(input(1),60,1.).unwrap();reference.trigger(input(1),60,1.).unwrap();
+    close(&render(&mut actual,97,17),&render(&mut reference,97,64));
+    let id=actual.expression_id(note).unwrap();let before=actual.expression(id).unwrap();let plan=actual.active_plan();
+    let revision=actual.control_revision(plan).unwrap();let now=actual.now();
+    let mut bad=before;bad.pitch_semitones=f64::NAN;
+    assert!(actual.set_expression(id,bad).is_err());assert_eq!(actual.expression(id),Ok(before));
+    assert_eq!((actual.control_revision(plan),actual.now(),actual.processing_owner_count()),(Ok(revision),now,1));
+    close(&render(&mut actual,511,3),&render(&mut reference,511,64));
 }

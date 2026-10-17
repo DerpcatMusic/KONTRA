@@ -569,6 +569,29 @@ impl Instrument {
                             _ => return Err(invalid("signal stages require a bounded real control")),
                         }
                     } else { [parameter.constant; 2] };
+                    if let Some(expression) = parameter.expression {
+                        let (zero, one, octaves) = match (node, expression.law) {
+                            (crate::ProcessingSignalNode::Gain(_), crate::SignalExpressionLaw::LinearFactor { zero, one })
+                                if zero >= 0. && one >= 0. => (zero, one, false),
+                            (crate::ProcessingSignalNode::OnePole(_), crate::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
+                            _ => return Err(invalid("expression law does not match its stage destination")),
+                        };
+                        if !zero.is_finite() || !one.is_finite() || !(one - zero).is_finite() {
+                            return Err(invalid("expression endpoint domain is not finite"));
+                        }
+                        for endpoint in [zero, one] {
+                            let factor = if octaves { endpoint.exp2() } else { endpoint };
+                            if !factor.is_finite() || (octaves && factor <= 0.) {
+                                return Err(invalid("expression factor is outside the finite destination domain"));
+                            }
+                            for base in [parameter.constant, bounds[0], bounds[1]] {
+                                let value = base * factor;
+                                if !value.is_finite() || value.abs() > f64::from(f32::MAX) || (octaves && value <= 0.) {
+                                    return Err(invalid("base and expression endpoint product is outside its destination domain"));
+                                }
+                            }
+                        }
+                    }
                     if matches!(node, crate::ProcessingSignalNode::OnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
                         return Err(invalid("OnePole cutoff must be positive"));
                     }
