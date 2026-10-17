@@ -164,6 +164,9 @@ pub(super) struct ControlEvent {
     pub performance: usize,
     pub origin: crate::ChannelAddress,
     pub channels: u16,
+    /// None is an explicitly channel-less plan callback; Some carries the
+    /// original physical target revisions through every wait/fanout.
+    pub controller_epochs: Option<[u64; 16]>,
     pub stage: usize,
     pub interaction: crate::WidgetInteraction,
 }
@@ -894,6 +897,8 @@ impl Runtime {
                 performance,
                 origin: context.origin,
                 channels: context.channels,
+                controller_epochs: Some(self.performance_state.epochs(performance, crate::ChannelScope {
+                    protocol: context.origin.protocol, port: context.origin.port, group: context.origin.group, channels: context.channels })),
                 stage: binding.stage,
                 interaction: crate::WidgetInteraction::default(),
             })

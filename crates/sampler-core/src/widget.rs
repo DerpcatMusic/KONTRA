@@ -449,6 +449,8 @@ impl Runtime {
             performance,
             origin: context.origin,
             channels: context.channels,
+            controller_epochs: Some(self.performance_state.epochs(performance, crate::ChannelScope {
+                protocol: context.origin.protocol, port: context.origin.port, group: context.origin.group, channels: context.channels })),
             stage: w.stage,
             interaction: WidgetInteraction {
                 index: edits[0].index,

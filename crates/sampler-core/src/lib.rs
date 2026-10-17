@@ -1079,7 +1079,7 @@ impl Runtime {
         std::alloc::Layout::array::<performance::NoteSelection>(limits.notes)
             .map_err(|_| Error::Capacity)?;
         let state_capacity =
-            performance::PerformanceState::validate(limits.notes, limits.performances)?;
+            performance::PerformanceState::validate(limits.notes, limits.performances, limits.channels)?;
         static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
         let id = NEXT_RUNTIME
@@ -1107,7 +1107,7 @@ impl Runtime {
                 zone_routing: plan.zone_routing.as_ref().map(prepare::zone_routing::PreparedRouting::state).transpose()?,
                 dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
                 groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
-                controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
+                controllers: controller_event::ControllerState::new(&plan, limits.performances, limits.channels)?,
                 projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
                 modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
                 script: script_params::EngineLayers::new(&plan),
@@ -1225,7 +1225,7 @@ impl Runtime {
                 .into_boxed_slice(),
             performance_state: {
                 let mut state =
-                    performance::PerformanceState::new(state_capacity, limits.performances);
+                    performance::PerformanceState::new(state_capacity, limits.performances, limits.channels)?;
                 for &(controller, value) in &initial_controllers {
                     state.states[0].controllers[usize::from(controller)] = value;
                     for input in state.input_controllers.iter_mut() {
@@ -1722,11 +1722,15 @@ impl Runtime {
             state.native_tick = generation.native_cycle;
             state.native_seed = generation.native_seed;
             generation.native_cycle = generation.native_cycle.wrapping_add(1);
+            self.performance_state.sync_metadata(performance);
         }
         self.selections[id.index] = performance::NoteSelection {
             performance,
-            snapshot: self.performance_state.capture(performance),
+            snapshot: self.performance_state.capture_channel(performance, address),
             consumed_switch: false,
+            controller_epoch: self.performance_state.epochs(performance, ChannelScope {
+                protocol: address.protocol, port: address.port, group: address.group, channels: 1 << address.channel,
+            })[usize::from(address.channel)],
         };
         self.release_times[id.index] = release::ReleaseTimes {
             admitted_at: self.now,

@@ -1172,6 +1172,7 @@ impl crate::Runtime {
                     channel: 0,
                 },
                 channels: 1,
+                controller_epochs: None,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             })

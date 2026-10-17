@@ -1,4 +1,4 @@
-//! Fixed-zone MPE 1.1 note/expression projection after raw-event interception.
+//! MPE 1.1 selected-zone receiver and captured note/expression projection.
 use crate::{Applied, ApplyError, Message, Packet, Value, Version};
 use sampler_core::{
     ChannelScope, Error, Expression, ExpressionId, Input, NoteId, NotePitch, PerformanceId,
@@ -17,6 +17,7 @@ impl Zone {
             Self::Upper => 15,
         }
     }
+    fn index(self) -> usize { usize::from(self == Self::Upper) }
     fn contains(self, channel: u8, members: u8) -> bool {
         channel < 16 && channel.abs_diff(self.manager()) <= members
     }
@@ -26,6 +27,7 @@ impl Zone {
 struct Binding {
     note: NoteId,
     channel: u8,
+    address: sampler_core::ChannelAddress,
     member: Controls,
     /// Transport's per-note tuning, independent of zone bends and part transpose.
     tuning: f64,
@@ -129,8 +131,9 @@ impl Sensitivity {
 /// Construct and drop on the control thread. The binding budget includes tails
 /// and unaccepted terminal notes. No pins are added and no heap work occurs in apply.
 ///
-/// This is not a complete MPE receiver: MCM, other RPNs and channel modes are
-/// reported Unsupported. Do not forward those messages to ordinary channel
+/// MCM/RPN6 tracks both zones for overlap arbitration; this instrument receives
+/// its explicitly selected zone (MPE 1.1 section3.1). Other RPNs and unsupported
+/// channel modes are reported Unsupported. Do not forward those messages to ordinary channel
 /// ingress as a substitute for zone semantics. Raw-event consumers run before
 /// this adapter; a consumed message must not be passed to apply.
 pub struct Mpe {
@@ -140,6 +143,9 @@ pub struct Mpe {
     group: u8,
     zone: Zone,
     members: u8,
+    zones: [u8; 2],
+    manual_active: bool,
+    configured: bool,
     limit: usize,
     controls: [Controls; 16],
     bends: [Value; 16],
@@ -200,6 +206,9 @@ impl Mpe {
             group,
             zone,
             members,
+            zones: match zone { Zone::Lower => [members, 0], Zone::Upper => [0, members] },
+            manual_active: true,
+            configured: false,
             limit: notes,
             controls: [Controls::default(); 16],
             bends: [Value::Bits14(8192); 16],
@@ -220,6 +229,29 @@ impl Mpe {
             transpose: 0.0,
             timbre_controller: None,
         })
+    }
+
+    /// Existing on-board fixed-zone mode before the first incoming MCM.
+    /// A product using this adapter for ordinary manager-channel MIDI can keep
+    /// that mode distinct from a manually selected MPE zone. Never overrides MCM.
+    pub fn set_manual_active(&mut self, active: bool) {
+        if !self.configured { self.manual_active = active; }
+    }
+
+    /// Actual received MCM state, independent of the synth's selected zone.
+    /// No message is inferred from note/channel traffic.
+    pub fn configuration(&self) -> Option<[u8; 2]> {
+        self.configured.then_some(self.zones)
+    }
+
+    /// Selected-zone acceptance, including the documented conventional manager
+    /// fallback only when BOTH negotiated zones have been disabled.
+    pub fn accepts_channel(&self, channel: u8) -> bool {
+        if channel >= 16 { return false; }
+        if self.configured && self.members == 0 {
+            return self.zones == [0, 0] && channel == self.zone.manager();
+        }
+        self.zone.contains(channel, self.members)
     }
 
     /// Also write each note's timbre (CC74) to its own member channel as this
@@ -285,8 +317,30 @@ impl Mpe {
             return Err(ApplyError::DisabledGroup);
         }
         let midi2 = voice.version == Version::Midi2;
-        if !self.zone.contains(voice.channel, self.members) {
-            return Ok(Applied::Unsupported);
+        if !midi2
+            && let Message::Control { index, value: Value::Bits7(value) } = voice.message
+        {
+            let selected = self.parameters[usize::from(voice.channel)];
+            if selected.registered && selected.rpn == [0, 6] {
+                match index {
+                    6 => return self.configure_zone(runtime, voice.channel, value).map_err(Into::into),
+                    // MCM uses the data-entry MSB only. Relative data entry is
+                    // not a zone-size operation and cannot leak into CC state.
+                    38 | 96 | 97 => return Ok(Applied::Ignored),
+                    _ => {}
+                }
+            }
+            // The other zone manager must be able to configure overlap even
+            // when it is currently outside this selected instrument's range.
+            if !self.accepts_channel(voice.channel)
+                && matches!(voice.channel, 0 | 15)
+                && matches!(index, 98..=101)
+            {
+                return self.parameter(runtime, voice.channel, index, value).map_err(Into::into);
+            }
+        }
+        if !self.accepts_channel(voice.channel) {
+            return Ok(if self.configured { Applied::Ignored } else { Applied::Unsupported });
         }
         runtime.render(&mut [])?;
         self.bindings
@@ -473,7 +527,7 @@ impl Mpe {
         tuning: f64, silent: bool,
     ) -> Result<NoteId, ApplyError> {
         if runtime.id() != self.runtime { return Err(Error::StaleHandle.into()); }
-        if !self.zone.contains(channel, self.members) || !tuning.is_finite() {
+        if !self.accepts_channel(channel) || !tuning.is_finite() {
             return Err(Error::InvalidInput.into());
         }
         runtime.render(&mut [])?;
@@ -567,6 +621,7 @@ impl Mpe {
         self.bindings.push(Binding {
             note,
             channel,
+            address: input.channel_address(),
             member,
             tuning,
         });
@@ -653,6 +708,119 @@ impl Mpe {
             owners: self.changes.len(),
         })
     }
+    fn configure_zone(&mut self, runtime: &mut Runtime, channel: u8, members: u8) -> Result<Applied, Error> {
+        let zone = match channel { 0 => Zone::Lower, 15 => Zone::Upper, _ => return Ok(Applied::Ignored) };
+        if members > 15 { return Ok(Applied::Ignored); }
+        let mut zones = if self.configured || self.manual_active { self.zones } else { [0, 0] };
+        zones[zone.index()] = members;
+        if members > 0 {
+            // Two managers need their own channels. A newly claimed manager
+            // channel disables its old zone; otherwise shrink its member edge.
+            let other = 1 - zone.index();
+            let maximum = 14u8.saturating_sub(members);
+            zones[other] = zones[other].min(maximum);
+        }
+        let role = |zones: [u8; 2], channel: u8| -> u8 {
+            for zone in [Zone::Lower, Zone::Upper] {
+                let members = zones[zone.index()];
+                if members > 0 && zone.contains(channel, members) {
+                    return 1 + (zone.index() as u8) * 2 + u8::from(channel != zone.manager());
+                }
+            }
+            0
+        };
+        let previous = if self.configured || self.manual_active { self.zones } else { [0, 0] };
+        let changed = (0..16u8).fold(0u16, |mask, channel|
+            mask | if role(previous, channel) != role(zones, channel) { 1 << channel } else { 0 });
+        runtime.render(&mut [])?;
+        let scope = ChannelScope { protocol: Protocol::Midi1, port: self.port, group: self.group, channels: changed };
+        if changed != 0 { runtime.validate_channel_controller_reset(self.performance, scope)?; }
+        self.bindings.retain(|binding| runtime.note(binding.note).is_ok());
+        let changed_owner = |binding: &Binding| changed & (1 << binding.channel) != 0
+            || (binding.address.protocol == scope.protocol && binding.address.port == scope.port
+                && binding.address.group == scope.group && changed & (1 << binding.address.channel) != 0);
+        let mut controls = self.controls;
+        for channel in 0..16usize {
+            if changed & (1 << channel) != 0 {
+                controls[channel] = Controls::default();
+            }
+        }
+        let reset_sensitivity = zone == self.zone;
+        if reset_sensitivity {
+            for channel in 0..16u8 {
+                if self.zone.contains(channel, zones[self.zone.index()]) {
+                    let range = if channel == self.zone.manager() { 2.0 } else { 48.0 };
+                    controls[usize::from(channel)].pitch = pitch(
+                        if changed & (1 << channel) != 0 { Value::Bits14(8192) } else { self.bends[usize::from(channel)] }, range,
+                    );
+                }
+            }
+        }
+        self.changes.clear();
+        for binding in &self.bindings {
+            if changed_owner(binding) || runtime.note(binding.note).is_err() { continue; }
+            let manager = controls[usize::from(self.zone.manager())];
+            let member = if binding.channel == self.zone.manager() { Controls::default() }
+                else if runtime.input_held(binding.note)? { controls[usize::from(binding.channel)] }
+                else { binding.member };
+            let combined = member.expression(manager);
+            let owner = runtime.expression_id(binding.note)?;
+            let old = runtime.expression(owner)?;
+            let mut value = Expression { pitch_semitones: combined.pitch_semitones, bend: combined.bend,
+                pressure: combined.pressure, timbre: combined.timbre, ..old };
+            value.pitch_semitones += self.transpose;
+            value.pitch_semitones += binding.tuning;
+            self.changes.push((owner, value));
+        }
+        // Every surviving pitch/source projection must be admitted before a
+        // changed channel can lose its keys, voices or controller state.
+        runtime.validate_expressions(&self.changes)?;
+        // No callback/due work occurs between the drained batch construction
+        // and this validated publication. Cleanup follows the accepted gesture.
+        runtime.set_expressions(&self.changes)?;
+        // Terminal cleanup never requires a new input/command slot. Do not
+        // leave host execution owners down after their channel changes roles.
+        for binding in &self.bindings {
+            if changed_owner(binding) {
+                match runtime.cancel_input_note(binding.note) {
+                    Ok(()) | Err(Error::StaleHandle) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if changed != 0 { runtime.reset_channel_controllers(self.performance, scope)?; }
+        for channel in 0..16u8 {
+            if changed & (1 << channel) != 0 {
+                runtime.all_sound_off(sampler_core::ChannelAddress {
+                    protocol: Protocol::Midi1, port: self.port, group: self.group, channel,
+                })?;
+            }
+        }
+        self.bindings.retain(|binding| !changed_owner(binding) && runtime.note(binding.note).is_ok());
+        for binding in &mut self.bindings {
+            if binding.channel != self.zone.manager() && runtime.input_held(binding.note)? {
+                binding.member = controls[usize::from(binding.channel)];
+            }
+        }
+        self.controls = controls;
+        let selector = self.parameters[usize::from(channel)];
+        for channel in 0..16usize {
+            if changed & (1 << channel) != 0 {
+                self.bends[channel] = Value::Bits14(8192);
+                self.parameters[channel] = Parameter::default();
+            }
+        }
+        self.parameters[usize::from(channel)] = selector;
+        if reset_sensitivity {
+            self.ranges = [Sensitivity { coarse: 2, cents: 0 }, Sensitivity { coarse: 48, cents: 0 }];
+            self.bend_override = None;
+        }
+        self.zones = zones;
+        self.members = zones[self.zone.index()];
+        self.configured = true;
+        Ok(Applied::Configuration)
+    }
+
     fn parameter(
         &mut self,
         runtime: &mut Runtime,

@@ -107,6 +107,7 @@ pub struct PlanControl {
     notes: usize,
     note_params: usize,
     performances: usize,
+    channels: usize,
     sequence: u64,
     /// Render lanes of the runtime (see `Runtime::set_threads`).
     lanes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -266,7 +267,7 @@ impl PlanControl {
             }
         };
         let controllers =
-            match super::controller_event::ControllerState::new(&prepared, self.performances) {
+            match super::controller_event::ControllerState::new(&prepared, self.performances, self.channels) {
                 Ok(state) => state,
                 Err(_) => {
                     return Err(RejectedPlan {
@@ -421,6 +422,7 @@ impl Runtime {
             notes: limits.notes,
             note_params: runtime.note_params.capacity(),
             performances: limits.performances,
+            channels: limits.channels,
             sequence: 0,
             lanes: runtime.lanes.clone(),
             installed: installed.clone(),

@@ -296,7 +296,10 @@ impl Ingress {
                 })?;
                 let channel = &mut self.channels[slot];
                 (channel.bend, channel.pressure, channel.rpn) = (0.0, 0, [127; 2]);
-                runtime.reset_poly_pressure(performance)?;
+                runtime.reset_channel_poly_pressure(performance, sampler_core::ChannelScope {
+                    protocol: input.protocol, port: input.port, group: input.group,
+                    channels: 1 << input.channel,
+                })?;
                 Applied::ResetControllers
             }
             Message::Control {

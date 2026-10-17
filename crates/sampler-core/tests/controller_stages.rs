@@ -174,13 +174,13 @@ fn consumption_and_generated_ccs_project_only_into_following_stages() {
             rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 15),
             Ok(0x8000_0003)
         );
-        assert_eq!(rt.input_controller(domain, 1), Ok(0x8000_0001));
+        assert_eq!(rt.channel_input_controller(domain, address(), 1), Ok(0x8000_0001));
         for cc in [2, 3] {
-            assert_eq!(rt.input_controller(domain, cc), Ok(0));
+            assert_eq!(rt.channel_input_controller(domain, address(), cc), Ok(0));
         }
-        assert_eq!(rt.controller(domain, 1), Ok(0));
-        assert_eq!(rt.controller(domain, 2), Ok(0));
-        assert_eq!(rt.controller(domain, 3), Ok(0x8000_0003));
+        assert_eq!(rt.channel_controller(domain, address(), 1), Ok(0));
+        assert_eq!(rt.channel_controller(domain, address(), 2), Ok(0));
+        assert_eq!(rt.channel_controller(domain, address(), 3), Ok(0x8000_0003));
         assert_eq!(rt.controller(rt.performance(0).unwrap(), 3), Ok(0));
         let mut completed = 0;
         rt.flush_behaviors(|_, _, outcome| {
@@ -192,7 +192,7 @@ fn consumption_and_generated_ccs_project_only_into_following_stages() {
         // Every reservation returned; reuse the complete chain under the same budget.
         rt.dispatch_controller(domain, address(), 0xe000, 1, 17)
             .unwrap();
-        assert_eq!(rt.controller(domain, 3), Ok(19));
+        assert_eq!(rt.channel_controller(domain, address(), 3), Ok(19));
     });
 }
 
@@ -245,8 +245,8 @@ fn empty_module_positions_preserve_projection_and_only_reserve_actual_callbacks(
         let domain = rt.performance(1).unwrap();
         rt.dispatch_controller(domain, address(), 0xe000, 1, 0x8000_0001)
             .unwrap();
-        assert_eq!(rt.input_controller(domain, 1), Ok(0x8000_0001));
-        assert_eq!(rt.input_controller(domain, 2), Ok(0));
+        assert_eq!(rt.channel_input_controller(domain, address(), 1), Ok(0x8000_0001));
+        assert_eq!(rt.channel_input_controller(domain, address(), 2), Ok(0));
         assert_eq!(
             rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
             Ok(0)
@@ -259,10 +259,10 @@ fn empty_module_positions_preserve_projection_and_only_reserve_actual_callbacks(
             rt.dispatch_controller(domain, address(), 0xe000, 1, 99),
             Err(Error::Capacity)
         );
-        assert_eq!(rt.input_controller(domain, 1), Ok(0x8000_0001));
+        assert_eq!(rt.channel_input_controller(domain, address(), 1), Ok(0x8000_0001));
         rt.render(&mut [[0.; 2]; 2]).unwrap();
-        assert_eq!(rt.controller(domain, 1), Ok(0));
-        assert_eq!(rt.controller(domain, 2), Ok(0x8000_0001));
+        assert_eq!(rt.channel_controller(domain, address(), 1), Ok(0));
+        assert_eq!(rt.channel_controller(domain, address(), 2), Ok(0x8000_0001));
         rt.flush_behaviors(|_, _, outcome| {
             assert_eq!(outcome, Outcome::Finished);
             true
@@ -299,8 +299,8 @@ fn deferred_forwarding_owns_downstream_capacity_and_original_projection_generati
             rt.dispatch_controller(domain, address(), 1 << 15, 1, 43),
             Err(Error::Capacity)
         );
-        assert_eq!(rt.input_controller(domain, 1), Ok(42));
-        assert_eq!(rt.controller(domain, 1), Ok(0));
+        assert_eq!(rt.channel_input_controller(domain, address(), 1), Ok(42));
+        assert_eq!(rt.channel_controller(domain, address(), 1), Ok(0));
     });
     worker
         .submit(Box::new(Prepared::new(48000, vec![], vec![], 0).unwrap()))
@@ -312,8 +312,8 @@ fn deferred_forwarding_owns_downstream_capacity_and_original_projection_generati
             .unwrap();
         rt.render(&mut [[0.; 2]; 5]).unwrap();
         assert_eq!(rt.script_cell(old, ScriptInstanceId(0), 0), Ok(42));
-        assert_eq!(rt.input_controller(domain, 1), Ok(99));
-        assert_eq!(rt.controller(domain, 1), Ok(42));
+        assert_eq!(rt.channel_input_controller(domain, address(), 1), Ok(99));
+        assert_eq!(rt.channel_controller(domain, address(), 1), Ok(42));
         assert_eq!(rt.collect_retired_plans(), 0);
         rt.flush_behaviors(|_, owner, outcome| {
             assert_eq!(owner, BehaviorOwner::Plan(old));
@@ -380,7 +380,7 @@ fn unused_stage_reservations_return_on_consumption_completion_fault_and_cancella
             // downstream reservation must still be available for unrelated work.
             rt.start_plan_behavior(rt.active_plan(), 2).unwrap();
             rt.flush_behaviors(|_, _, _| true);
-            assert_eq!(rt.controller(domain, 1), Ok(0));
+            assert_eq!(rt.channel_controller(domain, address(), 1), Ok(0));
         });
     }
 }
@@ -402,7 +402,7 @@ fn long_controller_chains_use_bounded_dispatch_storage_instead_of_the_thread_sta
                 let domain = rt.performance(0).unwrap();
                 rt.dispatch_controller(domain, address(), 1 << 15, 1, u32::MAX)
                     .unwrap();
-                assert_eq!(rt.controller(domain, 1), Ok(u32::MAX));
+                assert_eq!(rt.channel_controller(domain, address(), 1), Ok(u32::MAX));
                 let mut count = 0;
                 rt.flush_behaviors(|_, _, outcome| {
                     assert_eq!(outcome, Outcome::Finished);
