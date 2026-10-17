@@ -965,6 +965,8 @@ pub struct PreparedSourceOwners {
     rows: Box<[PreparedSourceOwner]>,
     by_id: Box<[(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)]>,
     processors: Box<[(sampler_ir::SourceEventProcessorId, PreparedSourceOwnerIndex, u32)]>,
+    /// Immutable compile-time high water for the actual owner-local lookup scan.
+    max_processors_per_owner:usize,
     bytes: usize,
     pub(crate) note_root:Option<PreparedSourceOwnerIndex>,
     pub(crate) note_entry:Option<usize>,
@@ -984,6 +986,10 @@ impl PreparedSourceOwners {
         let (_, owner, ordinal) = self.processors[i];
         self.get(owner)?.event_processors.iter().find(|row| row.ordinal == ordinal && row.id == id)
     }
+    pub(crate) fn processor_lookup_work_bound(&self)->Result<usize,Error>{
+        let search=usize::BITS as usize-self.processors.len().leading_zeros() as usize;
+        search.checked_add(self.max_processors_per_owner).and_then(|n|n.checked_add(2)).ok_or(Error::Capacity)
+    }
     pub(crate) fn keygroups_for_region(&self,region:usize)->&[(u32,PreparedSourceOwnerIndex)]{
         let Ok(region)=u32::try_from(region)else{return &[];};
         let low=self.keygroups_by_region.partition_point(|row|row.0<region);
@@ -999,6 +1005,7 @@ impl PreparedSourceOwners {
         let mut bytes = owners.len().checked_mul(size_of::<PreparedSourceOwner>()
             + size_of::<(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)>()).ok_or(Error::Capacity)?;
         let mut processors = 0usize;
+        let mut max_processors_per_owner=0usize;
         let mut keygroup_members=0usize;
         for owner in owners {
             if owner.kind==sampler_ir::SourceOwnerKind::Keygroup {keygroup_members=keygroup_members.checked_add(owner.zones.len()).ok_or(Error::Capacity)?;}
@@ -1009,6 +1016,7 @@ impl PreparedSourceOwners {
                 .ok_or(Error::Capacity)?;
             bytes = bytes.checked_add(add).ok_or(Error::Capacity)?;
             processors = processors.checked_add(owner.event_processors.len()).ok_or(Error::Capacity)?;
+            max_processors_per_owner=max_processors_per_owner.max(owner.event_processors.len());
             for processor in &owner.event_processors { bytes = bytes.checked_add(processor.kind.len()).ok_or(Error::Capacity)?; }
             for predicate in &owner.predicates {
                 if let sampler_ir::SourceInputPredicate::Unsupported{field} = predicate {
@@ -1092,7 +1100,7 @@ impl PreparedSourceOwners {
             }
         }
         keygroups_by_region.sort_unstable_by_key(|row|(row.0,row.1.index()));
-        Ok(Self{rows:rows.into_boxed_slice(),by_id:by_id.into_boxed_slice(),processors:processor_ids.into_boxed_slice(),bytes,note_root:None,note_entry:None,keygroups_by_region:keygroups_by_region.into_boxed_slice()})
+        Ok(Self{rows:rows.into_boxed_slice(),by_id:by_id.into_boxed_slice(),processors:processor_ids.into_boxed_slice(),max_processors_per_owner,bytes,note_root:None,note_entry:None,keygroups_by_region:keygroups_by_region.into_boxed_slice()})
     }
 }
 
