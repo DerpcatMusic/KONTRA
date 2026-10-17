@@ -449,6 +449,9 @@ pub enum Command {
     /// "Script Event Modulation `id`" for one voice, or all when `voice` is None.
     Modulation {
         id: u16,
+        /// Explicit start from sendScriptModulation2, committed with its ramp.
+        /// None reads each existing recipient's accepted Core value.
+        start: Option<f64>,
         value: f64,
         glide_ms: f64,
         voice: Option<u64>,
@@ -1161,7 +1164,7 @@ fn constant_command(params: &[(String, String)], glide_ms: f64) -> Option<Comman
     let id = read("ScriptLive")? as u16;
     let value = read("Value").unwrap_or(0.0).clamp(0.0, 1.0);
     let value = if read("Style") == Some(1.0) { f64::from(u8::from(value > 0.5)) } else { value };
-    Some(Command::Modulation { id, value, glide_ms, voice: None, at_ms: 0.0 })
+    Some(Command::Modulation { id, start: None, value, glide_ms, voice: None, at_ms: 0.0 })
 }
 
 fn element(
@@ -2468,10 +2471,15 @@ impl ScriptHost {
             "sendScriptModulation",
             lua.create_function(
                 move |_, (id, value, glide, voice): (f64, f64, Option<f64>, Option<f64>)| {
+                    let glide = glide.unwrap_or(20.0);
+                    // Normalize finite negative durations only. Nonfinite inputs
+                    // must reach the Driver's pure request preflight unchanged.
+                    let glide = if glide.is_finite() { glide.max(0.0) } else { glide };
                     s.command(Command::Modulation {
                         id: id.clamp(0.0, f64::from(u16::MAX)) as u16,
+                        start: None,
                         value,
-                        glide_ms: glide.unwrap_or(20.0).max(0.0),
+                        glide_ms: glide,
                         voice: voice.map(|v| v as u64),
                         at_ms: s.now.get(),
                     });
@@ -2691,17 +2699,17 @@ impl ScriptHost {
             let id = id.clamp(0.0, f64::from(u16::MAX)) as u16;
             let voice = voice.map(|v| v as u64);
             let at_ms = s.now.get();
+            let ramp = ramp.unwrap_or(20.0);
+            // Preserve NaN and infinities for the same Driver validation as
+            // explicit start/target values; finite negatives retain zero-time policy.
+            let ramp = if ramp.is_finite() { ramp.max(0.0) } else { ramp };
+            // One logical request: queue and Core admission cannot accept the
+            // start while refusing its accompanying ramp.
             s.command(Command::Modulation {
                 id,
-                value: from,
-                glide_ms: 0.0,
-                voice,
-                at_ms,
-            });
-            s.command(Command::Modulation {
-                id,
+                start: Some(from),
                 value: to,
-                glide_ms: ramp.unwrap_or(20.0).max(0.0),
+                glide_ms: ramp,
                 voice,
                 at_ms,
             });
@@ -3427,7 +3435,7 @@ fn parse_play(shared: &Shared, args: &[Value], origin: PlayOrigin) -> mlua::Resu
     Ok(Play {
         id: shared.next_id(),
         at_ms: shared.now.get(),
-        key: num(0).unwrap_or(60.0).clamp(0.0, 127.0) as u8,
+        key: num(0).unwrap_or(0.0).clamp(0.0, 127.0) as u8,
         velocity: num(1).unwrap_or(100.0).clamp(1.0, 127.0) as u8,
         duration_ms: duration,
         layers,
@@ -3840,19 +3848,19 @@ end
                 ..
             }
         ));
-        assert!(
-            matches!(&c[6], Command::Modulation { id: 3, value, glide_ms: 0.0, .. } if *value == 0.2)
-        );
+        assert_eq!(c.len(), 10);
         assert!(matches!(
-            &c[7],
+            &c[6],
             Command::Modulation {
                 id: 3,
+                start: Some(from),
+                value: to,
                 glide_ms: 100.0,
                 ..
-            }
+            } if *from == 0.2 && *to == 0.8
         ));
         assert_eq!(
-            c[8],
+            c[7],
             Command::Midi(MidiOut {
                 status: 0xb1,
                 a: 1,
@@ -3860,7 +3868,7 @@ end
             })
         );
         assert_eq!(
-            c[9],
+            c[8],
             Command::Midi(MidiOut {
                 status: 0xe0,
                 a: 0,
@@ -3868,7 +3876,7 @@ end
             })
         );
         assert_eq!(
-            c[10],
+            c[9],
             Command::Midi(MidiOut {
                 status: 0xb0,
                 a: 7,
@@ -4146,5 +4154,32 @@ mod play_creator_tests {
         host.note_on(23,60,100,0);
         assert_eq!(plays(&mut host)[0].creator,PlayCreator::NoteOn(23));
         assert!(host.findings().is_empty(),"{:?}",host.findings());
+    }
+}
+
+#[cfg(test)]
+mod documented_play_defaults_tests {
+    use super::*;
+    fn command(source:&str)->Play{
+        let xml=format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[function onController(e) {source} end]]></script></ScriptProcessor></EventProcessors></Program>");
+        let mut host=ScriptHost::new(&xml,(),Config::default()).unwrap();host.controller(1,64,0);
+        let commands=host.take_commands();assert_eq!(commands.len(),1,"one helper call must emit exactly one play");
+        assert!(host.findings().is_empty(),"{:?}",host.findings());
+        let Command::Play(play)=commands.into_iter().next().unwrap()else{panic!("actual public playNote command required")};play
+    }
+    #[test]
+    fn omitted_note_and_velocity_use_documented_zero_and_one_hundred_in_both_forms(){
+        for source in ["playNote(nil,nil,0)","playNote{duration=0}"]{
+            let play=command(source);assert_eq!((play.key,play.velocity),(0,100));
+            assert_eq!(play.duration_ms,Some(0.));assert_eq!(play.creator,PlayCreator::Event);
+        }
+    }
+    #[test]
+    fn explicit_note_zero_middle_and_upper_keys_are_preserved_in_both_forms(){
+        for key in [0,60,127]{
+            for source in [format!("playNote({key},96,0)"),format!("playNote{{note={key},velocity=96,duration=0}}")]{
+                let play=command(&source);assert_eq!((play.key,play.velocity),(key,96));assert_eq!(play.duration_ms,Some(0.));
+            }
+        }
     }
 }
