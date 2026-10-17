@@ -1198,3 +1198,195 @@ fn midi2_registered_sensitivity_retains_cents_and_legacy_parameter_ccs_do_not_re
         assert_eq!(expression(&rt, note).pitch_semitones, -1.5625);
     });
 }
+
+
+#[test]
+fn silent_host_admission_matches_wire_silent_expression_before_the_script_attack() {
+    for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+        let mut host = runtime(); let mut wire = runtime(); let mut sounding = runtime();
+        let mut hm = Mpe::new(&host, 7, 3, zone, 2, 8).unwrap();
+        let mut wm = Mpe::new(&wire, 7, 3, zone, 2, 8).unwrap();
+        let mut sm = Mpe::new(&sounding, 7, 3, zone, 2, 8).unwrap();
+        for (mpe, rt) in [(&mut hm, &mut host), (&mut wm, &mut wire), (&mut sm, &mut sounding)] {
+            apply(mpe, rt, bend(manager, 12288)).unwrap(); apply(mpe, rt, bend(member, 9216)).unwrap();
+            apply(mpe, rt, packet(0xd0, member, 70, 0)).unwrap();
+            apply(mpe, rt, packet(0xb0, member, 74, 40)).unwrap();
+        }
+        let input = sampler_core::Input { protocol: Protocol::Midi1, port: 7, group: 3,
+            channel: member, key: 60, external_id: Some(47) };
+        let note = hm.trigger_silent(&mut host, member, input, 100. / 127.).unwrap();
+        let word = packet(0x90, member, 60, 100);
+        let Applied::Started(wn) = wm.apply_silent(&mut wire, Packets::new(&[word]).next().unwrap().unwrap()).unwrap() else {
+            panic!("wire silent admission failed")
+        };
+        let sn = sm.trigger(&mut sounding, member, input, 100. / 127.).unwrap();
+        assert_eq!(expression(&host, note), expression(&wire, wn));
+        assert_eq!(expression(&host, note), expression(&sounding, sn));
+        assert_eq!((host.voice_count(), wire.voice_count(), sounding.voice_count()), (0, 0, 1));
+        host.forward_attack(note).unwrap(); wire.forward_attack(wn).unwrap();
+        for (mpe, rt) in [(&mut hm, &mut host), (&mut wm, &mut wire), (&mut sm, &mut sounding)] {
+            apply(mpe, rt, bend(member, 10240)).unwrap();
+            apply(mpe, rt, packet(0xd0, member, 90, 0)).unwrap();
+            apply(mpe, rt, packet(0xb0, member, 74, 10)).unwrap();
+        }
+        assert_eq!(expression(&host, note), expression(&wire, wn));
+        assert_eq!(expression(&host, note), expression(&sounding, sn));
+        let mut a = [[0.; 2]; 96]; let mut b = a; let mut c = a;
+        host.render(&mut a).unwrap(); wire.render(&mut b).unwrap(); sounding.render(&mut c).unwrap();
+        assert_eq!(a, b); assert_eq!(a, c);
+    }
+}
+
+#[test]
+fn host_tuning_is_independent_of_member_bends_and_reused_channel_release_snapshots() {
+    for (zone, manager, member, other) in [(Zone::Lower, 0, 1, 2), (Zone::Upper, 15, 14, 13)] {
+        let mut rt = runtime(); let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        let input = |channel, id| sampler_core::Input { protocol: Protocol::Midi1, port: 7,
+            group: 3, channel, key: 60, external_id: Some(id) };
+        mpe.transpose(&mut rt, 3.).unwrap();
+        apply(&mut mpe, &mut rt, bend(manager, 12288)).unwrap();
+        apply(&mut mpe, &mut rt, bend(member, 9216)).unwrap();
+        let a = mpe.trigger_silent_with_tuning(&mut rt, member, input(member, 11), 1., 0.75).unwrap();
+        let b = mpe.trigger_silent_with_tuning(&mut rt, member, input(member, 12), 1., -0.5).unwrap();
+        let c = mpe.trigger_with_tuning(&mut rt, other, input(other, 13), 1., 1.5).unwrap();
+        let combined = pitch(12288, 2.) + pitch(9216, 48.) + 3.;
+        assert_eq!(expression(&rt, a).pitch_semitones, combined + 0.75);
+        assert_eq!(expression(&rt, b).pitch_semitones, combined - 0.5);
+        rt.forward_attack(a).unwrap(); rt.forward_attack(b).unwrap();
+        let other_before = expression(&rt, c);
+        mpe.set_note_tuning(&mut rt, b, 1.25).unwrap();
+        assert_eq!(expression(&rt, b).pitch_semitones, combined + 1.25,
+            "channel bend then native tuning must preserve both components");
+        assert_eq!(expression(&rt, a).pitch_semitones, combined + 0.75);
+        apply(&mut mpe, &mut rt, bend(member, 10240)).unwrap();
+        let combined = pitch(12288, 2.) + pitch(10240, 48.) + 3.;
+        assert_eq!(expression(&rt, a).pitch_semitones, combined + 0.75);
+        assert_eq!(expression(&rt, b).pitch_semitones, combined + 1.25);
+        assert_eq!(expression(&rt, c), other_before);
+        rt.note_off_exact(a, None).unwrap();
+        let released = expression(&rt, a);
+        let reused = mpe.trigger_silent_with_tuning(&mut rt, member, input(member, 14), 1., -1.).unwrap();
+        rt.forward_attack(reused).unwrap();
+        apply(&mut mpe, &mut rt, bend(member, 8192)).unwrap();
+        assert_eq!(expression(&rt, a), released, "member reuse must not retarget the released owner");
+        assert_eq!(expression(&rt, b).pitch_semitones, pitch(12288, 2.) + 3. + 1.25);
+        assert_eq!(expression(&rt, reused).pitch_semitones, pitch(12288, 2.) + 3. - 1.);
+        apply(&mut mpe, &mut rt, bend(manager, 0)).unwrap();
+        assert_eq!(expression(&rt, a).pitch_semitones, pitch(10240, 48.) + 3. + 0.75 - 2.);
+        let before = (rt.note_count(), rt.voice_count(), rt.expression_count());
+        assert_eq!(mpe.trigger_silent_with_tuning(&mut rt, member, input(member, 15), 1., f64::NAN),
+            Err(ApplyError::Core(Error::InvalidInput)));
+        assert_eq!((rt.note_count(), rt.voice_count(), rt.expression_count()), before);
+        let retained = expression(&rt, b);
+        assert_eq!(mpe.set_note_tuning(&mut rt, b, f64::INFINITY), Err(Error::InvalidInput));
+        assert_eq!(expression(&rt, b), retained);
+    }
+}
+
+
+#[test]
+fn public_host_trigger_rejects_out_of_zone_channels_before_any_admission() {
+    for (zone, manager, member, rejected) in [
+        (Zone::Lower, 0, 1, [2, 15, 16, 30, 255]),
+        (Zone::Upper, 15, 14, [13, 0, 16, 30, 255]),
+    ] {
+        let mut rt = runtime_with_channels(16);
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 1, 8).unwrap();
+        let input = |channel, id| sampler_core::Input {
+            protocol: Protocol::Midi1,
+            port: 7,
+            group: 3,
+            channel,
+            key: 60,
+            external_id: Some(id),
+        };
+        let manager_note = mpe.trigger(&mut rt, manager, input(manager, 1), 0.75).unwrap();
+        let member_note = mpe.trigger(&mut rt, member, input(member, 2), 0.5).unwrap();
+        apply(&mut mpe, &mut rt, bend(member, 9216)).unwrap();
+        rt.render(&mut [[0.0; 2]; 64]).unwrap();
+        let before = (
+            rt.now(), rt.note_count(), rt.expression_count(), rt.voice_count(),
+            rt.pending_commands(), rt.note(manager_note).unwrap(), rt.note(member_note).unwrap(),
+            expression(&rt, manager_note), expression(&rt, member_note),
+        );
+        for channel in rejected {
+            // Keep Input valid: the public zone-channel argument itself must
+            // be checked before indexing its sixteen retained channel rows.
+            assert_eq!(
+                mpe.trigger(&mut rt, channel, input(member, 3), 1.0),
+                Err(ApplyError::Core(Error::InvalidInput)),
+                "zone={zone:?}, rejected channel={channel}"
+            );
+            assert_eq!(
+                (
+                    rt.now(), rt.note_count(), rt.expression_count(), rt.voice_count(),
+                    rt.pending_commands(), rt.note(manager_note).unwrap(), rt.note(member_note).unwrap(),
+                    expression(&rt, manager_note), expression(&rt, member_note),
+                ),
+                before,
+                "refusal must preserve the existing held owners and clock"
+            );
+        }
+        let next = mpe.trigger(&mut rt, member, input(member, 3), 1.0).unwrap();
+        assert_eq!(rt.note_count(), before.1 + 1);
+        assert_eq!(expression(&rt, next), expression(&rt, member_note));
+    }
+}
+
+fn rich_voice_runtime() -> Runtime {
+    use sampler_core::{ColorSettings, CurveSettings, ModProgram, ModRoute, ModSource, ModTarget, Parameter,
+        Processor, Rectifier, StateVariableFilter, SvfMode, VoiceChain};
+    let pcm=Pcm::new(48000,(0..16384).map(|i|{
+        let x=((i*137)%4096) as f32/2048.-1.;[x,x*0.5]
+    }).collect()).unwrap();
+    let chain=VoiceChain::new(vec![Processor::Gain(1.5),Processor::Color(ColorSettings::curve(CurveSettings::Rectifier(Rectifier::Full)))],
+        vec![Processor::StateVariable(StateVariableFilter{mode:SvfMode::LowPass,
+            cutoff_hz:Parameter::Constant(4000.),q:Parameter::Constant(0.8)})],0).unwrap();
+    let mut tone=ModRoute::new(1,ModTarget::Tone,60.);tone.shape=Some(0);
+    let program=ModProgram{sources:vec![ModSource::Pressure,ModSource::Timbre],
+        routes:vec![ModRoute::new(0,ModTarget::Decibels,6.),tone],
+        shapes:vec![vec![(0.,-1.),(0.5,0.),(1.,0.)]],..Default::default()};
+    let prepared=Prepared::new(48000,vec![pcm],vec![Region{sample:0,key_low:60,key_high:61,root_key:None,
+        velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::new(0,0,0,1.,256).unwrap(),playback:Playback::default()}],2).unwrap()
+        .with_voice_chains(vec![chain],vec![Some(0)]).unwrap()
+        .with_voice_modulation(vec![program],vec![Some(0)],vec![0]).unwrap();
+    let limits=Limits::for_plan(&prepared,8,16);Runtime::new(prepared,limits).unwrap()
+}
+fn rich_sum(actual:&[[f32;2]],a:&[[f32;2]],b:&[[f32;2]]) {
+    for (frame,((out,a),b)) in actual.iter().zip(a).zip(b).enumerate() {
+        for c in 0..2 { assert!((out[c]-(a[c]+b[c])).abs()<3e-6,"frame {frame},channel {c}"); }
+    }
+}
+#[test]
+fn rich_authored_voice_chain_keeps_mpe_host_identities_and_held_member_isolation() {
+    let mut actual=rich_voice_runtime();let mut first=rich_voice_runtime();let mut second=rich_voice_runtime();
+    let mut am=Mpe::new(&actual,7,3,Zone::Lower,2,8).unwrap();
+    let mut fm=Mpe::new(&first,7,3,Zone::Lower,2,8).unwrap();let mut sm=Mpe::new(&second,7,3,Zone::Lower,2,8).unwrap();
+    let host=|channel,id|sampler_core::Input{protocol:Protocol::Midi1,port:7,group:3,channel,key:60,external_id:Some(id)};
+    let a=am.trigger_with_tuning(&mut actual,1,host(1,101),1.,0.5).unwrap();
+    let b=am.trigger_with_tuning(&mut actual,2,host(2,202),1.,-0.5).unwrap();
+    fm.trigger_with_tuning(&mut first,1,host(1,101),1.,0.5).unwrap();
+    sm.trigger_with_tuning(&mut second,2,host(2,202),1.,-0.5).unwrap();
+    assert_ne!(actual.expression_id(a),actual.expression_id(b));
+    let mut x=[[0.;2];128];let mut y=x;let mut z=x;
+    support::without_heap(||{
+        actual.render(&mut x).unwrap();first.render(&mut y).unwrap();second.render(&mut z).unwrap();
+        rich_sum(&x,&y,&z);
+        let before=expression(&actual,b);let voices=actual.voice_count();
+        for word in [packet(0xb0,1,74,8),packet(0xd0,1,90,0),bend(1,8704)] {
+            apply(&mut am,&mut actual,word).unwrap();apply(&mut fm,&mut first,word).unwrap();
+        }
+        assert_eq!(expression(&actual,b),before);assert_eq!(actual.voice_count(),voices);
+        actual.render(&mut x).unwrap();first.render(&mut y).unwrap();second.render(&mut z).unwrap();rich_sum(&x,&y,&z);
+        actual.note_off_exact(a,None).unwrap();
+        let released=expression(&actual,a);
+        let next=am.trigger_with_tuning(&mut actual,1,host(1,303),1.,1.25).unwrap();
+        apply(&mut am,&mut actual,bend(1,8192)).unwrap();
+        assert_eq!(expression(&actual,a),released);
+        assert!((expression(&actual,next).pitch_semitones-1.25).abs()<1e-12);
+        assert_eq!(expression(&actual,b),before);
+        actual.panic();first.panic();second.panic();
+        actual.render(&mut x).unwrap();first.render(&mut y).unwrap();second.render(&mut z).unwrap();
+    });
+    assert_eq!((actual.nonfinite_frames(),actual.stream_underruns()),(0,0));
+}

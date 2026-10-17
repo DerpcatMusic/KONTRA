@@ -59,29 +59,23 @@ impl Runtime {
             let v = self.voices.slots[i].value.as_ref().unwrap();
             let f = self.families.get(v.family.0).unwrap();
             let n = self.notes.get(f.note.0).unwrap();
-            let asset = self.plans.get(n.plan.0).unwrap().asset(v.sample);
-            let ready = if let Some(frames) = asset.pin_resident() {
-                self.onsets.residents[i] = Some(frames);
-                true
-            } else if let Some(cache) = &self.stream_cache {
-                let head = asset.pin_head();
-                let source = crate::source::PagedFrames {
-                    cache: cache.reader(),
-                    asset: asset.asset_id(),
-                    head: &head,
-                };
-                // Reservations cap page probes; dynamic geometry exceeding the
-                // pool is reported by service, never walked or silently clamped.
-                let ready = v.cursor.reservation_pages(self.stream_horizon) <= cache.capacity()
-                    && v.cursor.runway_ready(
-                        v.cursor.pending_start_runway(),
-                        v.envelope,
-                        |range| source.covers(range),
-                    );
-                self.onsets.heads[i] = Some(head);
-                ready
-            } else {
-                false
+            let source = self.plans.get(n.plan.0).unwrap().source(v.sample);
+            let ready = match source {
+                Some(crate::SourceStorageRef::Channels(family)) => family.resident_view().frame_count() != 0,
+                Some(crate::SourceStorageRef::Stereo(asset)) => {
+                    if let Some(frames) = asset.pin_resident() {
+                        self.onsets.residents[i] = Some(frames);
+                        true
+                    } else if let Some(cache) = &self.stream_cache {
+                        let head = asset.pin_head();
+                        let source = crate::source::PagedFrames { cache: cache.reader(), asset: asset.asset_id(), head: &head };
+                        let ready = v.cursor.reservation_pages(self.stream_horizon) <= cache.capacity()
+                            && v.cursor.runway_ready(v.cursor.pending_start_runway(), v.envelope, |range| source.covers(range));
+                        self.onsets.heads[i] = Some(head);
+                        ready
+                    } else { false }
+                }
+                None => false,
             };
             // Exactly one entry per live voice. Growth installs matching storage.
             debug_assert!(self.onsets.probes.len() < self.onsets.probes.capacity());
@@ -131,13 +125,16 @@ impl Runtime {
             if !v.held_onset() { continue; }
             let f = self.families.get(v.family.0).unwrap();
             let n = self.notes.get(f.note.0).unwrap();
-            let asset = self.plans.get(n.plan.0).unwrap().asset(v.sample).asset_id();
+            let asset = self.plans.get(n.plan.0).unwrap().source(v.sample)
+                .and_then(crate::SourceStorageRef::stereo).map(crate::Pcm::asset_id);
             let failed = matches!(error, crate::stream::StreamError::Capacity
-                | crate::stream::StreamError::Disconnected | crate::stream::StreamError::SequenceExhausted) || cache.onset_failed(asset);
+                | crate::stream::StreamError::Disconnected | crate::stream::StreamError::SequenceExhausted)
+                || asset.is_some_and(|asset| cache.onset_failed(asset));
             if v.cursor.pending_start_runway() <= 1 {
                 // Keep legacy default-one terminal failure behavior per source.
                 if failed && !matches!(error, crate::stream::StreamError::Capacity
                     | crate::stream::StreamError::SequenceExhausted) {
+                    self.mark_processing_onset_failed(i);
                     self.end_voice(crate::VoiceId(self.voices.id(i)));
                 }
                 continue;
@@ -158,6 +155,7 @@ impl Runtime {
             if failed {
                 for p in begin..end {
                     let i = self.onsets.probes[p].voice;
+                    self.mark_processing_onset_failed(i);
                     self.end_voice(crate::VoiceId(self.voices.id(i)));
                 }
             }

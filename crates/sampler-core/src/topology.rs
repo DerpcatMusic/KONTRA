@@ -7,6 +7,9 @@ use crate::{
     VoiceId,
 };
 
+pub(crate) mod signal;
+pub(crate) mod stages;
+
 const MAX_MEMBERS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +33,7 @@ pub(super) struct PreparedScope {
     pub has_amplitude: bool,
     pub bus: Option<usize>,
     pub members: Box<[usize]>,
+    pub signal: Option<sampler_ir::ProcessingSignal>,
 }
 
 #[derive(Clone, Copy)]
@@ -142,6 +146,7 @@ impl Runtime {
             .claim(id.0.index)
             .fill(crate::dsp::ProcessorState::default());
         generation.dsp.owner_delays.claim(id.0.index).fill([0.; 2]);
+        generation.dsp.owner_signal_history.claim(id.0.index).fill(0.);
         Ok(Some((id, ordinal, gate)))
     }
 
@@ -258,6 +263,12 @@ impl Runtime {
             }
         }
     }
+    pub(crate) fn mark_processing_onset_failed(&mut self, index: usize) {
+        let Some((owner, _)) = self.voices.slots.get(index).and_then(|s| s.value.as_ref()).and_then(|v| v.processing) else { return; };
+        let explicit = self.processing_owners.get(owner.0).and_then(|owner|
+            self.plans.get(owner.plan.0).map(|plan| plan.prepared.processing_scopes[owner.template].signal.is_some())).unwrap_or(false);
+        if explicit && let Some(owner) = self.processing_owners.get_mut(owner.0) { owner.failed = true; }
+    }
     fn end_processing_owner(&mut self, id: ProcessingOwnerId) {
         let Some(owner) = self.processing_owners.get(id.0).copied() else {
             return;
@@ -284,6 +295,15 @@ impl Runtime {
                 continue;
             }
             let id = ProcessingOwnerId(self.processing_owners.id(index));
+            let explicit = self.plans.get(before.plan.0).is_some_and(|generation|
+                generation.prepared.processing_scopes[before.template].signal.is_some());
+            if explicit && before.failed { self.end_processing_owner(id); continue; }
+            if explicit && before.members.iter().flatten().any(|voice|
+                self.voices.get(voice.0).is_some_and(|v| !v.started || v.cursor.holding_onset())) {
+                // Processing ownership is independent of take/Family startup
+                // cohorts. Shared envelope and DSP state rest until all members.
+                continue;
+            }
             let Some(law) = self
                 .plans
                 .get(before.plan.0)
@@ -298,6 +318,16 @@ impl Runtime {
                 output.len().min(before.envelope.remaining())
             };
             let mut produced = 0usize;
+            if explicit {
+                match self.render_signal_sources(&before, source_len, at) {
+                    Ok(count) => produced = count,
+                    Err(_) => {
+                        self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+                        self.end_processing_owner(id);
+                        continue;
+                    }
+                }
+            } else {
             // Member order, not physical slot order. No note-to-note state sharing.
             for source in before.members.into_iter().flatten() {
                 if self.voices.get(source.0).is_none() {
@@ -323,6 +353,7 @@ impl Runtime {
                         }
                     }
                 }
+            }
             }
             // Stop source reads exactly at the owning amplitude's termination;
             // shared post-amplitude state may still render its zero-input tail.
@@ -355,7 +386,10 @@ impl Runtime {
                 tail_advance = output.len().min(tail as usize);
                 tail_advance
             } else if owner.members.iter().all(Option::is_none) {
-                let tail = chain.map_or(0, |c| c.owner_tail_frames());
+                let signal_tail = generation.prepared.processing_signals.get(owner.template)
+                    .and_then(Option::as_ref).map_or(0, |signal| signal.tail_frames);
+                // The sum is admitted during preparation; no wrapping lifetime.
+                let tail = chain.map_or(0, |c| c.owner_tail_frames()) + signal_tail;
                 let prefix = produced.min(output.len());
                 let len = output.len().min(prefix.saturating_add(tail as usize));
                 tail_advance = len - prefix;
@@ -364,6 +398,12 @@ impl Runtime {
             } else {
                 output.len()
             };
+            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &expression.value).is_err() {
+                generation.dsp.owner_signal_history.claim(index).fill(0.);
+                self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+                self.end_processing_owner(id);
+                continue;
+            }
             let mut cells = generation.dsp.owner_cells.claim(index);
             let mut delay = generation.dsp.owner_delays.claim(index);
             let filters = &mut generation.dsp.filters.as_mut_slice()[0];

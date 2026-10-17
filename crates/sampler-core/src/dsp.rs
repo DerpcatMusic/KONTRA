@@ -657,7 +657,17 @@ pub struct VoiceChain {
     tail_frames: u32,
     taps: Box<[VoiceSendTap]>,
 }
+/// Width-independent constant gain sections retain the existing f64 operation
+/// ordering around one source amplitude. Stereo-coupled/history stages do not fit.
+pub(crate) struct WideGainSections { pub pre: Box<[f64]>, pub post: Box<[f64]> }
 impl VoiceChain {
+    pub(crate) fn wide_gain_sections(&self) -> Option<WideGainSections> {
+        if self.tail_frames != 0 || !self.taps.is_empty() { return None; }
+        let gains = |processors: &[Processor]| processors.iter().map(|p| match p {
+            Processor::Gain(value) => Some(*value), _ => None,
+        }).collect::<Option<Vec<_>>>().map(Vec::into_boxed_slice);
+        Some(WideGainSections { pre: gains(&self.pre)?, post: gains(&self.post)? })
+    }
     pub fn new(
         pre_envelope: Vec<Processor>,
         post_envelope: Vec<Processor>,
@@ -1557,6 +1567,14 @@ pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
 /// Most render lanes: the audio thread and its workers.
 pub(crate) const MAX_LANES: usize = 8;
 
+/// Control-built per-voice channel scratch/history; old ownership returns through
+/// the ordinary growth queue. Shared generation scratch is independent of voice capacity.
+pub(crate) struct ChannelVoiceStorage {
+    sources: Slab<f32>,
+    last: Slab<f32>,
+    tone: Slab<[f64; 2]>,
+}
+
 pub(super) struct DspState {
     /// Voice slots `cells` and `delay_samples` are sized for.
     pub voices: usize,
@@ -1565,6 +1583,13 @@ pub(super) struct DspState {
     pub cells: Slab<ProcessorState>,
     pub owner_cells: Slab<ProcessorState>,
     pub owner_delays: Slab<[f64; 2]>,
+    pub owner_signal_history: Slab<f64>,
+    pub channel_sources: Slab<f32>,
+    pub channel_last: Slab<f32>,
+    /// Existing core Tone: two integrators per original channel and source slot.
+    pub channel_tone: Slab<[f64; 2]>,
+    pub channel_row: Slab<f32>,
+    pub channel_work: Slab<f32>,
     pub parameters: Box<[ControlRamp]>,
     pub modulated_parameters: Slab<ControlRamp>,
     pub delay_samples: Slab<[f64; 2]>,
@@ -1586,6 +1611,8 @@ impl DspState {
         expressions: usize,
         lanes: usize,
     ) -> Result<Self, Error> {
+        // Unprojected region outlets are stereo until an explicit signal schedule binds them.
+        plan.validate_signal_execution()?;
         let (stride, delay_stride) = Self::shape(plan);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
         let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
@@ -1613,6 +1640,30 @@ impl DspState {
             owner_delays: {
                 let n = if plan.processing_scopes.is_empty() { 0 } else { voices };
                 Slab::new(allocate(delay_stride.checked_mul(n).ok_or(Error::Capacity)?)?, delay_stride)
+            },
+            owner_signal_history: {
+                let stride = plan.signal_history_words();
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
+            },
+            channel_sources: {
+                let stride = plan.signal_channels().checked_mul(BLOCK).ok_or(Error::Capacity)?;
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
+            },
+            channel_last: {
+                let stride = plan.signal_channels();
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
+            },
+            channel_tone: {
+                let stride = plan.signal_channels();
+                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
+            },
+            channel_row: {
+                let stride = plan.signal_channels();
+                Slab::new(allocate(stride)?, stride)
+            },
+            channel_work: {
+                let stride = plan.signal_channels().checked_mul(BLOCK).and_then(|n| n.checked_mul(2)).ok_or(Error::Capacity)?;
+                Slab::new(allocate(stride)?, stride)
             },
             filters: Slab::new(
                 (0..lanes.clamp(1, MAX_LANES))
@@ -1685,6 +1736,25 @@ impl DspState {
             Slab::new(allocate(delays)?, delay),
         ))
     }
+    pub(crate) fn channel_voice_storage(channels: usize, voices: usize) -> Result<ChannelVoiceStorage, Error> {
+        let stride = channels.checked_mul(BLOCK).ok_or(Error::Capacity)?;
+        Ok(ChannelVoiceStorage {
+            sources: Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride),
+            last: Slab::new(allocate(channels.checked_mul(voices).ok_or(Error::Capacity)?)?, channels),
+            tone: Slab::new(allocate(channels.checked_mul(voices).ok_or(Error::Capacity)?)?, channels),
+        })
+    }
+    pub(crate) fn adopt_channel_voices(&mut self, storage: &mut ChannelVoiceStorage) {
+        let count = self.channel_sources.len();
+        storage.sources.as_mut_slice()[..count].swap_with_slice(self.channel_sources.as_mut_slice());
+        std::mem::swap(&mut self.channel_sources, &mut storage.sources);
+        let count = self.channel_last.len();
+        storage.last.as_mut_slice()[..count].swap_with_slice(self.channel_last.as_mut_slice());
+        std::mem::swap(&mut self.channel_last, &mut storage.last);
+        let count = self.channel_tone.len();
+        storage.tone.as_mut_slice()[..count].swap_with_slice(self.channel_tone.as_mut_slice());
+        std::mem::swap(&mut self.channel_tone, &mut storage.tone);
+    }
     /// Take the larger per-voice storage `cells`/`delays` (from
     /// `voice_storage`), moving every live voice's state across; the old
     /// storage is left in the arguments. No allocation.
@@ -1732,6 +1802,7 @@ impl DspState {
         Ok(())
     }
     pub fn reset(&mut self, voice: usize) {
+        self.channel_tone.claim(voice).fill([0.; 2]);
         let stride = self.stride;
         self.cells.as_mut_slice()[voice * stride..(voice + 1) * stride]
             .fill(ProcessorState::default());

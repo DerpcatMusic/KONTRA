@@ -60,6 +60,7 @@ fn prepare(shared: bool, frames: usize, delay: bool) -> Prepared {
     };
     if shared {
         ir.processing_scopes.push(ir::ProcessingScope {
+            signal: None,
             members: vec![ir::ZoneRef(0)],
             sum: ir::ProcessingSumLaw::OrderedF32,
             cadence: ir::ProcessingCadence::CoreCell64,
@@ -157,6 +158,7 @@ fn ir_membership_remap_preserves_order_and_rejects_duplicate_owners() {
         assets: vec![asset(), asset(), asset()],
         zones: (0..3).map(|n| ir::Zone::new(ir::AssetRef(n))).collect(),
         processing_scopes: vec![ir::ProcessingScope {
+            signal: None,
             members: vec![ir::ZoneRef(2), ir::ZoneRef(0)],
             sum: ir::ProcessingSumLaw::OrderedF32,
             cadence: ir::ProcessingCadence::CoreCell64,

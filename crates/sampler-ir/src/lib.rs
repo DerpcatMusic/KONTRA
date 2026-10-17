@@ -1922,6 +1922,112 @@ pub struct ProcessingScope {
     pub amplitude: Option<ModulatorRef>,
     /// None emits to the instrument input; Some is the existing bus identity.
     pub output: Option<BusRef>,
+    /// Explicit source/sum layouts and projection before the existing stereo section.
+    /// Absence retains the exact original stereo processing schedule.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub signal: Option<ProcessingSignal>,
+}
+
+/// Ordered discrete-channel port, separate from physical packing and native descriptors.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalLayout { pub channels: usize }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingSignal {
+    /// Existing f32 resampling, f64 source gain/amplitude sections, f32 member outlet.
+    pub source_law: ProcessingSourceLaw,
+    pub input: SignalLayout,
+    pub nodes: Vec<ProcessingSignalNode>,
+    pub controls: Vec<ProcessingCellBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessingSignalNode {
+    Matrix(ChannelMatrix),
+    /// Width-preserving generic core-law stage, before the explicit projection.
+    Gain(ChannelGain),
+    /// One independent history per processing owner and original channel.
+    OnePole(ChannelOnePole),
+}
+/// A typed real stage parameter. A control binds to the existing generation's
+/// value/ramp owner; the constant is used only in the absence of a binding.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignalParameter {
+    pub constant: f64,
+    pub control: Option<String>,
+    /// Optional per-note factor on the retained global base. Absence preserves
+    /// the original authored sound and does not install an enhancement node.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub expression: Option<SignalExpressionBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalExpressionSource { Pressure, Timbre }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SignalExpressionBinding {
+    pub source: SignalExpressionSource,
+    pub law: SignalExpressionLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SignalExpressionLaw {
+    /// Gain base times an event-rate linear, nonnegative factor.
+    LinearFactor { zero: f64, one: f64 },
+    /// OnePole Hertz base times 2^mapped_octaves. No hidden destination clamp.
+    Octaves { zero: f64, one: f64 },
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelGain { pub gain: SignalParameter, pub arithmetic: ChannelGainArithmetic }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelGainArithmetic { CoreGainF64ThenF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelOnePole {
+    pub cutoff_hz: SignalParameter,
+    pub mode: ChannelOnePoleMode,
+    pub arithmetic: ChannelOnePoleArithmetic,
+    /// Explicit bounded zero-input continuation after the last source ends.
+    /// This is an authored truncation policy, not the exact finite life of an IIR.
+    pub tail_frames: u32,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleMode { LowPass, HighPass }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleArithmetic {
+    /// Existing core f64 recurrence/Hertz conversion/segment-end history flush.
+    /// This does not select either native UVI f32 sample kernel.
+    CoreOnePoleF64,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSourceLaw { CoreF64GainAmplitudeF32Outlet }
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMatrix {
+    pub input: SignalLayout,
+    pub output: SignalLayout,
+    /// Row-major cells: output ordinal * input channels + input ordinal.
+    pub cells: Vec<f64>,
+    pub arithmetic: MatrixArithmetic,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatrixArithmetic { SeparateMulAddF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessingCellBinding {
+    pub node: usize,
+    pub input: usize,
+    pub output: usize,
+    pub control: String,
 }
 
 /// The first executable source-edge summation contract. Member blocks have

@@ -608,6 +608,7 @@ impl Runtime {
         let generation = self.plans.get(plan.0).unwrap();
         let prepared = &generation.prepared;
         let range = prepared.range(key, trigger);
+        let note_index = groups.map(|(index, _)| index);
         let groups = groups.map(|(index, view)| generation.groups.view(index, view));
         let mut required = ReleaseReserve::default();
         let mut processing_scopes = [false; 256];
@@ -626,10 +627,22 @@ impl Runtime {
                     let r = prepared.regions[c.region];
                     if let Some((sample,cursor))=generation.samples.source(prepared,c,note_pitch) {
                         let step=pitch.apply_source(cursor.step(),cursor.wavetable().is_some())?;
-                        let asset=generation.asset(sample);
-                        let cursor=cursor.with_offset(offset_micros,asset.sample_rate()).with_step(step);
+                        let source=generation.source(sample).ok_or(Error::NotReady)?;
+                        if source.stereo().is_none() {
+                            // A pending event can change key after a legal stereo
+                            // pan write. Validate the ACTUAL chosen source before
+                            // any family/owner/voice publication, not during render.
+                            let group = prepared.region_groups.get(c.region).copied().flatten();
+                            if generation.script.layer(group).has_source_pan()
+                                || note_index.is_some_and(|index| self.note_params[index].has_source_pan(self.now)) {
+                                return Err(Error::UnsupportedSourceLayout);
+                            }
+                        }
+                        let cursor=cursor.with_offset(offset_micros,source.sample_rate()).with_step(step);
                         let cursor = self.stream_start_cursor(plan, cursor);
-                        self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
+                        if let Some(asset) = source.stereo() {
+                            self.check_source_ready(asset,cursor,self.region_envelope(r.envelope,r.fallback_envelope))?;
+                        } else if source.resident_view().is_none() { return Err(Error::NotReady); }
                         if let Some((scope, _)) = prepared.region_processing.get(c.region).copied().flatten() {
                             processing_scopes[scope] = true;
                         }
@@ -954,7 +967,7 @@ impl Runtime {
                 let cursor = if trigger == Trigger::Attack {
                     cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
-                        self.plans.get(plan.0).unwrap().asset(sample).sample_rate(),
+                        self.plans.get(plan.0).unwrap().source(sample).expect("admitted logical source").sample_rate(),
                     )
                 } else {
                     cursor

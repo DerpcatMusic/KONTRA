@@ -560,6 +560,54 @@ pub fn ir_control_id(key: &str) -> crate::ControlId {
 }
 
 /// [`lower_with`] default [`Options`]: native MPE on every zone.
+// Keep the legacy Vec<Pcm> allocation/ownership path intact; only the source-aware
+// entrypoint pays for a logical source table and physical dependency enumeration.
+enum SourceInputs { Stereo(Vec<Pcm>), Logical(Vec<crate::SourceStorage>) }
+#[derive(Clone, Copy)]
+enum SourceInputsRef<'a> { Stereo(&'a [Pcm]), Logical(&'a [crate::SourceStorage]) }
+impl<'a> SourceInputsRef<'a> {
+    fn get(self, index: usize) -> Option<crate::SourceStorageRef<'a>> {
+        match self { Self::Stereo(s) => s.get(index).map(crate::SourceStorageRef::Stereo),
+            Self::Logical(s) => s.get(index).map(crate::SourceStorage::as_source) }
+    }
+}
+impl SourceInputs {
+    fn as_ref(&self) -> SourceInputsRef<'_> {
+        match self { Self::Stereo(s) => SourceInputsRef::Stereo(s), Self::Logical(s) => SourceInputsRef::Logical(s) }
+    }
+    fn len(&self) -> usize { match self { Self::Stereo(s) => s.len(), Self::Logical(s) => s.len() } }
+    fn get(&self, index: usize) -> Option<crate::SourceStorageRef<'_>> { self.as_ref().get(index) }
+    fn prepare(&self, rate: u32, regions: Vec<Region>, candidates: usize) -> Result<Prepared, Error> {
+        match self { Self::Stereo(s) => Prepared::new(rate, s.clone(), regions, candidates),
+            Self::Logical(s) => Prepared::new_sources(rate, s.clone(), regions, candidates) }
+    }
+    fn admit_legacy_bundles(&self, instrument: &ir::Instrument) -> Result<(), LowerError> {
+        match self {
+            Self::Stereo(pcm) => crate::source::bundle::admit_initial(instrument, pcm),
+            Self::Logical(_) if instrument.source_indices.source_bundles.is_empty() => Ok(()),
+            Self::Logical(sources) => {
+                let pcm = sources.iter().map(|s| s.as_source().stereo().cloned())
+                    .collect::<Option<Vec<_>>>().ok_or_else(||
+                        core(Stage::Regions, "legacy source-bundle storage")(Error::UnsupportedSourceLayout))?;
+                crate::source::bundle::admit_initial(instrument, &pcm)
+            }
+        }
+    }
+}
+
+/// Source-aware normal lowering. Every entry is one logical IR asset.
+/// Unprojected source outlets retain the current stereo signal contract.
+pub fn lower_sources(instrument: &ir::Instrument, rate: u32, sources: Vec<crate::SourceStorage>,
+    bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>)
+    -> Result<Prepared, LowerError> {
+    lower_sources_with(instrument, rate, sources, &Options::default(), bind_behaviors)
+}
+pub fn lower_sources_with(instrument: &ir::Instrument, rate: u32, sources: Vec<crate::SourceStorage>,
+    options: &Options, bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>)
+    -> Result<Prepared, LowerError> {
+    lower_inputs(instrument, rate, SourceInputs::Logical(sources), options, bind_behaviors)
+}
+
 pub fn lower(
     instrument: &ir::Instrument,
     rate: u32,
@@ -579,7 +627,7 @@ pub fn switching(
     Lowering {
         ir: instrument,
         rate: 1,
-        pcm: &[],
+        pcm: SourceInputsRef::Stereo(&[]),
         mpe: None,
         amplitude_sources: HashMap::new(),
         route_envelopes: Vec::new(),
@@ -599,6 +647,11 @@ pub fn lower_with(
     options: &Options,
     bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
 ) -> Result<Prepared, LowerError> {
+    lower_inputs(instrument, rate, SourceInputs::Stereo(pcm), options, bind_behaviors)
+}
+fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, options: &Options,
+    bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>)
+    -> Result<Prepared, LowerError> {
     if instrument.source_indices.zone_catalog.len() > SOURCE_ZONE_CATALOG_ZONES {
         return Err(core(Stage::ZoneRouting, "source zone catalog")(Error::Capacity));
     }
@@ -606,7 +659,42 @@ pub fn lower_with(
     // This must precede group-tap rewriting, effect preparation, behavior
     // binding and publication. A wide recipe may never become a legacy voice
     // merely because the initial implementation cannot render its layout yet.
-    crate::source::bundle::admit_initial(instrument, &pcm)?;
+    pcm.admit_legacy_bundles(instrument)?;
+    // A physical channel family is not a stereo outlet. This runs before any
+    // effect preparation, worker setup, group tap rewriting or behavior callback.
+    for (index, zone) in instrument.zones.iter().enumerate() {
+        let Some(source) = zone.asset.and_then(|asset| pcm.get(asset.0)) else { continue; };
+        let signal = instrument.processing_scopes.iter().find(|scope|
+            scope.members.iter().any(|member| member.0 == index)).and_then(|scope| scope.signal.as_ref());
+        if signal.is_some_and(|signal| signal.input.channels != source.channels().get())
+            || source.stereo().is_none() && signal.is_none() {
+            return Err(core(Stage::Regions, "source outlet requires a matching explicit signal layout")(Error::UnsupportedSourceLayout));
+        }
+        if source.stereo().is_none() && zone.routes.iter().any(|route| !matches!(instrument.routes[route.0].target,
+            ir::Target::Amplitude | ir::Target::Pitch | ir::Target::SampleStart
+                | ir::Target::SourcePhase(_) | ir::Target::SourceRate(_)
+                | ir::Target::LoopStart | ir::Target::LoopLength)) {
+            return Err(core(Stage::Modulation, "source destination requires typed channel ports")(Error::UnsupportedSourceLayout));
+        }
+        if source.stereo().is_none() {
+            // This resident source stage implements width-independent constant
+            // gain sections around ONE source amplitude. Coupled/history/tap
+            // processors need typed N-port kernels; refuse their source homes
+            // before preparing any effect or invoking a behavior binder.
+            let unsupported_chain = zone.chain.is_some_and(|id| {
+                let chain = &instrument.chains[id.0];
+                chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                    .any(|stage| !matches!(stage, ir::Processor::Gain(_)))
+                    || instrument.processor_controls.iter().any(|binding| binding.chain == id)
+                    || instrument.voice_send_taps.iter().any(|tap| tap.chain == id)
+                    || zone.routes.iter().any(|route| matches!(instrument.routes[route.0].target,
+                        ir::Target::Processor { chain, .. } if chain == id))
+            });
+            if zone.pan.position != 0. || unsupported_chain {
+                return Err(core(Stage::VoiceChains, "source section requires typed channel ports")(Error::UnsupportedSourceLayout));
+            }
+        }
+    }
     let tapped;
     let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
         tapped = instrument.with_group_taps();
@@ -623,7 +711,7 @@ pub fn lower_with(
     let lowering = Lowering {
         ir: instrument,
         rate,
-        pcm: &pcm,
+        pcm: pcm.as_ref(),
         mpe: options
             .mpe
             .filter(|m| m.pressure_db != 0.0 || m.timbre_semitones != 0.0),
@@ -636,7 +724,13 @@ pub fn lower_with(
     let mut chain_of = Vec::with_capacity(instrument.zones.len());
     let mut candidates = 0usize;
     for (i, zone) in instrument.zones.iter().enumerate() {
-        let (region, chain) = lowering.zone(i, zone)?;
+        let (region, mut chain) = lowering.zone(i, zone)?;
+        if chain.is_none() && instrument.processing_scopes.iter().any(|scope|
+            scope.signal.is_some() && scope.members.iter().any(|member| member.0 == i)) {
+            // The explicit source law selects the ordinary f64 amplitude section,
+            // including an identity section when no source processor is authored.
+            chain = Some(VoiceChain::new(vec![], vec![], 0).map_err(core(Stage::VoiceChains, format!("zone {i} source law")))?);
+        }
         // Name the zone whose geometry the runtime would reject as a whole.
         if let Some(source) = pcm.get(region.sample) {
             region.playback.cursor(source.frame_count(), source.sample_rate(), rate)
@@ -662,7 +756,7 @@ pub fn lower_with(
             })
         }));
     }
-    let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
+    let mut plan = pcm.prepare(rate, regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
     // Port v1 settings.envelope/flex: either authored amplitude source excludes defaults.
     plan = plan
@@ -862,7 +956,7 @@ pub fn lower_with(
         let owner = format!("processing scope {index}");
         match scope.cadence { ir::ProcessingCadence::CoreCell64 => {} }
         if scope.members.iter().any(|z| {
-            instrument.zones[z.0].asset.is_none_or(|a| pcm[a.0].resident_frames().is_none())
+            instrument.zones[z.0].asset.is_none_or(|a| pcm.get(a.0).is_none_or(|source| source.resident_view().is_none()))
         }) {
             return Err(core(Stage::Regions, owner)(Error::InvalidInput));
         }
@@ -880,9 +974,10 @@ pub fn lower_with(
             }
             region_processing[zone.0] = Some((index, ordinal));
         }
-        if instrument.source_indices.sample_targets.iter().any(|target| {
-            target.zones.iter().any(|z| scope.members.contains(z))
-        }) || !instrument.zone_routing.is_empty() {
+        // Dynamic stereo revisions preserve the member's compiled input width;
+        // logical family targets retain identity but reject one-Pcm writes at
+        // producer and commit preflight. Routing variants need their own join.
+        if !instrument.zone_routing.is_empty() {
             return Err(core(Stage::Regions, owner.clone())(Error::InvalidInput));
         }
         if scope.amplitude.is_some_and(|amplitude| instrument.source_indices.modulators.iter()
@@ -900,13 +995,14 @@ pub fn lower_with(
             chain, sum: scope.sum, envelope: region.envelope, has_amplitude: scope.amplitude.is_some(),
             bus: scope.output.or(instrument.input_bus).map(|b| b.0),
             members: scope.members.iter().map(|z| z.0).collect(),
+            signal: scope.signal.clone(),
         });
     }
     plan.processing_source_amplitude = instrument.zones.iter().map(|z| z.amplitude.is_some()
         || z.routes.iter().any(|r| instrument.routes[r.0].target == ir::Target::Amplitude)).collect();
     plan.processing_scopes = processing_scopes.into_boxed_slice();
     plan.region_processing = region_processing.into_boxed_slice();
-    if !chains.is_empty() {
+    if !chains.is_empty() || instrument.processing_scopes.iter().any(|scope| scope.signal.is_some()) {
         plan = plan
             .with_voice_chains(chains, chain_of)
             .map_err(core(Stage::VoiceChains, "zones"))?;
@@ -1186,7 +1282,7 @@ fn modulable_filter(ir: &ir::Instrument, chain: ir::ChainRef, index: usize) -> b
 struct Lowering<'a> {
     ir: &'a ir::Instrument,
     rate: u32,
-    pcm: &'a [Pcm],
+    pcm: SourceInputsRef<'a>,
     mpe: Option<MpeDefaults>,
     /// [`amplitude_sources`], built once rather than scanned per zone.
     amplitude_sources: HashMap<(ir::GroupRef, ir::ModulatorRef), &'a ir::SourceAhdsr>,
@@ -1283,7 +1379,7 @@ impl Lowering<'_> {
         let gain = zone.gain.linear() * group.map_or(1.0, |g| g.gain.linear());
         let tune = zone.tune.semitones() + group.map_or(0.0, |g| g.tune.semitones());
         let pan = zone.pan.position + group.map_or(0.0, |g| g.pan.position);
-        let asset_rate = zone.asset.map_or(f64::from(self.rate), |a| f64::from(self.pcm[a.0].sample_rate()));
+        let asset_rate = zone.asset.and_then(|a| self.pcm.get(a.0)).map_or(f64::from(self.rate), |source| f64::from(source.sample_rate()));
         let envelope = self.envelope(&owner, zone)?;
         let mut pre = Vec::new();
         let mut post = Vec::new();
@@ -3413,4 +3509,47 @@ fn cascade_class(c: &ir::fx::filter::Config) -> Option<crate::LegacyFilter> {
         (R::LowPass, 6) => L::Lp6,
         _ => return None,
     })
+}
+
+
+#[cfg(test)]
+mod logical_source_lower_tests {
+    use super::*;
+    fn pcm(value: f32) -> Pcm { Pcm::new(48000, vec![[value, -value]; 64].into_boxed_slice()).unwrap() }
+    fn sources() -> Vec<crate::SourceStorage> {
+        let family = crate::SourceStorageFamily::new_resident(crate::ChannelCount::new(6).unwrap(),
+            vec![pcm(1.), pcm(2.), pcm(3.)]).unwrap();
+        vec![family.into(), pcm(0.25).into()]
+    }
+    fn instrument(sample: usize) -> ir::Instrument {
+        ir::Instrument { assets: (0..2).map(|i| ir::Asset {
+            location: ir::AssetLocation::Path(format!("authored-source-{i}.wav")),
+            encoding: ir::Encoding::Wav, residency: ir::AssetResidency::Resident,
+            root_key: None, loops: vec![],
+        }).collect(), zones: vec![ir::Zone { pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None, ..ir::Zone::new(ir::AssetRef(sample)) }],
+            ..Default::default() }
+    }
+    #[test]
+    fn normal_source_lowering_keeps_logical_asset_count_and_stereo_query() {
+        let plan = lower_sources(&instrument(1), 48000, sources(), |_, p| Ok(p)).unwrap();
+        assert_eq!(plan.sample_count(), 2);
+        assert!(plan.source_storage(0).unwrap().stereo().is_none());
+        assert_eq!(plan.region_source_storage(0).unwrap().stereo().unwrap().resident_frames().unwrap()[0], [0.25, -0.25]);
+        let limits = crate::Limits::for_plan(&plan, 4, 8);
+        let mut runtime = crate::Runtime::new(plan, limits).unwrap();
+        let input = crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0,
+            channel: 0, key: 60, external_id: Some(1) };
+        runtime.trigger(input, 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 16]; runtime.render(&mut out).unwrap();
+        assert!(out.iter().flatten().any(|v| *v != 0.));
+    }
+    #[test]
+    fn missing_wide_signal_outlet_reports_its_phase_before_effects() {
+        let result = lower_sources(&instrument(0), 48000, sources(), |_, _| {
+            panic!("unprojected source reached the behavior binder")
+        });
+        assert!(matches!(result, Err(LowerError::Core { stage: Stage::Regions,
+            error: Error::UnsupportedSourceLayout, .. })));
+    }
 }

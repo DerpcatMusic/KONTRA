@@ -13,6 +13,8 @@ pub mod audit;
 mod cache;
 mod cache_zones;
 mod container;
+mod channel_reader;
+pub use channel_reader::{ChannelPackDestinations, EncodedChannelReader, install_resident_source_reload, resident_storage_from_interleaved};
 mod diagnostics;
 pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
@@ -52,7 +54,7 @@ pub use library::{
 pub use load::take_script_init_runs;
 // Stage and Kind are defined below with LoadError.
 pub use load::{
-    ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish,
+    ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish, finish_sources,
     load, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable,
     load_streamed, prepare, stream_instrument, stream_instrument_cancelable,
 };

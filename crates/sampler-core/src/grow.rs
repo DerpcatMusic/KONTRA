@@ -17,6 +17,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 pub(crate) struct Dims {
     pub request: u64,
     chain: (usize, usize),
+    source_channels: usize,
     modulation: ModShape,
 }
 
@@ -25,6 +26,7 @@ impl Dims {
         Self {
             request,
             chain: DspState::shape(plan),
+            source_channels: plan.signal_channels(),
             modulation: plan.voice_modulation.shape(),
         }
     }
@@ -34,6 +36,7 @@ struct PlanStorage {
     request: u64,
     cells: sampler_pool::Slab<dsp::ProcessorState>,
     delays: sampler_pool::Slab<[f64; 2]>,
+    channels: dsp::ChannelVoiceStorage,
     modulation: VoiceModState,
 }
 
@@ -64,6 +67,7 @@ impl Growth {
                     request: d.request,
                     cells,
                     delays,
+                    channels: DspState::channel_voice_storage(d.source_channels, voices)?,
                     modulation: VoiceModState::with_shape(d.modulation, voices)?,
                 })
             })
@@ -206,6 +210,7 @@ impl Runtime {
                 .find(|p| p.request == gen_.request)
                 .unwrap();
             gen_.dsp.adopt(g.voices, &mut p.cells, &mut p.delays);
+            gen_.dsp.adopt_channel_voices(&mut p.channels);
             gen_.modulation.adopt(&mut p.modulation);
         }
         // Scratch contains no outstanding pins outside render_voices.

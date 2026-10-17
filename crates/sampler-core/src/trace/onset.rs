@@ -282,7 +282,14 @@ impl Runtime {
 impl Runtime {
     /// Read-only off-audio observation between render calls. This is current
     /// state, never a replacement for the historical selection-time Birth row.
+    /// This legacy snapshot names one actual Pcm AssetId. If any live source
+    /// requires a channel family, return incomplete before emitting any row;
+    /// no physical pack is a substitute for that logical source identity.
     pub fn visit_onset_voices(&self, mut accept: impl FnMut(VoiceSnapshot) -> bool) -> bool {
+        if self.voices.slots.iter().any(|slot| slot.value.as_ref().is_some_and(|voice| {
+            self.plans.get(voice.plan.0).and_then(|plan| plan.source(voice.sample))
+                .is_none_or(|source| source.stereo().is_none())
+        })) { return false; }
         for (index, slot) in self.voices.slots.iter().enumerate() {
             let Some(voice) = slot.value.as_ref() else { continue };
             let plan = self.plans.get(voice.plan.0).unwrap();
@@ -302,6 +309,9 @@ impl Runtime {
         let note = self.notes.get(family.note.0).unwrap();
         let parent_event = note.parent.and_then(|id| self.notes.get(id.0)).map(|n| n.order);
         let plan = self.plans.get_mut(voice.plan.0).unwrap();
+        // Unsupported or disabled trace paths must not attempt a legacy Pcm
+        // projection before discovering that no recorder exists.
+        if plan.dsp.trace.is_none() { return; }
         let asset = plan.samples.asset(&plan.prepared, voice.sample).unwrap();
         let Some(trace) = plan.dsp.trace.as_mut() else { return };
         let physical = PhysicalVoice::from(id);

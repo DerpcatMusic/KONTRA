@@ -1152,6 +1152,7 @@ pub enum ZoneRoutingFeature {
     DynamicSampleUpdates,
     NonAttackTemplate,
     AbsolutePitch,
+    SourceLayout,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZoneRoutingBuildError {
@@ -1254,6 +1255,10 @@ impl super::Prepared {
                 ZoneRoutingFeature::DynamicSampleUpdates,
             ));
         }
+        if routes.iter().flat_map(|route| &route.variants).filter_map(|variant| variant.region)
+            .any(|region| self.region_source_storage(region).is_some_and(|s| s.stereo().is_none())) {
+            return Err(ZoneRoutingBuildError::Unsupported(ZoneRoutingFeature::SourceLayout));
+        }
         let variant_count = routes
             .iter()
             .try_fold(0usize, |n, r| add(n, r.variants.len()))?;
@@ -1335,10 +1340,8 @@ impl super::Prepared {
             for (index, region) in self.regions.iter().enumerate().filter(|(i, _)| routed[*i]) {
                 let cursor = region.cursor.map(|c| c.cursor(&self.cursor_loops));
                 let wave = cursor.and_then(|c| c.wavetable());
-                let source_rate = self
-                    .pcm
-                    .get(region.sample)
-                    .map_or(self.rate, |pcm| pcm.sample_rate());
+                let source_rate = self.source_storage(region.sample)
+                    .map_or(self.rate, |source| source.sample_rate());
                 let step = if let Some(root) = region.root_key {
                     // SAME root+tuning arithmetic and Playback::step as new_tuned.
                     let mut playback = crate::Playback {

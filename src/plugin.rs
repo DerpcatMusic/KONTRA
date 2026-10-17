@@ -2801,6 +2801,12 @@ fn host_pattern(address: ExactNoteAddress, clap: bool) -> Option<HostPattern> {
     })
 }
 
+/// Host actions retain their original tuple; this hint cannot represent a
+/// wildcard and is not an admission filter for an already captured owner.
+fn host_action_port(pattern: HostPattern) -> u8 {
+    u8::try_from(pattern.port).unwrap_or(0)
+}
+
 /// A CLAP or VST3 note event as core input; `None` leaves it to its typed fallback.
 fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
     let note = |kind, address: ExactNoteAddress, velocity: f64, clap, tune: f64| {
@@ -2839,15 +2845,17 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
                     port,
                 )
             }
+            // Concrete ports remain useful route hints; wildcards are resolved
+            // against captured native host tuples by the core, never port zero.
             ExactNoteKind::Off if (0.0..=1.0).contains(&velocity) =>
-                ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, velocity), 0),
-            ExactNoteKind::Choke => ExactInput::Routed(CoreEvent::Choke(pattern), 0),
+                ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, velocity), host_action_port(pattern)),
+            ExactNoteKind::Choke => ExactInput::Routed(CoreEvent::Choke(pattern), host_action_port(pattern)),
             _ => ExactInput::Unsupported,
         }
     };
     let expression =
         |address, clap, x: Option<NoteExpression>| match (host_pattern(address, clap), x) {
-            (Some(pattern), Some(x)) => ExactInput::Routed(CoreEvent::Expression(pattern, x), 0),
+            (Some(pattern), Some(x)) => ExactInput::Routed(CoreEvent::Expression(pattern, x), host_action_port(pattern)),
             _ => ExactInput::Unsupported,
         };
     let unit = |v: f64| (0.0..=1.0).contains(&v).then_some(v);
@@ -4716,6 +4724,53 @@ pub(crate) mod tests {
             })
         );
     }
+
+    #[test]
+    fn exact_native_port_tuples_reach_the_real_core_after_part_admission_is_remapped() {
+        use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+        let decode = |body| {
+            let mut events = moose::core::EventList::with_capacity(1);
+            events.try_push_exact(ExactEvent::new(0, body)).unwrap();
+            let LosslessEventRef::Exact(event) = events.lossless_iter().next().unwrap() else {
+                panic!("exact native event lost its payload")
+            };
+            match exact_host_input(event).unwrap() {
+                ExactInput::Routed(event, port) => (event, port),
+                ExactInput::Unsupported => panic!("authored native event refused"),
+            }
+        };
+        for clap in [true, false] {
+            let pcm = Pcm::new(48000, vec![[0.25; 2]; 4096].into_boxed_slice()).unwrap();
+            let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: None,
+                velocity_low: 0., velocity_high: 1., gain: 1.,
+                envelope: Envelope::default(), playback: Playback::default() };
+            let plan = Prepared::new(48000, vec![pcm], vec![region], 1).unwrap();
+            let limits = Limits::for_plan(&plan, 8, 16);
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, Some(Box::new(CorePart::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("exact native")).unwrap())));
+            let mut mix = Mix::default(); mix.parts[0].port = 2; mix.parts[0].channel = 3; core.set_mix(&mix);
+            let address = ExactNoteAddress::from_raw_signed(2, 3, 60, 117);
+            let note = HostNote { port: 2, channel: 3, key: 60, id: 117, clap };
+            let body = if clap { ExactEventBody::Note { kind: ExactNoteKind::On, address, velocity: 0.75 } }
+                else { ExactEventBody::DetailedNote { kind: ExactNoteKind::On, address, velocity: 0.75, tuning: 0., length: None } };
+            let (event, port) = decode(body); assert_eq!(port, 2); core.event(port, event);
+            assert!(core.owns(note)); assert!(core.render(1).buses[0][0][0] > 0.);
+            let mut changed = mix.clone(); changed.parts[0].port = 4; changed.parts[0].channel = 7; core.set_mix(&changed);
+            let body = if clap { ExactEventBody::NoteExpression { expression_id: 0, address, value: 0. } }
+                else { ExactEventBody::NormalizedNoteExpression { expression_id: 0, address, value: 0. } };
+            let (event, port) = decode(body); assert_eq!(port, 2); core.event(port, event);
+            assert!(core.render(32).buses[0][0][..32].iter().all(|v| *v == 0.));
+            assert_eq!(core.voices().active, 1, "held note expression must not retrigger or terminate its owner");
+            let body = if clap { ExactEventBody::Note { kind: ExactNoteKind::Off, address, velocity: 0.5 } }
+                else { ExactEventBody::DetailedNote { kind: ExactNoteKind::Off, address, velocity: 0.5, tuning: 0., length: None } };
+            let (event, port) = decode(body); assert_eq!(port, 2); core.event(port, event); core.render(128);
+            let mut ended = Vec::new(); core.end_block(128, &mut |note| { ended.push(note); true });
+            assert!(!core.owns(note)); assert_eq!(core.voices().active, 0);
+            assert_eq!(ended, if clap { vec![note] } else { vec![] });
+            core.end_block(1, &mut |_| panic!("duplicate native end"));
+        }
+    }
+
 }
 
 mod effect_controls;

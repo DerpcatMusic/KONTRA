@@ -814,7 +814,8 @@ impl crate::Runtime {
             let id = crate::VoiceId(self.voices.id(index));
             let family = self.families.get(voice.family.0).unwrap();
             let note = self.notes.get(family.note.0).unwrap();
-            let asset = self.plans.get(note.plan.0).unwrap().asset(voice.sample);
+            let Some(asset) = self.plans.get(note.plan.0).unwrap().source(voice.sample)
+                .and_then(crate::SourceStorageRef::stereo) else { continue; };
             let complete = self.visit_voice_demand(id, frames, |demand| {
                 if demand.frames.is_empty() { return true; }
                 for page in demand.frames.start / PAGE_FRAMES..=(demand.frames.end - 1) / PAGE_FRAMES {
@@ -1046,7 +1047,8 @@ impl crate::Runtime {
                 };
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
-                let asset = self.plans.get(note.plan.0).unwrap().asset(voice.sample);
+                let Some(asset) = self.plans.get(note.plan.0).unwrap().source(voice.sample)
+                    .and_then(crate::SourceStorageRef::stereo) else { continue; };
                 if asset.resident_frames().is_some() {
                     continue;
                 }

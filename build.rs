@@ -13,6 +13,7 @@ mod automation_ids;
 
 const SOURCES: &[&str] = &[
     "crates/sampler-ir/src",
+    "crates/sampler-uvi/src",
     "crates/sampler-kontakt/src",
     "crates/sampler-core/src/lower.rs",
 ];

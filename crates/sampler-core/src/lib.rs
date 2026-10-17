@@ -83,6 +83,10 @@ mod wavetable;
 pub use sampler_ir::Wavetable;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
+pub use source::storage::{
+    ChannelCount, SourceResidentView, SourceStorage, SourceStorageFamily, SourceStorageId,
+    SourceStorageRef,
+};
 pub use source::bundle::SourceBundleRefusal;
 mod bus;
 pub use bus::{Bus, BusMix, BusPeakTap, BusSend, GroupFader};
@@ -366,11 +370,13 @@ pub enum Error {
     /// Routed eligibility is prepared for MIDI-key pitch only.
     UnsupportedZoneRoutingPitch,
     UnsupportedZoneRoutingSampleUpdates,
+    /// A source outlet or mutable source operation lacks the required channel layout.
+    UnsupportedSourceLayout,
 }
 
 impl Error {
     /// Every variant, so one can travel as its index.
-    pub const ALL: [Error; 15] = [
+    pub const ALL: [Error; 16] = [
         Self::Capacity,
         Self::InvalidInput,
         Self::NotReady,
@@ -386,6 +392,7 @@ impl Error {
         Self::Canceled,
         Self::UnsupportedZoneRoutingPitch,
         Self::UnsupportedZoneRoutingSampleUpdates,
+        Self::UnsupportedSourceLayout,
     ];
 }
 
@@ -407,6 +414,7 @@ impl std::fmt::Display for Error {
             Self::Canceled => "candidate preparation was canceled",
             Self::UnsupportedZoneRoutingPitch => "absolute pitch with zone routing is unsupported",
             Self::UnsupportedZoneRoutingSampleUpdates => "dynamic sample updates with zone routing are unsupported",
+            Self::UnsupportedSourceLayout => "the source operation has no compatible channel-layout contract",
         })
     }
 }
@@ -1025,6 +1033,7 @@ impl Runtime {
         initial_notes: usize,
         canceled: &dyn Fn()->bool,
     ) -> Result<Self, Error> {
+        plan.validate_signal_execution()?;
         trace_report::configure(&mut plan)?;
         if initial_notes == 0 || initial_notes > limits.notes {
             return Err(Error::InvalidInput);
@@ -1851,6 +1860,11 @@ impl Runtime {
         at: u64,
         gain: f32,
     ) -> Result<VoiceId, Error> {
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let generation = self.plans.get(n.plan.0).ok_or(Error::StaleHandle)?;
+        if generation.source(sample).is_some_and(|s| s.stereo().is_none()) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
         let family = self.create_family(note)?;
         let result = self.start_family(
             family,
@@ -1888,12 +1902,12 @@ impl Runtime {
             .get(self.notes.get(f.note.0).unwrap().plan.0)
             .unwrap()
             .prepared;
-        if sample >= plan.pcm.len() || !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
-            return Err(Error::InvalidInput);
-        }
+        if !gain.is_finite() || !(0.0..=1.0).contains(&gain) { return Err(Error::InvalidInput); }
+        let source = plan.source_storage(sample).ok_or(Error::InvalidInput)?;
+        if source.stereo().is_none() { return Err(Error::UnsupportedSourceLayout); }
         let cursor = playback.cursor(
-            plan.pcm[sample].frame_count(),
-            plan.pcm[sample].sample_rate(),
+            source.frame_count(),
+            source.sample_rate(),
             self.rate,
         )?;
         self.admit_voice(family, sample, at, gain, envelope, cursor)
@@ -1921,15 +1935,17 @@ impl Runtime {
             .apply_source(base_step, cursor.wavetable().is_some())?;
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
-        let asset = self.plans.get(note.plan.0).unwrap().asset(sample);
-        if !asset.residency_permitted() {
-            return Err(Error::NotReady);
-        }
+        let source = self.plans.get(note.plan.0).unwrap().source(sample).ok_or(Error::NotReady)?;
         // Full conservative geometry is shared by admission, service, and the
         // pinned cohort release gate. No requested latency is shortened.
         let cursor = self.stream_start_cursor(note.plan, cursor);
-        let cold = self.check_source_ready(asset, cursor, envelope)?;
-        let streamed = asset.resident_frames().is_none();
+        let (cold, streamed) = if let Some(asset) = source.stereo() {
+            if !asset.residency_permitted() { return Err(Error::NotReady); }
+            (self.check_source_ready(asset, cursor, envelope)?, asset.resident_frames().is_none())
+        } else {
+            if source.resident_view().is_none() { return Err(Error::NotReady); }
+            (false, false)
+        };
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
         let stream_pages = if streamed && self.stream_cache.is_some() {
             match self.admit_streaming(cursor, cold) {

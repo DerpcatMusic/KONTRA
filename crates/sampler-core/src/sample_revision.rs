@@ -216,24 +216,30 @@ impl SampleState {
     pub fn resident_bytes(&self) -> usize {
         self.bytes
     }
+    pub fn source_storage<'a>(&'a self, prepared: &'a Prepared, sample: usize)
+        -> Option<crate::SourceStorageRef<'a>> {
+        if sample < prepared.sample_count() { prepared.source_storage(sample) }
+        else { self.slots.get(sample.checked_sub(prepared.sample_count())?)?.revision.as_ref()
+            .map(|revision| crate::SourceStorageRef::Stereo(&revision.pcm)) }
+    }
     pub fn asset<'a>(&'a self, prepared: &'a Prepared, sample: usize) -> Option<&'a Pcm> {
-        if sample < prepared.pcm.len() {
-            prepared.pcm.get(sample)
+        if sample < prepared.sample_count() {
+            prepared.source_storage(sample).and_then(crate::SourceStorageRef::stereo)
         } else {
             self.slots
-                .get(sample.checked_sub(prepared.pcm.len())?)?
+                .get(sample.checked_sub(prepared.sample_count())?)?
                 .revision
                 .as_ref()
                 .map(|r| &r.pcm)
         }
     }
     pub fn pin(&mut self, prepared: &Prepared, sample: usize) -> Result<(), Error> {
-        if sample < prepared.pcm.len() {
+        if sample < prepared.sample_count() {
             return Ok(());
         }
         let slot = self
             .slots
-            .get_mut(sample - prepared.pcm.len())
+            .get_mut(sample - prepared.sample_count())
             .ok_or(Error::InvalidInput)?;
         if slot.revision.is_none() {
             return Err(Error::StaleHandle);
@@ -242,8 +248,8 @@ impl SampleState {
         Ok(())
     }
     pub fn unpin(&mut self, prepared: &Prepared, sample: usize) {
-        if sample >= prepared.pcm.len() {
-            let slot = &mut self.slots[sample - prepared.pcm.len()];
+        if sample >= prepared.sample_count() {
+            let slot = &mut self.slots[sample - prepared.sample_count()];
             debug_assert!(slot.voices > 0);
             slot.voices -= 1;
         }
@@ -261,13 +267,13 @@ impl SampleState {
                 f64::from(revision.pcm.sample_rate()) / f64::from(prepared.rate)
             } else {
                 f64::from(revision.pcm.sample_rate())
-                    / f64::from(prepared.pcm[region.sample].sample_rate())
+                    / f64::from(prepared.source_storage(region.sample)?.sample_rate())
             };
             let step = prepared.step(candidate, pitch) * ratio;
             if !crate::lower::PITCH_STEPS.contains(&step) {
                 return None;
             }
-            Some((prepared.pcm.len() + slot, revision.cursor.with_step(step)))
+            Some((prepared.sample_count() + slot, revision.cursor.with_step(step)))
         } else {
             let cursor = region
                 .cursor?
@@ -334,6 +340,12 @@ impl SampleState {
             return Err(Error::StaleHandle);
         }
         let mapping = &prepared.sample_targets[target];
+        // This queue publishes exactly one two-lane Pcm. A logical original-
+        // channel target remains queryable, but cannot change source kind here.
+        // Defend the actual commit before slots, bindings, or the task CAS.
+        if !prepared.sample_target_accepts_pcm(target) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
         for &index in &mapping.regions {
             let r = &prepared.regions[index];
             if r.cursor
@@ -390,7 +402,13 @@ impl SampleState {
 }
 
 impl Prepared {
+    fn sample_target_accepts_pcm(&self, index: usize) -> bool {
+        self.sample_targets[index].regions.iter().all(|&region|
+            self.region_source_storage(region).is_none_or(|source| source.stereo().is_some()))
+    }
     /// Mapping and all queue/slot allocations happen before audio construction.
+    /// Targets retain their logical source identity, including channel families;
+    /// the single-Pcm update API admits only dormant or stereo source targets.
     pub fn with_sample_targets(
         mut self,
         mut targets: Vec<SampleTarget>,
@@ -434,6 +452,9 @@ pub struct SampleControl {
     sequence: u64,
     queued_bytes: usize,
     byte_limit: usize,
+    // Sorted immutable capabilities of the exact producer PlanId. No callback
+    // lookup/allocation or implicit first-pack source substitution.
+    targets: Box<[(SampleTargetId, bool)]>,
     head_budget: HeadBudget,
     wake: Arc<OnceLock<std::thread::Thread>>,
 }
@@ -458,12 +479,23 @@ impl SampleControl {
     pub fn plan(&self) -> PlanId {
         self.plan
     }
+    /// Off audio, before source preparation: validate this producer's target and
+    /// whether its one-Pcm publication preserves the compiled source layout.
+    pub fn validate_target(&self, target: SampleTargetId) -> Result<(), Error> {
+        let index = self.targets.binary_search_by_key(&target, |entry| entry.0)
+            .map_err(|_| Error::InvalidInput)?;
+        if !self.targets[index].1 { return Err(Error::UnsupportedSourceLayout); }
+        Ok(())
+    }
     #[allow(clippy::result_large_err)]
     pub fn submit(
         &mut self,
         revision: PreparedSampleRevision,
         task: Arc<SampleTask>,
     ) -> Result<u64, (Error, PreparedSampleRevision, Arc<SampleTask>)> {
+        if let Err(error) = self.validate_target(revision.target) {
+            return Err((error, revision, task));
+        }
         if revision.bytes > self.byte_limit {
             return Err((Error::InvalidInput, revision, task));
         }
@@ -525,6 +557,11 @@ impl Runtime {
     /// Control/readback borrow of the actual committed source, including an
     /// initially dormant target. Its lifetime cannot outlive this runtime borrow.
     pub fn sample_target_asset(&self, target: SampleTargetId) -> Result<&Pcm, Error> {
+        self.sample_target_source_storage(target)?.stereo().ok_or(Error::UnsupportedSourceLayout)
+    }
+    /// Source-kind-aware committed readback. A family never aliases its first pack.
+    pub fn sample_target_source_storage(&self, target: SampleTargetId)
+        -> Result<crate::SourceStorageRef<'_>, Error> {
         let generation = self
             .plans
             .get(self.active_plan.0)
@@ -536,10 +573,10 @@ impl Runtime {
             .map_err(|_| Error::InvalidInput)?;
         let region = prepared.sample_targets[index].regions[0];
         let sample = generation.samples.bindings[region]
-            .map_or(prepared.regions[region].sample, |s| prepared.pcm.len() + s);
+            .map_or(prepared.regions[region].sample, |s| prepared.sample_count() + s);
         generation
             .samples
-            .asset(prepared, sample)
+            .source_storage(prepared, sample)
             .ok_or(Error::NotReady)
     }
     pub fn sample_target_count(&self) -> usize {
@@ -577,6 +614,10 @@ impl Runtime {
             .sample_limits
             .unwrap()
             .resident_bytes;
+        let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let targets = prepared.sample_targets.iter().enumerate()
+            .map(|(index, target)| (target.id, prepared.sample_target_accepts_pcm(index)))
+            .collect();
         let head_budget=HeadBudget::new(byte_limit);
         self.sample_queues = Some(SampleQueues {
             wake: wake.clone(),
@@ -594,6 +635,7 @@ impl Runtime {
                 sequence: 0,
                 queued_bytes: 0,
                 byte_limit,
+                targets,
                 head_budget,
                 wake,
             },

@@ -15,6 +15,7 @@ pub enum PlanError {
     SequenceExhausted,
     Disabled,
     Canceled,
+    SourceLayout,
 }
 
 pub struct RejectedPlan {
@@ -76,6 +77,9 @@ pub(super) struct Generation {
 }
 
 impl Generation {
+    pub fn source(&self, sample: usize) -> Option<crate::SourceStorageRef<'_>> {
+        self.samples.source_storage(&self.prepared, sample)
+    }
     pub fn asset(&self,sample:usize)->&crate::Pcm {
         self.samples.asset(&self.prepared,sample).expect("live voice pins its immutable source revision")
     }
@@ -212,6 +216,8 @@ impl PlanControl {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
             Some(PlanError::SampleRate)
+        } else if prepared.validate_signal_execution().is_err() {
+            Some(PlanError::SourceLayout)
         } else if prepared.programs.iter().any(|p| p.locals > self.locals) {
             Some(PlanError::LocalCapacity)
         } else if prepared.note_cells > self.note_cells {
