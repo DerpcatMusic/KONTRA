@@ -422,6 +422,16 @@ impl Runtime {
             } else {
                 output.len()
             };
+            let wide=explicit && generation.prepared.processing_signals.get(owner.template)
+                .and_then(Option::as_ref).is_some_and(|signal|signal.output.get()!=2);
+            if wide {
+                if signal::render_wide_stages(generation,&mut owner,index,len,at,&stage_expression,expression.rendered.gain as f32).is_err(){
+                    generation.dsp.owner_signal_history.claim(index).fill(0.);
+                    self.nonfinite_frames=self.nonfinite_frames.saturating_add(1);
+                    self.end_processing_owner(id);
+                    continue;
+                }
+            } else {
             if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &stage_expression).is_err() {
                 generation.dsp.owner_signal_history.claim(index).fill(0.);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
@@ -502,6 +512,7 @@ impl Runtime {
                 generation.dsp.buses.fed(bus, len);
             }
             drop((cells, delay));
+            }
             if let Some(tail) = owner.tail_remaining {
                 owner.tail_remaining = Some(tail.saturating_sub(tail_advance as u32));
             }

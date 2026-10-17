@@ -13,14 +13,17 @@ pub(crate) enum Node {
     Matrix(Matrix),
     Stage(super::stages::Stage),
     Mix { count: usize, lanes: [usize; 3] },
+    BusChain,
 }
 pub(crate) struct Signal {
     pub input: ChannelCount,
+    pub output: ChannelCount,
     pub max_channels: usize,
     pub nodes: Box<[Node]>,
     pub history_words: usize,
     pub mix_depth: usize,
     pub expression_pan: bool,
+    pub bus_chain: bool,
     pub tail_frames: u32,
     pub domains: Box<[(ControlId, ControlDomain)]>,
 }
@@ -48,18 +51,20 @@ impl Prepared {
     /// Shape validation is separate from completed DSP lane compilation. Builders
     /// can safely validate incoming metadata before allocating processor state.
     pub(crate) fn validate_processing_controls(&self) -> Result<(), Error> {
-        for signal in self.processing_signals.iter().flatten() {
-            for &(id, domain) in &signal.domains {
-                if self.controls[self.control_index(id)?].domain != domain {
-                    return Err(Error::InvalidInput);
-                }
-                self.real_control(id)?;
+        for &(id,domain) in self.processing_signals.iter().flatten().flat_map(|signal|signal.domains.iter())
+            .chain(self.buses.signal_domains()) {
+            if self.controls[self.control_index(id)?].domain!=domain{return Err(Error::InvalidInput);}
+            match domain {
+                ControlDomain::Real{..}=>{self.real_control(id)?;}
+                ControlDomain::Toggle=>{},
+                _=>return Err(Error::InvalidInput),
             }
         }
         Ok(())
     }
     pub(crate) fn validate_signal_execution(&self) -> Result<(), Error> {
         self.validate_source_ports()?;
+        self.validate_bus_signal_edges()?;
         if self
             .processing_scopes
             .iter()
@@ -73,6 +78,16 @@ impl Prepared {
             })
         {
             return Err(Error::UnsupportedSourceLayout);
+        }
+        for (index, scope) in self.processing_scopes.iter().enumerate() {
+            let Some(signal)=self.processing_signals.get(index).and_then(Option::as_ref) else {continue;};
+            if signal.output.get()!=2 && (scope.bus.is_none() || scope.chain.is_some() || !signal.expression_pan) {
+                // A wide outlet cannot run a second stereo chain or defer a
+                // note's Pan until after different notes have been summed by
+                // a global bus. The signal must retain its actual expression
+                // home before an explicit authored expansion.
+                return Err(Error::UnsupportedSourceLayout);
+            }
         }
         self.validate_processing_controls()
     }
@@ -94,153 +109,192 @@ pub(crate) fn compile(
             let Some(definition) = &scope.signal else {
                 return Ok(None);
             };
-            match definition.source_law {
-                ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {}
-            }
-            let input = ChannelCount::new(definition.input.channels)?;
-            let mut previous = input;
-            let mut maximum = input.get();
-            let mut nodes = Vec::new();
-            let mut histories = 0usize;
-            let mut tail_frames = 0u32;
-            let mut domains = Vec::new();
-            let mut spans: Vec<(usize, ChannelCount)> = Vec::new();
-            let mut mix_depth = 0;
-            let mut expression_pan=false;
-            for (node, operation) in definition.nodes.iter().enumerate() {
-                while spans.last().is_some_and(|&(end, _)| end == node) {
-                    let (_, expected) = spans.pop().ok_or(Error::InvalidInput)?;
-                    if previous != expected { return Err(Error::InvalidInput); }
-                }
-                if let ir::ProcessingSignalNode::Mix(mix) = operation {
-                    let count = usize::from(mix.count);
-                    let end = node.checked_add(1).and_then(|index| index.checked_add(count)).ok_or(Error::Capacity)?;
-                    if end > definition.nodes.len() || spans.len() == 16
-                        || spans.last().is_some_and(|&(parent,_)| end > parent) {
-                        return Err(Error::InvalidInput);
-                    }
-                    let mut lanes = [0; 3];
-                    for (index, kind) in [crate::SlotKind::Dry, crate::SlotKind::Output, crate::SlotKind::Bypass].into_iter().enumerate() {
-                        let id = crate::slot_control(kind, mix.address.group, mix.address.slot, mix.address.generic);
-                        let domain = plan.controls[plan.control_index(id)?].domain;
-                        if domain != (ControlDomain::Real { min: 0., max: kind.max() }) { return Err(Error::InvalidInput); }
-                        plan.real_control(id)?;
-                        lanes[index] = parameters.len();
-                        parameters.push(ControlRange { control:id, low:0., high:kind.max(), ramp_frames:plan.rate/100 });
-                        domains.push((id,domain));
-                    }
-                    spans.push((end, previous));
-                    mix_depth = mix_depth.max(spans.len());
-                    nodes.push(Node::Mix { count, lanes });
-                    continue;
-                }
-                if matches!(operation,ir::ProcessingSignalNode::Pan(ir::ChannelPan{expression:true,..})) {
-                    if expression_pan || !spans.is_empty() {return Err(Error::InvalidInput);}
-                    expression_pan=true;
-                }
-                let ir::ProcessingSignalNode::Matrix(matrix) = operation else {
-                    let (stage, tail) = super::stages::Stage::compile(
-                        plan,
-                        operation,
-                        previous.get(),
-                        &mut histories,
-                        parameters,
-                        &mut domains,
-                    )?;
-                    tail_frames = tail_frames.checked_add(tail).ok_or(Error::Capacity)?;
-                    nodes.push(Node::Stage(stage));
-                    continue;
-                };
-                let width = ChannelCount::new(matrix.input.channels)?;
-                let output = ChannelCount::new(matrix.output.channels)?;
-                if width != previous
-                    || width.get().checked_mul(output.get()) != Some(matrix.cells.len())
-                {
-                    return Err(Error::InvalidInput);
-                }
-                let mut cells = Vec::new();
-                cells
-                    .try_reserve_exact(matrix.cells.len())
-                    .map_err(|_| Error::Capacity)?;
-                for &value in &matrix.cells {
-                    if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
-                        return Err(Error::InvalidInput);
-                    }
-                    cells.push(PreparedParameter::Constant(value));
-                }
-                for binding in definition.controls.iter().filter(|b| b.node == node) {
-                    let index = binding
-                        .output
-                        .checked_mul(width.get())
-                        .and_then(|i| i.checked_add(binding.input))
-                        .ok_or(Error::Capacity)?;
-                    if binding.input >= width.get() || binding.output >= output.get() {
-                        return Err(Error::InvalidInput);
-                    }
-                    let id = crate::lower::ir_control_id(&binding.control);
-                    let logical = plan.control_index(id)?;
-                    let domain = plan.controls[logical].domain;
-                    let ControlDomain::Real { min, max } = domain else {
-                        return Err(Error::InvalidInput);
-                    };
-                    if min.abs() > f64::from(f32::MAX) || max.abs() > f64::from(f32::MAX) {
-                        return Err(Error::InvalidInput);
-                    }
-                    plan.real_control(id)?;
-                    let lane = parameters.len();
-                    parameters.push(ControlRange {
-                        control: id,
-                        low: min,
-                        high: max,
-                        ramp_frames: 0,
-                    });
-                    *cells.get_mut(index).ok_or(Error::InvalidInput)? =
-                        PreparedParameter::Control(lane);
-                    domains.push((id, domain));
-                }
-                maximum = maximum.max(output.get());
-                nodes.push(Node::Matrix(Matrix {
-                    input: width,
-                    output,
-                    cells: cells.into_boxed_slice(),
-                    law: matrix.arithmetic,
-                }));
-                previous = output;
-            }
-            while let Some((end, expected)) = spans.pop() {
-                if end != nodes.len() || previous != expected { return Err(Error::InvalidInput); }
-            }
-            if nodes.is_empty() || previous.get() != 2 {
-                return Err(Error::UnsupportedSourceLayout);
-            }
-            // All scratch/last count multiplication is admitted before DSP allocation.
-            maximum
-                .checked_mul(3 * crate::dsp::BLOCK + 2)
-                .and_then(|n| n.checked_mul(size_of::<f32>()))
-                .and_then(|bytes| {
-                    maximum
-                        .checked_mul(size_of::<[f64; 2]>())
-                        .and_then(|tone| bytes.checked_add(tone))
-                })
-                .ok_or(Error::Capacity)?;
-            maximum.checked_mul(crate::dsp::BLOCK).and_then(|n| n.checked_mul(mix_depth))
-                .and_then(|n| n.checked_mul(size_of::<f32>())).ok_or(Error::Capacity)?;
-            histories
-                .checked_mul(size_of::<f64>())
-                .ok_or(Error::Capacity)?;
-            Ok(Some(Signal {
-                input,
-                max_channels: maximum,
-                nodes: nodes.into_boxed_slice(),
-                history_words: histories,
-                mix_depth,
-                expression_pan,
-                tail_frames,
-                domains: domains.into_boxed_slice(),
-            }))
+            compile_program(plan,definition,parameters,if scope.bus.is_some(){None}else{Some(ChannelCount::new(2)?)},true).map(Some)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Vec::into_boxed_slice)
+}
+
+/// Same compiler for per-activation source scopes and global bus scopes.
+/// A global sum has no canonical note owner: expression operands refuse.
+pub(crate) fn compile_program(plan:&Prepared,definition:&ir::ProcessingSignal,
+    parameters:&mut Vec<ControlRange>,output:Option<ChannelCount>,allow_expression:bool)->Result<Signal,Error> {
+    match definition.source_law {
+        ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {}
+    }
+    // Shared normal lowering and public Core builders admit every binding
+    // before lane compilation; ignored rows and last-writer-wins are invalid.
+    let mut bound_cells=Vec::new();
+    bound_cells.try_reserve_exact(definition.controls.len()).map_err(|_|Error::Capacity)?;
+    for binding in &definition.controls {
+        let Some(ir::ProcessingSignalNode::Matrix(matrix))=definition.nodes.get(binding.node) else {
+            return Err(Error::InvalidInput);
+        };
+        if binding.input>=matrix.input.channels || binding.output>=matrix.output.channels {
+            return Err(Error::InvalidInput);
+        }
+        bound_cells.push((binding.node,binding.input,binding.output));
+    }
+    bound_cells.sort_unstable();
+    if bound_cells.windows(2).any(|pair|pair[0]==pair[1]) {return Err(Error::InvalidInput);}
+    let input = ChannelCount::new(definition.input.channels)?;
+    let mut previous = input;
+    let mut maximum = input.get();
+    let mut nodes = Vec::new();
+    let mut histories = 0usize;
+    let mut tail_frames = 0u32;
+    let mut domains = Vec::new();
+    let mut spans: Vec<(usize, ChannelCount)> = Vec::new();
+    let mut mix_depth = 0;
+    let mut expression_pan=false;
+    let mut bus_chain=false;
+    for (node, operation) in definition.nodes.iter().enumerate() {
+        if !allow_expression && match operation {
+            ir::ProcessingSignalNode::Gain(gain)=>gain.gain.expression.is_some(),
+            ir::ProcessingSignalNode::OnePole(filter)=>filter.cutoff_hz.expression.is_some(),
+            ir::ProcessingSignalNode::Pan(pan)=>pan.expression || pan.position.expression.is_some(),
+            _=>false,
+        } {return Err(Error::InvalidInput);}
+        while spans.last().is_some_and(|&(end, _)| end == node) {
+            let (_, expected) = spans.pop().ok_or(Error::InvalidInput)?;
+            if previous != expected { return Err(Error::InvalidInput); }
+        }
+        if matches!(operation,ir::ProcessingSignalNode::BusChain) {
+            if allow_expression || bus_chain || previous.get()!=2 || !spans.is_empty() {
+                return Err(Error::InvalidInput);
+            }
+            bus_chain=true;
+            nodes.push(Node::BusChain);
+            continue;
+        }
+        if let ir::ProcessingSignalNode::Mix(mix) = operation {
+            let count = usize::from(mix.count);
+            let end = node.checked_add(1).and_then(|index| index.checked_add(count)).ok_or(Error::Capacity)?;
+            if end > definition.nodes.len() || spans.len() == 16
+                || spans.last().is_some_and(|&(parent,_)| end > parent) {
+                return Err(Error::InvalidInput);
+            }
+            let mut lanes = [0; 3];
+            for (index, kind) in [crate::SlotKind::Dry, crate::SlotKind::Output, crate::SlotKind::Bypass].into_iter().enumerate() {
+                let id = crate::slot_control(kind, mix.address.group, mix.address.slot, mix.address.generic);
+                let domain = plan.controls[plan.control_index(id)?].domain;
+                if domain != (ControlDomain::Real { min: 0., max: kind.max() }) { return Err(Error::InvalidInput); }
+                plan.real_control(id)?;
+                lanes[index] = parameters.len();
+                parameters.push(ControlRange { control:id, low:0., high:kind.max(), ramp_frames:plan.rate/100 });
+                domains.push((id,domain));
+            }
+            spans.push((end, previous));
+            mix_depth = mix_depth.max(spans.len());
+            nodes.push(Node::Mix { count, lanes });
+            continue;
+        }
+        if matches!(operation,ir::ProcessingSignalNode::Pan(ir::ChannelPan{expression:true,..})) {
+            if expression_pan || !spans.is_empty() {return Err(Error::InvalidInput);}
+            expression_pan=true;
+        }
+        let ir::ProcessingSignalNode::Matrix(matrix) = operation else {
+            let (stage, tail) = super::stages::Stage::compile(
+                plan,
+                operation,
+                previous.get(),
+                &mut histories,
+                parameters,
+                &mut domains,
+            )?;
+            tail_frames = tail_frames.checked_add(tail).ok_or(Error::Capacity)?;
+            nodes.push(Node::Stage(stage));
+            continue;
+        };
+        let width = ChannelCount::new(matrix.input.channels)?;
+        let output = ChannelCount::new(matrix.output.channels)?;
+        if width != previous
+            || width.get().checked_mul(output.get()) != Some(matrix.cells.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(matrix.cells.len())
+            .map_err(|_| Error::Capacity)?;
+        for &value in &matrix.cells {
+            if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
+                return Err(Error::InvalidInput);
+            }
+            cells.push(PreparedParameter::Constant(value));
+        }
+        for binding in definition.controls.iter().filter(|b| b.node == node) {
+            let index = binding
+                .output
+                .checked_mul(width.get())
+                .and_then(|i| i.checked_add(binding.input))
+                .ok_or(Error::Capacity)?;
+            if binding.input >= width.get() || binding.output >= output.get() {
+                return Err(Error::InvalidInput);
+            }
+            let id = crate::lower::ir_control_id(&binding.control);
+            let logical = plan.control_index(id)?;
+            let domain = plan.controls[logical].domain;
+            let ControlDomain::Real { min, max } = domain else {
+                return Err(Error::InvalidInput);
+            };
+            if min.abs() > f64::from(f32::MAX) || max.abs() > f64::from(f32::MAX) {
+                return Err(Error::InvalidInput);
+            }
+            plan.real_control(id)?;
+            let lane = parameters.len();
+            parameters.push(ControlRange {
+                control: id,
+                low: min,
+                high: max,
+                ramp_frames: 0,
+            });
+            *cells.get_mut(index).ok_or(Error::InvalidInput)? =
+                PreparedParameter::Control(lane);
+            domains.push((id, domain));
+        }
+        maximum = maximum.max(output.get());
+        nodes.push(Node::Matrix(Matrix {
+            input: width,
+            output,
+            cells: cells.into_boxed_slice(),
+            law: matrix.arithmetic,
+        }));
+        previous = output;
+    }
+    while let Some((end, expected)) = spans.pop() {
+        if end != nodes.len() || previous != expected { return Err(Error::InvalidInput); }
+    }
+    if nodes.is_empty() || output.is_some_and(|output|previous != output) {
+        return Err(Error::UnsupportedSourceLayout);
+    }
+    // All scratch/last count multiplication is admitted before DSP allocation.
+    maximum
+        .checked_mul(3 * crate::dsp::BLOCK + 2)
+        .and_then(|n| n.checked_mul(size_of::<f32>()))
+        .and_then(|bytes| {
+            maximum
+                .checked_mul(size_of::<[f64; 2]>())
+                .and_then(|tone| bytes.checked_add(tone))
+        })
+        .ok_or(Error::Capacity)?;
+    maximum.checked_mul(crate::dsp::BLOCK).and_then(|n| n.checked_mul(mix_depth))
+        .and_then(|n| n.checked_mul(size_of::<f32>())).ok_or(Error::Capacity)?;
+    histories
+        .checked_mul(size_of::<f64>())
+        .ok_or(Error::Capacity)?;
+    Ok(Signal {
+        input,
+        output:previous,
+        max_channels: maximum,
+        nodes: nodes.into_boxed_slice(),
+        history_words: histories,
+        mix_depth,
+        expression_pan,
+        bus_chain,
+        tail_frames,
+        domains: domains.into_boxed_slice(),
+    })
 }
 
 impl Matrix {
@@ -523,11 +577,9 @@ pub(crate) fn render_stages(
     let mut work = generation.dsp.channel_work.claim(0);
     let mut histories = generation.dsp.owner_signal_history.claim(index);
     let mut dry = generation.dsp.channel_mix.claim(0);
-    let mut alternate = false;
-    SignalRenderer { signal, work:&mut work, histories:&mut histories,
-        parameters:&generation.dsp.parameters, rate:generation.prepared.rate, at,
-        expression, frames, width }.range(0,signal.nodes.len(),&mut alternate,signal.input.get(),&mut dry)?;
-    let offset = if alternate { width } else { 0 };
+    if signal.output.get()!=2 {return Err(Error::UnsupportedSourceLayout);}
+    let offset=render_program(signal,&mut work,&mut histories,&mut dry,
+        &generation.dsp.parameters,generation.prepared.rate,at,frames,expression)?;
     for (i, frame) in stereo.iter_mut().take(frames).enumerate() {
         *frame = [work[offset+i], work[offset+crate::dsp::BLOCK+i]];
     }
@@ -535,14 +587,71 @@ pub(crate) fn render_stages(
 }
 
 
+/// Deliver a compiled wide activation into its actual global bus. The source
+/// clock has already advanced once; only this activation's envelope advances
+/// here. No global owner evaluates a per-note expression after note summation.
+pub(crate) fn render_wide_stages(
+    generation:&mut crate::plans::Generation,
+    owner:&mut super::ProcessingOwner,index:usize,frames:usize,at:u64,
+    expression:&crate::Expression,expression_gain:f32,
+)->Result<(),Error>{
+    let scope=&generation.prepared.processing_scopes[owner.template];
+    let bus=scope.bus.ok_or(Error::UnsupportedSourceLayout)?;
+    let signal=generation.prepared.processing_signals.get(owner.template)
+        .and_then(Option::as_ref).ok_or(Error::UnsupportedSourceLayout)?;
+    if signal.output.get()==2 || scope.chain.is_some() || !signal.expression_pan {
+        return Err(Error::UnsupportedSourceLayout);
+    }
+    let mut work=generation.dsp.channel_work.claim(0);
+    let mut histories=generation.dsp.owner_signal_history.claim(index);
+    let mut dry=generation.dsp.channel_mix.claim(0);
+    let offset=render_program(signal,&mut work,&mut histories,&mut dry,
+        &generation.dsp.parameters,generation.prepared.rate,at,frames,expression)?;
+    for frame in 0..frames {
+        let level=owner.envelope.constant_level().unwrap_or_else(||owner.envelope.next());
+        let gain=level*expression_gain;
+        for channel in 0..signal.output.get(){
+            let value=&mut work[offset+channel*crate::dsp::BLOCK+frame];
+            *value*=gain;
+            if !value.is_finite(){return Err(Error::InvalidInput);}
+        }
+    }
+    generation.dsp.buses.add_channels(&generation.prepared.buses,bus,&work[offset..],
+        signal.output.get(),crate::dsp::BLOCK,frames,1.)
+}
+
+pub(crate) fn render_program(signal:&Signal,work:&mut[f32],histories:&mut[f64],
+    dry:&mut[f32],parameters:&[ControlRamp],rate:u32,at:u64,frames:usize,
+    expression:&crate::Expression)->Result<usize,Error> {
+    let mut reject=|_:&mut[f32],_:usize,_:usize|Err(Error::UnsupportedSourceLayout);
+    render_program_with_chain(signal,work,histories,dry,parameters,rate,at,frames,expression,&mut reject)
+}
+
+pub(crate) fn render_program_with_chain<F>(signal:&Signal,work:&mut[f32],histories:&mut[f64],
+    dry:&mut[f32],parameters:&[ControlRamp],rate:u32,at:u64,frames:usize,
+    expression:&crate::Expression,chain:&mut F)->Result<usize,Error>
+where F:FnMut(&mut[f32],usize,usize)->Result<(),Error> {
+    let width=signal.max_channels.checked_mul(crate::dsp::BLOCK).ok_or(Error::Capacity)?;
+    if frames>crate::dsp::BLOCK || work.len()<width.checked_mul(2).ok_or(Error::Capacity)?
+        || histories.len()<signal.history_words || dry.len()<width.checked_mul(signal.mix_depth).ok_or(Error::Capacity)? {
+        return Err(Error::InvalidInput);
+    }
+    let mut alternate=false;
+    let channels=SignalRenderer{signal,work,histories,parameters,rate,at,expression,frames,width,chain}
+        .range(0,signal.nodes.len(),&mut alternate,signal.input.get(),dry)?;
+    if channels!=signal.output.get(){return Err(Error::InvalidInput);}
+    Ok(if alternate{width}else{0})
+}
+
+
 /// At most sixteen nested spans, admitted at compile time. Scratch belongs to
 /// the existing serial signal render owner; no per-block allocation or cache.
-struct SignalRenderer<'a> {
+struct SignalRenderer<'a,F> {
     signal:&'a Signal, work:&'a mut [f32], histories:&'a mut [f64],
     parameters:&'a [ControlRamp], rate:u32, at:u64, expression:&'a crate::Expression,
-    frames:usize, width:usize,
+    frames:usize, width:usize,chain:&'a mut F,
 }
-impl SignalRenderer<'_> {
+impl<F> SignalRenderer<'_,F> where F:FnMut(&mut[f32],usize,usize)->Result<(),Error> {
 fn range(&mut self, begin:usize, end:usize, alternate:&mut bool,
     mut channels:usize, scratch:&mut [f32]) -> Result<usize,Error> {
     let stride=crate::dsp::BLOCK;
@@ -555,6 +664,12 @@ fn range(&mut self, begin:usize, end:usize, alternate:&mut bool,
                 else { matrix.render(first,second,self.frames,stride,self.parameters,self.at)?; }
                 *alternate=!*alternate;
                 channels=matrix.output.get();
+                index+=1;
+            }
+            Node::BusChain => {
+                if channels!=2{return Err(Error::InvalidInput);}
+                let offset=if *alternate{self.width}else{0};
+                (self.chain)(&mut self.work[offset..offset+self.width],self.frames,stride)?;
                 index+=1;
             }
             Node::Stage(stage) => {
