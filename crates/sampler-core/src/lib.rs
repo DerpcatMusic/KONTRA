@@ -1033,7 +1033,7 @@ impl Runtime {
         initial_notes: usize,
         canceled: &dyn Fn()->bool,
     ) -> Result<Self, Error> {
-        plan.validate_source_ports()?;
+        plan.validate_signal_execution()?;
         trace_report::configure(&mut plan)?;
         if initial_notes == 0 || initial_notes > limits.notes {
             return Err(Error::InvalidInput);
@@ -1935,15 +1935,17 @@ impl Runtime {
             .apply_source(base_step, cursor.wavetable().is_some())?;
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
-        let asset = self.plans.get(note.plan.0).unwrap().asset(sample);
-        if !asset.residency_permitted() {
-            return Err(Error::NotReady);
-        }
+        let source = self.plans.get(note.plan.0).unwrap().source(sample).ok_or(Error::NotReady)?;
         // Full conservative geometry is shared by admission, service, and the
         // pinned cohort release gate. No requested latency is shortened.
         let cursor = self.stream_start_cursor(note.plan, cursor);
-        let cold = self.check_source_ready(asset, cursor, envelope)?;
-        let streamed = asset.resident_frames().is_none();
+        let (cold, streamed) = if let Some(asset) = source.stereo() {
+            if !asset.residency_permitted() { return Err(Error::NotReady); }
+            (self.check_source_ready(asset, cursor, envelope)?, asset.resident_frames().is_none())
+        } else {
+            if source.resident_view().is_none() { return Err(Error::NotReady); }
+            (false, false)
+        };
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
         let stream_pages = if streamed && self.stream_cache.is_some() {
             match self.admit_streaming(cursor, cold) {

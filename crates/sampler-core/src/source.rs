@@ -7,6 +7,7 @@ use crate::{
 
 pub(super) mod reuse;
 pub(crate) mod storage;
+pub(crate) mod channels;
 pub(crate) mod bundle;
 #[cfg(test)]
 mod mix_experiment;

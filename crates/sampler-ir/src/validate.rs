@@ -518,6 +518,47 @@ impl Instrument {
                         reason: "source zone belongs to multiple processing memberships" });
                 }
             }
+            if let Some(signal) = &scope.signal {
+                let invalid = |reason| ValidationError::ZoneRouting { owner: check.owner.clone(), reason };
+                match signal.source_law { crate::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {} }
+                if signal.input.channels == 0 || signal.nodes.is_empty() {
+                    return Err(invalid("signal graph requires a nonempty input and executable nodes"));
+                }
+                let mut channels = signal.input.channels;
+                for node in &signal.nodes {
+                    match node {
+                        crate::ProcessingSignalNode::Matrix(matrix) => {
+                            match matrix.arithmetic { crate::MatrixArithmetic::SeparateMulAddF32 => {} }
+                            if matrix.input.channels != channels || matrix.output.channels == 0
+                                || matrix.input.channels.checked_mul(matrix.output.channels) != Some(matrix.cells.len())
+                                || matrix.cells.iter().any(|v| !v.is_finite() || v.abs() > f64::from(f32::MAX)) {
+                                return Err(invalid("matrix layout, cell geometry or coefficient domain is invalid"));
+                            }
+                            channels = matrix.output.channels;
+                        }
+                    }
+                }
+                if channels != 2 { return Err(invalid("signal graph must feed its declared stereo scope outlet")); }
+                let mut cells = std::collections::BTreeSet::new();
+                for binding in &signal.controls {
+                    let Some(crate::ProcessingSignalNode::Matrix(matrix)) = signal.nodes.get(binding.node) else {
+                        return Err(invalid("matrix binding has no executable node"));
+                    };
+                    if binding.input >= matrix.input.channels || binding.output >= matrix.output.channels
+                        || !cells.insert((binding.node, binding.input, binding.output)) {
+                        return Err(invalid("matrix binding cell is outside the layout or duplicated"));
+                    }
+                    let Some(control) = self.controls.iter().find(|c| c.key == binding.control) else {
+                        return Err(invalid("matrix binding control is missing"));
+                    };
+                    match &control.value {
+                        crate::ControlValue::Continuous { min, max, .. }
+                            if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
+                                && max.abs() <= f64::from(f32::MAX) => {}
+                        _ => return Err(invalid("matrix cells require a bounded real coefficient domain")),
+                    }
+                }
+            }
             if let Some(chain) = scope.chain { check.exists(Reference::Chain(chain.0))?; }
             if let Some(amplitude) = scope.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
             if let Some(bus) = scope.output { check.exists(Reference::Bus(bus.0))?; }

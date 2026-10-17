@@ -61,6 +61,7 @@ fn graph(count: usize, chain: ir::Chain) -> ir::Instrument {
         zones: (0..count).map(zone).collect(),
         chains: vec![chain],
         processing_scopes: vec![ir::ProcessingScope {
+            signal: None,
             members: (0..count).map(ir::ZoneRef).collect(),
             sum: ir::ProcessingSumLaw::OrderedF32,
             cadence: ir::ProcessingCadence::CoreCell64,
@@ -642,6 +643,7 @@ fn native_amplitude_provenance_refuses_owner_migration_but_preserves_source_law(
         let mut instrument = native_primary_scope_fixture();
         if identity_owner {
             instrument.processing_scopes.push(ir::ProcessingScope {
+            signal: None,
                 members: vec![ir::ZoneRef(0)],
                 sum: ir::ProcessingSumLaw::OrderedF32,
                 cadence: ir::ProcessingCadence::CoreCell64,
@@ -699,6 +701,7 @@ fn native_amplitude_provenance_refuses_owner_migration_but_preserves_source_law(
     // envelope merely by clearing the zone's source identity during lowering.
     let mut instrument = native_primary_scope_fixture();
     instrument.processing_scopes.push(ir::ProcessingScope {
+            signal: None,
         members: vec![ir::ZoneRef(0)],
         sum: ir::ProcessingSumLaw::OrderedF32,
         cadence: ir::ProcessingCadence::CoreCell64,
