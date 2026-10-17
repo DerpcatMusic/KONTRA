@@ -1,6 +1,7 @@
 //! Canonical typed receiver ownership. Explicit offaudio binding moves actual
 //! state into this Runtime; adapters retain a handle, never a mutable mirror.
 pub(crate) mod external;
+pub(crate) mod hierarchy;
 pub use external::{ExternalInputId,ExternalTurn,ExternalEvent,ExternalOutput,ExternalOutputResult,ExternalAbortReport
 };
 pub(crate) mod
@@ -2396,7 +2397,7 @@ impl Runtime {
         let policy_epochs=self.performance_state.epochs(performance,scope);
         let context=crate::behavior::NoteControllerContext{performance,origin,source,epoch:policy_epochs[usize::from(origin.channel)],stage,
             receiver:Some(delivery.receiver),policy_epochs,host_epochs:self.receiver_host_epochs(delivery.receiver,performance)?,
-            physical_event:Some(PhysicalReleaseEvent{plan:event.plan,source:receipt.source,execution:event.execution,
+            physical_event:Some(PhysicalReleaseEvent{plan:event.plan,physical_note:receipt.note,source:receipt.source,execution:event.execution,
                 original_frame:event.original_frame,velocity:receipt.velocity})};
         // validate/admit uses the real preallocated behavior arena and reserves
         // normal generation.callbacks before the physical receipt can be ACKed.
@@ -2425,6 +2426,9 @@ impl Runtime {
 /// without treating a historical NoteId as a live parent or expression owner.
 #[derive(Clone,Copy,Debug)]
 pub struct PhysicalReleaseEvent {
+    /// Historical generational identity copied from this exact physical receipt.
+    /// It is an opaque event-map key, not a live parent or expression lease.
+    pub physical_note:NoteId,
     pub plan:crate::PlanId,pub source:Input,pub execution:Input,pub original_frame:u64,pub velocity:Option<f64>,
 }
 impl Runtime {

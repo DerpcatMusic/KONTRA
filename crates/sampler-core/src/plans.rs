@@ -619,3 +619,11 @@ impl Runtime {
         Ok(self.plans.get(plan.0).ok_or(Error::StaleHandle)?.physical_events)
     }
 }
+
+impl Runtime {
+    /// Borrow the ONE immutable owner authority of this actual retained generation.
+    /// No document lookup, copy, additional lease or cached live value is created.
+    pub fn source_owners(&self,plan:PlanId)->Result<&crate::PreparedSourceOwners,Error>{
+        Ok(self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners())
+    }
+}

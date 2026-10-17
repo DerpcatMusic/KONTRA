@@ -10,6 +10,7 @@ pub struct NoteProperties {
 #[derive(Clone, Copy)]
 pub(super) struct NoteEvent {
     pub initial: NoteProperties,
+    pub(crate) source_route:Option<crate::receiver::hierarchy::SourceNoteRoute>,
     pub pending_callbacks: usize,
     pub pending_releases: usize,
     pub release_start: usize,
@@ -37,6 +38,7 @@ impl NoteEvent {
         let initial = NoteProperties { pitch, velocity };
         Self {
             initial,
+            source_route:None,
             pending_callbacks: 0,
             pending_releases: 0,
             release_start: 0,
