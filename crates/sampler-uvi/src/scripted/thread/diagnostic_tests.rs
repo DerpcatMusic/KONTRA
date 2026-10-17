@@ -172,7 +172,7 @@ fn acknowledgement_reports_due_work_without_advancing_the_audio_clock() {
 #[test]
 fn requests_are_bounded_cancel_timeout_and_disconnect_without_blocking() {
     let (mut thread, loaded) = ScriptThread::spawn(
-        xml("local k=Knob('Control',0,0,1); k.changed=function() playNote(60,64) end"),
+        xml("local k=Knob('Control',0,0,1); k.changed=function() playNote(60,64,0) end"),
         (),
         Config::default(),
     )

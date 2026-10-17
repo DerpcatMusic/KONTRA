@@ -262,6 +262,8 @@ fn retired_parent_play_is_never_reinterpreted_as_a_generated_root() {
     let command = Play {
         id: 71,
         parent: Some(70),
+        creator: crate::script::PlayCreator::NoteOn(70),
+        origin: crate::script::PlayOrigin::Helper,
         at_ms: 0.,
         key: 60,
         velocity: 127,
@@ -353,4 +355,60 @@ fn queued_script_owner_receives_the_same_captured_channel_and_release_velocity()
     assert_eq!(midi, vec![MidiOut { status: 0xbe, a: 20, b: 14 }, MidiOut { status: 0xbe, a: 22, b: 53 }]);
     assert_eq!(loaded.ui.runtime_faults(), (0, 0));
     assert!(!matches!(rt.input_held(physical), Ok(true))); assert_eq!(rt.now(), 0);
+}
+
+#[test]
+fn no_creator_negative_duration_releases_immediately_instead_of_becoming_manual() {
+    for code in ["playNote(60,100,-1)", "function onInit() playNote(60,100,-1) end", "spawn(function() playNote(60,100,-1) end)"] {
+        let (mut rt, mut driver)=fixture(code,true);
+        driver.wake(&mut rt).unwrap();
+        for _ in 0..8 { rt.render(&mut [[0.;2];128]).unwrap(); }
+        rt.flush_ended(|_|true);
+        assert_eq!((rt.voice_count(),rt.note_count()),(0,0),"{code}");
+    }
+}
+
+#[test]
+fn callback_spawn_is_manual_even_when_spawned_by_an_on_note_creator() {
+    let (mut rt,mut driver)=fixture("function onNote(e) spawn(function() playNote(60,100,-1) end) end",true);
+    let input=Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None};
+    let physical=rt.note_on(input,60,1.).unwrap();
+    driver.note_on(&mut rt,physical,60,1.).unwrap();
+    driver.note_off_note(&mut rt,physical,60).unwrap();
+    for _ in 0..8 {rt.render(&mut [[0.;2];128]).unwrap();}
+    assert_eq!(rt.voice_count(),1,"spawn has a manual event creator, not the released onNote creator");
+}
+
+#[test]
+fn direct_on_note_helper_follows_real_physical_release() {
+    let (mut rt,mut driver)=fixture("function onNote(e) playNote(e.note,e.velocity,-1) end",true);
+    let input=Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None};
+    let physical=rt.note_on(input,60,1.).unwrap();
+    driver.note_on(&mut rt,physical,60,1.).unwrap();
+    rt.render(&mut [[0.;2];128]).unwrap();
+    assert_eq!(rt.voice_count(),1);
+    driver.note_off_note(&mut rt,physical,60).unwrap();
+    for _ in 0..8 {rt.render(&mut [[0.;2];128]).unwrap();}
+    rt.flush_ended(|_|true);
+    assert_eq!((rt.voice_count(),rt.note_count()),(0,0));
+}
+
+#[test]
+fn late_on_note_uses_a_real_pinned_closed_parent_and_releases_immediately() {
+    // The canonical capture owner holds exactly this checked Core lease while
+    // an external callback turn remains pending. This tests the branch with
+    // that real lease; it does not claim legacy Driver enqueue supplies it.
+    let (mut rt,mut driver)=fixture("function onNote(e) wait(10); playNote(e.note,e.velocity,-1) end",true);
+    let input=Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None};
+    let physical=rt.note_on(input,60,1.).unwrap();
+    rt.pin(physical).unwrap();
+    driver.note_on(&mut rt,physical,60,1.).unwrap();
+    driver.note_off_note(&mut rt,physical,60).unwrap();
+    rt.render(&mut [[0.;2];480]).unwrap();
+    driver.wake(&mut rt).unwrap();
+    assert!(rt.note(physical).is_ok(),"the real capture pin preserves the original identity");
+    rt.unpin(physical).unwrap();
+    for _ in 0..8 {rt.render(&mut [[0.;2];128]).unwrap();}
+    rt.flush_ended(|_|true);
+    assert_eq!((rt.voice_count(),rt.note_count()),(0,0));
 }
