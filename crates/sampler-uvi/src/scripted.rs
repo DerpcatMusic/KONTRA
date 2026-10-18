@@ -12,16 +12,17 @@ mod thread;
 use crate::OscGroup;
 use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use sampler_core::{
-    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol,
+    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, NotePitch, Prepared, Protocol,
     Runtime, Stealing,
 };
 use std::collections::HashMap;
-pub use thread::{Loaded, ScriptThread, UiBridge, DiagnosticAcknowledgement, DiagnosticPhase,
+pub use thread::{Loaded, ScriptThread, PreparedRootProgress, UiBridge, UiRegistryBudget, UiSnapshot, UiRegistryStorage, UiSchemaWorkBudget, UiSchemaWorkReport, DiagnosticAcknowledgement, DiagnosticPhase,
     DiagnosticPoll, DiagnosticProgress, DiagnosticRequest, DiagnosticRequestError};
 
 /// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,
 /// deterministic), or a [`ScriptThread`] that keeps Lua off the audio thread.
 pub trait Script {
+    fn bind_source_property_owner(&mut self,_owner:crate::script::OwnerSourcePropertyPort)->Result<(),String>{Err("standalone property service requires an independently serviced owner".into())}
     fn handles_notes(&self) -> bool;
     /// Off audio only: bounded owner query; threaded hosts may wait for a reply.
     fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {Err("sample status service unavailable".into())}
@@ -34,6 +35,14 @@ pub trait Script {
     fn set_time(&mut self, ms: f64);
     fn note_on(&mut self, id: u64, key: u8, velocity: u8);
     fn note_off(&mut self, id: u64, key: u8);
+    /// Physical callback channel (0-based). Legacy script implementations retain
+    /// their existing callbacks; real UVI owners override this transport boundary.
+    fn note_on_channel(&mut self, id: u64, key: u8, velocity: u8, _channel: u8) {
+        self.note_on(id, key, velocity)
+    }
+    fn note_off_channel(&mut self, id: u64, key: u8, velocity: u8, _channel: u8) {
+        self.note_off_velocity(id, key, velocity)
+    }
     fn note_off_velocity(&mut self, id: u64, key: u8, _velocity: u8) {
         self.note_off(id, key)
     }
@@ -97,6 +106,12 @@ impl Script for ScriptHost {
     fn note_off_velocity(&mut self, id: u64, key: u8, velocity: u8) {
         ScriptHost::note_off(self, id, key, velocity, 0)
     }
+    fn note_on_channel(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        ScriptHost::note_on(self, id, key, velocity, channel)
+    }
+    fn note_off_channel(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        ScriptHost::note_off(self, id, key, velocity, channel)
+    }
     fn advance(&mut self, ms: f64) {
         ScriptHost::advance(self, ms)
     }
@@ -144,22 +159,33 @@ pub struct Stream {
     pub _keep: (sampler_kontakt::Streamer, Vec<sampler_core::Pcm>),
 }
 
-/// Plays made once their originating note was released sound at most this long.
-const DETACHED_MS: f64 = 5000.0;
 /// Gliding script modulations are stepped this often.
 const GLIDE_STEP_MS: f64 = 5.0;
 /// Script wake-ups handled at one instant before time is forced forward.
 const SPIN: usize = 64;
 
-/// A `sendScriptModulation` gliding to its value.
+/// Fixed logical upper bound, independent of allocator spare capacity. Every
+/// recipient is priced before replacing any current glide or stored value.
+pub const SCRIPT_MODULATION_GLIDE_CAPACITY:usize=65_536;
+
+#[derive(Clone,Copy)]
+struct ModulationRecipient {voice:u64,note:NoteId,from:f64,broadcast:bool}
+
+/// A ramp owns one exact admitted recipient, never a future broadcast query.
 struct Glide {
     id: u16,
-    voice: Option<u64>,
+    voice: u64,
+    note: NoteId,
+    require_sounding:bool,
     from: f64,
     to: f64,
     start_ms: f64,
     ms: f64,
 }
+
+/// Maximum accepted pending script MIDI outputs in one driver. This logical
+/// bound is independent of the allocator's reported spare capacity.
+pub const MIDI_OUTPUT_CAPACITY: usize = 256;
 
 /// Plays what the scripts generate (`controlChange`, `postEvent`...) back into
 /// the runtime on channel 0, as a host does with a part's script output.
@@ -188,21 +214,30 @@ impl MidiFeed {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TrackedNote {
+    note: NoteId,
+    channel: u8,
+    // Preserve callback identity until real key-up, even if core cancellation
+    // already retired its source. This consumes the existing TRACKED budget.
+    physical_down: bool,
+}
+
 pub struct Driver<S: Script> {
+    source_properties:Option<crate::script::CoreSourcePropertyPort>,
     host: S,
     groups: Vec<OscGroup>,
     rate: f64,
     /// Script event / voice id -> core note.
-    notes: HashMap<u64, NoteId>,
+    notes: HashMap<u64, TrackedNote>,
     /// Sounding physical notes by key (script event id).
     held: HashMap<u8, std::collections::VecDeque<u64>>,
     next: u64,
     /// Plays that asked for something the runtime does not model.
     unmodeled: Vec<&'static str>,
-    /// Script event modulation values: for all voices (also given to later
-    /// ones) and per voice.
-    global: HashMap<u16, f64>,
-    voice_values: HashMap<(u64, u16), f64>,
+    /// No standing broadcast default or duplicate script-value bank. Values
+    /// live on the actual Core note; scratch retains only a command snapshot.
+    modulation_recipients:Vec<ModulationRecipient>,
     glides: Vec<Glide>,
     /// Frame of the next glide step.
     glide_at: u64,
@@ -216,6 +251,56 @@ pub struct Driver<S: Script> {
 
 /// Notes and values the driver tracks at once; beyond it, plays are dropped.
 const TRACKED: usize = 1024;
+
+impl Driver<ScriptThread> {
+    /// Offaudio actual owner contract bind, distinct from queue admission or
+    /// an immediate Core mutation result. A failed ACK prevents publication.
+    pub fn bind_external_authority(&mut self,runtime:&Runtime,plan:sampler_core::PlanId,timeout:std::time::Duration)->Result<(),String>{self.host.bind_external_authority(runtime,plan,timeout)}
+    pub fn start_prepared_root_adoption(&mut self,rt:&mut Runtime,plan:sampler_core::PlanId,performance:sampler_core::PerformanceId)->Result<PreparedRootProgress,Error>{self.host.start_prepared_root_adoption(rt,plan,performance)}
+    pub fn poll_prepared_root_adoption(&mut self,rt:&mut Runtime,plan:sampler_core::PlanId)->Result<PreparedRootProgress,Error>{self.host.poll_prepared_root_adoption(rt,plan)}
+    pub fn reset_execution_available(&self)->bool{self.host.reset_execution_available()}
+    pub fn reset_execution(&mut self,runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,sequence:u64)->Result<(),Error>{self.host.reset_execution(runtime,plan,sequence)}
+    pub fn reset_execution_ack(&mut self,sequence:u64)->Result<bool,Error>{self.host.reset_execution_ack(sequence)}
+    pub fn cancel_external_authority(&self){self.host.cancel_external_authority();}
+    pub fn deliver_external_turn(&mut self,turn:sampler_core::ExternalTurn)->Result<(),Error>{self.host.deliver_external_turn(turn)}
+    pub fn external_turn_slots(&self)->usize{self.host.external_turn_slots()}
+    pub fn external_reply_slots(&self)->usize{self.host.external_reply_slots()}
+    pub fn pop_external_request(&mut self)->Option<crate::script::AuthorityRequest>{self.host.pop_external_request()}
+    pub fn reply_external_request(&mut self,reply:crate::script::AuthorityReply)->Result<(),crate::script::AuthorityReply>{self.host.reply_external_request(reply)}
+    pub fn external_cancelled(&self)->bool{self.host.external_cancelled()}
+    /// Real Core Running context precedes all owner/engine mutations, including
+    /// identical values. A copied worker request is only routing metadata.
+    pub fn apply_external_command(&mut self,rt:&mut Runtime,requested:sampler_core::ExternalTurn,command:&Command)->Result<(),Error>{
+        let turn=rt.running_external_turn(requested.input)?;
+        if !self.host.external_authority_bound(rt.id(),turn.plan)
+            ||turn.plan!=requested.plan||turn.processor!=requested.processor||turn.owner!=requested.owner{
+            return Err(Error::StaleHandle);
+        }
+        match command{
+            Command::ConstantProperty{node,field,value}=>rt.set_source_constant_property(turn.plan,*node,*field,*value).map(|_|()),
+            Command::OwnerControl{owner,field,value}=>{
+                let id=rt.source_owner_control(turn.plan,*owner,*field)?;
+                rt.edit_controls(turn.plan,None,&[sampler_core::ControlWrite{id,value:*value}]).map(|_|())
+            },
+            Command::EngineParameter{address,value}=>{
+                if turn.plan!=rt.active_plan(){return Err(Error::InvalidInput);}
+                rt.set_engine_parameter(*address,*value)
+            },
+            Command::Impulse{slot,upload}=>{
+                if turn.plan!=rt.active_plan(){return Err(Error::InvalidInput);}
+                upload.swap(rt,*slot)
+            },
+            Command::Parameter{scope,param,value,authored}=>{
+                if turn.plan!=rt.active_plan(){return Err(Error::InvalidInput);}
+                self.parameter(rt,*scope,*param,*value,*authored)
+            },
+            // These need actual canonical child/output/route authority. They
+            // never fall back to a key lookup or the legacy generated queue.
+            Command::Play(_)|Command::Release{..}|Command::Modulation{..}|Command::Change{..}|Command::Fade{..}|Command::Midi(_)=>Err(Error::InvalidInput),
+        }
+    }
+
+}
 
 #[cfg(feature = "scan")]
 impl Driver<ScriptThread> {
@@ -237,6 +322,7 @@ impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
     pub fn new(host: S, groups: Vec<OscGroup>, rate: u32) -> Self {
         Self {
+            source_properties:None,
             host,
             groups,
             rate: f64::from(rate),
@@ -247,16 +333,23 @@ impl<S: Script> Driver<S> {
                 .collect(),
             next: 1,
             unmodeled: Vec::with_capacity(32),
-            global: HashMap::with_capacity(32),
-            voice_values: HashMap::with_capacity(TRACKED * 2),
-            glides: Vec::with_capacity(64),
+            modulation_recipients:Vec::with_capacity(TRACKED),
+            glides: Vec::with_capacity(SCRIPT_MODULATION_GLIDE_CAPACITY),
             glide_at: 0,
             inbox: Vec::with_capacity(256),
             ended: Vec::with_capacity(TRACKED),
-            midi: Vec::with_capacity(256),
+            midi: Vec::with_capacity(MIDI_OUTPUT_CAPACITY),
         }
     }
 
+    /// Offaudio explicit standalone property-only binding. No Plan lease,
+    /// active-plan inference, Play/MIDI authority or native timing is granted.
+    pub fn bind_source_properties(&mut self,rt:&Runtime,plan:sampler_core::PlanId)->Result<(),Error>{
+        if self.source_properties.is_some(){return Err(Error::Busy);}
+        let (core,owner)=crate::script::source_property_pair(rt,plan,std::time::Duration::from_secs(2))?;
+        self.host.bind_source_property_owner(owner).map_err(|_|Error::InvalidInput)?;
+        self.source_properties=Some(core);Ok(())
+    }
     /// A host message for the scripts.
     pub fn input(&mut self, rt: &Runtime, input: HostInput) {
         self.host.set_time(self.now_ms(rt));
@@ -266,6 +359,18 @@ impl<S: Script> Driver<S> {
     /// The MIDI the scripts generated since the last call.
     pub fn drain_midi(&mut self, mut each: impl FnMut(MidiOut)) {
         self.midi.drain(..).for_each(&mut each);
+    }
+
+    /// Copy and consume only the output prefix that fits. A full or empty
+    /// consumer does not discard a later output; the remaining FIFO stays owned
+    /// by this driver's preallocated queue. No Core acceptance is implied.
+    pub fn drain_midi_batch(&mut self, out: &mut [Option<MidiOut>]) -> usize {
+        out.fill(None);
+        let count = out.len().min(self.midi.len());
+        for (slot, message) in out.iter_mut().zip(self.midi.drain(..count)) {
+            *slot = Some(message);
+        }
+        count
     }
 
     /// Whether the scripts take over note selection.
@@ -295,6 +400,8 @@ impl<S: Script> Driver<S> {
         key: u8,
         velocity: f64,
     ) -> Result<(), Error> {
+        let channel = rt.input_source(note)?.ok_or(Error::InvalidInput)?.channel;
+        if self.notes.values().any(|entry|entry.note==note){return Err(Error::DuplicateInput);}
         if self.notes.len() >= TRACKED {
             self.prune(rt);
         }
@@ -305,16 +412,13 @@ impl<S: Script> Driver<S> {
         }
         let id = self.next;
         self.next += 1;
-        self.notes.insert(id, note);
+        self.notes.insert(id, TrackedNote { note, channel, physical_down: true });
         held.push_back(id);
         self.host.set_time(self.now_ms(rt));
-        self.host.note_on(id, key, (velocity * 127.0).round() as u8);
+        self.host.note_on_channel(id, key, (velocity * 127.0).round() as u8, channel);
         if !self.host.handles_notes() {
-            // No onNote: the program sounds as authored, with the script's
-            // standing modulation values.
-            for (id, value) in &self.global {
-                rt.set_note_script_value(note, *id, *value)?;
-            }
+            // A prior broadcast reaches only its then-sounding recipients.
+            // A new source starts from its own authored initial value.
             rt.forward_attack(note)?;
         }
         self.apply(rt, false)
@@ -342,7 +446,7 @@ impl<S: Script> Driver<S> {
         let Some(ids) = self.held.get_mut(&key) else {
             return Ok(());
         };
-        let Some(at) = ids.iter().position(|id| self.notes.get(id) == Some(&note)) else {
+        let Some(at) = ids.iter().position(|id| self.notes.get(id).map(|entry| entry.note) == Some(note)) else {
             return Ok(());
         };
         let id = ids.remove(at).unwrap();
@@ -351,28 +455,31 @@ impl<S: Script> Driver<S> {
 
     fn release_id(&mut self, rt: &mut Runtime, id: u64, key: u8,
         velocity: Option<f64>) -> Result<(), Error> {
+        let physical = self.notes.get(&id).copied();
         self.host.set_time(self.now_ms(rt));
-        self.host.note_off_velocity(id, key,
-            velocity.map_or(64, |v| (v * 127.).round() as u8));
+        self.host.note_off_channel(id, key,
+            velocity.map_or(64, |v| (v * 127.).round() as u8),
+            physical.map_or(0, |entry| entry.channel));
         // Plays made by onRelease must not be linked to the closing gate.
-        self.apply(rt, true)?;
-        if let Some(note) = self.notes.get(&id).copied() {
-            // A note whose voices already ended is gone; closing it is a no-op.
-            stale_ok(rt.key_up(note, velocity))?;
-        }
-        Ok(())
+        // Callback failure cannot prevent the original physical key-up.
+        let applied = self.apply(rt, true);
+        if let Some(entry) = self.notes.get_mut(&id) { entry.physical_down = false; }
+        let closed = physical.map_or(Ok(()), |entry| stale_ok(rt.key_up(entry.note, velocity)));
+        applied.and(closed)
     }
 
     /// Run what is due now (script wake-ups, glide steps); the frames until
     /// the next one, `None` when nothing is pending. Call before each block.
     pub fn wake(&mut self, rt: &mut Runtime) -> Result<Option<usize>, Error> {
+        if let Some(properties)=self.source_properties.as_mut(){properties.service(rt)?;}
+
         let mut spins = 0;
         self.host.tick(self.now_ms(rt));
         // Commands a script thread issued since the last block.
         self.apply(rt, false)?;
         loop {
             if !self.glides.is_empty() && rt.now() >= self.glide_at {
-                self.step_glides(rt);
+                self.step_glides(rt)?;
             }
             let glide = (!self.glides.is_empty()).then(|| self.glide_at - rt.now());
             let host = self
@@ -434,17 +541,18 @@ impl<S: Script> Driver<S> {
                 }
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
-                    if let Some(note) = self.notes.get(&id).copied() {
+                    if let Some(note) = self.notes.get(&id).map(|entry| entry.note) {
                         self.release(rt, note, at_ms)?;
                     }
                 }
                 Command::Modulation {
                     id,
+                    start,
                     value,
                     glide_ms,
                     voice,
                     at_ms,
-                } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
+                } => self.modulate(rt, id, start, value, glide_ms, voice, at_ms)?,
                 Command::Change {
                     id,
                     what,
@@ -453,7 +561,7 @@ impl<S: Script> Driver<S> {
                     immediate,
                     ..
                 } => {
-                    if let Some(note) = self.notes.get(&id).copied() {
+                    if let Some(note) = self.notes.get(&id).map(|entry| entry.note) {
                         let target = match what {
                             Change::Decibels => ModTarget::Decibels,
                             Change::Pan => ModTarget::Pan,
@@ -463,7 +571,9 @@ impl<S: Script> Driver<S> {
                             .set_note_param_with_immediate(note, target, value, relative, immediate)
                         {
                             Err(Error::StaleHandle) => {
-                                self.notes.remove(&id);
+                                if self.notes.get(&id).is_some_and(|entry| !entry.physical_down) {
+                                    self.notes.remove(&id);
+                                }
                             }
                             other => other?,
                         }
@@ -478,7 +588,7 @@ impl<S: Script> Driver<S> {
                     layer,
                     ..
                 } => {
-                    if let Some(note) = self.notes.get(&id).copied() {
+                    if let Some(note) = self.notes.get(&id).map(|entry| entry.note) {
                         let frames = self.frames(ms);
                         let result = if layer == 0 {
                             rt.fade_note(note, from, to, frames, kill && to <= 0.0)
@@ -499,7 +609,9 @@ impl<S: Script> Driver<S> {
                         };
                         match result {
                             Err(Error::StaleHandle) => {
-                                self.notes.remove(&id);
+                                if self.notes.get(&id).is_some_and(|entry| !entry.physical_down) {
+                                    self.notes.remove(&id);
+                                }
                             }
                             other => other?,
                         }
@@ -513,8 +625,12 @@ impl<S: Script> Driver<S> {
                 } => {
                     self.parameter(rt, scope, param, value, authored)?;
                 }
+                // Native owner commands require the genuine captured Running
+                // turn/Plan authority path. Ordinary legacy delivery cannot
+                // substitute its current active Plan as a liveness proof.
+                Command::ConstantProperty{..}|Command::OwnerControl{..}=>return Err(Error::InvalidInput),
                 Command::Midi(out) => {
-                    if self.midi.len() < self.midi.capacity() {
+                    if self.midi.len() < MIDI_OUTPUT_CAPACITY {
                         self.midi.push(out);
                     }
                 }
@@ -534,6 +650,50 @@ impl<S: Script> Driver<S> {
         value: f64,
         authored: f64,
     ) -> Result<(), Error> {
+        if matches!(param,Param::Gain|Param::Pan) && matches!(scope,Scope::Program|Scope::Layer(_)) {
+            let plan=rt.active_plan();
+            // Existing manual Scope ordinals are defined by document order.
+            // Resolve through the sole compiled canonical table, not a new
+            // layer-name/VM-slot map. Captured native commands carry exact IDs.
+            let owner=rt.source_owners(plan).ok().and_then(|table|match scope {
+                Scope::Program=>table.rows().iter().find(|row|row.parent.is_none()
+                    && row.kind==sampler_ir::SourceOwnerKind::Instrument).map(|row|row.id),
+                Scope::Layer(layer)=>layer.checked_sub(1).and_then(|layer|table.rows().iter()
+                    .filter(|row|row.kind==sampler_ir::SourceOwnerKind::Layer).nth(layer as usize)).map(|row|row.id),
+                _=>None,
+            });
+            if let Some(owner)=owner {
+                let field=if param==Param::Gain{sampler_core::SourceOwnerControl::Gain}else{sampler_core::SourceOwnerControl::Pan};
+                if let Ok(id)=rt.source_owner_control(plan,owner,field) {
+                    rt.edit_controls(plan,None,&[sampler_core::ControlWrite{id,value:sampler_core::ControlValue::Real(value)}])?;
+                    return Ok(());
+                }
+            }
+            // Legacy manual plans with no actual global home retain their
+            // existing explicitly offset-based API; captured OwnerControl never
+            // reaches this fallback or substitutes the active generation.
+        }
+        if param == Param::Gain && let Scope::Keygroup(node) = scope {
+            let id = crate::engine_parameters::scope_gain_control(node)?;
+            let plan = rt.active_plan();
+            if rt.control_definition(plan, id).is_ok() {
+                // Exact absolute KG control; zero opens/closes without a dB
+                // epsilon or callback key allocation. Missing is a legacy plan,
+                // whose existing group-offset path remains explicit below.
+                rt.edit_controls(plan, None, &[sampler_core::ControlWrite {
+                    id, value: sampler_core::ControlValue::Real(value),
+                }])?;
+                return Ok(());
+            }
+        }
+        if param == Param::Pan && let Scope::Keygroup(node)=scope {
+            let id=crate::engine_parameters::scope_pan_control(node)?;
+            let plan=rt.active_plan();
+            if rt.control_definition(plan,id).is_ok() {
+                rt.edit_controls(plan,None,&[sampler_core::ControlWrite{id,value:sampler_core::ControlValue::Real(value)}])?;
+                return Ok(());
+            }
+        }
         if scope != Scope::Program {
             for i in 0..self.groups.len() {
                 let g = self.groups[i];
@@ -593,94 +753,97 @@ impl<S: Script> Driver<S> {
 
     /// Forget notes the runtime no longer holds.
     fn prune(&mut self, rt: &Runtime) {
-        self.notes.retain(|_, note| rt.note(*note).is_ok());
-        let notes = &self.notes;
-        self.voice_values.retain(|(v, _), _| notes.contains_key(v));
+        self.notes.retain(|_, entry| entry.physical_down || rt.note(entry.note).is_ok());
+        self.glides.retain(|glide|self.notes.get(&glide.voice).is_some_and(|entry|entry.note==glide.note)&&rt.note(glide.note).is_ok());
     }
 
-    fn modulate(
-        &mut self,
-        rt: &mut Runtime,
-        id: u16,
-        value: f64,
-        glide_ms: f64,
-        voice: Option<u64>,
-        at_ms: f64,
-    ) -> Result<(), Error> {
-        self.glides.retain(|g| !(g.id == id && g.voice == voice));
-        if glide_ms <= 0.0 {
-            return self.set_value(rt, id, voice, value);
+    fn note_sounding(rt:&Runtime,note:NoteId)->Result<bool,Error>{rt.note_has_started_voices(note)}
+
+    fn modulate(&mut self,rt:&mut Runtime,id:u16,start:Option<f64>,value:f64,glide_ms:f64,voice:Option<u64>,at_ms:f64)->Result<(),Error>{
+        if start.is_some_and(|value|!value.is_finite())||!value.is_finite()||!glide_ms.is_finite()||glide_ms<0.||!at_ms.is_finite()||at_ms<0.{return Err(Error::InvalidInput);}
+        if glide_ms>0.{
+            let end=(at_ms+glide_ms)*self.rate/1000.;
+            if !end.is_finite()||end>=u64::MAX as f64{return Err(Error::ClockOverflow);}
+            rt.now().checked_add(self.frames(GLIDE_STEP_MS).max(1)).ok_or(Error::ClockOverflow)?;
         }
-        let from = match voice {
-            Some(v) => self.voice_values.get(&(v, id)),
-            None => self.global.get(&id),
+        self.modulation_recipients.clear();
+        // Pure full-batch admission first. No retain, replacement, stored-value
+        // write or current-glide mutation occurs until all recipients validate.
+        if let Some(voice)=voice{
+            if let Some(entry)=self.notes.get(&voice){
+                match rt.note_script_value(entry.note,id){
+                    Ok(from)=>self.modulation_recipients.push(ModulationRecipient{voice,note:entry.note,from,broadcast:false}),
+                    Err(Error::StaleHandle)=>return Ok(()),Err(error)=>return Err(error),
+                }
+            }
+        }else{
+            for (&voice,entry) in &self.notes{
+                match Self::note_sounding(rt,entry.note){
+                    Ok(true)=>{},Ok(false)|Err(Error::StaleHandle)=>continue,Err(error)=>return Err(error),
+                }
+                if self.modulation_recipients.len()==TRACKED{return Err(Error::Capacity);}
+                let from=rt.note_script_value(entry.note,id)?;
+                self.modulation_recipients.push(ModulationRecipient{voice,note:entry.note,from,broadcast:true});
+            }
+            // Admission owns one Lua physical identity per actual note; all
+            // generated admissions create a distinct real note. Refuse any
+            // violated alias invariant before changing an existing batch.
+            self.modulation_recipients.sort_unstable_by_key(|recipient|recipient.voice);
+            for (index,next) in self.modulation_recipients.iter().enumerate(){
+                if self.modulation_recipients[..index].iter().any(|old|old.note==next.note){return Err(Error::DuplicateInput);}
+            }
         }
-        .copied()
-        .unwrap_or(0.0);
-        if self.glides.is_empty() {
-            self.glide_at = rt.now();
+        let recipients=&self.modulation_recipients;
+        let replacing=self.glides.iter().filter(|glide|glide.id==id&&recipients.binary_search_by_key(&glide.voice,|row|row.voice)
+            .is_ok_and(|at|recipients[at].note==glide.note)).count();
+        let additions=if glide_ms>0.{recipients.len()}else{0};
+        let required=self.glides.len().checked_sub(replacing).and_then(|old|old.checked_add(additions)).ok_or(Error::Capacity)?;
+        if required>SCRIPT_MODULATION_GLIDE_CAPACITY{return Err(Error::Capacity);}
+        self.glides.retain(|glide|!(glide.id==id&&recipients.binary_search_by_key(&glide.voice,|row|row.voice)
+            .is_ok_and(|at|recipients[at].note==glide.note)));
+        if glide_ms==0.{
+            // Same exclusive Runtime owner, with no intervening service/apply_due:
+            // each exact generation and ID has already passed the pure read.
+            for recipient in recipients{rt.set_note_script_value(recipient.note,id,value)?;}
+        }else{
+            if self.glides.is_empty(){self.glide_at=rt.now();}
+            // The complete recipient/capacity/time preflight above admits
+            // BOTH explicit start and ramp. No partial start on refusal.
+            for recipient in recipients{
+                let from=if let Some(start)=start{
+                    rt.set_note_script_value(recipient.note,id,start)?;
+                    // Read the canonical accepted quantization/clamp, never
+                    // reproduce that law in a frontend value cache.
+                    rt.note_script_value(recipient.note,id)?
+                }else{recipient.from};
+                self.glides.push(Glide{id,voice:recipient.voice,note:recipient.note,require_sounding:recipient.broadcast,
+                    from,to:value,start_ms:at_ms,ms:glide_ms});
+            }
         }
-        self.glides.push(Glide {
-            id,
-            voice,
-            from,
-            to: value,
-            start_ms: at_ms,
-            ms: glide_ms,
-        });
         Ok(())
     }
 
-    fn step_glides(&mut self, rt: &mut Runtime) {
-        let now = self.now_ms(rt);
-        let mut i = 0;
-        while i < self.glides.len() {
-            let g = &self.glides[i];
-            let (id, voice) = (g.id, g.voice);
-            let t = ((now - g.start_ms) / g.ms).clamp(0.0, 1.0);
-            let value = g.from + (g.to - g.from) * t;
-            let _ = self.set_value(rt, id, voice, value);
-            if t < 1.0 {
-                i += 1;
-            } else {
-                self.glides.swap_remove(i);
-            }
-        }
-        self.glide_at = rt.now() + self.frames(GLIDE_STEP_MS).max(1);
-    }
-
-    /// Set Script Event Modulation `id` now. Voices that ended are forgotten.
-    fn set_value(
-        &mut self,
-        rt: &mut Runtime,
-        id: u16,
-        voice: Option<u64>,
-        value: f64,
-    ) -> Result<(), Error> {
-        self.ended.clear();
-        match voice {
-            Some(v) => {
-                self.voice_values.insert((v, id), value);
-                if let Some(note) = self.notes.get(&v).copied() {
-                    match rt.set_note_script_value(note, id, value) {
-                        Err(Error::StaleHandle) => self.ended.push(v),
-                        other => other?,
-                    }
+    fn step_glides(&mut self,rt:&mut Runtime)->Result<(),Error>{
+        let now=self.now_ms(rt);
+        let next=rt.now().checked_add(self.frames(GLIDE_STEP_MS).max(1)).ok_or(Error::ClockOverflow)?;
+        let mut i=0;
+        while i<self.glides.len(){
+            let glide=&self.glides[i];
+            if self.notes.get(&glide.voice).is_none_or(|entry|entry.note!=glide.note){self.glides.swap_remove(i);continue;}
+            let gate=match rt.note(glide.note){Ok((_,_,gate))=>gate,Err(Error::StaleHandle)=>{self.glides.swap_remove(i);continue;},Err(error)=>return Err(error)};
+            if glide.require_sounding||!gate{
+                match Self::note_sounding(rt,glide.note){
+                    Ok(true)=>{},Ok(false)|Err(Error::StaleHandle)=>{self.glides.swap_remove(i);continue;},Err(error)=>return Err(error),
                 }
             }
-            None => {
-                self.global.insert(id, value);
-                for (v, note) in &self.notes {
-                    match rt.set_note_script_value(*note, id, value) {
-                        Err(Error::StaleHandle) => self.ended.push(*v),
-                        other => other?,
-                    }
-                }
+            let t=((now-glide.start_ms)/glide.ms).clamp(0.,1.);
+            let value=glide.from+(glide.to-glide.from)*t;
+            match rt.set_note_script_value(glide.note,glide.id,value){
+                Ok(())=>{},Err(Error::StaleHandle)=>{self.glides.swap_remove(i);continue;},Err(error)=>return Err(error),
             }
+            if t<1.{i+=1;}else{self.glides.swap_remove(i);}
         }
-        for v in self.ended.drain(..) {
-            self.notes.remove(&v);
-        }
+        self.glide_at=next;
         Ok(())
     }
 
@@ -696,7 +859,7 @@ impl<S: Script> Driver<S> {
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
         // Forwarding a physical event keeps its identity and reuses its gate.
         if play.parent == Some(play.id) {
-            if let Some(note) = self.notes.get(&play.id).copied() {
+            if let Some(note) = self.notes.get(&play.id).map(|entry| entry.note) {
                 self.select(rt, note, play)?;
                 return stale_ok(rt.forward_attack(note).map(|_| ()));
             }
@@ -705,15 +868,29 @@ impl<S: Script> Driver<S> {
             return Ok(());
         }
         let velocity = f64::from(play.velocity) / 127.0;
-        let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
+        let parent = play.parent.and_then(|p| self.notes.get(&p).map(|entry| entry.note));
         if play.parent.is_some() && parent.is_none() {
             // A retired owner cannot turn its late command into an unlinked
             // generated note after driver pruning or input cancellation.
             return Ok(());
         }
-        let open = parent.is_some() && !closing && play.duration_ms.is_none();
+        let follows_creator = matches!(play.creator, crate::script::PlayCreator::NoteOn(_));
+        let parent_open = parent.is_some_and(|note| rt.note(note).is_ok_and(|(_, _, gate)| gate));
+        let open = parent_open && follows_creator && !closing && play.duration_ms.is_none();
         let note = match parent {
-            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),
+            Some(parent) => (|| {
+                // UVI callbacks report the physical input key. The MIDI2
+                // one-note absolute pitch is a separate base component: keep
+                // its offset when the authored script maps/transposes that key.
+                // Channel/PN expressions still follow through the ordinary
+                // Expression inheritance path and must not be added here.
+                let pitch = match (rt.note_pitch(parent)?, rt.input_source(parent)?) {
+                    (NotePitch::Absolute(pitch), Some(source)) =>
+                        NotePitch::Absolute(f64::from(play.key) + pitch - f64::from(source.key)),
+                    _ => NotePitch::Key(play.key),
+                };
+                rt.child_pitched(parent, pitch, velocity, open, Inheritance::Expression)
+            })(),
             None => {
                 let address = sampler_core::ChannelAddress {
                     protocol: Protocol::Native,
@@ -730,7 +907,7 @@ impl<S: Script> Driver<S> {
             Err(Error::ClosedNote | Error::StaleHandle) => return Ok(()),
             Err(e) => return Err(e),
         };
-        self.notes.insert(play.id, note);
+        self.notes.insert(play.id, TrackedNote { note, channel: 0, physical_down: false });
         self.select(rt, note, play)?;
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
@@ -745,18 +922,18 @@ impl<S: Script> Driver<S> {
             let id = rt.expression_id(note)?;
             rt.set_expression(id, expression)?;
         }
-        for (id, value) in &self.global {
-            rt.set_note_script_value(note, *id, *value)?;
-        }
         rt.forward_attack(note)?;
         let now = self.now_ms(rt);
         match play.duration_ms {
             Some(ms) if ms > 0.0 => self.release(rt, note, now + ms)?,
             Some(_) => {}
-            None if parent.is_none() || closing => self.release(rt, note, now + DETACHED_MS)?,
+            None if play.origin == crate::script::PlayOrigin::PostedEvent => {},
+            None if play.creator == crate::script::PlayCreator::None => self.release(rt, note, now)?,
+            None if follows_creator && (!parent_open || closing) => self.release(rt, note, now)?,
             None => {}
         }
-        if play.duration_ms == Some(0.0) {
+        if play.duration_ms == Some(0.0)
+            || (play.duration_ms.is_none() && play.creator == crate::script::PlayCreator::Event) {
             rt.retire_when_silent(note)?;
         }
         Ok(())
@@ -800,6 +977,7 @@ fn stale_ok(r: Result<(), Error>) -> Result<(), Error> {
 
 impl Player {
     pub fn new(program: Program, limits: Limits, rate: u32) -> Result<Self, Error> {
+        if program.plan.source_controller_inputs().next().is_some(){return Err(Error::NotReady);}
         let mut rt = Runtime::new(program.plan, limits)?;
         let mut horizon = None;
         let mut stream = program.stream;
@@ -882,5 +1060,132 @@ impl Driver<ScriptThread> {
     }
     pub fn set_control(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool {
         self.host.set_control(id, value)
+    }
+}
+
+#[cfg(test)]
+mod midi_output_batch_tests {
+    use super::*;
+
+    #[test]
+    fn zero_short_and_full_midi_consumers_keep_every_remaining_output_in_fifo_order() {
+        let host = ScriptHost::new("<UVI4><Program/></UVI4>", (), Default::default()).unwrap();
+        let mut driver = Driver::new(host, vec![], 48000);
+        let expected: Vec<_> = (0..MIDI_OUTPUT_CAPACITY).map(|index| MidiOut {
+            status: 0xb0 | ((index / 128) as u8), a: 20, b: (index % 128) as u8,
+        }).collect();
+        driver.midi.extend_from_slice(&expected);
+        let original_capacity = driver.midi.capacity();
+        assert_eq!(driver.drain_midi_batch(&mut []), 0);
+        assert_eq!(driver.midi, expected);
+        let mut seen = Vec::new();
+        for length in [1, 64, 65, 256] {
+            let mut buffer = vec![Some(MidiOut { status: 0xff, a: 127, b: 127 }); length];
+            let before = driver.midi.len();
+            let accepted = driver.drain_midi_batch(&mut buffer);
+            assert_eq!(accepted, length.min(before));
+            assert!(buffer[accepted..].iter().all(Option::is_none));
+            seen.extend(buffer[..accepted].iter().copied().map(Option::unwrap));
+            assert_eq!(driver.midi, expected[seen.len()..]);
+            assert_eq!(driver.midi.capacity(), original_capacity);
+        }
+        assert_eq!(seen, expected);
+        assert_eq!(driver.drain_midi_batch(&mut [None; 64]), 0);
+    }
+
+    #[test]
+    fn four_product_sized_batches_retain_the_sixty_fifth_and_last_accepted_output() {
+        let host = ScriptHost::new("<UVI4><Program/></UVI4>", (), Default::default()).unwrap();
+        let mut driver = Driver::new(host, vec![], 48000);
+        let expected: Vec<_> = (0..MIDI_OUTPUT_CAPACITY).map(|index| MidiOut {
+            status: 0xb0 | ((index / 128) as u8), a: 21, b: (index % 128) as u8,
+        }).collect();
+        driver.midi.extend_from_slice(&expected);
+        let mut delivered = Vec::new();
+        for _ in 0..MIDI_OUTPUT_CAPACITY.div_ceil(64) {
+            let mut batch = [None; 64];
+            let count = driver.drain_midi_batch(&mut batch);
+            assert_eq!(count, 64);
+            delivered.extend(batch.into_iter().flatten());
+        }
+        assert_eq!(delivered, expected);
+        assert_eq!(delivered[64], expected[64]);
+        assert_eq!(delivered.last(), expected.last());
+        assert!(driver.midi.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod detached_lifetime_tests {
+    use super::*;
+
+    fn fixture(looping: bool) -> (Runtime, Driver<ScriptHost>) {
+        let playback = sampler_core::Playback {
+            end: Some(256),
+            loop_range: looping.then_some(sampler_core::Loop {
+                start: 0, end: 128, mode: sampler_core::LoopMode::UntilRelease,
+                shape: sampler_core::LoopShape::Wrap, passes: None,
+            }),
+            ..Default::default()
+        };
+        let plan = Prepared::new(48000,
+            vec![sampler_core::Pcm::new(48000, vec![[0.25; 2]; 256].into_boxed_slice()).unwrap()],
+            vec![sampler_core::Region {
+                sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+                velocity_low: 0., velocity_high: 1., gain: 1.,
+                envelope: sampler_core::Envelope::new(0, 0, 0, 1., 64).unwrap(), playback,
+            }], 1).unwrap();
+        let limits = Limits::for_plan(&plan, 8, 8);
+        let host = ScriptHost::new(r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            local voice
+            function onController(e)
+              if e.controller == 1 then voice = playNote(60, 100, -1)
+              elseif e.controller == 2 then releaseVoice(voice) end
+            end
+        ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#, (), Default::default()).unwrap();
+        (Runtime::new(plan, limits).unwrap(), Driver::new(host, vec![], 48000))
+    }
+
+    #[test]
+    fn non_note_creator_negative_duration_loop_survives_five_seconds_until_explicit_release() {
+        let (mut runtime, mut driver) = fixture(true);
+        driver.input(&runtime, HostInput::Controller { cc: 1, value: 127, channel: 4 });
+        driver.wake(&mut runtime).unwrap();
+        assert_eq!(runtime.voice_count(), 1);
+        let mut last = [[0.; 2]; 128];
+        for _ in 0..2000 {
+            driver.wake(&mut runtime).unwrap();
+            runtime.render(&mut last).unwrap();
+        }
+        assert!(runtime.now() > 5 * 48000);
+        assert_eq!(runtime.voice_count(), 1, "non-note playNote(-1) has no five-second automatic release");
+        assert!(last.iter().flatten().any(|value| value.abs() > 0.01));
+        assert_eq!(runtime.note_count(), 1);
+        assert!(runtime.live_notes().all(|note| runtime.input_source(note).unwrap().is_none()),
+            "a generated loop does not invent a physical input source");
+        driver.input(&runtime, HostInput::Controller { cc: 2, value: 127, channel: 4 });
+        driver.wake(&mut runtime).unwrap();
+        for _ in 0..8 { runtime.render(&mut last).unwrap(); }
+        runtime.flush_ended(|_| true);
+        assert_eq!(runtime.voice_count(), 0);
+        assert_eq!(runtime.note_count(), 0);
+        assert!(last.iter().flatten().all(|value| *value == 0.));
+        assert!(driver.unmodeled().is_empty());
+    }
+
+    #[test]
+    fn non_note_creator_negative_duration_one_shot_retires_when_its_source_finishes() {
+        let (mut runtime, mut driver) = fixture(false);
+        driver.input(&runtime, HostInput::Controller { cc: 1, value: 127, channel: 0 });
+        driver.wake(&mut runtime).unwrap();
+        let mut output = [[0.; 2]; 128];
+        runtime.render(&mut output).unwrap();
+        assert!(output.iter().flatten().any(|value| value.abs() > 0.01));
+        for _ in 0..8 { runtime.render(&mut output).unwrap(); }
+        runtime.flush_ended(|_| true);
+        assert!(runtime.now() < 5 * 48000);
+        assert_eq!(runtime.voice_count(), 0);
+        assert_eq!(runtime.note_count(), 0, "manual generated ownership ends at natural EOF without an invented timeout");
+        assert!(driver.unmodeled().is_empty());
     }
 }

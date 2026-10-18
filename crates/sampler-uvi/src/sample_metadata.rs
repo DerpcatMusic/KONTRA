@@ -420,6 +420,166 @@ fn finish(mut state: State, format: Format, frames: usize) -> Result<SampleMetad
     })
 }
 
+// One checked extent traversal for playback metadata and the narrower normal
+// PCM decoder admission. Payload interpretation remains with each owner.
+fn walk_container_chunks<R:std::io::Read+std::io::Seek>(reader:&mut R,end:u64,aiff:bool,
+    mut visit:impl FnMut(&[u8;4],usize,&mut R)->Result<()>)->Result<()> {
+    use std::io::SeekFrom;
+    let mut at=12u64;let mut count=0usize;
+    while at<end {
+        count=count.checked_add(1).ok_or(MetadataError::Limit)?;
+        if count>MAX_CHUNKS {return Err(MetadataError::Limit);}
+        if end-at<8 {return Err(MetadataError::Truncated);}
+        reader.seek(SeekFrom::Start(at)).map_err(|_|MetadataError::Truncated)?;
+        let mut h=[0u8;8];reader.read_exact(&mut h).map_err(|_|MetadataError::Truncated)?;
+        let n=if aiff {be32(&h,4)?} else {le32(&h,4)?} as usize;
+        let next=at.checked_add(8).and_then(|v|v.checked_add(n as u64))
+            .and_then(|v|v.checked_add((n&1) as u64)).ok_or(MetadataError::Limit)?;
+        if next>end {return Err(MetadataError::Truncated);}
+        let id: &[u8;4]=h[..4].try_into().map_err(|_|MetadataError::Invalid)?;
+        visit(id,n,reader)?;at=next;
+    }
+    Ok(())
+}
+fn walk_flac_blocks<R:std::io::Read+std::io::Seek>(reader:&mut R,physical:u64,
+    mut visit:impl FnMut(u8,usize,&mut R)->Result<()>)->Result<()> {
+    use std::io::SeekFrom;
+    let mut at=4u64;
+    for _ in 0..MAX_CHUNKS {
+        reader.seek(SeekFrom::Start(at)).map_err(|_|MetadataError::Truncated)?;
+        let mut h=[0u8;4];reader.read_exact(&mut h).map_err(|_|MetadataError::Truncated)?;
+        let n=(usize::from(h[1])<<16)|(usize::from(h[2])<<8)|usize::from(h[3]);
+        let next=at.checked_add(4+n as u64).ok_or(MetadataError::Limit)?;
+        if next>physical {return Err(MetadataError::Truncated);}
+        visit(h[0]&127,n,reader)?;at=next;
+        if h[0]&128!=0 {return Ok(());}
+    }
+    Err(MetadataError::Limit)
+}
+
+/// A frozen new-wide recipe has no decoder admission. Keep its authored
+/// ownership graph intact and propagate this reason at initial sample-source
+/// admission, rather than classifying it as an unreadable removable zone.
+#[derive(Debug)]
+pub(crate) struct UnadmittedWideStream(String);
+impl std::fmt::Display for UnadmittedWideStream {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str(&self.0)}
+}
+impl std::error::Error for UnadmittedWideStream {}
+pub(crate) fn wide_stream_refusal(reason:impl ToString)->std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Unsupported,UnadmittedWideStream(reason.to_string()))
+}
+pub(crate) fn is_wide_stream_refusal(error:&std::io::Error)->bool {
+    error.get_ref().is_some_and(|e|e.is::<UnadmittedWideStream>())
+}
+
+#[derive(Clone,Copy)]
+pub(crate) enum StreamAdmission {
+    Pcm(sampler_kontakt::PcmStreamAdmission),
+    Flac(sampler_kontakt::FlacStreamAdmission),
+}
+impl StreamAdmission {
+    pub(crate) fn frames(self)->u64 {match self {Self::Pcm(p)=>p.frames(),Self::Flac(p)=>p.frames()}}
+    pub(crate) fn channels(self)->usize {match self {Self::Pcm(p)=>p.channels(),Self::Flac(p)=>p.channels()}}
+    pub(crate) fn accounted_workspace_bytes(self)->usize {match self {Self::Pcm(p)=>p.accounted_workspace_bytes(),Self::Flac(p)=>p.accounted_workspace_bytes()}}
+}
+
+/// Pre-open authority for one new-wide ordinary encoded owner. No audio payload,
+/// playback body, foreign metadata, comment or picture is allocated here.
+/// Old mono/stereo decoders retain their existing metadata/format behavior.
+pub(crate) fn encoded_stream_admission(reader:&mut (impl std::io::Read+std::io::Seek),
+    external_source_workspace_bytes:usize)->std::io::Result<Option<StreamAdmission>> {
+    use std::io::SeekFrom;
+    use sampler_kontakt::{PcmStreamAdmission,PcmStreamEncoding};
+    let invalid=|e:MetadataError|std::io::Error::new(std::io::ErrorKind::InvalidData,format!("owned PCM container admission: {e:?}"));
+    let physical=reader.seek(SeekFrom::End(0))?;reader.seek(SeekFrom::Start(0))?;
+    let mut header=[0u8;12];reader.read_exact(&mut header)?;
+    if header.starts_with(b"fLaC") {
+        let mut channels=None;
+        let walked=walk_flac_blocks(reader,physical,|kind,n,r| {
+            if kind==0 {
+                if channels.is_some() || n!=34 {return Err(MetadataError::Invalid);}
+                let mut b=[0u8;34];r.read_exact(&mut b).map_err(|_|MetadataError::Truncated)?;
+                let packed=u64::from_be_bytes(b[10..18].try_into().map_err(|_|MetadataError::Invalid)?);channels=Some(((packed>>41)&7) as usize+1);
+            }
+            Ok(())
+        });
+        if channels.is_some_and(|c|c<=2) {return Ok(None);}
+        walked.map_err(|e|if channels.is_some_and(|c|c>2) {wide_stream_refusal(format!("wide UVI FLAC container admission: {e:?}"))} else {invalid(e)})?;
+        reader.seek(SeekFrom::Start(0))?;
+        return sampler_kontakt::FlacStreamAdmission::inspect(reader,external_source_workspace_bytes)
+            .map(|profile|Some(StreamAdmission::Flac(profile)))
+            .map_err(|e|wide_stream_refusal(format!("wide UVI FLAC owned decoder/container admission: {e}")));
+    }
+    let aiff=header.starts_with(b"FORM");
+    if !(header.starts_with(b"RIFF") && &header[8..12]==b"WAVE")
+        && !(aiff && matches!(&header[8..12],b"AIFF"|b"AIFC")) {
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"uncertified UVI stream container"));
+    }
+    let end=u64::from((if aiff {be32(&header,4)} else {le32(&header,4)}).map_err(invalid)?)+8;
+    if end<12 || end>physical {return Err(invalid(MetadataError::Truncated));}
+    let mut channels=None;let mut frames=None;let mut bits=None;let mut encoding=None;
+    let mut data_bytes=None;let mut uncertified=aiff && &header[8..12]!=b"AIFF";
+    let walked=walk_container_chunks(reader,end,aiff,|id,n,r| {
+        if id==(if aiff {b"COMM"} else {b"fmt "}) {
+            if channels.is_some() {return Err(MetadataError::Invalid);}
+            let need=if aiff {18} else {16};
+            if n<need {return Err(MetadataError::Truncated);}
+            let mut body=[0u8;18];r.read_exact(&mut body[..need]).map_err(|_|MetadataError::Truncated)?;
+            let c=if aiff {be16(&body,0)?} else {u16::from_le_bytes([body[2],body[3]])};
+            let b=if aiff {be16(&body,6)?} else {u16::from_le_bytes([body[14],body[15]])};
+            channels=Some(usize::from(c));bits=Some(b);
+            if aiff {
+                // Keep legacy mono/stereo probing unchanged. New-wide COMM
+                // rates must be valid before Symphonia constructs TimeBase.
+                if c>2 {
+                    let rate=body[8..18].try_into().map_err(|_|MetadataError::Truncated)?;
+                    PcmStreamAdmission::validate_aiff_sample_rate(rate).map_err(|_|MetadataError::Invalid)?;
+                }
+                frames=Some(u64::from(be32(&body,2)?));encoding=Some(PcmStreamEncoding::AiffSigned(b));
+                uncertified|=n!=18;
+            } else {
+                let code=u16::from_le_bytes([body[0],body[1]]);
+                encoding=match code {1=>Some(PcmStreamEncoding::WavSigned(b)),3 if b==32=>Some(PcmStreamEncoding::WavFloat32),_=>None};
+                let align=usize::from(u16::from_le_bytes([body[12],body[13]]));
+                let rate=le32(&body,4)?;let bytes_per_second=le32(&body,8)?;
+                uncertified|=n!=16 || rate==0 || !matches!(b,16|24|32)
+                    || usize::from(c).checked_mul(usize::from(b/8))!=Some(align)
+                    || u64::from(rate).checked_mul(align as u64)!=Some(u64::from(bytes_per_second));
+            }
+        } else if id==(if aiff {b"SSND"} else {b"data"}) {
+            if data_bytes.is_some() {return Err(MetadataError::Invalid);}
+            if aiff {
+                if n<8 {return Err(MetadataError::Truncated);}
+                let mut b=[0u8;8];r.read_exact(&mut b).map_err(|_|MetadataError::Truncated)?;
+                uncertified|=be32(&b,0)?!=0 || be32(&b,4)?!=0;data_bytes=Some((n-8) as u64);
+            } else {data_bytes=Some(n as u64);}
+        } else if !matches!(id,b"smpl"|b"inst"|b"INST"|b"MARK"|b"acid"|b"JUNK"|b"PAD "|b"FLLR") {
+            // LIST/INFO/ID3 and unknown chunks have no allocating metadata
+            // authority in this exact certificate.
+            uncertified=true;
+        }
+        Ok(())
+    });
+    // Width discovery alone cannot narrow the legacy mono/stereo format law;
+    // its ordinary decoder keeps responsibility for all remaining validation.
+    if channels.is_some_and(|c|c<=2) {return Ok(None);}
+    walked.map_err(|e|if channels.is_some_and(|c|c>2) {wide_stream_refusal(format!("wide UVI PCM container admission: {e:?}"))} else {invalid(e)})?;
+    let c=channels.ok_or_else(||invalid(MetadataError::Invalid))?;
+    if c<=2 {return Ok(None);}
+    if uncertified {return Err(wide_stream_refusal("wide UVI PCM container metadata/encoding is uncertified"));}
+    let b=bits.ok_or_else(||wide_stream_refusal("wide UVI PCM coded width missing"))?;
+    if !matches!(b,16|24|32) {return Err(wide_stream_refusal("wide UVI PCM coded width is uncertified"));}
+    let align=(c as u64).checked_mul(u64::from(b/8)).ok_or_else(||wide_stream_refusal("wide UVI PCM sample alignment overflow"))?;
+    let bytes=data_bytes.ok_or_else(||wide_stream_refusal("wide UVI PCM data chunk missing"))?;
+    if align==0 || bytes==0 || bytes%align!=0 {return Err(wide_stream_refusal("wide UVI PCM payload alignment is invalid"));}
+    let decoded_frames=bytes/align;
+    if frames.is_some_and(|f|f!=decoded_frames) {return Err(wide_stream_refusal("wide UVI PCM frame count differs from payload"));}
+    let encoding=encoding.ok_or_else(||wide_stream_refusal("wide UVI PCM encoding is unsupported"))?;
+    PcmStreamAdmission::new(encoding,c,decoded_frames,physical,external_source_workspace_bytes).map(|profile|Some(StreamAdmission::Pcm(profile)))
+        .map_err(|e|wide_stream_refusal(format!("wide UVI PCM owned decoder/container admission: {e}")))
+}
+
 /// Read only bounded metadata and chunk headers; sample payloads are skipped.
 /// The reader is the same origin-aware (possibly decrypted) view used by audio.
 pub(crate) fn parse_reader(
@@ -463,97 +623,36 @@ pub(crate) fn parse_reader(
         if end < 12 || end > physical {
             return Err(MetadataError::Truncated);
         }
-        let mut at = 12u64;
-        while at < end {
-            if end - at < 8 {
-                return Err(MetadataError::Truncated);
-            }
-            reader
-                .seek(SeekFrom::Start(at))
-                .map_err(|_| MetadataError::Truncated)?;
-            let mut h = [0u8; 8];
-            reader
-                .read_exact(&mut h)
-                .map_err(|_| MetadataError::Truncated)?;
-            let n = if aiff { be32(&h, 4)? } else { le32(&h, 4)? } as usize;
-            let next = at
-                .checked_add(8 + n as u64 + (n & 1) as u64)
-                .ok_or(MetadataError::Limit)?;
-            if next > end {
-                return Err(MetadataError::Truncated);
-            }
-            if matches!(
-                &h[..4],
-                b"smpl" | b"inst" | b"INST" | b"MARK" | b"acid" | b"fmt " | b"COMM"
-            ) {
-                if n > MAX_METADATA.saturating_sub(state.metadata) {
-                    return Err(MetadataError::Limit);
-                }
-                let mut body = vec![0; n];
-                reader
-                    .read_exact(&mut body)
-                    .map_err(|_| MetadataError::Truncated)?;
-                state.chunk(&h[..4], &body, aiff)?;
-            } else {
-                state.chunk(&h[..4], &[], aiff)?;
-            }
-            at = next;
-        }
+        walk_container_chunks(reader,end,aiff,|id,n,reader| {
+            if matches!(id,b"smpl" | b"inst" | b"INST" | b"MARK" | b"acid" | b"fmt " | b"COMM") {
+                if n > MAX_METADATA.saturating_sub(state.metadata) { return Err(MetadataError::Limit); }
+                let mut body=vec![0;n];
+                reader.read_exact(&mut body).map_err(|_|MetadataError::Truncated)?;
+                state.chunk(id,&body,aiff)?;
+            } else { state.chunk(id,&[],aiff)?; }
+            Ok(())
+        })?;
         format = if aiff { Format::Aiff } else { Format::Wav };
     } else if header.starts_with(b"fLaC") {
-        let mut at = 4u64;
-        for index in 0..MAX_CHUNKS {
-            reader
-                .seek(SeekFrom::Start(at))
-                .map_err(|_| MetadataError::Truncated)?;
-            let mut h = [0u8; 4];
-            reader
-                .read_exact(&mut h)
-                .map_err(|_| MetadataError::Truncated)?;
-            let n = (usize::from(h[1]) << 16) | (usize::from(h[2]) << 8) | usize::from(h[3]);
-            let next = at + 4 + n as u64;
-            if next > physical {
-                return Err(MetadataError::Truncated);
+        walk_flac_blocks(reader,physical,|kind,n,reader| {
+            if kind==0 {
+                if n!=34 {return Err(MetadataError::Invalid);}
+                let mut body=[0u8;34];reader.read_exact(&mut body).map_err(|_|MetadataError::Truncated)?;
+                let packed=u64::from_be_bytes(body[10..18].try_into().unwrap());
+                state.channels=Some(((packed>>41)&7) as u16+1);
+                state.bits=Some(((packed>>36)&31) as u16+1);
             }
-            if h[0] & 0x7f == 0 {
-                if n != 34 {
-                    return Err(MetadataError::Invalid);
-                }
-                let mut body = [0u8; 34];
-                reader
-                    .read_exact(&mut body)
-                    .map_err(|_| MetadataError::Truncated)?;
-                let packed = u64::from_be_bytes(body[10..18].try_into().unwrap());
-                state.channels = Some(((packed >> 41) & 7) as u16 + 1);
-                state.bits = Some(((packed >> 36) & 31) as u16 + 1);
-            }
-            if h[0] & 0x7f == 2 {
-                if n < 4 {
-                    return Err(MetadataError::Truncated);
-                }
-                let mut id = [0u8; 4];
-                reader
-                    .read_exact(&mut id)
-                    .map_err(|_| MetadataError::Truncated)?;
-                if matches!(&id, b"riff" | b"aiff") {
-                    if n - 4 > MAX_METADATA.saturating_sub(state.metadata) {
-                        return Err(MetadataError::Limit);
-                    }
-                    let mut body = vec![0; n - 4];
-                    reader
-                        .read_exact(&mut body)
-                        .map_err(|_| MetadataError::Truncated)?;
-                    state.foreign(&body, &id == b"aiff")?;
+            if kind==2 {
+                if n<4 {return Err(MetadataError::Truncated);}
+                let mut id=[0u8;4];reader.read_exact(&mut id).map_err(|_|MetadataError::Truncated)?;
+                if matches!(&id,b"riff"|b"aiff") {
+                    if n-4>MAX_METADATA.saturating_sub(state.metadata) {return Err(MetadataError::Limit);}
+                    let mut body=vec![0;n-4];reader.read_exact(&mut body).map_err(|_|MetadataError::Truncated)?;
+                    state.foreign(&body,&id==b"aiff")?;
                 }
             }
-            at = next;
-            if h[0] & 0x80 != 0 {
-                break;
-            }
-            if index + 1 == MAX_CHUNKS {
-                return Err(MetadataError::Limit);
-            }
-        }
+            Ok(())
+        })?;
         format = Format::Flac;
     } else {
         return Err(MetadataError::Format);
@@ -843,5 +942,70 @@ mod tests {
         acid[0] = 3;
         let oneshot = [b"riff".as_slice(), &chunk(b"acid", &acid, false)].concat();
         assert!(parse(&flac(&[oneshot]), 16).unwrap().looping.is_none());
+    }
+}
+
+
+/// Initial file metadata must be representable by IR without approximation.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(crate) enum InitialPlaybackError {
+    Metadata(MetadataError), Geometry, UnsupportedFiniteLoop, UnsupportedLoopShape,
+}
+impl SampleMetadata {
+    pub(crate) fn initial_ir_playback(self)->std::result::Result<sampler_ir::Playback,InitialPlaybackError> {
+        use sampler_ir::{Looping,LoopRange,Span};
+        use InitialPlaybackError as E;
+        if let Some(error)=self.geometry_error {return Err(E::Metadata(error));}
+        let playback=self.playback();
+        // Only convert geometry representable by the existing IR/lower path.
+        // The actual cursor performs its final source/rate validation in lower.
+        let source_end=playback.end.unwrap_or(self.frames);
+        if playback.start>=source_end || source_end>self.frames {return Err(E::Geometry);}
+        let start=u64::try_from(playback.start).map_err(|_|E::Geometry)?;
+        let end=playback.end.map(u64::try_from).transpose().map_err(|_|E::Geometry)?;
+        let looping=if let Some(looping)=playback.loop_range {
+            if looping.passes.is_some() {return Err(E::UnsupportedFiniteLoop);}
+            if looping.start<playback.start || looping.start>=looping.end || looping.end>source_end {return Err(E::Geometry);}
+            if let LoopShape::Crossfade {frames}=looping.shape {
+                // Directional guard validation is deferred to lower, which still
+                // owns the oscillator Reverse parameter. Do not assume forward here.
+                if frames==0 || frames>looping.end-looping.start {return Err(E::Geometry);}
+            }
+            let (crossfade,alternating)=match looping.shape {
+                LoopShape::Wrap=>(Span::ZERO,false),
+                LoopShape::PingPong=>(Span::ZERO,true),
+                LoopShape::Crossfade {frames}=>(Span::Frames(u64::try_from(frames).map_err(|_|E::Geometry)?),false),
+                LoopShape::EqualPowerCrossfade {..}=>return Err(E::UnsupportedLoopShape),
+            };
+            let range=LoopRange {start:u64::try_from(looping.start).map_err(|_|E::Geometry)?,
+                end:u64::try_from(looping.end).map_err(|_|E::Geometry)?,crossfade,alternating};
+            match looping.mode {LoopMode::Continuous=>Looping::Continuous(range),LoopMode::UntilRelease=>Looping::UntilRelease(range)}
+        } else {Looping::None};
+        Ok(sampler_ir::Playback {start,end,looping,..Default::default()})
+    }
+}
+
+#[cfg(test)]
+mod initial_ir_tests {
+    use super::*;
+    fn metadata(shape:LoopShape)->SampleMetadata {
+        SampleMetadata {format:Format::Wav,base_note:64,fine_tune:25.,frames:128,
+            looping:Some(Loop {start:16,end:96,mode:LoopMode::Continuous,shape,passes:None}),
+            geometry_error:None,channels:Some(1),bits:Some(16),tempo:0.}
+    }
+    #[test]
+    fn initial_ir_conversion_preserves_supported_shapes_and_refuses_approximations() {
+        for (shape,fade,alternating) in [(LoopShape::Wrap,0,false),(LoopShape::PingPong,0,true),(LoopShape::Crossfade {frames:4},4,false)] {
+            let converted=metadata(shape).initial_ir_playback().unwrap();
+            let sampler_ir::Looping::Continuous(range)=converted.looping else {panic!("continuous loop lost");};
+            assert_eq!((converted.start,converted.end,range.start,range.end),(0,Some(128),16,96));
+            assert_eq!(range.crossfade,sampler_ir::Span::Frames(fade));assert_eq!(range.alternating,alternating);
+        }
+        assert_eq!(metadata(LoopShape::EqualPowerCrossfade {frames:4}).initial_ir_playback(),Err(InitialPlaybackError::UnsupportedLoopShape));
+        let mut finite=metadata(LoopShape::Wrap);finite.looping.as_mut().unwrap().passes=std::num::NonZeroU32::new(2);
+        assert_eq!(finite.initial_ir_playback(),Err(InitialPlaybackError::UnsupportedFiniteLoop));
+        let mut vendor=metadata(LoopShape::Wrap);vendor.geometry_error=Some(MetadataError::UnsupportedVendorSamplerData);
+        assert_eq!(vendor.initial_ir_playback(),Err(InitialPlaybackError::Metadata(MetadataError::UnsupportedVendorSamplerData)));
+        assert_eq!(metadata(LoopShape::Crossfade {frames:81}).initial_ir_playback(),Err(InitialPlaybackError::Geometry));
     }
 }

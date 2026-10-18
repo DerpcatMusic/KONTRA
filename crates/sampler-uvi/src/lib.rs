@@ -269,6 +269,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         locations: Vec::new(),
         envelopes: HashMap::new(),
         modulator_index: HashMap::new(),
+        modulator_nodes:HashMap::new(),
         route_index: HashMap::new(),
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
@@ -287,6 +288,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
+        processing_parameter_intents: Vec::new(),
     };
     out.program(program).map_err(Translate::Invalid)?;
     // Every authored user contributes, including a bypassed user sharing an
@@ -320,8 +322,26 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             );
         }
     }
+    // Also retain writable definitions which currently have no audio consumer.
+    for node in program.descendants().filter(|n|n.has_tag_name("ConstantModulation")&&n.attribute("ScriptLive").is_some()){
+        engine_parameters::register_constant(&mut out.ir,node).map_err(Translate::Invalid)?;
+    }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    // Real insert controls exist only now. Join exact original placement and
+    // semantic role; no placeholder control or output-field surrogate.
+    for (owner,source_node,chain,index,fixed_factors) in &out.processing_parameter_intents {
+        let bindings:Vec<_>=out.ir.processor_controls.iter().filter(|row|row.chain==*chain&&row.index==*index&&row.parameter==ir::ProcessorParameter::Cutoff).collect();
+        if bindings.len()!=1{return Err(Translate::Invalid("shared Frequency connection has no unique real Freq control".into()));}
+        out.ir.source_indices.processing_parameters.push(ir::SourceProcessingParameter{
+            owner:*owner,source_node:*source_node,chain:*chain,index:*index,parameter:ir::ProcessorParameter::Cutoff,
+            control:bindings[0].control,law:ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore,
+            fixed_factors:fixed_factors.clone(),compiled:None,
+        });
+    }
+    engine_parameters::register_source_matrices(&mut out.ir);
     out.ir.register_compressor_controls();
+    out.ir.source_indices.owners = source_owners(program, &out.ir)
+        .map_err(Translate::Invalid)?;
     #[cfg(feature = "scan")]
     {
         out.ir.dsp_slots = Some(coverage::slots(&out, program));
@@ -344,6 +364,139 @@ fn routers<'a>(node: Node<'a, 'a>) -> impl Iterator<Item = Node<'a, 'a>> {
     node.children()
         .filter(|n| n.has_tag_name("BusRouters"))
         .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+}
+
+/// Retain the actual source hierarchy once for both audio and event producers.
+/// This does not mark an unknown processor as implemented, execute a callback,
+/// or choose its DSP lifetime from the XML tag's display name.
+fn source_owners(program: Node, instrument: &ir::Instrument) -> Result<Vec<ir::SourceOwner>, String> {
+    fn kind(node: Node) -> Option<ir::SourceOwnerKind> {
+        if !node.is_element() { return None; }
+        Some(match node.tag_name().name() {
+            "Program" => ir::SourceOwnerKind::Instrument,
+            "Layer" => ir::SourceOwnerKind::Layer,
+            "Keygroup" => ir::SourceOwnerKind::Keygroup,
+            "SamplePlayer" => ir::SourceOwnerKind::Player,
+            "AuxEffect" => ir::SourceOwnerKind::Aux,
+            _ if node.is_element() && node.parent().is_some_and(|p| p.has_tag_name("Oscillators")) =>
+                ir::SourceOwnerKind::Player,
+            _ => return None,
+        })
+    }
+    fn identity(node: Node) -> Result<ir::SourceOwnerId, String> {
+        u32::try_from(node.id().get_usize()).map(ir::SourceOwnerId::UviNode)
+            .map_err(|_| "source owner XML node identity exceeds supported range".into())
+    }
+    fn saved_switch(node: Node, field: &str) -> Result<Option<ir::SourceSwitch>, String> {
+        node.attribute(field).map(|_| number(node, field, 0.).map(|value|
+            ir::SourceSwitch { saved: value != 0., control: None })).transpose()
+    }
+    let count = program.descendants().filter(|node| kind(*node).is_some()).count();
+    let mut nodes = Vec::new();
+    nodes.try_reserve_exact(count).map_err(|_| "source owner inventory capacity".to_string())?;
+    nodes.extend(program.descendants().filter(|node| kind(*node).is_some()));
+    let mut positions = HashMap::new();
+    positions.try_reserve(count).map_err(|_| "source owner identity capacity".to_string())?;
+    for (index, node) in nodes.iter().enumerate() {
+        positions.insert(identity(*node)?, index);
+    }
+    let mut targets = HashMap::new();
+    targets.try_reserve(instrument.source_indices.sample_targets.len())
+        .map_err(|_| "source owner target capacity".to_string())?;
+    for target in &instrument.source_indices.sample_targets {
+        if targets.insert(target.node, target.zones.as_slice()).is_some() {
+            return Err("duplicate actual source player target".into());
+        }
+    }
+    let mut owners = Vec::new();
+    owners.try_reserve_exact(nodes.len()).map_err(|_| "source hierarchy capacity".to_string())?;
+    for node in &nodes {
+        let node = *node;
+        let id = identity(node)?;
+        let owner_kind = kind(node).ok_or("source owner kind disappeared")?;
+        let parent = node.ancestors().skip(1).find(|node| kind(*node).is_some())
+            .map(identity).transpose()?;
+        let mut predicates = Vec::new();
+        if matches!(owner_kind, ir::SourceOwnerKind::Layer | ir::SourceOwnerKind::Keygroup) {
+            predicates.push(ir::SourceInputPredicate::Keys(ir::KeyRange {
+                low: midi(node, "LowKey", 0)?, high: midi(node, "HighKey", 127)?,
+            }));
+        }
+        if owner_kind == ir::SourceOwnerKind::Keygroup {
+            predicates.push(ir::SourceInputPredicate::Velocities(ir::VelocityRange {
+                low: midi(node, "LowVelocity", 1)?, high: midi(node, "HighVelocity", 127)?,
+            }));
+        }
+        // Do not guess whether an unjoined native channel field is zero- or
+        // one-based, nor silently turn an unimplemented generator into a sample.
+        for field in ["MidiChannel", "MIDIChannel", "InputChannel"] {
+            if node.attribute(field).is_some() {
+                predicates.push(ir::SourceInputPredicate::Unsupported { field: field.into() });
+            }
+        }
+        if owner_kind == ir::SourceOwnerKind::Player && !node.has_tag_name("SamplePlayer") {
+            predicates.push(ir::SourceInputPredicate::Unsupported {
+                field: format!("source-kind:{}", node.tag_name().name()),
+            });
+        }
+        let zones = match id {
+            ir::SourceOwnerId::UviNode(node) => targets.get(&node).map_or_else(Vec::new, |zones| zones.to_vec()),
+            _ => return Err("UVI source owner namespace changed".into()),
+        };
+        let mut groups = Vec::new();
+        for zone in &zones {
+            let zone = instrument.zones.get(zone.0).ok_or("source owner has dangling translated zone")?;
+            if let Some(group) = zone.group && !groups.contains(&group) { groups.push(group); }
+        }
+        let mut event_processors = Vec::new();
+        for processor in node.children().filter(|n| n.has_tag_name("EventProcessors"))
+            .flat_map(|list| list.children().filter(|node| node.is_element())) {
+            let ordinal = u32::try_from(event_processors.len())
+                .map_err(|_| "source event-list ordinal exceeds supported range")?;
+            let processor_id = u32::try_from(processor.id().get_usize())
+                .map_err(|_| "source event processor identity exceeds supported range")?;
+            event_processors.push(ir::SourceEventProcessor {
+                id: ir::SourceEventProcessorId::UviNode(processor_id), owner: id, ordinal,
+                kind: processor.tag_name().name().into(),
+                bypass: ir::SourceSwitch { saved: number(processor, "Bypass", 0.)? != 0., control: None },
+            });
+        }
+        owners.push(ir::SourceOwner { id, parent, kind: owner_kind,
+            children: Vec::new(), groups, zones, predicates,
+            bypass: saved_switch(node, "Bypass")?,
+            // Generic owner.mute is a reception predicate. Actual output Mute
+            // is independently bound at the retained global outlet above.
+            mute: if matches!(owner_kind,ir::SourceOwnerKind::Layer|ir::SourceOwnerKind::Instrument) {
+                let key=engine_parameters::scope_midi_mute_key(node.id().get_usize());
+                let control=instrument.controls.iter().position(|row|row.key==key).map(ir::ControlRef);
+                Some(ir::SourceSwitch{saved:number(node,"MidiMute",0.)?!=0.,control})
+            } else {saved_switch(node,"MidiMute")?},
+            event_processors });
+    }
+    for index in 0..owners.len() {
+        if let Some(parent) = owners[index].parent {
+            let parent_index = *positions.get(&parent).ok_or("source owner parent is outside program")?;
+            let child = owners[index].id;
+            owners[parent_index].children.push(child);
+        }
+    }
+    // A KG's direct source membership is useful to both selection and audio.
+    // Layers/Program retain their direct child graph instead of an unbounded
+    // duplicated descendant-zone cache. All source/event identities stay put.
+    for index in (0..owners.len()).rev() {
+        if owners[index].kind != ir::SourceOwnerKind::Keygroup { continue; }
+        let children = owners[index].children.clone();
+        for child in children {
+            let child = *positions.get(&child).ok_or("source child identity disappeared")?;
+            if owners[child].kind != ir::SourceOwnerKind::Player { continue; }
+            for group in owners[child].groups.clone() {
+                if !owners[index].groups.contains(&group) { owners[index].groups.push(group); }
+            }
+            let child_zones = owners[child].zones.clone();
+            owners[index].zones.extend(child_zones);
+        }
+    }
+    Ok(owners)
 }
 
 /// A node's own `SignalConnection`s.
@@ -438,10 +591,12 @@ struct Translation {
     /// Per asset, its sample path as resolved for the loader: an absolute disk
     /// path for loose samples, or the authored bank-relative path for a bank.
     locations: Vec<String>,
-    /// Envelope modulators by their source node, with their velocity law.
-    envelopes: HashMap<roxmltree::NodeId, (ir::ModulatorRef, ir::VelocityResponse)>,
+    /// Actual source-node envelope definitions, velocity law and cached qualification.
+    envelopes: HashMap<roxmltree::NodeId, modulation::EnvelopeDefinition>,
     /// Shared modulators, routes and shapes by identity (see `modulation`).
     modulator_index: HashMap<String, ir::ModulatorRef>,
+    /// Offaudio exact source-definition identity, never a runtime value cache.
+    modulator_nodes:HashMap<ir::ModulatorRef,roxmltree::NodeId>,
     route_index: HashMap<String, ir::RouteRef>,
     shape_index: HashMap<String, ir::ShapeRef>,
     /// Program- and layer-level source nodes already given their shared-state
@@ -461,6 +616,7 @@ struct Translation {
     insert_nodes: Vec<InsertNode>,
     /// The layer being translated, when a script may pick its oscillators.
     split: Option<(usize, ir::Group)>,
+    processing_parameter_intents: Vec<(ir::SourceOwnerId,u32,ir::ChainRef,usize,Vec<ir::SourceFrequencyFold>)>,
 }
 
 /// The IR group holding oscillator `osc` (1-based, counting bypassed ones) of
@@ -484,15 +640,13 @@ impl Translation {
         });
     }
 
-    /// Program and layer connections act on the mixed signal of their scope.
-    /// Gain, pitch and pan modulation are linear in the mix, so each keygroup
-    /// below the scope takes the connection itself (`Self::keygroup`).
+    /// Source-domain connections remain on children. Audio Gain/Pan belong
+    /// to the actual global scope outlet, never ahead of each child chain.
     fn scope_connections<'a>(&mut self, scope: Node<'a, 'a>) -> Vec<Node<'a, 'a>> {
-        connections(scope).collect()
+        connections(scope).filter(|connection|!matches!(connection.attribute("Destination"),Some("Gain"|"Pan"))).collect()
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let gain = number(program, "Gain", 1.0)?;
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -578,12 +732,13 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
-        let program_output = self.insert_bus(program, ir::Output::Master)?;
-        self.ir.input_bus = if let ir::Output::Bus(bus) = program_output {
-            Some(bus)
-        } else {
-            None
-        };
+        // The native builtin source factory/cache belongs to this actual
+        // Program. Layer output destinations delegate builtin MIDI lookup to
+        // the same resolved factory; XML ancestry alone is not a state policy.
+        let midi_input_owner=ir::SourceOwnerId::UviNode(u32::try_from(program.id().get_usize()).map_err(|_|"Program MIDI source identity overflow")?);
+        let (program_input,_program_outlet)=self.global_scope_bus(program,ir::Output::Master,midi_input_owner)?;
+        let program_output=ir::Output::Bus(program_input);
+        self.ir.input_bus=Some(program_input);
         for (_, bus) in &auxes {
             self.ir.buses[bus.0].output = program_output;
         }
@@ -592,30 +747,19 @@ impl Translation {
             .filter(|n| n.has_tag_name("Layer"))
             .enumerate()
         {
-            if number(layer, "Mute", 0.0)? != 0.0 {
-                continue;
-            }
             let mut scoped = program_scope.clone();
             scoped.extend(self.scope_connections(layer));
-            let output = self.insert_bus(layer, program_output)?;
-            let pan = number(layer, "Pan", 0.0)?;
-            let mut base = ir::Group {
+            let (layer_input,layer_outlet)=self.global_scope_bus(layer,program_output,midi_input_owner)?;
+            let output=ir::Output::Bus(layer_input);
+            let base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
-                gain: ir::Gain::Linear(gain * number(layer, "Gain", 1.0)?),
-                pan: ir::Pan {
-                    position: pan.clamp(-1.0, 1.0),
-                    law: ir::PanLaw::Balance,
-                },
+                gain: ir::Gain::UNITY,
+                pan: ir::Pan {position:0.,law:ir::PanLaw::Balance},
                 output,
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
             for router in routers(layer) {
-                if number(router, "Bypass", 0.0)? != 0.0 {
-                    // A bypassed send carries nothing.
-                    self.used.insert(router.id());
-                    continue;
-                }
                 let Some(bus) = router
                     .attribute("Destination")
                     .and_then(|d| d.rsplit('/').next())
@@ -625,24 +769,19 @@ impl Translation {
                     continue;
                 };
                 self.used.insert(router.id());
-                base.sends.push(ir::GroupSend {
-                    to: bus,
-                    gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
-                    pre_fader: number(router, "PreFader", 0.0)? != 0.0,
-                });
+                let sender=if number(router,"PreFader",0.)?!=0.{layer_input}else{layer_outlet};
+                self.ir.buses[sender.0].sends.push(ir::Send{to:ir::Output::Bus(bus),
+                    gain:ir::Gain::Linear(if number(router,"Bypass",0.)?!=0.{0.}else{number(router,"Gain",1.)?}),
+                    position:ir::SendPosition::PostChain});
             }
             // Scripts address individual keygroups/oscillators, including
             // single-oscillator keygroups; no two original nodes may alias.
-            self.split = scripted.then(|| (ordinal + 1, base.clone()));
+            // Source identity is independent of whether a Lua processor exists.
+            // Keep every authored oscillator and its own bypass selector; a
+            // muted alternate must never mute a sibling sharing one Group.
+            self.split = Some((ordinal + 1, base.clone()));
             if self.split.is_none() {
                 self.ir.groups.push(base);
-            }
-            if pan != 0.0 {
-                self.unsupported(
-                    &path(layer),
-                    "cos² balance pan law (linear balance used)",
-                    pan,
-                );
             }
             // (Split layers have no group of their own: every zone takes an
             // oscillator group, see `oscillator_group`.)
@@ -690,38 +829,52 @@ impl Translation {
         }
         // The amplitude envelope: a plain Gain connection from a DAHDSR. Every other
         // connection is a route or a static factor. AnalogADSR is not modeled (below).
-        let mut amplitude = None;
+        let amplitude:Option<(ir::ModulatorRef,ir::VelocityResponse)>=None;
+        let mut source_gate=None;
         let mut shared = modulation::Modulation::default();
         for connection in scoped {
+            if connection.attribute("Destination")==Some("Pan") {return Err(format!("{}: Program/Layer Pan connection requires its retained global processing owner; no per-player fallback",path(*connection)));}
             self.connect_scoped(*connection, &mut shared)?;
         }
         for connection in connections(keygroup) {
-            let plain = number(connection, "Ratio", 1.0)? == 1.0
-                && number(connection, "Bypass", 0.0)? == 0.0
-                && number(connection, "Inverted", 0.0)? == 0.0
-                && number(connection, "ConnectionMode", 0.0)? == 0.0
-                && connection
-                    .attribute("Mapper")
-                    .unwrap_or_default()
-                    .is_empty()
-                && connection.children().all(|c| !c.is_element());
-            let envelope = modulation::source_node(
-                keygroup,
-                connection.attribute("Source").unwrap_or_default(),
-            )
-            .filter(|n| n.tag_name().name() == "DAHDSR")
-            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0));
-            match envelope {
-                Some(envelope)
-                    if connection.attribute("Destination") == Some("Gain")
-                        && plain
-                        && amplitude.is_none() =>
-                {
-                    amplitude = Some(self.envelope(envelope)?);
-                }
-                _ => self.connect(connection, &mut shared)?,
+            let target=connection.attribute("Destination");
+            if matches!(target,Some("Gain"|"Pan")) && modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default())
+                .is_some_and(|source|source.has_tag_name("ScriptEventModulation")){
+                return Err(format!("{}: shared ScriptEventModulation requires actual source/event ownership, not a nearest-processor guess",path(connection)));
+            }
+            let plain=target==Some("Gain")&&source_gate.is_none()
+                &&number(connection,"Ratio",1.)?==1.&&number(connection,"Bypass",0.)?==0.
+                &&number(connection,"Inverted",0.)?==0.&&number(connection,"ConnectionMode",0.)?==0.
+                &&connection.attribute("Mapper").unwrap_or_default().is_empty()
+                &&connection.children().all(|child|!child.is_element());
+            let native_envelope=plain.then(||modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default())).flatten()
+                .filter(|node|node.has_tag_name("DAHDSR"))
+                .filter(|node|number(*node,"Bypass",0.).is_ok_and(|value|value==0.));
+            if let Some(envelope)=native_envelope {
+                let (source,velocity)=self.envelope(envelope)?;
+                self.qualify_envelope_output(connection, envelope)?;
+                let route=ir::RouteRef(self.ir.routes.len());
+                self.ir.routes.push(ir::Route{source,target:ir::Target::Amplitude,depth:ir::Depth::Normalized(1.),invert:false,shape:None,smoothing:ir::Time::ZERO,scale:None});
+                shared.routes.push(route);source_gate=Some(ir::SourceScopeGate{source,route,velocity});
+            } else if matches!(target, Some("Gain" | "Pan")) {
+                self.connect_shared_output(connection, &mut shared)?;
+            } else {
+                self.connect(connection, &mut shared)?;
             }
         }
+        let mut shared_routes:Vec<_>=shared.routes.iter().copied().filter(|route|matches!(self.ir.routes[route.0].target,ir::Target::Amplitude|ir::Target::Pan)).collect();
+        // Follow actual modulation dependencies, never leave a frequency/phase
+        // control in a physical player while moving its oscillator to the KG.
+        loop {
+            let sources:Vec<_>=shared_routes.iter().flat_map(|reference|{
+                let route=&self.ir.routes[reference.0];std::iter::once(route.source).chain(route.scale.map(|scale|scale.source))
+            }).collect();
+            let additions:Vec<_>=shared.routes.iter().copied().filter(|reference|!shared_routes.contains(reference)&&matches!(self.ir.routes[reference.0].target,ir::Target::SourceRate(source)|ir::Target::SourcePhase(source)if sources.contains(&source))).collect();
+            if additions.is_empty(){break;}shared_routes.extend(additions);
+        }
+        shared.routes.retain(|route|!shared_routes.contains(route));
+        let shared_gain_offset=std::mem::replace(&mut shared.gain,1.);
+        let shared_pan_offset=std::mem::replace(&mut shared.pan,0.);
         let (amplitude, velocity) = match amplitude {
             Some((modulator, velocity)) => (Some(modulator), velocity),
             None => (None, ir::VelocityResponse::None),
@@ -737,12 +890,57 @@ impl Translation {
         }
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
-        let (processors, placed) = self.inserts(
+        let (mut processors, mut placed) = self.inserts(
             keygroup,
             true,
             Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8),
         )?;
-        let chain = (!placed.is_empty()).then(|| {
+        // The keygroup's own insert-bypass is a separate retained owner from
+        // each insert's Bypass and every SamplePlayer enable predicate.
+        let insert_count = u16::try_from(processors.len())
+            .map_err(|_| format!("{at}: keygroup insert count exceeds shared chain capacity"))?;
+        processors.insert(0, ir::Processor::Mix {
+            count: insert_count,
+            address: ir::SlotAddress {
+                group: -1, slot: -1,
+                generic: i32::try_from(keygroup.id().get_usize())
+                    .map_err(|_| format!("{at}: keygroup insert-bypass address exceeds native domain"))?,
+            },
+            dry: 0., wet: 1.,
+            bypass: number(keygroup, "BypassInsertFX", 0.)? != 0.,
+        });
+        for (_, first, _) in &mut placed { *first += 1; }
+        // A keygroup gain is a zero-capable real owner at the KG boundary,
+        // never an epsilon ratio against a gain folded into physical sources.
+        if !gain.is_finite() || gain < 0. || gain > f64::from(f32::MAX) {
+            return Err(format!("{at}: keygroup Gain outside finite source domain"));
+        }
+        let gain_index = if number(keygroup, "FXPostGain", 0.)? != 0. {
+            // Native owner+410 bit2: true means FX follow the gain.
+            processors.insert(0, ir::Processor::Gain(ir::Gain::Linear(gain)));
+            for (_, first, _) in &mut placed { *first += 1; }
+            0
+        } else {
+            let index = processors.len();
+            processors.push(ir::Processor::Gain(ir::Gain::Linear(gain)));
+            index
+        };
+        // Authored static route factor is independent of the absolute public
+        // Gain base, at the SAME side of FX as that real field.
+        if shared_gain_offset!=1.{
+            let insertion=gain_index+1;
+            processors.insert(insertion,ir::Processor::Gain(ir::Gain::Linear(shared_gain_offset)));
+            for (_,first,_)in &mut placed{if *first>=insertion{*first+=1;}}
+        }
+        // Native f2cc80 resolves the KG Pan at the outgoing boundary, after
+        // shared inserts and either FXPostGain branch. This is one scalar
+        // control/home; source-local player pan remains a separate operation.
+        if !pan.is_finite() || !(-1. ..=1.).contains(&pan) {
+            return Err(format!("{at}: keygroup Pan outside its real domain"));
+        }
+        let pan_index=processors.len();
+        processors.push(ir::Processor::ExpressionPan(ir::OwnedPan{pan:ir::Pan{position:pan,law:ir::PanLaw::RaisedCosineCoreF64},offset:shared_pan_offset}));
+        let chain = {
             self.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
                 pre_amplitude: processors,
@@ -750,8 +948,28 @@ impl Translation {
             });
             let chain = ir::ChainRef(self.ir.chains.len() - 1);
             self.place(chain, placed);
-            chain
-        });
+            let control = ir::ControlRef(self.ir.controls.len());
+            self.ir.controls.push(ir::Control {
+                key: engine_parameters::scope_gain_key(keygroup.id().get_usize()),
+                label: "Keygroup Gain".into(),
+                value: ir::ControlValue::Continuous {
+                    min: 0., max: f64::from(f32::MAX), default: gain,
+                    unit: ir::ControlUnit::None,
+                },
+                automation: ir::Automation::None,
+            });
+            self.ir.processor_controls.push(ir::ProcessorControl {
+                control, chain, index: gain_index,
+                parameter: ir::ProcessorParameter::Gain,
+                ramp: ir::Time::ZERO,
+            });
+            let control=ir::ControlRef(self.ir.controls.len());
+            self.ir.controls.push(ir::Control{key:engine_parameters::scope_pan_key(keygroup.id().get_usize()),
+                label:"Keygroup Pan".into(),value:ir::ControlValue::Continuous{min:-1.,max:1.,default:pan,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+            self.ir.processor_controls.push(ir::ProcessorControl{control,chain,index:pan_index,
+                parameter:ir::ProcessorParameter::Pan,ramp:ir::Time::ZERO});
+            Some(chain)
+        };
         if let Some(chain) = chain {
             for insert in keygroup
                 .children()
@@ -766,20 +984,37 @@ impl Translation {
                     .copied()
                 {
                     for connection in connections(insert) {
+                        let before=self.ir.unsupported.len();
                         self.connect_frequency(connection, chain, placed.first, &mut shared)?;
+                        if self.ir.unsupported.len()!=before{return Err(format!("{}: shared Frequency connection has no supported exact route law",path(connection)));}
                     }
                 }
             }
         }
+        // Freq connections are parsed AFTER the earlier Gain/Pan extraction.
+        // Move each actual consumer now, before physical sections clone routes;
+        // the later common dependency closure retains source-rate/phase/scales.
+        if let Some(chain)=chain {
+            for route in &shared.routes {
+                if matches!(self.ir.routes[route.0].target,ir::Target::Processor{chain:target,..}if target==chain)&&!shared_routes.contains(route){shared_routes.push(*route);}
+            }
+            shared.routes.retain(|route|!shared_routes.contains(route));
+        }
+        let frequency_factors=std::mem::take(&mut shared.frequency_factors);
+        // One actual keygroup activation owns the insert chain. Source zones
+        // retain their own cursor/amplitude; they do not each instantiate KG DSP.
+        let first_member = self.ir.zones.len();
         for (oscillator, player) in keygroup
-            .descendants()
-            .filter(|n| n.has_tag_name("SamplePlayer"))
+            .children()
+            .filter(|n| n.has_tag_name("Oscillators"))
+            .flat_map(|n| n.children().filter(|n| n.is_element()))
             .enumerate()
         {
-            let bypassed = number(player, "Bypass", 0.0)? != 0.0;
-            if bypassed && self.split.is_none() {
+            if !player.has_tag_name("SamplePlayer") {
+                self.unsupported(&path(player), "oscillator source kind", player.tag_name().name());
                 continue;
             }
+            let bypassed = number(player, "Bypass", 0.0)? != 0.0;
             let group = self.oscillator_group(
                 group,
                 oscillator as u32 + 1,
@@ -817,13 +1052,6 @@ impl Translation {
                 }
             };
             let player_pan = number(player, "Pan", 0.0)?;
-            if player_pan != 0.0 && pan != 0.0 {
-                self.unsupported(
-                    &at,
-                    "pan at both keygroup and player (summed)",
-                    format!("{pan} + {player_pan}"),
-                );
-            }
             let playback = self.playback(player)?;
             let mut modulation = shared.clone();
             for connection in connections(player) {
@@ -857,6 +1085,9 @@ impl Translation {
             let zone = ir::ZoneRef(self.ir.zones.len());
             let node = u32::try_from(player.id().get_usize()).map_err(|_| "sample player identity exceeds supported range".to_string())?;
             self.ir.source_indices.sample_targets.push(ir::SourceSampleTarget { node, zones: vec![zone] });
+            if !player.children().any(|n|n.has_tag_name("PlaybackOptions")) {
+                self.ir.source_indices.file_playback_zones.push(zone);
+            }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -876,18 +1107,128 @@ impl Translation {
                         + modulation.pitch
                         + scaling_tune,
                 ),
-                gain: ir::Gain::Linear(gain * number(player, "Gain", 1.0)? * modulation.gain),
+                gain: ir::Gain::Linear(number(player, "Gain", 1.0)? * modulation.gain),
                 velocity,
                 pan: ir::Pan {
-                    position: (pan + player_pan + modulation.pan).clamp(-1.0, 1.0),
+                    position: (player_pan + modulation.pan).clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
                 playback,
-                chain,
+                // A player-local chain must be attached here when present;
+                // the keygroup's chain is the shared owner below.
+                chain: None,
                 amplitude,
                 routes: modulation.routes,
                 ..asset.map_or_else(ir::Zone::dormant, ir::Zone::new)
             });
+        }
+        if first_member < self.ir.zones.len() {
+            // Own the actual stateful KG definition once even when all of its
+            // outgoing consumers are physical targets. Resolve by source NodeId,
+            // not waveform/name equality or the nearest admitted player.
+            // Use the nearest STRUCTURAL definition owner, as in source_owners:
+            // a player's own source must not be promoted through its KG ancestor.
+            let mut owned_sources:Vec<_>=self.modulator_nodes.iter().filter_map(|(source,id)|{
+                let node=keygroup.document().get_node(*id)?;
+                (node.ancestors().find(|node|node.is_element()&&(
+                    matches!(node.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"|"AuxEffect")
+                    ||node.parent().is_some_and(|parent|parent.has_tag_name("Oscillators"))))
+                    .map(|node|node.id())==Some(keygroup.id())
+                    &&matches!(self.ir.modulators[source.0].source,ir::ModulationSource::Lfo(_)|ir::ModulationSource::Envelope(_)|ir::ModulationSource::Breakpoints(_)))
+                    .then_some(*source)
+            }).collect();
+            if let Some(gate)=source_gate{if !owned_sources.contains(&gate.source){owned_sources.push(gate.source);}}
+            // Complete incoming source-rate/phase and scaling dependencies. A
+            // route is moved by its genuine RouteRef and removed from every
+            // physical member, never run once per player.
+            loop {
+                let before=(owned_sources.len(),shared_routes.len());
+                for reference in shared_routes.clone(){
+                    let route=&self.ir.routes[reference.0];
+                    for source in std::iter::once(route.source).chain(route.scale.map(|scale|scale.source)){
+                        if !owned_sources.contains(&source){owned_sources.push(source);}
+                    }
+                }
+                let incoming:Vec<_>=self.ir.zones[first_member..].iter().flat_map(|zone|zone.routes.iter().copied()).chain(shared_routes.iter().copied())
+                    .filter(|reference|matches!(self.ir.routes[reference.0].target,ir::Target::SourceRate(source)|ir::Target::SourcePhase(source)if owned_sources.contains(&source))).collect();
+                for reference in incoming{if !shared_routes.contains(&reference){shared_routes.push(reference);}}
+                if before==(owned_sources.len(),shared_routes.len()){break;}
+            }
+            owned_sources.sort_by_key(|source|source.0);owned_sources.dedup();
+            for zone in &mut self.ir.zones[first_member..]{zone.routes.retain(|route|!shared_routes.contains(route));}
+            if let Some(chain)=chain {
+                // Preserve every cell at the real chain coordinate. Decode and
+                // ordinary materialization choose the actual processing width.
+                for insert in keygroup.children().filter(|n|n.has_tag_name("Inserts"))
+                    .flat_map(|n|n.descendants()).filter(|n|n.has_tag_name("GainMatrix")) {
+                    let Some(placement)=self.insert_nodes.iter().find(|entry|
+                        entry.node==insert.id().get_usize() && entry.chain==chain && entry.count>0) else {continue;};
+                    let mut cells=Vec::with_capacity(144);
+                    for output in 1..=12 {
+                        for input in 1..=12 {
+                            cells.push(number(insert,&format!("Gain_{input}_{output}"),f64::from(u8::from(input==output)))?);
+                        }
+                    }
+                    self.ir.source_indices.processing_matrices.push(ir::SourceProcessingMatrix {
+                        owner:ir::SourceOwnerId::UviNode(u32::try_from(keygroup.id().get_usize())
+                            .map_err(|_|"keygroup identity exceeds source address domain".to_owned())?),
+                        node:u32::try_from(insert.id().get_usize()).map_err(|_|"matrix identity exceeds source address domain".to_owned())?,
+                        chain,index:placement.first,
+                        matrix:ir::ChannelMatrix {input:ir::SignalLayout{channels:12},output:ir::SignalLayout{channels:12},cells,
+                            arithmetic:ir::MatrixArithmetic::SeparateMulAddF32},control_definitions:Vec::new(),controls:Vec::new(),compiled:None,
+                    });
+                }
+            }
+            self.ir.source_indices.processing.push(ir::SourceProcessingRecipe {
+                name: keygroup.attribute("Name").unwrap_or("Keygroup").to_owned(),
+                owner: ir::SourceOwnerId::UviNode(u32::try_from(keygroup.id().get_usize())
+                    .map_err(|_| "keygroup identity exceeds source address domain".to_owned())?),
+                lifetime: ir::SourceProcessingLifetime::UviKeygroupActivation,
+                members: (first_member..self.ir.zones.len()).map(ir::ZoneRef).collect(),
+                chain,
+                // Source envelopes retain their existing physical ownership.
+                // No independent shared envelope is inferred from ancestry.
+                amplitude: None,
+                output: match self.ir.zones[first_member].group.map(|group| self.ir.groups[group.0].output) {
+                    Some(ir::Output::Bus(bus)) => Some(bus),
+                    Some(ir::Output::Master) | None => None,
+                },
+                compiled: None,
+                parameter_roles: if let Some(chain)=chain {
+                    [ (ir::SourceOwnerOutputField::Gain,gain_index,ir::ProcessorParameter::Gain),
+                      (ir::SourceOwnerOutputField::Pan,pan_index,ir::ProcessorParameter::Pan) ]
+                        .into_iter().map(|(field,chain_index,parameter)|{
+                            let control=self.ir.processor_controls.iter().find(|binding|binding.chain==chain&&binding.index==chain_index&&binding.parameter==parameter)
+                                .ok_or_else(||format!("{at}: shared output scalar has no exact source binding"))?.control;
+                            Ok(ir::SourceScopeControlRole{field,chain_index,control,compiled:None})
+                        }).collect::<Result<Vec<_>,String>>()?
+                }else{Vec::new()},
+                sources:owned_sources,routes: shared_routes,source_gate,
+            });
+            let recipe=self.ir.source_indices.processing.last().ok_or_else(||"native source recipe absent".to_owned())?;
+            if let Some(chain)=recipe.chain {
+                for placement in self.insert_nodes.iter().filter(|row|row.chain==chain&&row.count>0){
+                    let dynamic=recipe.routes.iter().any(|route|matches!(self.ir.routes[route.0].target,ir::Target::Processor{chain:target,index,..}if target==chain&&index==placement.first));
+                    let factors:Vec<_>=frequency_factors.iter().filter(|(source,index,_)|*source==chain&&*index==placement.first).map(|(_,_,factor)|*factor).collect();
+                    if dynamic||!factors.is_empty(){
+                        let node=u32::try_from(placement.node).map_err(|_|"frequency source identity overflow".to_owned())?;
+                        let original=keygroup.document().get_node(roxmltree::NodeId::new(node)).ok_or_else(||"frequency source node absent".to_owned())?;
+                        if !original.has_tag_name("OnePole"){return Err("frequency binding source is not actual OnePole".into());}
+                        self.processing_parameter_intents.push((recipe.owner,node,chain,placement.first,factors));
+                    }
+                }
+            }
+            let mut one_poles=Vec::new();
+            if let Some(chain)=recipe.chain {
+                for placement in self.insert_nodes.iter().filter(|entry|entry.chain==chain&&entry.count>0){
+                    if let Some(node)=u32::try_from(placement.node).ok().and_then(|id|keygroup.document().get_node(roxmltree::NodeId::new(id)))
+                        && node.has_tag_name("OnePole") {
+                        one_poles.push(fx::filter::native_one_pole_site(node,chain,placement.first)?);
+                    }
+                }
+            }
+            self.ir.source_indices.uvi_native_processing.push(ir::UviNativeProcessingProfile{owner:recipe.owner,
+                members:recipe.members.iter().map(|zone|(*zone,None)).collect(),one_poles,requested:None});
         }
         Ok(())
     }
@@ -924,8 +1265,8 @@ impl Translation {
     }
 
     fn envelope(&mut self, node: Node) -> Result<(ir::ModulatorRef, ir::VelocityResponse), String> {
-        if let Some(&found) = self.envelopes.get(&node.id()) {
-            return Ok(found);
+        if let Some(found) = self.envelopes.get(&node.id()) {
+            return Ok((found.modulator, found.velocity));
         }
         self.used.insert(node.id());
         let at = path(node);
@@ -997,9 +1338,12 @@ impl Translation {
             scope: ir::Scope::Voice,
             source: ir::ModulationSource::Envelope(envelope),
         });
-        let found = (ir::ModulatorRef(self.ir.modulators.len() - 1), velocity);
+        let found = modulation::EnvelopeDefinition {
+            modulator: ir::ModulatorRef(self.ir.modulators.len() - 1), velocity,
+            limitation: modulation::envelope_limitation(node)?,
+        };
         self.envelopes.insert(node.id(), found);
-        Ok(found)
+        Ok((found.modulator, found.velocity))
     }
 
     fn asset(&mut self, at: &str, sample: &str) -> Option<ir::AssetRef> {
@@ -1154,6 +1498,13 @@ impl Translated {
         self.lua.occurrences()
     }
 
+    /// Explicit generic Core opt-in. This does not qualify native property
+    /// precision/smoothing/cadence, even when source-layout DSP is qualified.
+    /// Call after initialized translation, before assembly/publication.
+    pub fn declare_core_constant_target_reads(&mut self){
+        for definition in &mut self.instrument.source_indices.constant_properties{definition.law=ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead;}
+    }
+
     /// Start the program's Lua scripts on their own thread and mark the
     /// instrument as scripted: what they replace is no longer reported, what
     /// they use that is not modeled is. `None` when the program has none.
@@ -1172,6 +1523,7 @@ impl Translated {
         mut config: script::Config,
         state: Option<script::UiState>,
     ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+        require_ordinary_source_publication(&self.instrument).map_err(|error|sampler_kontakt::LoadError::Invalid{path:std::path::PathBuf::new(),reason:error.to_string()}.at(sampler_kontakt::Stage::Translate))?;
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
@@ -1286,6 +1638,16 @@ impl Translated {
 #[track_caller]
 pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Error>> {
     translate_untagged(path).map_err(|e| staged(e, path, sampler_kontakt::Stage::Translate))
+}
+
+/// Ordinary UVI publication still has no admitted native controller source
+/// installer/actor. Bare IR/Core-law construction remains available, but every
+/// ordinary eager-script and assembly path must refuse before side effects.
+fn require_ordinary_source_publication(ir:&ir::Instrument)->Result<(),Translate>{
+    if ir.source_indices.global_modulation.iter().any(|recipe|recipe.sources.iter().any(|source|
+        matches!(ir.modulators.get(source.0).map(|m|&m.source),Some(ir::ModulationSource::Controller(_))))) {
+        return Err(Translate::Invalid("global controller source requires actual prepublication receiver/actor installation".into()));
+    }Ok(())
 }
 
 /// Translate one program of an already opened `bank` to the IR, without its
@@ -1449,15 +1811,13 @@ pub fn assemble_translated(
     rate: u32,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     let named = t.locations.first().map(PathBuf::from).unwrap_or_default();
+    let inherit=initial_playback_assets(&t.instrument,t.locations.len())?;
     let decoded = t
         .locations
         .iter()
-        .map(|location| match &t.bank {
-            Some((bank, program_path)) => bank
-                .resource(program_path, location)
-                .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d)),
-            None => decode_sample(Path::new(location)).map_err(|e| e.to_string()),
+        .enumerate().map(|(asset,location)| match &t.bank {
+            Some((bank, program_path)) => initial_bank_decoded(bank,program_path,location,inherit[asset]),
+            None => decode_initial_file(Path::new(location),inherit[asset]).map_err(|e| e.to_string()),
         })
         .collect();
     assemble(
@@ -1489,15 +1849,16 @@ pub fn assemble_translated_streamed_cancelable(
 )->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
     if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
     let named=t.locations.first().map(PathBuf::from).unwrap_or_default();
+    let inherit=initial_playback_assets(&t.instrument,t.locations.len())?;
     let mut sources=Vec::with_capacity(t.locations.len());
-    for location in &t.locations {
+    for (asset,location) in t.locations.iter().enumerate() {
         if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
         sources.push(match &t.bank {
             #[cfg(feature="library-access")]
-            Some((bank,program_path))=>bank.stream_source(program_path,location),
+            Some((bank,program_path))=>bank.initial_stream_source(program_path,location,inherit[asset]),
             #[cfg(not(feature="library-access"))]
             Some(_)=>Err("bank samples need the library-access feature".to_string()),
-            None=>stream::source(vec![stream::Origin::File(location.into())]),
+            None=>stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset]),
         });
     }
     assemble_streamed_cancelable(t.instrument,t.locations,sources,rate,policy,canceled)
@@ -1523,6 +1884,13 @@ pub fn decode_sample(path: &Path) -> Result<sampler_kontakt::Decoded, Error> {
         })
 }
 
+/// Decode one loose initial sample through the normal UVI resident reader,
+/// retaining all original channel ordinals. This does not infer a signal
+/// layout, install a sampler graph or silently project a wide sample to stereo.
+pub fn decode_source(path:&Path)->Result<sampler_core::SourceStorage,Error> {
+    decode_initial_file(path,false).map(|decoded|decoded.source)
+}
+
 /// Load a clear `.uvip` program streamed: only the frames where zones start
 /// and a page pool are resident (see [`sampler_kontakt::stream_instrument`]).
 pub fn load_streamed(
@@ -1533,9 +1901,10 @@ pub fn load_streamed(
     let folder = path.parent().unwrap_or(Path::new("."));
     let (instrument, locations) = translate_with(&read_text(path)?, Source::Disk(folder.into()))
         .map_err(|e| describe(path, e))?;
+    let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
-        .iter()
-        .map(|location| stream::source(vec![stream::Origin::File(location.into())]))
+        .iter().enumerate()
+        .map(|(asset,location)| stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset]))
         .collect();
     assemble_streamed(instrument, locations, sources, rate, policy)
 }
@@ -1554,9 +1923,10 @@ pub fn load_program_streamed(
     if let Some(sources) = &mut instrument.uvi_script_sources {
         sources.files = bank.scripts().sources();
     }
+    let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
-        .iter()
-        .map(|authored| bank.stream_source(&program_path, authored))
+        .iter().enumerate()
+        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset]))
         .collect();
     assemble_streamed(instrument, locations, sources, rate, policy)
 }
@@ -1603,7 +1973,100 @@ pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize
     Ok(n)
 }
 
-type AssetSources = Vec<Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>, String>>;
+type AssetSources = Vec<Result<stream::InitialSource, String>>;
+
+fn initial_playback_error(reason:impl Into<String>)->sampler_kontakt::LoadError {
+    sampler_kontakt::LoadError::Invalid {path:"initial file playback".into(),reason:reason.into()}
+        .at(sampler_kontakt::Stage::Prepare)
+}
+/// This normal backend really emits stereo Frame. Its output request is
+/// propagated through Program/Layer default ports, not inferred from KG width.
+fn bind_native_header_geometry(instrument:&mut ir::Instrument,geometry:&[Option<(usize,usize)>])->Result<(),sampler_kontakt::LoadError>{
+    for profile in &mut instrument.source_indices.uvi_native_processing {
+        for (zone,slot)in &mut profile.members {
+            let definition=instrument.zones.get(zone.0).ok_or_else(||initial_playback_error("native geometry zone is absent"))?;
+            *slot=if let Some(asset)=definition.asset {
+                geometry.get(asset.0).copied().flatten().and_then(|(header,storage)|ir::UviNativeLayout::plain_header(header).map(|layout|
+                    ir::UviNativeSourceInput{layout,storage_channels:storage,provenance:ir::UviNativeSourceProvenance::PlainHeader}))
+            }else{Some(ir::UviNativeSourceInput{layout:ir::UviNativeLayout::Code1,storage_channels:0,provenance:ir::UviNativeSourceProvenance::UnloadedDefault})};
+        }
+        profile.requested=Some(ir::UviNativeLayout::Code2);
+    }Ok(())
+}
+
+fn initial_playback_assets(instrument:&ir::Instrument,source_count:usize)->Result<Vec<bool>,sampler_kontakt::LoadError> {
+    if source_count!=instrument.assets.len() {return Err(initial_playback_error("asset/source count mismatch"));}
+    for zone in &instrument.zones {
+        if zone.asset.is_some_and(|a|a.0>=source_count) {return Err(initial_playback_error("dangling initial source asset"));}
+    }
+    let mut needed=vec![false;source_count];let mut seen=std::collections::HashSet::new();
+    for id in &instrument.source_indices.file_playback_zones {
+        if !seen.insert(id.0) {return Err(initial_playback_error("duplicate file playback marker"));}
+        let zone=instrument.zones.get(id.0).ok_or_else(||initial_playback_error("dangling file playback marker"))?;
+        if let Some(asset)=zone.asset {
+            *needed.get_mut(asset.0).ok_or_else(||initial_playback_error("dangling file playback asset"))?=true;
+        }
+    }
+    Ok(needed)
+}
+fn apply_initial_playbacks(instrument:&mut ir::Instrument,playbacks:&[Result<Option<ir::Playback>,String>],usable:&[bool])->Result<(),sampler_kontakt::LoadError> {
+    initial_playback_assets(instrument,playbacks.len())?;
+    if usable.len()!=playbacks.len() {return Err(initial_playback_error("playback/source state count mismatch"));}
+    for id in &instrument.source_indices.file_playback_zones {
+        let zone=instrument.zones.get_mut(id.0).ok_or_else(||initial_playback_error("dangling file playback marker"))?;
+        if let Some(asset)=zone.asset {
+            let available=*usable.get(asset.0).ok_or_else(||initial_playback_error("dangling file playback asset"))?;
+            let playback=playbacks.get(asset.0).ok_or_else(||initial_playback_error("missing file playback state"))?;
+            if available {
+                match playback {
+                    Ok(Some(playback))=>{
+                        zone.playback.start=playback.start;zone.playback.end=playback.end;zone.playback.looping=playback.looping;
+                        zone.playback.loop_control_crossfade=playback.loop_control_crossfade;
+                    },
+                    Ok(None)=>return Err(initial_playback_error("successful inherited source has no playback metadata")),
+                    Err(reason)=>{
+                        // Only this marked player's recipe is disabled. Other
+                        // players and impulse readers still own the valid PCM.
+                        zone.asset=None;
+                        instrument.unsupported.push(ir::Unsupported {location:format!("file playback zone {}",id.0),
+                            feature:"unreadable initial sample".into(),value:reason.clone(),reason:ir::Reason::InvalidValue});
+                    },
+                }
+            }
+            // Failed sources keep explicit unreadable-source reports/unbound
+            // recipes. No replacement playback is fabricated.
+        }
+    }
+    Ok(())
+}
+
+fn initial_bank_decoded(bank:&Bank,program_path:&str,location:&str,inherit:bool)->Result<audio::InitialDecoded,String> {
+    #[cfg(feature="library-access")]
+    {bank.initial_resident_sample(program_path,location,inherit)}
+    #[cfg(not(feature="library-access"))]
+    {let _=(bank,program_path,location,inherit);Err("bank samples need the library-access feature".into())}
+}
+fn read_initial_snapshot(path:&Path,identity:&sampler_kontakt::FileIdentity)->Result<Vec<u8>,Error> {
+    use std::io::Read;
+    let mut file=std::fs::File::open(path).map_err(|error|Error::Io{path:path.into(),error})?;
+    identity.check(&file).map_err(|error|Error::Io{path:path.into(),error})?;
+    let mut bytes=Vec::new();file.by_ref().take((512<<20)+1).read_to_end(&mut bytes).map_err(|error|Error::Io{path:path.into(),error})?;
+    identity.check(&file).map_err(|error|Error::Io{path:path.into(),error})?;
+    Ok(bytes)
+}
+fn decode_initial_file(path:&Path,inherit:bool)->Result<audio::InitialDecoded,Error> {
+    let file=std::fs::File::open(path).map_err(|error|Error::Io{path:path.into(),error})?;
+    let metadata=file.metadata().map_err(|error|Error::Io{path:path.into(),error})?;
+    let identity=sampler_kontakt::FileIdentity::capture(&metadata).map_err(|error|Error::Io{path:path.into(),error})?;
+    let bytes=read_initial_snapshot(path,&identity)?;
+    let decoded=audio::decode_initial(&[bytes],inherit).map_err(|reason|Error::Invalid{path:path.into(),reason})?;
+    let path=path.to_owned();let error_path=path.clone();
+    sampler_kontakt::install_resident_source_reload(&decoded.source,move || {
+        let bytes=read_initial_snapshot(&path,&identity).map_err(|_|sampler_core::Error::NotReady)?;
+        audio::decode_initial(&[bytes],false).map(|d|d.source).map_err(|_|sampler_core::Error::NotReady)
+    }).map_err(|e|Error::Invalid{path:error_path,reason:e.to_string()})?;
+    Ok(decoded)
+}
 
 /// A failed initial file must not erase an authored dynamic target's mapping.
 /// The loader still reports the failed file; a later sample transaction can
@@ -1632,6 +2095,22 @@ fn assemble_streamed_cancelable(
     canceled:&(dyn Fn()->bool+Sync),
 )->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
     if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+    require_ordinary_source_publication(&instrument).map_err(|error|describe(Path::new(""),error))?;
+    initial_playback_assets(&instrument,locations.len())?;
+    if sources.len()!=locations.len() {return Err(initial_playback_error("stream/source count mismatch").into());}
+    // A new-wide decoder refusal is fatal admission, never unreadable-zone
+    // filtering. Inspect only actual initial sample uses; unrelated impulses
+    // keep their existing reader domain. This precedes all playback/IR edits.
+    for (asset,source) in sources.iter().enumerate() {
+        if instrument.zones.iter().any(|zone|zone.asset==Some(ir::AssetRef(asset)))
+            && let Ok(source)=source
+            && let Err(reason)=&source.admission {
+            return Err(initial_playback_error(reason.clone()).into());
+        }
+    }
+    bind_native_header_geometry(&mut instrument,&sources.iter().map(|source|source.as_ref().ok().and_then(|source|source.original_channels).map(|channels|(channels,if channels<=2{2}else{channels}))).collect::<Vec<_>>())?;
+    let playbacks:Vec<_>=sources.iter().map(|s|match s {Ok(s)=>s.playback.clone(),Err(_)=>Ok(None)}).collect();
+    apply_initial_playbacks(&mut instrument,&playbacks,&sources.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&sources) {
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
@@ -1644,7 +2123,7 @@ fn assemble_streamed_cancelable(
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| {
         let source = sources[a].as_ref().map_err(Clone::clone)?;
-        let mut reader = source.open().map_err(|e| e.to_string())?;
+        let mut reader = source.source.open().map_err(|e| e.to_string())?;
         if canceled(){return Err("load cancelled".into());}
         let mut frames = vec![[0f32; 2]; reader.frames()];
         for (index,page) in frames.chunks_mut(sampler_core::PAGE_FRAMES).enumerate() {
@@ -1657,7 +2136,7 @@ fn assemble_streamed_cancelable(
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
     retain_failed_sample_targets(&mut instrument, &usable);
     let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
-    let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
+    let mut sources: Vec<_> = sources.into_iter().map(|s|s.ok().map(|s|s.source)).collect();
     let sources = kept
         .iter()
         .map(|&a| sources[a].take().expect("usable"))
@@ -1668,13 +2147,10 @@ fn assemble_streamed_cancelable(
         scripts: true,
         ..Default::default()
     };
-    let bindings = engine_parameters::bindings(&instrument);
     let mut streamed =
         sampler_kontakt::stream_instrument_cancelable(instrument, sources, labels, &options, policy,canceled)?;
-    streamed.loaded.plan = streamed
-        .loaded
-        .plan
-        .with_engine_parameters(bindings, Vec::new())?;
+    let bindings=engine_parameters::bindings(&streamed.loaded.instrument);
+    streamed.loaded.plan = streamed.loaded.plan.with_engine_parameters(bindings, Vec::new())?;
     Ok(streamed)
 }
 
@@ -1709,11 +2185,9 @@ pub fn load_program_with_options(
         sources.files = bank.scripts().sources();
     }
     let (locations, decoded) =
-        decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
-            bank.resource(&program_path, authored)
-                .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
-        });
+        decode_selected_bank_assets(&mut instrument, locations, options, |authored,inherit| {
+            initial_bank_decoded(bank,&program_path,authored,inherit)
+        })?;
     assemble(instrument, locations, decoded, options)
 }
 
@@ -1746,11 +2220,9 @@ pub fn load_program_scripted_with_options(
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
     let (locations, decoded) =
-        decode_selected_bank_assets(&mut instrument, locations, options, |authored| {
-            bank.resource(&program_path, authored)
-                .map_err(|e| e.to_string())
-                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
-        });
+        decode_selected_bank_assets(&mut instrument, locations, options, |authored,inherit| {
+            initial_bank_decoded(bank,&program_path,authored,inherit)
+        })?;
     let loaded = assemble(instrument, locations, decoded, options)?;
     let mut instrument = loaded.instrument;
     note_script(&host, &mut instrument);
@@ -1891,6 +2363,10 @@ fn initialized_translation_configured(
     let promote_started = std::time::Instant::now();
     let text = promote(text, &files);
     let promote_ms = promote_started.elapsed().as_secs_f64() * 1000.;
+    // Pure translation guard precedes main/onLoad/onInit and any retained VM.
+    let (preflight,..)=translate_full(&text,source.clone()).map_err(|error|ScriptedTranslationFailure::Translate(Box::new(describe(path,error))))?;
+    require_ordinary_source_publication(&preflight).map_err(|error|ScriptedTranslationFailure::Translate(Box::new(describe(path,error))))?;
+    drop(preflight);
     let host = if profile {
         script::ScriptHost::new_profiled(&text, files.clone(), config, inspected)
     } else if inspected {
@@ -2058,17 +2534,19 @@ fn decode_selected_bank_assets(
     instrument: &mut ir::Instrument,
     locations: Vec<String>,
     options: &sampler_kontakt::Options,
-    mut decode: impl FnMut(&str) -> Result<sampler_kontakt::Decoded, String>,
-) -> (Vec<String>, Vec<Result<sampler_kontakt::Decoded, String>>) {
+    mut decode: impl FnMut(&str,bool) -> Result<audio::InitialDecoded, String>,
+) -> Result<(Vec<String>, Vec<Result<audio::InitialDecoded, String>>),sampler_kontakt::LoadError> {
+    initial_playback_assets(instrument,locations.len())?;
     inserts::fill_impulses(instrument, &locations, |asset| {
-        decode(&locations[asset]).map(|decoded| (decoded.rate, decoded.frames))
+        decode(&locations[asset],false).and_then(|decoded|decoded.stereo_audio().map(|audio|(audio.rate,audio.frames)))
     });
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
     });
     let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
-    let decoded = locations.iter().map(|location| decode(location)).collect();
-    (locations, decoded)
+    let inherit=initial_playback_assets(instrument,locations.len())?;
+    let decoded = locations.iter().enumerate().map(|(asset,location)| decode(location,inherit[asset])).collect();
+    Ok((locations, decoded))
 }
 
 #[cfg(test)]
@@ -2120,14 +2598,11 @@ mod narrowed_impulse_tests {
                 keys: 60..=60,
                 ..Default::default()
             },
-            |location| {
+            |location,_| {
                 reads.push(location.to_owned());
-                Ok(sampler_kontakt::Decoded {
-                    rate: 48000,
-                    frames: vec![[0.5, -0.5]],
-                })
+                Ok(audio::InitialDecoded {original_channels:Some(2),source:sampler_core::Pcm::new(48000,vec![[0.5,-0.5]].into_boxed_slice()).unwrap().into(),playback:Ok(None)})
             },
-        );
+        ).unwrap();
         assert_eq!(reads, ["room.wav", "low.wav"]);
         assert_eq!(selected, ["low.wav"]);
         assert_eq!(decoded.len(), 1);
@@ -2139,7 +2614,8 @@ mod narrowed_impulse_tests {
 }
 
 /// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
-/// write, so the translator makes them live and the host drives them.
+/// write. The marker discovers the actual definition; it is not a listener ID.
+/// Runtime Value/Style live in the explicit generation ControlState binding.
 fn promote(text: String, scripts: &script::Scripts) -> String {
     let promoted = engine_parameters::promoted_constants(&text, scripts);
     let marks: Vec<_> = promoted
@@ -2268,9 +2744,10 @@ pub fn load_program_scripted_streamed(
     let ((instrument, locations, groups, inserts), host) =
         initialized_translation(text, lua, Source::Bank, Path::new(program), false)
             .map_err(ScriptedTranslationFailure::into_error)?;
+    let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
-        .iter()
-        .map(|authored| bank.stream_source(&program_path, authored))
+        .iter().enumerate()
+        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset]))
         .collect();
     let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
     let sampler_kontakt::Streamed {
@@ -2337,9 +2814,15 @@ fn describe(path: &Path, e: Translate) -> Error {
 fn assemble(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
-    decoded: Vec<Result<sampler_kontakt::Decoded, String>>,
+    decoded: Vec<Result<audio::InitialDecoded, String>>,
     options: &sampler_kontakt::Options,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    require_ordinary_source_publication(&instrument).map_err(|error|describe(Path::new(""),error))?;
+    initial_playback_assets(&instrument,locations.len())?;
+    if decoded.len()!=locations.len() {return Err(initial_playback_error("decoded/source count mismatch").into());}
+    bind_native_header_geometry(&mut instrument,&decoded.iter().map(|source|source.as_ref().ok().and_then(|decoded|decoded.original_channels.map(|channels|(channels,decoded.source.as_source().channels().get())))).collect::<Vec<_>>())?;
+    let playbacks:Vec<_>=decoded.iter().map(|d|match d {Ok(d)=>d.playback.clone(),Err(_)=>Ok(None)}).collect();
+    apply_initial_playbacks(&mut instrument,&playbacks,&decoded.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&decoded) {
         if let Err(reason) = result {
             instrument.unsupported.push(ir::Unsupported {
@@ -2351,21 +2834,21 @@ fn assemble(
         }
     }
     inserts::fill_impulses(&mut instrument, &locations, |a| match &decoded[a] {
-        Ok(d) => Ok((d.rate, d.frames.clone())),
+        Ok(d) => d.stereo_audio().map(|audio|(audio.rate,audio.frames)),
         Err(e) => Err(e.clone()),
     });
     let usable: Vec<bool> = decoded.iter().map(Result::is_ok).collect();
     retain_failed_sample_targets(&mut instrument, &usable);
     let kept = instrument.retain_zones(|z| z.asset.is_none_or(|a| usable[a.0]));
-    let mut pcm = Vec::with_capacity(kept.len());
+    let mut sources = Vec::with_capacity(kept.len());
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {
         let d = decoded[asset].take().unwrap().unwrap();
-        pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
+        sources.push(d.source);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    let bindings = engine_parameters::bindings(&instrument);
-    let mut loaded = sampler_kontakt::finish(instrument, pcm, labels, options)?;
+    let mut loaded = sampler_kontakt::finish_sources(instrument, sources, labels, options)?;
+    let bindings=engine_parameters::bindings(&loaded.instrument);
     loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
     Ok(loaded)
 }
@@ -3317,5 +3800,26 @@ mod survey {
         for (k, (p, n)) in &gaps {
             println!("{p:5} {n:9} {k}");
         }
+    }
+}
+
+#[cfg(test)]
+mod initial_playback_admission_tests {
+    use super::*;
+    fn instrument()->ir::Instrument {
+        ir::Instrument {assets:vec![ir::Asset {location:ir::AssetLocation::Path("not-opened.wav".into()),
+            residency:Default::default(),encoding:ir::Encoding::Wav,root_key:None,loops:vec![]}],
+            zones:vec![ir::Zone::new(ir::AssetRef(0))],..Default::default()}
+    }
+    #[test]
+    fn invalid_markers_assets_and_dimensions_reject_before_effect_preparation() {
+        let mut value=instrument();value.source_indices.file_playback_zones=vec![ir::ZoneRef(99)];
+        assert!(initial_playback_assets(&value,1).is_err());
+        value.source_indices.file_playback_zones=vec![ir::ZoneRef(0)];value.zones[0].asset=Some(ir::AssetRef(99));
+        assert!(initial_playback_assets(&value,1).is_err());
+        value.zones[0].asset=Some(ir::AssetRef(0));assert!(initial_playback_assets(&value,0).is_err());
+        value.source_indices.file_playback_zones.push(ir::ZoneRef(0));assert!(initial_playback_assets(&value,1).is_err());
+        value.source_indices.file_playback_zones=vec![ir::ZoneRef(0)];
+        assert!(apply_initial_playbacks(&mut value,&[Ok(None)],&[true]).is_err());
     }
 }

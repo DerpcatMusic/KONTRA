@@ -123,10 +123,31 @@ pub(crate) struct TimeMod {
     min_delay: f64,
     /// Frames voice `v` reads later than its tap, times `v`.
     voice_delay: f64,
-    /// UVI table LFO: the table and whether the increment is the direct form.
-    uvi: Option<(&'static [f32; 257], bool)>,
+    oscillator: Oscillator,
     /// The voice bank (`Native::VoiceBank`).
     bank: Option<Box<voices::Bank>>,
+}
+
+#[derive(Clone, Copy)]
+enum PhaseShape { Triangle, Saw, Square }
+
+/// Prepared once; polynomial projection cannot receive a sine/table oscillator.
+#[derive(Clone, Copy)]
+enum Oscillator {
+    Sine,
+    Uvi(&'static [f32; 257], bool),
+    Phase(PhaseShape),
+}
+impl Oscillator {
+    fn new(shape: LfoShape) -> Self {
+        match shape {
+            LfoShape::Sine => Self::Sine,
+            LfoShape::Uvi { wave, direct } => Self::Uvi(uvi_table(wave), direct),
+            LfoShape::Triangle => Self::Phase(PhaseShape::Triangle),
+            LfoShape::Saw => Self::Phase(PhaseShape::Saw),
+            LfoShape::Square => Self::Phase(PhaseShape::Square),
+        }
+    }
 }
 
 /// UVI LFO tables (built at 0x14163c3c0..0x14163cbbb): 257 points, the last
@@ -234,15 +255,14 @@ fn soft(x: f64) -> f64 {
 }
 
 #[inline(always)]
-fn shape(kind: LfoShape, phase: f64) -> f64 {
+fn shape(kind: PhaseShape, phase: f64) -> f64 {
     let x = phase - phase.floor();
     match kind {
-        LfoShape::Sine | LfoShape::Uvi { .. } => unreachable!("sine and UVI tables have their own oscillators"),
-        LfoShape::Triangle => {
+        PhaseShape::Triangle => {
             if x < 0.25 { 4. * x } else if x < 0.75 { 2. - 4. * x } else { 4. * x - 4. }
         }
-        LfoShape::Saw => 2. * x - 1.,
-        LfoShape::Square => if x < 0.5 { 1. } else { -1. },
+        PhaseShape::Saw => 2. * x - 1.,
+        PhaseShape::Square => if x < 0.5 { 1. } else { -1. },
     }
 }
 
@@ -336,10 +356,7 @@ impl TimeMod {
             lfo_used,
             min_delay,
             voice_delay,
-            uvi: match cfg.lfo.shape {
-                LfoShape::Uvi { wave, direct } => Some((uvi_table(wave), direct)),
-                _ => None,
-            },
+            oscillator: Oscillator::new(cfg.lfo.shape),
             bank,
         })
     }
@@ -409,7 +426,7 @@ impl TimeMod {
     ) -> bool {
         let cfg = &self.cfg;
         let (cap, stages) = (self.cap, cfg.allpass.map_or(0, |a| usize::from(a.stages)));
-        let sine = cfg.lfo.shape == LfoShape::Sine;
+        let sine = matches!(self.oscillator, Oscillator::Sine);
         // Reset validity, not the potentially long ring: a reused voice or a
         // faulted chain never reads samples from its previous lifetime.
         if state.aux[15] == 0. {
@@ -420,7 +437,7 @@ impl TimeMod {
                 state.z[0] = [0., 1.];
                 let angle = f64::from(1. - phase) * TAU;
                 state.z[1] = [f64::from(angle.sin() as f32), f64::from(angle.cos() as f32)];
-            } else if self.uvi.is_some() {
+            } else if matches!(self.oscillator, Oscillator::Uvi(..)) {
                 // UVI: the right channel's 32-bit phase starts `phase` cycles ahead.
                 state.z[0] = [0., 0.];
                 state.z[1] = [f64::from(uvi_phase(f64::from(phase))), 0.];
@@ -477,7 +494,10 @@ impl TimeMod {
         let hz = self.hz(tempo);
         let step = (2. * (f64::from(hz) * PI / self.rate).sin()) as f32;
         let inc = f64::from(hz) / self.rate;
-        let uvi_inc = self.uvi.map_or(0, |(_, direct)| uvi_increment(f64::from(hz), self.rate, direct));
+        let uvi_inc = match self.oscillator {
+            Oscillator::Uvi(_, direct) => uvi_increment(f64::from(hz), self.rate, direct),
+            Oscillator::Sine | Oscillator::Phase(_) => 0,
+        };
 
         // Tempo-synced heads glide to their target (block rate).
         let mut base = [0.; MAX_TAPS];
@@ -532,19 +552,23 @@ impl TimeMod {
             let mut lfo_cos = [0f64; 2];
             if self.lfo_used {
                 for c in 0..2 {
-                    if sine {
-                        let [mut s, mut co] = state.z[c].map(|v| v as f32);
-                        s -= co * step;
-                        co += s * step;
-                        state.z[c] = [f64::from(s), f64::from(co)];
-                        (lfo[c], lfo_cos[c]) = (f64::from(s), f64::from(co));
-                    } else if let Some((table, _)) = self.uvi {
-                        // Read before the advance at the end of the frame.
-                        lfo[c] = f64::from(uvi_read(table, state.z[c][0] as u32));
-                    } else {
-                        state.z[c][0] += inc;
-                        state.z[c][0] -= state.z[c][0].floor();
-                        lfo[c] = shape(cfg.lfo.shape, state.z[c][0]);
+                    match self.oscillator {
+                        Oscillator::Sine => {
+                            let [mut s, mut co] = state.z[c].map(|v| v as f32);
+                            s -= co * step;
+                            co += s * step;
+                            state.z[c] = [f64::from(s), f64::from(co)];
+                            (lfo[c], lfo_cos[c]) = (f64::from(s), f64::from(co));
+                        }
+                        Oscillator::Uvi(table, _) => {
+                            // Read before the advance at the end of the frame.
+                            lfo[c] = f64::from(uvi_read(table, state.z[c][0] as u32));
+                        }
+                        Oscillator::Phase(kind) => {
+                            state.z[c][0] += inc;
+                            state.z[c][0] -= state.z[c][0].floor();
+                            lfo[c] = shape(kind, state.z[c][0]);
+                        }
                     }
                 }
             }
@@ -632,12 +656,12 @@ impl TimeMod {
                         for c in 0..2 {
                             let mod_value = if head.depth == 0. {
                                 0.
-                            } else if sine {
-                                lfo[c] * vc + lfo_cos[c] * vs
-                            } else if let Some((table, _)) = self.uvi {
-                                f64::from(uvi_read(table, (state.z[c][0] as u32).wrapping_add(uvi_phase(vp))))
                             } else {
-                                shape(cfg.lfo.shape, state.z[c][0] + vp)
+                                match self.oscillator {
+                                    Oscillator::Sine => lfo[c] * vc + lfo_cos[c] * vs,
+                                    Oscillator::Uvi(table, _) => f64::from(uvi_read(table, (state.z[c][0] as u32).wrapping_add(uvi_phase(vp)))),
+                                    Oscillator::Phase(kind) => shape(kind, state.z[c][0] + vp),
+                                }
                             };
                             let d = (base[k] * if c == 1 { line.right_scale } else { 1. }
                                 + v as f64 * self.voice_delay
@@ -684,7 +708,7 @@ impl TimeMod {
             }
             left[i] = cfg.dry * x[0] + cfg.wet * sig[0];
             right[i] = cfg.dry * x[1] + cfg.wet * sig[1];
-            if self.lfo_used && self.uvi.is_some() {
+            if self.lfo_used && matches!(self.oscillator, Oscillator::Uvi(..)) {
                 for z in &mut state.z {
                     z[0] = f64::from((z[0] as u32).wrapping_add(uvi_inc));
                 }
@@ -830,15 +854,12 @@ fn read(slab: &[[f64; 2]], cap: usize, position: usize, filled: usize, d: f64, k
         let m = position + cap - k;
         slab[if m >= cap { m - cap } else { m }][c]
     };
-    match kind {
-        Interpolation::Nearest => return at((d + 0.5) as usize),
-        Interpolation::Floor => return at(d as usize),
-        Interpolation::Ceil => return at(d.ceil() as usize),
-        _ => {}
-    }
     let i = d as usize;
     let x = d - i as f64;
     match kind {
+        Interpolation::Nearest => at((d + 0.5) as usize),
+        Interpolation::Floor => at(d as usize),
+        Interpolation::Ceil => at(d.ceil() as usize),
         Interpolation::Linear => {
             let (a, b) = (at(i), at(i + 1));
             a + (b - a) * x
@@ -855,6 +876,5 @@ fn read(slab: &[[f64; 2]], cap: usize, position: usize, filled: usize, d: f64, k
             let (xm, xp, x2) = (x - 1., x + 1., x - 2.);
             -x * xm * x2 / 6. * m + xp * xm * x2 / 2. * a - xp * x * x2 / 2. * b + xp * x * xm / 6. * n
         }
-        Interpolation::Nearest | Interpolation::Floor | Interpolation::Ceil => unreachable!(),
     }
 }

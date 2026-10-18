@@ -201,24 +201,26 @@ mod tests {
         assert!(native.zones[0].muted);
         assert_eq!(
             ir.source_indices.zones,
-            vec![None, Some(sampler_ir::ZoneRef(0))]
+            vec![Some(sampler_ir::ZoneRef(0)), Some(sampler_ir::ZoneRef(1))]
         );
+        assert_ne!(ir.zones[0].group, ir.zones[1].group);
+        assert!(ir.groups[ir.zones[0].group.unwrap().0].muted);
+        assert!(!ir.groups[ir.zones[1].group.unwrap().0].muted);
     }
 
     #[test]
     fn dropped_scope_connections_do_not_look_implemented() {
         let text = r#"<Program><ControlSignalSources><ConstantModulation Name="shared"/></ControlSignalSources><Connections><SignalConnection Source="$Program/shared" Destination="Gain" Ratio="1"/><SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1"/></Connections></Program>"#;
         let (ir, ..) = super::super::translate_full(text, super::super::Source::Bank).unwrap();
+        assert_eq!(ir.source_indices.global_modulation.len(),1,"live CC1 is an executable actual Program outlet input");
+        assert_eq!(ir.source_indices.global_modulation[0].sources.len(),1);
+        assert!(matches!(ir.modulators[ir.source_indices.global_modulation[0].sources[0].0].source,sampler_ir::ModulationSource::Controller(1)));
         let rows = ir.dsp_slots.unwrap();
         assert_eq!(rows.len(), 2);
-        assert!(
-            rows.iter()
-                .all(|r| r.disposition == D::Dropped(R::TargetsDropped))
-        );
-        assert!(rows.iter().all(|r| {
-            r.targets.len() == 1
-                && r.targets[0].disposition == D::Dropped(R::TargetsDropped)
-        }));
+        assert!(rows.iter().all(|r|r.disposition==D::Approximated(R::NativeLawUnverified)));
+        assert!(rows.iter().all(|r|r.targets.len()==1&&r.targets[0].disposition==D::Approximated(R::NativeLawUnverified)));
+        // Same authored inputs are retained. This is executable Core output
+        // coverage, not native timing/cadence certification or a dropped target.
     }
 
     #[test]

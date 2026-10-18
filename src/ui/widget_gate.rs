@@ -995,3 +995,836 @@ fn tab_layout_shots() {
         }
     }
 }
+
+
+/// Opt-in numeric observations of the actual Part asset owner. Off by default
+/// even in test builds; a request consumes at most one face on the UI thread.
+pub(super) fn library_face_receipt(
+    slot: usize, epoch: u64, source: usize, page: ir::PageRef,
+    presentation: ir::Presentation, snapshot: Option<&sampler_uvi::scripted::UiSnapshot>,
+    assets: &super::ir_view::Assets,
+) {
+    library_acceptance09::face_receipt(slot, epoch, source, page, presentation, snapshot, assets);
+}
+
+mod library_acceptance09 {
+    use super::*;
+    use crate::sound::{BlockInfo, MAX_BLOCK, event::Event};
+    use sampler_uvi::scripted::{DiagnosticPoll, UiBridge, UiSnapshot};
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
+    use std::{cell::RefCell, path::Path};
+
+    const MAX_DRAWS: usize = 240;
+    const MAX_FRAMES: u64 = 384_000;
+    const NOTE_FRAMES: u64 = 288_000;
+    const MAX_WORK: usize = 262_144;
+    const MAX_ACTIONS: usize = 12;
+    const MAX_RECEIPTS: usize = 8;
+    const MAX_REPORT: usize = 2 << 20;
+    const MAX_PROBES: usize = 512;
+    const MAX_PAINTS: usize = 4;
+    const WINDOWS: [(u64,u64);3] = [(0,6000),(180000,192000),(276000,288000)];
+
+    fn hash(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+    fn charge_work(work:&mut usize,n:usize)->Result<(),&'static str>{
+        *work=work.checked_add(n).ok_or("inspection_overflow")?;
+        if *work>MAX_WORK{Err("inspection_bound")}else{Ok(())}
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Profile { Ao, Clarinet }
+    impl Profile {
+        fn key(self) -> &'static str { match self { Self::Ao => "ao-pizzicato2", Self::Clarinet => "vwinds-clarinet-a" } }
+        fn path(self) -> &'static str { match self {
+            Self::Ao => "/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs/Presets/00 Orchestra/01 Strings/V Strings Pizzicato 2.uvip",
+            Self::Clarinet => "/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-AClarinet.ufs/Presets/Clarinet A.uvip",
+        } }
+    }
+
+    struct FaceCapture { epoch: u64, owner: UiSnapshot, requested: bool, report: Option<Value>, drawn: Option<(u64,usize,usize,u64)>, work_remaining:usize }
+    // Preserve the original authored-test API, but production-helper capture
+    // receives refusal work too; a bounded failed inspection is not free.
+    fn requested_waves(assets:&super::super::ir_view::Assets,face:&ir::Interface,page:ir::PageRef,limit:usize)->Result<(Value,bool,usize),&'static str>{
+        requested_waves_metered(assets,face,page,limit).map_err(|(reason,_)|reason)
+    }
+    fn requested_waves_metered(assets:&super::super::ir_view::Assets,face:&ir::Interface,page:ir::PageRef,limit:usize)->Result<(Value,bool,usize),(&'static str,usize)>{
+        let mut work=0usize;
+        fn reserve(work:&mut usize,n:usize,limit:usize)->Result<(),(&'static str,usize)>{
+            let wanted=work.checked_add(n).ok_or(("wave_inspection_overflow",*work))?;
+            if wanted>limit{return Err(("wave_inspection_bound",*work));}
+            *work=wanted;Ok(())
+        }
+        reserve(&mut work,face.widgets.len(),limit)?; // Actual preflight roster pass.
+        let mut wave_count=0usize;
+        let mut ancestor_count=0usize;
+        for w in &face.widgets {if w.uvi_wave_view_request.is_some(){
+            wave_count+=1;if wave_count>MAX_PROBES{return Err(("wave_observation_row_bound",work));}
+            let mut parent=w.parent;let mut depth=0;
+            while let Some(id)=parent {
+                depth+=1;
+                if depth>face.widgets.len(){return Err(("wave_ancestry_or_inspection_bound",work));}
+                reserve(&mut work,1,limit)?;
+                ancestor_count=ancestor_count.checked_add(1).ok_or(("wave_inspection_overflow",work))?;
+                parent=face.widgets.get(id.0).ok_or(("wave_parent_invalid",work))?.parent;
+            }
+        }}
+        // Observer independently scans the entire roster and visible() visits
+        // each wave plus ancestors. Its provider performs at most three cache
+        // scans per wave (get, status/get, failed-source scan), each bounded by
+        // the actual provider LIMIT. The final returned-row pass is separate.
+        // Reserve all these passes BEFORE observer allocation/traversal.
+        let provider=wave_count.checked_mul(3*crate::sound::waveform::uvi_manual::LIMIT)
+            .ok_or(("wave_inspection_overflow",work))?;
+        let observer=face.widgets.len().checked_add(ancestor_count)
+            .and_then(|n|n.checked_add(wave_count)).and_then(|n|n.checked_add(provider))
+            .and_then(|n|n.checked_add(wave_count)).ok_or(("wave_inspection_overflow",work))?;
+        reserve(&mut work,observer,limit)?;
+        let observations=assets.wave_view_observations(face);
+        let rows=observations["rows"].as_array().ok_or(("wave_observation_schema",work))?;
+        if rows.len()!=wave_count{return Err(("wave_observation_roster_changed",work));}
+        let dropped=observations["request_limit_drops"].as_u64().unwrap_or(0);
+        let mut actual_requested=0usize;let mut unresolved=0usize;
+        for row in rows {
+            let index=row["widget"].as_u64().and_then(|n|usize::try_from(n).ok()).ok_or(("wave_widget_identity",work))?;
+            let w=face.widgets.get(index).ok_or(("wave_widget_identity",work))?;
+            let status=row["status"].as_str().ok_or(("wave_status_schema",work))?;
+            let demanded=matches!(status,"ready"|"source_unavailable"|"worker_unavailable"|"pending")
+                ||(w.page==page&&row["visible"]==true&&w.uvi_wave_view_request.as_ref().is_some_and(|r|matches!(&r.sample,ir::UviWaveViewSample::Manual(_))));
+            if demanded{actual_requested+=1;if status!="ready"{unresolved+=1;}}
+        }
+        Ok((json!({"provider":observations,"actually_requested_or_visible_manual":actual_requested,
+            "unresolved_requested":unresolved,"request_limit_drops":dropped,"inspection_work":work,
+            "scope":"Actual manual provider requests; hidden unrequested definitions do not fail"}),unresolved==0&&dropped==0,work))
+    }
+    thread_local! { static FACE: RefCell<Option<FaceCapture>> = const { RefCell::new(None) }; }
+    struct CaptureGuard;
+    impl Drop for CaptureGuard { fn drop(&mut self) { FACE.with(|v| *v.borrow_mut() = None); } }
+    pub(super) fn face_receipt(
+        slot: usize, epoch: u64, source: usize, page: ir::PageRef,
+        presentation: ir::Presentation, snapshot: Option<&UiSnapshot>, assets: &super::super::ir_view::Assets,
+    ) {
+        FACE.with(|cell| {
+            let mut capture = cell.borrow_mut();
+            let Some(capture) = capture.as_mut().filter(|_| slot == 0) else { return; };
+            let Some(snapshot) = snapshot else {
+                capture.drawn=None;
+                if capture.requested {capture.requested=false;capture.report=Some(json!({"status":"missing_drawn_owner"}));}
+                return;
+            };
+            capture.drawn=Some((epoch,source,page.0,snapshot.generation()));
+            if !capture.requested {return;}
+            capture.requested = false;
+            if capture.epoch != epoch || !capture.owner.same_owner(snapshot) || snapshot.interface().source != ir::Source::FalconLua {
+                capture.report = Some(json!({"status":"stale_drawn_owner"})); return;
+            }
+            let probes = assets.probes();
+            if probes.len() > MAX_PROBES { capture.report = Some(json!({"status":"asset_probe_bound"})); return; }
+            let rows: Vec<_> = probes.iter().map(|p| json!({
+                "asset":p.index,"path_sha256":hash(p.path.as_bytes()),"path_truncated":p.path_truncated,
+                "kind":p.kind,"resolver":p.resolver,"status":p.status,"codec":p.codec,
+                "encoded_bytes":p.encoded_bytes,"prepared_bytes":p.prepared_bytes,
+                "width":p.width,"height":p.height,"frames":p.frames,"frame":p.frame,
+                "target":p.target,"window":p.window,"strip_cache_hit":p.strip_cache_hit,
+            })).collect();
+            let (waves,waves_complete,wave_work)=match requested_waves_metered(assets,snapshot.interface(),page,capture.work_remaining){
+                Ok(v)=>v,Err((reason,work))=>{capture.report=Some(json!({"status":reason,"requested_page_complete":false,"inspection_work":work}));return;}
+            };
+            let scan = assets.scan();
+            let failures = scan.lookup_missing + scan.lookup_invalid + scan.lookup_ambiguous + scan.lookup_corrupt
+                + scan.lookup_limit + scan.lookup_read + scan.lookup_unavailable + scan.preparation_oversized + scan.preparation_key_budget;
+            let requested_complete = scan.lookups > 0 && assets.pending() == 0 && failures == 0 && assets.probe_dropped() == 0 && waves_complete
+                && scan.decodes == scan.decode_ok && scan.fonts == scan.font_ok
+                && probes.iter().all(|p| !p.path_truncated);
+            capture.report = Some(json!({"status":"observed","epoch":epoch,"source_index":source,"page":page.0,
+                "schema_generation":snapshot.generation(),"bitmap":presentation==ir::Presentation::Bitmap,
+                "actual_owner_same":true,"declared_asset_inventory":snapshot.interface().assets.len(),
+                "pending":assets.pending(),"retained_picture_payload_bytes":assets.bytes(),
+                "probe_dropped":assets.probe_dropped(),"probe_count":probes.len(),"probes":rows,
+                "lookups":scan.lookups,"found":scan.lookup_ok,"failure_count":failures,
+                "image_decodes":scan.decodes,"image_decode_ok":scan.decode_ok,
+                "fonts":scan.fonts,"font_ok":scan.font_ok,"completed":scan.preparation_completed,
+                "prepared_bytes":scan.preparation_completed_bytes,"wanted_peak_bytes":scan.preparation_wanted_peak_bytes,
+                "requested_page_complete":requested_complete,"requested_wave_views":waves,"inspection_work":wave_work,
+                "scope":"Actual Part Assets request ledger; not an exhaustive declared-resource census or allocator/RSS bound"}));
+        });
+    }
+
+    // Same actual positive host block remains open through all diagnostic-only
+    // zero-service. A poll never installs a grant or closes/reopens the block.
+    #[derive(Default)]
+    struct ObservedHostBlock { frames: Option<usize> }
+    impl ObservedHostBlock {
+        fn finish(&mut self, core: &mut V2Core, note_ends: &mut usize) {
+            if let Some(frames)=self.frames.take() {core.end_block(frames,&mut |_|{*note_ends+=1;true});}
+        }
+        fn begin(&mut self, core: &mut V2Core, frames: usize, note_ends: &mut usize) -> Result<(), &'static str> {
+            if frames==0 || frames>MAX_BLOCK {return Err("invalid_observed_host_block");}
+            self.finish(core,note_ends);
+            core.begin_block(&BlockInfo {frames,offline:true,..Default::default()});
+            self.frames=Some(frames);Ok(())
+        }
+        fn service(&self, core: &mut V2Core) -> Result<(), &'static str> {
+            if self.frames.is_none() {return Err("zero_service_without_actual_host_block");}
+            let at=core.clock(0);let _=core.render(0);
+            if core.clock(0)!=at {return Err("zero_service_changed_clock");}Ok(())
+        }
+    }
+    struct Target { index: usize, component: Option<usize>, id: ir::ControlId, schema: u64, surface: String, kind: &'static str }
+    struct Run {
+        gate: Gate, owner: Arc<UiBridge>, epoch: u64, players:Vec<u32>, started: Instant, observations: Instant,
+        draws: usize, work: usize, actions: usize, receipts: usize, polls: usize, paints: usize,
+        rendered: u64, owner_checks:bool, held_at: Option<u64>, audio: [[f64;3];3], nonfinite: usize, note_ends: usize,
+        submitted: BTreeSet<String>, outcomes: Vec<Value>, rows: Vec<Value>, pixels: Vec<Value>, resources: Vec<Value>,
+        host_block: ObservedHostBlock,
+        pointer_held: Option<Point>, // Owns one reserved actual UI-only Up draw.
+        pointer_down_delivered: bool,
+        pointer_downs: usize, pointer_ups: usize, pointer_cleanup_ups: usize,
+        pointer_cleanup_failure: Option<&'static str>,
+    }
+    impl Run {
+        fn load(profile: Profile) -> Result<Self, &'static str> {
+            let started = Instant::now();
+            let mut selection = Selection::default();
+            selection.parts = vec![Part { path:profile.path().into(), program:0, view:1, ..Default::default() }];
+            let gate = Gate::load(selection);
+            if started.elapsed() > Duration::from_secs(110) { return Err("load_wall_bound"); }
+            let epoch = gate.core.epoch(0);
+            let owner = gate.params.shared.part(0).ok_or("missing_part_atoms")?
+                .widget_gate_uvi_owner(epoch).ok_or("missing_current_uvi_owner")?;
+            gate.core.enable_uvi_diagnostics(0, epoch, &owner).map_err(|_|"installed_owner_mismatch")?;
+            let players={
+                let view = gate.params.shared.view.lock().unwrap();
+                let part = &view.parts[0];
+                let Some((path,program,_)) = &part.active_source else { return Err("active_source_unavailable"); };
+                if path != profile.path() || *program != 0 || part.generation != epoch { return Err("loaded_identity_mismatch"); }
+                if part.interfaces.iter().filter(|f|f.source == ir::Source::FalconLua).count() != 1 { return Err("ambiguous_lua_face"); }
+                let instrument=part.instrument.as_ref().ok_or("loaded_instrument_metadata_missing")?;
+                let players:Vec<u32>=if profile==Profile::Clarinet {
+                    let expected=[9019,9073,9127];
+                    if expected.iter().any(|id|!instrument.source_indices.sample_targets.iter().any(|t|t.node==*id)){return Err("clarinet_retained_source_targets_missing");}
+                    expected.into()
+                }else{instrument.source_indices.sample_targets.iter().take(3).map(|t|t.node).collect()};
+                if players.is_empty() || players.iter().enumerate().any(|(i,p)|players[..i].contains(p)){return Err("source_target_metadata_missing_or_ambiguous");}
+                players
+            };
+            Self::observe_gate(gate,owner,epoch,players,started)
+        }
+        fn observe_gate(gate: Gate, owner: Arc<UiBridge>, epoch: u64, players: Vec<u32>, started: Instant) -> Result<Self, &'static str> {
+            let draws = gate.frame.checked_add(3).ok_or("draw_overflow")?; // Harness::new's actual three frames + Gate's eight.
+            let rendered = gate.core.clock(0);
+            let observations = Instant::now();
+            FACE.with(|v| *v.borrow_mut() = Some(FaceCapture { epoch, owner:owner.snapshot(), requested:false, report:None,drawn:None,work_remaining:0 }));
+            Ok(Self { gate,owner,epoch,players,started,observations,draws,work:0,actions:0,receipts:0,polls:0,paints:0,
+                rendered,owner_checks:true,held_at:None,audio:[[0.;3];3],nonfinite:0,note_ends:0,submitted:BTreeSet::new(),outcomes:Vec::new(),
+                rows:Vec::new(),pixels:Vec::new(),resources:Vec::new(),host_block:ObservedHostBlock::default(),
+                pointer_held:None,pointer_down_delivered:false,pointer_downs:0,pointer_ups:0,pointer_cleanup_ups:0,pointer_cleanup_failure:None })
+        }
+        fn charge(&mut self, n: usize) -> Result<(), &'static str> {
+            charge_work(&mut self.work,n)
+        }
+        fn current(&self) -> Result<UiSnapshot, &'static str> {
+            self.gate.core.uvi_diagnostic_progress(0,self.epoch,&self.owner).map_err(|_|"stale_runtime_owner")?;
+            let view = self.gate.params.shared.view.lock().unwrap();
+            let part = &view.parts[0];
+            if part.generation != self.epoch { return Err("stale_part_epoch"); }
+            let drawn = part.uvi_snapshot.clone().ok_or("drawn_snapshot_unavailable")?;
+            let now = self.owner.snapshot();
+            if !drawn.same_owner(&now) || drawn.generation() != now.generation() { return Err("drawn_schema_not_current"); }
+            let rendered=FACE.with(|v|v.borrow().as_ref().and_then(|v|v.drawn));
+            if rendered.is_none_or(|(epoch,_,_,schema)|epoch!=self.epoch||schema!=drawn.generation()){return Err("part_has_not_drawn_current_schema");}
+            Ok(drawn)
+        }
+        fn render(&mut self, frames: usize) -> Result<(), &'static str> {
+            if self.rendered.checked_add(frames as u64).is_none_or(|n| n > MAX_FRAMES) { return Err("audio_frame_bound"); }
+            let mut left = frames;
+            while left != 0 {
+                let n = left.min(MAX_BLOCK);
+                let at = self.gate.core.clock(0);
+                self.host_block.begin(&mut self.gate.core,n,&mut self.note_ends)?;
+                let out = self.gate.core.render(n);
+                for i in 0..n {
+                    let mut sample = [0f64;2];
+                    for (bus,on) in out.buses.iter().zip(out.live) {
+                        if on { sample[0] += f64::from(bus[0][i]); sample[1] += f64::from(bus[1][i]); }
+                    }
+                    if sample.iter().any(|v| !v.is_finite()) { self.nonfinite += 1; continue; }
+                    if let Some(start) = self.held_at {
+                        let relative = (at + i as u64).saturating_sub(start);
+                        for (index,(low,high)) in WINDOWS.iter().copied().enumerate() {
+                            if relative >= low && relative < high {
+                                self.audio[index][0] += sample[0]*sample[0]+sample[1]*sample[1];
+                                self.audio[index][1] = self.audio[index][1].max(sample[0].abs().max(sample[1].abs()));
+                                self.audio[index][2] += 1.;
+                            }
+                        }
+                    }
+                }
+                // Matching end_block is deferred until the next actual block
+                // or final cleanup; zero-service spends THIS remaining grant.
+                if self.gate.core.clock(0) != at + n as u64 { return Err("clock_did_not_advance_exactly"); }
+                self.rendered += n as u64; left -= n;
+                // This opt-in off-audio witness paces the existing independent
+                // owner. It is not an audio-thread wait or native timing proof.
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.gate.params.shared.widget_gate_readback(&mut self.gate.core);
+            Ok(())
+        }
+        fn tick(&mut self, input: Input) -> Result<(), &'static str> {
+            // While held, one slot is reserved for an unconditional actual Up.
+            if self.draws.checked_add(usize::from(self.pointer_held.is_some())).is_none_or(|n|n>=MAX_DRAWS)
+                || self.started.elapsed() > Duration::from_secs(110) { return Err("draw_or_wall_bound"); }
+            self.draws += 1;
+            let down=input.pointer.buttons==Buttons::PRIMARY;
+            self.gate.editor.tick(input);
+            if down&&self.pointer_held.is_some()&&!self.pointer_down_delivered{self.pointer_down_delivered=true;self.pointer_downs+=1;}
+            let submitted = SUBMITTED.with(|v|std::mem::take(&mut *v.borrow_mut()));
+            if submitted.len() > 32 { return Err("submitted_target_bound"); }
+            self.submitted.extend(submitted);
+            if self.submitted.len() > 32 { return Err("submitted_target_bound"); }
+            self.render(800)?;
+            self.gate.params.shared.widget_gate_readback(&mut self.gate.core);
+            Load.run(&self.gate.params);
+            Ok(())
+        }
+        fn release_pointer(&mut self, at: Point, cleanup: bool) -> Result<(), &'static str> {
+            if self.pointer_held.is_none() {return Ok(());}
+            if !self.pointer_down_delivered{self.pointer_held=None;return Ok(());}
+            // The reserved draw is UI-only: no schema/current-owner check,
+            // render, new fuel, Load, action retry or wall-bound suppression.
+            if self.draws>=MAX_DRAWS {self.pointer_cleanup_failure=Some("reserved_up_draw_missing");return Err("reserved_up_draw_missing");}
+            self.draws+=1;self.pointer_ups+=1;
+            if cleanup {self.pointer_cleanup_ups+=1;}
+            self.gate.editor.tick(Input {pointer:PointerInput {pos:Some(at),buttons:Buttons::default(),..Default::default()},..Default::default()});
+            self.pointer_held=None;self.pointer_down_delivered=false;
+            let submitted=SUBMITTED.with(|v|std::mem::take(&mut *v.borrow_mut()));
+            if submitted.len()>32 || self.submitted.len().checked_add(submitted.len()).is_none_or(|n|n>32) {
+                self.pointer_cleanup_failure=Some("up_submitted_target_bound");return Err("up_submitted_target_bound");
+            }
+            self.submitted.extend(submitted);Ok(())
+        }
+        fn pointer(&mut self, at: Point, down: bool) -> Result<(), &'static str> {
+            if !down && self.pointer_held.is_some() {
+                self.release_pointer(at,false)?;
+                // One ordinary post-Up service draw. The physical release was
+                // already delivered even if this fallible follow-up refuses.
+                return self.tick(Input {pointer:PointerInput {pos:Some(at),..Default::default()},..Default::default()});
+            }
+            if down && self.pointer_held.is_none() {
+                if self.draws.checked_add(3).is_none_or(|n|n>MAX_DRAWS) {return Err("press_and_up_draw_reservation_bound");}
+                self.pointer_held=Some(at);self.pointer_down_delivered=false;
+            }
+            let result=(||{for _ in 0..2 {
+                self.tick(Input {pointer:PointerInput {pos:Some(at),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()})?;
+            }Ok(())})();
+            if result.is_err() && self.pointer_held.is_some() {
+                // Keep original refusal even if the separately reported cleanup
+                // encounters a submission-accounting error AFTER actual Up.
+                let _=self.release_pointer(at,true);
+            }
+            result
+        }
+        fn hit(&mut self, surface: &str) -> Result<Point, &'static str> {
+            let r = self.gate.editor.ui.scene().and_then(|s|s.surface(surface)).filter(|s|!s.disabled).ok_or("target_scene_missing_or_disabled")?.frame;
+            if [r.x,r.y,r.size.width,r.size.height].iter().any(|v|!v.is_finite()) || r.size.width <= 0. || r.size.height <= 0. { return Err("target_scene_empty_or_nonfinite"); }
+            let at = Point::new(r.x+r.size.width/2.,r.y+r.size.height/2.);
+            self.pointer(at,false)?;
+            if !self.gate.editor.ui.get(surface).hovered { return Err("target_occluded"); }
+            Ok(at)
+        }
+        fn adopt_current(&mut self)->Result<UiSnapshot,&'static str>{
+            // Bounded ordinary repaints only. Never repeat a gesture or infer
+            // init completion from a quiet/stable face.
+            for _ in 0..4 {
+                match self.current(){
+                    Ok(snapshot)=>return Ok(snapshot),
+                    Err("drawn_schema_not_current"|"part_has_not_drawn_current_schema")=>self.tick(Input::default())?,
+                    Err(e)=>return Err(e),
+                }
+            }
+            self.current()
+        }
+        fn target(&mut self, index: usize, expected_kind: &'static str) -> Result<Target, &'static str> {
+            let snapshot = self.adopt_current()?;
+            let face = snapshot.interface();
+            let w = face.widgets.get(index).ok_or("target_index_missing")?;
+            let kind = match w.kind { ir::Kind::Button{..}=>"button",ir::Kind::Menu{..}=>"menu",ir::Kind::Knob{..}=>"knob",ir::Kind::Table{..}=>"table",_=>"unsupported" };
+            if kind != expected_kind { return Err("target_kind_mismatch"); }
+            let component=if let ir::Kind::Table{columns,steps_shown,..}=&w.kind {
+                let shown=steps_shown.unwrap_or(*columns).min(*columns) as usize;
+                if shown==0{return Err("table_has_no_shown_columns");} Some(shown/2)
+            }else{None};
+            let id=if let Some(component)=component {
+                *w.components.get(component).ok_or("table_component_unbound")?
+            }else{let ir::Binding::Control(id)=w.binding else{return Err("target_control_unbound");};id};
+            let drawn_page=FACE.with(|v|v.borrow().as_ref().and_then(|v|v.drawn)).ok_or("drawn_page_unavailable")?.2;
+            if w.page.0!=drawn_page{return Err("target_not_on_drawn_page");}
+            let mut node = Some(ir::WidgetRef(index));
+            while let Some(at) = node {
+                self.charge(1)?;
+                let row = face.widgets.get(at.0).ok_or("target_parent_invalid")?;
+                if row.hidden || !row.enabled { return Err("target_ancestor_hidden_or_disabled"); }
+                node = row.parent;
+            }
+            let view = self.gate.params.shared.view.lock().unwrap();
+            let source = view.parts[0].interfaces.iter().position(|f|f.source==ir::Source::FalconLua).ok_or("source_unavailable")?;
+            Ok(Target {index,component,id,schema:snapshot.generation(),surface:format!("part-0-epoch-{}-script-{source}-ir-{index}",self.epoch),kind})
+        }
+        fn target_still_current(&self, t: &Target) -> Result<(), &'static str> {
+            let s = self.current()?;
+            if s.generation() != t.schema || s.interface().widgets.get(t.index).is_none_or(|w|{
+                if let Some(component)=t.component{w.components.get(component)!=Some(&t.id)}else{w.binding!=ir::Binding::Control(t.id)}
+            }) { Err("target_schema_changed_before_down") } else { Ok(()) }
+        }
+        fn click(&mut self, target: &Target) -> Result<Value, &'static str> {
+            if self.actions >= MAX_ACTIONS { return Err("action_bound"); }
+            self.actions += 1; self.submitted.clear();
+            let before = self.owner.value(target.id);
+            let at = self.hit(&target.surface)?;
+            self.target_still_current(target)?;
+            self.pointer(at,true)?;
+            self.pointer(at,false)?; // Always deliver actual physical up, even if callback changed schema.
+            for _ in 0..2 { self.tick(Input::default())?; }
+            let ack = self.ack()?;
+            let expected = format!("control-{}",target.id.0);
+            Ok(json!({"widget":target.index,"control_id":target.id.0.to_string(),"schema_at_down":target.schema,
+                "kind":target.kind,"at":[at.x,at.y],"submitted_exact_target":self.submitted.contains(&expected),
+                "value_before":before,"value_after":self.owner.value(target.id),"owner":ack,
+                "queue_scope":"Submitted is queue admission, owner marker is an ordered attempt, neither proves the intended DSP law"}))
+        }
+        fn ack(&mut self) -> Result<Value, &'static str> {
+            if self.receipts >= MAX_RECEIPTS { return Err("owner_receipt_bound"); }
+            self.receipts += 1;
+            let deadline = Instant::now()+Duration::from_secs(3);
+            let mut request = self.gate.core.request_uvi_diagnostics(0,self.epoch,&self.owner,Duration::from_secs(3)).map_err(|_|"owner_request_refused")?;
+            loop {
+                if self.observations.elapsed() > Duration::from_secs(10) || Instant::now() > deadline || self.polls >= 10_000 {
+                    request.cancel(); return Err("owner_observation_timeout");
+                }
+                self.polls += 1;
+                self.host_block.service(&mut self.gate.core)?;
+                self.gate.params.shared.widget_gate_readback(&mut self.gate.core);
+                let reply = self.gate.core.poll_uvi_diagnostics(&mut request).map_err(|_|"owner_changed_during_ack")?;
+                if let DiagnosticPoll::Complete(a) = reply.poll {
+                    if reply.commands_drained {
+                        self.owner_checks &= a.sample_counts_conserved() && a.runtime_faults==0 && a.runtime_budgets==0 && a.samples.failed==0 && a.samples.cancelled==0;
+                        return Ok(json!({"request_id":a.request_id,"ordered_drained":true,"events_executed":a.events_executed,
+                            "commands_collected":a.commands_collected,"commands_pushed":a.commands_pushed,
+                            "ui_revision":a.ui_revision,"runtime_faults":a.runtime_faults,"runtime_budgets":a.runtime_budgets,
+                            "next_due_ms":a.next_due_ms,"sample_counts_conserved":a.sample_counts_conserved(),
+                            "samples":{"requested":a.samples.requested,"successful":a.samples.successful,"failed":a.samples.failed,
+                                "cancelled":a.samples.cancelled,"pending":a.samples.pending},
+                            "initialization_completion":"unobservable_in_current_owner_ack"}));
+                    }
+                } else if !matches!(reply.poll, DiagnosticPoll::Pending) { return Err("owner_ack_terminal_without_completion"); }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        fn capture(&mut self) -> Result<(), &'static str> {
+            if self.resources.len() >= MAX_PAINTS { return Err("resource_snapshot_bound"); }
+            let remaining=MAX_WORK.checked_sub(self.work).ok_or("inspection_bound")?;
+            FACE.with(|v| {if let Some(v)=v.borrow_mut().as_mut(){v.requested=true;v.report=None;v.work_remaining=remaining;}});
+            let tick=self.tick(Input::default());
+            // The Part hook can have performed real inspection before tick's
+            // later frame/submission/clock refusal. Consume that one receipt
+            // even on Err; never rerun the observer to reconstruct its work.
+            let report=FACE.with(|v|v.borrow_mut().as_mut().and_then(|v|v.report.take()));
+            let observed=if let Some(report)=report {
+                let work=report["inspection_work"].as_u64().and_then(|n|usize::try_from(n).ok()).unwrap_or(0);
+                let charged=self.charge(work);self.resources.push(report);charged
+            }else{Err("part_asset_hook_not_reached")};
+            tick?;observed
+        }
+        fn paint(&mut self) -> Result<(), &'static str> {
+            if self.paints >= MAX_PAINTS { return Err("pixel_snapshot_bound"); }
+            self.paints += 1;
+            let bytes = super::super::tests::pixels(&self.gate.editor.ui,1500,1100);
+            if bytes.len() != 6_600_000 { return Err("pixel_geometry_mismatch"); }
+            let first = &bytes[..4];
+            let nonbackground = bytes.chunks_exact(4).filter(|p|p.iter().zip(first).any(|(a,b)|a.abs_diff(*b)>8)).count();
+            self.pixels.push(json!({"width":1500,"height":1100,"rgba_bytes":bytes.len(),"sha256":hash(&bytes),
+                "nonbackground_pixels":nonbackground,"scope":"Actual current Part MUI CPU viewport, discarded pixels; no native-host equality"}));
+            Ok(())
+        }
+        fn optional_visible(&mut self, kind: &'static str) -> Result<Option<Target>, &'static str> {
+            let snapshot = self.adopt_current()?;
+            let face = snapshot.interface();
+            if face.widgets.len() > 48_000 { return Err("widget_inventory_bound"); }
+            for (index,w) in face.widgets.iter().enumerate() {
+                self.charge(1)?;
+                let matches = match kind {"menu"=>matches!(w.kind,ir::Kind::Menu{..}),"knob"=>matches!(w.kind,ir::Kind::Knob{..}),"table"=>matches!(w.kind,ir::Kind::Table{..}),_=>false};
+                if !matches { continue; }
+                match self.target(index,kind) {
+                    Ok(t) if self.gate.editor.ui.scene().and_then(|s|s.surface(&t.surface)).is_some_and(|s|!s.disabled) => return Ok(Some(t)),
+                    Ok(_) | Err("target_ancestor_hidden_or_disabled") | Err("target_control_unbound") | Err("target_not_on_drawn_page") => {},
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(None)
+        }
+        fn menu(&mut self, target: &Target) -> Result<Value, &'static str> {
+            let before = self.owner.value(target.id);
+            let mut row = self.click(target)?;
+            let mut visited = BTreeSet::new();
+            let mut selected = None;
+            for depth in 0..=2 {
+                let snapshot = self.adopt_current()?;
+                let w = snapshot.interface().widgets.get(target.index).ok_or("menu_gone")?;
+                let ir::Kind::Menu{items} = &w.kind else { return Err("menu_changed_kind"); };
+                self.charge(items.len())?;
+                selected = items.iter().enumerate().find_map(|(i,item)| {
+                    let key=format!("{}-item-{i}",target.surface);
+                    (item.visible && Some(f64::from(item.value)) != before
+                        && self.gate.editor.ui.scene().and_then(|s|s.surface(&key)).is_some_and(|s|!s.disabled))
+                        .then_some((i,item.value,key))
+                });
+                if selected.is_some() || depth==2 {break;}
+                let prefix=format!("{}-category-",target.surface);
+                let mut category=None::<(String,f64)>;
+                let mut inspected=0usize;
+                if let Some(scene)=self.gate.editor.ui.scene(){
+                    let work=&mut self.work;
+                    for surface in scene.surfaces(){
+                        charge_work(work,1)?;
+                        inspected=inspected.checked_add(1).ok_or("scene_inspection_overflow")?;
+                        if inspected>48_000{return Err("scene_inspection_bound");}
+                        let key=surface.key.as_str();
+                        if !surface.disabled && key.starts_with(&prefix) && !visited.contains(key)
+                            && category.as_ref().is_none_or(|(_,x)|surface.frame.x>*x){
+                            category=Some((key.to_owned(),surface.frame.x));
+                        }
+                    }
+                }
+                let Some((category,_))=category else{break;};
+                if self.actions>=MAX_ACTIONS{return Err("action_bound");}self.actions+=1;
+                let at=self.hit(&category)?;
+                self.target_still_current(target)?;
+                self.pointer(at,true)?;self.pointer(at,false)?;
+                visited.insert(category);
+            }
+            row["actual_category_actions"]=json!(visited.len());
+            if let Some((index,value,key)) = selected {
+                if self.actions>=MAX_ACTIONS{return Err("action_bound");}self.actions+=1;
+                let at = self.hit(&key)?;
+                self.target_still_current(target)?;
+                self.pointer(at,true)?;self.pointer(at,false)?;
+                let ack = self.ack()?;
+                row["leaf"] = json!({"original_item_index":index,"authored_value":value,"owner_value":self.owner.value(target.id),
+                    "at":[at.x,at.y],"value_observed":self.owner.value(target.id)==Some(f64::from(value)),
+                    "submitted_exact_target":self.submitted.contains(&format!("control-{}",target.id.0)),"owner":ack});
+            } else { row["leaf"] = json!({"status":"no_distinct_enabled_leaf_in_actual_scene_within_two_category_actions"}); }
+            if self.actions>=MAX_ACTIONS{return Err("action_bound");}self.actions+=1;
+            self.tick(Input{keys:vec![KeyPress{key:Key::Escape,mods:Mods::default()}],..Default::default()})?;
+            Ok(row)
+        }
+        fn drag(&mut self, target: &Target, table: bool) -> Result<Value, &'static str> {
+            if self.actions >= MAX_ACTIONS { return Err("action_bound"); } self.actions+=1;
+            self.submitted.clear();
+            let at = self.hit(&target.surface)?;
+            self.target_still_current(target)?;
+            let old = self.owner.value(target.id);
+            self.pointer(at,true)?;
+            self.pointer(Point::new(at.x,at.y-20.),true)?;
+            self.pointer(Point::new(at.x,at.y-20.),false)?;
+            let ack = self.ack()?;
+            Ok(json!({"widget":target.index,"control_id":target.id.0.to_string(),"table":table,
+                "component":target.component,"value_before":old,"value_after":self.owner.value(target.id),"submitted_controls":self.submitted.len(),
+                "submitted_exact_component":self.submitted.contains(&format!("control-{}",target.id.0)),
+                "relative_pointer_travel_px":20,"owner":ack}))
+        }
+        fn graph(&self)->Value {
+            self.gate.core.diagnostic_live_graph_runtime(0,self.epoch,&self.players,&[],&[])
+                .map_or_else(|e|json!({"status":e,"selected_actual_player_nodes":self.players}),|v|v)
+        }
+        fn finish_audio(&mut self) -> Result<(), &'static str> {
+            let held = self.held_at.ok_or("note_not_started")?;
+            let done = self.gate.core.clock(0).checked_sub(held).ok_or("held_clock_reversed")?;
+            if done > NOTE_FRAMES { return Err("held_note_frame_bound"); }
+            self.render((NOTE_FRAMES-done) as usize)?;
+            self.gate.core.play(0,Event::midi1(0x80,60,0));
+            self.held_at=None;
+            self.render(24_000)
+        }
+    }
+
+    fn execute(profile: Profile, bank_hash: &str) -> Result<Value, &'static str> {
+        if bank_hash.len()!=64 || !bank_hash.bytes().all(|c|c.is_ascii_hexdigit()) { return Err("root_identity_receipt_missing"); }
+        if profile==Profile::Clarinet && bank_hash!="e6e16c03efc9e3a39484d6326b9ba5634314bc896d6523c83e661b1b279a884a" { return Err("root_clarinet_identity_mismatch"); }
+        let _guard=CaptureGuard;
+        let mut r=Run::load(profile)?;
+        let execution=(|| -> Result<Value,&'static str> {
+        // Initial helper load draws occurred before capture was armed.
+        for _ in 0..2 {r.tick(Input::default())?;}
+        let baseline=r.ack()?;
+        r.rows.push(json!({"phase":"constructor_returned","owner":baseline,"all_on_init_completed":Value::Null}));
+        r.capture()?;r.paint()?;
+        let initial_problems=r.gate.core.problems(0);
+        r.held_at=Some(r.gate.core.clock(0));
+        r.gate.core.play(0,Event::midi1(0x90,60,96));
+        let note_ack=r.ack()?;
+        r.rows.push(json!({"phase":"note_on_ordered_attempt_before_pcm","owner":note_ack}));
+        r.render(6000)?;
+        let before_navigation=r.gate.core.voice_taps(0);
+        let source_before=r.graph();
+        if profile==Profile::Clarinet {
+            let t=r.target(76,"menu")?;
+            let current=r.current()?;let w=&current.interface().widgets[76];
+            if w.menu_hierarchy.is_none() || [w.rect.x,w.rect.y,w.rect.width,w.rect.height]!=[541.,363.,100.,21.] {return Err("clarinet_retained_menu_shape_changed");}
+            let row=r.menu(&t)?;r.rows.push(json!({"phase":"retained_visible_menu","action":row}));
+            if let Some(t)=r.optional_visible("knob")? {let row=r.drag(&t,false)?;r.rows.push(json!({"phase":"visible_knob","action":row}));}
+        } else if let Some(t)=r.optional_visible("menu")? {let row=r.menu(&t)?;r.rows.push(json!({"phase":"visible_menu","action":row}));}
+        else {r.rows.push(json!({"phase":"visible_menu","status":"not_reachable_on_current_authored_page"}));}
+        if let Some(t)=r.optional_visible("table")? {let row=r.drag(&t,true)?;r.rows.push(json!({"phase":"visible_table","action":row}));}
+        else {r.rows.push(json!({"phase":"visible_table","status":"not_reachable_without_guessed_authored_navigation"}));}
+        r.capture()?;r.paint()?;
+        let after_navigation=r.gate.core.voice_taps(0);
+        let voice_graph=r.graph();
+        r.finish_audio()?;
+        if profile==Profile::Ao {
+            for _ in 0..2 {r.tick(Input::default())?;}
+            let t=r.target(23,"button")?;
+            let s=r.current()?;
+            if s.interface().widgets[23].source_id!=Some(24) || t.id.0!=0x55564900000000000000001800000000u128 {return Err("ao_retained_layer_next_identity_changed");}
+            let row=r.click(&t)?;r.rows.push(json!({"phase":"retained_layer_next_after_note_release","action":row}));
+            r.capture()?;r.paint()?;
+        }
+        let final_ack=r.ack()?;
+        let source_after=r.graph();
+        let final_problems=r.gate.core.problems(0);
+        let storage=r.owner.registry_storage().map_err(|_|"registry_status_unavailable")?;
+        let work=r.owner.schema_work();
+        let outcomes=r.gate.core.widget_gate_engine_outcomes(0);
+        for o in outcomes.into_iter().take(64) {r.outcomes.push(json!({"write":o.write,"address":o.address.map(|a|json!({"parameter":a.parameter,"group":a.group,"slot":a.slot,"generic":a.generic})),"applied":o.result.is_ok()}));}
+        let taps=|rows:[Option<sampler_core::VoiceTap>;16]| rows.into_iter().flatten().map(|v|json!({"group":v.group,"key":v.key,"velocity":v.velocity,"phase":v.phase,"level":v.level})).collect::<Vec<_>>();
+        let samples=r.audio.iter().enumerate().map(|(i,v)|json!({"start":WINDOWS[i].0,"end":WINDOWS[i].1,"observed_frames":v[2],"rms_stereo":(v[0]/(v[2]*2.).max(1.)).sqrt(),"peak":v[1]})).collect::<Vec<_>>();
+        let audio_nonzero=r.audio.iter().zip(WINDOWS).all(|(v,(start,end))|v[1]>0. && v[2]==(end-start) as f64);
+        let model=r.owner.snapshot();
+        r.charge(model.interface().widgets.len())?;
+        let own_hidden=model.interface().widgets.iter().filter(|w|w.hidden).count();
+        let resources_ok=r.resources.last().is_some_and(|v|v["requested_page_complete"]==true&&v["bitmap"]==true&&v["schema_generation"]==model.generation())
+            && r.resources.iter().all(|v|v["probe_dropped"]==0);
+        let faults=r.owner.fault_counts();
+        let owner_healthy=faults.init.values().all(|v|*v==0)&&faults.runtime.values().all(|v|*v==0)&&faults.setter_type_mismatches.is_empty();
+        let core_healthy=r.nonfinite==0 && final_problems.capacity_drops==initial_problems.capacity_drops
+            && final_problems.underruns==initial_problems.underruns && final_problems.stream_errors==initial_problems.stream_errors
+            && final_problems.nonfinite==initial_problems.nonfinite && final_problems.ignored_input==initial_problems.ignored_input
+            && final_problems.script_overruns==initial_problems.script_overruns && final_problems.lua_faults==initial_problems.lua_faults;
+        let required_action=match profile {
+            Profile::Ao=>r.rows.iter().any(|v|v["phase"]=="retained_layer_next_after_note_release"&&v["action"]["submitted_exact_target"]==true&&v["action"]["owner"]["ordered_drained"]==true),
+            Profile::Clarinet=>r.rows.iter().any(|v|v["phase"]=="retained_visible_menu"&&v["action"]["leaf"]["value_observed"]==true&&v["action"]["leaf"]["submitted_exact_target"]==true&&v["action"]["leaf"]["owner"]["ordered_drained"]==true),
+        };
+        let ui_checks=owner_healthy&&core_healthy&&resources_ok&&required_action&&r.owner_checks;
+        Ok(json!({"schema":"kontra-real-library-ui09-v1","profile":profile.key(),"execution_status":"bounded_observations_completed",
+            "root_bank_sha256_preflight":bank_hash,"bank_identity_scope":"Root-supplied pre/post hash receipt required; helper does not certify or rewrite bank identity",
+            "part_epoch":r.epoch,"source":"FalconLua","required_product_ui_checks_pass":ui_checks,
+            "checks":{"required_real_action":required_action,"requested_page_resources":resources_ok,"owner_faults_zero":owner_healthy,"no_new_core_health_fault":core_healthy,"all_observed_owner_checks":r.owner_checks},
+            "owner_fault_counts":{"init":faults.init,"runtime":faults.runtime,"setter_type_mismatch_count":faults.setter_type_mismatches.len()},
+            "initialization_completion":"UNOBSERVABLE_DIRECT_INIT_ORIGIN; constructor and earlier owner attempt observed only",
+            "native_equivalence":"unverified","whole_library_acceptance":"NOT_ESTABLISHED",
+            "actions":r.rows,"final_owner":final_ack,"source_before_actions":source_before,"source_after_actions":source_after,
+            "source_observation_scope":"Same actual compiled target nodes and immutable AssetIds, at most3 targets; no whole-layer/sample census",
+            "current_model":{"schema_generation":model.generation(),"widgets":model.interface().widgets.len(),"pages":model.interface().pages.len(),
+                "own_hidden_flags":own_hidden,"ui_omissions":model.interface().unsupported.len(),"declared_assets":model.interface().assets.len(),
+                "scope":"Current actual owner model, own_hidden is not effective ancestry visibility; pixels/resources carry actual drawn schema separately"},"actual_part_resources":r.resources,"actual_part_pixels":r.pixels,
+            "registry":{"prepared_cells":storage.prepared_cells,"initial_controls":storage.initial_controls,"current_controls":storage.current_controls,
+                "retired_snapshots":storage.retired_snapshots,"initial_requested_bytes":storage.initial_requested_payload_bytes,
+                "initial_retained_bytes":storage.initial_retained_payload_bytes,"incoming_bytes":storage.incoming_payload_bytes,
+                "requested_bytes":storage.requested_payload_bytes,"retained_bytes":storage.retained_payload_bytes,
+                "schema_work":{"limit":work.limit,"requested":work.requested,"admitted":work.admitted,"exhausted":work.exhausted}},
+            "held_audio":{"windows":samples,"all_requested_windows_nonzero":audio_nonzero,"nonfinite_raw_samples":r.nonfinite,"physical_note_key":60,"velocity":96,
+                "note_frames":NOTE_FRAMES,"before_navigation_taps":taps(before_navigation),"after_navigation_taps":taps(after_navigation),"actual_graph":voice_graph,
+                "tap_scope":"Group/key taps are not stable NoteId/source handles; only actual_graph provides exact occupied identities when available"},
+            "core_problems_before":initial_problems,"core_problems_after":final_problems,"engine_outcomes":r.outcomes,
+            "engine_outcomes_complete":false,"engine_outcome_scope":"At most64 current drained outcomes; no inferred full transaction history or widget-to-DSP identity from value equality",
+            "active_voices_after_tail":r.gate.core.voices().active,
+            "requested_page_assets_observed_complete":resources_ok,"host_note_end_sink_acceptances":r.note_ends,
+            "host_note_end_scope":"MIDI1 notes need not call host NOTE_END sink; count is not Core retirement proof",
+            "budget":{"draws":r.draws,"inspection_work":r.work,"rendered_frames":r.rendered,"actions":r.actions,"owner_receipts":r.receipts,
+                "zero_service_polls":r.polls,"pixel_observations":r.paints,"wall_ms":r.started.elapsed().as_millis()},
+            "remaining":"Direct-init completion, declared-unrequested resources, unavailable Table/menu paths, native pixels, full DSP topology and accepted target law remain separate dimensions"}))
+        })();
+        // Neither final closure nor refused-gesture cleanup can grant fuel or
+        // advance PCM; close the actual block after the last owner observation.
+        if let Some(at)=r.pointer_held {let _=r.release_pointer(at,true);}
+        r.host_block.finish(&mut r.gate.core,&mut r.note_ends);
+        let pointer_receipt=json!({"downs":r.pointer_downs,"ups":r.pointer_ups,"cleanup_ups":r.pointer_cleanup_ups,
+            "held":r.pointer_held.is_some(),"cleanup_failure":r.pointer_cleanup_failure});
+        match execution {
+            Ok(mut report)=>{let cleanup_ok=r.pointer_held.is_none()&&r.pointer_cleanup_failure.is_none()&&r.pointer_downs==r.pointer_ups;
+                report["checks"]["physical_pointer_cleanup"]=json!(cleanup_ok);
+                if !cleanup_ok{report["required_product_ui_checks_pass"]=json!(false);}
+                report["physical_pointer_cleanup"]=pointer_receipt;report["host_note_end_sink_acceptances"]=json!(r.note_ends);Ok(report)},
+            Err(reason)=>Ok(json!({"profile":profile.key(),"execution_status":"refused","reason":reason,"part_epoch":r.epoch,
+                "actions_completed":r.rows,"resource_observations":r.resources,"pixel_observations":r.pixels,
+                "draws":r.draws,"rendered_frames":r.rendered,"inspections":r.work,"current_core_problems":r.gate.core.problems(0),
+                "physical_pointer_cleanup":pointer_receipt,"host_note_end_sink_acceptances":r.note_ends,
+                "native_equivalence":"unverified","whole_library_acceptance":"NOT_ESTABLISHED"})),
+        }
+    }
+
+    fn profile_test(profile: Profile) {
+        let out=std::env::var("KONTRA_LIBRARY_UI_OUT").expect("explicit private numeric report path");
+        let out=Path::new(&out);
+        assert!(out.is_absolute() && out.starts_with("/mnt/Windows11/DEV_WORKSPACE/PluginArtifacts") && !out.exists(),"new private report required");
+        let identity=std::env::var("KONTRA_LIBRARY_UI_BANK_SHA256").expect("root preflight bank digest required");
+        let hook=std::panic::take_hook();std::panic::set_hook(Box::new(|_|{}));
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||execute(profile,&identity)));
+        std::panic::set_hook(hook);
+        let (report,complete)=match result {Ok(Ok(v))=>{let complete=v["execution_status"]=="bounded_observations_completed"&&v["required_product_ui_checks_pass"]==true;(v,complete)},Ok(Err(e))=>(json!({"profile":profile.key(),"execution_status":"refused","reason":e}),false),Err(_)=>(json!({"profile":profile.key(),"execution_status":"panic_payload_discarded"}),false)};
+        let bytes=serde_json::to_vec_pretty(&report).unwrap();
+        let within_report=bytes.len()<=MAX_REPORT;
+        let bytes=if within_report{bytes}else{serde_json::to_vec(&json!({"profile":profile.key(),"execution_status":"report_bound"})).unwrap()};
+        use std::io::Write;
+        let mut options=std::fs::OpenOptions::new();options.create_new(true).write(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(out).unwrap();file.write_all(&bytes).unwrap();
+        assert!(complete && within_report,"bounded library UI observations failed; private numeric receipt retained");
+    }
+
+
+    fn authored_directory(tag:&str)->std::path::PathBuf {
+        static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+        let path=std::path::PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch").join(format!("ui09-{tag}-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&path).unwrap();path
+    }
+    #[test]
+    fn requested_page_picture_success_does_not_mask_real_manual_wave_failure() {
+        let dir=authored_directory("wave");let path=dir.join("authored.uvip");
+        let xml=r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            setSize(320,200); local art=Button{'Art',bounds={10,10,100,30}};
+            art:setStripImage('picture.png',1); local w=WaveView{'Display',bounds={20,60,240,96}};
+            w.sample='actually-missing.wav'
+        ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+        std::fs::write(&path,xml).unwrap();
+        moose::core::screenshot::save_png(&dir.join("picture.png"),&[20u8,40,60,255].repeat(4),2,2);
+        let host=sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();
+        let face=host.interface();let values=host.control_values().into_iter().collect();
+        let mut assets=super::super::ir_view::Assets::default();let deadline=Instant::now()+Duration::from_secs(3);
+        let report=loop {
+            assets.prepare(&path,&face,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
+            let (report,complete,_)=requested_waves(&assets,&face,ir::PageRef(0),MAX_WORK).unwrap();
+            if report["provider"]["rows"].as_array().unwrap().iter().any(|v|v["status"]=="source_unavailable")&&assets.scan().decode_ok==1 {
+                assert!(!complete);break report;
+            }
+            assert!(Instant::now()<deadline,"actual picture/manual-wave requests did not settle");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(assets.pending(),0);assert_eq!(assets.scan().decode_ok,1);assert_eq!(assets.probe_dropped(),0);
+        assert_eq!(report["unresolved_requested"],1);
+        // Same successful picture without a requested WaveView remains eligible.
+        let mut picture_only=face.clone();for w in &mut picture_only.widgets{w.uvi_wave_view_request=None;}
+        let mut clean=super::super::ir_view::Assets::default();let deadline=Instant::now()+Duration::from_secs(3);
+        loop {
+            clean.prepare(&path,&picture_only,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
+            if clean.pending()==0&&clean.scan().decode_ok==1{break;}
+            assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(1));
+        }
+        let (_,complete,_)=requested_waves(&clean,&picture_only,ir::PageRef(0),MAX_WORK).unwrap();assert!(complete);
+        // An actually hidden, never requested manual source is not a failure.
+        let mut hidden=face.clone();for w in &mut hidden.widgets{if w.uvi_wave_view_request.is_some(){w.hidden=true;}}
+        let (_,complete,_)=requested_waves(&super::super::ir_view::Assets::default(),&hidden,ir::PageRef(0),MAX_WORK).unwrap();assert!(complete);
+        drop(assets);drop(clean);std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn wave_observation_preflights_depth_rows_and_work_before_provider_projection() {
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script>local w=WaveView('Actual');w.sample='missing.wav'</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let host=sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();let mut face=host.interface();
+        let assets=super::super::ir_view::Assets::default();
+        assert!(matches!(requested_waves(&assets,&face,ir::PageRef(0),0),Err("wave_inspection_bound")));
+        face.widgets[0].parent=Some(ir::WidgetRef(0));
+        assert!(matches!(requested_waves(&assets,&face,ir::PageRef(0),MAX_WORK),Err("wave_ancestry_or_inspection_bound")));
+    }
+    #[test]
+    fn post_down_frame_refusal_delivers_one_real_up_and_never_retries_button_or_drag() {
+        for (kind,constructor) in [("button","Button{'Gesture',bounds={10,10,100,35}}"),("knob","Knob{'Gesture',0,0,1,bounds={10,10,100,70}}")]{
+            let _capture=CaptureGuard;let dir=authored_directory(kind);let path=dir.join("authored.uvip");
+            let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(240,140);local count=Label{{'Count',bounds={{130,10,80,30}}}};count.text='0';local g={constructor};g.triggeredOnMouseDown=true;g.changed=function() count.text=tostring(tonumber(count.text)+1) end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+            std::fs::write(&path,xml).unwrap();let mut selection=Selection::default();selection.parts=vec![Part{path:path.to_str().unwrap().to_owned(),program:0,view:1,..Default::default()}];
+            let gate=Gate::load(selection);let epoch=gate.core.epoch(0);let owner=gate.params.shared.part(0).unwrap().widget_gate_uvi_owner(epoch).unwrap();
+            gate.core.enable_uvi_diagnostics(0,epoch,&owner).unwrap();
+            let mut run=Run::observe_gate(gate,owner,epoch,Vec::new(),Instant::now()).unwrap();
+            for _ in 0..2{run.tick(Input::default()).unwrap();}
+            let snapshot=run.current().unwrap();let index=snapshot.interface().widgets.iter().position(|w|w.name=="Gesture").unwrap();
+            let target=run.target(index,kind).unwrap();let at=run.hit(&target.surface).unwrap();let clock=run.gate.core.clock(0);
+            run.rendered=MAX_FRAMES; // Real helper frame admission refuses AFTER editor delivered Down.
+            assert_eq!(run.pointer(at,true),Err("audio_frame_bound"));
+            assert_eq!(run.gate.core.clock(0),clock);assert!(run.pointer_held.is_none());
+            assert_eq!((run.pointer_downs,run.pointer_ups,run.pointer_cleanup_ups),(1,1,1));assert!(run.pointer_cleanup_failure.is_none());
+            assert!(!run.gate.editor.ui.get(&target.surface).held,"actual MUI capture must be released even though frame budget refused");
+            let deadline=Instant::now()+Duration::from_secs(3);let expected=if kind=="button"{"1"}else{"0"};
+            loop {
+                let now=run.owner.snapshot();let text=&now.interface().widgets.iter().find(|w|w.name=="Count").unwrap().text;
+                if text==expected{break;}assert!(Instant::now()<deadline,"actual owner callback did not settle");std::thread::sleep(Duration::from_millis(1));
+            }
+            run.host_block.finish(&mut run.gate.core,&mut run.note_ends);drop(run);std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+    #[test]
+    fn diagnostic_zero_service_spends_same_real_host_allowance_without_refilling() {
+        let source="on init declare $saved end on on note while ($saved<10000000) inc($saved) end while end on";
+        let script=sampler_ksp::compile(source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let plan=script.bind(sampler_core::Prepared::new(48000,vec![],vec![],0).unwrap()).unwrap();
+        let limits=sampler_core::Limits::for_plan(&plan,32,8);let runtime=sampler_core::Runtime::new(plan,limits).unwrap();
+        let part=crate::sound::v2::Part::new(runtime,crate::sound::tree::MixTree::instrument("actual exhausted callback")).unwrap();
+        let mut core=V2Core::with_parts(1,48000.);core.install(0,Some(Box::new(part)));let epoch=core.epoch(0);
+        let mut block=ObservedHostBlock::default();let mut ends=0;
+        assert_eq!(block.service(&mut core),Err("zero_service_without_actual_host_block"));
+        block.begin(&mut core,32,&mut ends).unwrap();core.play(0,Event::midi1(0x90,60,100));core.render(1);
+        let before=core.diagnostic_script_cell(0,epoch,0,0).unwrap();assert!(before>0&&before<10000000);
+        let clock=core.clock(0);for _ in 0..16 {block.service(&mut core).unwrap();assert_eq!(core.diagnostic_script_cell(0,epoch,0,0).unwrap(),before);assert_eq!(core.clock(0),clock);}
+        block.finish(&mut core,&mut ends);assert_eq!(block.service(&mut core),Err("zero_service_without_actual_host_block"));
+        block.begin(&mut core,32,&mut ends).unwrap();core.render(1);assert!(core.diagnostic_script_cell(0,epoch,0,0).unwrap()>before);block.finish(&mut core,&mut ends);
+    }
+
+    #[test]
+    fn refused_wave_projection_reports_reserved_work_before_any_ancestor_walk_or_retry(){
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script>local w=WaveView('Actual');w.sample='missing.wav'</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let host=sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();let mut face=host.interface();let assets=super::super::ir_view::Assets::default();
+        face.widgets[0].parent=Some(ir::WidgetRef(0));
+        let (_,first)=requested_waves_metered(&assets,&face,ir::PageRef(0),MAX_WORK).unwrap_err();
+        assert!(first>=face.widgets.len());let mut total=0;charge_work(&mut total,first).unwrap();
+        let (_,second)=requested_waves_metered(&assets,&face,ir::PageRef(0),0).unwrap_err();assert_eq!(second,0);assert_eq!(total,first);
+    }
+
+    #[test]
+    fn wave_observer_and_returned_rows_are_charged_in_addition_to_preflight(){
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script>local w=WaveView('Actual');w.sample='missing.wav'</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let host=sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();let mut face=host.interface();
+        let wave=face.widgets.iter().find(|w|w.uvi_wave_view_request.is_some()).unwrap().clone();
+        let mut ordinary=wave.clone();ordinary.uvi_wave_view_request=None;ordinary.parent=None;
+        face.widgets=vec![ordinary;40_000];face.widgets[0]=wave;face.widgets[0].parent=None;
+        let assets=super::super::ir_view::Assets::default();let mut charged=0;
+        for _ in 0..3 {let (_,_,work)=requested_waves_metered(&assets,&face,ir::PageRef(0),MAX_WORK-charged).unwrap();assert!(work>=80_002);charge_work(&mut charged,work).unwrap();}
+        let (_,work)=requested_waves_metered(&assets,&face,ir::PageRef(0),MAX_WORK-charged).unwrap_err();
+        assert_eq!(work,0,"fourth complete roster scan is refused before traversal");assert!(charged<=MAX_WORK);
+        let (_,_,exact)=requested_waves_metered(&assets,&face,ir::PageRef(0),MAX_WORK).unwrap();
+        assert!(requested_waves_metered(&assets,&face,ir::PageRef(0),exact).is_ok());
+        let (_,spent)=requested_waves_metered(&assets,&face,ir::PageRef(0),exact-1).unwrap_err();
+        assert_eq!(spent,40_000,"observer is not called after its aggregate reservation refuses");
+    }
+    #[test]
+    fn capture_debits_real_part_hook_on_later_tick_refusal_without_reinspection(){
+        let _capture=CaptureGuard;let dir=authored_directory("capture-refusal");let path=dir.join("authored.uvip");
+        std::fs::write(&path,"<UVI4><Program><EventProcessors><ScriptProcessor><script>setSize(240,140);local l=Label('Actual');l.text='visible'</script></ScriptProcessor></EventProcessors></Program></UVI4>").unwrap();
+        let mut selection=Selection::default();selection.parts=vec![Part{path:path.to_str().unwrap().to_owned(),program:0,view:1,..Default::default()}];
+        let gate=Gate::load(selection);let epoch=gate.core.epoch(0);let owner=gate.params.shared.part(0).unwrap().widget_gate_uvi_owner(epoch).unwrap();
+        let mut run=Run::observe_gate(gate,owner,epoch,Vec::new(),Instant::now()).unwrap();
+        for _ in 0..2{run.tick(Input::default()).unwrap();}
+        let widgets=run.owner.snapshot().interface().widgets.len();assert!(widgets>0);
+        let clock=run.gate.core.clock(0);run.rendered=MAX_FRAMES;
+        assert_eq!(run.capture(),Err("audio_frame_bound"));assert_eq!(run.gate.core.clock(0),clock);
+        assert_eq!(run.resources.len(),1);assert_eq!(run.work,2*widgets);
+        assert!(FACE.with(|v|v.borrow().as_ref().unwrap().report.is_none()));
+        let before=run.work;assert_eq!(run.capture(),Err("audio_frame_bound"));assert_eq!(run.resources.len(),2);
+        assert_eq!(run.work,before+2*widgets,"each genuine hook is charged once, never reconstructed or skipped");
+        run.host_block.finish(&mut run.gate.core,&mut run.note_ends);drop(run);std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "one exact owned AO normal product profile; explicit root hash and numeric output required"]
+    fn actual_ao_pizzicato2_part_ui_acceptance09() { profile_test(Profile::Ao); }
+    #[test]
+    #[ignore = "one exact owned VWinds normal product profile; explicit root hash and numeric output required"]
+    fn actual_vwinds_clarinet_a_part_ui_acceptance09() { profile_test(Profile::Clarinet); }
+}

@@ -25,7 +25,9 @@ fn fixture(script: Option<&str>) -> (SamplerParams, Dsp) {
     } else {
         prepared
     };
-    let limits = Limits::for_plan(&prepared, 16, 16);
+    // The actual Part profile prepares MIDI1/MIDI2/Native host domains. This
+    // fixture must reserve the same explicit aggregate pedal address budget.
+    let limits = Limits {channels:48,..Limits::for_plan(&prepared, 16, 16)};
     let runtime = Runtime::new(prepared, limits).unwrap();
     let part = CorePart::new(runtime, MixTree::instrument("pressed test")).unwrap();
     let params = SamplerParams::new();
@@ -39,6 +41,7 @@ fn exact(dsp: &mut Dsp, p: &SamplerParams, event: CoreEvent) {
     let transport = TransportInfo::default();
     let mut cx = ProcessContext::new(&transport, 48000., 64, &mut out);
     feed_exact_input(dsp, p, event, 0, 0, &mut cx);
+    assert_eq!(dsp.core.problems(0).capacity_drops,0);
 }
 fn drain(dsp: &mut Dsp, p: &SamplerParams) {
     for _ in 0..8 {
@@ -82,6 +85,7 @@ fn process(dsp: &mut Dsp, p: &SamplerParams, playing: bool) {
     let mut channels = [left.as_mut_slice(), right.as_mut_slice()];
     let mut buffer = AudioBuffer::from_slices_checked(&[], &mut channels, 64);
     Sampler::process(dsp, p, &mut buffer, &EventList::with_capacity(0), &mut cx);
+    assert_eq!(dsp.core.problems(0).capacity_drops,0);
 }
 
 #[test]

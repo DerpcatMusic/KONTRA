@@ -1,4 +1,4 @@
-use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
 use sampler_midi::{Applied, ApplyError, Ingress, Packets, Version};
 #[path = "../../sampler-core/tests/support/mod.rs"]
 mod support;
@@ -783,7 +783,7 @@ fn midi1_controllers_upscale_to_exact_center_and_full_scale() {
     for (value, expected) in [(64, 0x8000_0000), (127, u32::MAX)] {
         apply(&mut ingress, &mut rt, &[0x20b0_0100 | value]).unwrap();
         assert_eq!(
-            rt.controller(rt.performance(0).unwrap(), 1).unwrap(),
+            rt.channel_controller(rt.performance(0).unwrap(), sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 0, group: 0, channel: 0 }, 1).unwrap(),
             expected
         );
     }
@@ -796,6 +796,8 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
         let mut ingress = Ingress::new(0, [Some(version); 16]);
         support::without_heap(|| {
             let domain = rt.performance(1).unwrap();
+            let address = sampler_core::ChannelAddress { protocol: if version == Version::Midi1 { Protocol::Midi1 } else { Protocol::Midi2 },
+                port: 0, group: 0, channel: 0 };
             let values = if version == Version::Midi1 {
                 [0, 1, 63, 64, 126, 127]
             } else {
@@ -818,7 +820,9 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
                 } else {
                     value
                 };
-                assert_eq!(rt.controller(domain, 1).unwrap(), expected);
+                assert_eq!(rt.channel_controller(domain, address, 1).unwrap(), expected);
+                assert_eq!(rt.controller(domain, 1).unwrap(), 0);
+                assert_eq!(rt.channel_controller(rt.performance(0).unwrap(), address, 1).unwrap(), 0);
                 assert_eq!(rt.controller(rt.performance(0).unwrap(), 1).unwrap(), 0);
             }
             let on = if version == Version::Midi1 {
@@ -871,6 +875,7 @@ fn reset_all_controllers_follows_rp015() {
     let mut rt = runtime();
     let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
     let p = rt.performance(0).unwrap();
+    let address = sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 0, group: 0, channel: 0 };
     for (cc, value) in [(64, 127), (66, 127), (1, 100), (11, 20), (7, 90), (10, 30)] {
         apply(&mut ingress, &mut rt, &[0x20b0_0000 | cc << 8 | value]).unwrap();
     }
@@ -882,7 +887,8 @@ fn reset_all_controllers_follows_rp015() {
         rt.release_context(note).unwrap().gate.is_none(),
         "sustained"
     );
-    let (volume, pan) = (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap());
+    let (volume, pan) = (rt.channel_controller(p, address, 7).unwrap(), rt.channel_controller(p, address, 10).unwrap());
+    assert_eq!((volume, pan), (spec7(90), spec7(30)));
     assert_eq!(
         apply(&mut ingress, &mut rt, &[0x20b0_7900]),
         Ok(Applied::ResetControllers)
@@ -892,11 +898,11 @@ fn reset_all_controllers_follows_rp015() {
         "pedal released"
     );
     for cc in [1, 64, 65, 66, 67] {
-        assert_eq!(rt.controller(p, cc).unwrap(), 0, "CC{cc}");
+        assert_eq!(rt.channel_controller(p, address, cc).unwrap(), 0, "CC{cc}");
     }
-    assert_eq!(rt.controller(p, 11).unwrap(), u32::MAX);
+    assert_eq!(rt.channel_controller(p, address, 11).unwrap(), u32::MAX);
     assert_eq!(
-        (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()),
+        (rt.channel_controller(p, address, 7).unwrap(), rt.channel_controller(p, address, 10).unwrap()),
         (volume, pan)
     );
     // A non-zero value is not a channel mode message.
@@ -904,4 +910,150 @@ fn reset_all_controllers_follows_rp015() {
         apply(&mut ingress, &mut rt, &[0x20b0_7901]),
         Ok(Applied::Unsupported)
     );
+}
+
+#[test]
+fn reset_all_controllers_preserves_other_physical_poly_pressure_domains() {
+    use sampler_core::ChannelAddress;
+    for version in [Version::Midi1, Version::Midi2] {
+        let mut rt = runtime();
+        let mut ingress = Ingress::new(7, [Some(version); 16]);
+        let domain = rt.performance(0).unwrap();
+        let other_performance = rt.performance(1).unwrap();
+        let address = ChannelAddress { protocol: if version == Version::Midi1 { Protocol::Midi1 } else { Protocol::Midi2 },
+            port: 7, group: 3, channel: 1 };
+        let others = [ChannelAddress { channel: 2, ..address }, ChannelAddress { port: 9, ..address },
+            ChannelAddress { group: 4, ..address }, ChannelAddress { protocol: Protocol::Clap, ..address }];
+        support::without_heap(|| {
+            for key in [60, 61] { rt.dispatch_poly_pressure(domain, address, key, 0x8000_0000).unwrap(); }
+            for (i, &other) in others.iter().enumerate() {
+                rt.dispatch_poly_pressure(domain, other, 60, 0x9000_0000 + i as u32).unwrap();
+            }
+            rt.dispatch_poly_pressure(other_performance, address, 60, 0xa000_0000).unwrap();
+            let words = if version == Version::Midi1 { [0x23b1_7900, 0] } else { [0x43b1_7900, 0] };
+            let len = if version == Version::Midi1 { 1 } else { 2 };
+            assert_eq!(ingress.apply_in(&mut rt, domain, Packets::new(&words[..len]).next().unwrap().unwrap()), Ok(Applied::ResetControllers));
+            for input in [false, true] {
+                for key in [60, 61] { assert_eq!(rt.channel_poly_pressure(domain, address, key, input), Ok(0)); }
+                for (i, &other) in others.iter().enumerate() {
+                    assert_eq!(rt.channel_poly_pressure(domain, other, 60, input), Ok(0x9000_0000 + i as u32));
+                }
+                assert_eq!(rt.channel_poly_pressure(other_performance, address, 60, input), Ok(0xa000_0000));
+            }
+            assert_eq!(rt.now(), 0); assert_eq!(rt.pending_commands(), 0);
+        });
+    }
+}
+
+
+fn range_admission_runtime() -> Runtime {
+    let pcm = Pcm::new(48000, (0..8192).map(|frame| {
+        let phase = f64::from(frame) * 0.017 * std::f64::consts::TAU;
+        [phase.sin() as f32 * 0.1, phase.cos() as f32 * 0.1]
+    }).collect()).unwrap();
+    let prepared = Prepared::new(48000, vec![pcm], vec![Region { sample: 0, key_low: 60, key_high: 60,
+        root_key: None, velocity_low: 0., velocity_high: 1., gain: 1.,
+        envelope: Envelope::new(0,0,0,1.,128).unwrap(), playback: Playback::default() }], 1).unwrap();
+    let limits = Limits::for_plan(&prepared, 8, 8);
+    Runtime::new(prepared, limits).unwrap()
+}
+
+#[test]
+fn rejected_midi2_range_projection_keeps_previous_config_for_the_next_real_note() {
+    let mut rt = range_admission_runtime(); let mut reference = range_admission_runtime();
+    let mut groups = [None; 16]; groups[3] = Some(Version::Midi2);
+    let mut ingress = Ingress::new(7, groups); let mut reference_ingress = Ingress::new(7, groups);
+    let seed = |ingress: &mut Ingress, runtime: &mut Runtime| {
+        assert_eq!(apply(ingress, runtime, &[0x4321_0000, 0]), Ok(Applied::Configuration));
+        apply(ingress, runtime, &[0x43e1_0000, u32::MAX]).unwrap();
+        let Applied::Started(note) = apply(ingress, runtime, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+        note
+    };
+    let note = seed(&mut ingress, &mut rt); seed(&mut reference_ingress, &mut reference);
+    let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
+    support::without_heap(|| {
+        let clock = rt.now(); let counts = (rt.note_count(), rt.expression_count(), rt.voice_count(), rt.pending_commands());
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x4321_0000, 96u32 << 25]),
+            Err(ApplyError::Core(sampler_core::Error::InvalidInput)));
+        assert_eq!(rt.expression(owner), Ok(before)); assert_eq!(rt.expression_id(note), Ok(owner));
+        assert_eq!(rt.now(), clock); assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count(),rt.pending_commands()), counts);
+        assert!(rt.input_held(note).unwrap());
+        let mut actual = [[0.;2]; 128]; let mut expected = actual;
+        rt.render(&mut actual).unwrap(); reference.render(&mut expected).unwrap(); assert_eq!(actual, expected);
+        let Applied::Started(future) = apply(&mut ingress, &mut rt, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+        let Applied::Started(reference_future) = apply(&mut reference_ingress, &mut reference, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+        assert_ne!(future, note); assert_eq!(rt.expression(rt.expression_id(future).unwrap()).unwrap().pitch_semitones, 0.);
+        assert_eq!(reference.expression(reference.expression_id(reference_future).unwrap()).unwrap().pitch_semitones, 0.);
+        rt.render(&mut actual).unwrap(); reference.render(&mut expected).unwrap(); assert_eq!(actual, expected);
+        assert_eq!(rt.voice_count(), 2); assert!(actual.iter().flatten().any(|value| value.abs() > 0.01));
+    });
+}
+
+#[test]
+fn rejected_midi1_rpn_range_is_not_retained_but_the_received_cc_remains_an_admitted_input() {
+    let mut rt = range_admission_runtime(); let mut groups = [None;16]; groups[3] = Some(Version::Midi1);
+    let mut ingress = Ingress::new(7, groups);
+    for (cc,value) in [(101u8,0u8),(100,0),(6,0)] {
+        apply(&mut ingress, &mut rt, &[0x23b1_0000 | u32::from(cc)<<8 | u32::from(value)]).unwrap();
+    }
+    apply(&mut ingress, &mut rt, &[0x23e1_7f7f]).unwrap();
+    let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x2391_3c7f]).unwrap() else { panic!() };
+    let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
+    support::without_heap(|| {
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x23b1_0660]), Err(ApplyError::Core(sampler_core::Error::InvalidInput)));
+        assert_eq!(rt.expression(owner), Ok(before)); assert!(rt.input_held(note).unwrap());
+        let domain = rt.performance(0).unwrap(); let address = sampler_core::ChannelAddress { protocol: Protocol::Midi1, port: 7, group: 3, channel: 1 };
+        // Existing boundary: the data-entry CC is forwarded before configuration
+        // projection. Do not pretend its raw/callback side effects rolled back.
+        assert_ne!(rt.channel_input_controller(domain, address, 6).unwrap(), 0);
+        let Applied::Started(future) = apply(&mut ingress, &mut rt, &[0x2391_3c7f]).unwrap() else { panic!() };
+        assert_eq!(rt.expression(rt.expression_id(future).unwrap()).unwrap().pitch_semitones, 0.);
+        assert_eq!(rt.voice_count(), 2); assert_eq!(rt.now(), 0);
+    });
+}
+
+#[test]
+fn explicit_bend_override_still_retains_hidden_rpn_without_reprojecting_the_held_note() {
+    let mut rt = range_admission_runtime(); let mut groups = [None;16]; groups[3] = Some(Version::Midi2);
+    let mut ingress = Ingress::new(7, groups);
+    apply(&mut ingress, &mut rt, &[0x4321_0000, 0]).unwrap();
+    apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]).unwrap();
+    let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x4391_3c00, 0xffff_0000]).unwrap() else { panic!() };
+    let owner = rt.expression_id(note).unwrap(); let before = rt.expression(owner).unwrap();
+    support::without_heap(|| {
+        ingress.set_bend_range(Some(1.));
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x4321_0000, 96u32<<25]), Ok(Applied::Configuration));
+        assert_eq!(rt.expression(owner), Ok(before), "explicit override leaves held pitch alone until a bend");
+        apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]).unwrap();
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 1.);
+        ingress.set_bend_range(None);
+        apply(&mut ingress, &mut rt, &[0x43e1_0000, 0x8000_0000]).unwrap();
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
+        assert_eq!(apply(&mut ingress, &mut rt, &[0x43e1_0000, u32::MAX]), Err(ApplyError::Core(sampler_core::Error::InvalidInput)),
+            "previously accepted hidden96 range must remain after removing the override");
+        assert_eq!(rt.expression(owner).unwrap().pitch_semitones, 0.);
+    });
+}
+
+#[test]
+fn program_change_preserves_pending_vs_selected_bank_per_wire_domain_without_heap(){
+    use sampler_core::{ChannelAddress,ProgramSelection,ProgramPlaybackCapability};
+    let mut rt=runtime();let performance=rt.performance(0).unwrap();
+    let mut groups=[None;16];groups[1]=Some(Version::Midi1);groups[3]=Some(Version::Midi2);let mut ingress=Ingress::new(7,groups);
+    let midi1=ChannelAddress{protocol:Protocol::Midi1,port:7,group:1,channel:2};let midi2=ChannelAddress{protocol:Protocol::Midi2,port:7,group:3,channel:2};
+    support::without_heap(||{
+        // Independent literal packet bytes: MIDI1 MSB=4, LSB=126, program=63.
+        apply(&mut ingress,&mut rt,&[0x21b2_0004]).unwrap();apply(&mut ingress,&mut rt,&[0x21b2_207e]).unwrap();
+        assert_eq!(rt.program_selection(performance,midi1).unwrap(),None,"Bank Select is pending, not a preset switch");
+        assert!(matches!(apply(&mut ingress,&mut rt,&[0x21c2_3f00]).unwrap(),Applied::ProgramChange{targets:1}));
+        assert_eq!(rt.program_selection(performance,midi1).unwrap(),Some(ProgramSelection{program:63,bank:[4,126]}));
+        // MIDI2 Bank Valid=1 takes bytes from data, not word1 reserved bytes.
+        assert!(matches!(apply(&mut ingress,&mut rt,&[0x43c2_0001,0x4100_037c]).unwrap(),Applied::ProgramChange{targets:1}));
+        assert_eq!(rt.program_selection(performance,midi2).unwrap(),Some(ProgramSelection{program:65,bank:[3,124]}));
+        apply(&mut ingress,&mut rt,&[0x43c2_0000,0x0700_0000]).unwrap();
+        assert_eq!(rt.program_selection(performance,midi2).unwrap(),Some(ProgramSelection{program:7,bank:[3,124]}));
+        assert_eq!(rt.program_selection(performance,midi1).unwrap(),Some(ProgramSelection{program:63,bank:[4,126]}));
+        assert_eq!(rt.program_selection(performance,ChannelAddress{channel:3,..midi2}).unwrap(),None);
+        assert_eq!(rt.program_playback_capability(rt.active_plan()).unwrap(),ProgramPlaybackCapability::NoPresetCatalog);
+    });
 }

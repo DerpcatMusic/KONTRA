@@ -15,6 +15,7 @@ pub enum PlanError {
     SequenceExhausted,
     Disabled,
     Canceled,
+    SourceLayout,
 }
 
 pub struct RejectedPlan {
@@ -48,6 +49,7 @@ pub struct PlanTransfer {
     samples: super::prepare::sample_revision::SampleState,
     initial_residency: super::residency::startup::State,
     start_cursor: usize,
+    source_tasks:super::receiver::task::TaskState,
 }
 
 pub(super) struct Generation {
@@ -56,7 +58,11 @@ pub(super) struct Generation {
     pub prepared: Box<Prepared>,
     pub notes: usize,
     pub callbacks: usize,
-    pub allocation: super::allocation::AllocationState,
+    pub physical_events:usize,
+    pub event_values:usize,
+    pub source_tasks:super::receiver::task::TaskState,
+    pub
+allocation: super::allocation::AllocationState,
     pub sequences: super::variation::SequenceState,
     pub native_cycle: u64,
     pub native_seed: u64,
@@ -76,6 +82,9 @@ pub(super) struct Generation {
 }
 
 impl Generation {
+    pub fn source(&self, sample: usize) -> Option<crate::SourceStorageRef<'_>> {
+        self.samples.source_storage(&self.prepared, sample)
+    }
     pub fn asset(&self,sample:usize)->&crate::Pcm {
         self.samples.asset(&self.prepared,sample).expect("live voice pins its immutable source revision")
     }
@@ -99,10 +108,12 @@ pub struct PlanControl {
     locals: usize,
     note_cells: usize,
     voices: usize,
+    processing_owners:usize,
     expressions: usize,
     notes: usize,
     note_params: usize,
     performances: usize,
+    channels: usize,
     sequence: u64,
     /// Render lanes of the runtime (see `Runtime::set_threads`).
     lanes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -212,6 +223,8 @@ impl PlanControl {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
             Some(PlanError::SampleRate)
+        } else if prepared.validate_signal_execution().is_err()||prepared.validate_source_tasks().is_err() {
+            Some(PlanError::SourceLayout)
         } else if prepared.programs.iter().any(|p| p.locals > self.locals) {
             Some(PlanError::LocalCapacity)
         } else if prepared.note_cells > self.note_cells {
@@ -232,9 +245,10 @@ impl PlanControl {
                 prepared,
             });
         }
-        let dsp = match super::dsp::DspState::new(
+        let dsp = match super::dsp::DspState::new_with_owner_capacity(
             &prepared,
             self.voices,
+            self.processing_owners,
             self.expressions,
             self.lanes.load(std::sync::atomic::Ordering::Relaxed),
         ) {
@@ -260,7 +274,7 @@ impl PlanControl {
             }
         };
         let controllers =
-            match super::controller_event::ControllerState::new(&prepared, self.performances) {
+            match super::controller_event::ControllerState::new(&prepared, self.performances, self.channels) {
                 Ok(state) => state,
                 Err(_) => {
                     return Err(RejectedPlan {
@@ -293,6 +307,7 @@ impl PlanControl {
             Ok(state) => state,
             Err(_) => return Err(RejectedPlan { reason: PlanError::Capacity, prepared }),
         };
+        let source_tasks=match super::receiver::task::TaskState::new(&prepared){Ok(state)=>state,Err(_)=>return Err(RejectedPlan{reason:PlanError::Capacity,prepared})};
         let request = self.sequence + 1;
         let script = super::script_params::EngineLayers::new(&prepared);
         let allocation = super::allocation::AllocationState::new(&prepared);
@@ -327,7 +342,7 @@ impl PlanControl {
             script,
             samples,
             initial_residency,
-            start_cursor: 0,
+            start_cursor: 0,source_tasks,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -411,10 +426,12 @@ impl Runtime {
             locals: runtime.behavior_stride,
             note_cells: runtime.note_stride,
             voices: limits.voices,
+            processing_owners:runtime.processing_owner_capacity(),
             expressions: limits.expressions,
             notes: limits.notes,
             note_params: runtime.note_params.capacity(),
             performances: limits.performances,
+            channels: limits.channels,
             sequence: 0,
             lanes: runtime.lanes.clone(),
             installed: installed.clone(),
@@ -462,7 +479,10 @@ impl Runtime {
                 || !slot.value.as_ref().is_some_and(|g| {
                     g.notes == 0
                         && g.callbacks == 0
-                        && g.controls.pending == 0
+                        && g.physical_events == 0
+                        && g.event_values == 0
+                        && g.
+controls.pending == 0
                         && !g.dsp.buses.active()
                 })
             {
@@ -493,7 +513,7 @@ impl Runtime {
                 script: generation.script,
                 samples: generation.samples,
                 initial_residency: generation.initial_residency,
-                start_cursor: generation.start_cursor,
+                start_cursor: generation.start_cursor,source_tasks:generation.source_tasks,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -522,6 +542,7 @@ impl Runtime {
                             start_cursor: plan.start_cursor,
                             notes: 0,
                             callbacks: 0,
+                            physical_events:0,event_values:0,source_tasks:plan.source_tasks,
                         },
                     );
                     break;
@@ -542,6 +563,7 @@ impl Runtime {
     /// retain their generation. Backpressure leaves the pending plan and active plan
     /// untouched; call again after retirements/terminals are consumed.
     pub fn poll_plan_update(&mut self) -> Result<Option<u64>, PlanError> {
+        if self.external_execution_aborted{return Err(PlanError::Canceled);}
         self.apply_due();
         self.collect_retired_plans();
         let queues = self.plan_queues.as_mut().ok_or(PlanError::Disabled)?;
@@ -583,6 +605,7 @@ impl Runtime {
                     samples: plan.samples,
                     notes: 0,
                     callbacks: plan.initial_residency.pending(),
+                    physical_events:0,event_values:0,source_tasks:plan.source_tasks,
                     initial_residency: plan.initial_residency,
                     start_cursor: plan.start_cursor,
                 })
@@ -596,5 +619,19 @@ impl Runtime {
                 .store(request, std::sync::atomic::Ordering::Release);
         }
         Ok(Some(request))
+    }
+}
+impl Runtime {
+    /// Pure generation reference accounting, including queued/in-flight physical receipts.
+    pub fn plan_physical_event_count(&self,plan:PlanId)->Result<usize,Error>{
+        Ok(self.plans.get(plan.0).ok_or(Error::StaleHandle)?.physical_events)
+    }
+}
+
+impl Runtime {
+    /// Borrow the ONE immutable owner authority of this actual retained generation.
+    /// No document lookup, copy, additional lease or cached live value is created.
+    pub fn source_owners(&self,plan:PlanId)->Result<&crate::PreparedSourceOwners,Error>{
+        Ok(self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_owners())
     }
 }

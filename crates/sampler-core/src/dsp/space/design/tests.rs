@@ -173,7 +173,7 @@ fn jezar_net(decay_time: f32, cutoff: f32) -> Network {
 fn jezar_lengths_and_feedback_match_native_vectors() {
     use jezar_law::*;
     let at = |l| length(l, 44_100.0);
-    assert_eq!([at(1116), at(1580), at(1617), at(464), at(441)], [1116, 1579, 1616, 463, 441]);
+    assert_eq!([at(Tuning::T1116), at(Tuning::T1580), at(Tuning::T1617), at(Tuning::T464), at(Tuning::T441)], [1116, 1579, 1616, 463, 441]);
     assert!((feedback(2.0) - 0.825_219_8).abs() < 1e-6, "{}", feedback(2.0));
 }
 

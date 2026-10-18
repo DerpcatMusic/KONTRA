@@ -17,8 +17,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod input_authority;
+pub use input_authority::{ProcessorAddress,ProcessorInputDisposition,CoreAuthorityPort,AuthorityOperation,AuthorityRequest,AuthorityReply,AuthorityValue,PreparedRootTask};
+pub(crate) use input_authority::{OwnerAuthorityPort,authority_pair,PreparedRootBinding,source_property_pair};
+pub use input_authority::{CoreSourcePropertyPort,OwnerSourcePropertyPort,SourcePropertyOperation};
 mod async_data;
 mod sample_loading;
+mod live_graph;
+pub use live_graph::{LiveGraphQuery, LiveGraphReceipt};
 pub use sample_loading::{SampleLoadStatus, SampleResource, SampleSource, SamplePath, SampleLoadTimings, SampleSourceTimings};
 mod sources;
 pub use sources::{ScriptOccurrence, ScriptReadError};
@@ -32,7 +38,7 @@ mod modules;
 pub(crate) mod parameters;
 mod profile;
 mod ui;
-pub use ui::{SavedValue, UiState, control_id};
+pub use ui::{SavedValue, UiState, ProcessorUiState, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
 const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization work budget exceeded";
@@ -377,6 +383,30 @@ impl<const N: usize> From<[u32; N]> for Layers {
     }
 }
 
+/// Actual coroutine creator, independent of the played voice's optional parent.
+/// A spawned/run coroutine has a manual event creator when launched by any
+/// callback; top-level/init/transport/async completion have no creator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayCreator {
+    #[default]
+    None,
+    NoteOn(u64),
+    Event,
+    Widget,
+}
+
+impl PlayCreator {
+    fn note(self) -> Option<u64> {
+        match self { Self::NoteOn(id) => Some(id), _ => None }
+    }
+    fn independent(self) -> Self {
+        match self { Self::None => Self::None, _ => Self::Event }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayOrigin { Helper, PostedEvent }
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Play {
     /// The voice id `playNote` returned to the script.
@@ -384,9 +414,8 @@ pub struct Play {
     pub at_ms: f64,
     pub key: u8,
     pub velocity: u8,
-    /// Milliseconds until its own release; `Some(0.0)` sends only the note-on
-    /// (the script releases it); `None` (-1, or unset) follows the originating
-    /// note.
+    /// Milliseconds until its own release; `Some(0.0)` is manual. `None`
+    /// (-1 or unset) uses the actual creator branch, never parent absence.
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
     pub layers: Layers,
@@ -396,12 +425,23 @@ pub struct Play {
     pub vol: f64,
     pub pan: f64,
     pub tune: f64,
-    /// The script event that caused it, if any.
+    /// Actual callback/thread provenance; parent absence is not a lifetime law.
+    pub creator: PlayCreator,
+    pub origin: PlayOrigin,
+    /// The physical onNote event that caused it, if any.
     pub parent: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    ConstantProperty {node:u32,field:sampler_core::SourceConstantField,value:sampler_core::ControlValue},
+    /// An actual compiled source-owner operand. The authoritative consumer
+    /// supplies the validated retained PlanId; this command is not a lease.
+    OwnerControl {
+        owner:sampler_ir::SourceOwnerId,
+        field:sampler_core::SourceOwnerControl,
+        value:sampler_core::ControlValue,
+    },
     /// A typed insert write, normalized by the shared native law.
     EngineParameter {
         address: sampler_core::EngineParameterAddress,
@@ -421,6 +461,9 @@ pub enum Command {
     /// "Script Event Modulation `id`" for one voice, or all when `voice` is None.
     Modulation {
         id: u16,
+        /// Explicit start from sendScriptModulation2, committed with its ramp.
+        /// None reads each existing recipient's accepted Core value.
+        start: Option<f64>,
         value: f64,
         glide_ms: f64,
         voice: Option<u64>,
@@ -604,8 +647,12 @@ struct Waiting {
     thread: Thread,
     due: f64,
     seq: u64,
-    note: Option<u64>,
+    creator: PlayCreator,
+    processor: Option<usize>,
     release: bool,
+    remaining_work:u64,
+    exhausted:bool,
+    prepared_origin:input_authority::PreparedLuaOrigin,
 }
 
 struct Shared {
@@ -621,6 +668,10 @@ struct Shared {
     #[cfg(feature = "scan")]
     scan: RefCell<ScanFaults>,
     initializing: Cell<bool>,
+    /// Only the offaudio staged constructor suppresses legacy timer cycling.
+    staged_preparation: Cell<bool>,
+    /// Staged hosts are clocked only by genuine Core segments, never polling.
+    canonical_tasks: bool,
     faults: RefCell<FaultCounts>,
     inspection: RefCell<Option<crate::parity::Inspection>>,
     finding_revision: Cell<u64>,
@@ -637,14 +688,17 @@ struct Shared {
     graph_nodes: Cell<usize>,
     graph_depth: Cell<usize>,
     script_bytes: Cell<usize>,
-    current: Cell<Option<u64>>,
+    creator: Cell<PlayCreator>,
+    in_thread: Cell<bool>,
     commands: RefCell<Vec<Command>>,
     // A batch sent before UI export stays charged until the ordinary collector
     // has rebuilt stale impulses, preserving the authored queue admission limit.
     ready_command_charge: Cell<usize>,
     findings: RefCell<BTreeMap<(String, Option<SetterTypes>), Finding>>,
     waiting: RefCell<Vec<Waiting>>,
-    deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
+    deferred: RefCell<Vec<(Thread, MultiValue, PlayCreator, Option<usize>,input_authority::PreparedLuaOrigin)>>,
+    prepared_origin:RefCell<input_authority::PreparedLuaOrigin>,
+    restoring_widget_values:Cell<bool>,
     data_loads: RefCell<async_data::DataLoads>,
     sample_loads: RefCell<sample_loading::SampleLoads>,
     params: RefCell<Vec<Vec<(String, String)>>>,
@@ -659,12 +713,21 @@ struct Shared {
     live: RefCell<Vec<Vec<&'static str>>>,
     /// Globals the scripts assign somewhere: reading one that is still unset
     /// answers nil, as in Lua; only unknown API names answer a stub.
-    assigned: RefCell<std::collections::HashSet<String>>,
+    processor_view: RefCell<Rc<input_authority::ProcessorView>>,
+    processor: Cell<Option<usize>>,
+    context_failed:Cell<bool>,
+    processors: RefCell<Vec<input_authority::ProcessorContext>>,
+    authority:RefCell<Option<OwnerAuthorityPort>>,
+    source_properties:RefCell<Option<OwnerSourcePropertyPort>>,
+    constant_owners:RefCell<Vec<(u32,sampler_ir::SourceOwnerId)>>,
+    external_projection:RefCell<Option<Rc<input_authority::ControllerProjection>>>,
+    external_waiting:RefCell<Vec<input_authority::ExternalWaiting>>,
+    prepared_roots:RefCell<Option<Vec<input_authority::PreparedLuaRoot>>>,
+    owner_shapes:RefCell<Vec<input_authority::OwnerShape>>,
+    pristine_globals: RefCell<Option<mlua::RegistryKey>>,
     /// Names the scripts call or index as objects: unmodeled API when unset.
-    called: RefCell<std::collections::HashSet<String>>,
     /// The preset's saved widget values and table data (ScriptProcessor
     /// attributes and ScriptData), by widget name.
-    saved: RefCell<BTreeMap<String, String>>,
     /// Each scripted bus convolver's source impulse, by element node.
     impulses: RefCell<std::collections::HashMap<usize, sampler_ir::Impulse>>,
     /// Uploads sent to the audio thread; dropped here once it has let go.
@@ -676,13 +739,12 @@ struct Shared {
     files: Box<dyn Files>,
     config: Config,
     tempo: Cell<f64>,
-    /// When each key went down (ms), if it is down.
-    down: RefCell<[Option<f64>; 128]>,
-    held: RefCell<std::collections::BTreeSet<u64>>,
+    /// Last physical note-on time per key, retained through release callbacks.
+    last_note_on: RefCell<[Option<f64>; 128]>,
+    held: RefCell<BTreeMap<u64, u8>>,
     voices: RefCell<std::collections::BTreeSet<u64>>,
     playing: Cell<bool>,
     beat_anchor: Cell<(f64, f64)>,
-    cc: RefCell<[u8; 128]>,
 }
 
 struct InspectionBudget<'a> {
@@ -1004,6 +1066,21 @@ impl Shared {
     }
 
     fn command(&self, command: Command) -> bool {
+        if self.context_failed.get(){return false;}
+        if self.authority.borrow().as_ref().and_then(|owner|owner.current()).is_some(){
+            let accepted=matches!(self.authority.borrow_mut().as_mut().map(|owner|owner.call(AuthorityOperation::Command(command))),Some(Ok(AuthorityValue::Applied)));
+            if !accepted{self.find("external command refused","");}
+            return accepted;
+        }
+        if self.staged_preparation.get(){
+            // Only values which the initialized XML exporter folds are preparation
+            // effects. No executable command is queued before actual Core authority.
+            if matches!(&command,Command::EngineParameter{..}|Command::Parameter{..}) {return true;}
+            self.find("staged execution command refused","no actual Core task");return false;
+        }
+        if self.canonical_tasks||self.authority.borrow().is_some(){
+            self.find("external command refused","no actual Running Core turn");return false;
+        }
         let mut commands = self.commands.borrow_mut();
         if self.command_count(commands.len()) < 1 << 16 {
             commands.push(command);
@@ -1015,6 +1092,10 @@ impl Shared {
         }
     }
 
+    fn constant_property_field(&self,id:usize,name:&str)->bool{
+        self.kinds.borrow().get(id).is_some_and(|kind|kind=="ConstantModulation")&&matches!(name,"Value"|"Style")
+            &&self.params.borrow().get(id).is_some_and(|params|params.iter().any(|(field,_)|field=="ScriptLive"))
+    }
     fn command_count(&self, queued: usize) -> usize {
         queued.saturating_add(self.ready_command_charge.get())
     }
@@ -1120,20 +1201,6 @@ struct Tree {
     layers: u32,
 }
 
-/// The Script Event Modulation command a promoted ConstantModulation's fields
-/// (Value, Style, and the `ScriptLive` id) stand for.
-fn constant_command(params: &[(String, String)], glide_ms: f64) -> Option<Command> {
-    let read = |n: &str| {
-        params
-            .iter()
-            .find(|(k, _)| k == n)
-            .and_then(|(_, v)| v.parse::<f64>().ok())
-    };
-    let id = read("ScriptLive")? as u16;
-    let value = read("Value").unwrap_or(0.0).clamp(0.0, 1.0);
-    let value = if read("Style") == Some(1.0) { f64::from(u8::from(value > 0.5)) } else { value };
-    Some(Command::Modulation { id, value, glide_ms, voice: None, at_ms: 0.0 })
-}
 
 fn element(
     lua: &Lua,
@@ -1163,10 +1230,11 @@ fn element(
     tree.nodes.push((Some(node.id().get_usize()), insert));
     tree.kinds.push(node.tag_name().name().to_owned());
     tree.live.push(crate::engine_parameters::live_names(node));
-    if node.has_tag_name("ConstantModulation")
-        && let Some(initial) = constant_command(&tree.params[id], 0.0)
-    {
-        shared.command(initial);
+    if node.has_tag_name("ConstantModulation")&&node.attribute("ScriptLive").is_some(){
+        let definition=u32::try_from(node.id().get_usize()).map_err(|_|mlua::Error::runtime("Constant definition overflow"))?;
+        let parent=node.ancestors().skip(1).find(|n|n.is_element()&&(matches!(n.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"|"AuxEffect")||n.parent().is_some_and(|p|p.has_tag_name("Oscillators")))).ok_or_else(||mlua::Error::runtime("Constant structural owner missing"))?;
+        let parent=u32::try_from(parent.id().get_usize()).map_err(|_|mlua::Error::runtime("Constant owner overflow"))?;
+        shared.constant_owners.borrow_mut().push((definition,sampler_ir::SourceOwnerId::UviNode(parent)));
     }
     tree.scopes.push(match node.tag_name().name() {
         "Program" => Some(Scope::Program),
@@ -1275,7 +1343,8 @@ impl Shared {
         self.script_bytes
             .set(self.script_bytes.get().saturating_add(source.len()));
         self.note_called(source);
-        let mut names = self.assigned.borrow_mut();
+        let view=self.processor_view.borrow().clone();
+        let mut names = view.assigned.borrow_mut();
         for line in source.lines() {
             let line = line.trim_start();
             let (line, function) = match line.strip_prefix("function ") {
@@ -1302,7 +1371,8 @@ impl Shared {
 impl Shared {
     /// Remember the plain names followed by a call or a field access.
     fn note_called(&self, source: &str) {
-        let mut names = self.called.borrow_mut();
+        let view=self.processor_view.borrow().clone();
+        let mut names = view.called.borrow_mut();
         let b = source.as_bytes();
         let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
         let mut i = 0;
@@ -1347,6 +1417,15 @@ impl ScriptHost {
         Self::create(xml, files, config, state, false)
     }
 
+    /// Offaudio processor preparation: main chunk, saved widgets and synchronous
+    /// onLoad only. No onInit callback or legacy deferred timer is executed.
+    /// First-F Init must be admitted through the actual prepared Core task entry.
+    pub fn new_staged_with_ui_state(
+        xml:&str, files:impl Files+'static, config:Config, state:Option<&UiState>,
+    )->Result<Self,String>{
+        Self::create_profiled_mode(xml,files,config,state,false,false,true)
+    }
+
     /// Inspector-only host: real Luau statement-line coverage, including init.
     /// Ordinary constructors compile without coverage instructions. Inspection
     /// lasts for this host's lifetime; recreate normally to turn it off.
@@ -1387,6 +1466,13 @@ impl ScriptHost {
         inspect: bool,
         profiled: bool,
     ) -> Result<Self, String> {
+        Self::create_profiled_mode(xml,files,config,state,inspect,profiled,false)
+    }
+
+    fn create_profiled_mode(
+        xml:&str, files:impl Files+'static, config:Config, state:Option<&UiState>,
+        inspect:bool, profiled:bool, staged:bool,
+    )->Result<Self,String>{
         let profile = profile::Profile::new(profiled);
         let _total = profile.span("host_create");
         let options = roxmltree::ParsingOptions {
@@ -1431,6 +1517,8 @@ impl ScriptHost {
             #[cfg(feature = "scan")]
             scan: RefCell::new(ScanFaults::default()),
             initializing: Cell::new(true),
+            staged_preparation:Cell::new(staged),
+            canonical_tasks:staged,
             faults: RefCell::new(FaultCounts::default()),
             inspection: RefCell::new(inspect.then(crate::parity::Inspection::default)),
             finding_revision: Cell::new(0),
@@ -1446,12 +1534,15 @@ impl ScriptHost {
             graph_nodes: Cell::new(0),
             graph_depth: Cell::new(0),
             script_bytes: Cell::new(PRELUDE.len()),
-            current: Cell::new(None),
+            creator: Cell::new(PlayCreator::None),
+            in_thread: Cell::new(false),
             commands: RefCell::new(Vec::new()),
             ready_command_charge: Cell::new(0),
             findings: RefCell::new(BTreeMap::new()),
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
+            prepared_origin:RefCell::new(input_authority::PreparedLuaOrigin::None),
+            restoring_widget_values:Cell::new(false),
             data_loads: RefCell::new(async_data::DataLoads::default()),
             sample_loads: RefCell::new(sample_loading::SampleLoads::new(&doc, files.sample_source(), config.rate as u32)),
             params: RefCell::new(Vec::new()),
@@ -1460,22 +1551,30 @@ impl ScriptHost {
             kinds: RefCell::new(Vec::new()),
             folded: RefCell::new(BTreeMap::new()),
             live: RefCell::new(Vec::new()),
-            assigned: RefCell::new(Default::default()),
-            called: RefCell::new(Default::default()),
-            saved: RefCell::new(BTreeMap::new()),
+            processor_view: RefCell::new(Rc::new(input_authority::ProcessorView::default())),
+            processor: Cell::new(None),context_failed:Cell::new(false),
+            processors: RefCell::new(Vec::new()),
+            authority:RefCell::new(None),
+            source_properties:RefCell::new(None),
+            constant_owners:RefCell::new(Vec::new()),
+            external_projection:RefCell::new(None),
+            external_waiting:RefCell::new(Vec::new()),prepared_roots:RefCell::new(None),
+            owner_shapes:RefCell::new(Vec::new()),
+            pristine_globals: RefCell::new(None),
             impulses: RefCell::new(Default::default()),
             retired: RefCell::new(Vec::new()),
             stale_impulses: RefCell::new(Vec::new()),
             files: Box::new(files),
             config,
             tempo: Cell::new(120.0),
-            down: RefCell::new([None; 128]),
+            last_note_on: RefCell::new([None; 128]),
             held: RefCell::new(Default::default()),
             voices: RefCell::new(Default::default()),
             playing: Cell::new(false),
             beat_anchor: Cell::new((0., 0.)),
-            cc: RefCell::new([0; 128]),
         });
+        let pristine = input_authority::fresh_environment(&lua, &lua.globals()).map_err(lua_error)?;
+        *shared.pristine_globals.borrow_mut()=Some(lua.create_registry_value(pristine).map_err(lua_error)?);
         let host = Self { lua, shared };
         let initialized = host
             .install()
@@ -1518,6 +1617,7 @@ impl ScriptHost {
             host.shared.sample_loads.borrow_mut().refresh_initial(&final_doc)?;
         }
         host.shared.initializing.set(false);
+        host.shared.staged_preparation.set(false);
         Ok(host)
     }
 
@@ -1551,21 +1651,6 @@ impl ScriptHost {
             .descendants()
             .find(|n| n.has_tag_name("Program"))
             .ok_or_else(|| mlua::Error::runtime("no Program"))?;
-        for processor in program
-            .descendants()
-            .filter(|n| n.has_tag_name("ScriptProcessor"))
-        {
-            let mut saved = self.shared.saved.borrow_mut();
-            for node in std::iter::once(processor).chain(
-                processor
-                    .children()
-                    .filter(|c| c.has_tag_name("ScriptData")),
-            ) {
-                for a in node.attributes() {
-                    saved.insert(a.name().to_owned(), a.value().to_owned());
-                }
-            }
-        }
         let mut tree = Tree {
             params: Vec::new(),
             scopes: Vec::new(),
@@ -1658,6 +1743,30 @@ impl ScriptHost {
                 Ok(f64::from(value))
             })?,
         )?;
+        let s = shared.clone();
+        native.set("widgetChanged", lua.create_function(move |lua, (f, args): (Function, MultiValue)| {
+            let previous = s.creator.get();
+            let previous_origin=s.prepared_origin.borrow().clone();
+            if !s.in_thread.get() {
+                let origin=if s.staged_preparation.get()&&s.restoring_widget_values.get(){
+                    let widget=match args.front(){Some(Value::Table(widget))=>Some(widget.clone()),_=>None};
+                    let canonical=if let Some(widget)=widget {
+                        let list=lua.globals().raw_get::<Table>("__ui").and_then(|ui|ui.raw_get::<Table>("widgets"));
+                        let mut found=None;
+                        if let Ok(list)=list {for candidate in list.sequence_values::<Table>() {
+                            s.consume_work()?;let candidate=candidate?;
+                            if candidate.to_pointer()==widget.to_pointer(){found=Some(widget.clone());break;}
+                        }}
+                        found
+                    }else{None};
+                    canonical.map_or(input_authority::PreparedLuaOrigin::UnclassifiedEvent,input_authority::PreparedLuaOrigin::RestoredWidget)
+                }else{input_authority::PreparedLuaOrigin::UnclassifiedEvent};
+                s.creator.set(PlayCreator::Widget);*s.prepared_origin.borrow_mut()=origin;
+            }
+            let result = f.call::<MultiValue>(args);
+            s.creator.set(previous);*s.prepared_origin.borrow_mut()=previous_origin;
+            result
+        })?)?;
         async_data::install(lua, shared)?;
         let s = shared.clone();
         globals.raw_set(
@@ -1684,7 +1793,7 @@ impl ScriptHost {
                     let thread = lua.create_thread(callback.clone())?;
                     s.deferred
                         .borrow_mut()
-                        .push((thread, MultiValue::from_vec(vec![Value::UserData(task.clone())]), None));
+                        .push((thread, MultiValue::from_vec(vec![Value::UserData(task.clone())]), PlayCreator::None, s.processor.get(), input_authority::PreparedLuaOrigin::None));
                 }
                 Ok(task)
             })?,
@@ -1717,7 +1826,7 @@ impl ScriptHost {
         let s = shared.clone();
         native.set(
             "saved",
-            lua.create_function(move |_, name: String| Ok(s.saved.borrow().get(&name).cloned()))?,
+            lua.create_function(move |_, name: String| Ok(s.processor_view.borrow().saved.borrow().get(&name).cloned()))?,
         )?;
         let s = shared.clone();
         // Port v1 host.rs's direct named lookup; preserve v2's typed catalog laws.
@@ -1783,6 +1892,9 @@ impl ScriptHost {
             lua.create_function(move |_, (id, name): (usize, String)| {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_definition");
+                if s.constant_property_field(id,&name){
+                    return Ok((Some(if name=="Style"{"int"}else{"float"}),Some(if name=="Style"{0.}else{f64::MIN}),Some(if name=="Style"{1.}else{f64::MAX})));
+                }
                 if let Some(p) =
                     parameters::definitions(s.kinds.borrow().get(id).map_or("", String::as_str))
                         .iter()
@@ -1917,9 +2029,24 @@ impl ScriptHost {
                         list.raw_push(template)?;
                     }
                 }
-                clone_schema.call::<Table>((schema, templates))
+                let definitions=clone_schema.call::<Table>((schema, templates))?;
+                if s.constant_property_field(id,"Value"){
+                    // Modify only the fresh per-element clone. Never poison the
+                    // cached native/static schema used by unpromoted elements.
+                    for (field,min,max,kind)in [("Value",f64::MIN,f64::MAX,"float"),("Style",0.,1.,"int")]{
+                        let definition:Table=definitions.raw_get(field)?;
+                        definition.raw_set("min",min)?;definition.raw_set("max",max)?;definition.raw_set("type",kind)?;
+                        definition.raw_set("default",0.)?;definition.raw_set("provenance","declared-core-constant-target")?;
+                    }
+                }
+                Ok(definitions)
             })?,
         )?;
+        let s=shared.clone();
+        native.set("constantPropertyField",lua.create_function(move |_,(id,name):(usize,String)|{
+            let property=s.constant_property_field(id,&name);
+            Ok((property,property&&!s.initializing.get()))
+        })?)?;
         let s = shared.clone();
         native.set(
             "paramNames",
@@ -1941,6 +2068,16 @@ impl ScriptHost {
             lua.create_function(move |_, (id, name, value): (usize, String, Value)| {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_set_param");
+                if s.context_failed.get(){return Ok(None);}
+                let bound=s.authority.borrow().is_some();
+                let current=s.authority.borrow().as_ref().and_then(|owner|owner.current()).is_some();
+                if current{
+                    // Validate actual Core continuation BEFORE owner-only bool
+                    // writes and current-value no-op decisions, not merely
+                    // before a later numerical control command.
+                    let valid=matches!(s.authority.borrow_mut().as_mut().map(|owner|owner.call(AuthorityOperation::Validate)),Some(Ok(AuthorityValue::Validated)));
+                    if !valid{return Ok(None);}
+                }else if !s.staged_preparation.get()&&(s.canonical_tasks||bound){return Ok(None);}
                 let written = match &value {
                     Value::Integer(n) => Some(*n as f64),
                     Value::Number(n) => Some(*n),
@@ -1954,12 +2091,73 @@ impl ScriptHost {
                     return Ok(None);
                 }
                 let applied = (|| -> mlua::Result<Option<bool>> {
+                if name=="Bypass"&&s.kinds.borrow().get(id).is_some_and(|kind|kind=="ScriptProcessor") {
+                    let Value::Boolean(bypassed)=&value else{return Ok(None);};
+                    let mut retained=s.params.borrow_mut();
+                    let Some(params)=retained.get_mut(id)else{return Ok(None);};
+                    let text=if *bypassed {"true"}else{"false"}.to_owned();
+                    match params.iter_mut().find(|(name,_)|name=="Bypass"){Some((_,value))=>*value=text,None=>params.push(("Bypass".into(),text))}
+                    return Ok(Some(true));
+                }
                 // Retained XML fields have local model identity, not DSP acceptance.
                 let catalogued = parameters::definitions(
                     s.kinds.borrow().get(id).map_or("", String::as_str),
                 )
                 .iter()
                 .any(|p| p.name == name);
+                let kind=s.kinds.borrow().get(id).cloned().unwrap_or_default();
+                if matches!(kind.as_str(),"Program"|"Layer") && !s.initializing.get() {
+                    let owner_field=match name.as_str(){
+                        "Gain" if current=>Some(sampler_core::SourceOwnerControl::Gain),
+                        "Pan" if current=>Some(sampler_core::SourceOwnerControl::Pan),
+                        "Mute"=>Some(sampler_core::SourceOwnerControl::OutputMute),
+                        "MidiMute"=>Some(sampler_core::SourceOwnerControl::MidiMute),
+                        // No native-law/capability proof follows from catalog kind.
+                        "BypassInsertFX"|"FXPostGain"=>return Ok(None),
+                        _=>None,
+                    };
+                    if let Some(owner_field)=owner_field {
+                        // This branch precedes same-default acceptance: a missing
+                        // compiled home never becomes writable through a no-op.
+                        if !catalogued || !current{return Ok(None);}
+                        let control_value=match (owner_field,&value){
+                            (sampler_core::SourceOwnerControl::OutputMute|sampler_core::SourceOwnerControl::MidiMute,Value::Boolean(value))=>sampler_core::ControlValue::Toggle(*value),
+                            (sampler_core::SourceOwnerControl::Gain|sampler_core::SourceOwnerControl::Pan,Value::Integer(value))=>sampler_core::ControlValue::Real(*value as f64),
+                            (sampler_core::SourceOwnerControl::Gain|sampler_core::SourceOwnerControl::Pan,Value::Number(value))if value.is_finite()=>sampler_core::ControlValue::Real(*value),
+                            _=>return Ok(None),
+                        };
+                        let Some(node)=s.nodes.borrow().get(id).and_then(|(node,_)|*node)else{return Ok(None);};
+                        let Ok(node)=u32::try_from(node)else{return Ok(None);};
+                        if s.params.borrow().get(id).is_none(){return Ok(None);}
+                        if !s.command(Command::OwnerControl{owner:sampler_ir::SourceOwnerId::UviNode(node),field:owner_field,value:control_value}){return Ok(None);}
+                        let text=match control_value{sampler_core::ControlValue::Toggle(value)=>value.to_string(),sampler_core::ControlValue::Real(value)=>value.to_string(),_=>return Ok(None)};
+                        let mut retained=s.params.borrow_mut();let Some(params)=retained.get_mut(id)else{return Ok(None);};
+                        match params.iter_mut().find(|(field,_)|field==&name){Some((_,value))=>*value=text,None=>params.push((name.clone(),text))}
+                        return Ok(Some(true));
+                    }
+                }
+                if kind=="ConstantModulation" && matches!(name.as_str(),"Value"|"Style")
+                    && s.params.borrow().get(id).is_some_and(|p|p.iter().any(|(field,_)|field=="ScriptLive")) {
+                    if !matches!(&value,Value::Integer(_)|Value::Number(_)){return Ok(None);}
+                    let Some(raw)=written.filter(|value|value.is_finite())else{return Ok(None);};
+                    let (field,control)=match name.as_str(){
+                        "Value"=>(sampler_core::SourceConstantField::Value,sampler_core::ControlValue::Real(raw)),
+                        "Style" if raw==0.||raw==1.=>(sampler_core::SourceConstantField::Style,sampler_core::ControlValue::Toggle(raw==1.)),
+                        _=>return Ok(None),
+                    };
+                    if s.initializing.get(){
+                        // Pure initialized XML folding; no runtime/listener command.
+                        return Ok(s.fold(id,&name,raw).then_some(true));
+                    }
+                    let Some(node)=s.nodes.borrow().get(id).and_then(|(node,_)|*node).and_then(|node|u32::try_from(node).ok())else{return Ok(None);};
+                    let accepted=if current{s.command(Command::ConstantProperty{node,field,value:control})}
+                        else if let Some(owner)=s.source_properties.borrow_mut().as_mut(){owner.call(SourcePropertyOperation::Set{node,field,value:control}).is_ok()}
+                        else{false};
+                    if !accepted{return Ok(None);}
+                    let mut retained=s.params.borrow_mut();let Some(params)=retained.get_mut(id)else{return Ok(None);};
+                    match params.iter_mut().find(|(key,_)|key==&name){Some((_,value))=>*value=raw.to_string(),None=>params.push((name.clone(),raw.to_string()))}
+                    return Ok(Some(true));
+                }
                 // A write of the value the engine already holds changes nothing:
                 // rejected writes are never retained, so the retained field is
                 // what plays (UVI fields are f32, so compare at f32).
@@ -2005,6 +2203,8 @@ impl ScriptHost {
                     && IMPULSE_FIELDS.contains(&name.as_str())
                     && node.is_some_and(|n| s.files.convolver_slot(n).is_some())
                 {
+                    // Deferred rebuilding is not a synchronous Core ACK.
+                    if current{return Ok(None);}
                     // The impulse is built from the retained fields.
                     if let Some(params) = s.params.borrow_mut().get_mut(id) {
                         match params.iter_mut().find(|(k, _)| *k == name) {
@@ -2054,6 +2254,7 @@ impl ScriptHost {
                         s.params.borrow().get(id).and_then(|p| crate::engine_parameters::retune(node, &kind, p, &name, value))
                     };
                     let Some(writes) = writes else { return Ok(None) };
+                    if current&&writes.len()>1{return Ok(None);}
                     for (address, value) in writes {
                         if !s.command(Command::EngineParameter { address, value }) {
                             return Ok(None);
@@ -2086,17 +2287,12 @@ impl ScriptHost {
                 {
                     // A rack chain's bypass is its gain at zero: send the
                     // effective gain whichever of the two was written.
-                    let mut params = s.params.borrow_mut();
-                    let retained = params.get_mut(id).map(|p| {
-                        match p.iter_mut().find(|(k, _)| *k == name) {
-                            Some((_, v)) => *v = value.to_string(),
-                            None => p.push((name.clone(), value.to_string())),
-                        }
+                    let params = s.params.borrow();
+                    let retained = params.get(id).map(|p| {
                         let read = |n: &str, d: f64| {
-                            p.iter()
-                                .find(|(k, _)| k == n)
-                                .and_then(|(_, v)| v.parse().ok())
-                                .unwrap_or(d)
+                            if n==name{return value;}
+                            p.iter().find(|(k, _)| k == n)
+                                .and_then(|(_, v)| v.parse().ok()).unwrap_or(d)
                         };
                         let bypassed = live.contains(&"BypassGain") && read("Bypass", 0.) != 0.;
                         if bypassed { 0. } else { read("Gain", 1.) }
@@ -2107,15 +2303,9 @@ impl ScriptHost {
                         .flatten()
                         .and_then(|effective| engine("Gain", effective))
                 } else if kind == "ConstantModulation" && live.contains(&name.as_str()) {
-                    // A promoted constant: retain the field, send the source.
-                    let mut params = s.params.borrow_mut();
-                    params.get_mut(id).and_then(|p| {
-                        match p.iter_mut().find(|(k, _)| *k == name) {
-                            Some((_, v)) => *v = value.to_string(),
-                            None => p.push((name.clone(), value.to_string())),
-                        }
-                        constant_command(p, 20.0)
-                    })
+                    // A listener broadcast is not a Constant property acceptance.
+                    // Replaced by the typed definition-property path below42f.
+                    None
                 } else if live.contains(&name.as_str()) {
                     engine(&name, value)
                 } else {
@@ -2192,6 +2382,17 @@ impl ScriptHost {
                 #[cfg(feature = "scan")]
                 let _timer = s.api_timer("uvi_lua_api_get_param");
                 let kinds = s.kinds.borrow();
+                if kinds.get(id).is_some_and(|kind|kind=="ConstantModulation") && matches!(name.as_str(),"Value"|"Style")
+                    && !s.initializing.get() && s.params.borrow().get(id).is_some_and(|p|p.iter().any(|(field,_)|field=="ScriptLive")) {
+                    let node=s.nodes.borrow().get(id).and_then(|(node,_)|*node).and_then(|node|u32::try_from(node).ok()).ok_or_else(||mlua::Error::runtime("missing actual Constant definition"))?;
+                    let snapshot=if s.authority.borrow().as_ref().and_then(|owner|owner.current()).is_some(){
+                        match s.authority.borrow_mut().as_mut().ok_or_else(||mlua::Error::runtime("missing captured property owner"))?.call(AuthorityOperation::QueryConstant{node}){
+                            Ok(AuthorityValue::Constant(value))=>Ok(value),Ok(_)=>Err(sampler_core::Error::InvalidInput),Err(error)=>Err(error),
+                        }
+                    }else if let Some(owner)=s.source_properties.borrow_mut().as_mut(){owner.call(SourcePropertyOperation::Query{node})}
+                    else{Err(sampler_core::Error::NotReady)}.map_err(|error|mlua::Error::runtime(format!("Constant property query refused: {error:?}")))?;
+                    return Ok(Value::Number(if name=="Value"{snapshot.value}else{f64::from(u8::from(snapshot.style))}));
+                }
                 if kinds.get(id).is_some_and(|kind| kind == "StepEnvelope")
                     && let Some(index) = name.strip_prefix("Level").and_then(|s| s.parse::<usize>().ok())
                     && index < 128
@@ -2240,11 +2441,7 @@ impl ScriptHost {
         let s = shared.clone();
         native.set(
             "defglobal",
-            // The main environment: a coroutine's own is a throwaway proxy.
-            lua.create_function({
-                let env = globals.clone();
-                move |_, (name, value): (String, Value)| env.raw_set(name, value)
-            })?,
+            lua.create_function(move |lua, (name, value): (String, Value)| lua.globals().raw_set(name, value))?,
         )?;
         native.set("nextId", lua.create_function(move |_, ()| Ok(s.next_id()))?)?;
         let s = shared.clone();
@@ -2273,7 +2470,7 @@ impl ScriptHost {
                 // only read as values are variables (nil, as in Lua); the
                 // ones they call are unmodeled API and answer a stub.
                 Ok(name.starts_with(|c: char| c.is_ascii_lowercase())
-                    && (s.assigned.borrow().contains(&name) || !s.called.borrow().contains(&name)))
+                    && (s.processor_view.borrow().assigned.borrow().contains(&name) || !s.processor_view.borrow().called.borrow().contains(&name)))
             })?,
         )?;
         let s = shared.clone();
@@ -2296,7 +2493,7 @@ impl ScriptHost {
                 }
                 let chunk_name = resolved_name.unwrap_or(name);
                 let bytes = source.as_bytes();
-                let mut chunk = lua.load(bytes.as_ref()).set_name(&chunk_name);
+                let mut chunk = lua.load(bytes.as_ref()).set_name(&chunk_name).set_environment(lua.globals());
                 if s.inspection.borrow().is_some() {
                     chunk =
                         chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
@@ -2391,38 +2588,59 @@ impl ScriptHost {
         globals.raw_set(
             "playNote",
             lua.create_function(move |_, args: Variadic<Value>| {
-                let play = parse_play(&s, &args);
+                if s.staged_preparation.get(){return Err(mlua::Error::runtime("staged playNote requires an admitted Core task"));}
+                let play = parse_play(&s, &args, PlayOrigin::Helper)?;
                 let id = play.id;
+                let requires_ack=s.canonical_tasks||s.authority.borrow().is_some();
+                if !s.command(Command::Play(play))&&(requires_ack||s.staged_preparation.get()){
+                    return Err(mlua::Error::runtime("Core generated-note admission refused"));
+                }
                 s.voices.borrow_mut().insert(id);
-                s.command(Command::Play(play));
                 Ok(id)
             })?,
         )?;
+        let s=shared.clone();
+        native.set("postExternal",lua.create_function(move |_,table:Table|{
+            let Some(projection)=s.external_projection.borrow().clone() else{
+                if s.authority.borrow().as_ref().and_then(|owner|owner.current()).is_some(){
+                    return Err(mlua::Error::runtime("this actual captured task has no typed authored event route"));
+                }
+                if !s.staged_preparation.get()&&(s.canonical_tasks||s.authority.borrow().is_some()){
+                    return Err(mlua::Error::runtime("authored event requires an actual Running Core turn"));
+                }
+                return Ok(false);
+            };
+            let output=projection.output(&table)?;
+            let result=s.authority.borrow_mut().as_mut().ok_or_else(||mlua::Error::runtime("external owner disconnected"))?
+                .call(AuthorityOperation::Post(output)).map_err(|error|mlua::Error::runtime(format!("Core post refused: {error:?}")))?;
+            if !matches!(result,AuthorityValue::Posted(_)){return Err(mlua::Error::runtime("invalid Core post receipt"));}
+            Ok(true)
+        })?)?;
         let s = shared.clone();
         native.set(
             "postNote",
             lua.create_function(move |_, event: Table| {
-                let mut play = parse_play(&s, &[Value::Table(event.clone())]);
+                if s.staged_preparation.get(){return Err(mlua::Error::runtime("staged posted note requires an admitted Core task"));}
+                let mut play = parse_play(&s, &[Value::Table(event.clone())], PlayOrigin::PostedEvent)?;
                 play.id = field(&event, "id")
                     .or_else(|| field(&event, "voiceId"))
                     .map_or(play.id, |id| id as u64);
-                s.voices.borrow_mut().insert(play.id);
-                s.command(Command::Play(play.clone()));
-                Ok(play.id)
+                let id=play.id;
+                let requires_ack=s.canonical_tasks||s.authority.borrow().is_some();
+                if !s.command(Command::Play(play))&&(requires_ack||s.staged_preparation.get()){
+                    return Err(mlua::Error::runtime("Core posted-note admission refused"));
+                }
+                s.voices.borrow_mut().insert(id);
+                Ok(id)
             })?,
         )?;
         let s = shared.clone();
         globals.raw_set(
             "releaseVoice",
             lua.create_function(move |_, id: f64| {
-                if !s.voices.borrow_mut().remove(&(id as u64)) {
-                    return Ok(false);
-                }
-                s.command(Command::Release {
-                    id: id as u64,
-                    at_ms: s.now.get(),
-                });
-                Ok(true)
+                if !id.is_finite()||!s.voices.borrow().contains(&(id as u64)){return Ok(false);}
+                if !s.command(Command::Release{id:id as u64,at_ms:s.now.get()}){return Ok(false);}
+                s.voices.borrow_mut().remove(&(id as u64));Ok(true)
             })?,
         )?;
         let s = shared.clone();
@@ -2430,10 +2648,15 @@ impl ScriptHost {
             "sendScriptModulation",
             lua.create_function(
                 move |_, (id, value, glide, voice): (f64, f64, Option<f64>, Option<f64>)| {
+                    let glide = glide.unwrap_or(20.0);
+                    // Normalize finite negative durations only. Nonfinite inputs
+                    // must reach the Driver's pure request preflight unchanged.
+                    let glide = if glide.is_finite() { glide.max(0.0) } else { glide };
                     s.command(Command::Modulation {
                         id: id.clamp(0.0, f64::from(u16::MAX)) as u16,
+                        start: None,
                         value,
-                        glide_ms: glide.unwrap_or(20.0).max(0.0),
+                        glide_ms: glide,
                         voice: voice.map(|v| v as u64),
                         at_ms: s.now.get(),
                     });
@@ -2446,7 +2669,7 @@ impl ScriptHost {
             "spawn",
             lua.create_function(move |lua, (f, args): (Function, MultiValue)| {
                 let thread = lua.create_thread(f)?;
-                s.deferred.borrow_mut().push((thread, args, None));
+                s.deferred.borrow_mut().push((thread, args, s.creator.get().independent(), s.processor.get(),s.prepared_origin.borrow().clone()));
                 Ok(())
             })?,
         )?;
@@ -2457,7 +2680,7 @@ impl ScriptHost {
                 let thread = lua.create_thread(f)?;
                 // Immediate execution does not transfer the calling note's
                 // ownership to this independent coroutine (as with spawn).
-                resume(&s, thread, args, None);
+                resume(lua, &s, thread, args, s.creator.get().independent(), s.processor.get());
                 Ok(())
             })?,
         )?;
@@ -2498,7 +2721,7 @@ impl ScriptHost {
             s.now.get() / beat(&s)
         ));
         define!("getNoteDuration", s, move |_, note: f64| {
-            let down = s.down.borrow();
+            let down = s.last_note_on.borrow();
             Ok(down
                 .get(note as usize)
                 .copied()
@@ -2506,26 +2729,30 @@ impl ScriptHost {
                 .map_or(0.0, |at| (s.now.get() - at).max(0.0)))
         });
         define!("isKeyDown", s, move |_, note: f64| {
-            Ok(s.down
-                .borrow()
-                .get(note as usize)
-                .is_some_and(Option::is_some))
+            Ok(s.held.borrow().values().any(|key| usize::from(*key) == note as usize))
         });
         define!("isOctaveKeyDown", s, move |_, note: f64| {
             let class = (note as usize) % 12;
-            Ok(s.down
-                .borrow()
-                .iter()
-                .enumerate()
-                .any(|(k, d)| k % 12 == class && d.is_some()))
+            Ok(s.held.borrow().values().any(|key| usize::from(*key) % 12 == class))
         });
         define!("isNoteHeld", s, move |_, ()| Ok(s
-            .current
+            .creator
             .get()
-            .is_some_and(|id| s.held.borrow().contains(&id))));
+            .note()
+            .is_some_and(|id| s.held.borrow().contains_key(&id))));
         define!("getCC", s, move |_, cc: f64| {
-            Ok(s.cc.borrow().get(cc as usize).copied().unwrap_or(0))
+            Ok(s.processor_view.borrow().cc.borrow().get(cc as usize).copied().unwrap_or(0))
         });
+        for (name,family) in [
+            ("enable_rpn_as_cc",input_authority::ControllerFamily::Rpn),
+            ("enable_nrpn_as_cc",input_authority::ControllerFamily::Nrpn),
+            ("enable_data_entry_as_cc",input_authority::ControllerFamily::DataEntry),
+        ] {
+            let s=shared.clone();
+            globals.raw_set(name,lua.create_function(move |_,enabled:bool| {
+                s.processor_view.borrow().visibility.set(family,enabled);Ok(())
+            })?)?;
+        }
         // Conversions.
         define!("beat2ms", s, move |_, beats: f64| Ok(beats * beat(&s)));
         define!("ms2beat", s, move |_, ms: f64| Ok(ms / beat(&s)));
@@ -2659,17 +2886,17 @@ impl ScriptHost {
             let id = id.clamp(0.0, f64::from(u16::MAX)) as u16;
             let voice = voice.map(|v| v as u64);
             let at_ms = s.now.get();
+            let ramp = ramp.unwrap_or(20.0);
+            // Preserve NaN and infinities for the same Driver validation as
+            // explicit start/target values; finite negatives retain zero-time policy.
+            let ramp = if ramp.is_finite() { ramp.max(0.0) } else { ramp };
+            // One logical request: queue and Core admission cannot accept the
+            // start while refusing its accompanying ramp.
             s.command(Command::Modulation {
                 id,
-                value: from,
-                glide_ms: 0.0,
-                voice,
-                at_ms,
-            });
-            s.command(Command::Modulation {
-                id,
+                start: Some(from),
                 value: to,
-                glide_ms: ramp.unwrap_or(20.0).max(0.0),
+                glide_ms: ramp,
                 voice,
                 at_ms,
             });
@@ -2737,95 +2964,510 @@ impl ScriptHost {
         Ok(())
     }
 
-    fn load_scripts(
-        &self,
-        doc: &roxmltree::Document,
-        state: Option<&UiState>,
-    ) -> Result<(), String> {
-        let _profile = self.shared.profile.span("scripts_total");
-        let _span = Span::new("uvi_lua_scripts");
-        for script in doc.descendants().filter(|n| n.has_tag_name("script")) {
-            if script.ancestors().any(|n| {
-                n.has_tag_name("ScriptProcessor")
-                    && n.attribute("Bypass")
-                        .is_some_and(|v| v == "1" || v == "true")
-            }) {
-                continue;
+    fn load_scripts(&self, doc:&roxmltree::Document, state:Option<&UiState>)->Result<(),String> {
+        let _profile=self.shared.profile.span("scripts_total");
+        let _span=Span::new("uvi_lua_scripts");
+        if let Some(state)=state {state.validate()?;}
+        if let Some(state)=state
+            && let Some(first)=doc.descendants().find(|n|n.has_tag_name("ScriptProcessor"))
+            && state.processors.iter().any(|row|row.source_node as usize==first.id().get_usize())
+            && (!state.widgets.is_empty()||state.custom.is_some()) {
+                return Err("duplicate legacy/typed first-processor state".into());
             }
-            let text: String = script.text().unwrap_or_default().to_owned();
-            if text.trim().is_empty() {
-                continue;
+        let bootstrap=self.lua.globals();
+        let program:Table=bootstrap.raw_get("Program").map_err(lua_error)?;
+        let element_class:Table=bootstrap.raw_get("__element_mt").map_err(lua_error)?;
+        let list_class:Table=bootstrap.raw_get("__list_mt").map_err(lua_error)?;
+        // The canonical graph is built exactly once. Resolve `this` before any
+        // authored callback can edit a collection; the object itself is shared.
+        let mut objects=BTreeMap::new();
+        let mut pending=vec![program.clone()];
+        while let Some(object)=pending.pop() {
+            let id:usize=object.raw_get("__id").map_err(lua_error)?;
+            if let Some(node)=self.shared.nodes.borrow().get(id).and_then(|n|n.0) {
+                if objects.insert(node,object.clone()).is_some(){return Err("duplicate canonical processor object".into());}
             }
-            self.shared.note_assigned(&text);
-            self.shared
-                .arm(self.shared.config.load, self.shared.config.load_work);
-            let function = {
-                let _profile = self.shared.profile.span("root_script_compile");
-                let _span = Span::new("uvi_lua_root_compile");
-                let id = crate::parity::script_id(script);
-                // Keep source names path-free: relative resources are resolved
-                // from embedded module paths, not report ids.
-                let chunk_name = if self.shared.inspection.borrow().is_some() {
-                    format!("uvi-script-{}", script.id().get_usize())
-                } else {
-                    "script".into()
-                };
-                self.shared.profile.register_chunk(&chunk_name);
-                let mut chunk = self.lua.load(&text).set_name(&chunk_name);
-                if self.shared.inspection.borrow().is_some() {
-                    chunk =
-                        chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));
-                }
-                let function = chunk.into_function().map_err(lua_error)?;
-                if let Some(inspection) = self.shared.inspection.borrow_mut().as_mut() {
-                    inspection.register(id, chunk_name, &text, function.clone());
-                }
-                function
+            let children:Table=object.raw_get("children").map_err(lua_error)?;
+            for child in children.sequence_values::<Table>() {pending.push(child.map_err(lua_error)?);}
+            if objects.len()>1<<18 {return Err("ScriptProcessor graph budget exceeded".into());}
+        }
+        for processor in doc.descendants().filter(|n|n.has_tag_name("ScriptProcessor")) {
+            if self.shared.processors.borrow().len()>=input_authority::MAX_PROCESSORS {
+                return Err("ScriptProcessor count exceeds 1024".into());
+            }
+            let list=processor.parent().filter(|n|n.has_tag_name("EventProcessors"))
+                .ok_or("ScriptProcessor is outside a canonical EventProcessors list")?;
+            let owner_node=list.parent().filter(|n|matches!(n.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"))
+                .ok_or("ScriptProcessor has no direct admitted source owner")?;
+            let owner_kind=match owner_node.tag_name().name() {
+                "Program"=>sampler_ir::SourceOwnerKind::Instrument,
+                "Layer"=>sampler_ir::SourceOwnerKind::Layer,
+                "Keygroup"=>sampler_ir::SourceOwnerKind::Keygroup,
+                "SamplePlayer"=>sampler_ir::SourceOwnerKind::Player,
+                _=>return Err("unadmitted ScriptProcessor owner kind".into()),
             };
-            let thread = self.lua.create_thread(function).map_err(lua_error)?;
-            {
-                let _profile = self.shared.profile.span("script_body_and_require");
-                let _span = Span::new("uvi_lua_script_body");
-                resume(&self.shared, thread, MultiValue::new(), None);
-                self.cycle();
+            let owner_parent=owner_node.parent().into_iter().flat_map(|n|n.ancestors())
+                .find(|n|matches!(n.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"))
+                .map(|n|u32::try_from(n.id().get_usize()).map(sampler_ir::SourceOwnerId::UviNode))
+                .transpose().map_err(|_|"ScriptProcessor owner parent identity overflow")?;
+            let node=u32::try_from(processor.id().get_usize()).map_err(|_|"ScriptProcessor XML identity overflow")?;
+            let program_level=owner_node.has_tag_name("Program");
+            let owner=u32::try_from(owner_node.id().get_usize()).map_err(|_|"ScriptProcessor owner identity overflow")?;
+            let ordinal=u32::try_from(list.children().filter(|n|n.is_element()).position(|n|n.id()==processor.id()).ok_or("processor list membership")?).map_err(|_|"processor ordinal overflow")?;
+            let address=ProcessorAddress {processor:sampler_ir::SourceEventProcessorId::UviNode(node), owner:sampler_ir::SourceOwnerId::UviNode(owner),ordinal};
+            let owner_id=sampler_ir::SourceOwnerId::UviNode(owner);
+            if !self.shared.owner_shapes.borrow().iter().any(|shape|shape.id==owner_id) {
+                let mut events=Vec::new();
+                for (ordinal,row) in list.children().filter(|n|n.is_element()).enumerate() {
+                    let id=u32::try_from(row.id().get_usize()).map_err(|_|"event-list member identity overflow")?;
+                    let ordinal=u32::try_from(ordinal).map_err(|_|"event-list ordinal overflow")?;
+                    let bypass=match row.attribute("Bypass") {None|Some("0"|"false")=>false,Some("1"|"true")=>true,_=>return Err("invalid event processor saved bypass".into())};
+                    events.push(input_authority::EventShape {id:sampler_ir::SourceEventProcessorId::UviNode(id),ordinal,kind:row.tag_name().name().to_owned(),bypass});
+                }
+                self.shared.owner_shapes.borrow_mut().push(input_authority::OwnerShape {id:owner_id,parent:owner_parent,kind:owner_kind,events});
             }
-            let restored = Span::new("uvi_lua_restore");
-            let restore_profile = self.shared.profile.span("saved_ui_restore");
-            // Saved widget values and their `changed` callbacks run after the
-            // script body and before onLoad and onInit.
-            if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
-                self.shared
-                    .arm(self.shared.config.load, self.shared.config.load_work);
-                if let Ok(thread) = self.lua.create_thread(f) {
-                    resume(&self.shared, thread, MultiValue::new(), None);
-                    self.cycle();
+            let view=Rc::new(input_authority::ProcessorView::default());
+            for source in std::iter::once(processor).chain(processor.children().filter(|n|n.has_tag_name("ScriptData"))) {
+                for attr in source.attributes(){view.saved.borrow_mut().insert(attr.name().to_owned(),attr.value().to_owned());}
+            }
+            let environment=if self.shared.processors.borrow().is_empty(){bootstrap.clone()}else{
+                let pristine:Table=self.lua.registry_value(self.shared.pristine_globals.borrow().as_ref().ok_or("missing pristine globals")?).map_err(lua_error)?;
+                input_authority::fresh_environment(&self.lua,&pristine).map_err(lua_error)?
+            };
+            let index=self.shared.processors.borrow().len();
+            let saved_bypass=processor.attribute("Bypass").is_some_and(|v|v=="1"||v=="true");
+            self.shared.processors.borrow_mut().push(input_authority::ProcessorContext {
+                address,source_node:node,environment:self.lua.create_registry_value(environment.clone()).map_err(lua_error)?,view,program_level,
+            });
+            let _context=input_authority::enter(&self.lua,&self.shared,Some(index)).map_err(lua_error)?;
+            if index>0 {
+                self.shared.script_bytes.set(self.shared.script_bytes.get().checked_add(PRELUDE.len()).ok_or("aggregate script byte overflow")?);
+                self.install().map_err(lua_error)?;
+            }
+            environment.raw_set("Program",program.clone()).map_err(lua_error)?;
+            // Objects retain the one authoritative graph's class identity.
+            environment.raw_set("__element_mt",element_class.clone()).map_err(lua_error)?;
+            environment.raw_set("__list_mt",list_class.clone()).map_err(lua_error)?;
+            environment.raw_set("this",objects.get(&(node as usize)).ok_or("canonical ScriptProcessor element unavailable")?.clone()).map_err(lua_error)?;
+            // The processor's module remains loaded while bypassed. Saved
+            // bypass still suppresses the historical initialization path below;
+            // exact native onInit-while-bypassed behavior is not claimed here.
+            let mut scripts=processor.children().filter(|n|n.has_tag_name("script"));
+            let script=scripts.next();
+            if scripts.next().is_some(){return Err("multiple script bodies in one ScriptProcessor".into());}
+            if let Some(script)=script {
+                let text=script.text().unwrap_or_default();
+                self.shared.note_assigned(text);
+                self.shared.arm(self.shared.config.load,self.shared.config.load_work);
+                if !text.trim().is_empty() {
+                    let compile_profile=self.shared.profile.span("root_script_compile");
+                    let chunk_name=if self.shared.inspection.borrow().is_some(){format!("uvi-script-{}",script.id().get_usize())}else{"script".into()};
+                    self.shared.profile.register_chunk(&chunk_name);
+                    let mut chunk=self.lua.load(text).set_name(&chunk_name).set_environment(environment.clone());
+                    if self.shared.inspection.borrow().is_some(){chunk=chunk.set_compiler(mlua::chunk::Compiler::default().set_coverage_level(1));}
+                    let function=chunk.into_function().map_err(lua_error)?;
+                    if let Some(inspection)=self.shared.inspection.borrow_mut().as_mut(){inspection.register(crate::parity::script_id(script),chunk_name,text,function.clone());}
+                    drop(compile_profile);
+                    let _body_profile=self.shared.profile.span("script_body_and_require");
+                    let thread=self.lua.create_thread(function).map_err(lua_error)?;
+                    if self.shared.staged_preparation.get(){
+                        self.resume_prepared_chunk(thread,MultiValue::new())?;
+                    }else{
+                        resume(&self.lua,&self.shared,thread,MultiValue::new(),PlayCreator::None,Some(index));
+                        self.cycle();
+                    }
                 }
             }
-            if let Some(state) = state {
-                self.restore_ui_values(state)?;
+            if saved_bypass {continue;}
+            let restore_profile=self.shared.profile.span("saved_ui_restore");
+            if let Ok(Value::Function(f))=environment.raw_get::<Value>("__restore") {
+                let thread=self.lua.create_thread(f).map_err(lua_error)?;
+                if self.shared.staged_preparation.get(){self.resume_prepared_chunk(thread,MultiValue::new())?;}
+                else{resume(&self.lua,&self.shared,thread,MultiValue::new(),PlayCreator::None,Some(index));self.cycle();}
             }
-            if let Some(state) = state {
-                self.restore_ui_custom(state)?;
-            } else if let Some(saved) = script
-                .parent()
-                .and_then(|p| p.children().find(|n| n.has_tag_name("state")))
-            {
-                self.restore_ui_custom(&UiState {
-                    custom: Some(ui::json_state(saved.text().unwrap_or_default())?),
-                    ..Default::default()
-                })?;
-            }
-            drop(restored);
+            let saved=state.and_then(|state|state.for_processor(node,index==0));
+            let before_restore=self.shared.restoring_widget_values.replace(self.shared.staged_preparation.get());
+            let restored=(||->Result<(),String>{
+                if let Some(state)=saved {self.restore_ui_values(&state)?;self.restore_ui_custom(&state)?;}
+                else if let Some(custom)=processor.children().find(|n|n.has_tag_name("state")) {
+                    self.restore_ui_custom(&UiState {custom:Some(ui::json_state(custom.text().unwrap_or_default())?),..Default::default()})?;
+                }Ok(())
+            })();
+            self.shared.restoring_widget_values.set(before_restore);restored?;
             drop(restore_profile);
-            let _span = Span::new("uvi_lua_on_init");
-            let _profile = self.shared.profile.span("on_init_and_deferred_callbacks");
-            self.call("onInit", None);
+            let _init_profile=self.shared.profile.span("on_init_and_deferred_callbacks");
+            if !self.shared.staged_preparation.get(){self.call("onInit",None);}
         }
         Ok(())
     }
 
+    /// A synchronous preparation chunk has no rendered clock or Core turn.
+    /// Preserve actual independent spawn/run rows for subsequent genuine task
+    /// adoption; never execute their deferred suffix from a load-time cycle.
+    fn resume_prepared_chunk(&self,thread:Thread,args:MultiValue)->Result<(),String>{
+        let before=self.shared.creator.replace(PlayCreator::None);
+        let was_thread=self.shared.in_thread.replace(true);
+        let result=thread.resume::<MultiValue>(args);
+        self.shared.in_thread.set(was_thread);self.shared.creator.set(before);
+        result.map_err(lua_error)?;
+        if thread.is_resumable(){return Err("main/restore chunk yielded without a rendered Core task context".into());}
+        if self.shared.waiting.borrow().len().checked_add(self.shared.deferred.borrow().len()).is_none_or(|n|n>4096){return Err("prepared independent task capacity".into());}
+        Ok(())
+    }
+
+    fn checked_prepared_origin(&self,index:Option<usize>,origin:&input_authority::PreparedLuaOrigin)->Result<sampler_core::PreparedGlobalTaskOrigin,String>{
+        if let input_authority::PreparedLuaOrigin::RestoredWidget(widget)=origin {
+            let contexts=self.shared.processors.borrow();
+            let context=contexts.get(index.ok_or("restored widget processor missing")?).ok_or("restored widget processor unavailable")?;
+            let environment=self.lua.registry_value::<Table>(&context.environment).map_err(lua_error)?;
+            drop(contexts);
+            let registry=environment.raw_get::<Table>("__ui").and_then(|ui|ui.raw_get::<Table>("widgets")).map_err(lua_error)?;
+            let mut found=false;
+            for actual in registry.sequence_values::<Table>() {
+                self.shared.consume_work().map_err(lua_error)?;
+                if actual.map_err(lua_error)?.to_pointer()==widget.to_pointer(){found=true;break;}
+            }
+            if !found{return Err("restored widget root no longer belongs to its canonical processor registry".into());}
+        }
+        origin.core_origin()
+    }
+
+    /// Freeze actual staged rows on their sole Lua owner. No authored function
+    /// is run here and no Core authority is manufactured from these positions.
+    pub(crate) fn prepared_root_tasks(&mut self)->Result<Vec<PreparedRootTask>,String>{
+        use sampler_core::SourceTaskFamily as Family;
+        use input_authority::{PreparedLuaRoot,PreparedRootTask};
+        if !self.shared.canonical_tasks||self.shared.staged_preparation.get(){return Err("not a completed staged preparation".into());}
+        if let Some(roots)=self.shared.prepared_roots.borrow().as_ref(){if roots.iter().any(|root|root.behavior.is_some()){return Err("prepared task roots already bound".into());}return Ok(roots.iter().map(|root|root.descriptor).collect());}
+        let waiting=self.shared.waiting.borrow();let deferred=self.shared.deferred.borrow();
+        let count=waiting.len().checked_add(deferred.len()).filter(|n|*n<=4096).ok_or("prepared task capacity")?;
+        let contexts=self.shared.processors.borrow();
+        let processor=|index:Option<usize>|contexts.get(index.ok_or("prepared task has no actual processor")?).map(|row|row.address.processor).ok_or("prepared task processor missing");
+        for row in waiting.iter(){
+            processor(row.processor)?;
+            let origin=self.checked_prepared_origin(row.processor,&row.prepared_origin)?;
+            if row.release||!matches!((row.creator,origin),(PlayCreator::None,sampler_core::PreparedGlobalTaskOrigin::None)|(PlayCreator::Event,sampler_core::PreparedGlobalTaskOrigin::RestoredWidgetEvent)){return Err("prepared Event/release-wait creator needs its genuine captured or nonmusical task entry".into());}
+            let frames=(row.due*self.shared.config.rate/1000.).ceil();
+            if !row.due.is_finite()||row.due<=0.||!frames.is_finite()||frames<1.||frames>=u64::MAX as f64{return Err("invalid prepared residual wait".into());}
+        }
+        for (_,_,creator,index,origin) in deferred.iter(){processor(*index)?;let origin=self.checked_prepared_origin(*index,origin)?;
+            if !matches!((*creator,origin),(PlayCreator::None,sampler_core::PreparedGlobalTaskOrigin::None)|(PlayCreator::Event,sampler_core::PreparedGlobalTaskOrigin::RestoredWidgetEvent)){return Err("prepared Event task needs its genuine captured or nonmusical creator".into());}}
+        // Logical layout admission; existing Lua allocator limit still owns
+        // thread/argument values. This is not a hard RSS/allocator ceiling.
+        std::alloc::Layout::array::<PreparedLuaRoot>(count).map_err(|_|"prepared task layout")?;
+        std::alloc::Layout::array::<PreparedRootTask>(count).map_err(|_|"prepared task descriptor layout")?;
+        let mut roots=Vec::new();roots.try_reserve_exact(count).map_err(|_|"prepared task allocation")?;
+        drop(waiting);drop(deferred);
+        // All admission checks preceded moving any retained LuaThread.
+        for row in self.shared.waiting.borrow_mut().drain(..){
+            let descriptor=PreparedRootTask{row:roots.len(),processor:processor(row.processor)?,family:Family::Run,origin:row.prepared_origin.core_origin()?};
+            roots.push(PreparedLuaRoot{origin:row.prepared_origin,descriptor,behavior:None,thread:row.thread,args:MultiValue::new(),delay:Some((row.due*self.shared.config.rate/1000.).ceil() as u64),remaining_work:row.remaining_work,exhausted:row.exhausted});
+        }
+        for (thread,args,_,index,origin) in self.shared.deferred.borrow_mut().drain(..){
+            let descriptor=PreparedRootTask{row:roots.len(),processor:processor(index)?,family:Family::Spawned,origin:origin.core_origin()?};
+            roots.push(PreparedLuaRoot{origin,descriptor,behavior:None,thread,args,delay:None,remaining_work:self.shared.config.load_work,exhausted:false});
+        }
+        let descriptors=roots.iter().map(|root|root.descriptor).collect();
+        *self.shared.prepared_roots.borrow_mut()=Some(roots);Ok(descriptors)
+    }
+    pub(crate) fn bind_prepared_roots(&mut self,runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,bindings:Vec<input_authority::PreparedRootBinding>)->Result<(),String>{
+        let owner=self.shared.authority.borrow();let owner=owner.as_ref().ok_or("prepared task authority missing")?;
+        if owner.runtime!=runtime||owner.plan!=plan||owner.current().is_some()||owner.cancelled(){return Err("prepared task binding identity/current turn mismatch".into());}
+        let mut roots=self.shared.prepared_roots.borrow_mut();let roots=roots.as_mut().ok_or("prepared tasks not frozen")?;
+        if roots.len()!=bindings.len(){return Err("prepared task binding count".into());}
+        for (at,binding) in bindings.iter().enumerate(){
+            if binding.row!=at||roots[at].descriptor.row!=at||roots[at].behavior.is_some()||bindings[..at].iter().any(|old|old.behavior==binding.behavior){return Err("prepared task duplicate/stale binding".into());}
+        }
+        for (root,binding) in roots.iter_mut().zip(bindings){root.behavior=Some(binding.behavior);}
+        Ok(())
+    }
+
+    /// Called only on the existing Lua owner, before engine publication. The
+    /// transient proof came from ONE actual retained Core plan table, not from
+    /// imported source numbers or a permanent second dispatch hierarchy.
+    pub(crate) fn bind_owner_authority(&mut self,mut owner:OwnerAuthorityPort)->Result<(),String>{
+        if !self.shared.canonical_tasks{return Err("external authority requires the genuine staged constructor; eager Init cannot be adopted".into());}
+        if self.shared.authority.borrow().is_some(){return Err("external owner authority already bound".into());}
+        let proof=owner.proof.take().ok_or("missing actual Core owner proof")?;
+        let shapes=self.shared.owner_shapes.borrow();
+        if proof.len()!=shapes.len(){return Err("actual Core/VM owner shape count differs".into());}
+        for expected in shapes.iter(){
+            let actual=proof.iter().find(|row|row.id==expected.id).ok_or("actual Core owner missing")?;
+            if actual.parent!=expected.parent||actual.kind!=expected.kind||actual.events.len()!=expected.events.len(){return Err("actual Core/VM owner parent/kind/list differs".into());}
+            for (actual,expected) in actual.events.iter().zip(&expected.events){
+                if actual.id!=expected.id||actual.ordinal!=expected.ordinal||actual.kind!=expected.kind||actual.bypass!=expected.bypass{return Err("actual Core/VM processor ID/ordinal/kind/initial field differs".into());}
+            }
+        }
+        drop(shapes);drop(proof);owner.bind_current_thread();*self.shared.authority.borrow_mut()=Some(owner);Ok(())
+    }
+    pub(crate) fn external_fault(&self,error:&str){self.shared.find("lua error",error);}
+    pub(crate) fn requires_external_authority(&self)->bool{self.shared.canonical_tasks}
+    pub fn external_runtime(&self)->Option<sampler_core::RuntimeId>{self.shared.authority.borrow().as_ref().map(|owner|owner.runtime)}
+
+    /// Ordered owner reset after Core has canceled old continuations at H.
+    /// Drop actual coroutine values here, on the Lua owner. Physical held keys
+    /// remain owed to their retained source terminal; no synthetic key-up occurs.
+    pub(crate) fn reset_execution_barrier(&mut self,runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId)->Result<(),sampler_core::Error>{
+        let mut authority=self.shared.authority.borrow_mut();
+        authority.as_mut().ok_or(sampler_core::Error::InvalidInput)?.reset_barrier(runtime,plan)?;
+        drop(authority);
+        self.shared.external_waiting.borrow_mut().clear();
+        self.shared.waiting.borrow_mut().clear();
+        self.shared.deferred.borrow_mut().clear();
+        self.shared.prepared_roots.borrow_mut().take();
+        self.shared.commands.borrow_mut().clear();
+        self.shared.creator.set(PlayCreator::None);
+        *self.shared.prepared_origin.borrow_mut()=input_authority::PreparedLuaOrigin::None;
+        self.shared.restoring_widget_values.set(false);
+        Ok(())
+    }
+
+    pub(crate) fn bind_source_property_owner(&mut self,owner:OwnerSourcePropertyPort)->Result<(),String>{
+        if self.shared.canonical_tasks||self.shared.authority.borrow().is_some()||self.shared.source_properties.borrow().is_some(){return Err("property-only fallback forbidden for captured/product owner".into());}
+        if owner.definitions.len()!=self.shared.constant_owners.borrow().len(){return Err("incomplete actual Constant property roster".into());}
+        for definition in &owner.definitions {
+            let index=self.shared.nodes.borrow().iter().position(|(node,_)|*node==Some(definition.node as usize)).ok_or("actual Constant definition missing")?;
+            if self.shared.kinds.borrow().get(index).is_none_or(|kind|kind!="ConstantModulation")
+                ||!self.shared.params.borrow()[index].iter().any(|(name,_)|name=="ScriptLive") {return Err("actual property class/promotion mismatch".into());}
+            let key=crate::engine_parameters::key(definition.node as usize,"ConstantModulation","Value");
+            let style=crate::engine_parameters::key(definition.node as usize,"ConstantModulation","Style");
+            if sampler_core::lower::ir_control_id(&key)!=definition.value||sampler_core::lower::ir_control_id(&style)!=definition.style{return Err("actual property control identity mismatch".into());}
+            // Actual owner shape is retained from the same parsed Host generation.
+            if !self.shared.constant_owners.borrow().contains(&(definition.node,definition.owner)){return Err("actual property structural owner mismatch".into());}
+            let polarity=self.shared.params.borrow()[index].iter().find(|(field,_)|field=="Bipolar").map(|(_,text)|text.parse::<f64>().ok().filter(|value|value.is_finite())).unwrap_or(Some(0.)).ok_or("actual Constant Bipolar is malformed")?!=0.;
+            if polarity!=definition.bipolar{return Err("actual Constant polarity differs from compiled definition".into());}
+        }
+        *self.shared.source_properties.borrow_mut()=Some(owner);Ok(())
+    }
+
+    /// Execute exactly the real canonical segment selected for this processor.
+    /// This runs only on the existing non-RT Lua owner. Core remains parked at
+    /// turn.resume_frame until the explicit operation receipt has been ACKed.
+    pub fn deliver_external_turn(&mut self,turn:sampler_core::ExternalTurn)->Result<(),String>{
+        let result=self.deliver_controller_turn(turn);
+        if result.is_err(){
+            if let Some(owner)=self.shared.authority.borrow_mut().as_mut(){let _=owner.call(AuthorityOperation::Cancel);}
+        }
+        result
+    }
+    fn deliver_controller_turn(&mut self,turn:sampler_core::ExternalTurn)->Result<(),String>{
+        use sampler_core::{ExternalEvent,ExternalOutput};
+        let index=self.shared.processors.borrow().iter().position(|p|p.address.processor==turn.processor).ok_or("unknown actual processor")?;
+        self.shared.authority.borrow_mut().as_mut().ok_or("missing actual Core authority")?.begin(turn).map_err(|e|format!("Core turn admission: {e:?}"))?;
+        // Routing metadata is not liveness. Nothing below may touch the owner
+        // clock, retained waiting rows, processor cache or authored Lua before ACK.
+        if !matches!(self.external_operation(AuthorityOperation::Validate)?,AuthorityValue::Validated){return Err("invalid initial Running receipt".into());}
+        let now=turn.resume_frame as f64*1000./self.shared.config.rate;
+        if !now.is_finite(){return Err("invalid external frame/rate".into());}
+        self.shared.now.set(now);
+        let waiting={let mut rows=self.shared.external_waiting.borrow_mut();rows.iter().position(|row|row.behavior==turn.input.behavior()).map(|at|rows.remove(at))};
+        let lua=self.lua.clone();let shared=self.shared.clone();
+        let _context=input_authority::enter(&lua,&shared,Some(index)).map_err(lua_error)?;
+        let prepared_at={let rows=self.shared.prepared_roots.borrow();rows.as_ref().and_then(|rows|rows.iter().position(|row|row.behavior==Some(turn.input.behavior())))};
+        if let Some(at)=prepared_at {
+            let rows=self.shared.prepared_roots.borrow();let root=&rows.as_ref().ok_or("prepared root store missing")?[at];
+            let task=match turn.event{ExternalEvent::Task(task)=>task,_=>return Err("prepared root received non-task turn".into())};
+            let family=match task.reason{sampler_core::SourceTaskReason::Spawned=>sampler_core::SourceTaskFamily::Spawned,sampler_core::SourceTaskReason::Run=>sampler_core::SourceTaskFamily::Run,_=>return Err("prepared root task reason changed".into())};
+            let expected=match root.descriptor.origin {
+                sampler_core::PreparedGlobalTaskOrigin::None=>sampler_core::SourceTaskCreator::None,
+                sampler_core::PreparedGlobalTaskOrigin::RestoredWidgetEvent=>sampler_core::SourceTaskCreator::NonMusicalEvent(sampler_core::NonMusicalTaskOrigin::RestoredWidget),
+            };
+            if root.descriptor.processor!=turn.processor||root.descriptor.family!=family||task.creator!=expected{return Err("prepared root Core creator/processor mismatch".into());}
+        }
+        let prepared=if let Some(at)=prepared_at {
+            let mut rows=self.shared.prepared_roots.borrow_mut();let rows=rows.as_mut().ok_or("prepared root store changed")?;
+            if at>=rows.len(){return Err("prepared root row changed".into());}Some(rows.remove(at))
+        }else{None};
+        let (thread,projection,args,creator,origin,wall)=if let Some(root)=prepared{
+            let creator=if root.descriptor.origin==sampler_core::PreparedGlobalTaskOrigin::None{PlayCreator::None}else{PlayCreator::Event};
+            self.shared.remaining_work.set(root.remaining_work);self.shared.work_exhausted.set(root.exhausted);
+            let wall=self.shared.config.load;self.shared.deadline.set(Instant::now().checked_add(wall));
+            if let Some(delay)=root.delay{
+                let next=turn.resume_frame.checked_add(delay).ok_or("prepared residual wait overflow")?;
+                let mut rows=self.shared.external_waiting.borrow_mut();if rows.len()>=4096{return Err("external coroutine capacity".into());}rows.try_reserve(1).map_err(|_|"external coroutine allocation")?;drop(rows);
+                _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:Some(next)})?;
+                self.shared.external_waiting.borrow_mut().push(input_authority::ExternalWaiting{behavior:turn.input.behavior(),processor:turn.processor,thread:root.thread,projection:None,creator,origin:root.origin,wall,remaining_work:root.remaining_work,exhausted:root.exhausted});
+                return Ok(());
+            }
+            (root.thread,None,root.args,creator,root.origin,wall)
+        }else if let Some(waiting)=waiting{
+            if waiting.processor!=turn.processor{return Err("external resume processor changed".into());}
+            self.shared.remaining_work.set(waiting.remaining_work);self.shared.work_exhausted.set(waiting.exhausted);
+            // Sleeping time is Core-rendered time, not Lua execution time. A
+            // new segment gets a wall deadline without refilling callback fuel.
+            self.shared.deadline.set(Instant::now().checked_add(waiting.wall));
+            (waiting.thread,waiting.projection,MultiValue::new(),waiting.creator,waiting.origin,waiting.wall)
+        }else{
+            match turn.event{
+                ExternalEvent::Task(task)=>{
+                    use sampler_core::{SourceTaskCreator,SourceTaskReason};
+                    let (name,args,init)=match task.reason{
+                        SourceTaskReason::Init(host)=>{
+                            self.set_task_host_context(host,turn.resume_frame)?;
+                            ("onInit",MultiValue::new(),true)
+                        },
+                        SourceTaskReason::Transport(host)=>{
+                            self.set_task_host_context(host,turn.resume_frame)?;
+                            ("onTransport",std::iter::once(Value::Boolean(host.playing)).collect(),false)
+                        },
+                        // The actual staged/parent-spawned LuaThread must be
+                        // joined by real BehaviorId; there is no handler name
+                        // from which a missing coroutine can be reconstructed.
+                        SourceTaskReason::Spawned|SourceTaskReason::Run=>return Err("actual independent Lua coroutine adoption pending".into()),
+                    };
+                    let creator=match task.creator{SourceTaskCreator::None=>PlayCreator::None,SourceTaskCreator::Event|SourceTaskCreator::NonMusicalEvent(_)=>PlayCreator::Event};
+                    let handler=match lua.globals().raw_get::<Value>(name).map_err(lua_error)?{Value::Function(handler)=>Some(handler),_=>None};
+                    let Some(handler)=handler else{_context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;return Ok(());};
+                    self.shared.arm(if init{self.shared.config.load}else{self.shared.config.callback},if init{self.shared.config.load_work}else{self.shared.config.callback_work});
+                    (lua.create_thread(handler).map_err(lua_error)?,None,args,creator,input_authority::PreparedLuaOrigin::None,if init{self.shared.config.load}else{self.shared.config.callback})
+                },
+                ExternalEvent::Controller{source,number,value,poly_key}=>{
+                    if self.processor_bypassed(turn.processor)?||number<128&&!self.shared.processor_view.borrow().visibility.receives(number){
+                        self.external_operation(AuthorityOperation::Post(ExternalOutput::Original))?;
+                        _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;return Ok(());
+                    }
+                    if number<128{self.shared.processor_view.borrow().cc.borrow_mut()[usize::from(number)]=(value>>25) as u8;}
+                    let projection=Rc::new(input_authority::ControllerProjection::new_with_channel(&lua,source,turn.logical_channel.ok_or("captured logical channel missing")?,number,value,poly_key).map_err(lua_error)?);
+                    let globals=lua.globals();
+                    let handler=match globals.raw_get::<Value>("onEvent").map_err(lua_error)?{
+                        Value::Function(handler)=>Some(handler),_=>match globals.raw_get::<Value>(projection.handler).map_err(lua_error)?{Value::Function(handler)=>Some(handler),_=>None},
+                    };
+                    let Some(handler)=handler else{
+                        self.external_operation(AuthorityOperation::Post(ExternalOutput::Original))?;
+                        _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;return Ok(());
+                    };
+                    self.shared.arm(self.shared.config.callback,self.shared.config.callback_work);
+                    let args=std::iter::once(Value::Table(projection.table.clone())).collect();
+                    (lua.create_thread(handler).map_err(lua_error)?,Some(projection),args,PlayCreator::Event,input_authority::PreparedLuaOrigin::UnclassifiedEvent,self.shared.config.callback)
+                },
+                ExternalEvent::ProgramChange{source,program,bank,..}=>{
+                    if self.processor_bypassed(turn.processor)?{
+                        self.external_operation(AuthorityOperation::Post(ExternalOutput::Original))?;
+                        _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;return Ok(());
+                    }
+                    let projection=Rc::new(input_authority::ControllerProjection::program(&lua,source,turn.logical_channel.ok_or("captured logical channel missing")?,program,bank).map_err(lua_error)?);
+                    let globals=lua.globals();
+                    let handler=match globals.raw_get::<Value>("onEvent").map_err(lua_error)?{
+                        Value::Function(handler)=>Some(handler),_=>match globals.raw_get::<Value>(projection.handler).map_err(lua_error)?{Value::Function(handler)=>Some(handler),_=>None},
+                    };
+                    let Some(handler)=handler else{
+                        self.external_operation(AuthorityOperation::Post(ExternalOutput::Original))?;
+                        _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;return Ok(());
+                    };
+                    self.shared.arm(self.shared.config.callback,self.shared.config.callback_work);
+                    let args=std::iter::once(Value::Table(projection.table.clone())).collect();
+                    (lua.create_thread(handler).map_err(lua_error)?,Some(projection),args,PlayCreator::Event,input_authority::PreparedLuaOrigin::UnclassifiedEvent,self.shared.config.callback)
+                },
+                _=>return Err("note canonical context bridge not yet installed".into()),
+            }
+        };
+        *self.shared.external_projection.borrow_mut()=projection.clone();
+        let before=self.shared.creator.replace(creator);let before_origin=self.shared.prepared_origin.replace(origin.clone());let was_thread=self.shared.in_thread.replace(true);
+        let result=thread.resume::<MultiValue>(args);
+        self.shared.in_thread.set(was_thread);self.shared.creator.set(before);*self.shared.prepared_origin.borrow_mut()=before_origin;
+        self.shared.external_projection.borrow_mut().take();
+        let values=result.map_err(lua_error)?;
+        // Independent tasks require their own real Core Continuation. Never let
+        // an external spawn escape onto the legacy wall-clock polling path.
+        if !self.shared.deferred.borrow().is_empty(){return Err("external independent task continuation bridge pending".into());}
+        if thread.is_resumable(){
+            let ms=values.front().and_then(number).ok_or("external wait needs a positive numeric duration")?;
+            if !ms.is_finite()||ms<=0.{return Err("external wait duration must be greater than zero".into());}
+            let frames=(ms*self.shared.config.rate/1000.).ceil();
+            if !frames.is_finite()||frames<1.||frames>=u64::MAX as f64{return Err("external wait frame overflow".into());}
+            let next=turn.resume_frame.checked_add(frames as u64).ok_or("external wait frame overflow")?;
+            if self.shared.external_waiting.borrow().len()>=4096{return Err("external coroutine capacity".into());}
+            _context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:Some(next)})?;
+            self.shared.external_waiting.borrow_mut().push(input_authority::ExternalWaiting{behavior:turn.input.behavior(),processor:turn.processor,thread,projection,creator,origin,wall,remaining_work:self.shared.remaining_work.get(),exhausted:self.shared.work_exhausted.get()});
+        }else{_context.restore().map_err(lua_error)?;self.external_operation(AuthorityOperation::Complete{next_frame:None})?;}
+        Ok(())
+    }
+    fn set_task_host_context(&self,host:sampler_core::SourceTaskHostContext,frame:u64)->Result<(),String>{
+        if host.frame!=frame||!host.tempo.is_finite()||host.tempo<=0.{return Err("invalid actual task host context".into());}
+        // A real Core task supplies this actual local F. Do not dispatch another
+        // callback or infer an absolute rack clock while updating the API view.
+        let at=frame as f64*1000./self.shared.config.rate;
+        if !at.is_finite(){return Err("invalid actual task frame/rate".into());}
+        let (anchor,beat)=self.shared.beat_anchor.get();
+        let current=beat+(at-anchor)*self.shared.tempo.get()/60_000.;
+        self.shared.beat_anchor.set((at,current));
+        self.shared.tempo.set(host.tempo);self.shared.playing.set(host.playing);Ok(())
+    }
+    fn external_operation(&self,operation:AuthorityOperation)->Result<AuthorityValue,String>{
+        self.shared.authority.borrow_mut().as_mut().ok_or("missing actual Core authority")?.call(operation).map_err(|error|format!("Core authority operation: {error:?}"))
+    }
+
+
+    /// Actual source addresses, never filtered script ordinals or VM IDs.
+    pub fn processors(&self)->Vec<ProcessorAddress> {
+        self.shared.processors.borrow().iter().map(|p|p.address).collect()
+    }
+
+    /// Offaudio shape proof against the actual initialized translation. The
+    /// caller must still bind this proof to its real PlanId/Arc epoch and Core
+    /// selection transaction; document-local numbers alone are not a lease.
+    pub fn validate_owner_contract(&self,owners:&[sampler_ir::SourceOwner])->Result<(),String> {
+        let contexts=self.shared.processors.borrow();
+        let script_rows=owners.iter().flat_map(|owner|owner.event_processors.iter()).filter(|row|row.kind=="ScriptProcessor").count();
+        if script_rows!=contexts.len(){return Err("initialized ScriptProcessor count changed".into());}
+        for shape in self.shared.owner_shapes.borrow().iter() {
+            let owner=owners.iter().find(|owner|owner.id==shape.id).ok_or("initialized script owner missing")?;
+            if owner.parent!=shape.parent||owner.kind!=shape.kind||owner.event_processors.len()!=shape.events.len(){return Err("initialized script owner/list shape changed".into());}
+            for (actual,expected) in owner.event_processors.iter().zip(&shape.events) {
+                if actual.id!=expected.id||actual.owner!=shape.id||actual.ordinal!=expected.ordinal||actual.kind!=expected.kind||actual.bypass.saved!=expected.bypass {
+                    return Err("initialized event-processor identity/order/kind/bypass changed".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Deliver to the exact processor selected by the canonical topology stage.
+    /// This method does not broadcast to sibling scopes or decide Core routing.
+    pub fn processor_input(&mut self,processor:sampler_ir::SourceEventProcessorId,input:crate::scripted::HostInput)->Result<ProcessorInputDisposition,String> {
+        let index=self.shared.processors.borrow().iter().position(|p|p.address.processor==processor).ok_or("unknown ScriptProcessor identity")?;
+        if self.processor_bypassed(processor)?{return Ok(input_authority::ProcessorInputDisposition::Bypassed);}
+        let lua=self.lua.clone();let shared=self.shared.clone();
+        let _context=input_authority::enter(&lua,&shared,Some(index)).map_err(lua_error)?;
+        crate::scripted::Script::input(self,input);
+        Ok(input_authority::ProcessorInputDisposition::CallbackDispatched)
+    }
+
+    /// The actual accepted unmodulated owner parameter, read at delivery. No
+    /// source snapshot, Lua raw-property override or parallel cached bool gates
+    /// routing. An actual bound modulation/control must be queried at Core F by
+    /// the future binding join instead of treating this target as its signal.
+    pub fn processor_bypassed(&self,processor:sampler_ir::SourceEventProcessorId)->Result<bool,String> {
+        let contexts=self.shared.processors.borrow();
+        let context=contexts.iter().find(|p|p.address.processor==processor).ok_or("unknown ScriptProcessor identity")?;
+        let nodes=self.shared.nodes.borrow();
+        let source_node=usize::try_from(context.source_node).map_err(|_|"ScriptProcessor source identity is out of range")?;
+        let mut matches=nodes.iter().enumerate().filter(|(_,row)|row.0==Some(source_node));
+        let (id,_)=matches.next().ok_or("canonical ScriptProcessor owner unavailable")?;
+        if matches.next().is_some()||self.shared.kinds.borrow().get(id).is_none_or(|kind|kind!="ScriptProcessor"){return Err("ambiguous ScriptProcessor owner".into());}
+        let params=self.shared.params.borrow();
+        match params.get(id).and_then(|params|params.iter().find(|(name,_)|name=="Bypass")).map(|(_,value)|value.as_str()) {
+            None|Some("0"|"false")=>Ok(false),Some("1"|"true")=>Ok(true),_=>Err("invalid accepted ScriptProcessor.Bypass value".into()),
+        }
+    }
+
+    pub fn processor_global_text(&self,processor:sampler_ir::SourceEventProcessorId,name:&str)->Result<String,String> {
+        let index=self.shared.processors.borrow().iter().position(|p|p.address.processor==processor).ok_or("unknown ScriptProcessor identity")?;
+        let _context=input_authority::enter(&self.lua,&self.shared,Some(index)).map_err(lua_error)?;
+        Ok(self.global_text(name))
+    }
+
+    fn default_processor(&self)->mlua::Result<input_authority::ContextGuard<'_>> {
+        let current=self.shared.processor.get();
+        let next=if current.is_some(){current}else{
+            match self.shared.processors.borrow().len(){0=>None,1=>Some(0),_=>return Err(mlua::Error::runtime("multiple ScriptProcessors require exact topology-stage delivery"))}
+        };
+        input_authority::enter(&self.lua,&self.shared,next)
+    }
+
     /// Start spawned threads until none remain.
     fn cycle(&self) {
+        if self.shared.canonical_tasks{return;}
         #[cfg(feature = "scan")]
         let _owner_span = self.owner_span(diagnostics::OwnerStage::DeferredCycle);
         loop {
@@ -2833,7 +3475,7 @@ impl ScriptHost {
             if batch.is_empty() {
                 break;
             }
-            for (thread, args, note) in batch {
+            for (thread, args, creator, processor,origin) in batch {
                 #[cfg(feature = "scan")]
                 self.owner_count(diagnostics::OwnerCounter::DeferredResumes, 1);
                 if self.shared.consume_work().is_err() {
@@ -2841,7 +3483,7 @@ impl ScriptHost {
                     self.shared.find("lua error", "work budget exceeded");
                     return;
                 }
-                resume(&self.shared, thread, args, note);
+                resume_with_prepared_origin(&self.lua, &self.shared, thread, args, creator, processor,origin);
             }
         }
     }
@@ -2885,12 +3527,12 @@ impl ScriptHost {
         let Ok(thread) = self.lua.create_thread(f) else {
             return;
         };
-        let note = (name == "onNote")
-            .then(|| event.as_ref().and_then(|e| field(e, "id")))
-            .flatten()
-            .map(|id| id as u64);
+        let creator = if name == "onNote" {
+            event.as_ref().and_then(|e| field(e, "id"))
+                .map_or(PlayCreator::None, |id| PlayCreator::NoteOn(id as u64))
+        } else if event.is_some() { PlayCreator::Event } else { PlayCreator::None };
         let args: MultiValue = event.map(Value::Table).into_iter().collect();
-        resume(&self.shared, thread, args, note);
+        resume(&self.lua, &self.shared, thread, args, creator, self.shared.processor.get());
         self.cycle();
     }
 
@@ -2908,9 +3550,10 @@ impl ScriptHost {
 
     /// A note-on the host received, as the script's `onNote(e)`.
     pub fn note_on(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
-        self.shared.held.borrow_mut().insert(id);
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        self.shared.held.borrow_mut().insert(id, key & 127);
         self.shared.voices.borrow_mut().insert(id);
-        self.shared.down.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
+        self.shared.last_note_on.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
         let e = self.event(
             1,
             &[
@@ -2928,13 +3571,13 @@ impl ScriptHost {
 
     /// A note-off for the note-on `id`: `onRelease(e)`, and wakes `waitForRelease`.
     pub fn note_off(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
         self.shared.held.borrow_mut().remove(&id);
-        self.shared.down.borrow_mut()[usize::from(key & 127)] = None;
         let woken: Vec<Waiting> = {
             let mut waiting = self.shared.waiting.borrow_mut();
             let (woken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiting)
                 .into_iter()
-                .partition(|w| w.release && w.note == Some(id));
+                .partition(|w| w.release && w.creator.note() == Some(id));
             *waiting = rest;
             woken
         };
@@ -2943,7 +3586,7 @@ impl ScriptHost {
                 self.shared.config.callback,
                 self.shared.config.callback_work,
             );
-            resume(&self.shared, w.thread, MultiValue::new(), w.note);
+            resume_with_prepared_origin(&self.lua, &self.shared, w.thread, MultiValue::new(), w.creator, w.processor,w.prepared_origin);
         }
         let e = self.event(
             2,
@@ -2962,7 +3605,9 @@ impl ScriptHost {
     }
 
     pub fn controller(&mut self, controller: u8, value: u8, channel: u8) {
-        self.shared.cc.borrow_mut()[usize::from(controller & 127)] = value;
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        if !self.shared.processor_view.borrow().visibility.receives(controller) {return;}
+        self.shared.processor_view.borrow().cc.borrow_mut()[usize::from(controller & 127)] = value;
         let e = self.event(
             3,
             &[
@@ -2986,6 +3631,7 @@ impl ScriptHost {
 
     /// Pitch bend in -1..=1.
     pub fn pitch_bend(&mut self, value: f64, channel: u8) {
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
         self.deliver(
             "onPitchBend",
             4,
@@ -2998,6 +3644,7 @@ impl ScriptHost {
     }
 
     pub fn after_touch(&mut self, value: u8, channel: u8) {
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
         self.deliver(
             "onAfterTouch",
             5,
@@ -3009,6 +3656,7 @@ impl ScriptHost {
     }
 
     pub fn poly_after_touch(&mut self, key: u8, value: u8, channel: u8) {
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
         self.deliver(
             "onPolyAfterTouch",
             6,
@@ -3021,6 +3669,7 @@ impl ScriptHost {
     }
 
     pub fn program_change(&mut self, value: u8, channel: u8) {
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
         self.deliver(
             "onProgramChange",
             7,
@@ -3034,6 +3683,7 @@ impl ScriptHost {
 
     /// The host's transport: `onTransport(playing)`.
     pub fn transport(&mut self, playing: bool) {
+        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
         let (at, value) = self.shared.beat_anchor.get();
         let elapsed = if self.shared.playing.get() {
             (self.shared.now.get() - at) * self.shared.tempo.get() / 60_000.
@@ -3054,7 +3704,7 @@ impl ScriptHost {
         if let Ok(thread) = self.lua.create_thread(f) {
             let mut args = MultiValue::new();
             args.push_front(Value::Boolean(playing));
-            resume(&self.shared, thread, args, None);
+            resume(&self.lua, &self.shared, thread, args, PlayCreator::None, self.shared.processor.get());
             self.cycle();
         }
     }
@@ -3069,6 +3719,9 @@ impl ScriptHost {
     /// Move the clock to `now_ms`, resuming every thread whose wait ends by
     /// then, in time order. Commands carry the time they were issued.
     pub fn advance(&mut self, now_ms: f64) {
+        // Staged initialization/deferred continuations are owned by actual
+        // Core tasks. A thread poll cannot advance or resume them independently.
+        if self.shared.canonical_tasks{return;}
         #[cfg(feature = "scan")]
         let scheduled_span = self.owner_span(diagnostics::OwnerStage::AdvanceScheduled);
         self.shared.arm(
@@ -3094,7 +3747,7 @@ impl ScriptHost {
                 self.shared.find("lua error", "work budget exceeded");
                 break;
             }
-            resume(&self.shared, w.thread, MultiValue::new(), w.note);
+            resume_with_prepared_origin(&self.lua, &self.shared, w.thread, MultiValue::new(), w.creator, w.processor,w.prepared_origin);
             self.cycle();
         }
         self.shared.now.set(now_ms.max(self.shared.now.get()));
@@ -3312,16 +3965,27 @@ impl ScriptHost {
     }
 }
 
-fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u64>) {
+fn resume(lua:&Lua, shared: &Rc<Shared>, thread: Thread, args: MultiValue, creator: PlayCreator, processor:Option<usize>) {
+    let origin=shared.prepared_origin.borrow().clone();
+    resume_with_prepared_origin(lua,shared,thread,args,creator,processor,origin)
+}
+fn resume_with_prepared_origin(lua:&Lua,shared:&Rc<Shared>,thread:Thread,args:MultiValue,creator:PlayCreator,processor:Option<usize>,origin:input_authority::PreparedLuaOrigin){
+    let _context=match input_authority::enter(lua,shared,processor) {
+        Ok(context)=>context,
+        Err(error)=>{shared.find("lua error",&lua_error(error));return;}
+    };
+    let previous_origin=shared.prepared_origin.replace(origin.clone());
     #[cfg(feature = "scan")]
     if let Some(audit) = shared.owner_audit.get() { audit.add(diagnostics::OwnerCounter::CoroutineResumes, 1); }
     #[cfg(feature = "scan")]
     if let Some(progress) = &shared.progress {
         progress.resume(shared.now.get());
     }
-    let before = shared.current.replace(note);
+    let before = shared.creator.replace(creator);
+    let was_thread = shared.in_thread.replace(true);
     let result = thread.resume::<MultiValue>(args);
-    shared.current.set(before);
+    shared.in_thread.set(was_thread);
+    shared.creator.set(before);*shared.prepared_origin.borrow_mut()=previous_origin;
     match result {
         Err(e) => shared.find("lua error", &lua_error(e)),
         Ok(values) => {
@@ -3338,14 +4002,18 @@ fn resume(shared: &Rc<Shared>, thread: Thread, args: MultiValue, note: Option<u6
                 thread,
                 due,
                 seq: shared.seq.get(),
-                note,
+                creator,
+                processor,
                 release,
+                remaining_work:shared.remaining_work.get(),
+                exhausted:shared.work_exhausted.get(),
+                prepared_origin:origin,
             });
         }
     }
 }
 
-fn parse_play(shared: &Shared, args: &[Value]) -> Play {
+fn parse_play(shared: &Shared, args: &[Value], origin: PlayOrigin) -> mlua::Result<Play> {
     let mut values: [Option<Value>; 11] = Default::default();
     match args {
         [Value::Table(t)] => {
@@ -3387,10 +4055,14 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
     // lua.uvi.net: > 0 releases after that long, -1 with the originating note,
     // 0 sends only the note-on (the script ends it with releaseVoice).
     let duration = num(2).filter(|d| *d >= 0.0);
-    Play {
+    let creator = shared.creator.get();
+    if origin == PlayOrigin::Helper && duration.is_none() && creator == PlayCreator::Widget {
+        return Err(mlua::Error::runtime("playNote duration -1 requires a script thread in a widget changed callback"));
+    }
+    Ok(Play {
         id: shared.next_id(),
         at_ms: shared.now.get(),
-        key: num(0).unwrap_or(60.0).clamp(0.0, 127.0) as u8,
+        key: num(0).unwrap_or(0.0).clamp(0.0, 127.0) as u8,
         velocity: num(1).unwrap_or(100.0).clamp(1.0, 127.0) as u8,
         duration_ms: duration,
         layers,
@@ -3398,8 +4070,10 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
         vol: num(6).unwrap_or(1.0),
         pan: num(7).unwrap_or(0.0),
         tune: num(8).unwrap_or(0.0),
-        parent: shared.current.get(),
-    }
+        creator,
+        origin,
+        parent: creator.note(),
+    })
 }
 
 #[cfg(test)]
@@ -3801,19 +4475,19 @@ end
                 ..
             }
         ));
-        assert!(
-            matches!(&c[6], Command::Modulation { id: 3, value, glide_ms: 0.0, .. } if *value == 0.2)
-        );
+        assert_eq!(c.len(), 10);
         assert!(matches!(
-            &c[7],
+            &c[6],
             Command::Modulation {
                 id: 3,
+                start: Some(from),
+                value: to,
                 glide_ms: 100.0,
                 ..
-            }
+            } if *from == 0.2 && *to == 0.8
         ));
         assert_eq!(
-            c[8],
+            c[7],
             Command::Midi(MidiOut {
                 status: 0xb1,
                 a: 1,
@@ -3821,7 +4495,7 @@ end
             })
         );
         assert_eq!(
-            c[9],
+            c[8],
             Command::Midi(MidiOut {
                 status: 0xe0,
                 a: 0,
@@ -3829,7 +4503,7 @@ end
             })
         );
         assert_eq!(
-            c[10],
+            c[9],
             Command::Midi(MidiOut {
                 status: 0xb0,
                 a: 7,
@@ -3982,3 +4656,578 @@ end
 #[cfg(test)]
 #[path = "script/ready_command_tests.rs"]
 mod ready_command_tests;
+
+#[cfg(test)]
+mod physical_key_state_regressions {
+    use super::*;
+    fn host(script:&str)->ScriptHost {
+        let xml=format!("<UVI4><Program Name='P'><EventProcessors><ScriptProcessor Name='S'><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+        ScriptHost::new(&xml,(),Config::default()).unwrap()
+    }
+    #[test]
+    fn key_state_keeps_overlapping_physical_owners_and_last_note_on_duration() {
+        let mut h=host(r#"
+            releases={}
+            function onRelease(e)
+                table.insert(releases,{getNoteDuration(e.note),isKeyDown(e.note),isOctaveKeyDown(e.note)})
+            end
+        "#);
+        h.set_time(10.);h.note_on(1,60,100,1);
+        h.set_time(30.);h.note_on(2,60,90,12);
+        h.set_time(40.);h.note_on(3,72,80,8);
+        h.set_time(80.);h.note_off(1,60,11,1);
+        h.lua.load("assert(releases[1][1]==50 and releases[1][2] and releases[1][3])").exec().unwrap();
+        h.set_time(110.);h.note_off(2,60,22,12);
+        h.lua.load("assert(releases[2][1]==80 and not releases[2][2] and releases[2][3])").exec().unwrap();
+        h.set_time(115.);h.note_off(999,72,0,8);
+        h.lua.load("assert(releases[3][1]==75 and releases[3][2] and releases[3][3])").exec().unwrap();
+        h.set_time(120.);h.note_off(3,72,33,8);
+        h.lua.load("assert(releases[4][1]==80 and not releases[4][2] and not releases[4][3])").exec().unwrap();
+        assert!(h.findings().is_empty(),"{:?}",h.findings());
+    }
+    #[test]
+    fn releasing_one_same_key_owner_wakes_only_its_own_release_waiter() {
+        let mut h=host(r#"
+            resumed={}
+            function onNote(e)
+                waitForRelease()
+                table.insert(resumed,{e.id,isNoteHeld(),isKeyDown(e.note)})
+            end
+        "#);
+        h.note_on(41,60,100,0);h.note_on(42,60,100,15);
+        h.note_off(41,60,64,0);
+        h.lua.load("assert(#resumed==1 and resumed[1][1]==41 and not resumed[1][2] and resumed[1][3])").exec().unwrap();
+        h.note_off(42,60,64,15);
+        h.lua.load("assert(#resumed==2 and resumed[2][1]==42 and not resumed[2][2] and not resumed[2][3])").exec().unwrap();
+        assert!(h.findings().is_empty(),"{:?}",h.findings());
+    }
+}
+
+#[cfg(test)]
+mod play_creator_tests {
+    use super::*;
+
+    fn host(source: &str) -> ScriptHost {
+        let xml = format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors></Program>");
+        ScriptHost::new(&xml, (), Config::default()).unwrap()
+    }
+    fn plays(host: &mut ScriptHost) -> Vec<Play> {
+        host.take_commands().into_iter().filter_map(|c| match c { Command::Play(p) => Some(p), _ => None }).collect()
+    }
+
+    #[test]
+    fn actual_creator_survives_wait_and_spawn_run_get_manual_callback_creator() {
+        let mut host = host(r#"
+            playNote(48,100,-1)
+            spawn(function() playNote(49,100,-1) end)
+            function onInit() playNote(50,100,-1) end
+            function onNote(e)
+                run(function() playNote(61,100,-1) end)
+                spawn(function() wait(2); playNote(62,100,-1) end)
+                wait(10); playNote(63,100,-1)
+            end
+            function onController(e) playNote(64,100,-1) end
+            function onRelease(e) playNote(65,100,-1) end
+            function onTransport(playing) playNote(66,100,-1) end
+        "#);
+        let init = plays(&mut host);
+        assert_eq!(init.iter().map(|p| p.creator).collect::<Vec<_>>(), [PlayCreator::None; 3]);
+        host.note_on(17,60,100,4);
+        let immediate = plays(&mut host);
+        assert_eq!(immediate.len(),1);
+        assert_eq!((immediate[0].key,immediate[0].creator,immediate[0].parent), (61,PlayCreator::Event,None));
+        host.advance(2.);
+        let spawned = plays(&mut host);
+        assert_eq!((spawned[0].key,spawned[0].creator,spawned[0].parent), (62,PlayCreator::Event,None));
+        host.note_off(17,60,64,4);
+        let release = plays(&mut host);
+        assert_eq!((release[0].key,release[0].creator), (65,PlayCreator::Event));
+        host.advance(10.);
+        let late = plays(&mut host);
+        assert_eq!((late[0].key,late[0].creator,late[0].parent), (63,PlayCreator::NoteOn(17),Some(17)));
+        host.controller(1,127,4);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::Event);
+        host.transport(true);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::None);
+        assert!(host.findings().is_empty(),"{:?}",host.findings());
+    }
+
+    #[test]
+    fn widget_negative_duration_errors_outside_thread_but_explicit_duration_and_spawn_remain_valid() {
+        let mut host = host(r#"
+            k=Knob('CreatorWidget',0,0,10)
+            k.changed=function(self) playNote(60,100,-1) end
+        "#);
+        assert!(host.set_control(control_id(1,0),1.).is_err());
+        assert!(plays(&mut host).is_empty());
+        // Reassignment is deliberately observed by the ordinary edit path.
+        host.lua.load("k.changed=function(self) playNote(61,100,0); spawn(function() playNote(62,100,-1) end) end").exec().unwrap();
+        host.set_control(control_id(1,0),2.).unwrap();
+        let commands=plays(&mut host);
+        assert_eq!(commands.len(),2);
+        assert_eq!((commands[0].creator,commands[0].duration_ms),(PlayCreator::Widget,Some(0.)));
+        assert_eq!((commands[1].creator,commands[1].duration_ms),(PlayCreator::Event,None));
+    }
+
+    #[test]
+    fn widget_changed_inside_real_init_thread_has_no_creator_and_inside_note_has_note_creator() {
+        let mut host = host(r#"
+            k=Knob('ThreadWidget',0,0,10)
+            k.changed=function(self) playNote(60,100,-1) end
+            function onInit() k:setValue(1) end
+            function onNote(e) k:setValue(2) end
+        "#);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::None);
+        host.note_on(23,60,100,0);
+        assert_eq!(plays(&mut host)[0].creator,PlayCreator::NoteOn(23));
+        assert!(host.findings().is_empty(),"{:?}",host.findings());
+    }
+}
+
+
+#[cfg(test)]
+mod staged_preparation_tests {
+    use super::*;
+    fn xml(source:&str)->String{format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{source}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>")}
+    #[test]
+    fn staged_main_restore_and_custom_load_precede_unexecuted_init(){
+        let source=r#"
+            order='main'; function __restore() order=order..':restore' end
+            function onLoad(value) order=order..':'..value end
+            function onInit() order=order..':init' end
+        "#;
+        let state=UiState{custom:Some(ui::SavedValue::String("load".into())),..Default::default()};
+        let mut host=ScriptHost::new_staged_with_ui_state(&xml(source),(),Config::default(),Some(&state)).unwrap();
+        assert_eq!(host.global_text("order"),"main:restore:load");
+        host.advance(10000.);
+        assert_eq!(host.global_text("order"),"main:restore:load");
+        assert!(host.shared.external_waiting.borrow().is_empty());
+    }
+    #[test]
+    fn staged_spawn_is_retained_without_running_or_polling_its_body(){
+        let mut host=ScriptHost::new_staged_with_ui_state(&xml("count=0; spawn(function() count=count+1 end); function onInit() count=count+10 end"),(),Config::default(),None).unwrap();
+        assert_eq!(host.global_text("count"),"0");
+        assert_eq!(host.shared.deferred.borrow().len(),1);
+        host.advance(100000.);
+        assert_eq!(host.global_text("count"),"0");
+        assert_eq!(host.shared.deferred.borrow().len(),1);
+    }
+    #[test]
+    fn synchronous_main_yield_is_visible_and_never_a_fake_prepared_init(){
+        let result=ScriptHost::new_staged_with_ui_state(&xml("wait(10); initialized=true"),(),Config::default(),None);
+        assert!(matches!(result,Err(error)if error.contains("without a rendered Core task context")));
+        let eager=ScriptHost::new(&xml("function onInit() initialized=123 end"),(),Config::default()).unwrap();
+        assert_eq!(eager.global_text("initialized"),"123");
+    }
+}
+
+#[cfg(test)]
+mod actual_task_segment_tests{
+    use super::*;
+    use std::{sync::mpsc,thread,time::{Duration,Instant}};
+    fn runtime(xml:&str)->sampler_core::Runtime{
+        use sampler_core::{Instruction,Program,WaitLifetime,PreparedSourceTaskBinding as Binding,SourceTaskFamily as Family};
+        let translated=crate::translate(xml,std::path::Path::new(".")).unwrap();
+        let processor=translated.instrument.source_indices.owners.iter().flat_map(|owner|&owner.event_processors).find(|row|row.kind=="ScriptProcessor").unwrap().id;
+        assert!(translated.instrument.assets.is_empty(),"authored task graph has no sample assets");
+        // The final lower argument binds behavior modules; it is not an asset
+        // reader. These fixtures bind the real external task program below.
+        let prepared=sampler_core::lower::lower(&translated.instrument,48000,vec![],|_,plan|Ok(plan)).unwrap()
+            .with_programs(vec![Program::new(vec![Instruction::AwaitExternal{processor},Instruction::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback)],None).unwrap()
+            .with_controller_programs(vec![0]).unwrap()
+            .with_source_tasks(vec![Binding{processor,family:Family::Init,program:0},Binding{processor,family:Family::Transport,program:0},Binding{processor,family:Family::Spawned,program:0},Binding{processor,family:Family::Run,program:0}]).unwrap();
+        let limits=sampler_core::Limits::for_plan(&prepared,8,8);
+        sampler_core::Runtime::new(prepared,limits).unwrap()
+    }
+    #[test]
+    fn actual_failed_environment_restoration_fences_later_callbacks_instead_of_guessing_context(){
+        let xml="<Program><EventProcessors><ScriptProcessor><script>value=17</script></ScriptProcessor><ScriptProcessor><script>value=99</script></ScriptProcessor></EventProcessors></Program>";
+        let host=ScriptHost::new_staged_with_ui_state(xml,(),Config::default(),None).unwrap();
+        let guard=input_authority::enter(&host.lua,&host.shared,Some(0)).unwrap();
+        // mlua explicitly rejects set_globals while its real sandbox is set.
+        // Exercise that actual refusal, not a forged successful restoration.
+        host.lua.sandbox(true).unwrap();assert!(guard.restore().is_err());drop(guard);
+        assert!(host.shared.context_failed.get());
+        assert!(input_authority::enter(&host.lua,&host.shared,Some(1)).is_err());
+        host.lua.sandbox(false).unwrap();
+        assert!(input_authority::enter(&host.lua,&host.shared,Some(1)).is_err(),"a failed context never silently rearms on a later callback");
+        assert!(!host.shared.command(Command::Midi(MidiOut{status:0xb0,a:7,b:127})));
+        assert!(host.shared.commands.borrow().is_empty());
+    }
+    #[test]
+    fn staged_out_of_turn_commands_cannot_escape_to_legacy_queue_or_publish_fake_voices(){
+        let xml="<Program><EventProcessors><ScriptProcessor><script>function onController(e) end</script></ScriptProcessor></EventProcessors></Program>";
+        let mut staged=ScriptHost::new_staged_with_ui_state(xml,(),Config::default(),None).unwrap();
+        assert!(staged.lua.load("playNote(60,100,0)").exec().is_err());
+        assert!(staged.shared.voices.borrow().is_empty());assert!(staged.take_commands().is_empty());
+        staged.lua.load("sendScriptModulation(7,0.5,20,nil)").exec().unwrap();
+        assert!(staged.take_commands().is_empty(),"no future-value/legacy queue cache may replace actual Core task authority");
+        let mut legacy=ScriptHost::new(xml,(),Config::default()).unwrap();
+        legacy.lua.load("playNote(60,100,0)").exec().unwrap();
+        assert!(matches!(&legacy.take_commands()[..],[Command::Play(play)]if play.key==60));
+    }
+    #[test]
+    fn same_frame_cancel_is_checked_before_actual_processor_bypass_noop_or_retention(){
+        let xml=String::from("<Program><EventProcessors><ScriptProcessor Bypass='0'><script>function onController(e) this:setParameter('Bypass',false) end</script></ScriptProcessor></EventProcessors></Program>");
+        let mut rt=runtime(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let (mut core,owner)=authority_pair(&rt,plan,Duration::from_secs(2)).unwrap();
+        rt.dispatch_controller(perf,sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:0},1,7,0).unwrap();
+        rt.service_external_boundary().unwrap();let pending=rt.pending_external_turn().unwrap().unwrap();let turn=rt.begin_external_turn(pending.input).unwrap();
+        let (send,done)=mpsc::sync_channel(1);
+        let handle=thread::spawn(move||{
+            let mut host=ScriptHost::new_staged_with_ui_state(&xml,(),Config::default(),None).unwrap();
+            host.bind_owner_authority(owner).unwrap();let before=host.shared.params.borrow().clone();
+            let result=host.deliver_external_turn(turn);
+            assert_eq!(*host.shared.params.borrow(),before,"canceled no-op cannot retain a model/overlay write");
+            send.send(result).unwrap();
+        });
+        let deadline=Instant::now()+Duration::from_secs(2);let mut validated=false;
+        loop{
+            if let Some(request)=core.pop(){
+                assert_eq!(request.turn.input,turn.input);
+                let result=match request.operation{
+                    AuthorityOperation::Validate=>{
+                        assert!(!validated);validated=true;rt.cancel_external_input(turn.input).unwrap();
+                        rt.running_external_turn(turn.input).map(|_|AuthorityValue::Validated)
+                    },
+                    AuthorityOperation::Complete{next_frame}=>{assert!(validated);rt.complete_external_segment(turn.input,next_frame).map(|_|AuthorityValue::Completed)},
+                    AuthorityOperation::Cancel=>{assert!(validated);rt.cancel_external_input(turn.input).map(|_|AuthorityValue::Completed)},
+                    other=>panic!("canceled no-op must not post or mutate: {other:?}"),
+                };
+                assert!(result.is_err());
+                core.reply(AuthorityReply{input:turn.input,ordinal:request.ordinal,result,retired_command:None}).unwrap();
+            }
+            match done.try_recv(){Ok(result)=>{assert!(validated);assert!(result.is_err());break;},Err(mpsc::TryRecvError::Disconnected)=>panic!("real Lua owner stopped"),Err(mpsc::TryRecvError::Empty)=>{}}
+            assert!(Instant::now()<deadline,"canceled callback must receive its real terminal refusal");thread::sleep(Duration::from_micros(50));
+        }
+        handle.join().unwrap();assert_eq!(rt.now(),0);assert!(rt.pending_external_turn().unwrap().is_none());
+    }
+    #[test]
+    fn refused_actual_command_returns_its_last_upload_reference_to_the_lua_owner(){
+        let xml="<Program><EventProcessors><ScriptProcessor Script='function onController(e) end'/></EventProcessors></Program>";
+        let mut rt=runtime(xml);let plan=rt.active_plan();
+        let (mut core,mut owner)=authority_pair(&rt,plan,Duration::from_secs(2)).unwrap();
+        let performance=rt.performance(0).unwrap();
+        rt.dispatch_controller(performance,sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:0},1,7,0).unwrap();
+        rt.service_external_boundary().unwrap();
+        let pending=rt.pending_external_turn().unwrap().unwrap();let turn=rt.begin_external_turn(pending.input).unwrap();
+        let (send,weak)=mpsc::sync_channel(1);
+        let handle=thread::spawn(move||{
+            owner.bind_current_thread();owner.begin(turn).unwrap();
+            let upload=ImpulseUpload(std::sync::Arc::new(std::sync::Mutex::new(None)));
+            send.send(std::sync::Arc::downgrade(&upload.0)).unwrap();
+            let result=owner.call(AuthorityOperation::Command(Command::Impulse{slot:0,upload}));
+            assert!(matches!(result,Err(sampler_core::Error::InvalidInput)));
+        });
+        let weak=weak.recv_timeout(Duration::from_secs(2)).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(2);
+        let request=loop{
+            if let Some(request)=core.pop(){break request;}
+            assert!(Instant::now()<deadline);thread::sleep(Duration::from_micros(50));
+        };
+        assert_eq!(request.turn.input,turn.input);assert_eq!(weak.strong_count(),1);
+        let AuthorityOperation::Command(command)=request.operation else{panic!("actual queued command required");};
+        // A pure refusal still returns exactly the original payload. There is
+        // no clone maintaining a second lifetime or engine-side last drop.
+        core.reply(AuthorityReply{input:turn.input,ordinal:request.ordinal,result:Err(sampler_core::Error::InvalidInput),retired_command:Some(command)}).unwrap();
+        handle.join().unwrap();assert!(weak.upgrade().is_none());
+        rt.cancel_external_input(turn.input).unwrap();
+    }
+    fn complete_turn(rt:&mut sampler_core::Runtime,port:&mut CoreAuthorityPort,tx:&mpsc::SyncSender<sampler_core::ExternalTurn>,done:&mpsc::Receiver<Result<String,String>>)->String{
+        let turn=rt.pending_external_turn().unwrap().expect("real Core continuation must own this segment");
+        let turn=rt.begin_external_turn(turn.input).unwrap();tx.send(turn).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(3);
+        loop{
+            if let Some(request)=port.pop(){
+                assert_eq!(request.turn.input,turn.input);
+                let mut retired_command=None;
+                let result=match request.operation{
+                    AuthorityOperation::Validate=>rt.running_external_turn(turn.input).map(|_|AuthorityValue::Validated),
+                    AuthorityOperation::QueryConstant{node}=>rt.running_external_turn(turn.input).and_then(|_|rt.source_constant_property(turn.plan,node)).map(AuthorityValue::Constant),
+                    AuthorityOperation::Post(output)=>rt.post_external_output(turn.input,output).map(AuthorityValue::Posted),
+                    AuthorityOperation::Complete{next_frame}=>rt.complete_external_segment(turn.input,next_frame).map(|_|AuthorityValue::Completed),
+                    AuthorityOperation::Cancel=>rt.cancel_external_input(turn.input).map(|_|AuthorityValue::Completed),
+                    AuthorityOperation::Command(command)=>{retired_command=Some(command);Err(sampler_core::Error::InvalidInput)},
+                };
+                port.reply(AuthorityReply{input:turn.input,ordinal:request.ordinal,result,retired_command}).unwrap();
+            }
+            match done.try_recv(){Ok(result)=>return result.unwrap(),Err(mpsc::TryRecvError::Disconnected)=>panic!("actual Lua owner stopped"),Err(mpsc::TryRecvError::Empty)=>{}}
+            assert!(Instant::now()<deadline,"actual owner/Core receipt deadline");thread::sleep(Duration::from_micros(50));
+        }
+    }
+    #[test]
+    fn actual_core_transport_then_sleeping_init_allows_independent_controller_before_resume(){
+        use sampler_core::{SourceTaskReason as Reason,SourceTaskHostContext as Host,ChannelAddress,Protocol};
+        let xml=String::from(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            order='main';
+            function onTransport(playing) assert(playing);order=order..':transport' end
+            function onInit() assert(getTempo()==91);order=order..':init1';wait(1);order=order..':init2' end
+            function onController(e) assert(e.controller==1);order=order..':cc' end
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#);
+        let mut rt=runtime(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let (mut core,owner)=input_authority::authority_pair(&rt,plan,Duration::from_secs(2)).unwrap();
+        let (tx,receive)=mpsc::sync_channel(1);let (reply,done)=mpsc::sync_channel(1);
+        let actor=thread::spawn(move||{
+            let mut host=ScriptHost::new_staged_with_ui_state(&xml,(),Config::default(),None).unwrap();
+            assert_eq!(host.global_text("order"),"main");host.bind_owner_authority(owner).unwrap();
+            while let Ok(turn)=receive.recv(){let result=host.deliver_external_turn(turn).map(|_|host.global_text("order"));reply.send(result).unwrap();}
+        });
+        let host=Host{frame:0,tempo:91.,playing:true};
+        assert_eq!(rt.start_source_tasks(plan,Reason::Transport(host),perf),Ok(1));
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:transport");assert_eq!(rt.now(),0);
+        assert_eq!(rt.start_source_tasks(plan,Reason::Init(host),perf),Ok(1));
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:transport:init1");assert_eq!(rt.now(),0);
+        assert_eq!(rt.start_source_tasks(plan,Reason::Init(host),perf),Ok(0),"actual per-generation once Init");
+        let source=ChannelAddress{protocol:Protocol::Midi2,port:0,group:0,channel:0};
+        rt.dispatch_controller(perf,source,1,1,0x9123_4567).unwrap();rt.service_external_boundary().unwrap();
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:transport:init1:cc");assert_eq!(rt.now(),0);
+        rt.render(&mut [[0.;2];48]).unwrap();rt.service_external_boundary().unwrap();
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:transport:init1:cc:init2");assert_eq!(rt.now(),48);
+        drop(tx);actor.join().unwrap();
+    }
+    #[test]
+    fn genuine_prepared_run_wait_and_spawn_join_real_core_tasks_without_prefix_replay(){
+        let xml=String::from(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            order='main';
+            run(function() order=order..':run-prefix';wait(1);order=order..':run-suffix' end);
+            spawn(function() order=order..':spawn' end)
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#);
+        let mut rt=runtime(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let (mut core,owner)=input_authority::authority_pair(&rt,plan,Duration::from_secs(2)).unwrap();
+        let runtime_id=rt.id();
+        let (metadata,roots)=mpsc::sync_channel(1);
+        let (bindings,adoption)=mpsc::sync_channel::<Vec<input_authority::PreparedRootBinding>>(1);
+        let (ready,accepted)=mpsc::sync_channel(1);
+        let (tx,receive)=mpsc::sync_channel(1);let (reply,done)=mpsc::sync_channel(1);
+        let actor=thread::spawn(move||{
+            let mut host=ScriptHost::new_staged_with_ui_state(&xml,(),Config::default(),None).unwrap();
+            assert_eq!(host.global_text("order"),"main:run-prefix");
+            let tasks=host.prepared_root_tasks().unwrap();assert_eq!(tasks.len(),2);
+            host.advance(1000.);assert_eq!(host.global_text("order"),"main:run-prefix");
+            host.bind_owner_authority(owner).unwrap();metadata.send(tasks).unwrap();
+            host.bind_prepared_roots(runtime_id,plan,adoption.recv().unwrap()).unwrap();ready.send(()).unwrap();
+            assert!(host.prepared_root_tasks().is_err(),"a bound residual cannot be adopted twice");
+            while let Ok(turn)=receive.recv(){let result=host.deliver_external_turn(turn).map(|_|host.global_text("order"));reply.send(result).unwrap();}
+        });
+        let roots=roots.recv_timeout(Duration::from_secs(3)).unwrap();
+        let actual=roots.iter().map(|root|input_authority::PreparedRootBinding{row:root.row,behavior:rt.start_prepared_source_task(plan,root.processor,root.family,perf).unwrap()}).collect();
+        bindings.send(actual).unwrap();accepted.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:run-prefix");
+        assert_eq!(rt.now(),0,"parking the residual wait does not render or replay");
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:run-prefix:spawn");
+        rt.render(&mut [[0.;2];48]).unwrap();rt.service_external_boundary().unwrap();
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"main:run-prefix:spawn:run-suffix");
+        assert!(rt.pending_external_turn().unwrap().is_none());
+        drop(tx);actor.join().unwrap();
+    }
+    #[test]
+    fn prepared_residual_wait_preserves_the_actual_executed_prefix_work_budget(){
+        let xml="<Program><EventProcessors><ScriptProcessor><script>run(function() for i=1,100 do assert(i&gt;0) end;wait(2); finished=true end)</script></ScriptProcessor></EventProcessors></Program>";
+        let mut host=ScriptHost::new_staged_with_ui_state(xml,(),Config::default(),None).unwrap();
+        let (remaining,exhausted)={let rows=host.shared.waiting.borrow();assert_eq!(rows.len(),1);(rows[0].remaining_work,rows[0].exhausted)};
+        let tasks=host.prepared_root_tasks().unwrap();assert_eq!(tasks.len(),1);
+        let roots=host.shared.prepared_roots.borrow();let root=&roots.as_ref().unwrap()[0];
+        assert_eq!((root.remaining_work,root.exhausted),(remaining,exhausted));assert_eq!(root.delay,Some(96));
+        assert_eq!(host.global_text("finished"),"nil");
+    }
+    #[test]
+    fn prepared_task_capture_rejects_real_widget_event_creator_before_moving_any_row(){
+        let xml="<Program><EventProcessors><ScriptProcessor><script><![CDATA[k=Knob('root',0,0,1);k.changed=function(self) spawn(function() end) end]]></script></ScriptProcessor></EventProcessors></Program>";
+        let mut host=ScriptHost::new_staged_with_ui_state(xml,(),Config::default(),None).unwrap();
+        // This is the ordinary widget edit entry and genuine changed callback,
+        // not a forged Event creator or a fabricated Core parent.
+        let _=host.set_control(control_id(1,0),1.);
+        let before=host.shared.deferred.borrow().len();assert_eq!(before,1);
+        assert!(host.prepared_root_tasks().is_err());
+        assert_eq!(host.shared.deferred.borrow().len(),before);
+        assert!(host.shared.prepared_roots.borrow().is_none());
+    }
+
+    #[test]
+    fn canceled_queued_resume_does_not_advance_clock_remove_waiter_cache_cc_or_execute_lua(){
+        let xml=String::from("<Program><EventProcessors><ScriptProcessor><script>count=0;function onController(e) count=count+1;wait(1);count=count+100 end</script></ScriptProcessor></EventProcessors></Program>");
+        let mut rt=runtime(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let(mut core,owner)=authority_pair(&rt,plan,Duration::from_secs(2)).unwrap();
+        let(tx,receive)=mpsc::sync_channel(1);let(reply,done)=mpsc::sync_channel(1);
+        let actor=thread::spawn(move||{
+            let mut host=ScriptHost::new_staged_with_ui_state(&xml,(),Config::default(),None).unwrap();host.bind_owner_authority(owner).unwrap();
+            let first=receive.recv().unwrap();let result=host.deliver_external_turn(first).map(|_|host.global_text("count"));reply.send(result).unwrap();
+            assert_eq!(host.shared.external_waiting.borrow().len(),1);
+            let before=(host.shared.now.get(),host.shared.external_waiting.borrow().len(),host.shared.processor_view.borrow().cc.borrow()[7],host.global_text("count"));
+            let resumed=receive.recv().unwrap();let result=host.deliver_external_turn(resumed);
+            assert!(result.is_err());
+            assert_eq!((host.shared.now.get(),host.shared.external_waiting.borrow().len(),host.shared.processor_view.borrow().cc.borrow()[7],host.global_text("count")),before);
+            reply.send(result.map(|_|String::new())).unwrap();
+        });
+        rt.dispatch_controller(perf,sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:0},1,7,0x7200_0000).unwrap();rt.service_external_boundary().unwrap();
+        assert_eq!(complete_turn(&mut rt,&mut core,&tx,&done),"1");let mut out=[[0.;2];48];rt.render(&mut out).unwrap();rt.service_external_boundary().unwrap();
+        let pending=rt.pending_external_turn().unwrap().unwrap();let turn=rt.begin_external_turn(pending.input).unwrap();rt.cancel_external_input(turn.input).unwrap();tx.send(turn).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(2);
+        loop{
+            if let Some(request)=core.pop(){
+                let result=match request.operation{
+                    AuthorityOperation::Validate=>rt.running_external_turn(turn.input).map(|_|AuthorityValue::Validated),
+                    AuthorityOperation::Cancel=>rt.cancel_external_input(turn.input).map(|_|AuthorityValue::Completed),
+                    other=>panic!("canceled-before-entry must execute no other action: {other:?}"),
+                };assert!(result.is_err());core.reply(AuthorityReply{input:turn.input,ordinal:request.ordinal,result,retired_command:None}).unwrap();
+            }
+            match done.try_recv(){Ok(result)=>{assert!(result.is_err());break;},Err(mpsc::TryRecvError::Empty)=>{},Err(error)=>panic!("{error}")}
+            assert!(Instant::now()<deadline);thread::sleep(Duration::from_micros(50));
+        }actor.join().unwrap();assert_eq!(rt.now(),48);
+    }
+    #[test]
+    fn refused_aux_write_is_not_retained_and_identical_retry_still_reaches_core(){
+        let xml=String::from("<Program><Auxs><AuxEffect Name='A' Gain='0.25' Bypass='0'/></Auxs><EventProcessors><ScriptProcessor><script>function onController(e) Program.auxs[1]:setParameter('Gain',0.75) end</script></ScriptProcessor></EventProcessors></Program>");
+        let mut rt=runtime(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let(mut core,owner)=authority_pair(&rt,plan,Duration::from_secs(2)).unwrap();let(tx,receive)=mpsc::sync_channel(1);let(reply,done)=mpsc::sync_channel(1);
+        let actor=thread::spawn(move||{
+            let mut host=ScriptHost::new_staged_with_ui_state(&xml,(),Config::default(),None).unwrap();host.bind_owner_authority(owner).unwrap();let before=host.shared.params.borrow().clone();
+            for _ in 0..2{let turn=receive.recv().unwrap();let result=host.deliver_external_turn(turn);assert_eq!(*host.shared.params.borrow(),before,"rejected Gain may not become the prospective Bypass/current-value input");reply.send(result).unwrap();}
+        });
+        let mut commands=0;
+        for _ in 0..2{
+            rt.dispatch_controller(perf,sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:0},1,1,0).unwrap();rt.service_external_boundary().unwrap();let pending=rt.pending_external_turn().unwrap().unwrap();let turn=rt.begin_external_turn(pending.input).unwrap();tx.send(turn).unwrap();
+            let deadline=Instant::now()+Duration::from_secs(2);
+            loop{
+                if let Some(request)=core.pop(){let mut retired_command=None;let result=match request.operation{
+                    AuthorityOperation::Validate=>rt.running_external_turn(turn.input).map(|_|AuthorityValue::Validated),
+                    AuthorityOperation::Command(command)=>{
+                        commands+=1;
+                        // This low-level Core plan has no UVI adapter's native
+                        // alias installation. Real Core address refusal is the
+                        // causal boundary, not a fabricated successful ACK.
+                        let Command::EngineParameter{address,value}=&command else{panic!("actual Aux engine command");};
+                        let result=rt.set_engine_parameter(*address,*value).map(|_|AuthorityValue::Applied);assert!(result.is_err());retired_command=Some(command);result
+                    },
+                    AuthorityOperation::Complete{next_frame}=>rt.complete_external_segment(turn.input,next_frame).map(|_|AuthorityValue::Completed),
+                    AuthorityOperation::Cancel=>rt.cancel_external_input(turn.input).map(|_|AuthorityValue::Completed),
+                    other=>panic!("unexpected actual Aux operation: {other:?}"),
+                };core.reply(AuthorityReply{input:turn.input,ordinal:request.ordinal,result,retired_command}).unwrap();}
+                match done.try_recv(){Ok(result)=>{result.unwrap();break;},Err(mpsc::TryRecvError::Empty)=>{},Err(error)=>panic!("{error}")};assert!(Instant::now()<deadline);thread::sleep(Duration::from_micros(50));
+            }
+        }assert_eq!(commands,2,"refusal must not turn the retry into an owner-value no-op");actor.join().unwrap();
+    }
+
+}
+
+#[cfg(test)]
+mod documented_play_defaults_tests {
+    use super::*;
+    fn command(source:&str)->Play{
+        let xml=format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[function onController(e) {source} end]]></script></ScriptProcessor></EventProcessors></Program>");
+        let mut host=ScriptHost::new(&xml,(),Config::default()).unwrap();host.controller(1,64,0);
+        let commands=host.take_commands();assert_eq!(commands.len(),1,"one helper call must emit exactly one play");
+        assert!(host.findings().is_empty(),"{:?}",host.findings());
+        let Command::Play(play)=commands.into_iter().next().unwrap()else{panic!("actual public playNote command required")};play
+    }
+    #[test]
+    fn omitted_note_and_velocity_use_documented_zero_and_one_hundred_in_both_forms(){
+        for source in ["playNote(nil,nil,0)","playNote{duration=0}"]{
+            let play=command(source);assert_eq!((play.key,play.velocity),(0,100));
+            assert_eq!(play.duration_ms,Some(0.));assert_eq!(play.creator,PlayCreator::Event);
+        }
+    }
+    #[test]
+    fn explicit_note_zero_middle_and_upper_keys_are_preserved_in_both_forms(){
+        for key in [0,60,127]{
+            for source in [format!("playNote({key},96,0)"),format!("playNote{{note={key},velocity=96,duration=0}}")]{
+                let play=command(&source);assert_eq!((play.key,play.velocity),(key,96));assert_eq!(play.duration_ms,Some(0.));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod processor_completion_context42 {
+    use super::*;
+    use std::sync::atomic::{AtomicU64,Ordering};
+    static NEXT:AtomicU64=AtomicU64::new(0);
+    struct DataFile(std::path::PathBuf);
+    impl DataFile {
+        fn new(value:&str)->Self{
+            let directory=std::path::Path::new("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+            std::fs::create_dir_all(directory).unwrap();
+            let path=directory.join(format!("uvi-processor42-{}-{}.json",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+            std::fs::write(&path,value).unwrap();Self(path)
+        }
+    }
+    impl Drop for DataFile{fn drop(&mut self){let _=std::fs::remove_file(&self.0);}}
+    #[test]
+    fn actual_load_data_completion_resumes_originating_processor_even_after_other_context_and_error(){
+        let a=DataFile::new(r#"{"tag":"A"}"#);let b=DataFile::new(r#"{"tag":"B"}"#);
+        let path=|file:&DataFile|serde_json::to_string(file.0.to_str().unwrap()).unwrap();
+        let script=|file:&DataFile,fail:bool|format!(r#"
+            marker='main'
+            function onController(e)
+                expected=e.value
+                loadData({},function(data)
+                    seen=data.tag..':'..getCC(1)
+                    wait(10)
+                    resumed=data.tag..':'..getCC(1)
+                    {}
+                end)
+            end
+        "#,path(file),if fail{"error('actual A completion failure')"}else{"marker='done'"});
+        let xml=format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{}]]></script></ScriptProcessor><ScriptProcessor><script><![CDATA[{}]]></script></ScriptProcessor></EventProcessors></Program>",script(&a,true),script(&b,false));
+        let mut host=ScriptHost::new(&xml,(),Config::default()).unwrap();let processors=host.processors();assert_eq!(processors.len(),2);
+        // Submit the second definition first, then leave the first active. The
+        // actual file-worker completions must retain their originating context.
+        for(index,value)in[(1,99),(0,17)]{
+            host.processor_input(processors[index].processor,crate::scripted::HostInput::Controller{cc:1,value,channel:5}).unwrap();
+        }
+        let mut complete=false;
+        for frame in 0..1000{
+            host.advance(frame as f64);
+            if host.processor_global_text(processors[0].processor,"resumed").unwrap()=="A:17"&&host.processor_global_text(processors[1].processor,"resumed").unwrap()=="B:99"{complete=true;break;}
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(complete,"actual file completions did not resume both owned coroutines");
+        assert_eq!(host.processor_global_text(processors[0].processor,"seen").unwrap(),"A:17");
+        assert_eq!(host.processor_global_text(processors[1].processor,"seen").unwrap(),"B:99");
+        assert_eq!(host.processor_global_text(processors[1].processor,"marker").unwrap(),"done");
+        assert!(host.findings().iter().any(|f|f.value.contains("actual A completion failure")));
+        // A failed continuation restores the surrounding owner. A later B
+        // callback must still update only B's last-received API view.
+        host.processor_input(processors[1].processor,crate::scripted::HostInput::Controller{cc:1,value:71,channel:5}).unwrap();
+        assert_eq!(host.processor_global_text(processors[0].processor,"expected").unwrap(),"17");
+        assert_eq!(host.processor_global_text(processors[1].processor,"expected").unwrap(),"71");
+    }
+}
+
+
+#[cfg(test)]
+mod preparation_and_refusal42g_tests {
+    use super::*;
+    fn xml(script:&str)->String{format!("<Program><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program>")}
+    #[test]
+    fn staged_synchronous_main_and_onload_play_are_load_refused_before_voice_or_legacy_queue(){
+        assert!(ScriptHost::new_staged_with_ui_state(&xml("playNote(60,100,0)"),(),Config::default(),None).is_err());
+        let state=UiState{custom:Some(SavedValue::String("load".into())),..Default::default()};
+        assert!(ScriptHost::new_staged_with_ui_state(&xml("function onLoad(state) playNote(60,100,0) end"),(),Config::default(),Some(&state)).is_err());
+    }
+    #[test]
+    fn staged_restored_widget_play_cannot_escape_before_any_core_context(){
+        let script="k=Knob('root',0,0,1);k.changed=function(self) playNote(60,100,0) end";
+        let mut state=UiState::default();state.widgets.push((1,"root".into(),SavedValue::Number(1.)));
+        let result=ScriptHost::new_staged_with_ui_state(&xml(script),(),Config::default(),Some(&state));
+        match result{Err(_)=>{},Ok(mut host)=>{assert!(host.shared.voices.borrow().is_empty());assert!(host.take_commands().is_empty());assert!(host.findings().iter().any(|finding|finding.feature.contains("refused")||finding.value.contains("refused")||finding.value.contains("staged playNote")));}}
+    }
+    #[test]
+    fn unbound_promoted_constant_refusal_does_not_retain_or_seed_a_listener(){
+        let xml="<Program><ControlSignalSources><ConstantModulation Name='A' Value='0.25' Style='0' ScriptLive='1000'/></ControlSignalSources><EventProcessors><ScriptProcessor><script>function onController(e) Program.modulations['A']:setParameter('Value',1) end</script></ScriptProcessor></EventProcessors></Program>";
+        let mut host=ScriptHost::new(xml,(),Config::default()).unwrap();assert!(host.take_commands().is_empty(),"construction is a standing schema default, never a nil listener send");let before=host.shared.params.borrow().clone();
+        host.controller(1,127,0);assert_eq!(*host.shared.params.borrow(),before);assert!(host.take_commands().is_empty());host.controller(1,127,0);assert_eq!(*host.shared.params.borrow(),before);
+    }
+    #[test]
+    fn rejected_release_retains_actual_played_voice_and_sounding_core_owner(){
+        use crate::scripted::{Driver,HostInput};use sampler_core::{Prepared,Pcm,Region,Envelope,Playback,Limits,Runtime};
+        let prepared=Prepared::new(48000,vec![Pcm::new(48000,vec![[0.25;2];256].into_boxed_slice()).unwrap()],vec![Region{sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::new(0,0,0,1.,64).unwrap(),playback:Playback::default()}],1).unwrap();let limits=Limits::for_plan(&prepared,8,8);let mut rt=Runtime::new(prepared,limits).unwrap();
+        let host=ScriptHost::new(&xml("function onController(e) voice=playNote(60,100,0) end"),(),Config::default()).unwrap();let lua=host.lua.clone();let shared=host.shared.clone();let mut driver=Driver::new(host,vec![],48000);
+        driver.input(&rt,HostInput::Controller{cc:1,value:127,channel:0});driver.wake(&mut rt).unwrap();let id=lua.globals().raw_get::<u64>("voice").unwrap();assert!(shared.voices.borrow().contains(&id));assert_eq!(rt.voice_count(),1);
+        // Trigger the real context-restoration fence, not a made-up NoteId or
+        // a mutated command acceptance result. No command can be accepted now.
+        let context=input_authority::enter(&lua,&shared,Some(0)).unwrap();lua.sandbox(true).unwrap();assert!(context.restore().is_err());drop(context);lua.sandbox(false).unwrap();
+        for _ in 0..2{let accepted:bool=lua.load(format!("return releaseVoice({id})")).eval().unwrap();assert!(!accepted);assert!(shared.voices.borrow().contains(&id));}
+        driver.wake(&mut rt).unwrap();assert_eq!(rt.voice_count(),1);let mut output=[[0.;2];16];rt.render(&mut output).unwrap();assert!(output.iter().flatten().any(|v|*v>0.01));rt.panic();
+    }
+}

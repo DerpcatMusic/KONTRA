@@ -339,6 +339,7 @@ fn detail(p: ir::Processor) -> String {
         ir::Processor::Gain(g) => format!("Gain · {}", db(g)),
         ir::Processor::Color(c) => color_detail(&c),
         ir::Processor::Pan(p) => format!("Pan · {}", pan_text(p.position)),
+        ir::Processor::ExpressionPan(p) => format!("Pan · {}", pan_text((p.pan.position + p.offset).clamp(-1., 1.))),
         ir::Processor::LiveFormant { knobs: [talk, sharp, size], .. } => {
             format!("Formant · talk {talk:.2} · sharp {sharp:.2} · size {size:.2}")
         }

@@ -57,6 +57,10 @@ pub enum ValidationError {
         owner: String,
         reason: &'static str,
     },
+    SourceBundle {
+        owner: String,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -81,6 +85,7 @@ impl fmt::Display for ValidationError {
             Self::Switching { owner, reason } => write!(f, "{owner}: {reason}"),
             Self::ZoneRouting { owner, reason } => write!(f, "{owner}: {reason}"),
             Self::SampleTarget { owner, reason } => write!(f, "{owner}: {reason}"),
+            Self::SourceBundle { owner, reason } => write!(f, "{owner}: {reason}"),
         }
     }
 }
@@ -308,6 +313,7 @@ impl Check<'_> {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Color(c) => self.color(&c)?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::ExpressionPan(pan) => {self.pan(pan.pan,"pan")?;self.within(pan.offset,-f64::from(f32::MAX)..=f64::from(f32::MAX),"Pan constant offset")?;},
                 Processor::Eq(eq) => {
                     self.finite(f64::from(eq.output_gain_db), "EQ output gain")?;
                     self.within(f64::from(eq.count), 1.0..=crate::fx::eq::MAX_BANDS as f64, "EQ band count")?;
@@ -495,6 +501,437 @@ impl Instrument {
         if let Some(bus) = self.input_bus {
             check.output(Output::Bus(bus))?;
         }
+        // The shared source hierarchy is document identity, not a guess from
+        // processing names. Validate canonical direct membership before either
+        // the event adapter or audio producer can resolve an owner through it.
+        if !self.source_indices.owners.is_empty() {
+            use crate::{SourceEventProcessorId as EventId, SourceInputPredicate as Predicate,
+                SourceOwnerId as Id, SourceOwnerKind as Kind};
+            let owners = &self.source_indices.owners;
+            let invalid = |reason| ValidationError::ZoneRouting {
+                owner: "source owner hierarchy".into(), reason,
+            };
+            let mut identities = std::collections::BTreeMap::new();
+            for (index, owner) in owners.iter().enumerate() {
+                if identities.insert(owner.id, index).is_some() {
+                    return Err(invalid("duplicate native source owner identity"));
+                }
+                let kind_matches = match (owner.id, owner.kind, &self.source) {
+                    (Id::UviNode(_), Kind::Instrument | Kind::Layer | Kind::Keygroup
+                        | Kind::Player | Kind::Aux, crate::SourceFormat::Uvi) => true,
+                    (Id::KontaktInstrument, Kind::Instrument, crate::SourceFormat::Kontakt { .. })
+                    | (Id::KontaktGroup(_), Kind::KontaktGroup, crate::SourceFormat::Kontakt { .. })
+                    | (Id::KontaktZone(_), Kind::KontaktZone, crate::SourceFormat::Kontakt { .. }) => true,
+                    _ => false,
+                };
+                if !kind_matches {
+                    return Err(invalid("native source identity does not match its format and kind"));
+                }
+            }
+            let mut appearances = vec![0usize; owners.len()];
+            let mut roots = Vec::new();
+            let mut event_ids = std::collections::BTreeSet::new();
+            for (index, owner) in owners.iter().enumerate() {
+                if let Some(parent) = owner.parent {
+                    if !identities.contains_key(&parent) || parent == owner.id {
+                        return Err(invalid("dangling or self-parent native source owner"));
+                    }
+                } else {
+                    if owner.kind != Kind::Instrument {
+                        return Err(invalid("only an instrument is a source hierarchy root"));
+                    }
+                    roots.push(index);
+                }
+                for child in &owner.children {
+                    let child = *identities.get(child)
+                        .ok_or_else(|| invalid("dangling source child identity"))?;
+                    if owners[child].parent != Some(owner.id) {
+                        return Err(invalid("source child has a different canonical parent"));
+                    }
+                    appearances[child] = appearances[child].checked_add(1)
+                        .ok_or_else(|| invalid("source child membership overflow"))?;
+                    if appearances[child] != 1 {
+                        return Err(invalid("duplicate source child membership"));
+                    }
+                }
+                for (refs, count, reason) in [
+                    (owner.groups.iter().map(|g| g.0).collect::<Vec<_>>(), self.groups.len(),
+                        "dangling or duplicate source owner group binding"),
+                    (owner.zones.iter().map(|z| z.0).collect::<Vec<_>>(), self.zones.len(),
+                        "dangling or duplicate source owner zone binding"),
+                ] {
+                    let mut seen = std::collections::BTreeSet::new();
+                    for reference in refs {
+                        if reference >= count || !seen.insert(reference) {
+                            return Err(invalid(reason));
+                        }
+                    }
+                }
+                for predicate in &owner.predicates {
+                    let valid = match predicate {
+                        Predicate::Keys(range) => range.low <= range.high && range.high < 128,
+                        Predicate::Velocities(range) => range.low <= range.high && range.high < 128,
+                        Predicate::Channel(channel) => *channel < 16,
+                        Predicate::Unsupported { field } => !field.is_empty(),
+                    };
+                    if !valid { return Err(invalid("invalid retained source input predicate")); }
+                }
+                let mut switches = Vec::with_capacity(owner.event_processors.len() + 2);
+                switches.extend(owner.bypass);
+                switches.extend(owner.mute);
+                for (ordinal, processor) in owner.event_processors.iter().enumerate() {
+                    if processor.owner != owner.id || processor.ordinal as usize != ordinal
+                        || processor.kind.is_empty() || !event_ids.insert(processor.id) {
+                        return Err(invalid("event processor lost original owner, full-list order or identity"));
+                    }
+                    let address_matches = match (owner.id, processor.id) {
+                        (Id::UviNode(_), EventId::UviNode(node)) => !identities.contains_key(&Id::UviNode(node)),
+                        (Id::KontaktInstrument | Id::KontaktGroup(_) | Id::KontaktZone(_),
+                            EventId::KontaktScriptSlot(_)) => true,
+                        _ => false,
+                    };
+                    if !address_matches {
+                        return Err(invalid("event processor address is not in its source namespace"));
+                    }
+                    switches.push(processor.bypass);
+                }
+                for switch in switches {
+                    if let Some(control) = switch.control {
+                        if !matches!(self.controls.get(control.0).map(|c| &c.value),
+                            Some(crate::ControlValue::Toggle { .. })) {
+                            return Err(invalid("source switch requires an actual typed boolean control"));
+                        }
+                    }
+                }
+            }
+            if roots.len() != 1 || owners.iter().enumerate().any(|(index, owner)|
+                appearances[index] != usize::from(owner.parent.is_some())) {
+                return Err(invalid("source hierarchy requires one root and exact direct child membership"));
+            }
+            let mut reached = vec![false; owners.len()];
+            let mut pending = roots;
+            let mut visited = 0usize;
+            while let Some(index) = pending.pop() {
+                if reached[index] { return Err(invalid("cyclic native source hierarchy")); }
+                reached[index] = true;
+                visited += 1;
+                pending.extend(owners[index].children.iter().map(|id| identities[id]));
+            }
+            if visited != owners.len() {
+                return Err(invalid("unreachable or cyclic native source hierarchy"));
+            }
+        }
+        let mut constant_nodes=std::collections::BTreeSet::new();let mut constant_fields=std::collections::BTreeSet::new();
+        for property in &self.source_indices.constant_properties{
+            let invalid=||ValidationError::ZoneRouting{owner:"Constant property definition".into(),reason:"missing/duplicate actual owner or incompatible Value/Style controls"};
+            if !constant_nodes.insert(property.node)||!constant_fields.insert(property.value.0)||!constant_fields.insert(property.style.0)
+                ||!self.source_indices.owners.iter().any(|owner|owner.id==property.owner)
+                ||!matches!(self.controls.get(property.value.0).map(|c|&c.value),Some(crate::ControlValue::Continuous{min,max,..})if *min==f64::MIN&&*max==f64::MAX)
+                ||!matches!(self.controls.get(property.style.0).map(|c|&c.value),Some(crate::ControlValue::Toggle{..})){return Err(invalid());}
+        }
+        let mut global_owners=std::collections::BTreeSet::new();
+        for recipe in &self.source_indices.global_modulation {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:"global source modulation".into(),reason};
+            let owner=self.source_indices.owners.iter().find(|row|row.id==recipe.owner)
+                .ok_or_else(||invalid("global output owner is absent"))?;
+            let input=self.source_indices.owners.iter().find(|row|row.id==recipe.input_owner)
+                .ok_or_else(||invalid("resolved global MIDI source owner is absent"))?;
+            if !global_owners.insert(recipe.owner)
+                || !matches!(owner.kind,crate::SourceOwnerKind::Instrument|crate::SourceOwnerKind::Layer)
+                || input.kind!=crate::SourceOwnerKind::Instrument
+                || !matches!(input.id,crate::SourceOwnerId::UviNode(_))
+                || (owner.id!=input.id && owner.parent!=Some(input.id))
+                || recipe.routes.is_empty()
+                || !self.processing_buses.iter().any(|bus|bus.bus==recipe.outlet&&bus.owner==Some(recipe.owner)) {
+                return Err(invalid("global input/output identity or executable bus binding is invalid"));
+            }
+            let mut sources=std::collections::BTreeSet::new();
+            for &source in &recipe.sources {
+                if !sources.insert(source.0)
+                    || (!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Controller(number))if *number<128)
+                        &&!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Constant|crate::ModulationSource::ConstantProperty{..}))) {
+                    return Err(invalid("global source roster requires distinct actual default-state controller sources"));
+                }
+            }
+            let mut referenced=std::collections::BTreeSet::new();
+            let mut routes=std::collections::BTreeSet::new();
+            for &route in &recipe.routes {
+                let row=self.routes.get(route.0).ok_or_else(||invalid("global route is absent"))?;
+                let field=match row.target{crate::Target::Amplitude=>crate::SourceOwnerOutputField::Gain,crate::Target::Pan=>crate::SourceOwnerOutputField::Pan,_=>return Err(invalid("global route requires an actual output scalar target"))};
+                if !routes.insert(route.0)||!self.source_indices.output_controls.iter().any(|home|
+                    home.owner==recipe.owner&&home.field==field&&matches!(home.target,crate::SourceOwnerControlTarget::Bus{bus,..}if bus==recipe.outlet)) {
+                    return Err(invalid("global route has no unique actual output-field home"));
+                }
+                referenced.insert(row.source.0);
+                if let Some(scale)=row.scale {referenced.insert(scale.source.0);}
+            }
+            if referenced!=sources {return Err(invalid("global source roster differs from its exact route dependencies"));}
+        }
+        let mut recipe_members = std::collections::BTreeSet::new();
+        let mut recipe_owners = std::collections::BTreeSet::new();
+        for row in &self.source_indices.processing_parameters {
+            if self.source_indices.processing.iter().filter(|recipe|recipe.owner==row.owner&&recipe.chain==Some(row.chain)).count()!=1 {
+                return Err(ValidationError::ZoneRouting {
+                    owner: "source processing recipe".into(),
+                    reason: "shared processor binding has no unique actual source recipe",
+                });
+            }
+        }
+        for recipe in &self.source_indices.processing {
+            let invalid = |reason| ValidationError::ZoneRouting { owner: "source processing recipe".into(), reason };
+            if !recipe_owners.insert(recipe.owner)
+                || !self.source_indices.owners.iter().any(|owner| owner.id == recipe.owner) {
+                return Err(invalid("processing recipe has absent or duplicate source owner"));
+            }
+            let owner = self.source_indices.owners.iter().find(|owner| owner.id == recipe.owner)
+                .ok_or_else(|| invalid("processing recipe source owner disappeared"))?;
+            match recipe.lifetime {
+                crate::SourceProcessingLifetime::UviKeygroupActivation => {
+                    if !matches!(recipe.owner, crate::SourceOwnerId::UviNode(_))
+                        || owner.kind != crate::SourceOwnerKind::Keygroup
+                        || owner.zones != recipe.members {
+                        return Err(invalid("UVI processing recipe differs from its actual keygroup members"));
+                    }
+                }
+            }
+            if recipe.members.is_empty() || recipe.members.len() > 16 {
+                return Err(invalid("processing recipe member capacity is invalid"));
+            }
+            for member in &recipe.members {
+                check.exists(Reference::Zone(member.0))?;
+                if !recipe_members.insert(member.0) {
+                    return Err(invalid("source zone has multiple source processing recipes"));
+                }
+            }
+            let mut roles=std::collections::BTreeSet::new();
+            for role in &recipe.parameter_roles {
+                check.exists(Reference::Control(role.control.0))?;
+                if !roles.insert(role.field){return Err(invalid("duplicate scoped scalar field role"));}
+                let chain_id=recipe.chain.ok_or_else(||invalid("scope scalar has no source chain"))?;
+                check.exists(Reference::Chain(chain_id.0))?;let chain=&self.chains[chain_id.0];
+                let stage=chain.pre_amplitude.iter().chain(&chain.post_amplitude).nth(role.chain_index).ok_or_else(||invalid("scope scalar original coordinate absent"))?;
+                let parameter=match(role.field,stage){
+                    (crate::SourceOwnerOutputField::Gain,crate::Processor::Gain(_))=>crate::ProcessorParameter::Gain,
+                    (crate::SourceOwnerOutputField::Pan,crate::Processor::ExpressionPan(_))=>crate::ProcessorParameter::Pan,_=>return Err(invalid("scope scalar field differs from actual source operand")),
+                };
+                if self.processor_controls.iter().filter(|b|b.chain==chain_id&&b.index==role.chain_index&&b.parameter==parameter&&b.control==role.control).count()!=1{return Err(invalid("scope scalar control is not bound to its exact source operand"));}
+                let domain=&self.controls[role.control.0].value;
+                if !match(role.field,domain){
+                    (crate::SourceOwnerOutputField::Gain,crate::ControlValue::Continuous{min,max,..})=>*min>=0.&&*max<=f64::from(f32::MAX),
+                    (crate::SourceOwnerOutputField::Pan,crate::ControlValue::Continuous{min,max,..})=>*min>=-1.&&*max<=1.,_=>false,
+                }{return Err(invalid("scope scalar role domain differs from public field"));}
+            }
+            let mut processor_parameters=std::collections::BTreeSet::new();
+            let mut processor_sources=std::collections::BTreeSet::new();
+            for binding in self.source_indices.processing_parameters.iter().filter(|row|row.owner==recipe.owner){
+                check.exists(Reference::Chain(binding.chain.0))?;check.exists(Reference::Control(binding.control.0))?;
+                if recipe.chain!=Some(binding.chain)||!processor_parameters.insert((binding.index,binding.parameter as u32))||!processor_sources.insert(binding.source_node) {
+                    return Err(invalid("shared processor parameter has a duplicate or foreign source coordinate"));
+                }
+                let chain=&self.chains[binding.chain.0];
+                let stage=chain.pre_amplitude.iter().chain(&chain.post_amplitude).nth(binding.index).ok_or_else(||invalid("shared processor original operand absent"))?;
+                if binding.parameter!=crate::ProcessorParameter::Cutoff || !matches!(stage,crate::Processor::Filter(crate::Filter{kind:crate::FilterKind::LowPass{poles:1}|crate::FilterKind::HighPass{poles:1},..})) {
+                    return Err(invalid("shared processor role differs from its actual frequency operand"));
+                }
+                if self.processor_controls.iter().filter(|row|row.chain==binding.chain&&row.index==binding.index&&row.parameter==binding.parameter&&row.control==binding.control).count()!=1 {
+                    return Err(invalid("shared processor control is not its exact original operand"));
+                }
+                if !matches!(self.controls[binding.control.0].value,crate::ControlValue::Continuous{min,max,unit:crate::ControlUnit::Hertz,..}if min>0.&&max<=20000.)
+                    ||binding.fixed_factors.iter().any(|value|matches!(value,crate::SourceFrequencyFold::MultiplyClamp(value)if !value.is_finite()||*value<=0.)) {
+                    return Err(invalid("shared frequency binding has an invalid domain or fixed-source factor"));
+                }
+                if !binding.fixed_factors.is_empty()&&self.processor_controls.iter().any(|row|row.chain==binding.chain&&row.index==binding.index&&row.parameter==binding.parameter&&row.ramp.seconds()!=0.){
+                    return Err(invalid("historical fixed Frequency clamp requires its actual zero-ramp base"));
+                }
+                if matches!(binding.law,crate::SourceProcessingParameterLaw::LegacyCutoffSemitoneMidpoint)&&!binding.fixed_factors.is_empty(){
+                    return Err(invalid("legacy cutoff law cannot claim historical UVI fixed-source folding"));
+                }
+                if let Some(compiled)=binding.compiled {
+                    if recipe.compiled!=Some(compiled.scope){return Err(invalid("shared processor compiled scope differs from actual owner"));}
+                    let scope=self.processing_scopes.get(compiled.scope).ok_or_else(||invalid("shared processor compiled scope absent"))?;
+                    match compiled.site {
+                        crate::ScopeControlSite::SignalNode(node)=>{
+                            let node=scope.signal.as_ref().and_then(|signal|signal.nodes.get(node)).ok_or_else(||invalid("shared processor emitted signal operand absent"))?;
+                            let parameter=match node {crate::ProcessingSignalNode::OnePole(filter)=>&filter.cutoff_hz,crate::ProcessingSignalNode::UviOnePole(filter)=>&filter.frequency,_=>return Err(invalid("shared processor emitted operand has wrong kind"))};
+                            if parameter.control.as_ref()!=Some(&self.controls[binding.control.0].key){return Err(invalid("shared processor emitted operand has a different control"));}
+                        },
+                        crate::ScopeControlSite::ChainPre(index)=>if scope.chain!=Some(binding.chain)||index!=binding.index{return Err(invalid("shared processor pre-chain coordinate differs"));},
+                        crate::ScopeControlSite::ChainPost(index)=>if scope.chain!=Some(binding.chain)||chain.pre_amplitude.len().checked_add(index)!=Some(binding.index){return Err(invalid("shared processor post-chain coordinate differs"));},
+                    }
+                }
+            }
+            let mut owned_sources=std::collections::BTreeSet::new();
+            for source in &recipe.sources {
+                check.exists(Reference::Modulator(source.0))?;
+                if !owned_sources.insert(source.0){return Err(invalid("duplicate actual processing source"));}
+            }
+            for route in &recipe.routes {
+                check.exists(Reference::Route(route.0))?;
+                let field=match self.routes[route.0].target{
+                    crate::Target::Amplitude=>crate::SourceOwnerOutputField::Gain,
+                    crate::Target::Pan=>crate::SourceOwnerOutputField::Pan,
+                    crate::Target::SourceRate(source)|crate::Target::SourcePhase(source)=>{
+                        check.exists(Reference::Modulator(source.0))?;
+                        if !matches!(self.modulators[source.0].source,crate::ModulationSource::Lfo(_))
+                            ||!(recipe.sources.contains(&source)||recipe.routes.iter().any(|route|self.routes[route.0].source==source||self.routes[route.0].scale.is_some_and(|scale|scale.source==source))){
+                            return Err(invalid("scoped internal target has no actual owned LFO consumer"));
+                        }continue;
+                    },crate::Target::Processor{chain,index,parameter}=>{
+                        if self.zones.iter().any(|zone|zone.routes.contains(route)){return Err(invalid("shared processor route escapes into physical source program"));}
+                        if !self.source_indices.processing_parameters.iter().any(|row|row.owner==recipe.owner&&row.chain==chain&&row.index==index&&row.parameter==parameter)
+                            ||!matches!(self.routes[route.0].depth,crate::Depth::Pitch(_)) {
+                            return Err(invalid("scoped processor route has no exact owned parameter/law"));
+                        }continue;
+                    },_=>return Err(invalid("scoped program contains a non-owned output target")),
+                };
+                if !roles.contains(&field){return Err(invalid("scoped route has no declared scalar home"));}
+            }
+            if let Some(gate)=recipe.source_gate {
+                check.exists(Reference::Modulator(gate.source.0))?;check.exists(Reference::Route(gate.route.0))?;
+                let route=&self.routes[gate.route.0];
+                if !recipe.routes.contains(&gate.route)||route.source!=gate.source||route.target!=crate::Target::Amplitude
+                    ||route.depth!=crate::Depth::Normalized(1.)||route.invert||route.shape.is_some()||route.scale.is_some()||route.smoothing!=crate::Time::ZERO
+                    ||!matches!(self.modulators[gate.source.0].source,crate::ModulationSource::Envelope(_))
+                    ||self.modulators[gate.source.0].scope!=crate::Scope::Voice
+                    ||self.source_indices.route_controls.iter().any(|row|row.0==gate.route)
+                    ||matches!(gate.velocity,crate::VelocityResponse::Power(p)if !p.is_finite()||p<=0.){return Err(invalid("source gate requires exact actual plain amplitude source/route"));}
+            }
+            if let Some(chain) = recipe.chain { check.exists(Reference::Chain(chain.0))?; }
+            if let Some(amplitude) = recipe.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
+            if let Some(bus) = recipe.output { check.exists(Reference::Bus(bus.0))?; }
+            if let Some(index) = recipe.compiled {
+                let Some(scope) = self.processing_scopes.get(index) else {
+                    return Err(invalid("source recipe compiled scope is absent"));
+                };
+                if scope.members != recipe.members || (scope.chain != recipe.chain && !(scope.chain.is_none() && scope.signal.is_some()))
+                    || scope.amplitude != recipe.amplitude || scope.output != recipe.output {
+                    return Err(invalid("source recipe differs from actual compiled scope"));
+                }
+            }
+        }
+        let mut native_owners=std::collections::BTreeSet::new();
+        for profile in &self.source_indices.uvi_native_processing {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:"native UVI processing profile".into(),reason};
+            let recipe=self.source_indices.processing.iter().find(|recipe|recipe.owner==profile.owner).ok_or_else(||invalid("native profile has no actual recipe"))?;
+            if !native_owners.insert(profile.owner)||profile.members.iter().map(|row|row.0).collect::<Vec<_>>()!=recipe.members{return Err(invalid("native profile member identity/order differs from actual recipe"));}
+            let mut sites=std::collections::BTreeSet::new();
+            for site in &profile.one_poles {
+                if !sites.insert((site.chain.0,site.index)){return Err(invalid("duplicate native OnePole source site"));}
+                check.exists(Reference::Chain(site.chain.0))?;
+                if Some(site.chain)!=recipe.chain || !site.frequency.is_finite()||site.frequency<=0.||site.frequency>f64::from(f32::MAX)||!site.tracking.is_finite()||!(0. ..=1.).contains(&site.tracking)
+                    || !matches!(self.chains[site.chain.0].pre_amplitude.get(site.index),Some(crate::Processor::Filter(crate::Filter{kind:crate::FilterKind::LowPass{poles:1}|crate::FilterKind::HighPass{poles:1},..}))){return Err(invalid("native OnePole site has no exact retained processor or valid fields"));}
+            }
+        }
+        let mut source_matrices=std::collections::BTreeSet::new();
+        for matrix in &self.source_indices.processing_matrices {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:format!("source matrix {}",matrix.node),reason};
+            check.exists(Reference::Chain(matrix.chain.0))?;
+            if !source_matrices.insert((matrix.owner,matrix.node)) || matrix.matrix.input.channels!=12 || matrix.matrix.output.channels!=12
+                || matrix.matrix.cells.len()!=144 || matrix.matrix.cells.iter().any(|value|!value.is_finite() || value.abs()>f64::from(f32::MAX)) {
+                return Err(invalid("source matrix identity, geometry or coefficient is invalid"));
+            }
+            let chain=&self.chains[matrix.chain.0];
+            if !matches!(chain.pre_amplitude.get(matrix.index),Some(crate::Processor::StereoMatrix(_)))
+                || !self.source_indices.owners.iter().any(|owner|owner.id==matrix.owner) {
+                return Err(invalid("source matrix has no actual owner or chain coordinate"));
+            }
+            let mut definitions=std::collections::BTreeSet::new();
+            let mut definition_keys=std::collections::BTreeSet::new();
+            for cell in &matrix.control_definitions {
+                if cell.input>=12 || cell.output>=12 || !definitions.insert((cell.input,cell.output))
+                    || !definition_keys.insert(&cell.control.key) || cell.control.key.is_empty() {
+                    return Err(invalid("source matrix control schema is duplicated or outside its layout"));
+                }
+                let coefficient=matrix.matrix.cells[cell.output*12+cell.input];
+                if !matches!(cell.control.value,crate::ControlValue::Continuous{min,max,default,..}
+                    if min.is_finite() && max.is_finite() && min<=max
+                    && min.abs()<=f64::from(f32::MAX) && max.abs()<=f64::from(f32::MAX)
+                    && default==coefficient && (min..=max).contains(&default)) {
+                    return Err(invalid("source matrix control schema differs from its exact authored coefficient"));
+                }
+            }
+            let mut raw_cells=std::collections::BTreeSet::new();
+            for cell in &matrix.controls {
+                check.exists(Reference::Control(cell.control.0))?;
+                if cell.input>=12 || cell.output>=12 || !raw_cells.insert((cell.input,cell.output)) {
+                    return Err(invalid("raw source matrix control is duplicated or outside its layout"));
+                }
+                if !matches!(self.controls[cell.control.0].value,crate::ControlValue::Continuous{min,max,..}
+                    if min.is_finite() && max.is_finite() && min.abs()<=f64::from(f32::MAX) && max.abs()<=f64::from(f32::MAX)) {
+                    return Err(invalid("raw source matrix control requires a bounded real domain"));
+                }
+            }
+            if let Some(binding)=&matrix.compiled {
+                let Some(recipe)=self.source_indices.processing.iter().find(|recipe|recipe.owner==matrix.owner && recipe.compiled==Some(binding.scope)) else {
+                    return Err(invalid("source matrix capability has no compiled owner"));
+                };
+                if recipe.chain!=Some(matrix.chain) || !(1..=12).contains(&binding.layout.channels) {return Err(invalid("source matrix capability differs from its owner"));}
+                let scope=self.processing_scopes.get(binding.scope).ok_or_else(||invalid("source matrix capability has no scope"))?;
+                if let Some(node)=binding.signal_node {
+                    let Some(crate::ProcessingSignalNode::Matrix(operation))=scope.signal.as_ref().and_then(|signal|signal.nodes.get(node)) else {
+                        return Err(invalid("source matrix capability has no executable matrix"));
+                    };
+                    if operation.input!=binding.layout || operation.output!=binding.layout {return Err(invalid("source matrix capability layout differs from executable node"));}
+                } else if scope.signal.is_some() || binding.layout.channels!=2 || scope.chain!=Some(matrix.chain) {
+                    return Err(invalid("source matrix legacy capability has no actual stereo chain"));
+                }
+                let mut cells=std::collections::BTreeSet::new();
+                for cell in &binding.cells {
+                    check.exists(Reference::Control(cell.control.0))?;
+                    if !matrix.controls.contains(cell) {return Err(invalid("compiled matrix cell differs from its actual source control"));}
+                    if let Some(node)=binding.signal_node {
+                        if !scope.signal.as_ref().is_some_and(|signal|signal.controls.iter().any(|candidate|
+                            candidate.node==node && candidate.input==cell.input && candidate.output==cell.output
+                            && candidate.control==self.controls[cell.control.0].key)) {
+                            return Err(invalid("compiled matrix cell differs from actual signal control binding"));
+                        }
+                    }
+                    if cell.input>=binding.layout.channels || cell.output>=binding.layout.channels || !cells.insert((cell.input,cell.output)) {
+                        return Err(invalid("source matrix capability cell is out of bounds or duplicated"));
+                    }
+                }
+            }
+        }
+        let mut source_ports=std::collections::BTreeSet::new();
+        for port in &self.source_indices.processing_ports {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:"source processing port".into(),reason};
+            let matrix=&port.conversion;
+            if !source_ports.insert(port.owner) || !self.source_indices.owners.iter().any(|owner|owner.id==port.owner)
+                || matrix.input.channels==0 || matrix.output.channels!=2
+                || matrix.input.channels.checked_mul(matrix.output.channels)!=Some(matrix.cells.len())
+                || matrix.cells.iter().any(|value|!value.is_finite() || value.abs()>f64::from(f32::MAX)) {
+                return Err(invalid("source output port identity or explicit matrix is invalid"));
+            }
+        }
+        if self.processing_scopes.len() > 256 {
+            return Err(ValidationError::ZoneRouting { owner: "processing scopes".into(),
+                reason: "processing scope definition capacity exceeded" });
+        }
+        let mut processing_members = std::collections::BTreeSet::new();
+        for (index, scope) in self.processing_scopes.iter().enumerate() {
+            check.owner = format!("processing scope {index}");
+            if scope.members.is_empty() || scope.members.len() > 16 {
+                return Err(ValidationError::ZoneRouting { owner: check.owner.clone(),
+                    reason: "processing scope requires 1..=16 authored members" });
+            }
+            if let Some(crate::ProcessingSignal{source_law:crate::ProcessingSourceLaw::UviC997Layout{members},..})=&scope.signal {
+                if members.iter().filter(|input|input.is_some()).count()!=scope.members.len(){return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"native source ordinal roster differs from actual scope members"});}
+            }
+            for member in &scope.members {
+                check.exists(Reference::Zone(member.0))?;
+                if !processing_members.insert(member.0) {
+                    return Err(ValidationError::ZoneRouting { owner: check.owner.clone(),
+                        reason: "source zone belongs to multiple processing memberships" });
+                }
+            }
+            if let Some(signal) = &scope.signal {
+                let output=scope.output.and_then(|bus|self.processing_buses.iter().find(|row|row.bus==bus)).map_or(2,|row|row.signal.input.channels);
+                self.validate_processing_signal(signal,output,true,scope.chain,&mut check)?;
+            }
+            if let Some(chain) = scope.chain { check.exists(Reference::Chain(chain.0))?; }
+            if let Some(amplitude) = scope.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
+            if let Some(bus) = scope.output { check.exists(Reference::Bus(bus.0))?; }
+        }
         for (source, zone) in self.source_indices.zones.iter().enumerate() {
             check.owner = format!("source zone {source}");
             if let Some(zone) = zone {
@@ -553,6 +990,14 @@ impl Instrument {
                 return Err(invalid_routing(check.owner.clone(), "missing original destination"));
             }
         }
+        let mut file_playback_zones=std::collections::HashSet::new();
+        for zone in &self.source_indices.file_playback_zones {
+            check.owner=format!("file playback zone {}",zone.0);
+            check.exists(Reference::Zone(zone.0))?;
+            if !file_playback_zones.insert(zone.0) {
+                return Err(ValidationError::SampleTarget {owner:check.owner.clone(),reason:"duplicate file playback zone"});
+            }
+        }
         let mut sample_nodes = std::collections::HashSet::new();
         let mut sample_zones = std::collections::HashSet::new();
         for target in &self.source_indices.sample_targets {
@@ -564,6 +1009,66 @@ impl Instrument {
                 check.exists(Reference::Zone(zone.0))?;
                 if !sample_zones.insert(zone.0) {
                     return Err(ValidationError::SampleTarget { owner: check.owner.clone(), reason: "zone belongs to several sample targets" });
+                }
+            }
+        }
+        let mut bundled_zones = std::collections::HashSet::new();
+        for (ordinal, bundle) in self.source_indices.source_bundles.iter().enumerate() {
+            check.owner = format!("source bundle {ordinal}");
+            let invalid = |reason| ValidationError::SourceBundle {
+                owner: check.owner.clone(), reason,
+            };
+            check.exists(Reference::Zone(bundle.zone.0))?;
+            check.exists(Reference::Chain(bundle.boundary.chain.0))?;
+            if !bundled_zones.insert(bundle.zone.0) {
+                return Err(invalid("several bundles own one zone"));
+            }
+            for pack in bundle.packs { check.exists(Reference::Asset(pack.0))?; }
+            if bundle.packs[0] == bundle.packs[1] || bundle.packs[0] == bundle.packs[2]
+                || bundle.packs[1] == bundle.packs[2] {
+                return Err(invalid("physical pack references must be distinct"));
+            }
+            let zone = &self.zones[bundle.zone.0];
+            if zone.asset != Some(bundle.packs[0]) || zone.chain != Some(bundle.boundary.chain) {
+                return Err(invalid("bundle primary/chain differs from its owning zone"));
+            }
+            if bundle.geometry.rate == 0 || bundle.geometry.frames == 0 {
+                return Err(invalid("empty source geometry"));
+            }
+            let chain = &self.chains[bundle.boundary.chain.0];
+            let section = match bundle.boundary.section {
+                crate::SourceBoundarySection::BeforeAmplitude => &chain.pre_amplitude,
+                crate::SourceBoundarySection::AfterAmplitude => &chain.post_amplitude,
+            };
+            let Some(processor) = section.get(bundle.boundary.index) else {
+                return Err(invalid("boundary index is outside its amplitude section"));
+            };
+            let Processor::StereoMatrix(matrix) = processor else {
+                return Err(invalid("boundary must identify the authored matrix"));
+            };
+            let mut cells = [[false; 6]; 2];
+            let mut controls = std::collections::HashSet::new();
+            for cell in bundle.boundary.cells {
+                let (input, output) = (usize::from(cell.input), usize::from(cell.output));
+                if input >= 6 || output >= 2 { return Err(invalid("cell coordinates exceed 2x6")); }
+                if std::mem::replace(&mut cells[output][input], true) {
+                    return Err(invalid("duplicate matrix cell"));
+                }
+                check.within(cell.coefficient, -1.0..=1.0, "matrix coefficient")?;
+                check.within(cell.ramp.seconds(), 0.0..=f64::MAX, "matrix ramp")?;
+                if input < 2 && matrix[output][input] != cell.coefficient {
+                    return Err(invalid("matrix first-pair coefficients differ from boundary"));
+                }
+                if let Some(control) = cell.control {
+                    check.exists(Reference::Control(control.0))?;
+                    if !controls.insert(control.0) { return Err(invalid("cells must have independent control identities")); }
+                    let crate::ControlValue::Continuous { min, max, default, .. } = self.controls[control.0].value else {
+                        return Err(invalid("matrix cell needs a continuous numeric control"));
+                    };
+                    if !min.is_finite() || !max.is_finite() || min > max || min < -1.0 || max > 1.0
+                        || default != cell.coefficient || default < min || default > max {
+                        return Err(invalid("matrix control range/default differs from signed cell"));
+                    }
                 }
             }
         }
@@ -698,6 +1203,10 @@ impl Instrument {
             check.owner = format!("modulator {i}");
             check.scope(modulator.scope)?;
             match &modulator.source {
+                ModulationSource::ConstantProperty{node,value,style,bipolar}=>{
+                    check.exists(Reference::Control(value.0))?;check.exists(Reference::Control(style.0))?;
+                    if !self.source_indices.constant_properties.iter().any(|row|row.node==*node&&row.value==*value&&row.style==*style&&row.bipolar==*bipolar){return Err(ValidationError::ZoneRouting{owner:"Constant source".into(),reason:"source differs from actual definition property role"});}
+                },
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
                 ModulationSource::Breakpoints(b) => {
                     for point in &b.points {
@@ -837,6 +1346,8 @@ impl Instrument {
         let bound: std::collections::HashSet<_> = (self.processor_controls.iter())
             .map(|binding| binding.control)
             .chain(self.source_indices.route_controls.iter().flat_map(|b| [b.1, b.2]))
+            .chain(self.source_indices.source_bundles.iter()
+                .flat_map(|b| b.boundary.cells.iter().filter_map(|cell| cell.control)))
             .collect();
         let mut native_aliases = std::collections::HashSet::new();
         for (i, alias) in self.source_indices.control_aliases.iter().enumerate() {
@@ -890,6 +1401,104 @@ impl Instrument {
         for (i, chain) in self.chains.iter().enumerate() {
             check.owner = format!("chain {i}");
             check.chain(chain)?;
+            let homes=chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .filter(|stage|matches!(stage,crate::Processor::ExpressionPan(_))).count();
+            let hidden_home=[&chain.pre_amplitude[..],&chain.post_amplitude[..]].into_iter().any(|section|section.iter().enumerate().any(|(index,stage)|matches!(stage,crate::Processor::ExpressionPan(_)) && section[..index].iter().enumerate().any(|(start,previous)|matches!(previous,crate::Processor::Mix{count,..}|crate::Processor::Branch{count,..} if index-start<=usize::from(*count)))));
+            if homes>1 || hidden_home || homes!=0 && (self.zones.iter().any(|zone|zone.chain==Some(crate::ChainRef(i)))
+                || chain.scope!=crate::Scope::Voice
+                || !self.processing_scopes.iter().any(|scope|scope.chain==Some(crate::ChainRef(i)))
+                    && !self.source_indices.processing.iter().any(|recipe|recipe.chain==Some(crate::ChainRef(i)))) {
+                return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"expression Pan requires one actual shared source home"});
+            }
+        }
+        let mut channel_buses=std::collections::BTreeSet::new();
+        for row in &self.processing_buses {
+            check.owner=format!("processing bus {}",row.bus.0);check.exists(Reference::Bus(row.bus.0))?;
+            let invalid=|reason|ValidationError::ZoneRouting{owner:check.owner.clone(),reason};
+            if !channel_buses.insert(row.bus) || row.output.channels==0{return Err(invalid("channel program must bind one existing global bus"));}
+            let marker_count=row.signal.nodes.iter().filter(|node|matches!(node,crate::ProcessingSignalNode::BusChain)).count();
+            let chain=if let Some(chain)=self.buses[row.bus.0].chain {
+                check.exists(Reference::Chain(chain.0))?;
+                let chain=&self.chains[chain.0];
+                if chain.scope!=crate::Scope::Bus(row.bus){return Err(invalid("channel marker must own the same actual bus chain"));}
+                Some(chain)
+            }else{None};
+            let active_chain=chain.is_some_and(|chain|!chain.pre_amplitude.is_empty()||!chain.post_amplitude.is_empty());
+            if marker_count!=usize::from(active_chain){return Err(invalid("channel program requires one exact nonempty bus chain marker"));}
+            if row.owner.is_some_and(|owner|!self.source_indices.owners.iter().any(|row|row.id==owner)){return Err(invalid("global bus source owner is absent"));}
+            self.validate_processing_signal(&row.signal,row.output.channels,false,None,&mut check)?;
+        }
+        let mut output_homes=std::collections::BTreeSet::new();
+        for home in &self.source_indices.output_controls {
+            check.owner=format!("source output {:?} {:?}",home.owner,home.field);
+            check.exists(Reference::Control(home.control.0))?;
+            let invalid=||ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"source output requires exact declared owner operand binding"};
+            if !output_homes.insert((home.owner,home.field)){return Err(invalid());}
+            let scalar_key=match home.target {
+                crate::SourceOwnerControlTarget::Bus{bus,node}=>{
+                    let _=self.buses.get(bus.0).ok_or_else(invalid)?;
+                    let row=self.processing_buses.iter().find(|row|row.bus==bus&&row.owner==Some(home.owner)).ok_or_else(invalid)?;
+                    let chain=self.buses[bus.0].chain.map(|chain|&self.chains[chain.0]);
+                    if chain.is_some_and(|chain|!chain.pre_amplitude.is_empty()||!chain.post_amplitude.is_empty())||row.signal.input!=row.output{return Err(invalid());}
+                    let mut phase=0;
+                    for operation in &row.signal.nodes {
+                        let next=match operation{crate::ProcessingSignalNode::Gain(_)=>0,crate::ProcessingSignalNode::Pan(_)=>1,crate::ProcessingSignalNode::Mute(_)=>2,_=>return Err(invalid())};
+                        if next<phase{return Err(invalid());}phase=next;
+                    }
+                    match(home.field,row.signal.nodes.get(node)){
+                        (crate::SourceOwnerOutputField::Gain,Some(crate::ProcessingSignalNode::Gain(stage)))=>stage.gain.control.as_ref(),
+                        (crate::SourceOwnerOutputField::Pan,Some(crate::ProcessingSignalNode::Pan(stage)))=>stage.position.control.as_ref(),
+                        (crate::SourceOwnerOutputField::Mute,Some(crate::ProcessingSignalNode::Mute(stage)))=>stage.control.as_ref(),_=>return Err(invalid()),
+                    }
+                },
+                crate::SourceOwnerControlTarget::ProcessingScope{scope,site}=>{
+                    let definition=self.processing_scopes.get(scope).ok_or_else(invalid)?;
+                    if !self.source_indices.processing.iter().any(|row|row.owner==home.owner&&row.compiled==Some(scope)){return Err(invalid());}
+                    match site {
+                        crate::ScopeControlSite::SignalNode(node)=>{
+                            let signal=definition.signal.as_ref().ok_or_else(invalid)?;
+                            if signal.nodes.iter().enumerate().take(node).any(|(at,p)|matches!(p,crate::ProcessingSignalNode::Mix(m)if node-at<=usize::from(m.count))){return Err(invalid());}
+                            match(home.field,signal.nodes.get(node)){
+                                (crate::SourceOwnerOutputField::Gain,Some(crate::ProcessingSignalNode::Gain(stage)))=>stage.gain.control.as_ref(),
+                                (crate::SourceOwnerOutputField::Pan,Some(crate::ProcessingSignalNode::Pan(stage)))if stage.expression=>stage.position.control.as_ref(),
+                                (crate::SourceOwnerOutputField::Pan,Some(crate::ProcessingSignalNode::UviLayout(stage)))=>stage.pan.control.as_ref(),_=>return Err(invalid()),
+                            }
+                        },
+                        crate::ScopeControlSite::ChainPre(node)|crate::ScopeControlSite::ChainPost(node)=>{
+                            let chain_id=definition.chain.ok_or_else(invalid)?;let chain=&self.chains[chain_id.0];
+                            let (list,index)=if matches!(site,crate::ScopeControlSite::ChainPre(_)){(&chain.pre_amplitude,node)}else{(&chain.post_amplitude,chain.pre_amplitude.len()+node)};
+                            if list.iter().enumerate().take(node).any(|(at,p)|matches!(p,crate::Processor::Mix{count,..}|crate::Processor::Branch{count,..}if node-at<=usize::from(*count))){return Err(invalid());}
+                            let role=match(home.field,list.get(node)){
+                                (crate::SourceOwnerOutputField::Gain,Some(crate::Processor::Gain(_)))=>crate::ProcessorParameter::Gain,
+                                (crate::SourceOwnerOutputField::Pan,Some(crate::Processor::ExpressionPan(_)))=>crate::ProcessorParameter::Pan,_=>return Err(invalid()),
+                            };
+                            let mut bindings=self.processor_controls.iter().filter(|binding|binding.chain==chain_id&&binding.index==index&&binding.parameter==role);
+                            let binding=bindings.next().ok_or_else(invalid)?;if bindings.next().is_some()||binding.control!=home.control{return Err(invalid());}
+                            Some(&self.controls[binding.control.0].key)
+                        },
+                    }
+                },
+            };
+            let control=&self.controls[home.control.0];
+            // Output roles are narrower than generic signed signal Gain. Check
+            // the declared public field domain before behavior/resource binding.
+            let valid_domain=match (home.field,&control.value) {
+                (crate::SourceOwnerOutputField::Gain,crate::ControlValue::Continuous{min,max,..})=>*min>=0. && *max<=f64::from(f32::MAX),
+                (crate::SourceOwnerOutputField::Pan,crate::ControlValue::Continuous{min,max,..})=>*min>=-1. && *max<=1.,
+                (crate::SourceOwnerOutputField::Mute,crate::ControlValue::Toggle{..})=>true,
+                _=>false,
+            };
+            if !valid_domain{return Err(invalid());}
+            if scalar_key!=Some(&control.key){return Err(invalid());}
+        }
+        for(index,bus)in self.buses.iter().enumerate(){
+            check.owner=format!("bus {index}");
+            let output=self.processing_buses.iter().find(|row|row.bus.0==index).map_or(2,|row|row.output.channels);
+            for(target,position)in std::iter::once((bus.output,crate::SendPosition::PostChain)).chain(bus.sends.iter().map(|send|(send.to,send.position))){
+                let input=match target{crate::Output::Master=>2,crate::Output::Bus(bus)=>self.processing_buses.iter().find(|row|row.bus==bus).map_or(2,|row|row.signal.input.channels)};
+                let source=if position==crate::SendPosition::PreChain{self.processing_buses.iter().find(|row|row.bus.0==index).map_or(2,|row|row.signal.input.channels)}else{output};
+                if input!=source{return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"bus edge requires an explicit layout conversion"});}
+            }
         }
         for (i, bus) in self.buses.iter().enumerate() {
             check.owner = format!("bus {i}");
@@ -1202,5 +1811,191 @@ mod tests {
             ir.validate(),
             Err(ValidationError::Switching { .. })
         ));
+    }
+    #[test]
+    fn file_playback_marker_validates_and_tracks_zone_retention() {
+        let mut ir=one_zone();let mut second=ir.zones[0].clone();second.keys=KeyRange {low:61,high:61};ir.zones.push(second);
+        ir.source_indices.file_playback_zones=vec![ZoneRef(0),ZoneRef(1)];
+        assert_eq!(ir.validate(),Ok(()));ir.retain_zones(|z|z.keys.low==61);
+        assert_eq!(ir.source_indices.file_playback_zones,vec![ZoneRef(0)]);assert_eq!(ir.validate(),Ok(()));
+        ir.source_indices.file_playback_zones.push(ZoneRef(0));assert!(matches!(ir.validate(),Err(ValidationError::SampleTarget {..})));
+        ir.source_indices.file_playback_zones=vec![ZoneRef(99)];assert!(matches!(ir.validate(),Err(ValidationError::Dangling {..})));
+    }
+
+}
+
+impl Instrument {
+    fn validate_processing_signal(&self,signal:&crate::ProcessingSignal,output:usize,
+        allow_expression:bool,chain:Option<crate::ChainRef>,check:&mut Check)->Result<(),ValidationError>{
+        let invalid = |reason| ValidationError::ZoneRouting { owner: check.owner.clone(), reason };
+        match signal.source_law {
+            crate::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet=>{},
+            crate::ProcessingSourceLaw::UviC997Layout{members}=>{
+                let count=members.iter().take_while(|member|member.is_some()).count();
+                if !allow_expression || count==0 || members[count..].iter().any(Option::is_some)
+                    || members.iter().flatten().any(|member|match member.provenance {
+                        crate::UviNativeSourceProvenance::PlainHeader=>member.storage_channels!=member.layout.channels()&&!(member.layout==crate::UviNativeLayout::Code1&&member.storage_channels==2),
+                        crate::UviNativeSourceProvenance::UnloadedDefault=>member.layout!=crate::UviNativeLayout::Code1||member.storage_channels!=0,
+                    })
+                    || members.iter().flatten().map(|member|member.layout.channels()).max()!=Some(signal.input.channels){return Err(invalid("native member/header layout differs from its retained widest input"));}
+            }
+        }
+        if signal.input.channels == 0 || signal.nodes.is_empty() {
+            return Err(invalid("signal graph requires a nonempty input and executable nodes"));
+        }
+        let mut channels = signal.input.channels;
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut expression_pan = false;
+        for (node_index, node) in signal.nodes.iter().enumerate() {
+            if !allow_expression && match node {
+                crate::ProcessingSignalNode::Gain(gain)=>gain.gain.expression.is_some(),
+                crate::ProcessingSignalNode::OnePole(filter)=>filter.cutoff_hz.expression.is_some(),
+                crate::ProcessingSignalNode::UviOnePole(filter)=>filter.frequency.expression.is_some() || filter.tracking!=0.,
+                crate::ProcessingSignalNode::Pan(pan)=>pan.expression || pan.position.expression.is_some(),
+                _=>false,
+            } {return Err(invalid("global processing bus has no per-note expression owner"));}
+            while spans.last().is_some_and(|&(end, _)| end == node_index) {
+                let (_, width) = spans.pop().ok_or_else(|| invalid("missing channel mix span"))?;
+                if channels != width { return Err(invalid("channel mix must preserve its input width")); }
+            }
+            if let crate::ProcessingSignalNode::Mix(mix) = node {
+                let end = node_index.checked_add(1).and_then(|index| index.checked_add(usize::from(mix.count)))
+                    .ok_or_else(|| invalid("channel mix span overflow"))?;
+                if end > signal.nodes.len() || spans.last().is_some_and(|&(parent,_)| end > parent)
+                    || spans.len() == 16 || !mix.dry.is_finite() || !mix.wet.is_finite()
+                    || !(0. ..=16.).contains(&mix.dry) || !(0. ..=16.).contains(&mix.wet) {
+                    return Err(invalid("channel mix geometry, depth or default is invalid"));
+                }
+                spans.push((end, channels));
+            }
+            match node {
+                crate::ProcessingSignalNode::BusChain => {
+                    if allow_expression || channels!=2 || !spans.is_empty() {return Err(invalid("bus chain requires an unsuppressed stereo global boundary"));}
+                }
+                crate::ProcessingSignalNode::Matrix(matrix) => {
+                    match matrix.arithmetic { crate::MatrixArithmetic::SeparateMulAddF32 => {} }
+                    if matrix.input.channels != channels || matrix.output.channels == 0
+                        || matrix.input.channels.checked_mul(matrix.output.channels) != Some(matrix.cells.len())
+                        || matrix.cells.iter().any(|v| !v.is_finite() || v.abs() > f64::from(f32::MAX)) {
+                        return Err(invalid("matrix layout, cell geometry or coefficient domain is invalid"));
+                    }
+                    channels = matrix.output.channels;
+                }
+                crate::ProcessingSignalNode::UviLayout(layout)=>{
+                    if channels!=layout.source.channels() || layout.source.weight(layout.destination,0,0).is_none()
+                        || !layout.pan_offset.is_finite() || layout.pan.expression.is_some(){return Err(invalid("native descriptor edge or Pan operand is invalid"));}
+                    channels=layout.destination.channels();
+                }
+                crate::ProcessingSignalNode::UviOnePole(filter)=>{
+                    if !filter.tracking.is_finite() || !(0. ..=1.).contains(&filter.tracking){return Err(invalid("native OnePole tracking is invalid"));}
+                }
+                crate::ProcessingSignalNode::Mute(mute) => {
+                    if let Some(key)=&mute.control {
+                        let control=self.controls.iter().find(|control|&control.key==key)
+                            .ok_or_else(||invalid("outlet Mute Toggle control is missing"))?;
+                        if !matches!(control.value,crate::ControlValue::Toggle{..}) {
+                            return Err(invalid("outlet Mute requires a canonical Toggle control"));
+                        }
+                    }
+                }
+                crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) => {},
+                crate::ProcessingSignalNode::Pan(pan) => {
+                    if channels!=2 || !pan.offset.is_finite() || pan.offset.abs()>f64::from(f32::MAX) || pan.position.expression.is_some() {return Err(invalid("Pan requires a stereo boundary and one scalar position"));}
+                    if pan.expression {
+                        if expression_pan || !spans.is_empty() || chain.is_some_and(|chain|self.chains.get(chain.0).is_some_and(|chain|chain.pre_amplitude.iter().chain(&chain.post_amplitude).any(|stage|matches!(stage,crate::Processor::ExpressionPan(_))))) {
+                            return Err(invalid("expression Pan requires one unsuppressed shared home"));
+                        }
+                        expression_pan=true;
+                    }
+                }
+                crate::ProcessingSignalNode::Gain(gain) => {
+                    match gain.arithmetic { crate::ChannelGainArithmetic::CoreGainF64ThenF32 => {} }
+                }
+                crate::ProcessingSignalNode::OnePole(filter) => {
+                    match filter.arithmetic { crate::ChannelOnePoleArithmetic::CoreOnePoleF64 => {} }
+                }
+            }
+        }
+        while let Some((end, width)) = spans.pop() {
+            if end != signal.nodes.len() || width != channels { return Err(invalid("channel mix must preserve its input width")); }
+        }
+        if channels != output { return Err(invalid("signal graph output differs from its declared destination layout")); }
+        let mut tail = 0u32;
+        for node in &signal.nodes {
+            let parameter = match node {
+                crate::ProcessingSignalNode::Matrix(_) | crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) | crate::ProcessingSignalNode::BusChain | crate::ProcessingSignalNode::Mute(_) => continue,
+                crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
+                crate::ProcessingSignalNode::Pan(pan) => &pan.position,
+                crate::ProcessingSignalNode::UviLayout(layout)=>&layout.pan,
+                crate::ProcessingSignalNode::UviOnePole(filter)=>{tail=tail.checked_add(filter.tail_frames).ok_or_else(||invalid("native OnePole tail budget overflow"))?;&filter.frequency},
+                crate::ProcessingSignalNode::OnePole(filter) => {
+                    tail = tail.checked_add(filter.tail_frames)
+                        .ok_or_else(|| invalid("signal stage tail budget overflow"))?;
+                    &filter.cutoff_hz
+                }
+            };
+            if !parameter.constant.is_finite() || parameter.constant.abs() > f64::from(f32::MAX) {
+                return Err(invalid("signal stage constant is outside its finite domain"));
+            }
+            let bounds = if let Some(key) = &parameter.control {
+                let control = self.controls.iter().find(|c| &c.key == key)
+                    .ok_or_else(|| invalid("signal stage control is missing"))?;
+                match &control.value {
+                    crate::ControlValue::Continuous { min, max, .. }
+                        if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
+                            && max.abs() <= f64::from(f32::MAX) => [*min, *max],
+                    _ => return Err(invalid("signal stages require a bounded real control")),
+                }
+            } else { [parameter.constant; 2] };
+            if let Some(expression) = parameter.expression {
+                let (zero, one, octaves) = match (node, expression.law) {
+                    (crate::ProcessingSignalNode::Gain(_), crate::SignalExpressionLaw::LinearFactor { zero, one })
+                        if zero >= 0. && one >= 0. => (zero, one, false),
+                    (crate::ProcessingSignalNode::OnePole(_)|crate::ProcessingSignalNode::UviOnePole(_), crate::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
+                    _ => return Err(invalid("expression law does not match its stage destination")),
+                };
+                if !zero.is_finite() || !one.is_finite() || !(one - zero).is_finite() {
+                    return Err(invalid("expression endpoint domain is not finite"));
+                }
+                for endpoint in [zero, one] {
+                    let factor = if octaves { endpoint.exp2() } else { endpoint };
+                    if !factor.is_finite() || (octaves && factor <= 0.) {
+                        return Err(invalid("expression factor is outside the finite destination domain"));
+                    }
+                    for base in [parameter.constant, bounds[0], bounds[1]] {
+                        let value = base * factor;
+                        if !value.is_finite() || value.abs() > f64::from(f32::MAX) || (octaves && value <= 0.) {
+                            return Err(invalid("base and expression endpoint product is outside its destination domain"));
+                        }
+                    }
+                }
+            }
+            if matches!(node,crate::ProcessingSignalNode::Pan(_)|crate::ProcessingSignalNode::UviLayout(_)) && bounds.iter().any(|v|!(-1. ..=1.).contains(v)) {
+                return Err(invalid("Pan scalar domain is outside minus-one to one"));
+            }
+            if matches!(node, crate::ProcessingSignalNode::OnePole(_)|crate::ProcessingSignalNode::UviOnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
+                return Err(invalid("OnePole cutoff must be positive"));
+            }
+        }
+        let mut cells = std::collections::BTreeSet::new();
+        for binding in &signal.controls {
+            let Some(crate::ProcessingSignalNode::Matrix(matrix)) = signal.nodes.get(binding.node) else {
+                return Err(invalid("matrix binding has no executable node"));
+            };
+            if binding.input >= matrix.input.channels || binding.output >= matrix.output.channels
+                || !cells.insert((binding.node, binding.input, binding.output)) {
+                return Err(invalid("matrix binding cell is outside the layout or duplicated"));
+            }
+            let Some(control) = self.controls.iter().find(|c| c.key == binding.control) else {
+                return Err(invalid("matrix binding control is missing"));
+            };
+            match &control.value {
+                crate::ControlValue::Continuous { min, max, .. }
+                    if min.is_finite() && max.is_finite() && min.abs() <= f64::from(f32::MAX)
+                        && max.abs() <= f64::from(f32::MAX) => {}
+                _ => return Err(invalid("matrix cells require a bounded real coefficient domain")),
+            }
+        }
+        Ok(())
     }
 }

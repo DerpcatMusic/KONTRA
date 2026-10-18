@@ -19,7 +19,7 @@ pub struct ChannelScope {
     pub channels: u16,
 }
 impl ChannelScope {
-    fn contains(self, address: ChannelAddress) -> bool {
+    pub(super) fn contains(self, address: ChannelAddress) -> bool {
         self.protocol == address.protocol
             && self.port == address.port
             && self.group == address.group
@@ -305,8 +305,16 @@ impl Runtime {
                     super::BehaviorOwner::Note(note) => {
                         self.notes.get(note.0).is_some_and(|n| n.address == address)
                     }
-                    super::BehaviorOwner::Plan(_) => matches!(callback.context,
-                        super::behavior::PlanContext::Controller(event) if event.origin == address),
+                    super::BehaviorOwner::Plan(_) => match callback.context {
+                        super::behavior::PlanContext::Task(task)=>matches!(task.domain,super::receiver::task::TaskDomain::Captured{origin,..}if origin==address),
+                        super::behavior::PlanContext::Controller(event)=>event.origin==address,
+                        super::behavior::PlanContext::Program(event)=>event.origin==address,
+                        super::behavior::PlanContext::NoteControllers(context)=>context.origin==address,
+                        // Parameter/signal fanout preserves captured physical epochs
+                        // inside Control. Global startup/widget Control stays alive.
+                        super::behavior::PlanContext::Control(event)=>event.controller_epochs.is_some()&&event.origin==address,
+                        _=>false,
+                    },
                 }
             {
                 callback.outcome = Some(super::Outcome::Cancelled);
