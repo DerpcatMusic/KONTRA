@@ -46,6 +46,7 @@ pub use widget::{
     WidgetDropStorage, WidgetEdit, WidgetEventType, WidgetInteraction, WidgetStorage, WidgetValue,
 };
 mod control;
+pub use control::{SourceConstantProperty,SourceConstantField,SourceConstantSnapshot};
 pub use control::{
     NativeSnapshotOverlay, SnapshotOverlayEpoch, SnapshotOverlayFence, SnapshotOverlayRefusal,
     SnapshotMenuPosition, WidgetMenuStorage,
@@ -434,6 +435,111 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Additional simultaneously retained callbacks from the actual staged source
+/// population. These are job counts, not a count inferred from owner metadata:
+/// the caller includes every prepared root and Init/Transport context it can
+/// retain alongside its existing ordinary callbacks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceCallbackPopulation {
+    pub prepared_roots: usize,
+    pub source_contexts: usize,
+}
+
+/// Explicit caller policy for callback array payload only. This does not change
+/// any Runtime-wide limit or price PCM, DSP, queues, allocator metadata or the
+/// Runtime header. Retained payload is callback storage still owned by old or
+/// incoming runtimes during construction; it is not released at plan publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackStorageBudget {
+    pub max_payload_bytes: usize,
+    pub retained_payload_bytes: usize,
+    pub max_construction_bytes: usize,
+}
+
+/// Checked callback-array payload, using Core's real private element layouts.
+/// A Limits report uses requested capacities; a Runtime report uses the actual
+/// reserved Vec/VecDeque capacities and boxed lengths. Neither includes allocator
+/// bookkeeping. Read the Runtime report and recheck the same explicit budget
+/// before publication; allocator-provided spare capacity is not assumed to be zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackStorage {
+    pub callbacks: usize,
+    pub local_cells: usize,
+    pub ready_entries: usize,
+    pub yielded_entries: usize,
+    pub source_task_entries: usize,
+    pub arena_bytes: usize,
+    pub free_bitmap_bytes: usize,
+    pub local_bytes: usize,
+    pub ready_bytes: usize,
+    pub yielded_bytes: usize,
+    pub source_task_bytes: usize,
+    payload_bytes: usize,
+    boxing_overlap_bytes: usize,
+}
+
+impl CallbackStorage {
+    fn for_capacities(callbacks: usize, free_words: usize, local_cells: usize,
+        ready_entries: usize, yielded_entries: usize, source_task_entries: usize)
+        -> Result<Self, Error>
+    {
+        fn array<T>(count: usize) -> Result<usize, Error> {
+            std::alloc::Layout::array::<T>(count)
+                .map(|layout| layout.size()).map_err(|_| Error::Capacity)
+        }
+        let arena_bytes = array::<Slot<Continuation>>(callbacks)?;
+        let free_bitmap_bytes = array::<u64>(free_words)?;
+        let local_bytes = array::<i64>(local_cells)?;
+        let ready_bytes = array::<behavior::Ready>(ready_entries)?;
+        let yielded_bytes = array::<BehaviorId>(yielded_entries)?;
+        let source_task_bytes = array::<BehaviorId>(source_task_entries)?;
+        let payload_bytes = [arena_bytes, free_bitmap_bytes, local_bytes, ready_bytes,
+            yielded_bytes, source_task_bytes].into_iter().try_fold(0usize, |sum, bytes|
+                sum.checked_add(bytes).ok_or(Error::Capacity))?;
+        // Callback boxes are constructed sequentially. A shrinking Vec-to-Box
+        // conversion may temporarily keep both old and new payloads; charge one
+        // additional largest boxed callback array rather than assuming in-place
+        // shrink at the reported capacities. Runtime's retained Vec/VecDeque
+        // spare is separately visible in its report. A temporary Vec discarded
+        // during Box construction is not observable through Runtime::new, so
+        // this requested-capacity construction figure is not a strict bound on
+        // its hidden temporary spare. Other Runtime allocations are outside it.
+        let boxing_overlap_bytes = arena_bytes.max(free_bitmap_bytes).max(local_bytes);
+        Ok(Self { callbacks, local_cells, ready_entries, yielded_entries,
+            source_task_entries, arena_bytes, free_bitmap_bytes, local_bytes,
+            ready_bytes, yielded_bytes, source_task_bytes, payload_bytes,
+            boxing_overlap_bytes })
+    }
+
+    pub fn payload_bytes(self) -> usize { self.payload_bytes }
+
+    /// Requested-capacity callback construction overlap: retained callback
+    /// payload plus this storage and one additional boxed-array copy. Temporary
+    /// Vec spare during the legacy constructor's Box conversion is not retained
+    /// in Runtime and cannot be measured here; strict construction enforcement
+    /// needs a constructor reservation/preflight join. This is neither an actual
+    /// allocator-peak bound nor a process-memory/RSS claim.
+    pub fn construction_bytes(self, retained_payload_bytes: usize) -> Result<usize, Error> {
+        retained_payload_bytes.checked_add(self.payload_bytes)
+            .and_then(|bytes| bytes.checked_add(self.boxing_overlap_bytes))
+            .ok_or(Error::Capacity)
+    }
+}
+
+impl CallbackStorageBudget {
+    /// Pure payload admission check. Use before allocation on the Limits report
+    /// and again before publication on the Runtime report. Construction checks
+    /// have the explicit requested-capacity scope of construction_bytes().
+    /// Runtime::new retains its policy and does not silently install this budget.
+    pub fn check(self, storage: CallbackStorage) -> Result<(), Error> {
+        let construction = storage.construction_bytes(self.retained_payload_bytes)?;
+        if storage.payload_bytes() > self.max_payload_bytes
+            || construction > self.max_construction_bytes
+        { return Err(Error::Capacity); }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub notes: usize,
@@ -502,6 +608,46 @@ impl Limits {
         let ceiling = (Self::SCRIPT_CELLS / locals)
             .min(Self::SCRIPT_CALLBACK_BYTES / per_callback);
         ordinary.saturating_add(completions.min(ceiling.saturating_sub(ordinary)))
+    }
+
+    /// Requested callback storage for these exact caller limits. Local cells
+    /// use the same even per-callback stride as Runtime::new; any remainder in
+    /// behavior_cells remains a caller ceiling, not a secretly allocated bank.
+    pub fn callback_storage(self) -> Result<CallbackStorage, Error> {
+        let stride = self.behavior_cells.checked_div(self.behaviors).unwrap_or(0);
+        let cells = stride.checked_mul(self.behaviors).ok_or(Error::Capacity)?;
+        let ready = self.behaviors.checked_add(self.notes).ok_or(Error::Capacity)?;
+        let words = self.behaviors / 64 + usize::from(!self.behaviors.is_multiple_of(64));
+        CallbackStorage::for_capacities(self.behaviors, words, cells, ready,
+            self.behaviors, self.behaviors)
+    }
+
+    /// Offaudio aggregate admission for real staged jobs. Preserve the caller's
+    /// ordinary callback count, local stride, unused cell remainder, fuel, and
+    /// every unrelated limit. No baseline-16 replacement or implicit ceiling
+    /// increase: every added row and its locals must fit the supplied policy.
+    /// The caller proves these population counts from actual prepared/live jobs;
+    /// this storage helper does not turn source metadata into executable work.
+    pub fn with_source_callbacks(self, plan: &Prepared, population: SourceCallbackPopulation,
+        budget: CallbackStorageBudget) -> Result<(Self, CallbackStorage), Error>
+    {
+        let additional = population.prepared_roots.checked_add(population.source_contexts)
+            .ok_or(Error::Capacity)?;
+        // With no ordinary arena there is no established local stride. Do not
+        // reinterpret an unused legacy cell ceiling as a new per-job bank.
+        if self.behaviors == 0 && self.behavior_cells != 0 && additional != 0 {
+            return Err(Error::Capacity);
+        }
+        let stride = self.behavior_cells.checked_div(self.behaviors).unwrap_or(0);
+        if plan.behavior_local_count() > stride { return Err(Error::Capacity); }
+        let behaviors = self.behaviors.checked_add(additional).ok_or(Error::Capacity)?;
+        let behavior_cells = additional.checked_mul(stride)
+            .and_then(|cells| self.behavior_cells.checked_add(cells))
+            .ok_or(Error::Capacity)?;
+        let expanded = Self { behaviors, behavior_cells, ..self };
+        let storage = expanded.callback_storage()?;
+        budget.check(storage)?;
+        Ok((expanded, storage))
     }
 
     /// Capacities for playing `plan`: `notes` held at once and `voices`,
@@ -1323,6 +1469,16 @@ impl Runtime {
         // getter, including hosts that send MIDI before their first render.
         runtime.start_plan_programs();
         Ok(runtime)
+    }
+
+    /// Actual reserved callback payload. This immutable, allocation-free query
+    /// includes allocator spare Vec/VecDeque capacity. An offaudio candidate
+    /// installer must recheck its explicit CallbackStorageBudget against this
+    /// report before publishing; it does not alter legacy Runtime admission.
+    pub fn callback_storage(&self) -> Result<CallbackStorage, Error> {
+        CallbackStorage::for_capacities(self.behaviors.slots.len(), self.behaviors.free.len(),
+            self.behavior_locals.len(), self.behavior_ready.capacity(), self.yielded.capacity(),
+            self.source_task_scratch.capacity())
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -2392,3 +2548,190 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
 
 #[cfg(test)]
 mod tests;
+
+
+#[cfg(test)]
+mod callback_storage_budget_tests {
+    use super::*;
+
+    fn plan() -> Prepared {
+        Prepared::new(48_000, vec![], vec![], 0).unwrap()
+            .with_programs(vec![Program::new(vec![
+                Instruction::SetLocal { local: 2, value: 7 }, Instruction::End,
+            ]).unwrap()], None).unwrap()
+    }
+
+    fn limits(plan: &Prepared) -> Limits {
+        Limits { behaviors: 51, behavior_cells: 51 * 3 + 2,
+            behavior_fuel: 91, ..Limits::for_plan(plan, 3, 1) }
+    }
+
+    fn unlimited() -> CallbackStorageBudget {
+        CallbackStorageBudget { max_payload_bytes: usize::MAX,
+            retained_payload_bytes: 0, max_construction_bytes: usize::MAX }
+    }
+
+    #[test]
+    fn population_preserves_ordinary_stride_remainder_and_all_other_limits() {
+        let plan = plan();
+        let original = limits(&plan);
+        let (expanded, report) = original.with_source_callbacks(&plan,
+            SourceCallbackPopulation { prepared_roots: 7, source_contexts: 7 },
+            unlimited()).unwrap();
+        assert_eq!(expanded.behaviors, 65);
+        assert_eq!(expanded.behavior_cells, 65 * 3 + 2);
+        assert_eq!(report.callbacks, 65);
+        assert_eq!(report.local_cells, 195);
+        assert_eq!(report.ready_entries, 68);
+        assert_eq!(report.yielded_entries, 65);
+        assert_eq!(report.source_task_entries, 65);
+        assert_eq!(report.free_bitmap_bytes, 2 * std::mem::size_of::<u64>());
+        assert_eq!(expanded.behavior_fuel, original.behavior_fuel);
+        assert_eq!((expanded.notes, expanded.channels, expanded.performances,
+            expanded.families, expanded.expressions, expanded.voices,
+            expanded.decisions, expanded.commands, expanded.note_cells),
+            (original.notes, original.channels, original.performances,
+            original.families, original.expressions, original.voices,
+            original.decisions, original.commands, original.note_cells));
+        assert_eq!(original.behaviors, 51);
+        assert_eq!(original.behavior_cells, 155);
+    }
+
+    #[test]
+    fn payload_prices_each_actual_private_array_and_word_boundary() {
+        let plan = plan();
+        for count in [0, 1, 63, 64, 65] {
+            let limits = Limits { behaviors: count, behavior_cells: count * 3,
+                ..limits(&plan) };
+            let report = limits.callback_storage().unwrap();
+            let slots = std::alloc::Layout::array::<Slot<Continuation>>(count).unwrap().size();
+            let words = if count == 0 { 0 } else if count <= 64 { 1 } else { 2 };
+            let bitmap = words * std::mem::size_of::<u64>();
+            let locals = count * 3 * std::mem::size_of::<i64>();
+            let ready = (count + limits.notes) * std::mem::size_of::<behavior::Ready>();
+            let yielded = count * std::mem::size_of::<BehaviorId>();
+            let scratch = count * std::mem::size_of::<BehaviorId>();
+            assert_eq!(report.arena_bytes, slots);
+            assert_eq!(report.free_bitmap_bytes, bitmap);
+            assert_eq!(report.local_bytes, locals);
+            assert_eq!(report.ready_bytes, ready);
+            assert_eq!(report.yielded_bytes, yielded);
+            assert_eq!(report.source_task_bytes, scratch);
+            assert_eq!(report.payload_bytes(), slots + bitmap + locals + ready + yielded + scratch);
+            // Construction may need a second boxed callback array; old live
+            // callback storage is charged separately and is not silently freed.
+            assert_eq!(report.construction_bytes(123).unwrap(),
+                123 + report.payload_bytes() + slots.max(bitmap).max(locals));
+        }
+    }
+
+    #[test]
+    fn exact_payload_and_construction_budget_admit_and_one_byte_less_refuses() {
+        let plan = plan();
+        let original = limits(&plan);
+        let population = SourceCallbackPopulation { prepared_roots: 7, source_contexts: 7 };
+        let (_, report) = original.with_source_callbacks(&plan, population, unlimited()).unwrap();
+        let retained = original.callback_storage().unwrap().payload_bytes();
+        let exact = CallbackStorageBudget { max_payload_bytes: report.payload_bytes(),
+            retained_payload_bytes: retained,
+            max_construction_bytes: report.construction_bytes(retained).unwrap() };
+        assert!(original.with_source_callbacks(&plan, population, exact).is_ok());
+        assert!(matches!(original.with_source_callbacks(&plan, population,
+            CallbackStorageBudget { max_payload_bytes: exact.max_payload_bytes - 1, ..exact }),
+            Err(Error::Capacity)));
+        assert!(matches!(original.with_source_callbacks(&plan, population,
+            CallbackStorageBudget { max_construction_bytes: exact.max_construction_bytes - 1, ..exact }),
+            Err(Error::Capacity)));
+        assert!(matches!(original.with_source_callbacks(&plan, population,
+            CallbackStorageBudget { retained_payload_bytes: usize::MAX, ..exact }),
+            Err(Error::Capacity)));
+        assert_eq!(original.behaviors, 51);
+        assert_eq!(original.behavior_cells, 155);
+    }
+
+    #[test]
+    fn malformed_population_and_layout_overflow_refuse_without_allocation() {
+        let plan = plan();
+        let original = limits(&plan);
+        for population in [
+            SourceCallbackPopulation { prepared_roots: usize::MAX, source_contexts: 1 },
+            SourceCallbackPopulation { prepared_roots: usize::MAX, source_contexts: 0 },
+        ] {
+            assert!(matches!(original.with_source_callbacks(&plan, population, unlimited()),
+                Err(Error::Capacity)));
+        }
+        let overflow = Limits { behaviors: usize::MAX, behavior_cells: usize::MAX,
+            ..original };
+        assert_eq!(overflow.callback_storage(), Err(Error::Capacity));
+        let ready_overflow = Limits { notes: usize::MAX, ..original };
+        assert_eq!(ready_overflow.callback_storage(), Err(Error::Capacity));
+        let too_few_locals = Limits { behavior_cells: 51 * 2, ..original };
+        assert!(matches!(too_few_locals.with_source_callbacks(&plan,
+            SourceCallbackPopulation { prepared_roots: 1, source_contexts: 0 }, unlimited()),
+            Err(Error::Capacity)));
+        assert_eq!(original.behaviors, 51);
+        assert_eq!(original.behavior_cells, 155);
+    }
+
+    #[test]
+    fn actual_runtime_report_includes_real_spare_capacity_before_publication() {
+        let plan = plan();
+        let original = limits(&plan);
+        let (expanded, requested) = original.with_source_callbacks(&plan,
+            SourceCallbackPopulation { prepared_roots: 7, source_contexts: 7 },
+            unlimited()).unwrap();
+        let runtime = Runtime::new(plan, expanded).unwrap();
+        let actual = runtime.callback_storage().unwrap();
+        assert_eq!(actual.callbacks, runtime.behaviors.slots.len());
+        assert_eq!(actual.free_bitmap_bytes,
+            runtime.behaviors.free.len() * std::mem::size_of::<u64>());
+        assert_eq!(actual.local_cells, runtime.behavior_locals.len());
+        assert_eq!(actual.ready_entries, runtime.behavior_ready.capacity());
+        assert_eq!(actual.yielded_entries, runtime.yielded.capacity());
+        assert_eq!(actual.source_task_entries, runtime.source_task_scratch.capacity());
+        assert!(actual.payload_bytes() >= requested.payload_bytes());
+        let exact = CallbackStorageBudget { max_payload_bytes: actual.payload_bytes(),
+            retained_payload_bytes: requested.payload_bytes(),
+            max_construction_bytes: actual.construction_bytes(requested.payload_bytes()).unwrap() };
+        assert_eq!(exact.check(actual), Ok(()));
+        assert_eq!(CallbackStorageBudget {
+            max_payload_bytes: actual.payload_bytes() - 1, ..exact }.check(actual),
+            Err(Error::Capacity));
+    }
+
+    #[test]
+    fn zero_population_keeps_existing_caller_capacity_instead_of_baseline_sixteen() {
+        let plan = plan();
+        let original = Limits { behaviors: 7, behavior_cells: 21, ..limits(&plan) };
+        let (expanded, requested) = original.with_source_callbacks(&plan,
+            SourceCallbackPopulation::default(), unlimited()).unwrap();
+        assert_eq!(expanded.behaviors, 7);
+        assert_eq!(expanded.behavior_cells, 21);
+        assert_eq!(requested, original.callback_storage().unwrap());
+        assert_eq!(Runtime::new(plan, original).unwrap().behaviors.slots.len(), 7);
+    }
+
+    #[test]
+    fn zero_arena_orphan_cell_ceiling_is_not_reinterpreted_as_new_callback_stride() {
+        let empty = || Prepared::new(48_000, vec![], vec![], 0).unwrap();
+        let plan = empty();
+        let original = Limits { behaviors: 0, behavior_cells: 17,
+            ..Limits::for_plan(&plan, 3, 1) };
+        let runtime = Runtime::new(empty(), original).unwrap();
+        assert_eq!(runtime.callback_storage().unwrap().local_cells, 0);
+        let (same, report) = original.with_source_callbacks(&plan,
+            SourceCallbackPopulation::default(), unlimited()).unwrap();
+        assert_eq!(same.behaviors, 0);
+        assert_eq!(same.behavior_cells, 17);
+        assert_eq!(report.local_cells, 0);
+        for population in [
+            SourceCallbackPopulation { prepared_roots: 1, source_contexts: 0 },
+            SourceCallbackPopulation { prepared_roots: 0, source_contexts: 1 },
+        ] {
+            assert!(matches!(original.with_source_callbacks(&plan, population, unlimited()),
+                Err(Error::Capacity)));
+        }
+        assert_eq!(original.behaviors, 0);
+        assert_eq!(original.behavior_cells, 17);
+    }
+}

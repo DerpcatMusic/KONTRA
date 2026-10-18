@@ -471,7 +471,7 @@ impl Runtime {
             ))
         } else {
             let end = stages.len();
-            self.publish_input_event(event)?;
+            self.publish_input_event(plan,event)?;
             self.receive_controller_path(plan, event, end);
             Ok(None)
         }
@@ -593,7 +593,9 @@ impl Runtime {
             event.value = value;
             if let Some(receiver) = event.receiver.as_mut() {
                 receiver.provenance = super::receiver::components::ReceiverProvenance::Script;
-                receiver.kind = super::receiver::components::ReceiverActionKind::Controller;
+                if !matches!(receiver.kind,super::receiver::components::ReceiverActionKind::ElementOnly){
+                    receiver.kind = super::receiver::components::ReceiverActionKind::Controller;
+                }
             }
             event.pending = true;
             event.reserved = 0;
@@ -621,7 +623,9 @@ impl Runtime {
                     receiver: event.receiver.map(|mut receiver| {
                         receiver.provenance =
                             super::receiver::components::ReceiverProvenance::Script;
-                        receiver.kind = super::receiver::components::ReceiverActionKind::Controller;
+                        if !matches!(receiver.kind,super::receiver::components::ReceiverActionKind::ElementOnly){
+                    receiver.kind = super::receiver::components::ReceiverActionKind::Controller;
+                }
                         receiver
                     }),
                     number,
@@ -851,7 +855,7 @@ impl Runtime {
                 )
                 .expect("reserved controller continuation");
             } else {
-                self.publish_input_event(event)?;
+                self.publish_input_event(plan,event)?;
                 self.receive_controller_path(
                     plan,
                     ControllerEvent {
@@ -910,7 +914,38 @@ impl Runtime {
         Ok(())
     }
 
-    fn publish_input_event(&mut self, event: ControllerEvent) -> Result<(), Error> {
+    fn publish_input_event(&mut self,plan:PlanId,event:ControllerEvent)->Result<(),Error>{
+        let primary=self.performance_state.surviving_scope(event.performance,event.scope(),event.epochs);
+        let source_number=if matches!(event.receiver.map(|capture|capture.kind),Some(super::receiver::components::ReceiverActionKind::TimbreBridge)){74}else{event.number};
+        let source=if source_number<128&&event.poly_key.is_none()&&primary.channels!=0{
+            if let Some(capture)=event.receiver{
+                let performance=self.receiver_performance(capture.receiver)?;
+                if self.performance_index(performance)?!=event.performance{return Err(Error::InvalidInput);}
+                let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+                generation.dsp.buses.validate_element_input(&generation.prepared.buses,capture.receiver,performance,self.now)?;
+                let point=match capture.provenance{
+                    super::receiver::components::ReceiverProvenance::Wire(value)=>value.normalized(),
+                    super::receiver::components::ReceiverProvenance::Script7(value)=>f64::from(value)/127.,
+                    super::receiver::components::ReceiverProvenance::Script=>f64::from(event.value)/f64::from(u32::MAX),
+                };
+                if !point.is_finite()||!(0. ..=1.).contains(&point){return Err(Error::InvalidInput);}
+                Some((capture.receiver,performance,point))
+            }else{None}
+        }else{None};
+        // The source owner and channel/expression projection publish under one
+        // existing guard. Ready callbacks cannot observe a half-published event.
+        self.publish_receiver_transaction(|runtime|{
+            runtime.publish_input_event_channels(event)?;
+            if let Some((receiver,performance,point))=source{
+                let generation=runtime.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+                generation.dsp.buses.commit_element_input(&generation.prepared.buses,receiver,performance,
+                    source_number,point,event.original_frame,runtime.now);
+            }
+            Ok(())
+        })
+    }
+
+    fn publish_input_event_channels(&mut self, event: ControllerEvent) -> Result<(), Error> {
         let scope =
             self.performance_state
                 .surviving_scope(event.performance, event.scope(), event.epochs);

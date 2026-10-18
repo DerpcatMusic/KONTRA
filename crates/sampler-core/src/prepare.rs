@@ -1554,6 +1554,59 @@ impl Prepared {
         })
     }
 
+    /// Offaudio executable Controller entries for one actual Program owner.
+    /// This does not flatten Layer siblings or activate a frontend. The bound
+    /// actor must independently prove its exact initialized processor roster.
+    /// Other families, programs and their existing indexes remain unchanged.
+    pub fn with_source_controller_entries(mut self,entries:Vec<sampler_ir::SourceEventProcessorId>,max_new_entries:usize,max_entry_bytes:usize)->Result<Self,Error>{
+        if entries.is_empty(){return Ok(self);}
+        if entries.len()>max_new_entries{return Err(Error::Capacity);}
+        if self.stages.iter().any(|stage|stage.controller.is_some()){return Err(Error::Busy);}
+        let count=self.programs.len().checked_add(entries.len()).ok_or(Error::Capacity)?;
+        u32::try_from(count.checked_sub(1).ok_or(Error::Capacity)?).map_err(|_|Error::Capacity)?;
+        let stage_count=self.stages.len().max(entries.len());
+        let mut bytes=0usize;
+        for n in [std::alloc::Layout::array::<crate::Program>(self.programs.len()).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<crate::Program>(count).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<crate::Stage>(stage_count).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<crate::Instruction>(entries.len().checked_mul(2).ok_or(Error::Capacity)?).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<sampler_ir::SourceEventProcessorId>(entries.capacity()).map_err(|_|Error::Capacity)?.size()]
+        {bytes=bytes.checked_add(n).ok_or(Error::Capacity)?;}
+        if bytes>max_entry_bytes{return Err(Error::Capacity);}
+        let mut owner=None;let mut previous=None;
+        for (index,&id)in entries.iter().enumerate(){
+            if entries[..index].contains(&id){return Err(Error::InvalidInput);}
+            let processor=self.source_owners.processor(id).ok_or(Error::InvalidInput)?;
+            let row=self.source_owners.get(processor.owner).ok_or(Error::InvalidInput)?;
+            if processor.kind.as_ref()!="ScriptProcessor"||row.kind!=sampler_ir::SourceOwnerKind::Instrument
+                ||!matches!(row.id,sampler_ir::SourceOwnerId::UviNode(_))
+                ||owner.is_some_and(|owner|owner!=processor.owner)||previous.is_some_and(|ordinal|ordinal>=processor.ordinal)
+            {return Err(Error::InvalidInput);}
+            owner=Some(processor.owner);previous=Some(processor.ordinal);
+        }
+        let mut programs=Vec::new();programs.try_reserve_exact(count).map_err(|_|Error::Capacity)?;
+        let mut stages=Vec::new();stages.try_reserve_exact(stage_count).map_err(|_|Error::Capacity)?;
+        let program_spare=programs.capacity().checked_sub(count).ok_or(Error::Capacity)?;
+        let stage_spare=stages.capacity().checked_sub(stage_count).ok_or(Error::Capacity)?;
+        bytes=bytes.checked_add(std::alloc::Layout::array::<crate::Program>(program_spare).map_err(|_|Error::Capacity)?.size())
+            .and_then(|n|std::alloc::Layout::array::<crate::Stage>(stage_spare).ok().and_then(|layout|n.checked_add(layout.size()))).ok_or(Error::Capacity)?;
+        if bytes>max_entry_bytes{return Err(Error::Capacity);}
+        programs.extend(self.programs.iter().cloned());stages.extend_from_slice(&self.stages);stages.resize(stage_count,crate::Stage::default());
+        for (index,processor)in entries.into_iter().enumerate(){
+            let mut code=Vec::new();code.try_reserve_exact(2).map_err(|_|Error::Capacity)?;
+            let spare=code.capacity().checked_sub(2).ok_or(Error::Capacity)?;
+            bytes=bytes.checked_add(std::alloc::Layout::array::<crate::Instruction>(spare).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+            if bytes>max_entry_bytes{return Err(Error::Capacity);}
+            code.extend([crate::Instruction::AwaitExternal{processor},crate::Instruction::End]);
+            let program=crate::Program::new(code)?.with_wait_lifetime(crate::WaitLifetime::Callback);
+            stages[index].controller=Some(programs.len());programs.push(program);
+        }
+        // Existing with_stages performs complete typed family/receiver checks
+        // on this unpublished candidate. No note hierarchy or startup alias.
+        self.programs=programs.into_boxed_slice();self.external_programs=true;
+        self.with_stages(stages)
+    }
+
     /// Replace the complete program table and optional note binding atomically on
     /// the control thread. Generated children select regions without re-entry.
     pub fn with_programs(
@@ -1816,6 +1869,7 @@ programs = programs.into_boxed_slice();
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
             |id| self.real_control(id),
         )?;
+        self.validate_constant_property_program(&modulation)?;
         modulation.validate_provider_bindings(&self.processing_modulation,&self.region_processing)?;
         self.voice_modulation=modulation;
         Ok(self)

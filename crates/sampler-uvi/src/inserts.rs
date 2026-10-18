@@ -31,7 +31,7 @@ impl Translation {
     /// same owner graph. The explicit current Core stereo port is independent
     /// of source file cardinality and of any native descriptor enum.
     pub(super) fn global_scope_bus(
-        &mut self, parent:Node, output:ir::Output,
+        &mut self, parent:Node, output:ir::Output, input_owner:ir::SourceOwnerId,
     )->Result<(ir::BusRef,ir::BusRef),String>{
         let at=path(parent);let node=parent.id().get_usize();
         let owner=ir::SourceOwnerId::UviNode(u32::try_from(node).map_err(|_|format!("{at}: scope owner identity overflow"))?);
@@ -41,8 +41,22 @@ impl Translation {
         let mut modulation=super::modulation::Modulation::default();
         for connection in super::connections(parent).filter(|connection|matches!(connection.attribute("Destination"),Some("Gain"|"Pan"))){
             let before=self.ir.unsupported.len();self.connect_scoped(connection,&mut modulation)?;
-            if self.ir.unsupported.len()!=before || !modulation.routes.is_empty(){
-                return Err(format!("{}: live global Gain/Pan requires the actual shared owner modulator; no per-source fallback",path(connection)));
+            if self.ir.unsupported.len()!=before {
+                return Err(format!("{}: global outlet source has no accepted executable law",path(connection)));
+            }
+        }
+        // This finite source family has a proved default-state controller
+        // owner. Note/Script/LFO sources require their actual creator/context
+        // law; no zero-filled voice or copied member state is substituted.
+        let mut sources=Vec::new();
+        for &route in &modulation.routes {
+            let route=&self.ir.routes[route.0];
+            for source in std::iter::once(route.source).chain(route.scale.map(|scale|scale.source)) {
+                if !matches!(self.ir.modulators[source.0].source,ir::ModulationSource::Controller(number)if number<128)
+                    &&!matches!(self.ir.modulators[source.0].source,ir::ModulationSource::ConstantProperty{..}|ir::ModulationSource::Constant) {
+                    return Err(format!("{at}: live global Gain/Pan requires the actual shared owner modulator; no per-source fallback"));
+                }
+                if !sources.contains(&source){sources.push(source);}
             }
         }
         let gain_key=engine_parameters::scope_gain_key(node);let pan_key=engine_parameters::scope_pan_key(node);
@@ -81,6 +95,9 @@ impl Translation {
             self.ir.source_indices.output_controls.push(ir::SourceOwnerOutputControl{owner,field,target:ir::SourceOwnerControlTarget::Bus{bus:outlet,node},control});
         }
         self.ir.processing_buses.push(ir::ProcessingBus{bus:outlet,owner:Some(owner),signal:ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:2},nodes,controls:vec![]},output:ir::SignalLayout{channels:2}});
+        if !modulation.routes.is_empty(){
+            self.ir.source_indices.global_modulation.push(ir::SourceGlobalModulation{owner,input_owner,outlet,sources,routes:modulation.routes});
+        }
         Ok((input,outlet))
     }
 

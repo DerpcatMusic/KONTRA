@@ -469,3 +469,200 @@ fn native67_automatic_wide_two_notes_keep_expression_pan_after_conversion_and_fr
     for note in [first,second,third]{actual.rt.release(note).unwrap();}actual.render(8192);let mut endings=[0usize;3];actual.rt.flush_ended(|source|{if source==input(){endings[0]+=1;}else if source==second_source{endings[1]+=1;}else if source==third_source{endings[2]+=1;}else{panic!("unexpected source owner: {source:?}");}true});
     assert_eq!(endings,[1;3]);assert_eq!((actual.rt.voice_count(),actual.rt.processing_owner_count()),(0,0));actual.health();
 }
+
+
+#[test]
+fn normal_program_cc7_layer_cc11_reach_both_keygroups_after_one_shared_nonlinear_output(){
+    let fixture=Fixture::new();
+    for(name,sample)in[("global-input-a",4096i16),("global-input-b",-2048i16)]{
+        std::fs::write(fixture.0.join(format!("{name}.wav")),wav(&vec![[sample;2];FRAMES])).unwrap();
+    }
+    let xml=r#"<Program Gain="0.75"><Connections><SignalConnection Source="@MIDI CC 7" Destination="Gain" Ratio="1"/></Connections>
+    <Layers><Layer Gain="0.5"><Connections><SignalConnection Source="@MIDI CC 11" Destination="Gain" Ratio="1"/></Connections>
+    <Inserts><WaveShaper Mode="6" InputGain="0" OutputGain="0"/><OnePole Freq="1200" Mode="0" Bypass="0"/></Inserts><Keygroups>
+    <Keygroup LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="global-input-a.wav" BaseNote="60" Gain="1"/></Oscillators></Keygroup>
+    <Keygroup LowKey="61" HighKey="61"><Oscillators><SamplePlayer SamplePath="global-input-b.wav" BaseNote="61" Gain="1"/></Oscillators></Keygroup>
+    </Keygroups></Layer></Layers></Program>"#;
+    let path=fixture.0.join("global-controller.uvip");std::fs::write(&path,xml).unwrap();
+    let reference_xml=xml.replace(r#"<Connections><SignalConnection Source="@MIDI CC 7" Destination="Gain" Ratio="1"/></Connections>"#,"")
+        .replace(r#"<Connections><SignalConnection Source="@MIDI CC 11" Destination="Gain" Ratio="1"/></Connections>"#,"")
+        .replace(r#"<Program Gain="0.75">"#,r#"<Program Gain="1">"#).replace(r#"<Layer Gain="0.5">"#,r#"<Layer Gain="1">"#);
+    let reference_path=fixture.0.join("route-free-global-reference.uvip");std::fs::write(&reference_path,reference_xml).unwrap();
+    let reference_loaded=sampler_uvi::assemble_translated(sampler_uvi::translate_path(&reference_path).unwrap(),RATE).unwrap();
+    assert!(reference_loaded.instrument.source_indices.global_modulation.is_empty());
+    let reference_limits=Limits::for_plan(&reference_loaded.plan,8,16);let mut reference_rt=Runtime::new(reference_loaded.plan,reference_limits).unwrap();
+    reference_rt.trigger(Input{external_id:Some(1901),..input()},60,1.).unwrap();reference_rt.trigger(Input{key:61,external_id:Some(1902),..input()},61,1.).unwrap();
+    let translated=sampler_uvi::translate_path(&path).unwrap();let ir=&translated.instrument;
+    assert_eq!(ir.zones.len(),2);assert!(ir.zones.iter().all(|zone|zone.routes.is_empty()));assert_eq!(ir.source_indices.global_modulation.len(),2);
+    // Ordinary publication is still refused until the real receiver/actor
+    // installer exists. The following positive PCM law is explicitly bare Core
+    // construction from the same normal translated IR and normal decoded assets;
+    // its caller supplies and binds the actual receiver before rendering.
+    let error=sampler_uvi::assemble_translated(sampler_uvi::translate_path(&path).unwrap(),RATE).err().expect("ordinary global-controller publication remains unqualified");
+    assert!(error.to_string().contains("prepublication receiver/actor"),"{error}");
+    let instrument=translated.instrument;
+    assert!(instrument.behaviors.is_empty());
+    let labels=instrument.assets.iter().map(|asset|match &asset.location{ir::AssetLocation::Path(path)=>path.clone(),_=>panic!("authored normal disk sample")}).collect();
+    let assets=instrument.assets.iter().map(|asset|{
+        let ir::AssetLocation::Path(path)=&asset.location else{panic!("authored ordinary disk sample identity");};
+        let decoded=sampler_uvi::decode_sample(Path::new(path)).unwrap();
+        sampler_core::Pcm::new(decoded.rate,decoded.frames.into_boxed_slice()).unwrap()
+    }).collect();
+    // The ordinary shared materializer binds each actual keygroup geometry
+    // before canonical Core lower; never guess/erase a compiled source recipe.
+    let loaded=sampler_kontakt::finish(instrument,assets,labels,&sampler_kontakt::Options{rate:RATE,..Default::default()}).unwrap();
+    let prepared=loaded.plan;
+    let definitions:Vec<_>=prepared.source_controller_inputs().collect();assert_eq!(definitions.len(),2);
+    let owner=definitions[0].0;assert!(definitions.iter().all(|row|row.0==owner));
+    let initial:Vec<_>=definitions.iter().map(|(_,id,_)|(*id,sampler_core::ReceiverValue::Bits7(127))).collect();
+    let mut limits=Limits::for_plan(&prepared,8,16);limits.channels=48;
+    let mut rt=Runtime::new(prepared,limits).unwrap();let state=sampler_core::OwnedReceiver::new(&rt,0,0,sampler_core::ReceiverZone::Lower,1,8).unwrap();let receiver=rt.bind_receiver(state).unwrap();
+    rt.bind_receiver_source_input(receiver,rt.active_plan(),owner,&initial).unwrap();
+    let first=rt.trigger(Input{external_id:Some(901),..input()},60,1.).unwrap();
+    let second=rt.trigger(Input{key:61,external_id:Some(902),..input()},61,1.).unwrap();
+    let c7=0x4000_0000;let c11=0x8000_0000;
+    for(index,value,channel)in[(7,c7,13),(11,c11,6)]{
+        rt.apply_receiver(receiver,Some(sampler_core::ReceiverChannelVoice{version:sampler_core::ReceiverVersion::Midi1,group:0,channel,
+            message:sampler_core::ReceiverMessage::Control{index,value:sampler_core::ReceiverValue::Bits32(value)}}),false,None).unwrap();
+    }
+    let mut audio=[[0.;2];96];let mut route_free=[[0.;2];96];let mut at=0;
+    for frames in [1usize,17,31,15,1,31]{rt.render(&mut audio[at..at+frames]).unwrap();reference_rt.render(&mut route_free[at..at+frames]).unwrap();at+=frames;}
+    assert_eq!(at,96);let target7=f64::from(c7)/f64::from(u32::MAX);let target11=f64::from(c11)/f64::from(u32::MAX);
+    for(frame,samples)in audio.into_iter().enumerate(){
+        let fraction=(frame as f64/64.).min(1.);let gain7=1.+(target7-1.)*fraction;let gain11=1.+(target11-1.)*fraction;
+        // The independent route-free reader advances the SAME declared FX
+        // once on the unchanged summed sources. Only the expected post-FX
+        // scalars are calculated here. Moving the time-varying controller gain
+        // before the OnePole changes its history and fails this full transient.
+        for(channel,sample)in samples.into_iter().enumerate(){
+            let layer=(f64::from(route_free[frame][channel])*(0.5*gain11))as f32;
+            let expected=(f64::from(layer)*(0.75*gain7))as f32;
+            assert!((sample-expected).abs()<4e-7,"frame={frame} c={channel} actual={sample} expected={expected}");
+        }
+    }
+    assert!(route_free.iter().flatten().any(|sample|sample.abs()>0.01),"reference must actually sound, not a missing source");
+    assert_eq!(reference_rt.voice_count(),2);assert_eq!(reference_rt.stats().nonfinite_frames,0);
+    assert_eq!(rt.voice_count(),2);assert!(rt.note(first).unwrap().2&&rt.note(second).unwrap().2);
+    let stats=rt.stats();assert_eq!(stats.nonfinite_frames,0);assert_eq!(stats.stream_underruns,0);assert_eq!(stats.voice_drops,0);assert_eq!(stats.refused_starts,0);
+    rt.note_off_exact(first,None).unwrap();rt.note_off_exact(second,None).unwrap();rt.render(&mut [[0.;2];256]).unwrap();rt.flush_ended(|_|true);assert_eq!(rt.voice_count(),0);
+}
+
+
+fn property42g_program(f:&Fixture,name:&str,script:&str,connections:&str,definitions:&str)->PathBuf{
+    std::fs::write(f.0.join("property42g.wav"),wav(&vec![[8192i16,-4096];FRAMES])).unwrap();
+    let xml=format!(r#"<Program Gain="1"><ControlSignalSources>{definitions}</ControlSignalSources><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup LowKey="60" HighKey="60" Gain="1"><Connections>{connections}</Connections><Oscillators><SamplePlayer SamplePath="property42g.wav" BaseNote="60" Gain="1"><PlaybackOptions Start="0" Stop="2048"><Loop Start="0" End="2048" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#);
+    let path=f.0.join(format!("{name}.uvip"));std::fs::write(&path,xml).unwrap();path
+}
+#[test]
+fn normal_constant_definitions_have_distinct_controls_and_references_share_actual_identity(){
+    let fixture=Fixture::new();let path=property42g_program(&fixture,"property-identities",r#"function onController(e) Program.modulations['A']:setParameter('Value',1);Program.modulations['B']:setParameter('Value',0.5) end"#,r#"<SignalConnection Source="$Program/A" Destination="Gain" Ratio="1"/><SignalConnection Source="$Program/A" Destination="Gain" Ratio="1"/><SignalConnection Source="$Program/B" Destination="Gain" Ratio="1"/>"#,r#"<ConstantModulation Name="A" Value="0.25"/><ConstantModulation Name="B" Value="0.5"/>"#);
+    let mut translated=sampler_uvi::translate_path(&path).unwrap();let roles=translated.instrument.source_indices.constant_properties.clone();assert_eq!(roles.len(),2);assert_ne!(roles[0].node,roles[1].node);assert_ne!(roles[0].value,roles[1].value);assert_ne!(roles[0].style,roles[1].style);
+    let property_sources:Vec<_>=translated.instrument.modulators.iter().filter_map(|source|match source.source{ir::ModulationSource::ConstantProperty{node,..}=>Some(node),_=>None}).collect();assert_eq!(property_sources.len(),2,"repeated references must not create a third definition/source");
+    // Cache keeps the exact definition/field roles, full finite Value domain and
+    // explicit qualification boundary. Validation is not stripped or weakened.
+    let encoded=serde_json::to_vec(&translated.instrument).unwrap();let cached:ir::Instrument=serde_json::from_slice(&encoded).unwrap();cached.validate().unwrap();assert_eq!(cached.source_indices.constant_properties,roles);assert_eq!(cached.controls,translated.instrument.controls);
+    for (old,new)in translated.instrument.controls.iter().zip(&cached.controls){if let (ir::ControlValue::Continuous{min:a,max:b,default:c,..},ir::ControlValue::Continuous{min:x,max:y,default:z,..})=(&old.value,&new.value){assert_eq!((a.to_bits(),b.to_bits(),c.to_bits()),(x.to_bits(),y.to_bits(),z.to_bits()));}}
+    let error=sampler_uvi::assemble_translated(sampler_uvi::translate_path(&path).unwrap(),RATE).err().expect("normal native temporal law must not be silently activated");assert!(error.to_string().contains("declared-Core target reader"),"{error}");
+    translated.declare_core_constant_target_reads();let loaded=sampler_uvi::assemble_translated(translated,RATE).unwrap();let limits=Limits::for_plan(&loaded.plan,8,8);let mut rt=Runtime::new(loaded.plan,limits).unwrap();let plan=rt.active_plan();
+    let bindings=rt.source_constant_properties(plan).unwrap().collect::<Vec<_>>();assert_eq!(bindings.len(),2);
+    let a=bindings.iter().find(|row|row.node==roles[0].node).unwrap();let b=bindings.iter().find(|row|row.node==roles[1].node).unwrap();assert_eq!(rt.source_constant_property(plan,a.node).unwrap().value,0.25);assert_eq!(rt.source_constant_property(plan,b.node).unwrap().value,0.5);
+    rt.trigger(input(),60,1.).unwrap();let mut actual=[[0.;2];65];rt.render(&mut actual).unwrap();
+    // Independent exact-integer PCM: (8192,-4096)*(1/4)*(1/4)*(1/2).
+    // This ordinary route-free sampler has no property/mapper/evaluator and
+    // no discarded onset frames. It preserves the same physical sampler law.
+    std::fs::write(fixture.0.join("property42g-reference.wav"),wav(&vec![[256i16,-128];FRAMES])).unwrap();
+    let reference_path=fixture.0.join("property42g-reference.uvip");std::fs::write(&reference_path,r#"<Program><Layers><Layer><Keygroups><Keygroup LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="property42g-reference.wav" BaseNote="60" Gain="1"><PlaybackOptions Start="0" Stop="2048"><Loop Start="0" End="2048" Type="0"/></PlaybackOptions></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+    let reference=sampler_uvi::load(&reference_path,RATE).unwrap();let reference_limits=Limits::for_plan(&reference.plan,8,8);let mut reference=Runtime::new(reference.plan,reference_limits).unwrap();reference.trigger(input(),60,1.).unwrap();let mut expected=[[0.;2];65];reference.render(&mut expected).unwrap();assert!(expected.iter().flatten().any(|sample|sample.abs()>0.001));
+    for (actual,expected)in actual.iter().zip(expected){for channel in 0..2{assert!((actual[channel]-expected[channel]).abs()<3e-7);}}
+    rt.set_source_constant_property(plan,a.node,sampler_core::SourceConstantField::Value,ControlValue::Real(0.75)).unwrap();assert_eq!(rt.source_constant_property(plan,b.node).unwrap().value,0.5);rt.panic();
+}
+#[test]
+fn standalone_constant_ack_does_not_turn_nil_listener_broadcast_into_future_note_seeding(){
+    use sampler_uvi::{script::Config,scripted::HostInput};
+    let fixture=Fixture::new();let path=property42g_program(&fixture,"property-listener-separation",r#"
+        function onInit() sendScriptModulation(7,0.9,0,nil);controlChange(119,1) end
+        function onController(e)
+          if e.controller==1 then sendScriptModulation(7,0.5,0,nil);controlChange(119,2)
+          elseif e.controller==2 then Program.modulations['A']:setParameter('Value',0.75);assert(Program.modulations['A']:getParameter('Value')==0.75);controlChange(119,3)
+          elseif e.controller==3 then local a=Program.modulations['A'];assert(not pcall(function() a:setParameter('Value',0/0) end));a:setParameter('Style',2);assert(a:getParameter('Value')==0.75 and a:getParameter('Style')==0);controlChange(119,4) end
+        end
+    "#,r#"<SignalConnection Source="$Program/A" Destination="Gain" Ratio="1"/><SignalConnection Source="$Program/Listener" Destination="Pitch" Ratio="1"/>"#,r#"<ConstantModulation Name="A" Value="0.25"/><ScriptEventModulation Name="Listener" EventId="7"/>"#);
+    let mut translated=sampler_uvi::translate_path(&path).unwrap();let mut attached=translated.attach_script(RATE,Config::default()).unwrap().unwrap();translated.declare_core_constant_target_reads();let loaded=sampler_uvi::assemble_translated(translated,RATE).unwrap();let limits=Limits::for_plan(&loaded.plan,8,8);let mut rt=Runtime::new(loaded.plan,limits).unwrap();let plan=rt.active_plan();let definition=rt.source_constant_properties(plan).unwrap().next().unwrap();attached.driver.bind_source_properties(&rt,plan).unwrap();
+    fn fence(driver:&mut sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>,rt:&mut Runtime,expected:u8){
+        let deadline=std::time::Instant::now()+Duration::from_secs(5);let mut received=false;
+        while !received{driver.wake(rt).unwrap();driver.drain_midi(|event|received|=event.status==0xb0&&event.a==119&&event.b==expected);assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_millis(1));}
+    }
+    fence(&mut attached.driver,&mut rt,1);let first=rt.note_on(input(),60,1.).unwrap();attached.driver.note_on(&mut rt,first,60,1.).unwrap();assert_eq!(rt.note_script_value(first,7),Ok(0.));
+    attached.driver.input(&rt,HostInput::Controller{cc:1,value:127,channel:0});fence(&mut attached.driver,&mut rt,2);assert_eq!(rt.note_script_value(first,7),Ok(0.5));assert_eq!(rt.source_constant_property(plan,definition.node).unwrap().value,0.25);
+    let mut second_input=input();second_input.channel=1;let second=rt.note_on(second_input,60,1.).unwrap();attached.driver.note_on(&mut rt,second,60,1.).unwrap();assert_eq!(rt.note_script_value(second,7),Ok(0.),"nil listener send reaches only its then-sounding owner snapshot");
+    attached.driver.input(&rt,HostInput::Controller{cc:2,value:127,channel:0});fence(&mut attached.driver,&mut rt,3);assert_eq!(rt.source_constant_property(plan,definition.node).unwrap().value,0.75);assert_eq!(rt.note_script_value(first,7),Ok(0.5));assert_eq!(rt.note_script_value(second,7),Ok(0.));
+    let accepted=rt.source_constant_property(plan,definition.node).unwrap();attached.driver.input(&rt,HostInput::Controller{cc:3,value:127,channel:0});fence(&mut attached.driver,&mut rt,4);assert_eq!(rt.source_constant_property(plan,definition.node).unwrap(),accepted,"invalid numeric/Style candidates never commit or poison Lua readback");
+    attached.driver.note_off_note(&mut rt,first,60).unwrap();attached.driver.note_off_note(&mut rt,second,60).unwrap();let mut out=[[0.;2];128];rt.render(&mut out).unwrap();assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+#[test]
+fn ordinary_global_controller_refuses_before_eager_lua_or_part_publication(){
+    let fixture=Fixture::new();std::fs::write(fixture.0.join("guard42g.wav"),wav(&vec![[4096i16;2];FRAMES])).unwrap();
+    let path=fixture.0.join("guard42g.uvip");std::fs::write(&path,r#"<Program><Connections><SignalConnection Source="@MIDI CC 7" Destination="Gain" Ratio="1"/></Connections><EventProcessors><ScriptProcessor><script>error('EAGER_LUA_MUST_NOT_RUN')</script></ScriptProcessor></EventProcessors><Layers><Layer><Keygroups><Keygroup LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="guard42g.wav" BaseNote="60"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#).unwrap();
+    let mut translated=sampler_uvi::translate_path(&path).unwrap();assert!(!translated.instrument.source_indices.global_modulation.is_empty());let before=translated.instrument.clone();
+    let error=translated.attach_script(RATE,Default::default()).err().expect("ordinary producer has no accepted receiver/actor installer");assert!(error.to_string().contains("prepublication receiver/actor"),"{error}");assert!(!error.to_string().contains("EAGER_LUA_MUST_NOT_RUN"));assert_eq!(translated.instrument,before);
+    let error=sampler_uvi::load(&path,RATE).err().expect("ordinary assembly must not publish an unbound program");assert!(error.to_string().contains("prepublication receiver/actor"),"{error}");
+}
+
+
+// R42G-01: ordinary authored parameter UI must not accept a fabricated0 while
+// the actual generation property endpoint is not yet available.
+fn property_ui42h_setup(name:&str)->(Fixture,sampler_uvi::AttachedScript,Runtime,u32){
+    let fixture=Fixture::new();
+    let path=property42g_program(&fixture,name,r#"
+        function onInit()
+          Bound=ParamKnob(Program.modulations['A'],'Value')
+          Bound.changed=function() controlChange(118,99) end
+          Sibling=Knob('Sibling',0.5,0,1)
+          Sibling.changed=function() controlChange(118,98) end
+        end
+        function onController(e) Program.modulations['A']:setParameter('Value',0.75) end
+    "#,r#"<SignalConnection Source="$Program/A" Destination="Gain" Ratio="1"/>"#,r#"<ConstantModulation Name="A" Value="0.25"/>"#);
+    let mut translated=sampler_uvi::translate_path(&path).unwrap();
+    let attached=translated.attach_script(RATE,sampler_uvi::script::Config::default()).unwrap().unwrap();
+    translated.declare_core_constant_target_reads();
+    let loaded=sampler_uvi::assemble_translated(translated,RATE).unwrap();let limits=Limits::for_plan(&loaded.plan,8,8);let runtime=Runtime::new(loaded.plan,limits).unwrap();let node=runtime.source_constant_properties(runtime.active_plan()).unwrap().next().unwrap().node;
+    (fixture,attached,runtime,node)
+}
+fn service_property_ui42h(driver:&mut sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>,runtime:&mut Runtime,expected:f64){
+    let id=sampler_uvi::script::control_id(1,0);let deadline=std::time::Instant::now()+Duration::from_secs(5);
+    while driver.ui().value(id)!=Some(expected){
+        driver.wake(runtime).unwrap();let mut callbacks=0;driver.drain_midi(|_|callbacks+=1);assert_eq!(callbacks,0,"presentation readback must not invoke changed/onController or generate MIDI");
+        assert!(std::time::Instant::now()<deadline,"actual property presentation was never admitted");std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(runtime.now(),0);assert_eq!(runtime.voice_count(),0,"presentation has no musical authority");
+}
+#[test]
+fn promoted_constant_initial_paramknob_is_unavailable_without_an_editable_zero(){
+    let(_fixture,attached,runtime,node)=property_ui42h_setup("property-ui-initial");
+    let property=sampler_uvi::script::control_id(1,0);let sibling=sampler_uvi::script::control_id(2,0);
+    assert_eq!(runtime.source_constant_property(runtime.active_plan(),node).unwrap().value,0.25);
+    assert_eq!(attached.interface.widgets.len(),2);assert_eq!(attached.interface.widgets[0].source_id,Some(1));assert!(matches!(attached.interface.widgets[0].binding,sampler_ui_ir::Binding::None),"unavailable preparation is not a successful editable0");
+    assert!(!attached.interface.widgets[0].enabled);assert!(attached.interface.unsupported.iter().any(|entry|entry.feature=="canonical Constant property value unavailable"));
+    assert_eq!(attached.driver.ui().value(property),None);assert_eq!(attached.driver.ui().value(sibling),Some(0.5));assert!(!attached.driver.ui().edit(property,0.));
+    attached.interface.validate().unwrap();
+}
+#[test]
+fn property_bind_metadata_ack_then_real_readback_republishes_without_an_unrelated_edit(){
+    let(_fixture,mut attached,mut runtime,node)=property_ui42h_setup("property-ui-bind");
+    let property=sampler_uvi::script::control_id(1,0);let sibling=sampler_uvi::script::control_id(2,0);let ui=attached.driver.ui().clone();let preparation=ui.snapshot();let plan=runtime.active_plan();
+    assert_eq!(ui.value(property),None);assert_eq!(ui.value(sibling),Some(0.5));attached.driver.bind_source_properties(&runtime,plan).unwrap();
+    assert_eq!(ui.value(property),None,"metadata ACK alone cannot certify a canonical value before any Core service");
+    service_property_ui42h(&mut attached.driver,&mut runtime,0.25);
+    let admitted=ui.snapshot();assert!(admitted.generation()>preparation.generation());assert_eq!(ui.value(sibling),Some(0.5));assert_eq!(admitted.interface().widgets[1].source_id,preparation.interface().widgets[1].source_id);
+    assert!(!ui.edit_snapshot(&preparation,sibling,0.9),"missing property reappearance keeps the real schema-generation stale edit fence");
+    assert_eq!(attached.interface.widgets[0].binding,sampler_ui_ir::Binding::None,"the old Loaded preparation clone is never relabelled live");assert_eq!(runtime.source_constant_property(plan,node).unwrap().value,0.25);
+    admitted.interface().validate().unwrap();
+}
+#[test]
+fn explicit_property_presentation_refresh_reads_actual_core_without_authored_callbacks(){
+    let(_fixture,mut attached,mut runtime,node)=property_ui42h_setup("property-ui-refresh");let ui=attached.driver.ui().clone();let property=sampler_uvi::script::control_id(1,0);let sibling=sampler_uvi::script::control_id(2,0);let plan=runtime.active_plan();attached.driver.bind_source_properties(&runtime,plan).unwrap();service_property_ui42h(&mut attached.driver,&mut runtime,0.25);
+    runtime.set_source_constant_property(plan,node,sampler_core::SourceConstantField::Value,ControlValue::Real(0.625)).unwrap();let accepted=runtime.source_constant_property(plan,node).unwrap();assert_eq!(ui.value(property),Some(0.25),"old presentation is a snapshot, not an invented live target bank");
+    assert!(ui.request_source_property_refresh(),"only bounded request admission; service and value readback below are the actual result");service_property_ui42h(&mut attached.driver,&mut runtime,0.625);
+    assert_eq!(runtime.source_constant_property(plan,node).unwrap(),accepted);assert_eq!(ui.value(sibling),Some(0.5));assert_eq!(runtime.now(),0);assert_eq!(runtime.voice_count(),0);
+}

@@ -274,6 +274,13 @@ pub struct SourceIndices {
     /// Explicit actual output-field roles, never inferred from processor kind.
     #[cfg_attr(feature = "cache", serde(default))]
     pub output_controls:Vec<SourceOwnerOutputControl>,
+    /// Executable modulation at a real Program/Layer output, supplied by the
+    /// resolved element MIDI source domain. Never copied to member zones.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub global_modulation:Vec<SourceGlobalModulation>,
+    /// Writable Constant definitions; property controls are not listener inputs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub constant_properties:Vec<SourceConstantProperty>,
     /// Original physical order. Empty for caches without native identity metadata.
     #[cfg_attr(feature = "cache", serde(default))]
     pub zone_catalog: Vec<SourceZone>,
@@ -1703,12 +1710,14 @@ pub enum ModulationSource {
     Script(u16),
     /// The same script value for a bipolar source, kept in -1..=1.
     ScriptBipolar(u16),
+    /// Declared-Core target reader, never native smoothing or a listener value.
+    ConstantProperty { node:u32, value:ControlRef, style:ControlRef, bipolar:bool },
 }
 
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
 }
 
@@ -2077,6 +2086,36 @@ pub enum Depth {
 }
 
 // ---------------------------------------------------------------- DSP
+
+/// One actual XML ConstantModulation definition, independent of destinations.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceConstantProperty {
+    pub node:u32,pub owner:SourceOwnerId,pub value:ControlRef,pub style:ControlRef,pub bipolar:bool,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub law:SourceConstantPropertyLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum SourceConstantPropertyLaw {
+    #[default] UnqualifiedNative,
+    /// Explicit caller-declared Core target reader, retaining Core route cadence.
+    DeclaredCoreTargetRead,
+}
+
+/// One actual global destination and its resolved accepted-element input.
+/// Identities are source/plan metadata; the Runtime must bind the real receiver
+/// capability before any such outlet can execute. A destination owner is not
+/// itself permission to invent a MIDI channel or per-note input context.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceGlobalModulation {
+    pub owner:SourceOwnerId,
+    pub input_owner:SourceOwnerId,
+    pub outlet:BusRef,
+    pub sources:Vec<ModulatorRef>,
+    pub routes:Vec<RouteRef>,
+}
 
 /// A native source-owner recipe, resolved on the ordinary loader after actual
 /// SourceStorage geometry is available. This is not a second render engine.
