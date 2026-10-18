@@ -142,6 +142,16 @@ pub struct ControlWrite {
     pub value: ControlValue,
 }
 
+/// Declared-Core Constant property identity; no native parameter address.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SourceConstantProperty {pub node:u32,pub owner:sampler_ir::SourceOwnerId,pub value:ControlId,pub style:ControlId,pub bipolar:bool}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceConstantField {Value,Style}
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct SourceConstantSnapshot {pub value:f64,pub style:bool,pub revision:u64,pub frame:u64}
+#[derive(Clone,Copy)]
+struct ConstantPropertySlots {definition:SourceConstantProperty,value:RealControlIndex,style:usize}
+
 /// A control callback's position in the prepared source-module route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlCallback {
@@ -242,6 +252,7 @@ pub(super) struct ControlLayout {
     integers: Box<[IntegerDefinition]>,
     reals: Box<[RealDefinition]>,
     toggles: Box<[bool]>,
+    properties:Box<[ConstantPropertySlots]>,
 }
 impl ControlLayout {
     fn new(definitions: &[ControlDefinition]) -> Result<Self, Error> {
@@ -293,6 +304,7 @@ impl ControlLayout {
             integers: integers.into_boxed_slice(),
             reals: reals.into_boxed_slice(),
             toggles: toggles.into_boxed_slice(),
+            properties:Box::new([]),
         })
     }
     pub(super) fn real(&self, logical: usize) -> Result<RealControlIndex, Error> {
@@ -385,13 +397,22 @@ impl RealCell {
     }
 }
 #[derive(Clone, Copy)]
-pub(crate) struct RealValuesRef<'a>(&'a [RealCell]);
+pub(crate) struct RealValuesRef<'a>(&'a [RealCell], &'a [ToggleCell], &'a [ConstantPropertySlots]);
 impl<'a> RealValuesRef<'a> {
     pub(crate) fn new(cells: &'a [RealCell]) -> Self {
-        Self(cells)
+        Self(cells,&[],&[])
     }
     pub(crate) fn get(self, slot: RealControlIndex) -> f64 {
         self.0[slot.0].base
+    }
+    pub(crate) fn constant_property(self,node:u32,value:ControlId,style:ControlId,bipolar:bool)->f64{
+        // Preparation guarantees the exact pair; no note-local fallback/default.
+        let row=self.2.binary_search_by_key(&node,|row|row.definition.node)
+            .ok().and_then(|i|self.2.get(i)).filter(|row|row.definition.value==value&&row.definition.style==style&&row.definition.bipolar==bipolar);
+        let Some(row)=row else{return f64::NAN;};
+        let value=self.0[row.value.0].base.clamp(0.,1.);
+        let value=if self.1[row.style].value{f64::from(u8::from(value>0.5))}else{value};
+        if bipolar{2.*value-1.}else{value}
     }
 }
 
@@ -410,6 +431,7 @@ pub(super) struct ControlState {
     integers: Box<[IntegerCell]>,
     reals: Box<[RealCell]>,
     toggles: Box<[ToggleCell]>,
+    properties:Box<[ConstantPropertySlots]>,
     pub(super) automation: Box<[crate::automation::AutomationState]>,
     pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
@@ -441,12 +463,13 @@ impl ControlState {
                 .collect(),
             automation: vec![crate::automation::AutomationState::default(); plan.automation.len()]
                 .into_boxed_slice(),
+            properties:plan.control_layout.properties.clone(),
             revision: 0,
             pending: 0,
         }
     }
     pub(super) fn base_reals(&self) -> RealValuesRef<'_> {
-        RealValuesRef::new(&self.reals)
+        RealValuesRef(&self.reals,&self.toggles,&self.properties)
     }
     pub(super) fn real_value(&self, slot: RealControlIndex) -> f64 {
         self.reals[slot.0].playing
@@ -591,7 +614,17 @@ impl Prepared {
         }
         let layout = ControlLayout::new(&controls)?;
         let previous_layout = std::mem::replace(&mut self.control_layout, layout);
+        let properties=previous_layout.properties.iter().map(|row|row.definition).collect::<Vec<_>>();
+
         let previous = std::mem::replace(&mut self.controls, controls.into_boxed_slice());
+        let mut property_rows=Vec::new();property_rows.try_reserve_exact(properties.len()).map_err(|_|Error::Capacity)?;
+        for definition in properties{
+            let value=self.real_control(definition.value)?;
+            let style=match self.control_layout.slots[self.control_index(definition.style)?].kind{ControlKind::Toggle(index)=>index,_=>return Err(Error::InvalidInput)};
+            if self.controls[self.control_index(definition.value)?].domain!=(ControlDomain::Real{min:f64::MIN,max:f64::MAX}){return Err(Error::InvalidInput);}
+            property_rows.push(ConstantPropertySlots{definition,value,style});
+        }
+        self.control_layout.properties=property_rows.into_boxed_slice();
         self.validate_program_controls(&self.programs)?;
         self.validate_dsp_controls()?;
         self.validate_processing_controls()?;
@@ -662,7 +695,9 @@ impl Prepared {
             layout.real(index)
         };
         self.voice_modulation.remap_controls(&remap)?;
-        self.processing_modulation.remap_controls(remap)?;
+        self.processing_modulation.remap_controls(&remap)?;
+        self.buses.remap_element_controls(remap)?;
+        self.validate_all_constant_property_programs()?;
         Ok(self)
     }
 
@@ -713,6 +748,41 @@ impl Prepared {
         value: ControlValue,
     ) -> Result<ControlEdit, Error> {
         self.control_layout.edit(self.control_index(id)?, value)
+    }
+    pub fn source_constant_properties(&self)->impl Iterator<Item=SourceConstantProperty>+'_ {
+        self.control_layout.properties.iter().map(|row|row.definition)
+    }
+    /// Offaudio, checked actual definitions. Existing generic controls remain sole values.
+    pub fn with_source_constant_properties(mut self,definitions:Vec<SourceConstantProperty>,max_bytes:usize)->Result<Self,Error>{
+        let bytes=std::alloc::Layout::array::<ConstantPropertySlots>(definitions.len()).map_err(|_|Error::Capacity)?.size();
+        let construction=std::alloc::Layout::array::<SourceConstantProperty>(definitions.capacity()).map_err(|_|Error::Capacity)?.size().checked_add(bytes.checked_mul(3).ok_or(Error::Capacity)?).ok_or(Error::Capacity)?;
+        let old=std::alloc::Layout::array::<ConstantPropertySlots>(self.control_layout.properties.len()).map_err(|_|Error::Capacity)?.size();
+        if definitions.len()>self.controls.len()/2||bytes>max_bytes||construction.checked_add(old).ok_or(Error::Capacity)?>max_bytes{return Err(Error::Capacity);}
+        let mut rows=Vec::new();rows.try_reserve_exact(definitions.len()).map_err(|_|Error::Capacity)?;
+        let actual=std::alloc::Layout::array::<ConstantPropertySlots>(rows.capacity()).map_err(|_|Error::Capacity)?.size();
+        let spare=actual.checked_sub(bytes).ok_or(Error::Capacity)?;
+        if construction.checked_add(old).and_then(|sum|sum.checked_add(spare)).ok_or(Error::Capacity)?>max_bytes{return Err(Error::Capacity);}
+        for definition in definitions{
+            if self.source_owner_index(definition.owner).is_none()||definition.value==definition.style||rows.iter().any(|row:&ConstantPropertySlots|row.definition.node==definition.node||row.definition.value==definition.value||row.definition.style==definition.style){return Err(Error::InvalidInput);}
+            let value=self.real_control(definition.value)?;
+            let style=match self.control_layout.slots[self.control_index(definition.style)?].kind{ControlKind::Toggle(index)=>index,_=>return Err(Error::InvalidInput)};
+            if self.controls[self.control_index(definition.value)?].domain!= (ControlDomain::Real{min:f64::MIN,max:f64::MAX}){return Err(Error::InvalidInput);}
+            rows.push(ConstantPropertySlots{definition,value,style});
+        }
+        rows.sort_unstable_by_key(|row|row.definition.node);self.control_layout.properties=rows.into_boxed_slice();self.validate_all_constant_property_programs()?;Ok(self)
+    }
+    pub(crate) fn validate_constant_property_program(&self,program:&crate::voice_mod::VoiceModulation)->Result<(),Error>{
+        program.validate_constant_properties(|node,value,style,bipolar|self.control_layout.properties.binary_search_by_key(&node,|row|row.definition.node).ok().and_then(|index|self.control_layout.properties.get(index)).is_some_and(|row|row.definition.value==value&&row.definition.style==style&&row.definition.bipolar==bipolar))
+    }
+    fn validate_all_constant_property_programs(&self)->Result<(),Error>{
+        self.validate_constant_property_program(&self.voice_modulation)?;
+        self.validate_constant_property_program(&self.processing_modulation)?;
+        self.validate_constant_property_element_inputs()
+    }
+    /// Requested/retained role-map payload, separate from existing scalar cells.
+    /// One immutable Prepared map and one runtime map; no value duplication.
+    pub fn source_constant_storage_bytes(&self)->Result<usize,Error>{
+        std::alloc::Layout::array::<ConstantPropertySlots>(self.control_layout.properties.len()).map_err(|_|Error::Capacity)?.size().checked_mul(2).ok_or(Error::Capacity)
     }
     /// Rebuild physical handles whenever IDs or attached metadata change, before publication.
     pub(super) fn refresh_real_controls(&mut self) -> Result<(), Error> {
@@ -804,6 +874,21 @@ impl crate::Generation {
 }
 
 impl Runtime {
+    pub fn source_constant_properties(&self,plan:PlanId)->Result<impl Iterator<Item=SourceConstantProperty>+'_,Error>{
+        Ok(self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_constant_properties())
+    }
+    pub fn source_constant_property(&self,plan:PlanId,node:u32)->Result<SourceConstantSnapshot,Error>{
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let row=generation.prepared.control_layout.properties.get(generation.prepared.control_layout.properties.binary_search_by_key(&node,|row|row.definition.node).map_err(|_|Error::InvalidInput)?).ok_or(Error::InvalidInput)?;
+        Ok(SourceConstantSnapshot{value:generation.controls.reals[row.value.0].base,style:generation.controls.toggles[row.style].value,revision:generation.controls.revision,frame:self.now})
+    }
+    pub fn set_source_constant_property(&mut self,plan:PlanId,node:u32,field:SourceConstantField,value:ControlValue)->Result<SourceConstantSnapshot,Error>{
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let row=generation.prepared.control_layout.properties.get(generation.prepared.control_layout.properties.binary_search_by_key(&node,|row|row.definition.node).map_err(|_|Error::InvalidInput)?).ok_or(Error::InvalidInput)?;
+        let id=match field{SourceConstantField::Value=>row.definition.value,SourceConstantField::Style=>row.definition.style};
+        // edit_controls validates all fields/revision capacity before any mutation.
+        self.edit_controls(plan,None,&[ControlWrite{id,value}])?;self.source_constant_property(plan,node)
+    }
     /// One cross-format host Tone, independent of authored voice/filter controls.
     pub fn set_part_tone_cutoff(&mut self, cutoff: f64) -> Result<(), Error> {
         if !(20.0..=20_000.).contains(&cutoff) {

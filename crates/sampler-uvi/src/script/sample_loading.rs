@@ -204,6 +204,7 @@ struct Pending {
     status: Arc<SampleTask>,
     task: Option<AnyUserData>,
     callback: Option<Thread>,
+    processor: Option<usize>,
 }
 impl Pending {
     fn path_bytes(&self) -> usize {
@@ -538,6 +539,8 @@ impl SampleLoads {
                 thread,
                 MultiValue::from_vec(vec![Value::UserData(task)]),
                 super::PlayCreator::None,
+                pending.processor,
+                super::input_authority::PreparedLuaOrigin::None,
             ));
         }
     }
@@ -833,6 +836,7 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
                 status,
                 task: task.clone(),
                 callback: thread,
+                processor: s.processor.get(),
             };
             s.sample_loads.borrow_mut().enqueue(&s, pending);
             Ok(task)

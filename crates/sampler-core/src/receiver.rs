@@ -183,6 +183,28 @@ impl Runtime {
         Ok(&self.receivers.get(id.0).ok_or(Error::StaleHandle)?.state)
     }
 
+    fn receiver_has_element_input(&self,id:ReceiverId)->bool{
+        self.plans.get(self.active_plan.0).is_some_and(|generation|generation.dsp.buses.has_element_receiver(id))
+    }
+
+    pub(super) fn receiver_performance(&self,id:ReceiverId)->Result<crate::PerformanceId,Error>{
+        Ok(self.receiver(id)?.performance)
+    }
+
+    /// Bind an actual retained plan's element input to its real receiver.
+    /// Every source definition supplies an explicit initial value off audio;
+    /// this API neither chooses a channel nor supplies MIDI reset defaults.
+    pub fn bind_receiver_source_input(&mut self,receiver:ReceiverId,plan:crate::PlanId,
+        owner:sampler_ir::SourceOwnerId,initial:&[(sampler_ir::ModulatorRef,Value)])->Result<(),Error>{
+        let performance=self.receiver(receiver)?.performance;
+        self.performance_index(performance)?;
+        let generation=self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        if generation.callbacks!=0{return Err(Error::Busy);}
+        let owner=generation.prepared.source_owner_index(owner).ok_or(Error::InvalidInput)?;
+        generation.dsp.buses.bind_element_inputs(&generation.prepared.buses,owner,receiver,performance,initial,
+            self.now,self.tempo,generation.controls.base_reals())
+    }
+
     /// Offaudio transfer back to the unbound facade. A completed-but-unflushed
     /// captured callback still owns its real context and therefore remains busy.
     fn receiver_unbind_busy(&self,id:ReceiverId)->Result<bool,Error>{
@@ -194,6 +216,7 @@ impl Runtime {
             || !owner.state.physical.is_empty()
             || !owner.state.terminal_releases.is_empty()
             || !owner.state.bindings.is_empty()
+            || self.plans.slots.iter().any(|slot|slot.value.as_ref().is_some_and(|generation|generation.dsp.buses.has_element_receiver(id)))
             || self.expressions.slots.iter().any(|slot| {
                 slot.value.as_ref().is_some_and(|owner| {
                     owner
@@ -331,7 +354,7 @@ impl Runtime {
     /// The real owner remains queryable throughout this transaction. Only Ready
     /// execution/due adoption is deferred; no arena state is borrowed across an
     /// authored callback and no facade temporarily owns canonical state.
-    fn publish_receiver_transaction<T>(
+    pub(super) fn publish_receiver_transaction<T>(
         &mut self,
         commit: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
@@ -406,7 +429,8 @@ impl Runtime {
         let state = self.receiver(id)?;
         let domain = OwnedReceiver::domain(input.protocol)?;
         let performance = self.performance_index(state.performance)?;
-        let channels = state.controller_channels(domain, input.channel);
+        let element_only=matches!(kind,ReceiverActionKind::ElementOnly);
+        let channels=if element_only{1<<input.channel}else{state.controller_channels(domain,input.channel)};
         let origin = input.channel_address();
         let scope = ChannelScope {
             protocol: origin.protocol,
@@ -417,7 +441,7 @@ impl Runtime {
         let native_per_note = matches!(number, 128 | 129)
             || matches!(kind, ReceiverActionKind::TimbreBridge)
             || number == 74 && state.zone_domain(domain);
-        let secondary = if number == 120 {
+        let secondary = if element_only||number == 120 {
             None
         } else {
             state.host_targets(input.channel, native_per_note)
@@ -507,10 +531,17 @@ impl Runtime {
     ) -> Result<(), Error> {
         let capture = event.receiver.ok_or(Error::InvalidInput)?;
         let id = capture.receiver;
+        if matches!(capture.kind,ReceiverActionKind::ElementOnly){
+            // This is an accepted source action, never a controller mirror in
+            // a fabricated voice channel. Authored new families need an actual
+            // checked reroute rather than changing this captured audience.
+            return if event.number<120{Ok(())}else{Err(Error::InvalidInput)};
+        }
         let domain = OwnedReceiver::domain(event.origin.protocol)?;
         let allowed = self.receiver_allowed(id, primary, secondary)?;
         let raw = match capture.provenance {
             ReceiverProvenance::Wire(value) => value,
+            ReceiverProvenance::Script7(value) => Value::Bits7(value),
             ReceiverProvenance::Script => {
                 if event.number == 128 {
                     Value::Bits14((event.value >> 18) as u16)
@@ -965,6 +996,12 @@ impl Runtime {
                 }
             ) || mcm && matches!(voice.message, Message::Control { index: 6, .. }));
         if !state.accepts_wire_channel(domain, voice.channel) && !captured && !parameter {
+            if let Message::Control{index,value}=voice.message{
+                if index<120&&!(voice.version==Version::Midi2&&is_midi2_legacy_control(index))&&self.receiver_has_element_input(id){
+                    self.apply_due();
+                    return self.dispatch_receiver_controller(id,input,source.unwrap_or(input),index,value,ReceiverActionKind::ElementOnly).map_err(Into::into);
+                }
+            }
             return Ok(if state.configured || terminal.is_some() {
                 Applied::Ignored
             } else {
@@ -1109,6 +1146,8 @@ impl Runtime {
                         value,
                         ReceiverActionKind::Controller,
                     )?
+                } else if self.receiver_has_element_input(id){
+                    self.dispatch_receiver_controller(id,input,source.unwrap_or(input),index,value,ReceiverActionKind::ElementOnly)?
                 } else {
                     Applied::Ignored
                 }

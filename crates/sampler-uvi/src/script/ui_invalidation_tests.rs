@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn identical_scalar_presentation_writes_do_not_republish_an_unchanged_face() {
-    let xml = r#"<Program><ScriptProcessor><script><![CDATA[
+    let xml = r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
         makePerformanceView()
         labels = {}
         for i=1,256 do
@@ -21,7 +21,7 @@ fn identical_scalar_presentation_writes_do_not_republish_an_unchanged_face() {
                 label.alpha=1
             end
         end
-    ]]></script></ScriptProcessor></Program>"#;
+    ]]></script></ScriptProcessor></EventProcessors></Program>"#;
     let mut host = ScriptHost::new(xml, (), Config::default()).unwrap();
     let face = host.interface();
     let before = host.ui_revision();
@@ -38,11 +38,11 @@ fn identical_scalar_presentation_writes_do_not_republish_an_unchanged_face() {
 
 #[test]
 fn real_scalar_changes_and_reassigned_mutable_menu_items_remain_visible() {
-    let xml = r#"<Program><ScriptProcessor><script><![CDATA[
+    let xml = r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
         label=Label('label')
         label.text='before'
         menu=Menu('menu', {'one','two'}, 1)
-    ]]></script></ScriptProcessor></Program>"#;
+    ]]></script></ScriptProcessor></EventProcessors></Program>"#;
     let host = ScriptHost::new(xml, (), Config::default()).unwrap();
     let before = host.ui_revision();
     host.lua.load("label.text='after'; label.visible=false; local items=menu.items; items[1]='edited'; menu.items=items").exec().unwrap();
@@ -64,7 +64,7 @@ fn real_scalar_changes_and_reassigned_mutable_menu_items_remain_visible() {
 
 #[test]
 fn scalar_invalidation_preserves_types_signed_zero_and_nan_writes() {
-    let host = ScriptHost::new("<Program><ScriptProcessor><script>label=Label('label')</script></ScriptProcessor></Program>", (), Config::default()).unwrap();
+    let host = ScriptHost::new("<Program><EventProcessors><ScriptProcessor><script>label=Label('label')</script></ScriptProcessor></EventProcessors></Program>", (), Config::default()).unwrap();
     host.lua.load("label.observation=0").exec().unwrap();
     let before = host.ui_revision();
     host.lua
@@ -105,7 +105,7 @@ fn scalar_invalidation_preserves_types_signed_zero_and_nan_writes() {
 
 #[test]
 fn presentation_data_with_authored_metamethods_keeps_its_write_side_effects() {
-    let host = ScriptHost::new("<Program><ScriptProcessor><script>label=Label('label')</script></ScriptProcessor></Program>", (), Config::default()).unwrap();
+    let host = ScriptHost::new("<Program><EventProcessors><ScriptProcessor><script>label=Label('label')</script></ScriptProcessor></EventProcessors></Program>", (), Config::default()).unwrap();
     host.lua.load("writes=0; setmetatable(rawget(label,'__data'), {__newindex=function(t,k,v) writes=writes+1; rawset(t,k,v) end})").exec().unwrap();
     let before = host.ui_revision();
     host.lua

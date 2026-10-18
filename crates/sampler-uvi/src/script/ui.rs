@@ -9,11 +9,32 @@ mod wave_view;
 pub fn control_id(widget: usize, component: usize) -> ui::ControlId {
     ui::ControlId(0x55564900000000000000000000000000 | ((widget as u128) << 32) | component as u128)
 }
-fn identity(id: ui::ControlId) -> Option<(usize, usize)> {
-    ((id.0 >> 64) == 0x5556490000000000).then_some((
-        ((id.0 >> 32) & 0xffff_ffff) as usize,
-        (id.0 & 0xffff_ffff) as usize,
-    ))
+fn identity(id:ui::ControlId)->Option<(Option<u32>,usize,usize)> {
+    let high=(id.0>>64) as u64;
+    let processor=if high==0x5556490000000000 {None}
+        else if high>>32==0x55564901 {Some(high as u32)} else{return None;};
+    Some((processor,((id.0>>32)&0xffff_ffff) as usize,(id.0&0xffff_ffff) as usize))
+}
+impl ScriptHost {
+    fn processor_control_id(&self,widget:usize,component:usize)->ui::ControlId {
+        let Some(index)=self.shared.processor.get().filter(|i|*i!=0) else{return control_id(widget,component);};
+        let node=self.shared.processors.borrow()[index].source_node;
+        ui::ControlId((0x55564901_u128<<96)|((node as u128)<<64)|((widget as u128)<<32)|component as u128)
+    }
+    fn presentation_processor(&self)->Option<usize> {
+        if let Some(index)=self.shared.processor.get(){return Some(index);}
+        self.shared.processors.borrow().iter().enumerate().find_map(|(index,context)| {
+            if !context.program_level||self.processor_bypassed(context.address.processor).ok()?{return None;}
+            let environment=self.lua.registry_value::<Table>(&context.environment).ok()?;
+            let root=environment.raw_get::<Table>("__ui").ok()?;
+            matches!(root.raw_get::<Value>("performance"),Ok(Value::Boolean(true))).then_some(index)
+        }).or_else(||(!self.shared.processors.borrow().is_empty()).then_some(0))
+    }
+    pub fn processor_interface(&self,processor:sampler_ir::SourceEventProcessorId)->Result<ui::Interface,String> {
+        let index=self.shared.processors.borrow().iter().position(|p|p.address.processor==processor).ok_or("unknown ScriptProcessor interface")?;
+        let _context=super::input_authority::enter(&self.lua,&self.shared,Some(index)).map_err(super::lua_error)?;
+        Ok(self.interface())
+    }
 }
 // Canonical reads retain Lua's __index semantics. The private projection
 // specialization below may supply the same scalar values from a fresh raw pass.
@@ -566,7 +587,15 @@ impl ScriptHost {
         }
         out
     }
+    pub(crate) const SOURCE_PROPERTY_PRESENTATION_UNAVAILABLE: &'static str = "canonical Constant property value unavailable";
+    /// Endpoint presence is routing metadata, never a canonical value/liveness
+    /// proof. Each presentation read still queries the actual Core generation.
+    pub(crate) fn has_standalone_property_presentation_endpoint(&self)->bool {
+        !self.shared.canonical_tasks && self.shared.authority.borrow().is_none()
+            && self.shared.source_properties.borrow().is_some()
+    }
     pub fn ui_revision(&self) -> u64 {
+        let Ok(_context)=super::input_authority::enter(&self.lua,&self.shared,self.presentation_processor()) else{return 0;};
         self.lua
             .globals()
             .raw_get::<Table>("__ui")
@@ -579,17 +608,17 @@ impl ScriptHost {
     }
     pub(crate) fn control_values_from(face: &ui::Interface) -> Vec<(ui::ControlId, f64)> {
         let mut out = Vec::new();
-        for (i, w) in face.widgets.iter().enumerate() {
+        for w in &face.widgets {
             match &w.kind {
                 ui::Kind::Table { cells, .. } => out.extend(
                     cells
                         .iter()
                         .enumerate()
-                        .map(|(c, v)| (control_id(i + 1, c + 1), *v)),
+                        .filter_map(|(c,v)|w.components.first().map(|id|(ui::ControlId((id.0 & !0xffff_ffff_u128)|(c+1) as u128),*v))),
                 ),
                 ui::Kind::Xy { .. } => {} // Axes share their original knobs' controls.
                 _ if matches!(w.binding, ui::Binding::Control(_)) => {
-                    out.push((control_id(i + 1, 0), w.initial_value));
+                    if let ui::Binding::Control(id)=w.binding {out.push((id,w.initial_value));}
                 }
                 _ => {}
             }
@@ -605,7 +634,14 @@ impl ScriptHost {
         if !value.is_finite() {
             return Err("non-finite UI value".into());
         }
-        let (widget, component) = identity(id).ok_or("not a UVI control")?;
+        let (processor,widget,component)=identity(id).ok_or("not a UVI control")?;
+        let index=match processor {
+            Some(node)=>self.shared.processors.borrow().iter().position(|p|p.address.processor==sampler_ir::SourceEventProcessorId::UviNode(node)),
+            None=>(!self.shared.processors.borrow().is_empty()).then_some(0),
+        };
+        if processor.is_some()&&index.is_none(){return Err("stale ScriptProcessor control identity".into());}
+        let lua=self.lua.clone();let shared=self.shared.clone();
+        let _context=super::input_authority::enter(&lua,&shared,index).map_err(super::lua_error)?;
         self.shared.arm(
             self.shared.config.callback,
             self.shared.config.callback_work,
@@ -628,8 +664,15 @@ impl ScriptHost {
     /// not manufacture click modifiers or consult pointer activation timing.
     pub fn activate_control(&mut self,id:ui::ControlId,activation:ui::UiActivation)->Result<(),String>{
         if !activation.valid(){return Err("invalid UVI activation origin/modifiers".into());}
-        let (widget,component)=identity(id).ok_or("not a UVI control")?;
+        let (processor,widget,component)=identity(id).ok_or("not a UVI control")?;
         if component!=0{return Err("UVI activation requires a scalar widget".into());}
+        let index=match processor {
+            Some(node)=>self.shared.processors.borrow().iter().position(|p|p.address.processor==sampler_ir::SourceEventProcessorId::UviNode(node)),
+            None=>(!self.shared.processors.borrow().is_empty()).then_some(0),
+        };
+        if processor.is_some()&&index.is_none(){return Err("stale ScriptProcessor activation identity".into());}
+        let lua=self.lua.clone();let shared=self.shared.clone();
+        let _context=super::input_authority::enter(&lua,&shared,index).map_err(super::lua_error)?;
         self.shared.arm(self.shared.config.callback,self.shared.config.callback_work);
         let result=(||{
             let mods=if let Some(raw)=activation.modifiers {
@@ -653,6 +696,13 @@ impl ScriptHost {
     // The canonical iterator and rejected classifier are test-only oracles.
     // Ordinary exports use the same membership rules with mlua's raw for_each.
     fn interface_classified<const INVENTORY_MODE: u8>(&self) -> ui::Interface {
+        let _context=match super::input_authority::enter(&self.lua,&self.shared,self.presentation_processor()) {
+            Ok(context)=>context,
+            Err(error)=> {
+                self.shared.find("lua UI snapshot",&super::lua_error(error));
+                return ui::Interface {source:ui::Source::FalconLua,unsupported:vec![ui::Unsupported {widget:None,feature:"ScriptProcessor context".into(),value:"unavailable".into()}],..Default::default()};
+            }
+        };
         let _profile = self.shared.profile.span("ui_ir_export");
         let _budget = self.shared.inspection_budget();
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_snapshot");
@@ -764,7 +814,10 @@ impl ScriptHost {
                 num(w, "width").unwrap_or(0.),
                 num(w, "height").unwrap_or(0.),
             );
-            let value = {
+            let property_bound = w.table("element").and_then(|element|element.raw_get::<usize>("__id").ok())
+                .zip(text(w,"parameter"))
+                .is_some_and(|(id,field)|self.shared.constant_property_field(id,&field));
+            let read_value = {
                 #[cfg(feature = "scan")]
                 let _value_sample = sampled_audit
                     .map(|audit| audit.span(super::diagnostics::OwnerStage::ExportValueSample));
@@ -778,8 +831,22 @@ impl ScriptHost {
                     }
                     num(proxy, "value")
                 }
+            };
+            if property_bound && read_value.is_none() {
+                // Preserve the real widget slot/parent/paint identities. An
+                // unavailable parameter is a non-value, noneditable placeholder,
+                // not a successful value0 and not an editable registry cell.
+                let mut unavailable=ui::Widget::new(name.clone(),ui::PageRef(0),ui::Rect{x,y,width:wd,height:ht},ui::Kind::Panel);
+                unavailable.source_id=Some(index as i32+1);
+                unavailable.parent=parents[index];
+                unavailable.hidden=!flag(w,"visible",true);
+                unavailable.enabled=false;unavailable.intercepts_mouse=false;
+                unavailable.text="Unavailable".into();
+                out.widgets.push(unavailable);
+                out.unsupported.push(ui::Unsupported{widget:Some(ui::WidgetRef(index)),feature:Self::SOURCE_PROPERTY_PRESENTATION_UNAVAILABLE.into(),value:"requires actual bound Core readback".into()});
+                continue;
             }
-            .unwrap_or(0.);
+            let value=read_value.unwrap_or(0.);
             let range = ui::Range {
                 min: num(w, "min").unwrap_or(0.),
                 max: num(w, "max").unwrap_or(1.),
@@ -979,10 +1046,10 @@ impl ScriptHost {
                     | ui::Kind::Button { .. }
                     | ui::Kind::Menu { .. }
             ) {
-                wd.binding = ui::Binding::Control(control_id(index + 1, 0));
+                wd.binding = ui::Binding::Control(self.processor_control_id(index + 1, 0));
             } else if let ui::Kind::Table { columns, .. } = wd.kind {
                 wd.components = (1..=columns as usize)
-                    .map(|c| control_id(index + 1, c))
+                    .map(|c| self.processor_control_id(index + 1, c))
                     .collect();
                 wd.binding = wd
                     .components
@@ -994,7 +1061,7 @@ impl ScriptHost {
                 for key in ["paramX", "paramY"] {
                     let target = text(w, key);
                     if let Some(i) = widgets.iter().position(|w| text(w, "name") == target) {
-                        wd.components.push(control_id(i + 1, 0));
+                        wd.components.push(self.processor_control_id(i + 1, 0));
                     } else {
                         out.unsupported.push(ui::Unsupported {
                             widget: Some(ui::WidgetRef(index)),
@@ -1390,6 +1457,43 @@ pub enum SavedValue {
 pub struct UiState {
     pub widgets: Vec<(usize, String, SavedValue)>,
     pub custom: Option<SavedValue>,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    pub processors: Vec<ProcessorUiState>,
+}
+#[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
+pub struct ProcessorUiState {
+    pub source_node:u32,
+    pub widgets:Vec<(usize,String,SavedValue)>,
+    pub custom:Option<SavedValue>,
+}
+impl UiState {
+    pub(super) fn for_processor(&self,node:u32,legacy:bool)->Option<UiState> {
+        self.processors.iter().find(|state|state.source_node==node)
+            .map(|state|UiState {widgets:state.widgets.clone(),custom:state.custom.clone(),processors:Vec::new()})
+            .or_else(||legacy.then(||UiState {widgets:self.widgets.clone(),custom:self.custom.clone(),processors:Vec::new()}))
+    }
+    pub(super) fn validate(&self)->Result<(),String> {
+        fn value(v:&SavedValue,depth:usize,left:&mut usize)->Result<(),String> {
+            *left=left.checked_sub(1).ok_or("aggregate UVI state exceeds 65536 values")?;
+            if depth>64{return Err("UVI state exceeds depth limit".into());}
+            match v {
+                SavedValue::Number(n) if !n.is_finite()=>return Err("invalid UVI state number".into()),
+                SavedValue::String(s) if s.len()>1<<20=>return Err("UVI state string exceeds limit".into()),
+                SavedValue::Bytes(s) if s.len()>1<<20=>return Err("UVI state bytes exceed limit".into()),
+                SavedValue::Table(rows)=>for (key,v) in rows {value(key,depth+1,left)?;value(v,depth+1,left)?;},
+                _=>{}
+            }Ok(())
+        }
+        if self.processors.len()>super::input_authority::MAX_PROCESSORS{return Err("too many saved ScriptProcessors".into());}
+        let mut seen=HashSet::new();let mut left=65536;
+        for (widgets,custom) in std::iter::once((&self.widgets,&self.custom)).chain(self.processors.iter().map(|state|(&state.widgets,&state.custom))) {
+            for (_,name,v) in widgets {if name.len()>1<<20{return Err("UVI widget name exceeds limit".into());}value(v,0,&mut left)?;}
+            if let Some(custom)=custom {value(custom,0,&mut left)?;}
+        }
+        for state in &self.processors {if !seen.insert(state.source_node){return Err("duplicate saved ScriptProcessor identity".into());}}
+        if serde_json::to_vec(self).map_err(|e|e.to_string())?.len()>8<<20{return Err("aggregate UVI state exceeds 8 MiB".into());}
+        Ok(())
+    }
 }
 pub(super) fn json_state(source: &str) -> Result<SavedValue, String> {
     if source.len() > 2 << 20 {
@@ -1518,19 +1622,47 @@ fn load_value(
 }
 impl ScriptHost {
     /// Explicit state restoration: widget callbacks, custom onLoad, no onInit.
-    pub fn restore_ui_state(&self, state: &UiState) -> Result<(), String> {
-        self.restore_ui_values(state)?;
-        self.restore_ui_custom(state)
+    pub fn restore_ui_state(&self,state:&UiState)->Result<(),String> {
+        state.validate()?;
+        self.shared.arm(self.shared.config.load,self.shared.config.load_work);
+        for (index,context) in self.shared.processors.borrow().iter().enumerate() {
+            let sampler_ir::SourceEventProcessorId::UviNode(node)=context.address.processor else{return Err("non-UVI processor state".into());};
+            if index==0&&state.processors.iter().any(|row|row.source_node==node)&&(!state.widgets.is_empty()||state.custom.is_some()){return Err("duplicate legacy/typed first-processor state".into());}
+        }
+        let count=self.shared.processors.borrow().len();
+        if count==0 {self.restore_ui_values(state)?;return self.restore_ui_custom(state);}
+        for index in 0..count {
+            let processor=self.shared.processors.borrow()[index].address.processor;
+            let sampler_ir::SourceEventProcessorId::UviNode(node)=processor else{return Err("non-UVI processor state".into());};
+            if let Some(state)=state.for_processor(node,index==0) {
+                let _context=super::input_authority::enter(&self.lua,&self.shared,Some(index)).map_err(super::lua_error)?;
+                self.restore_ui_values(&state)?;self.restore_ui_custom(&state)?;
+            }
+        }Ok(())
     }
-    pub fn save_ui_state(&self) -> Result<UiState, String> {
+    pub fn save_ui_state(&self)->Result<UiState,String> {
+        self.shared.arm(self.shared.config.load,self.shared.config.load_work);
+        let count=self.shared.processors.borrow().len();let mut remaining=65536;
+        if count==0 {return self.save_processor_state(&mut remaining);}
+        let mut out=UiState::default();
+        for index in 0..count {
+            let _context=super::input_authority::enter(&self.lua,&self.shared,Some(index)).map_err(super::lua_error)?;
+            let state=self.save_processor_state(&mut remaining)?;
+            if index==0 {out.widgets=state.widgets;out.custom=state.custom;}
+            else {
+                let processor=self.shared.processors.borrow()[index].address.processor;
+                let sampler_ir::SourceEventProcessorId::UviNode(node)=processor else{return Err("non-UVI processor state".into());};
+                out.processors.push(ProcessorUiState {source_node:node,widgets:state.widgets,custom:state.custom});
+            }
+        }
+        out.validate()?;Ok(out)
+    }
+    fn save_processor_state(&self,remaining:&mut usize)->Result<UiState,String> {
         let _span = sampler_kontakt::audit::Span::new("uvi_lua_ui_save");
-        self.shared
-            .arm(self.shared.config.load, self.shared.config.load_work);
         let mut out = UiState::default();
-        let mut remaining = 65536;
         if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onSave") {
             let value = f.call::<Value>(()).map_err(super::lua_error)?;
-            out.custom = Some(save_value(value, &mut Vec::new(), &mut remaining)?);
+            out.custom = Some(save_value(value, &mut Vec::new(), remaining)?);
         }
         for (i, w) in widgets(self).iter().enumerate() {
             if !flag(w, "persistent", true) || text(w, "kind").as_deref() == Some("Button") {
@@ -1546,7 +1678,7 @@ impl ScriptHost {
                 out.widgets.push((
                     i + 1,
                     text(w, "name").unwrap_or_default(),
-                    save_value(v, &mut Vec::new(), &mut remaining)?,
+                    save_value(v, &mut Vec::new(), remaining)?,
                 ));
             }
         }
@@ -1556,8 +1688,6 @@ impl ScriptHost {
         Ok(out)
     }
     pub(super) fn restore_ui_values(&self, state: &UiState) -> Result<(), String> {
-        self.shared
-            .arm(self.shared.config.load, self.shared.config.load_work);
         let list = widgets(self);
         let mut remaining = 65536;
         for (i, name, v) in &state.widgets {
@@ -1592,8 +1722,6 @@ impl ScriptHost {
         if let Some(value) = &state.custom
             && let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onLoad")
         {
-            self.shared
-                .arm(self.shared.config.load, self.shared.config.load_work);
             f.call::<()>(load_value(&self.lua, value, 0, &mut 65536)?)
                 .map_err(super::lua_error)?;
             self.cycle();

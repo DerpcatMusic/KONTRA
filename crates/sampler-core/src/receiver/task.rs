@@ -62,7 +62,10 @@ impl TaskDomain {
         Self::Global{..}=>None,
         Self::Captured{performance,origin,source,channels,epochs,secondary,mut receiver,stage}=>{
             if receiver.is_none()&&source!=origin{return None;}
-            if let Some(capture)=receiver.as_mut(){capture.kind=super::components::ReceiverActionKind::Controller;capture.provenance=super::components::ReceiverProvenance::Script;}
+            if let Some(capture)=receiver.as_mut(){
+                if !matches!(capture.kind,super::components::ReceiverActionKind::ElementOnly){capture.kind=super::components::ReceiverActionKind::Controller;}
+                capture.provenance=super::components::ReceiverProvenance::Script;
+            }
             Some(ControllerEvent{original_frame:now,performance,origin,channels,epochs,secondary,receiver,number,value,poly_key:None,poly_recipients:None,stage:stage+1,pending:true,reserved:0})
         }
     }}

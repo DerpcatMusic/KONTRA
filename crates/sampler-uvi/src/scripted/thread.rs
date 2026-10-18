@@ -22,7 +22,7 @@ use std::{
         mpsc,
     },
     thread::{Builder, JoinHandle},
-    time::Duration,
+    time::{Duration,Instant},
 };
 
 /// Events and commands in flight between the two sides.
@@ -34,10 +34,13 @@ const POLL: Duration = Duration::from_millis(1);
 enum Outgoing {
     Command(Command),
     Diagnostic(u64),
+    Reset{sequence:u64,accepted:bool},
 }
 
 #[derive(Clone, Copy)]
 enum Message {
+    External(sampler_core::ExternalTurn),
+    Reset{runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,sequence:u64},
     Control {
         generation: u64,
         id: ControlId,
@@ -69,6 +72,8 @@ pub struct Loaded {
     /// Initialization writes folded into the program (`ScriptHost::folded_writes`).
     pub folded_writes: Vec<(usize, String, String)>,
     pub findings: Vec<Finding>,
+    /// Preparation snapshot. Unavailable canonical fields are explicit; this
+    /// copy is never a live-value ACK. Use ui snapshots/value after readback.
     pub interface: sampler_ui_ir::Interface,
     pub ui: Arc<UiBridge>,
 }
@@ -80,11 +85,24 @@ pub struct ScriptThread {
     events: rtrb::Producer<Message>,
     ui: Arc<UiBridge>,
     commands: rtrb::Consumer<Outgoing>,
+    reset_retirement:rtrb::Producer<Command>,
+    reset_sequence:u64,
+    pending_reset:Option<u64>,
+    reset_retained:Option<Command>,
     /// The audio clock in milliseconds, as `f64` bits.
     clock: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     handles_notes: bool,
+    authority:Option<crate::script::CoreAuthorityPort>,
+    external_in_flight:Option<sampler_core::ExternalInputId>,
+    external_terminal:Option<(sampler_core::ExternalInputId,u32)>,
+    prepared_roots:Box<[crate::script::PreparedRootTask]>,
+    root_requests:Box<[sampler_core::PreparedGlobalSourceTask]>,
+    root_bindings:Option<Box<[Option<sampler_core::BehaviorId>]>>,
+    root_setup:rtrb::Producer<RootSetup>,
+    root_acks:rtrb::Consumer<RootSetupAck>,
+    root_state:RootSetupState,
     time_ms: f64,
     #[cfg(feature = "scan")]
     audit: bool,
@@ -94,9 +112,21 @@ pub struct ScriptThread {
     audit_pending: Vec<Command>,
 }
 
+struct RootSetup {runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,bindings:Box<[Option<sampler_core::BehaviorId>]>}
+struct RootSetupAck {setup:RootSetup,result:Result<(),sampler_core::Error>}
+#[derive(Clone,Copy,Debug)]
+enum RootSetupState {Idle,Pending{runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,frame:u64},Ready{runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,frame:u64},Failed}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PreparedRootProgress {Pending,Ready{tasks:usize}}
+
 enum UiRequest {
     Diagnostic(diagnostics::Pending),
     SampleStatus(mpsc::SyncSender<crate::script::SampleLoadStatus>),
+    BindAuthority(crate::script::OwnerAuthorityPort,mpsc::SyncSender<Result<(),String>>),
+    BindSourceProperties(crate::script::OwnerSourcePropertyPort,mpsc::SyncSender<Result<(),String>>),
+    RefreshSourcePropertyPresentation,
+    PreparedRoots(mpsc::SyncSender<Result<Vec<crate::script::PreparedRootTask>,String>>),
+    BindPreparedRoots {runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,bindings:Vec<crate::script::PreparedRootBinding>,reply:mpsc::SyncSender<Result<(),String>>},
     SampleControl(sampler_core::SampleControl, mpsc::SyncSender<Result<(),String>>),
     SampleStream(sampler_kontakt::DynamicSources, mpsc::SyncSender<Result<(),String>>),
     Edit { generation:u64, id:ControlId, value:f64, drawn:bool },
@@ -118,7 +148,20 @@ fn process_events(host: &mut ScriptHost, incoming: &mut rtrb::Consumer<Message>,
     while let Ok(message) = incoming.pop() {
         #[cfg(feature = "scan")]
         host.owner_count(OwnerCounter::Events, 1);
+        if host.requires_external_authority()&&matches!(&message,Message::On{..}|Message::Off{..}|Message::In{..}){
+            host.external_fault("legacy event delivery to staged canonical owner refused");continue;
+        }
         match message {
+            Message::Reset{runtime,plan,sequence}=>{
+                match host.reset_execution_barrier(runtime,plan){
+                    Ok(())=>ui.reset_ready.store(sequence,Ordering::Release),
+                    Err(_)=>ui.reset_refused.store(sequence,Ordering::Release),
+                }
+                // A reset marker is a real FIFO boundary; never collapse two
+                // resets or run later events before its command-order ACK.
+                break;
+            },
+            Message::External(turn)=>{if let Err(error)=host.deliver_external_turn(turn){host.external_fault(&error);}},
             Message::Control { generation, id, value } => {
                 ui.apply_control(host, generation, id, value, false, DiagnosticPhase::Events);
             }
@@ -172,6 +215,17 @@ fn process_ui_requests(
                 *diagnostic = Some(request);
                 break;
             }
+            UiRequest::BindSourceProperties(owner,reply)=>{
+                let result=host.bind_source_property_owner(owner);let bound=result.is_ok();
+                // Metadata ACK must precede readback: the caller can now retain
+                // and service its Core endpoint. No bind/readback deadlock.
+                let _=reply.send(result);
+                if bound {ui.publish_source_property_presentation(host);}
+            }
+            UiRequest::RefreshSourcePropertyPresentation=>{ui.publish_source_property_presentation(host);}
+            UiRequest::BindAuthority(owner,reply)=>{let _=reply.send(host.bind_owner_authority(owner));}
+            UiRequest::PreparedRoots(reply)=>{let _=reply.send(host.prepared_root_tasks());}
+            UiRequest::BindPreparedRoots{runtime,plan,bindings,reply}=>{let _=reply.send(host.bind_prepared_roots(runtime,plan,bindings));}
             UiRequest::SampleStatus(reply)=>{let _=reply.send(ScriptHost::sample_load_status(host));}
             UiRequest::SampleControl(control,reply)=>{let _=reply.send(host.bind_sample_control(control));}
             UiRequest::SampleStream(sources,reply)=>{let _=reply.send(host.bind_sample_stream(sources));}
@@ -295,7 +349,7 @@ impl ScriptThread {
         xml: Arc<str>, files: impl Files + Send + 'static, config: Config, state: Option<UiState>,
         #[cfg(feature = "scan")] owner_audit: Option<Arc<OwnerAudit>>,
     ) -> Result<(Self, Loaded), String> {
-        Self::spawn_owner_budget(xml,files,config,state,UiRegistryBudget::default(),UiSchemaWorkBudget::default(),
+        Self::spawn_owner_budget(xml,files,config,state,UiRegistryBudget::default(),UiSchemaWorkBudget::default(),false,
             #[cfg(feature="scan")] owner_audit,
         )
     }
@@ -303,7 +357,7 @@ impl ScriptThread {
     pub fn spawn_with_ui_registry_budget(
         xml:String, files:impl Files+Send+'static, config:Config, state:Option<UiState>, budget:UiRegistryBudget,
     )->Result<(Self,Loaded),String>{
-        Self::spawn_owner_budget(xml.into(),files,config,state,budget,UiSchemaWorkBudget::default(),
+        Self::spawn_owner_budget(xml.into(),files,config,state,budget,UiSchemaWorkBudget::default(),false,
             #[cfg(feature="scan")] OwnerAudit::from_env()?,
         )
     }
@@ -312,19 +366,44 @@ impl ScriptThread {
         xml:String,files:impl Files+Send+'static,config:Config,state:Option<UiState>,
         budget:UiRegistryBudget,work_budget:UiSchemaWorkBudget,
     )->Result<(Self,Loaded),String>{
-        Self::spawn_owner_budget(xml.into(),files,config,state,budget,work_budget,
+        Self::spawn_owner_budget(xml.into(),files,config,state,budget,work_budget,false,
             #[cfg(feature="scan")] OwnerAudit::from_env()?,
         )
     }
+    /// Staged owner: main/restore/onLoad run offaudio, while Init and every
+    /// waited segment need real Core tasks at the actual installation frame.
+    pub fn spawn_staged_with_ui_registry_budgets(
+        xml:Arc<str>,files:impl Files+Send+'static,config:Config,state:Option<UiState>,
+        budget:UiRegistryBudget,work_budget:UiSchemaWorkBudget,
+    )->Result<(Self,Loaded),String>{
+        Self::spawn_owner_budget(xml,files,config,state,budget,work_budget,true,
+            #[cfg(feature="scan")] OwnerAudit::from_env()?,
+        )
+    }
+    pub fn spawn_staged_with_ui_state(
+        xml:Arc<str>,files:impl Files+Send+'static,config:Config,state:Option<UiState>,
+    )->Result<(Self,Loaded),String>{
+        Self::spawn_staged_with_ui_registry_budgets(xml,files,config,state,UiRegistryBudget::default(),UiSchemaWorkBudget::default())
+    }
     fn spawn_owner_budget(
-        xml:Arc<str>,files:impl Files+Send+'static,config:Config,state:Option<UiState>,budget:UiRegistryBudget,work_budget:UiSchemaWorkBudget,
+        xml:Arc<str>,files:impl Files+Send+'static,config:Config,state:Option<UiState>,budget:UiRegistryBudget,work_budget:UiSchemaWorkBudget,staged:bool,
         #[cfg(feature="scan")] owner_audit:Option<Arc<OwnerAudit>>,
     )->Result<(Self,Loaded),String>{
         #[cfg(feature = "scan")]
         let audit = config.audit_seed.is_some();
+        for layout in [
+            std::alloc::Layout::array::<Message>(QUEUE),
+            std::alloc::Layout::array::<Outgoing>(QUEUE),
+            std::alloc::Layout::array::<Command>(QUEUE),
+            std::alloc::Layout::array::<RootSetup>(1),
+            std::alloc::Layout::array::<RootSetupAck>(1),
+        ]{layout.map_err(|_|"script owner queue payload layout overflow")?;}
         let (ui_send, ui_receive) = mpsc::sync_channel(256);
         let (events, mut incoming) = rtrb::RingBuffer::new(QUEUE);
         let (mut outgoing, commands) = rtrb::RingBuffer::new(QUEUE);
+        let (reset_retirement,mut owner_retirement)=rtrb::RingBuffer::new(QUEUE);
+        let (root_setup,mut owner_roots)=rtrb::RingBuffer::<RootSetup>::new(1);
+        let (mut owner_root_acks,root_acks)=rtrb::RingBuffer::<RootSetupAck>::new(1);
         let clock = Arc::new(AtomicU64::new(0f64.to_bits()));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready, loaded) = mpsc::channel();
@@ -340,7 +419,8 @@ impl ScriptThread {
                     #[cfg(feature = "scan")]
                     let load_span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Loading));
                     let mut host =
-                        match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
+                        match if staged {ScriptHost::new_staged_with_ui_state(&xml,files,config,state.as_ref())}
+                        else {ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref())} {
                             Ok(host) => host,
                             Err(e) => {
                                 #[cfg(feature = "scan")]
@@ -361,6 +441,18 @@ impl ScriptThread {
                     {
                         *scan.lock().unwrap() = host.scan_faults();
                     }
+                    let prepared_roots=if staged {
+                        match host.prepared_root_tasks(){
+                            Ok(roots)=>{
+                                let valid=roots.len()<=4096
+                                    &&std::alloc::Layout::array::<crate::script::PreparedRootTask>(roots.len()).is_ok()
+                                    &&std::alloc::Layout::array::<sampler_core::PreparedGlobalSourceTask>(roots.len()).is_ok()
+                                    &&std::alloc::Layout::array::<Option<sampler_core::BehaviorId>>(roots.len()).is_ok();
+                                if !valid{return drop(ready.send(Err("prepared root payload layout/capacity".into())));}
+                                roots.into_boxed_slice()
+                            },Err(error)=>return drop(ready.send(Err(error)))
+                        }
+                    }else{Box::new([])};
                     let report = Loaded {
                         insert_overrides: host.insert_overrides(),
                         folded_writes: host.folded_writes(),
@@ -368,13 +460,26 @@ impl ScriptThread {
                         interface: ui.interface().as_ref().clone(),
                         ui: ui.clone(),
                     };
-                    let _ = ready.send(Ok((handles, report)));
+                    let _ = ready.send(Ok((handles, report, prepared_roots)));
                     drop(ready);
                     let mut backlog: Vec<Command> = Vec::new();
                     let mut revision = host.ui_revision();
                     let mut finding_revision = host.finding_revision();
                     let mut diagnostic: Option<diagnostics::Pending> = None;
                     while !stop.load(Ordering::Acquire) {
+                        if owner_root_acks.slots()!=0&&let Ok(setup)=owner_roots.pop(){
+                            let result=(||{
+                                let mut bindings=Vec::new();bindings.try_reserve_exact(setup.bindings.len()).map_err(|_|sampler_core::Error::Capacity)?;
+                                for (row,behavior) in setup.bindings.iter().enumerate(){bindings.push(crate::script::PreparedRootBinding{row,behavior:behavior.ok_or(sampler_core::Error::InvalidInput)?});}
+                                host.bind_prepared_roots(setup.runtime,setup.plan,bindings).map_err(|_|sampler_core::Error::InvalidInput)
+                            })();
+                            // Sole producer after reservation; payload retirement
+                            // stays on the owner if the invariant is violated.
+                            if owner_root_acks.push(RootSetupAck{setup,result}).is_err(){host.external_fault("root setup reply reservation violated");break;}
+                        }
+
+
+                        while let Ok(command)=owner_retirement.pop(){drop(command);}
                         if let Some(request) = &mut diagnostic {
                             request.eligible = true;
                             if request.abandoned() { diagnostic = None; }
@@ -390,6 +495,20 @@ impl ScriptThread {
                             #[cfg(feature = "scan")]
                             let _span = owner_audit.as_ref().map(|a|a.span(OwnerStage::Events));
                             process_events(&mut host, &mut incoming, &ui);
+                        }
+                        let ready=ui.reset_ready.swap(0,Ordering::AcqRel);
+                        let refused=ui.reset_refused.swap(0,Ordering::AcqRel);
+                        if ready!=0||refused!=0{
+                            // Old legacy payloads retire on their real Lua owner.
+                            if ready!=0{backlog.clear();}
+                            let mut marker=Outgoing::Reset{sequence:ready.max(refused),accepted:ready!=0};
+                            loop{
+                                match outgoing.push(marker){Ok(())=>break,Err(rtrb::PushError::Full(back))=>marker=back}
+                                while let Ok(command)=owner_retirement.pop(){drop(command);}
+                                if stop.load(Ordering::Acquire){return;}
+                                std::thread::sleep(POLL);
+                            }
+                            continue;
                         }
                         #[cfg(feature = "scan")]
                         host.owner_phase(OwnerPhase::UiRequests);
@@ -408,6 +527,7 @@ impl ScriptThread {
                             &mut audit_reply,
                         );
                         }
+                        if ui.reset_ready.load(Ordering::Acquire)!=0||ui.reset_refused.load(Ordering::Acquire)!=0{continue;}
                         ui.diagnostic_phase(DiagnosticPhase::Advance);
                         #[cfg(feature = "scan")]
                         if !audit {
@@ -552,7 +672,7 @@ impl ScriptThread {
                 }
             })
             .map_err(|e| e.to_string())?;
-        let (handles_notes, report) = loaded
+        let (handles_notes, report, prepared_roots) = loaded
             .recv()
             .map_err(|_| "the script thread stopped while loading".to_string())??;
         Ok((
@@ -561,11 +681,15 @@ impl ScriptThread {
                 scan,
                 events,
                 ui: report.ui.clone(),
-                commands,
+                commands,reset_retirement,reset_sequence:0,pending_reset:None,reset_retained:None,
                 clock,
                 stop,
                 thread: Some(thread),
                 handles_notes,
+                root_requests:prepared_roots.iter().map(|root|sampler_core::PreparedGlobalSourceTask{processor:root.processor,family:root.family,origin:root.origin}).collect::<Vec<_>>().into_boxed_slice(),
+                root_bindings:Some(vec![None;prepared_roots.len()].into_boxed_slice()),prepared_roots,
+                root_setup,root_acks,root_state:RootSetupState::Idle,
+                authority:None,external_in_flight:None,external_terminal:None,
                 time_ms: 0.0,
                 #[cfg(feature = "scan")]
                 audit,
@@ -576,6 +700,146 @@ impl ScriptThread {
             },
             report,
         ))
+    }
+
+    /// Offaudio before Part publication: bind both endpoints to the actual
+    /// Runtime/Plan table and wait for the genuine Lua owner shape ACK.
+    pub fn bind_external_authority(&mut self,runtime:&sampler_core::Runtime,plan:sampler_core::PlanId,timeout:Duration)->Result<(),String>{
+        if self.authority.is_some(){return Err("external authority already bound".into());}
+        let (core,owner)=crate::script::authority_pair(runtime,plan,timeout).map_err(|error|format!("external authority preparation: {error:?}"))?;
+        let (send,reply)=mpsc::sync_channel(1);
+        self.ui.edits.try_send(UiRequest::BindAuthority(owner,send)).map_err(|_|"external owner binding unavailable/capacity".to_string())?;
+        self.ui.owner.unpark();reply.recv_timeout(timeout).map_err(|_|"external owner binding deadline".to_string())??;
+        self.authority=Some(core);Ok(())
+    }
+    /// Active candidate setup is nonblocking. All ring/binding storage was
+    /// prepared by construction. Queue success is never the Lua-owner ACK.
+    pub fn start_prepared_root_adoption(&mut self,runtime:&mut sampler_core::Runtime,plan:sampler_core::PlanId,performance:sampler_core::PerformanceId)->Result<PreparedRootProgress,sampler_core::Error>{
+        use sampler_core::Error;
+        if !self.external_authority_bound(runtime.id(),plan){return Err(Error::Canceled);}
+        if self.pending_reset.is_some()||self.reset_retained.is_some(){return Err(Error::Busy);}
+        match self.root_state{
+            RootSetupState::Idle=>{},
+            RootSetupState::Pending{..}=>return self.poll_prepared_root_adoption(runtime,plan),
+            RootSetupState::Ready{runtime:actual,plan:actual_plan,frame}=>return if actual==runtime.id()&&actual_plan==plan&&frame==runtime.now(){Ok(PreparedRootProgress::Ready{tasks:self.prepared_roots.len()})}else{Err(Error::StaleHandle)},
+            RootSetupState::Failed=>return Err(Error::Canceled),
+        }
+        if self.root_setup.slots()==0{return Err(Error::Capacity);}
+        let frame=runtime.now();let bindings=self.root_bindings.as_mut().ok_or(Error::InvalidInput)?;
+        if bindings.len()!=self.prepared_roots.len()||bindings.iter().any(Option::is_some){return Err(Error::InvalidInput);}
+        for (index,root) in self.prepared_roots.iter().enumerate(){
+            if root.row!=index||runtime.executable_source_binding(plan,root.processor,sampler_core::SourceEventFamily::Task(root.family))?.is_none(){return Err(Error::InvalidInput);}
+        }
+        // One real aggregate Core transaction validates the complete request
+        // roster and writes ALL output handles, or changes none. In particular
+        // repeated processor/family rows are distinct genuine Lua coroutines.
+        let admitted=runtime.start_prepared_global_source_tasks(plan,performance,&self.root_requests,bindings)?;
+        if admitted!=self.prepared_roots.len()||bindings.iter().any(Option::is_none){
+            let _=runtime.abort_external_execution();self.cancel_external_authority();self.root_state=RootSetupState::Failed;return Err(Error::InvalidInput);
+        }
+        let setup=RootSetup{runtime:runtime.id(),plan,bindings:self.root_bindings.take().ok_or(Error::InvalidInput)?};
+        if let Err(rtrb::PushError::Full(setup))=self.root_setup.push(setup){
+            self.root_bindings=Some(setup.bindings);let _=runtime.abort_external_execution();self.cancel_external_authority();self.root_state=RootSetupState::Failed;return Err(Error::Capacity);
+        }
+        self.root_state=RootSetupState::Pending{runtime:runtime.id(),plan,frame};self.wake();Ok(PreparedRootProgress::Pending)
+    }
+    pub fn poll_prepared_root_adoption(&mut self,runtime:&mut sampler_core::Runtime,plan:sampler_core::PlanId)->Result<PreparedRootProgress,sampler_core::Error>{
+        use sampler_core::Error;
+        let (actual,actual_plan,frame)=match self.root_state{
+            RootSetupState::Pending{runtime,plan,frame}=>(runtime,plan,frame),
+            RootSetupState::Ready{runtime:actual,plan:actual_plan,frame}=>return if actual==runtime.id()&&actual_plan==plan&&frame==runtime.now(){Ok(PreparedRootProgress::Ready{tasks:self.prepared_roots.len()})}else{Err(Error::StaleHandle)},
+            _=>return Err(Error::InvalidInput),
+        };
+        if actual!=runtime.id()||actual_plan!=plan||frame!=runtime.now()||!self.external_authority_bound(actual,plan){return Err(Error::StaleHandle);}
+        let Ok(ack)=self.root_acks.pop()else{return Ok(PreparedRootProgress::Pending);};
+        let valid=ack.setup.runtime==actual&&ack.setup.plan==plan&&ack.setup.bindings.len()==self.prepared_roots.len();
+        self.root_bindings=Some(ack.setup.bindings);
+        if !valid||ack.result.is_err(){let _=runtime.abort_external_execution();self.cancel_external_authority();self.root_state=RootSetupState::Failed;return Err(if valid{ack.result.unwrap_err()}else{Error::StaleHandle});}
+        self.root_state=RootSetupState::Ready{runtime:actual,plan,frame};Ok(PreparedRootProgress::Ready{tasks:self.prepared_roots.len()})
+    }
+
+    /// Actual copied requests from the existing Lua owner. The Core actor must
+    /// reserve a result slot and validate actual turn/plan before mutation.
+    /// A copied real Core turn is queued once. A true result is transport
+    /// admission only; only the later Complete/Cancel Core reply is acceptance.
+    pub fn external_turn_slots(&self)->usize{if self.external_cancelled(){0}else{self.events.slots()}}
+    pub fn deliver_external_turn(&mut self,turn:sampler_core::ExternalTurn)->Result<(),sampler_core::Error>{
+        if self.authority.as_ref().is_none_or(|port|port.plan()!=turn.plan||port.cancelled()){return Err(sampler_core::Error::Canceled);}
+        if self.external_in_flight.is_some(){return Err(sampler_core::Error::Busy);}
+        self.events.push(Message::External(turn)).map_err(|_|sampler_core::Error::Capacity)?;
+        self.external_in_flight=Some(turn.input);self.wake();Ok(())
+    }
+    /// Endpoint identity only. Every command must separately query Core's
+    /// actual Running turn; this predicate does not authorize a mutation.
+    pub fn external_authority_bound(&self,runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId)->bool{
+        self.authority.as_ref().is_some_and(|port|port.runtime()==runtime&&port.plan()==plan&&!port.cancelled())
+    }
+    pub fn cancel_external_authority(&self){if let Some(port)=&self.authority{port.cancel();}}
+    pub fn external_reply_slots(&self)->usize{self.authority.as_ref().map_or(0,|port|port.reply_slots())}
+    pub fn pop_external_request(&mut self)->Option<crate::script::AuthorityRequest>{
+        let request=self.authority.as_mut()?.pop()?;
+        if matches!(&request.operation,crate::script::AuthorityOperation::Complete{..}|crate::script::AuthorityOperation::Cancel){self.external_terminal=Some((request.turn.input,request.ordinal));}
+        Some(request)
+    }
+    pub fn reply_external_request(&mut self,reply:crate::script::AuthorityReply)->Result<(),crate::script::AuthorityReply>{
+        let terminal=self.external_terminal==Some((reply.input,reply.ordinal))&&matches!(&reply.result,Ok(crate::script::AuthorityValue::Completed)|Err(sampler_core::Error::Canceled|sampler_core::Error::StaleHandle));
+        let input=reply.input;
+        match self.authority.as_mut(){Some(port)=>{port.reply(reply)?;if terminal&&self.external_in_flight==Some(input){self.external_in_flight=None;self.external_terminal=None;}Ok(())},None=>Err(reply)}
+    }
+    pub fn external_cancelled(&self)->bool{self.authority.as_ref().is_some_and(|port|port.cancelled())}
+
+    /// The sole Core worker must first quiesce the previous segment through its
+    /// actual terminal reply (or irreversibly abort the endpoint). Reset refuses
+    /// while any delivery is queued/executing; it cannot roll back Lua globals.
+    /// Only after this pure availability check may the worker cancel Core and
+    /// enqueue the ordered owner marker. An aborted endpoint never rearms here.
+    /// The sole Core worker cancels real continuations before this marker.
+    /// Capacity is pure; one marker at a time prevents coalesced reset ACKs.
+    pub fn reset_execution_available(&self)->bool{
+        self.pending_reset.is_none()&&self.reset_retained.is_none()&&self.external_in_flight.is_none()
+            &&!matches!(self.root_state,RootSetupState::Pending{..})
+            &&self.events.slots()!=0&&!self.external_cancelled()
+    }
+    pub fn reset_execution(&mut self,runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,sequence:u64)->Result<(),sampler_core::Error>{
+        use sampler_core::Error;
+        #[cfg(feature="scan")]
+        if self.audit{return Err(Error::InvalidInput);}
+        if !self.external_authority_bound(runtime,plan){return Err(Error::StaleHandle);}
+        if sequence==0||sequence<=self.reset_sequence{return Err(Error::InvalidInput);}
+        if !self.reset_execution_available(){return Err(Error::Capacity);}
+        self.events.push(Message::Reset{runtime,plan,sequence}).map_err(|_|Error::Capacity)?;
+        self.reset_sequence=sequence;self.pending_reset=Some(sequence);self.wake();Ok(())
+    }
+    /// A queued marker is not ACK. Old owned Command payloads transfer back to
+    /// the Lua owner; the Core worker never drops them on this path.
+    pub fn reset_execution_ack(&mut self,sequence:u64)->Result<bool,sampler_core::Error>{
+        use sampler_core::Error;
+        if self.pending_reset!=Some(sequence){return Err(Error::StaleHandle);}
+        if self.reset_retained.is_some(){return Err(Error::Canceled);}
+        if self.ui.reset_failed.load(Ordering::Acquire)==sequence{self.pending_reset=None;return Err(Error::Canceled);}
+        if self.ui.reset_ack.load(Ordering::Acquire)==sequence{self.pending_reset=None;return Ok(true);}
+        for _ in 0..QUEUE{
+            if self.reset_retirement.slots()==0{self.wake();return Ok(false);}
+            let Ok(row)=self.commands.pop()else{self.wake();return Ok(false);};
+            match row{
+                Outgoing::Command(command)=>{
+                    // Sole producer, reserved above; retain payload on this
+                    // worker if this queue invariant is violated.
+                    if let Err(rtrb::PushError::Full(command))=self.reset_retirement.push(command){
+                        self.reset_retained=Some(command);self.cancel_external_authority();return Err(Error::Capacity);
+                    }
+                    if let Some(progress)=self.ui.diagnostics.get(){progress.drained.fetch_add(1,Ordering::Release);}
+                },
+                Outgoing::Diagnostic(id)=>{if let Some(progress)=self.ui.diagnostics.get(){progress.marker_drained.store(id,Ordering::Release);}},
+                Outgoing::Reset{sequence:actual,accepted}=>{
+                    if actual!=sequence{self.cancel_external_authority();return Err(Error::StaleHandle);}
+                    self.pending_reset=None;
+                    if accepted{self.ui.reset_ack.store(actual,Ordering::Release);return Ok(true);}
+                    self.ui.reset_failed.store(actual,Ordering::Release);return Err(Error::Canceled);
+                },
+            }
+        }
+        self.wake();Ok(false)
     }
 
     pub fn ui(&self) -> &Arc<UiBridge> {
@@ -662,6 +926,11 @@ impl ScriptThread {
 }
 
 impl Script for ScriptThread {
+    fn bind_source_property_owner(&mut self,owner:crate::script::OwnerSourcePropertyPort)->Result<(),String>{
+        let(send,reply)=mpsc::sync_channel(1);
+        self.ui.edits.try_send(UiRequest::BindSourceProperties(owner,send)).map_err(|_|"property owner binding capacity".to_owned())?;
+        self.ui.owner.unpark();reply.recv_timeout(Duration::from_secs(2)).map_err(|_|"property owner binding timeout".to_owned())?
+    }
     fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {
         let (send,reply)=mpsc::sync_channel(1);
         self.ui.edits.try_send(UiRequest::SampleStatus(send)).map_err(|_|"sample status owner unavailable/capacity".to_string())?;
@@ -736,6 +1005,9 @@ impl Script for ScriptThread {
         while let Ok(command) = self.commands.pop() {
             match command {
                 Outgoing::Command(command) => { out.push(command); drained += 1; }
+                Outgoing::Reset{sequence,accepted}=>{
+                    if accepted{self.ui.reset_ack.store(sequence,Ordering::Release);}else{self.ui.reset_failed.store(sequence,Ordering::Release);}
+                },
                 Outgoing::Diagnostic(id) => {
                     if let Some(progress) = self.ui.diagnostics.get() {
                         progress.marker_drained.store(id, Ordering::Release);
@@ -977,6 +1249,7 @@ pub struct UiBridge {
     faults: Mutex<FaultCounts>,
     runtime_faults: AtomicU64,
     runtime_budgets: AtomicU64,
+    reset_ready:AtomicU64,reset_refused:AtomicU64,reset_ack:AtomicU64,reset_failed:AtomicU64,
 }
 impl UiBridge {
     fn new(
@@ -1011,6 +1284,7 @@ impl UiBridge {
             face:UiFace{state:Mutex::new(UiPublication{current:Arc::new(UiPublished{face:Arc::new(face),schema,schema_bytes,generation:2}),retired:Vec::with_capacity(budget.max_retained_snapshots)})},
             revision:AtomicU64::new(1),findings:Mutex::new(host.findings()),faults:Mutex::new(host.fault_counts()),
             runtime_faults:AtomicU64::new(0),runtime_budgets:AtomicU64::new(0),
+            reset_ready:AtomicU64::new(0),reset_refused:AtomicU64::new(0),reset_ack:AtomicU64::new(0),reset_failed:AtomicU64::new(0),
         })
     }
     fn publish_findings(&self, host: &ScriptHost) {
@@ -1214,6 +1488,19 @@ impl UiBridge {
         *self.registry_error.lock().unwrap()=None;
         Ok(())
     }
+    fn publish_source_property_presentation(&self,host:&ScriptHost) {
+        // No fallback on a captured/product owner. Presence only selects this
+        // request family; actual getters validate/query their bound Core plan.
+        if host.has_standalone_property_presentation_endpoint(){self.publish(host);}
+    }
+    /// Queue-only non-RT presentation request, not a value/ready ACK. Normal
+    /// Driver::wake services actual Core queries; then value()/snapshot() expose
+    /// the newly admitted registry. No changed/onController callback is invoked.
+    pub fn request_source_property_refresh(&self)->bool {
+        if self.stop.load(Ordering::Acquire){return false;}
+        if self.edits.try_send(UiRequest::RefreshSourcePropertyPresentation).is_err(){return false;}
+        self.owner.unpark();true
+    }
     fn publish(&self,host:&ScriptHost) {
         if let Err(error)=self.try_publish(host) {self.registry_failure(host,error);}
     }
@@ -1347,5 +1634,198 @@ mod registry_work_tests {
         let mut child=Widget::new("Child",PageRef(0),Rect::new(13,17,80,30),Kind::Knob{range:Range{min:0.,max:1.,default:0.25,step:None},display:Default::default()});child.parent=Some(WidgetRef(0));child.binding=Binding::Control(crate::script::control_id(2,0));child.initial_value=0.25;face.widgets=vec![parent,child];
         let mut work=UiSchemaMeter::new(UiSchemaWorkBudget{max_inspections:64});let projection=registry_projection(&face,budget(),&mut work).unwrap();
         assert_eq!(projection.schema[0].rect,[46f64.to_bits(),66f64.to_bits(),80f64.to_bits(),30f64.to_bits()]);assert!(!projection.schema[0].editable);assert_eq!(projection.values,[(crate::script::control_id(2,0),0.25)]);
+    }
+}
+
+
+#[cfg(test)]
+mod prepared_root_handoff_tests {
+    use super::*;
+    use sampler_core::{Instruction,Program,WaitLifetime,SourceTaskFamily as Family,
+        PreparedSourceTaskBinding as Binding};
+
+    fn prepared(xml:&str)->sampler_core::Runtime {
+        let translated=crate::translate(xml,std::path::Path::new(".")).unwrap();
+        let processor=translated.instrument.source_indices.owners.iter()
+            .flat_map(|owner|&owner.event_processors).find(|row|row.kind=="ScriptProcessor").unwrap().id;
+        assert!(translated.instrument.assets.is_empty(),"authored task-only graph has no sample assets");
+        // Behavior binding is supplied by the real external programs below;
+        // decoded resources are the separate, empty PCM argument to lower.
+        let prepared=sampler_core::lower::lower(&translated.instrument,48000,vec![],|_,plan|Ok(plan)).unwrap()
+            .with_programs(vec![Program::new(vec![Instruction::AwaitExternal{processor},Instruction::End]).unwrap()
+                .with_wait_lifetime(WaitLifetime::Callback)],None).unwrap()
+            .with_source_tasks(vec![Binding{processor,family:Family::Run,program:0},
+                Binding{processor,family:Family::Spawned,program:0}]).unwrap();
+        let limits=sampler_core::Limits::for_plan(&prepared,8,8);
+        sampler_core::Runtime::new(prepared,limits).unwrap()
+    }
+    fn ready(owner:&mut ScriptThread,rt:&mut sampler_core::Runtime,plan:sampler_core::PlanId)->usize {
+        let deadline=Instant::now()+Duration::from_secs(3);
+        loop {
+            match owner.poll_prepared_root_adoption(rt,plan).unwrap() {
+                PreparedRootProgress::Ready{tasks}=>return tasks,
+                PreparedRootProgress::Pending=>{},
+            }
+            assert!(Instant::now()<deadline,"actual Lua root binding ACK deadline");
+            std::thread::yield_now();
+        }
+    }
+    fn execute_one(owner:&mut ScriptThread,rt:&mut sampler_core::Runtime) {
+        use crate::script::{AuthorityOperation as Op,AuthorityValue as Value,AuthorityReply};
+        let turn=rt.pending_external_turn().unwrap().expect("real prepared continuation");
+        let turn=rt.begin_external_turn(turn.input).unwrap();
+        owner.deliver_external_turn(turn).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(3);
+        loop {
+            if let Some(request)=owner.pop_external_request() {
+                assert_eq!(request.turn.input,turn.input);
+                assert!(!matches!(request.operation,Op::Cancel),"actual Lua root failed; a successful Cancel ACK is not a passing callback");
+                let finishing=matches!(request.operation,Op::Complete{..}|Op::Cancel);
+                let mut retired_command=None;
+                let result=match request.operation {
+                    Op::Validate=>rt.running_external_turn(turn.input).map(|_|Value::Validated),
+                    Op::QueryConstant{node}=>rt.running_external_turn(turn.input).and_then(|_|rt.source_constant_property(turn.plan,node)).map(Value::Constant),
+                    Op::Complete{next_frame}=>rt.complete_external_segment(turn.input,next_frame).map(|_|Value::Completed),
+                    Op::Cancel=>rt.cancel_external_input(turn.input).map(|_|Value::Completed),
+                    Op::Post(output)=>rt.post_external_output(turn.input,output).map(Value::Posted),
+                    Op::Command(command)=>{retired_command=Some(command);Err(sampler_core::Error::InvalidInput)},
+                };
+                assert!(result.is_ok(),"real root task operation refused: {result:?}");
+                owner.reply_external_request(AuthorityReply{input:turn.input,ordinal:request.ordinal,result,retired_command}).unwrap();
+                if finishing {return;}
+            }
+            assert!(!owner.external_cancelled(),"actual owner cancelled root task");
+            assert!(Instant::now()<deadline,"actual task operation deadline");
+            std::thread::yield_now();
+        }
+    }
+    #[test]
+    fn active_root_setup_is_pending_until_owner_ack_and_repeated_poll_does_not_duplicate_tasks() {
+        let xml:Arc<str>=Arc::from(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            prefix=0;suffix=0;spawned=0;
+            run(function() prefix=prefix+1;wait(1);assert(prefix==1);suffix=suffix+1;assert(suffix==1) end);
+            spawn(function() spawned=spawned+1;assert(spawned==1) end)
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#);
+        let mut rt=prepared(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let (mut owner,_)=ScriptThread::spawn_staged_with_ui_state(Arc::clone(&xml),(),Config::default(),None).unwrap();
+        owner.bind_external_authority(&rt,plan,Duration::from_secs(2)).unwrap();
+        assert_eq!(owner.start_prepared_root_adoption(&mut rt,plan,perf),Ok(PreparedRootProgress::Pending),
+            "enqueued binding transfer never impersonates an owner ACK");
+        assert_eq!(rt.now(),0);
+        assert_eq!(ready(&mut owner,&mut rt,plan),2);
+        for _ in 0..16 {assert_eq!(owner.start_prepared_root_adoption(&mut rt,plan,perf),Ok(PreparedRootProgress::Ready{tasks:2}));}
+        execute_one(&mut owner,&mut rt); // adopt the existing residual wait, no replay
+        execute_one(&mut owner,&mut rt); // independent deferred spawn, once
+        assert!(rt.pending_external_turn().unwrap().is_none());
+        rt.render(&mut [[0.;2];48]).unwrap();rt.service_external_boundary().unwrap();
+        execute_one(&mut owner,&mut rt); // same genuine run coroutine suffix
+        assert!(rt.pending_external_turn().unwrap().is_none());
+        assert_eq!(rt.now(),48);assert!(!rt.external_execution_aborted());
+    }
+    #[test]
+    fn root_setup_ack_cannot_bind_another_runtime_or_survive_authority_cancellation() {
+        let xml:Arc<str>=Arc::from("<Program><EventProcessors><ScriptProcessor><script>spawn(function() end)</script></ScriptProcessor></EventProcessors></Program>");
+        let mut actual=prepared(&xml);let plan=actual.active_plan();let perf=actual.performance(0).unwrap();
+        let mut other=prepared(&xml);let other_plan=other.active_plan();
+        let (mut owner,_)=ScriptThread::spawn_staged_with_ui_state(Arc::clone(&xml),(),Config::default(),None).unwrap();
+        owner.bind_external_authority(&actual,plan,Duration::from_secs(2)).unwrap();
+        assert_eq!(owner.start_prepared_root_adoption(&mut actual,plan,perf),Ok(PreparedRootProgress::Pending));
+        assert_eq!(owner.poll_prepared_root_adoption(&mut other,other_plan),Err(sampler_core::Error::StaleHandle));
+        assert_eq!(other.now(),0);assert!(other.pending_external_turn().unwrap().is_none());
+        assert_eq!(ready(&mut owner,&mut actual,plan),1);
+        owner.cancel_external_authority();
+        assert!(owner.start_prepared_root_adoption(&mut actual,plan,perf).is_err());
+        assert_eq!(actual.now(),0);assert_eq!(other.now(),0);
+    }
+    #[test]
+    fn restored_widget_active_root_batch_refuses_late_invalid_entry_without_partial_adoption(){
+        let xml:Arc<str>=Arc::from(r#"<Program><EventProcessors><ScriptProcessor><script><![CDATA[
+            prefix=0;suffix=0;spawned=0;k=Knob('Root',0,0,1);
+            k.changed=function(self)
+                run(function() prefix=prefix+1;wait(1);assert(prefix==1);suffix=suffix+1;assert(suffix==1) end);
+                spawn(function() spawned=spawned+1;assert(spawned==1) end);
+                spawn(function() spawned=spawned+1;assert(spawned==2) end)
+            end
+        ]]></script></ScriptProcessor></EventProcessors></Program>"#);
+        let state=UiState{widgets:vec![(1,"Root".into(),crate::script::SavedValue::Number(1.))],..Default::default()};
+        let mut rt=prepared(&xml);let plan=rt.active_plan();let perf=rt.performance(0).unwrap();
+        let (mut owner,_)=ScriptThread::spawn_staged_with_ui_state(Arc::clone(&xml),(),Config::default(),Some(state)).unwrap();
+        assert_eq!(owner.prepared_roots.len(),3);
+        assert!(owner.prepared_roots.iter().all(|root|root.origin==sampler_core::PreparedGlobalTaskOrigin::RestoredWidgetEvent));
+        owner.bind_external_authority(&rt,plan,Duration::from_secs(2)).unwrap();
+        let actual=owner.root_requests[2].processor;
+        owner.root_requests[2].processor=sampler_ir::SourceEventProcessorId::UviNode(u32::MAX);
+        assert!(owner.start_prepared_root_adoption(&mut rt,plan,perf).is_err());
+        assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!(rt.now(),0);
+        assert!(owner.root_bindings.as_ref().unwrap().iter().all(Option::is_none));
+        assert!(!rt.external_execution_aborted());assert!(!owner.external_cancelled());
+        owner.root_requests[2].processor=actual;
+        assert_eq!(owner.start_prepared_root_adoption(&mut rt,plan,perf),Ok(PreparedRootProgress::Pending));
+        assert_eq!(ready(&mut owner,&mut rt,plan),3);
+        let turn=rt.pending_external_turn().unwrap().unwrap();
+        assert!(matches!(turn.event,sampler_core::ExternalEvent::Task(task)if task.source.is_none()
+            &&task.creator==sampler_core::SourceTaskCreator::NonMusicalEvent(sampler_core::NonMusicalTaskOrigin::RestoredWidget)));
+        execute_one(&mut owner,&mut rt);execute_one(&mut owner,&mut rt);execute_one(&mut owner,&mut rt);
+        assert!(rt.pending_external_turn().unwrap().is_none());
+        rt.render(&mut [[0.;2];48]).unwrap();rt.service_external_boundary().unwrap();execute_one(&mut owner,&mut rt);
+        assert!(rt.pending_external_turn().unwrap().is_none());assert_eq!(rt.now(),48);assert!(!owner.external_cancelled());
+    }
+
+    #[test]
+    fn ordered_reset_requires_real_owner_ack_and_cannot_coalesce_or_replay_sequences(){
+        let xml:Arc<str>=Arc::from("<Program><EventProcessors><ScriptProcessor><script>function onInit() end</script></ScriptProcessor></EventProcessors></Program>");
+        let mut rt=prepared(&xml);let plan=rt.active_plan();
+        let (mut owner,_)=ScriptThread::spawn_staged_with_ui_state(Arc::clone(&xml),(),Config::default(),None).unwrap();
+        owner.bind_external_authority(&rt,plan,Duration::from_secs(2)).unwrap();
+        // Cancel actual Core work at H before queueing the real owner barrier;
+        // no fake physical key-up or advancement is involved.
+        rt.panic();assert_eq!(rt.now(),0);
+        owner.reset_execution(rt.id(),plan,1).unwrap();
+        assert!(!owner.reset_execution_available());
+        assert_eq!(owner.reset_execution(rt.id(),plan,2),Err(sampler_core::Error::Capacity));
+        assert_eq!(owner.reset_execution(rt.id(),plan,1),Err(sampler_core::Error::InvalidInput));
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while !owner.reset_execution_ack(1).unwrap(){assert!(Instant::now()<deadline);std::thread::yield_now();}
+        assert_eq!(owner.reset_execution_ack(1),Err(sampler_core::Error::StaleHandle),"one exact marker has one owner ACK");
+        assert_eq!(owner.reset_execution(rt.id(),plan,1),Err(sampler_core::Error::InvalidInput));
+        assert!(owner.reset_execution_available());assert_eq!(rt.now(),0);
+        owner.reset_execution(rt.id(),plan,2).unwrap();
+        while !owner.reset_execution_ack(2).unwrap(){assert!(Instant::now()<deadline);std::thread::yield_now();}
+        assert!(!owner.external_cancelled());assert_eq!(rt.now(),0);
+    }
+
+}
+
+
+#[cfg(test)]
+mod reset_quiescence42g_tests {
+    use super::*;
+    fn pair()->(sampler_core::Runtime,ScriptThread){
+        use sampler_core::{Prepared,Program,Instruction,WaitLifetime,Limits};
+        let xml:Arc<str>=Arc::from("<Program><EventProcessors><ScriptProcessor><script>calls=0;function onController(e) calls=calls+1 end</script></ScriptProcessor></EventProcessors></Program>");
+        let translated=crate::translate(&xml,std::path::Path::new(".")).unwrap();let processor=translated.instrument.source_indices.owners.iter().flat_map(|owner|&owner.event_processors).find(|row|row.kind=="ScriptProcessor").unwrap().id;
+        let prepared=sampler_core::lower::lower(&translated.instrument,48000,vec![],|_,plan:Prepared|Ok(plan)).unwrap().with_programs(vec![Program::new(vec![Instruction::AwaitExternal{processor},Instruction::End]).unwrap().with_wait_lifetime(WaitLifetime::Callback)],None).unwrap().with_controller_programs(vec![0]).unwrap();
+        let limits=Limits::for_plan(&prepared,8,8);let runtime=sampler_core::Runtime::new(prepared,limits).unwrap();let(mut thread,_)=ScriptThread::spawn_staged_with_ui_state(xml,(),Default::default(),None).unwrap();thread.bind_external_authority(&runtime,runtime.active_plan(),Duration::from_secs(2)).unwrap();(runtime,thread)
+    }
+    #[test]
+    fn reset_refuses_queued_or_running_segment_until_exact_terminal_reply_then_marker_ack(){
+        use crate::script::{AuthorityOperation as Op,AuthorityValue as Value,AuthorityReply};
+        let(mut rt,mut thread)=pair();let plan=rt.active_plan();let perf=rt.performance(0).unwrap();rt.dispatch_controller(perf,sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:0},1,1,0).unwrap();rt.service_external_boundary().unwrap();let pending=rt.pending_external_turn().unwrap().unwrap();let turn=rt.begin_external_turn(pending.input).unwrap();thread.deliver_external_turn(turn).unwrap();
+        assert!(!thread.reset_execution_available());assert_eq!(thread.reset_execution(rt.id(),plan,1),Err(sampler_core::Error::Capacity));assert!(rt.running_external_turn(turn.input).is_ok());
+        let deadline=std::time::Instant::now()+Duration::from_secs(2);
+        while !thread.reset_execution_available(){
+            if let Some(request)=thread.pop_external_request(){let result=match request.operation{
+                Op::Validate=>rt.running_external_turn(turn.input).map(|_|Value::Validated),
+                Op::Post(output)=>rt.post_external_output(turn.input,output).map(Value::Posted),
+                Op::Complete{next_frame}=>rt.complete_external_segment(turn.input,next_frame).map(|_|Value::Completed),
+                other=>panic!("pure callback has no other command: {other:?}"),
+            };thread.reply_external_request(AuthorityReply{input:turn.input,ordinal:request.ordinal,result,retired_command:None}).unwrap();}
+            assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_micros(50));
+        }
+        // The actual segment completed. Core cancellation of old waits (none in
+        // this case) precedes the real ordered marker; queueing is not its ACK.
+        thread.reset_execution(rt.id(),plan,1).unwrap();assert!(!thread.reset_execution_available());
+        while !thread.reset_execution_ack(1).unwrap(){assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_micros(50));}
+        assert!(thread.reset_execution_available());thread.cancel_external_authority();assert!(!thread.reset_execution_available());assert!(thread.reset_execution(rt.id(),plan,2).is_err());
     }
 }

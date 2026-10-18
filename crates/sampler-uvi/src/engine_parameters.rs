@@ -647,3 +647,19 @@ fn scope_control(node:usize,prefix:&[u8])->Result<sampler_core::ControlId,sample
         .map_err(|_| sampler_core::Error::InvalidInput)?;
     Ok(sampler_core::lower::ir_control_id(key))
 }
+
+/// Compile the actual Constant definition, not its synthetic listener rank.
+pub(crate) fn register_constant(ir:&mut ir::Instrument,node:roxmltree::Node)->Result<ir::SourceConstantProperty,String>{
+    let identity=u32::try_from(node.id().get_usize()).map_err(|_|"constant definition identity overflow")?;
+    if let Some(row)=ir.source_indices.constant_properties.iter().find(|row|row.node==identity){return Ok(row.clone());}
+    if !node.has_tag_name("ConstantModulation")||node.attribute("ScriptLive").is_none(){return Err("missing actual writable Constant definition".into());}
+    let owner=node.ancestors().skip(1).find(|n|n.is_element()&&(matches!(n.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"|"AuxEffect")||n.parent().is_some_and(|p|p.has_tag_name("Oscillators")))).ok_or("constant structural owner missing")?;
+    let owner=ir::SourceOwnerId::UviNode(u32::try_from(owner.id().get_usize()).map_err(|_|"constant owner identity overflow")?);
+    let read=|field:&str,default:f64|->Result<f64,String>{match node.attribute(field){Some(text)=>text.parse::<f64>().ok().filter(|v|v.is_finite()).ok_or_else(||format!("Constant {field} must be finite")),None=>Ok(default)}};
+    let initial=read("Value",0.)?;let style=read("Style",0.)?;let bipolar=read("Bipolar",0.)?!=0.;
+    if style!=0.&&style!=1.{return Err("Constant Style must be exactly0 or1".into());}
+    let value=ir::ControlRef(ir.controls.len());let toggle=ir::ControlRef(ir.controls.len()+1);
+    ir.controls.push(ir::Control{key:key(node.id().get_usize(),"ConstantModulation","Value"),label:"Constant Value (Core target)".into(),value:ir::ControlValue::Continuous{min:f64::MIN,max:f64::MAX,default:initial,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+    ir.controls.push(ir::Control{key:key(node.id().get_usize(),"ConstantModulation","Style"),label:"Constant Style (Core target)".into(),value:ir::ControlValue::Toggle{default:style==1.},automation:ir::Automation::None});
+    let row=ir::SourceConstantProperty{node:identity,owner,value,style:toggle,bipolar,law:ir::SourceConstantPropertyLaw::UnqualifiedNative};ir.source_indices.constant_properties.push(row.clone());Ok(row)
+}

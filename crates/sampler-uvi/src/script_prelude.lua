@@ -466,6 +466,10 @@ function element.getParameter(self, name)
   if type(name) == "number" then
     name = parameter_name(self,name); if not name then error("invalid parameter id") end
   end
+  -- A standing definition is queried from its real bound Core owner. Accepted
+  -- local writes are not a cache for later generic control edits or reset.
+  local _, canonical = native.constantPropertyField(rawget(self,'__id'),name)
+  if canonical then return native.param(rawget(self,'__id'),name) end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
@@ -517,10 +521,11 @@ function element.setParameter(self, name, value)
     native.setterMismatch(expected,actual)
     return
   end
+  local constantProperty = native.constantPropertyField(rawget(self,'__id'),name)
   if actual == 'number' then
     if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
     -- Keep reversed documented bounds intact; native semantics need a measurement.
-    if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
+    if not constantProperty and min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
     if expected == 'int' and value ~= math.floor(value) then
       -- A fraction for an integer: the native number-to-int conversion (truncate
       -- or round) is not measured, so the write is reported and not applied.
@@ -579,6 +584,9 @@ function postEvent(e, delta)
     spawn(function() wait(delta); postEvent(e) end)
     return id
   end
+  -- A real captured owner can post the original typed action. Delayed posts
+  -- enter through their resumed task; legacy hosts have no such hook.
+  if native.postExternal and native.postExternal(e) then return end
   local t = e.type
   if t == Event.NoteOn then
     return native.postNote(e)

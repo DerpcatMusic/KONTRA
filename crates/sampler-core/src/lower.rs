@@ -984,6 +984,15 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
     plan = plan.with_source_owners(&instrument.source_indices.owners, instrument.groups.len(), instrument.zones.len(),
         &instrument.controls.iter().map(|control|ir_control_id(&control.key)).collect::<Vec<_>>())
         .map_err(core(Stage::Regions, "source owner hierarchy"))?;
+    if !instrument.source_indices.constant_properties.is_empty(){
+        if instrument.source_indices.constant_properties.iter().any(|row|row.law!=ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead){return Err(unsupported("Constant property requires explicit declared-Core target reader; native temporal law is unqualified",Feature::Controls));}
+        let count=instrument.source_indices.constant_properties.len();
+        let incoming=std::alloc::Layout::array::<crate::SourceConstantProperty>(count).map_err(|_|core(Stage::Modulation,"Constant definition allocation")(Error::Capacity))?.size();
+        if incoming>4*1024*1024{return Err(core(Stage::Modulation,"Constant definition allocation")(Error::Capacity));}
+        let mut properties=Vec::new();properties.try_reserve_exact(count).map_err(|_|core(Stage::Modulation,"Constant definition allocation")(Error::Capacity))?;
+        properties.extend(instrument.source_indices.constant_properties.iter().map(|row|crate::SourceConstantProperty{node:row.node,owner:row.owner,value:ir_control_id(&instrument.controls[row.value.0].key),style:ir_control_id(&instrument.controls[row.style.0].key),bipolar:row.bipolar}));
+        plan=plan.with_source_constant_properties(properties,4*1024*1024).map_err(core(Stage::Modulation,"actual Constant definition controls"))?;
+    }
     // Compile explicit shared sections into the SAME typed chain owner table.
     // A definition shared by members is not a physical source or a global bus.
     let mut processing_scopes = Vec::with_capacity(instrument.processing_scopes.len());
@@ -1256,6 +1265,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
         )
         .map_err(core(Stage::Controls, "authored source engine values"))?;
     plan = lowering.parameter_registry(plan)?;
+    plan = lowering.source_output_modulation(plan)?;
     let (prepared,provider_sources)=lowering.processing_modulation(plan)?;
     plan = lowering.modulation(prepared,&provider_sources)?;
     if !instrument.source_indices.sample_targets.is_empty() {
@@ -1967,6 +1977,31 @@ impl Lowering<'_> {
         plan.validate_processing_parameters().map_err(error)?;Ok(plan)
     }
 
+    fn source_output_modulation(&self,plan:Prepared)->Result<Prepared,LowerError>{
+        let mut entries=Vec::new();
+        entries.try_reserve_exact(self.ir.source_indices.global_modulation.len())
+            .map_err(|_|core(Stage::Modulation,"source output program entries")(Error::Capacity))?;
+        for definition in &self.ir.source_indices.global_modulation {
+            let label=format!("source output {:?}",definition.owner);
+            let (program,sources,_)=self.program_for_routes(&label,None,None,None,&definition.routes,&plan,false,None,true,&definition.sources)?;
+            let mut roster=vec![None;program.sources.len()];
+            for (identity,index)in sources {
+                let controller=match self.ir.modulators[identity.0].source{
+                    ir::ModulationSource::Controller(cc)if cc<128=>Some(cc),
+                    ir::ModulationSource::Constant|ir::ModulationSource::ConstantProperty{..}=>None,
+                    _=>return Err(unsupported(label.clone(),Feature::ModulatorScope(self.ir.modulators[identity.0].scope))),
+                };
+                let slot=roster.get_mut(index).ok_or_else(||core(Stage::Modulation,&label)(Error::InvalidInput))?;
+                if slot.is_some(){return Err(core(Stage::Modulation,&label)(Error::InvalidInput));}
+                *slot=Some((identity,controller));
+            }
+            let roster=roster.into_iter().map(|source|source.ok_or_else(||core(Stage::Modulation,&label)(Error::InvalidInput))).collect::<Result<Vec<_>,_>>()?;
+            entries.push((definition.owner,definition.input_owner,definition.outlet.0,program,roster));
+        }
+        plan.with_source_output_modulation(entries,64*1024*1024)
+            .map_err(core(Stage::Modulation,"actual element output programs"))
+    }
+
     fn processing_modulation(&self,plan:Prepared)->Result<(Prepared,HashMap<(usize,ir::ModulatorRef),crate::ProcessingSourceRef>),LowerError>{
         let mut programs=Vec::new();let mut scopes=vec![None;plan.processing_scope_count()];let mut gates=vec![None;scopes.len()];
         let mut provider_sources=HashMap::new();
@@ -2046,7 +2081,7 @@ impl Lowering<'_> {
     }
 
     fn register_program_source(&self,owner:&str,modulator:ir::ModulatorRef,program:&mut ModProgram,
-        sources:&mut HashMap<ir::ModulatorRef,usize>,implicit_mpe:bool)->Result<usize,LowerError>{
+        sources:&mut HashMap<ir::ModulatorRef,usize>,implicit_mpe:bool,element_inputs:bool)->Result<usize,LowerError>{
         let owner=owner.to_owned();
                 if let Some(&index) = sources.get(&modulator) {
                     return Ok(index);
@@ -2057,7 +2092,8 @@ impl Lowering<'_> {
                     (m.scope, &m.source),
                     (ir::Scope::Master, ir::ModulationSource::Lfo(_))
                 );
-                if m.scope != ir::Scope::Voice && !shared {
+                let resolved_element=element_inputs&&(matches!(m.source,ir::ModulationSource::Controller(cc)if cc<128)||matches!(m.source,ir::ModulationSource::Constant|ir::ModulationSource::ConstantProperty{..}));
+                if m.scope != ir::Scope::Voice && !shared && !resolved_element {
                     return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
                 }
                 if !implicit_mpe && shared && matches!(&m.source,ir::ModulationSource::Lfo(lfo)if lfo.retrigger){
@@ -2078,17 +2114,22 @@ impl Lowering<'_> {
                 Ok(program.sources.len() - 1)
     }
     fn program_for_owner(&self,owner:&str,zone_index:usize,zone:&ir::Zone,plan:&Prepared,implicit_mpe:bool,processing_scope:Option<usize>,source_roster:&[ir::ModulatorRef])->Result<(ModProgram,HashMap<ir::ModulatorRef,usize>,HashMap<ir::RouteRef,usize>),LowerError>{
+        self.program_for_routes(owner,Some(zone_index),zone.group,zone.chain,&zone.routes,plan,implicit_mpe,processing_scope,false,source_roster)
+    }
+    // Common compiler for actual routed owners. A global outlet supplies no
+    // zone identity or processing scope: it cannot borrow a sample's projector.
+    fn program_for_routes(&self,owner:&str,zone_index:Option<usize>,group:Option<ir::GroupRef>,owner_chain:Option<ir::ChainRef>,route_refs:&[ir::RouteRef],plan:&Prepared,implicit_mpe:bool,processing_scope:Option<usize>,element_inputs:bool,source_roster:&[ir::ModulatorRef])->Result<(ModProgram,HashMap<ir::ModulatorRef,usize>,HashMap<ir::RouteRef,usize>),LowerError>{
         let mut program = ModProgram::default();
         let mut sources = std::collections::HashMap::new();
         let mut route_sites=HashMap::new();
         let mut shapes = std::collections::HashMap::new();
-        for &source in source_roster{self.register_program_source(owner,source,&mut program,&mut sources,implicit_mpe)?;}
-        for &route_ref in &zone.routes {
+        for &source in source_roster{self.register_program_source(owner,source,&mut program,&mut sources,implicit_mpe,element_inputs)?;}
+        for &route_ref in route_refs {
             let route = &self.ir.routes[route_ref.0];
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
             let mut processor_targets = Vec::new();
-            let mut source_of=|modulator:ir::ModulatorRef,program:&mut ModProgram|self.register_program_source(&owner,modulator,program,&mut sources,implicit_mpe);
+            let mut source_of=|modulator:ir::ModulatorRef,program:&mut ModProgram|self.register_program_source(&owner,modulator,program,&mut sources,implicit_mpe,element_inputs);
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -2112,7 +2153,7 @@ impl Lowering<'_> {
                     d,
                 ),
                 (ir::Target::Wavetable(parameter), ir::Depth::Normalized(d)) => {
-                    if !zone.group.and_then(|group| self.ir.groups.get(group.0)).is_some_and(|group| group.wavetable.is_some()) {
+                    if !group.and_then(|group| self.ir.groups.get(group.0)).is_some_and(|group| group.wavetable.is_some()) {
                         return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
                     }
                     (match parameter {
@@ -2140,7 +2181,7 @@ impl Lowering<'_> {
                             .ir
                             .processor_controls
                             .iter()
-                            .any(|b| b.control == control && Some(b.chain) == zone.chain)
+                            .any(|b| b.control == control && Some(b.chain) == owner_chain)
                     {
                         return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
                     }
@@ -2153,7 +2194,7 @@ impl Lowering<'_> {
                         parameter,
                     },
                     ir::Depth::Normalized(depth),
-                ) if Some(chain) == zone.chain
+                ) if Some(chain) == owner_chain
                     && self
                         .registered_processor_target(plan, chain, index, parameter)
                         .is_some() =>
@@ -2171,7 +2212,7 @@ impl Lowering<'_> {
                         parameter,
                     },
                     depth,
-                ) if Some(chain) == zone.chain => {
+                ) if Some(chain) == owner_chain => {
                     let authored = &self.ir.chains[chain.0];
                     let listed: Vec<_> = authored
                         .pre_amplitude
@@ -2181,7 +2222,7 @@ impl Lowering<'_> {
                     let processor = listed.get(index).ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
-                    let native_chain = plan.region_chain(zone_index).ok_or_else(|| {
+                    let native_chain = zone_index.and_then(|index|plan.region_chain(index)).ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
                     let native = plan.voice_chains.view(native_chain);
@@ -2357,7 +2398,7 @@ impl Lowering<'_> {
                 ));
             }
             let cutoff = mpe.timbre == TimbreTarget::Cutoff
-                && zone.chain.is_some_and(|c| {
+                && owner_chain.is_some_and(|c| {
                     let chain = &self.ir.chains[c.0];
                     (0..chain.pre_amplitude.len() + chain.post_amplitude.len())
                         .any(|i| modulable_filter(self.ir, c, i))
@@ -2478,6 +2519,7 @@ impl Lowering<'_> {
             ir::ModulationSource::Timbre => ModSource::Timbre,
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::ConstantProperty{node,value,style,bipolar}=>ModSource::ConstantProperty{node:*node,value:ir_control_id(&self.ir.controls[value.0].key),style:ir_control_id(&self.ir.controls[style.0].key),bipolar:*bipolar},
             ir::ModulationSource::Script(id) => ModSource::Script(*id),
             ir::ModulationSource::ScriptBipolar(id) => ModSource::ScriptBipolar(*id),
             ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
