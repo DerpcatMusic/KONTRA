@@ -6,6 +6,9 @@ use crate::{
 };
 
 pub(super) mod reuse;
+pub(crate) mod storage;
+pub(crate) mod channels;
+pub(crate) mod bundle;
 #[cfg(test)]
 mod mix_experiment;
 
@@ -858,6 +861,12 @@ impl Cursor {
 
     pub(super) fn holding_onset(&self) -> bool {
         self.cold_hold
+    }
+    /// A complete default-one processing-owner admission cleared only the
+    /// hold. Existing starvation/recovery fade and all source history remain
+    /// owned by the ordinary next source render.
+    pub(crate) fn admit_processing_cold_start(&mut self) {
+        self.cold_hold = false;
     }
 
     /// One millisecond of native fade from the last complete resampled frame.

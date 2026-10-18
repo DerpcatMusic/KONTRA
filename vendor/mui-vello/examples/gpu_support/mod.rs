@@ -1,5 +1,8 @@
 use mui_scene::prelude::*;
-use std::{sync::mpsc, time::Duration};
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub const W: u32 = 384;
 pub const H: u32 = 256;
@@ -87,6 +90,7 @@ pub fn readback(
     texture: &wgpu::Texture,
     size: [u32; 2],
 ) -> Result<Vec<u8>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
     let stride = (size[0] * 4 + 255) & !255;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("conformance readback"),
@@ -121,8 +125,35 @@ pub fn readback(
     buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
         let _ = send.send(r);
     });
-    device.poll(wgpu::PollType::wait_indefinitely())?;
-    recv.recv_timeout(Duration::from_secs(10))??;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "GPU_READBACK_TIMEOUT: mapping did not complete within 10 seconds",
+            )
+            .into());
+        }
+        // Poll never intentionally waits for the GPU; the test driver also
+        // imposes a wall deadline for a native driver call that itself stalls.
+        device.poll(wgpu::PollType::Poll)?;
+        match recv.try_recv() {
+            Ok(result) => {
+                result?;
+                break;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err("GPU readback mapping callback disconnected".into());
+            }
+            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(2)),
+        }
+    }
+    if Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "GPU_READBACK_TIMEOUT: mapping callback exceeded the readback deadline",
+        )
+        .into());
+    }
     let mapped = buffer.slice(..).get_mapped_range()?;
     let mut pixels = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
     for row in mapped.chunks(stride as usize).take(size[1] as usize) {

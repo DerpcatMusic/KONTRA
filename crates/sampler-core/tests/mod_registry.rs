@@ -21,6 +21,7 @@ fn descriptor(scope: ParameterScope, node: u32, parameter: u32) -> ParameterDesc
                     ParameterScope::Group(id) => (1u128 << 64) + u128::from(id),
                     ParameterScope::Bus(id) => (2u128 << 64) + u128::from(id),
                     ParameterScope::Plan => 3u128 << 64,
+                    ParameterScope::ProcessingScope(id) => (4u128 << 64) + u128::from(id),
                 },
         ),
         name: "custom level".into(),
@@ -191,4 +192,15 @@ fn preparation_freezes_descriptor_metadata_and_registration_order() {
     assert_eq!(published.range, [0., 2.]);
     assert_eq!(published.default, 1.);
     assert_eq!(published.control, source.control);
+}
+
+#[test]
+fn processing_scope_address_appends_without_colliding_with_original_four_domains(){
+    let scopes=[ParameterScope::Voice,ParameterScope::Group(0),ParameterScope::Bus(0),ParameterScope::Plan,ParameterScope::ProcessingScope(0),ParameterScope::ProcessingScope(1)];
+    assert!(scopes.windows(2).all(|p|p[0]<p[1]));let mut registry=ParameterRegistry::default();
+    for scope in scopes{registry.register(descriptor(scope,7,2)).unwrap();}
+    let ready=registry.prepare().unwrap();let mut lanes=Vec::new();for scope in scopes{lanes.push(ready.resolve(descriptor(scope,7,2).address).unwrap());}
+    for i in 0..lanes.len(){assert!(!lanes[..i].contains(&lanes[i]));}
+    assert_ne!(ParameterAddress::ProcessingParameter(0,0),ParameterAddress::ProcessorCutoff(0));
+    assert_ne!(ParameterAddress::ProcessingParameter(0,0),ParameterAddress::ProcessingParameter(1,0));
 }

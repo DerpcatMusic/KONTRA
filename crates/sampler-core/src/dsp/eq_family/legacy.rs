@@ -101,67 +101,20 @@ pub(crate) struct NativeEq {
     gain: PreparedParameter,
 }
 impl NativeEq {
+    pub(super) fn constant(self) -> Option<ConstantEq> {
+        match [self.frequency, self.bandwidth, self.gain] {
+            [PreparedParameter::Constant(frequency), PreparedParameter::Constant(bandwidth),
+                PreparedParameter::Constant(gain)] => Some(ConstantEq { rate: self.rate, frequency, bandwidth, gain }),
+            _ => None,
+        }
+    }
+    #[cfg(test)]
     pub(super) fn batches(self) -> bool {
         [self.frequency, self.bandwidth, self.gain].iter()
             .all(|p| matches!(p, PreparedParameter::Constant(_)))
     }
 
-    pub(super) fn process_lanes(
-        self,
-        cells: &mut super::super::lanes::Cells<'_>,
-        cell: usize,
-        batch: &super::super::lanes::Batch,
-        block: &mut super::super::lanes::LaneBlock,
-        parameters: &[ControlRamp],
-        at: u64,
-    ) {
-        use super::super::lanes::LANES;
-        debug_assert!(self.batches());
-        let targets = self.targets(parameters, at);
-        let mut held = true;
-        for v in 0..batch.count {
-            if batch.ends[2 * v] == 0 { continue; }
-            let state = &mut cells[v].as_mut().expect("batch voice")[cell];
-            if state.aux[8] == 0. {
-                self.tune(state, targets, 7);
-                state.aux[15] = state.aux[2];
-                state.aux[8] = 1.;
-                state.delay_position = 32;
-            }
-            // Stronger than the native settle tolerance: inherited moving
-            // coefficients continue through their scalar cadence until exact.
-            held &= (0..3).all(|i| state.aux[i] as f32 == targets[i]);
-        }
-        if !held {
-            for v in 0..batch.count {
-                let len = batch.ends[2 * v];
-                let mut planar = std::array::from_fn(|c| std::array::from_fn(|i| block[i][2*v+c]));
-                self.process(&mut cells[v].as_mut().expect("batch voice")[cell], parameters, &mut planar, len, at);
-                for i in 0..len { for c in 0..2 { block[i][2*v+c] = planar[c][i]; } }
-            }
-            return;
-        }
-        let mut coefficients = [kernel::Svf::PASS; LANES];
-        let mut states = [[0.; LANES]; 2];
-        for v in 0..batch.count {
-            let state = &cells[v].as_ref().expect("batch voice")[cell];
-            let coefficient = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9+i]));
-            for c in 0..2 {
-                coefficients[2*v+c] = coefficient;
-                states[0][2*v+c] = state.z[c][0];
-                states[1][2*v+c] = state.z[c][1];
-            }
-        }
-        if batch.ends.iter().all(|&end| end == batch.len) {
-            kernel::Svf::run_lanes_dispatched::<LANES, false>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
-        } else {
-            kernel::Svf::run_lanes_dispatched::<LANES, true>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
-        }
-        for v in 0..batch.count {
-            if batch.ends[2*v] == 0 { continue; }
-            cells[v].as_mut().expect("batch voice")[cell].z = std::array::from_fn(|c| [states[0][2*v+c], states[1][2*v+c]].map(super::super::flush));
-        }
-    }
+
 
     pub(crate) fn trace_parameters(self) -> [(&'static str, PreparedParameter); 3] {
         [
@@ -170,13 +123,29 @@ impl NativeEq {
             ("gain_db", self.gain),
         ]
     }
-    fn targets(self, parameters: &[ControlRamp], at: u64) -> [f32; 3] {
-        [
-            self.frequency.value(parameters, at, None) as f32,
-            self.bandwidth.value(parameters, at, None) as f32,
-            KontaktLegacyEqSettings::gain_knob(self.gain.value(parameters, at, None) as f32),
-        ]
+
+
+    pub(super) fn process(
+        self,
+        state: &mut ProcessorState,
+        parameters: &[ControlRamp],
+        block: &mut Planar,
+        len: usize,
+        at: u64,
+    ) {
+        let [left, right] = block;
+        self.process_samples(state, parameters, [&mut left[..len], &mut right[..len]], at);
     }
+
+}
+
+/// The native recurrence receives an actual control owner. Constants retain
+/// their f64 values until the original target conversion; neither owner is
+/// downcast or reconstructed while processing.
+trait NativeLaw: Copy {
+    fn rate(self) -> u32;
+    fn targets(self, parameters: &[ControlRamp], at: u64) -> [f32; 3];
+    fn modulated(self, parameters: &[ControlRamp]) -> [bool; 3];
     fn tune(self, state: &mut ProcessorState, incoming: [f32; 3], mask: u8) {
         if mask == 0 {
             return;
@@ -190,7 +159,7 @@ impl NativeEq {
         for (dst, value) in state.aux[0..3].iter_mut().zip(values) {
             *dst = f64::from(value);
         }
-        let c = coefficients(self.rate, values[0], values[1], values[2]);
+        let c = coefficients(self.rate(), values[0], values[1], values[2]);
         for (dst, value) in state.aux[3..8].iter_mut().zip(c) {
             *dst = f64::from(value);
         }
@@ -199,17 +168,6 @@ impl NativeEq {
         let svf = kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [-a1, -a2] })
             .unwrap_or(kernel::Svf::PASS);
         state.aux[9..15].copy_from_slice(&svf.to_array());
-    }
-    pub(super) fn process(
-        self,
-        state: &mut ProcessorState,
-        parameters: &[ControlRamp],
-        block: &mut Planar,
-        len: usize,
-        at: u64,
-    ) {
-        let [left, right] = block;
-        self.process_samples(state, parameters, [&mut left[..len], &mut right[..len]], at);
     }
     fn process_samples(
         self,
@@ -233,7 +191,7 @@ impl NativeEq {
         // A lane with a modulation buffer (+0x308/+0x310/+0x318) is latched only when the
         // 32-frame countdown reloads: cutoff snaps (no smoothing), bandwidth applies, gain
         // becomes the smoothing target. Unmodulated lanes follow their setters at once.
-        let modulated = [self.frequency, self.bandwidth, self.gain].map(|p| p.projected(parameters));
+        let modulated = self.modulated(parameters);
         let mut position = 0;
         while position < len {
             let live = self.targets(parameters, at + position as u64);
@@ -300,6 +258,106 @@ impl NativeEq {
         }
     }
 }
+impl NativeLaw for NativeEq {
+    fn rate(self) -> u32 { self.rate }
+    fn modulated(self, parameters: &[ControlRamp]) -> [bool; 3] {
+        [self.frequency, self.bandwidth, self.gain].map(|p| p.projected(parameters))
+    }
+    fn targets(self, parameters: &[ControlRamp], at: u64) -> [f32; 3] {
+        [
+            self.frequency.value(parameters, at, None) as f32,
+            self.bandwidth.value(parameters, at, None) as f32,
+            KontaktLegacyEqSettings::gain_knob(self.gain.value(parameters, at, None) as f32),
+        ]
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ConstantEq {
+    rate: u32,
+    frequency: f64,
+    bandwidth: f64,
+    gain: f64,
+}
+impl NativeLaw for ConstantEq {
+    fn rate(self) -> u32 { self.rate }
+    fn modulated(self, _parameters: &[ControlRamp]) -> [bool; 3] { [false; 3] }
+    fn targets(self, _parameters: &[ControlRamp], _at: u64) -> [f32; 3] {
+        [self.frequency as f32, self.bandwidth as f32,
+            KontaktLegacyEqSettings::gain_knob(self.gain as f32)]
+    }
+}
+impl ConstantEq {
+    pub(super) fn into_native(self) -> NativeEq {
+        NativeEq { rate: self.rate, frequency: PreparedParameter::Constant(self.frequency),
+            bandwidth: PreparedParameter::Constant(self.bandwidth), gain: PreparedParameter::Constant(self.gain) }
+    }
+    pub(super) fn trace_parameters(self) -> [(&'static str, PreparedParameter); 3] {
+        [("frequency_knob", PreparedParameter::Constant(self.frequency)),
+         ("bandwidth_knob", PreparedParameter::Constant(self.bandwidth)),
+         ("gain_db", PreparedParameter::Constant(self.gain))]
+    }
+    pub(super) fn process(self, state: &mut ProcessorState, parameters: &[ControlRamp],
+        block: &mut Planar, len: usize, at: u64) {
+        let [left, right] = block;
+        self.process_samples(state, parameters, [&mut left[..len], &mut right[..len]], at);
+    }
+    pub(super) fn process_lanes(
+        self,
+        cells: &mut super::super::lanes::Cells<'_>,
+        cell: usize,
+        batch: &super::super::lanes::Batch,
+        block: &mut super::super::lanes::LaneBlock,
+        parameters: &[ControlRamp],
+        at: u64,
+    ) {
+        use super::super::lanes::LANES;
+        let targets = self.targets(parameters, at);
+        let mut held = true;
+        for v in 0..batch.count {
+            if batch.ends[2 * v] == 0 { continue; }
+            let state = &mut cells[v].as_mut().expect("batch voice")[cell];
+            if state.aux[8] == 0. {
+                self.tune(state, targets, 7);
+                state.aux[15] = state.aux[2];
+                state.aux[8] = 1.;
+                state.delay_position = 32;
+            }
+            // Stronger than the native settle tolerance: inherited moving
+            // coefficients continue through their scalar cadence until exact.
+            held &= (0..3).all(|i| state.aux[i] as f32 == targets[i]);
+        }
+        if !held {
+            for v in 0..batch.count {
+                let len = batch.ends[2 * v];
+                let mut planar = std::array::from_fn(|c| std::array::from_fn(|i| block[i][2*v+c]));
+                self.process(&mut cells[v].as_mut().expect("batch voice")[cell], parameters, &mut planar, len, at);
+                for i in 0..len { for c in 0..2 { block[i][2*v+c] = planar[c][i]; } }
+            }
+            return;
+        }
+        let mut coefficients = [kernel::Svf::PASS; LANES];
+        let mut states = [[0.; LANES]; 2];
+        for v in 0..batch.count {
+            let state = &cells[v].as_ref().expect("batch voice")[cell];
+            let coefficient = kernel::Svf::from_array(std::array::from_fn(|i| state.aux[9+i]));
+            for c in 0..2 {
+                coefficients[2*v+c] = coefficient;
+                states[0][2*v+c] = state.z[c][0];
+                states[1][2*v+c] = state.z[c][1];
+            }
+        }
+        if batch.ends.iter().all(|&end| end == batch.len) {
+            kernel::Svf::run_lanes_dispatched::<LANES, false>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
+        } else {
+            kernel::Svf::run_lanes_dispatched::<LANES, true>(&coefficients, &mut states, &mut block[..batch.len], &batch.ends);
+        }
+        for v in 0..batch.count {
+            if batch.ends[2*v] == 0 { continue; }
+            cells[v].as_mut().expect("batch voice")[cell].z = std::array::from_fn(|c| [states[0][2*v+c], states[1][2*v+c]].map(super::super::flush));
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -354,7 +412,7 @@ mod tests {
                             eq.process(&mut scalar[v], &[], &mut planar, ends[2*v], round as u64 * 64);
                             for i in 0..ends[2*v] { for c in 0..2 { expected[i][2*v+c] = planar[c][i]; } }
                         }
-                        eq.process_lanes(&mut cells, 0, &batch, &mut block, &[], round as u64 * 64);
+                        eq.constant().unwrap().process_lanes(&mut cells, 0, &batch, &mut block, &[], round as u64 * 64);
                         for v in 0..count {
                             let state = &cells[v].as_ref().unwrap()[0];
                             assert_eq!(state.z.map(|s| s.map(f64::to_bits)), scalar[v].z.map(|s| s.map(f64::to_bits)));

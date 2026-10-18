@@ -133,6 +133,14 @@ impl Overlay {
         }
     }
 
+    /// Effective key assignment, retaining explicit clears and inherited source keys.
+    pub fn keys<'a>(&'a self, id: &str, a: &'a ir::Articulation) -> &'a [u8] {
+        self.inputs
+            .get(id)
+            .and_then(|input| input.keys.as_deref())
+            .unwrap_or(&a.switch_keys)
+    }
+
     pub fn input(&self, id: &str, a: &ir::Articulation, driver: ir::Driver) -> Input {
         let custom = self.inputs.get(id).cloned().unwrap_or_default();
         let alt = a.alternatives;
@@ -308,10 +316,8 @@ impl Overlay {
         let mut inputs = Vec::new();
         let mut blocked = 0u128;
         for (n, (a, id)) in inst.articulations.iter().zip(ids).enumerate() {
-            let Input::Keys(effective) = self.input(&id, a, ir::Driver::Keys) else {
-                unreachable!()
-            };
-            let changed = effective != a.switch_keys;
+            let effective = self.keys(&id, a);
+            let changed = effective != a.switch_keys.as_slice();
             if changed && !self.keep_originals {
                 for &key in &a.switch_keys {
                     blocked |= 1u128 << key;
@@ -336,7 +342,8 @@ impl Overlay {
             };
             if mode == ir::Driver::Keys || inst.switching.keys == ir::SwitchKeys::Keep {
                 for key in effective
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter(|_| changed || a.switch_keys.is_empty())
                 {
                     if let Some(switch) = switch {
@@ -605,6 +612,33 @@ mod v1_parity_tests {
         assert_eq!(
             overlay,
             serde_json::from_str(&serde_json::to_string(&overlay).unwrap()).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod doctor_key_projection_tests {
+    use super::*;
+    #[test]
+    fn borrowed_keys_preserve_inheritance_explicit_clear_and_order() {
+        let articulation = ir::Articulation {
+            switch_keys: vec![42, 24],
+            ..Default::default()
+        };
+        let mut overlay = Overlay::default();
+        assert_eq!(overlay.keys("source", &articulation), &[42, 24]);
+        assert_eq!(
+            overlay.keys("source", &articulation).as_ptr(),
+            articulation.switch_keys.as_ptr()
+        );
+        overlay.set("source", Input::Keys(vec![]));
+        assert!(overlay.keys("source", &articulation).is_empty());
+        overlay.set("source", Input::Keys(vec![60, 59]));
+        assert_eq!(overlay.keys("source", &articulation), &[60, 59]);
+        assert_eq!(articulation.switch_keys, [42, 24]);
+        assert_eq!(
+            overlay.input("source", &articulation, ir::Driver::Keys),
+            Input::Keys(vec![60, 59])
         );
     }
 }

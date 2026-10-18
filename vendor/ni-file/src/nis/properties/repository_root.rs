@@ -57,13 +57,23 @@ impl std::convert::TryFrom<&ItemData> for RepositoryRoot {
 impl RepositoryRoot {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, NIFileError> {
         // itemVersion == 1
-        assert_eq!(reader.read_u32_le()?, 1);
+        let version = reader.read_u32_le()?;
+        if version != 1 {
+            return Err(NIFileError::VersionMismatch { expected: 1, got: version });
+        }
 
         let nisound_version = RepositoryVersion::from(reader.read_u32_le()?);
         let repository_magic = reader.read_u32_le()?;
         let repository_type = reader.read_u32_le()?;
 
-        assert_eq!(reader.read_u32_le()?, 1);
+        let segments_version = reader.read_u32_le()?;
+        if segments_version != 1 {
+            return Err(NIFileError::InvalidField {
+                field: "RepositoryRoot segments version",
+                expected: "1",
+                actual: segments_version.to_string(),
+            });
+        }
 
         let num_segments = reader.read_u32_le()?;
         let mut segments = Vec::new();
@@ -103,6 +113,44 @@ mod tests {
     use std::fs::File;
 
     use super::*;
+
+    fn encode(item: &RepositoryRoot) -> Vec<u8> {
+        let version = &item.nisound_version;
+        let mut bytes = Vec::new();
+        for word in [1, (version.major << 20) | (version.minor << 12) | version.patch,
+                     item.repository_magic, item.repository_type, 1, item.segments.len() as u32] {
+            bytes.extend(word.to_le_bytes());
+        }
+        for segment in &item.segments {
+            bytes.extend((segment.encode_utf16().count() as u32).to_le_bytes());
+            for c in segment.encode_utf16() { bytes.extend(c.to_le_bytes()); }
+        }
+        bytes
+    }
+
+    #[test]
+    fn repository_segments_round_trip_and_truncations_fail() {
+        let source = RepositoryRoot {
+            nisound_version: RepositoryVersion { major: 1, minor: 7, patch: 14 },
+            repository_magic: 0, repository_type: 2,
+            segments: vec!["".into(), "Libraries".into(), "音楽🎹".into()],
+        };
+        let bytes = encode(&source);
+        let mut reader = Cursor::new(&bytes);
+        let item = RepositoryRoot::read(&mut reader).unwrap();
+        assert_eq!(item.segments, source.segments);
+        assert_eq!(item.nisound_version, source.nisound_version);
+        assert_eq!(encode(&item), bytes);
+        assert_eq!(reader.position() as usize, bytes.len());
+        for n in 0..bytes.len() { assert!(RepositoryRoot::read(Cursor::new(&bytes[..n])).is_err()); }
+        for (offset, segment_version) in [(0, false), (16, true)] {
+            let mut invalid = bytes.clone();
+            invalid[offset..offset+4].copy_from_slice(&2u32.to_le_bytes());
+            let err = RepositoryRoot::read(Cursor::new(invalid)).unwrap_err();
+            if segment_version { assert!(matches!(err, NIFileError::InvalidField { field: "RepositoryRoot segments version", .. })); }
+            else { assert!(matches!(err, NIFileError::VersionMismatch { expected: 1, got: 2 })); }
+        }
+    }
 
     #[test]
     #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]

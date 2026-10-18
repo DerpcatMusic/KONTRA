@@ -392,8 +392,8 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
         .submit(ControlRequest {
             plan: old,
             expected_revision: Some(0),
-            operation: ControlOperation::Invoke(
-                control_context(&rt),
+            operation: ControlOperation::InvokeGlobal(
+                rt.performance(0).unwrap(),
                 write(MODE, ControlValue::Integer(11)),
             ),
         })
@@ -408,8 +408,8 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
     let mut second = None;
     support::without_heap(|| {
         second = rt
-            .invoke_control(
-                control_context(&rt),
+            .invoke_global_control(
+                rt.performance(0).unwrap(),
                 old,
                 Some(1),
                 write(MODE, ControlValue::Integer(12)),
@@ -422,8 +422,8 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
         assert_eq!(rt.behavior_local(second.unwrap(), 0), Ok(12));
         // Saturation cannot change the value even though the value itself is valid.
         assert_eq!(
-            rt.invoke_control(
-                control_context(&rt),
+            rt.invoke_global_control(
+                rt.performance(0).unwrap(),
                 old,
                 None,
                 write(MODE, ControlValue::Integer(99))
@@ -1301,4 +1301,73 @@ fn schema_replacement_preserves_native_envelope_and_dsp_identity_consumers() {
             .unwrap();
     });
     assert_modulation_frame(modulation_frame(&mut rt), [0.09375, 0.125]); // Both DSP parameter and modulation input retain the same ID.
+}
+
+#[test]
+fn channel_bound_plan_callbacks_cancel_only_on_their_actual_hard_stop_domain() {
+    let prepared = plan(definitions()).with_programs(vec![Program::new(vec![
+        Instruction::ReadControl { local: 0, control: MODE },
+        Instruction::Wait(5),
+        Instruction::WriteControl { control: MODE, local: 0 },
+        Instruction::End,
+    ]).unwrap().with_wait_lifetime(WaitLifetime::Callback)], None).unwrap()
+        .with_control_programs(vec![ControlCallback { control: MODE, program: 0, stage: 0 }]).unwrap();
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let active = rt.active_plan();
+    let stopped = control_context(&rt);
+    let sibling = ControlContext { origin: ChannelAddress { channel: 1, ..stopped.origin }, channels: 2, ..stopped };
+    support::without_heap(|| {
+        let first = rt.invoke_control(stopped, active, Some(0), write(MODE, ControlValue::Integer(11))).unwrap().1.unwrap();
+        let second = rt.invoke_control(sibling, active, Some(1), write(MODE, ControlValue::Integer(12))).unwrap().1.unwrap();
+        assert_eq!(rt.note_count(), 0);
+        assert_eq!(rt.all_sound_off(stopped.origin), Ok(0));
+        assert_eq!(rt.behavior_outcome(first), Ok(Some(Outcome::Cancelled)));
+        assert_eq!(rt.behavior_outcome(second), Ok(None));
+        rt.render(&mut [[0.; 2]; 6]).unwrap();
+        assert_eq!(rt.behavior_outcome(first), Ok(Some(Outcome::Cancelled)));
+        assert_eq!(rt.behavior_outcome(second), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.control_value(active, MODE), Ok(ControlValue::Integer(12)));
+        assert_eq!(rt.control_revision(active), Ok(3));
+        assert_eq!(rt.note_count(), 0);
+        assert_eq!(rt.expression_count(), 0);
+    });
+}
+
+
+#[test]
+fn legacy_local_modulation_without_shared_owners_keeps_live_controls_recall_and_terminal_lifetime() {
+    let prepared = modulation_plan();
+    assert_eq!(prepared.processing_scope_count(), 0);
+    let limits = Limits::for_plan(&prepared, 4, 4);
+    let mut runtime = Runtime::new(prepared, limits).unwrap();
+    let owner = runtime.active_plan();
+    let mut snapshot = vec![write(ControlId(0), ControlValue::Real(0.)); runtime.control_definitions(owner).unwrap().len()];
+    let (count, revision) = runtime.capture_controls(owner, &mut snapshot).unwrap();
+    assert_eq!(count, snapshot.len());
+    assert_eq!(revision, 0);
+    let input = Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(164) };
+    let mut note = None;
+    support::without_heap(|| note = Some(runtime.trigger(input, 60, 1.).unwrap()));
+    let note = note.unwrap();
+    assert_modulation_frame(modulation_frame(&mut runtime), [0.25, 0.5]);
+    assert_eq!(runtime.processing_owner_count(), 0);
+    assert_eq!(runtime.voice_count(), 1);
+    support::without_heap(|| runtime.edit_controls(owner, None, &[write(MOD_DEPTH, ControlValue::Real(0.25))]).map(|_| ()).unwrap());
+    assert_modulation_frame(modulation_frame(&mut runtime), [0.375, 0.5]);
+    support::without_heap(|| runtime.recall_controls(owner, None, &snapshot).map(|_| ()).unwrap());
+    assert_modulation_frame(modulation_frame(&mut runtime), [0.25, 0.5]);
+    assert_eq!(runtime.control_base_value(owner, MOD_DEPTH), Ok(ControlValue::Real(0.5)));
+    assert_eq!(runtime.note_plan(note), Ok(owner));
+    assert_eq!(runtime.now(), 384);
+    let mut ends = 0;
+    support::without_heap(|| {
+        runtime.release(note).unwrap();
+        runtime.render(&mut [[0.; 2]; 128]).unwrap();
+        runtime.flush_ended(|ended| { assert_eq!(ended, input); ends += 1; true });
+    });
+    assert_eq!(ends, 1);
+    assert_eq!(runtime.voice_count(), 0);
+    assert_eq!(runtime.note_count(), 0);
+    assert_eq!(runtime.processing_owner_count(), 0);
+    assert_eq!(runtime.stats().nonfinite_frames, 0);
 }

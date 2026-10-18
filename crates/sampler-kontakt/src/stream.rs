@@ -65,6 +65,18 @@ impl Bytes {
     }
 }
 
+/// Control-side complete encoded resident read through the ordinary immutable
+/// Source recipe. This does not create a new decryption or path resolver.
+pub(crate) fn read_encoded_resident(source: &Source, byte_limit: usize) -> io::Result<Vec<u8>> {
+    let len=usize::try_from(source.size).map_err(|_|io::Error::new(io::ErrorKind::InvalidData,"encoded sample length overflow"))?;
+    if len==0 || len>byte_limit {return Err(io::Error::new(io::ErrorKind::InvalidData,"encoded resident sample limit exceeded"));}
+    let mut input=Bytes::open(source,false)?;
+    let mut bytes=Vec::new();bytes.try_reserve_exact(len).map_err(|e|io::Error::new(io::ErrorKind::OutOfMemory,e))?;
+    bytes.resize(len,0);input.read_exact(&mut bytes)?;
+    source.check_snapshot(&input.file)?;
+    Ok(bytes)
+}
+
 impl Read for Bytes {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let end = self.at + self.buffer.len() as u64;
@@ -135,11 +147,18 @@ enum Codec {
     Ncw(Box<ncw::NcwReader<Bytes>>),
     /// A reader supplied by another loader: fills frames from a start.
     Custom(Reader),
+    Encoded(Box<crate::EncodedChannelReader>),
 }
 
 /// Where an asset's frames are read from, reopened by each decode thread.
 pub trait AssetSource: Send + Sync {
     fn open(&self) -> io::Result<SampleReader>;
+    /// Original-channel reader admission is explicit. Opaque custom closures
+    /// retain their legacy stereo domain and cannot acquire wide authority.
+    fn open_channels(&self, _workspace_limit:usize) -> io::Result<Option<SampleReader>> { Ok(None) }
+    fn open_stream_channels(&self, workspace_limit:usize) -> io::Result<Option<SampleReader>> {self.open_channels(workspace_limit)}
+    /// Physical page source whose immutable recipe remains one logical reader.
+    fn channel_pack(&self) -> Option<(&LogicalStreamRecipe, usize)> { None }
     /// A validated persistent numeric header, when available.
     fn header(&self) -> Option<(u32, usize)> {
         None
@@ -151,6 +170,12 @@ pub trait AssetSource: Send + Sync {
 }
 
 impl AssetSource for Source {
+    fn open_stream_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        open_native_channel_reader(self,true,workspace_limit)
+    }
+    fn open_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        open_native_channel_reader(self,false,workspace_limit)
+    }
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
     }
@@ -160,6 +185,162 @@ impl AssetSource for Source {
     fn open_stream(&self) -> io::Result<SampleReader> {
         SampleReader::open_counted(self, true)
     }
+}
+
+/// Original width discovery and new-wide native workspace admission. Legacy
+/// mono/stereo takes its original opener, without imposing this new wide cap.
+fn open_native_channel_reader(source:&Source,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+    let mut bytes=Bytes::open(source,counted)?;let mut head=Vec::new();
+    (&mut bytes).take(1<<12).read_to_end(&mut head)?;
+    let channels=if head.starts_with(b"RIFF") || head.starts_with(b"FORM") {
+        let wav=if head.starts_with(b"FORM") {
+            bytes.seek(SeekFrom::Start(0))?;crate::samples::aiff_reader(&mut bytes)
+        } else {
+            if crate::samples::wav_layout(&head).is_err() {bytes.seek(SeekFrom::Start(0))?;head.clear();(&mut bytes).take(1<<16).read_to_end(&mut head)?;}
+            crate::samples::wav_layout(&head)
+        }.map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e))?;
+        if wav.channels>2 {
+            let cost=PAGE_FRAMES.checked_mul(wav.channels).and_then(|n|n.checked_mul(wav.width)).and_then(|n|n.checked_add(BUFFER+source.path.capacity()+size_of::<SampleReader>()))
+                .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"native PCM workspace overflow"))?;
+            if cost>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"native PCM workspace admission"));}
+        }
+        wav.channels
+    } else {
+        let header=ncw::NcwHeader::read(&mut std::io::Cursor::new(&head)).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e.to_string()))?;
+        let channels=usize::from(header.channels);
+        if channels>2 {
+            let blocks=usize::try_from(header.num_samples.div_ceil(ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK as u32)).map_err(io::Error::other)?;
+            let entries=header.data_offset.checked_sub(header.blocks_offset).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData,"NCW index geometry"))?;
+            if u64::from(header.data_offset)+u64::from(header.data_size)>source.size || u64::from(entries)!=(blocks as u64+1)*4 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,"NCW declared index extent"));
+            }
+            let index=blocks.max(4).checked_next_power_of_two().and_then(|n|n.checked_mul(size_of::<u32>()))
+                .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"NCW index capacity overflow"))?;
+            let outer=channels.checked_next_power_of_two().and_then(|n|n.checked_mul(size_of::<Vec<i32>>()))
+                .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"NCW channel capacity overflow"))?;
+            let decoded=channels.checked_mul(ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK).and_then(|n|n.checked_mul(size_of::<i32>()))
+                .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"NCW block capacity overflow"))?;
+            let cost=index.checked_add(outer).and_then(|n|n.checked_add(decoded)).and_then(|n|n.checked_add(ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK.checked_mul(size_of::<i32>())?))
+                .and_then(|n|n.checked_add(BUFFER+source.path.capacity()+size_of::<ncw::NcwReader<Bytes>>()+size_of::<SampleReader>()))
+                .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"NCW aggregate workspace overflow"))?;
+            if cost>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"NCW workspace admission before seek-table decode"));}
+        }
+        channels
+    };
+    drop(bytes);drop(head);
+    if channels<=2 {return Ok(None);}
+    let reader=SampleReader::open_counted(source,counted)?;
+    if reader.original_channels()!=Some(channels) || reader.native_workspace_bound().is_none_or(|n|n>workspace_limit) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,"original native channel admission changed"));
+    }
+    Ok(Some(reader))
+}
+
+/// Checked geometry and frozen normal origin for one paged logical source.
+/// Contains real physical IDs but NO Pcm/SourceStorage strong references: loader
+/// closures may retain this recipe without forming a residency-owner cycle.
+pub struct LogicalStreamRecipe {
+    id: sampler_core::SourceStorageId,
+    source: Arc<dyn AssetSource>,
+    channels: usize,
+    rate: u32,
+    frames: usize,
+    packs: Box<[AssetId]>,
+    workspace_limit: usize,
+}
+impl LogicalStreamRecipe {
+    fn open(&self) -> io::Result<SampleReader> {self.open_counted(true)}
+    fn open_initial(&self) -> io::Result<SampleReader> {self.open_counted(false)}
+    fn reader_workspace_limit(&self) -> io::Result<usize> {
+        // Persistent all-pack scratch and temporary destination references
+        // coexist with the owned native reader. Reserve their logical
+        // capacities BEFORE opening a decoder or allocating that scratch.
+        let scratch=self.packs.len().checked_mul(PAGE_FRAMES)
+            .and_then(|n|n.checked_mul(size_of::<Frame>()))
+            .and_then(|n|self.packs.len().checked_mul(size_of::<Vec<Frame>>()).and_then(|meta|n.checked_add(meta)))
+            .and_then(|n|self.packs.len().checked_mul(size_of::<&mut [Frame]>()).and_then(|refs|n.checked_add(refs)))
+            .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical coexisting workspace overflow"))?;
+        self.workspace_limit.checked_sub(scratch)
+            .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical scratch exhausted native reader admission"))
+    }
+    fn open_counted(&self,counted:bool) -> io::Result<SampleReader> {
+        let reader_limit=self.reader_workspace_limit()?;
+        let reader = (if counted {self.source.open_stream_channels(reader_limit)} else {self.source.open_channels(reader_limit)})?.ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"logical source has no typed reader"))?;
+        if reader.original_channels()!=Some(self.channels) || reader.rate()!=self.rate || reader.frames()!=self.frames {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,"logical source geometry changed"));
+        }
+        if reader.native_workspace_bound().is_none_or(|n|n>reader_limit) {
+            return Err(io::Error::new(io::ErrorKind::OutOfMemory,"logical reader workspace exceeds admission"));
+        }
+        Ok(reader)
+    }
+    fn scratch(&self) -> io::Result<Vec<Vec<Frame>>> {
+        self.reader_workspace_limit()?;
+        let bytes=self.packs.len().checked_mul(PAGE_FRAMES).and_then(|n|n.checked_mul(size_of::<Frame>()))
+            .and_then(|n|n.checked_add(self.packs.len()*size_of::<Vec<Frame>>()))
+            .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical page workspace overflow"))?;
+        if bytes>self.workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"logical page workspace limit"));}
+        let mut packs=Vec::new();packs.try_reserve_exact(self.packs.len()).map_err(io::Error::other)?;
+        for _ in &self.packs {let mut page=Vec::new();page.try_reserve_exact(PAGE_FRAMES).map_err(io::Error::other)?;page.resize(PAGE_FRAMES,[0.;2]);packs.push(page);}
+        Ok(packs)
+    }
+    fn read(&self, reader:&mut SampleReader, start:usize, frames:usize, scratch:&mut [Vec<Frame>]) -> io::Result<()> {
+        if frames>PAGE_FRAMES || scratch.len()!=self.packs.len() || scratch.iter().any(|p|p.len()!=PAGE_FRAMES) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"logical page scratch geometry"));
+        }
+        let scratch_bytes=scratch.iter().try_fold(scratch.len()*size_of::<Vec<Frame>>(),|n,p|n.checked_add(p.capacity()*size_of::<Frame>()))
+            .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical scratch accounting overflow"))?;
+        let reader_limit=self.workspace_limit.checked_sub(scratch_bytes).ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical scratch exhausted workspace"))?;
+        // This small destination-reference vector is control/worker-only and
+        // charged alongside the persistent page workspace before decoder use.
+        let refs_bytes=scratch.len().checked_mul(size_of::<&mut [Frame]>()).ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical reference overflow"))?;
+        let reader_limit=reader_limit.checked_sub(refs_bytes).ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical reference workspace limit"))?;
+        let mut refs=Vec::new();refs.try_reserve_exact(scratch.len()).map_err(io::Error::other)?;
+        for page in scratch.iter_mut() {refs.push(&mut page[..frames]);}
+        if refs.capacity().checked_mul(size_of::<&mut [Frame]>()).is_none_or(|n|n>refs_bytes) {
+            return Err(io::Error::new(io::ErrorKind::OutOfMemory,"logical reference capacity exceeds admission"));
+        }
+        let mut out=crate::channel_reader::ChannelPackDestinations::new(self.channels,frames,&mut refs)?;
+        reader.read_packs(start,&mut out,reader_limit)?;
+        drop(out);drop(refs);
+        if scratch.iter().any(|page|page[..frames].iter().flatten().any(|v|!v.is_finite()))
+            || self.channels%2!=0 && scratch.last().is_some_and(|page|page[..frames].iter().any(|f|f[1].to_bits()!=0)) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,"logical page contains invalid original channels"));
+        }
+        Ok(())
+    }
+}
+struct LogicalPackSource { recipe: Arc<LogicalStreamRecipe>, ordinal: usize }
+impl AssetSource for LogicalPackSource {
+    fn open(&self) -> io::Result<SampleReader> {
+        // A single-pack legacy reader must never silently decode/truncate this
+        // family. Normal workers and heads dispatch explicit logical batches.
+        Err(io::Error::new(io::ErrorKind::Unsupported,"logical family requires batch reader"))
+    }
+    fn header(&self)->Option<(u32,usize)> {Some((self.recipe.rate,self.recipe.frames))}
+    fn channel_pack(&self)->Option<(&LogicalStreamRecipe,usize)> {Some((&self.recipe,self.ordinal))}
+}
+/// Construct unpublished normal streamed storage and real physical recipe keys.
+/// Caller owns the frozen ordinary AssetSource; custom opaque readers refuse.
+pub fn logical_stream_source(source:Arc<dyn AssetSource>, workspace_limit:usize)
+    ->io::Result<(sampler_core::SourceStorage,Vec<(AssetId,Arc<dyn AssetSource>)>)> {
+    let reader=source.open_channels(workspace_limit)?.ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"typed original-channel reader unavailable"))?;
+    let channels=reader.original_channels().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"opaque channel geometry"))?;
+    if channels<=2 {return Err(io::Error::new(io::ErrorKind::InvalidInput,"legacy source uses normal stereo constructor"));}
+    if reader.native_workspace_bound().is_none_or(|n|n>workspace_limit) {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"logical decoder workspace admission"));}
+    let rate=reader.rate();let frames=reader.frames();drop(reader);
+    let count=sampler_core::ChannelCount::new(channels).map_err(io::Error::other)?;
+    let mut packs=Vec::new();packs.try_reserve_exact(count.pack_count()).map_err(io::Error::other)?;
+    for _ in 0..count.pack_count() {packs.push(Pcm::streamed(rate,frames).map_err(io::Error::other)?);}
+    let ids=packs.iter().map(Pcm::asset_id).collect::<Vec<_>>().into_boxed_slice();
+    let family=sampler_core::SourceStorageFamily::new_paged(count,packs).map_err(io::Error::other)?;
+    let recipe=Arc::new(LogicalStreamRecipe {id:family.id(),source,channels,rate,frames,packs:ids,workspace_limit});
+    // Reserve all metadata/page scratch capacity before exposing recipe keys.
+    let scratch=recipe.scratch()?;let mut reader=recipe.open_initial()?;
+    recipe.read(&mut reader,0,frames.min(PAGE_FRAMES),&mut {scratch})?;
+    let registry=recipe.packs.iter().copied().enumerate().map(|(ordinal,id)|
+        (id,Arc::new(LogicalPackSource{recipe:recipe.clone(),ordinal}) as Arc<dyn AssetSource>)).collect();
+    Ok((family.into(),registry))
 }
 
 /// Random-access frames of one sample, converted exactly as a full decode.
@@ -196,6 +377,7 @@ impl SampleReader {
                     + reader.workspace_bytes()
                     + bytes(reader.get_ref())
             }
+            Codec::Encoded(reader)=>return reader.accounted_workspace_bytes(),
             Codec::Custom(_) => return None,
         };
         Some(self.scratch.capacity() + codec)
@@ -281,6 +463,15 @@ impl SampleReader {
         }
     }
 
+    /// Same checked ordinary PCM decoder plus explicit caller accounting of
+    /// its source owner. The codec bound is verified; an arbitrary MediaSource
+    /// cost is a separate contract, not a certified total-owner capability.
+    /// Legacy and opaque Custom decoders cannot enter this typed variant.
+    pub fn accounted_encoded(reader:crate::EncodedChannelReader)->io::Result<Self> {
+        reader.accounted_workspace_bytes().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"encoded reader has no checked codec accounting"))?;
+        let frames=usize::try_from(reader.frames()).map_err(io::Error::other)?;let rate=reader.rate();
+        Ok(Self{codec:Codec::Encoded(Box::new(reader)),bytes:None,rate,frames,scratch:Vec::new()})
+    }
     pub fn rate(&self) -> u32 {
         self.rate
     }
@@ -288,6 +479,91 @@ impl SampleReader {
         self.frames
     }
 
+    /// Typed normal WAV/AIFF/NCW original width. A custom stereo closure is
+    /// intentionally not evidence of its original encoded source width.
+    pub fn original_channels(&self) -> Option<usize> {
+        match &self.codec { Codec::Wav(w) => Some(w.channels), Codec::Ncw(n) => Some(usize::from(n.header.channels)), Codec::Encoded(reader)=>Some(reader.channels()), Codec::Custom(_) => None }
+    }
+    pub fn owned_channel_reader_bytes(&self) -> Option<usize> { self.cache_bytes() }
+    fn native_workspace_bound(&self) -> Option<usize> {
+        let current=self.cache_bytes()?;
+        match &self.codec {
+            Codec::Wav(w)=>current.checked_add(PAGE_FRAMES.checked_mul(w.width)?.checked_mul(w.channels)?),
+            Codec::Ncw(n)=> {
+                // Existing native decoder owns a geometric outer Vec and at
+                // most FRAMES_PER_BLOCK i32 values per original channel.
+                let channels=usize::from(n.header.channels);
+                current.checked_add(channels.checked_next_power_of_two()?.checked_mul(size_of::<Vec<i32>>())?)?
+                    .checked_add(channels.checked_mul(ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK)?.checked_mul(size_of::<i32>())?)?
+                    // Zero-bit/raw NCW read_block retains one raw input Vec
+                    // while extending its channel output: up to512*4 bytes.
+                    .checked_add(ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK.checked_mul(size_of::<i32>())?)
+            }
+            Codec::Encoded(reader)=>reader.accounted_workspace_bytes(),
+            Codec::Custom(_)=>None,
+        }
+    }
+    /// One normal decoder traversal scatters every original ordinal. Output is
+    /// unpublished staging; any error discards the complete caller-owned batch.
+    pub fn read_packs(&mut self, start: usize, out: &mut crate::channel_reader::ChannelPackDestinations<'_, '_>, workspace_limit: usize) -> io::Result<()> {
+        if let Codec::Encoded(reader)=&mut self.codec {
+            if reader.accounted_workspace_bytes().is_none_or(|n|n>workspace_limit) {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"encoded channel workspace admission"));}
+            out.clear();return reader.read_packs(start as u64,out.frames(),out);
+        }
+        let channels = self.original_channels().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,"opaque custom reader has no original-channel contract"))?;
+        let frames = out.frames();
+        if channels == 0 || channels != out.channels() || start.checked_add(frames).is_none_or(|end|end>self.frames) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"channel read geometry mismatch"));
+        }
+        let current = self.cache_bytes().ok_or_else(||io::Error::new(io::ErrorKind::Unsupported,"reader accounting unavailable"))?;
+        if self.native_workspace_bound().is_none_or(|n|n>workspace_limit) {
+            return Err(io::Error::new(io::ErrorKind::OutOfMemory,"native channel workspace preflight"));
+        }
+        if current > workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"channel reader workspace limit"));}
+        // Native NCW decoding owns its existing bounded codec block. WAV/AIFF
+        // conversion reserves exact input scratch before touching destinations.
+        if let Codec::Wav(wav) = &self.codec {
+            let bytes = frames.checked_mul(wav.width).and_then(|n|n.checked_mul(channels))
+                .ok_or_else(||io::Error::new(io::ErrorKind::InvalidInput,"channel scratch overflow"))?;
+            let fixed = current.checked_sub(self.scratch.capacity()).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData,"reader accounting mismatch"))?;
+            if fixed.checked_add(bytes.max(self.scratch.capacity())).is_none_or(|n|n>workspace_limit) {
+                return Err(io::Error::new(io::ErrorKind::OutOfMemory,"channel scratch limit"));
+            }
+            if bytes>self.scratch.capacity() {self.scratch.try_reserve_exact(bytes-self.scratch.len()).map_err(|e|io::Error::new(io::ErrorKind::OutOfMemory,e))?;}
+            if fixed.checked_add(self.scratch.capacity()).is_none_or(|n|n>workspace_limit) {
+                return Err(io::Error::new(io::ErrorKind::OutOfMemory,"channel scratch capacity limit"));
+            }
+            self.scratch.resize(bytes,0);
+        }
+        out.clear();
+        match &mut self.codec {
+            Codec::Wav(wav) => {
+                let align=wav.width.checked_mul(channels).ok_or_else(||io::Error::new(io::ErrorKind::InvalidInput,"WAV channel alignment"))?;
+                let at=start.checked_mul(align).and_then(|n|n.checked_add(wav.data.start)).ok_or_else(||io::Error::new(io::ErrorKind::InvalidInput,"WAV read offset overflow"))?;
+                let bytes=self.bytes.as_mut().expect("native WAV owns guarded Bytes");bytes.seek(SeekFrom::Start(at as u64))?;bytes.read_exact(&mut self.scratch)?;
+                for (frame,data) in self.scratch.chunks_exact(align).enumerate() {
+                    for channel in 0..channels {out.put(frame,channel,wav.sample(&data[channel*wav.width..][..wav.width]));}
+                }
+            }
+            Codec::Ncw(reader) => {
+                const BLOCK:usize=ncw::NcwReader::<Bytes>::FRAMES_PER_BLOCK;
+                let convert=crate::samples::ncw_sample(reader.sample_format,reader.header.bits_per_sample);
+                let mut at=start;let mut done=0;
+                while done<frames {
+                    let values=reader.decode_block(at/BLOCK).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e.to_string()))?;
+                    if values.len()!=channels {return Err(io::Error::new(io::ErrorKind::InvalidData,"NCW channel width changed"));}
+                    let offset=at%BLOCK;let count=values[0].len().saturating_sub(offset).min(frames-done);
+                    if count==0 || values.iter().any(|v|v.len()<offset+count) {return Err(io::ErrorKind::UnexpectedEof.into());}
+                    for frame in 0..count {for channel in 0..channels {out.put(done+frame,channel,convert(values[channel][offset+frame]));}}
+                    at+=count;done+=count;
+                }
+            }
+            Codec::Encoded(_)=>return Err(io::Error::new(io::ErrorKind::InvalidData,"encoded channel dispatch changed")),
+            Codec::Custom(_)=>return Err(io::Error::new(io::ErrorKind::Unsupported,"custom reader cannot decode original packs")),
+        }
+        if self.cache_bytes().is_none_or(|bytes|bytes>workspace_limit) {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"grown channel reader workspace limit"));}
+        Ok(())
+    }
     /// Fill `out` with frames from `start`.
     pub fn read(&mut self, start: usize, out: &mut [Frame]) -> io::Result<()> {
         let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidData, e);
@@ -295,6 +571,7 @@ impl SampleReader {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
         match &mut self.codec {
+            Codec::Encoded(_)=>return Err(io::Error::new(io::ErrorKind::Unsupported,"accounted encoded source requires complete pack destinations")),
             Codec::Custom(read) => read(start, out)?,
             Codec::Wav(wav) => {
                 let align = wav.width * wav.channels;
@@ -498,13 +775,20 @@ fn start_ranges_with_offsets(
     policy: &StreamPolicy,
     include_offsets: bool,
 ) -> Vec<Vec<Range<usize>>> {
-    let mut ranges = vec![Vec::new(); assets.len()];
+    let geometry=assets.iter().map(|p|(p.sample_rate(),p.frame_count())).collect::<Vec<_>>();
+    let mut ranges=start_ranges_geometry(instrument,&geometry,rate,head,policy,include_offsets);
+    if let Some(room)=policy.resident_budget {keep_whole(assets,&mut ranges,room);}
+    ranges
+}
+fn start_ranges_geometry(instrument:&ir::Instrument,geometry:&[(u32,usize)],rate:u32,head:usize,
+    policy:&StreamPolicy,include_offsets:bool)->Vec<Vec<Range<usize>>> {
+    let mut ranges = vec![Vec::new(); geometry.len()];
     for zone in &instrument.zones {
         let Some(asset) = zone.asset.map(|a| a.0) else {
             continue;
         };
         let playback = &zone.playback;
-        let pcm = &assets[asset];
+        let (sample_rate, frame_count) = geometry[asset];
         if zone
             .group
             .is_some_and(|g| instrument.groups[g.0].wavetable.is_some())
@@ -512,14 +796,14 @@ fn start_ranges_with_offsets(
             // port v1 bank.rs::spans: any cycle can be read at every oscillator sample.
             let end = playback
                 .end
-                .unwrap_or(pcm.frame_count() as u64)
-                .min(pcm.frame_count() as u64);
+                .unwrap_or(frame_count as u64)
+                .min(frame_count as u64);
             if playback.start < end {
                 ranges[asset].push(playback.start as usize..end as usize);
             }
             continue;
         }
-        let ratio = f64::from(pcm.sample_rate()) / f64::from(rate);
+        let ratio = f64::from(sample_rate) / f64::from(rate);
         let step = zone_step(zone, &instrument.groups, ratio, policy);
         // The resampling window reads this far either side of the position.
         let guard = sampler_core::read_radius(step) as u64 + 1;
@@ -532,7 +816,7 @@ fn start_ranges_with_offsets(
         }) { playback.start_range.min(u64::from(u32::MAX)) } else { 0 };
         let frames = ((head as f64 * step).ceil() as u64)
             .saturating_add(2 * guard).saturating_add(offset);
-        let length = pcm.frame_count() as u64;
+        let length = frame_count as u64;
         let end = playback.end.unwrap_or(length).min(length);
         let (from, to) = if playback.reverse {
             (end.saturating_sub(frames), end)
@@ -554,9 +838,6 @@ fn start_ranges_with_offsets(
             }
         }
         *list = merged;
-    }
-    if let Some(room) = policy.resident_budget {
-        keep_whole(assets, &mut ranges, room);
     }
     ranges
 }
@@ -941,6 +1222,7 @@ fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> 
 
 /// Streamed assets before their start ranges are read.
 pub(crate) struct Opened {
+    pub logical_sources: Option<Vec<sampler_core::SourceStorage>>,
     pub assets: Vec<Pcm>,
     pub sources: HashMap<AssetId, Arc<dyn AssetSource>>,
     pub report: StreamReport,
@@ -1332,7 +1614,47 @@ impl Streamer {
         let requirements=vec![ir::AssetResidency::Streamable;sources.len()];
         Self::open_required(sources,&requirements,rate,policy,probe,canceled,progress)
     }
-    pub(crate) fn open_required(
+    pub(crate) fn open_required(sources:Vec<(Arc<dyn AssetSource>,&std::path::Path)>,
+        requirements:&[ir::AssetResidency],rate:u32,policy:&StreamPolicy,probe:usize,
+        canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize))->Result<Opened,LoadError> {
+        if sources.len()!=requirements.len() {return Err(LoadError::Invalid{path:"logical sources".into(),reason:"source requirement count mismatch".into()});}
+        let mut wide=false;
+        for (source,path) in &sources {
+            if canceled(){return Err(LoadError::Canceled);}
+            if let Some(reader)=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))? {
+                wide |= reader.original_channels().is_some_and(|n|n>2);
+            }
+        }
+        if !wide {return Self::open_required_stereo(sources,requirements,rate,policy,probe,canceled,progress);}
+        if policy.resident_budget.is_some() {return Err(LoadError::Invalid{path:"logical stream".into(),reason:"whole-source promotion requires resident logical producer".into()});}
+        let mut logical=Vec::new();let mut assets=Vec::new();let mut registry=HashMap::new();let mut latency=Vec::new();let mut full=0u64;let mut max_packs=1usize;
+        for (index,(source,path)) in sources.into_iter().enumerate() {
+            if canceled(){return Err(LoadError::Canceled);}
+            let started=Instant::now();
+            let header=source.open_channels(READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))?;
+            let storage=if header.as_ref().and_then(SampleReader::original_channels).is_some_and(|n|n>2) {
+                if requirements[index]==ir::AssetResidency::Resident {return Err(LoadError::Invalid{path:path.into(),reason:"mandatory wide resident source requires resident source pipeline".into()});}
+                let (storage,keys)=logical_stream_source(source,READER_CACHE_BYTES/policy.decoders.clamp(1,8)/2).map_err(|e|LoadError::io(path,e))?;
+                registry.extend(keys);storage
+            } else {
+                let mut reader=match header {Some(reader)=>reader,None=>source.open().map_err(|e|LoadError::io(path,e))?};
+                let pcm=if requirements[index]==ir::AssetResidency::Resident {Pcm::pending_resident(reader.rate(),reader.frames())} else {Pcm::streamed(reader.rate(),reader.frames())}.map_err(|e|LoadError::Invalid{path:path.into(),reason:e.to_string()})?;
+                if index<probe {let mut page=vec![[0.;2];reader.frames().min(PAGE_FRAMES)];reader.read(0,&mut page).map_err(|e|LoadError::io(path,e))?;}
+                registry.insert(pcm.asset_id(),source);sampler_core::SourceStorage::Stereo(pcm)
+            };
+            let view=storage.as_source();max_packs=max_packs.max(view.physical_count());
+            view.physical_dependencies(|pack|assets.push(pack.clone()));
+            full=full.checked_add((view.frame_count() as u64).checked_mul(view.physical_count() as u64).and_then(|n|n.checked_mul(size_of::<Frame>() as u64)).ok_or_else(||LoadError::Invalid{path:path.into(),reason:"logical stream full-byte overflow".into()})?).ok_or_else(||LoadError::Invalid{path:path.into(),reason:"logical stream aggregate overflow".into()})?;
+            if index<probe {latency.push(started.elapsed());}
+            logical.push(storage);progress(index+1,requirements.len());
+        }
+        latency.sort_unstable();let at=|q:usize|latency.get((latency.len()*q/100).min(latency.len().saturating_sub(1))).copied().unwrap_or_default();
+        let head=head_frames(at(95),rate,policy);
+        let report=StreamReport{latency_p50:at(50),latency_p95:at(95),latency_p99:at(99),latency_samples:latency.len(),head_frames:head,head_budget:policy.head_budget,
+            full_bytes:full,pool_pages:policy.voices.checked_mul(PAGES_PER_VOICE).and_then(|n|n.checked_mul(max_packs)).ok_or_else(||LoadError::Invalid{path:"logical page pool".into(),reason:"physical pool overflow".into()})?,..Default::default()};
+        Ok(Opened{logical_sources:Some(logical),assets,sources:registry,report,head,rate,policy:*policy})
+    }
+    fn open_required_stereo(
         sources:Vec<(Arc<dyn AssetSource>,&std::path::Path)>,
         requirements:&[ir::AssetResidency],rate:u32,policy:&StreamPolicy,probe:usize,
         canceled:&(dyn Fn()->bool+Sync),progress:&mut dyn FnMut(usize,usize),
@@ -1457,6 +1779,7 @@ impl Streamer {
             pool_bytes: 0,
         };
         Ok(Opened {
+            logical_sources: None,
             assets,
             sources: registry,
             report,
@@ -1739,6 +2062,14 @@ impl Streamer {
                 continue;
             }
             let recipe = pcm.head_preparer();
+            if source.channel_pack().is_some() {
+                pcm.set_prepared_residency_loader(move || {
+                    let (logical,ordinal)=source.channel_pack().ok_or(sampler_core::Error::InvalidInput)?;
+                    head_prepare::prepare_logical_pack(logical,ordinal,&recipe,&ranges,&||false)
+                        .map_err(|e|if e.kind()==io::ErrorKind::OutOfMemory {sampler_core::Error::Capacity}else{sampler_core::Error::NotReady})
+                }).map_err(io::Error::other)?;
+                continue;
+            }
             let residency_page=residency_page.clone();
             pcm.set_prepared_residency_loader(move || {
                 let mut page=residency_page.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1914,9 +2245,10 @@ fn reload<R: AsRef<[Range<usize>]>>(
             continue;
         };
         if page.is_empty() {page.resize(PAGE_FRAMES,[0.;2]);}
-        let loaded = match source
-            .open_stream()
-            .and_then(|mut reader| load_ranges(pcm, &mut reader, ranges.as_ref(),&mut page))
+        let loaded = match if let Some((recipe,ordinal))=source.channel_pack() {
+            head_prepare::prepare_logical_pack(recipe,ordinal,&pcm.head_preparer(),ranges.as_ref(),&||!pcm.residency_permitted())
+                .and_then(|head| {let bytes=head.bytes();pcm.publish_ranges(head).map_err(io::Error::other)?;Ok(bytes)})
+        } else {source.open_stream().and_then(|mut reader|load_ranges(pcm,&mut reader,ranges.as_ref(),&mut page))}
         {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -2159,6 +2491,12 @@ fn decode_with_publish(
         audit.reader_budget_bytes = reader_byte_limit;
         audit.peak_retained_reader_bytes = readers.peak_retained_bytes;
     }
+    let max_packs=sources.values().filter_map(|source|source.channel_pack().map(|(recipe,_)|recipe.packs.len())).max().unwrap_or(0);
+    let mut cohort=Vec::new();
+    if cohort.try_reserve_exact(max_packs).is_err() {return;}
+    let cohort_bytes=cohort.capacity().saturating_mul(size_of::<sampler_core::DecodeJob>());
+    if cohort_bytes>reader_byte_limit {return;}
+    let mut logical_reader:Option<(sampler_core::SourceStorageId,SampleReader,Vec<Vec<Frame>>)>=None;
     let mut tick = 0u64;
     let mut held: Option<(sampler_core::DecodeJob, Result<(), DecodeFailure>)> = None;
     while !stop.load(Ordering::Relaxed) {
@@ -2183,12 +2521,76 @@ fn decode_with_publish(
             }
             continue;
         }
-        let Some(mut job) = worker().next_job() else {
-            // The runtime unparks decoders after queuing requests and Drop
-            // unparks them to stop; an unpark before this park is not lost.
-            std::thread::park();
-            continue;
+        let next={
+            let mut coordinator=worker();
+            let first=coordinator.next_job();
+            if let Some(first)=&first {
+                if let Some((recipe,_))=sources.get(&first.key().asset).and_then(|s|s.channel_pack()) {
+                    while let Some(related)=coordinator.next_related_job(first.key().index,&recipe.packs) {
+                        // One request exists per actual physical key/slot.
+                        if cohort.len()==max_packs {return;}
+                        cohort.push(related);
+                    }
+                }
+            }
+            first
         };
+        let Some(mut job) = next else {
+            std::thread::park(); continue;
+        };
+        if let Some((recipe,ordinal))=sources.get(&job.key().asset).and_then(|s|s.channel_pack()) {
+            if cohort.len()==max_packs {return;}
+            cohort.push(job);
+            // Cache one logical original-channel reader, never one decoder per
+            // output pack. A different logical source releases it off audio.
+            readers.entries.clear();readers.bytes=0;readers.opaque=0;
+            let result=(|| -> io::Result<()> {
+                let available=reader_byte_limit.checked_sub(cohort_bytes)
+                    .and_then(|n|n.checked_sub(readers.storage_bytes))
+                    .ok_or_else(||io::Error::new(io::ErrorKind::OutOfMemory,"logical worker metadata exceeds workspace admission"))?;
+                if recipe.workspace_limit>available {
+                    return Err(io::Error::new(io::ErrorKind::OutOfMemory,"logical worker aggregate workspace admission"));
+                }
+                recipe.reader_workspace_limit()?;
+                if logical_reader.as_ref().is_none_or(|(id,_,_)|*id!=recipe.id) {
+                    logical_reader=None;
+                    let scratch=recipe.scratch()?;
+                    let reader=recipe.open()?;
+                    logical_reader=Some((recipe.id,reader,scratch));
+                }
+                let (_,reader,scratch)=logical_reader.as_mut().expect("logical reader opened");
+                let range=cohort.last().expect("first page retained").range();
+                if cohort.iter().any(|j|j.range()!=range) {return Err(io::Error::new(io::ErrorKind::InvalidInput,"logical batch range mismatch"));}
+                recipe.read(reader,range.start,range.len(),scratch)?;
+                for job in &mut cohort {
+                    let index=recipe.packs.iter().position(|id|*id==job.key().asset).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData,"logical key missing"))?;
+                    job.frames_mut().copy_from_slice(&scratch[index][..range.len()]);
+                }
+                let _=ordinal;
+                Ok(())
+            })().map_err(|error|match error.kind() {
+                io::ErrorKind::InvalidData|io::ErrorKind::UnexpectedEof=>DecodeFailure::InvalidSamples,
+                _=>DecodeFailure::Unavailable,
+            });
+            if result.is_err() {logical_reader=None;}
+            // All decode/validation completed before any result enters the
+            // normal queue. Runtime's all-pack barrier prevents partial render.
+            while let Some(mut done)=cohort.pop() {
+                loop {
+                    match publish(done,result) {
+                        Ok(())=>break,
+                        Err(rejected)=>{
+                            if rejected.reason!=sampler_core::StreamError::Capacity || stop.load(Ordering::Relaxed) {return;}
+                            done=rejected.job;
+                            std::thread::sleep(Duration::from_micros(500));
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        debug_assert!(cohort.is_empty());
+        logical_reader=None;
         let job_start = audit.as_ref().map(|_| Instant::now());
         let cpu_start = audit.as_ref().and_then(|_| crate::audit::thread_cpu_nanos());
         let queue_us = job
@@ -2340,6 +2742,36 @@ pub struct Streamed {
 }
 
 impl Streamed {
+    pub(crate) fn new_sources(loaded:crate::Loaded,mut opened:Opened,kept:Vec<sampler_core::SourceStorage>,canceled:&(dyn Fn()->bool+Sync))->Result<Self,LoadError> {
+        if kept.iter().all(|s|s.as_source().stereo().is_some()) {
+            let pcm=kept.into_iter().map(|s|match s {
+                sampler_core::SourceStorage::Stereo(p)=>Ok(p),
+                sampler_core::SourceStorage::Channels(_)=>Err(LoadError::Invalid {
+                    path:"logical stream".into(),reason:"stereo stream storage changed layout".into(),
+                }),
+            }).collect::<Result<Vec<_>,_>>()?;
+            return Self::new(loaded,opened,pcm,canceled);
+        }
+        if canceled(){return Err(LoadError::Canceled);}
+        let invalid=|e:io::Error|if canceled(){LoadError::Canceled}else{LoadError::Invalid{path:"logical stream".into(),reason:e.to_string()}};
+        let geometry=kept.iter().map(|s|(s.as_source().sample_rate(),s.as_source().frame_count())).collect::<Vec<_>>();
+        let logical_ranges=start_ranges_geometry(&loaded.instrument,&geometry,opened.rate,opened.head,&opened.policy,true);
+        let mut physical=Vec::new();let mut ranges=Vec::new();
+        for (source,logical_ranges) in kept.iter().zip(logical_ranges) {source.as_source().physical_dependencies(|pack|{physical.push(pack.clone());ranges.push(logical_ranges.clone());});}
+        let used=physical.iter().map(Pcm::asset_id).collect::<HashSet<_>>();opened.sources.retain(|id,_|used.contains(id));
+        let mut pinned=HashSet::new();
+        for zone in &loaded.instrument.zones {if zone.group.is_some_and(|g|loaded.instrument.groups[g.0].wavetable.is_some()) {
+            if let Some(storage)=zone.asset.and_then(|a|kept.get(a.0)) {storage.as_source().physical_dependencies(|p|{pinned.insert(p.asset_id());});}
+        }}
+        let mut report=opened.report;
+        let (mut cache,worker)=StreamCache::new(report.pool_pages.max(1)).map_err(|e|invalid(io::Error::other(e)))?;
+        report.pool_bytes=cache.bytes();report.head_assets=ranges.iter().filter(|r|!r.is_empty()).count();report.head_ranges=ranges.iter().map(Vec::len).sum();report.head_source_frames=ranges.iter().flatten().map(|r|r.len() as u64).sum();
+        let (streamer,_)=Streamer::start_with_onsets_cancelable(opened.sources,&physical,ranges,None,worker,opened.policy.decoders,opened.policy.lazy,opened.policy.head_budget,pinned,opened.policy.allow_cold_fallback,canceled).map_err(invalid)?;
+        report.head_bytes=physical.iter().map(Pcm::head_bytes).sum();report.head_fallback=streamer.head_fallback();
+        report.required_resident_assets=physical.iter().filter(|p|p.requires_resident()).count();report.required_resident_bytes=physical.iter().filter_map(|p|p.resident_frames().map(|f|f.len()*size_of::<Frame>())).sum();
+        cache.set_wake(streamer.threads.iter().map(|t|t.thread().clone()).collect());cache.set_reloader(streamer.reloader.as_ref().map(|t|t.thread().clone()));
+        Ok(Self{loaded,assets:physical,cache,streamer,report})
+    }
     /// Read the start ranges of `opened` assets that `loaded`'s zones use and
     /// start streaming. `kept` are the assets of `loaded`'s plan, in its order.
     pub(crate) fn new(
@@ -2349,6 +2781,7 @@ impl Streamed {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Self, LoadError> {
         let Opened {
+            logical_sources: _,
             assets,
             sources,
             mut report,
@@ -4240,3 +4673,45 @@ mod stream_onset_tests;
 #[cfg(test)]
 #[path = "stream_hint_tests.rs"]
 mod stream_hint_tests;
+
+#[cfg(test)]
+mod wide_ncw_workspace_tests {
+    use super::*;
+    #[test]
+    fn synthetic_zero_bit_ncw_admission_charges_its_simultaneous_raw_block_buffer() {
+        // Synthetic legacy zero-bit interpretation, not a Kontakt/native
+        // format-parity assertion. It still consumes real decoder workspace.
+        let channels=3usize;let frames=512usize;let mut bytes=vec![0u8;120];
+        bytes[..8].copy_from_slice(&0x01A89ED631010000u64.to_be_bytes());
+        bytes[8..10].copy_from_slice(&(channels as u16).to_le_bytes());bytes[10..12].copy_from_slice(&32u16.to_le_bytes());
+        bytes[12..16].copy_from_slice(&48000u32.to_le_bytes());bytes[16..20].copy_from_slice(&(frames as u32).to_le_bytes());
+        bytes[20..24].copy_from_slice(&120u32.to_le_bytes());bytes[24..28].copy_from_slice(&128u32.to_le_bytes());
+        let mut payload=Vec::new();for channel in 0..channels {
+            payload.extend(0x3e9a0c16u32.to_le_bytes());payload.extend(0i32.to_le_bytes());payload.extend(0i16.to_le_bytes());payload.extend(0u16.to_le_bytes());payload.extend(0u32.to_le_bytes());
+            for _ in 0..frames {payload.extend(((channel as i32+1)*0x1000_0000).to_le_bytes());}
+        }
+        bytes[28..32].copy_from_slice(&(payload.len() as u32).to_le_bytes());bytes.extend(0u32.to_le_bytes());bytes.extend((payload.len() as u32).to_le_bytes());bytes.extend(payload);
+        static SERIAL:AtomicU64=AtomicU64::new(0);
+        let directory=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.test-artifacts").join(format!("wide-ncw-workspace-{}-{}",std::process::id(),SERIAL.fetch_add(1,Ordering::Relaxed)));
+        std::fs::create_dir_all(&directory).unwrap();let path=directory.join("synthetic-zero-bit.ncw");std::fs::write(&path,&bytes).unwrap();
+        let source=Source {identity:Arc::new(crate::FileIdentity::capture(&std::fs::metadata(&path).unwrap()).unwrap()),
+            size:bytes.len() as u64,path,offset:0,key:None,handle:None,header:None};
+        let initial=SampleReader::open(&source).unwrap();
+        let current=initial.cache_bytes().unwrap();
+        let final_channels=channels.next_power_of_two()*size_of::<Vec<i32>>()+channels*frames*size_of::<i32>();
+        let transient=frames*size_of::<i32>();assert_eq!(transient,2048);
+        assert_eq!(initial.native_workspace_bound(),Some(current+final_channels+transient));
+        let preopen=4*size_of::<u32>()+final_channels+transient+BUFFER+source.path.capacity()+size_of::<ncw::NcwReader<Bytes>>()+size_of::<SampleReader>();
+        let admitted=preopen.max(initial.native_workspace_bound().unwrap());drop(initial);
+        assert!(open_native_channel_reader(&source,false,admitted-1).is_err());
+        for limit in [admitted,admitted+1] {
+            let mut reader=open_native_channel_reader(&source,false,limit).unwrap().unwrap();
+            let mut first=vec![[0.;2];frames];let mut second=vec![[0.;2];frames];let mut parts=[first.as_mut_slice(),second.as_mut_slice()];
+            let mut output=crate::channel_reader::ChannelPackDestinations::new(channels,frames,&mut parts).unwrap();
+            reader.read_packs(0,&mut output,limit).unwrap();drop(output);
+            assert!(first.iter().all(|f|*f==[0.125,0.25]));assert!(second.iter().all(|f|*f==[0.375,0.]));
+            assert!(reader.cache_bytes().unwrap()+transient<=limit);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}

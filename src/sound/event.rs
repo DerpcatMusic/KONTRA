@@ -64,8 +64,8 @@ pub enum Event {
     NoteOffVelocity(HostPattern, f64),
     Choke(HostPattern),
     Expression(HostPattern, NoteExpression),
-    /// A MIDI 1.0 (message type 2, one word used) or MIDI 2.0 (type 4)
-    /// channel voice packet, its group the host port's.
+    /// Original one-word System/MIDI1 or two-word MIDI2 packet.
+    /// The UMP group is independent of the physical host input port.
     Ump([u32; 2]),
 }
 
@@ -89,7 +89,88 @@ impl Event {
             | Self::NoteOffVelocity(p, _)
             | Self::Choke(p)
             | Self::Expression(p, _) => u8::try_from(p.channel).ok(),
-            Self::Ump([word, _]) => Some((word >> 16) as u8 & 15),
+            Self::Ump([word, _]) => matches!(word>>28,2|4).then_some((word >> 16) as u8 & 15),
         }
+    }
+}
+
+/// Host-pattern operation without the note-on/packet alternatives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HostAction {
+    Off(Option<f64>),
+    Choke,
+    Expression(NoteExpression),
+}
+impl HostAction {
+    pub(crate) fn at(self, pattern: HostPattern) -> Event {
+        match self {
+            Self::Off(None) => Event::NoteOff(pattern),
+            Self::Off(Some(velocity)) => Event::NoteOffVelocity(pattern, velocity),
+            Self::Choke => Event::Choke(pattern),
+            Self::Expression(value) => Event::Expression(pattern, value),
+        }
+    }
+}
+impl Event {
+    pub(crate) fn host_action(self) -> Option<(HostPattern, HostAction)> {
+        Some(match self {
+            Self::NoteOff(pattern) => (pattern, HostAction::Off(None)),
+            Self::NoteOffVelocity(pattern, velocity) => (pattern, HostAction::Off(Some(velocity))),
+            Self::Choke(pattern) => (pattern, HostAction::Choke),
+            Self::Expression(pattern, value) => (pattern, HostAction::Expression(value)),
+            Self::NoteOn { .. } | Self::Ump(_) => return None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod doctor_host_action_tests {
+    use super::*;
+    #[test]
+    fn host_actions_retarget_every_exact_axis_and_preserve_release_velocity_bits() {
+        let wildcard = HostPattern {
+            port: -1,
+            channel: -1,
+            key: -1,
+            id: -1,
+            clap: true,
+        };
+        let exact = HostPattern {
+            port: 3,
+            channel: 7,
+            key: 60,
+            id: 91,
+            clap: true,
+        };
+        for event in [
+            Event::NoteOff(wildcard),
+            Event::NoteOffVelocity(wildcard, -0.0),
+            Event::Choke(wildcard),
+            Event::Expression(wildcard, NoteExpression::Tune(-0.75)),
+        ] {
+            let (pattern, action) = event.host_action().unwrap();
+            assert_eq!(pattern, wildcard);
+            let retargeted = action.at(exact);
+            assert_eq!(retargeted.host_action().unwrap(), (exact, action));
+            if let Event::NoteOffVelocity(_, velocity) = retargeted {
+                assert_eq!(velocity.to_bits(), (-0.0_f64).to_bits());
+            }
+        }
+        assert!(Event::midi1(0x90, 60, 80).host_action().is_none());
+        assert!(
+            Event::NoteOn {
+                note: HostNote {
+                    port: 0,
+                    channel: 0,
+                    key: 60,
+                    id: 1,
+                    clap: false
+                },
+                velocity: 1.,
+                tune: 0.
+            }
+            .host_action()
+            .is_none()
+        );
     }
 }

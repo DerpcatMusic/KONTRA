@@ -79,3 +79,23 @@ the controller inside its own native callback requests close and defers teardown
 until that callback returns, avoiding self-join. Embedded close never adopts the
 floating-window timeout/detach policy. Each controller has its own worker/channel
 and atomic metadata, so an old close cannot address a reopened worker.
+
+## X11 temporary grabs (issue #77)
+
+The editor retains logical focus through `NotifyGrab`/`NotifyUngrab`. These
+keyboard events redirect input temporarily without changing `XGetInputFocus`;
+forwarding them as deactivation cleared MUI's held pointer and cancelled the
+click or drag. Real `NotifyNormal` and `NotifyWhileGrabbed` focus changes still
+clear held state and cancel gestures. Pointer-grab activation's pseudo crossing
+is ignored; normal and ungrab crossings still reconcile the pointer.
+
+`kontra-native-host`'s ignored
+`native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels` test uses
+actual keyboard/pointer grabs on an isolated X server and the production MUI
+input adapter, without a GPU. It fails at the held-gesture assertion on the
+original loop and passes with this patch. It also checks genuine deactivation
+(normal and while grabbed) and physical pointer exit. The existing native host
+CI step already runs it under Xvfb. This proves the X11 protocol correction;
+Fedora/GNOME/Wayland with the reporting Bitwig host still needs confirmation.
+
+Protocol: [Xlib sections 10.6.2 and 10.7](https://www.x.org/releases/X11R7.5/doc/libX11/libX11.html).

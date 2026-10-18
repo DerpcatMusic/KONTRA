@@ -17,6 +17,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 pub(crate) struct Dims {
     pub request: u64,
     chain: (usize, usize),
+    source_channels: usize,
     modulation: ModShape,
 }
 
@@ -25,6 +26,7 @@ impl Dims {
         Self {
             request,
             chain: DspState::shape(plan),
+            source_channels: plan.signal_channels(),
             modulation: plan.voice_modulation.shape(),
         }
     }
@@ -34,6 +36,7 @@ struct PlanStorage {
     request: u64,
     cells: sampler_pool::Slab<dsp::ProcessorState>,
     delays: sampler_pool::Slab<[f64; 2]>,
+    channels: dsp::ChannelVoiceStorage,
     modulation: VoiceModState,
 }
 
@@ -55,6 +58,7 @@ pub(crate) struct Growth {
 impl Growth {
     /// Control side: allocates.
     pub fn build(voices: usize, live: &[Dims], parallel: bool) -> Result<Self, Error> {
+        std::alloc::Layout::array::<Slot<Voice>>(voices).map_err(|_|Error::Capacity)?;
         let (slots, free) = Arena::<Voice>::blank(voices);
         let plans = live
             .iter()
@@ -64,6 +68,7 @@ impl Growth {
                     request: d.request,
                     cells,
                     delays,
+                    channels: DspState::channel_voice_storage(d.source_channels, voices)?,
                     modulation: VoiceModState::with_shape(d.modulation, voices)?,
                 })
             })
@@ -206,6 +211,7 @@ impl Runtime {
                 .find(|p| p.request == gen_.request)
                 .unwrap();
             gen_.dsp.adopt(g.voices, &mut p.cells, &mut p.delays);
+            gen_.dsp.adopt_channel_voices(&mut p.channels);
             gen_.modulation.adopt(&mut p.modulation);
         }
         // Scratch contains no outstanding pins outside render_voices.
@@ -454,5 +460,17 @@ mod tests {
             drop(submit);
             assert_reclaimed(&state, 2);
         }
+    }
+}
+
+#[cfg(test)]
+mod intrinsic_pitch_growth_capacity_tests{
+    use super::*;
+    #[test]
+    fn physical_voice_storage_overflow_is_a_typed_refusal_before_blank_allocation(){
+        let above=(isize::MAX as usize)/std::mem::size_of::<Slot<Voice>>()+1;
+        assert!(matches!(Growth::build(above,&[],false),Err(Error::Capacity)));
+        assert!(matches!(Growth::build(usize::MAX,&[],false),Err(Error::Capacity)));
+        assert_eq!(Growth::build(1,&[],false).unwrap().voices,1);
     }
 }

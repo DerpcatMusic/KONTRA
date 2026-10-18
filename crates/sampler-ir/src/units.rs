@@ -128,6 +128,26 @@ pub enum PanLaw {
     Balance,
     /// Sine/cosine law, -3 dB per channel at center.
     EqualPower,
+    /// Unity on the near side, (1 + cos(pi*position))/2 on the far side.
+    /// Explicit Core f64 curve; native ISA-dependent sine rounding is separate.
+    RaisedCosineCoreF64,
+}
+
+impl PanLaw {
+    /// Finite position admission belongs to the owning scalar/control domain.
+    pub fn gains(self, position: f64) -> [f64; 2] {
+        match self {
+            Self::Balance => [1. - position.max(0.), 1. + position.min(0.)],
+            Self::EqualPower => {
+                let angle=(position+1.)*std::f64::consts::FRAC_PI_4;
+                [angle.cos(),angle.sin()]
+            }
+            Self::RaisedCosineCoreF64 => {
+                let far=0.5*(1.+(std::f64::consts::PI*position).cos());
+                if position<0. {[1.,far]} else if position>0. {[far,1.]} else {[1.;2]}
+            }
+        }
+    }
 }
 
 /// Sample frames of the referenced asset at its own rate.

@@ -254,6 +254,11 @@ pub struct SoundChunk {
 
 impl ParseChunk for SoundChunk {
     fn parse<B: ReadBytes>(reader: &mut B, _: [u8; 4], len: u32) -> Result<SoundChunk> {
+        // SSND length includes these two prefix fields. The demuxer records
+        // its data start after them, so only remaining bytes are PCM payload.
+        let Some(len) = len.checked_sub(8) else {
+            return decode_error("aiff: sound chunk shorter than offset/block-size prefix");
+        };
         let offset = reader.read_be_u32()?;
         let block_size = reader.read_be_u32()?;
 
@@ -282,6 +287,44 @@ impl ParseChunkTag for RiffAiffChunks {
             b"COMM" => parser!(RiffAiffChunks::Common, CommonChunk, tag, len),
             b"SSND" => parser!(RiffAiffChunks::Sound, SoundChunk, tag, len),
             _ => None,
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod sound_chunk_tests {
+    use super::*;
+    use symphonia_core::io::BufReader;
+
+    #[test]
+    fn ssnd_prefix_is_excluded_from_pcm_length_before_demux_admission() {
+        let prefix=[0;8];
+        for (stored,payload) in [(8,0),(264,256),(u32::MAX,u32::MAX-8)] {
+            let mut reader=BufReader::new(&prefix);
+            let parsed=SoundChunk::parse(&mut reader,*b"SSND",stored).unwrap();
+            assert_eq!(parsed.len,payload);assert_eq!(reader.pos(),8);
+            assert_eq!(parsed.offset,0);assert_eq!(parsed.block_size,0);
+        }
+    }
+    #[test]
+    fn undersized_ssnd_rejects_before_reading_any_prefix_bytes() {
+        let prefix=[0;8];
+        for len in 0..8 {
+            let mut reader=BufReader::new(&prefix);
+            assert!(SoundChunk::parse(&mut reader,*b"SSND",len).is_err());
+            assert_eq!(reader.pos(),0);
+        }
+    }
+    #[test]
+    fn truncated_and_nonzero_ssnd_prefixes_keep_existing_refusals() {
+        let short=[0;4];let mut reader=BufReader::new(&short);
+        assert!(SoundChunk::parse(&mut reader,*b"SSND",264).is_err());
+        for (offset,block) in [(1u32,0u32),(0,1),(1,1)] {
+            let mut prefix=offset.to_be_bytes().to_vec();prefix.extend(block.to_be_bytes());
+            let mut reader=BufReader::new(&prefix);
+            assert!(SoundChunk::parse(&mut reader,*b"SSND",264).is_err());
+            assert_eq!(reader.pos(),8);
         }
     }
 }

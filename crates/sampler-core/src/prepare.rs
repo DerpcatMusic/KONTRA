@@ -50,6 +50,9 @@ struct PcmData {
     residency_managed: AtomicBool,
     residency_loader: std::sync::OnceLock<ResidencyLoader>,
     residency_mutation: std::sync::Mutex<()>,
+    // Off-audio reclamation discovery only. No strong cycle or last-reader
+    // cleanup on audio: any surviving physical alias worker can visit roots.
+    resident_families: std::sync::Mutex<Vec<std::sync::Weak<crate::source::storage::ResidentFamily>>>,
     // Pre-decimated octave levels (level 1 first), built by `Pcm::mipmapped`
     // or `service_mipmaps`. Audio borrows an immutable published generation.
     levels: Levels,
@@ -389,6 +392,7 @@ impl Pcm {
             residency_managed: AtomicBool::new(false),
             residency_loader: std::sync::OnceLock::new(),
             residency_mutation: std::sync::Mutex::new(()),
+            resident_families: std::sync::Mutex::new(Vec::new()),
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
@@ -511,12 +515,35 @@ impl Pcm {
             .load(std::sync::atomic::Ordering::Acquire)
             || self.residency_owners() > 0
     }
+    pub(crate) fn register_resident_family(&self, family: &std::sync::Arc<crate::source::storage::ResidentFamily>) -> Result<(), Error> {
+        let mut roots = self.0.resident_families.lock().unwrap_or_else(|e| e.into_inner());
+        roots.retain(|root| root.strong_count() != 0);
+        roots.try_reserve(1).map_err(|_| Error::Capacity)?;
+        roots.push(std::sync::Arc::downgrade(family));
+        Ok(())
+    }
+    /// Off audio, after a family releases its complete pin cohort. Sibling
+    /// physical assets can have lost their last worker in an older Prepared.
+    pub(crate) fn collect_retired_resident(&self) { self.0.frames.collect(); }
+    fn collect_resident_families(&self) {
+        let mut roots = self.0.resident_families.lock().unwrap_or_else(|e| e.into_inner());
+        roots.retain(|root| {
+            let Some(family) = root.upgrade() else { return false; };
+            // Lock order: physical mutation -> weak registry -> family mutation
+            // -> cohort Snapshot. Family refresh never takes physical mutation,
+            // calls a loader, or visits registries; borrowed reads take neither.
+            let _ = family.refresh_residency();
+            family.collect_residency();
+            true
+        });
+    }
     pub(crate) fn residency_collect(&self) -> bool {
         let _mutation = self
             .0
             .residency_mutation
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        self.collect_resident_families();
         if !self.residency_permitted() {
             if self.0.frames.read().is_some() {
                 self.0.frames.replace(None, |_| ());
@@ -551,22 +578,23 @@ impl Pcm {
             return Ok(());
         }
         let loader = self.0.residency_loader.get().ok_or(Error::NotReady)?;
-        if let ResidencyLoader::Resident(loader)=loader {
-            let (rate,data,budget)=loader()?.into_parts()?;
-            if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
-            if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
-            if !self.residency_permitted() {return Err(Error::NotReady);}
-            self.0.frames.replace(Some(data), |_|());
-            return Ok(());
-        }
-        if let ResidencyLoader::Prepared(loader)=loader {
-            let prepared=loader()?;
-            if !self.residency_permitted() {return Err(Error::NotReady);}
-            self.publish_ranges_unlocked(prepared)?;
-            return Ok(());
-        }
-        let ResidencyLoader::Raw(loader)=loader else {unreachable!()};
-        let mut ranges = loader()?;
+        let mut ranges = match loader {
+            ResidencyLoader::Resident(loader) => {
+                let (rate,data,budget)=loader()?.into_parts()?;
+                if rate != self.sample_rate() || data.frames().len()!=self.frame_count() {return Err(Error::InvalidInput);}
+                if !self.0.resident_budget.get().is_some_and(|current|current.same(&budget)) {return Err(Error::RevisionConflict);}
+                if !self.residency_permitted() {return Err(Error::NotReady);}
+                self.0.frames.replace(Some(data), |_|());
+                return Ok(());
+            }
+            ResidencyLoader::Prepared(loader) => {
+                let prepared=loader()?;
+                if !self.residency_permitted() {return Err(Error::NotReady);}
+                self.publish_ranges_unlocked(prepared)?;
+                return Ok(());
+            }
+            ResidencyLoader::Raw(loader) => loader()?,
+        };
         if !self.residency_permitted() {
             return Err(Error::NotReady);
         }
@@ -839,8 +867,251 @@ impl ConstantStartPrefix {
     }
 }
 
+/// Dense immutable index into ONE prepared document-owner table. The actual
+/// importing document ID remains in the addressed row; this index is plan-local.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedSourceOwnerIndex(pub(crate) u32);
+impl PreparedSourceOwnerIndex {
+    pub fn index(self) -> usize { self.0 as usize }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedSourceSwitch {
+    pub saved: bool,
+    /// An actual prepared control identity, not a cached live boolean.
+    pub control: Option<crate::ControlId>,
+}
+
+/// Actual installed executable family, independent of retained source metadata.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceEventFamily {Note,Release,Controller,PolyPressure,ProgramChange,Task(crate::SourceTaskFamily)}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceEventRouting {SourceHierarchy,LinearStage,PlanTask}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ExecutableSourceBinding {
+    pub processor:sampler_ir::SourceEventProcessorId,
+    pub owner:PreparedSourceOwnerIndex,
+    pub family:SourceEventFamily,
+    pub program:usize,
+    pub stage:Option<usize>,
+    pub routing:SourceEventRouting,
+}
+impl Prepared {
+    /// Proves an actual installed entry. An unused instruction or source row
+    /// cannot turn off a frontend's established input path.
+    pub fn executable_source_binding(&self,processor:sampler_ir::SourceEventProcessorId,family:SourceEventFamily)->Result<Option<ExecutableSourceBinding>,Error>{
+        let row=self.source_owners.processor(processor).ok_or(Error::InvalidInput)?;
+        if row.kind.as_ref()!="ScriptProcessor"{return Ok(None);}
+        if let SourceEventFamily::Task(family)=family{
+            self.validate_source_tasks()?;
+            return Ok(self.source_tasks.iter().find(|binding|binding.processor==processor&&binding.family==family).map(|binding|ExecutableSourceBinding{processor,owner:row.owner,family:SourceEventFamily::Task(family),program:binding.program,stage:None,routing:SourceEventRouting::PlanTask}));
+        }
+        let entry_matches=|index:usize|self.programs.get(index).is_some_and(|program|
+            matches!(program.code.get(program.entry),Some(crate::Instruction::AwaitExternal{processor:bound}) if *bound==processor));
+        if family==SourceEventFamily::Note&&self.source_owners.note_root.is_some(){
+            if let Some(program)=row.note_program.filter(|&program|entry_matches(program)){
+                return Ok(Some(ExecutableSourceBinding{processor,owner:row.owner,family,program,stage:None,routing:SourceEventRouting::SourceHierarchy}));
+            }
+        }
+        let mut binding=None;
+        for (stage,callbacks) in self.stages.iter().enumerate(){
+            let program=match family{SourceEventFamily::Note=>callbacks.note,SourceEventFamily::Release=>callbacks.release,
+                SourceEventFamily::Controller=>callbacks.controller,SourceEventFamily::PolyPressure=>callbacks.poly_at,SourceEventFamily::ProgramChange=>callbacks.program_change,SourceEventFamily::Task(_)=>None};
+            let Some(program)=program else{continue;};
+            if !entry_matches(program){
+                if self.programs.get(program).is_some_and(|body|body.code.iter().any(|instruction|matches!(instruction,crate::Instruction::AwaitExternal{processor:bound}if *bound==processor))){return Err(Error::InvalidInput);}
+                continue;
+            }
+            if binding.is_some(){return Err(Error::InvalidInput);}
+            binding=Some(ExecutableSourceBinding{processor,owner:row.owner,family,program,stage:Some(stage),routing:SourceEventRouting::LinearStage});
+        }Ok(binding)
+    }
+}
+impl crate::Runtime {
+    pub fn executable_source_binding(&self,plan:crate::PlanId,processor:sampler_ir::SourceEventProcessorId,family:SourceEventFamily)->Result<Option<ExecutableSourceBinding>,Error>{
+        self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.executable_source_binding(processor,family)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedSourceEventProcessor {
+    pub id: sampler_ir::SourceEventProcessorId,
+    pub owner: PreparedSourceOwnerIndex,
+    pub ordinal: u32,
+    pub kind: Box<str>,
+    pub bypass: PreparedSourceSwitch,
+    pub(crate) note_program:Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedSourceOwner {
+    pub id: sampler_ir::SourceOwnerId,
+    pub parent: Option<PreparedSourceOwnerIndex>,
+    pub kind: sampler_ir::SourceOwnerKind,
+    pub children: Box<[PreparedSourceOwnerIndex]>,
+    /// Actual runtime group/region coordinates, preserved by ordinary lowering.
+    pub groups: Box<[u32]>,
+    pub regions: Box<[u32]>,
+    pub predicates: Box<[sampler_ir::SourceInputPredicate]>,
+    pub bypass: Option<PreparedSourceSwitch>,
+    pub mute: Option<PreparedSourceSwitch>,
+    pub event_processors: Box<[PreparedSourceEventProcessor]>,
+}
+
+/// Shared immutable authority for audio processing ownership and external event
+/// compilation. Retaining a predicate/processor does not assert it is executable.
+#[derive(Default, Debug)]
+pub struct PreparedSourceOwners {
+    rows: Box<[PreparedSourceOwner]>,
+    by_id: Box<[(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)]>,
+    processors: Box<[(sampler_ir::SourceEventProcessorId, PreparedSourceOwnerIndex, u32)]>,
+    /// Immutable compile-time high water for the actual owner-local lookup scan.
+    max_processors_per_owner:usize,
+    bytes: usize,
+    pub(crate) note_root:Option<PreparedSourceOwnerIndex>,
+    pub(crate) note_entry:Option<usize>,
+    keygroups_by_region:Box<[(u32,PreparedSourceOwnerIndex)]>,
+}
+impl PreparedSourceOwners {
+    pub fn rows(&self) -> &[PreparedSourceOwner] { &self.rows }
+    pub(crate) fn rows_mut(&mut self)->&mut [PreparedSourceOwner]{&mut self.rows}
+    pub fn get(&self, index: PreparedSourceOwnerIndex) -> Option<&PreparedSourceOwner> {
+        self.rows.get(index.index())
+    }
+    pub fn index(&self, id: sampler_ir::SourceOwnerId) -> Option<PreparedSourceOwnerIndex> {
+        self.by_id.binary_search_by_key(&id, |row| row.0).ok().map(|i| self.by_id[i].1)
+    }
+    pub fn processor(&self, id: sampler_ir::SourceEventProcessorId) -> Option<&PreparedSourceEventProcessor> {
+        let i = self.processors.binary_search_by_key(&id, |row| row.0).ok()?;
+        let (_, owner, ordinal) = self.processors[i];
+        self.get(owner)?.event_processors.iter().find(|row| row.ordinal == ordinal && row.id == id)
+    }
+    pub(crate) fn processor_lookup_work_bound(&self)->Result<usize,Error>{
+        let search=usize::BITS as usize-self.processors.len().leading_zeros() as usize;
+        search.checked_add(self.max_processors_per_owner).and_then(|n|n.checked_add(2)).ok_or(Error::Capacity)
+    }
+    pub(crate) fn keygroups_for_region(&self,region:usize)->&[(u32,PreparedSourceOwnerIndex)]{
+        let Ok(region)=u32::try_from(region)else{return &[];};
+        let low=self.keygroups_by_region.partition_point(|row|row.0<region);
+        let high=self.keygroups_by_region.partition_point(|row|row.0<=region);
+        &self.keygroups_by_region[low..high]
+    }
+    pub fn memory_bytes(&self) -> usize { self.bytes }
+
+    fn compile(owners: &[sampler_ir::SourceOwner], groups: usize, regions: usize,
+        controls: &[crate::ControlId]) -> Result<Self, Error> {
+        use std::mem::size_of;
+        if !owners.is_empty() && owners.iter().filter(|owner|owner.parent.is_none()).count()!=1 {return Err(Error::InvalidInput);}
+        let mut bytes = owners.len().checked_mul(size_of::<PreparedSourceOwner>()
+            + size_of::<(sampler_ir::SourceOwnerId, PreparedSourceOwnerIndex)>()).ok_or(Error::Capacity)?;
+        let mut processors = 0usize;
+        let mut max_processors_per_owner=0usize;
+        let mut keygroup_members=0usize;
+        for owner in owners {
+            if owner.kind==sampler_ir::SourceOwnerKind::Keygroup {keygroup_members=keygroup_members.checked_add(owner.zones.len()).ok_or(Error::Capacity)?;}
+            let add = owner.children.len().checked_mul(size_of::<PreparedSourceOwnerIndex>())
+                .and_then(|n| owner.groups.len().checked_add(owner.zones.len()).and_then(|m|m.checked_mul(size_of::<u32>())).and_then(|m|n.checked_add(m)))
+                .and_then(|n| owner.predicates.len().checked_mul(size_of::<sampler_ir::SourceInputPredicate>()).and_then(|m|n.checked_add(m)))
+                .and_then(|n| owner.event_processors.len().checked_mul(size_of::<PreparedSourceEventProcessor>() + size_of::<(sampler_ir::SourceEventProcessorId, PreparedSourceOwnerIndex, u32)>()).and_then(|m|n.checked_add(m)))
+                .ok_or(Error::Capacity)?;
+            bytes = bytes.checked_add(add).ok_or(Error::Capacity)?;
+            processors = processors.checked_add(owner.event_processors.len()).ok_or(Error::Capacity)?;
+            max_processors_per_owner=max_processors_per_owner.max(owner.event_processors.len());
+            for processor in &owner.event_processors { bytes = bytes.checked_add(processor.kind.len()).ok_or(Error::Capacity)?; }
+            for predicate in &owner.predicates {
+                if let sampler_ir::SourceInputPredicate::Unsupported{field} = predicate {
+                    bytes = bytes.checked_add(field.len()).ok_or(Error::Capacity)?;
+                }
+            }
+        }
+        bytes=bytes.checked_add(keygroup_members.checked_mul(size_of::<(u32,PreparedSourceOwnerIndex)>()).ok_or(Error::Capacity)?).ok_or(Error::Capacity)?;
+        if bytes > isize::MAX as usize || owners.len() > u32::MAX as usize { return Err(Error::Capacity); }
+        fn reserved<T>(n: usize) -> Result<Vec<T>, Error> {
+            let mut v = Vec::new(); v.try_reserve_exact(n).map_err(|_| Error::Capacity)?; Ok(v)
+        }
+        fn text(s: &str) -> Result<Box<str>, Error> {
+            let mut v = String::new(); v.try_reserve_exact(s.len()).map_err(|_|Error::Capacity)?; v.push_str(s); Ok(v.into_boxed_str())
+        }
+        let mut by_id = reserved(owners.len())?;
+        for (index, owner) in owners.iter().enumerate() {
+            by_id.push((owner.id, PreparedSourceOwnerIndex(index as u32)));
+        }
+        by_id.sort_unstable_by_key(|row|row.0);
+        if by_id.windows(2).any(|w|w[0].0==w[1].0) { return Err(Error::InvalidInput); }
+        let resolve = |id| by_id.binary_search_by_key(&id, |row|row.0).ok().map(|i|by_id[i].1).ok_or(Error::InvalidInput);
+        let switch = |s: sampler_ir::SourceSwitch| -> Result<PreparedSourceSwitch,Error> {
+            let control = s.control.map(|r| controls.get(r.0).copied().ok_or(Error::InvalidInput)).transpose()?;
+            Ok(PreparedSourceSwitch{saved:s.saved,control})
+        };
+        let mut rows = reserved(owners.len())?;
+        let mut processor_ids = reserved(processors)?;
+        for (index, owner) in owners.iter().enumerate() {
+            let own = PreparedSourceOwnerIndex(index as u32);
+            let parent = owner.parent.map(resolve).transpose()?;
+            if parent==Some(own) {return Err(Error::InvalidInput);}
+            let mut children = reserved(owner.children.len())?;
+            for &child in &owner.children {
+                let child = resolve(child)?;
+                if children.contains(&child) || owners[child.index()].parent!=Some(owner.id) {return Err(Error::InvalidInput);}
+                children.push(child);
+            }
+            if let Some(parent) = parent {
+                if owners[parent.index()].children.iter().filter(|&&id|id==owner.id).count()!=1 {return Err(Error::InvalidInput);}
+            }
+            let mut group_ids = reserved(owner.groups.len())?;
+            for group in &owner.groups {
+                if group.0>=groups || group.0>u32::MAX as usize || group_ids.contains(&(group.0 as u32)) {return Err(Error::InvalidInput);}
+                group_ids.push(group.0 as u32);
+            }
+            let mut region_ids = reserved(owner.zones.len())?;
+            for zone in &owner.zones {
+                if zone.0>=regions || zone.0>u32::MAX as usize || region_ids.contains(&(zone.0 as u32)) {return Err(Error::InvalidInput);}
+                region_ids.push(zone.0 as u32);
+            }
+            let mut predicates = reserved(owner.predicates.len())?;
+            for predicate in &owner.predicates {
+                predicates.push(match predicate {
+                    sampler_ir::SourceInputPredicate::Unsupported{field} => sampler_ir::SourceInputPredicate::Unsupported{field:text(field)?.into()},
+                    other=>other.clone(),
+                });
+            }
+            let mut event_processors = reserved(owner.event_processors.len())?;
+            for (ordinal,processor) in owner.event_processors.iter().enumerate() {
+                if processor.owner!=owner.id || processor.ordinal as usize!=ordinal {return Err(Error::InvalidInput);}
+                processor_ids.push((processor.id,own,processor.ordinal));
+                event_processors.push(PreparedSourceEventProcessor{id:processor.id,owner:own,ordinal:processor.ordinal,kind:text(&processor.kind)?,bypass:switch(processor.bypass)?,note_program:None});
+            }
+            rows.push(PreparedSourceOwner{id:owner.id,parent,kind:owner.kind,children:children.into_boxed_slice(),groups:group_ids.into_boxed_slice(),regions:region_ids.into_boxed_slice(),predicates:predicates.into_boxed_slice(),bypass:owner.bypass.map(switch).transpose()?,mute:owner.mute.map(switch).transpose()?,event_processors:event_processors.into_boxed_slice()});
+        }
+        processor_ids.sort_unstable_by_key(|row|row.0);
+        if processor_ids.windows(2).any(|w|w[0].0==w[1].0) {return Err(Error::InvalidInput);}
+        // A canonical parent edge may never form a cycle, even with disconnected roots.
+        for row in &rows {
+            let mut parent=row.parent;let mut remaining=rows.len();
+            while let Some(index)=parent {
+                if remaining==0 {return Err(Error::InvalidInput);}
+                remaining-=1;parent=rows[index.index()].parent;
+            }
+        }
+        let mut keygroups_by_region=reserved(keygroup_members)?;
+        for (index,row) in rows.iter().enumerate(){
+            if row.kind==sampler_ir::SourceOwnerKind::Keygroup{
+                for &region in &row.regions{keygroups_by_region.push((region,PreparedSourceOwnerIndex(index as u32)));}
+            }
+        }
+        keygroups_by_region.sort_unstable_by_key(|row|(row.0,row.1.index()));
+        Ok(Self{rows:rows.into_boxed_slice(),by_id:by_id.into_boxed_slice(),processors:processor_ids.into_boxed_slice(),max_processors_per_owner,bytes,note_root:None,note_entry:None,keygroups_by_region:keygroups_by_region.into_boxed_slice()})
+    }
+}
+
 pub struct Prepared {
-    pub(crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
+    /// Immutable actual tuning of this generation; children never consult a replacement plan.
+    tuning: Tuning,
+    pub(super) source_owners: PreparedSourceOwners,
+    pub(super) external_programs: bool,
+    pub(crate) source_tasks:Box<[crate::PreparedSourceTaskBinding]>,
+    pub(
+crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(crate) zone_routing: Option<zone_routing::PreparedRouting>,
     pub(super) sample_targets: Box<[SampleTarget]>,
     pub(super) sample_limits: Option<SampleRevisionLimits>,
@@ -849,11 +1120,20 @@ pub struct Prepared {
     pub(super) parameter_registry: super::PreparedParameterRegistry,
     pub(super) signal_trace: Option<crate::trace::TracePrepared>,
     pub(super) rate: u32,
+    /// Physical dependency collection; logical region indices resolve via source_storage.
     pub(super) pcm: Box<[Pcm]>,
+    pub(super) source_storage: Option<Box<[crate::SourceStorage]>>,
     pub(super) buses: super::bus::PreparedBuses,
     pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
-    pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
-    pub(super) filters: Box<[super::dsp::svf::PreparedFilter]>,
+    pub(super) voice_chains: super::dsp::PreparedChains,
+    pub(super) processing_scopes: Box<[super::topology::PreparedScope]>,
+    pub(super) processing_signals: Box<[Option<super::topology::signal::Signal>]>,
+    pub(super) processing_modulation: super::voice_mod::VoiceModulation,
+    pub(super) processing_modulation_limit:usize,
+    pub(super) wide_gain_sections: Box<[Option<super::dsp::WideGainSections>]>,
+    pub(super) region_processing: Box<[Option<(usize, usize)>]>,
+    pub(super) processing_source_amplitude: Box<[bool]>,
+    pub(super) filters: super::dsp::svf::PreparedFilters,
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
     pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
@@ -905,6 +1185,10 @@ pub struct Prepared {
     pub(super) automation: Box<[super::AutomationBinding]>,
     pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
+    pub(super) control_layout: super::control::ControlLayout,
+    pub(super) engine_controls: Box<[super::control::EngineControl]>,
+    pub(super) envelope_real: Box<[[Option<super::control::RealControlIndex>;6]]>,
+    pub(super) wavetable_real: Box<[Option<[super::control::RealControlIndex;5]>]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) initial_residency: Box<[super::InitialGroupResidency]>,
@@ -928,6 +1212,12 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    pub fn source_owners(&self) -> &PreparedSourceOwners { &self.source_owners }
+    pub fn source_owner_index(&self, id: sampler_ir::SourceOwnerId) -> Option<PreparedSourceOwnerIndex> { self.source_owners.index(id) }
+    pub(crate) fn with_source_owners(mut self, owners: &[sampler_ir::SourceOwner], groups: usize, regions: usize, controls: &[crate::ControlId]) -> Result<Self,Error> {
+        self.source_owners=PreparedSourceOwners::compile(owners,groups,regions,controls)?;Ok(self)
+    }
+
     /// Initial sample-start modulation offset, in source frames, when every
     /// contributing source and depth assignment is Constant. `None` means an
     /// input-dependent route or an invalid region; a region without such routes
@@ -976,7 +1266,7 @@ impl Prepared {
         // would intentionally bypass that loop for the actual voice.
         cursor.initial_forward_window(offset, 1.)?;
         cursor.skip(offset).initial_forward_window(0, cursor.step())?;
-        Some(ConstantStartPrefix { asset: self.pcm.get(source.sample)?.asset_id(), template, offset })
+        Some(ConstantStartPrefix { asset: self.source_storage(source.sample)?.stereo()?.asset_id(), template, offset })
     }
 
     /// One response per authored region, in its original order. Selection always
@@ -1028,14 +1318,40 @@ impl Prepared {
         max_candidates: usize,
         tuning: &Tuning,
     ) -> Result<Self, Error> {
-        if rate == 0 {
-            return Err(Error::InvalidInput);
+        Self::new_tuned_storage(rate, pcm, None, regions, max_candidates, tuning)
+    }
+
+    /// Source-aware control construction. One logical source per region sample index.
+    /// Runtime publication additionally validates each source outlet's signal layout.
+    pub fn new_sources(rate: u32, sources: Vec<crate::SourceStorage>, regions: Vec<Region>,
+        max_candidates: usize) -> Result<Self, Error> {
+        Self::new_sources_tuned(rate, sources, regions, max_candidates, &Tuning::default())
+    }
+    pub fn new_sources_tuned(rate: u32, sources: Vec<crate::SourceStorage>, regions: Vec<Region>,
+        max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
+        let mut pcm = Vec::new();
+        for source in &sources {
+            source.as_source().physical_dependencies(|pack| {
+                if !pcm.iter().any(|old: &Pcm| old.asset_id() == pack.asset_id()) {
+                    pcm.push(pack.clone());
+                }
+            });
         }
+        Self::new_tuned_storage(rate, pcm, Some(sources.into_boxed_slice()), regions, max_candidates, tuning)
+    }
+    fn new_tuned_storage(rate: u32, pcm: Vec<Pcm>, source_storage: Option<Box<[crate::SourceStorage]>>,
+        regions: Vec<Region>, max_candidates: usize, tuning: &Tuning) -> Result<Self, Error> {
+        if rate == 0 { return Err(Error::InvalidInput); }
+        let source_count = source_storage.as_ref().map_or(pcm.len(), |s| s.len());
+        let source_at = |index: usize| match &source_storage {
+            Some(sources) => sources.get(index).map(crate::SourceStorage::as_source),
+            None => pcm.get(index).map(crate::SourceStorageRef::Stereo),
+        };
         let mut count = 0usize;
         let mut prepared_regions = Vec::new();
         let mut cursor_loops = Vec::new();
         for r in &regions {
-            if (r.sample != DORMANT_SAMPLE && r.sample >= pcm.len())
+            if (r.sample != DORMANT_SAMPLE && r.sample >= source_count)
                 || r.key_low > r.key_high
                 || r.key_high >= 128
                 || r.root_key.is_some_and(|key| key >= 128)
@@ -1065,7 +1381,8 @@ impl Prepared {
                 }
                 None
             } else {
-                Some(playback.cursor(pcm[r.sample].frame_count(), pcm[r.sample].sample_rate(), rate)?)
+                Some(playback.cursor(source_at(r.sample).ok_or(Error::InvalidInput)?.frame_count(),
+                    source_at(r.sample).ok_or(Error::InvalidInput)?.sample_rate(), rate)?)
             };
             count = count
                 .checked_add(usize::from(r.key_high - r.key_low) + 1)
@@ -1113,7 +1430,7 @@ impl Prepared {
                         let mut playback = r.playback;
                         playback.transpose_semitones +=
                             f64::from(key) - f64::from(root) + tuning.0[key as usize];
-                        playback.step(if r.sample == DORMANT_SAMPLE { rate } else { pcm[r.sample].sample_rate() }, rate)
+                        playback.step(if r.sample == DORMANT_SAMPLE { rate } else { source_at(r.sample).ok_or(Error::InvalidInput)?.sample_rate() }, rate)
                     } else {
                         prepared_regions[region].cursor.map_or_else(
                             || r.playback.step(rate, rate),
@@ -1142,6 +1459,10 @@ impl Prepared {
             );
         }
         Ok(Self {
+            tuning:tuning.clone(),
+            source_owners: PreparedSourceOwners::default(),
+            external_programs: false,
+            source_tasks:Box::new([]),
             sample_targets: Box::new([]),
             sample_limits: None,
             source_zone_catalog: None,
@@ -1152,12 +1473,18 @@ impl Prepared {
             parameter_registry: Default::default(),
             rate,
             pcm: pcm.into_boxed_slice(),
+            source_storage,
             buses: super::bus::PreparedBuses::default(),
             impulses: Vec::new(),
-            voice_chains: Box::new([]),
+            voice_chains: super::dsp::PreparedChains::default(),
+            processing_scopes: Box::new([]),
+            processing_signals: Box::new([]),processing_modulation:Default::default(),processing_modulation_limit:0,
+            wide_gain_sections: Box::new([]),
+            region_processing: Box::new([]),
+            processing_source_amplitude: Box::new([]),
             signal_trace: None,
             dsp_bindings: Box::new([]),
-            filters: Box::new([]),
+            filters: super::dsp::svf::PreparedFilters::default(),
             dsp_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
             cursor_loops: cursor_loops.into_boxed_slice(),
@@ -1202,6 +1529,10 @@ impl Prepared {
             automation: Box::new([]),
             widgets: Box::new([]),
             controls: Box::new([]),
+            control_layout: Default::default(),
+            engine_controls: Box::new([]),
+            envelope_real: Box::new([]),
+            wavetable_real: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
             signal_programs: Box::new([]),
@@ -1223,6 +1554,59 @@ impl Prepared {
         })
     }
 
+    /// Offaudio executable Controller entries for one actual Program owner.
+    /// This does not flatten Layer siblings or activate a frontend. The bound
+    /// actor must independently prove its exact initialized processor roster.
+    /// Other families, programs and their existing indexes remain unchanged.
+    pub fn with_source_controller_entries(mut self,entries:Vec<sampler_ir::SourceEventProcessorId>,max_new_entries:usize,max_entry_bytes:usize)->Result<Self,Error>{
+        if entries.is_empty(){return Ok(self);}
+        if entries.len()>max_new_entries{return Err(Error::Capacity);}
+        if self.stages.iter().any(|stage|stage.controller.is_some()){return Err(Error::Busy);}
+        let count=self.programs.len().checked_add(entries.len()).ok_or(Error::Capacity)?;
+        u32::try_from(count.checked_sub(1).ok_or(Error::Capacity)?).map_err(|_|Error::Capacity)?;
+        let stage_count=self.stages.len().max(entries.len());
+        let mut bytes=0usize;
+        for n in [std::alloc::Layout::array::<crate::Program>(self.programs.len()).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<crate::Program>(count).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<crate::Stage>(stage_count).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<crate::Instruction>(entries.len().checked_mul(2).ok_or(Error::Capacity)?).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<sampler_ir::SourceEventProcessorId>(entries.capacity()).map_err(|_|Error::Capacity)?.size()]
+        {bytes=bytes.checked_add(n).ok_or(Error::Capacity)?;}
+        if bytes>max_entry_bytes{return Err(Error::Capacity);}
+        let mut owner=None;let mut previous=None;
+        for (index,&id)in entries.iter().enumerate(){
+            if entries[..index].contains(&id){return Err(Error::InvalidInput);}
+            let processor=self.source_owners.processor(id).ok_or(Error::InvalidInput)?;
+            let row=self.source_owners.get(processor.owner).ok_or(Error::InvalidInput)?;
+            if processor.kind.as_ref()!="ScriptProcessor"||row.kind!=sampler_ir::SourceOwnerKind::Instrument
+                ||!matches!(row.id,sampler_ir::SourceOwnerId::UviNode(_))
+                ||owner.is_some_and(|owner|owner!=processor.owner)||previous.is_some_and(|ordinal|ordinal>=processor.ordinal)
+            {return Err(Error::InvalidInput);}
+            owner=Some(processor.owner);previous=Some(processor.ordinal);
+        }
+        let mut programs=Vec::new();programs.try_reserve_exact(count).map_err(|_|Error::Capacity)?;
+        let mut stages=Vec::new();stages.try_reserve_exact(stage_count).map_err(|_|Error::Capacity)?;
+        let program_spare=programs.capacity().checked_sub(count).ok_or(Error::Capacity)?;
+        let stage_spare=stages.capacity().checked_sub(stage_count).ok_or(Error::Capacity)?;
+        bytes=bytes.checked_add(std::alloc::Layout::array::<crate::Program>(program_spare).map_err(|_|Error::Capacity)?.size())
+            .and_then(|n|std::alloc::Layout::array::<crate::Stage>(stage_spare).ok().and_then(|layout|n.checked_add(layout.size()))).ok_or(Error::Capacity)?;
+        if bytes>max_entry_bytes{return Err(Error::Capacity);}
+        programs.extend(self.programs.iter().cloned());stages.extend_from_slice(&self.stages);stages.resize(stage_count,crate::Stage::default());
+        for (index,processor)in entries.into_iter().enumerate(){
+            let mut code=Vec::new();code.try_reserve_exact(2).map_err(|_|Error::Capacity)?;
+            let spare=code.capacity().checked_sub(2).ok_or(Error::Capacity)?;
+            bytes=bytes.checked_add(std::alloc::Layout::array::<crate::Instruction>(spare).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+            if bytes>max_entry_bytes{return Err(Error::Capacity);}
+            code.extend([crate::Instruction::AwaitExternal{processor},crate::Instruction::End]);
+            let program=crate::Program::new(code)?.with_wait_lifetime(crate::WaitLifetime::Callback);
+            stages[index].controller=Some(programs.len());programs.push(program);
+        }
+        // Existing with_stages performs complete typed family/receiver checks
+        // on this unpublished candidate. No note hierarchy or startup alias.
+        self.programs=programs.into_boxed_slice();self.external_programs=true;
+        self.with_stages(stages)
+    }
+
     /// Replace the complete program table and optional note binding atomically on
     /// the control thread. Generated children select regions without re-entry.
     pub fn with_programs(
@@ -1234,6 +1618,16 @@ impl Prepared {
             .is_some_and(|index| programs.get(index).is_none_or(|p| p.requires_controller))
         {
             return Err(Error::InvalidInput);
+        }
+        for program in &programs {
+            for op in program.code.iter() {
+                if let super::Instruction::AwaitExternal{processor}=op {
+                    if program.wait_lifetime!=super::WaitLifetime::Callback
+                        || self.source_owners.processor(*processor).is_none() {
+                        return Err(Error::InvalidInput);
+                    }
+                }
+            }
         }
         self.validate_program_controls(&programs)?;
         self.validate_program_scripts(&programs)?;
@@ -1255,7 +1649,12 @@ impl Prepared {
             p.note_base = bases[bank(p)];
         }
         self.note_cells = cells;
-        self.programs = programs.into_boxed_slice();
+        self.source_owners.note_root=None;
+        self.source_owners.note_entry=None;
+        for owner in self.source_owners.rows_mut(){for processor in &mut owner.event_processors{processor.note_program=None;}}
+        self.external_programs=programs.iter().any(|program|program.code.iter().any(|op|matches!(op,super::Instruction::AwaitExternal{..})));
+        self.
+programs = programs.into_boxed_slice();
         self.stages = Box::new([super::Stage {
             note: note_program,
             ..super::Stage::default()
@@ -1297,9 +1696,27 @@ impl Prepared {
         let native = std::iter::repeat_with(|| None).take(programs.len()).collect();
         self.with_voice_modulation_and_v1(programs, regions, start_ranges, native)
     }
-    pub(crate) fn with_voice_modulation_and_v1(mut self,
+    /// Bind physical consumer slots to actual immutable scoped source rows.
+    /// The supplied source descriptors remain preparation metadata; a mapped
+    /// slot allocates no envelope/oscillator evaluator in the physical voice.
+    pub fn with_voice_modulation_providers(self,programs:Vec<super::ModProgram>,regions:Vec<Option<usize>>,start_ranges:Vec<u32>,providers:Vec<crate::ModProvider>)->Result<Self,Error>{
+        let native=std::iter::repeat_with(||None).take(programs.len()).collect();
+        self.with_voice_modulation_and_providers(programs,regions,start_ranges,native,providers)
+    }
+    pub(crate) fn with_voice_modulation_and_v1(self,
         programs: Vec<super::ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
-        mut native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
+        native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
+        self.with_voice_modulation_and_providers(programs,regions,start_ranges,native,Vec::new())
+    }
+    pub(crate) fn with_voice_modulation_and_providers(mut self,
+        programs:Vec<super::ModProgram>,regions:Vec<Option<usize>>,start_ranges:Vec<u32>,
+        mut native:Vec<Option<crate::whole_voice::Program>>,providers:Vec<crate::ModProvider>)->Result<Self,Error>{
+        std::alloc::Layout::array::<crate::ModProvider>(providers.capacity()).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<(crate::ModProvider,bool)>(providers.len()).map_err(|_|Error::Capacity)?;
+        let resolved_providers=providers.into_iter().map(|binding|{
+            let bipolar=self.processing_modulation.source_bipolar(binding.provider)?;Ok((binding,bipolar))
+        }).collect::<Result<Vec<_>,Error>>()?;
+        std::alloc::Layout::array::<(crate::ModProvider,bool)>(resolved_providers.capacity()).map_err(|_|Error::Capacity)?;
         if native.len() != programs.len() { return Err(Error::InvalidInput); }
         if regions.len() != self.regions.len()
             || programs.iter().any(|p| {
@@ -1317,16 +1734,16 @@ impl Prepared {
                         super::voice_mod::CompiledTarget::ProcessorCutoff(i)
                         | super::voice_mod::CompiledTarget::ProcessorResonance(i),
                     ) => !matches!(
-                        self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::StateVariable(_))
+                        self.filters.kind(i as usize),
+                        Some(super::dsp::svf::FilterKind::StateVariable)
                     ),
                     Some(
                         super::voice_mod::CompiledTarget::ProcessorNativeCutoff(i)
                         | super::voice_mod::CompiledTarget::ProcessorNativeResonance(i)
                         | super::voice_mod::CompiledTarget::ProcessorNativeGain(i),
                     ) => !matches!(
-                        self.filters.get(i as usize),
-                        Some(super::dsp::svf::PreparedFilter::NativeControl)
+                        self.filters.kind(i as usize),
+                        Some(super::dsp::svf::FilterKind::NativeControl)
                     ),
                     _ => false,
                 })
@@ -1337,21 +1754,38 @@ impl Prepared {
             let Some(program) = program else {
                 continue;
             };
+            if self.source_storage(region.sample).is_some_and(|source| source.stereo().is_none())
+                && native.get(*program).is_some_and(Option::is_some) {
+                return Err(Error::UnsupportedSourceLayout);
+            }
             let Some(program) = programs.get(*program) else {
                 return Err(Error::InvalidInput);
             };
             for route in &program.routes {
+                if self.source_storage(region.sample).is_some_and(|source| source.stereo().is_none()) {
+                    use super::voice_mod::CompiledTarget;
+                    // The wide source primitive owns scalar gain/pitch/phase
+                    // and source-address laws. Existing stereo filter/native
+                    // DSP destinations require explicit typed N-port stages.
+                    if !matches!(route.target.compiled(), Some(CompiledTarget::Attenuate
+                        | CompiledTarget::Decibels | CompiledTarget::Pitch | CompiledTarget::SampleStart
+                        | CompiledTarget::Tone | CompiledTarget::SourcePhase(_) | CompiledTarget::SourceRate(_)
+                        | CompiledTarget::LoopStart | CompiledTarget::LoopLength)) {
+                        return Err(Error::UnsupportedSourceLayout);
+                    }
+                }
                 if matches!(
                     route.target.compiled(),
                     Some(
                         super::voice_mod::CompiledTarget::LoopStart
                             | super::voice_mod::CompiledTarget::LoopLength
                     )
-                ) && region.cursor.is_some_and(|c| !c.cursor(&self.cursor_loops)
-                    .supports_loop_control(self.pcm[region.sample].frame_count()))
+                ) && region.cursor.is_some_and(|c| self.source_storage(region.sample).is_none_or(|source|
+                    !c.cursor(&self.cursor_loops).supports_loop_control(source.frame_count())))
                 {
                     return Err(Error::InvalidInput);
                 }
+                if matches!(route.target.scope,super::ParameterScope::ProcessingScope(_)){return Err(Error::InvalidInput);}
                 if route.target.compiled().is_some() {
                     continue;
                 }
@@ -1427,23 +1861,17 @@ impl Prepared {
             program.controls = controls;
             if let Some(native) = &mut native[index] { native.routes = native_routes; }
         }
-        self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
+        let modulation = super::voice_mod::VoiceModulation::new_resolved_providers(
             programs,
             regions,
             start_ranges,
-            native,
+            native,resolved_providers,
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
-            |id| {
-                let index = self.control_index(id)?;
-                if !matches!(
-                    self.controls[index].domain,
-                    super::ControlDomain::Real { .. }
-                ) {
-                    return Err(Error::InvalidInput);
-                }
-                Ok(index)
-            },
+            |id| self.real_control(id),
         )?;
+        self.validate_constant_property_program(&modulation)?;
+        modulation.validate_provider_bindings(&self.processing_modulation,&self.region_processing)?;
+        self.voice_modulation=modulation;
         Ok(self)
     }
 
@@ -1457,8 +1885,14 @@ impl Prepared {
         self.rate
     }
 
+    pub(crate) fn region_has_amplitude(&self, region: usize) -> bool {
+        self.processing_source_amplitude.get(region).copied().unwrap_or(false)
+    }
     pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
         self.regions[region].chain
+    }
+    pub(crate) fn region_bus(&self, region: usize) -> Option<usize> {
+        self.regions[region].bus
     }
 
     /// Required cells per logical note across all script-instance namespaces.
@@ -1512,9 +1946,73 @@ impl Prepared {
             + stages * size_of::<crate::dsp::ProcessorState>()
             + delay * size_of::<[f64; 2]>()
             + self.voice_modulation.bytes_per_voice()
+            + self.processing_modulation.bytes_per_voice()
+            + if self.processing_modulation.is_empty(){0}else{
+                // Conservative per-owner share includes the complete immutable
+                // program restart-domain array; no unpriced generation array.
+                self.processing_scopes.len()*std::mem::size_of::<(u64,u64)>()
+                    +std::mem::size_of::<Option<(u64,u64)>>()
+            }
+            // Runtime always has a fixed-capacity owner arena so a retained
+            // legacy generation can adopt an incoming explicit-scope plan.
+            + size_of::<crate::Slot<crate::topology::ProcessingOwner>>()
+            + size_of::<u64>() // conservative arena free-word/claim overhead
+            + self.signal_channels().saturating_mul(3 * super::dsp::BLOCK + 2).saturating_mul(size_of::<f32>())
+            + self.signal_channels().div_ceil(2).saturating_mul(size_of::<Option<sampler_pool::SnapshotPin<Ranges>>>())
+            + self.signal_history_words().saturating_mul(size_of::<f64>())
+            + if self.signal_history_words() == 0 { 0 } else { size_of::<std::sync::atomic::AtomicBool>() }
+            + self.signal_channels().saturating_mul(size_of::<[f64; 2]>())
+            + if self.processing_scopes.is_empty() { 0 } else {
+                stages * size_of::<crate::dsp::ProcessorState>()
+                    + delay * size_of::<[f64; 2]>()
+                    + 2 * size_of::<std::sync::atomic::AtomicBool>()
+            }
     }
     pub fn sample_count(&self) -> usize {
-        self.pcm.len()
+        self.source_storage.as_ref().map_or(self.pcm.len(), |s| s.len())
+    }
+    /// Resolve a logical sample index. Physical family packs are never sample aliases.
+    pub fn source_storage(&self, sample: usize) -> Option<crate::SourceStorageRef<'_>> {
+        match &self.source_storage {
+            Some(sources) => sources.get(sample).map(crate::SourceStorage::as_source),
+            None => self.pcm.get(sample).map(crate::SourceStorageRef::Stereo),
+        }
+    }
+    pub fn region_source_storage(&self, region: usize) -> Option<crate::SourceStorageRef<'_>> {
+        self.source_storage(self.regions.get(region)?.sample)
+    }
+    /// Current undeclared region outlets are stereo. A later explicit scope signal
+    /// compiler supplies a matching wide outlet; storage packing is not that signal.
+    pub(super) fn validate_source_ports(&self) -> Result<(), Error> {
+        for (index, region) in self.regions.iter().enumerate() {
+            if region.sample == DORMANT_SAMPLE { continue; }
+            let source = self.source_storage(region.sample).ok_or(Error::InvalidInput)?;
+            let signal = self.region_processing.get(index).copied().flatten()
+                .and_then(|(scope, _)| self.processing_scopes.get(scope))
+                .and_then(|scope| scope.signal.as_ref());
+            if let Some(signal) = signal {
+                if let sampler_ir::ProcessingSourceLaw::UviC997Layout{members}=&signal.source_law {
+                    let (_,ordinal)=self.region_processing.get(index).copied().flatten().ok_or(Error::InvalidInput)?;
+                    let member=members.get(ordinal).copied().flatten().ok_or(Error::InvalidInput)?;
+                    if member.provenance!=sampler_ir::UviNativeSourceProvenance::PlainHeader || member.storage_channels!=source.channels().get()
+                        || !(member.layout.channels()==source.channels().get() || member.layout==sampler_ir::UviNativeLayout::Code1&&source.channels().get()==2)
+                        || member.layout.weight(sampler_ir::UviNativeLayout::plain_header(signal.input.channels).ok_or(Error::UnsupportedSourceLayout)?,0,0).is_none(){return Err(Error::UnsupportedSourceLayout);}
+                }else if signal.input.channels != source.channels().get() { return Err(Error::UnsupportedSourceLayout); }
+            } else if source.stereo().is_none() { return Err(Error::UnsupportedSourceLayout); }
+        }
+        Ok(())
+    }
+
+    /// Legacy source pan is a two-lane operand. Retained definitions, rather
+    /// than the current voice/bypass snapshot, define future note eligibility.
+    pub(crate) fn source_pan_key_supported(&self, key: u8) -> bool {
+        self.regions.iter().filter(|region| region.bounds[0] <= key && key <= region.bounds[1])
+            .all(|region| self.source_storage(region.sample).is_none_or(|source| source.channels().get() == 2))
+    }
+    pub(crate) fn source_pan_group_supported(&self, group: i64) -> bool {
+        self.regions.iter().enumerate().filter(|(index, _)| group < 0
+            || self.region_groups.get(*index).copied().flatten().is_some_and(|g| i64::from(g) == group))
+            .all(|(_, region)| self.source_storage(region.sample).is_none_or(|source| source.channels().get() == 2))
     }
     pub fn region_count(&self) -> usize {
         self.regions.len()
@@ -1547,13 +2045,18 @@ impl Prepared {
 
     /// The immutable prepared sample asset behind a region, for control-side peak work.
     pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
-        self.regions
-            .get(region)
-            .and_then(|r| self.pcm.get(r.sample))
+        self.region_source_storage(region).and_then(crate::SourceStorageRef::stereo)
     }
 
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
+    }
+
+    /// Actual inherent pitch authority, before receiver-relative bend/tuning.
+    pub fn inherent_pitch(&self,pitch:NotePitch)->Result<f64,Error>{
+        if !pitch.valid(){return Err(Error::InvalidInput);}
+        let value=match pitch{NotePitch::Key(key)=>f64::from(key)+self.tuning.0[usize::from(key)],NotePitch::Absolute(value)=>value};
+        if !value.is_finite(){return Err(Error::InvalidInput);}Ok(value)
     }
 
     fn step(&self, candidate: Candidate, pitch: NotePitch) -> f64 {
@@ -1564,7 +2067,7 @@ impl Prepared {
                 if r.cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()) {
                     440. * 2048. / f64::from(self.rate) * super::pitch::ratio(semitones)
                 } else {
-                    self.pcm.get(r.sample).map_or(1., |pcm| f64::from(pcm.sample_rate()) / f64::from(self.rate))
+                    self.source_storage(r.sample).map_or(1., |source| f64::from(source.sample_rate()) / f64::from(self.rate))
                         * super::pitch::ratio(semitones)
                 }
             }
@@ -1900,6 +2403,15 @@ impl Prepared {
                 .voices
                 .min(self.controller_release_bound(key, trigger));
         }
+        if !self.processing_scopes.is_empty() {
+            let mut owners = [false; 256];
+            for candidate in &self.candidates[self.range(key, trigger)] {
+                if let Some((owner, _)) = self.region_processing.get(candidate.region).copied().flatten() {
+                    owners[owner] = true;
+                }
+            }
+            maximum.processing_owners = owners.iter().filter(|used| **used).count().min(maximum.voices);
+        }
         maximum
     }
 
@@ -1908,6 +2420,7 @@ impl Prepared {
         pitch: NotePitch,
         trigger: super::Trigger,
         range: super::pitch::PitchRange,
+        intrinsic_ratio:f64,
         velocity: Option<f64>,
         state: Option<&super::performance::State>,
     ) -> Result<(), Error> {
@@ -1927,7 +2440,7 @@ impl Prepared {
                     continue;
                 }
                 range.apply_source(
-                    self.step(candidate, pitch),
+                    self.step(candidate, pitch)*if self.regions[candidate.region].root_key.is_some(){intrinsic_ratio}else{1.},
                     self.regions[candidate.region].cursor.is_some_and(|c| c.cursor(&self.cursor_loops).wavetable().is_some()),
                 )?;
             }
@@ -2026,7 +2539,9 @@ impl Prepared {
         chains: Vec<super::VoiceChain>,
         bindings: Vec<Option<usize>>,
     ) -> Result<Self, Error> {
+        self.validate_source_ports()?;
         if bindings.len() != self.regions.len()
+            || self.processing_scopes.iter().any(|s| s.chain.is_some_and(|c| c >= chains.len()))
             || bindings
                 .iter()
                 .flatten()
@@ -2034,15 +2549,45 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
+        self.validate_processing_controls()?;
+        // An expression Pan stage is the sole explicit canonical home, never
+        // an arbitrary source insert that would double the ordinary note pan.
+        for (index,chain) in chains.iter().enumerate() {
+            let homes=chain.expression_pan_count();
+            if homes>1 || !chain.expression_pan_home_valid() || homes!=0 && (bindings.contains(&Some(index))
+                || !self.processing_scopes.iter().any(|scope|scope.chain==Some(index))) {
+                return Err(Error::InvalidInput);
+            }
+        }
+        let needs_wide = self.regions.iter().any(|r| self.source_storage(r.sample).is_some_and(|s| s.stereo().is_none()));
+        let wide_gain_sections = if needs_wide {
+            chains.iter().map(super::VoiceChain::wide_gain_sections).collect::<Vec<_>>()
+        } else { Vec::new() };
+        if self.regions.iter().zip(&bindings).any(|(region, chain)|
+            self.source_storage(region.sample).is_some_and(|s| s.stereo().is_none())
+            && chain.is_some_and(|chain| wide_gain_sections[chain].is_none())) {
+            return Err(Error::UnsupportedSourceLayout);
+        }
+        self.wide_gain_sections = wide_gain_sections.into_boxed_slice();
         for (region, chain) in self.regions.iter_mut().zip(bindings) {
             region.chain = chain;
         }
         let mut parameters = Vec::new();
-        let mut filters = Vec::new();
-        self.voice_chains = chains
+        let mut filters = super::dsp::svf::FilterRegistryBuilder::default();
+        self.voice_chains = super::dsp::PreparedChains::from_compiled(chains
             .into_iter()
             .map(|chain| chain.compile(self.rate, &mut parameters, &mut filters))
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?);
+        self.processing_signals = super::topology::signal::compile(&self, &mut parameters)?;
+        for (scope, signal) in self.processing_scopes.iter().zip(self.processing_signals.iter()) {
+            if let Some(signal) = signal {
+                if signal.expression_pan && scope.chain.is_some_and(|index|self.voice_chains.view(index).expression_pan) {
+                    return Err(Error::InvalidInput);
+                }
+                let tail = scope.chain.map_or(0, |index| self.voice_chains.view(index).owner_tail_frames());
+                tail.checked_add(signal.tail_frames).ok_or(Error::Capacity)?;
+            }
+        }
         let mut controls: Vec<_> = parameters
             .iter()
             .enumerate()
@@ -2051,7 +2596,7 @@ impl Prepared {
         controls.sort_unstable();
         self.dsp_controls = controls.into_boxed_slice();
         self.dsp_bindings = parameters.into_boxed_slice();
-        self.filters = filters.into_boxed_slice();
+        self.filters = filters.finish();
         self.validate_dsp_controls()?;
         Ok(self)
     }
@@ -2070,7 +2615,8 @@ impl Prepared {
         if bus >= self.buses.len() {
             return Err(Error::InvalidInput);
         }
-        self.buses.input = Some(bus);
+        self.buses.select_input_bus(bus)?;
+        self.validate_bus_signal_edges()?;
         Ok(self)
     }
 
@@ -2081,7 +2627,9 @@ impl Prepared {
         buses: Vec<super::Bus>,
         bindings: Vec<Option<usize>>,
     ) -> Result<Self, Error> {
+        self.validate_source_ports()?;
         if bindings.len() != self.regions.len()
+            || self.processing_scopes.iter().any(|s| s.bus.is_some_and(|b| b >= buses.len()))
             || bindings.iter().flatten().any(|i| *i >= buses.len())
         {
             return Err(Error::InvalidInput);
@@ -2178,7 +2726,11 @@ impl Prepared {
         self.enable_signal_trace_scope(records, None)
     }
     fn enable_signal_trace_scope(&mut self, records: usize, scope: Option<crate::trace::SignalTraceScope>) -> Result<(), Error> {
-        if self.signal_trace.is_some() || records == 0 { return Err(Error::InvalidInput); }
+        if self.signal_trace.is_some() || records == 0 || !self.processing_scopes.is_empty() {
+            // The legacy trace schema has no shared-owner edge/state node.
+            // Do not emit a misleading graph; numeric owner snapshots remain available.
+            return Err(Error::InvalidInput);
+        }
         // Exact preflight is before TraceGraph::new, chain insertion, parameter
         // arrays, ring storage and (later) Runtime's per-node Recorder scratch.
         let expected = if let Some(scope) = scope {
@@ -2205,11 +2757,9 @@ impl Prepared {
             let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(
                 self.rate,
                 &mut vec![],
-                &mut vec![],
+                &mut crate::dsp::filter::svf::FilterRegistryBuilder::default(),
             )?;
-            let mut chains = std::mem::take(&mut self.voice_chains).into_vec();
-            chains.push(empty);
-            self.voice_chains = chains.into_boxed_slice();
+            self.voice_chains.push_empty(empty);
             for region in &mut self.regions {
                 if region.chain.is_none()
                     && scope.is_none_or(|s| s.includes(region.bounds[0], region.bounds[1])) {
@@ -2247,7 +2797,7 @@ impl Prepared {
                 .copied()
                 .unwrap_or(index as u32 + 1);
             let group = self.region_groups.get(index).copied().flatten();
-            let chain = &self.voice_chains[region.chain.unwrap()];
+            let chain = self.voice_chains.view(region.chain.unwrap());
             let mut nodes = chain.trace_graph(&self, &mut graph, zone, group, region.bus, &initial);
             nodes.region = index;
             graph.nodes[nodes.amp].parameters = std::iter::once(
@@ -2399,5 +2949,129 @@ mod publication_tests {
         publisher.join().unwrap();
         assert!(published, "publication must not block on the audio reader");
         assert_eq!(pcm.try_head().unwrap()[0].1.frame(0), [0.5; 2]);
+    }
+}
+
+
+#[cfg(test)]
+mod logical_source_tests {
+    use super::*;
+    use crate::{ChannelCount, Limits, SourceStorage, SourceStorageFamily};
+    fn pcm(value: f32) -> Pcm { Pcm::new(48000, vec![[value, -value]; 256].into_boxed_slice()).unwrap() }
+    fn region(sample: usize) -> Region {
+        Region { sample, key_low: 60, key_high: 60, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default() }
+    }
+    fn family() -> SourceStorageFamily {
+        SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), vec![pcm(1.), pcm(2.), pcm(3.)]).unwrap()
+    }
+    #[test]
+    fn logical_source_indices_do_not_address_physical_family_packs() {
+        let family = family(); let id = family.id(); let stereo = pcm(0.25); let stereo_id = stereo.asset_id();
+        let plan = Prepared::new_sources(48000, vec![family.into(), stereo.into()], vec![region(1)], 1).unwrap();
+        assert_eq!(plan.sample_count(), 2);
+        assert_eq!(plan.pcm.len(), 4); // complete physical dependencies, a different namespace
+        assert_eq!(plan.source_storage(0).unwrap().id(), id);
+        assert!(plan.source_storage(0).unwrap().stereo().is_none());
+        assert_eq!(plan.region_asset(0).unwrap().asset_id(), stereo_id);
+        assert_eq!(plan.region_source_storage(0).unwrap().stereo().unwrap().asset_id(), stereo_id);
+        assert!(plan.source_storage(2).is_none());
+        let samples = sample_revision::SampleState::new(&plan);
+        assert!(samples.asset(&plan, 0).is_none());
+        assert_eq!(samples.asset(&plan, 1).unwrap().asset_id(), stereo_id);
+        assert!(samples.asset(&plan, 2).is_none());
+    }
+    #[test]
+    fn unused_family_does_not_change_a_legacy_stereo_region_execution() {
+        let stereo = Pcm::new(44100, (0..256).map(|i| {
+            let x = i as f32 / 1024.; [x, -x]
+        }).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+        let normal = Prepared::new(48000, vec![stereo.clone()], vec![region(0)], 1).unwrap();
+        let mixed = Prepared::new_sources(48000, vec![family().into(), stereo.into()], vec![region(1)], 1).unwrap();
+        let a = Limits::for_plan(&normal, 4, 8); let b = Limits::for_plan(&mixed, 4, 8);
+        let mut a = crate::Runtime::new(normal, a).unwrap(); let mut b = crate::Runtime::new(mixed, b).unwrap();
+        let input = crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0, channel: 0,
+            key: 60, external_id: Some(1) };
+        a.trigger(input, 60, 1.).unwrap(); let note = b.trigger(input, 60, 1.).unwrap();
+        let before = (b.family_count(), b.voice_count());
+        assert_eq!(b.start(note, 0, b.now(), 1.), Err(Error::UnsupportedSourceLayout));
+        assert_eq!((b.family_count(), b.voice_count()), before);
+        let mut x = [[0.; 2]; 300]; let mut y = x;
+        a.render(&mut x).unwrap(); b.render(&mut y).unwrap();
+        assert_eq!(x.map(|f| f.map(f32::to_bits)), y.map(|f| f.map(f32::to_bits)));
+        assert!(x.iter().flatten().any(|v| *v != 0.));
+    }
+    #[test]
+    fn unprojected_family_outlets_cannot_publish_an_old_stereo_executor() {
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        assert_eq!(plan.validate_source_ports(), Err(Error::UnsupportedSourceLayout));
+        let limits = Limits::for_plan(&plan, 4, 8);
+        assert!(matches!(crate::Runtime::new(plan, limits), Err(Error::UnsupportedSourceLayout)));
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        assert!(matches!(plan.with_voice_chains(vec![], vec![None]), Err(Error::UnsupportedSourceLayout)));
+    }
+    #[test]
+    fn wide_group_and_target_builders_retain_their_complete_source() {
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        let plan = plan.with_groups(1, vec![Some(0)]).unwrap();
+        assert_eq!(plan.group_count, 1);
+        assert_eq!(plan.region_groups[0], Some(0));
+        let plan = Prepared::new_sources(48000, vec![family().into()], vec![region(0)], 1).unwrap();
+        let plan = plan.with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
+            SampleRevisionLimits { slots: 1, resident_bytes: 4096 }).unwrap();
+        assert_eq!(plan.sample_targets[0].id, SampleTargetId(1));
+        assert!(plan.region_source_storage(plan.sample_targets[0].regions[0]).unwrap().stereo().is_none());
+        let stereo = pcm(0.25); let stereo_id = stereo.asset_id();
+        let plan = Prepared::new_sources(48000, vec![family().into(), SourceStorage::Stereo(stereo)], vec![region(1)], 1).unwrap()
+            .with_sample_targets(vec![SampleTarget { id: SampleTargetId(1), regions: vec![0].into() }],
+                SampleRevisionLimits { slots: 1, resident_bytes: 4096 }).unwrap();
+        let limits = Limits::for_plan(&plan, 4, 8); let runtime = crate::Runtime::new(plan, limits).unwrap();
+        assert_eq!(runtime.sample_target_asset(SampleTargetId(1)).unwrap().asset_id(), stereo_id);
+        assert_eq!(runtime.sample_target_source_storage(SampleTargetId(1)).unwrap().stereo().unwrap().asset_id(), stereo_id);
+    }
+}
+
+#[cfg(test)]
+mod prepared_source_owner_tests {
+    use super::*;
+    use sampler_ir::{SourceOwner as Owner,SourceOwnerId as Id,SourceOwnerKind as Kind,
+        SourceEventProcessor as Processor,SourceEventProcessorId as Event,SourceSwitch as Switch};
+    fn owner(id:u32,parent:Option<u32>,children:&[u32])->Owner {
+        Owner{id:Id::UviNode(id),parent:parent.map(Id::UviNode),kind:if parent.is_none(){Kind::Instrument}else{Kind::Layer},
+            children:children.iter().copied().map(Id::UviNode).collect(),groups:vec![],zones:vec![],predicates:vec![],
+            bypass:None,mute:None,event_processors:vec![]}
+    }
+    #[test]
+    fn source_owner_table_retains_real_ids_direct_order_all_processors_and_unimplemented_predicates() {
+        let mut root=owner(100,None,&[7,9]);
+        root.groups=vec![sampler_ir::GroupRef(1)];root.zones=vec![sampler_ir::ZoneRef(2)];
+        root.predicates=vec![sampler_ir::SourceInputPredicate::Unsupported{field:"native selector".into()}];
+        root.bypass=Some(Switch{saved:true,control:Some(sampler_ir::ControlRef(0))});
+        root.event_processors=vec![Processor{id:Event::UviNode(110),owner:root.id,ordinal:0,kind:"UnknownProcessor".into(),bypass:Switch{saved:false,control:None}},
+            Processor{id:Event::UviNode(111),owner:root.id,ordinal:1,kind:"ScriptProcessor".into(),bypass:Switch{saved:false,control:None}}];
+        let table=PreparedSourceOwners::compile(&[owner(9,Some(100),&[]),root,owner(7,Some(100),&[])],2,3,&[crate::ControlId(91)]).unwrap();
+        let root_index=table.index(Id::UviNode(100)).unwrap();let row=table.get(root_index).unwrap();
+        assert_eq!(root_index.index(),1);
+        assert_eq!(row.children.iter().map(|&id|table.get(id).unwrap().id).collect::<Vec<_>>(),[Id::UviNode(7),Id::UviNode(9)]);
+        assert_eq!(row.groups.as_ref(),[1]);assert_eq!(row.regions.as_ref(),[2]);
+        assert_eq!(row.bypass.unwrap().control,Some(crate::ControlId(91)));
+        assert!(matches!(&row.predicates[0],sampler_ir::SourceInputPredicate::Unsupported{field}if field=="native selector"));
+        let script=table.processor(Event::UviNode(111)).unwrap();
+        assert_eq!((script.owner,script.ordinal),(root_index,1));
+        assert_eq!(table.processor(Event::UviNode(110)).unwrap().kind.as_ref(),"UnknownProcessor");
+        assert!(table.memory_bytes()>=3*std::mem::size_of::<PreparedSourceOwner>());
+    }
+    #[test]
+    fn source_owner_table_rejects_dangling_duplicate_cycle_and_physical_coordinate_errors() {
+        let root=owner(1,None,&[2]);let child=owner(2,Some(1),&[]);
+        assert!(PreparedSourceOwners::compile(&[root.clone(),child.clone()],0,0,&[]).is_ok());
+        assert!(matches!(PreparedSourceOwners::compile(&[root.clone()],0,0,&[]),Err(Error::InvalidInput)));
+        assert!(matches!(PreparedSourceOwners::compile(&[root.clone(),root.clone(),child.clone()],0,0,&[]),Err(Error::InvalidInput)));
+        let mut cycle_root=root.clone();cycle_root.parent=Some(child.id);
+        let mut cycle_child=child.clone();cycle_child.children.push(root.id);
+        assert!(matches!(PreparedSourceOwners::compile(&[cycle_root,cycle_child],0,0,&[]),Err(Error::InvalidInput)));
+        let mut bad=root;bad.zones.push(sampler_ir::ZoneRef(0));
+        assert!(matches!(PreparedSourceOwners::compile(&[bad,child],0,0,&[]),Err(Error::InvalidInput)));
     }
 }
