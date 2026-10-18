@@ -30,7 +30,7 @@ ni-file = { path = "../../vendor/ni-file" }
 ncw = { path = "../../vendor/ncw" }
 dirs = "5"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10.9"
 aes = { version = "0.8", optional = true }
 
