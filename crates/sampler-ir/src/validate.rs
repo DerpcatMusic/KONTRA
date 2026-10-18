@@ -623,6 +623,14 @@ impl Instrument {
         }
         let mut recipe_members = std::collections::BTreeSet::new();
         let mut recipe_owners = std::collections::BTreeSet::new();
+        for row in &self.source_indices.processing_parameters {
+            if self.source_indices.processing.iter().filter(|recipe|recipe.owner==row.owner&&recipe.chain==Some(row.chain)).count()!=1 {
+                return Err(ValidationError::ZoneRouting {
+                    owner: "source processing recipe".into(),
+                    reason: "shared processor binding has no unique actual source recipe",
+                });
+            }
+        }
         for recipe in &self.source_indices.processing {
             let invalid = |reason| ValidationError::ZoneRouting { owner: "source processing recipe".into(), reason };
             if !recipe_owners.insert(recipe.owner)
@@ -667,6 +675,45 @@ impl Instrument {
                     (crate::SourceOwnerOutputField::Pan,crate::ControlValue::Continuous{min,max,..})=>*min>=-1.&&*max<=1.,_=>false,
                 }{return Err(invalid("scope scalar role domain differs from public field"));}
             }
+            let mut processor_parameters=std::collections::BTreeSet::new();
+            let mut processor_sources=std::collections::BTreeSet::new();
+            for binding in self.source_indices.processing_parameters.iter().filter(|row|row.owner==recipe.owner){
+                check.exists(Reference::Chain(binding.chain.0))?;check.exists(Reference::Control(binding.control.0))?;
+                if recipe.chain!=Some(binding.chain)||!processor_parameters.insert((binding.index,binding.parameter as u32))||!processor_sources.insert(binding.source_node) {
+                    return Err(invalid("shared processor parameter has a duplicate or foreign source coordinate"));
+                }
+                let chain=&self.chains[binding.chain.0];
+                let stage=chain.pre_amplitude.iter().chain(&chain.post_amplitude).nth(binding.index).ok_or_else(||invalid("shared processor original operand absent"))?;
+                if binding.parameter!=crate::ProcessorParameter::Cutoff || !matches!(stage,crate::Processor::Filter(crate::Filter{kind:crate::FilterKind::LowPass{poles:1}|crate::FilterKind::HighPass{poles:1},..})) {
+                    return Err(invalid("shared processor role differs from its actual frequency operand"));
+                }
+                if self.processor_controls.iter().filter(|row|row.chain==binding.chain&&row.index==binding.index&&row.parameter==binding.parameter&&row.control==binding.control).count()!=1 {
+                    return Err(invalid("shared processor control is not its exact original operand"));
+                }
+                if !matches!(self.controls[binding.control.0].value,crate::ControlValue::Continuous{min,max,unit:crate::ControlUnit::Hertz,..}if min>0.&&max<=20000.)
+                    ||binding.fixed_factors.iter().any(|value|matches!(value,crate::SourceFrequencyFold::MultiplyClamp(value)if !value.is_finite()||*value<=0.)) {
+                    return Err(invalid("shared frequency binding has an invalid domain or fixed-source factor"));
+                }
+                if !binding.fixed_factors.is_empty()&&self.processor_controls.iter().any(|row|row.chain==binding.chain&&row.index==binding.index&&row.parameter==binding.parameter&&row.ramp.seconds()!=0.){
+                    return Err(invalid("historical fixed Frequency clamp requires its actual zero-ramp base"));
+                }
+                if matches!(binding.law,crate::SourceProcessingParameterLaw::LegacyCutoffSemitoneMidpoint)&&!binding.fixed_factors.is_empty(){
+                    return Err(invalid("legacy cutoff law cannot claim historical UVI fixed-source folding"));
+                }
+                if let Some(compiled)=binding.compiled {
+                    if recipe.compiled!=Some(compiled.scope){return Err(invalid("shared processor compiled scope differs from actual owner"));}
+                    let scope=self.processing_scopes.get(compiled.scope).ok_or_else(||invalid("shared processor compiled scope absent"))?;
+                    match compiled.site {
+                        crate::ScopeControlSite::SignalNode(node)=>{
+                            let node=scope.signal.as_ref().and_then(|signal|signal.nodes.get(node)).ok_or_else(||invalid("shared processor emitted signal operand absent"))?;
+                            let parameter=match node {crate::ProcessingSignalNode::OnePole(filter)=>&filter.cutoff_hz,crate::ProcessingSignalNode::UviOnePole(filter)=>&filter.frequency,_=>return Err(invalid("shared processor emitted operand has wrong kind"))};
+                            if parameter.control.as_ref()!=Some(&self.controls[binding.control.0].key){return Err(invalid("shared processor emitted operand has a different control"));}
+                        },
+                        crate::ScopeControlSite::ChainPre(index)=>if scope.chain!=Some(binding.chain)||index!=binding.index{return Err(invalid("shared processor pre-chain coordinate differs"));},
+                        crate::ScopeControlSite::ChainPost(index)=>if scope.chain!=Some(binding.chain)||chain.pre_amplitude.len().checked_add(index)!=Some(binding.index){return Err(invalid("shared processor post-chain coordinate differs"));},
+                    }
+                }
+            }
             let mut owned_sources=std::collections::BTreeSet::new();
             for source in &recipe.sources {
                 check.exists(Reference::Modulator(source.0))?;
@@ -682,6 +729,12 @@ impl Instrument {
                         if !matches!(self.modulators[source.0].source,crate::ModulationSource::Lfo(_))
                             ||!(recipe.sources.contains(&source)||recipe.routes.iter().any(|route|self.routes[route.0].source==source||self.routes[route.0].scale.is_some_and(|scale|scale.source==source))){
                             return Err(invalid("scoped internal target has no actual owned LFO consumer"));
+                        }continue;
+                    },crate::Target::Processor{chain,index,parameter}=>{
+                        if self.zones.iter().any(|zone|zone.routes.contains(route)){return Err(invalid("shared processor route escapes into physical source program"));}
+                        if !self.source_indices.processing_parameters.iter().any(|row|row.owner==recipe.owner&&row.chain==chain&&row.index==index&&row.parameter==parameter)
+                            ||!matches!(self.routes[route.0].depth,crate::Depth::Pitch(_)) {
+                            return Err(invalid("scoped processor route has no exact owned parameter/law"));
                         }continue;
                     },_=>return Err(invalid("scoped program contains a non-owned output target")),
                 };

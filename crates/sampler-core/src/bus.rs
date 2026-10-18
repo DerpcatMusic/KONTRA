@@ -470,6 +470,7 @@ impl Prepared {
         self.voice_modulation.validate_provider_bindings(&self.processing_modulation,&self.region_processing)?;
         self.processing_modulation.validate_scoped_bindings(self.processing_scopes.len(),
             |scope,field|self.has_processing_output_role(scope,field),
+            |scope,binding|self.processing_scopes.get(scope).and_then(|scope|scope.parameters.get(binding)).is_some(),
             |scope|self.processing_scopes[scope].modulation_gate)
 
     }

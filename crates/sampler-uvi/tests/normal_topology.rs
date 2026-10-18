@@ -258,3 +258,46 @@ fn binding148_shared_filter_case(stream:bool){
 }
 #[test]fn binding148_historical_frequency_connection_reaches_shared_core_filter_full(){binding148_shared_filter_case(false);}
 #[test]fn binding148_historical_frequency_connection_reaches_shared_core_filter_streamed(){binding148_shared_filter_case(true);}
+
+// The explicit caller port below declares a Core graph; it does not activate
+// any currently unqualified native Frequency attachment/cadence contract.
+fn binding148_wide_wav(samples:&[[i16;2]])->Vec<u8>{
+    let bytes=u32::try_from(samples.len()*12).unwrap();let mut out=b"RIFF".to_vec();out.extend((36+bytes).to_le_bytes());out.extend(b"WAVEfmt ");out.extend(16u32.to_le_bytes());out.extend(1u16.to_le_bytes());out.extend(6u16.to_le_bytes());out.extend(RATE.to_le_bytes());out.extend((RATE*12).to_le_bytes());out.extend(12u16.to_le_bytes());out.extend(16u16.to_le_bytes());out.extend(b"data");out.extend(bytes.to_le_bytes());
+    for &[l,r]in samples{for value in [l,r,l/2,r/2,l/4,r/4]{out.extend(value.to_le_bytes());}}out
+}
+fn binding148_wide_paths(f:&Fixture)->(PathBuf,PathBuf){
+    let(target,_,_)=binding148_paths(f);
+    // Use the actual authored source names from the real target file, not a
+    // decoder shortcut. Rewrite each ordinary WAV as six real PCM channels.
+    let text=std::fs::read_to_string(&target).unwrap();let document=roxmltree::Document::parse(&text).unwrap();
+    for player in document.descendants().filter(|n|n.has_tag_name("SamplePlayer")){
+        let path=f.0.join(player.attribute("SamplePath").unwrap());let bytes=std::fs::read(&path).unwrap();
+        let stereo:Vec<_>=bytes[44..].chunks_exact(4).map(|s|[i16::from_le_bytes([s[0],s[1]]),i16::from_le_bytes([s[2],s[3]])]).collect();
+        std::fs::write(path,binding148_wide_wav(&stereo)).unwrap();
+    }
+    // Read literal baseline source residuals rather than target renderer output.
+    let a:Vec<_>=(0..FRAMES).map(|i|[if i%53<26{512}else{2048},if i%79<39{768}else{2304}]).collect();
+    let residual:Vec<_>=a.iter().map(|v|[v[0]*5/4,v[1]*5/4]).collect();
+    let reference=f.program("binding148-wide-reference",&[("binding148-wide-ref",residual,false)],1.,false,NONLINEAR);
+    (target,reference)
+}
+fn binding148_explicit_wide_case(stream:bool){
+    let f=Fixture::new();let(target,reference)=binding148_wide_paths(&f);
+    let mut translated=sampler_uvi::translate_path(&target).unwrap();
+    translated.instrument.source_indices.processing_ports=translated.instrument.source_indices.processing.iter().map(|recipe|sampler_ir::SourceProcessingPort{owner:recipe.owner,conversion:sampler_ir::ChannelMatrix{input:sampler_ir::SignalLayout{channels:6},output:sampler_ir::SignalLayout{channels:2},cells:vec![1.,0.,0.,0.,1.,0.,0.,1.,0.,0.,0.,1.],arithmetic:sampler_ir::MatrixArithmetic::SeparateMulAddF32}}).collect();
+    let (loaded,cache,keep,horizon)=if stream{let s=sampler_uvi::assemble_translated_streamed(translated,RATE,&Default::default()).unwrap();let h=u32::try_from(s.report.head_frames.max(sampler_core::PAGE_FRAMES)+127).unwrap();(s.loaded,Some(s.cache),Some((s.streamer,s.assets)),Some(h))}else{(sampler_uvi::assemble_translated(translated,RATE).unwrap(),None,None,None)};
+    let limits=Limits::for_plan(&loaded.plan,8,16);let mut rt=Runtime::new(loaded.plan,limits).unwrap();if let Some(cache)=cache{rt=rt.with_stream_cache(cache);rt.set_stream_horizon(horizon.unwrap()).unwrap();rt.set_offline(true);}
+    let note=rt.trigger(input(),60,0.75).unwrap();let mut actual=Session{rt,ir:loaded.instrument,note,_keep:keep,stream};let mut reference=Session::new(&reference,stream);
+    compare(&actual.render(4096),&reference.render(4096));assert_eq!((actual.rt.voice_count(),actual.rt.processing_owner_count()),(2,1));
+    let binding=&actual.ir.source_indices.processing_parameters[0];assert!(matches!(binding.compiled.unwrap().site,sampler_ir::ScopeControlSite::SignalNode(_)));
+    actual.close();reference.close();
+}
+#[test]fn binding148_explicit_six_input_core_frequency_full(){binding148_explicit_wide_case(false);}
+#[test]fn binding148_explicit_six_input_core_frequency_streamed(){binding148_explicit_wide_case(true);}
+#[test]
+fn binding148_native_frequency_attachment_is_not_activated_by_historical_control_metadata(){
+    let f=Fixture::new();let(target,_)=binding148_wide_paths(&f);let mut translated=sampler_uvi::translate_path(&target).unwrap();
+    for profile in &mut translated.instrument.source_indices.uvi_native_processing{profile.requested=Some(sampler_ir::UviNativeLayout::Code2);}
+    let error=sampler_uvi::assemble_translated(translated,RATE).err().expect("unqualified native Frequency must refuse before Runtime").to_string();
+    assert!(error.contains("native Frequency connection attachment and typed parameter cadence are unqualified"),"{error}");
+}

@@ -255,6 +255,10 @@ pub struct SourceIndices {
     /// XML/container translation; the normal loader binds actual source ports.
     #[cfg_attr(feature = "cache", serde(default))]
     pub processing: Vec<SourceProcessingRecipe>,
+    /// Exact original processor operands on a real per-activation owner. These
+    /// are not output Gain/Pan roles or a cache of current parameter values.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_parameters: Vec<SourceProcessingParameter>,
     /// Full authored matrices, before actual source geometry is known. These
     /// cells are not an early decoder fold or a guessed two-channel graph.
     #[cfg_attr(feature = "cache", serde(default))]
@@ -1166,6 +1170,14 @@ impl Instrument {
             });
         }
         self.source_indices.processing.retain(|recipe| !recipe.members.is_empty());
+        self.source_indices.processing_parameters.retain_mut(|parameter| {
+            if !self.source_indices.processing.iter().any(|recipe|recipe.owner==parameter.owner&&recipe.chain==Some(parameter.chain)){return false;}
+            if let Some(compiled)=&mut parameter.compiled {
+                match processing_remap.get(compiled.scope).copied().unwrap_or(Some(compiled.scope)) {
+                    Some(next)=>compiled.scope=next,None=>parameter.compiled=None,
+                }
+            }true
+        });
         for profile in &mut self.source_indices.uvi_native_processing {
             profile.members=profile.members.iter().filter_map(|(zone,input)|remap.get(zone.0).copied().unwrap_or(Some(*zone)).map(|zone|(zone,*input))).collect();
         }
@@ -2101,6 +2113,42 @@ pub struct SourceProcessingRecipe {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct SourceScopeGate {pub source:ModulatorRef,pub route:RouteRef,pub velocity:VelocityResponse}
+
+/// A separately named projection law. Historical UVI import behavior is not
+/// evidence of the current native Frequency connection/cadence implementation.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceProcessingParameterLaw {
+    /// Existing ordered per-route midpoint semitone sum -> exp2(sum/12).
+    LegacyCutoffSemitoneMidpoint,
+    /// Historical Freq connection: depth carries 12*log2(1000)*Ratio.
+    /// Native dynamic attachment remains separately unqualified.
+    HistoricalUviFrequencyThreeDecadeCore,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingParameter {
+    pub owner: SourceOwnerId,
+    /// Original actual source processor node, not a VM or runtime slot.
+    pub source_node: u32,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub parameter: ProcessorParameter,
+    pub control: ControlRef,
+    pub law: SourceProcessingParameterLaw,
+    /// Ordered accepted fixed-source multipliers, each followed by the
+    /// historical20..20000Hz clamp BEFORE live connection modulation.
+    pub fixed_factors: Vec<SourceFrequencyFold>,
+    pub compiled: Option<SourceProcessingParameterSite>,
+}
+/// Fixed-source historical Freq operation. Under/overflow of the positive
+/// multiplier becomes a typed clamp, never a nonfinite retained value.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SourceFrequencyFold { MultiplyClamp(f64), LowerClamp, UpperClamp }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceProcessingParameterSite { pub scope: usize, pub site: ScopeControlSite }
 
 /// The typed operand site within one real per-activation owner.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

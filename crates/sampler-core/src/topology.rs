@@ -29,6 +29,17 @@ pub struct ProcessingOwnerSnapshot {
     pub tail_remaining: Option<u32>,
 }
 
+/// Immutable exact operand metadata. Current values stay on the generation's
+/// existing ControlRamp and SAME owner VoiceModState; no parameter value bank.
+pub(crate) struct CompiledProcessingParameter {
+    pub definition: sampler_ir::SourceProcessingParameter,
+    pub site: crate::ScopeControlSite,
+    pub lane: usize,
+    pub control: crate::ControlId,
+    /// Original control's authored smoothing, joined offaudio to this operand.
+    pub ramp_frames:u32,
+    pub routes: Box<[usize]>,
+}
 pub(super) struct PreparedScope {
     /// The canonical prepared owner table is shared with event dispatch.
     /// None is an explicit hand-authored generic scope, never a guessed source ID.
@@ -41,6 +52,8 @@ pub(super) struct PreparedScope {
     pub members: Box<[usize]>,
     pub signal: Option<sampler_ir::ProcessingSignal>,
     pub modulation_gate:Option<ProcessingModulationGate>,
+    pub parameters: Box<[CompiledProcessingParameter]>,
+    pub parameter_preparation_bytes: usize,
 }
 
 /// Admission freezes only the actual onset point; forecasts read current
@@ -86,6 +99,12 @@ impl Prepared {
     pub fn with_processing_modulation_gates(mut self,programs:Vec<crate::ModProgram>,scopes:Vec<Option<usize>>,gates:Vec<Option<ProcessingModulationGate>>,max_state_bytes:usize)->Result<Self,Error>{
         if gates.len()!=scopes.len(){return Err(Error::InvalidInput);}
         if scopes.len()!=self.processing_scopes.len()||programs.len()>scopes.len()|| (0..programs.len()).any(|program|!scopes.contains(&Some(program))){return Err(Error::InvalidInput);}
+        // Parameter rows need the actual owner projector even when their only
+        // work is an ordered fixed-source fold. Never publish a missing map
+        // and hope the audio path supplies an empty program later.
+        if self.processing_scopes.iter().zip(&scopes).any(|(scope,program)|!scope.parameters.is_empty()&&program.is_none()){
+            return Err(Error::InvalidInput);
+        }
         for (scope,binding) in scopes.iter().enumerate(){
             let Some(program)=binding else{continue;};
             let program=programs.get(*program).ok_or(Error::InvalidInput)?;
@@ -94,6 +113,9 @@ impl Prepared {
                     Some(crate::voice_mod::CompiledTarget::Pan)=>crate::SourceOwnerControl::Pan,
                     Some(crate::voice_mod::CompiledTarget::Attenuate|crate::voice_mod::CompiledTarget::Decibels)=>crate::SourceOwnerControl::Gain,
                     Some(crate::voice_mod::CompiledTarget::SourcePhase(_)|crate::voice_mod::CompiledTarget::SourceRate(_))=>continue,
+                    Some(crate::voice_mod::CompiledTarget::ProcessingParameter{scope:actual,binding})=>{
+                        if actual as usize!=scope||self.processing_scopes[scope].parameters.get(binding as usize).is_none(){return Err(Error::InvalidInput);}continue;
+                    },
                     _=>return Err(Error::InvalidInput),
                 };
                 if !self.has_processing_output_role(scope,field){return Err(Error::InvalidInput);}
@@ -109,20 +131,93 @@ impl Prepared {
                 ||program.controls.iter().any(|(row,_)|*row==gate.route)
                 ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.){return Err(Error::InvalidInput);}
         }
-        let preparation_bytes=crate::voice_mod::VoiceModulation::scoped_preparation_bytes(&programs,programs.capacity(),&scopes,scopes.capacity())?
+        let parameter_bytes=self.processing_parameter_preparation_bytes(&programs,&scopes)?;
+        let mut preparation_bytes=parameter_bytes.checked_add(crate::voice_mod::VoiceModulation::scoped_preparation_bytes(&programs,programs.capacity(),&scopes,scopes.capacity())?).ok_or(Error::Capacity)?
             .checked_add(std::alloc::Layout::array::<Option<ProcessingModulationGate>>(gates.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
         if preparation_bytes>max_state_bytes{return Err(Error::Capacity);}
+        for(scope,program)in scopes.iter().enumerate(){
+            let rows=&mut self.processing_scopes[scope].parameters;
+            let routes=programs.get(program.unwrap_or(usize::MAX)).map_or(&[][..],|p|&p.routes);
+            let mut counts=Vec::new();counts.try_reserve_exact(rows.len()).map_err(|_|Error::Capacity)?;counts.resize(rows.len(),0usize);
+            let count_spare=std::alloc::Layout::array::<usize>(counts.capacity()-counts.len()).map_err(|_|Error::Capacity)?.size();
+            preparation_bytes=preparation_bytes.checked_add(count_spare).ok_or(Error::Capacity)?;
+            if preparation_bytes>max_state_bytes{return Err(Error::Capacity);}
+            for route in routes {if let Some(crate::voice_mod::CompiledTarget::ProcessingParameter{scope:actual,binding})=route.target.compiled(){
+                if actual as usize!=scope{return Err(Error::InvalidInput);}
+                let count=counts.get_mut(binding as usize).ok_or(Error::InvalidInput)?;*count=count.checked_add(1).ok_or(Error::Capacity)?;
+            }}
+            let mut indices=Vec::new();indices.try_reserve_exact(rows.len()).map_err(|_|Error::Capacity)?;
+            let builder_spare=std::alloc::Layout::array::<Vec<usize>>(indices.capacity()-rows.len()).map_err(|_|Error::Capacity)?.size();
+            preparation_bytes=preparation_bytes.checked_add(builder_spare).ok_or(Error::Capacity)?;
+            if preparation_bytes>max_state_bytes{return Err(Error::Capacity);}
+            for count in counts {let mut row=Vec::new();row.try_reserve_exact(count).map_err(|_|Error::Capacity)?;
+                // Reserve/box may coexist. Count observed spare capacity too;
+                // allocator metadata/RSS is not a logical payload certificate.
+                let spare=row.capacity().checked_sub(count).ok_or(Error::Capacity)?.checked_mul(2).ok_or(Error::Capacity)?;
+                let bytes=std::alloc::Layout::array::<usize>(spare).map_err(|_|Error::Capacity)?.size();
+                preparation_bytes=preparation_bytes.checked_add(bytes).ok_or(Error::Capacity)?;
+                if preparation_bytes>max_state_bytes{return Err(Error::Capacity);}indices.push(row);
+            }
+            for(index,route)in routes.iter().enumerate(){if let Some(crate::voice_mod::CompiledTarget::ProcessingParameter{binding,..})=route.target.compiled(){indices[binding as usize].push(index);}}
+            for(row,routes)in rows.iter_mut().zip(indices){row.routes=routes.into_boxed_slice();}
+        }
         // This builder owns an unpublished candidate. Retire its previous
         // compiled program before constructing replacement prepared arrays;
         // errors still consume the candidate, never mutate a Runtime.
         self.processing_modulation=Default::default();
         let ranges=vec![0;scopes.len()];
         let modulation=crate::voice_mod::VoiceModulation::new_resolved(programs,scopes,ranges,Vec::new(),|_|None,|id|self.real_control(id))?;
+        for(scope,definition)in self.processing_scopes.iter().enumerate(){
+            if !definition.parameters.is_empty()&&modulation.program(scope).is_none(){return Err(Error::InvalidInput);}
+        }
         let minimum=crate::voice_mod::VoiceModState::checked_storage_bytes(modulation.shape(),1,self.processing_scopes.len())?;
         if minimum>max_state_bytes.checked_sub(preparation_bytes).ok_or(Error::Capacity)?{return Err(Error::Capacity);}
         self.voice_modulation.validate_provider_bindings(&modulation,&self.region_processing)?;
         for (scope,gate)in self.processing_scopes.iter_mut().zip(gates){scope.modulation_gate=gate;}
         self.processing_modulation=modulation;self.processing_modulation_limit=max_state_bytes.checked_sub(preparation_bytes).ok_or(Error::Capacity)?;Ok(self)
+    }
+
+    pub(crate) fn processing_parameter_lane(&self,scope:usize,site:crate::ScopeControlSite,role:sampler_ir::ProcessorParameter)->Result<usize,Error>{
+        let definition=self.processing_scopes.get(scope).ok_or(Error::InvalidInput)?;
+        match site {
+            crate::ScopeControlSite::SignalNode(index)=>{
+                let signal=self.processing_signals.get(scope).and_then(Option::as_ref).ok_or(Error::InvalidInput)?;
+                let Some(signal::Node::Stage(stage))=signal.nodes.get(index)else{return Err(Error::InvalidInput);};
+                stage.processor_parameter_lane(role).ok_or(Error::InvalidInput)
+            },
+            crate::ScopeControlSite::ChainPre(_)|crate::ScopeControlSite::ChainPost(_)=>{
+                self.voice_chains.view(definition.chain.ok_or(Error::InvalidInput)?).processor_parameter_lane(site,role,&self.filters).ok_or(Error::InvalidInput)
+            },
+        }
+    }
+    pub(crate) fn validate_processing_parameters(&self)->Result<(),Error>{
+        for(scope,definition)in self.processing_scopes.iter().enumerate(){
+            for(index,row)in definition.parameters.iter().enumerate(){
+                let source_owner=definition.source_owner.and_then(|owner|self.source_owners().get(owner)).ok_or(Error::InvalidInput)?;
+                if source_owner.id!=row.definition.owner||row.definition.compiled.is_none_or(|site|site.scope!=scope){return Err(Error::InvalidInput);}
+                let lane=self.processing_parameter_lane(scope,row.site,row.definition.parameter)?;
+                let operand=self.dsp_bindings.get(lane).ok_or(Error::InvalidInput)?;
+                let control=row.control;
+                if lane!=row.lane||operand.control!=control||operand.ramp_frames!=row.ramp_frames||definition.parameters[..index].iter().any(|old|old.lane==lane){return Err(Error::InvalidInput);}
+                let domain=self.controls[self.control_index(control)?].domain;
+                if !matches!(domain,crate::ControlDomain::Real{min,max}if min>0.&&max<=20000.)||(!row.definition.fixed_factors.is_empty()&&operand.ramp_frames!=0){return Err(Error::InvalidInput);}
+            }
+        }Ok(())
+    }
+    pub(crate) fn processing_parameter_preparation_bytes(&self,programs:&[crate::ModProgram],scopes:&[Option<usize>])->Result<usize,Error>{
+        fn add<T>(total:&mut usize,count:usize)->Result<(),Error>{*total=total.checked_add(std::alloc::Layout::array::<T>(count).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;Ok(())}
+        let mut bytes=0usize;
+        for(scope,definition)in self.processing_scopes.iter().enumerate(){
+            bytes=bytes.checked_add(definition.parameter_preparation_bytes).ok_or(Error::Capacity)?;
+            // Count table, per-binding Vec builders and boxed-conversion overlap.
+            add::<usize>(&mut bytes,definition.parameters.len())?;
+            add::<Vec<usize>>(&mut bytes,definition.parameters.len().checked_mul(2).ok_or(Error::Capacity)?)?;
+            for row in &definition.parameters{add::<usize>(&mut bytes,row.routes.len())?;}
+            if let Some(program)=scopes.get(scope).copied().flatten(){
+                let program=programs.get(program).ok_or(Error::InvalidInput)?;
+                add::<usize>(&mut bytes,program.routes.len().checked_mul(2).ok_or(Error::Capacity)?)?;
+            }
+        }Ok(bytes)
     }
 
     pub fn processing_scope_count(&self) -> usize {
@@ -439,6 +534,8 @@ impl Runtime {
             let mut parameters=generation.dsp.modulated_parameters.claim(0);
             parameters.copy_from_slice(&generation.dsp.parameters);
             generation.prepared.project_processing_outputs(owner.template,ramp,&mut parameters);
+            generation.dsp.owner_modulation.project_processing_parameters(&generation.prepared.processing_modulation,
+                id.0.index,owner.template,&generation.prepared.processing_scopes[owner.template].parameters,ramp.begin,ramp.end,self.rate,&mut parameters)?;
         }
         Ok(())
     }

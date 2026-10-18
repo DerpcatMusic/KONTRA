@@ -298,10 +298,16 @@ impl Stage {
                 let end = history.checked_add(channels).ok_or(Error::Capacity)?;
                 let state = histories.get_mut(history..end).ok_or(Error::InvalidInput)?;
                 let factor = cutoff.factor(parameters, at, expression);
+                let scoped=cutoff.base.scoped_cutoff_factor(parameters).unwrap_or(1.);
+                // Match the legacy physical Cutoff consumer at this ACTUAL
+                // chunk, not the owner's forecast CELL endpoint. Neutral
+                // routes keep the original per-frame base trajectory.
+                let midpoint=if scoped!=1.{Some((cutoff.base.scoped_cutoff_base(parameters,at+frames as u64/2,None)*factor*scoped)
+                    .clamp(20.,20000.0_f64.min(f64::from(rate)*0.49)))}else{None};
                 let mut previous = None;
                 let mut b = 0.;
                 for frame in 0..frames {
-                    let hz = cutoff.base.value(parameters, at + frame as u64, None) * factor;
+                    let hz = midpoint.unwrap_or_else(||cutoff.base.value(parameters, at + frame as u64, None) * factor);
                     if previous != Some(hz) {
                         b = core_one_pole_coefficient(f64::from(rate), hz);
                         previous = Some(hz);
@@ -355,6 +361,12 @@ impl Stage {
             if !note.is_finite() || !(0. ..128.).contains(&note){return Err(Error::InvalidInput);}
             *histories.get_mut(history+4).ok_or(Error::InvalidInput)?=f64::from(note as f32);
         }Ok(())
+    }
+    /// Only the exact semantic Core OnePole operand is admitted here. Current
+    /// native Frequency attachment/cadence is NOT inferred from this base lane.
+    pub(crate) fn processor_parameter_lane(&self,role:ir::ProcessorParameter)->Option<usize>{
+        let base=match (self,role){(Self::OnePole{cutoff,..},ir::ProcessorParameter::Cutoff)=>cutoff.base,_=>return None};
+        if let PreparedParameter::Control(lane)=base{Some(lane)}else{None}
     }
     pub(crate) fn scope_control_lane(&self,field:crate::SourceOwnerControl)->Option<usize>{
         if field==crate::SourceOwnerControl::Pan && !matches!(self,Self::Pan{expression:true,..}){return None;}

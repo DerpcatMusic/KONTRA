@@ -746,7 +746,7 @@ fn three_band_shelves_uniform_gain_is_a_level_change() {
 }
 
 #[test]
-fn one_pole_frequency_connections_keep_the_native_three_decade_law() {
+fn one_pole_frequency_connections_keep_the_historical_core_three_decade_law() {
     let dir = std::env::temp_dir().join(format!("sampler-uvi-cutoff-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("samples")).unwrap();
     std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
@@ -770,11 +770,13 @@ fn one_pole_frequency_connections_keep_the_native_three_decade_law() {
         panic!("cutoff depth must be exponential");
     };
     assert!((depth.semitones() - 6.0 * 1000f64.log2()).abs() < 1e-10);
-    assert!(
-        ir.zones
-            .iter()
-            .any(|zone| zone.routes.contains(&sampler_ir::RouteRef(index)))
-    );
+    let reference=sampler_ir::RouteRef(index);
+    let owners:Vec<_>=ir.source_indices.processing.iter().filter(|recipe|recipe.routes.contains(&reference)).collect();
+    assert_eq!(owners.len(),1,"actual shared Frequency route belongs to one source processing owner");
+    assert_eq!(owners[0].routes.iter().filter(|&&r|r==reference).count(),1);
+    assert!(ir.zones.iter().all(|zone|!zone.routes.contains(&reference)),"physical players must not reevaluate the shared filter connection");
+    assert!(ir.source_indices.processing_parameters.iter().any(|binding|binding.owner==owners[0].owner
+        &&binding.law==sampler_ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

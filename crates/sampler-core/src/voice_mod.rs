@@ -133,6 +133,7 @@ pub(crate) enum CompiledTarget {
     Resonance,
     /// Actual compiled filter index, preserving the addressed source stage.
     ProcessorCutoff(u32),
+    ProcessingParameter { scope: u32, binding: u32 },
     ProcessorResonance(u32),
     /// Add normalized depth to the native filter's saved cutoff knob.
     ProcessorNativeCutoff(u32),
@@ -160,6 +161,9 @@ pub type ModTarget = crate::ParameterAddress;
 
 impl crate::ParameterAddress {
     pub(crate) fn compiled(self) -> Option<CompiledTarget> {
+        if let crate::ParameterScope::ProcessingScope(scope)=self.scope {
+            return (self.parameter==0).then_some(CompiledTarget::ProcessingParameter{scope,binding:self.node});
+        }
         if self.scope != crate::ParameterScope::Voice {
             return None;
         }
@@ -474,6 +478,7 @@ impl VoiceModulation {
     /// the SAME actual scope home for every compiled scalar output.
     pub(crate) fn validate_scoped_bindings(&self,scopes:usize,
         mut home:impl FnMut(usize,crate::SourceOwnerControl)->bool,
+        mut parameter:impl FnMut(usize,usize)->bool,
         mut gate:impl FnMut(usize)->Option<crate::ProcessingModulationGate>)->Result<(),Error>{
         if (!self.programs.is_empty()||!self.regions.is_empty())&&self.regions.len()!=scopes{return Err(Error::InvalidInput);}
         for scope in 0..scopes {
@@ -484,6 +489,9 @@ impl VoiceModulation {
                         CompiledTarget::Attenuate|CompiledTarget::Decibels=>crate::SourceOwnerControl::Gain,
                         CompiledTarget::Pan=>crate::SourceOwnerControl::Pan,
                         CompiledTarget::SourceRate(_)|CompiledTarget::SourcePhase(_)=>continue,
+                        CompiledTarget::ProcessingParameter{scope:actual,binding}=>{
+                            if *actual as usize!=scope||!parameter(scope,*binding as usize){return Err(Error::InvalidInput);}continue;
+                        },
                         _=>return Err(Error::InvalidInput),
                     };
                     if !home(scope,field){return Err(Error::InvalidInput);}
@@ -1642,6 +1650,36 @@ impl VoiceModState {
         true
     }
 
+    pub(crate) fn project_processing_parameters(
+        &self, modulation:&VoiceModulation, owner:usize, scope:usize,
+        bindings:&[crate::topology::CompiledProcessingParameter], begin:u64,end:u64,rate:u32,
+        parameters:&mut[crate::dsp::control::ControlRamp],
+    )->Result<(),Error>{
+        if bindings.is_empty(){return Ok(());}
+        let program=self.program(owner).and_then(|p|modulation.programs.get(p as usize)).ok_or(Error::InvalidInput)?;
+        let offset=owner.checked_mul(self.routes).ok_or(Error::Capacity)?;
+        // Preflight every actual target/operand before mutating transient scratch.
+        for(binding,row)in bindings.iter().enumerate(){
+            if row.lane>=parameters.len(){return Err(Error::InvalidInput);}
+            for &route in &row.routes {
+                if !matches!(program.targets.get(route),Some(CompiledTarget::ProcessingParameter{scope:actual,binding:index})if *actual as usize==scope&&*index as usize==binding){return Err(Error::InvalidInput);}
+                if offset.checked_add(route).is_none_or(|index|index>=self.processor_values.len()||index>=self.previous_processor_values.len()){return Err(Error::InvalidInput);}
+            }
+        }
+        let projection=|row:&crate::topology::CompiledProcessingParameter|{
+            let mut semitones=0.;
+            for &route in &row.routes {semitones+=(self.previous_processor_values[offset+route]+self.processor_values[offset+route])*0.5;}
+            parameters[row.lane].project_processor((semitones/12.).exp2(),&row.definition.fixed_factors,row.definition.law,begin,end,rate)
+        };
+        // The first pass validates all values before ANY scratch publication.
+        for row in bindings {let _=projection(row)?;}
+        for row in bindings {
+            let mut semitones=0.;for &route in &row.routes{semitones+=(self.previous_processor_values[offset+route]+self.processor_values[offset+route])*0.5;}
+            parameters[row.lane]=parameters[row.lane].project_processor((semitones/12.).exp2(),&row.definition.fixed_factors,row.definition.law,begin,end,rate)?;
+        }
+        Ok(())
+    }
+
     pub fn start(
         &mut self, modulation: &VoiceModulation, voice: usize, region: usize,
         inputs: &Inputs<'_>, clock: Clock, seed: u64,
@@ -2039,7 +2077,8 @@ impl VoiceModState {
                 | CompiledTarget::SourcePhase(_)
                 | CompiledTarget::SourceRate(_) => {}
                 CompiledTarget::LoopStart | CompiledTarget::LoopLength => {}
-                CompiledTarget::ProcessorCutoff(_)
+                CompiledTarget::ProcessingParameter { .. }
+                | CompiledTarget::ProcessorCutoff(_)
                 | CompiledTarget::ProcessorResonance(_)
                 | CompiledTarget::ProcessorNativeCutoff(_)
                 | CompiledTarget::ProcessorNativeResonance(_)
