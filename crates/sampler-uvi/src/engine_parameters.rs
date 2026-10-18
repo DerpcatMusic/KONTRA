@@ -204,6 +204,10 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
         .filter(|p| !node_lanes(node, p.name).is_empty())
         .map(|p| p.name)
         .collect();
+    // Tracking no longer folds the native wide owner's base Freq. The normal
+    // profile can bind its exact control after decoded geometry; an unbound
+    // legacy shape still refuses at the actual Core command/home check.
+    if kind=="OnePole" && !out.contains(&"Freq"){out.push("Freq");}
     if lane_family(node) {
         // Any field: `retune` decides whether its write is lanes only.
         for name in parameters::definitions(kind).iter().map(|p| p.name) {
@@ -615,6 +619,8 @@ pub(crate) fn scope_gain_key(node: usize) -> String {
     format!("uvi:scope-gain:{node}")
 }
 pub(crate) fn scope_pan_key(node:usize)->String {format!("uvi:scope-pan:{node}")}
+pub(crate) fn scope_mute_key(node:usize)->String {format!("uvi:scope-output-mute:{node}")}
+pub(crate) fn scope_midi_mute_key(node:usize)->String {format!("uvi:scope-midi-mute:{node}")}
 pub(crate) fn scope_pan_control(node:usize)->Result<sampler_core::ControlId,sampler_core::Error> {
     scope_control(node,b"uvi:scope-pan:")
 }

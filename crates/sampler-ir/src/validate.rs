@@ -649,6 +649,54 @@ impl Instrument {
                     return Err(invalid("source zone has multiple source processing recipes"));
                 }
             }
+            let mut roles=std::collections::BTreeSet::new();
+            for role in &recipe.parameter_roles {
+                check.exists(Reference::Control(role.control.0))?;
+                if !roles.insert(role.field){return Err(invalid("duplicate scoped scalar field role"));}
+                let chain_id=recipe.chain.ok_or_else(||invalid("scope scalar has no source chain"))?;
+                check.exists(Reference::Chain(chain_id.0))?;let chain=&self.chains[chain_id.0];
+                let stage=chain.pre_amplitude.iter().chain(&chain.post_amplitude).nth(role.chain_index).ok_or_else(||invalid("scope scalar original coordinate absent"))?;
+                let parameter=match(role.field,stage){
+                    (crate::SourceOwnerOutputField::Gain,crate::Processor::Gain(_))=>crate::ProcessorParameter::Gain,
+                    (crate::SourceOwnerOutputField::Pan,crate::Processor::ExpressionPan(_))=>crate::ProcessorParameter::Pan,_=>return Err(invalid("scope scalar field differs from actual source operand")),
+                };
+                if self.processor_controls.iter().filter(|b|b.chain==chain_id&&b.index==role.chain_index&&b.parameter==parameter&&b.control==role.control).count()!=1{return Err(invalid("scope scalar control is not bound to its exact source operand"));}
+                let domain=&self.controls[role.control.0].value;
+                if !match(role.field,domain){
+                    (crate::SourceOwnerOutputField::Gain,crate::ControlValue::Continuous{min,max,..})=>*min>=0.&&*max<=f64::from(f32::MAX),
+                    (crate::SourceOwnerOutputField::Pan,crate::ControlValue::Continuous{min,max,..})=>*min>=-1.&&*max<=1.,_=>false,
+                }{return Err(invalid("scope scalar role domain differs from public field"));}
+            }
+            let mut owned_sources=std::collections::BTreeSet::new();
+            for source in &recipe.sources {
+                check.exists(Reference::Modulator(source.0))?;
+                if !owned_sources.insert(source.0){return Err(invalid("duplicate actual processing source"));}
+            }
+            for route in &recipe.routes {
+                check.exists(Reference::Route(route.0))?;
+                let field=match self.routes[route.0].target{
+                    crate::Target::Amplitude=>crate::SourceOwnerOutputField::Gain,
+                    crate::Target::Pan=>crate::SourceOwnerOutputField::Pan,
+                    crate::Target::SourceRate(source)|crate::Target::SourcePhase(source)=>{
+                        check.exists(Reference::Modulator(source.0))?;
+                        if !matches!(self.modulators[source.0].source,crate::ModulationSource::Lfo(_))
+                            ||!(recipe.sources.contains(&source)||recipe.routes.iter().any(|route|self.routes[route.0].source==source||self.routes[route.0].scale.is_some_and(|scale|scale.source==source))){
+                            return Err(invalid("scoped internal target has no actual owned LFO consumer"));
+                        }continue;
+                    },_=>return Err(invalid("scoped program contains a non-owned output target")),
+                };
+                if !roles.contains(&field){return Err(invalid("scoped route has no declared scalar home"));}
+            }
+            if let Some(gate)=recipe.source_gate {
+                check.exists(Reference::Modulator(gate.source.0))?;check.exists(Reference::Route(gate.route.0))?;
+                let route=&self.routes[gate.route.0];
+                if !recipe.routes.contains(&gate.route)||route.source!=gate.source||route.target!=crate::Target::Amplitude
+                    ||route.depth!=crate::Depth::Normalized(1.)||route.invert||route.shape.is_some()||route.scale.is_some()||route.smoothing!=crate::Time::ZERO
+                    ||!matches!(self.modulators[gate.source.0].source,crate::ModulationSource::Envelope(_))
+                    ||self.modulators[gate.source.0].scope!=crate::Scope::Voice
+                    ||self.source_indices.route_controls.iter().any(|row|row.0==gate.route)
+                    ||matches!(gate.velocity,crate::VelocityResponse::Power(p)if !p.is_finite()||p<=0.){return Err(invalid("source gate requires exact actual plain amplitude source/route"));}
+            }
             if let Some(chain) = recipe.chain { check.exists(Reference::Chain(chain.0))?; }
             if let Some(amplitude) = recipe.amplitude { check.exists(Reference::Modulator(amplitude.0))?; }
             if let Some(bus) = recipe.output { check.exists(Reference::Bus(bus.0))?; }
@@ -660,6 +708,19 @@ impl Instrument {
                     || scope.amplitude != recipe.amplitude || scope.output != recipe.output {
                     return Err(invalid("source recipe differs from actual compiled scope"));
                 }
+            }
+        }
+        let mut native_owners=std::collections::BTreeSet::new();
+        for profile in &self.source_indices.uvi_native_processing {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:"native UVI processing profile".into(),reason};
+            let recipe=self.source_indices.processing.iter().find(|recipe|recipe.owner==profile.owner).ok_or_else(||invalid("native profile has no actual recipe"))?;
+            if !native_owners.insert(profile.owner)||profile.members.iter().map(|row|row.0).collect::<Vec<_>>()!=recipe.members{return Err(invalid("native profile member identity/order differs from actual recipe"));}
+            let mut sites=std::collections::BTreeSet::new();
+            for site in &profile.one_poles {
+                if !sites.insert((site.chain.0,site.index)){return Err(invalid("duplicate native OnePole source site"));}
+                check.exists(Reference::Chain(site.chain.0))?;
+                if Some(site.chain)!=recipe.chain || !site.frequency.is_finite()||site.frequency<=0.||site.frequency>f64::from(f32::MAX)||!site.tracking.is_finite()||!(0. ..=1.).contains(&site.tracking)
+                    || !matches!(self.chains[site.chain.0].pre_amplitude.get(site.index),Some(crate::Processor::Filter(crate::Filter{kind:crate::FilterKind::LowPass{poles:1}|crate::FilterKind::HighPass{poles:1},..}))){return Err(invalid("native OnePole site has no exact retained processor or valid fields"));}
             }
         }
         let mut source_matrices=std::collections::BTreeSet::new();
@@ -753,6 +814,9 @@ impl Instrument {
             if scope.members.is_empty() || scope.members.len() > 16 {
                 return Err(ValidationError::ZoneRouting { owner: check.owner.clone(),
                     reason: "processing scope requires 1..=16 authored members" });
+            }
+            if let Some(crate::ProcessingSignal{source_law:crate::ProcessingSourceLaw::UviC997Layout{members},..})=&scope.signal {
+                if members.iter().filter(|input|input.is_some()).count()!=scope.members.len(){return Err(ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"native source ordinal roster differs from actual scope members"});}
             }
             for member in &scope.members {
                 check.exists(Reference::Zone(member.0))?;
@@ -1261,6 +1325,69 @@ impl Instrument {
             if row.owner.is_some_and(|owner|!self.source_indices.owners.iter().any(|row|row.id==owner)){return Err(invalid("global bus source owner is absent"));}
             self.validate_processing_signal(&row.signal,row.output.channels,false,None,&mut check)?;
         }
+        let mut output_homes=std::collections::BTreeSet::new();
+        for home in &self.source_indices.output_controls {
+            check.owner=format!("source output {:?} {:?}",home.owner,home.field);
+            check.exists(Reference::Control(home.control.0))?;
+            let invalid=||ValidationError::ZoneRouting{owner:check.owner.clone(),reason:"source output requires exact declared owner operand binding"};
+            if !output_homes.insert((home.owner,home.field)){return Err(invalid());}
+            let scalar_key=match home.target {
+                crate::SourceOwnerControlTarget::Bus{bus,node}=>{
+                    let _=self.buses.get(bus.0).ok_or_else(invalid)?;
+                    let row=self.processing_buses.iter().find(|row|row.bus==bus&&row.owner==Some(home.owner)).ok_or_else(invalid)?;
+                    let chain=self.buses[bus.0].chain.map(|chain|&self.chains[chain.0]);
+                    if chain.is_some_and(|chain|!chain.pre_amplitude.is_empty()||!chain.post_amplitude.is_empty())||row.signal.input!=row.output{return Err(invalid());}
+                    let mut phase=0;
+                    for operation in &row.signal.nodes {
+                        let next=match operation{crate::ProcessingSignalNode::Gain(_)=>0,crate::ProcessingSignalNode::Pan(_)=>1,crate::ProcessingSignalNode::Mute(_)=>2,_=>return Err(invalid())};
+                        if next<phase{return Err(invalid());}phase=next;
+                    }
+                    match(home.field,row.signal.nodes.get(node)){
+                        (crate::SourceOwnerOutputField::Gain,Some(crate::ProcessingSignalNode::Gain(stage)))=>stage.gain.control.as_ref(),
+                        (crate::SourceOwnerOutputField::Pan,Some(crate::ProcessingSignalNode::Pan(stage)))=>stage.position.control.as_ref(),
+                        (crate::SourceOwnerOutputField::Mute,Some(crate::ProcessingSignalNode::Mute(stage)))=>stage.control.as_ref(),_=>return Err(invalid()),
+                    }
+                },
+                crate::SourceOwnerControlTarget::ProcessingScope{scope,site}=>{
+                    let definition=self.processing_scopes.get(scope).ok_or_else(invalid)?;
+                    if !self.source_indices.processing.iter().any(|row|row.owner==home.owner&&row.compiled==Some(scope)){return Err(invalid());}
+                    match site {
+                        crate::ScopeControlSite::SignalNode(node)=>{
+                            let signal=definition.signal.as_ref().ok_or_else(invalid)?;
+                            if signal.nodes.iter().enumerate().take(node).any(|(at,p)|matches!(p,crate::ProcessingSignalNode::Mix(m)if node-at<=usize::from(m.count))){return Err(invalid());}
+                            match(home.field,signal.nodes.get(node)){
+                                (crate::SourceOwnerOutputField::Gain,Some(crate::ProcessingSignalNode::Gain(stage)))=>stage.gain.control.as_ref(),
+                                (crate::SourceOwnerOutputField::Pan,Some(crate::ProcessingSignalNode::Pan(stage)))if stage.expression=>stage.position.control.as_ref(),
+                                (crate::SourceOwnerOutputField::Pan,Some(crate::ProcessingSignalNode::UviLayout(stage)))=>stage.pan.control.as_ref(),_=>return Err(invalid()),
+                            }
+                        },
+                        crate::ScopeControlSite::ChainPre(node)|crate::ScopeControlSite::ChainPost(node)=>{
+                            let chain_id=definition.chain.ok_or_else(invalid)?;let chain=&self.chains[chain_id.0];
+                            let (list,index)=if matches!(site,crate::ScopeControlSite::ChainPre(_)){(&chain.pre_amplitude,node)}else{(&chain.post_amplitude,chain.pre_amplitude.len()+node)};
+                            if list.iter().enumerate().take(node).any(|(at,p)|matches!(p,crate::Processor::Mix{count,..}|crate::Processor::Branch{count,..}if node-at<=usize::from(*count))){return Err(invalid());}
+                            let role=match(home.field,list.get(node)){
+                                (crate::SourceOwnerOutputField::Gain,Some(crate::Processor::Gain(_)))=>crate::ProcessorParameter::Gain,
+                                (crate::SourceOwnerOutputField::Pan,Some(crate::Processor::ExpressionPan(_)))=>crate::ProcessorParameter::Pan,_=>return Err(invalid()),
+                            };
+                            let mut bindings=self.processor_controls.iter().filter(|binding|binding.chain==chain_id&&binding.index==index&&binding.parameter==role);
+                            let binding=bindings.next().ok_or_else(invalid)?;if bindings.next().is_some()||binding.control!=home.control{return Err(invalid());}
+                            Some(&self.controls[binding.control.0].key)
+                        },
+                    }
+                },
+            };
+            let control=&self.controls[home.control.0];
+            // Output roles are narrower than generic signed signal Gain. Check
+            // the declared public field domain before behavior/resource binding.
+            let valid_domain=match (home.field,&control.value) {
+                (crate::SourceOwnerOutputField::Gain,crate::ControlValue::Continuous{min,max,..})=>*min>=0. && *max<=f64::from(f32::MAX),
+                (crate::SourceOwnerOutputField::Pan,crate::ControlValue::Continuous{min,max,..})=>*min>=-1. && *max<=1.,
+                (crate::SourceOwnerOutputField::Mute,crate::ControlValue::Toggle{..})=>true,
+                _=>false,
+            };
+            if !valid_domain{return Err(invalid());}
+            if scalar_key!=Some(&control.key){return Err(invalid());}
+        }
         for(index,bus)in self.buses.iter().enumerate(){
             check.owner=format!("bus {index}");
             let output=self.processing_buses.iter().find(|row|row.bus.0==index).map_or(2,|row|row.output.channels);
@@ -1598,7 +1725,18 @@ impl Instrument {
     fn validate_processing_signal(&self,signal:&crate::ProcessingSignal,output:usize,
         allow_expression:bool,chain:Option<crate::ChainRef>,check:&mut Check)->Result<(),ValidationError>{
         let invalid = |reason| ValidationError::ZoneRouting { owner: check.owner.clone(), reason };
-        match signal.source_law { crate::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {} }
+        match signal.source_law {
+            crate::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet=>{},
+            crate::ProcessingSourceLaw::UviC997Layout{members}=>{
+                let count=members.iter().take_while(|member|member.is_some()).count();
+                if !allow_expression || count==0 || members[count..].iter().any(Option::is_some)
+                    || members.iter().flatten().any(|member|match member.provenance {
+                        crate::UviNativeSourceProvenance::PlainHeader=>member.storage_channels!=member.layout.channels()&&!(member.layout==crate::UviNativeLayout::Code1&&member.storage_channels==2),
+                        crate::UviNativeSourceProvenance::UnloadedDefault=>member.layout!=crate::UviNativeLayout::Code1||member.storage_channels!=0,
+                    })
+                    || members.iter().flatten().map(|member|member.layout.channels()).max()!=Some(signal.input.channels){return Err(invalid("native member/header layout differs from its retained widest input"));}
+            }
+        }
         if signal.input.channels == 0 || signal.nodes.is_empty() {
             return Err(invalid("signal graph requires a nonempty input and executable nodes"));
         }
@@ -1609,6 +1747,7 @@ impl Instrument {
             if !allow_expression && match node {
                 crate::ProcessingSignalNode::Gain(gain)=>gain.gain.expression.is_some(),
                 crate::ProcessingSignalNode::OnePole(filter)=>filter.cutoff_hz.expression.is_some(),
+                crate::ProcessingSignalNode::UviOnePole(filter)=>filter.frequency.expression.is_some() || filter.tracking!=0.,
                 crate::ProcessingSignalNode::Pan(pan)=>pan.expression || pan.position.expression.is_some(),
                 _=>false,
             } {return Err(invalid("global processing bus has no per-note expression owner"));}
@@ -1638,6 +1777,14 @@ impl Instrument {
                         return Err(invalid("matrix layout, cell geometry or coefficient domain is invalid"));
                     }
                     channels = matrix.output.channels;
+                }
+                crate::ProcessingSignalNode::UviLayout(layout)=>{
+                    if channels!=layout.source.channels() || layout.source.weight(layout.destination,0,0).is_none()
+                        || !layout.pan_offset.is_finite() || layout.pan.expression.is_some(){return Err(invalid("native descriptor edge or Pan operand is invalid"));}
+                    channels=layout.destination.channels();
+                }
+                crate::ProcessingSignalNode::UviOnePole(filter)=>{
+                    if !filter.tracking.is_finite() || !(0. ..=1.).contains(&filter.tracking){return Err(invalid("native OnePole tracking is invalid"));}
                 }
                 crate::ProcessingSignalNode::Mute(mute) => {
                     if let Some(key)=&mute.control {
@@ -1676,6 +1823,8 @@ impl Instrument {
                 crate::ProcessingSignalNode::Matrix(_) | crate::ProcessingSignalNode::Mix(_) | crate::ProcessingSignalNode::Rectifier(_) | crate::ProcessingSignalNode::BusChain | crate::ProcessingSignalNode::Mute(_) => continue,
                 crate::ProcessingSignalNode::Gain(gain) => &gain.gain,
                 crate::ProcessingSignalNode::Pan(pan) => &pan.position,
+                crate::ProcessingSignalNode::UviLayout(layout)=>&layout.pan,
+                crate::ProcessingSignalNode::UviOnePole(filter)=>{tail=tail.checked_add(filter.tail_frames).ok_or_else(||invalid("native OnePole tail budget overflow"))?;&filter.frequency},
                 crate::ProcessingSignalNode::OnePole(filter) => {
                     tail = tail.checked_add(filter.tail_frames)
                         .ok_or_else(|| invalid("signal stage tail budget overflow"))?;
@@ -1699,7 +1848,7 @@ impl Instrument {
                 let (zero, one, octaves) = match (node, expression.law) {
                     (crate::ProcessingSignalNode::Gain(_), crate::SignalExpressionLaw::LinearFactor { zero, one })
                         if zero >= 0. && one >= 0. => (zero, one, false),
-                    (crate::ProcessingSignalNode::OnePole(_), crate::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
+                    (crate::ProcessingSignalNode::OnePole(_)|crate::ProcessingSignalNode::UviOnePole(_), crate::SignalExpressionLaw::Octaves { zero, one }) => (zero, one, true),
                     _ => return Err(invalid("expression law does not match its stage destination")),
                 };
                 if !zero.is_finite() || !one.is_finite() || !(one - zero).is_finite() {
@@ -1718,10 +1867,10 @@ impl Instrument {
                     }
                 }
             }
-            if matches!(node,crate::ProcessingSignalNode::Pan(_)) && bounds.iter().any(|v|!(-1. ..=1.).contains(v)) {
+            if matches!(node,crate::ProcessingSignalNode::Pan(_)|crate::ProcessingSignalNode::UviLayout(_)) && bounds.iter().any(|v|!(-1. ..=1.).contains(v)) {
                 return Err(invalid("Pan scalar domain is outside minus-one to one"));
             }
-            if matches!(node, crate::ProcessingSignalNode::OnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
+            if matches!(node, crate::ProcessingSignalNode::OnePole(_)|crate::ProcessingSignalNode::UviOnePole(_)) && bounds.iter().any(|v| *v <= 0.) {
                 return Err(invalid("OnePole cutoff must be positive"));
             }
         }

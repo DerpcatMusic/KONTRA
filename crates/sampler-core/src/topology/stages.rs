@@ -13,6 +13,7 @@ pub(crate) enum Stage {
     Gain {
         gain: StageParameter,
     },
+    UviOnePole {frequency:StageParameter,tracking:f32,high:bool,history:usize,channels:usize,cadence:ir::UviOnePoleCadence},
     OnePole {
         cutoff: StageParameter,
         high: bool,
@@ -23,7 +24,7 @@ pub(crate) enum Stage {
 /// Immutable routing metadata: the base is still the ordinary generation lane.
 #[derive(Clone, Copy)]
 pub(crate) struct StageParameter {
-    base: PreparedParameter,
+    pub(super) base: PreparedParameter,
     expression: Option<ExpressionFactor>,
 }
 #[derive(Clone, Copy)]
@@ -36,7 +37,7 @@ impl StageParameter {
         })
     }
 }
-fn parameter(
+pub(super) fn parameter(
     plan: &Prepared,
     definition: &ir::SignalParameter,
     parameters: &mut Vec<ControlRange>,
@@ -125,6 +126,17 @@ impl Stage {
                     0,
                 ))
             }
+            ir::ProcessingSignalNode::UviOnePole(filter)=>{
+                if !filter.tracking.is_finite() || !(0. ..=1.).contains(&filter.tracking){return Err(Error::InvalidInput);}
+                let frequency=parameter(plan,&filter.frequency,parameters,domains,|value|finite(value)&&value>0.,true)?;
+                let history=*histories;
+                // Actual f32 native scalars are stored exactly in the existing
+                // f64 history owner. No independent cache or callback allocation.
+                let words=8usize.checked_add(if channels==2{8}else{channels}).ok_or(Error::Capacity)?;
+                *histories=history.checked_add(words).ok_or(Error::Capacity)?;
+                Ok((Self::UviOnePole{frequency,tracking:filter.tracking as f32,high:filter.mode==ir::ChannelOnePoleMode::HighPass,
+                    history,channels,cadence:filter.cadence},filter.tail_frames))
+            }
             ir::ProcessingSignalNode::OnePole(filter) => {
                 match filter.arithmetic {
                     ir::ChannelOnePoleArithmetic::CoreOnePoleF64 => {}
@@ -144,7 +156,7 @@ impl Stage {
                     filter.tail_frames,
                 ))
             }
-            ir::ProcessingSignalNode::Matrix(_) | ir::ProcessingSignalNode::Mix(_) | ir::ProcessingSignalNode::BusChain => Err(Error::InvalidInput),
+            ir::ProcessingSignalNode::Matrix(_) | ir::ProcessingSignalNode::Mix(_) | ir::ProcessingSignalNode::BusChain | ir::ProcessingSignalNode::UviLayout(_) => Err(Error::InvalidInput),
         }
     }
     pub(crate) fn render(
@@ -216,6 +228,64 @@ impl Stage {
                     }
                 }
             }
+            Self::UviOnePole{frequency,tracking,high,history,channels:expected,cadence}=>{
+                if channels!=expected{return Err(Error::InvalidInput);}
+                if frames==0{return Ok(());}
+                let words=8usize.checked_add(if channels==2{8}else{channels}).ok_or(Error::Capacity)?;
+                let end=history.checked_add(words).ok_or(Error::Capacity)?;
+                let state=histories.get_mut(history..end).ok_or(Error::InvalidInput)?;
+                let first=state[6]==0. && cadence==ir::UviOnePoleCadence::FirstSetup32;
+                state[6]=1.;
+                let mut begin=0;
+                // This models the ACTUAL first-setup versus already-prepared
+                // invocation branches. No invented absolute clock%32 domain.
+                while begin<frames {
+                    let count=if first{(frames-begin).min(32)}else{frames-begin};
+                    let time=at+begin as u64;
+                    let hz=(frequency.base.value(parameters,time,None)*frequency.factor(parameters,time,expression))as f32;
+                    let note=state[4]as f32;
+                    if state[5]==0. || state[1]as f32!=hz || state[3]as f32!=note {
+                        let q=((note-60.)*tracking)*f32::from_bits(0x3daaaaab);
+                        let f=(2.0f32.powf(q)*hz).min((rate as f32)*0.5);
+                        let exponent=-(f64::from(f)*f64::from_bits(0x401921fb54442d18)/f64::from(rate));
+                        let a=exponent.exp()as f32;
+                        if !a.is_finite(){return Err(Error::InvalidInput);}
+                        state[0]=f64::from(a);state[1]=f64::from(hz);state[3]=f64::from(note);state[5]=1.;
+                    }
+                    let a=state[0]as f32;let b=1.0f32-a;
+                    if channels==2 {
+                        let aa=a*a;let ab=a*b;
+                        for channel in 0..2 {
+                            let base=8+4*channel;
+                            let(mut x2,mut x1,mut y2,mut y1)=(state[base]as f32,state[base+1]as f32,state[base+2]as f32,state[base+3]as f32);
+                            let mut frame=begin;let end=begin+count;
+                            while frame+4<=end {
+                                let i=channel*stride+frame;let x=[block[i],block[i+1],block[i+2],block[i+3]];
+                                let y0=((x[0]*b)+(x1*ab))+(y2*aa);
+                                let y_1=((x[1]*b)+(x[0]*ab))+(y1*aa);
+                                let y_2=((x[1]*ab)+(x[2]*b))+(y0*aa);
+                                let y_3=((x[2]*ab)+(x[3]*b))+(y_1*aa);
+                                for(offset,value)in[y0,y_1,y_2,y_3].into_iter().enumerate(){block[i+offset]=if high{x[offset]-value}else{value};}
+                                x2=x[2];x1=x[3];y2=y_2;y1=y_3;frame+=4;
+                            }
+                            while frame<end {
+                                let i=channel*stride+frame;let x=block[i];let y=y1+(x-y1)*b;
+                                block[i]=if high{x-y}else{y};x2=x1;x1=x;y2=y1;y1=y;frame+=1;
+                            }
+                            for(offset,value)in[x2,x1,y2,y1].into_iter().enumerate(){state[base+offset]=f64::from(value);}
+                        }
+                    }else{
+                        for channel in 0..channels {
+                            let mut y=state[8+channel]as f32;
+                            for frame in begin..begin+count {
+                                let i=channel*stride+frame;let x=block[i];y=y+(x-y)*b;block[i]=if high{x-y}else{y};
+                            }state[8+channel]=f64::from(y);
+                        }
+                    }
+                    if block.chunks(stride).take(channels).any(|row|row[begin..begin+count].iter().any(|sample|!sample.is_finite())){return Err(Error::InvalidInput);}
+                    if count==0{break;}begin+=count;
+                }
+            }
             Self::OnePole {
                 cutoff,
                 high,
@@ -275,5 +345,32 @@ mod pan_preparation_work_tests {
         let mut block=[0.25f32;128];block[64..].fill(-0.125);
         Stage::StaticPan(gains).render(&mut block,2,64,64,&mut[],&[],48000,0,&Default::default()).unwrap();
         for frame in 0..64{assert!((block[frame]-((0.25*expected)as f32)).abs()<1e-7);assert_eq!(block[64+frame],-0.125);}
+    }
+}
+
+
+impl Stage {
+    pub(crate) fn prepare_native_note(&self,histories:&mut[f64],note:f64)->Result<(),Error>{
+        if let Self::UviOnePole{history,..}=*self {
+            if !note.is_finite() || !(0. ..128.).contains(&note){return Err(Error::InvalidInput);}
+            *histories.get_mut(history+4).ok_or(Error::InvalidInput)?=f64::from(note as f32);
+        }Ok(())
+    }
+    pub(crate) fn scope_control_lane(&self,field:crate::SourceOwnerControl)->Option<usize>{
+        if field==crate::SourceOwnerControl::Pan && !matches!(self,Self::Pan{expression:true,..}){return None;}
+        if field==crate::SourceOwnerControl::OutputMute{return None;}
+        self.owner_control_lane(field)
+    }
+    pub(crate) fn owner_outlet_kind(&self)->Option<crate::SourceOwnerControl>{
+        match self{Self::Gain{..}=>Some(crate::SourceOwnerControl::Gain),Self::Pan{..}|Self::StaticPan(_)=>Some(crate::SourceOwnerControl::Pan),Self::Mute{..}=>Some(crate::SourceOwnerControl::OutputMute),_=>None}
+    }
+    pub(crate) fn owner_control_lane(&self,field:crate::SourceOwnerControl)->Option<usize>{
+        let base=match (self,field){
+            (Self::Gain{gain,..},crate::SourceOwnerControl::Gain)=>gain.base,
+            (Self::Pan{position,..},crate::SourceOwnerControl::Pan)=>position.base,
+            (Self::Mute{gain},crate::SourceOwnerControl::OutputMute)=>*gain,
+            _=>return None,
+        };
+        if let PreparedParameter::Control(lane)=base{Some(lane)}else{None}
     }
 }

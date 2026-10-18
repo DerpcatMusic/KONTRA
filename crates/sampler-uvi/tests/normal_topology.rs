@@ -150,22 +150,51 @@ fn constant_keygroup_pan_offset_survives_public_absolute_writes() {
     compare(&actual.render(2048),&pan_reference(expected.render(2048),1.));
     actual.close();expected.close();
 }
+// These exact three authored KG inputs used to assert refusal. Their shared
+// owner implementation is now tested through real normal loading and PCM.
+const LIVE_KG_PAN:&str=r#"<SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1"/>"#;
+const BYPASSED_KG_PAN:&str=r#"<SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1" Bypass="1"/>"#;
+const KEYFOLLOW_KG_PAN:&str=r#"<SignalConnection Source="@VoiceParam LinearKeyFollow" Destination="Pan" Ratio="1"/>"#;
+fn supported_shared_pan_case(connection:&str,bypassed:bool,keyfollow:bool){
+    let f=Fixture::new();let(a,b,c,sum)=sources();let target=f.program("supported-shared-pan",&[("shared-a",a,false),("shared-b",b,false),("shared-c",c,true)],1.,false,PAN_COUPLED);
+    let reference=f.program("independent-pan-sum",&[("independent-sum",sum,false)],1.,false,PAN_COUPLED);
+    let xml=std::fs::read_to_string(&target).unwrap().replace("<Inserts>",&format!("<Connections>{connection}</Connections><Inserts>"));std::fs::write(&target,xml).unwrap();
+    if keyfollow{for path in [&target,&reference]{let xml=std::fs::read_to_string(path).unwrap().replace("LowKey=\"60\" HighKey=\"60\"","LowKey=\"60\" HighKey=\"84\"");std::fs::write(path,xml).unwrap();}}
+    let mut actual=Session::new(&target,false);let mut expected=Session::new(&reference,false);
+    // MIDI CC1 defaults to0; LinearKeyFollow is (key-60)/60, so key60 is0.
+    compare(&actual.render(4123),&pan_reference(expected.render(4123),0.));
+    let mut owners=Vec::new();actual.rt.visit_processing_owners(|owner|owners.push((owner.id,owner.note,owner.plan,owner.template,owner.sources)));let held=actual.note;
+    let performance=actual.rt.performance(0).unwrap();
+    for (value,position)in [(u32::MAX,if bypassed||keyfollow{0.}else{1.}),(0x8000_0000,if bypassed||keyfollow{0.}else{f64::from(0x8000_0000u32)/f64::from(u32::MAX)})]{
+        actual.rt.dispatch_controller(performance,input().channel_address(),1,1,value).unwrap();
+        let frames=actual.render(1024);let want=pan_reference(expected.render(1024),position);
+        // Preserve the real CELL64 response; discard only its bounded settling
+        // prefix, not the continuing source/history or the actual controller.
+        compare(&frames[128..],&want[128..]);assert_eq!(actual.note,held);
+        let mut after=Vec::new();actual.rt.visit_processing_owners(|owner|after.push((owner.id,owner.note,owner.plan,owner.template,owner.sources)));assert_eq!(owners,after);assert_eq!(actual.rt.voice_count(),2);
+    }
+    if keyfollow{
+        // Add a real nonzero key-follow witness; source/control input above is
+        // unchanged. Both normal fixtures admit the authored new key72.
+        actual.rt.release(actual.note).unwrap();expected.rt.release(expected.note).unwrap();actual.render(4096);expected.render(4096);actual.rt.flush_ended(|_|true);expected.rt.flush_ended(|_|true);
+        assert_eq!(actual.rt.voice_count(),0);assert_eq!(actual.rt.processing_owner_count(),0);
+        let key=Input{key:72,..input()};actual.note=actual.rt.trigger(key,72,0.75).unwrap();expected.note=expected.rt.trigger(key,72,0.75).unwrap();
+        compare(&actual.render(4096),&pan_reference(expected.render(4096),(72.-60.)/60.));assert_eq!(actual.rt.voice_count(),2);assert_eq!(actual.rt.processing_owner_count(),1);
+    }
+    assert_eq!(actual.ir.assets.len(),3);assert_eq!(actual.ir.zones.len(),3);actual.close();expected.close();
+}
+#[test]fn live_keygroup_cc_pan_matches_independent_normal_loader_pcm(){supported_shared_pan_case(LIVE_KG_PAN,false,false);}
+#[test]fn bypassed_keygroup_cc_pan_keeps_same_sources_and_independent_normal_loader_pcm(){supported_shared_pan_case(BYPASSED_KG_PAN,true,false);}
+#[test]fn linear_keyfollow_keygroup_pan_uses_real_new_key_and_ignores_controller(){supported_shared_pan_case(KEYFOLLOW_KG_PAN,false,true);}
+
 #[test]
 fn unsupported_shared_pan_refuses_normal_translation_without_partial_plan() {
     let f=Fixture::new();let(a,b,c,_)=sources();let path=f.program("live-pan",&[("a",a,false),("b",b,false),("c",c,true)],1.,false,PAN_COUPLED);
     let original=std::fs::read_to_string(&path).unwrap();
-    for connection in [
-        r#"<SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1"/>"#,
-        r#"<SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1" Bypass="1"/>"#,
-        r#"<SignalConnection Source="@VoiceParam LinearKeyFollow" Destination="Pan" Ratio="1"/>"#,
-    ] {
-        let xml=original.replace("<Inserts>",&format!("<Connections>{connection}</Connections><Inserts>"));std::fs::write(&path,xml).unwrap();
-        let error=sampler_uvi::translate_path(&path).err().expect("no partial shared-Pan plan");assert!(error.to_string().contains("live keygroup Pan connection"),"{error}");
-    }
     for tag in ["Program","Layer"] {
         let old=format!("<{tag} Gain=\"1\">");let replacement=format!("{old}<Connections><SignalConnection Source=\"@MIDI CC 1\" Destination=\"Pan\" Ratio=\"1\"/></Connections>");
         let xml=original.replace(&old,&replacement);assert_ne!(xml,original);std::fs::write(&path,xml).unwrap();
-        let error=sampler_uvi::translate_path(&path).err().expect("no per-player global-Pan fallback");assert!(error.to_string().contains("Program/Layer Pan connection"),"{error}");
+        let error=sampler_uvi::translate_path(&path).err().expect("no per-player global-Pan fallback");assert!(error.to_string().contains("live global Gain/Pan requires the actual shared owner modulator; no per-source fallback"),"{error}");
     }
 }
 #[test]

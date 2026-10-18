@@ -562,6 +562,10 @@ impl<S: Script> Driver<S> {
                 } => {
                     self.parameter(rt, scope, param, value, authored)?;
                 }
+                // Native owner commands require the genuine captured Running
+                // turn/Plan authority path. Ordinary legacy delivery cannot
+                // substitute its current active Plan as a liveness proof.
+                Command::OwnerControl{..}=>return Err(Error::InvalidInput),
                 Command::Midi(out) => {
                     if self.midi.len() < MIDI_OUTPUT_CAPACITY {
                         self.midi.push(out);
@@ -583,6 +587,29 @@ impl<S: Script> Driver<S> {
         value: f64,
         authored: f64,
     ) -> Result<(), Error> {
+        if matches!(param,Param::Gain|Param::Pan) && matches!(scope,Scope::Program|Scope::Layer(_)) {
+            let plan=rt.active_plan();
+            // Existing manual Scope ordinals are defined by document order.
+            // Resolve through the sole compiled canonical table, not a new
+            // layer-name/VM-slot map. Captured native commands carry exact IDs.
+            let owner=rt.source_owners(plan).ok().and_then(|table|match scope {
+                Scope::Program=>table.rows().iter().find(|row|row.parent.is_none()
+                    && row.kind==sampler_ir::SourceOwnerKind::Instrument).map(|row|row.id),
+                Scope::Layer(layer)=>layer.checked_sub(1).and_then(|layer|table.rows().iter()
+                    .filter(|row|row.kind==sampler_ir::SourceOwnerKind::Layer).nth(layer as usize)).map(|row|row.id),
+                _=>None,
+            });
+            if let Some(owner)=owner {
+                let field=if param==Param::Gain{sampler_core::SourceOwnerControl::Gain}else{sampler_core::SourceOwnerControl::Pan};
+                if let Ok(id)=rt.source_owner_control(plan,owner,field) {
+                    rt.edit_controls(plan,None,&[sampler_core::ControlWrite{id,value:sampler_core::ControlValue::Real(value)}])?;
+                    return Ok(());
+                }
+            }
+            // Legacy manual plans with no actual global home retain their
+            // existing explicitly offset-based API; captured OwnerControl never
+            // reaches this fallback or substitutes the active generation.
+        }
         if param == Param::Gain && let Scope::Keygroup(node) = scope {
             let id = crate::engine_parameters::scope_gain_control(node)?;
             let plan = rt.active_plan();

@@ -68,6 +68,8 @@ impl Runtime {
         let mut ready=true;
         for id in owner.members.iter().flatten() {
             if self.voices.get(id.0).is_none() {continue;}
+            // prepare_voice first resolves and prepares the SAME provider
+            // owner row before inspecting the physical cursor's pitched runway.
             if self.prepare_voice(id.0.index,at,frames).is_none() {ready=false;continue;}
             let Some(v)=self.voices.get(id.0) else {ready=false;continue;};
             let Some(generation)=self.plans.get(owner.plan.0) else {return false;};

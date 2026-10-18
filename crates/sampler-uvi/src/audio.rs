@@ -165,6 +165,9 @@ mod tests {
 
 
 pub(crate) struct InitialDecoded {
+    /// True single-file header cardinality before mono packing; None for bundles.
+    /// A collection of mono files is not proof of a native source header enum.
+    pub original_channels:Option<usize>,
     pub source:sampler_core::SourceStorage,
     pub playback:Result<Option<sampler_ir::Playback>,String>,
 }
@@ -223,7 +226,7 @@ pub(crate) fn decode_initial(parts:&[Vec<u8>],inherit:bool)->Result<InitialDecod
         for frame in 0..frames {for (samples,_,_) in &decoded {interleaved.push(samples[frame]);}}
         sampler_kontakt::resident_storage_from_interleaved(rate,channels,&interleaved,MEMORY_LIMIT).map_err(|e|e.to_string())?
     };
-    Ok(InitialDecoded{source,playback})
+    Ok(InitialDecoded{source,playback,original_channels:if decoded.len()==1{Some(channels)}else{None}})
 }
 
 #[cfg(test)]
