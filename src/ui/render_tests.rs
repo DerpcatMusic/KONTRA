@@ -644,3 +644,43 @@ fn manual_wave_view_real_provider_pointer_callbacks_a_b_clear_a_pixels_and_count
     assert!(p.ui.scene().unwrap().surface("/waveview-ir-1").is_none());
     assert_eq!(p.host.global_text("calls"), "5");
 }
+
+
+#[test]
+fn uvi_six_frame_on_off_button_paints_authored_hover_and_held_pixels() {
+    // UVI's six frames are off/on, hovered off/on, held off/on. The
+    // independent literal colours make selecting an arbitrary skin impossible
+    // to mistake for a successful paint or a changed callback.
+    const COLOURS:[[u8;4];6]=[
+        [240,20,20,255],[20,220,20,255],[20,20,220,255],
+        [220,180,20,255],[180,20,180,255],[20,180,180,255],
+    ];
+    for on in [false,true] {
+        for (held,hover,base) in [(false,false,0),(false,true,2),(true,true,4)] {
+            let script=format!("setSize(160,120); local b=OnOffButton('Skin',{}); b.bounds={{10,10,100,80}}; b.text=''; b.showLabel=false; b:setStripImage('authored-states.png',6)",if on {"true"}else{"false"});
+            let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+            let host=sampler_uvi::script::ScriptHost::new(&xml,(),Default::default()).unwrap();
+            assert!(host.findings().is_empty(),"{:?}",host.findings());
+            let face=host.interface();face.validate().unwrap();
+            assert_eq!(face.widgets.len(),1);assert_eq!(face.widgets[0].rect,ir::Rect::new(10,10,100,80));
+            assert_eq!(face.source,ir::Source::FalconLua);
+            let mut assets=Assets::default();
+            assets.sync(&face,Presentation::Bitmap,|_|Some(Arc::new(Picture::new(COLOURS.into_iter().map(|rgba|Arc::new(moose::mui::mui::scene::Image::rgba(100,80,rgba.repeat(100*80)).unwrap())).collect()))));
+            let mut ui=super::super::theme::ui();let mut values:Values=host.control_values().into_iter().collect();let mut input=InputState::default();
+            let mut tick=|event:Input|{
+                let root=view_state(&mut ui,"six",&face,PageRef(0),&assets,Presentation::Bitmap,1.,&mut values,&mut input);
+                ui.frame(root,Some(Size::new(160.,120.)),event,1./60.).unwrap();
+            };
+            let pointer=|over:bool,down:bool|Input{pointer:PointerInput{pos:Some(if over{Point::new(60.,50.)}else{Point::new(140.,110.)}),buttons:if down{Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()};
+            for _ in 0..3{tick(pointer(false,false));}
+            if hover {for _ in 0..3{tick(pointer(true,false));}}
+            if held {for _ in 0..3{tick(pointer(true,true));}}
+            assert_eq!(ui.get("six-ir-0").held,held);
+            let actual=super::super::tests::pixels(&ui,160,120);let expected=COLOURS[base+usize::from(on)];
+            for (x,y) in [(25,25),(60,50),(95,75)] {
+                let at=(y*160+x)*4;assert_eq!(&actual[at..at+4],&expected,"on={on} held={held} hover={hover}: independent authored skin colour at{x},{y}");
+            }
+            assert!(input.edits.is_empty(),"hover/held painting cannot synthesize a release/callback edit");
+        }
+    }
+}

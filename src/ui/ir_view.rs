@@ -1316,6 +1316,10 @@ pub(super) fn widget_state(
             ir::Source::Ksp { .. } | ir::Source::PerformanceView
         ) {
             ir::kontakt_picture_frame(on, held, hovered, frames)
+        } else if frames >= 6 && matches!(wd.kind, Kind::Button { .. } | Kind::Switch) {
+            // UVI setStripImage: off/on, hovered off/on, held off/on.
+            // The native Kontakt order above is deliberately different.
+            usize::from(on) + if held { 4 } else if hovered { 2 } else { 0 }
         } else {
             usize::from(on).min(frames.saturating_sub(1))
         }
