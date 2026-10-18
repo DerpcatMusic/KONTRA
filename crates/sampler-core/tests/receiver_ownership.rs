@@ -368,21 +368,59 @@ fn physical_event_terminal_union_capacity_refuses_before_any_new_row_or_core_gat
     rt.release_receiver_native(receiver,|_,input|input==source,None).unwrap();raw_off(&mut rt,receiver,raw);
     assert_eq!(rt.plan_physical_event_count(plan),Ok(2),"two queued receipts remain after actual row acknowledgment");
     let (execution2,source2)=physical_native(902);
-    let second=rt.trigger_receiver(receiver,0,execution2,Some(source2),1.,0.,true).unwrap();
-    let raw_second=rt.trigger_receiver(receiver,1,raw,None,1.,0.,true).unwrap();
-    let before=(rt.now(),rt.note_count(),rt.plan_physical_event_count(plan));
     support::without_heap(||{
-        assert_eq!(rt.queue_receiver_all_releases(receiver),Err(Error::Capacity));
-        assert_eq!((rt.now(),rt.note_count(),rt.plan_physical_event_count(plan)),before);
+        let mut active=None;
+        // Q reserves queued AND active AND future obligations. The old fixture
+        // illegally overcommitted future receipts before testing the queue.
+        for phase in 0..2 {
+            let status=rt.receiver_wire_status(receiver).unwrap();
+            assert_eq!((status.queued_receipts,status.active_receipts,status.future_receipts),(2-phase,phase,0));
+            let before=(rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.plan_physical_event_count(plan));
+            assert_eq!(rt.trigger_receiver(receiver,0,execution2,Some(source2),1.,0.,true),Err(Error::Capacity));
+            assert_eq!(rt.receiver_wire_status(receiver).unwrap(),status);
+            assert_eq!(rt.trigger_receiver(receiver,1,raw,None,1.,0.,true),Err(Error::Capacity));
+            let rejected=rt.receiver_wire_status(receiver).unwrap();
+            assert_eq!((rejected.decisions,rejected.pending,rejected.accepted,rejected.rejected),(1,0,0,1));
+            assert_eq!((rejected.queued_receipts,rejected.active_receipts,rejected.future_receipts),(2-phase,phase,0));
+            assert!(!rejected.fenced_unknown_debt);
+            assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.plan_physical_event_count(plan)),before);
+            assert!(!rt.note(first).unwrap().2&&!rt.note(raw_first).unwrap().2);
+            // Capacity-rejected raw On still owes exactly one actual Off. Its
+            // marker absorption adds no receipt and releases no other gate.
+            raw_off(&mut rt,receiver,raw);assert_eq!(rt.receiver_wire_status(receiver).unwrap(),status);
+            assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.plan_physical_event_count(plan)),before);
+            if phase==0 {let a=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(a.release.note,first);active=Some(a);}
+        }
+        let a=active.unwrap();rt.cancel_receiver_physical_event(a).unwrap();
+        assert_eq!(rt.cancel_receiver_physical_event(a),Err(Error::StaleHandle));
+        assert_eq!(rt.plan_physical_event_count(plan),Ok(1));
+        let second=rt.trigger_receiver(receiver,0,execution2,Some(source2),1.,0.,true).unwrap();
+        let status=rt.receiver_wire_status(receiver).unwrap();
+        assert_eq!((status.queued_receipts,status.active_receipts,status.future_receipts),(1,0,1));
+        let before=(rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.plan_physical_event_count(plan));
+        assert_eq!(rt.trigger_receiver(receiver,1,raw,None,1.,0.,true),Err(Error::Capacity));
+        let rejected=rt.receiver_wire_status(receiver).unwrap();
+        // Accepted counts anonymous wire decisions; the Native row only owns future credit.
+        assert_eq!((rejected.accepted,rejected.rejected,rejected.future_receipts),(0,1,1));
+        assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.plan_physical_event_count(plan)),before);
+        assert!(rt.note(second).unwrap().2);raw_off(&mut rt,receiver,raw);
+        assert_eq!(rt.receiver_wire_status(receiver).unwrap(),status);
+        let b=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(b.release.note,raw_first);
+        let status=rt.receiver_wire_status(receiver).unwrap();assert_eq!((status.queued_receipts,status.active_receipts,status.future_receipts),(0,1,1));
+        assert_eq!(rt.trigger_receiver(receiver,0,execution,Some(source),1.,0.,true),Err(Error::Capacity));
+        assert_eq!(rt.receiver_wire_status(receiver).unwrap(),status);assert!(rt.note(second).unwrap().2);
+        rt.cancel_receiver_physical_event(b).unwrap();assert_eq!(rt.plan_physical_event_count(plan),Ok(1));
+        let raw_second=rt.trigger_receiver(receiver,1,raw,None,1.,0.,true).unwrap();
+        let status=rt.receiver_wire_status(receiver).unwrap();assert_eq!((status.queued_receipts,status.active_receipts,status.future_receipts),(0,0,2));
         assert!(rt.note(second).unwrap().2&&rt.note(raw_second).unwrap().2);
-        let a=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(a.release.note,first);rt.cancel_receiver_physical_event(a).unwrap();
-        let b=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(b.release.note,raw_first);rt.cancel_receiver_physical_event(b).unwrap();
         assert_eq!(rt.queue_receiver_all_releases(receiver),Ok(2));
         assert_eq!(rt.plan_physical_event_count(plan),Ok(4),"synthetic copy owns a separate checked plan ref beside each physical row");
         rt.release_receiver_native(receiver,|_,input|input==source2,None).unwrap();raw_off(&mut rt,receiver,raw);
         assert_eq!(rt.plan_physical_event_count(plan),Ok(2));
-        for _ in 0..2{let delivery=rt.next_receiver_terminal(receiver).unwrap().unwrap();rt.cancel_receiver_physical_event(delivery).unwrap();}
+        for note in [second,raw_second]{let delivery=rt.next_receiver_terminal(receiver).unwrap().unwrap();assert_eq!(delivery.release.note,note);rt.cancel_receiver_physical_event(delivery).unwrap();}
         assert_eq!(rt.plan_physical_event_count(plan),Ok(0));assert!(rt.next_receiver_terminal(receiver).unwrap().is_none());
+        let status=rt.receiver_wire_status(receiver).unwrap();assert_eq!((status.decisions,status.queued_receipts,status.active_receipts,status.future_receipts),(0,0,0,0));
+        assert!(!status.fenced_unknown_debt);
     });
 }
 #[test]
@@ -1462,4 +1500,155 @@ fn prepared_nonmusical_wait_holds_old_plan_until_real_task_completion_then_relea
     assert!(matches!(resumed.event,ExternalEvent::Task(event)if event.creator==SourceTaskCreator::NonMusicalEvent(NonMusicalTaskOrigin::RestoredWidget)&&event.source.is_none()));
     rt.begin_external_turn(resumed.input).unwrap();rt.complete_external_segment(resumed.input,None).unwrap();rt.flush_behaviors(|_,_,_|true);assert_eq!(rt.collect_retired_plans(),1);
     assert!(rt.running_external_turn(resumed.input).is_err());assert_eq!(rt.collect_retired_plans(),0);assert_eq!((rt.note_count(),rt.expression_count()),(0,0));
+}
+
+
+// Raw19: actual generational physical decisions, no scheduler/key cache.
+fn raw19_runtime(notes:usize,external:bool)->Runtime{
+    let plan=if external{external_plan(false)}else{Prepared::new(48000,
+        vec![Pcm::new(48000,Box::from([[0.25;2];4096])).unwrap()],
+        vec![Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,
+            envelope:Envelope::new(0,0,0,1.,0).unwrap(),playback:Playback::default()}],1).unwrap()};
+    let mut limits=Limits::for_plan(&plan,notes.max(8),notes.max(8));limits.channels=48;limits.expressions=notes.max(8);
+    Runtime::new(plan,limits).unwrap()
+}
+fn raw19_owner(rt:&mut Runtime,notes:usize)->sampler_core::ReceiverId{
+    let mut owner=sampler_core::OwnedReceiver::new(rt,0,0,sampler_core::ReceiverZone::Lower,15,notes).unwrap();
+    owner.use_midi2_channel_voice().unwrap();owner.enable_host_channel_projection().unwrap();rt.bind_receiver(owner).unwrap()
+}
+fn raw19_source(port:u16,group:u8)->Input{Input{protocol:Protocol::Midi2,port,group,channel:13,key:60,external_id:None}}
+fn raw19_intent(rt:&Runtime,source:Input)->sampler_core::RawAttackIntent{
+    use sampler_core::{ReceiverAttribute as Attribute,ReceiverChannelVoice as Voice,ReceiverMessage as Message,ReceiverValue as Value,ReceiverVersion as Version};
+    sampler_core::RawAttackIntent{voice:Voice{version:Version::Midi2,group:0,channel:1,message:Message::NoteOn{key:60,velocity:Value::Bits16(0xabcd),attribute:Attribute::default()}},source,frame:rt.now()}
+}
+fn raw19_pending(rt:&mut Runtime,owner:sampler_core::ReceiverId,source:Input)->sampler_core::RawAdmissionId{
+    let epoch=rt.receiver_wire_epoch(owner).unwrap();let intent=raw19_intent(rt,source);
+    let sampler_core::RawAdmission::Pending(id)=rt.reserve_raw_attack(epoch,intent).unwrap()else{panic!("expected an actual pending decision")};id
+}
+fn raw19_attack()->sampler_core::CapturedLogicalRawAttack{
+    sampler_core::CapturedLogicalRawAttack{input:Input{protocol:Protocol::Midi2,port:0,group:0,channel:1,key:60,external_id:None},pitch:sampler_core::NotePitch::Key(60),velocity:0.5,tuning:0.,silent:false}
+}
+#[test]
+fn raw_pending_terminal_claim_keeps_exact_ingress_on_identity_across_reordered_due_times(){
+    use sampler_core::{RawDecisionPhase as Phase,RawTerminalOutcome as Outcome};
+    let mut rt=raw19_runtime(8,false);let owner=raw19_owner(&mut rt,8);let source=raw19_source(7,3);
+    // These genuine queued-operation identities stand for accepted A:F100/B:F10.
+    // Core does not invent a reschedule/minimum-hold policy for the producer.
+    let a=raw19_pending(&mut rt,owner,source);let b=raw19_pending(&mut rt,owner,source);assert_ne!(a,b);
+    support::without_heap(||{
+        rt.render(&mut [[0.;2];10]).unwrap();let note_b=rt.commit_raw_attack(b,raw19_attack()).unwrap();
+        rt.render(&mut [[0.;2];1]).unwrap();let epoch=rt.receiver_wire_epoch(owner).unwrap();
+        let claim=rt.claim_raw_terminal(epoch,source,Some(0.75)).unwrap().unwrap();
+        assert_eq!(claim.admission(),a);assert_eq!(claim.phase(),Phase::Pending);
+        let before=(rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.expression(rt.expression_id(note_b).unwrap()).unwrap());
+        assert_eq!(rt.commit_raw_terminal(claim.terminal()),Err(Error::NotReady));
+        assert_eq!(rt.raw_admission_terminal(a).unwrap(),Some(claim));assert_eq!(rt.raw_terminal_claim(claim.terminal()).unwrap(),claim);
+        assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),rt.expression(rt.expression_id(note_b).unwrap()).unwrap()),before);
+        assert_eq!(rt.input_held(note_b),Ok(true));
+        rt.render(&mut [[0.;2];89]).unwrap();assert_eq!(rt.now(),100);
+        let note_a=rt.commit_raw_attack(a,raw19_attack()).unwrap();
+        let current=rt.raw_terminal_claim(claim.terminal()).unwrap();assert_eq!(current.admission(),a);assert_eq!(current.phase(),Phase::Accepted);
+        assert_eq!(rt.commit_raw_terminal(claim.terminal()),Ok(Outcome::Released(note_a)));assert_eq!(rt.input_held(note_b),Ok(true));
+        let claim_b=rt.claim_raw_terminal(epoch,source,None).unwrap().unwrap();assert_eq!(claim_b.admission(),b);
+        assert_eq!(rt.commit_raw_terminal(claim_b.terminal()),Ok(Outcome::Released(note_b)));
+        assert_eq!(rt.commit_raw_terminal(claim.terminal()),Err(Error::StaleHandle));assert_eq!(rt.now(),100);
+    });
+    rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);
+    assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count()),(0,0,0));
+    assert_eq!(rt.receiver_wire_status(owner).unwrap().decisions,0);
+}
+#[test]
+fn raw_pending_cancel_keeps_its_marker_and_stale_claim_cannot_alias_reused_decision_slot(){
+    use sampler_core::{RawDecisionPhase as Phase,RawRejection,RawTerminalOutcome as Outcome};
+    let mut rt=raw19_runtime(8,false);let owner=raw19_owner(&mut rt,1);let source=raw19_source(2,4);let epoch=rt.receiver_wire_epoch(owner).unwrap();
+    let pending=raw19_pending(&mut rt,owner,source);let claim=rt.claim_raw_terminal(epoch,source,None).unwrap().unwrap();
+    let before=(rt.now(),rt.note_count(),rt.expression_count());
+    support::without_heap(||{
+        rt.reject_raw_attack(pending,RawRejection::Canceled).unwrap();assert_eq!(rt.raw_admission_phase(pending),Ok(Phase::Rejected));
+        assert_eq!(rt.raw_terminal_claim(claim.terminal()).unwrap().admission(),pending);
+        assert_eq!(rt.commit_raw_terminal(claim.terminal()),Ok(Outcome::AbsorbedRejected));
+        let fresh=raw19_pending(&mut rt,owner,source);assert_ne!(fresh,pending);
+        assert_eq!(rt.commit_raw_attack(pending,raw19_attack()),Err(Error::StaleHandle));assert_eq!(rt.commit_raw_terminal(claim.terminal()),Err(Error::StaleHandle));
+        assert_eq!(rt.raw_admission_terminal(fresh).unwrap(),None);assert_eq!((rt.now(),rt.note_count(),rt.expression_count()),before);
+        rt.reject_raw_attack(fresh,RawRejection::Canceled).unwrap();let fresh_off=rt.claim_raw_terminal(epoch,source,None).unwrap().unwrap();rt.commit_raw_terminal(fresh_off.terminal()).unwrap();
+    });assert_eq!(rt.receiver_wire_status(owner).unwrap().decisions,0);
+}
+#[test]
+fn raw_full_decision_arena_fences_unknown_debt_after_known_rows_drain_and_blocks_unbind(){
+    use sampler_core::{RawRejection,RawTerminalOutcome};
+    let mut rt=raw19_runtime(8,false);let owner=raw19_owner(&mut rt,1);let source=raw19_source(2,3);let epoch=rt.receiver_wire_epoch(owner).unwrap();
+    let a=raw19_pending(&mut rt,owner,source);let b=raw19_pending(&mut rt,owner,source);let intent=raw19_intent(&rt,source);
+    assert_eq!(rt.reserve_raw_attack(epoch,intent),Err(Error::Capacity));assert!(rt.receiver_wire_status(owner).unwrap().fenced_unknown_debt);
+    support::without_heap(||{
+        for id in [a,b]{rt.reject_raw_attack(id,RawRejection::Canceled).unwrap();let off=rt.claim_raw_terminal(epoch,source,None).unwrap().unwrap();assert_eq!(off.admission(),id);assert_eq!(rt.commit_raw_terminal(off.terminal()),Ok(RawTerminalOutcome::AbsorbedRejected));}
+        assert_eq!(rt.receiver_wire_status(owner).unwrap().decisions,0);rt.panic();rt.flush_ended(|_|true);
+        assert_eq!(rt.reserve_raw_attack(epoch,intent),Err(Error::Capacity));assert!(rt.receiver_wire_status(owner).unwrap().replacement_blocked);
+    });assert!(matches!(rt.unbind_receiver(owner),Err(Error::Busy)));assert_eq!((rt.note_count(),rt.expression_count()),(0,0));
+}
+#[test]
+fn raw_future_receipt_union_blocks_native_admission_even_after_queue_moves_to_active_delivery(){
+    use sampler_core::RawRejection;
+    let mut rt=raw19_runtime(8,false);let owner=raw19_owner(&mut rt,1);
+    let logical=Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(8801)};
+    let native=Input{protocol:Protocol::Clap,port:9,group:0,channel:4,key:60,external_id:Some(8801)};
+    let old=rt.trigger_receiver(owner,0,logical,Some(native),1.,0.,true).unwrap();
+    rt.release_receiver_native(owner,|id,source|id==old&&source==native,None).unwrap();rt.flush_ended(|_|true);
+    assert_eq!(rt.receiver_wire_status(owner).unwrap().queued_receipts,1);
+    let pending=raw19_pending(&mut rt,owner,raw19_source(7,3));let before=(rt.now(),rt.note_count(),rt.expression_count());
+    let new_source=Input{external_id:Some(8802),..native};let new_input=Input{external_id:Some(8802),..logical};
+    assert_eq!(rt.trigger_receiver(owner,0,new_input,Some(new_source),1.,0.,true),Err(Error::Capacity));assert_eq!((rt.now(),rt.note_count(),rt.expression_count()),before);
+    let delivery=rt.next_receiver_terminal(owner).unwrap().unwrap();let status=rt.receiver_wire_status(owner).unwrap();assert_eq!((status.queued_receipts,status.active_receipts,status.future_receipts),(0,1,1));
+    support::without_heap(||{
+        assert_eq!(rt.trigger_receiver(owner,0,new_input,Some(new_source),1.,0.,true),Err(Error::Capacity));assert_eq!(rt.receiver_wire_status(owner).unwrap(),status);
+        rt.complete_receiver_terminal(delivery).unwrap();assert_eq!(rt.complete_receiver_terminal(delivery),Err(Error::StaleHandle));
+        let fresh=rt.trigger_receiver(owner,0,new_input,Some(new_source),1.,0.,true).unwrap();assert_eq!(rt.input_held(fresh),Ok(true));
+        let status=rt.receiver_wire_status(owner).unwrap();assert_eq!((status.queued_receipts,status.active_receipts,status.future_receipts),(0,0,2));
+        rt.reject_raw_attack(pending,RawRejection::Canceled).unwrap();let off=rt.claim_raw_terminal(status.epoch,raw19_source(7,3),None).unwrap().unwrap();rt.commit_raw_terminal(off.terminal()).unwrap();
+        rt.release_receiver_native(owner,|id,_|id==fresh,None).unwrap();let release=rt.next_receiver_terminal(owner).unwrap().unwrap();rt.complete_receiver_terminal(release).unwrap();
+    });rt.flush_ended(|_|true);assert_eq!(rt.receiver_wire_status(owner).unwrap().decisions,0);
+}
+#[test]
+fn raw_malformed_and_foreign_epoch_refuse_without_fence_or_claim_publication(){
+    let mut rt=raw19_runtime(8,false);let owner=raw19_owner(&mut rt,1);let source=raw19_source(2,3);let epoch=rt.receiver_wire_epoch(owner).unwrap();let before=rt.receiver_wire_status(owner).unwrap();
+    let mut bad=raw19_intent(&rt,source);bad.source.channel=16;
+    assert_eq!(rt.reserve_raw_attack(epoch,bad),Err(Error::InvalidInput));assert_eq!(rt.receiver_wire_status(owner).unwrap(),before);
+    let mut foreign=raw19_runtime(8,false);let foreign_owner=raw19_owner(&mut foreign,1);let foreign_epoch=foreign.receiver_wire_epoch(foreign_owner).unwrap();let valid=raw19_intent(&rt,source);
+    assert_eq!(rt.reserve_raw_attack(foreign_epoch,valid),Err(Error::StaleHandle));assert_eq!(rt.receiver_wire_status(owner).unwrap(),before);
+    let pending=raw19_pending(&mut rt,owner,source);let mut bad=raw19_attack();bad.input.channel=16;
+    assert_eq!(rt.commit_raw_attack(pending,bad),Err(Error::InvalidInput));assert_eq!(rt.raw_admission_phase(pending),Ok(sampler_core::RawDecisionPhase::Pending));
+    let now=rt.now();assert_eq!(rt.claim_raw_terminal(epoch,Input{key:128,..source},None),Err(Error::InvalidInput));assert_eq!(rt.now(),now);assert_eq!(rt.raw_admission_terminal(pending).unwrap(),None);
+}
+
+#[test]
+fn raw_decision_storage_extreme_layout_refuses_before_an_unbounded_allocation(){
+    let rt=raw19_runtime(8,false);
+    assert!(matches!(sampler_core::OwnedReceiver::new(&rt,0,0,sampler_core::ReceiverZone::Lower,15,usize::MAX),Err(Error::Capacity)));
+    assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count(),rt.now()),(0,0,0,0));
+}
+
+
+// Raw19 R1: malformed physical identity never becomes a debt/credit row.
+#[test]
+fn raw_physical_bounds_refuse_before_pending_credit_or_full_arena_fence() {
+    use sampler_core::{RawAdmission,RawRejection,ReceiverVersion,ReceiverMessage,ReceiverValue,ReceiverAttribute};
+    for midi2 in [false,true] {for full in [false,true] {
+        let mut rt=raw19_runtime(8,false);let owner=raw19_owner(&mut rt,1);let epoch=rt.receiver_wire_epoch(owner).unwrap();
+        let protocol=if midi2{Protocol::Midi2}else{Protocol::Midi1};
+        let source=Input{protocol,..raw19_source(7,3)};
+        let intent=|rt:&Runtime,source:Input|{let mut value=raw19_intent(rt,source);if !midi2{value.voice.version=ReceiverVersion::Midi1;value.voice.message=ReceiverMessage::NoteOn{key:60,velocity:ReceiverValue::Bits7(100),attribute:ReceiverAttribute::default()};}value};
+        let mut retained=[None;2];
+        if full{for row in &mut retained{let RawAdmission::Pending(id)=rt.reserve_raw_attack(epoch,intent(&rt,source)).unwrap()else{panic!()};*row=Some(id);}}
+        let before=rt.receiver_wire_status(owner).unwrap();let music=(rt.now(),rt.note_count(),rt.voice_count(),rt.expression_count());
+        support::without_heap(||{
+            for bad in [Input{group:16,..source},Input{channel:16,..source},Input{key:128,..source},Input{group:u8::MAX,channel:u8::MAX,key:u8::MAX,..source}]{
+                assert_eq!(rt.reserve_raw_attack(epoch,intent(&rt,bad)),Err(Error::InvalidInput));
+                assert_eq!(rt.receiver_wire_status(owner).unwrap(),before,"malformed tuples cannot reserve even when D is full");
+                assert_eq!((rt.now(),rt.note_count(),rt.voice_count(),rt.expression_count()),music);
+            }
+            for id in retained.into_iter().flatten(){rt.reject_raw_attack(id,RawRejection::Canceled).unwrap();let claim=rt.claim_raw_terminal(epoch,source,None).unwrap().unwrap();assert_eq!(claim.admission(),id);rt.commit_raw_terminal(claim.terminal()).unwrap();}
+            let boundary=Input{port:u16::MAX,group:15,channel:15,key:127,..source};
+            let RawAdmission::Pending(id)=rt.reserve_raw_attack(epoch,intent(&rt,boundary)).unwrap()else{panic!("valid remapped boundary source must remain admitted")};
+            rt.reject_raw_attack(id,RawRejection::Canceled).unwrap();let claim=rt.claim_raw_terminal(epoch,boundary,None).unwrap().unwrap();assert_eq!(claim.admission(),id);rt.commit_raw_terminal(claim.terminal()).unwrap();
+        });let after=rt.receiver_wire_status(owner).unwrap();assert_eq!((after.decisions,after.future_receipts,after.queued_receipts,after.active_receipts),(0,0,0,0));assert!(!after.fenced_unknown_debt);assert!(rt.unbind_receiver(owner).is_ok());
+    }}
 }

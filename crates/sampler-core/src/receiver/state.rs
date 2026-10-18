@@ -85,6 +85,39 @@ pub(super) enum PhysicalKind { Wire,Native }
 pub(super) struct PhysicalPair { pub(super) note: NoteId, pub(super) expression:Option<ExpressionId>, pub(super) execution: Input, pub(super) source: Input, pub(super) kind:PhysicalKind,
     pub(super) released: bool, pub(super) scripted: bool, pub(super) terminal_received:bool, pub(super) choked:bool, pub(super) event_plan:Option<crate::PlanId>,
 }
+
+#[derive(Clone,Copy)]
+pub(super) enum PhysicalPhase {Pending(super::types::RawAttackIntent),Accepted(PhysicalPair),Rejected(super::types::RawRejection)}
+#[derive(Clone,Copy)]
+pub(super) struct PhysicalDecision {pub source:Input,pub epoch:u64,pub phase:PhysicalPhase,pub terminal:Option<Option<f64>>}
+impl PhysicalDecision {
+    pub fn phase(self)->super::types::RawDecisionPhase{match self.phase{PhysicalPhase::Pending(_)=>super::types::RawDecisionPhase::Pending,PhysicalPhase::Accepted(_)=>super::types::RawDecisionPhase::Accepted,PhysicalPhase::Rejected(_)=>super::types::RawDecisionPhase::Rejected}}
+    fn receipt(self)->bool{match self.phase{PhysicalPhase::Pending(_)=>true,PhysicalPhase::Accepted(pair)=>!pair.released&&(pair.scripted||pair.event_plan.is_some()),PhysicalPhase::Rejected(_)=>false}}
+}
+/// One real physical-decision arena. Accepted views do not own/cache rows.
+pub(super) struct PhysicalRoster {pub decisions:crate::Arena<PhysicalDecision>}
+pub(super) struct PhysicalIter<'a>{roster:&'a PhysicalRoster,next:Option<usize>}
+impl<'a> Iterator for PhysicalIter<'a>{type Item=&'a PhysicalPair;fn next(&mut self)->Option<Self::Item>{while let Some(at)=self.next{let slot=&self.roster.decisions.slots[at];self.next=slot.next;if let Some(PhysicalDecision{phase:PhysicalPhase::Accepted(pair),..})=slot.value.as_ref(){return Some(pair);}}None}}
+impl PhysicalRoster {
+    fn new(runtime:RuntimeId,capacity:usize)->Result<Self,Error>{let(mut slots,mut free)=crate::Arena::try_blank(capacity)?;let mut decisions=crate::Arena::new(runtime.0,0);decisions.grow(&mut slots,&mut free);Ok(Self{decisions})}
+    pub fn iter(&self)->PhysicalIter<'_>{PhysicalIter{roster:self,next:self.decisions.first}}
+    /// Index span of genuine slots, including holes; get() is a checked O(1) view.
+    pub fn len(&self)->usize{self.decisions.slots.iter().rposition(|slot|slot.value.is_some()).map_or(0,|i|i+1)}
+    pub fn is_empty(&self)->bool{self.decisions.count()==0}
+    pub fn capacity(&self)->usize{self.decisions.slots.len()}
+    pub fn available(&self)->usize{self.decisions.available()}
+    pub fn first_index(&self)->Option<usize>{self.decisions.first}
+    pub fn next_index(&self,at:usize)->Option<usize>{self.decisions.slots.get(at).and_then(|s|s.next)}
+    pub fn get(&self,at:usize)->Option<&PhysicalPair>{match &self.decisions.slots.get(at)?.value.as_ref()?.phase{PhysicalPhase::Accepted(pair)=>Some(pair),_=>None}}
+    pub fn get_mut(&mut self,at:usize)->Option<&mut PhysicalPair>{match &mut self.decisions.slots.get_mut(at)?.value.as_mut()?.phase{PhysicalPhase::Accepted(pair)=>Some(pair),_=>None}}
+    pub fn push(&mut self,pair:PhysicalPair)->Result<(),Error>{self.decisions.insert(PhysicalDecision{source:pair.source,epoch:1,phase:PhysicalPhase::Accepted(pair),terminal:None})?;Ok(())}
+    pub fn remove(&mut self,at:usize){if self.decisions.slots.get(at).is_some_and(|s|s.value.is_some()){let id=self.decisions.id(at);self.decisions.remove(id);}}
+    pub fn retain(&mut self,mut keep:impl FnMut(&PhysicalPair)->bool){let mut cursor=self.first_index();while let Some(at)=cursor{cursor=self.next_index(at);if self.get(at).is_some_and(|pair|!keep(pair)){self.remove(at);}}}
+    pub fn future_receipts(&self)->usize{self.decisions.slots.iter().filter_map(|s|s.value).filter(|row|row.receipt()).count()}
+    pub fn retained_bytes(&self)->Result<usize,Error>{std::alloc::Layout::array::<crate::Slot<PhysicalDecision>>(self.decisions.slots.len()).map_err(|_|Error::Capacity)?.size().checked_add(std::alloc::Layout::array::<u64>(self.decisions.free.len()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)}
+}
+impl<'a> IntoIterator for &'a PhysicalRoster{type Item=&'a PhysicalPair;type IntoIter=PhysicalIter<'a>;fn into_iter(self)->Self::IntoIter{self.iter()}}
+
 pub(super) fn native_source(source: Input) -> bool {
     matches!(source.protocol, Protocol::Clap | Protocol::Vst3)
 }
@@ -283,12 +316,66 @@ pub struct OwnedReceiver {
     pub(super) timbre_controller: Option<u8>,
     pub(super) per_note: super::per_note::PerNoteState,
     pub(super) note_changes: Vec<(usize, super::per_note::Snapshot)>,
-    pub(super) physical: Vec<PhysicalPair>,
-    pub(super) physical_limit: usize,
+    pub(super) physical: PhysicalRoster,
+    pub(super) wire_epoch:u64,
+    pub(super) wire_fenced:bool,
     pub(super) terminal_releases: Vec<QueuedTerminal>,
     pub(super) terminal_limit: usize,
     pub(super) reset_members: Vec<usize>,
 }
+impl OwnedReceiver {
+    pub(super) fn future_receipts(&self)->Result<usize,Error>{
+        self.physical.future_receipts().checked_add(self.bindings.iter().filter(|binding|binding.domain==ChannelDomain::HostChannel&&!native_source(binding.source)&&binding.scripted&&!binding.terminal_released).count()).ok_or(Error::Capacity)
+    }
+    pub(super) fn validate_receipt_union(&self,active:usize,additional:usize)->Result<(),Error>{
+        self.terminal_releases.len().checked_add(active)
+            .and_then(|n|n.checked_add(self.future_receipts().ok()?))
+            .and_then(|n|n.checked_add(additional)).filter(|n|*n<=self.terminal_limit).map(|_|()).ok_or(Error::Capacity)
+    }
+    pub(super) fn validate_raw_intent(&self,intent:super::types::RawAttackIntent)->Result<(),Error>{
+        let voice=intent.voice;let source=intent.source;
+        let Message::NoteOn{..}=voice.message else{return Err(Error::InvalidInput);};
+        let protocol=match voice.version{Version::Midi1=>Protocol::Midi1,Version::Midi2=>Protocol::Midi2};
+        if !voice.valid()||voice.group!=self.group||source.protocol!=protocol||source.external_id.is_some()
+            ||source.group>=16||source.channel>=16||source.key>=128
+            {return Err(Error::InvalidInput);}
+        Ok(())
+    }
+    pub(super) fn reserve_wire_decision(&mut self,intent:super::types::RawAttackIntent,active:usize)->Result<(crate::Handle,Option<super::types::RawRejection>),Error>{
+        self.validate_raw_intent(intent)?;
+        if self.wire_fenced{return Err(Error::Capacity);}
+        if self.physical.available()==0{self.wire_fenced=true;return Err(Error::Capacity);}
+        let domain=if intent.voice.version==Version::Midi2{ChannelDomain::Midi2}else{ChannelDomain::Midi1};
+        let reason=if !self.accepts_wire_channel(domain,intent.voice.channel){Some(super::types::RawRejection::Profile)}
+            else if self.validate_receipt_union(active,1).is_err(){Some(super::types::RawRejection::Capacity)}else{None};
+        let phase=reason.map_or(PhysicalPhase::Pending(intent),PhysicalPhase::Rejected);
+        let id=match self.physical.decisions.insert(PhysicalDecision{source:intent.source,epoch:self.wire_epoch,phase,terminal:None}){
+            Ok(id)=>id,Err(error)=>{self.wire_fenced=true;return Err(error);}
+        };
+        Ok((id,reason))
+    }
+    pub(super) fn reject_wire_decision(&mut self,id:crate::Handle,reason:super::types::RawRejection)->Result<(),Error>{
+        let row=self.physical.decisions.get_mut(id).ok_or(Error::StaleHandle)?;
+        if !matches!(row.phase,PhysicalPhase::Pending(_)){return Err(Error::StaleHandle);}
+        row.phase=PhysicalPhase::Rejected(reason);Ok(())
+    }
+    pub(super) fn claim_wire_terminal(&mut self,source:Input,velocity:Option<f64>)->Result<Option<crate::Handle>,Error>{
+        if !matches!(source.protocol,Protocol::Midi1|Protocol::Midi2)||source.group>=16||source.channel>=16||source.key>=128||source.external_id.is_some()
+            ||velocity.is_some_and(|v|!v.is_finite()||!(0.0..=1.0).contains(&v)){return Err(Error::InvalidInput);}
+        let mut cursor=self.physical.first_index();
+        while let Some(at)=cursor{cursor=self.physical.next_index(at);
+            let id=self.physical.decisions.id(at);let row=self.physical.decisions.get_mut(id).ok_or(Error::StaleHandle)?;
+            let wire=match row.phase{PhysicalPhase::Accepted(pair)=>pair.kind==PhysicalKind::Wire,_=>true};
+            if wire&&row.source==source&&row.terminal.is_none(){row.terminal=Some(velocity);return Ok(Some(id));}
+        }Ok(None)
+    }
+    pub(super) fn has_wire_source(&self,source:Input)->bool{
+        self.physical.decisions.slots.iter().filter_map(|slot|slot.value).any(|row|row.source==source&&row.terminal.is_none()
+            &&match row.phase{PhysicalPhase::Accepted(pair)=>pair.kind==PhysicalKind::Wire,_=>true})
+    }
+    pub fn wire_fenced(&self)->bool{self.wire_fenced}
+}
+
 impl OwnedReceiver {
     pub fn new(
         runtime: &Runtime,
@@ -338,9 +425,9 @@ impl OwnedReceiver {
                 .map_err(|_| Error::Capacity)?
                 .size();
         let physical_limit = notes.checked_mul(2).ok_or(Error::Capacity)?;
-        let physical_bytes = std::alloc::Layout::array::<PhysicalPair>(physical_limit)
+        let physical_bytes = std::alloc::Layout::array::<crate::Slot<PhysicalDecision>>(physical_limit)
             .map_err(|_| Error::Capacity)?
-            .size();
+            .size().checked_add(std::alloc::Layout::array::<u64>(physical_limit.div_ceil(64)).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
         let terminal_limit = notes.checked_mul(2).ok_or(Error::Capacity)?;
         let terminal_bytes = std::alloc::Layout::array::<QueuedTerminal>(terminal_limit)
             .map_err(|_| Error::Capacity)?
@@ -373,10 +460,7 @@ impl OwnedReceiver {
         reset_members
             .try_reserve_exact(notes)
             .map_err(|_| Error::Capacity)?;
-        let mut physical = Vec::new();
-        physical
-            .try_reserve_exact(physical_limit)
-            .map_err(|_| Error::Capacity)?;
+        let physical = PhysicalRoster::new(runtime.id(),physical_limit)?;
         let mut terminal_releases = Vec::new();
         terminal_releases
             .try_reserve_exact(terminal_limit)
@@ -404,9 +488,7 @@ impl OwnedReceiver {
             .ok_or(Error::Capacity)?;
         let bytes = bytes
             .checked_add(
-                std::alloc::Layout::array::<PhysicalPair>(physical.capacity())
-                    .map_err(|_| Error::Capacity)?
-                    .size(),
+                physical.retained_bytes()?,
             )
             .ok_or(Error::Capacity)?;
         let bytes = bytes
@@ -471,7 +553,7 @@ impl OwnedReceiver {
             per_note,
             note_changes,
             physical,
-            physical_limit,
+            wire_epoch:1,wire_fenced:false,
             terminal_releases,
             terminal_limit,
             reset_members,
@@ -987,11 +1069,20 @@ impl OwnedReceiver {
         } else {
             None
         };
-        let captured_terminal = terminal_source.is_some_and(|source| {
-            self.physical
-                .iter()
-                .any(|pair| pair.kind == PhysicalKind::Wire && pair.source == source)
-        });
+        let captured_terminal=terminal_source.is_some_and(|source|self.has_wire_source(source));
+        if let Message::NoteOn{key,velocity,attribute}=voice.message{
+            if attribute.kind!=0&&!midi2{return Ok(Applied::Unsupported);}
+            let input=Input{protocol:domain.protocol(),port:self.port,group:self.group,channel:voice.channel,key,external_id:None};
+            let source=source.unwrap_or(input);
+            let(decision,reason)=self.reserve_wire_decision(super::types::RawAttackIntent{voice,source,frame:runtime.now()},0)?;
+            if let Some(reason)=reason{return match reason{super::types::RawRejection::Profile=>Ok(if self.configured{Applied::Ignored}else{Applied::Unsupported}),_=>Err(Error::Capacity.into())};}
+            if let Err(error)=runtime.render(&mut []){self.reject_wire_decision(decision,super::types::RawRejection::Core(error))?;return Err(error.into());}
+            self.bindings.retain(|binding|runtime.note(binding.note).is_ok());
+            let pitch=if midi2&&attribute.kind==3{NotePitch::Absolute(f64::from(attribute.data)/512.)}else{NotePitch::Key(key)};
+            let result=self.admit_decision(runtime,voice.channel,(input,Some(source),pitch),velocity.normalized(),silent,0.,Some(decision));
+            if let Err(error)=result{self.reject_wire_decision(decision,super::types::RawRejection::Core(error))?;}
+            return result.map(Applied::Started).map_err(Into::into);
+        }
         if !self.accepts_wire_channel(domain, voice.channel) && !captured_terminal {
             return Ok(if self.configured || terminal_source.is_some() {
                 Applied::Ignored
@@ -1038,18 +1129,8 @@ impl OwnedReceiver {
                 silent,
                 0.0,
             )?),
-            Message::NoteOff {
-                key,
-                velocity,
-                attribute,
-            } => Applied::Released {
-                note: self.release_physical(
-                    runtime,
-                    source.unwrap_or(Input { key, ..input }),
-                    velocity.map(Value::normalized),
-                )?,
-                velocity,
-                attribute,
+            Message::NoteOff{key,velocity,attribute}=>match self.release_physical(runtime,source.unwrap_or(Input{key,..input}),velocity.map(Value::normalized))?{
+                Some(note)=>Applied::Released{note,velocity,attribute},None=>Applied::Ignored,
             },
             Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) => {
                 self.bend(runtime, domain, voice.channel, value)?
@@ -1420,7 +1501,25 @@ impl OwnedReceiver {
         .map_err(Into::into)
     }
 
-    pub(super) fn admit(
+    pub(super) fn admit(&mut self,runtime:&mut Runtime,channel:u8,inputs:(Input,Option<Input>,NotePitch),velocity:f64,silent:bool,tuning:f64)->Result<NoteId,Error>{
+        let(input,source,pitch)=inputs;let source=source.unwrap_or(input);
+        if !velocity.is_finite()||!(0.0..=1.0).contains(&velocity)||!pitch.valid()||!tuning.is_finite(){return Err(Error::InvalidInput);}
+        // Explicit host-owned identities keep the existing direct trigger law.
+        // Only anonymous wire inputs reserve raw FIFO ingress decisions; packet
+        // apply still validates every raw source independently and strictly.
+        if matches!(input.protocol,Protocol::Midi1|Protocol::Midi2)&&input.external_id.is_none()
+            &&source.protocol==input.protocol&&source.external_id.is_none(){
+            let voice=ChannelVoice{version:if input.protocol==Protocol::Midi2{Version::Midi2}else{Version::Midi1},group:self.group,channel:input.channel,
+                message:Message::NoteOn{key:input.key,velocity:Value::Bits32((velocity*f64::from(u32::MAX)).round()as u32),attribute:super::types::Attribute::default()}};
+            let(decision,reason)=self.reserve_wire_decision(super::types::RawAttackIntent{voice,source,frame:runtime.now()},0)?;
+            if let Some(reason)=reason{return Err(match reason{super::types::RawRejection::Profile=>Error::InvalidInput,_=>Error::Capacity});}
+            let result=self.admit_decision(runtime,channel,(input,Some(source),pitch),velocity,silent,tuning,Some(decision));
+            if let Err(error)=result{self.reject_wire_decision(decision,super::types::RawRejection::Core(error))?;}
+            result
+        }else{self.admit_decision(runtime,channel,(input,Some(source),pitch),velocity,silent,tuning,None)}
+    }
+
+    fn admit_decision(
         &mut self,
         runtime: &mut Runtime,
         channel: u8,
@@ -1428,6 +1527,7 @@ impl OwnedReceiver {
         velocity: f64,
         silent: bool,
         tuning: f64,
+        decision:Option<crate::Handle>,
     ) -> Result<NoteId, Error> {
         let (input, source, note_pitch) = inputs;
         let source = source.unwrap_or(input);
@@ -1477,9 +1577,14 @@ impl OwnedReceiver {
                 .count();
         if kind == Some(PhysicalKind::Wire) && wire_debt == self.limit
             || domain == ChannelDomain::HostChannel && native_debt == self.limit
-            || kind.is_some() && self.physical.len() == self.physical_limit
+            || kind.is_some() && decision.is_none() && self.physical.available() == 0
         {
             return Err(Error::Capacity);
+        }
+        self.validate_receipt_union(0,usize::from(decision.is_none()&&silent))?;
+        if let Some(decision)=decision{
+            let row=self.physical.decisions.get(decision).ok_or(Error::StaleHandle)?;
+            if !matches!(row.phase,PhysicalPhase::Pending(_))||row.source!=source{return Err(Error::StaleHandle);}
         }
         let member = if self.zone_domain(domain) && channel == self.zone.manager() {
             Controls::default()
@@ -1506,18 +1611,10 @@ impl OwnedReceiver {
         } else {
             runtime.trigger_in_with_pitch_base(self.performance,input,source,note_pitch,intrinsic,velocity,expression)?
         };
-        if let Some(kind) = kind {
-            self.physical.push(PhysicalPair {
-                note,
-                expression: None,
-                execution: input,
-                source,
-                kind,
-                released: false,
-                scripted: silent,
-                terminal_received: false,
-                choked: false,event_plan:None
-            });
+        if let Some(kind)=kind {
+            let pair=PhysicalPair{note,expression:None,execution:input,source,kind,released:false,scripted:silent,terminal_received:false,choked:false,event_plan:None};
+            if let Some(decision)=decision{self.physical.decisions.get_mut(decision).ok_or(Error::StaleHandle)?.phase=PhysicalPhase::Accepted(pair);}
+            else{self.physical.push(pair)?;}
         }
         self.bindings.push(Binding {
             note,
@@ -1537,27 +1634,20 @@ impl OwnedReceiver {
 
     /// Physical pair ownership survives Core cancellation/retirement. Never
     /// borrow a different source's earlier same-key note in a collapsed Part.
-    pub(super) fn release_physical(
-        &mut self,
-        runtime: &mut Runtime,
-        source: Input,
-        velocity: Option<f64>,
-    ) -> Result<NoteId, Error> {
-        if source.group >= 16 || source.channel >= 16 || source.key >= 128 {
-            return Err(Error::InvalidInput);
+    pub(super) fn release_physical(&mut self,runtime:&mut Runtime,source:Input,velocity:Option<f64>)->Result<Option<NoteId>,Error>{
+        let Some(id)=self.claim_wire_terminal(source,velocity)?else{return Ok(None);};
+        let row=*self.physical.decisions.get(id).ok_or(Error::StaleHandle)?;
+        match row.phase {
+            PhysicalPhase::Pending(_)=>Err(Error::NotReady),
+            PhysicalPhase::Rejected(_)=>{self.physical.decisions.remove(id);Ok(None)},
+            PhysicalPhase::Accepted(pair)=>{
+                self.validate_receipt_union(0,0)?;
+                match runtime.note_off_exact(pair.note,velocity){Ok(())|Err(Error::StaleHandle)|Err(Error::ClosedNote)=>{},Err(error)=>return Err(error)}
+                // Ordinary wire Off returns the exact owner to the adapter;
+                // its existing direct release callback is not duplicated here.
+                self.physical.decisions.remove(id);Ok((!pair.released).then_some(pair.note))
+            }
         }
-        let at = self
-            .physical
-            .iter()
-            .position(|pair| pair.kind == PhysicalKind::Wire && pair.source == source)
-            .ok_or(Error::InvalidInput)?;
-        let note = self.physical[at].note;
-        match runtime.note_off_exact(note, velocity) {
-            Ok(()) | Err(Error::StaleHandle) | Err(Error::ClosedNote) => {}
-            Err(error) => return Err(error),
-        }
-        self.physical.remove(at);
-        Ok(note)
     }
 
     /// Deliver queued synthetic physical releases exactly once. A later real
@@ -1596,6 +1686,7 @@ impl OwnedReceiver {
         &self,
         matches: impl Fn(NoteId, Input) -> bool,
     ) -> Result<(), Error> {
+        self.validate_receipt_union(0,0)?;
         let needed = self
             .physical
             .iter()
@@ -1633,8 +1724,10 @@ impl OwnedReceiver {
         }
         self.validate_native_physical_releases(&matches)?;
         let mut count = 0;
-        for index in 0..self.physical.len() {
-            let pair = self.physical[index];
+        let mut cursor=self.physical.first_index();
+        while let Some(index)=cursor {
+            cursor=self.physical.next_index(index);
+            let Some(pair)=self.physical.get(index).copied() else{continue;};
             if pair.kind != PhysicalKind::Native
                 || pair.terminal_received
                 || !matches(pair.note, pair.source)
@@ -1647,8 +1740,8 @@ impl OwnedReceiver {
             }
             if !pair.released && (pair.scripted||pair.event_plan.is_some()) {self.terminal_releases.push(TerminalRelease{note:pair.note,source:pair.source,velocity}.into());
             }
-            self.physical[index].released = true;
-            self.physical[index].terminal_received = true;
+            self.physical.get_mut(index).ok_or(Error::StaleHandle)?.released = true;
+            self.physical.get_mut(index).ok_or(Error::StaleHandle)?.terminal_received = true;
             count += 1;
         }
         // The exact pending receipt owns its own captured NoteId/source/value.
@@ -1666,8 +1759,10 @@ impl OwnedReceiver {
             return Err(Error::StaleHandle);
         }
         let mut count = 0;
-        for index in 0..self.physical.len() {
-            let pair = self.physical[index];
+        let mut cursor=self.physical.first_index();
+        while let Some(index)=cursor {
+            cursor=self.physical.next_index(index);
+            let Some(pair)=self.physical.get(index).copied() else{continue;};
             if pair.kind != PhysicalKind::Native
                 || pair.terminal_received
                 || pair.choked
@@ -1679,7 +1774,7 @@ impl OwnedReceiver {
                 Ok(()) | Err(Error::StaleHandle) | Err(Error::ClosedNote) => {}
                 Err(error) => return Err(error),
             }
-            self.physical[index].choked = true;
+            self.physical.get_mut(index).ok_or(Error::StaleHandle)?.choked = true;
             count += 1;
         }
         Ok(count)
@@ -1688,6 +1783,7 @@ impl OwnedReceiver {
     /// Pure complete queue admission for transport stop. Physical pairs retain
     /// exact source tuples even when their original Core generation has retired.
     pub fn validate_all_physical_releases(&self) -> Result<(), Error> {
+        self.validate_receipt_union(0,0)?;
         let needed = self
             .physical
             .iter()
@@ -1711,7 +1807,10 @@ impl OwnedReceiver {
     pub fn queue_all_physical_releases(&mut self) -> Result<usize, Error> {
         self.validate_all_physical_releases()?;
         let mut count = 0;
-        for pair in &mut self.physical {
+        let mut cursor=self.physical.first_index();
+        while let Some(at)=cursor {
+            cursor=self.physical.next_index(at);
+            let Some(pair)=self.physical.get_mut(at) else{continue;};
             if pair.released {
                 continue;
             }
@@ -1730,6 +1829,7 @@ impl OwnedReceiver {
         channel: u8,
         sound_off: bool,
     ) -> Result<Applied, Error> {
+        self.validate_receipt_union(0,0)?;
         let channels = self.controller_channels(domain, channel);
         // This is the same explicitly enabled Part HostChannel projection as
         // accepted channel gestures, never a raw key-only Native lookup.
@@ -1834,7 +1934,10 @@ impl OwnedReceiver {
             }
         };
         if !sound_off {
-            for pair in &mut self.physical {
+            let mut cursor=self.physical.first_index();
+        while let Some(at)=cursor {
+            cursor=self.physical.next_index(at);
+            let Some(pair)=self.physical.get_mut(at) else{continue;};
                 if !pair.released
                     && (pair.kind == PhysicalKind::Wire
                         && pair.execution.protocol == domain.protocol()

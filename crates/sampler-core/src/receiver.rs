@@ -19,6 +19,7 @@ pub use channel_event::{ProgramBankIntent,ProgramSelection,ProgramPlaybackCapabi
 pub use state::{OwnedReceiver, TerminalRelease, Zone};
 pub use types::{
     Applied, ApplyError, Attribute, ChannelVoice, Controllers, Message, Value, Version,
+    ReceiverWireEpoch,RawAdmissionId,RawTerminalId,RawDecisionPhase,RawRejection,RawAdmission,RawAttackIntent,CapturedLogicalRawAttack,RawTerminalClaim,RawTerminalOutcome,WireAdmissionStatus,
 };
 
 pub const fn is_midi2_legacy_control(index: u8) -> bool {
@@ -144,6 +145,7 @@ impl Runtime {
         }
         if state.registration.is_some()
             || !state.bindings.is_empty()
+            || state.wire_fenced
             || !state.physical.is_empty()
             || !state.terminal_releases.is_empty()
         {
@@ -183,11 +185,12 @@ impl Runtime {
 
     /// Offaudio transfer back to the unbound facade. A completed-but-unflushed
     /// captured callback still owns its real context and therefore remains busy.
-    pub fn unbind_receiver(&mut self, id: ReceiverId) -> Result<OwnedReceiver, Error> {
-        let owner = self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
-        if self.publishing_receiver
+    fn receiver_unbind_busy(&self,id:ReceiverId)->Result<bool,Error>{
+        let owner=self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
+        Ok(self.publishing_receiver
             || owner.callback_references != 0
             || owner.event_value_references != 0
+            || owner.state.wire_fenced
             || !owner.state.physical.is_empty()
             || !owner.state.terminal_releases.is_empty()
             || !owner.state.bindings.is_empty()
@@ -202,10 +205,10 @@ impl Runtime {
                 slot.value
                     .as_ref()
                     .is_some_and(|callback| callback.context.receiver() == Some(id))
-            })
-        {
-            return Err(Error::Busy);
-        }
+            }))
+    }
+    pub fn unbind_receiver(&mut self,id:ReceiverId)->Result<OwnedReceiver,Error>{
+        if self.receiver_unbind_busy(id)?{return Err(Error::Busy);}
         let mut owner = self.receivers.take(id.0).ok_or(Error::StaleHandle)?;
         owner.state.registration = None;
         Ok(owner.state)
@@ -673,7 +676,24 @@ impl Runtime {
         })
     }
 
-    fn admit_receiver_input(
+    fn admit_receiver_input(&mut self,id:ReceiverId,input:Input,source:Input,pitch:NotePitch,velocity:f64,tuning:f64,silent:bool)->Result<NoteId,Error>{
+        // Explicit host identities and remapped physical host sources keep the
+        // legacy direct-trigger law; packet apply reserves raw intent itself.
+        if matches!(input.protocol,Protocol::Midi1|Protocol::Midi2)&&input.external_id.is_none()
+            &&source.protocol==input.protocol&&source.external_id.is_none(){
+            let state=self.receiver(id)?;
+            let voice=ChannelVoice{version:if input.protocol==Protocol::Midi2{Version::Midi2}else{Version::Midi1},group:state.group,channel:input.channel,
+                message:Message::NoteOn{key:input.key,velocity:Value::Bits32((velocity.clamp(0.,1.)*f64::from(u32::MAX)).round() as u32),attribute:Attribute::default()}};
+            if !velocity.is_finite()||!(0.0..=1.0).contains(&velocity)||!pitch.valid()||!tuning.is_finite(){return Err(Error::InvalidInput);}
+            let epoch=self.receiver_wire_epoch(id)?;
+            match self.reserve_raw_attack(epoch,RawAttackIntent{voice,source,frame:self.now})?{
+                RawAdmission::Pending(admission)=>self.commit_raw_attack(admission,CapturedLogicalRawAttack{input,pitch,velocity,tuning,silent}),
+                RawAdmission::Rejected{reason,..}=>Err(match reason{RawRejection::Core(error)=>error,RawRejection::Profile=>Error::InvalidInput,_=>Error::Capacity}),
+            }
+        }else{self.admit_receiver_input_decision(id,input,source,pitch,velocity,tuning,silent,None)}
+    }
+
+    fn admit_receiver_input_decision(
         &mut self,
         id: ReceiverId,
         input: Input,
@@ -682,6 +702,7 @@ impl Runtime {
         velocity: f64,
         tuning: f64,
         silent: bool,
+        decision:Option<Handle>,
     ) -> Result<NoteId, Error> {
         if !tuning.is_finite() || source.group >= 16 || source.channel >= 16 || source.key >= 128 {
             return Err(Error::InvalidInput);
@@ -737,7 +758,7 @@ impl Runtime {
             .ok_or(Error::Capacity)?;
         if kind == Some(PhysicalKind::Wire) && wire == state.limit
             || domain == ChannelDomain::HostChannel && native == state.limit
-            || kind.is_some() && state.physical.len() == state.physical_limit
+            || kind.is_some() && decision.is_none() && state.physical.available() == 0
         {
             return Err(Error::Capacity);
         }
@@ -783,13 +804,23 @@ impl Runtime {
         let event_plan=kind.and_then(|_|self.plans.get(self.active_plan.0)
             .filter(|generation|generation.prepared.external_programs).map(|_|self.active_plan));
         if let Some(plan)=event_plan {self.validate_physical_event_add(plan,1)?;}
+        let active=usize::from(self.receivers.get(id.0).ok_or(Error::StaleHandle)?.terminal_delivery.is_some());
+        state.validate_receipt_union(active,usize::from(decision.is_none()&&kind.is_some()&&(silent||event_plan.is_some())))?;
+        if let Some(decision)=decision{
+            let row=state.physical.decisions.get(decision).ok_or(Error::StaleHandle)?;
+            if !matches!(row.phase,state::PhysicalPhase::Pending(_))||row.epoch!=state.wire_epoch||row.source!=source{return Err(Error::StaleHandle);}
+        }
+
         self.publish_receiver_transaction(|runtime| {
             let note=if silent {runtime.note_on_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,Some(component))?}
                 else{runtime.trigger_owned_pitch_base(performance,input,source,pitch,intrinsic,velocity,expression,Some(component))?};
             let expression=runtime.expression_id(note)?;
             if let Some(plan)=event_plan {runtime.retain_physical_event(plan)?;}
-            if let Some(kind)=kind {runtime.receiver_state_mut(id)?.physical.push(PhysicalPair{note,expression:Some(expression),execution:input,source,kind,released:false,scripted:silent,terminal_received:false,choked:false,event_plan,
-                });
+            if let Some(kind)=kind {
+                let pair=PhysicalPair{note,expression:Some(expression),execution:input,source,kind,released:false,scripted:silent,terminal_received:false,choked:false,event_plan};
+                if let Some(decision)=decision {
+                    runtime.receiver_state_mut(id)?.physical.decisions.get_mut(decision).ok_or(Error::StaleHandle)?.phase=state::PhysicalPhase::Accepted(pair);
+                }else{runtime.receiver_state_mut(id)?.physical.push(pair)?;}
             }
             Ok(note)
         })
@@ -812,37 +843,10 @@ impl Runtime {
         }
     }
 
-    fn release_receiver_wire(
-        &mut self,
-        id: ReceiverId,
-        source: Input,
-        velocity: Option<f64>,
-    ) -> Result<Option<NoteId>, Error> {
-        let at = self
-            .receiver(id)?
-            .physical
-            .iter()
-            .position(|pair| pair.kind == PhysicalKind::Wire && pair.source == source);
-        let Some(at) = at else {
-            return Ok(None);
-        };
-        let pair = self.receiver(id)?.physical[at];
-        let queued=pair.event_plan.is_some()&&!pair.released;
-        if queued&&self.receiver(id)?.terminal_releases.len()==self.receiver(id)?.terminal_limit{return Err(Error::Capacity);}
-        self.validate_physical_event_row(pair)?;
-        self.publish_receiver_transaction(|runtime| {
-            match runtime.note_off_exact(pair.note, velocity) {
-                Ok(()) | Err(Error::StaleHandle) | Err(Error::ClosedNote) => {}
-                Err(error) => return Err(error),
-            }
-            runtime.freeze_receiver_expression(id, pair.expression);
-            if queued{
-                let receipt=runtime.physical_terminal(pair,velocity);
-                runtime.receiver_state_mut(id)?.terminal_releases.push(receipt);
-            }else if let Some(plan)=pair.event_plan{runtime.release_physical_event(plan)?;}
-            runtime.receiver_state_mut(id)?.physical.remove(at);
-            Ok(Some(pair.note))
-        })
+    fn release_receiver_wire(&mut self,id:ReceiverId,source:Input,velocity:Option<f64>)->Result<Option<NoteId>,Error>{
+        let epoch=self.receiver_wire_epoch(id)?;
+        let Some(claim)=self.claim_raw_terminal(epoch,source,velocity)?else{return Ok(None);};
+        match self.commit_raw_terminal(claim.terminal())?{RawTerminalOutcome::Released(note)=>Ok(Some(note)),_=>Ok(None)}
     }
 
     pub fn trigger_receiver(
@@ -919,17 +923,25 @@ impl Runtime {
             key: 0,
             external_id: None,
         };
+        if let Message::NoteOn{key,velocity,attribute}=voice.message {
+            if attribute.kind!=0&&voice.version!=Version::Midi2{return Ok(Applied::Unsupported);}
+            let input=Input{key,..input};let source=source.unwrap_or(input);
+            let epoch=self.receiver_wire_epoch(id)?;
+            return match self.reserve_raw_attack(epoch,RawAttackIntent{voice,source,frame:self.now})?{
+                RawAdmission::Rejected{reason:RawRejection::Profile,..}=>Ok(if self.receiver(id)?.configured{Applied::Ignored}else{Applied::Unsupported}),
+                RawAdmission::Rejected{reason,..}=>Err(match reason{RawRejection::Core(error)=>error,_=>Error::Capacity}.into()),
+                RawAdmission::Pending(admission)=>{
+                    let pitch=if voice.version==Version::Midi2&&attribute.kind==3{NotePitch::Absolute(f64::from(attribute.data)/512.)}else{NotePitch::Key(key)};
+                    Ok(Applied::Started(self.commit_raw_attack(admission,CapturedLogicalRawAttack{input,pitch,velocity:velocity.normalized(),tuning:0.,silent})?))
+                }
+            };
+        }
         let terminal = if let Message::NoteOff { key, .. } = voice.message {
             Some(source.unwrap_or(Input { key, ..input }))
         } else {
             None
         };
-        let captured = terminal.is_some_and(|source| {
-            state
-                .physical
-                .iter()
-                .any(|pair| pair.kind == PhysicalKind::Wire && pair.source == source)
-        });
+        let captured=terminal.is_some_and(|source|state.has_wire_source(source));
         let selected = state.wire[0].parameters[usize::from(voice.channel)];
         let mcm = voice.version == Version::Midi1 && selected.registered && selected.rpn == [0, 6];
         if mcm
@@ -1388,8 +1400,9 @@ impl Runtime {
         id: ReceiverId,
         matches: impl Fn(NoteId, Input) -> bool,
     ) -> Result<(), Error> {
-        self.receiver(id)?
-            .validate_native_physical_releases(matches)
+        let owner=self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
+        owner.state.validate_receipt_union(usize::from(owner.terminal_delivery.is_some()),0)?;
+        owner.state.validate_native_physical_releases(matches)
     }
     pub fn release_receiver_native(
         &mut self,
@@ -1406,9 +1419,10 @@ impl Runtime {
         }
         self.publish_receiver_transaction(|runtime| {
             let mut count = 0;
-            let length = runtime.receiver(id)?.physical.len();
-            for at in 0..length {
-                let pair = runtime.receiver(id)?.physical[at];
+            let mut cursor=runtime.receiver(id)?.physical.first_index();
+            while let Some(at)=cursor {
+                cursor=runtime.receiver(id)?.physical.next_index(at);
+                let Some(pair) = runtime.receiver(id)?.physical.get(at).copied() else{continue;};
                 if pair.kind != PhysicalKind::Native
                     || pair.terminal_received
                     || !matches(pair.note, pair.source)
@@ -1424,9 +1438,9 @@ impl Runtime {
                 if transfer {let receipt=runtime.physical_terminal(pair,velocity);runtime.receiver_state_mut(id)?.terminal_releases.push(receipt);}
                 else if let Some(plan)=pair.event_plan {runtime.release_physical_event(plan)?;}
                 let state=runtime.receiver_state_mut(id)?;
-                state.physical[at].event_plan=None;
-                state.physical[at].released = true;
-                state.physical[at].terminal_received = true;
+                state.physical.get_mut(at).ok_or(Error::StaleHandle)?.event_plan=None;
+                state.physical.get_mut(at).ok_or(Error::StaleHandle)?.released = true;
+                state.physical.get_mut(at).ok_or(Error::StaleHandle)?.terminal_received = true;
                 count += 1;
             }
             runtime
@@ -1444,9 +1458,10 @@ impl Runtime {
         self.receiver(id)?;
         self.publish_receiver_transaction(|runtime| {
             let mut count = 0;
-            let length = runtime.receiver(id)?.physical.len();
-            for at in 0..length {
-                let pair = runtime.receiver(id)?.physical[at];
+            let mut cursor=runtime.receiver(id)?.physical.first_index();
+            while let Some(at)=cursor {
+                cursor=runtime.receiver(id)?.physical.next_index(at);
+                let Some(pair) = runtime.receiver(id)?.physical.get(at).copied() else{continue;};
                 if pair.kind != PhysicalKind::Native
                     || pair.terminal_received
                     || pair.choked
@@ -1458,26 +1473,28 @@ impl Runtime {
                     Ok(()) | Err(Error::StaleHandle) | Err(Error::ClosedNote) => {}
                     Err(error) => return Err(error),
                 }
-                runtime.receiver_state_mut(id)?.physical[at].choked = true;
+                runtime.receiver_state_mut(id)?.physical.get_mut(at).ok_or(Error::StaleHandle)?.choked = true;
                 count += 1;
             }
             Ok(count)
         })
     }
     pub fn validate_receiver_all_releases(&self, id: ReceiverId) -> Result<(), Error> {
+        let owner=self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
+        owner.state.validate_receipt_union(usize::from(owner.terminal_delivery.is_some()),0)?;
         self.receiver(id)?.validate_all_physical_releases()
     ?;self.validate_physical_terminal_copies(id,|pair|!pair.released)
     }
     pub fn queue_receiver_all_releases(&mut self,id:ReceiverId)->Result<usize,Error>{
-        self.receiver(id)?.validate_all_physical_releases()?;
-        self.validate_physical_terminal_copies(id,|pair|!pair.released)?;
+        self.validate_receiver_all_releases(id)?;
         self.publish_receiver_transaction(|runtime| {
-            let length=runtime.receiver(id)?.physical.len();let mut count=0;
-            for at in 0..length {
-                let pair=runtime.receiver(id)?.physical[at];if pair.released{continue;}
+            let mut cursor=runtime.receiver(id)?.physical.first_index();let mut count=0;
+            while let Some(at)=cursor {
+                cursor=runtime.receiver(id)?.physical.next_index(at);
+                let Some(pair)=runtime.receiver(id)?.physical.get(at).copied() else{continue;};if pair.released{continue;}
                 runtime.freeze_receiver_expression(id,pair.expression);
                 if pair.scripted||pair.event_plan.is_some() {runtime.queue_physical_terminal_copy(id,pair,None)?;}
-                runtime.receiver_state_mut(id)?.physical[at].released = true;
+                runtime.receiver_state_mut(id)?.physical.get_mut(at).ok_or(Error::StaleHandle)?.released = true;
                 count += 1;
             }
             Ok(count)
@@ -1529,6 +1546,8 @@ impl Runtime {
         secondary: Option<ChannelScope>,
         sound_off: bool,
     ) -> Result<Applied, Error> {
+        let owner=self.receivers.get(id.0).ok_or(Error::StaleHandle)?;
+        owner.state.validate_receipt_union(usize::from(owner.terminal_delivery.is_some()),0)?;
         let state = self.receiver(id)?;
         let channels = primary.channels;
         let host = if sound_off { None } else { secondary };
@@ -1574,15 +1593,16 @@ impl Runtime {
                 }
             }
             if !sound_off {
-                let length = runtime.receiver(id)?.physical.len();
-                for at in 0..length {
-                    let pair = runtime.receiver(id)?.physical[at];
+                let mut cursor=runtime.receiver(id)?.physical.first_index();
+                while let Some(at)=cursor {
+                    cursor=runtime.receiver(id)?.physical.next_index(at);
+                    let Some(pair) = runtime.receiver(id)?.physical.get(at).copied() else{continue;};
                     if pair.released || !matches(pair) {
                         continue;
                     }
                     runtime.freeze_receiver_expression(id, pair.expression);
                     if pair.scripted||pair.event_plan.is_some() {runtime.queue_physical_terminal_copy(id,pair,None)?;}
-                    runtime.receiver_state_mut(id)?.physical[at].released = true;
+                    runtime.receiver_state_mut(id)?.physical.get_mut(at).ok_or(Error::StaleHandle)?.released = true;
                 }
             }
             Ok(if sound_off {
@@ -2310,7 +2330,7 @@ impl Runtime {
     pub fn receiver_memory(&self, id: ReceiverId) -> Result<ReceiverMemory, Error> {
         let state = self.receiver(id)?;
         let array = |count: usize, size: usize| count.checked_mul(size).ok_or(Error::Capacity);
-        let mut state_heap = state.per_note.retained_bytes()?;
+        let mut state_heap = state.per_note.retained_bytes()?.checked_add(state.physical.retained_bytes()?).ok_or(Error::Capacity)?;
         for (count, size) in [
             (
                 state.bindings.capacity(),
@@ -2324,10 +2344,7 @@ impl Runtime {
                 state.note_changes.capacity(),
                 std::mem::size_of::<(usize, per_note::Snapshot)>(),
             ),
-            (
-                state.physical.capacity(),
-                std::mem::size_of::<PhysicalPair>(),
-            ),
+
             (
                 state.terminal_releases.capacity(),
                 std::mem::size_of::<QueuedTerminal>(),
@@ -2594,5 +2611,106 @@ impl Runtime {
             if found.is_some(){return Err(Error::InvalidInput);}
             found=Some(ReceiverId(self.receivers.id(index)));
         }Ok(found)
+    }
+}
+
+
+impl Runtime {
+    fn checked_wire_epoch(&self,epoch:ReceiverWireEpoch)->Result<&OwnedReceiver,Error>{
+        let state=self.receiver(epoch.receiver)?;
+        if state.wire_epoch!=epoch.serial{return Err(Error::StaleHandle);}Ok(state)
+    }
+    pub fn receiver_wire_epoch(&self,id:ReceiverId)->Result<ReceiverWireEpoch,Error>{
+        Ok(ReceiverWireEpoch{receiver:id,serial:self.receiver(id)?.wire_epoch})
+    }
+    /// Reserve at actual ingress BEFORE scheduling. No Note/Expr/Plan is owned.
+    pub fn reserve_raw_attack(&mut self,epoch:ReceiverWireEpoch,intent:RawAttackIntent)->Result<RawAdmission,Error>{
+        let state=self.checked_wire_epoch(epoch)?;state.validate_raw_intent(intent)?;
+        if intent.frame>self.now{return Err(Error::PastEvent);}
+        let active=usize::from(self.receivers.get(epoch.receiver.0).ok_or(Error::StaleHandle)?.terminal_delivery.is_some());
+        let (decision,reason)=self.receiver_state_mut(epoch.receiver)?.reserve_wire_decision(intent,active)?;
+        let decision=RawAdmissionId{receiver:epoch.receiver,decision};
+        Ok(match reason{Some(reason)=>RawAdmission::Rejected{decision,reason},None=>RawAdmission::Pending(decision)})
+    }
+    pub fn raw_admission_phase(&self,id:RawAdmissionId)->Result<RawDecisionPhase,Error>{
+        let state=self.receiver(id.receiver)?;let row=state.physical.decisions.get(id.decision).ok_or(Error::StaleHandle)?;
+        if row.epoch!=state.wire_epoch{return Err(Error::StaleHandle);}Ok(row.phase())
+    }
+    /// Typed actual disposition, without applying due work or constructing IDs.
+    pub fn raw_rejection(&self,id:RawAdmissionId)->Result<Option<RawRejection>,Error>{
+        self.raw_admission_phase(id)?;
+        Ok(match self.receiver(id.receiver)?.physical.decisions.get(id.decision).ok_or(Error::StaleHandle)?.phase{state::PhysicalPhase::Rejected(reason)=>Some(reason),_=>None})
+    }
+    pub fn reject_raw_attack(&mut self,id:RawAdmissionId,reason:RawRejection)->Result<(),Error>{
+        self.raw_admission_phase(id)?;self.receiver_state_mut(id.receiver)?.reject_wire_decision(id.decision,reason)
+    }
+    pub fn commit_raw_attack(&mut self,id:RawAdmissionId,attack:CapturedLogicalRawAttack)->Result<NoteId,Error>{
+        let state=self.receiver(id.receiver)?;let row=*state.physical.decisions.get(id.decision).ok_or(Error::StaleHandle)?;
+        let state::PhysicalPhase::Pending(intent)=row.phase else{return Err(Error::StaleHandle);};
+        let protocol=if intent.voice.version==Version::Midi2{Protocol::Midi2}else{Protocol::Midi1};
+        if row.epoch!=state.wire_epoch{return Err(Error::StaleHandle);}
+        if attack.input.protocol!=protocol||attack.input.external_id.is_some()||attack.input.group>=16||attack.input.channel>=16||attack.input.key>=128
+            ||!attack.pitch.valid()||!attack.velocity.is_finite()||!(0.0..=1.0).contains(&attack.velocity)||!attack.tuning.is_finite(){return Err(Error::InvalidInput);}
+        if self.external_execution_aborted{return Err(Error::Canceled);}
+        self.apply_due();
+        let result=self.admit_receiver_input_decision(id.receiver,attack.input,row.source,attack.pitch,attack.velocity,attack.tuning,attack.silent,Some(id.decision));
+        if let Err(error)=result{self.receiver_state_mut(id.receiver)?.reject_wire_decision(id.decision,RawRejection::Core(error))?;}
+        result
+    }
+    pub fn claim_raw_terminal(&mut self,epoch:ReceiverWireEpoch,source:Input,velocity:Option<f64>)->Result<Option<RawTerminalClaim>,Error>{
+        self.checked_wire_epoch(epoch)?;
+        let Some(decision)=self.receiver_state_mut(epoch.receiver)?.claim_wire_terminal(source,velocity)?else{return Ok(None);};
+        let terminal=RawTerminalId{admission:RawAdmissionId{receiver:epoch.receiver,decision}};
+        self.raw_terminal_claim(terminal).map(Some)
+    }
+    /// Pure recovery of the same real terminal claim from its actual On token.
+    /// Used when a synchronous terminal observed a still-pending staged On.
+    pub fn raw_admission_terminal(&self,id:RawAdmissionId)->Result<Option<RawTerminalClaim>,Error>{
+        self.raw_admission_phase(id)?;
+        if self.receiver(id.receiver)?.physical.decisions.get(id.decision).ok_or(Error::StaleHandle)?.terminal.is_none(){return Ok(None);}
+        self.raw_terminal_claim(RawTerminalId{admission:id}).map(Some)
+    }
+    pub fn raw_terminal_claim(&self,terminal:RawTerminalId)->Result<RawTerminalClaim,Error>{
+        let id=terminal.admission;let state=self.receiver(id.receiver)?;
+        let row=state.physical.decisions.get(id.decision).ok_or(Error::StaleHandle)?;
+        if row.epoch!=state.wire_epoch||row.terminal.is_none(){return Err(Error::StaleHandle);}
+        Ok(RawTerminalClaim{terminal,phase:row.phase()})
+    }
+    pub fn commit_raw_terminal(&mut self,terminal:RawTerminalId)->Result<RawTerminalOutcome,Error>{
+        self.raw_terminal_claim(terminal)?;let id=terminal.admission;
+        let row=*self.receiver(id.receiver)?.physical.decisions.get(id.decision).ok_or(Error::StaleHandle)?;
+        let velocity=row.terminal.ok_or(Error::StaleHandle)?;
+        match row.phase{
+            state::PhysicalPhase::Pending(_)=>Err(Error::NotReady),
+            state::PhysicalPhase::Rejected(_)=>{self.receiver_state_mut(id.receiver)?.physical.decisions.remove(id.decision);Ok(RawTerminalOutcome::AbsorbedRejected)},
+            state::PhysicalPhase::Accepted(pair)=>{
+                if pair.kind!=PhysicalKind::Wire{return Err(Error::InvalidInput);}
+                let active=usize::from(self.receivers.get(id.receiver.0).ok_or(Error::StaleHandle)?.terminal_delivery.is_some());
+                self.receiver(id.receiver)?.validate_receipt_union(active,0)?;
+                self.validate_physical_event_row(pair)?;
+                self.publish_receiver_transaction(|runtime|{
+                    match runtime.note_off_exact(pair.note,velocity){Ok(())|Err(Error::StaleHandle)|Err(Error::ClosedNote)=>{},Err(error)=>return Err(error)}
+                    runtime.freeze_receiver_expression(id.receiver,pair.expression);
+                    if !pair.released&&pair.event_plan.is_some(){
+                        let receipt=runtime.physical_terminal(pair,velocity);runtime.receiver_state_mut(id.receiver)?.terminal_releases.push(receipt);
+                    }else if let Some(plan)=pair.event_plan{runtime.release_physical_event(plan)?;}
+                    runtime.receiver_state_mut(id.receiver)?.physical.decisions.remove(id.decision);
+                    Ok(if pair.released{RawTerminalOutcome::AbsorbedAlreadySynthetic}else{RawTerminalOutcome::Released(pair.note)})
+                })
+            }
+        }
+    }
+    pub fn receiver_has_unclaimed_wire_source(&self,id:ReceiverId,source:Input)->Result<bool,Error>{Ok(self.receiver(id)?.has_wire_source(source))}
+    pub fn receiver_wire_status(&self,id:ReceiverId)->Result<WireAdmissionStatus,Error>{
+        let owner=self.receivers.get(id.0).ok_or(Error::StaleHandle)?;let state=&owner.state;
+        let mut pending=0;let mut accepted=0;let mut rejected=0;let mut claimed=0;
+        for row in state.physical.decisions.slots.iter().filter_map(|slot|slot.value){
+            match row.phase{state::PhysicalPhase::Pending(_)=>pending+=1,state::PhysicalPhase::Accepted(pair)if pair.kind==PhysicalKind::Wire=>accepted+=1,state::PhysicalPhase::Rejected(_)=>rejected+=1,_=>{}}
+            claimed+=usize::from(row.terminal.is_some());
+        }
+        Ok(WireAdmissionStatus{epoch:ReceiverWireEpoch{receiver:id,serial:state.wire_epoch},fenced_unknown_debt:state.wire_fenced,
+            decisions:state.physical.decisions.count(),pending,accepted,rejected,claimed,decision_capacity:state.physical.capacity(),receipt_limit:state.terminal_limit,
+            queued_receipts:state.terminal_releases.len(),active_receipts:usize::from(owner.terminal_delivery.is_some()),future_receipts:state.future_receipts()?,
+            replacement_blocked:self.receiver_unbind_busy(id)?})
     }
 }
