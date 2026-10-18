@@ -668,3 +668,34 @@ fn v1_global_host_parameters_drive_plugin_audio_without_allocations() {
     assert_eq!(left, right);
     assert_eq!(dsp.unsupported, 0);
 }
+
+
+/// Test-host borrow of the SAME currently published Lua owner; callers must
+/// additionally validate this Arc against the installed Core epoch/Driver.
+#[cfg(feature = "shots")]
+impl PartShared {
+    pub(crate) fn widget_gate_uvi_owner(&self, epoch: u64) -> Option<Arc<sampler_uvi::scripted::UiBridge>> {
+        let scripts = self.scripts.lock().unwrap();
+        if self.generation.load(Ordering::Acquire) != epoch { return None; }
+        scripts.uvi.clone()
+    }
+}
+
+#[cfg(feature = "shots")]
+#[test]
+fn library_ui_owner_borrow_fences_epoch_and_returns_actual_replacement_arc() {
+    let source = "<UVI4><Program><EventProcessors><ScriptProcessor><script>Button('Actual')</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (_a, a) = sampler_uvi::scripted::ScriptThread::spawn(source.into(), (), Default::default()).unwrap();
+    let (_b, b) = sampler_uvi::scripted::ScriptThread::spawn(source.into(), (), Default::default()).unwrap();
+    let atoms = PartShared::default();
+    atoms.generation.store(3, Ordering::Release);
+    atoms.scripts.lock().unwrap().uvi = Some(a.ui.clone());
+    assert!(atoms.widget_gate_uvi_owner(2).is_none());
+    assert!(Arc::ptr_eq(&atoms.widget_gate_uvi_owner(3).unwrap(), &a.ui));
+    atoms.generation.store(4, Ordering::Release);
+    atoms.scripts.lock().unwrap().uvi = Some(b.ui.clone());
+    assert!(atoms.widget_gate_uvi_owner(3).is_none());
+    let current = atoms.widget_gate_uvi_owner(4).unwrap();
+    assert!(Arc::ptr_eq(&current, &b.ui));
+    assert!(!Arc::ptr_eq(&current, &a.ui));
+}
