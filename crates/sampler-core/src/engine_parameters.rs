@@ -215,15 +215,10 @@ impl EngineParameterLaw {
     /// Convert the normalized service range to a native DSP value. Use a law
     /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
     pub fn decode(self, value: i32) -> f64 {
-        if self == Self::WavetableForm {
-            return f64::from(value.clamp(0, 33));
-        }
-        if self == Self::SignedNormalized {
-            return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6;
-        }
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
-            Self::WavetableForm | Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm => f64::from(value.clamp(0, 33)),
+            Self::SignedNormalized => f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6,
             Self::Switch => f64::from(value != 0),
             Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
             Self::ScaledSignedCubic { scale } => scale * Self::SignedCubic.decode(value),
@@ -279,14 +274,9 @@ impl EngineParameterLaw {
     /// Convert a finite native DSP value to the normalized service range.
     /// Frontends should use normalized_value to validate authored input.
     pub fn encode(self, value: f64) -> i32 {
-        if self == Self::WavetableForm {
-            return value.round().clamp(0., 33.) as i32;
-        }
-        if self == Self::SignedNormalized {
-            return (value * 1e6).round().clamp(-1e6, 1e6) as i32;
-        }
         (match self {
-            Self::WavetableForm | Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm => return value.round().clamp(0., 33.) as i32,
+            Self::SignedNormalized => return (value * 1e6).round().clamp(-1e6, 1e6) as i32,
             Self::Switch => f64::from(value != 0.),
             Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
             Self::ScaledSignedCubic { scale } => 500_000. * ((value / scale).cbrt() + 1.),
@@ -413,6 +403,13 @@ impl Prepared {
         let mut controls = self.controls.to_vec();
         let mut bindings = self.engine_parameters.to_vec();
         let mut lanes = self.envelope_controls.to_vec();
+        // Each admitted group adds exactly six definitions and bindings. Use
+        // the iterator's known minimum, bounded by the possible group count,
+        // so a normal bank batch does not repeatedly grow both schema arrays.
+        let additional = envelopes.size_hint().0.min(self.group_count as usize)
+            .checked_mul(ENVELOPE_STAGES.len()).ok_or(Error::Capacity)?;
+        controls.try_reserve(additional).map_err(|_| Error::Capacity)?;
+        bindings.try_reserve(additional).map_err(|_| Error::Capacity)?;
         lanes.resize(self.group_count as usize, [None; 6]);
         for (group, physical_group, slot, authored) in envelopes {
             if group >= self.group_count || physical_group < 0 || slot < 0 {
@@ -486,6 +483,7 @@ impl Prepared {
         }
         self.engine_parameters = bindings.into_boxed_slice();
         self.engine_lookups = lookups.into_boxed_slice();
+        self.refresh_real_controls()?;
         Ok(self)
     }
 }
@@ -797,8 +795,7 @@ impl Runtime {
         };
         // Missing controls are ignored, like v1 offsets for a group without that parameter.
         let mut changed = false;
-        for binding in &prepared.engine_parameters {
-            let index = prepared.control_index(binding.control).unwrap();
+        for (binding, &index) in prepared.engine_parameters.iter().zip(&prepared.engine_controls) {
             let offset: f32 = offsets
                 .iter()
                 .filter(|o| matches(o.address, binding))
@@ -812,7 +809,7 @@ impl Runtime {
             if binding.law == EngineParameterLaw::WavetableForm && offset != 0. {
                 return Err(Error::InvalidInput);
             }
-            changed |= generation.controls.offsets[index] != offset;
+            changed |= generation.controls.offset(index) != offset;
         }
         if !changed {
             return Ok(());
@@ -823,20 +820,15 @@ impl Runtime {
             .checked_add(1)
             .filter(|r| r.checked_add(generation.controls.pending as u64).is_some())
             .ok_or(Error::Capacity)?;
-        for binding in &prepared.engine_parameters {
-            let index = prepared.control_index(binding.control).unwrap();
+        for (binding, &index) in prepared.engine_parameters.iter().zip(&prepared.engine_controls) {
             let offset: f32 = offsets
                 .iter()
                 .filter(|o| matches(o.address, binding))
                 .map(|o| o.offset)
                 .sum();
-            if generation.controls.offsets[index] != offset {
-                generation.controls.offsets[index] = offset;
-                let value = generation.controls.playing(prepared, index);
-                generation.controls.values[index] = value;
-                generation
-                    .dsp
-                    .edit_control(prepared, index, value, self.now);
+            if generation.controls.offset(index) != offset {
+                let value = generation.controls.set_offset(prepared, index, offset);
+                generation.dsp.edit_control(prepared, binding.control, value, self.now);
             }
         }
         generation.controls.revision = revision;
@@ -943,22 +935,12 @@ impl Runtime {
                 return Ok(layer_encode(target, value));
             }
         }
-        let b = self
-            .plans
-            .get(plan.0)
-            .ok_or(Error::StaleHandle)?
-            .prepared
-            .engine_parameters
-            .iter()
-            .find(|b| b.address == address)
-            .copied();
-        if let Some(b) = b {
-            let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-            let index = generation.prepared.control_index(b.control)?;
-            if let ControlValue::Real(v) = generation.controls.base[index] {
-                return Ok(b.law.encode(v));
-            }
-        }
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let b=generation.prepared.engine_parameters.iter().zip(&generation.prepared.engine_controls)
+            .find(|(b,_)| b.address==address);
+        if let Some((b,&control))=b
+            && let Some(v)=generation.controls.engine_base(control)
+        { return Ok(b.law.encode(v)); }
         if let Some((kind, id, law)) = slot_parameter(name, address) {
             if let Ok(ControlValue::Real(v)) = self.control_value(plan, id) {
                 return Ok(if kind == SlotKind::Bypass {

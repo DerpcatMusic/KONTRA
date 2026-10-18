@@ -23,28 +23,21 @@ impl Runtime {
         frames: u32,
         mut accept: impl FnMut(SampleDemand) -> bool,
     ) -> Result<bool, Error> {
-        let Some(VoiceDemand {
-            cursor,
-            envelope,
-            at,
-            frames,
-            asset,
-        }) = self.voice_demand(voice, frames)?
-        else {
-            return Ok(true);
-        };
-        if cursor.bounded_demand() && frames > 0 {
-            return Ok(cursor.runway_reach(frames).into_iter().flatten().all(|(range, offset)| {
-                accept(SampleDemand { asset, frames: range, deadline: at + u64::from(offset) })
-            }));
+        let Some(demand) = self.voice_demand(voice, frames)? else { return Ok(true); };
+        let mut complete = true;
+        for ordinal in 0..demand.source.physical_count() {
+            let asset = demand.source.physical(ordinal).ok_or(Error::InvalidInput)?.asset_id();
+            let mut visit = |offset, frames| {
+                let keep = accept(SampleDemand { asset, frames, deadline: demand.at + u64::from(offset) });
+                complete &= keep; keep
+            };
+            if demand.cursor.bounded_demand() && demand.frames > 0 {
+                for (range, offset) in demand.cursor.runway_reach(demand.frames).into_iter().flatten() {
+                    if !visit(offset, range) { return Ok(false); }
+                }
+            } else if !demand.cursor.visit_demand(demand.frames, demand.envelope, visit) { return Ok(false); }
         }
-        Ok(cursor.visit_demand(frames, envelope, |offset, frames| {
-            accept(SampleDemand {
-                asset,
-                frames,
-                deadline: at + u64::from(offset),
-            })
-        }))
+        Ok(complete)
     }
 
     /// A voice's cursor at its rendered pitch over the horizon, from its
@@ -53,7 +46,7 @@ impl Runtime {
         &self,
         voice: VoiceId,
         frames: u32,
-    ) -> Result<Option<VoiceDemand>, Error> {
+    ) -> Result<Option<VoiceDemand<'_>>, Error> {
         let end = self
             .now
             .checked_add(u64::from(frames))
@@ -61,6 +54,8 @@ impl Runtime {
         let v = self.voices.get(voice.0).ok_or(Error::StaleHandle)?;
         let family = self.families.get(v.family.0).unwrap();
         let note = self.notes.get(family.note.0).unwrap();
+        let source = self.plans.get(note.plan.0).unwrap().source(v.sample).ok_or(Error::NotReady)?;
+        if source.stereo().is_none() && !source.is_paged() { return Ok(None); }
         let at = if v.started {
             self.now
         } else {
@@ -94,17 +89,17 @@ impl Runtime {
             envelope: v.envelope,
             at,
             frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
-            asset: self.plans.get(note.plan.0).unwrap().asset(v.sample).asset_id(),
+            source,
         }))
     }
 }
 
-pub(crate) struct VoiceDemand {
+pub(crate) struct VoiceDemand<'a> {
     pub cursor: Cursor,
     pub envelope: EnvelopeState,
     pub at: u64,
     pub frames: u32,
-    pub asset: AssetId,
+    pub source: crate::SourceStorageRef<'a>,
 }
 
 /// Up to four physical ranges, each with the output offset first needing it.
@@ -333,6 +328,23 @@ impl Cursor {
         let span = ((f64::from(frames) * step).ceil() as usize)
             .saturating_add(2 * crate::resample::Kernel::radius(step) as usize + 1);
         pages(view).min(legs * (span.div_ceil(PAGE_FRAMES) + 1))
+    }
+
+    /// Phase-independent physical page bound for a retained logical family.
+    /// Reuses the existing fallback span/leg law even when the current fast
+    /// linear reach happens to align to fewer pages. Source heads may retire;
+    /// reservation must not grow merely because playback crossed a page edge.
+    pub(crate) fn family_reservation_pages(&self,frames:u32)->usize {
+        if frames==0 || self.start>=self.end {return 0;}
+        let full=(self.end-1)/crate::PAGE_FRAMES-self.start/crate::PAGE_FRAMES+1;
+        if self.bounded_demand && (self.loops.is_some() || self.wavetable.is_some() || self.exit.is_some()) {return full;}
+        let (step,legs)=if let Some(loops)=self.loops {
+            let tuning=loops.slots.iter().flatten().fold(1.0f64,|max,slot|max.max(slot.tuning));
+            (self.step*tuning,2*loops.slots.iter().flatten().count()+1)
+        } else {(self.step,if self.loop_range.is_some_and(|r|r.shape!=crate::LoopShape::PingPong) {2}else{1})};
+        let span=((f64::from(frames-1)*step).ceil() as usize)
+            .saturating_add((2*crate::resample::Kernel::radius(step) as usize).saturating_add(1));
+        full.min(legs.saturating_mul(span.div_ceil(crate::PAGE_FRAMES).saturating_add(1)))
     }
 
     /// Output frames until a linear stretch (see `linear_reach`) first reads

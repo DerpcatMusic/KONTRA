@@ -615,13 +615,14 @@ impl Driver {
                         && (next.pointer.buttons, next.pointer.mods)
                             == (input.pointer.buttons, input.pointer.mods)
                     {
-                        let Some(Pending::Drag(next)) = self.pending.pop_front() else {
-                            unreachable!()
-                        };
+                        // Copy the pointer while the front is proven to be a
+                        // compatible drag; removing it needs no second dispatch.
+                        let pointer = next.pointer;
+                        let _ = self.pending.pop_front();
                         self.count(Counter::InputsDispatched, 1);
                         self.count(Counter::DragCoalesced, 1);
                         input.trail.extend(input.pointer.pos);
-                        input.pointer = next.pointer;
+                        input.pointer = pointer;
                     }
                     input
                 }

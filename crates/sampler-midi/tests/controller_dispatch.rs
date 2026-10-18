@@ -82,6 +82,8 @@ fn midi1_and_midi2_dispatch_before_pedals_or_downstream_controller_projection() 
             let mut ingress = Ingress::new(2, [Some(version); 16]);
             support::without_heap(|| {
                 let domain = rt.performance(1).unwrap();
+                let address = ChannelAddress { protocol: if version == Version::Midi1 { Protocol::Midi1 } else { Protocol::Midi2 },
+                    port: 2, group: 2, channel: 3 };
                 let len = if version == Version::Midi1 { 1 } else { 2 };
                 let on = if version == Version::Midi1 {
                     [0x2293_3c7f, 0]
@@ -114,17 +116,19 @@ fn midi1_and_midi2_dispatch_before_pedals_or_downstream_controller_projection() 
                 assert_origin(&mut rt, [2, 2, 3]);
                 rt.key_up(note, None).unwrap();
                 assert_eq!(rt.note(note).unwrap().2, remap);
-                assert_eq!(rt.controller(domain, number as u8), Ok(0));
+                assert_eq!(rt.channel_controller(domain, address, number as u8), Ok(0));
                 let expected = if version == Version::Midi1 {
                     u32::MAX
                 } else {
                     0x80000001
                 };
-                assert_eq!(rt.input_controller(domain, number as u8), Ok(expected));
+                assert_eq!(rt.channel_input_controller(domain, address, number as u8), Ok(expected));
                 assert_eq!(
-                    rt.controller(domain, 64),
+                    rt.channel_controller(domain, address, 64),
                     Ok(if remap { expected } else { 0 })
                 );
+                assert_eq!(rt.controller(domain, 64), Ok(0));
+                assert_eq!(rt.input_controller(domain, number as u8), Ok(0));
                 let up = if version == Version::Midi1 {
                     [0x22b3_0000 | (number << 8), 0]
                 } else {
@@ -173,7 +177,11 @@ fn an_mpe_manager_remap_to_sustain_retains_the_entire_zone_scope() {
             rt.key_up(note, None).unwrap();
             assert!(rt.note(note).unwrap().2);
             assert_eq!(rt.controller(domain, 1), Ok(0));
-            assert_eq!(rt.controller(domain, 64), Ok(u32::MAX));
+            let member_address = ChannelAddress { protocol: Protocol::Midi1, port: 2, group: 3, channel: member as u8 };
+            let manager_address = ChannelAddress { channel: manager as u8, ..member_address };
+            assert_eq!(rt.channel_controller(domain, member_address, 64), Ok(u32::MAX));
+            assert_eq!(rt.channel_controller(domain, manager_address, 64), Ok(u32::MAX));
+            assert_eq!(rt.controller(domain, 64), Ok(0));
             let up = [0x23b0_0100 | (manager << 16)];
             mpe.apply(&mut rt, Packets::new(&up).next().unwrap().unwrap())
                 .unwrap();

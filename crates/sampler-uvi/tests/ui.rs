@@ -384,3 +384,202 @@ fn snapshot_of_a_large_ui_stays_cheap() {
     let each = start.elapsed() / 20;
     assert!(each < std::time::Duration::from_millis(40), "{each:?}");
 }
+
+
+#[test]
+fn menu_text_is_current_selected_text_in_real_changed_parameter_callback() {
+    use sampler_uvi::script::{Command,Param,Scope};
+    let mut h=host(r#"
+      local menu=Menu('Dynamics',{'Soft','Loud'},2)
+      menu.changed=function(self)
+        chosen=self.text
+        Program:setParameter('Gain',self.text=='Soft' and 0.25 or 0.75)
+      end
+    "#);
+    assert!(h.take_commands().is_empty());
+    h.set_control(control_id(1,0),1.).unwrap();
+    assert_eq!(h.global_text("chosen"),"Soft");
+    let commands=h.take_commands();
+    assert!(matches!(&commands[..],[Command::Parameter{scope:Scope::Program,param:Param::Gain,value,authored}] if *value==0.25&&*authored==1.));
+    h.set_control(control_id(1,0),2.).unwrap();
+    assert_eq!(h.global_text("chosen"),"Loud");
+    assert!(matches!(&h.take_commands()[..],[Command::Parameter{scope:Scope::Program,param:Param::Gain,value,..}] if *value==0.75));
+    assert!(h.findings().is_empty(),"{:?}",h.findings());
+}
+
+#[test]
+fn menu_text_choice_changes_normal_driver_runtime_pcm_from_same_held_source() {
+    use sampler_core::{Envelope,Input,Limits,Pcm,Playback,Prepared,Protocol,Region,Runtime};
+    use sampler_uvi::scripted::Driver;
+    fn runtime()->Runtime {
+        let pcm=Pcm::new(48_000,vec![[0.25,-0.125];1024].into_boxed_slice()).unwrap();
+        let region=Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,
+            envelope:Envelope::new(0,0,0,1.,0).unwrap(),playback:Playback::default()};
+        let plan=Prepared::new(48_000,vec![pcm],vec![region],1).unwrap();
+        let limits=Limits::for_plan(&plan,4,4);Runtime::new(plan,limits).unwrap()
+    }
+    let mut candidate=runtime();let mut reference=runtime();
+    let input=Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(1)};
+    let note=candidate.trigger(input,60,1.).unwrap();reference.trigger(input,60,1.).unwrap();
+    let mut before=[[0.;2];32];let mut expected_before=[[0.;2];32];
+    candidate.render(&mut before).unwrap();reference.render(&mut expected_before).unwrap();assert_eq!(before,expected_before);
+    let mut h=host(r#"
+      local menu=Menu('Dynamics',{'Soft','Loud'},2)
+      menu.changed=function(self) Program:setParameter('Gain',self.text=='Soft' and 0.25 or 0.75) end
+    "#);
+    h.set_control(control_id(1,0),1.).unwrap();
+    let mut driver=Driver::new(h,vec![],48_000);driver.wake(&mut candidate).unwrap();
+    let mut got=[[0.;2];64];let mut wanted=[[0.;2];64];candidate.render(&mut got).unwrap();reference.render(&mut wanted).unwrap();
+    assert!(wanted.iter().flatten().any(|sample|sample.abs()>0.01));
+    // Existing Program gain transport quantizes to one millidecibel; the
+    // tolerance admits that law while strongly separating quarter from 3/4.
+    for (a,b) in got.iter().flatten().zip(wanted.iter().flatten()){
+        assert!((f64::from(*a)-f64::from(*b)*0.25).abs()<2e-5,"selected menu text must choose quarter-gain PCM, got {a}, unity reference {b}");
+    }
+    assert_eq!(candidate.input_held(note),Ok(true));assert_eq!(candidate.voice_count(),1);
+    assert_eq!(candidate.stats().nonfinite_frames,0);assert_eq!(candidate.stats().voice_pool_refusals,0);
+}
+
+#[test]
+fn menu_text_and_get_text_follow_current_items_and_return_empty_for_missing_entry() {
+    let h=host(r#"
+      local menu=Menu('Mode',{'One','Two'},2)
+      initial=menu.text
+      menu:setItem(2,'Updated')
+      updated=menu.text
+      matching=menu.text==menu.selectedText and menu.text==menu:getText(menu.value)
+      missingLow=type(menu:getText(0))..':'..tostring(menu:getText(0))
+      missingHigh=type(menu:getText(3))..':'..tostring(menu:getText(3))
+      menu:clear()
+      cleared=menu.text
+      local label=Label('Status');label.text='authored text';labelText=label.text
+    "#);
+    assert_eq!(h.global_text("initial"),"Two");assert_eq!(h.global_text("updated"),"Updated");
+    assert_eq!(h.global_text("matching"),"true");assert_eq!(h.global_text("missingLow"),"string:");
+    assert_eq!(h.global_text("missingHigh"),"string:");assert_eq!(h.global_text("cleared"),"");
+    assert_eq!(h.global_text("labelText"),"authored text");assert!(h.findings().is_empty(),"{:?}",h.findings());
+}
+
+
+#[test]
+fn widget_w_h_aliases_share_real_dimensions_and_authored_parent_geometry() {
+    let h=host(r#"
+      local p=Panel{'Parent',bounds={10,20,200,100}}
+      local k=p:Knob('Gain',0,0,1)
+      k.w=31;k.h=47;k.position={3,5}
+      aliasReads=k.w==k.width and k.h==k.height and k.size[1]==31 and k.bounds[4]==47
+      k.width=42;k.height=53
+      reverseReads=k.w==42 and k.h==53
+      local label=Label{'Named',w=19,h=23,x=60,y=7}
+      local winner=Label{'Winner',w=9,h=11,bounds={70,8,29,33}}
+      local image=Image('authored.png');image.w=91;image.h=37
+    "#);
+    assert_eq!(h.global_text("aliasReads"),"true");assert_eq!(h.global_text("reverseReads"),"true");
+    let face=h.interface();face.validate().unwrap();
+    assert_eq!(face.widgets[1].rect,Rect::new(3,5,42,53));assert_eq!(face.page_rect(WidgetRef(1)),Rect::new(13,25,42,53));
+    assert_eq!(face.widgets[2].rect,Rect::new(60,7,19,23));assert_eq!(face.widgets[3].rect,Rect::new(70,8,29,33));
+    assert_eq!(face.widgets[4].rect.width,91.);assert_eq!(face.widgets[4].rect.height,37.);
+    assert!(h.findings().is_empty(),"{:?}",h.findings());
+}
+
+#[test]
+fn table_length_growth_publishes_default_cells_bindings_and_real_new_cell_callback() {
+    use sampler_uvi::script::{Command,Param,Scope};
+    let mut h=host(r#"
+      local steps=Table('Steps',2,0.25,0,1,false);steps:setValue(1,0.75,false);steps.default=0.5
+      local grow=Button('Grow');grow.changed=function() steps.length=4 end
+      steps.changed=function(self,index) changedIndex=index;Program:setParameter('Gain',self:getValue(index)) end
+    "#);
+    let before=h.ui_revision();h.set_control(control_id(2,0),1.).unwrap();assert!(h.ui_revision()>before);
+    let face=h.interface();face.validate().unwrap();
+    assert!(matches!(&face.widgets[0].kind,Kind::Table{columns:4,cells,..}if cells==&[0.75,0.25,0.5,0.5]));
+    assert_eq!(face.widgets[0].components,(1..=4).map(|i|control_id(1,i)).collect::<Vec<_>>());
+    assert!(h.control_values().contains(&(control_id(1,4),0.5)));
+    h.set_control(control_id(1,4),0.625).unwrap();assert_eq!(h.global_text("changedIndex"),"4");
+    assert!(matches!(&h.take_commands()[..],[Command::Parameter{scope:Scope::Program,param:Param::Gain,value,..}]if *value==0.625));
+    assert!(h.findings().is_empty(),"{:?}",h.findings());
+}
+
+#[test]
+fn table_length_shrink_and_regrow_discard_removed_cells_and_save_only_current_shape() {
+    let mut h=host(r#"
+      local steps=Table('Steps',4,0.125,0,1,false);steps:setValue(1,0.75,false);steps:setValue(4,0.875,false)
+      local resize=Button('Resize');resize.changed=function()
+        if steps.length==4 then steps.length=2 else steps.default=0.375;steps.length=4 end
+      end
+    "#);
+    h.set_control(control_id(2,0),1.).unwrap();let face=h.interface();
+    assert!(matches!(&face.widgets[0].kind,Kind::Table{columns:2,cells,..}if cells==&[0.75,0.125]));
+    assert_eq!(face.widgets[0].components,vec![control_id(1,1),control_id(1,2)]);
+    let saved=h.save_ui_state().unwrap();let (_,_,sampler_uvi::script::SavedValue::Table(values))=&saved.widgets[0]else{panic!("actual Table saved state")};
+    assert_eq!(values.len(),2,"removed cells cannot survive in the saved value array");
+    h.set_control(control_id(2,0),1.).unwrap();let face=h.interface();
+    assert!(matches!(&face.widgets[0].kind,Kind::Table{columns:4,cells,..}if cells==&[0.75,0.125,0.375,0.375]));
+    assert_eq!(h.control_values().iter().filter(|(id,_)|(1..=4).any(|i|*id==control_id(1,i))).count(),4);
+}
+
+#[test]
+fn table_length_zero_and_invalid_host_shapes_do_not_publish_partial_value_arrays() {
+    let h=host(r#"
+      local steps=Table('Steps',2,0.25,0,1,false);steps:setValue(2,0.75,false)
+      local original=steps.values
+      for _,bad in ipairs({-1,0.5,math.huge,0/0,'3',4294967296}) do
+        assert(not pcall(function() steps.length=bad end))
+        assert(steps.length==2 and steps.values==original and steps:getValue(1)==0.25 and steps:getValue(2)==0.75)
+      end
+      steps.length=0;emptyLength=steps.length;steps.default=0.5;steps.length=2
+      completed=true
+    "#);
+    assert_eq!(h.global_text("completed"),"true");assert_eq!(h.global_text("emptyLength"),"0");
+    let face=h.interface();assert!(matches!(&face.widgets[0].kind,Kind::Table{columns:2,cells,..}if cells==&[0.5,0.5]));
+    assert!(h.findings().is_empty(),"{:?}",h.findings());
+}
+
+
+#[test]
+fn resized_table_values_roundtrip_through_real_save_and_restore_callbacks() {
+    for (initial,target) in [(2,4),(4,2)] {
+        let script=format!(r#"
+          calls=0
+          local steps=Table('Steps',{initial},0.25,0,1,false);steps.length={target}
+          steps.changed=function(self,index) calls=calls+1;lastIndex=index;lastValue=self:getValue(index) end
+        "#);
+        let source=xml(&script);let mut original=ScriptHost::new(&source,(),Config::default()).unwrap();
+        original.set_control(control_id(1,1),0.5).unwrap();original.set_control(control_id(1,target),0.625).unwrap();
+        let saved=original.save_ui_state().unwrap();let bytes=serde_json::to_vec(&saved).unwrap();
+        let state:sampler_uvi::script::UiState=serde_json::from_slice(&bytes).unwrap();
+        let restored=ScriptHost::new_with_ui_state(&source,(),Config::default(),Some(&state)).unwrap();
+        let face=restored.interface();face.validate().unwrap();let mut expected=vec![0.25;target];expected[0]=0.5;expected[target-1]=0.625;
+        assert!(matches!(&face.widgets[0].kind,Kind::Table{columns,cells,..}if *columns==target as u32&&cells==&expected));
+        assert_eq!(restored.global_text("calls"),"2");assert_eq!(restored.global_text("lastIndex"),target.to_string());assert_eq!(restored.global_text("lastValue"),"0.625");
+        assert_eq!(restored.control_values(),expected.iter().enumerate().map(|(i,value)|(control_id(1,i+1),*value)).collect::<Vec<_>>());
+        assert_eq!(restored.save_ui_state().unwrap(),saved);assert!(restored.findings().is_empty(),"{:?}",restored.findings());
+        assert_ne!(control_id(1,u32::MAX as usize),control_id(2,0),"component occupies exactly the low32 bits without a widget alias");
+    }
+}
+
+#[test]
+fn table_resize_work_exhaustion_keeps_prior_shape_and_cells() {
+    let source=xml(r#"
+      local steps=Table('Steps',2,0.25,0,1,false);steps:setValue(2,0.75,false)
+      local resize=Button('Resize');resize.changed=function() entered=true;steps.length=1000000;finished=true end
+    "#);
+    let mut h=ScriptHost::new(&source,(),Config{callback_work:4096,..Config::default()}).unwrap();
+    let error=h.set_control(control_id(2,0),1.).unwrap_err();assert!(error.contains("work budget exceeded"),"{error}");
+    assert_eq!(h.global_text("entered"),"true");assert_eq!(h.global_text("finished"),"nil");
+    let face=h.interface();assert!(matches!(&face.widgets[0].kind,Kind::Table{columns:2,cells,..}if cells==&[0.25,0.75]));
+    assert_eq!(face.widgets[0].components,vec![control_id(1,1),control_id(1,2)]);
+}
+
+#[test]
+fn table_resize_vm_memory_failure_keeps_prior_shape_and_cells() {
+    let source=xml(r#"
+      local steps=Table('Steps',2,0.25,0,1,false);steps:setValue(2,0.75,false)
+      local resize=Button('Resize');resize.changed=function() entered=true;steps.length=16777216;finished=true end
+    "#);
+    let mut h=ScriptHost::new(&source,(),Config{memory:16<<20,callback_work:1<<25,..Config::default()}).unwrap();
+    let error=h.set_control(control_id(2,0),1.).unwrap_err();assert!(error.to_lowercase().contains("memory"),"{error}");
+    assert_eq!(h.global_text("entered"),"true");assert_eq!(h.global_text("finished"),"nil");
+    let face=h.interface();assert!(matches!(&face.widgets[0].kind,Kind::Table{columns:2,cells,..}if cells==&[0.25,0.75]));
+    assert_eq!(face.widgets[0].components,vec![control_id(1,1),control_id(1,2)]);
+}

@@ -211,24 +211,40 @@ fn label_text_shows_over_a_transparent_background_picture() {
     std::fs::write(pictures.join("transparent.png"), png(1, 1, [0, 0, 0, 0])).unwrap();
     std::fs::write(pictures.join("wall.png"), png(160, 40, [29, 29, 30, 255])).unwrap();
     let path = dir.path().join("Instruments/x.nki");
-    let mut label = Widget::new("$readout", PageRef(0), Rect::new(10, 10, 112, 20), Kind::Label);
+    let mut label = Widget::new(
+        "$readout",
+        PageRef(0),
+        Rect::new(10, 10, 112, 20),
+        Kind::Label,
+    );
     label.text = "VALUE READOUT".into();
     label.style = Some(ir::StyleRef(0));
-    label.images.push(ImageUse::new(ir::AssetRef(0), ir::Role::Background));
+    label
+        .images
+        .push(ImageUse::new(ir::AssetRef(0), ir::Role::Background));
     let image = |path: &str| ir::Asset {
         path: path.into(),
         kind: AssetKind::Image(ImageMeta {
             size: Some(if path.ends_with("transparent.png") {
-                ir::Size { width: 1.0, height: 1.0 }
+                ir::Size {
+                    width: 1.0,
+                    height: 1.0,
+                }
             } else {
-                ir::Size { width: 160.0, height: 40.0 }
+                ir::Size {
+                    width: 160.0,
+                    height: 40.0,
+                }
             }),
             ..Default::default()
         }),
     };
     let face = ir::Interface {
         pages: vec![ir::Page {
-            size: ir::Size { width: 160.0, height: 40.0 },
+            size: ir::Size {
+                width: 160.0,
+                height: 40.0,
+            },
             background: ir::Background {
                 image: Some(ir::AssetRef(1)),
                 ..Default::default()
@@ -242,18 +258,30 @@ fn label_text_shows_over_a_transparent_background_picture() {
             color: ir::Rgba::rgb(0xfefefe),
             align: ir::Align::Center,
         }],
-        assets: vec![image("Resources/pictures/transparent.png"), image("Resources/pictures/wall.png")],
+        assets: vec![
+            image("Resources/pictures/transparent.png"),
+            image("Resources/pictures/wall.png"),
+        ],
         ..Default::default()
     };
     let mut natural = face.clone();
     natural.widgets[0].auto_size = true;
     natural.widgets[0].default_axes = [true; 2];
-    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    assert_eq!(
+        ir_view::resolved(&natural).widgets[0].rect,
+        Rect::new(10, 10, 1, 1)
+    );
     natural.widgets[0].rect.width = 112.0;
     natural.widgets[0].default_axes = [false, true];
-    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 112, 1));
+    assert_eq!(
+        ir_view::resolved(&natural).widgets[0].rect,
+        Rect::new(10, 10, 112, 1)
+    );
     natural.widgets[0].kind = Kind::Switch;
-    assert_eq!(ir_view::resolved(&natural).widgets[0].rect, Rect::new(10, 10, 1, 1));
+    assert_eq!(
+        ir_view::resolved(&natural).widgets[0].rect,
+        Rect::new(10, 10, 1, 1)
+    );
     let face = ir_view::resolved(&face);
     assert_eq!(face.widgets[0].rect, Rect::new(10, 10, 112, 20));
     let mut assets = ir_view::Assets::default();
@@ -261,7 +289,14 @@ fn label_text_shows_over_a_transparent_background_picture() {
     let mut ui = theme::ui();
     let mut settled = 0;
     for _ in 0..2000 {
-        assets.prepare(&path, &face, PageRef(0), ir::Presentation::Bitmap, 1., &values);
+        assets.prepare(
+            &path,
+            &face,
+            PageRef(0),
+            ir::Presentation::Bitmap,
+            1.,
+            &values,
+        );
         let root = col![ir_view::view(
             &mut ui,
             &face,
@@ -276,14 +311,21 @@ fn label_text_shows_over_a_transparent_background_picture() {
         .fill(Role::Background);
         ui.frame(root, Some(Size::new(160., 40.)), Input::default(), 1. / 60.)
             .unwrap();
-        settled = if assets.pending() == 0 { settled + 1 } else { 0 };
+        settled = if assets.pending() == 0 {
+            settled + 1
+        } else {
+            0
+        };
         if settled >= 2 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     let shot = pixels(&ui, 160, 40);
-    let bright = shot.chunks(4).filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
+    let bright = shot
+        .chunks(4)
+        .filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200)
+        .count();
     assert!(bright > 50, "label text vanished: {bright} bright pixels");
 }
 
@@ -738,20 +780,30 @@ fn native_interface_through_the_plugin_loader() {
     let path = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").unwrap());
     let p = Arc::new(crate::plugin::SamplerParams::new());
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
-    p.selection.write().unwrap().parts.push(crate::plugin::Part {
-        path: path.to_string_lossy().into_owned(),
-        ..Default::default()
-    });
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        });
     crate::plugin::Load.run(&p);
     {
         let v = p.shared.view.lock().unwrap();
         let part = &v.parts[0];
         assert!(part.instrument.is_some(), "{}", part.status);
         assert!(part.interfaces.iter().any(|f| f.native_ui.is_some()));
-        let resource_path = part.resource_path.as_ref().expect("resolved resource owner");
+        let resource_path = part
+            .resource_path
+            .as_ref()
+            .expect("resolved resource owner");
         assert!(resource_path.extension().is_some_and(|ext| ext == "nki"));
         if path.extension().is_some_and(|ext| ext == "nksn") {
-            assert_ne!(resource_path, &path, "snapshot must use its base NKI resources");
+            assert_ne!(
+                resource_path, &path,
+                "snapshot must use its base NKI resources"
+            );
         }
     }
     for (width, height) in [(900, 640), (1180, 780)] {
@@ -761,25 +813,37 @@ fn native_interface_through_the_plugin_loader() {
             h.idle(1);
             let diagnostics = super::native_ui::gate_diagnostics();
             assert!(diagnostics.is_empty(), "{diagnostics:?}");
-            if !super::native_ui::gate_targets(0).is_empty() { break; }
-            assert!(Instant::now() < deadline, "native interface did not become interactive");
+            if !super::native_ui::gate_targets(0).is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native interface did not become interactive"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         h.idle(40);
         assert!(h.ui.scene().unwrap().surface("view-0-Interface").is_some());
         let scene = h.ui.scene().unwrap();
         let viewport = scene.surface("rack-view").unwrap().frame;
-        for surface in scene.surfaces().filter(|s| s.key.as_str().starts_with("nui-")
-            && s.key.as_str().ends_with("-root/component")) {
-            assert!(surface.frame.y + surface.frame.size.height <= viewport.y + viewport.size.height + 1.,
-                "fitted native interface must remain inside the rack: {:?}, {viewport:?}", surface.frame);
+        for surface in scene.surfaces().filter(|s| {
+            s.key.as_str().starts_with("nui-") && s.key.as_str().ends_with("-root/component")
+        }) {
+            assert!(
+                surface.frame.y + surface.frame.size.height
+                    <= viewport.y + viewport.size.height + 1.,
+                "fitted native interface must remain inside the rack: {:?}, {viewport:?}",
+                surface.frame
+            );
         }
         if let Some(out) = std::env::var_os("KONTRA_NATIVE_LOAD_SHOTS") {
             let out = std::path::PathBuf::from(out);
             std::fs::create_dir_all(&out).unwrap();
             moose::core::screenshot::save_png(
                 &out.join(format!("native-{width}x{height}.png")),
-                &pixels(&h.ui, width, height), u32::from(width), u32::from(height),
+                &pixels(&h.ui, width, height),
+                u32::from(width),
+                u32::from(height),
             );
         }
     }
@@ -946,19 +1010,34 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     // One two-row header (bar, then views + performance), the old full-width
     // strips gone, the preset picker in row 1.
     assert!(!there(&h, "perf-0"), "no separate CC7 row");
-    assert!(!there(&h, "perf-vol-0"), "CC7 is information on the gain control, not a row");
+    assert!(
+        !there(&h, "perf-vol-0"),
+        "CC7 is information on the gain control, not a row"
+    );
     let scene = h.ui.scene().unwrap();
     let one = scene.surface("header-0").unwrap().frame;
     let two = scene.surface("header2-0").unwrap().frame;
     let pick = scene.surface("snapshot-0").expect("preset picker").frame;
     assert!(two.y >= one.y + one.size.height - 0.5, "row 2 under row 1");
-    assert!(pick.y >= one.y && pick.y + pick.size.height <= one.y + one.size.height + 0.5, "picker in row 1");
-    assert!((two.size.height - one.size.height).abs() < 0.5, "rows share one height");
+    assert!(
+        pick.y >= one.y && pick.y + pick.size.height <= one.y + one.size.height + 0.5,
+        "picker in row 1"
+    );
+    assert!(
+        (two.size.height - one.size.height).abs() < 0.5,
+        "rows share one height"
+    );
     for id in ["snapshot-next-0"] {
         assert!(there(&h, id), "{id}");
     }
     assert!(
-        scene.surface("volume-0").unwrap().tip.as_deref().unwrap().contains("CC7 -6.0 dB"),
+        scene
+            .surface("volume-0")
+            .unwrap()
+            .tip
+            .as_deref()
+            .unwrap()
+            .contains("CC7 -6.0 dB"),
         "instrument volume remains available on the main gain control"
     );
     assert_eq!(
@@ -2377,16 +2456,33 @@ fn widget_picture_slider_drags_like_the_authored_knob() {
 #[test]
 fn five_thousand_widgets_are_all_present_and_laid_out() {
     let mut face = ir::Interface {
-        pages: vec![ir::Page { size: ir::Size { width: 2000.0, height: 1600.0 }, ..Default::default() }],
+        pages: vec![ir::Page {
+            size: ir::Size {
+                width: 2000.0,
+                height: 1600.0,
+            },
+            ..Default::default()
+        }],
         ..Default::default()
     };
     for n in 0..5000i32 {
         let kind = if n % 2 == 0 {
-            ir::Kind::Knob { range: ir::Range::default(), display: ir::Display::default() }
+            ir::Kind::Knob {
+                range: ir::Range::default(),
+                display: ir::Display::default(),
+            }
         } else {
-            ir::Kind::Slider { range: ir::Range::default(), orientation: ir::Orientation::Vertical }
+            ir::Kind::Slider {
+                range: ir::Range::default(),
+                orientation: ir::Orientation::Vertical,
+            }
         };
-        let mut w = ir::Widget::new(format!("$w{n}"), ir::PageRef(0), ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28), kind);
+        let mut w = ir::Widget::new(
+            format!("$w{n}"),
+            ir::PageRef(0),
+            ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28),
+            kind,
+        );
         w.text = format!("Caption {n}");
         w.binding = ir::Binding::Control(ir::ControlId(n as u128));
         face.widgets.push(w);
@@ -2395,12 +2491,23 @@ fn five_thousand_widgets_are_all_present_and_laid_out() {
     let mut values = ir_view::Values::default();
     let start = std::time::Instant::now();
     let ui = settle(2000., 1600., |ui| {
-        ir_view::view(ui, &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
+        ir_view::view(
+            ui,
+            &face,
+            ir::PageRef(0),
+            &assets,
+            ir::Presentation::Vector,
+            1.,
+            &mut values,
+        )
     });
     println!("FIVE_THOUSAND_WIDGETS 4 frames in {:?}", start.elapsed());
     let scene = ui.scene().unwrap();
     for n in [0, 2499, 4999] {
-        assert!(scene.surface(&format!("ir-{n}")).is_some(), "widget {n} missing");
+        assert!(
+            scene.surface(&format!("ir-{n}")).is_some(),
+            "widget {n} missing"
+        );
     }
 }
 
@@ -2419,20 +2526,41 @@ fn ir_view_frame_profile() {
                 ..Default::default()
             };
             let loaded = sampler_kontakt::load(patch, &options, |_| {}).unwrap();
-            loaded.interfaces.into_iter().max_by_key(|u| u.widgets.len()).unwrap()
+            loaded
+                .interfaces
+                .into_iter()
+                .max_by_key(|u| u.widgets.len())
+                .unwrap()
         }
         None => {
             let mut face = ir::Interface {
-                pages: vec![ir::Page { size: ir::Size { width: 2000.0, height: 1600.0 }, ..Default::default() }],
+                pages: vec![ir::Page {
+                    size: ir::Size {
+                        width: 2000.0,
+                        height: 1600.0,
+                    },
+                    ..Default::default()
+                }],
                 ..Default::default()
             };
             for n in 0..5000i32 {
                 let kind = if n % 2 == 0 {
-                    ir::Kind::Knob { range: ir::Range::default(), display: ir::Display::default() }
+                    ir::Kind::Knob {
+                        range: ir::Range::default(),
+                        display: ir::Display::default(),
+                    }
                 } else {
-                    ir::Kind::Slider { range: ir::Range::default(), orientation: ir::Orientation::Vertical }
+                    ir::Kind::Slider {
+                        range: ir::Range::default(),
+                        orientation: ir::Orientation::Vertical,
+                    }
                 };
-                let mut w = ir::Widget::new(format!("$w{n}"), ir::PageRef(0), ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28), kind);
+                let mut w = ir::Widget::new(
+                    format!("$w{n}"),
+                    ir::PageRef(0),
+                    ir::Rect::new(n % 100 * 20, n / 100 * 30, 18, 28),
+                    kind,
+                );
                 w.text = format!("Caption {n}");
                 w.binding = ir::Binding::Control(ir::ControlId(n as u128));
                 face.widgets.push(w);
@@ -2441,7 +2569,9 @@ fn ir_view_frame_profile() {
         }
     };
     let face = ir_view::resolved(&authored);
-    let visible = (0..face.widgets.len()).filter(|&n| face.visible(ir::WidgetRef(n))).count();
+    let visible = (0..face.widgets.len())
+        .filter(|&n| face.visible(ir::WidgetRef(n)))
+        .count();
     println!("PROFILE widgets={} visible={}", face.widgets.len(), visible);
     let (w, h) = (
         f64::from(face.pages[0].size.width),
@@ -2451,10 +2581,15 @@ fn ir_view_frame_profile() {
     let target = (0..face.widgets.len())
         .find(|&n| {
             face.visible(ir::WidgetRef(n))
-                && matches!(face.widgets[n].kind, ir::Kind::Knob { .. } | ir::Kind::Slider { .. })
+                && matches!(
+                    face.widgets[n].kind,
+                    ir::Kind::Knob { .. } | ir::Kind::Slider { .. }
+                )
         })
         .unwrap();
-    let path = patch.clone().unwrap_or_else(|| "/nonexistent/synthetic.nki".into());
+    let path = patch
+        .clone()
+        .unwrap_or_else(|| "/nonexistent/synthetic.nki".into());
     for (presentation, name) in [
         (ir::Presentation::Bitmap, "original"),
         (ir::Presentation::Vector, "vector"),
@@ -2479,17 +2614,39 @@ fn ir_view_frame_profile() {
             let el = if name == "kontra" {
                 super::generated::view(ui, "", &face, ir::PageRef(0), assets, 1., values, input)
             } else {
-                ir_view::view_state(ui, "", &face, ir::PageRef(0), assets, presentation, 1., values, input)
+                ir_view::view_state(
+                    ui,
+                    "",
+                    &face,
+                    ir::PageRef(0),
+                    assets,
+                    presentation,
+                    1.,
+                    values,
+                    input,
+                )
             };
             let t2 = std::time::Instant::now();
-            ui.frame(col![el].w(w).h(h).fill(Role::Background), Some(Size::new(w, h)), events, 1. / 60.).unwrap();
+            ui.frame(
+                col![el].w(w).h(h).fill(Role::Background),
+                Some(Size::new(w, h)),
+                events,
+                1. / 60.,
+            )
+            .unwrap();
             let t3 = std::time::Instant::now();
             [t1 - t0, t2 - t1, t3 - t2]
         };
         // Warm up until the pictures have all decoded: steady means loaded.
         let started = std::time::Instant::now();
         for n in 0.. {
-            frame(&mut ui, &mut assets, &mut values, &mut input, Input::default());
+            frame(
+                &mut ui,
+                &mut assets,
+                &mut values,
+                &mut input,
+                Input::default(),
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
             if n >= 40 && assets.pending() == 0 || started.elapsed().as_secs() > 60 {
                 break;
@@ -2497,9 +2654,21 @@ fn ir_view_frame_profile() {
         }
         println!("PROFILE {name} loaded in {:?}", started.elapsed());
         let steady: Vec<_> = (0..40)
-            .map(|_| frame(&mut ui, &mut assets, &mut values, &mut input, Input::default()))
+            .map(|_| {
+                frame(
+                    &mut ui,
+                    &mut assets,
+                    &mut values,
+                    &mut input,
+                    Input::default(),
+                )
+            })
             .collect();
-        let surface = ui.scene().unwrap().surface(&format!("ir-{target}")).map(|s| s.frame);
+        let surface = ui
+            .scene()
+            .unwrap()
+            .surface(&format!("ir-{target}"))
+            .map(|s| s.frame);
         let at = surface.map_or(Point::new(10., 10.), |f| {
             Point::new(f.x + f.size.width / 2., f.y + f.size.height / 2.)
         });
@@ -2515,7 +2684,15 @@ fn ir_view_frame_profile() {
                 &mut values,
                 &mut input,
                 Input {
-                    pointer: PointerInput { pos: Some(point), buttons: if down { Buttons::PRIMARY } else { Buttons::default() }, ..Default::default() },
+                    pointer: PointerInput {
+                        pos: Some(point),
+                        buttons: if down {
+                            Buttons::PRIMARY
+                        } else {
+                            Buttons::default()
+                        },
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             );
@@ -2526,27 +2703,58 @@ fn ir_view_frame_profile() {
             let total = median(rows.iter().map(|r| r.iter().sum()).collect());
             println!(
                 "PROFILE {name} {label}: prepare={:?} build={:?} frame={:?} total={:?}",
-                col(0), col(1), col(2), total
+                col(0),
+                col(1),
+                col(2),
+                total
             );
         };
         // Where the build time goes, per widget kind (steady state).
         {
-            let mut by_kind: std::collections::BTreeMap<String, (usize, std::time::Duration)> = Default::default();
+            let mut by_kind: std::collections::BTreeMap<String, (usize, std::time::Duration)> =
+                Default::default();
             for _ in 0..10 {
                 for n in 0..face.widgets.len() {
-                    if !face.visible(ir::WidgetRef(n)) { continue; }
+                    if !face.visible(ir::WidgetRef(n)) {
+                        continue;
+                    }
                     let r = face.page_rect(ir::WidgetRef(n));
                     let t = std::time::Instant::now();
-                    let el = ir_view::widget_state(&mut ui, "", &face, ir::WidgetRef(n), &assets, presentation, 1., &mut values, &mut input, f64::from(r.width), f64::from(r.height));
+                    let el = ir_view::widget_state(
+                        &mut ui,
+                        "",
+                        &face,
+                        ir::WidgetRef(n),
+                        &assets,
+                        presentation,
+                        1.,
+                        &mut values,
+                        &mut input,
+                        f64::from(r.width),
+                        f64::from(r.height),
+                    );
                     let d = t.elapsed();
                     drop(el);
-                    let e = by_kind.entry(kind_name(&face.widgets[n].kind).split(|c: char| !c.is_alphanumeric()).next().unwrap().to_string()).or_default();
+                    let e = by_kind
+                        .entry(
+                            kind_name(&face.widgets[n].kind)
+                                .split(|c: char| !c.is_alphanumeric())
+                                .next()
+                                .unwrap()
+                                .to_string(),
+                        )
+                        .or_default();
                     e.0 += 1;
                     e.1 += d;
                 }
             }
             for (k, (c, d)) in by_kind {
-                println!("KIND {name} {k}: n={} per_widget={:?} per_frame={:?}", c / 10, d / c as u32, d / 10);
+                println!(
+                    "KIND {name} {k}: n={} per_widget={:?} per_frame={:?}",
+                    c / 10,
+                    d / c as u32,
+                    d / 10
+                );
             }
         }
         report("steady", &steady);
@@ -5366,7 +5574,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
     for (w, h) in [(1180, 780), (900, 640)] {
         let mut ui = Harness::new(&p, w as f64, h as f64);
         ui.press("view-0-Mapping");
-        ui.press("map-group-0-0");
+        ui.press(&format!("map-group-0-{}", inst.zones[0].group.unwrap().0));
         ui.press("map-zone-0-0");
         for _ in 0..15 {
             ui.idle(1);
@@ -5410,6 +5618,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
             part.zone_waveform_window(1, epoch + 1, 512, Some((24000, 48000)))
                 .is_none()
         );
+        ui.press(&format!("map-group-0-{}", inst.zones[1].group.unwrap().0));
         ui.press("map-zone-0-1");
         for _ in 0..100 {
             ui.idle(1);
@@ -5446,6 +5655,7 @@ fn mapping_waveform_worker_reads_falcon_without_original_waveform_widget() {
                 .surface("map-inspector-0-1")
                 .is_some()
         );
+        ui.press(&format!("map-group-0-{}", inst.zones[0].group.unwrap().0));
         ui.press("map-zone-0-0");
         ui.press("map-wave-fit-0");
         ui.idle(10);
@@ -6520,12 +6730,18 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
             I::Scope::Group(I::GroupRef(0)),
             I::Processor::Gain(I::Gain::Decibels(-6.)),
         ),
-        (I::Scope::Master, I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Full))),
+        (
+            I::Scope::Master,
+            I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Full)),
+        ),
         (
             I::Scope::Bus(I::BusRef(0)),
             I::Processor::Color(I::fx::color::Config::lofi(0.5, 0.5, 0., 0.5)),
         ),
-        (I::Scope::Voice, I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Half))),
+        (
+            I::Scope::Voice,
+            I::Processor::Color(I::fx::color::Config::rectifier(I::Rectifier::Half)),
+        ),
         (
             I::Scope::Voice,
             I::Processor::Daft(I::Daft {
@@ -6600,9 +6816,7 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
     i.groups[0].chain = Some(I::ChainRef(0));
     let text = labels(&i);
     assert_eq!(
-        text.iter()
-            .filter(|s| s.starts_with("Ladder LP4"))
-            .count(),
+        text.iter().filter(|s| s.starts_with("Ladder LP4")).count(),
         1,
         "a chain referenced by both zones and group is shown once"
     );
@@ -7093,10 +7307,24 @@ fn keyswitch_real_analog_strings_does_not_invent_preset_browser_articulations() 
 #[test]
 fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
     let dir = tempfile::tempdir().unwrap();
-    let colours = [[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,0,255]];
-    for (name,width,height,horizontal) in [("h.png",32,8,true),("v.png",8,32,false)] {
-        let data: Vec<u8> = (0..height).flat_map(|y| (0..width).flat_map(move |x| colours[if horizontal {x/8} else {y/8}])).collect();
-        moose::core::screenshot::save_png(&dir.path().join(name),&data,width as u32,height as u32);
+    let colours = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    for (name, width, height, horizontal) in [("h.png", 32, 8, true), ("v.png", 8, 32, false)] {
+        let data: Vec<u8> = (0..height)
+            .flat_map(|y| {
+                (0..width).flat_map(move |x| colours[if horizontal { x / 8 } else { y / 8 }])
+            })
+            .collect();
+        moose::core::screenshot::save_png(
+            &dir.path().join(name),
+            &data,
+            width as u32,
+            height as u32,
+        );
     }
     let xml = r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
       require('uvi.ChordRec')
@@ -7115,38 +7343,91 @@ fn w10_scripted_uvi_strips_positions_and_callback_paint_authored_pixels() {
       end
     ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
     let patch = dir.path().join("preset.uvip");
-    std::fs::write(&patch,xml).unwrap();
-    let mut host = sampler_uvi::script::ScriptHost::new(xml,(),Default::default()).unwrap();
-    assert!(host.findings().is_empty(),"{:?}",host.findings());
+    std::fs::write(&patch, xml).unwrap();
+    let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    assert!(host.findings().is_empty(), "{:?}", host.findings());
     let mut assets = ir_view::Assets::default();
     let mut values = ir_view::Values::default();
-    for (after,name,expected) in [(false,"uvi-scripted-before.png",colours[0]),(true,"uvi-scripted-after.png",colours[3])] {
-        if after { host.set_control(sampler_uvi::script::control_id(5,0),1.).unwrap(); }
-        let face=host.interface();
-        assert_eq!(face.page_rect(ir::WidgetRef(1)),ir::Rect::new(30,20,32,32));
-        assert_eq!(face.page_rect(ir::WidgetRef(2)),ir::Rect::new(90,20,32,32));
-        assert_eq!((face.pages[0].size.width,face.pages[0].size.height),(320.,160.));
-        assert_eq!(face.widgets[5].initial_value,if after {0.5} else {0.25});
-        assert_eq!(face.widgets[5].value_text.as_deref(),Some(if after {"50 %"} else {"25 %"}));
-        for (control,value) in host.control_values() { values.insert(control,value); }
-        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+    for (after, name, expected) in [
+        (false, "uvi-scripted-before.png", colours[0]),
+        (true, "uvi-scripted-after.png", colours[3]),
+    ] {
+        if after {
+            host.set_control(sampler_uvi::script::control_id(5, 0), 1.)
+                .unwrap();
+        }
+        let face = host.interface();
+        assert_eq!(
+            face.page_rect(ir::WidgetRef(1)),
+            ir::Rect::new(30, 20, 32, 32)
+        );
+        assert_eq!(
+            face.page_rect(ir::WidgetRef(2)),
+            ir::Rect::new(90, 20, 32, 32)
+        );
+        assert_eq!(
+            (face.pages[0].size.width, face.pages[0].size.height),
+            (320., 160.)
+        );
+        assert_eq!(
+            face.widgets[5].initial_value,
+            if after { 0.5 } else { 0.25 }
+        );
+        assert_eq!(
+            face.widgets[5].value_text.as_deref(),
+            Some(if after { "50 %" } else { "25 %" })
+        );
+        for (control, value) in host.control_values() {
+            values.insert(control, value);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
-            assets.prepare(&patch,&face,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
-            if assets.pending()==0 { break; }
-            assert!(std::time::Instant::now()<deadline,"authored asset preparation must finish");
+            assets.prepare(
+                &patch,
+                &face,
+                ir::PageRef(0),
+                ir::Presentation::Bitmap,
+                1.,
+                &values,
+            );
+            if assets.pending() == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "authored asset preparation must finish"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let ui=settle(320.,160.,|ui| ir_view::view(ui,&face,ir::PageRef(0),&assets,ir::Presentation::Bitmap,1.,&mut values));
-        let data=pixels(&ui,320,160);
-        for x in [46,106] {
-            let at=(36*320+x)*4;
-            assert_eq!(&data[at..at+4],&expected,"{name}: authored strip frame at x={x}");
+        let ui = settle(320., 160., |ui| {
+            ir_view::view(
+                ui,
+                &face,
+                ir::PageRef(0),
+                &assets,
+                ir::Presentation::Bitmap,
+                1.,
+                &mut values,
+            )
+        });
+        let data = pixels(&ui, 320, 160);
+        for x in [46, 106] {
+            let at = (36 * 320 + x) * 4;
+            assert_eq!(
+                &data[at..at + 4],
+                &expected,
+                "{name}: authored strip frame at x={x}"
+            );
         }
-        if after { assert_eq!(face.widgets[3].text,"M"); }
-        #[cfg(feature="shots")]
-        if let Some(out)=std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from) {
+        if after {
+            assert_eq!(face.widgets[3].text, "M");
+        }
+        #[cfg(feature = "shots")]
+        if let Some(out) =
+            std::env::var_os("KONTRA_UVI_FIXTURE_SHOTS").map(std::path::PathBuf::from)
+        {
             std::fs::create_dir_all(&out).unwrap();
-            moose::core::screenshot::save_png(&out.join(name),&data,320,160);
+            moose::core::screenshot::save_png(&out.join(name), &data, 320, 160);
         }
     }
 }
@@ -7353,11 +7634,7 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         ui.press("map-zone-0-1");
         ui.press("view-0-Sound");
         assert!(
-            ui.ui
-                .scene()
-                .unwrap()
-                .surface("map-0")
-                .is_none(),
+            ui.ui.scene().unwrap().surface("map-0").is_none(),
             "switching to Sound controls removes the actual map content"
         );
         ui.press("view-0-Mapping");
@@ -7383,7 +7660,11 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
             ui.tick(Input {
                 pointer: PointerInput {
                     pos: Some(at),
-                    buttons: if down { Buttons::PRIMARY } else { Buttons::default() },
+                    buttons: if down {
+                        Buttons::PRIMARY
+                    } else {
+                        Buttons::default()
+                    },
                     ..Default::default()
                 },
                 ..Default::default()
@@ -7392,22 +7673,52 @@ fn mapping_workbench_54k_caches_idle_paint_and_reopens_without_reindexing() {
         ui.idle(2);
         assert_eq!(ui.ui.focus_key(), Some("map-groups-0/item/0"));
         for key in [Key::Down, Key::Enter] {
-            ui.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+            ui.tick(Input {
+                keys: vec![KeyPress {
+                    key,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            });
             ui.idle(2);
         }
-        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-1").is_some());
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-inspector-0-1")
+                .is_some()
+        );
         for key in [Key::End, Key::Enter] {
-            ui.tick(Input { keys: vec![KeyPress { key, mods: Mods::default() }], ..Default::default() });
+            ui.tick(Input {
+                keys: vec![KeyPress {
+                    key,
+                    mods: Mods::default(),
+                }],
+                ..Default::default()
+            });
             ui.idle(2);
         }
         assert_eq!(ui.ui.focus_key(), Some("map-groups-0/item/188"));
         let scene = ui.ui.scene().unwrap();
         assert!(scene.surface("map-group-0-188").is_some());
         assert!(scene.surface("map-inspector-0-188").is_some());
-        assert!(scene.surfaces().filter(|s| s.key.starts_with("map-group-0-")).count() < 48);
+        assert!(
+            scene
+                .surfaces()
+                .filter(|s| s.key.starts_with("map-group-0-"))
+                .count()
+                < 48
+        );
         ui.press("view-0-Sound");
         ui.press("view-0-Mapping");
-        assert!(ui.ui.scene().unwrap().surface("map-inspector-0-188").is_some());
+        assert!(
+            ui.ui
+                .scene()
+                .unwrap()
+                .surface("map-inspector-0-188")
+                .is_some()
+        );
     }
     assert_eq!(
         *source, before,
@@ -7512,11 +7823,23 @@ fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
         let pixel = |x: usize, y: usize| &data[(y * 642 + x) * 4..(y * 642 + x + 1) * 4];
         let background = pixel(40, 77);
         for (x, y) in [(42, 77), (108, 77), (75, 44), (75, 111)] {
-            assert_eq!(pixel(x, y), background, "{name}: outside authored fractional bounds");
+            assert_eq!(
+                pixel(x, y),
+                background,
+                "{name}: outside authored fractional bounds"
+            );
         }
         for (x, y) in [(43, 77), (107, 77), (75, 45), (75, 110)] {
-            assert_ne!(pixel(x, y), background, "{name}: fractional edge must paint");
-            assert_ne!(pixel(x, y), &expected, "{name}: fractional edge retains partial coverage");
+            assert_ne!(
+                pixel(x, y),
+                background,
+                "{name}: fractional edge must paint"
+            );
+            assert_ne!(
+                pixel(x, y),
+                &expected,
+                "{name}: fractional edge retains partial coverage"
+            );
         }
         #[cfg(feature = "shots")]
         if let Some(out) =
@@ -7525,5 +7848,202 @@ fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
             std::fs::create_dir_all(&out).unwrap();
             moose::core::screenshot::save_png(&out.join(name), &data, 642, 322);
         }
+    }
+}
+
+#[test]
+fn uvi_dynamic_table_renderer_keeps_real_scalar_component_action_path(){
+    use sampler_uvi::scripted::{ScriptThread,UiBridge};
+    use std::time::{Duration,Instant};
+    fn wait(ui:&UiBridge,phase:&str,predicate:impl Fn(&ir::Interface)->bool){
+        let deadline=Instant::now()+Duration::from_secs(3);while !predicate(&ui.interface()) {assert!(Instant::now()<deadline,"{phase}: owner publication; faults={:?}",ui.fault_counts());std::thread::sleep(Duration::from_millis(2));}
+    }
+    let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(220,120);local create=Button{'Create',bounds={10,10,80,25}};local status=Label{'Status',bounds={10,95,180,20}};create.changed=function() if made then return end;made=true;local steps=Table{'DynamicSteps',3,0.25,0,1,false,bounds={10,50,150,40}};steps.changed=function(self,index) status.text=tostring(index)..':'..tostring(self:getValue(index)) end end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (_thread,loaded)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+    let ir::Binding::Control(create)=loaded.ui.interface().widgets[0].binding else{panic!("real button")};assert!(loaded.ui.edit(create,1.));
+    wait(&loaded.ui,"created Table",|f|f.widgets.iter().any(|w|w.name=="DynamicSteps"));
+    let snapshot=loaded.ui.snapshot();let face=ir_view::resolved(snapshot.interface());
+    let table=face.widgets.iter().find(|w|w.name=="DynamicSteps").unwrap();let third=table.components[2];
+    let mut values:ir_view::Values=loaded.ui.values().into_iter().collect();let mut state=ir_view::InputState::default();
+    let assets=ir_view::Assets::default();let mut ui=theme::ui();let at=Point::new(140.,60.);
+    let mut tick=|pointer:PointerInput|{
+        let before=values.clone();let root=ir_view::view_state(&mut ui,"registry",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values,&mut state);
+        ui.frame(root,Some(Size::new(220.,120.)),Input{pointer,..Default::default()},1./60.).unwrap();
+        assert!(state.edits.is_empty(),"UVI scalar components must not become native/KSP array WidgetEdits");
+        for (&id,&value) in &values {if before.get(&id).is_some_and(|old|*old!=value){assert!(snapshot.edit(id,value));}}
+    };
+    tick(PointerInput::default());
+    tick(PointerInput{pos:Some(at),buttons:Buttons::PRIMARY,..Default::default()});
+    // This is the established relative vertical fader path: a stationary
+    // click cannot change its value. Keep the third cell captured while
+    // moving, just as a real pointer gesture does.
+    for distance in [20.,40.,60.,80.] {
+        tick(PointerInput{pos:Some(Point::new(at.x,at.y-distance)),buttons:Buttons::PRIMARY,..Default::default()});
+    }
+    tick(PointerInput{pos:Some(Point::new(at.x,at.y-80.)),..Default::default()});
+    wait(&loaded.ui,"third cell callback",|f|f.widgets.iter().any(|w|w.name=="Status"&&w.text.starts_with("3:")));
+    assert!(loaded.ui.value(third).unwrap()>0.5);
+}
+
+#[test]
+fn uvi_prepared_registry_audio_reads_and_control_enqueue_do_not_allocate_or_free(){
+    let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[Knob('Gain',0,0,1)]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (mut thread,loaded)=sampler_uvi::scripted::ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+    let ir::Binding::Control(control)=loaded.ui.interface().widgets[0].binding else{panic!("real binding")};
+    let _=thread.set_control(control,0.25); // First platform wake outside measured region.
+    let calls=crate::plugin::tests::allocations(||{
+        for _ in 0..1024 {
+            std::hint::black_box(loaded.ui.value(control));
+            std::hint::black_box(thread.set_control(control,0.5));
+        }
+    });
+    assert_eq!(calls,0,"fixed atomic lookup and bounded SPSC enqueue must not allocate/free on audio");
+}
+
+
+#[cfg(test)]
+mod uvi_activation_render_tests {
+    use super::*;
+    use sampler_uvi::script::{ScriptHost,Config};
+    struct Gesture {
+        host:ScriptHost,face:ir::Interface,values:ir_view::Values,state:ir_view::InputState,
+        assets:ir_view::Assets,ui:Ui,widget:usize,
+    }
+    impl Gesture {
+        fn new(on_press:bool)->Self{
+            let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(220,120);calls=0;local b=Button{{'B',bounds={{10,10,100,30}}}};b.triggeredOnMouseDown={on_press};b.changed=function(self,mods) calls=calls+1;seen=mods==nil and 'nil' or tostring(mods.shiftDown)..'|'..tostring(mods.commandDown)..'|'..tostring(mods.altDown) end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+            let host=ScriptHost::new(&xml,(),Config::default()).unwrap();
+            let face=ir_view::resolved(&host.interface());
+            let widget=face.widgets.iter().position(|w|w.name=="B").unwrap();
+            let values=host.control_values().into_iter().collect();
+            let mut this=Self{host,face,values,state:Default::default(),assets:Default::default(),ui:theme::ui(),widget};
+            for _ in 0..3{this.tick(Input::default());}this
+        }
+        fn id(&self)->String{format!("gesture-ir-{}",self.widget)}
+        fn tick(&mut self,input:Input)->Vec<ir::UiActivation>{
+            let before=self.values.clone();
+            let tree=ir_view::view_state(&mut self.ui,"gesture",&self.face,ir::PageRef(0),&self.assets,ir::Presentation::Vector,1.,&mut self.values,&mut self.state);
+            self.ui.frame(tree,Some(Size::new(220.,120.)),input,1./60.).unwrap();
+            assert!(self.state.edits.is_empty(),"button actions must not duplicate scalar/KSP edits");
+            assert_eq!(self.values,before,"stateless UVI Button must not emit a later scalar reset");
+            let mut seen=Vec::new();
+            for edit in self.state.activations.drain(..){
+                assert_eq!(edit.widget.0,self.widget);let ir::Binding::Control(control)=self.face.widgets[self.widget].binding else{panic!("real control")};
+                self.host.activate_control(control,edit.activation).unwrap();seen.push(edit.activation);
+            }
+            seen
+        }
+        fn pointer(&mut self,at:Point,buttons:Buttons,mods:Mods)->Vec<ir::UiActivation>{self.tick(Input{pointer:PointerInput{pos:Some(at),buttons,mods,..Default::default()},..Default::default()})}
+        fn idle(&mut self)->Vec<ir::UiActivation>{self.tick(Input::default())}
+        fn count(&self)->String{self.host.global_text("calls")}
+    }
+    #[test]
+    fn uvi_pointer_release_vs_press_are_real_single_edges_without_scalar_pulses(){
+        for on_press in [false,true]{
+            let mut h=Gesture::new(on_press);let at=super::super::tests::center(&h.ui,&h.id());
+            let mods=Mods{shift:true,ctrl:true,alt:true,cmd:true};
+            assert!(h.pointer(at,Buttons::PRIMARY,mods).is_empty());
+            let press=h.pointer(at,Buttons::PRIMARY,mods);
+            assert_eq!(press.len(),usize::from(on_press));
+            assert_eq!(h.count(),if on_press{"1"}else{"0"});
+            for _ in 0..8{assert!(h.pointer(at,Buttons::PRIMARY,mods).is_empty());}
+            assert!(h.pointer(at,Buttons::default(),mods).is_empty());
+            let release=h.idle();assert_eq!(release.len(),usize::from(!on_press));
+            let payload=press.first().or(release.first()).unwrap();
+            assert_eq!(payload.origin,if on_press{ir::UiActivationOrigin::PointerDown}else{ir::UiActivationOrigin::PointerUp});
+            assert_eq!(payload.modifiers,Some(ir::UiModifiers{shift:true,ctrl:true,alt:true,cmd:true}));
+            assert_eq!(h.count(),"1");assert_eq!(h.host.global_text("seen"),"true|true|true");
+            for _ in 0..3{assert!(h.idle().is_empty());}assert_eq!(h.count(),"1");
+        }
+    }
+    #[test]
+    fn uvi_keyboard_uses_actual_key_modifiers_not_stale_pointer_modifiers(){
+        let mut h=Gesture::new(true);let id=h.id();h.ui.focus(id);
+        let pointer_mods=Mods{cmd:true,..Default::default()};
+        let key_mods=Mods{shift:true,ctrl:true,alt:true,cmd:false};
+        h.tick(Input{pointer:PointerInput{mods:pointer_mods,..Default::default()},keys:vec![KeyPress{key:Key::Enter,mods:key_mods}],..Default::default()});
+        let activation=h.idle();assert_eq!(activation.len(),1);assert_eq!(activation[0].origin,ir::UiActivationOrigin::Keyboard);
+        assert_eq!(activation[0].modifiers,Some(ir::UiModifiers{shift:true,ctrl:true,alt:true,cmd:false}));
+        assert_eq!(h.host.global_text("seen"),if cfg!(target_os="macos"){"true|false|true"}else{"true|true|true"});
+        assert_eq!(h.count(),"1");assert!(h.idle().is_empty());
+        // Space is the same explicit nonphysical product activation policy.
+        h.tick(Input{keys:vec![KeyPress{key:Key::Space,mods:Mods::default()}],..Default::default()});assert_eq!(h.idle().len(),1);assert_eq!(h.count(),"2");
+    }
+    #[test]
+    fn uvi_accessibility_activate_is_single_nonphysical_action_and_disabled_refuses(){
+        let mut h=Gesture::new(true);let id=h.id();
+        assert!(h.ui.request_action(SemanticAction::activate(&id)));assert!(h.ui.request_action(SemanticAction::activate(&id)));
+        let activation=h.idle();assert_eq!(activation.len(),1);assert_eq!(activation[0],ir::UiActivation{origin:ir::UiActivationOrigin::Accessibility,modifiers:None});
+        assert_eq!(h.host.global_text("seen"),"nil");assert_eq!(h.count(),"1");assert!(h.idle().is_empty());
+        h.face.widgets[h.widget].enabled=false;h.idle();h.idle();assert!(!h.ui.request_action(SemanticAction::activate(&id)));
+        assert!(h.idle().is_empty());assert_eq!(h.count(),"1");
+    }
+    #[test]
+    fn uvi_secondary_middle_and_dragged_release_do_not_become_button_callbacks(){
+        let mut h=Gesture::new(false);let at=super::super::tests::center(&h.ui,&h.id());
+        for button in [Button::Secondary,Button::Middle]{
+            let down=Buttons::default().set(button,true);h.pointer(at,down,Mods::default());h.pointer(at,down,Mods::default());h.pointer(at,Buttons::default(),Mods::default());assert!(h.idle().is_empty());
+        }
+        assert_eq!(h.count(),"0");
+        h.pointer(at,Buttons::PRIMARY,Mods::default());h.pointer(at,Buttons::PRIMARY,Mods::default());
+        let out=Point::new(210.,110.);h.pointer(out,Buttons::PRIMARY,Mods::default());h.pointer(out,Buttons::default(),Mods::default());assert!(h.idle().is_empty());assert_eq!(h.count(),"0");
+    }
+}
+
+
+#[cfg(test)]
+mod uvi_gesture_latch_tests {
+    use super::*;
+    use sampler_uvi::scripted::{Script,ScriptThread,UiBridge,UiSnapshot,HostInput};
+    use sampler_uvi::script::Config;
+    use std::{sync::Arc,time::{Duration,Instant}};
+    fn source(body:&str)->String{format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(220,120);{body}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>")}
+    fn until(mut ready:impl FnMut()->bool){let deadline=Instant::now()+Duration::from_secs(3);while !ready(){assert!(Instant::now()<deadline,"real owner publication did not complete");std::thread::sleep(Duration::from_millis(2));}}
+    fn control(ui:&UiBridge,name:&str)->ir::ControlId{let face=ui.interface();let row=face.widgets.iter().find(|row|row.name==name).unwrap();let ir::Binding::Control(id)=row.binding else{panic!("actual control")};id}
+    fn calls(ui:&UiBridge)->String{ui.interface().widgets.iter().find(|row|row.name=="State").unwrap().text.clone()}
+    struct Drawn{snapshot:UiSnapshot,face:ir::Interface,values:ir_view::Values,input:ir_view::InputState,assets:ir_view::Assets,ui:Ui}
+    impl Drawn{
+        fn new(ui:&Arc<UiBridge>)->Self{
+            let snapshot=ui.snapshot();let face=ir_view::resolved(snapshot.interface());
+            let mut drawn=Self{snapshot,face,values:ui.values().into_iter().collect(),input:Default::default(),assets:Default::default(),ui:theme::ui()};for _ in 0..3{drawn.tick(Input::default());}drawn
+        }
+        fn adopt(&mut self,ui:&Arc<UiBridge>){let next=ui.snapshot();self.face=ir_view::resolved(next.interface());self.input.adopt_uvi_schema(self.snapshot.same_owner(&next),&self.face);self.snapshot=next;self.values=ui.values().into_iter().collect();}
+        fn tick(&mut self,event:Input)->Vec<ir::UiActivation>{
+            let tree=ir_view::view_state(&mut self.ui,"latched",&self.face,ir::PageRef(0),&self.assets,ir::Presentation::Vector,1.,&mut self.values,&mut self.input);
+            self.ui.frame(tree,Some(Size::new(220.,120.)),event,1./60.).unwrap();assert!(self.input.edits.is_empty());
+            self.input.activations.drain(..).map(|action|action.activation).collect()
+        }
+        fn pointer(&mut self,down:bool)->Vec<ir::UiActivation>{self.tick(Input{pointer:PointerInput{pos:Some(Point::new(40.,25.)),buttons:if down{Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()})}
+        fn idle(&mut self)->Vec<ir::UiActivation>{self.tick(Input::default())}
+    }
+    const BASE:&str="local b=Button{'Gesture',bounds={10,10,100,30}};local state=Label{'State',bounds={10,65,180,20}};state.text='0';local count=0;b.changed=function() count=count+1;state.text=tostring(count) end;";
+    #[test]
+    fn unrelated_same_owner_schema_change_preserves_pending_release_target(){
+        let (_thread,loaded)=ScriptThread::spawn(source(&format!("{BASE}local extra=Button{{'Extra',bounds={{150,70,60,25}}}};extra.changed=function() extra.width=130 end")),(),Config::default()).unwrap();let mut d=Drawn::new(&loaded.ui);let id=control(&loaded.ui,"Gesture");
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());let old=d.snapshot.clone();assert!(old.edit(control(&loaded.ui,"Extra"),1.));until(||!old.same_schema(&loaded.ui.snapshot()));
+        assert!(old.same_owner(&loaded.ui.snapshot()));d.adopt(&loaded.ui);for _ in 0..4{assert!(d.pointer(true).is_empty());}
+        assert!(d.pointer(false).is_empty());let actions=d.idle();assert_eq!(actions.len(),1);assert_eq!(actions[0].origin,ir::UiActivationOrigin::PointerUp);assert!(d.snapshot.activate(id,actions[0]));until(||calls(&loaded.ui)=="1");assert!(d.idle().is_empty());
+    }
+    #[test]
+    fn replacing_actual_owner_cancels_held_capture_instead_of_retargeting_same_control_id(){
+        let (_old_thread,old)=ScriptThread::spawn(source(BASE),(),Config::default()).unwrap();let (_new_thread,new)=ScriptThread::spawn(source(BASE),(),Config::default()).unwrap();let mut d=Drawn::new(&old.ui);
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());assert!(!d.snapshot.same_owner(&new.ui.snapshot()));d.adopt(&new.ui);assert!(d.pointer(true).is_empty());assert!(d.pointer(false).is_empty());assert!(d.idle().is_empty());assert_eq!(calls(&old.ui),"0");assert_eq!(calls(&new.ui),"0");
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());assert!(d.pointer(false).is_empty());let actions=d.idle();assert_eq!(actions.len(),1);assert!(d.snapshot.activate(control(&new.ui,"Gesture"),actions[0]));until(||calls(&new.ui)=="1");assert_eq!(calls(&old.ui),"0");
+    }
+    #[test]
+    fn actual_queue_refused_press_cannot_become_release_after_current_phase_adoption(){
+        use std::sync::mpsc;
+        struct Held{entered:mpsc::Sender<()>,release:mpsc::Receiver<()>}
+        impl sampler_uvi::script::Files for Held{fn script(&self,name:&str)->Option<String>{assert_eq!(name,"hold");self.entered.send(()).unwrap();self.release.recv_timeout(Duration::from_secs(3)).unwrap();Some("return {}".into())}}
+        let (entered,waiting)=mpsc::channel();let (release,held)=mpsc::channel();
+        let text=format!("{BASE}b.triggeredOnMouseDown=true;local fill=Button{{'Fill',bounds={{150,10,60,25}}}};local mode=Button{{'Mode',bounds={{150,45,60,25}}}};mode.changed=function() b.triggeredOnMouseDown=false;b.width=130 end;function onController(e) require('hold') end");
+        let (mut thread,loaded)=ScriptThread::spawn(source(&text),Held{entered,release:held},Config::default()).unwrap();let mut d=Drawn::new(&loaded.ui);let gesture=control(&loaded.ui,"Gesture");let fill=control(&loaded.ui,"Fill");let mode=control(&loaded.ui,"Mode");
+        thread.input(HostInput::Controller{cc:1,value:64,channel:0});waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        for _ in 0..255{assert!(d.snapshot.edit(fill,1.));}assert!(d.snapshot.edit(mode,1.));
+        assert!(d.pointer(true).is_empty());let press=d.pointer(true);assert_eq!(press.len(),1);assert_eq!(press[0].origin,ir::UiActivationOrigin::PointerDown);
+        assert!(!d.snapshot.activate(gesture,press[0]),"actual shared 256-slot request queue must refuse the press");
+        release.send(()).unwrap();until(||loaded.ui.interface().widgets.iter().find(|w|w.name=="Gesture").is_some_and(|w|!w.activate_on_press));d.adopt(&loaded.ui);
+        for _ in 0..4{assert!(d.pointer(true).is_empty());}assert!(d.pointer(false).is_empty());assert!(d.idle().is_empty());assert_eq!(calls(&loaded.ui),"0");
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());assert!(d.pointer(false).is_empty());let fresh=d.idle();assert_eq!(fresh.len(),1);assert!(d.snapshot.activate(gesture,fresh[0]));until(||calls(&loaded.ui)=="1");assert!(d.idle().is_empty());
     }
 }

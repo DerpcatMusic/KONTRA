@@ -165,7 +165,7 @@ pub(crate) fn lanes(kind: &str, name: &str) -> Vec<(usize, P)> {
 /// translator's folded cutoff.
 fn node_lanes(node: roxmltree::Node, name: &str) -> Vec<(usize, P)> {
     let kind = node.tag_name().name();
-    if !matches!(kind, "Gain" | "OnePole") && !bus_scope(node) {
+    if !matches!(kind, "Gain" | "OnePole" | "GainMatrix") && !bus_scope(node) {
         return Vec::new();
     }
     let number = |n: &str, d: f64| node.attribute(n).and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -204,6 +204,10 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
         .filter(|p| !node_lanes(node, p.name).is_empty())
         .map(|p| p.name)
         .collect();
+    // Tracking no longer folds the native wide owner's base Freq. The normal
+    // profile can bind its exact control after decoded geometry; an unbound
+    // legacy shape still refuses at the actual Core command/home check.
+    if kind=="OnePole" && !out.contains(&"Freq"){out.push("Freq");}
     if lane_family(node) {
         // Any field: `retune` decides whether its write is lanes only.
         for name in parameters::definitions(kind).iter().map(|p| p.name) {
@@ -227,7 +231,8 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
 /// older Gain and OnePole fields keep slot -1; the rest are told apart by
 /// their catalog position. The engine name only has to be a valid id.
 fn address(kind: &str, name: &str) -> Option<(&'static str, i32)> {
-    let first = lanes(kind, name).first().map(|l| l.1)?;
+    let first = if kind=="GainMatrix" && matrix_cell(name).is_some() {P::CellLL}
+        else {lanes(kind,name).first().map(|lane|lane.1)?};
     let engine = if matches!(first, P::Cutoff | P::Frequency) {
         "ENGINE_PAR_CUTOFF"
     } else {
@@ -244,8 +249,15 @@ fn address(kind: &str, name: &str) -> Option<(&'static str, i32)> {
     Some((engine, slot))
 }
 
-fn key(node: usize, kind: &str, name: &str) -> String {
+pub(crate) fn key(node: usize, kind: &str, name: &str) -> String {
     format!("{PREFIX}{node}:{kind}:{name}")
+}
+
+fn matrix_cell(name:&str)->Option<(usize,usize)> {
+    let mut parts=name.strip_prefix("Gain_")?.split('_');
+    let input=parts.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+    let output=parts.next()?.parse::<usize>().ok()?.checked_sub(1)?;
+    (parts.next().is_none() && input<12 && output<12).then_some((input,output))
 }
 
 pub(crate) fn binding(node: usize, kind: &str, name: &str) -> Option<EngineParameterBinding> {
@@ -278,7 +290,7 @@ pub(crate) fn binding(node: usize, kind: &str, name: &str) -> Option<EngineParam
 }
 
 pub(crate) fn bindings(instrument: &ir::Instrument) -> Vec<EngineParameterBinding> {
-    instrument
+    let mut bindings:Vec<_>=instrument
         .controls
         .iter()
         .filter_map(|c| {
@@ -289,9 +301,24 @@ pub(crate) fn bindings(instrument: &ir::Instrument) -> Vec<EngineParameterBindin
             if parts.next().is_some() {
                 return None;
             }
+            if kind=="GainMatrix" && let Some(matrix)=instrument.source_indices.processing_matrices.iter().find(|matrix|matrix.node as usize==node) {
+                let (input,output)=matrix_cell(name)?;
+                let compiled=matrix.compiled.as_ref()?;
+                if !compiled.cells.iter().any(|cell|cell.input==input && cell.output==output
+                    && instrument.controls.get(cell.control.0).is_some_and(|control|control.key==c.key)) {return None;}
+            }
             binding(node, kind, name)
         })
-        .collect()
+        .collect();
+    for control in &instrument.controls {
+        let Some(node)=control.key.strip_prefix("uvi:scope-pan:").and_then(|node|node.parse::<usize>().ok()) else {continue;};
+        let Some(parameter)=sampler_core::engine_parameter_id("ENGINE_PAR_PAN") else {continue;};
+        if let Ok(generic)=i32::try_from(node) {
+            bindings.push(EngineParameterBinding{address:EngineParameterAddress{parameter,group:-1,slot:-1,generic},
+                control:sampler_core::lower::ir_control_id(&control.key),law:EngineParameterLaw::Linear{low:-1.,high:1.}});
+        }
+    }
+    bindings
 }
 
 pub(crate) fn register(
@@ -363,6 +390,30 @@ pub(crate) fn register(
                     parameter,
                     ramp: ir::Time::Seconds(0.),
                 });
+            }
+        }
+    }
+}
+
+/// Retain full immutable cell schemas, not 144 mutable runtime controls. The
+/// normal materializer resolves only cells in the actual decoded working port.
+pub(crate) fn register_source_matrices(instrument:&mut ir::Instrument) {
+    for matrix in &mut instrument.source_indices.processing_matrices {
+        for output in 0..matrix.matrix.output.channels {
+            for input in 0..matrix.matrix.input.channels {
+                let name=format!("Gain_{}_{}",input+1,output+1);
+                let Some(parameter)=parameters::definitions("GainMatrix").iter().find(|p|p.name==name) else {continue;};
+                let key=key(matrix.node as usize,"GainMatrix",&name);
+                let value=matrix.matrix.cells[output*matrix.matrix.input.channels+input];
+                // Static authored coefficients remain exact even when no live
+                // catalog domain can represent that value; never clamp them.
+                if value<parameter.min || value>parameter.max {continue;}
+                let definition=ir::Control{key:key.clone(),label:name,value:ir::ControlValue::Continuous{
+                    min:parameter.min,max:parameter.max,default:value,unit:ir::ControlUnit::None},automation:ir::Automation::None};
+                if let Some(index)=instrument.controls.iter().position(|control|control.key==key) {
+                    matrix.controls.push(ir::SourceProcessingCell{input,output,control:ir::ControlRef(index)});
+                }
+                matrix.control_definitions.push(ir::SourceProcessingCellDefinition{input,output,control:definition});
             }
         }
     }
@@ -560,4 +611,55 @@ pub(crate) fn convolver_slots(
         }
     }
     slots
+}
+
+/// Source-owner identity remains the actual XML node id. Key generation here
+/// is off audio; the callback equivalent below uses only a fixed stack buffer.
+pub(crate) fn scope_gain_key(node: usize) -> String {
+    format!("uvi:scope-gain:{node}")
+}
+pub(crate) fn scope_pan_key(node:usize)->String {format!("uvi:scope-pan:{node}")}
+pub(crate) fn scope_mute_key(node:usize)->String {format!("uvi:scope-output-mute:{node}")}
+pub(crate) fn scope_midi_mute_key(node:usize)->String {format!("uvi:scope-midi-mute:{node}")}
+pub(crate) fn scope_pan_control(node:usize)->Result<sampler_core::ControlId,sampler_core::Error> {
+    scope_control(node,b"uvi:scope-pan:")
+}
+pub(crate) fn scope_gain_control(node: usize) -> Result<sampler_core::ControlId, sampler_core::Error> {
+    scope_control(node,b"uvi:scope-gain:")
+}
+fn scope_control(node:usize,prefix:&[u8])->Result<sampler_core::ControlId,sampler_core::Error> {
+    let mut bytes = [0u8; 64];
+    bytes[..prefix.len()].copy_from_slice(prefix);
+    let mut digits = [0u8; 20];
+    let mut n = node;
+    let mut count = 0;
+    loop {
+        if count == digits.len() { return Err(sampler_core::Error::InvalidInput); }
+        digits[count] = b'0' + (n % 10) as u8;
+        count += 1;
+        n /= 10;
+        if n == 0 { break; }
+    }
+    for (index, byte) in digits[..count].iter().rev().enumerate() {
+        bytes[prefix.len() + index] = *byte;
+    }
+    let key = std::str::from_utf8(&bytes[..prefix.len() + count])
+        .map_err(|_| sampler_core::Error::InvalidInput)?;
+    Ok(sampler_core::lower::ir_control_id(key))
+}
+
+/// Compile the actual Constant definition, not its synthetic listener rank.
+pub(crate) fn register_constant(ir:&mut ir::Instrument,node:roxmltree::Node)->Result<ir::SourceConstantProperty,String>{
+    let identity=u32::try_from(node.id().get_usize()).map_err(|_|"constant definition identity overflow")?;
+    if let Some(row)=ir.source_indices.constant_properties.iter().find(|row|row.node==identity){return Ok(row.clone());}
+    if !node.has_tag_name("ConstantModulation")||node.attribute("ScriptLive").is_none(){return Err("missing actual writable Constant definition".into());}
+    let owner=node.ancestors().skip(1).find(|n|n.is_element()&&(matches!(n.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"|"AuxEffect")||n.parent().is_some_and(|p|p.has_tag_name("Oscillators")))).ok_or("constant structural owner missing")?;
+    let owner=ir::SourceOwnerId::UviNode(u32::try_from(owner.id().get_usize()).map_err(|_|"constant owner identity overflow")?);
+    let read=|field:&str,default:f64|->Result<f64,String>{match node.attribute(field){Some(text)=>text.parse::<f64>().ok().filter(|v|v.is_finite()).ok_or_else(||format!("Constant {field} must be finite")),None=>Ok(default)}};
+    let initial=read("Value",0.)?;let style=read("Style",0.)?;let bipolar=read("Bipolar",0.)?!=0.;
+    if style!=0.&&style!=1.{return Err("Constant Style must be exactly0 or1".into());}
+    let value=ir::ControlRef(ir.controls.len());let toggle=ir::ControlRef(ir.controls.len()+1);
+    ir.controls.push(ir::Control{key:key(node.id().get_usize(),"ConstantModulation","Value"),label:"Constant Value (Core target)".into(),value:ir::ControlValue::Continuous{min:f64::MIN,max:f64::MAX,default:initial,unit:ir::ControlUnit::None},automation:ir::Automation::None});
+    ir.controls.push(ir::Control{key:key(node.id().get_usize(),"ConstantModulation","Style"),label:"Constant Style (Core target)".into(),value:ir::ControlValue::Toggle{default:style==1.},automation:ir::Automation::None});
+    let row=ir::SourceConstantProperty{node:identity,owner,value,style:toggle,bipolar,law:ir::SourceConstantPropertyLaw::UnqualifiedNative};ir.source_indices.constant_properties.push(row.clone());Ok(row)
 }

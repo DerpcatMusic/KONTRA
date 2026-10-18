@@ -390,7 +390,6 @@ pub(super) fn evidence(
         || captured.started_at != started
         || captured.host_process != host
         || !(started..=ended).contains(&captured.captured_at)
-        || !SIGNALS.contains(&captured.signal)
         || captured.backtrace.is_empty()
         || captured.backtrace.len() > FRAMES
     {
@@ -402,7 +401,7 @@ pub(super) fn evidence(
         libc::SIGILL => "SIGILL",
         libc::SIGFPE => "SIGFPE",
         libc::SIGABRT => "SIGABRT",
-        _ => unreachable!(),
+        _ => return None,
     };
     let mut text = format!(
         "Standalone native signal {signal} ({}) · code {} · fault address {:#x}\nBuild: {}\nNative backtrace (raw instruction addresses; bounded frame-pointer walk):\n",

@@ -23,6 +23,22 @@ pub enum NIFileError {
     #[error("Version Mismatch: expected {expected}, got {got}")]
     VersionMismatch { expected: u32, got: u32 },
 
+    /// A serialized field violates the format this reader supports.
+    #[error("Invalid {field}: expected {expected}, got {actual}")]
+    InvalidField {
+        field: &'static str,
+        expected: &'static str,
+        actual: String,
+    },
+
+    /// The stream uses a newer format than this reader implements.
+    #[error("Unsupported {format} version {got}; maximum supported version is {max_supported}")]
+    UnsupportedVersion {
+        format: &'static str,
+        max_supported: u32,
+        got: u32,
+    },
+
     #[error(transparent)]
     NKSError(#[from] NKSError),
 

@@ -90,7 +90,15 @@ pub struct Instrument {
     /// Transfer curves routes apply to their source value.
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
+    /// Explicit per-selection-activation processor owners. This namespace is
+    /// independent of GroupRef, selection families and source storage packs.
+    /// Empty retains the existing singleton source execution exactly.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_scopes: Vec<ProcessingScope>,
     pub buses: Vec<Bus>,
+    /// Explicit channel programs on existing GLOBAL bus owners, never voice activations.
+    #[cfg_attr(feature="cache",serde(default))]
+    pub processing_buses:Vec<ProcessingBus>,
     /// Sum entering the instrument/program inserts, after upstream group buses.
     /// Direct outputs before this point bypass instrument-level processing.
     pub input_bus: Option<BusRef>,
@@ -237,6 +245,42 @@ pub enum DspSlotReason {
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
+    /// Original source-owner hierarchy. Identities are document-local native
+    /// addresses, not runtime handles, display names, or processing-owner IDs.
+    /// The compiled plan/actual runtime owner supplies generation fencing.
+    /// Empty is legacy metadata absence, never proof that all scopes coincide.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub owners: Vec<SourceOwner>,
+    /// Source-defined shared processing recipes. No width is guessed during
+    /// XML/container translation; the normal loader binds actual source ports.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing: Vec<SourceProcessingRecipe>,
+    /// Exact original processor operands on a real per-activation owner. These
+    /// are not output Gain/Pan roles or a cache of current parameter values.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_parameters: Vec<SourceProcessingParameter>,
+    /// Full authored matrices, before actual source geometry is known. These
+    /// cells are not an early decoder fold or a guessed two-channel graph.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_matrices: Vec<SourceProcessingMatrix>,
+    /// Explicit caller-supplied conversion at the source-owner output port.
+    /// Absent is not permission to drop wide channels or infer native enums.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_ports: Vec<SourceProcessingPort>,
+    /// Current UVI native source/header and primitive profile. Pending geometry
+    /// is resolved by the ordinary reader, never from physical Stereo packing.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub uvi_native_processing: Vec<UviNativeProcessingProfile>,
+    /// Explicit actual output-field roles, never inferred from processor kind.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub output_controls:Vec<SourceOwnerOutputControl>,
+    /// Executable modulation at a real Program/Layer output, supplied by the
+    /// resolved element MIDI source domain. Never copied to member zones.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub global_modulation:Vec<SourceGlobalModulation>,
+    /// Writable Constant definitions; property controls are not listener inputs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub constant_properties:Vec<SourceConstantProperty>,
     /// Original physical order. Empty for caches without native identity metadata.
     #[cfg_attr(feature = "cache", serde(default))]
     pub zone_catalog: Vec<SourceZone>,
@@ -244,6 +288,16 @@ pub struct SourceIndices {
     /// An initially empty player retains complete dormant zone recipes.
     #[cfg_attr(feature = "cache", serde(default))]
     pub sample_targets: Vec<SourceSampleTarget>,
+    /// SamplePlayer zones without program-owned PlaybackOptions. Initial source
+    /// loading inherits file playback for these zones, never root/tune/gain.
+    /// Presence is explicit: an empty stored PlaybackOptions suppresses inheritance.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub file_playback_zones: Vec<ZoneRef>,
+    /// One logical six-channel source, stored as three ordinary stereo assets.
+    /// Empty in legacy translations. These dependencies must survive narrowing;
+    /// their presence never authorizes a consumer to fall back to the first pack.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_bundles: Vec<SourceBundle>,
     pub modulators: Vec<SourceModulator>,
     /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
     pub ahdsrs: Vec<SourceAhdsr>,
@@ -304,6 +358,145 @@ pub struct ZoneRouteVariant {
 pub struct SourceSampleTarget {
     pub node: u32,
     pub zones: Vec<ZoneRef>,
+}
+
+/// A real source address in the importing instrument's document namespace.
+/// Kontakt's physical group/zone indices are deliberately not UVI XML node IDs.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceOwnerId {
+    UviNode(u32),
+    KontaktInstrument,
+    KontaktGroup(u32),
+    KontaktZone(u32),
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceOwnerKind {
+    Instrument,
+    Layer,
+    Keygroup,
+    Player,
+    Aux,
+    KontaktGroup,
+    KontaktZone,
+}
+
+/// A retained source property. A binding is real only when it names a typed
+/// control; the saved value alone does not pretend to implement live updates.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSwitch {
+    pub saved: bool,
+    pub control: Option<ControlRef>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceEventProcessorId {
+    UviNode(u32),
+    KontaktScriptSlot(u32),
+}
+
+/// EVERY direct authored event-list member, including unsupported processors.
+/// `ordinal` counts the original full list, not only ScriptProcessor entries.
+/// This row is source metadata, not a VM, callback token, or execution admission.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEventProcessor {
+    pub id: SourceEventProcessorId,
+    pub owner: SourceOwnerId,
+    pub ordinal: u32,
+    pub kind: String,
+    pub bypass: SourceSwitch,
+}
+
+/// Known native input predicates. An unsupported predicate remains explicit;
+/// its absence from an adapter cannot silently mean "accept every event".
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceInputPredicate {
+    Keys(KeyRange),
+    Velocities(VelocityRange),
+    Channel(u8),
+    Unsupported { field: String },
+}
+
+/// Source topology and semantic membership shared by the audio and event
+/// producers. `children` is direct original order. `zones`/`groups` are actual
+/// translated references within this owner's subtree, not guessed names.
+/// The kind does NOT choose a DSP lifetime: UVI KG activation processing,
+/// Kontakt per-voice groups and instrument buses compile their own proven law.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceOwner {
+    pub id: SourceOwnerId,
+    pub parent: Option<SourceOwnerId>,
+    pub kind: SourceOwnerKind,
+    pub children: Vec<SourceOwnerId>,
+    pub groups: Vec<GroupRef>,
+    pub zones: Vec<ZoneRef>,
+    pub predicates: Vec<SourceInputPredicate>,
+    pub bypass: Option<SourceSwitch>,
+    pub mute: Option<SourceSwitch>,
+    pub event_processors: Vec<SourceEventProcessor>,
+}
+
+/// Initial storage recipe for ONE source/zone, not three selectable voices.
+/// Pack order is fixed: input channels (1,2), (3,4), (5,6). Geometry applies
+/// identically to all packs; source pitch and Playback remain on the zone.
+/// This semantic record does not assert native oscillator grouping or width.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceBundle {
+    pub zone: ZoneRef,
+    pub packs: [AssetRef; 3],
+    pub geometry: SourceBundleGeometry,
+    /// Original logical player/resource identities, independent of asset compaction.
+    pub player: u32,
+    pub logical_asset: u32,
+    /// Immutable resource identity. No PCM, URI or decoder state is retained here.
+    pub origin: [u8; 32],
+    pub boundary: SourceMatrixBoundary,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceBundleGeometry {
+    pub rate: u32,
+    pub frames: u64,
+}
+
+/// Authored position of the first width-reducing matrix. Coordinates and control
+/// identities remain explicit so deleting a prefix cannot renumber later slots.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceMatrixBoundary {
+    pub node: u32,
+    pub chain: ChainRef,
+    pub section: SourceBoundarySection,
+    pub index: usize,
+    /// Twelve independent signed cells. Coordinates are zero-based; XML's
+    /// Gain_i_j has input i and output j, not row-major XML field order.
+    pub cells: [SourceMatrixCell; 12],
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceBoundarySection {
+    BeforeAmplitude,
+    AfterAmplitude,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceMatrixCell {
+    pub input: u8,
+    pub output: u8,
+    pub coefficient: f64,
+    pub control: Option<ControlRef>,
+    pub ramp: Time,
 }
 
 /// What a Kontakt external route record says about its law: the native target
@@ -945,6 +1138,72 @@ impl Instrument {
             old += 1;
             retained
         });
+        for scope in &mut self.processing_scopes {
+            if let Some(signal)=&mut scope.signal {
+                if let ProcessingSourceLaw::UviC997Layout{members}=&mut signal.source_law {
+                    let old=*members;*members=[None;16];let mut output=0;
+                    for (ordinal,zone)in scope.members.iter().enumerate(){
+                        if remap.get(zone.0).copied().unwrap_or(Some(*zone)).is_some(){if output<16{members[output]=old.get(ordinal).copied().flatten();}output+=1;}
+                    }
+                }
+            }
+            scope.members = scope.members.iter().filter_map(|z| {
+                // Preserve dangling public refs for validate(), never drop them.
+                remap.get(z.0).copied().unwrap_or(Some(*z))
+            }).collect();
+        }
+        let mut processing_remap = vec![None; self.processing_scopes.len()];
+        let mut processing_old = 0;
+        let mut processing_next = 0;
+        self.processing_scopes.retain(|scope| {
+            let keep = !scope.members.is_empty();
+            if keep { processing_remap[processing_old] = Some(processing_next); processing_next += 1; }
+            processing_old += 1;
+            keep
+        });
+        self.source_indices.output_controls.retain_mut(|home| {
+            if let SourceOwnerControlTarget::ProcessingScope{scope,..}=&mut home.target {
+                match processing_remap.get(*scope).copied().unwrap_or(Some(*scope)) {
+                    Some(next)=>*scope=next, None=>return false,
+                }
+            } true
+        });
+        for recipe in &mut self.source_indices.processing {
+            recipe.members = recipe.members.iter().filter_map(|zone| {
+                remap.get(zone.0).copied().unwrap_or(Some(*zone))
+            }).collect();
+            recipe.compiled = recipe.compiled.and_then(|old| {
+                processing_remap.get(old).copied().unwrap_or(Some(old))
+            });
+        }
+        self.source_indices.processing.retain(|recipe| !recipe.members.is_empty());
+        self.source_indices.processing_parameters.retain_mut(|parameter| {
+            if !self.source_indices.processing.iter().any(|recipe|recipe.owner==parameter.owner&&recipe.chain==Some(parameter.chain)){return false;}
+            if let Some(compiled)=&mut parameter.compiled {
+                match processing_remap.get(compiled.scope).copied().unwrap_or(Some(compiled.scope)) {
+                    Some(next)=>compiled.scope=next,None=>parameter.compiled=None,
+                }
+            }true
+        });
+        for profile in &mut self.source_indices.uvi_native_processing {
+            profile.members=profile.members.iter().filter_map(|(zone,input)|remap.get(zone.0).copied().unwrap_or(Some(*zone)).map(|zone|(zone,*input))).collect();
+        }
+        self.source_indices.uvi_native_processing.retain(|profile|!profile.members.is_empty());
+        for matrix in &mut self.source_indices.processing_matrices {
+            if let Some(binding)=&mut matrix.compiled {
+                if let Some(scope)=processing_remap.get(binding.scope).copied().flatten() {
+                    binding.scope=scope;
+                } else { matrix.compiled=None; }
+            }
+        }
+        // Keep every native owner and event-list identity after narrowing.
+        // Only actual translated zone references change. Dangling public refs
+        // remain visible for validate(), rather than becoming a missing owner.
+        for owner in &mut self.source_indices.owners {
+            owner.zones = owner.zones.iter().filter_map(|zone| {
+                remap.get(zone.0).copied().unwrap_or(Some(*zone))
+            }).collect();
+        }
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
         }
@@ -957,10 +1216,28 @@ impl Instrument {
             target.zones = target.zones.iter().filter_map(|z| remap[z.0]).collect();
         }
         self.source_indices.sample_targets.retain(|t| !t.zones.is_empty());
+        self.source_indices.file_playback_zones=self.source_indices.file_playback_zones.iter()
+            .filter_map(|z|remap[z.0]).collect();
+        // Malformed public recipes remain malformed for validate(); never turn
+        // a dangling owner into a silently removed wide-source declaration.
+        self.source_indices.source_bundles.retain_mut(|bundle| {
+            match remap.get(bundle.zone.0) {
+                Some(Some(zone)) => { bundle.zone = *zone; true }
+                Some(None) => false,
+                None => true,
+            }
+        });
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
             if let Some(used) = zone.asset.and_then(|a| used.get_mut(a.0)) {
                 *used = true;
+            }
+        }
+        for bundle in &self.source_indices.source_bundles {
+            for asset in bundle.packs {
+                if let Some(used) = used.get_mut(asset.0) {
+                    *used = true;
+                }
             }
         }
         let kept: Vec<usize> = (0..self.assets.len()).filter(|&i| used[i]).collect();
@@ -980,6 +1257,15 @@ impl Instrument {
                     .copied()
                     .unwrap_or(asset.0),
             ));
+        }
+        for bundle in &mut self.source_indices.source_bundles {
+            for asset in &mut bundle.packs {
+                // Every valid dependency was marked above; dangling refs stay
+                // outside the compacted table and fail structural validation.
+                if let Some(index) = renumbered.get(asset.0) {
+                    *asset = AssetRef(*index);
+                }
+            }
         }
         kept
     }
@@ -1424,12 +1710,14 @@ pub enum ModulationSource {
     Script(u16),
     /// The same script value for a bipolar source, kept in -1..=1.
     ScriptBipolar(u16),
+    /// Declared-Core target reader, never native smoothing or a listener value.
+    ConstantProperty { node:u32, value:ControlRef, style:ControlRef, bipolar:bool },
 }
 
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
 }
 
@@ -1799,6 +2087,437 @@ pub enum Depth {
 
 // ---------------------------------------------------------------- DSP
 
+/// One actual XML ConstantModulation definition, independent of destinations.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceConstantProperty {
+    pub node:u32,pub owner:SourceOwnerId,pub value:ControlRef,pub style:ControlRef,pub bipolar:bool,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub law:SourceConstantPropertyLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum SourceConstantPropertyLaw {
+    #[default] UnqualifiedNative,
+    /// Explicit caller-declared Core target reader, retaining Core route cadence.
+    DeclaredCoreTargetRead,
+}
+
+/// One actual global destination and its resolved accepted-element input.
+/// Identities are source/plan metadata; the Runtime must bind the real receiver
+/// capability before any such outlet can execute. A destination owner is not
+/// itself permission to invent a MIDI channel or per-note input context.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceGlobalModulation {
+    pub owner:SourceOwnerId,
+    pub input_owner:SourceOwnerId,
+    pub outlet:BusRef,
+    pub sources:Vec<ModulatorRef>,
+    pub routes:Vec<RouteRef>,
+}
+
+/// A native source-owner recipe, resolved on the ordinary loader after actual
+/// SourceStorage geometry is available. This is not a second render engine.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingRecipe {
+    /// Authored display label only; all joins use owner/member identities.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub name: String,
+    pub owner: SourceOwnerId,
+    pub lifetime: SourceProcessingLifetime,
+    /// Authored order, including saved-bypass and dormant source definitions.
+    pub members: Vec<ZoneRef>,
+    pub chain: Option<ChainRef>,
+    pub amplitude: Option<ModulatorRef>,
+    pub output: Option<BusRef>,
+    /// Actual materialized ProcessingScope index; None is untranslated geometry.
+    /// This index is never a source/native identity or runtime liveness token.
+    pub compiled: Option<usize>,
+    /// Scalar roles retain original chain coordinates until actual source layout is known.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub parameter_roles: Vec<SourceScopeControlRole>,
+    /// Real original sources owned by this activation, including sources whose
+    /// only outgoing consumer is a retained physical player. No dummy route.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub sources: Vec<ModulatorRef>,
+    /// One program per actual activation, never one copy per physical member.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub routes: Vec<RouteRef>,
+    /// Only an actual native plain amplitude connection grants source lifetime.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_gate:Option<SourceScopeGate>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct SourceScopeGate {pub source:ModulatorRef,pub route:RouteRef,pub velocity:VelocityResponse}
+
+/// A separately named projection law. Historical UVI import behavior is not
+/// evidence of the current native Frequency connection/cadence implementation.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceProcessingParameterLaw {
+    /// Existing ordered per-route midpoint semitone sum -> exp2(sum/12).
+    LegacyCutoffSemitoneMidpoint,
+    /// Historical Freq connection: depth carries 12*log2(1000)*Ratio.
+    /// Native dynamic attachment remains separately unqualified.
+    HistoricalUviFrequencyThreeDecadeCore,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingParameter {
+    pub owner: SourceOwnerId,
+    /// Original actual source processor node, not a VM or runtime slot.
+    pub source_node: u32,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub parameter: ProcessorParameter,
+    pub control: ControlRef,
+    pub law: SourceProcessingParameterLaw,
+    /// Ordered accepted fixed-source multipliers, each followed by the
+    /// historical20..20000Hz clamp BEFORE live connection modulation.
+    pub fixed_factors: Vec<SourceFrequencyFold>,
+    pub compiled: Option<SourceProcessingParameterSite>,
+}
+/// Fixed-source historical Freq operation. Under/overflow of the positive
+/// multiplier becomes a typed clamp, never a nonfinite retained value.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SourceFrequencyFold { MultiplyClamp(f64), LowerClamp, UpperClamp }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceProcessingParameterSite { pub scope: usize, pub site: ScopeControlSite }
+
+/// The typed operand site within one real per-activation owner.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ScopeControlSite {SignalNode(usize),ChainPre(usize),ChainPost(usize)}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceScopeControlRole {
+    pub field: SourceOwnerOutputField,
+    pub chain_index: usize,
+    pub control: ControlRef,
+    pub compiled: Option<ScopeControlSite>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceOwnerControlTarget {Bus{bus:BusRef,node:usize},ProcessingScope{scope:usize,site:ScopeControlSite}}
+
+/// Exact author-declared source-output field role on one actual operand.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq,PartialOrd,Ord)]
+pub enum SourceOwnerOutputField {Gain,Pan,Mute}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SourceOwnerOutputControl {
+    pub owner:SourceOwnerId,
+    pub field:SourceOwnerOutputField,
+    pub target:SourceOwnerControlTarget,
+    pub control:ControlRef,
+}
+
+/// An original matrix node and its original ordered chain coordinate. Native
+/// source addresses identify definitions only; PlanId/Arc owns their liveness.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingMatrix {
+    pub owner: SourceOwnerId,
+    pub node: u32,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub matrix: ChannelMatrix,
+    /// Bounded immutable schemas retained by the source adapter; only cells in
+    /// the actual admitted working layout become mutable IR controls.
+    pub control_definitions: Vec<SourceProcessingCellDefinition>,
+    /// Actual shared IR control references, never a consumer-reconstructed native name.
+    pub controls: Vec<SourceProcessingCell>,
+    /// Actual postdecode binding, absent until ordinary materialization.
+    pub compiled: Option<SourceProcessingMatrixBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingMatrixBinding {
+    pub scope: usize,
+    /// None denotes the retained ordinary stereo chain coordinate above.
+    pub signal_node: Option<usize>,
+    pub layout: SignalLayout,
+    pub cells: Vec<SourceProcessingCell>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingCellDefinition {
+    pub input: usize,
+    pub output: usize,
+    pub control: Control,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceProcessingCell {
+    pub input: usize,
+    pub output: usize,
+    pub control: ControlRef,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingPort {
+    pub owner: SourceOwnerId,
+    /// Concrete caller matrix; its input count is checked against actual
+    /// SourceStorage. Choosing this is an explicit Core graph contract, never
+    /// automatic native descriptor provenance from a file channel count.
+    pub conversion: ChannelMatrix,
+}
+
+/// Descriptor identities joined to the current SamplePlayer header path.
+/// Names encode the ORIGINAL numeric descriptor, not inferred speaker labels.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UviNativeLayout { Code1, Code2, Code6 }
+impl UviNativeLayout {
+    pub const fn channels(self)->usize {match self {Self::Code1=>1,Self::Code2=>2,Self::Code6=>6}}
+    /// Only valid plain decoded-header counts with an admitted attachment law.
+    pub fn plain_header(channels:usize)->Option<Self>{match channels{1=>Some(Self::Code1),2=>Some(Self::Code2),6=>Some(Self::Code6),_=>None}}
+    /// Current source-image profile. Distinct from programmable matrix cells.
+    /// Unknown pairs refuse; there is no general zero-padding fallback.
+    pub fn weight(self,to:Self,input:usize,output:usize)->Option<f32>{
+        if input>=self.channels() || output>=to.channels(){return None;}
+        let selected=match(self,to){
+            (Self::Code1,Self::Code6)=>input==0&&output==2,
+            (Self::Code2,Self::Code6)=>input==output,
+            (Self::Code6,Self::Code6)|(Self::Code2,Self::Code2)|(Self::Code1,Self::Code1)=>input==output,
+            (Self::Code6,Self::Code2)=>output==0&&(input==0||input==4)||output==1&&(input==1||input==5),
+            _=>return None,
+        };
+        Some(if !selected{0.}else if self==Self::Code6&&to==Self::Code2{f32::from_bits(0x3f13cd3a)}else{1.})
+    }
+}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct UviNativeSourceInput {pub layout:UviNativeLayout,pub storage_channels:usize,pub provenance:UviNativeSourceProvenance}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UviNativeSourceProvenance {PlainHeader,UnloadedDefault}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeOnePoleSite {pub chain:ChainRef,pub index:usize,pub frequency:f64,pub frequency_control:Option<String>,pub tracking:f64,pub mode:ChannelOnePoleMode}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeProcessingProfile {
+    pub owner:SourceOwnerId,
+    pub members:Vec<(ZoneRef,Option<UviNativeSourceInput>)>,
+    pub one_poles:Vec<UviNativeOnePoleSite>,
+    /// Set only by the actual application backend output contract, not XML kind.
+    pub requested:Option<UviNativeLayout>,
+}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeLayoutConvert {pub source:UviNativeLayout,pub destination:UviNativeLayout,pub pan:SignalParameter,pub pan_offset:f64}
+/// Numerical primitive and control-frontier contracts are separate. This is
+/// the proved native first-setup32 / prepared-whole-invocation distinction;
+/// the caller supplies actual setup boundaries, never absolute clock%32.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UviOnePoleCadence { PreparedInvocation, FirstSetup32 }
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeOnePole {pub frequency:SignalParameter,pub tracking:f64,pub mode:ChannelOnePoleMode,pub cadence:UviOnePoleCadence,pub tail_frames:u32}
+
+/// Native scope lifetime evidence, separate from numerical sample profiles.
+/// Kontakt Group ownership is deliberately not inferred from its display name.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceProcessingLifetime { UviKeygroupActivation }
+
+/// One per-attack shared processing definition. Only selected members of this
+/// activation contribute, in this authored order. Each member keeps its source
+/// clock, local chain and local amplitude; this section runs ONCE after their sum.
+/// Its optional amplitude is an additional explicit boundary, not an inferred
+/// envelope instance from the declaration's ancestry. No global group sharing.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingScope {
+    pub members: Vec<ZoneRef>,
+    /// Explicit precision boundary, not a format or compiler default.
+    pub sum: ProcessingSumLaw,
+    /// Explicit processing clock domain. This first schedule preserves core's
+    /// existing absolute CELL cadence; it does not stand for UVI's native32.
+    pub cadence: ProcessingCadence,
+    pub chain: Option<ChainRef>,
+    pub amplitude: Option<ModulatorRef>,
+    /// None emits to the instrument input; Some is the existing bus identity.
+    pub output: Option<BusRef>,
+    /// Explicit source/sum layouts and projection before the existing stereo section.
+    /// Absence retains the exact original stereo processing schedule.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub signal: Option<ProcessingSignal>,
+}
+
+/// Ordered discrete-channel port, separate from physical packing and native descriptors.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalLayout { pub channels: usize }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingSignal {
+    /// Existing f32 resampling, f64 source gain/amplitude sections, f32 member outlet.
+    pub source_law: ProcessingSourceLaw,
+    pub input: SignalLayout,
+    pub nodes: Vec<ProcessingSignalNode>,
+    pub controls: Vec<ProcessingCellBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessingSignalNode {
+    Matrix(ChannelMatrix),
+    /// A width-preserving ordered span, sharing the ordinary slot controls and
+    /// their ramp law. Fully bypassed spans hold the inner processor histories.
+    Mix(ChannelMix),
+    /// Existing memoryless Core rectifier applied independently to each retained channel.
+    Rectifier(Rectifier),
+    /// Width-preserving generic core-law stage, before the explicit projection.
+    Gain(ChannelGain),
+    /// One independent history per processing owner and original channel.
+    OnePole(ChannelOnePole),
+    /// Current original f32 N/stereo kernel. Existing CoreOnePoleF64 unchanged.
+    UviOnePole(UviNativeOnePole),
+    /// True descriptor conversion, not programmable GainMatrix. Its Pan operand
+    /// is retained but current wide6->2 does not read it.
+    UviLayout(UviNativeLayoutConvert),
+    /// One scalar Pan at a declared stereo boundary. Its explicit expression
+    /// home consumes canonical note pan exactly once; other Pan stages do not.
+    Pan(ChannelPan),
+    /// Invoke the enclosing global bus's actual existing stereo processor
+    /// chain at this exact top-level point. No source or foreign-chain target.
+    BusChain,
+    /// Silence only this explicit signal outlet while upstream processors and
+    /// source clocks continue. The canonical Toggle never overwrites Gain.
+    Mute(ChannelMute),
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMute {
+    pub muted: bool,
+    /// Actual canonical Toggle control; no real-valued surrogate or ramp.
+    pub control: Option<String>,
+}
+/// A typed real stage parameter. A control binds to the existing generation's
+/// value/ramp owner; the constant is used only in the absence of a binding.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignalParameter {
+    pub constant: f64,
+    pub control: Option<String>,
+    /// Optional per-note factor on the retained global base. Absence preserves
+    /// the original authored sound and does not install an enhancement node.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub expression: Option<SignalExpressionBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalExpressionSource { Pressure, Timbre }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SignalExpressionBinding {
+    pub source: SignalExpressionSource,
+    pub law: SignalExpressionLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SignalExpressionLaw {
+    /// Gain base times an event-rate linear, nonnegative factor.
+    LinearFactor { zero: f64, one: f64 },
+    /// OnePole Hertz base times 2^mapped_octaves. No hidden destination clamp.
+    Octaves { zero: f64, one: f64 },
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMix {
+    /// Number of following nodes, including nested Mix markers.
+    pub count: u16,
+    pub address: SlotAddress,
+    pub dry: f64,
+    pub wet: f64,
+    pub bypass: bool,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelGain { pub gain: SignalParameter, pub arithmetic: ChannelGainArithmetic }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelPan {
+    /// Immutable source connection offset, separate from the mutable scalar base.
+    pub offset: f64,
+    pub position: SignalParameter,
+    pub law: PanLaw,
+    pub expression: bool,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelGainArithmetic { CoreGainF64ThenF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelOnePole {
+    pub cutoff_hz: SignalParameter,
+    pub mode: ChannelOnePoleMode,
+    pub arithmetic: ChannelOnePoleArithmetic,
+    /// Explicit bounded zero-input continuation after the last source ends.
+    /// This is an authored truncation policy, not the exact finite life of an IIR.
+    pub tail_frames: u32,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleMode { LowPass, HighPass }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleArithmetic {
+    /// Existing core f64 recurrence/Hertz conversion/segment-end history flush.
+    /// This does not select either native UVI f32 sample kernel.
+    CoreOnePoleF64,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSourceLaw {
+    CoreF64GainAmplitudeF32Outlet,
+    /// Same source clock/local Core sections; only these explicit member layout
+    /// edges and downstream named primitives select the current native laws.
+    /// Fixed existing16-member capacity is priced in the actual enum layout.
+    UviC997Layout {members:[Option<UviNativeSourceInput>;16]},
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMatrix {
+    pub input: SignalLayout,
+    pub output: SignalLayout,
+    /// Row-major cells: output ordinal * input channels + input ordinal.
+    pub cells: Vec<f64>,
+    pub arithmetic: MatrixArithmetic,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatrixArithmetic { SeparateMulAddF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessingCellBinding {
+    pub node: usize,
+    pub input: usize,
+    pub output: usize,
+    pub control: String,
+}
+
+/// The first executable source-edge summation contract. Member blocks have
+/// binary32 storage; contributions add in authored order with a binary32 store
+/// after EVERY addition. Native UVI constant/vector helper equivalence remains
+/// a separate adapter proof, never inferred merely from choosing this variant.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSumLaw { OrderedF32 }
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingCadence { CoreCell64 }
+
 /// Serial processors in one scope. A voice chain splits around the amplitude
 /// envelope because nonlinear stages sound different on each side of it.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1874,7 +2593,17 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+    /// The single explicit canonical note-Pan home of a shared source owner.
+    /// Its scalar/control value is combined with projected note Pan before
+    /// evaluating the declared law. Not valid on an ordinary source chain.
+    ExpressionPan(OwnedPan),
 }
+
+/// Canonical shared Pan home: its base remains the public Pan/control value.
+/// Constant source connections add after the base trajectory and before one clamp.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct OwnedPan {pub pan:Pan,pub offset:f64}
 
 impl Processor {
     /// The same unit addressed by a script slot, so [`Processor::lanes`] are
@@ -2062,6 +2791,17 @@ pub enum Output {
     #[default]
     Master,
     Bus(BusRef),
+}
+
+/// One channel graph bound to an existing BusRef. Output layout is explicit;
+/// source cardinality never implies a native descriptor or conversion matrix.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct ProcessingBus {
+    pub bus:BusRef,
+    pub owner:Option<SourceOwnerId>,
+    pub signal:ProcessingSignal,
+    pub output:SignalLayout,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

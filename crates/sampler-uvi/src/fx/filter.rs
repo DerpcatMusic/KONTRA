@@ -204,3 +204,15 @@ mod tests {
         assert!(!handles("Reverb"));
     }
 }
+
+
+/// Preserve actual native OnePole fields before legacy translation folds a
+/// middle-key approximation. This immutable recipe is not executable until
+/// normal decoded geometry selects its genuine native channel profile.
+pub(crate) fn native_one_pole_site(node:Node,chain:sampler_ir::ChainRef,index:usize)->Result<sampler_ir::UviNativeOnePoleSite,String>{
+    let number=|name:&str,default:f64|node.attribute(name).map_or(Ok(default),|value|value.parse::<f64>().map_err(|_|format!("invalid native OnePole {name}")));
+    let frequency=number("Freq",1000.)?;let tracking=number("KeyTracking",0.)?;let mode=number("Mode",0.)?;
+    if !frequency.is_finite()||frequency<=0.||frequency>f64::from(f32::MAX)||!tracking.is_finite()||!(0. ..=1.).contains(&tracking)||mode!=0.&&mode!=1.{return Err("native OnePole field domain is invalid".into());}
+    Ok(sampler_ir::UviNativeOnePoleSite{chain,index,frequency,
+        frequency_control:(20. ..=20000.).contains(&frequency).then(||crate::engine_parameters::key(node.id().get_usize(),"OnePole","Freq")),tracking,mode:if mode==0.{sampler_ir::ChannelOnePoleMode::LowPass}else{sampler_ir::ChannelOnePoleMode::HighPass}})
+}

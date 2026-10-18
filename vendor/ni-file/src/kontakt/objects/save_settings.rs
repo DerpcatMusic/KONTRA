@@ -25,8 +25,16 @@ pub struct SaveSettings;
 
 impl SaveSettings {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        let is_structured = reader.read_bool()?; // is structured
-        assert!(!is_structured);
+        // Only the unstructured representation is implemented. Check the raw
+        // tag: read_bool would silently turn invalid tags such as 2 into false.
+        let structure_tag = reader.read_u8()?;
+        if structure_tag != 0 {
+            return Err(Error::InvalidField {
+                field: "SaveSettings structure tag",
+                expected: "0 (unstructured)",
+                actual: structure_tag.to_string(),
+            });
+        }
 
         // dbg!(reader.read_u16_le()?);
         // dbg!(reader.read_i32_le()?);
@@ -61,6 +69,21 @@ mod tests {
     use super::*;
     use crate::{kontakt::Chunk, Error};
     use std::fs::File;
+
+    #[test]
+    fn structure_tag_is_validated_without_panicking() {
+        use std::io::Cursor;
+        let mut reader = Cursor::new([0]);
+        SaveSettings::read(&mut reader).unwrap();
+        assert_eq!(reader.position(), 1);
+        for tag in [1, 2, 255] {
+            assert!(matches!(
+                SaveSettings::read(Cursor::new([tag])),
+                Err(Error::InvalidField { field: "SaveSettings structure tag", .. })
+            ));
+        }
+        assert!(SaveSettings::read(Cursor::new([])).is_err());
+    }
 
     #[test]
     #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
