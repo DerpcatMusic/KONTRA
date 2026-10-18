@@ -699,6 +699,11 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             &face.values,
         );
     }
+    #[cfg(all(test, feature = "shots"))]
+    super::widget_gate::library_face_receipt(
+        slot, generation, face.shown, face.page, face.presentation,
+        face.uvi_snapshot.as_ref(), &face.assets,
+    );
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
     // Both authored presentations lower the evaluated graph to live MUI
     // primitives. Raw KSP rectangles are parameter handles, not this layout.
