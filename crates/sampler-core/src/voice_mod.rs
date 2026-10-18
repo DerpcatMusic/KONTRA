@@ -3004,16 +3004,27 @@ impl VoiceModulation {
         program.bipolar.get(source.source).copied().ok_or(Error::InvalidInput)
     }
     pub(crate) fn validate_provider_bindings(&self,owners:&VoiceModulation,regions:&[Option<(usize,usize)>])->Result<(),Error>{
-        if self.is_empty(){return Ok(());}
+        // Legacy Prepared::new has no shared-processing region roster. Only an
+        // actual retained provider program depends on that separate metadata;
+        // local source programs keep their ordinary physical-region mapping.
+        let mut has_providers=false;
+        for p in &self.programs {
+            let provider_rows=p.sources.iter().filter(|source|matches!(source,Prepared::Provider(_))).count();
+            if provider_rows==0 && p.provider_scope.is_none(){continue;}
+            has_providers=true;
+            let scope=p.provider_scope.ok_or(Error::InvalidInput)?;
+            if provider_rows==0 || p.bipolar.len()!=p.sources.len(){return Err(Error::InvalidInput);}
+            for (index,source)in p.sources.iter().enumerate(){if let Prepared::Provider(source)=source{
+                if source.scope!=scope || p.bipolar[index]!=owners.source_bipolar(*source)?{return Err(Error::InvalidInput);}
+            }}
+        }
+        if !has_providers{return Ok(());}
         if regions.len()!=self.regions.len(){return Err(Error::InvalidInput);}
         for (region,program)in self.regions.iter().enumerate(){
-            let Some(program)=program else{continue;};let p=&self.programs[*program as usize];
-            if let Some(scope)=p.provider_scope{
-                if regions[region].is_none_or(|(actual,_)|actual!=scope){return Err(Error::InvalidInput);}
-                for (index,source)in p.sources.iter().enumerate(){if let Prepared::Provider(source)=source{
-                    if source.scope!=scope||p.bipolar[index]!=owners.source_bipolar(*source)?{return Err(Error::InvalidInput);}
-                }}
-            }
+            let Some(program)=program else{continue;};
+            let p=self.programs.get(*program as usize).ok_or(Error::InvalidInput)?;
+            if let Some(scope)=p.provider_scope
+                && regions[region].is_none_or(|(actual,_)|actual!=scope){return Err(Error::InvalidInput);}
         }Ok(())
     }
     pub(crate) fn region_provider_scope(&self,region:usize)->Option<usize>{self.program(region).and_then(|program|self.programs[program as usize].provider_scope)}
@@ -3086,5 +3097,81 @@ mod provider_endpoint_precision {
         assert_eq!(points.at(1,64).to_bits(),0f64.to_bits());
         let simple_from=[0.];let simple_to=[1.];let middle=ProviderView{scope:Some(0),from:&simple_from,to:&simple_to,begin:0,end:64};
         assert_eq!(middle.at(0,16),0.25);assert_eq!(middle.at(0,32),0.5);assert_eq!(middle.at(0,48),0.75);
+    }
+}
+
+
+#[cfg(test)]
+mod provider_legacy_validation164 {
+    use super::*;
+
+    fn local() -> VoiceModulation {
+        VoiceModulation::new(vec![ModProgram {
+            sources: vec![ModSource::Constant],
+            routes: vec![ModRoute::new(0, ModTarget::Pan, 0.25)],
+            ..Default::default()
+        }], vec![Some(0)], vec![0]).unwrap()
+    }
+
+    fn provider() -> (VoiceModulation, VoiceModulation) {
+        let owner = local();
+        let source = ProcessingSourceRef { scope: 0, source: 0 };
+        let bipolar = owner.source_bipolar(source).unwrap();
+        let physical = VoiceModulation::new_resolved_providers(
+            vec![ModProgram {
+                sources: vec![ModSource::Constant],
+                routes: vec![ModRoute::new(0, ModTarget::Pan, 0.25)],
+                ..Default::default()
+            }], vec![Some(0)], vec![0], vec![None],
+            vec![(ModProvider { program: 0, source: 0, provider: source }, bipolar)],
+            |_| None, |_| Err(Error::InvalidInput),
+        ).unwrap();
+        (owner, physical)
+    }
+
+    #[test]
+    fn local_programs_do_not_depend_on_unrelated_shared_region_metadata() {
+        let physical = local();
+        let unrelated_owner = local();
+        for regions in [vec![], vec![None], vec![Some((99, 17)); 3]] {
+            assert_eq!(physical.validate_provider_bindings(&VoiceModulation::default(), &regions), Ok(()));
+            assert_eq!(physical.validate_provider_bindings(&unrelated_owner, &regions), Ok(()));
+        }
+        // The ordinary local-region/program constructor still owns its shape.
+        assert!(matches!(VoiceModulation::new(vec![ModProgram::default()], vec![Some(9)], vec![0]), Err(Error::InvalidInput)));
+        assert!(matches!(VoiceModulation::new(vec![ModProgram::default()], vec![Some(0)], vec![]), Err(Error::InvalidInput)));
+    }
+
+    #[test]
+    fn real_provider_requires_complete_matching_shared_roster_and_source() {
+        let (owner, physical) = provider();
+        assert_eq!(physical.validate_provider_bindings(&owner, &[Some((0, 0))]), Ok(()));
+        for regions in [vec![], vec![None], vec![Some((1, 0))], vec![Some((0, 0)); 2]] {
+            assert_eq!(physical.validate_provider_bindings(&owner, &regions), Err(Error::InvalidInput));
+        }
+        assert_eq!(physical.validate_provider_bindings(&VoiceModulation::default(), &[Some((0, 0))]), Err(Error::InvalidInput));
+        let (mut nested_owner, physical) = provider();
+        nested_owner.programs[0].sources[0] = Prepared::Provider(ProcessingSourceRef { scope: 0, source: 0 });
+        assert_eq!(physical.validate_provider_bindings(&nested_owner, &[Some((0, 0))]), Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn malformed_provider_metadata_cannot_hide_behind_an_absent_or_unused_roster() {
+        for malformed in 0..9 {
+            let (owner, mut physical) = provider();
+            match malformed {
+                0 => physical.programs[0].provider_scope = None,
+                1 => physical.programs[0].provider_scope = Some(1),
+                2 => physical.programs[0].sources[0] = Prepared::Input(InputSource::Constant),
+                3 => physical.programs[0].bipolar = Box::new([]),
+                4 => physical.programs[0].bipolar = vec![false; 2].into_boxed_slice(),
+                5 => physical.programs[0].bipolar[0] = !physical.programs[0].bipolar[0],
+                6 => physical.programs[0].sources[0] = Prepared::Provider(ProcessingSourceRef { scope: 0, source: 9 }),
+                7 => physical.regions[0] = Some(99),
+                _ => { physical.regions[0] = None; physical.programs[0].provider_scope = None; }
+            }
+            assert_eq!(physical.validate_provider_bindings(&owner, &[Some((0, 0))]), Err(Error::InvalidInput), "malformed provider case {malformed}");
+            assert_eq!(physical.validate_provider_bindings(&owner, &[]), Err(Error::InvalidInput), "missing metadata must not hide malformed provider case {malformed}");
+        }
     }
 }

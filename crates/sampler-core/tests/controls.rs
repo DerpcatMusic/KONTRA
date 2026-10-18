@@ -1332,3 +1332,42 @@ fn channel_bound_plan_callbacks_cancel_only_on_their_actual_hard_stop_domain() {
         assert_eq!(rt.expression_count(), 0);
     });
 }
+
+
+#[test]
+fn legacy_local_modulation_without_shared_owners_keeps_live_controls_recall_and_terminal_lifetime() {
+    let prepared = modulation_plan();
+    assert_eq!(prepared.processing_scope_count(), 0);
+    let limits = Limits::for_plan(&prepared, 4, 4);
+    let mut runtime = Runtime::new(prepared, limits).unwrap();
+    let owner = runtime.active_plan();
+    let mut snapshot = vec![write(ControlId(0), ControlValue::Real(0.)); runtime.control_definitions(owner).unwrap().len()];
+    let (count, revision) = runtime.capture_controls(owner, &mut snapshot).unwrap();
+    assert_eq!(count, snapshot.len());
+    assert_eq!(revision, 0);
+    let input = Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(164) };
+    let mut note = None;
+    support::without_heap(|| note = Some(runtime.trigger(input, 60, 1.).unwrap()));
+    let note = note.unwrap();
+    assert_modulation_frame(modulation_frame(&mut runtime), [0.25, 0.5]);
+    assert_eq!(runtime.processing_owner_count(), 0);
+    assert_eq!(runtime.voice_count(), 1);
+    support::without_heap(|| runtime.edit_controls(owner, None, &[write(MOD_DEPTH, ControlValue::Real(0.25))]).map(|_| ()).unwrap());
+    assert_modulation_frame(modulation_frame(&mut runtime), [0.375, 0.5]);
+    support::without_heap(|| runtime.recall_controls(owner, None, &snapshot).map(|_| ()).unwrap());
+    assert_modulation_frame(modulation_frame(&mut runtime), [0.25, 0.5]);
+    assert_eq!(runtime.control_base_value(owner, MOD_DEPTH), Ok(ControlValue::Real(0.5)));
+    assert_eq!(runtime.note_plan(note), Ok(owner));
+    assert_eq!(runtime.now(), 384);
+    let mut ends = 0;
+    support::without_heap(|| {
+        runtime.release(note).unwrap();
+        runtime.render(&mut [[0.; 2]; 128]).unwrap();
+        runtime.flush_ended(|ended| { assert_eq!(ended, input); ends += 1; true });
+    });
+    assert_eq!(ends, 1);
+    assert_eq!(runtime.voice_count(), 0);
+    assert_eq!(runtime.note_count(), 0);
+    assert_eq!(runtime.processing_owner_count(), 0);
+    assert_eq!(runtime.stats().nonfinite_frames, 0);
+}
