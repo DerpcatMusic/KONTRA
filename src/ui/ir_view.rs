@@ -434,6 +434,10 @@ pub struct InputState {
     pub peaks: HashMap<WidgetRef, Arc<[(f32, f32)]>>,
     pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
+    /// UVI primary actions retain their input origin; numeric edits stay scalar.
+    pub activations:Vec<ActivationEdit>,
+    // One actual primary capture, not a per-widget history or an engine ID.
+    uvi_pointer:UviPointerGesture,
     menu: Option<WidgetRef>,
     menu_path: Vec<String>,
     menu_hovered: Option<String>,
@@ -449,7 +453,34 @@ pub struct InputState {
     pub(super) generated: Option<Arc<super::generated::Layout>>,
 }
 
+#[derive(Clone,Copy,Default)]
+enum UviPointerGesture {
+    #[default]
+    Idle,
+    Held{widget:WidgetRef,control:ControlId,on_press:bool,consumed:bool},
+    // Owner/schema/view retirement cancels a physical capture until button-up;
+    // it cannot turn the previous owner's press into a new target's release.
+    Cancelled,
+}
 impl InputState {
+    pub fn reset_drafts(&mut self){
+        *self=Self{uvi_pointer:UviPointerGesture::Cancelled,..Default::default()};
+    }
+    pub fn cancel_pointer(&mut self){self.uvi_pointer=UviPointerGesture::Cancelled;}
+    pub fn adopt_uvi_schema(&mut self,same_owner:bool,face:&Interface){
+        let previous=self.uvi_pointer;
+        self.reset_drafts();
+        if let UviPointerGesture::Held{widget,control,on_press,..}=previous
+            && same_owner&&face.source==ir::Source::FalconLua
+            && face.widgets.get(widget.0).is_some_and(|row|row.binding==Binding::Control(control)
+                &&row.activate_on_press==on_press
+                &&(matches!(row.kind,Kind::Button{..})||(matches!(row.kind,Kind::Menu{..})&&row.menu_cycle)))
+        {self.uvi_pointer=previous;}
+    }
+    pub fn finish_pointer_frame(&mut self,ui:&Ui){
+        if !ui.pointer().buttons.contains(Button::Primary){self.uvi_pointer=UviPointerGesture::Idle;}
+    }
+
     /// Retained widgets must rebuild when an editor opens, changes draft, or
     /// closes even if its committed control value has not changed yet.
     pub(super) fn numeric_revision(&self) -> u64 {
@@ -461,6 +492,8 @@ impl InputState {
         })
     }
 }
+
+pub struct ActivationEdit {pub widget:WidgetRef,pub activation:ir::UiActivation}
 
 pub struct Edit {
     pub widget: WidgetRef,
@@ -1031,6 +1064,7 @@ pub fn view_state(
     if let Some(popup) = value_popup(ui, namespace, face, scale, values) {
         layers.push(popup);
     }
+    input.finish_pointer_frame(ui);
     stack(layers)
         .w(w)
         .h(h)
@@ -1187,6 +1221,35 @@ fn gesture(w: &ir::Widget, scale: f64, knob: bool) -> (bool, f64) {
     (vertical, travel * scale)
 }
 
+fn uvi_activation(ui:&Ui,id:&str,widget:WidgetRef,control:ControlId,on_press:bool,input:&mut InputState)->Option<ir::UiActivation>{
+    let response=ui.get(id);
+    let raw=|mods:Mods|ir::UiModifiers{shift:mods.shift,ctrl:mods.ctrl,alt:mods.alt,cmd:mods.cmd};
+    if let UviPointerGesture::Held{widget:original,control:target,on_press:phase,..}=input.uvi_pointer
+        && original==widget&&(target!=control||phase!=on_press)
+    {input.uvi_pointer=UviPointerGesture::Cancelled;}
+    if response.pressed&&response.button==Some(Button::Primary)&&matches!(input.uvi_pointer,UviPointerGesture::Idle){
+        // Spend the physical gesture BEFORE enqueue; a refused press is never
+        // retried as a release after queue/schema/owner changes.
+        input.uvi_pointer=UviPointerGesture::Held{widget,control,on_press,consumed:on_press};
+        if on_press{return Some(ir::UiActivation{origin:ir::UiActivationOrigin::PointerDown,modifiers:Some(raw(response.mods))});}
+    }
+    if response.released&&response.clicked_with(Button::Primary)
+        && let UviPointerGesture::Held{widget:original,control:target,on_press:false,consumed:false}=input.uvi_pointer
+        && original==widget&&target==control&&!on_press
+    {
+        input.uvi_pointer=UviPointerGesture::Idle;
+        return Some(ir::UiActivation{origin:ir::UiActivationOrigin::PointerUp,modifiers:Some(raw(response.mods))});
+    }
+    // Key modifiers belong to the actual focused KeyPress, not pointer state.
+    if let Some(key)=ui.keys(id).iter().find(|key|matches!(key.key,Key::Enter|Key::Space)){
+        return Some(ir::UiActivation{origin:ir::UiActivationOrigin::Keyboard,modifiers:Some(raw(key.mods))});
+    }
+    if response.clicked_with(Button::Primary)&&!response.pressed&&!response.released{
+        return Some(ir::UiActivation{origin:ir::UiActivationOrigin::Accessibility,modifiers:None});
+    }
+    None
+}
+
 fn quantized(value: f64, range: &ir::Range) -> f64 {
     let value = match range.step.filter(|s| s.is_finite() && *s > 0.) {
         Some(step) => range.min + ((value - range.min) / step).round() * step,
@@ -1340,6 +1403,10 @@ pub(super) fn widget_state(
         parent = p.parent;
     }
     let can_edit = enabled && wd.intercepts_mouse;
+    let uvi_button=face.source==ir::Source::FalconLua
+        &&(matches!(wd.kind,Kind::Button{..})||(matches!(wd.kind,Kind::Menu{..})&&wd.menu_cycle));
+    let activation=if can_edit&&uvi_button{control.and_then(|control|uvi_activation(ui,&id,n,control,wd.activate_on_press,input))}else{None};
+    if let Some(activation)=activation{input.activations.push(ActivationEdit{widget:n,activation});}
     let policy = if face.source == ir::Source::FalconLua {
         GesturePolicy::Falcon
     } else {
@@ -1539,16 +1606,10 @@ pub(super) fn widget_state(
         }
         Kind::Button { momentary: true } => {
             // UVI Button is stateless: one callback per activation, including keyboard.
-            if can_edit {
-                v = if face.source == ir::Source::FalconLua {
-                    if ui.get(id.as_str()).activated() {
-                        1.
-                    } else {
-                        0.
-                    }
-                } else {
-                    if ui.get(id.as_str()).held { 1. } else { 0. }
-                };
+            // UVI Button has no persistent value. Its separate activation
+            // payload must not make a scalar pulse (or a later reset edit).
+            if can_edit && face.source != ir::Source::FalconLua {
+                v = if ui.get(id.as_str()).held { 1. } else { 0. };
             }
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
@@ -1569,7 +1630,7 @@ pub(super) fn widget_state(
             .a11y(A11y::Button)
         }
         Kind::Button { .. } | Kind::Switch => {
-            if can_edit && ui.get(id.as_str()).activated() {
+            if can_edit && (if uvi_button{activation.is_some()}else{ui.get(id.as_str()).activated()}) {
                 v = if v > 0.5 { 0. } else { 1. };
             }
             let on = v > 0.5;
@@ -1609,7 +1670,7 @@ pub(super) fn widget_state(
                 .iter()
                 .position(|i| f64::from(i.value) == v)
                 .or((!shown.is_empty()).then_some(0));
-            if can_edit && ui.get(id.as_str()).activated() && !shown.is_empty() {
+            if can_edit && (if uvi_button{activation.is_some()}else{ui.get(id.as_str()).activated()}) && !shown.is_empty() {
                 if wd.menu_cycle {
                     v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
                 } else {
@@ -2305,7 +2366,7 @@ pub(super) fn widget_state(
     if let Some(c) = control
         && wd.components.is_empty()
     {
-        if can_edit && v.to_bits() != before.to_bits() {
+        if can_edit && !uvi_button && v.to_bits() != before.to_bits() {
             let response = ui.get(id.as_str());
             let mods = if numeric_edit || matches!(wd.kind, Kind::Menu { .. } | Kind::ValueEdit { .. }) {
                 Mods::default()

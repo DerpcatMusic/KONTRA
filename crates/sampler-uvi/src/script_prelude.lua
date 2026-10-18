@@ -395,6 +395,42 @@ function __ui_edit(id, component, value)
   end
 end
 
+-- Only the host's typed activation transport calls this entry. Public push /
+-- setValue keep their existing no-click-modifier programmatic semantics.
+function __ui_activate(id, origin, mods)
+  local w=registry[id];if not w then error('invalid UI activation') end
+  local at=w
+  for visit=0,#registry do
+    local owner=data(at)
+    if not owner.enabled or not owner.visible or (at==w and owner.interceptsMouseClicks==false) then error('inactive UI activation') end
+    at=owner.parent
+    if not at then break end
+    if visit==#registry then error('cyclic UI activation ancestry') end
+  end
+  local d=data(w)
+  if d.kind=='ParamOnOffButton' and not d.bound then error('unbound UI parameter activation') end
+  if d.kind~='Button' and d.kind~='OnOffButton' and d.kind~='ParamOnOffButton' and d.kind~='MultiStateButton' then error('not a UVI button activation') end
+  if origin==0 or origin==1 then
+    local down=d.kind~='MultiStateButton' and d.triggeredOnMouseDown==true
+    if (origin==0)~=down then error('stale UI activation phase') end
+  elseif origin~=2 and origin~=3 then error('invalid UI activation origin') end
+  if d.kind=='Button' then
+    methods.push(w,true,mods)
+  elseif d.kind=='MultiStateButton' then
+    local length=#d.items;if length==0 then return end
+    local previous=w.value
+    local at=1
+    for i=1,length do if i==previous then at=i;break end end
+    methods.setValue(w,at%length+1,false)
+    if previous~=w.value then notify(w,mods) end
+  else
+    local previous=w.value
+    methods.setValue(w,not previous,false)
+    -- ParamOnOff is a bound Widget, not OnOffButton: it never calls changed.
+    if d.kind=='OnOffButton' and previous~=w.value then notify(w,mods) end
+  end
+end
+
 -- Elements -----------------------------------------------------------------
 local element = {}
 local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
