@@ -203,3 +203,58 @@ fn player_local_pan_connection_retains_its_original_route_home() {
     let xml=std::fs::read_to_string(&path).unwrap().replace("<PlaybackOptions",r#"<Connections><SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="0.5"/></Connections><PlaybackOptions"#);std::fs::write(&path,xml).unwrap();
     let translated=sampler_uvi::translate_path(&path).unwrap();let zone=&translated.instrument.zones[0];assert_eq!(zone.routes.len(),1);let route=&translated.instrument.routes[zone.routes[0].0];assert_eq!(route.target,sampler_ir::Target::Pan);
 }
+
+
+// Shared processor binding148: declared historical/Core law, not a native
+// Frequency attachment/cadence claim. All inputs and independent references are authored.
+const BINDING148_RATIO:&str="0.10034333188799373"; // log(2)/log(1000), literal fixture.
+fn binding148_paths(f:&Fixture)->(PathBuf,PathBuf,PathBuf){
+    let(a,mut b,c,_)=sources();
+    // Variable residual magnitude survives full-wave rectification. The older
+    // generic helper's equal-magnitude residual would become DC and could not
+    // discriminate cutoff after settling.
+    for(i,v)in b.iter_mut().enumerate(){v[0]=-a[i][0]+if i%53<26{512}else{2048};v[1]=-a[i][1]+if i%79<39{768}else{2304};}
+    let sum:Vec<_>=a.iter().zip(&b).map(|(a,b)|[a[0]+b[0],a[1]+b[1]]).collect();
+    let filter=format!(r#"<WaveShaper Mode="6" InputGain="0" OutputGain="0"/><OnePole Freq="1800" Mode="0" Bypass="0"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="{BINDING148_RATIO}"/></Connections></OnePole>"#);
+    let target=f.program("binding148-members",&[("binding148-a",a,false),("binding148-b",b,false),("binding148-c",c,true)],1.,false,&filter);
+    let low=f.program("binding148-low",&[("binding148-sum-low",sum.clone(),false)],1.,false,NONLINEAR);
+    let high=f.program("binding148-high",&[("binding148-sum-high",sum,false)],1.,false,r#"<WaveShaper Mode="6" InputGain="0" OutputGain="0"/><OnePole Freq="3600" Mode="0" Bypass="0"/>"#);
+    (target,low,high)
+}
+#[test]
+fn binding148_real_keygroup_frequency_route_is_owned_once_and_removed_from_all_players(){
+    let f=Fixture::new();let(target,_,_)=binding148_paths(&f);
+    let translated=sampler_uvi::translate_path(&target).unwrap();let ir=&translated.instrument;
+    let recipe=ir.source_indices.processing.iter().find(|r|r.members.len()==3).expect("actual three-member KG recipe");
+    let chain=recipe.chain.unwrap();
+    let routes:Vec<_>=ir.routes.iter().enumerate().filter_map(|(n,r)|matches!(r.target,sampler_ir::Target::Processor{chain:c,..}if c==chain).then_some(sampler_ir::RouteRef(n))).collect();
+    assert_eq!(routes.len(),1,"fixture has exactly one real addressed insert connection");
+    let route=routes[0];assert_eq!(recipe.routes.iter().filter(|r|**r==route).count(),1,"actual KG filter route must execute once on the real processing owner");
+    assert!(recipe.members.iter().all(|z|!ir.zones[z.0].routes.contains(&route)),"physical source programs cannot own shared filter consumers");
+    assert!(recipe.sources.contains(&ir.routes[route.0].source),"same actual source dependency must be retained by owner");
+    assert_eq!((ir.zones.len(),ir.assets.len()),(3,3),"bypassed source retained, not deleted to make the graph work");
+}
+fn binding148_shared_filter_case(stream:bool){
+    let f=Fixture::new();let(target,low,high)=binding148_paths(&f);
+    // Independent ordinary summed-source references must load/sound first.
+    let mut low=Session::new(&low,stream);let mut high=Session::new(&high,stream);
+    let low_start=low.render(4123);let high_start=high.render(4123);
+    assert!(low_start.iter().flatten().any(|v|v.abs()>1e-4));
+    assert!(low_start.iter().flatten().zip(high_start.iter().flatten()).any(|(a,b)|(a-b).abs()>1e-4),"two literal filter references must discriminate Frequency");
+    let mut actual=Session::new(&target,stream);compare(&actual.render(4123),&low_start);
+    assert_eq!((actual.rt.voice_count(),actual.rt.processing_owner_count()),(2,1));
+    let held=actual.note;let mut owners=Vec::new();actual.rt.visit_processing_owners(|o|owners.push((o.id,o.note,o.plan,o.template,o.sources)));
+    let performance=actual.rt.performance(0).unwrap();
+    for(value,raised)in [(u32::MAX,true),(0,false),(u32::MAX,true)]{
+        actual.rt.dispatch_controller(performance,input().channel_address(),1,1,value).unwrap();
+        let got=actual.render(2048);let lo=low.render(2048);let hi=high.render(2048);
+        // Independently warmed histories converge beyond CELL64 plus this fixed
+        // lowpass settling window; no cursor/source/history is restarted.
+        let expected=if raised{&hi}else{&lo};compare(&got[256..],&expected[256..]);
+        let mut after=Vec::new();actual.rt.visit_processing_owners(|o|after.push((o.id,o.note,o.plan,o.template,o.sources)));
+        assert_eq!(owners,after);assert_eq!(actual.note,held);assert_eq!((actual.rt.voice_count(),actual.rt.processing_owner_count()),(2,1));
+    }
+    assert_eq!((actual.ir.zones.len(),actual.ir.assets.len()),(3,3));actual.close();low.close();high.close();
+}
+#[test]fn binding148_historical_frequency_connection_reaches_shared_core_filter_full(){binding148_shared_filter_case(false);}
+#[test]fn binding148_historical_frequency_connection_reaches_shared_core_filter_streamed(){binding148_shared_filter_case(true);}
