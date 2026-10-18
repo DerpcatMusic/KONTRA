@@ -24,6 +24,15 @@ pub enum PickerShape {
     Sliders,
 }
 
+// A field has geometry; slider rows do not. Keep that distinction in the
+// private drawing API rather than relying on every caller to exclude Sliders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldShape {
+    Square,
+    Wheel,
+    Triangle,
+}
+
 /// The notation of an [`oklch_picker`]'s text field and sliders.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorFormat {
@@ -41,7 +50,7 @@ pub struct OklchPicker {
     pub shape: PickerShape,
     pub format: ColorFormat,
     draft: String,
-    image: Option<((PickerShape, i16), Arc<Image>)>,
+    image: Option<((FieldShape, i16), Arc<Image>)>,
     ring: Option<bool>,
 }
 impl Default for OklchPicker {
@@ -138,8 +147,8 @@ fn weights(x: f32, y: f32) -> [f32; 3] {
     let right = (x - 0.2 - 0.3 * top) / 0.6;
     [top, 1.0 - top - right, right]
 }
-fn sample(shape: PickerShape, x: f32, y: f32, hue: f32) -> Option<Color> {
-    if shape == PickerShape::Square {
+fn sample(shape: FieldShape, x: f32, y: f32, hue: f32) -> Option<Color> {
+    if shape == FieldShape::Square {
         return Some(Color::oklch(1.0 - y, x * CHROMA, hue));
     }
     if ring(x, y) && (x - 0.5).hypot(y - 0.5) <= 0.5 {
@@ -149,14 +158,14 @@ fn sample(shape: PickerShape, x: f32, y: f32, hue: f32) -> Option<Color> {
             (x - 0.5).atan2(0.5 - y).to_degrees().rem_euclid(360.0),
         ));
     }
-    if shape == PickerShape::Wheel && (0.22..=0.78).contains(&x) && (0.22..=0.78).contains(&y) {
+    if shape == FieldShape::Wheel && (0.22..=0.78).contains(&x) && (0.22..=0.78).contains(&y) {
         return Some(Color::oklch(
             1.0 - (y - 0.22) / 0.56,
             (x - 0.22) / 0.56 * CHROMA,
             hue,
         ));
     }
-    if shape == PickerShape::Triangle {
+    if shape == FieldShape::Triangle {
         let w = weights(x, y);
         if w.iter().all(|v| *v >= 0.0) {
             return Some(Color::oklch(w[0] + 0.65 * w[2], CHROMA * w[2], hue));
@@ -164,7 +173,7 @@ fn sample(shape: PickerShape, x: f32, y: f32, hue: f32) -> Option<Color> {
     }
     None
 }
-fn bitmap(shape: PickerShape, hue: f32) -> Arc<Image> {
+fn bitmap(shape: FieldShape, hue: f32) -> Arc<Image> {
     let mut rgba = Vec::with_capacity((PIXELS * PIXELS * 4) as usize);
     for y in 0..PIXELS {
         for x in 0..PIXELS {
@@ -193,7 +202,7 @@ fn marker(x: f64, y: f64) -> Path {
         true,
     )
 }
-fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker) -> El {
+fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker, shape: FieldShape) -> El {
     let target = format!("{id}/field");
     let response = ui.get(&target);
     let point = ui
@@ -207,8 +216,8 @@ fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker) -> El {
         });
     if response.pressed {
         state.ring = point.and_then(|(x, y)| {
-            sample(state.shape, x, y, state.color.hue())
-                .map(|_| state.shape != PickerShape::Square && ring(x, y))
+            sample(shape, x, y, state.color.hue())
+                .map(|_| shape != FieldShape::Square && ring(x, y))
         });
     }
     if response.held && response.button == Some(Button::Primary) {
@@ -222,13 +231,13 @@ fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker) -> El {
             if on_ring {
                 h = (x - 0.5).atan2(0.5 - y).to_degrees().rem_euclid(360.0);
             } else {
-                (l, c) = match state.shape {
-                    PickerShape::Square => (1.0 - y, x * CHROMA),
-                    PickerShape::Wheel => (
+                (l, c) = match shape {
+                    FieldShape::Square => (1.0 - y, x * CHROMA),
+                    FieldShape::Wheel => (
                         1.0 - ((y - 0.22) / 0.56).clamp(0.0, 1.0),
                         ((x - 0.22) / 0.56).clamp(0.0, 1.0) * CHROMA,
                     ),
-                    PickerShape::Triangle => {
+                    FieldShape::Triangle => {
                         let mut w = weights(x, y).map(|v| v.max(0.0));
                         let sum: f32 = w.iter().sum();
                         for v in &mut w {
@@ -236,7 +245,6 @@ fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker) -> El {
                         }
                         (w[0] + 0.65 * w[2], CHROMA * w[2])
                     }
-                    PickerShape::Sliders => unreachable!(),
                 };
             }
             state.color = Color::oklcha(l, c, h, state.color.alpha());
@@ -244,9 +252,9 @@ fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker) -> El {
     } else {
         state.ring = None;
     }
-    let key = (state.shape, state.color.hue().round() as i16);
+    let key = (shape, state.color.hue().round() as i16);
     if state.image.as_ref().is_none_or(|(old, _)| *old != key) {
-        state.image = Some((key, bitmap(state.shape, key.1 as f32)));
+        state.image = Some((key, bitmap(shape, key.1 as f32)));
     }
     let image = state.image.as_ref().unwrap().1.clone();
     let (l, c, h) = (
@@ -254,16 +262,15 @@ fn field(ui: &mut Ui, id: &Id, state: &mut OklchPicker) -> El {
         (state.color.chroma() / CHROMA).clamp(0.0, 1.0) as f64,
         state.color.hue() as f64,
     );
-    let mut points = match state.shape {
-        PickerShape::Square => vec![(c, 1.0 - l)],
-        PickerShape::Wheel => vec![(0.22 + 0.56 * c, 0.22 + 0.56 * (1.0 - l))],
-        PickerShape::Triangle => {
+    let mut points = match shape {
+        FieldShape::Square => vec![(c, 1.0 - l)],
+        FieldShape::Wheel => vec![(0.22 + 0.56 * c, 0.22 + 0.56 * (1.0 - l))],
+        FieldShape::Triangle => {
             let t = (l - 0.65 * c).clamp(0.0, 1.0 - c);
             vec![(0.2 + 0.3 * t + 0.6 * c, 0.76 - 0.55 * t)]
         }
-        PickerShape::Sliders => unreachable!(),
     };
-    if state.shape != PickerShape::Square {
+    if shape != FieldShape::Square {
         let a = h.to_radians();
         points.push((0.5 + 0.453 * a.sin(), 0.5 - 0.453 * a.cos()));
     }
@@ -337,10 +344,11 @@ pub fn oklch_picker(ui: &mut Ui, id: impl Into<Id>, state: &mut OklchPicker) -> 
             (ColorFormat::Hex, "HEX"),
         ],
     );
-    let visual = if state.shape == PickerShape::Sliders {
-        Vec::new()
-    } else {
-        vec![field(ui, &id, state)]
+    let visual = match state.shape {
+        PickerShape::Square => vec![field(ui, &id, state, FieldShape::Square)],
+        PickerShape::Wheel => vec![field(ui, &id, state, FieldShape::Wheel)],
+        PickerShape::Triangle => vec![field(ui, &id, state, FieldShape::Triangle)],
+        PickerShape::Sliders => Vec::new(),
     };
     let input_id = format!("{id}/value");
     if !ui.focused(&input_id) {
@@ -460,6 +468,19 @@ pub fn oklch_picker(ui: &mut Ui, id: impl Into<Id>, state: &mut OklchPicker) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn field_geometry_keeps_square_wheel_and_triangle_coordinates() {
+        let square = sample(FieldShape::Square, 0.25, 0.75, 90.0).unwrap();
+        assert!((square.lightness() - 0.25).abs() < 1e-6);
+        assert!((square.chroma() - 0.1).abs() < 1e-6);
+        let wheel = sample(FieldShape::Wheel, 0.5, 0.5, 90.0).unwrap();
+        assert!((wheel.lightness() - 0.5).abs() < 1e-6);
+        assert!((wheel.chroma() - 0.2).abs() < 1e-6);
+        assert!(sample(FieldShape::Triangle, 0.5, 0.5, 90.0).is_some());
+        assert!(sample(FieldShape::Triangle, 0.1, 0.1, 90.0).is_none());
+        assert!(sample(FieldShape::Wheel, 0.1, 0.1, 90.0).is_none());
+    }
+
     #[test]
     fn formats_parse_and_every_shape_resolves() {
         for s in [

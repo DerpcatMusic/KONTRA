@@ -262,6 +262,8 @@ fn retired_parent_play_is_never_reinterpreted_as_a_generated_root() {
     let command = Play {
         id: 71,
         parent: Some(70),
+        creator: crate::script::PlayCreator::NoteOn(70),
+        origin: crate::script::PlayOrigin::Helper,
         at_ms: 0.,
         key: 60,
         velocity: 127,
@@ -274,4 +276,139 @@ fn retired_parent_play_is_never_reinterpreted_as_a_generated_root() {
     };
     driver.play(&mut rt, &command, false).unwrap();
     assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
+}
+
+#[test]
+fn script_note_callbacks_keep_the_original_physical_channel_and_overlapping_note_pairing() {
+    use crate::script::MidiOut;
+    let (mut rt, mut driver) = fixture(
+        "function onNote(e) postEvent{type=Event.Controller,controller=20,value=e.channel-1,channel=e.channel} end function onRelease(e) postEvent{type=Event.Controller,controller=21,value=e.channel-1,channel=e.channel}; postEvent{type=Event.Controller,controller=22,value=e.velocity,channel=e.channel} end", true);
+    let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+    let first = rt.note_on(input(1), 60, 1.).unwrap();
+    rt.set_input_source(first, Input { protocol: Protocol::Clap, port: 3, channel: 13, ..input(1) }).unwrap();
+    driver.note_on(&mut rt, first, 60, 1.).unwrap();
+    let second = rt.note_on(input(2), 60, 1.).unwrap();
+    rt.set_input_source(second, Input { protocol: Protocol::Vst3, port: 5, channel: 4, ..input(2) }).unwrap();
+    driver.note_on(&mut rt, second, 60, 1.).unwrap();
+    let mut midi = Vec::new(); driver.drain_midi(|m| midi.push(m));
+    assert_eq!(midi, vec![MidiOut { status: 0xbd, a: 20, b: 13 }, MidiOut { status: 0xb4, a: 20, b: 4 }]);
+    // A later adapter mapping cannot change the channel of an admitted callback.
+    rt.set_input_source(first, Input { protocol: Protocol::Clap, channel: 2, ..input(1) }).unwrap();
+    driver.note_off_note_velocity(&mut rt, second, 60, Some(53. / 127.)).unwrap();
+    assert!(rt.input_held(first).unwrap()); assert!(!rt.input_held(second).unwrap());
+    driver.note_off_note_velocity(&mut rt, first, 60, Some(17. / 127.)).unwrap();
+    midi.clear(); driver.drain_midi(|m| midi.push(m));
+    assert_eq!(midi, vec![MidiOut { status: 0xb4, a: 21, b: 4 }, MidiOut { status: 0xb4, a: 22, b: 53 },
+        MidiOut { status: 0xbd, a: 21, b: 13 }, MidiOut { status: 0xbd, a: 22, b: 17 }]);
+    assert!(driver.held[&60].is_empty());
+}
+
+#[test]
+fn a_retired_core_note_keeps_its_physical_script_channel_until_the_real_keyup() {
+    use crate::script::MidiOut;
+    let (mut rt, mut driver) = fixture("function onNote(e) end function onRelease(e) postEvent{type=Event.Controller,controller=21,value=e.channel-1,channel=e.channel} end", true);
+    let input = Input { protocol: Protocol::Midi2, port: 2, group: 3, channel: 15, key: 60, external_id: Some(91) };
+    let physical = rt.note_on(input, 60, 1.).unwrap();
+    driver.note_on(&mut rt, physical, 60, 1.).unwrap();
+    rt.cancel_input_note(physical).unwrap(); rt.flush_ended(|_| true);
+    assert_eq!(rt.note(physical), Err(Error::StaleHandle));
+    driver.prune(&rt);
+    driver.note_off_note(&mut rt, physical, 60).unwrap();
+    let mut midi = Vec::new(); driver.drain_midi(|m| midi.push(m));
+    assert_eq!(midi, vec![MidiOut { status: 0xbf, a: 21, b: 15 }]);
+    assert!(driver.held[&60].is_empty()); assert_eq!(rt.note_count(), 0);
+    driver.prune(&rt); assert!(driver.notes.is_empty());
+}
+
+#[test]
+fn release_command_capacity_failure_cannot_leave_the_original_physical_key_down() {
+    let (mut rt, mut driver) = fixture("function onNote(e) end function onRelease(e) for i=1,12 do playNote(e.note,e.velocity,0) end end", true);
+    let input = Input { protocol: Protocol::Midi1, port: 2, group: 3, channel: 11, key: 60, external_id: Some(91) };
+    let physical = rt.note_on(input, 60, 1.).unwrap();
+    driver.note_on(&mut rt, physical, 60, 1.).unwrap();
+    assert_eq!(driver.note_off_note(&mut rt, physical, 60), Err(Error::Capacity));
+    assert!(!rt.input_held(physical).unwrap(), "real keyup must reach core even when an onRelease play exceeds capacity");
+    assert!(driver.held[&60].is_empty());
+}
+
+#[test]
+fn queued_script_owner_receives_the_same_captured_channel_and_release_velocity() {
+    use crate::script::MidiOut;
+    use std::time::{Duration, Instant};
+    let (mut rt, _) = fixture("", true);
+    let code = "function onNote(e) postEvent{type=Event.Controller,controller=20,value=e.channel-1,channel=e.channel} end function onRelease(e) postEvent{type=Event.Controller,controller=22,value=e.velocity,channel=e.channel} end";
+    let xml = format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{code}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+    let (thread, loaded) = ScriptThread::spawn(xml, (), crate::script::Config::default()).unwrap();
+    let mut driver = Driver::new(thread, vec![], 48000);
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(67) };
+    let physical = rt.note_on(input, 60, 1.).unwrap();
+    rt.set_input_source(physical, Input { protocol: Protocol::Clap, port: 7, channel: 14, ..input }).unwrap();
+    driver.note_on(&mut rt, physical, 60, 1.).unwrap();
+    rt.set_input_source(physical, Input { channel: 2, ..input }).unwrap();
+    driver.note_off_note_velocity(&mut rt, physical, 60, Some(53. / 127.)).unwrap();
+    let mut midi = Vec::new(); let deadline = Instant::now() + Duration::from_secs(3);
+    while midi.len() < 2 {
+        driver.wake(&mut rt).unwrap(); driver.drain_midi(|m| midi.push(m));
+        assert!(Instant::now() < deadline, "ordinary queued script owner did not drain within fixture bound");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(midi, vec![MidiOut { status: 0xbe, a: 20, b: 14 }, MidiOut { status: 0xbe, a: 22, b: 53 }]);
+    assert_eq!(loaded.ui.runtime_faults(), (0, 0));
+    assert!(!matches!(rt.input_held(physical), Ok(true))); assert_eq!(rt.now(), 0);
+}
+
+#[test]
+fn no_creator_negative_duration_releases_immediately_instead_of_becoming_manual() {
+    for code in ["playNote(60,100,-1)", "function onInit() playNote(60,100,-1) end", "spawn(function() playNote(60,100,-1) end)"] {
+        let (mut rt, mut driver)=fixture(code,true);
+        driver.wake(&mut rt).unwrap();
+        for _ in 0..8 { rt.render(&mut [[0.;2];128]).unwrap(); }
+        rt.flush_ended(|_|true);
+        assert_eq!((rt.voice_count(),rt.note_count()),(0,0),"{code}");
+    }
+}
+
+#[test]
+fn callback_spawn_is_manual_even_when_spawned_by_an_on_note_creator() {
+    let (mut rt,mut driver)=fixture("function onNote(e) spawn(function() playNote(60,100,-1) end) end",true);
+    let input=Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None};
+    let physical=rt.note_on(input,60,1.).unwrap();
+    driver.note_on(&mut rt,physical,60,1.).unwrap();
+    driver.note_off_note(&mut rt,physical,60).unwrap();
+    for _ in 0..8 {rt.render(&mut [[0.;2];128]).unwrap();}
+    assert_eq!(rt.voice_count(),1,"spawn has a manual event creator, not the released onNote creator");
+}
+
+#[test]
+fn direct_on_note_helper_follows_real_physical_release() {
+    let (mut rt,mut driver)=fixture("function onNote(e) playNote(e.note,e.velocity,-1) end",true);
+    let input=Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None};
+    let physical=rt.note_on(input,60,1.).unwrap();
+    driver.note_on(&mut rt,physical,60,1.).unwrap();
+    rt.render(&mut [[0.;2];128]).unwrap();
+    assert_eq!(rt.voice_count(),1);
+    driver.note_off_note(&mut rt,physical,60).unwrap();
+    for _ in 0..8 {rt.render(&mut [[0.;2];128]).unwrap();}
+    rt.flush_ended(|_|true);
+    assert_eq!((rt.voice_count(),rt.note_count()),(0,0));
+}
+
+#[test]
+fn late_on_note_uses_a_real_pinned_closed_parent_and_releases_immediately() {
+    // The canonical capture owner holds exactly this checked Core lease while
+    // an external callback turn remains pending. This tests the branch with
+    // that real lease; it does not claim legacy Driver enqueue supplies it.
+    let (mut rt,mut driver)=fixture("function onNote(e) wait(10); playNote(e.note,e.velocity,-1) end",true);
+    let input=Input {protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None};
+    let physical=rt.note_on(input,60,1.).unwrap();
+    rt.pin(physical).unwrap();
+    driver.note_on(&mut rt,physical,60,1.).unwrap();
+    driver.note_off_note(&mut rt,physical,60).unwrap();
+    rt.render(&mut [[0.;2];480]).unwrap();
+    driver.wake(&mut rt).unwrap();
+    assert!(rt.note(physical).is_ok(),"the real capture pin preserves the original identity");
+    rt.unpin(physical).unwrap();
+    for _ in 0..8 {rt.render(&mut [[0.;2];128]).unwrap();}
+    rt.flush_ended(|_|true);
+    assert_eq!((rt.voice_count(),rt.note_count()),(0,0));
 }

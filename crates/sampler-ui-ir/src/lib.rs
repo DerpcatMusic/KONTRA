@@ -106,6 +106,21 @@ pub struct Background {
     pub frame: u32,
 }
 
+/// Raw, immutable modifiers from the actual UI input edge. Sources decide
+/// which platform key corresponds to their documented Command convention.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct UiModifiers {pub shift:bool,pub ctrl:bool,pub alt:bool,pub cmd:bool}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UiActivationOrigin {PointerDown,PointerUp,Keyboard,Accessibility}
+/// A primary UI activation, distinct from a programmatic scalar value write.
+/// This describes input; it is not a Core admission or execution receipt.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct UiActivation {pub origin:UiActivationOrigin,pub modifiers:Option<UiModifiers>}
+impl UiActivation {
+    pub fn valid(self)->bool{matches!((self.origin,self.modifiers),
+        (UiActivationOrigin::PointerDown|UiActivationOrigin::PointerUp|UiActivationOrigin::Keyboard,Some(_))|
+        (UiActivationOrigin::Accessibility,None))}
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
     /// Source identity: KSP variable (with type prefix) or Lua widget name.
@@ -142,6 +157,9 @@ pub struct Widget {
     /// Shift a button/switch caption while pressed (KSP's stock behavior).
     /// Sources without this behavior leave it false.
     pub text_shift_on_press: bool,
+    /// Source-requested primary pointer activation at press instead of release.
+    /// Keyboard and accessibility remain primary actions, not pointer edges.
+    pub activate_on_press:bool,
     pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
@@ -214,6 +232,7 @@ impl Widget {
             text: String::new(),
             text_y: None,
             text_shift_on_press: false,
+            activate_on_press:false,
             value_y: None,
             value_text: None,
             tooltip: String::new(),

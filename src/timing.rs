@@ -416,7 +416,16 @@ impl Scheduler {
         if let Some(row) = router.controller_of(ev) {
             self.art = row;
         }
-        if let In::HostOff(pattern, _) | In::HostChoke(pattern) | In::HostExpression(pattern, _) = ev {
+        if let Some((pattern, action)) = match ev {
+            In::HostOff(pattern, velocity) => {
+                Some((pattern, crate::sound::event::HostAction::Off(velocity)))
+            }
+            In::HostChoke(pattern) => Some((pattern, crate::sound::event::HostAction::Choke)),
+            In::HostExpression(pattern, value) => {
+                Some((pattern, crate::sound::event::HostAction::Expression(value)))
+            }
+            _ => None,
+        } {
             if !self.host.iter().any(|o| pattern.matches(o.note)) {
                 return Some(original);
             }
@@ -432,15 +441,7 @@ impl Scheduler {
                     id: owner.note.id,
                     clap: owner.note.clap,
                 };
-                let to = match ev {
-                    In::HostOff(_, velocity) => match velocity {
-                        Some(velocity) => Event::NoteOffVelocity(pattern, velocity),
-                        None => Event::NoteOff(pattern),
-                    },
-                    In::HostChoke(_) => Event::Choke(pattern),
-                    In::HostExpression(_, x) => Event::Expression(pattern, x),
-                    _ => unreachable!(),
-                };
+                let to = action.at(pattern);
                 let lane = if router.by_channel() {
                     owner.note.channel as usize
                 } else {

@@ -65,6 +65,9 @@ impl FadeCurve {
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
+    AwaitExternal { processor: sampler_ir::SourceEventProcessorId },
+    /// Compiled native document router, executed under normal callback fuel/outcome.
+    AdvanceSourceNote,
     ForwardAttack,
     ForwardReleaseGroups,
     SuppressAttack,
@@ -606,7 +609,7 @@ impl Program {
         let requires_note = instructions.clone().any(|op| {
             matches!(
                 op,
-                Instruction::ForwardAttack
+                Instruction::AdvanceSourceNote | Instruction::ForwardAttack
                     | Instruction::ForwardReleaseGroups
                     | Instruction::SuppressAttack
                     | Instruction::SuppressRelease
@@ -1004,17 +1007,48 @@ impl NoteStage {
     }
 }
 
+/// Capture belongs to a callback instance, not the note's admission snapshot.
+/// Forked plan work retains this exact origin/epoch/stage through waits.
+#[derive(Clone,Copy,Debug)]
+pub(super) struct NoteControllerContext {
+    pub performance:usize,
+    pub origin:super::ChannelAddress,
+    pub source:super::ChannelAddress,
+    pub epoch:u64,
+    pub stage:usize,
+    pub receiver:Option<super::ReceiverId>,
+    pub policy_epochs:[u64;16],
+    pub host_epochs:Option<[u64;16]>,
+    pub physical_event:Option<super::PhysicalReleaseEvent>
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlanContext {
     Bare,
+    Task(super::receiver::task::TaskContext),
+    NoteControllers(NoteControllerContext),
     Controller(super::controller_event::ControllerEvent),
+    Program(super::receiver::channel_event::ProgramEvent),
     Control(super::control::ControlEvent),
 }
 impl PlanContext {
+    pub(super) fn receiver(self)->Option<super::ReceiverId> {
+        match self {
+            Self::Bare=>None,
+            Self::Task(task)=>task.domain.receiver(),
+            Self::Control(event)=>event.receiver.map(|capture|capture.receiver),
+            Self::NoteControllers(context)=>context.receiver,
+            Self::Controller(event)=>event.receiver.map(|target|target.receiver),
+            Self::Program(event)=>event.receiver,
+        }
+    }
     pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
+            Self::Task(task)=>task.domain.stage(),
+            Self::NoteControllers(context)=>Some(context.stage),
             Self::Controller(event) => Some(event.stage),
+            Self::Program(event) => Some(event.stage),
             Self::Control(event) => Some(event.stage),
         }
     }
@@ -1040,6 +1074,8 @@ pub(super) struct Continuation {
     pub parameter: Option<super::plan_programs::ParameterMessage>,
     pub async_result: Option<(i32, i32)>,
     pub async_wait: Option<i32>,
+    pub external: Option<super::receiver::external::ExternalState>,
+    pub external_sequence: u64
 }
 
 #[derive(Clone, Copy)]
@@ -1079,6 +1115,7 @@ impl Runtime {
         program: usize,
         note_stage: Option<NoteStage>,
     ) -> Result<BehaviorId, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         if program >= plan.programs.len() || plan.programs[program].requires_controller {
@@ -1091,16 +1128,28 @@ impl Runtime {
         if !self.behavior_room(1) {
             return Err(Error::Capacity);
         }
-        let n = self.notes.get_mut(note.0).unwrap();
+        let n = self.notes.get(note.0).unwrap();
         let work = n.work + 1;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
+        let entry = plan.programs[program].entry;
+        let locals = plan.programs[program].locals;
+        let performance=self.selections[note.0.index].performance;
+        let origin=n.address;
+        let source=self.note_events[note.0.index].source_route.map(|route|route.source).or(n.input_source).map_or(origin,|source|source.channel_address());
+        let expression=n.expression;
+        let epoch=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:1<<origin.channel})[usize::from(origin.channel)];
+        let receiver=self.expression_receiver(expression).map(|component|component.receiver);
+        let policy_epochs=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:u16::MAX});
+        let host_epochs=receiver.map(|receiver|self.receiver_host_epochs(receiver,performance)).transpose()?.flatten();
+        let context=NoteControllerContext{performance,origin,source,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index),receiver,policy_epochs,host_epochs,physical_event:None
+};
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
-            context: PlanContext::Bare,
+            context: PlanContext::NoteControllers(context),
             parameter: None,
             note_stage,
             program,
-            pc: plan.programs[program].entry,
+            pc: entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -1113,10 +1162,12 @@ impl Runtime {
             disable_wait: false,
             async_result: None,
             async_wait: None,
+            external:None,
+            external_sequence:0,
         })?);
-        n.work = work;
+        self.notes.get_mut(note.0).unwrap().work = work;
         let begin = id.0.index * self.behavior_stride;
-        self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
+        self.behavior_locals[begin..begin + locals].fill(0);
         Ok(id)
     }
 
@@ -1137,6 +1188,7 @@ impl Runtime {
         program: usize,
         context: PlanContext,
     ) -> Result<(), Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let program = generation
             .prepared
@@ -1206,6 +1258,8 @@ impl Runtime {
             disable_wait: false,
             async_result: None,
             async_wait: None,
+            external: None,
+            external_sequence: 0
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1290,6 +1344,7 @@ impl Runtime {
             }
             self.cancel_zone_parameters(id);
             self.cancel_closed_work();
+            self.release_task_run_parent(id)?;
         }
         Ok(())
     }
@@ -1334,6 +1389,7 @@ impl Runtime {
             if !accept(id, c.owner, outcome, c.program) {
                 return;
             }
+            let _=self.release_task_run_parent(id);
             self.release_controller_reserve(id);
             self.record_script_state_outcome(id);
             self.behaviors.remove(id.0);
@@ -1378,6 +1434,7 @@ impl Runtime {
                 && c.outcome == Some(Outcome::Finished)
             {
                 let id = BehaviorId(self.behaviors.id(i));
+                let _=self.release_task_run_parent(id);
                 self.release_controller_reserve(id);
                 self.record_script_state_outcome(id);
                 self.behaviors.remove(id.0);
@@ -1402,6 +1459,7 @@ impl Runtime {
 
     pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
         // Behind a preempted callback of the same instrument: keep event order.
+        if self.behaviors.get(id.0).is_some_and(|c|c.external.is_some_and(|state|state.blocks_dispatch())) { return; }
         let plan = self.behaviors.get(id.0).map(|c| c.owner);
         let plan = plan.and_then(|o| self.behavior_plan(o).ok());
         if self
@@ -1419,7 +1477,7 @@ impl Runtime {
     }
 
     pub(super) fn drain_behavior(&mut self) {
-        if self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
+        if self.publishing_receiver || self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
             return;
         }
         let time = self.behavior_time_left;
@@ -1494,9 +1552,19 @@ impl Runtime {
                     };
                     continue;
                 }
-                time_check_steps += 1;
-                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
-                self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
+                let cost=if matches!(op,Instruction::AdvanceSourceNote){
+                    match c.owner.note().and_then(|note|self.source_note_work_cost(note)){
+                        Ok(cost) if cost<=self.behavior_fuel=>cost,
+                        Ok(_)=>{self.fail_behavior(id,Outcome::Fault(Error::Capacity));self.behavior_ready.remove(index);continue;}
+                        Err(error)=>{self.fail_behavior(id,Outcome::Fault(error));self.behavior_ready.remove(index);continue;}
+                    }
+                }else{1};
+                if cost>fuel||cost>self.block_fuel_left{
+                    self.behavior_ready.remove(index);self.yield_behavior(id);continue;
+                }
+                time_check_steps=time_check_steps.saturating_add(cost);
+                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - cost };
+                self.block_fuel_left = self.block_fuel_left.saturating_sub(cost);
                 self.behaviors.get_mut(id.0).unwrap().pc += 1;
                 let stepped = self.behavior_step(id, c.owner, op);
                 if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
@@ -1805,7 +1873,13 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
-            Instruction::ForwardController => {
+            Instruction::AdvanceSourceNote=>{self.advance_source_note(owner.note()?)?;}
+            Instruction::AwaitExternal { processor } => {
+                self.await_external_input(id, processor)?;
+                return Ok(true);
+            }
+            Instruction::
+ForwardController => {
                 self.forward_controller(id)?;
                 self.flush_deferred(id);
             }
@@ -1818,15 +1892,18 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerPort { local } => {
-                let value = self.controller_event_mut(id)?.origin.port;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).port;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerGroup { local } => {
-                let value = self.controller_event_mut(id)?.origin.group;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).group;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerChannel { local } => {
-                let value = self.controller_event_mut(id)?.origin.channel;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).channel;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerValue { local } => {
@@ -2092,7 +2169,9 @@ impl Runtime {
                         let c = slot.value?;
                         (i64::from(c.callback_id) == callback
                             && c.waiting
-                            && c.outcome.is_none()
+                            && c.external.is_none()
+                            && c.
+outcome.is_none()
                             && self.behavior_plan(c.owner).ok() == Some(plan))
                         .then(|| BehaviorId(self.behaviors.id(index)))
                     });
@@ -2596,7 +2675,12 @@ impl Runtime {
             }
             Instruction::StartProgram { program } => {
                 let plan = self.behavior_plan(owner)?;
-                let context = self.behaviors.get(id.0).unwrap().context;
+                let context = match self.behaviors.get(id.0).unwrap().context {
+                    // A fork inherits provenance/epochs, never ownership of its
+                    // parent's already-reserved original forwarding path.
+                    PlanContext::Program(event)=>PlanContext::Program(crate::receiver::channel_event::ProgramEvent{pending:false,reserved:0,..event}),
+                    context=>context,
+                };
                 match self.start_plan_context(plan, program as usize, context) {
                     Ok(_) | Err(Error::Capacity) => {}
                     Err(error) => return Err(error),
@@ -2748,6 +2832,18 @@ impl Runtime {
                 if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
                     return Err(Error::InvalidInput);
                 }
+                let key=u8::try_from(key).map_err(|_|Error::InvalidInput)?;
+                // KSP reports the effective integer selection key, unlike
+                // UVI's physical callback key. Keep an inherited absolute
+                // parent's fractional pitch when play_note remaps that key.
+                let pitch = if let (BehaviorOwner::Note(parent), Inheritance::Expression) = (owner, inheritance) {
+                    match self.notes.get(parent.0).ok_or(Error::StaleHandle)?.pitch {
+                        super::NotePitch::Absolute(parent) =>
+                            super::NotePitch::Absolute(f64::from(key) + parent - f64::from(super::NotePitch::Absolute(parent).key())),
+                        super::NotePitch::Key(_) => super::NotePitch::Key(key),
+                    }
+                } else { super::NotePitch::Key(key) };
+                if !pitch.valid() { return Err(Error::InvalidInput); }
                 // Reserve the external identity before publishing any child/audio.
                 // Failed admission may leave a numeric gap, never a reused ID.
                 let source_id = result
@@ -2755,7 +2851,7 @@ impl Runtime {
                     .transpose()?;
                 let child = self.play_behavior(
                     id,
-                    super::NotePitch::Key(key as u8),
+                    pitch,
                     velocity as f64 / 127.,
                     inheritance,
                     duration,
@@ -2790,6 +2886,7 @@ impl Runtime {
     /// Start the notes `id` played since it last waited, with the group
     /// selection it left them (Kontakt starts played notes when the callback
     /// yields, so scripts adjust them right after `play_note`).
+    pub(super)
     fn flush_deferred(&mut self, id: BehaviorId) {
         while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
             let (_, note, entry) = self.deferred.remove(at);
@@ -2908,6 +3005,7 @@ impl Runtime {
         Ok(true)
     }
 
+    pub(super)
     fn play_behavior(
         &mut self,
         id: BehaviorId,
@@ -2950,8 +3048,12 @@ impl Runtime {
                 let (origin, performance) = if let PlanContext::Controller(event) = callback.context
                 {
                     (event.origin, event.performance)
+                } else if let PlanContext::Program(event) = callback.context {
+                    (event.origin,event.performance)
                 } else if let PlanContext::Control(event) = callback.context {
                     (event.origin, event.performance)
+                } else if let PlanContext::NoteControllers(context)=callback.context {
+                    (context.origin,context.performance)
                 } else {
                     return Err(Error::InvalidInput);
                 };
@@ -3044,6 +3146,7 @@ impl Runtime {
 
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
         self.cancel_zone_parameters(id);
+        let _=self.release_task_run_parent(id);
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
         if let Outcome::Fault(error) = outcome {

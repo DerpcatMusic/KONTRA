@@ -93,7 +93,7 @@ local function same_presentation_scalar(d, k, v)
 end
 local function notify(w, index)
   local f = data(w).changed
-  if rawtype(f) == "function" then f(w, index) end
+  if rawtype(f) == "function" then native.widgetChanged(f, w, index) end
 end
 local value_kinds = {Table=true,Menu=true,MultiStateButton=true,Knob=true,Slider=true,NumBox=true,OnOffButton=true,
   ParamKnob=true,ParamSlider=true,ParamNumBox=true,ParamMenu=true,ParamOnOffButton=true,ParameterValue=true}
@@ -162,7 +162,7 @@ function methods.push(w, callChangedCallback, mods)
   local p = data(w)
   if p.kind ~= 'Button' or rawtype(callChangedCallback) ~= 'boolean' then error('UVI Button push requires a boolean callback flag') end
   if callChangedCallback and rawtype(p.changed) == 'function' then
-    if mods then p.changed(w,mods) else p.changed(w) end
+    if mods then native.widgetChanged(p.changed,w,mods) else native.widgetChanged(p.changed,w) end
   end
 end
 function methods.setRange(w, lo, hi) w.min, w.max = lo, hi end
@@ -175,7 +175,7 @@ function methods.addItem(w, text)
   return #items
 end
 function methods.clear(w) data(w).items = {}; ui.revision = ui.revision + 1 end
-function methods.getText(w, i) return data(w).items[i] end
+function methods.getText(w, i) return data(w).items[i] or "" end
 function methods.setStripImage(w, path, frames, horizontal) w.stripImage, w.frames, w.stripHorizontal = path, frames, horizontal end
 function methods.setViewPosition(w, x, y) w.viewPosition = {x, y} end
 function methods.loadFont(w, path) w.font = path end
@@ -203,11 +203,18 @@ widget_mt.__index = function(w, k)
   if d.kind == "Button" and (k == "setValue" or k == "getValue" or k == "setRange") then return nil end
   if k == "bind" and d.kind == "WaveView" then return wave_bind end
   if methods[k] then return methods[k] end
+  if k == "w" then return d.width end
+  if k == "h" then return d.height end
   if k == "size" then return {d.width, d.height} end
   if k == "position" or k == "pos" then return {d.x, d.y} end
   if k == "bounds" then return {d.x, d.y, d.width, d.height} end
   if k == "selected" then return d.value end
-  if k == "selectedText" then return d.items and d.items[d.value] or "" end
+  if k == "selectedText" or (k == "text" and (d.kind == "Menu" or d.kind == "ParamMenu")) then
+    -- Menu.text is the documented selected-item readback, not the generic
+    -- widget's retained text property. Resolve from current items/value so
+    -- setItem and changed callbacks cannot observe a stale selection label.
+    return d.items and d.items[d.value] or ""
+  end
   if k == "length" and d.items then return #d.items end
   if k == "value" and d.element then return d.element:getParameter(d.parameter) end
   if d[k] ~= nil then return d[k] end
@@ -232,9 +239,27 @@ widget_mt.__newindex = function(w, k, v)
   if type(v) == 'string' and (k == 'font' or string.match(k, 'Image$') or k == 'image') then
     v = native.resourcePath(v)
   end
+  if k == "w" then k = "width" elseif k == "h" then k = "height" end
   if k == "value" or k == "selected" then
     methods.setValue(w, v)
     return
+  elseif k == "length" and d.kind == "Table" then
+    -- UI IR columns and component identities are u32. This is host admission
+    -- for the documented integer property, not a claimed native malformed-
+    -- input coercion law. Validate before constructing or publishing cells.
+    if rawtype(v) ~= "number" or v ~= v or v < 0 or v > 4294967295 or v ~= math.floor(v) then
+      error("invalid UVI Table length")
+    end
+    if v == d.length then return end
+    -- Build separately: memory/work exhaustion cannot expose a partly resized
+    -- value array or destroy removed values before the new shape is ready.
+    local values = {}
+    for i = 1, v do
+      local value = i <= d.length and d.values[i] or nil
+      if value == nil then value = d.default end
+      values[i] = value
+    end
+    d.values,d.length = values,v
   elseif k == "sample" and d.kind == "WaveView" then
     d.sample,d.sample_set = v,true
     d.sample_directory = native.sampleDirectory()
@@ -370,6 +395,42 @@ function __ui_edit(id, component, value)
   end
 end
 
+-- Only the host's typed activation transport calls this entry. Public push /
+-- setValue keep their existing no-click-modifier programmatic semantics.
+function __ui_activate(id, origin, mods)
+  local w=registry[id];if not w then error('invalid UI activation') end
+  local at=w
+  for visit=0,#registry do
+    local owner=data(at)
+    if not owner.enabled or not owner.visible or (at==w and owner.interceptsMouseClicks==false) then error('inactive UI activation') end
+    at=owner.parent
+    if not at then break end
+    if visit==#registry then error('cyclic UI activation ancestry') end
+  end
+  local d=data(w)
+  if d.kind=='ParamOnOffButton' and not d.bound then error('unbound UI parameter activation') end
+  if d.kind~='Button' and d.kind~='OnOffButton' and d.kind~='ParamOnOffButton' and d.kind~='MultiStateButton' then error('not a UVI button activation') end
+  if origin==0 or origin==1 then
+    local down=d.kind~='MultiStateButton' and d.triggeredOnMouseDown==true
+    if (origin==0)~=down then error('stale UI activation phase') end
+  elseif origin~=2 and origin~=3 then error('invalid UI activation origin') end
+  if d.kind=='Button' then
+    methods.push(w,true,mods)
+  elseif d.kind=='MultiStateButton' then
+    local length=#d.items;if length==0 then return end
+    local previous=w.value
+    local at=1
+    for i=1,length do if i==previous then at=i;break end end
+    methods.setValue(w,at%length+1,false)
+    if previous~=w.value then notify(w,mods) end
+  else
+    local previous=w.value
+    methods.setValue(w,not previous,false)
+    -- ParamOnOff is a bound Widget, not OnOffButton: it never calls changed.
+    if d.kind=='OnOffButton' and previous~=w.value then notify(w,mods) end
+  end
+end
+
 -- Elements -----------------------------------------------------------------
 local element = {}
 local collections = {layers=true,keygroups=true,oscillators=true,inserts=true,auxs=true,
@@ -405,6 +466,10 @@ function element.getParameter(self, name)
   if type(name) == "number" then
     name = parameter_name(self,name); if not name then error("invalid parameter id") end
   end
+  -- A standing definition is queried from its real bound Core owner. Accepted
+  -- local writes are not a cache for later generic control edits or reset.
+  local _, canonical = native.constantPropertyField(rawget(self,'__id'),name)
+  if canonical then return native.param(rawget(self,'__id'),name) end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
@@ -456,10 +521,11 @@ function element.setParameter(self, name, value)
     native.setterMismatch(expected,actual)
     return
   end
+  local constantProperty = native.constantPropertyField(rawget(self,'__id'),name)
   if actual == 'number' then
     if value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
     -- Keep reversed documented bounds intact; native semantics need a measurement.
-    if min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
+    if not constantProperty and min ~= nil and max ~= nil and min <= max then value = math.max(min, math.min(max, value)) end
     if expected == 'int' and value ~= math.floor(value) then
       -- A fraction for an integer: the native number-to-int conversion (truncate
       -- or round) is not measured, so the write is reported and not applied.
@@ -518,6 +584,9 @@ function postEvent(e, delta)
     spawn(function() wait(delta); postEvent(e) end)
     return id
   end
+  -- A real captured owner can post the original typed action. Delayed posts
+  -- enter through their resumed task; legacy hosts have no such hook.
+  if native.postExternal and native.postExternal(e) then return end
   local t = e.type
   if t == Event.NoteOn then
     return native.postNote(e)

@@ -644,3 +644,140 @@ fn manual_wave_view_real_provider_pointer_callbacks_a_b_clear_a_pixels_and_count
     assert!(p.ui.scene().unwrap().surface("/waveview-ir-1").is_none());
     assert_eq!(p.host.global_text("calls"), "5");
 }
+
+
+#[test]
+fn uvi_six_frame_on_off_button_paints_authored_hover_and_held_pixels() {
+    // UVI's six frames are off/on, hovered off/on, held off/on. The
+    // independent literal colours make selecting an arbitrary skin impossible
+    // to mistake for a successful paint or a changed callback.
+    const COLOURS:[[u8;4];6]=[
+        [240,20,20,255],[20,220,20,255],[20,20,220,255],
+        [220,180,20,255],[180,20,180,255],[20,180,180,255],
+    ];
+    for on in [false,true] {
+        for (held,hover,base) in [(false,false,0),(false,true,2),(true,true,4)] {
+            let script=format!("setSize(160,120); local b=OnOffButton('Skin',{}); b.bounds={{10,10,100,80}}; b.text=''; b.showLabel=false; b:setStripImage('authored-states.png',6)",if on {"true"}else{"false"});
+            let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+            let host=sampler_uvi::script::ScriptHost::new(&xml,(),Default::default()).unwrap();
+            assert!(host.findings().is_empty(),"{:?}",host.findings());
+            let face=host.interface();face.validate().unwrap();
+            assert_eq!(face.widgets.len(),1);assert_eq!(face.widgets[0].rect,ir::Rect::new(10,10,100,80));
+            assert_eq!(face.source,ir::Source::FalconLua);
+            let mut assets=Assets::default();
+            assets.sync(&face,Presentation::Bitmap,|_|Some(Arc::new(Picture::new(COLOURS.into_iter().map(|rgba|Arc::new(moose::mui::mui::scene::Image::rgba(100,80,rgba.repeat(100*80)).unwrap())).collect()))));
+            let mut ui=super::super::theme::ui();let mut values:Values=host.control_values().into_iter().collect();let mut input=InputState::default();
+            let mut tick=|event:Input|{
+                let root=view_state(&mut ui,"six",&face,PageRef(0),&assets,Presentation::Bitmap,1.,&mut values,&mut input);
+                ui.frame(root,Some(Size::new(160.,120.)),event,1./60.).unwrap();
+            };
+            let pointer=|over:bool,down:bool|Input{pointer:PointerInput{pos:Some(if over{Point::new(60.,50.)}else{Point::new(140.,110.)}),buttons:if down{Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()};
+            for _ in 0..3{tick(pointer(false,false));}
+            if hover {for _ in 0..3{tick(pointer(true,false));}}
+            if held {for _ in 0..3{tick(pointer(true,true));}}
+            assert_eq!(ui.get("six-ir-0").held,held);
+            let actual=super::super::tests::pixels(&ui,160,120);let expected=COLOURS[base+usize::from(on)];
+            for (x,y) in [(25,25),(60,50),(95,75)] {
+                let at=(y*160+x)*4;assert_eq!(&actual[at..at+4],&expected,"on={on} held={held} hover={hover}: independent authored skin colour at{x},{y}");
+            }
+            assert!(input.edits.is_empty(),"hover/held painting cannot synthesize a release/callback edit");
+        }
+    }
+}
+
+
+mod uvi_default_font_alignment_tests {
+    use super::*;
+    use sampler_uvi::script::{Config,ScriptHost};
+    fn host(kind:&str,align:Option<&str>,style:&str,file:bool)->ScriptHost{
+        let constructor=match kind{"Label"=>"Label('Alignment')","NumBox"=>"NumBox('Alignment',0.5,0,1,false)","Button"=>"Button('Alignment')","OnOffButton"=>"OnOffButton('Alignment',false)",_=>panic!("finite authored constructor")};
+        let alignment=align.map(|value|format!("w.align='{value}';")).unwrap_or_default();
+        let font=if file{"w.font='fixture/NotoSans.ttf';"}else{""};
+        let hide=if kind=="NumBox"{"w.showLabel=false;"}else{"w.showLabel=true;"};
+        let script=format!("setSize(160,120);setBackgroundColour('#000000');local w={constructor};w.bounds={{10,10,100,80}};w.text='MM';w.displayText='MM';w.backgroundColour='#000000';w.backgroundColourOff='#000000';w.backgroundColourOn='#000000';{hide}{alignment}{font}{style}");
+        let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+        let host=ScriptHost::new(&xml,(),Config::default()).unwrap();assert!(host.findings().is_empty(),"{:?}",host.findings());host
+    }
+    fn paint(face:&Interface)->Vec<u8>{
+        let mut assets=Assets::default();let mut font_loads=0;
+        assets.sync_fonts(face,|asset|{assert_eq!(asset.path,"fixture/NotoSans.ttf");font_loads+=1;Some(Font::new(super::super::super::theme::NOTO_SANS).expect("authored bundled font must parse"))});
+        let files=face.assets.iter().filter(|a|matches!(a.kind,ir::AssetKind::TrueTypeFont)).count();assert_eq!(font_loads,files);
+        for (index,asset) in face.assets.iter().enumerate(){if matches!(asset.kind,ir::AssetKind::TrueTypeFont){assert!(assets.font(&ir::AssetRef(index)).is_some(),"actual file-font provider must supply the bundled font, never silently fall back");}}
+        let mut ui=super::super::super::theme::ui();let mut values=Values::default();let mut input=InputState::default();
+        for _ in 0..3{let tree=view_state(&mut ui,"font-align",face,PageRef(0),&assets,Presentation::Bitmap,1.,&mut values,&mut input);ui.frame(tree,Some(Size::new(160.,120.)),Input::default(),1./60.).unwrap();}
+        super::super::super::tests::pixels(&ui,160,120)
+    }
+    fn ink(data:&[u8],red:bool)->(usize,usize,usize){
+        let (mut left,mut right,mut count)=(usize::MAX,0,0);
+        for y in 10..90{for x in 10..120{let p=&data[(y*160+x)*4..(y*160+x+1)*4];let visible=if red{p[0]>120&&p[1]<70&&p[2]<70}else{p[0]>120&&p[1]>120&&p[2]>120};if visible{left=left.min(x);right=right.max(x);count+=1;}}}
+        assert!(count>20,"literal foreground glyph pixels must exist");(left,right,count)
+    }
+    fn model_reference(face:&Interface,align:ir::Align)->Interface{
+        let mut reference=face.clone();let mut widget=reference.widgets[0].clone();
+        let style=widget.style.expect("fontSize/textColour emits an actual style");reference.styles[style.0].align=align;
+        // Each inherited state style must retain the same modeled alignment.
+        for style in widget.state_styles.into_iter().flatten(){reference.styles[style.0].align=align;}
+        widget.style=Some(style);reference.widgets[0]=widget;reference
+    }
+    #[test]
+    fn normal_uvi_default_font_horizontal_alignment_reaches_literal_pixels_and_ir_reference(){
+        for kind in ["Label","NumBox","Button","OnOffButton"]{
+            let mut bounds=Vec::new();
+            for (name,alignment) in [("left",ir::Align::Left),("centred",ir::Align::Center),("right",ir::Align::Right)]{
+                let face=host(kind,Some(name),"w.fontSize=20;w.textColour='#ff0000';w.textColourOff='#ff0000';w.textColourOn='#ff0000';",false).interface();
+                let actual=paint(&face);let expected=paint(&model_reference(&face,alignment));assert_eq!(actual,expected,"{kind}/{name}: actual normal UVI export must render the explicit UIIR alignment, independent of font file presence");
+                let span=ink(&actual,true);if kind=="Label"{match alignment{ir::Align::Left=>assert!(span.0<25&&span.1<70,"literal left ink window: {span:?}"),ir::Align::Center=>assert!(span.0>30&&span.1<90,"literal center ink window: {span:?}"),ir::Align::Right=>assert!(span.0>55&&span.1>95,"literal right ink window: {span:?}")}}
+                bounds.push(span);
+            }
+            assert!(bounds[0].0+10<bounds[1].0&&bounds[1].0+10<bounds[2].0,"{kind}: each glyph origin moves across the literal100px authored box: {bounds:?}");
+        }
+    }
+    #[test]
+    fn normal_uvi_explicit_align_alone_is_retained_without_adding_a_custom_font(){
+        for (name,alignment) in [("left",ir::Align::Left),("centred",ir::Align::Center),("right",ir::Align::Right)]{
+            let face=host("Label",Some(name),"",false).interface();let span=ink(&paint(&face),false);
+            match alignment{ir::Align::Left=>assert!(span.0<25),ir::Align::Center=>assert!(span.0>35&&span.1<90),ir::Align::Right=>assert!(span.0>70&&span.1>95)}
+            let style=face.widgets[0].style.expect("explicit alignment alone needs its actual TextStyle");assert!(matches!(face.styles[style.0].font,ir::Font::Default));assert_eq!(face.styles[style.0].align,alignment);assert!(face.assets.is_empty());
+        }
+    }
+    #[test]
+    fn normal_file_and_default_font_paths_share_horizontal_alignment_for_same_real_font_bytes(){
+        for kind in ["Label","NumBox"]{for name in ["left","centred","right"]{
+            let default=host(kind,Some(name),"w.fontSize=20;w.textColour='#ff0000';",false).interface();let file=host(kind,Some(name),"w.fontSize=20;w.textColour='#ff0000';",true).interface();
+            assert!(default.assets.is_empty());assert_eq!(file.assets.len(),1);assert!(matches!(file.styles[file.widgets[0].style.unwrap().0].font,ir::Font::File(_)));
+            assert_eq!(paint(&default),paint(&file),"{kind}/{name}: same actual bundled Noto bytes must yield identical pixels through normal File/Default consumers");
+        }}
+    }
+    #[test]
+    fn absent_alignment_keeps_existing_unstyled_and_styled_default_behavior(){
+        let bare=host("Label",None,"",false).interface();assert!(bare.widgets[0].style.is_none());assert!(ink(&paint(&bare),false).0<25,"existing unstyled Label stays left by renderer policy");
+        let default=host("Label",None,"w.fontSize=20;w.textColour='#ff0000';",false).interface();let file=host("Label",None,"w.fontSize=20;w.textColour='#ff0000';",true).interface();
+        assert_eq!(default.styles[default.widgets[0].style.unwrap().0].align,ir::Align::Center);assert_eq!(file.styles[file.widgets[0].style.unwrap().0].align,ir::Align::Center);assert_eq!(paint(&default),paint(&file));
+    }
+    #[test]
+    fn normal_owner_alignment_mutation_reexports_current_default_font_style(){
+        let mut h=host("Label",Some("left"),"w.fontSize=20;w.textColour='#ff0000';function onController(e) w.align=({'left','centred','right'})[e.value+1] end",false);let mut previous=None;
+        for (value,alignment) in [(0,ir::Align::Left),(1,ir::Align::Center),(2,ir::Align::Right)]{h.controller(3,value,0);let face=h.interface();let actual=paint(&face);assert_eq!(actual,paint(&model_reference(&face,alignment)));let span=ink(&actual,true);if let Some(left)=previous{assert!(left+10<span.0);}previous=Some(span.0);}
+    }
+}
+
+
+#[test]
+fn normal_uvi_align_only_metatable_decision_is_fetched_once_and_retained_with_its_effect(){
+    let xml=r#"<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[
+      setSize(160,120);calls=0
+      local w=Label{'Alignment',bounds={10,10,100,80}};w.text='MM'
+      local effect=Label{'Effect',bounds={10,100,140,20}};effect.text='none'
+      setmetatable(rawget(w,'__data'),{__index=function(_,key)
+        if key=='align' then
+          calls=calls+1;effect.text='alignment fetch '..calls
+          return calls==1 and 'right' or 'left'
+        end
+      end})
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let h=sampler_uvi::script::ScriptHost::new(xml,(),sampler_uvi::script::Config::default()).unwrap();
+    assert_eq!(h.global_text("calls"),"0","constructor must not fabricate a UI export getter pass");
+    let actual=h.interface();assert_eq!(h.global_text("calls"),"1","one align-only decision performs exactly one genuine getter call");
+    let style=actual.widgets[0].style.expect("the first returned explicit align creates its real style");assert!(matches!(actual.styles[style.0].font,ir::Font::Default));assert_eq!(actual.styles[style.0].align,ir::Align::Right,"retain the first actual returned value rather than a changed second getter result");
+    assert_eq!(actual.widgets[1].text,"alignment fetch 1","the genuine getter's downstream widget effect is exported once");assert!(h.findings().is_empty(),"{:?}",h.findings());
+}

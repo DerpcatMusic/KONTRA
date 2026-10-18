@@ -96,12 +96,18 @@ impl Expression {
 
 #[derive(Clone, Copy)]
 pub(super) struct ExpressionOwner {
+    pub intrinsic:super::pitch::IntrinsicPitch,
     pub value: Expression,
     pub rendered: super::RenderedExpression,
     pub program: Option<super::PlanId>,
     pub notes: usize,
+    /// Real expression-owner references, independent of NoteId lifetime.
+    pub followers:usize,
+    /// Real retained original-value references, independently priced on every slot.
+    pub captures:usize,
     /// The expression whose pitch, pressure, timbre and bend this one copies.
     pub follows: Option<ExpressionId>,
+    pub receiver:Option<super::receiver::components::ReceiverComponents>,
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +135,12 @@ impl Runtime {
         Ok(())
     }
 
+    /// Captured physical source, distinct from the adapter execution address.
+    /// Generated notes have no physical input source. The returned tuple is a copy.
+    pub fn input_source(&self, id: NoteId) -> Result<Option<Input>, Error> {
+        Ok(self.notes.get(id.0).ok_or(Error::StaleHandle)?.input_source)
+    }
+
     pub fn family_count(&self) -> usize {
         self.families.count()
     }
@@ -146,9 +158,75 @@ impl Runtime {
 
     /// Changes the owner, including all explicitly linked children. Adapters retain
     /// this handle per admitted note; they must never retarget tails by channel alone.
+    /// This is a full effective-expression write, not a request to infer hidden
+    /// source components. A later accepted receiver update of one dimension
+    /// recomputes that dimension from its known canonical source components;
+    /// every other effective dimension remains as explicitly written.
     pub fn set_expression(&mut self, id: ExpressionId, value: Expression) -> Result<(), Error> {
         self.apply_due();
         self.set_expression_now(id, value)
+    }
+
+    /// Read-only semantic admission for the entire expression batch. This uses
+    /// existing private scratch but neither drains due work nor publishes values,
+    /// callbacks, cursor changes or stream reservations. Callers that need the
+    /// immediate mutation boundary must first drain due work explicitly.
+    pub fn validate_expressions(&mut self, changes: &[(ExpressionId, Expression)]) -> Result<(), Error> {
+        self.prepare_expression_changes(changes).map(|_| ())
+    }
+
+    fn prepare_expression_row(&mut self,id:ExpressionId,value:Expression)->Result<bool,Error> {
+        if !value.valid() {return Err(Error::InvalidInput);}
+        let owner=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+        if self.expression_changes[id.0.index].is_some() {return Err(Error::InvalidInput);}
+        let rendered=self.project_expression(owner.program,value,Some(owner))?;
+        let pitch_changed=rendered.ratio!=owner.rendered.ratio;
+        self.expression_changes[id.0.index]=Some(rendered);
+        Ok(pitch_changed)
+    }
+
+    fn validate_prepared_expression_pitches(&self,pitch_changed:bool)->Result<(),Error> {
+        if pitch_changed {
+            self.validate_source_pitches(|id|self.expression_changes[id.0.index].map(|rendered|rendered.ratio))?;
+        }
+        Ok(())
+    }
+
+    fn prepare_expression_changes(&mut self,changes:&[(ExpressionId,Expression)])->Result<bool,Error> {
+        if changes.is_empty() {return Ok(false);}
+        self.expression_changes.fill(None);let mut pitch_changed=false;
+        for &(id,value) in changes {pitch_changed|=self.prepare_expression_row(id,value)?;}
+        self.validate_prepared_expression_pitches(pitch_changed)?;
+        Ok(pitch_changed)
+    }
+
+    /// Same validator and private scratch as the public slice API. The staged
+    /// rows are copied one at a time so no mutable receiver/arena borrow spans
+    /// source-budget validation or any eventual callback publication.
+    pub(super) fn prepare_receiver_expression_changes(&mut self)->Result<bool,Error> {
+        self.expression_changes.fill(None);let mut pitch_changed=false;
+        for index in 0..self.receiver_changes.len() {
+            let (id,value)=self.receiver_changes[index];
+            pitch_changed|=self.prepare_expression_row(id,value)?;
+        }
+        self.validate_prepared_expression_pitches(pitch_changed)?;
+        Ok(pitch_changed)
+    }
+
+    pub(super) fn commit_receiver_expression_changes(&mut self,pitch_changed:bool)->Result<(),Error> {
+        // The caller validated this exact batch and holds the Ready/due guard.
+        // No admission, callback, generation adoption or arena retirement can
+        // intervene; every actual handle remains the validated generation.
+        for index in 0..self.receiver_changes.len() {
+            let (id,value)=self.receiver_changes[index];
+            let rendered=self.expression_changes[id.0.index].ok_or(Error::StaleHandle)?;
+            let owner=self.expressions.get_mut(id.0).ok_or(Error::StaleHandle)?;
+            owner.value=value;owner.rendered=rendered;
+            if let Some(component)=self.receiver_component_changes[id.0.index] {owner.receiver=Some(component);}
+        }
+        self.follow_expression();
+        if pitch_changed {self.refresh_stream_reservations();}
+        Ok(())
     }
 
     /// Apply one controller gesture to several owners without partial updates.
@@ -159,27 +237,7 @@ impl Runtime {
         if changes.is_empty() {
             return Ok(());
         }
-        // Scratch is private, allocated with the expression arena, and cleared
-        // before every batch. An error never mutates an expression owner.
-        self.expression_changes.fill(None);
-        let mut pitch_changed = false;
-        for &(id, value) in changes {
-            if !value.valid() {
-                return Err(Error::InvalidInput);
-            }
-            let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
-            if self.expression_changes[id.0.index].is_some() {
-                return Err(Error::InvalidInput);
-            }
-            let rendered = self.project_expression(owner.program, value, Some(owner))?;
-            pitch_changed |= rendered.ratio != owner.rendered.ratio;
-            self.expression_changes[id.0.index] = Some(rendered);
-        }
-        if pitch_changed {
-            self.validate_source_pitches(|id| {
-                self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
-            })?;
-        }
+        let pitch_changed = self.prepare_expression_changes(changes)?;
         for &(id, value) in changes {
             let owner = self.expressions.get_mut(id.0).unwrap();
             owner.rendered = self.expression_changes[id.0.index].unwrap();
@@ -190,6 +248,64 @@ impl Runtime {
             self.refresh_stream_reservations();
         }
         Ok(())
+    }
+
+    /// Set a real intrinsic absolute base for these expression origins, together
+    /// with their relative expression values. None restores each origin's actual
+    /// admitted base. The complete source/release/stream projection precedes all
+    /// publication. Selection, voice age and cursor phase are unchanged.
+    pub fn set_intrinsic_pitch(&mut self,changes:&[(ExpressionId,Expression)],absolute:Option<f64>)->Result<(),Error>{
+        self.apply_due();self.prepare_intrinsic_pitch_rows(absolute,changes.len(),|_,at|changes[at])?;
+        self.commit_intrinsic_pitch_rows(absolute,changes.len(),|_,at|changes[at])
+    }
+    fn projected_intrinsic_row(&self,id:ExpressionId,absolute:Option<f64>,count:usize,row:&impl Fn(&Self,usize)->(ExpressionId,Expression))->Result<Option<(super::RenderedExpression,f64)>,Error>{
+        let origin=self.intrinsic_origin(id)?;
+        let Some((_,value))=(0..count).map(|at|row(self,at)).find(|(actual,_)|*actual==origin)else{return Ok(None);};
+        let owner=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+        let value=if id==origin{value}else{Expression{pitch_semitones:value.pitch_semitones,pressure:value.pressure,timbre:value.timbre,bend:value.bend,..owner.value}};
+        let rendered=self.project_expression(owner.program,value,Some(owner))?;
+        let inherent=self.expressions.get(origin.0).ok_or(Error::StaleHandle)?.intrinsic;
+        Ok(Some((rendered,super::pitch::IntrinsicPitch{absolute,..inherent}.ratio())))
+    }
+    fn prepare_intrinsic_pitch_rows(&mut self,absolute:Option<f64>,count:usize,row:impl Fn(&Self,usize)->(ExpressionId,Expression))->Result<(),Error>{
+        if absolute.is_some_and(|pitch|!super::NotePitch::Absolute(pitch).valid()){return Err(Error::InvalidInput);}
+        self.expression_changes.fill(None);
+        for at in 0..count{
+            let (id,value)=row(self,at);let owner=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            // A follower is not an independent receiver component origin.
+            if owner.follows.is_some(){return Err(Error::InvalidInput);}
+            self.prepare_expression_row(id,value)?;
+        }
+        self.validate_source_pitch_bases(|id|Ok(self.projected_intrinsic_row(id,absolute,count,&row)?.map(|(rendered,base)|(rendered.ratio,base))))
+    }
+    fn commit_intrinsic_pitch_rows(&mut self,absolute:Option<f64>,count:usize,row:impl Fn(&Self,usize)->(ExpressionId,Expression))->Result<(),Error>{
+        for at in 0..count{
+            let (id,value)=row(self,at);let rendered=self.expression_changes[id.0.index].ok_or(Error::StaleHandle)?;
+            let owner=self.expressions.get_mut(id.0).ok_or(Error::StaleHandle)?;
+            owner.intrinsic.absolute=absolute;owner.value=value;owner.rendered=rendered;
+        }
+        self.follow_expression();
+        // Update source base only; do not reconstruct/seek/retrigger any cursor.
+        for index in 0..self.voices.slots.len(){
+            let Some(voice)=self.voices.slots[index].value.as_ref()else{continue;};
+            if !voice.pitch_tracked{continue;}
+            let note=self.families.get(voice.family.0).ok_or(Error::StaleHandle)?.note;
+            let expression=self.notes.get(note.0).ok_or(Error::StaleHandle)?.expression;
+            let origin=self.intrinsic_origin(expression)?;
+            if !(0..count).any(|at|row(self,at).0==origin){continue;}
+            let base=voice.inherent_step*self.intrinsic_pitch(expression)?.ratio();
+            self.voices.slots[index].value.as_mut().ok_or(Error::StaleHandle)?.base_step=base;
+        }
+        self.refresh_stream_reservations();Ok(())
+    }
+    pub(super) fn prepare_receiver_intrinsic_pitch(&mut self,absolute:Option<f64>)->Result<(),Error>{
+        self.prepare_intrinsic_pitch_rows(absolute,self.receiver_changes.len(),|runtime,at|runtime.receiver_changes[at])
+    }
+    pub(super) fn commit_receiver_intrinsic_pitch(&mut self,absolute:Option<f64>)->Result<(),Error>{
+        self.commit_intrinsic_pitch_rows(absolute,self.receiver_changes.len(),|runtime,at|runtime.receiver_changes[at])?;
+        for index in 0..self.receiver_changes.len(){let id=self.receiver_changes[index].0;
+            if let Some(component)=self.receiver_component_changes[id.0.index]{self.expressions.get_mut(id.0).ok_or(Error::StaleHandle)?.receiver=Some(component);}
+        }Ok(())
     }
 
     /// Rewrite every expression owner of a live note (held or releasing)
@@ -203,7 +319,12 @@ impl Runtime {
         key: Option<u8>,
         update: impl Fn(Expression) -> Expression,
     ) -> Result<usize, Error> {
-        self.select_input_expressions(None, Some((address, key)), update)
+        self.select_input_expressions(None, Some((crate::ChannelScope{protocol:address.protocol,port:address.port,group:address.group,channels:1u16.checked_shl(u32::from(address.channel)).unwrap_or(0)},key)), update)
+    }
+
+    /// Atomic logical execution mask; it never selects by physical source tuple.
+    pub fn set_scope_expressions(&mut self,scope:crate::ChannelScope,key:Option<u8>,update:impl Fn(Expression)->Expression)->Result<usize,Error>{
+        self.select_input_expressions(None,Some((scope,key)),update)
     }
 
     pub(super) fn set_source_expressions(
@@ -214,13 +335,27 @@ impl Runtime {
         self.select_input_expressions(Some(selector), None, update)
     }
 
+    /// Pure whole-input projection using existing preallocated expression
+    /// scratch; no due work, controller mutation or expression publication.
+    pub fn validate_input_expressions(&mut self,address:super::ChannelAddress,key:Option<u8>,update:impl Fn(Expression)->Expression)->Result<usize,Error> {
+        self.project_input_expressions(None,Some((crate::ChannelScope{protocol:address.protocol,port:address.port,group:address.group,channels:1u16.checked_shl(u32::from(address.channel)).unwrap_or(0)},key)),update,false)
+    }
+
     fn select_input_expressions(
         &mut self,
         source: Option<InputSelector>,
-        execution: Option<(super::ChannelAddress, Option<u8>)>,
+        execution: Option<(crate::ChannelScope, Option<u8>)>,
         update: impl Fn(Expression) -> Expression,
     ) -> Result<usize, Error> {
         self.apply_due();
+        self.project_input_expressions(source,execution,update,true)
+    }
+
+    fn project_input_expressions(
+        &mut self,source:Option<InputSelector>,execution:Option<(crate::ChannelScope,Option<u8>)>,
+        update:impl Fn(Expression)->Expression,publish:bool,
+    )->Result<usize,Error> {
+        if execution.is_some_and(|(scope,key)|scope.group>=16||scope.channels==0||key.is_some_and(|key|key>=128)) {return Err(Error::InvalidInput);}
         self.expression_changes.fill(None);
         let mut pitch_changed = false;
         let mut changed = 0;
@@ -230,8 +365,8 @@ impl Runtime {
             };
             let matches = if let Some(selector) = source {
                 note.input_source.is_some_and(|input| selector.matches(input))
-            } else if let Some((address, key)) = execution {
-                note.input.is_some_and(|input| input.channel_address() == address && key.is_none_or(|key| input.key == key))
+            } else if let Some((scope, key)) = execution {
+                note.input.is_some_and(|input| scope.contains(input.channel_address()) && key.is_none_or(|key| input.key == key))
             } else { false };
             if !matches {
                 continue;
@@ -255,6 +390,7 @@ impl Runtime {
                 self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
             })?;
         }
+        if !publish {return Ok(changed);}
         for index in 0..self.expression_changes.len() {
             if let Some(rendered) = self.expression_changes[index] {
                 // `update` is pure over the unchanged owner value.
@@ -326,6 +462,17 @@ impl Runtime {
         }
     }
 
+    /// Resolve the real single-follows ownership graph, bounded by its arena.
+    /// This is a query of actual generational references, never a note/key map.
+    pub(crate) fn expression_receiver(&self,mut id:ExpressionId)->Option<crate::receiver::components::ReceiverComponents>{
+        for _ in 0..self.expressions.slots.len(){
+            let owner=self.expressions.get(id.0)?;
+            if let Some(component)=owner.receiver{return Some(component);}
+            id=owner.follows?;
+        }
+        None
+    }
+
     /// Freeze a shared note at its current expression. Capacity failure leaves its
     /// previous link intact; a uniquely owned expression needs no replacement slot.
     pub fn detach_expression(&mut self, note: NoteId) -> Result<ExpressionId, Error> {
@@ -335,13 +482,28 @@ impl Runtime {
         if owner.notes == 1 {
             return Ok(old);
         }
+        let retained=owner.follows.map(|id| {
+            let from=self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            Ok::<_,Error>((id,from.followers.checked_add(1).ok_or(Error::Capacity)?))
+        }).transpose()?;
         let new = ExpressionId(self.expressions.insert(ExpressionOwner {
+            intrinsic:owner.intrinsic,
             value: owner.value,
             rendered: owner.rendered,
             program: owner.program,
             notes: 1,
+            followers:0,captures:0,
             follows: owner.follows,
+            receiver:owner.receiver,
         })?);
+        if let Some((from,count))=retained {
+            // Both generations were checked before insertion; no callback or
+            // retirement intervenes. Keep a typed rollback for a stale owner.
+            let Some(source)=self.expressions.get_mut(from.0) else {
+                self.expressions.remove(new.0);return Err(Error::StaleHandle);
+            };
+            source.followers=count;
+        }
         self.expressions.get_mut(old.0).unwrap().notes -= 1;
         self.notes.get_mut(note.0).unwrap().expression = new;
         Ok(new)
@@ -350,8 +512,21 @@ impl Runtime {
     pub(super) fn drop_expression(&mut self, id: ExpressionId) {
         let owner = self.expressions.get_mut(id.0).unwrap();
         owner.notes -= 1;
-        if owner.notes == 0 {
+        self.retire_expression_chain(id);
+    }
+
+    /// Each owner has at most one follows edge. Release actual references
+    /// iteratively, bounded by the real arena; never recurse or allocate/free
+    /// protocol state on a rendering callback.
+    pub(crate) fn retire_expression_chain(&mut self,mut id:ExpressionId) {
+        for _ in 0..self.expressions.slots.len() {
+            let Some(owner)=self.expressions.get(id.0).copied() else {return;};
+            if owner.notes!=0||owner.followers!=0||owner.captures!=0 {return;}
             self.expressions.remove(id.0);
+            let Some(from)=owner.follows else {return;};
+            let Some(source)=self.expressions.get_mut(from.0) else {return;};
+            source.followers-=1;
+            id=from;
         }
     }
 
@@ -411,6 +586,7 @@ impl Runtime {
     }
 
     pub(super) fn release_family_now(&mut self, id: FamilyId) {
+        self.release_processing_family(id);
         let Some(family) = self.families.get_mut(id.0) else {
             return;
         };
@@ -424,10 +600,9 @@ impl Runtime {
         while let Some(index) = voice {
             let state = self.voices.at_mut(index);
             voice = state.siblings.next;
-            if state.held_onset() {
-                state.envelope.release_onset();
-            } else {
-                state.envelope.release();
+            if !state.processing_gate {
+                if state.held_onset() { state.envelope.release_onset(); }
+                else { state.envelope.release(); }
             }
             state.cursor.release();
             let g = self.plans.get_mut(plan.0).unwrap();
@@ -504,6 +679,7 @@ impl Runtime {
     }
 
     pub(super) fn choke_family_now(&mut self, id: FamilyId, frames: u32) {
+        self.choke_processing_family(id, frames);
         // A scheduled choke does not retain a naturally completed family. The
         // generation check makes its later execution harmless after slot reuse.
         let Some(family) = self.families.get_mut(id.0) else {
@@ -613,6 +789,12 @@ impl Runtime {
 
     pub(super) fn end_voice(&mut self, id: VoiceId) {
         let v = *self.voices.get(id.0).unwrap();
+        if let Some((owner, ordinal)) = v.processing {
+            if let Some(state) = self.processing_owners.get_mut(owner.0) {
+                state.members[ordinal] = None;
+                if !state.published { state.failed = true; }
+            }
+        }
         if let Some(link) = v.stretch {
             self.plans.get_mut(v.plan.0).unwrap().dsp.stretch_busy &= !(1 << link.engine);
         }
@@ -663,6 +845,7 @@ impl Runtime {
     pub(super) fn reclaim_internal_notes(&mut self, required: super::ReleaseReserve) {
         if self.notes.available() != 0
             && self.expressions.available() != 0
+            && self.processing_owners.available() >= required.processing_owners
             && self.decisions.available() >= required.decisions
             && self.voices.available() >= required.voices
             && self.families.available() >= required.families
@@ -685,7 +868,7 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(live notes + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
-            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0;
+            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0 && n.processing_owners == 0;
             if quiet
                 && n.children == 0
                 && n.gate()
@@ -706,6 +889,7 @@ impl Runtime {
                 || n.pins != 0
                 || n.work != 0
                 || n.families != 0
+                || n.processing_owners != 0
                 || n.children != 0
             {
                 break;

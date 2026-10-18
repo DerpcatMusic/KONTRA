@@ -174,7 +174,10 @@ impl Runtime {
         };
         // Keep the captured physical address, not a guessed channel from a mask.
         let (performance, origin, channels) = match callback.context {
+            PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{performance,origin,channels,..}=>(performance,origin,channels),_=>return Err(Error::InvalidInput)},
+            PlanContext::NoteControllers(context)=>(context.performance,context.origin,1<<context.origin.channel),
             PlanContext::Controller(event) => (event.performance, event.origin, event.channels),
+            PlanContext::Program(event) => (event.performance, event.origin, event.channels),
             PlanContext::Control(event) => (event.performance, event.origin, event.channels),
             PlanContext::Bare => {
                 let note = match callback.owner {
@@ -233,6 +236,9 @@ impl Runtime {
                 performance,
                 origin,
                 channels,
+                controller_epochs: self.controller_target_epochs(id)?,
+                controller_secondary: self.controller_secondary_target(id)?,
+                receiver:self.behavior_receiver_capture(id)?,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
@@ -255,6 +261,10 @@ impl Runtime {
         signal: u16,
     ) -> Result<(), Error> {
         let performance = self.behavior_performance(id).ok();
+        let controller_epochs = self.controller_target_epochs(id)?;
+        let controller_origin = self.controller_origin(id)?;
+        let controller_secondary = self.controller_secondary_target(id)?;
+        let receiver=self.behavior_receiver_capture(id)?;
         let count = self
             .plans
             .get(plan.0)
@@ -270,13 +280,16 @@ impl Runtime {
             let context = performance.map_or(PlanContext::Bare, |(performance, scope)| {
                 PlanContext::Control(crate::control::ControlEvent {
                     performance,
-                    origin: crate::ChannelAddress {
+                    origin: controller_origin.unwrap_or(crate::ChannelAddress {
                         protocol: scope.protocol,
                         port: scope.port,
                         group: scope.group,
                         channel: scope.channels.trailing_zeros().min(15) as u8,
-                    },
+                    }),
                     channels: scope.channels,
+                    controller_epochs,
+                    controller_secondary,
+                    receiver,
                     stage: p.stage,
                     interaction: crate::WidgetInteraction::default(),
                 })
@@ -311,6 +324,9 @@ impl Runtime {
                     channel: 0,
                 },
                 channels: 1,
+                controller_epochs: None,
+                controller_secondary: None,
+                receiver:None,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });

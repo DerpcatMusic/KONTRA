@@ -160,6 +160,7 @@ impl Counters {
 
 struct Group {
     assets: Box<[Pcm]>,
+    families: Box<[crate::SourceStorageFamily]>,
     loaded: AtomicBool,
     revision: AtomicU64,
     pending: AtomicUsize,
@@ -177,6 +178,7 @@ struct Slot {
 struct Shared {
     groups: Box<[Group]>,
     pinned: Box<[Pcm]>,
+    families: Box<[crate::SourceStorageFamily]>,
     slots: Box<[Slot]>,
     stop: AtomicBool,
     counters: Counters,
@@ -200,16 +202,46 @@ impl Residency {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
         let mut groups: Vec<Vec<Pcm>> = vec![vec![]; plan.group_count as usize];
         let mut pinned = Vec::new();
+        let mut families: Vec<crate::SourceStorageFamily> = Vec::new();
+        let mut group_families: Vec<Vec<crate::SourceStorageFamily>> = vec![vec![]; plan.group_count as usize];
+        let mut referenced = std::collections::HashSet::new();
         for region in 0..plan.region_count() {
-            let Some(pcm) = plan.region_asset(region) else {
+            let Some(source) = plan.region_source_storage(region) else {
                 continue;
             };
+            if let crate::SourceStorageRef::Channels(family) = source {
+                referenced.insert(family.id());
+                if !families.iter().any(|old| old.id() == family.id()) { families.push(family.clone()); }
+                if let Some(group) = plan.region_groups[region] {
+                    let owners = &mut group_families[group as usize];
+                    if !owners.iter().any(|old| old.id() == family.id()) { owners.push(family.clone()); }
+                }
+            }
             let members = match plan.region_groups[region] {
                 Some(g) => &mut groups[g as usize],
                 None => &mut pinned,
             };
-            if !members.iter().any(|p| p.asset_id() == pcm.asset_id()) {
-                members.push(pcm.clone());
+            // Logical sources may retain multiple physical assets. Every actual
+            // dependency participates in the existing group/pinned owner count;
+            // an immutable family pin alone must not strand an aliased purge.
+            source.physical_dependencies(|pcm| {
+                if !members.iter().any(|p| p.asset_id() == pcm.asset_id()) {
+                    members.push(pcm.clone());
+                }
+            });
+        }
+        // Unreferenced roots have no group that can manage their cohort. Keep
+        // those actual dependencies pinned until the storage root retires.
+        // Referenced families belong to their actual group/ungrouped owners.
+        for sample in 0..plan.sample_count() {
+            if let Some(crate::SourceStorageRef::Channels(source)) = plan.source_storage(sample) {
+                if referenced.contains(&source.id()) { continue; }
+                if !families.iter().any(|old| old.id() == source.id()) { families.push(source.clone()); }
+                source.as_source().physical_dependencies(|pcm| {
+                    if !pinned.iter().any(|p| p.asset_id() == pcm.asset_id()) {
+                        pinned.push(pcm.clone());
+                    }
+                });
             }
         }
         for pcm in groups.iter().flatten().chain(&pinned) {
@@ -218,8 +250,10 @@ impl Residency {
         let shared = Arc::new(Shared {
             groups: groups
                 .into_iter()
-                .map(|assets| Group {
+                .zip(group_families)
+                .map(|(assets, families)| Group {
                     assets: assets.into(),
+                    families: families.into(),
                     loaded: AtomicBool::new(true),
                     revision: AtomicU64::new(1),
                     pending: AtomicUsize::new(0),
@@ -227,6 +261,7 @@ impl Residency {
                 })
                 .collect(),
             pinned: pinned.into(),
+            families: families.into(),
             slots: (0..JOBS)
                 .map(|_| Slot {
                     state: AtomicUsize::new(0),
@@ -262,6 +297,12 @@ impl Residency {
                             success &= pcm.residency_reload().is_ok();
                         }
                     }
+                    // Only publish a complete original-channel cohort after
+                    // all physical reloads. This is off audio on the existing
+                    // worker; a failed middle pack cannot become a partial view.
+                    for family in &group.families {
+                        if family.refresh_residency().is_err() && reload { success = false; }
+                    }
                     // A failed multi-asset reload rolls back its ownership before
                     // completion. Mode and revision share one CAS so a newer
                     // request cannot lose its reference to this older failure.
@@ -277,10 +318,16 @@ impl Residency {
                         }
                         slot.revision.store(revision & !1, Relaxed);
                     }
+                    for family in &group.families {
+                        // Failure rollback or a racing purge can revoke the
+                        // whole cohort after staging. Release its pins first.
+                        let _ = family.refresh_residency();
+                    }
                     for pcm in &group.assets {
                         // Check after I/O as well: a newer purge owns eligibility and
                         // must not leave a stale head resident when no other owner needs it.
                         while !pcm.residency_collect() && !worker.stop.load(Acquire) {
+                            for family in &group.families { family.collect_residency(); }
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         }
                     }
@@ -442,6 +489,7 @@ impl Drop for Shared {
         for p in &self.pinned {
             p.residency_release();
         }
+        for family in &self.families { let _ = family.refresh_residency(); }
         for p in self
             .groups
             .iter()
@@ -675,4 +723,206 @@ impl Runtime {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod logical_source_residency_tests {
+    use super::*;
+    use crate::{ChannelCount, Envelope, Playback, Region, SourceStorageFamily};
+    fn region(sample: usize) -> Region {
+        Region { sample, key_low: 60, key_high: 60, root_key: None,
+            velocity_low: 0., velocity_high: 1., gain: 1.,
+            envelope: Envelope::default(), playback: Playback::default() }
+    }
+    #[test]
+    fn pinned_family_dependencies_keep_an_aliased_stereo_group_purge_collectable() {
+        for referenced in [true, false] { check_aliased_family_purge(referenced); }
+    }
+    fn check_aliased_family_purge(referenced: bool) {
+        let packs: Vec<_> = (1..=3).map(|value| Pcm::new(48000,
+            vec![[value as f32, -(value as f32)]; 128].into_boxed_slice()).unwrap()).collect();
+        let alias = packs[1].clone();
+        let family = SourceStorageFamily::new_resident(ChannelCount::new(6).unwrap(), packs.clone()).unwrap();
+        let mut plan = Prepared::new_sources(48000, vec![family.clone().into(), alias.clone().into()],
+            vec![region(0), region(0), region(1)], 3).unwrap();
+        // The family remains ungrouped; only the independently authored stereo
+        // alias is a mutable group. This does not enable wide group mutation.
+        plan.group_count = 1;
+        plan.region_groups = vec![None, None, Some(0)].into_boxed_slice();
+        if !referenced {
+            // Unreferenced roots still retain pins until this table retires.
+            plan = Prepared::new_sources(48000, vec![family.clone().into(), alias.clone().into()],
+                vec![region(1)], 1).unwrap();
+            plan.group_count = 1;
+            plan.region_groups = vec![Some(0)].into_boxed_slice();
+        }
+        let owner = Residency::new(&plan).unwrap();
+        assert_eq!(owner.shared.pinned.len(), 3);
+        assert_eq!(owner.shared.groups[0].assets.len(), 1);
+        assert_eq!(packs.iter().map(Pcm::residency_owners).collect::<Vec<_>>(), vec![1, 2, 1]);
+        owner.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let completion = loop {
+            if let Some(completion) = owner.peek() { break completion; }
+            assert!(std::time::Instant::now() < deadline, "aliased purge retained by an unregistered family pin");
+            std::thread::yield_now();
+        };
+        assert!(completion.success);
+        owner.consume(completion);
+        assert_eq!(alias.residency_owners(), 1);
+        assert!(alias.pin_resident().is_some());
+        assert_eq!(family.resident_view().sample(2, 127), Some(2.));
+        let retained = family.resident_view();
+        drop(owner);
+        assert!(packs.iter().all(|pcm| pcm.residency_owners() == 0));
+        // A reader keeps its exact cohort through owner retirement; new readers
+        // observe the unavailable publication rather than a stale pack alias.
+        assert_eq!(retained.sample(2, 127), Some(2.));
+        assert_eq!(family.resident_view().sample(2, 127), None);
+    }
+    fn family_owner(members: Vec<Option<u32>>, fail_middle: Arc<AtomicBool>)
+        -> (Residency, crate::SourceStorageFamily, Vec<Pcm>) {
+        let packs: Vec<_> = (1..=3).map(|n| {
+            let data = vec![[n as f32 / 8., -(n as f32) / 8.]; 128];
+            let pcm = Pcm::new(48000, data.clone().into_boxed_slice()).unwrap();
+            let fail = fail_middle.clone();
+            pcm.set_residency_loader(move || {
+                if n == 2 && fail.load(Acquire) { return Err(Error::NotReady); }
+                Ok(vec![(0, data.clone().into_boxed_slice())])
+            }).unwrap();
+            pcm
+        }).collect();
+        let family = crate::SourceStorageFamily::new_resident(crate::ChannelCount::new(6).unwrap(), packs.clone()).unwrap();
+        let plan = Prepared::new_sources(48000, vec![family.clone().into()],
+            members.iter().map(|_| region(0)).collect(), members.len()).unwrap()
+            .with_groups(members.iter().flatten().copied().max().map_or(0, |x| x + 1), members).unwrap();
+        // Move the sole existing worker out of the Prepared test fixture.
+        let mut plan = plan;
+        (plan.residency.take().unwrap(), family, packs)
+    }
+    fn finish(owner: &Residency) -> Completion {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(completion) = owner.peek() { owner.consume(completion); return completion; }
+            assert!(std::time::Instant::now() < deadline, "complete physical cohort did not finish");
+            std::thread::yield_now();
+        }
+    }
+    #[test]
+    fn family_group_purge_reclaims_every_pack_then_reload_publishes_one_complete_cohort() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        let identity = family.id();
+        assert!(owner.shared.pinned.is_empty());
+        assert_eq!(owner.shared.groups[0].assets.len(), 3);
+        owner.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        assert!(finish(&owner).success);
+        assert!(!owner.allowed(0));
+        assert!(family.as_source().resident_view().is_none());
+        assert!(packs.iter().all(|p| p.resident_non_head_bytes() == 0 && p.residency_owners() == 0));
+        owner.request(0, true, 2, ScriptInstanceId(0)).unwrap();
+        assert!(!owner.allowed(0));
+        assert!(finish(&owner).success);
+        assert!(owner.allowed(0));
+        assert_eq!(family.id(), identity);
+        let view = family.as_source().resident_view().unwrap();
+        for c in 0..6 { assert_eq!(view.sample(c, 127), Some(if c % 2 == 0 { (c / 2 + 1) as f32 / 8. } else { -((c / 2 + 1) as f32) / 8. })); }
+        assert!(packs.iter().all(|p| p.residency_owners() == 1));
+    }
+    #[test]
+    fn family_failed_middle_reload_rolls_back_all_packs_and_retries_without_partial_publication() {
+        let failure = Arc::new(AtomicBool::new(false));
+        let (owner, family, packs) = family_owner(vec![Some(0)], failure.clone());
+        owner.request(0, false, 1, ScriptInstanceId(0)).unwrap(); assert!(finish(&owner).success);
+        failure.store(true, Release);
+        owner.request(0, true, 2, ScriptInstanceId(0)).unwrap(); assert!(!finish(&owner).success);
+        assert!(!owner.allowed(0));
+        assert!(family.as_source().resident_view().is_none());
+        assert!(packs.iter().all(|p| p.residency_owners() == 0 && p.resident_non_head_bytes() == 0));
+        failure.store(false, Release);
+        owner.request(0, true, 3, ScriptInstanceId(0)).unwrap(); assert!(finish(&owner).success);
+        assert!(owner.allowed(0));
+        assert!(family.as_source().resident_view().is_some());
+        assert!(packs.iter().all(|p| p.residency_owners() == 1));
+    }
+    #[test]
+    fn family_shared_group_and_ungrouped_owners_keep_all_dependencies_until_last_release() {
+        for members in [vec![Some(0), Some(1)], vec![Some(0), None]] {
+            let (owner, family, packs) = family_owner(members.clone(), Arc::new(AtomicBool::new(false)));
+            assert!(packs.iter().all(|p| p.residency_owners() == 2));
+            owner.request(0, false, 1, ScriptInstanceId(0)).unwrap(); assert!(finish(&owner).success);
+            assert!(family.as_source().resident_view().is_some());
+            assert!(packs.iter().all(|p| p.residency_owners() == 1));
+            if members[1].is_some() {
+                owner.request(1, false, 2, ScriptInstanceId(0)).unwrap(); assert!(finish(&owner).success);
+                assert!(family.as_source().resident_view().is_none());
+                assert!(packs.iter().all(|p| p.resident_non_head_bytes() == 0));
+            }
+        }
+    }
+    #[test]
+    fn family_purge_retires_borrowed_cohort_only_after_reader_release() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        let retained = family.resident_view();
+        owner.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while family.as_source().resident_view().is_some() {
+            assert!(std::time::Instant::now() < deadline); std::thread::yield_now();
+        }
+        assert_eq!(retained.sample(4, 127), Some(3. / 8.));
+        assert!(owner.peek().is_none(), "worker cannot claim physical retirement while the old cohort is borrowed");
+        drop(retained);
+        assert!(finish(&owner).success);
+        assert!(packs.iter().all(|p| p.resident_non_head_bytes() == 0));
+    }
+    #[test]
+    fn family_stale_purge_completion_cannot_revoke_a_newer_reload_owner() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        owner.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        owner.request(0, true, 2, ScriptInstanceId(0)).unwrap();
+        finish(&owner); assert!(!owner.allowed(0));
+        assert!(finish(&owner).success); assert!(owner.allowed(0));
+        assert_eq!(owner.progress().stale, 1);
+        assert!(family.as_source().resident_view().is_some());
+        assert!(packs.iter().all(|p| p.residency_owners() == 1));
+    }
+
+    #[test]
+    fn retired_family_cohort_is_reclaimed_by_a_surviving_stereo_alias_residency_owner() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        let alias = packs[1].clone();
+        let mut stereo = Prepared::new(48000, vec![alias.clone()], vec![region(0)], 1).unwrap()
+            .with_groups(1, vec![Some(0)]).unwrap();
+        let surviving = stereo.residency.take().unwrap();
+        assert!(surviving.shared.groups[0].families.is_empty());
+        let borrowed = family.resident_view();
+        drop(owner); // Its worker is gone while the old cohort is still borrowed.
+        assert_eq!(borrowed.sample(2, 127), Some(2. / 8.));
+        assert!(family.as_source().resident_view().is_none());
+        drop(borrowed); // Audio/read drop must do no reclamation, locking, or I/O.
+        // Keep family alive externally. The surviving owner knows only Pcm;
+        // it must still be able to reclaim retired family pins that retain it.
+        surviving.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        assert!(finish(&surviving).success);
+        assert_eq!(alias.resident_non_head_bytes(), 0);
+        assert!(family.as_source().resident_view().is_none());
+    }
+
+    #[test]
+    fn current_family_cohort_is_reclaimed_by_surviving_all_pack_stereo_aliases() {
+        let (owner, family, packs) = family_owner(vec![Some(0)], Arc::new(AtomicBool::new(false)));
+        let mut aliases = Prepared::new(48000, packs.clone(), (0..3).map(region).collect(), 3).unwrap()
+            .with_groups(1, vec![Some(0); 3]).unwrap();
+        let surviving = aliases.residency.take().unwrap();
+        assert!(surviving.shared.groups[0].families.is_empty());
+        drop(owner);
+        // Every physical pack has a surviving independent alias owner, so A's
+        // family still publishes a current cohort after its own worker retires.
+        assert!(family.as_source().resident_view().is_some());
+        assert!(packs.iter().all(|p| p.residency_owners() == 1));
+        surviving.request(0, false, 1, ScriptInstanceId(0)).unwrap();
+        assert!(finish(&surviving).success);
+        assert!(family.as_source().resident_view().is_none());
+        assert!(packs.iter().all(|p| p.resident_non_head_bytes() == 0));
+    }
+
 }

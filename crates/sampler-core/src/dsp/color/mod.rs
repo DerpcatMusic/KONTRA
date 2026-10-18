@@ -456,6 +456,23 @@ impl State {
     }
 }
 
+/// Off-audio capability owner: the admitted Color value moves here once. This
+/// wrapper owns no second kernel, stage list or history and performs no render
+/// time capability check.
+pub(crate) struct BatchColor(Color);
+pub(super) enum ColorOwner { Batch(BatchColor), Scalar(Color) }
+impl BatchColor {
+    pub(super) fn classify(color: Color) -> ColorOwner {
+        if color.batches() { ColorOwner::Batch(Self(color)) } else { ColorOwner::Scalar(color) }
+    }
+    pub(super) fn color(&self) -> &Color { &self.0 }
+    pub(super) fn into_color(self) -> Color { self.0 }
+    pub(super) fn process_lanes(&self, cells: &mut Cells<'_>, cell: usize,
+        batch: &Batch, block: &mut LaneBlock, parameters: &[ControlRamp], at: u64) {
+        self.0.process_lanes(cells, cell, batch, block, parameters, at);
+    }
+}
+
 impl Color {
     /// Only prepared subunits can mutate their histories. Live controls alter
     /// their values, not which subunits this color processor owns. Preserve the
@@ -710,7 +727,7 @@ impl Color {
 
     /// Voice-lane layout of [`Self::process`] for a unit that [`Self::batches`]:
     /// every lane does exactly the scalar arithmetic, voice by voice.
-    pub(super) fn process_lanes(
+    fn process_lanes(
         &self,
         cells: &mut Cells<'_>,
         cell: usize,

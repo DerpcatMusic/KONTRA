@@ -966,6 +966,41 @@ pub(crate) enum State {
     },
 }
 
+/// One call's exclusive history owner, bound to references to its exact prepared
+/// core. It contains the actual family history, never a broad State to downcast.
+/// The stored State layout is unchanged; no prepared kernel is copied per voice.
+enum Bound<'a> {
+    SimpleLpHp {
+        dj: &'a Dj,
+        ladder: &'a Ladder,
+        knobs: [f32; 5],
+        d: DjState,
+        l: LadderState,
+    },
+    DualSkf {
+        skf: &'a Skf,
+        knobs: [f32; 5],
+        s: SkfState,
+    },
+    Monark {
+        m: &'a Monark,
+        knobs: [f32; 5],
+        s: MonarkState,
+    },
+}
+
+impl Bound<'_> {
+    /// Return the owned history to the same processor slot after the complete
+    /// fragment. Core references are borrowed, with no shared owner or destructor.
+    fn into_state(self) -> State {
+        match self {
+            Self::SimpleLpHp { knobs, d, l, .. } => State::SimpleLpHp { knobs, dj: d, ladder: l },
+            Self::DualSkf { knobs, s, .. } => State::DualSkf { knobs, s },
+            Self::Monark { knobs, s, .. } => State::Monark { knobs, s },
+        }
+    }
+}
+
 impl State {
     pub(crate) fn finite(&self) -> bool {
         // ponytail: the shared check covers the audio-path outputs; core histories are
@@ -994,33 +1029,56 @@ impl KontaktFilter {
         k
     }
 
-    /// A fresh state with the knobs set and snapped (the native prepare).
-    fn start(&self, knobs: [f32; 5]) -> State {
+    /// Bind one actual history to its prepared core. A different family (or an
+    /// empty slot) receives the same zero -> set -> snap native initialization;
+    /// a matching family retains every history bit, even across prepared swaps.
+    fn bind(&self, history: State, modulation: [f64; 4]) -> Bound<'_> {
         match &self.core {
-            Core::SimpleLpHp(dj, _) => {
-                let mut d = DjState::default();
-                dj.set(&mut d, knobs[1], 0.0);
-                Dj::snap(&mut d);
-                let mut l = LadderState::default();
-                Ladder::set(&mut l, knobs[0]);
-                l.ramp.snap();
-                State::SimpleLpHp { knobs, dj: d, ladder: l }
+            Core::SimpleLpHp(dj, ladder) => {
+                let (knobs, d, l) = match history {
+                    State::SimpleLpHp { knobs, dj, ladder } => (knobs, dj, ladder),
+                    State::None | State::DualSkf { .. } | State::Monark { .. } => {
+                        let knobs = self.knobs(modulation);
+                        let mut d = DjState::default();
+                        dj.set(&mut d, knobs[1], 0.0);
+                        Dj::snap(&mut d);
+                        let mut l = LadderState::default();
+                        Ladder::set(&mut l, knobs[0]);
+                        l.ramp.snap();
+                        (knobs, d, l)
+                    }
+                };
+                Bound::SimpleLpHp { dj, ladder, knobs, d, l }
             }
-            Core::DualSkf(_) => {
-                let mut s = SkfState::default();
-                Skf::set(&mut s, knobs);
-                s.ramp.snap();
-                State::DualSkf { knobs, s }
+            Core::DualSkf(skf) => {
+                let (knobs, s) = match history {
+                    State::DualSkf { knobs, s } => (knobs, s),
+                    State::None | State::SimpleLpHp { .. } | State::Monark { .. } => {
+                        let knobs = self.knobs(modulation);
+                        let mut s = SkfState::default();
+                        Skf::set(&mut s, knobs);
+                        s.ramp.snap();
+                        (knobs, s)
+                    }
+                };
+                Bound::DualSkf { skf, knobs, s }
             }
             Core::Monark(m) => {
-                let mut s = MonarkState::default();
-                Monark::set(&mut s, knobs);
-                s.ramp.snap();
-                for ch in &mut s.ch {
-                    ch.h8 = T3A8[m.mode];
-                }
-                m.snap(&mut s);
-                State::Monark { knobs, s }
+                let (knobs, s) = match history {
+                    State::Monark { knobs, s } => (knobs, s),
+                    State::None | State::SimpleLpHp { .. } | State::DualSkf { .. } => {
+                        let knobs = self.knobs(modulation);
+                        let mut s = MonarkState::default();
+                        Monark::set(&mut s, knobs);
+                        s.ramp.snap();
+                        for ch in &mut s.ch {
+                            ch.h8 = T3A8[m.mode];
+                        }
+                        m.snap(&mut s);
+                        (knobs, s)
+                    }
+                };
+                Bound::Monark { m, knobs, s }
             }
         }
     }
@@ -1028,21 +1086,17 @@ impl KontaktFilter {
     /// Filter `len` frames from absolute frame `at`. True on a fault.
     pub(crate) fn process(&self, state: &mut ProcessorState, block: &mut Planar, len: usize, at: u64, modulation: [f64; 4]) -> bool {
         let unit = state.color.kontakt_filter();
-        let prepared = matches!(
-            (&self.core, &*unit),
-            (Core::SimpleLpHp(..), State::SimpleLpHp { .. }) | (Core::DualSkf(_), State::DualSkf { .. }) | (Core::Monark(_), State::Monark { .. })
-        );
-        if !prepared {
-            *unit = self.start(self.knobs(modulation));
-        }
+        // The slot is vacated while Bound owns its history. No caller can
+        // observe it through this exclusive borrow; write back before returning.
+        let mut bound = self.bind(std::mem::take(unit), modulation);
         let mut i = 0;
         while i < len {
             let t = at + i as u64;
             let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
             let quantum = t % QUANTUM == 0;
             let knobs = self.knobs(modulation);
-            match (&self.core, &mut *unit) {
-                (Core::SimpleLpHp(dj, ladder), State::SimpleLpHp { knobs: k, dj: d, ladder: l }) => {
+            match &mut bound {
+                Bound::SimpleLpHp { dj, ladder, knobs: k, d, l } => {
                     if quantum {
                         if *k != knobs {
                             dj.set(d, knobs[1], 0.0);
@@ -1057,7 +1111,7 @@ impl KontaktFilter {
                         (block[0][n], block[1][n]) = (f64::from(y[0]), f64::from(y[1]));
                     }
                 }
-                (Core::DualSkf(skf), State::DualSkf { knobs: k, s }) => {
+                Bound::DualSkf { skf, knobs: k, s } => {
                     if quantum {
                         if *k != knobs {
                             Skf::set(s, knobs);
@@ -1083,7 +1137,7 @@ impl KontaktFilter {
                         (block[0][n], block[1][n]) = (f64::from(y[0]), f64::from(y[1]));
                     }
                 }
-                (Core::Monark(m), State::Monark { knobs: k, s }) => {
+                Bound::Monark { m, knobs: k, s } => {
                     if quantum {
                         if *k != knobs {
                             Monark::set(s, knobs);
@@ -1113,10 +1167,10 @@ impl KontaktFilter {
                         (block[0][n], block[1][n]) = (f64::from(y[0]), f64::from(y[1]));
                     }
                 }
-                _ => unreachable!("state kind follows the core"),
             }
             i += run;
         }
+        *unit = bound.into_state();
         !block.iter().all(|c| c[..len].iter().all(|v| v.is_finite()))
     }
 }
@@ -1166,4 +1220,436 @@ mod tests {
             }
         }
     }
+
+    // Source-free lifecycle fixtures; no bank, native process or edited golden.
+    fn typed_owner_cases() -> Vec<KontaktFx> {
+        let knobs = [0.35, 0.25, 0.45, 0.1, 0.5];
+        let mut cases = vec![KontaktFx::SimpleLpHp { lp: knobs[0], hp: knobs[1] }, KontaktFx::DualSkf(knobs)];
+        for mode in 0..4 {
+            for variant in 0..3 {
+                cases.push(KontaktFx::Monark { mode, variant, knobs });
+            }
+        }
+        // Existing constructor semantics: mode clamps, other variants use clean.
+        cases.push(KontaktFx::Monark { mode: 255, variant: 255, knobs });
+        cases
+    }
+
+    fn typed_owner_family(fx: KontaktFx) -> u8 {
+        match fx {
+            KontaktFx::SimpleLpHp { .. } => 1,
+            KontaktFx::DualSkf(_) => 2,
+            KontaktFx::Monark { .. } => 3,
+        }
+    }
+
+    fn typed_history_family(s: State) -> u8 {
+        match s {
+            State::None => 0,
+            State::SimpleLpHp { .. } => 1,
+            State::DualSkf { .. } => 2,
+            State::Monark { .. } => 3,
+        }
+    }
+
+    fn typed_owner_input(at: u64, len: usize) -> Planar {
+        let mut block = [[0.; BLOCK]; 2];
+        for (channel, samples) in block.iter_mut().enumerate() {
+            for (n, sample) in samples[..len].iter_mut().enumerate() {
+                let clock = at + n as u64;
+                *sample = ((clock * 17 + channel as u64 * 29) % 97) as f64 / 128. - 0.25;
+            }
+        }
+        block
+    }
+
+    fn typed_owner_block(unit: &KontaktFilter, state: &mut ProcessorState, at: u64, len: usize, modulation: [f64; 4]) -> Planar {
+        let mut block = typed_owner_input(at, len);
+        assert!(!unit.process(state, &mut block, len, at, modulation));
+        block
+    }
+
+    fn typed_owner_bits(block: &Planar) -> [[u64; BLOCK]; 2] {
+        block.map(|channel| channel.map(f64::to_bits))
+    }
+
+    #[test]
+    fn typed_history_initialization_and_clamp_match_native_prepare_for_every_family() {
+        for rate in [48_000, 66_000, 100_000] {
+            for fx in typed_owner_cases() {
+                let unit = KontaktFilter::new(fx, rate);
+                let mut state = ProcessorState::default();
+                state.z = [[0.125, -0.5]; 2];
+                state.aux[3] = 0.375;
+                state.delay_position = 9;
+                state.delay_filled = 12;
+                // Empty, non-quantum calls still perform the historical repair.
+                typed_owner_block(&unit, &mut state, 17, 0, [-1., 1., 55., -66.]);
+                assert_eq!(state.z, [[0.125, -0.5]; 2]);
+                assert_eq!(state.aux[3], 0.375);
+                assert_eq!((state.delay_position, state.delay_filled), (9, 12));
+                let history = *state.color.kontakt_filter();
+                let family = typed_owner_family(fx);
+                assert_eq!(typed_history_family(history), family);
+                let expected = match fx {
+                    KontaktFx::SimpleLpHp { .. } => [0., 1., 0., 0., 0.],
+                    KontaktFx::DualSkf(_) => [1., 0.25, 0., 0.1, 0.5],
+                    KontaktFx::Monark { .. } => [0., 1., 0.45, 0.1, 0.5],
+                };
+                match history {
+                    State::None => assert_eq!(family, 0),
+                    State::SimpleLpHp { knobs, dj, ladder } => {
+                        assert_eq!(knobs, expected);
+                        for q in dj.slots {
+                            assert_eq!(q.cur.to_bits(), q.tgt.to_bits());
+                            assert_eq!(q.d, 0.);
+                            assert!(!q.dirty);
+                            assert_eq!(q.count, 0);
+                        }
+                        assert_eq!(dj.z, [[0.; 3]; 2]);
+                        assert_eq!(ladder.ramp.cur, ladder.ramp.tgt);
+                        assert!(ladder.ramp.dirty);
+                        assert_eq!(ladder.count, 0);
+                        assert_eq!(ladder.z, [[0.; 5]; 2]);
+                    }
+                    State::DualSkf { knobs, s } => {
+                        assert_eq!(knobs, expected);
+                        assert_eq!(s.ramp.cur, s.ramp.tgt);
+                        assert!(s.ramp.dirty);
+                        assert_eq!(s.ramp.tgt[4], 0.);
+                        assert_eq!(s.count, 0);
+                        assert_eq!(s.z, [[[0.; 2]; 2]; 2]);
+                        assert_eq!(s.rs, [KaiserState::default(); 2]);
+                    }
+                    State::Monark { knobs, s } => {
+                        assert_eq!(knobs, expected);
+                        assert_eq!(s.ramp.cur, s.ramp.tgt);
+                        assert!(s.ramp.dirty);
+                        assert_eq!(s.count, 0);
+                        if let KontaktFx::Monark { mode, .. } = fx {
+                            for ch in s.ch {
+                                assert_eq!(ch.h8.to_bits(), T3A8[usize::from(mode.min(3))].to_bits());
+                                assert_eq!(ch.h7, 0.);
+                                assert_eq!(ch.lcg, 0);
+                                assert_eq!(ch.rs, KaiserState::default());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_history_reuse_cross_family_repair_and_full_reset_keep_the_original_law() {
+        let sources = [KontaktFx::SimpleLpHp { lp: 0.35, hp: 0.25 },
+            KontaktFx::DualSkf([0.35, 0.25, 0.45, 0.1, 0.5]),
+            KontaktFx::Monark { mode: 0, variant: 0, knobs: [0.35, 0.25, 0.45, 0.1, 0.5] }];
+        for rate in [48_000, 100_000] {
+            for source in sources {
+                for target in typed_owner_cases() {
+                    let old = KontaktFilter::new(source, rate);
+                    let new = KontaktFilter::new(target, rate);
+                    let mut state = ProcessorState::default();
+                    typed_owner_block(&old, &mut state, 0, 64, [0.; 4]);
+                    typed_owner_block(&old, &mut state, 64, 31, [0.125, -0.0625, 0., 0.]);
+                    let before = *state.color.kontakt_filter();
+                    assert_eq!(typed_history_family(before), typed_owner_family(source));
+                    let mut fresh = ProcessorState::default();
+                    let modulation = [-0.1, 0.2, 0., 0.];
+                    typed_owner_block(&new, &mut state, 95, 0, modulation);
+                    typed_owner_block(&new, &mut fresh, 95, 0, modulation);
+                    let after = *state.color.kontakt_filter();
+                    assert_eq!(typed_history_family(after), typed_owner_family(target));
+                    if typed_owner_family(source) == typed_owner_family(target) {
+                        // Replacing a same-family core must not clear or resnap history.
+                        assert_eq!(after, before);
+                    } else {
+                        assert_eq!(after, *fresh.color.kontakt_filter());
+                        let actual = typed_owner_block(&new, &mut state, 95, 53, modulation);
+                        let expected = typed_owner_block(&new, &mut fresh, 95, 53, modulation);
+                        assert_eq!(typed_owner_bits(&actual), typed_owner_bits(&expected));
+                        assert_eq!(*state.color.kontakt_filter(), *fresh.color.kontakt_filter());
+                    }
+                    // This is the reset value used by voice, bus and fault owners.
+                    state = ProcessorState::default();
+                    fresh = ProcessorState::default();
+                    let actual = typed_owner_block(&new, &mut state, 17, 47, modulation);
+                    let expected = typed_owner_block(&new, &mut fresh, 17, 47, modulation);
+                    assert_eq!(typed_owner_bits(&actual), typed_owner_bits(&expected));
+                    assert_eq!(*state.color.kontakt_filter(), *fresh.color.kontakt_filter());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_history_same_family_swap_uses_new_core_and_retains_audible_history() {
+        let knobs = [0.35, 0.25, 0.45, 0.1, 0.5];
+        let old = KontaktFilter::new(KontaktFx::Monark { mode: 0, variant: 0, knobs }, 48_000);
+        let new = KontaktFilter::new(KontaktFx::Monark { mode: 3, variant: 2, knobs }, 48_000);
+        let mut warm = ProcessorState::default();
+        typed_owner_block(&old, &mut warm, 0, 64, [0.; 4]);
+        typed_owner_block(&old, &mut warm, 64, 31, [0.; 4]);
+        let before = *warm.color.kontakt_filter();
+        let mut actual = warm;
+        typed_owner_block(&new, &mut actual, 95, 0, [0.; 4]);
+        assert_eq!(*actual.color.kontakt_filter(), before);
+        let a = typed_owner_block(&new, &mut actual, 95, 64, [0.; 4]);
+        let b = typed_owner_block(&old, &mut warm, 95, 64, [0.; 4]);
+        let mut fresh = ProcessorState::default();
+        let c = typed_owner_block(&new, &mut fresh, 95, 64, [0.; 4]);
+        assert_ne!(typed_owner_bits(&a), typed_owner_bits(&b), "the incoming mode/variant must reach the kernel");
+        assert_ne!(typed_owner_bits(&a), typed_owner_bits(&c), "a matching history must not be silently reset");
+    }
+
+    const TYPED_FRAMES: usize = 257;
+    fn typed_owner_capture(unit: &KontaktFilter, start: u64, pattern: &[usize]) -> ([[u64; TYPED_FRAMES]; 2], State) {
+        let events = [(0, [0.; 4]), (5, [0.125, -0.0625, 99., -99.]),
+            (31, [-0.1, 0.2, 0., 0.]), (47, [0.3, -0.2, 0., 0.]),
+            (64, [-0.125, 0.0625, 0., 0.]), (95, [0.05, -0.1, 0., 0.]),
+            (129, [0.1, 0.125, 0., 0.]), (201, [0.; 4])];
+        let mut state = ProcessorState::default();
+        let mut output = [[0u64; TYPED_FRAMES]; 2];
+        let mut fragment = 0;
+        for (event, &(begin, modulation)) in events.iter().enumerate() {
+            let end = events.get(event + 1).map_or(TYPED_FRAMES, |e| e.0);
+            let mut at = begin;
+            while at < end {
+                let len = pattern[fragment % pattern.len()].min(BLOCK).min(end - at);
+                let block = typed_owner_block(unit, &mut state, start + at as u64, len, modulation);
+                for channel in 0..2 {
+                    for n in 0..len {
+                        output[channel][at + n] = block[channel][n].to_bits();
+                    }
+                }
+                at += len;
+                fragment += 1;
+            }
+        }
+        (output, *state.color.kontakt_filter())
+    }
+
+    fn typed_owner_digest(bits: &[[u64; TYPED_FRAMES]; 2]) -> u64 {
+        bits.iter().flatten().fold(0xcbf29ce484222325, |hash, word| (hash ^ word).wrapping_mul(0x100000001b3))
+    }
+
+    #[test]
+    fn typed_history_fragmented_modulation_keeps_exact_f64_bits_and_final_history() {
+        for rate in [48_000, 65_999, 66_000, 96_000, 99_999, 100_000] {
+            for fx in typed_owner_cases() {
+                let unit = KontaktFilter::new(fx, rate);
+                for start in [0, 17] {
+                    let coarse = typed_owner_capture(&unit, start, &[BLOCK]);
+                    let fine = typed_owner_capture(&unit, start, &[1, 7, 13, 32, 5, 64]);
+                    assert_eq!(coarse, fine);
+                    // Root can compare this identical test's parent/candidate
+                    // receipts without inventing or editing any golden values.
+                    eprintln!("kontakt typed bits rate={rate} fx={fx:?} start={start} digest={:016x}", typed_owner_digest(&coarse.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_history_disjoint_thread_owners_match_serial_bits() {
+        let units = [KontaktFilter::new(KontaktFx::SimpleLpHp { lp: 0.35, hp: 0.25 }, 48_000),
+            KontaktFilter::new(KontaktFx::DualSkf([0.35, 0.25, 0.45, 0.1, 0.5]), 48_000),
+            KontaktFilter::new(KontaktFx::Monark { mode: 0, variant: 1, knobs: [0.35, 0.25, 0.45, 0.1, 0.5] }, 48_000)];
+        let expected = units.map(|unit| typed_owner_capture(&unit, 17, &[1, 7, 13, 32, 5, 64]));
+        std::thread::scope(|scope| {
+            let workers = units.iter().map(|unit| scope.spawn(move || {
+                typed_owner_capture(unit, 17, &[1, 7, 13, 32, 5, 64])
+            })).collect::<Vec<_>>();
+            for (worker, expected) in workers.into_iter().zip(expected) {
+                assert!(worker.join().is_ok_and(|result| result == expected));
+            }
+        });
+    }
+
+    // The following three test-only loop bodies are byte-for-byte extracts of
+    // the immutable parent941521 process arms, not calls through Bound. They
+    // bind CURRENT recipe references to independently copied warm histories.
+    fn legacy_simple_fragment(knob_source: &KontaktFilter, core: (&Dj, &Ladder), history: (&mut [f32; 5], &mut DjState, &mut LadderState), at: u64, len: usize, modulation: [f64; 4]) -> Planar {
+        let (dj, ladder) = core;
+        let (k, d, l) = history;
+        let mut block = typed_owner_input(at, len);
+        let mut i = 0;
+        while i < len {
+            let t = at + i as u64;
+            let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
+            let quantum = t % QUANTUM == 0;
+            let knobs = knob_source.knobs(modulation);
+
+                    if quantum {
+                        if *k != knobs {
+                            dj.set(d, knobs[1], 0.0);
+                            Ladder::set(l, knobs[0]);
+                            *k = knobs;
+                        }
+                        d.slots.iter_mut().for_each(|q| q.block(dj.timing));
+                        l.ramp.block(ladder.timing);
+                    }
+                    for n in i..i + run {
+                        let y = ladder.tick(l, dj.tick(d, [block[0][n] as f32, block[1][n] as f32]));
+                        (block[0][n], block[1][n]) = (f64::from(y[0]), f64::from(y[1]));
+                    }
+                i += run;
+        }
+        block
+    }
+    fn legacy_skf_fragment(knob_source: &KontaktFilter, skf: &Skf, history: (&mut [f32; 5], &mut SkfState), at: u64, len: usize, modulation: [f64; 4]) -> Planar {
+        let (k, s) = history;
+        let mut block = typed_owner_input(at, len);
+        let mut i = 0;
+        while i < len {
+            let t = at + i as u64;
+            let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
+            let quantum = t % QUANTUM == 0;
+            let knobs = knob_source.knobs(modulation);
+
+                    if quantum {
+                        if *k != knobs {
+                            Skf::set(s, knobs);
+                            *k = knobs;
+                        }
+                        s.ramp.block(skf.timing);
+                        Skf::update(s);
+                    }
+                    for n in i..i + run {
+                        let x = [block[0][n] as f32, block[1][n] as f32];
+                        let y = match &skf.os {
+                            None => skf.core(s, x),
+                            Some(k) => {
+                                let mut up = [[0f32; 2]; 2];
+                                for c in 0..2 {
+                                    k.up(&mut s.rs[c], x[c], &mut up[c]);
+                                }
+                                let a = skf.core(s, [up[0][0], up[1][0]]);
+                                let b = skf.core(s, [up[0][1], up[1][1]]);
+                                [k.down(&mut s.rs[0], &[a[0], b[0]]), k.down(&mut s.rs[1], &[a[1], b[1]])]
+                            }
+                        };
+                        (block[0][n], block[1][n]) = (f64::from(y[0]), f64::from(y[1]));
+                    }
+                i += run;
+        }
+        block
+    }
+    fn legacy_monark_fragment(knob_source: &KontaktFilter, m: &Monark, history: (&mut [f32; 5], &mut MonarkState), at: u64, len: usize, modulation: [f64; 4]) -> Planar {
+        let (k, s) = history;
+        let mut block = typed_owner_input(at, len);
+        let mut i = 0;
+        while i < len {
+            let t = at + i as u64;
+            let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
+            let quantum = t % QUANTUM == 0;
+            let knobs = knob_source.knobs(modulation);
+
+                    if quantum {
+                        if *k != knobs {
+                            Monark::set(s, knobs);
+                            *k = knobs;
+                        }
+                        s.ramp.block(m.timing);
+                    }
+                    for n in i..i + run {
+                        let x = [block[0][n] as f32, block[1][n] as f32];
+                        let y = match &m.os {
+                            None => m.core(s, x),
+                            Some(k) => {
+                                let f = m.factor;
+                                let mut up = [[0f32; crate::dsp::kaiser::MAX]; 2];
+                                for c in 0..2 {
+                                    let rs = &mut s.ch[c].rs;
+                                    k.up(rs, x[c], &mut up[c]);
+                                }
+                                let mut down = [[0f32; crate::dsp::kaiser::MAX]; 2];
+                                for p in 0..f {
+                                    let y = m.core(s, [up[0][p], up[1][p]]);
+                                    (down[0][p], down[1][p]) = (y[0], y[1]);
+                                }
+                                [k.down(&mut s.ch[0].rs, &down[0][..f]), k.down(&mut s.ch[1].rs, &down[1][..f])]
+                            }
+                        };
+                        (block[0][n], block[1][n]) = (f64::from(y[0]), f64::from(y[1]));
+                    }
+                i += run;
+        }
+        block
+    }
+
+    #[test]
+    fn typed_history_distinct_same_family_recipes_match_frozen_legacy_oracles() {
+        let old_knobs = [0.35, 0.25, 0.45, 0.1, 0.5];
+        let new_knobs = [0.55, 0.35, 0.65, 0.2, 0.6];
+        let recipes = [
+            (KontaktFx::SimpleLpHp { lp: old_knobs[0], hp: old_knobs[1] }, KontaktFx::SimpleLpHp { lp: new_knobs[0], hp: new_knobs[1] }),
+            (KontaktFx::DualSkf(old_knobs), KontaktFx::DualSkf(new_knobs)),
+            (KontaktFx::Monark { mode: 0, variant: 0, knobs: old_knobs }, KontaktFx::Monark { mode: 3, variant: 1, knobs: new_knobs }),
+        ];
+        for (old_fx, new_fx) in recipes {
+            // Exercise timing/coefficient and oversampling changes, including
+            // DualSKF x2 -> x1 and Monark x3 -> x2, without resetting history.
+            let old = KontaktFilter::new(old_fx, 48_000);
+            let new = KontaktFilter::new(new_fx, 96_000);
+            let mut warm = ProcessorState::default();
+            typed_owner_block(&old, &mut warm, 0, 64, [0.; 4]);
+            typed_owner_block(&old, &mut warm, 64, 31, [0.125, -0.0625, 0., 0.]);
+            let before = *warm.color.kontakt_filter();
+            let modulation = [0.125, -0.0625, 0., 0.];
+            let mut actual_state = warm;
+            typed_owner_block(&new, &mut actual_state, 95, 0, modulation);
+            assert_eq!(*actual_state.color.kontakt_filter(), before);
+            let actual = typed_owner_block(&new, &mut actual_state, 95, 64, modulation);
+            let mut reset = ProcessorState::default();
+            let reset_output = typed_owner_block(&new, &mut reset, 95, 64, modulation);
+            let checked = match (&old.core, &new.core, before) {
+                (Core::SimpleLpHp(old_dj, old_ladder), Core::SimpleLpHp(dj, ladder), State::SimpleLpHp { knobs, dj: d, ladder: l }) => {
+                    let (mut stale_k, mut stale_d, mut stale_l) = (knobs, d, l);
+                    let (mut k, mut d, mut l) = (knobs, d, l);
+                    let expected = legacy_simple_fragment(&new, (dj, ladder), (&mut k, &mut d, &mut l), 95, 64, modulation);
+                    let stale_output = legacy_simple_fragment(&new, (old_dj, old_ladder), (&mut stale_k, &mut stale_d, &mut stale_l), 95, 64, modulation);
+                    assert_eq!(typed_owner_bits(&actual), typed_owner_bits(&expected));
+                    assert_ne!(typed_owner_bits(&expected), typed_owner_bits(&stale_output), "self knobs plus stale Simple coefficients must differ");
+                    assert_ne!(typed_owner_bits(&expected), typed_owner_bits(&reset_output), "Simple warm history must matter");
+                    assert_eq!(*actual_state.color.kontakt_filter(), State::SimpleLpHp { knobs: k, dj: d, ladder: l });
+                    true
+                }
+                (Core::DualSkf(old_skf), Core::DualSkf(skf), State::DualSkf { knobs, s }) => {
+                    let (mut stale_k, mut stale_s) = (knobs, s);
+                    let (mut k, mut s) = (knobs, s);
+                    let expected = legacy_skf_fragment(&new, skf, (&mut k, &mut s), 95, 64, modulation);
+                    let stale_output = legacy_skf_fragment(&new, old_skf, (&mut stale_k, &mut stale_s), 95, 64, modulation);
+                    assert_eq!(typed_owner_bits(&actual), typed_owner_bits(&expected));
+                    assert_ne!(typed_owner_bits(&expected), typed_owner_bits(&stale_output), "self knobs plus stale SKF resampler/timing must differ");
+                    assert_ne!(typed_owner_bits(&expected), typed_owner_bits(&reset_output), "SKF warm history must matter");
+                    assert_eq!(*actual_state.color.kontakt_filter(), State::DualSkf { knobs: k, s });
+                    true
+                }
+                (Core::Monark(old_m), Core::Monark(m), State::Monark { knobs, s }) => {
+                    let (mut stale_k, mut stale_s) = (knobs, s);
+                    let (mut k, mut s) = (knobs, s);
+                    let expected = legacy_monark_fragment(&new, m, (&mut k, &mut s), 95, 64, modulation);
+                    let stale_output = legacy_monark_fragment(&new, old_m, (&mut stale_k, &mut stale_s), 95, 64, modulation);
+                    assert_eq!(typed_owner_bits(&actual), typed_owner_bits(&expected));
+                    assert_ne!(typed_owner_bits(&expected), typed_owner_bits(&stale_output), "self knobs plus stale Monark mode/rate/variant must differ");
+                    assert_ne!(typed_owner_bits(&expected), typed_owner_bits(&reset_output), "Monark warm history must matter");
+                    assert_eq!(*actual_state.color.kontakt_filter(), State::Monark { knobs: k, s });
+                    true
+                }
+                _ => false,
+            };
+            assert!(checked, "all same-family fixture recipes must be exercised");
+        }
+    }
+
+    #[test]
+    fn typed_history_owner_layout_receipt() {
+        eprintln!("Kontakt owner sizes: state={} bound={} core={} prepared={} dj_history={} ladder_history={} skf_history={} monark_history={} kaiser_history={} color_state={} processor_state={}",
+            std::mem::size_of::<State>(), std::mem::size_of::<Bound<'static>>(), std::mem::size_of::<Core>(), std::mem::size_of::<KontaktFilter>(),
+            std::mem::size_of::<DjState>(), std::mem::size_of::<LadderState>(), std::mem::size_of::<SkfState>(), std::mem::size_of::<MonarkState>(),
+            std::mem::size_of::<KaiserState>(), std::mem::size_of::<super::super::super::color::State>(), std::mem::size_of::<ProcessorState>());
+    }
+
 }
