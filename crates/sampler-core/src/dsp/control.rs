@@ -87,7 +87,7 @@ pub(crate) enum PreparedParameter {
 }
 impl PreparedParameter {
     pub(super) fn projected(self, parameters: &[ControlRamp]) -> bool {
-        matches!(self, Self::Control(lane) if parameters[lane].modulation.is_some())
+        matches!(self, Self::Control(lane) if (parameters[lane].modulation.is_some()||parameters[lane].owner_projection.is_some()))
     }
     pub fn requires_expression(self) -> bool {
         matches!(self, Self::Expression { .. })
@@ -158,10 +158,23 @@ pub(crate) struct ControlRamp {
     start: u64,
     frames: u32,
     modulation: Option<(f64, [f64; 2])>,
+    owner_projection:Option<OwnerProjection>,
+}
+#[derive(Clone,Copy)]
+struct OwnerProjection {from:f64,to:f64,begin:u64,end:u64,multiply:bool}
+impl OwnerProjection {
+    fn value(self,at:u64)->f64{
+        if at<=self.begin{return self.from;}if at>=self.end{return self.to;}
+        self.from+(self.to-self.from)*(at-self.begin)as f64/(self.end-self.begin)as f64
+    }
+    fn held(self,at:u64,len:usize)->bool{self.from==self.to || at>=self.end || at.saturating_add(len.saturating_sub(1)as u64)<=self.begin}
 }
 impl ControlRamp {
     pub(super) fn held(self, at: u64, len: usize) -> Option<f64> {
         let first = self.value(at);
+        if self.owner_projection.is_some_and(|p|!p.held(at,len)){return None;}
+        // A product of two moving ramps can return to the same endpoint.
+        // Only a held owner factor can use the old monotone base shortcut.
         if at.saturating_sub(self.start) >= u64::from(self.frames) || self.from == self.target {
             return Some(first);
         }
@@ -176,7 +189,7 @@ impl ControlRamp {
             target,
             start,
             frames,
-            modulation: None,
+            modulation: None,owner_projection:None,
         }
     }
     pub(crate) fn value(self, at: u64) -> f64 {
@@ -189,10 +202,18 @@ impl ControlRamp {
             (self.from + (self.target - self.from) * (elapsed as f64 / f64::from(self.frames)))
                 .clamp(self.from.min(self.target), self.from.max(self.target))
         };
-        match self.modulation {
+        let value=match self.modulation {
             None => value,
-            Some((delta, [low, high])) => (value + delta).clamp(low, high),
+            Some((delta,[low,high]))=>(value+delta).clamp(low,high),
+        };
+        match self.owner_projection {
+            None=>value,
+            Some(p)if p.multiply=>value*p.value(at),
+            Some(p)=>value+p.value(at), // Pan clamps once in the actual home.
         }
+    }
+    pub(crate) fn project_owner(&mut self,from:f64,to:f64,begin:u64,end:u64,multiply:bool){
+        self.owner_projection=Some(OwnerProjection{from,to,begin,end,multiply});
     }
     pub(crate) fn add_modulation(&mut self, delta: f64, binding: ControlRange) {
         let sum = self.modulation.map_or(0., |(delta, _)| delta) + delta;
@@ -215,6 +236,8 @@ impl Prepared {
     pub(crate) fn validate_dsp_controls(&self) -> Result<(), Error> {
         self.voice_modulation
             .validate_dsp_targets(&self.filters, self.dsp_bindings.len())?;
+        self.processing_modulation.validate_dsp_targets(&self.filters,self.dsp_bindings.len())?;
+        self.validate_source_owner_output_controls()?;
         for binding in self.dsp_bindings.iter().chain(self.buses.parameters.iter()) {
             self.control_index(binding.control)?;
         }
@@ -230,7 +253,7 @@ pub(crate) fn initial_parameters(plan: &Prepared, bindings: &[ControlRange]) -> 
 pub(crate) fn initial_parameter(plan: &Prepared, binding: &ControlRange) -> ControlRamp {
     let index = plan.control_index(binding.control).unwrap();
     let target = binding.target(normalized(plan.control_layout.initial(index)));
-    ControlRamp { from: target, target, start: 0, frames: 0, modulation: None }
+    ControlRamp { from: target, target, start: 0, frames: 0, modulation: None,owner_projection:None }
 }
 
 impl super::DspState {
@@ -320,7 +343,7 @@ mod projection_tests {
             target: 2.,
             start: 0,
             frames: 100,
-            modulation: None,
+            modulation: None,owner_projection:None,
         };
         let binding = ControlRange {
             control: ControlId(1),
@@ -393,5 +416,42 @@ mod pan_coefficient_work_tests {
             assert_eq!(next_call.at(0.375),law.gains(0.375));
             assert_eq!(next_call.evaluations,1);
         }
+    }
+}
+
+#[cfg(test)]
+mod scoped_projection_tests {
+    use super::*;
+    #[test]
+    fn raw_pan_projection_is_not_clamped_before_constant_and_expression_home() {
+        let mut ramp=ControlRamp::test_ramp(0.8,0.8,0,0);
+        ramp.project_owner(-0.4,0.6,0,64,false);
+        assert_eq!(ramp.held(0,64),None);
+        for at in 0..64 {
+            let routed=-0.4+at as f64/64.;
+            assert!((ramp.value(at)-(0.8+routed)).abs()<1e-15);
+            let complete=(ramp.value(at)-0.5+0.25).clamp(-1.,1.);
+            assert!((complete-(0.8+routed-0.5+0.25).clamp(-1.,1.)).abs()<1e-15);
+        }
+        assert!(ramp.value(64)>1.,"the actual Pan home owns the only final clamp");
+        assert_eq!(ramp.held(64,64),Some(1.4));
+    }
+    #[test]
+    fn moving_gain_base_and_owner_factor_do_not_claim_equal_endpoint_hold() {
+        let mut ramp=ControlRamp::test_ramp(1.,2.,0,64);
+        ramp.project_owner(2.,1.,0,64,true);
+        assert_eq!(ramp.value(0),ramp.value(64));
+        assert_eq!(ramp.held(0,65),None);
+        assert_eq!(ramp.value(32),2.25);
+        assert_eq!(ramp.held(64,64),Some(2.));
+    }
+    #[test]
+    fn held_scalar_projection_preserves_held_base_and_absolute_offsets() {
+        let mut ramp=ControlRamp::test_ramp(0.25,0.25,97,0);
+        ramp.project_owner(0.5,0.5,97,128,false);
+        assert_eq!(ramp.held(97,31),Some(0.75));
+        let p=PreparedParameter::Control(0);
+        assert!(p.projected(&[ramp]));
+        assert_eq!(p.value(&[ramp],109,None),0.75);
     }
 }

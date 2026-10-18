@@ -108,6 +108,7 @@ pub struct PlanControl {
     locals: usize,
     note_cells: usize,
     voices: usize,
+    processing_owners:usize,
     expressions: usize,
     notes: usize,
     note_params: usize,
@@ -244,9 +245,10 @@ impl PlanControl {
                 prepared,
             });
         }
-        let dsp = match super::dsp::DspState::new(
+        let dsp = match super::dsp::DspState::new_with_owner_capacity(
             &prepared,
             self.voices,
+            self.processing_owners,
             self.expressions,
             self.lanes.load(std::sync::atomic::Ordering::Relaxed),
         ) {
@@ -424,6 +426,7 @@ impl Runtime {
             locals: runtime.behavior_stride,
             note_cells: runtime.note_stride,
             voices: limits.voices,
+            processing_owners:runtime.processing_owner_capacity(),
             expressions: limits.expressions,
             notes: limits.notes,
             note_params: runtime.note_params.capacity(),

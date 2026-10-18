@@ -430,6 +430,13 @@ pub struct Play {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    /// An actual compiled source-owner operand. The authoritative consumer
+    /// supplies the validated retained PlanId; this command is not a lease.
+    OwnerControl {
+        owner:sampler_ir::SourceOwnerId,
+        field:sampler_core::SourceOwnerControl,
+        value:sampler_core::ControlValue,
+    },
     /// A typed insert write, normalized by the shared native law.
     EngineParameter {
         address: sampler_core::EngineParameterAddress,

@@ -1013,41 +1013,41 @@ input.group>=16||input.channel>=16||input.key>=128
                     .flatten();
                 let Some((sample,source_cursor))=self.plans.get(plan.0).unwrap().samples.source(prepared,candidate,note_pitch) else {continue;};
                 let step=source_cursor.step();
-                let seed =
-                    self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
-                let held = self.release_counter_frames(note).unwrap();
-                let n = self.notes.get(note.0).unwrap();
-                let inputs = crate::voice_mod::Inputs::new(
-                    n,
-                    self.expressions.get(n.expression.0).unwrap().value,
-                    &state.controllers,
-                    held,
-                    &self.note_params[note.0.index].mods,
-                    self.plans.get(plan.0).unwrap().controls.base_reals(),
-                );
-                let start = prepared
-                    .voice_modulation
-                    .start_offset(candidate.region, &inputs, seed);
-                let cursor = source_cursor;
-                let cursor = if trigger == Trigger::Attack {
-                    cursor.with_offset(
-                        self.note_events[note.0.index].source_offset_micros,
-                        self.plans.get(plan.0).unwrap().source(sample).expect("admitted logical source").sample_rate(),
-                    )
-                } else {
-                    cursor
+                let seed=self.now^((note.0.index as u64)<<40)^((candidate.region as u64)<<20);
+                let provider_scope=prepared.voice_modulation.region_provider_scope(candidate.region);
+                // Claim the real shared owner BEFORE a provider-dependent
+                // SampleStart is read and before the physical cursor offset
+                // and voice admission. source_cursor above is pure geometry.
+                let processing=match self.processing_member_admission(note,processing_activation,candidate.region){
+                    Ok(processing)=>processing,
+                    Err(_)=>{self.refused_starts=self.refused_starts.saturating_add(1);continue;}
                 };
-                let cursor = if start != 0 {
-                    cursor.skip(start)
-                } else {
-                    cursor
-                };
-                let processing = match self.processing_member_admission(
-                    note, processing_activation, candidate.region,
-                ) {
-                    Ok(processing) => processing,
-                    Err(_) => { self.refused_starts = self.refused_starts.saturating_add(1); continue; }
-                };
+                if provider_scope.is_some(){
+                    let Some((owner,_,_))=processing else{self.refused_starts=self.refused_starts.saturating_add(1);continue;};
+                    if self.prepare_processing_modulation(owner,self.now,crate::topology::ProcessingModulationPhase::AdmissionOnset).is_err(){
+                        self.fail_processing_owner(owner);self.refused_starts=self.refused_starts.saturating_add(1);continue;
+                    }
+                }
+                let generation=self.plans.get(plan.0).unwrap();
+                let prepared=&generation.prepared;
+                let state=&self.performance_state.states[snapshot];
+                let held=self.release_counter_frames(note).unwrap();
+                let n=self.notes.get(note.0).unwrap();
+                let inputs=crate::voice_mod::Inputs::new(n,self.expressions.get(n.expression.0).unwrap().value,
+                    &state.controllers,held,&self.note_params[note.0.index].mods,generation.controls.base_reals());
+                let start=if let (Some(scope),Some((owner,_,_)))=(provider_scope,processing){
+                    generation.dsp.owner_modulation.provider_view(&prepared.processing_modulation,owner.0.index,scope)
+                        .and_then(|view|prepared.voice_modulation.start_offset_provided(candidate.region,&inputs,seed,self.now,view))
+                }else{prepared.voice_modulation.start_offset(candidate.region,&inputs,seed)};
+                let start=match start{Ok(start)=>start,Err(_)=>{
+                    if let Some((owner,_,_))=processing{self.fail_processing_owner(owner);}
+                    self.refused_starts=self.refused_starts.saturating_add(1);continue;
+                }};
+                let cursor=if trigger==Trigger::Attack{
+                    source_cursor.with_offset(self.note_events[note.0.index].source_offset_micros,
+                        generation.source(sample).expect("admitted logical source").sample_rate())
+                }else{source_cursor};
+                let cursor=if start!=0{cursor.skip(start)}else{cursor};
                 let family = *family.get_or_insert_with(|| {
                     let family = self
                         .create_family_for(note, trigger)

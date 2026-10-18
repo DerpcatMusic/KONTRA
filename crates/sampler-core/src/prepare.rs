@@ -1128,6 +1128,8 @@ crate) source_zone_catalog: Option<zone_routing::SourceZoneCatalog>,
     pub(super) voice_chains: super::dsp::PreparedChains,
     pub(super) processing_scopes: Box<[super::topology::PreparedScope]>,
     pub(super) processing_signals: Box<[Option<super::topology::signal::Signal>]>,
+    pub(super) processing_modulation: super::voice_mod::VoiceModulation,
+    pub(super) processing_modulation_limit:usize,
     pub(super) wide_gain_sections: Box<[Option<super::dsp::WideGainSections>]>,
     pub(super) region_processing: Box<[Option<(usize, usize)>]>,
     pub(super) processing_source_amplitude: Box<[bool]>,
@@ -1476,7 +1478,7 @@ impl Prepared {
             impulses: Vec::new(),
             voice_chains: super::dsp::PreparedChains::default(),
             processing_scopes: Box::new([]),
-            processing_signals: Box::new([]),
+            processing_signals: Box::new([]),processing_modulation:Default::default(),processing_modulation_limit:0,
             wide_gain_sections: Box::new([]),
             region_processing: Box::new([]),
             processing_source_amplitude: Box::new([]),
@@ -1641,9 +1643,27 @@ programs = programs.into_boxed_slice();
         let native = std::iter::repeat_with(|| None).take(programs.len()).collect();
         self.with_voice_modulation_and_v1(programs, regions, start_ranges, native)
     }
-    pub(crate) fn with_voice_modulation_and_v1(mut self,
+    /// Bind physical consumer slots to actual immutable scoped source rows.
+    /// The supplied source descriptors remain preparation metadata; a mapped
+    /// slot allocates no envelope/oscillator evaluator in the physical voice.
+    pub fn with_voice_modulation_providers(self,programs:Vec<super::ModProgram>,regions:Vec<Option<usize>>,start_ranges:Vec<u32>,providers:Vec<crate::ModProvider>)->Result<Self,Error>{
+        let native=std::iter::repeat_with(||None).take(programs.len()).collect();
+        self.with_voice_modulation_and_providers(programs,regions,start_ranges,native,providers)
+    }
+    pub(crate) fn with_voice_modulation_and_v1(self,
         programs: Vec<super::ModProgram>, regions: Vec<Option<usize>>, start_ranges: Vec<u32>,
-        mut native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
+        native: Vec<Option<crate::whole_voice::Program>>) -> Result<Self, Error> {
+        self.with_voice_modulation_and_providers(programs,regions,start_ranges,native,Vec::new())
+    }
+    pub(crate) fn with_voice_modulation_and_providers(mut self,
+        programs:Vec<super::ModProgram>,regions:Vec<Option<usize>>,start_ranges:Vec<u32>,
+        mut native:Vec<Option<crate::whole_voice::Program>>,providers:Vec<crate::ModProvider>)->Result<Self,Error>{
+        std::alloc::Layout::array::<crate::ModProvider>(providers.capacity()).map_err(|_|Error::Capacity)?;
+        std::alloc::Layout::array::<(crate::ModProvider,bool)>(providers.len()).map_err(|_|Error::Capacity)?;
+        let resolved_providers=providers.into_iter().map(|binding|{
+            let bipolar=self.processing_modulation.source_bipolar(binding.provider)?;Ok((binding,bipolar))
+        }).collect::<Result<Vec<_>,Error>>()?;
+        std::alloc::Layout::array::<(crate::ModProvider,bool)>(resolved_providers.capacity()).map_err(|_|Error::Capacity)?;
         if native.len() != programs.len() { return Err(Error::InvalidInput); }
         if regions.len() != self.regions.len()
             || programs.iter().any(|p| {
@@ -1787,14 +1807,16 @@ programs = programs.into_boxed_slice();
             program.controls = controls;
             if let Some(native) = &mut native[index] { native.routes = native_routes; }
         }
-        self.voice_modulation = super::voice_mod::VoiceModulation::new_resolved(
+        let modulation = super::voice_mod::VoiceModulation::new_resolved_providers(
             programs,
             regions,
             start_ranges,
-            native,
+            native,resolved_providers,
             |address| (address.parameter == u32::MAX - 13).then_some(address.node as usize),
             |id| self.real_control(id),
         )?;
+        modulation.validate_provider_bindings(&self.processing_modulation,&self.region_processing)?;
+        self.voice_modulation=modulation;
         Ok(self)
     }
 
@@ -1869,6 +1891,13 @@ programs = programs.into_boxed_slice();
             + stages * size_of::<crate::dsp::ProcessorState>()
             + delay * size_of::<[f64; 2]>()
             + self.voice_modulation.bytes_per_voice()
+            + self.processing_modulation.bytes_per_voice()
+            + if self.processing_modulation.is_empty(){0}else{
+                // Conservative per-owner share includes the complete immutable
+                // program restart-domain array; no unpriced generation array.
+                self.processing_scopes.len()*std::mem::size_of::<(u64,u64)>()
+                    +std::mem::size_of::<Option<(u64,u64)>>()
+            }
             // Runtime always has a fixed-capacity owner arena so a retained
             // legacy generation can adopt an incoming explicit-scope plan.
             + size_of::<crate::Slot<crate::topology::ProcessingOwner>>()
@@ -1907,7 +1936,13 @@ programs = programs.into_boxed_slice();
                 .and_then(|(scope, _)| self.processing_scopes.get(scope))
                 .and_then(|scope| scope.signal.as_ref());
             if let Some(signal) = signal {
-                if signal.input.channels != source.channels().get() { return Err(Error::UnsupportedSourceLayout); }
+                if let sampler_ir::ProcessingSourceLaw::UviC997Layout{members}=&signal.source_law {
+                    let (_,ordinal)=self.region_processing.get(index).copied().flatten().ok_or(Error::InvalidInput)?;
+                    let member=members.get(ordinal).copied().flatten().ok_or(Error::InvalidInput)?;
+                    if member.provenance!=sampler_ir::UviNativeSourceProvenance::PlainHeader || member.storage_channels!=source.channels().get()
+                        || !(member.layout.channels()==source.channels().get() || member.layout==sampler_ir::UviNativeLayout::Code1&&source.channels().get()==2)
+                        || member.layout.weight(sampler_ir::UviNativeLayout::plain_header(signal.input.channels).ok_or(Error::UnsupportedSourceLayout)?,0,0).is_none(){return Err(Error::UnsupportedSourceLayout);}
+                }else if signal.input.channels != source.channels().get() { return Err(Error::UnsupportedSourceLayout); }
             } else if source.stereo().is_none() { return Err(Error::UnsupportedSourceLayout); }
         }
         Ok(())

@@ -3689,6 +3689,15 @@ fn kontakt(
     })
 }
 
+/// Preserve a normal UVI assembler's typed refusal at the product boundary.
+fn uvi_assembly_error(error: &(dyn std::error::Error + 'static)) -> CoreError {
+    match error.downcast_ref::<sampler_kontakt::LoadError>() {
+        Some(error) if matches!(error.cause(), sampler_kontakt::LoadError::Canceled) => CoreError::Canceled,
+        Some(error) => CoreError::Load(error.into()),
+        None => CoreError::Load(LoadFailure::message(error)),
+    }
+}
+
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
 /// stream from the bank or file; its Lua scripts run on their own thread.
 fn uvi(
@@ -3723,12 +3732,7 @@ fn uvi(
     let tree = nest(&mut t.instrument);
     let streamed = sampler_uvi::assemble_translated_streamed_cancelable(
         t, rate, &stream_policy(request), canceled,
-    ).map_err(|e| {
-        if e.downcast_ref::<sampler_kontakt::LoadError>().is_some_and(|e|
-            matches!(e.cause(), sampler_kontakt::LoadError::Canceled)) {
-            CoreError::Canceled
-        } else { load(&*e) }
-    })?;
+    ).map_err(|error| uvi_assembly_error(&*error))?;
     let sampler_kontakt::Streamed {
         mut loaded,
         assets,
@@ -9460,7 +9464,7 @@ mod source_processing_mixer_tests {
             let mut zone=ir::Zone::new(ir::AssetRef(index));zone.keys=ir::KeyRange{low:60,high:60};zone.group=Some(ir::GroupRef(index));zone.velocity=ir::VelocityResponse::None;if index==2 {zone.keys=ir::KeyRange{low:61,high:61};}ir.zones.push(zone);
         }
         ir.source_indices.owners=vec![owner(0,None,ir::SourceOwnerKind::Instrument,&[1,4],&[]),owner(1,Some(0),ir::SourceOwnerKind::Keygroup,&[2,3],&[0,1]),owner(2,Some(1),ir::SourceOwnerKind::Player,&[],&[0]),owner(3,Some(1),ir::SourceOwnerKind::Player,&[],&[1]),owner(4,Some(0),ir::SourceOwnerKind::Player,&[],&[2])];
-        ir.source_indices.processing.push(ir::SourceProcessingRecipe{name:"shared keygroup".into(),owner:ir::SourceOwnerId::UviNode(1),lifetime:ir::SourceProcessingLifetime::UviKeygroupActivation,members:vec![ir::ZoneRef(0),ir::ZoneRef(1)],chain:None,amplitude:None,output:None,compiled:None});ir
+        ir.source_indices.processing.push(ir::SourceProcessingRecipe{name:"shared keygroup".into(),owner:ir::SourceOwnerId::UviNode(1),lifetime:ir::SourceProcessingLifetime::UviKeygroupActivation,members:vec![ir::ZoneRef(0),ir::ZoneRef(1)],chain:None,amplitude:None,output:None,compiled:None,parameter_roles:vec![],sources:vec![],routes:vec![],source_gate:None});ir
     }
     fn pcm(instrument:ir::Instrument)->Vec<[f32;2]>{
         let pcm=(0..3).map(|index|sampler_core::Pcm::new(48000,vec![[0.125*(index+1)as f32;2];512].into_boxed_slice()).unwrap()).collect();
@@ -9471,5 +9475,35 @@ mod source_processing_mixer_tests {
     }
     #[test] fn graph_aware_nest_preserves_normal_owner_pcm(){
         let original=instrument();let reference=pcm(original.clone());assert!(reference.iter().flatten().any(|sample|sample.abs()>0.01));let mut nested=original;nest(&mut nested);let actual=pcm(nested);assert_eq!(actual,reference,"product graph handoff must not move source gains to an unobserved member bus");
+    }
+}
+
+#[cfg(test)]
+mod uvi_load_refusal147_tests {
+    use super::*;
+    #[test]
+    fn uvi_load_refusal147_preserves_actual_lower_stage_kind_and_source_location() {
+        let original = sampler_kontakt::LoadError::Lower(sampler_core::lower::LowerError::Core {
+            stage: sampler_core::lower::Stage::Regions,
+            owner: "authored source outlet".into(),
+            error: sampler_core::Error::UnsupportedSourceLayout,
+        }).at(sampler_kontakt::Stage::Prepare);
+        let expected = LoadFailure::from(&original);
+        let CoreError::Load(actual) = uvi_assembly_error(&original) else { panic!("typed load refusal was lost") };
+        assert_eq!(actual, expected);
+        assert_eq!(actual.kind, Some(sampler_kontakt::Kind::Lower));
+        assert_eq!(actual.stage, Some(sampler_kontakt::Stage::Prepare));
+        assert!(actual.at.is_some());
+    }
+    #[test]
+    fn uvi_load_refusal147_keeps_cancellation_and_untyped_messages_distinct() {
+        let canceled = sampler_kontakt::LoadError::Canceled.at(sampler_kontakt::Stage::Prepare);
+        assert!(matches!(uvi_assembly_error(&canceled), CoreError::Canceled));
+        let original = std::io::Error::other("authored untyped diagnostic");
+        let CoreError::Load(actual) = uvi_assembly_error(&original) else { panic!("untyped failure was lost") };
+        assert_eq!(actual.message, "authored untyped diagnostic");
+        assert_eq!(actual.stage, None);
+        assert_eq!(actual.kind, None);
+        assert_eq!(actual.at, None);
     }
 }
