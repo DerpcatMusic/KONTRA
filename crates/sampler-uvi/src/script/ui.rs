@@ -53,6 +53,16 @@ fn mapper(t: &impl UiRead) -> Option<String> {
         .map(|name| (*name).to_owned())
     })
 }
+// The existing modeled horizontal enum is independent of font selection.
+// Other UVI vertical/corner alignment modes remain outside this IR contract.
+fn horizontal_alignment(value:Option<Value>)->ui::Align{
+    match value{
+        Some(Value::String(value)) if value.as_bytes().as_ref()==b"left"=>ui::Align::Left,
+        Some(Value::String(value)) if value.as_bytes().as_ref()==b"right"=>ui::Align::Right,
+        _=>ui::Align::Center,
+    }
+}
+
 fn unit(t: &impl UiRead) -> Option<f64> {
     num(t, "unit").or_else(|| {
         Some(match text(t, "unit")?.as_str() {
@@ -1064,22 +1074,24 @@ impl ScriptHost {
                     color: text(w, "textColour")
                         .and_then(|c| color(&c))
                         .unwrap_or(ui::Rgba::rgb(0xffffff)),
-                    align: match text(w, "align").as_deref() {
-                        Some("left") => ui::Align::Left,
-                        Some("right") => ui::Align::Right,
-                        _ => ui::Align::Center,
-                    },
+                    align: horizontal_alignment(w.read("align")),
                 });
-            } else if num(w, "fontSize").is_some() || text(w, "textColour").is_some() {
-                wd.style = Some(ui::StyleRef(out.styles.len()));
-                out.styles.push(ui::TextStyle {
-                    font: ui::Font::Default,
-                    size: num(w, "fontSize").map(|n| n as f32),
-                    color: text(w, "textColour")
-                        .and_then(|c| color(&c))
-                        .unwrap_or(ui::Rgba::rgb(0xffffff)),
-                    align: ui::Align::Center,
-                });
+            } else {
+                let existing_style=num(w,"fontSize").is_some()||text(w,"textColour").is_some();
+                // Retain the actual align-only decision Value. A canonical
+                // metatable getter may mutate state or differ on its next call.
+                let initial_alignment=if existing_style{None}else{w.read("align")};
+                if existing_style||matches!(&initial_alignment,Some(Value::String(_))){
+                    wd.style = Some(ui::StyleRef(out.styles.len()));
+                    out.styles.push(ui::TextStyle {
+                        font: ui::Font::Default,
+                        size: num(w, "fontSize").map(|n| n as f32),
+                        color: text(w, "textColour")
+                            .and_then(|c| color(&c))
+                            .unwrap_or(ui::Rgba::rgb(0xffffff)),
+                        align: horizontal_alignment(if existing_style{w.read("align")}else{initial_alignment}),
+                    });
+                }
             }
             if matches!(wd.kind, ui::Kind::Button { .. }) {
                 // State ink inherits the authored face, size and alignment.
