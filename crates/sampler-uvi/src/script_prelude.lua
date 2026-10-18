@@ -175,7 +175,7 @@ function methods.addItem(w, text)
   return #items
 end
 function methods.clear(w) data(w).items = {}; ui.revision = ui.revision + 1 end
-function methods.getText(w, i) return data(w).items[i] end
+function methods.getText(w, i) return data(w).items[i] or "" end
 function methods.setStripImage(w, path, frames, horizontal) w.stripImage, w.frames, w.stripHorizontal = path, frames, horizontal end
 function methods.setViewPosition(w, x, y) w.viewPosition = {x, y} end
 function methods.loadFont(w, path) w.font = path end
@@ -203,11 +203,18 @@ widget_mt.__index = function(w, k)
   if d.kind == "Button" and (k == "setValue" or k == "getValue" or k == "setRange") then return nil end
   if k == "bind" and d.kind == "WaveView" then return wave_bind end
   if methods[k] then return methods[k] end
+  if k == "w" then return d.width end
+  if k == "h" then return d.height end
   if k == "size" then return {d.width, d.height} end
   if k == "position" or k == "pos" then return {d.x, d.y} end
   if k == "bounds" then return {d.x, d.y, d.width, d.height} end
   if k == "selected" then return d.value end
-  if k == "selectedText" then return d.items and d.items[d.value] or "" end
+  if k == "selectedText" or (k == "text" and (d.kind == "Menu" or d.kind == "ParamMenu")) then
+    -- Menu.text is the documented selected-item readback, not the generic
+    -- widget's retained text property. Resolve from current items/value so
+    -- setItem and changed callbacks cannot observe a stale selection label.
+    return d.items and d.items[d.value] or ""
+  end
   if k == "length" and d.items then return #d.items end
   if k == "value" and d.element then return d.element:getParameter(d.parameter) end
   if d[k] ~= nil then return d[k] end
@@ -232,9 +239,27 @@ widget_mt.__newindex = function(w, k, v)
   if type(v) == 'string' and (k == 'font' or string.match(k, 'Image$') or k == 'image') then
     v = native.resourcePath(v)
   end
+  if k == "w" then k = "width" elseif k == "h" then k = "height" end
   if k == "value" or k == "selected" then
     methods.setValue(w, v)
     return
+  elseif k == "length" and d.kind == "Table" then
+    -- UI IR columns and component identities are u32. This is host admission
+    -- for the documented integer property, not a claimed native malformed-
+    -- input coercion law. Validate before constructing or publishing cells.
+    if rawtype(v) ~= "number" or v ~= v or v < 0 or v > 4294967295 or v ~= math.floor(v) then
+      error("invalid UVI Table length")
+    end
+    if v == d.length then return end
+    -- Build separately: memory/work exhaustion cannot expose a partly resized
+    -- value array or destroy removed values before the new shape is ready.
+    local values = {}
+    for i = 1, v do
+      local value = i <= d.length and d.values[i] or nil
+      if value == nil then value = d.default end
+      values[i] = value
+    end
+    d.values,d.length = values,v
   elseif k == "sample" and d.kind == "WaveView" then
     d.sample,d.sample_set = v,true
     d.sample_directory = native.sampleDirectory()
