@@ -666,11 +666,15 @@ impl PartShared {
 
     /// The part's controls and their values, in id order.
     pub(crate) fn control_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
-        self.controls
-            .lock_unpoisoned()
-            .iter()
-            .map(|c| (c.id, c.value()))
-            .collect()
+        let mut values:Vec<_>=self.controls.lock_unpoisoned().iter().map(|c|(c.id,c.value())).collect();
+        // UI/save thread only. The audio-side original ControlCell allocation
+        // stays fixed; the actual Lua bridge owns dynamic scalar/cell readback.
+        if let Some(uvi)=&self.scripts.lock_unpoisoned().uvi {
+            values.retain(|(id,_)|(id.0>>64)!=0x5556490000000000);
+            values.extend(uvi.values());
+            values.sort_by_key(|(id,_)|*id);
+        }
+        values
     }
 
     /// Audio thread: copy the core's values in, unless the loader holds the lock.
@@ -1069,6 +1073,8 @@ pub(crate) struct PartView {
     pub(crate) program: u32,
     pub(crate) generation: u64,
     pub(crate) ui_revision: u64,
+    /// The genuine UVI bridge/schema owning the interface drawn below.
+    pub(crate) uvi_snapshot: Option<sampler_uvi::scripted::UiSnapshot>,
     pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
     pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
@@ -1729,6 +1735,19 @@ impl Shared {
             .is_some_and(|client| client.submit(control, value))
     }
 
+    /// A drawn UVI action carries the exact bridge/schema it was drawn from.
+    /// Part/source epoch, owner identity and owner-thread current visibility are
+    /// separate checks; queuing this action is not a Core Applied receipt.
+    pub(crate) fn set_uvi_control_at(
+        &self,slot:usize,epoch:u64,snapshot:&sampler_uvi::scripted::UiSnapshot,
+        control:sampler_ui_ir::ControlId,value:f64,
+    )->bool{
+        let Some(part)=self.part(slot)else{return false;};
+        let scripts=part.scripts.lock_unpoisoned();
+        if part.generation.load(Ordering::Acquire)!=epoch||!value.is_finite(){return false;}
+        scripts.uvi.as_ref().is_some_and(|owner|owner.edit_snapshot(snapshot,control,value))
+    }
+
     /// Main-thread host automation uses the same epoch admission and reply queue.
     pub(crate) fn set_host_parameter_at(
         &self,
@@ -1930,7 +1949,9 @@ impl Shared {
             scripts.uvi_revision = revision;
             if let Some(view) = self.view.lock_unpoisoned().parts.get_mut(slot) {
                 self.ui_activity.add(UiCount::PublicationCalls, 1);
-                let changed = view.publish_interface(&uvi.interface());
+                let snapshot=uvi.snapshot();
+                let changed=view.publish_interface(snapshot.interface());
+                view.uvi_snapshot=Some(snapshot);
                 self.ui_activity.add(UiCount::PublicationChanges, u64::from(changed));
             }
         }
@@ -2642,6 +2663,11 @@ fn load_part_with(
             v.report = Some(Arc::new(loaded.report));
             v.generation = generation;
             v.interfaces = loaded.interfaces.into();
+            if let Some(uvi)=&loaded.scripts.uvi {
+                let snapshot=uvi.snapshot();
+                v.publish_interface(snapshot.interface());
+                v.uvi_snapshot=Some(snapshot);
+            }
             v.resource_path = loaded.scripts.resource_path.clone();
             v.resource_revision = resource_revision;
             if let Some(part) = loaded.part.as_mut() {
@@ -5290,3 +5316,40 @@ mod exact_packet_tests;
 
 #[cfg(test)]
 mod transport_event_tests;
+
+#[cfg(test)]
+mod uvi_registry_part_tests {
+    use super::*;
+    #[test]
+    fn uvi_dynamic_registry_joins_part_display_save_epoch_and_drawn_owner(){
+        use sampler_uvi::scripted::ScriptThread;
+        use std::time::{Duration,Instant};
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[local create=Button('Create');create.changed=function() if made then return end;made=true;Knob('Dynamic',0.25,0,1) end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let (_thread,loaded)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+        let params=SamplerParams::new();params.shared.ensure_parts(1);
+        params.selection.write_unpoisoned().parts=vec![Part{path:"registry.uvip".into(),..Default::default()}];
+        let actual=params.shared.part(0).unwrap();actual.generation.store(17,Ordering::Release);
+        let initial=loaded.ui.snapshot();let sampler_ui_ir::Binding::Control(create)=initial.interface().widgets[0].binding else{panic!("real Button")};
+        {
+            let mut scripts=actual.scripts.lock_unpoisoned();scripts.uvi=Some(loaded.ui.clone());scripts.uvi_source=Some(params.selection.read_unpoisoned().parts[0].source());
+            let mut view=params.shared.view.lock_unpoisoned();view.parts[0].interfaces=vec![initial.interface().as_ref().clone()].into();view.parts[0].generation=17;
+        }
+        *actual.controls.lock_unpoisoned()=vec![ControlCell::new(create,0.)].into();
+        assert!(params.shared.set_uvi_control_at(0,17,&initial,create,1.));
+        let deadline=Instant::now()+Duration::from_secs(3);
+        let dynamic=loop{
+            let face=loaded.ui.interface();if let Some(widget)=face.widgets.iter().find(|w|w.name=="Dynamic") {let sampler_ui_ir::Binding::Control(id)=widget.binding else{panic!("real dynamic Knob")};break id;}
+            assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(2));
+        };
+        params.shared.refresh_uvi(&params);
+        let drawn=params.shared.view.lock_unpoisoned().parts[0].uvi_snapshot.clone().unwrap();
+        assert!(loaded.ui.owns_snapshot(&drawn));assert!(actual.display_values().contains(&(dynamic,0.25)));
+        assert!(actual.control_values().contains(&(dynamic,0.25)),"save must include actual dynamic roster");
+        assert!(!params.shared.set_uvi_control_at(0,16,&drawn,dynamic,0.75));
+        assert!(!params.shared.set_uvi_control_at(0,17,&initial,dynamic,0.75));
+        let (_other_thread,other)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+        actual.scripts.lock_unpoisoned().uvi=Some(other.ui.clone());
+        assert!(!params.shared.set_uvi_control_at(0,17,&drawn,dynamic,0.75),"same Part epoch cannot substitute a different real VM bridge");
+        assert!(!actual.control_values().iter().any(|(id,_)|*id==dynamic),"retired original cell is not saved through the old static mirror");
+    }
+}
