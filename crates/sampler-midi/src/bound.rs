@@ -46,3 +46,26 @@ impl BoundMpe {
     pub fn complete_terminal_release(&self,runtime:&mut Runtime,delivery:sampler_core::ReceiverTerminalDelivery)->Result<(),Error>{runtime.complete_receiver_terminal(delivery)}
     pub fn unbind(self,runtime:&mut Runtime)->Result<crate::Mpe,Error>{runtime.unbind_receiver(self.receiver).map(|state|crate::Mpe{state})}
 }
+
+
+impl BoundMpe {
+    pub fn wire_epoch(&self,runtime:&Runtime)->Result<sampler_core::ReceiverWireEpoch,Error>{self.owner(runtime)?;runtime.receiver_wire_epoch(self.receiver)}
+    pub fn wire_status(&self,runtime:&Runtime)->Result<sampler_core::WireAdmissionStatus,Error>{self.owner(runtime)?;runtime.receiver_wire_status(self.receiver)}
+    /// True-ingress reservation; scheduling retains the genuine returned ID.
+    pub fn reserve_raw_attack(&self,runtime:&mut Runtime,epoch:sampler_core::ReceiverWireEpoch,intent:sampler_core::RawAttackIntent)->Result<sampler_core::RawAdmission,Error>{
+        self.owner(runtime)?;if runtime.receiver_wire_epoch(self.receiver)?!=epoch{return Err(Error::StaleHandle);}runtime.reserve_raw_attack(epoch,intent)
+    }
+    pub fn commit_raw_attack(&self,runtime:&mut Runtime,id:sampler_core::RawAdmissionId,attack:sampler_core::CapturedLogicalRawAttack)->Result<NoteId,Error>{
+        self.owner(runtime)?;if id.receiver()!=self.receiver{return Err(Error::StaleHandle);}runtime.commit_raw_attack(id,attack)
+    }
+    pub fn reject_raw_attack(&self,runtime:&mut Runtime,id:sampler_core::RawAdmissionId,reason:sampler_core::RawRejection)->Result<(),Error>{
+        self.owner(runtime)?;if id.receiver()!=self.receiver{return Err(Error::StaleHandle);}runtime.reject_raw_attack(id,reason)
+    }
+    pub fn claim_raw_terminal(&self,runtime:&mut Runtime,epoch:sampler_core::ReceiverWireEpoch,source:Input,velocity:Option<f64>)->Result<Option<sampler_core::RawTerminalClaim>,Error>{
+        self.owner(runtime)?;if runtime.receiver_wire_epoch(self.receiver)?!=epoch{return Err(Error::StaleHandle);}runtime.claim_raw_terminal(epoch,source,velocity)
+    }
+    pub fn commit_raw_terminal(&self,runtime:&mut Runtime,id:sampler_core::RawTerminalId)->Result<sampler_core::RawTerminalOutcome,Error>{
+        self.owner(runtime)?;if id.admission().receiver()!=self.receiver{return Err(Error::StaleHandle);}runtime.commit_raw_terminal(id)
+    }
+    pub fn has_unclaimed_wire_source(&self,runtime:&Runtime,source:Input)->Result<bool,Error>{self.owner(runtime)?;runtime.receiver_has_unclaimed_wire_source(self.receiver,source)}
+}

@@ -174,6 +174,10 @@ fn failed_gestures_and_binding_pressure_do_not_publish_partial_state() {
             Err(ApplyError::Core(Error::Capacity))
         );
         assert_eq!(rt.note_count(), 2);
+        assert_eq!(apply(&mut mpe,&mut rt,packet(0x80,1,61,0)),Ok(Applied::Ignored),
+            "the capacity-rejected press still owes its own actual physical Off");
+        assert!(rt.input_held(a).unwrap()&&rt.input_held(b).unwrap());
+        assert_eq!((expression(&rt,a),expression(&rt,b)),(before_a,before_b));
         assert_eq!(
             apply(&mut mpe, &mut foreign, bend(0, 0)),
             Err(ApplyError::Core(Error::StaleHandle))
@@ -182,6 +186,10 @@ fn failed_gestures_and_binding_pressure_do_not_publish_partial_state() {
             apply(&mut mpe, &mut rt, packet(0x90, 3, 60, 127)),
             Ok(Applied::Unsupported)
         );
+        assert_eq!(apply(&mut mpe,&mut rt,packet(0x80,3,60,0)),Ok(Applied::Ignored),
+            "an unsupported-profile press is absorbed without releasing either admitted owner");
+        assert!(rt.input_held(a).unwrap()&&rt.input_held(b).unwrap());
+        assert_eq!((expression(&rt,a),expression(&rt,b)),(before_a,before_b));
         assert_eq!(
             apply(&mut mpe, &mut rt, 0x2391_3c7f ^ 0x0100_0000),
             Err(ApplyError::DisabledGroup)
@@ -192,9 +200,11 @@ fn failed_gestures_and_binding_pressure_do_not_publish_partial_state() {
             apply(&mut mpe, &mut rt, packet(0x90, 1, 61, 127)),
             Err(ApplyError::Core(Error::Capacity))
         );
+        assert_eq!(apply(&mut mpe,&mut rt,packet(0x80,1,61,0)),Ok(Applied::Ignored));
         rt.flush_ended(|_| true);
         assert_eq!(apply(&mut mpe,&mut rt,packet(0x90,1,61,127)),Err(ApplyError::Core(Error::Capacity)),
             "Core NOTE_END does not acknowledge the two still-held physical wire keys");
+        assert_eq!(apply(&mut mpe,&mut rt,packet(0x80,1,61,0)),Ok(Applied::Ignored));
         for (channel,owner) in [(1,a),(2,b)] {
             let Applied::Released{note,..}=apply(&mut mpe,&mut rt,packet(0x80,channel,60,0)).unwrap() else {panic!("actual physical terminal lost")};
             assert_eq!(note,owner,"a retired Core slot keeps its original wire terminal identity");
@@ -1733,4 +1743,149 @@ fn rejected_secondary_host_controller_admission_does_not_change_wire_or_future_h
         assert_eq!(expression(&rt, future), before);
         assert_eq!(rt.now(), 0); assert_eq!(rt.voice_count(), 2);
     });
+}
+
+fn raw_fifo_rejection_runtime()->sampler_core::Runtime{
+    let samples=(0..8192).map(|frame|{let x=frame as f64;[(0.07*x).sin()as f32*0.25,(0.031*x).cos()as f32*0.125]}).collect::<Vec<_>>();
+    let plan=sampler_core::Prepared::new(48000,vec![sampler_core::Pcm::new(48000,samples.into_boxed_slice()).unwrap()],vec![sampler_core::Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:sampler_core::Envelope::new(0,0,0,1.,0).unwrap(),playback:sampler_core::Playback::default()}],1).unwrap();
+    let mut limits=sampler_core::Limits::for_plan(&plan,2,4);limits.channels=48;limits.expressions=2;
+    sampler_core::Runtime::new(plan,limits).unwrap().with_receiver_capacity(1).unwrap()
+}
+fn raw_fifo_packet(midi2:bool,on:bool)->[u32;2]{
+    [(if midi2{0x4000_0000}else{0x2000_0000})|(if on{0x0091_0000}else{0x0081_0000})|0x3c00|if !midi2&&on{127}else{0},if midi2&&on{0xffff_0000}else{0}]
+}
+fn raw_fifo_source(midi2:bool,port:u16,group:u8)->sampler_core::Input{
+    sampler_core::Input{protocol:if midi2{sampler_core::Protocol::Midi2}else{sampler_core::Protocol::Midi1},port,group,channel:1,key:60,external_id:None}
+}
+fn raw_fifo_filler(channel:u8)->sampler_core::Input{
+    sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel,key:60,external_id:None}
+}
+fn raw_fifo_pcm(actual:&mut sampler_core::Runtime,reference:&mut sampler_core::Runtime,frames:usize){
+    let mut a=[[0.;2];64];let mut b=a;let mut remaining=frames;let mut energy=0.;
+    while remaining!=0{let n=remaining.min(64);actual.render(&mut a[..n]).unwrap();reference.render(&mut b[..n]).unwrap();for(frame,want)in a[..n].iter().zip(&b[..n]){for c in 0..2{assert_eq!(frame[c],want[c],"exact source PCM/phase diverged after a rejected physical attack terminal");energy+=f64::from(want[c]).abs();}}remaining-=n;}
+    assert!(energy>0.,"reference source must be independently sounding");assert_eq!(actual.now(),reference.now());
+}
+
+fn raw_fifo_unbound(rt:&sampler_core::Runtime)->Mpe{let mut owner=Mpe::new(rt,0,0,Zone::Lower,15,8).unwrap();owner.use_midi2_channel_voice().unwrap();owner}
+fn raw_fifo_unbound_apply(owner:&mut Mpe,rt:&mut Runtime,midi2:bool,on:bool,source:sampler_core::Input)->Result<Applied,ApplyError>{let words=raw_fifo_packet(midi2,on);owner.apply_with_source(rt,Packets::new(&words).next().unwrap().unwrap(),source)}
+#[test]
+fn raw_rejected_unbound_attack_cannot_release_newer_same_tuple_after_capacity_frees(){
+    for midi2 in [false,true]{
+        let mut rt=raw_fifo_rejection_runtime();let mut owner=raw_fifo_unbound(&rt);let mut reference=raw_fifo_rejection_runtime();let mut reference_owner=raw_fifo_unbound(&reference);let source=raw_fifo_source(midi2,7,3);
+        let a=rt.note_on(raw_fifo_filler(14),60,1.).unwrap();let b=rt.note_on(raw_fifo_filler(15),60,1.).unwrap();let before=(rt.now(),rt.note_count(),rt.expression_count());
+        support::without_heap(||{assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source),Err(ApplyError::Core(Error::Capacity)));});assert_eq!((rt.now(),rt.note_count(),rt.expression_count()),before);
+        rt.cancel_input_note(a).unwrap();rt.cancel_input_note(b).unwrap();rt.flush_ended(|_|true);let Applied::Started(note)=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source).unwrap()else{panic!()};assert!(matches!(raw_fifo_unbound_apply(&mut reference_owner,&mut reference,midi2,true,source),Ok(Applied::Started(_))));let expression=rt.expression_id(note).unwrap();let value=rt.expression(expression).unwrap();assert_eq!(rt.input_source(note),Ok(Some(source)));
+        support::without_heap(||{raw_fifo_pcm(&mut rt,&mut reference,64);let now=rt.now();let result=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,false,source).unwrap();assert!(rt.note(note).unwrap().2,"older refused unbound raw attack stole the newer accepted physical gate");assert_eq!(result,Applied::Ignored);assert_eq!(rt.now(),now);assert_eq!(rt.expression(expression),Ok(value));raw_fifo_pcm(&mut rt,&mut reference,128);});
+        let Applied::Released{note:released,..}=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,false,source).unwrap()else{panic!()};assert_eq!(released,note);assert!(matches!(raw_fifo_unbound_apply(&mut reference_owner,&mut reference,midi2,false,source),Ok(Applied::Released{..})));
+        rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));assert_eq!(rt.expression(expression),Err(Error::StaleHandle));assert_eq!(rt.stats().nonfinite_frames,0);let mut releases=0;owner.drain_terminal_releases(|_|releases+=1);assert_eq!(releases,0);
+    }
+}
+#[test]
+fn raw_accepted_rejected_accepted_unbound_sequence_retains_older_and_newer_owners(){
+    for midi2 in [false,true]{
+        let mut rt=raw_fifo_rejection_runtime();let mut owner=raw_fifo_unbound(&rt);let mut reference=raw_fifo_rejection_runtime();let mut reference_owner=raw_fifo_unbound(&reference);let source=raw_fifo_source(midi2,2,4);
+        let Applied::Started(older)=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source).unwrap()else{panic!()};assert!(matches!(raw_fifo_unbound_apply(&mut reference_owner,&mut reference,midi2,true,source),Ok(Applied::Started(_))));let filler=rt.note_on(raw_fifo_filler(15),60,1.).unwrap();assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source),Err(ApplyError::Core(Error::Capacity)));assert!(rt.note(older).unwrap().2);rt.cancel_input_note(filler).unwrap();rt.flush_ended(|_|true);
+        let Applied::Started(newer)=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source).unwrap()else{panic!()};assert_ne!(older,newer);assert!(matches!(raw_fifo_unbound_apply(&mut reference_owner,&mut reference,midi2,true,source),Ok(Applied::Started(_))));
+        support::without_heap(||{raw_fifo_pcm(&mut rt,&mut reference,64);let Applied::Released{note,..}=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,false,source).unwrap()else{panic!()};assert_eq!(note,older);assert!(matches!(raw_fifo_unbound_apply(&mut reference_owner,&mut reference,midi2,false,source),Ok(Applied::Released{..})));assert!(rt.note(newer).unwrap().2);raw_fifo_pcm(&mut rt,&mut reference,64);
+            let result=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,false,source).unwrap();assert!(rt.note(newer).unwrap().2,"rejected middle unbound attack stole the newer accepted physical gate");assert_eq!(result,Applied::Ignored);raw_fifo_pcm(&mut rt,&mut reference,128);
+        });
+        let Applied::Released{note,..}=raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,false,source).unwrap()else{panic!()};assert_eq!(note,newer);assert!(matches!(raw_fifo_unbound_apply(&mut reference_owner,&mut reference,midi2,false,source),Ok(Applied::Released{..})));
+        rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));assert_eq!(rt.stats().nonfinite_frames,0);let mut releases=0;owner.drain_terminal_releases(|_|releases+=1);assert_eq!(releases,0);
+    }
+}
+
+
+#[test]
+fn raw_unbound_full_decision_roster_stays_fenced_after_known_physical_acks_and_panic(){
+    for midi2 in [false,true]{
+        let mut rt=raw_fifo_rejection_runtime();let mut owner=Mpe::new(&rt,0,0,Zone::Lower,15,1).unwrap();owner.use_midi2_channel_voice().unwrap();let source=raw_fifo_source(midi2,7,3);
+        let a=rt.note_on(raw_fifo_filler(14),60,1.).unwrap();let b=rt.note_on(raw_fifo_filler(15),60,1.).unwrap();
+        for _ in 0..2{assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source),Err(ApplyError::Core(Error::Capacity)));assert!(!owner.wire_fenced());}
+        assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source),Err(ApplyError::Core(Error::Capacity)));assert!(owner.wire_fenced());
+        rt.cancel_input_note(a).unwrap();rt.cancel_input_note(b).unwrap();rt.flush_ended(|_|true);
+        support::without_heap(||{
+            for _ in 0..2{assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,false,source),Ok(Applied::Ignored));}
+            rt.panic();assert!(owner.wire_fenced());
+            assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,source),Err(ApplyError::Core(Error::Capacity)));
+            assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));
+        });
+        assert_eq!(rt.stats().nonfinite_frames,0);
+    }
+}
+
+
+#[test]
+fn raw_synchronous_unbound_malformed_sources_do_not_create_bind_blocking_debt() {
+    for midi2 in [false,true] {
+        let mut rt=raw_fifo_rejection_runtime();let mut owner=raw_fifo_unbound(&rt);let source=raw_fifo_source(midi2,7,3);let logical=sampler_core::Input{port:0,group:0,channel:1,key:60,..source};let before=(rt.now(),rt.note_count(),rt.voice_count(),rt.expression_count());
+        support::without_heap(||{for bad in [sampler_core::Input{group:16,..source},sampler_core::Input{channel:16,..source},sampler_core::Input{key:128,..source}] {
+            assert_eq!(raw_fifo_unbound_apply(&mut owner,&mut rt,midi2,true,bad),Err(ApplyError::Core(Error::InvalidInput)));
+            assert_eq!(owner.trigger_with_source(&mut rt,1,logical,bad,0.5,0.),Err(ApplyError::Core(Error::InvalidInput)));
+            assert_eq!((rt.now(),rt.note_count(),rt.voice_count(),rt.expression_count()),before);assert!(!owner.wire_fenced());
+        }});
+        // A genuine consuming bind proves the unbound owner has no hidden
+        // Pending/Rejected/physical/binding/receipt state after all refusals.
+        let bound=owner.bind(&mut rt).unwrap();let status=bound.wire_status(&rt).unwrap();assert_eq!((status.decisions,status.future_receipts,status.queued_receipts,status.active_receipts),(0,0,0,0));assert!(!status.fenced_unknown_debt);
+        let valid=sampler_core::Input{group:15,channel:15,key:127,..source};let words=raw_fifo_packet(midi2,true);let Applied::Started(note)=bound.apply_with_source(&mut rt,Packets::new(&words).next().unwrap().unwrap(),valid).unwrap()else{panic!()};assert_eq!(rt.input_source(note),Ok(Some(valid)));
+        let words=raw_fifo_packet(midi2,false);assert!(matches!(bound.apply_with_source(&mut rt,Packets::new(&words).next().unwrap().unwrap(),valid),Ok(Applied::Released{note:released,..})if released==note));rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count()),(0,0,0));assert_eq!(rt.stats().nonfinite_frames,0);
+    }
+}
+
+#[test]
+fn explicit_host_ids_on_midi_protocol_inputs_keep_direct_trigger_and_exact_wire_isolation(){
+    for protocol in [Protocol::Midi1,Protocol::Midi2] {
+        let mut rt=runtime_with_channels(16);let mut mpe=Mpe::new(&rt,7,3,Zone::Lower,2,4).unwrap();
+        let first=sampler_core::Input{protocol,port:7,group:3,channel:1,key:60,external_id:Some(9101)};
+        let second=sampler_core::Input{external_id:Some(9102),..first};
+        support::without_heap(||{
+            let a=mpe.trigger_with_tuning(&mut rt,1,first,1.,0.25).unwrap();
+            let b=mpe.trigger_with_tuning(&mut rt,1,second,1.,-0.5).unwrap();assert_ne!(a,b);
+            let raw=if protocol==Protocol::Midi1 {start(&mut mpe,&mut rt,1,60)}else{
+                let Applied::Started(note)=apply_midi2(&mut mpe,&mut rt,1,0x90,60,0,0xffff_0000).unwrap()else{panic!("raw MIDI2 not admitted")};note
+            };
+            let expected=if protocol==Protocol::Midi1 {
+                apply(&mut mpe,&mut rt,bend(1,12288)).unwrap();pitch(12288,48.)
+            }else{
+                apply_midi2(&mut mpe,&mut rt,1,0xe0,0,0,0xa000_0000).unwrap();48.*536_870_912./2_147_483_647.
+            };
+            assert_eq!(expression(&rt,a).pitch_semitones,expected+0.25);
+            assert_eq!(expression(&rt,b).pitch_semitones,expected-0.5);
+            assert_eq!(expression(&rt,raw).pitch_semitones,expected);
+            let release=if protocol==Protocol::Midi1 {apply(&mut mpe,&mut rt,packet(0x80,1,60,0)).unwrap()}
+                else{apply_midi2(&mut mpe,&mut rt,1,0x80,60,0,0).unwrap()};
+            assert!(matches!(release,Applied::Released{note,..} if note==raw));
+            assert!(rt.input_held(a).unwrap()&&rt.input_held(b).unwrap());assert!(!rt.input_held(raw).unwrap());
+            rt.note_off(first,None).unwrap();assert!(!rt.input_held(a).unwrap());assert!(rt.input_held(b).unwrap());
+            rt.note_off(second,None).unwrap();assert!(!rt.input_held(b).unwrap());
+            // A packet-origin source remains anonymous even when a direct host
+            // trigger legitimately uses this protocol with a real external ID.
+            let words=if protocol==Protocol::Midi1 {[packet(0x90,1,61,127),0]}else{[0x4391_3d00,0xffff_0000]};
+            let packet=Packets::new(if protocol==Protocol::Midi1{&words[..1]}else{&words[..]}).next().unwrap().unwrap();
+            let before=(rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count());
+            assert_eq!(mpe.apply_with_source(&mut rt,packet,first),Err(ApplyError::Core(Error::InvalidInput)));
+            assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count()),before);
+        });
+    }
+}
+
+#[test]
+fn explicit_logical_midi_trigger_preserves_different_physical_host_source(){
+    for protocol in [Protocol::Midi1,Protocol::Midi2] {
+        let mut rt=runtime_with_channels(16);let mut mpe=Mpe::new(&rt,7,3,Zone::Lower,2,4).unwrap();
+        let logical=sampler_core::Input{protocol,port:7,group:3,channel:1,key:60,external_id:None};
+        let source=sampler_core::Input{protocol:Protocol::Clap,port:12,group:4,channel:9,key:61,external_id:Some(9201)};
+        support::without_heap(||{
+            let note=mpe.trigger_with_source(&mut rt,1,logical,source,0.75,0.375).unwrap();
+            assert_eq!(rt.input_source(note),Ok(Some(source)));assert_eq!(rt.note(note).unwrap().0,logical.key);
+            assert_eq!(rt.note(note).unwrap().1,0.75);
+            let expected=if protocol==Protocol::Midi1 {apply(&mut mpe,&mut rt,bend(1,12288)).unwrap();pitch(12288,48.)}
+                else{apply_midi2(&mut mpe,&mut rt,1,0xe0,0,0,0xa000_0000).unwrap();48.*536_870_912./2_147_483_647.};
+            assert_eq!(expression(&rt,note).pitch_semitones,expected+0.375);
+            // Exact logical Core terminal remains the existing API; the physical
+            // source is metadata, not reclassified as a Native ledger admission.
+            rt.note_off(logical,None).unwrap();assert!(!rt.input_held(note).unwrap());
+            assert_eq!(rt.input_source(note),Ok(Some(source)));
+            rt.panic();let mut ended=0;rt.flush_ended(|input|{assert_eq!(input,logical);ended+=1;true});assert_eq!(ended,1);
+        });
+    }
 }

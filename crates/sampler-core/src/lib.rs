@@ -143,6 +143,7 @@ pub use receiver::{PerNoteState as ReceiverPerNoteState,KeyState as ReceiverKeyS
 pub use receiver::{EventValueId,EventPostId,EventValueSnapshot,EventPostOutcome,EventValueMemory,SourceTaskFamily,SourceTaskHostContext,SourceTaskReason,SourceTaskCreator,NonMusicalTaskOrigin,PreparedGlobalTaskOrigin,PreparedGlobalSourceTask,PreparedSourceTaskBinding,SourceTaskEvent,ProgramBankIntent,ProgramSelection,ProgramPlaybackCapability,PhysicalReleaseEvent,
 ExternalInputId, ExternalTurn, ExternalEvent, ExternalOutput, ExternalOutputResult, ExternalTarget,
 ExternalAbortReport,
+ReceiverWireEpoch,RawAdmissionId,RawTerminalId,RawDecisionPhase,RawRejection,RawAdmission,RawAttackIntent,CapturedLogicalRawAttack,RawTerminalClaim,RawTerminalOutcome,WireAdmissionStatus,
 ReceiverId,ReceiverMemory,ReceiverTerminalDelivery,OwnedReceiver,Zone as ReceiverZone,TerminalRelease as ReceiverTerminalRelease,Applied as ReceiverApplied,ApplyError as ReceiverApplyError,Attribute as ReceiverAttribute,ChannelVoice as ReceiverChannelVoice,Controllers as ReceiverControllers,Message as ReceiverMessage,Value as ReceiverValue,Version as ReceiverVersion};
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};

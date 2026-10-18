@@ -514,3 +514,128 @@ fn bound_program_state_is_canonical_and_has_no_native_host_or_other_version_alia
     });
     let mut reference=runtime(None);let reference_owner=bind(&mut reference,0);start(&reference_owner,&mut reference,3,69);assert_pcm(&mut rt,&mut reference,256);
 }
+
+fn raw_fifo_rejection_runtime()->sampler_core::Runtime{
+    let samples=(0..8192).map(|frame|{let x=frame as f64;[(0.07*x).sin()as f32*0.25,(0.031*x).cos()as f32*0.125]}).collect::<Vec<_>>();
+    let plan=sampler_core::Prepared::new(48000,vec![sampler_core::Pcm::new(48000,samples.into_boxed_slice()).unwrap()],vec![sampler_core::Region{sample:0,key_low:60,key_high:60,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:sampler_core::Envelope::new(0,0,0,1.,0).unwrap(),playback:sampler_core::Playback::default()}],1).unwrap();
+    let mut limits=sampler_core::Limits::for_plan(&plan,2,4);limits.channels=48;limits.expressions=2;
+    sampler_core::Runtime::new(plan,limits).unwrap().with_receiver_capacity(1).unwrap()
+}
+fn raw_fifo_packet(midi2:bool,on:bool)->[u32;2]{
+    [(if midi2{0x4000_0000}else{0x2000_0000})|(if on{0x0091_0000}else{0x0081_0000})|0x3c00|if !midi2&&on{127}else{0},if midi2&&on{0xffff_0000}else{0}]
+}
+fn raw_fifo_source(midi2:bool,port:u16,group:u8)->sampler_core::Input{
+    sampler_core::Input{protocol:if midi2{sampler_core::Protocol::Midi2}else{sampler_core::Protocol::Midi1},port,group,channel:1,key:60,external_id:None}
+}
+fn raw_fifo_filler(channel:u8)->sampler_core::Input{
+    sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel,key:60,external_id:None}
+}
+fn raw_fifo_pcm(actual:&mut sampler_core::Runtime,reference:&mut sampler_core::Runtime,frames:usize){
+    let mut a=[[0.;2];64];let mut b=a;let mut remaining=frames;let mut energy=0.;
+    while remaining!=0{let n=remaining.min(64);actual.render(&mut a[..n]).unwrap();reference.render(&mut b[..n]).unwrap();for(frame,want)in a[..n].iter().zip(&b[..n]){for c in 0..2{assert_eq!(frame[c],want[c],"exact source PCM/phase diverged after a rejected physical attack terminal");energy+=f64::from(want[c]).abs();}}remaining-=n;}
+    assert!(energy>0.,"reference source must be independently sounding");assert_eq!(actual.now(),reference.now());
+}
+
+fn raw_fifo_bound(rt:&mut sampler_core::Runtime)->sampler_midi::BoundMpe{
+    let mut owner=Mpe::new(rt,0,0,Zone::Lower,15,8).unwrap();owner.use_midi2_channel_voice().unwrap();owner.bind(rt).unwrap()
+}
+fn raw_fifo_bound_apply(owner:BoundMpe,rt:&mut Runtime,midi2:bool,on:bool,source:Input)->Result<Applied,sampler_midi::ApplyError>{
+    let words=raw_fifo_packet(midi2,on);owner.apply_with_source(rt,Packets::new(&words).next().unwrap().unwrap(),source)
+}
+#[test]
+fn raw_rejected_older_bound_attack_cannot_release_a_newer_same_physical_tuple(){
+    for midi2 in [false,true]{
+        let mut rt=raw_fifo_rejection_runtime();let owner=raw_fifo_bound(&mut rt);let mut reference=raw_fifo_rejection_runtime();let reference_owner=raw_fifo_bound(&mut reference);let source=raw_fifo_source(midi2,7,3);
+        let first=rt.note_on(raw_fifo_filler(14),60,1.).unwrap();let second=rt.note_on(raw_fifo_filler(15),60,1.).unwrap();let before=(rt.now(),rt.note_count(),rt.voice_count(),rt.expression_count());
+        support::without_heap(||{assert_eq!(raw_fifo_bound_apply(owner,&mut rt,midi2,true,source),Err(sampler_midi::ApplyError::Core(Error::Capacity)));});assert_eq!((rt.now(),rt.note_count(),rt.voice_count(),rt.expression_count()),before);
+        rt.cancel_input_note(first).unwrap();rt.cancel_input_note(second).unwrap();rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.expression_count()),(0,0));
+        let Applied::Started(note)=raw_fifo_bound_apply(owner,&mut rt,midi2,true,source).unwrap()else{panic!("newer raw attack not admitted after actual unrelated capacity freed")};let Applied::Started(reference_note)=raw_fifo_bound_apply(reference_owner,&mut reference,midi2,true,source).unwrap()else{panic!()};
+        assert_eq!(rt.input_source(note),Ok(Some(source)));let expression=rt.expression_id(note).unwrap();let value=rt.expression(expression).unwrap();
+        support::without_heap(||{raw_fifo_pcm(&mut rt,&mut reference,64);let now=rt.now();let result=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap();assert!(rt.note(note).unwrap().2,"older refused raw attack stole the newer accepted physical gate");assert_eq!(result,Applied::Ignored);assert_eq!(rt.now(),now);assert_eq!(rt.expression(expression),Ok(value));assert_eq!(rt.voice_count(),1);raw_fifo_pcm(&mut rt,&mut reference,128);});
+        assert!(owner.next_terminal_release(&mut rt).unwrap().is_none(),"rejected attack has no script terminal receipt or fabricated NoteId");
+        let Applied::Released{note:released,..}=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap()else{panic!("newer physical Off must release its actual owner")};assert_eq!(released,note);
+        let Applied::Released{note:released,..}=raw_fifo_bound_apply(reference_owner,&mut reference,midi2,false,source).unwrap()else{panic!()};assert_eq!(released,reference_note);
+        let mut a=[[0.;2];64];let mut b=a;rt.render(&mut a).unwrap();reference.render(&mut b).unwrap();assert_eq!(a,b);rt.flush_ended(|_|true);reference.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));assert_eq!(rt.expression(expression),Err(Error::StaleHandle));assert_eq!(rt.stats().nonfinite_frames,0);assert!(owner.next_terminal_release(&mut rt).unwrap().is_none());
+    }
+}
+#[test]
+fn raw_accepted_older_rejected_middle_and_newer_bound_attacks_keep_exact_fifo(){
+    for midi2 in [false,true]{
+        let mut rt=raw_fifo_rejection_runtime();let owner=raw_fifo_bound(&mut rt);let mut reference=raw_fifo_rejection_runtime();let reference_owner=raw_fifo_bound(&mut reference);let source=raw_fifo_source(midi2,2,4);
+        let Applied::Started(older)=raw_fifo_bound_apply(owner,&mut rt,midi2,true,source).unwrap()else{panic!()};let Applied::Started(ref_older)=raw_fifo_bound_apply(reference_owner,&mut reference,midi2,true,source).unwrap()else{panic!()};
+        let filler=rt.note_on(raw_fifo_filler(15),60,1.).unwrap();assert_eq!(raw_fifo_bound_apply(owner,&mut rt,midi2,true,source),Err(sampler_midi::ApplyError::Core(Error::Capacity)));assert!(rt.note(older).unwrap().2);
+        rt.cancel_input_note(filler).unwrap();rt.flush_ended(|_|true);let Applied::Started(newer)=raw_fifo_bound_apply(owner,&mut rt,midi2,true,source).unwrap()else{panic!()};let Applied::Started(ref_newer)=raw_fifo_bound_apply(reference_owner,&mut reference,midi2,true,source).unwrap()else{panic!()};assert_ne!(older,newer);
+        support::without_heap(||{raw_fifo_pcm(&mut rt,&mut reference,64);let Applied::Released{note,..}=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap()else{panic!()};assert_eq!(note,older);let Applied::Released{note,..}=raw_fifo_bound_apply(reference_owner,&mut reference,midi2,false,source).unwrap()else{panic!()};assert_eq!(note,ref_older);assert!(!rt.note(older).unwrap().2);assert!(rt.note(newer).unwrap().2);raw_fifo_pcm(&mut rt,&mut reference,64);
+            let outcome=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap();assert!(rt.note(newer).unwrap().2,"rejected middle attack released the newer owner after correctly releasing the accepted older owner");assert_eq!(outcome,Applied::Ignored);raw_fifo_pcm(&mut rt,&mut reference,128);
+        });
+        let Applied::Released{note,..}=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap()else{panic!()};assert_eq!(note,newer);let Applied::Released{note,..}=raw_fifo_bound_apply(reference_owner,&mut reference,midi2,false,source).unwrap()else{panic!()};assert_eq!(note,ref_newer);
+        rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count()),(0,0,0));assert_eq!(rt.stats().nonfinite_frames,0);assert!(owner.next_terminal_release(&mut rt).unwrap().is_none());
+    }
+}
+#[test]
+fn raw_rejected_bound_decisions_keep_two_actual_ports_and_groups_independent(){
+    for midi2 in [false,true]{
+        let mut rt=raw_fifo_rejection_runtime();let owner=raw_fifo_bound(&mut rt);let mut reference=raw_fifo_rejection_runtime();let reference_owner=raw_fifo_bound(&mut reference);let sources=[raw_fifo_source(midi2,2,3),raw_fifo_source(midi2,7,4)];
+        let a=rt.note_on(raw_fifo_filler(14),60,1.).unwrap();let b=rt.note_on(raw_fifo_filler(15),60,1.).unwrap();for source in sources{assert_eq!(raw_fifo_bound_apply(owner,&mut rt,midi2,true,source),Err(sampler_midi::ApplyError::Core(Error::Capacity)));}
+        rt.cancel_input_note(a).unwrap();rt.cancel_input_note(b).unwrap();rt.flush_ended(|_|true);let mut notes=[None;2];
+        for(index,source)in sources.into_iter().enumerate(){let Applied::Started(note)=raw_fifo_bound_apply(owner,&mut rt,midi2,true,source).unwrap()else{panic!()};notes[index]=Some(note);assert_eq!(rt.input_source(note),Ok(Some(source)));assert!(matches!(raw_fifo_bound_apply(reference_owner,&mut reference,midi2,true,source),Ok(Applied::Started(_))));}
+        support::without_heap(||{raw_fifo_pcm(&mut rt,&mut reference,64);for source in sources.into_iter().rev(){let result=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap();for note in notes{assert!(rt.note(note.unwrap()).unwrap().2,"a refused source's old Off cannot release either live port/group");}assert_eq!(result,Applied::Ignored);}raw_fifo_pcm(&mut rt,&mut reference,64);});
+        for(index,source)in sources.into_iter().enumerate(){let Applied::Released{note,..}=raw_fifo_bound_apply(owner,&mut rt,midi2,false,source).unwrap()else{panic!()};assert_eq!(Some(note),notes[index]);assert!(matches!(raw_fifo_bound_apply(reference_owner,&mut reference,midi2,false,source),Ok(Applied::Released{..})));if index==0{assert!(rt.note(notes[1].unwrap()).unwrap().2);}}
+        rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);assert_eq!((rt.note_count(),rt.expression_count()),(0,0));assert_eq!(rt.stats().nonfinite_frames,0);assert!(owner.next_terminal_release(&mut rt).unwrap().is_none());
+    }
+}
+
+
+#[test]
+fn raw_synchronous_bound_malformed_sources_leave_no_rows_and_preserve_valid_remap_and_host_ids() {
+    for midi2 in [false,true] {
+        let mut rt=raw_fifo_rejection_runtime();let mut unbound=Mpe::new(&rt,0,0,Zone::Lower,15,8).unwrap();unbound.use_midi2_channel_voice().unwrap();unbound.enable_host_channel_projection().unwrap();let owner=unbound.bind(&mut rt).unwrap();
+        let source=raw_fifo_source(midi2,7,3);let logical=Input{port:0,group:0,channel:1,key:60,..source};let before=owner.wire_status(&rt).unwrap();let clock=rt.now();
+        support::without_heap(||{for bad in [Input{group:16,..source},Input{channel:16,..source},Input{key:128,..source}] {
+            assert_eq!(raw_fifo_bound_apply(owner,&mut rt,midi2,true,bad),Err(sampler_midi::ApplyError::Core(Error::InvalidInput)));
+            assert_eq!(owner.trigger_with_source(&mut rt,1,logical,bad,0.5,0.),Err(Error::InvalidInput));
+            assert_eq!(owner.wire_status(&rt).unwrap(),before);assert_eq!((rt.note_count(),rt.voice_count(),rt.expression_count(),rt.now()),(0,0,0,clock));
+        }});
+        let valid=Input{group:15,channel:15,key:127,..source};let Applied::Started(note)=raw_fifo_bound_apply(owner,&mut rt,midi2,true,valid).unwrap()else{panic!()};assert_eq!(rt.input_source(note),Ok(Some(valid)));assert_eq!(rt.note(note).unwrap().0,60);
+        let host=Input{protocol:Protocol::Clap,port:9,group:15,channel:15,key:127,external_id:Some(8901)};let target=Input{protocol:Protocol::Native,external_id:Some(8901),..logical};let native=owner.trigger_with_source(&mut rt,1,target,host,1.,0.).unwrap();assert_eq!(rt.input_source(native),Ok(Some(host)));
+        owner.release_native_physical(&mut rt,|id,input|id==native&&input==host,None).unwrap();
+        assert!(matches!(raw_fifo_bound_apply(owner,&mut rt,midi2,false,valid),Ok(Applied::Released{note:released,..})if released==note));
+        rt.render(&mut [[0.;2];64]).unwrap();rt.flush_ended(|_|true);assert_eq!(owner.wire_status(&rt).unwrap().decisions,0);assert_eq!((rt.note_count(),rt.expression_count(),rt.voice_count()),(0,0,0));assert!(!owner.wire_status(&rt).unwrap().fenced_unknown_debt);assert_eq!(rt.stats().nonfinite_frames,0);
+    }
+}
+
+#[test]
+fn bound_explicit_midi_host_ids_and_remapped_host_sources_preserve_public_trigger_law(){
+    for protocol in [Protocol::Midi1,Protocol::Midi2] {
+        let mut rt=runtime(None);let owner=bind(&mut rt,0);
+        let first=Input{protocol,port:0,group:0,channel:1,key:60,external_id:Some(9301)};
+        let second=Input{external_id:Some(9302),..first};
+        let logical=Input{key:61,external_id:None,..first};
+        let source=Input{protocol:Protocol::Vst3,port:12,group:4,channel:9,key:55,external_id:Some(9303)};
+        let raw_input=Input{external_id:None,..first};
+        support::without_heap(||{
+            let a=owner.trigger_with_tuning(&mut rt,1,first,1.,0.25).unwrap();
+            let b=owner.trigger_with_tuning(&mut rt,1,second,1.,-0.5).unwrap();
+            let c=owner.trigger_with_source(&mut rt,1,logical,source,0.75,0.375).unwrap();
+            assert_eq!(rt.input_source(c),Ok(Some(source)));assert_eq!(rt.note(c).unwrap().0,61);assert_eq!(rt.note(c).unwrap().1,0.75);
+            let on=if protocol==Protocol::Midi1{[0x2091_3c7f,0]}else{wire(0x90,1,60,0xffff_0000)};
+            let Applied::Started(raw)=owner.apply(&mut rt,Packets::new(if protocol==Protocol::Midi1{&on[..1]}else{&on[..]}).next().unwrap().unwrap()).unwrap()else{panic!("raw admission")};
+            let bend=if protocol==Protocol::Midi1{[0x20e1_0060,0]}else{wire(0xe0,1,0,0xa000_0000)};
+            owner.apply(&mut rt,Packets::new(if protocol==Protocol::Midi1{&bend[..1]}else{&bend[..]}).next().unwrap().unwrap()).unwrap();
+            let expected=if protocol==Protocol::Midi1{48.*4096./8191.}else{2.*536_870_912./2_147_483_647.};
+            for (note,tuning) in [(a,0.25),(b,-0.5),(c,0.375),(raw,0.)]{assert_eq!(expression(&rt,note).pitch_semitones,expected+tuning);}
+            let off=if protocol==Protocol::Midi1{[0x2081_3c00,0]}else{wire(0x80,1,60,0)};
+            let released=owner.apply(&mut rt,Packets::new(if protocol==Protocol::Midi1{&off[..1]}else{&off[..]}).next().unwrap().unwrap()).unwrap();
+            assert!(matches!(released,Applied::Released{note,..} if note==raw));
+            assert!(rt.input_held(a).unwrap()&&rt.input_held(b).unwrap()&&rt.input_held(c).unwrap());
+            rt.note_off(first,None).unwrap();assert!(!rt.input_held(a).unwrap());assert!(rt.input_held(b).unwrap()&&rt.input_held(c).unwrap());
+            rt.note_off(second,None).unwrap();rt.note_off(logical,None).unwrap();assert!(!rt.input_held(b).unwrap()&&!rt.input_held(c).unwrap());
+            assert_eq!(rt.input_source(c),Ok(Some(source)));
+            let before=(rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),owner.wire_status(&rt).unwrap());
+            let bad=owner.apply_with_source(&mut rt,Packets::new(if protocol==Protocol::Midi1{&on[..1]}else{&on[..]}).next().unwrap().unwrap(),first);
+            assert_eq!(bad,Err(sampler_midi::ApplyError::Core(Error::InvalidInput)));
+            assert_eq!((rt.now(),rt.note_count(),rt.expression_count(),rt.voice_count(),owner.wire_status(&rt).unwrap()),before);
+            rt.panic();let mut seen=0u8;rt.flush_ended(|input|{let bit=if input==first{1}else if input==second{2}else if input==logical{4}else{assert_eq!(input,raw_input);8};assert_eq!(seen&bit,0);seen|=bit;true});assert_eq!(seen,15);
+        });
+    }
+}
