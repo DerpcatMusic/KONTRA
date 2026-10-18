@@ -3169,10 +3169,12 @@ impl Core for V2Core {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return false;
         };
-        if let Some(script) = &mut p.script
-            && script.ui().value(control).is_some()
+        if let Some(script)=&mut p.script
+            && (control.0>>64)==0x5556490000000000
         {
-            return script.set_control(control, value);
+            // Busy/retired/unregistered UVI cells must not fall through to an
+            // unrelated Core control with the same numeric payload.
+            return script.set_control(control,value);
         }
         let rt = &mut p.runtime;
         let (plan, id) = (rt.active_plan(), sampler_core::ControlId(control.0));
@@ -3195,9 +3197,9 @@ impl Core for V2Core {
 
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64> {
         let p = self.parts.get(part)?.as_ref()?;
-        if let Some(v) = p.script.as_ref().and_then(|s| s.ui().value(control)) {
-            return Some(v);
-        }
+        if let Some(script)=&p.script
+            && (control.0>>64)==0x5556490000000000
+        {return script.ui().value(control);}
         let rt = &p.runtime;
         rt.control_base_value(rt.active_plan(), sampler_core::ControlId(control.0))
             .ok()

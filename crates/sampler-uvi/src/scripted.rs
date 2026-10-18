@@ -16,7 +16,7 @@ use sampler_core::{
     Runtime, Stealing,
 };
 use std::collections::HashMap;
-pub use thread::{Loaded, ScriptThread, UiBridge, DiagnosticAcknowledgement, DiagnosticPhase,
+pub use thread::{Loaded, ScriptThread, UiBridge, UiRegistryBudget, UiSnapshot, UiRegistryStorage, UiSchemaWorkBudget, UiSchemaWorkReport, DiagnosticAcknowledgement, DiagnosticPhase,
     DiagnosticPoll, DiagnosticProgress, DiagnosticRequest, DiagnosticRequestError};
 
 /// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,

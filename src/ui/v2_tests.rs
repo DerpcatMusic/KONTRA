@@ -7850,3 +7850,52 @@ fn w10_fractional_uvi_child_order_paints_callback_result_at_device_scale() {
         }
     }
 }
+
+#[test]
+fn uvi_dynamic_table_renderer_keeps_real_scalar_component_action_path(){
+    use sampler_uvi::scripted::{ScriptThread,UiBridge};
+    use std::time::{Duration,Instant};
+    fn wait(ui:&UiBridge,phase:&str,predicate:impl Fn(&ir::Interface)->bool){
+        let deadline=Instant::now()+Duration::from_secs(3);while !predicate(&ui.interface()) {assert!(Instant::now()<deadline,"{phase}: owner publication; faults={:?}",ui.fault_counts());std::thread::sleep(Duration::from_millis(2));}
+    }
+    let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(220,120);local create=Button{'Create',bounds={10,10,80,25}};local status=Label{'Status',bounds={10,95,180,20}};create.changed=function() if made then return end;made=true;local steps=Table{'DynamicSteps',3,0.25,0,1,false,bounds={10,50,150,40}};steps.changed=function(self,index) status.text=tostring(index)..':'..tostring(self:getValue(index)) end end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (_thread,loaded)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+    let ir::Binding::Control(create)=loaded.ui.interface().widgets[0].binding else{panic!("real button")};assert!(loaded.ui.edit(create,1.));
+    wait(&loaded.ui,"created Table",|f|f.widgets.iter().any(|w|w.name=="DynamicSteps"));
+    let snapshot=loaded.ui.snapshot();let face=ir_view::resolved(snapshot.interface());
+    let table=face.widgets.iter().find(|w|w.name=="DynamicSteps").unwrap();let third=table.components[2];
+    let mut values:ir_view::Values=loaded.ui.values().into_iter().collect();let mut state=ir_view::InputState::default();
+    let assets=ir_view::Assets::default();let mut ui=theme::ui();let at=Point::new(140.,60.);
+    let mut tick=|pointer:PointerInput|{
+        let before=values.clone();let root=ir_view::view_state(&mut ui,"registry",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values,&mut state);
+        ui.frame(root,Some(Size::new(220.,120.)),Input{pointer,..Default::default()},1./60.).unwrap();
+        assert!(state.edits.is_empty(),"UVI scalar components must not become native/KSP array WidgetEdits");
+        for (&id,&value) in &values {if before.get(&id).is_some_and(|old|*old!=value){assert!(snapshot.edit(id,value));}}
+    };
+    tick(PointerInput::default());
+    tick(PointerInput{pos:Some(at),buttons:Buttons::PRIMARY,..Default::default()});
+    // This is the established relative vertical fader path: a stationary
+    // click cannot change its value. Keep the third cell captured while
+    // moving, just as a real pointer gesture does.
+    for distance in [20.,40.,60.,80.] {
+        tick(PointerInput{pos:Some(Point::new(at.x,at.y-distance)),buttons:Buttons::PRIMARY,..Default::default()});
+    }
+    tick(PointerInput{pos:Some(Point::new(at.x,at.y-80.)),..Default::default()});
+    wait(&loaded.ui,"third cell callback",|f|f.widgets.iter().any(|w|w.name=="Status"&&w.text.starts_with("3:")));
+    assert!(loaded.ui.value(third).unwrap()>0.5);
+}
+
+#[test]
+fn uvi_prepared_registry_audio_reads_and_control_enqueue_do_not_allocate_or_free(){
+    let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[Knob('Gain',0,0,1)]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let (mut thread,loaded)=sampler_uvi::scripted::ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+    let ir::Binding::Control(control)=loaded.ui.interface().widgets[0].binding else{panic!("real binding")};
+    let _=thread.set_control(control,0.25); // First platform wake outside measured region.
+    let calls=crate::plugin::tests::allocations(||{
+        for _ in 0..1024 {
+            std::hint::black_box(loaded.ui.value(control));
+            std::hint::black_box(thread.set_control(control,0.5));
+        }
+    });
+    assert_eq!(calls,0,"fixed atomic lookup and bounded SPSC enqueue must not allocate/free on audio");
+}

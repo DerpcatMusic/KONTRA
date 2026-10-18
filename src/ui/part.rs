@@ -78,6 +78,7 @@ pub struct Face {
     values: ir_view::Values,
     pub input: ir_view::InputState,
     native: Option<super::native_ui::State>,
+    uvi_snapshot:Option<sampler_uvi::scripted::UiSnapshot>,
 }
 
 impl Face {
@@ -162,6 +163,7 @@ impl Face {
             values: Default::default(),
             input: Default::default(),
             native: None,
+            uvi_snapshot:None,
         };
         out.sync_with_package(package);
         out
@@ -484,6 +486,15 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         activity.add(Count::NativeWidgets, widgets as u64);
         face.revision = published.ui_revision;
     }
+    let same_uvi_schema=match (&face.uvi_snapshot,&published.uvi_snapshot) {
+        (None,None)=>true,(Some(old),Some(next))=>old.same_schema(next),_=>false,
+    };
+    if !same_uvi_schema {
+        // Drop typed/drag drafts when their actual owner or schema retires.
+        face.input=Default::default();
+        face.values.clear();
+    }
+    face.uvi_snapshot=published.uvi_snapshot.clone();
     if face.presentation != presentation {
         face.presentation = presentation;
         face.sync();
@@ -805,14 +816,17 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         };
         #[cfg(all(test, feature = "shots"))]
         let indices = edits.keys().copied().collect::<Vec<_>>();
-        let admitted = cx.p.shared.set_widget_batch_at(
-            slot,
-            generation,
-            source_slot,
-            widget,
-            edits.into_iter().collect(),
-            interaction,
-        );
+        let admitted = if let Some(snapshot)=face.uvi_snapshot.as_ref().filter(|snapshot|snapshot.interface().source==face.face.source) {
+            // UVI Table components retain their scalar path below; native/KSP
+            // pointer button/modifier batches keep their existing route.
+            match (&widget.binding,edits.len(),edits.get(&0)) {
+                (ir::Binding::Control(id),1,Some(ir::Value::Integer(value)))=>cx.p.shared.set_uvi_control_at(slot,generation,snapshot,*id,f64::from(*value)),
+                (ir::Binding::Control(id),1,Some(ir::Value::Real(value)))=>cx.p.shared.set_uvi_control_at(slot,generation,snapshot,*id,*value),
+                _=>false,
+            }
+        }else{
+            cx.p.shared.set_widget_batch_at(slot,generation,source_slot,widget,edits.into_iter().collect(),interaction)
+        };
         #[cfg(all(test, feature = "shots"))]
         if admitted && slot == 0 {
             super::widget_gate::submitted_widget(widget, &indices);
@@ -826,7 +840,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             && now != was
             && !edited_controls.contains(&id)
         {
-            let _admitted = cx.p.shared.set_control_at(slot, generation, id, now);
+            let _admitted = if let Some(snapshot)=face.uvi_snapshot.as_ref().filter(|snapshot|snapshot.interface().source==face.face.source) {
+                cx.p.shared.set_uvi_control_at(slot,generation,snapshot,id,now)
+            }else{cx.p.shared.set_control_at(slot,generation,id,now)};
             #[cfg(all(test, feature = "shots"))]
             if _admitted && slot == 0 {
                 super::widget_gate::submitted_control(id);

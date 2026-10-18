@@ -585,6 +585,9 @@ impl ScriptHost {
         }
         out
     }
+    pub(crate) fn ui_registry_failure(&self,message:&str) {
+        self.shared.find("UVI UI registry",message);
+    }
     /// A renderer edit. Executes the real `changed` handler synchronously on Lua's
     /// owner; yielding is an error, while spawn remains available.
     pub fn set_control(&mut self, id: ui::ControlId, value: f64) -> Result<(), String> {
