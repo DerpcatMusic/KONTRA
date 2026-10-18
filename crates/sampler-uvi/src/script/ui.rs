@@ -118,7 +118,8 @@ fn flag(t: &impl UiRead, key: &str, default: bool) -> bool {
 fn documented_property(key: &str) -> bool {
     matches!(
         key,
-        "textColourOn"
+        "triggeredOnMouseDown"
+            | "textColourOn"
             | "textColourOff"
             | "outlineColour"
             | "arrowColour"
@@ -204,7 +205,7 @@ macro_rules! plain_properties {
     };
 }
 plain_properties! {
-    Kind => "kind", Name => "name", X => "x", Y => "y", Width => "width",
+    Kind => "kind", Name => "name", TriggerOnPress => "triggeredOnMouseDown", X => "x", Y => "y", Width => "width",
     Height => "height", Value => "value", Min => "min", Max => "max",
     Default => "default", Integer => "integer", Unit => "unit", Vertical => "vertical",
     Alpha => "alpha", InterceptsMouse => "interceptsMouseClicks", Visible => "visible",
@@ -613,6 +614,27 @@ impl ScriptHost {
         self.cycle();
         result
     }
+    /// A genuine UI primary action. Programmatic set_control/push/setValue do
+    /// not manufacture click modifiers or consult pointer activation timing.
+    pub fn activate_control(&mut self,id:ui::ControlId,activation:ui::UiActivation)->Result<(),String>{
+        if !activation.valid(){return Err("invalid UVI activation origin/modifiers".into());}
+        let (widget,component)=identity(id).ok_or("not a UVI control")?;
+        if component!=0{return Err("UVI activation requires a scalar widget".into());}
+        self.shared.arm(self.shared.config.callback,self.shared.config.callback_work);
+        let result=(||{
+            let mods=if let Some(raw)=activation.modifiers {
+                let table=self.lua.create_table_with_capacity(0,3).map_err(super::lua_error)?;
+                table.raw_set("altDown",raw.alt).map_err(super::lua_error)?;
+                table.raw_set("shiftDown",raw.shift).map_err(super::lua_error)?;
+                table.raw_set("commandDown",if cfg!(target_os="macos"){raw.cmd}else{raw.ctrl}).map_err(super::lua_error)?;
+                Some(table)
+            }else{None};
+            let origin=match activation.origin {ui::UiActivationOrigin::PointerDown=>0,ui::UiActivationOrigin::PointerUp=>1,ui::UiActivationOrigin::Keyboard=>2,ui::UiActivationOrigin::Accessibility=>3};
+            self.lua.globals().raw_get::<Function>("__ui_activate").map_err(super::lua_error)?.call::<()>((widget,origin,mods)).map_err(super::lua_error)
+        })();
+        if let Err(error)=&result{self.shared.find("lua UI activation",error);}
+        self.cycle();result
+    }
     /// Current declaration, with script-driven geometry, visibility and text.
     pub fn interface(&self) -> ui::Interface {
         self.interface_classified::<3>()
@@ -864,6 +886,9 @@ impl ScriptHost {
             wd.initial_value = value;
             wd.opacity = num(w, "alpha").unwrap_or(1.).clamp(0., 1.) as f32;
             wd.intercepts_mouse = flag(w, "interceptsMouseClicks", true);
+            if matches!(kind.as_str(),"Button"|"OnOffButton"|"ParamOnOffButton") {
+                wd.activate_on_press=flag(w,"triggeredOnMouseDown",false);
+            }
             wd.hidden = !flag(w, "visible", true);
             wd.enabled = flag(w, "enabled", true);
             wd.tooltip = text(w, "tooltip").unwrap_or_default();
@@ -1156,6 +1181,7 @@ impl ScriptHost {
                         return;
                     }
                     let documented = [
+                        "triggeredOnMouseDown",
                         "textColourOn",
                         "textColourOff",
                         "outlineColour",
@@ -1181,6 +1207,7 @@ impl ScriptHost {
                         "gridColour",
                     ];
                     let consumed = match key.as_str() {
+                        "triggeredOnMouseDown"=>matches!(kind.as_str(),"Button"|"OnOffButton"|"ParamOnOffButton")&&matches!(w.raw_read("triggeredOnMouseDown"),Some(Value::Boolean(_))),
                         "fillStyle" => {
                             matches!(wd.kind, ui::Kind::Table { .. }) && wd.table_fill.is_some()
                         }
@@ -1560,5 +1587,79 @@ impl ScriptHost {
             self.cycle();
         }
         Ok(())
+    }
+}
+
+
+#[cfg(test)]
+mod plain_projection_contract_tests {
+    use super::*;
+    use crate::script::Config;
+    fn host(body:&str)->ScriptHost{
+        let xml=format!("<UVI4><Program Name='P' Gain='0.5'><EventProcessors><ScriptProcessor><script><![CDATA[{body}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+        ScriptHost::new(&xml,(),Config::default()).unwrap()
+    }
+    #[test]
+    fn real_plain_button_phase_properties_survive_constructor_and_later_callback_exports(){
+        let mut h=host("local b=Button('Press');local t=OnOffButton('Toggle',false);b.triggeredOnMouseDown=true;t.triggeredOnMouseDown=false;function onController(e) b.triggeredOnMouseDown=e.value>0;t.triggeredOnMouseDown=e.value==0 end");
+        for value in [None,Some(0),Some(127),Some(0)]{
+            if let Some(value)=value{h.controller(3,value,0);}
+            let reference=h.interface_classified::<0>();let actual=h.interface();assert_eq!(actual,reference,"ordinary public constructor/callback projection must equal canonical reads");
+            let pressed=value.is_none_or(|value|value>0);
+            assert_eq!(actual.widgets[0].activate_on_press,pressed);assert_eq!(actual.widgets[1].activate_on_press,!pressed);
+            assert!(widgets(&h).iter().all(|widget|InputRoute::for_table(&widget.raw_get::<Table>("__data").unwrap())==InputRoute::Plain));
+            assert!(!actual.unsupported.iter().any(|row|row.feature.ends_with("triggeredOnMouseDown")));assert!(h.findings().is_empty());
+        }
+    }
+    #[test]
+    fn ordinary_scalar_constructors_preserve_modeled_assets_styles_values_and_metadata(){
+        let h=host(r#"
+          setSize(720,480)
+          local rows={Panel('Panel'),Frame('Frame'),Knob('Knob',0.25,0,1),Slider('Slider',0.25,0,1),
+            Button('Button'),OnOffButton('OnOff',false),NumBox('Num',0.25,0,1),Label('Label'),Text('Text')}
+          for n,w in ipairs(rows) do
+            w.bounds={n*3,n*5,80,20};w.alpha=0.625;w.visible=n%2==0;w.enabled=n%3==0
+            w.interceptsMouseClicks=false;w.exported=true;w.paramId=100+n
+            w.text='caption '..n;w.tooltip='tip '..n;w.displayName='display '..n;w.displayText='readout '..n
+            w.mapper=Mapper.Quadratic;w.unit=Unit.Percent;w.showLabel=true;w.showValue=false
+            w.backgroundColour='#123456';w.backgroundColourOn='#234567';w.backgroundColourOff='#345678'
+            w.sliderColour='#456789';w.fillColour='#56789a';w.font='authored/font.ttf';w.fontSize=13;w.textColour='#abcdef';w.align='right'
+            w.image='authored/base.png';w.backgroundImage='authored/base.png';w.normalImage='authored/normal.png';w.stripImage='authored/strip.png'
+            w.pressedImage='authored/pressed.png';w.overImage='authored/over.png';w.overPressedImage='authored/over-pressed.png';w.handleImage='authored/handle.png';w.frames=7;w.stripHorizontal=true
+          end
+          rows[4].vertical=true;rows[3].showPopupDisplay=false;rows[4].showPopupDisplay=true
+          rows[5].textColourOff='#112233';rows[5].textColourOn='#445566'
+          rows[8].textColourOn='#778899' -- retained diagnostic, not a Label button-state claim
+        "#);
+        let canonical=h.interface_classified::<0>();let actual=h.interface();assert_eq!(actual,canonical);
+        assert_eq!(actual.widgets.len(),9);assert!(widgets(&h).iter().all(|widget|InputRoute::for_table(&widget.raw_get::<Table>("__data").unwrap())==InputRoute::Plain));
+        assert_eq!(actual.widgets[2].initial_value,0.25);assert_eq!(actual.widgets[2].popup_display,Some(false));assert_eq!(actual.widgets[3].popup_display,Some(true));
+        assert_eq!(actual.widgets[0].rect,ui::Rect::new(3,5,80,20));assert_eq!(actual.widgets[0].opacity,0.625);assert!(actual.widgets[0].hidden);assert!(!actual.widgets[0].enabled);
+        assert_eq!(actual.widgets[2].tooltip,"tip 3");assert_eq!(actual.widgets[2].images.len(),8);assert_eq!(actual.assets.len(),8);
+        let style=actual.widgets[2].style.unwrap();assert_eq!(actual.styles[style.0].align,ui::Align::Right);assert_eq!(actual.styles[style.0].size,Some(13.));
+        for (state,expected) in [(0,0x112233),(1,0x445566),(2,0x112233),(3,0x445566),(4,0x112233),(5,0x445566)]{
+            let style=actual.widgets[4].state_styles[state].unwrap();assert_eq!(actual.styles[style.0].color,ui::Rgba::rgb(expected));
+        }
+        assert!(actual.unsupported.iter().any(|row|row.widget==Some(ui::WidgetRef(7))&&row.feature=="Label.textColourOn"));
+        assert!(!actual.unsupported.iter().any(|row|row.widget==Some(ui::WidgetRef(4))&&row.feature.ends_with("textColourOn")));
+        assert_eq!(ScriptHost::control_values_from(&actual),ScriptHost::control_values_from(&canonical));assert!(h.findings().is_empty());
+    }
+    #[test]
+    fn real_bound_metatable_and_indirect_fallbacks_keep_canonical_getter_order_and_effects(){
+        let body=r#"
+          calls=0;trace='';local before=Label('Before');local bound=ParamKnob(Program,'Gain');local after=Label('After');local meta=Label('Meta');local menu=Menu('Menu',{'Group/One','Group/Two'})
+          menu.hierarchical=true;menu.popupBackgroundColour='#123456'
+          local get=Program.getParameter;Program.getParameter=function(self,name) calls=calls+1;trace=trace..'bound;';before.text='earlier '..calls;after.text='later '..calls;return get(self,name) end
+          setmetatable(rawget(meta,'__data'),{__index=function(_,key) if key=='fontSize' then trace=trace..'meta;';return 12 end end})
+        "#;
+        let mut canonical=host(body);let mut ordinary=host(body);
+        let routes:Vec<_>=widgets(&ordinary).iter().map(|widget|InputRoute::for_table(&widget.raw_get::<Table>("__data").unwrap())).collect();
+        assert_eq!(routes,[InputRoute::Plain,InputRoute::Bound,InputRoute::Plain,InputRoute::Metatable,InputRoute::IndirectKind]);
+        for _ in 0..3{
+            let reference=canonical.interface_classified::<0>();let actual=ordinary.interface();assert_eq!(actual,reference);
+            assert_eq!(ordinary.global_text("trace"),canonical.global_text("trace"));assert_eq!(ordinary.global_text("calls"),canonical.global_text("calls"));
+            assert_eq!(ordinary.take_commands(),canonical.take_commands());assert_eq!(ordinary.findings(),canonical.findings());
+            assert!(actual.unsupported.iter().any(|row|row.feature=="Menu.popupBackgroundColour"));
+        }
     }
 }

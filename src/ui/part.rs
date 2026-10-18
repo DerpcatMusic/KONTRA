@@ -126,6 +126,7 @@ impl Face {
             &self.path, generation, from, shown, presentation, self.program, assets, package,
         );
         next.resource_revision = revision;
+        next.input.cancel_pointer();
         if let Some((shown, page)) = navigation {
             next.show(shown);
             next.page.0 = page.0.min(next.face.pages.len().saturating_sub(1));
@@ -192,7 +193,7 @@ impl Face {
             if self.shown >= self.from.len() {
                 self.shown = fallback;
                 self.page = ir::PageRef(0);
-                self.input = Default::default();
+                self.input.reset_drafts();
             }
             Some(previous)
         } else {
@@ -243,7 +244,7 @@ impl Face {
     fn show(&mut self, shown: usize) {
         self.shown = shown;
         self.page = ir::PageRef(0);
-        self.input = Default::default();
+        self.input.reset_drafts();
         self.face = ir_view::resolved(self.sources[shown].interface(&self.from[shown]));
         self.patch = self.sources[shown].patch.clone();
         self.sync();
@@ -465,6 +466,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                 program,
             );
             next.resource_revision = published.resource_revision.clone();
+            next.input.cancel_pointer();
             cx.state.faces.insert(slot, next);
         }
     }
@@ -490,8 +492,10 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         (None,None)=>true,(Some(old),Some(next))=>old.same_schema(next),_=>false,
     };
     if !same_uvi_schema {
-        // Drop typed/drag drafts when their actual owner or schema retires.
-        face.input=Default::default();
+        // Drafts retire, but a real physical capture is not reborn by schema
+        // adoption. Preserve only the exact same owner's target and phase.
+        let same_owner=matches!((&face.uvi_snapshot,&published.uvi_snapshot),(Some(old),Some(next)) if old.same_owner(next));
+        face.input.adopt_uvi_schema(same_owner,&face.face);
         face.values.clear();
     }
     face.uvi_snapshot=published.uvi_snapshot.clone();
@@ -790,6 +794,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             &mut face.input,
         )
     };
+    // Generated views can call widget_state directly; retire the same actual
+    // physical capture even when no current widget survives to see its release.
+    face.input.finish_pointer_frame(ui);
     let mut edits: std::collections::HashMap<
         ir::WidgetRef,
         (
@@ -803,6 +810,17 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         entry.0.insert(edit.index, edit.value);
     }
     let mut edited_controls = std::collections::HashSet::new();
+    for edit in face.input.activations.drain(..){
+        let Some(widget)=face.face.widgets.get(edit.widget.0)else{continue;};
+        let ir::Binding::Control(id)=widget.binding else{continue;};
+        // Even a refused gesture must not replay through the scalar fallback.
+        edited_controls.insert(id);
+        let admitted=face.uvi_snapshot.as_ref().filter(|snapshot|snapshot.interface().source==face.face.source)
+            .is_some_and(|snapshot|cx.p.shared.activate_uvi_control_at(slot,generation,snapshot,id,edit.activation));
+        if !admitted{face.values.remove(&id);face.input.values.remove(&edit.widget);}
+        #[cfg(all(test,feature="shots"))]
+        if admitted&&slot==0{super::widget_gate::submitted_control(id);}
+    }
     for (n, (edits, interaction)) in edits {
         let Some(widget) = face.face.widgets.get(n.0) else {
             continue;
