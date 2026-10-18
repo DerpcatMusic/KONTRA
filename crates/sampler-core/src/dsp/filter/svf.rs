@@ -193,6 +193,14 @@ impl PreparedFilters {
     pub(crate) fn kind(&self, addressed: usize) -> Option<FilterKind> {
         self.kinds.get(addressed).copied()
     }
+    /// Checked semantic query on the exact dense/addressed prepared handle.
+    /// An identically addressed two-pole filter is not a OnePole operand.
+    pub(crate) fn source_one_pole_cutoff(&self,handle:SvfHandle)->Option<PreparedParameter>{
+        if self.kind(handle.addressed)!=Some(FilterKind::StateVariable){return None;}
+        let filter=self.svfs.get(handle.dense)?;
+        filter.mode.one_pole_high()?;
+        Some(filter.cutoff)
+    }
     pub(crate) fn trace_parameters(&self, handle: SvfHandle) -> [(&'static str, PreparedParameter); 2] {
         self.svfs[handle.dense].trace_parameters()
     }
@@ -622,12 +630,16 @@ impl FilterContext<'_> {
         let [cutoff, q] = std::array::from_fn(|i| {
             self.bank.modulation[i] * self.bank.addressed_modulation[index.addressed][i]
         });
+        // SAME real operand and old physical consumer: a nonneutral scoped
+        // route joins the existing held-midpoint branch. Factor1 retains the
+        // ordinary per-frame genuine base ramp below.
+        let cutoff=cutoff*cache.filter.cutoff.scoped_cutoff_factor(parameters).unwrap_or(1.);
         if cutoff != 1.0 || q != 1.0 {
             // A modulated voice's coefficients are its own: one set per chunk at
             // its midpoint, outside the shared cache.
             let filter = cache.filter;
             let middle = at + len as u64 / 2;
-            let hz = (filter.cutoff.value(parameters, middle, expression) * cutoff)
+            let hz = (filter.cutoff.scoped_cutoff_base(parameters, middle, expression) * cutoff)
                 .clamp(20.0, 20_000.0_f64.min(filter.rate * 0.49));
             let q = (filter.q.value(parameters, middle, expression) * q).max(0.025);
             let c = Coefficients::new(filter.mode, filter.rate, hz, q);

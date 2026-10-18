@@ -1047,7 +1047,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             chain, sum: scope.sum, envelope: region.envelope, has_amplitude: scope.amplitude.is_some(),
             bus: scope.output.or(instrument.input_bus).map(|b| b.0),
             members: scope.members.iter().map(|z| z.0).collect(),
-            signal: scope.signal.clone(),modulation_gate:None,
+            signal: scope.signal.clone(),modulation_gate:None,parameters:Box::new([]),parameter_preparation_bytes:0,
         });
     }
     plan.processing_source_amplitude = instrument.zones.iter().map(|z| z.amplitude.is_some()
@@ -1059,6 +1059,9 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
             .with_voice_chains(chains, chain_of)
             .map_err(core(Stage::VoiceChains, "zones"))?;
     }
+    // Resolve real source operands immediately after actual chain/signal
+    // compilation, before unrelated bus/effect work or behavior binding.
+    plan = lowering.processing_parameter_bindings(plan,&processing_control_sites)?;
     if instrument
         .zones
         .iter()
@@ -1905,17 +1908,76 @@ impl Lowering<'_> {
             .map_err(core(Stage::Controls, "parameter registry"))
     }
 
+    fn processing_parameter_bindings(&self,mut plan:Prepared,sites:&[Vec<crate::ScopeControlSite>])->Result<Prepared,LowerError>{
+        fn bytes<T>(count:usize)->Result<usize,Error>{Ok(std::alloc::Layout::array::<T>(count).map_err(|_|Error::Capacity)?.size())}
+        if self.ir.source_indices.processing_parameters.is_empty(){return Ok(plan);}
+        let error=|error|core(Stage::Modulation,"shared processor parameter bindings")(error);
+        let mut cost=bytes::<Vec<crate::topology::CompiledProcessingParameter>>(plan.processing_scopes.len().checked_mul(2).ok_or_else(||error(Error::Capacity))?).map_err(&error)?;
+        cost=cost.checked_add(bytes::<usize>(plan.processing_scopes.len()).map_err(&error)?).ok_or_else(||error(Error::Capacity))?;
+        cost=cost.checked_add(bytes::<ir::SourceProcessingParameter>(self.ir.source_indices.processing_parameters.capacity()).map_err(&error)?).ok_or_else(||error(Error::Capacity))?;
+        for row in &self.ir.source_indices.processing_parameters {
+            cost=cost.checked_add(bytes::<crate::topology::CompiledProcessingParameter>(2).map_err(&error)?).ok_or_else(||error(Error::Capacity))?;
+            let factors=row.fixed_factors.capacity().checked_add(row.fixed_factors.len().checked_mul(2).ok_or_else(||error(Error::Capacity))?).ok_or_else(||error(Error::Capacity))?;
+            cost=cost.checked_add(bytes::<ir::SourceFrequencyFold>(factors).map_err(&error)?).ok_or_else(||error(Error::Capacity))?;
+        }
+        // SAME scoped-modulation preparation allowance, before roster copying.
+        if cost>64*1024*1024{return Err(error(Error::Capacity));}
+        let mut counts=vec![0usize;plan.processing_scopes.len()];
+        for definition in &self.ir.source_indices.processing_parameters {
+            let scope=definition.compiled.ok_or_else(||error(Error::InvalidInput))?.scope;
+            let count=counts.get_mut(scope).ok_or_else(||error(Error::InvalidInput))?;*count=count.checked_add(1).ok_or_else(||error(Error::Capacity))?;
+        }
+        let mut rows:Vec<Vec<crate::topology::CompiledProcessingParameter>>=Vec::new();rows.try_reserve_exact(plan.processing_scopes.len()).map_err(|_|error(Error::Capacity))?;
+        for &count in &counts {let mut values=Vec::new();values.try_reserve_exact(count).map_err(|_|error(Error::Capacity))?;rows.push(values);}
+        let mut actual_cost=bytes::<Vec<crate::topology::CompiledProcessingParameter>>(rows.capacity().checked_mul(2).ok_or_else(||error(Error::Capacity))?).map_err(&error)?;
+        actual_cost=actual_cost.checked_add(bytes::<usize>(counts.capacity()).map_err(&error)?).and_then(|n|n.checked_add(bytes::<ir::SourceProcessingParameter>(self.ir.source_indices.processing_parameters.capacity()).ok()?)).ok_or_else(||error(Error::Capacity))?;
+        for (row,count) in rows.iter().zip(&counts) {actual_cost=actual_cost.checked_add(bytes::<crate::topology::CompiledProcessingParameter>(row.capacity().checked_add(*count).ok_or_else(||error(Error::Capacity))?).map_err(&error)?).ok_or_else(||error(Error::Capacity))?;}
+        for definition in &self.ir.source_indices.processing_parameters {
+            let compiled=definition.compiled.ok_or_else(||error(Error::InvalidInput))?;
+            let scope=compiled.scope;let actual=sites.get(scope).ok_or_else(||error(Error::InvalidInput))?;
+            let site=match compiled.site {
+                ir::ScopeControlSite::SignalNode(index)=>crate::ScopeControlSite::SignalNode(index),
+                ir::ScopeControlSite::ChainPre(index)=>*actual.get(index).ok_or_else(||error(Error::InvalidInput))?,
+                ir::ScopeControlSite::ChainPost(index)=>{
+                    let chain=&self.ir.chains[definition.chain.0];let index=chain.pre_amplitude.len().checked_add(index).ok_or_else(||error(Error::Capacity))?;
+                    *actual.get(index).ok_or_else(||error(Error::InvalidInput))?
+                },
+            };
+            let lane=plan.processing_parameter_lane(scope,site,definition.parameter).map_err(&error)?;
+            let control=ir_control_id(&self.ir.controls[definition.control.0].key);
+            let original=self.ir.processor_controls.iter().find(|row|row.chain==definition.chain&&row.index==definition.index&&row.parameter==definition.parameter&&row.control==definition.control)
+                .ok_or_else(||error(Error::InvalidInput))?;
+            let ramp_frames=self.frames(original.ramp);
+            let operand=plan.dsp_bindings.get_mut(lane).ok_or_else(||error(Error::InvalidInput))?;
+            if operand.control!=control{return Err(error(Error::InvalidInput));}
+            // Materialized SignalParameter keeps the real ControlId but its
+            // generic constructor has no source ProcessorControl smoothing.
+            // Install the exact joined source ramp before Runtime exists.
+            if matches!(site,crate::ScopeControlSite::SignalNode(_)){operand.ramp_frames=ramp_frames;}
+            else if operand.ramp_frames!=ramp_frames{return Err(error(Error::InvalidInput));}
+            let mut fixed=Vec::new();fixed.try_reserve_exact(definition.fixed_factors.len()).map_err(|_|error(Error::Capacity))?;fixed.extend_from_slice(&definition.fixed_factors);
+            let factors=definition.fixed_factors.capacity().checked_add(fixed.capacity().checked_mul(2).ok_or_else(||error(Error::Capacity))?).ok_or_else(||error(Error::Capacity))?;
+            actual_cost=actual_cost.checked_add(bytes::<ir::SourceFrequencyFold>(factors).map_err(&error)?).ok_or_else(||error(Error::Capacity))?;
+            if actual_cost>64*1024*1024{return Err(error(Error::Capacity));}
+            let definition=ir::SourceProcessingParameter{owner:definition.owner,source_node:definition.source_node,chain:definition.chain,index:definition.index,parameter:definition.parameter,control:definition.control,law:definition.law,fixed_factors:fixed,compiled:definition.compiled};
+            rows.get_mut(scope).ok_or_else(||error(Error::InvalidInput))?.push(crate::topology::CompiledProcessingParameter{definition,site,lane,control,ramp_frames,routes:Box::new([])});
+        }
+        for(scope,mut rows)in plan.processing_scopes.iter_mut().zip(rows){rows.sort_unstable_by_key(|row|(row.definition.chain.0,row.definition.index,row.definition.parameter as u32));scope.parameters=rows.into_boxed_slice();scope.parameter_preparation_bytes=0;}
+        if let Some(scope)=plan.processing_scopes.first_mut(){scope.parameter_preparation_bytes=cost.max(actual_cost);}
+        plan.validate_processing_parameters().map_err(error)?;Ok(plan)
+    }
+
     fn processing_modulation(&self,plan:Prepared)->Result<(Prepared,HashMap<(usize,ir::ModulatorRef),crate::ProcessingSourceRef>),LowerError>{
         let mut programs=Vec::new();let mut scopes=vec![None;plan.processing_scope_count()];let mut gates=vec![None;scopes.len()];
         let mut provider_sources=HashMap::new();
         for recipe in &self.ir.source_indices.processing {
-            if recipe.routes.is_empty()&&recipe.sources.is_empty(){continue;}
+            if recipe.routes.is_empty()&&recipe.sources.is_empty()&&!self.ir.source_indices.processing_parameters.iter().any(|row|row.owner==recipe.owner){continue;}
             let scope=recipe.compiled.ok_or_else(||core(Stage::Modulation,"source scope unresolved")(Error::InvalidInput))?;
             let first=recipe.members[0].0;
             // Route compiler inputs carry the real source recipe, not a fake
             // physical modulator binding. No implicit physical/MPE defaults.
             let mut section=self.ir.zones[first].clone();section.routes=recipe.routes.clone();section.chain=recipe.chain;section.amplitude=None;
-            let (program,sources,routes)=self.program_for_owner(&format!("processing scope {scope}"),first,&section,&plan,false,&recipe.sources)?;
+            let (program,sources,routes)=self.program_for_owner(&format!("processing scope {scope}"),first,&section,&plan,false,Some(scope),&recipe.sources)?;
             if let Some(gate)=recipe.source_gate {
                 gates[scope]=Some(crate::ProcessingModulationGate{
                     source:*sources.get(&gate.source).ok_or_else(||core(Stage::Modulation,"scope gate source absent")(Error::InvalidInput))?,
@@ -1955,7 +2017,7 @@ impl Lowering<'_> {
             let index = match known.get(&(&zone.routes, plan.region_chain(i), zone.group, zone.amplitude,source_scope)) {
                 Some(&index) => index,
                 None => {
-                    let (program,sources,_)=self.program_for_owner(&format!("zone {i}"),i,zone,&plan,true,&[])?;
+                    let (program,sources,_)=self.program_for_owner(&format!("zone {i}"),i,zone,&plan,true,None,&[])?;
                     let index=programs.len();let before=providers.len();
                     if let Some(scope)=source_scope{for (identity,&source)in &sources{
                         if let Some(&provider)=provider_sources.get(&(scope,*identity)){providers.push(crate::ModProvider{program:index,source,provider});}
@@ -2015,7 +2077,7 @@ impl Lowering<'_> {
                 }
                 Ok(program.sources.len() - 1)
     }
-    fn program_for_owner(&self,owner:&str,zone_index:usize,zone:&ir::Zone,plan:&Prepared,implicit_mpe:bool,source_roster:&[ir::ModulatorRef])->Result<(ModProgram,HashMap<ir::ModulatorRef,usize>,HashMap<ir::RouteRef,usize>),LowerError>{
+    fn program_for_owner(&self,owner:&str,zone_index:usize,zone:&ir::Zone,plan:&Prepared,implicit_mpe:bool,processing_scope:Option<usize>,source_roster:&[ir::ModulatorRef])->Result<(ModProgram,HashMap<ir::ModulatorRef,usize>,HashMap<ir::RouteRef,usize>),LowerError>{
         let mut program = ModProgram::default();
         let mut sources = std::collections::HashMap::new();
         let mut route_sites=HashMap::new();
@@ -2059,6 +2121,14 @@ impl Lowering<'_> {
                         ir::WavetableParameter::Form2 => ModTarget::WavetableForm2,
                     }, d)
                 }
+                (ir::Target::Processor{chain,index,parameter},ir::Depth::Pitch(depth)) if processing_scope.is_some()=>{
+                    let scope=processing_scope.ok_or_else(||unsupported(owner.clone(),Feature::ModulationRoute(route.target)))?;
+                    let definition=plan.processing_scopes.get(scope).ok_or_else(||unsupported(owner.clone(),Feature::ModulationRoute(route.target)))?;
+                    let binding=definition.parameters.binary_search_by_key(&(chain.0,index,parameter as u32),|row|(row.definition.chain.0,row.definition.index,row.definition.parameter as u32))
+                        .map_err(|_|unsupported(owner.clone(),Feature::ModulationRoute(route.target)))?;
+                    (ModTarget::ProcessingParameter(u32::try_from(scope).map_err(|_|core(Stage::Modulation,owner.clone())(Error::Capacity))?,
+                        u32::try_from(binding).map_err(|_|core(Stage::Modulation,owner.clone())(Error::Capacity))?),depth.semitones())
+                },
                 (ir::Target::Control(control), ir::Depth::Normalized(depth)) => {
                     let address = crate::ParameterAddress {
                         scope: crate::ParameterScope::Voice,
