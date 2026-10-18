@@ -621,6 +621,52 @@ impl Instrument {
                 return Err(invalid("unreachable or cyclic native source hierarchy"));
             }
         }
+        let mut constant_nodes=std::collections::BTreeSet::new();let mut constant_fields=std::collections::BTreeSet::new();
+        for property in &self.source_indices.constant_properties{
+            let invalid=||ValidationError::ZoneRouting{owner:"Constant property definition".into(),reason:"missing/duplicate actual owner or incompatible Value/Style controls"};
+            if !constant_nodes.insert(property.node)||!constant_fields.insert(property.value.0)||!constant_fields.insert(property.style.0)
+                ||!self.source_indices.owners.iter().any(|owner|owner.id==property.owner)
+                ||!matches!(self.controls.get(property.value.0).map(|c|&c.value),Some(crate::ControlValue::Continuous{min,max,..})if *min==f64::MIN&&*max==f64::MAX)
+                ||!matches!(self.controls.get(property.style.0).map(|c|&c.value),Some(crate::ControlValue::Toggle{..})){return Err(invalid());}
+        }
+        let mut global_owners=std::collections::BTreeSet::new();
+        for recipe in &self.source_indices.global_modulation {
+            let invalid=|reason|ValidationError::ZoneRouting{owner:"global source modulation".into(),reason};
+            let owner=self.source_indices.owners.iter().find(|row|row.id==recipe.owner)
+                .ok_or_else(||invalid("global output owner is absent"))?;
+            let input=self.source_indices.owners.iter().find(|row|row.id==recipe.input_owner)
+                .ok_or_else(||invalid("resolved global MIDI source owner is absent"))?;
+            if !global_owners.insert(recipe.owner)
+                || !matches!(owner.kind,crate::SourceOwnerKind::Instrument|crate::SourceOwnerKind::Layer)
+                || input.kind!=crate::SourceOwnerKind::Instrument
+                || !matches!(input.id,crate::SourceOwnerId::UviNode(_))
+                || (owner.id!=input.id && owner.parent!=Some(input.id))
+                || recipe.routes.is_empty()
+                || !self.processing_buses.iter().any(|bus|bus.bus==recipe.outlet&&bus.owner==Some(recipe.owner)) {
+                return Err(invalid("global input/output identity or executable bus binding is invalid"));
+            }
+            let mut sources=std::collections::BTreeSet::new();
+            for &source in &recipe.sources {
+                if !sources.insert(source.0)
+                    || (!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Controller(number))if *number<128)
+                        &&!matches!(self.modulators.get(source.0).map(|row|&row.source),Some(crate::ModulationSource::Constant|crate::ModulationSource::ConstantProperty{..}))) {
+                    return Err(invalid("global source roster requires distinct actual default-state controller sources"));
+                }
+            }
+            let mut referenced=std::collections::BTreeSet::new();
+            let mut routes=std::collections::BTreeSet::new();
+            for &route in &recipe.routes {
+                let row=self.routes.get(route.0).ok_or_else(||invalid("global route is absent"))?;
+                let field=match row.target{crate::Target::Amplitude=>crate::SourceOwnerOutputField::Gain,crate::Target::Pan=>crate::SourceOwnerOutputField::Pan,_=>return Err(invalid("global route requires an actual output scalar target"))};
+                if !routes.insert(route.0)||!self.source_indices.output_controls.iter().any(|home|
+                    home.owner==recipe.owner&&home.field==field&&matches!(home.target,crate::SourceOwnerControlTarget::Bus{bus,..}if bus==recipe.outlet)) {
+                    return Err(invalid("global route has no unique actual output-field home"));
+                }
+                referenced.insert(row.source.0);
+                if let Some(scale)=row.scale {referenced.insert(scale.source.0);}
+            }
+            if referenced!=sources {return Err(invalid("global source roster differs from its exact route dependencies"));}
+        }
         let mut recipe_members = std::collections::BTreeSet::new();
         let mut recipe_owners = std::collections::BTreeSet::new();
         for row in &self.source_indices.processing_parameters {
@@ -1157,6 +1203,10 @@ impl Instrument {
             check.owner = format!("modulator {i}");
             check.scope(modulator.scope)?;
             match &modulator.source {
+                ModulationSource::ConstantProperty{node,value,style,bipolar}=>{
+                    check.exists(Reference::Control(value.0))?;check.exists(Reference::Control(style.0))?;
+                    if !self.source_indices.constant_properties.iter().any(|row|row.node==*node&&row.value==*value&&row.style==*style&&row.bipolar==*bipolar){return Err(ValidationError::ZoneRouting{owner:"Constant source".into(),reason:"source differs from actual definition property role"});}
+                },
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
                 ModulationSource::Breakpoints(b) => {
                     for point in &b.points {

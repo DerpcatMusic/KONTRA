@@ -16,12 +16,13 @@ use sampler_core::{
     Runtime, Stealing,
 };
 use std::collections::HashMap;
-pub use thread::{Loaded, ScriptThread, UiBridge, UiRegistryBudget, UiSnapshot, UiRegistryStorage, UiSchemaWorkBudget, UiSchemaWorkReport, DiagnosticAcknowledgement, DiagnosticPhase,
+pub use thread::{Loaded, ScriptThread, PreparedRootProgress, UiBridge, UiRegistryBudget, UiSnapshot, UiRegistryStorage, UiSchemaWorkBudget, UiSchemaWorkReport, DiagnosticAcknowledgement, DiagnosticPhase,
     DiagnosticPoll, DiagnosticProgress, DiagnosticRequest, DiagnosticRequestError};
 
 /// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,
 /// deterministic), or a [`ScriptThread`] that keeps Lua off the audio thread.
 pub trait Script {
+    fn bind_source_property_owner(&mut self,_owner:crate::script::OwnerSourcePropertyPort)->Result<(),String>{Err("standalone property service requires an independently serviced owner".into())}
     fn handles_notes(&self) -> bool;
     /// Off audio only: bounded owner query; threaded hosts may wait for a reply.
     fn sample_load_status(&mut self)->Result<crate::script::SampleLoadStatus,String> {Err("sample status service unavailable".into())}
@@ -223,6 +224,7 @@ struct TrackedNote {
 }
 
 pub struct Driver<S: Script> {
+    source_properties:Option<crate::script::CoreSourcePropertyPort>,
     host: S,
     groups: Vec<OscGroup>,
     rate: f64,
@@ -250,6 +252,56 @@ pub struct Driver<S: Script> {
 /// Notes and values the driver tracks at once; beyond it, plays are dropped.
 const TRACKED: usize = 1024;
 
+impl Driver<ScriptThread> {
+    /// Offaudio actual owner contract bind, distinct from queue admission or
+    /// an immediate Core mutation result. A failed ACK prevents publication.
+    pub fn bind_external_authority(&mut self,runtime:&Runtime,plan:sampler_core::PlanId,timeout:std::time::Duration)->Result<(),String>{self.host.bind_external_authority(runtime,plan,timeout)}
+    pub fn start_prepared_root_adoption(&mut self,rt:&mut Runtime,plan:sampler_core::PlanId,performance:sampler_core::PerformanceId)->Result<PreparedRootProgress,Error>{self.host.start_prepared_root_adoption(rt,plan,performance)}
+    pub fn poll_prepared_root_adoption(&mut self,rt:&mut Runtime,plan:sampler_core::PlanId)->Result<PreparedRootProgress,Error>{self.host.poll_prepared_root_adoption(rt,plan)}
+    pub fn reset_execution_available(&self)->bool{self.host.reset_execution_available()}
+    pub fn reset_execution(&mut self,runtime:sampler_core::RuntimeId,plan:sampler_core::PlanId,sequence:u64)->Result<(),Error>{self.host.reset_execution(runtime,plan,sequence)}
+    pub fn reset_execution_ack(&mut self,sequence:u64)->Result<bool,Error>{self.host.reset_execution_ack(sequence)}
+    pub fn cancel_external_authority(&self){self.host.cancel_external_authority();}
+    pub fn deliver_external_turn(&mut self,turn:sampler_core::ExternalTurn)->Result<(),Error>{self.host.deliver_external_turn(turn)}
+    pub fn external_turn_slots(&self)->usize{self.host.external_turn_slots()}
+    pub fn external_reply_slots(&self)->usize{self.host.external_reply_slots()}
+    pub fn pop_external_request(&mut self)->Option<crate::script::AuthorityRequest>{self.host.pop_external_request()}
+    pub fn reply_external_request(&mut self,reply:crate::script::AuthorityReply)->Result<(),crate::script::AuthorityReply>{self.host.reply_external_request(reply)}
+    pub fn external_cancelled(&self)->bool{self.host.external_cancelled()}
+    /// Real Core Running context precedes all owner/engine mutations, including
+    /// identical values. A copied worker request is only routing metadata.
+    pub fn apply_external_command(&mut self,rt:&mut Runtime,requested:sampler_core::ExternalTurn,command:&Command)->Result<(),Error>{
+        let turn=rt.running_external_turn(requested.input)?;
+        if !self.host.external_authority_bound(rt.id(),turn.plan)
+            ||turn.plan!=requested.plan||turn.processor!=requested.processor||turn.owner!=requested.owner{
+            return Err(Error::StaleHandle);
+        }
+        match command{
+            Command::ConstantProperty{node,field,value}=>rt.set_source_constant_property(turn.plan,*node,*field,*value).map(|_|()),
+            Command::OwnerControl{owner,field,value}=>{
+                let id=rt.source_owner_control(turn.plan,*owner,*field)?;
+                rt.edit_controls(turn.plan,None,&[sampler_core::ControlWrite{id,value:*value}]).map(|_|())
+            },
+            Command::EngineParameter{address,value}=>{
+                if turn.plan!=rt.active_plan(){return Err(Error::InvalidInput);}
+                rt.set_engine_parameter(*address,*value)
+            },
+            Command::Impulse{slot,upload}=>{
+                if turn.plan!=rt.active_plan(){return Err(Error::InvalidInput);}
+                upload.swap(rt,*slot)
+            },
+            Command::Parameter{scope,param,value,authored}=>{
+                if turn.plan!=rt.active_plan(){return Err(Error::InvalidInput);}
+                self.parameter(rt,*scope,*param,*value,*authored)
+            },
+            // These need actual canonical child/output/route authority. They
+            // never fall back to a key lookup or the legacy generated queue.
+            Command::Play(_)|Command::Release{..}|Command::Modulation{..}|Command::Change{..}|Command::Fade{..}|Command::Midi(_)=>Err(Error::InvalidInput),
+        }
+    }
+
+}
+
 #[cfg(feature = "scan")]
 impl Driver<ScriptThread> {
     pub fn scan_faults(&self) -> crate::script::ScanFaults {
@@ -270,6 +322,7 @@ impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
     pub fn new(host: S, groups: Vec<OscGroup>, rate: u32) -> Self {
         Self {
+            source_properties:None,
             host,
             groups,
             rate: f64::from(rate),
@@ -289,6 +342,14 @@ impl<S: Script> Driver<S> {
         }
     }
 
+    /// Offaudio explicit standalone property-only binding. No Plan lease,
+    /// active-plan inference, Play/MIDI authority or native timing is granted.
+    pub fn bind_source_properties(&mut self,rt:&Runtime,plan:sampler_core::PlanId)->Result<(),Error>{
+        if self.source_properties.is_some(){return Err(Error::Busy);}
+        let (core,owner)=crate::script::source_property_pair(rt,plan,std::time::Duration::from_secs(2))?;
+        self.host.bind_source_property_owner(owner).map_err(|_|Error::InvalidInput)?;
+        self.source_properties=Some(core);Ok(())
+    }
     /// A host message for the scripts.
     pub fn input(&mut self, rt: &Runtime, input: HostInput) {
         self.host.set_time(self.now_ms(rt));
@@ -410,6 +471,8 @@ impl<S: Script> Driver<S> {
     /// Run what is due now (script wake-ups, glide steps); the frames until
     /// the next one, `None` when nothing is pending. Call before each block.
     pub fn wake(&mut self, rt: &mut Runtime) -> Result<Option<usize>, Error> {
+        if let Some(properties)=self.source_properties.as_mut(){properties.service(rt)?;}
+
         let mut spins = 0;
         self.host.tick(self.now_ms(rt));
         // Commands a script thread issued since the last block.
@@ -565,7 +628,7 @@ impl<S: Script> Driver<S> {
                 // Native owner commands require the genuine captured Running
                 // turn/Plan authority path. Ordinary legacy delivery cannot
                 // substitute its current active Plan as a liveness proof.
-                Command::OwnerControl{..}=>return Err(Error::InvalidInput),
+                Command::ConstantProperty{..}|Command::OwnerControl{..}=>return Err(Error::InvalidInput),
                 Command::Midi(out) => {
                     if self.midi.len() < MIDI_OUTPUT_CAPACITY {
                         self.midi.push(out);
@@ -914,6 +977,7 @@ fn stale_ok(r: Result<(), Error>) -> Result<(), Error> {
 
 impl Player {
     pub fn new(program: Program, limits: Limits, rate: u32) -> Result<Self, Error> {
+        if program.plan.source_controller_inputs().next().is_some(){return Err(Error::NotReady);}
         let mut rt = Runtime::new(program.plan, limits)?;
         let mut horizon = None;
         let mut stream = program.stream;

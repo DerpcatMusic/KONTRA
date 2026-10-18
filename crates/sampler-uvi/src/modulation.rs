@@ -56,6 +56,89 @@ impl Default for Modulation {
     }
 }
 
+/// Intrinsic envelope limitations travel with the actual cached definition.
+/// Reporting a finding once never turns an unknown source law into a capability.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum EnvelopeLimitation {
+    AhdNoteOff,
+    VelocitySensitivity,
+    PartialVelocity,
+    Retrigger,
+    NoteOffRetrigger,
+}
+
+impl EnvelopeLimitation {
+    fn description(self) -> &'static str {
+        match self {
+            Self::AhdNoteOff => "AHD note-off release is unproved",
+            Self::VelocitySensitivity => "envelope velocity sensitivity is approximated",
+            Self::PartialVelocity => "envelope partial velocity amount is approximated",
+            Self::Retrigger => "envelope retrigger law is unproved",
+            Self::NoteOffRetrigger => "envelope note-off retrigger law is unproved",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EnvelopeDefinition {
+    pub modulator: ir::ModulatorRef,
+    pub velocity: ir::VelocityResponse,
+    pub limitation: Option<EnvelopeLimitation>,
+}
+
+/// This records a missing semantic law, never a global/per-note state choice.
+/// The attachment's actual XML identity remains distinct from source values.
+#[derive(Clone, Copy)]
+enum SourceLimitation {
+    Envelope(roxmltree::NodeId, EnvelopeLimitation),
+    Activation(roxmltree::NodeId),
+}
+
+#[derive(Default)]
+struct SourceQualification {
+    limitation: Option<SourceLimitation>,
+}
+
+impl SourceQualification {
+    fn envelope(&mut self, node: Node, definition: EnvelopeDefinition) {
+        if self.limitation.is_none() {
+            self.limitation = definition.limitation.map(|law| SourceLimitation::Envelope(node.id(), law));
+        }
+    }
+
+    fn activation(&mut self, shared: &Shared) {
+        if self.limitation.is_none() {
+            self.limitation = Some(SourceLimitation::Activation(shared.node));
+        }
+    }
+
+    fn require_output(self, connection: Node) -> Result<(), String> {
+        let Some(limitation) = self.limitation else { return Ok(()); };
+        let (node, law) = match limitation {
+            SourceLimitation::Envelope(node, law) => (node, law.description()),
+            SourceLimitation::Activation(node) => (node, "source activation ownership is unproved"),
+        };
+        Err(format!("{}: shared output source node {} has no supported exact law: {law}", path(connection), node.get_usize()))
+    }
+}
+
+/// Qualify the same scalar envelope fields that the legacy translator reports.
+/// This does not decide state ownership from the definition's container.
+pub(crate) fn envelope_limitation(node: Node) -> Result<Option<EnvelopeLimitation>, String> {
+    if node.has_tag_name("AHD") { return Ok(Some(EnvelopeLimitation::AhdNoteOff)); }
+    let sensitivity = number(node, "VelocitySens", 0.75)?.clamp(-1., 1.);
+    let amount = number(node, "VelocityAmount", 0.)?.clamp(0., 1.);
+    Ok(if amount != 0. && sensitivity == 1. {
+        Some(EnvelopeLimitation::VelocitySensitivity)
+    } else if amount != 0. && amount != 1. {
+        Some(EnvelopeLimitation::PartialVelocity)
+    } else if number(node, "Retrigger", 1.)? != 1. {
+        Some(EnvelopeLimitation::Retrigger)
+    } else if number(node, "NoteOffRetrigger", 0.)? != 0. {
+        Some(EnvelopeLimitation::NoteOffRetrigger)
+    } else { None })
+}
+
 /// Why a connection was not translated.
 struct Gap {
     feature: &'static str,
@@ -94,7 +177,7 @@ enum Signal {
     Fixed { value: f64, bipolar: bool },
 }
 
-/// A shared UVI source instance; see [`Translation::share`].
+/// A legacy unqualified source-attachment report; see [`Translation::share`].
 struct Shared {
     node: roxmltree::NodeId,
     location: String,
@@ -225,16 +308,38 @@ impl Translation {
 
     /// Translate `connection` (owned by a Keygroup or SamplePlayer) into `out`.
     pub(crate) fn connect(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
-        if let Err(gap) = self.try_connect(connection, out, None)? {
+        if let Err(gap) = self.try_connect(connection, out, None, &mut SourceQualification::default())? {
             self.gap(connection, gap);
         }
         Ok(())
     }
 
+    /// An exact shared output must qualify every actually evaluated source,
+    /// including Ratio/Depth dependencies, independently of diagnostic dedup.
+    pub(crate) fn connect_shared_output(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
+        let mut qualification = SourceQualification::default();
+        if let Err(gap) = self.try_connect(connection, out, None, &mut qualification)? {
+            let feature = gap.feature;
+            self.gap(connection, gap);
+            return Err(format!("{}: shared output connection has no supported exact modulator program: {feature}", path(connection)));
+        }
+        qualification.require_output(connection)
+    }
+
+    pub(crate) fn qualify_envelope_output(&self, connection: Node, source: Node) -> Result<(), String> {
+        let definition = *self.envelopes.get(&source.id()).ok_or_else(|| "envelope definition qualification missing".to_owned())?;
+        let mut qualification = SourceQualification::default();
+        qualification.envelope(source, definition);
+        qualification.require_output(connection)
+    }
+
     /// A program or layer connection applied to one keygroup of its scope: a
     /// gap is reported once for the connection, not once per keygroup.
     pub(crate) fn connect_scoped(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
-        if let Err(gap) = self.try_connect(connection, out, None)? {
+        if matches!(connection.attribute("Destination"), Some("Gain" | "Pan")) {
+            return self.connect_shared_output(connection, out);
+        }
+        if let Err(gap) = self.try_connect(connection, out, None, &mut SourceQualification::default())? {
             if self.shared_sources.insert(connection.id()) {
                 self.gap(connection, gap);
             }
@@ -250,7 +355,7 @@ impl Translation {
         out: &mut Modulation,
     ) -> Result<(), String> {
         let law = Law::Frequency { chain, index };
-        if let Err(gap) = self.try_connect(connection, out, Some(law))? {
+        if let Err(gap) = self.try_connect(connection, out, Some(law), &mut SourceQualification::default())? {
             self.gap(connection, gap);
         }
         Ok(())
@@ -261,6 +366,7 @@ impl Translation {
         connection: Node,
         out: &mut Modulation,
         frequency: Option<Law>,
+        qualification: &mut SourceQualification,
     ) -> Result<Result<(), Gap>, String> {
         #[cfg(feature = "scan")]
         self.visited_connections.insert(connection.id());
@@ -291,7 +397,7 @@ impl Translation {
                     NotModeled,
                 )));
             }
-            match self.signal(connection, nested)? {
+            match self.qualified_signal(connection, nested, qualification)? {
                 Err(gap) => return Ok(Err(gap)),
                 Ok(Signal::Live {
                     modulator,
@@ -303,6 +409,7 @@ impl Translation {
                     shared,
                 }) if scale.is_none() => {
                     if let Some(shared) = shared {
+                        qualification.activation(&shared);
                         self.share(shared);
                     }
                     let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
@@ -337,7 +444,7 @@ impl Translation {
         if law == Law::Factor {
             ratio = ratio.clamp(-1.0, 1.0);
         }
-        let signal = match self.signal(connection, connection)? {
+        let signal = match self.qualified_signal(connection, connection, qualification)? {
             Ok(signal) => signal,
             Err(gap) => return Ok(Err(gap)),
         };
@@ -476,6 +583,7 @@ impl Translation {
                     out.routes.push(route);
                 }
                 if let Some(shared) = shared {
+                    qualification.activation(&shared);
                     self.share(shared);
                 }
             }
@@ -610,14 +718,19 @@ impl Translation {
     }
 
     /// What `connection`'s `Source` reads, seen from `owner`'s scope.
+    #[cfg(test)]
     fn signal(&mut self, owner: Node, connection: Node) -> Result<Result<Signal, Gap>, String> {
-        let result=self.signal_inner(owner,connection)?;
+        self.qualified_signal(owner, connection, &mut SourceQualification::default())
+    }
+
+    fn qualified_signal(&mut self, owner: Node, connection: Node, qualification: &mut SourceQualification) -> Result<Result<Signal, Gap>, String> {
+        let result=self.signal_inner(owner,connection,qualification)?;
         if let (Some(node),Ok(Signal::Live{modulator,extra,..}))=(source_node(owner,connection.attribute("Source").unwrap_or_default()),&result){
             self.modulator_nodes.entry(*modulator).or_insert(node.id());
             if let Some((source,_))=extra{self.modulator_nodes.entry(*source).or_insert(node.id());}
         }Ok(result)
     }
-    fn signal_inner(&mut self, owner: Node, connection: Node) -> Result<Result<Signal, Gap>, String> {
+    fn signal_inner(&mut self, owner: Node, connection: Node, qualification: &mut SourceQualification) -> Result<Result<Signal, Gap>, String> {
         use ir::Reason::{NotModeled, Unknown, UnknownLaw};
         let source = connection.attribute("Source").unwrap_or_default();
         let identity = vec![(0.0, 0.0), (1.0, 1.0)];
@@ -742,7 +855,7 @@ impl Translation {
                         UnknownLaw,
                     )));
                 }
-                match self.signal(node, nested)? {
+                match self.qualified_signal(node, nested, qualification)? {
                     Err(gap) => return Ok(Err(gap)),
                     Ok(Signal::Fixed { value, bipolar }) => {
                         match self.stage(nested, value, bipolar)? {
@@ -763,7 +876,7 @@ impl Translation {
                 continue;
             }
             let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
-            match self.signal(node, nested)? {
+            match self.qualified_signal(node, nested, qualification)? {
                 Err(gap) => return Ok(Err(gap)),
                 Ok(Signal::Live {
                     modulator,
@@ -775,6 +888,7 @@ impl Translation {
                     shared,
                 }) if scale.is_none() => {
                     if let Some(shared) = shared {
+                        qualification.activation(&shared);
                         self.share(shared);
                     }
                     let f = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
@@ -798,23 +912,11 @@ impl Translation {
         }
         match kind {
             "ConstantModulation" => {
-                if let Some(id) = node.attribute("ScriptLive").and_then(|t| t.parse::<u16>().ok()) {
-                    // A script writes it: a live source the host drives, not a fold.
-                    let polar = number(node, "Bipolar", 0.0)? != 0.0;
-                    let source = if polar {
-                        ir::ModulationSource::ScriptBipolar(id)
-                    } else {
-                        ir::ModulationSource::Script(id)
-                    };
-                    return Ok(Ok(Signal::Live {
-                        modulator: self.modulator(format!("{source:?}"), source),
-                        curve: if polar { bipolar } else { identity },
-                        bipolar: polar,
-                        scale: None,
-                        smoothing: 0.0,
-                        extra: None,
-                        shared: None,
-                    }));
+                if node.attribute("ScriptLive").is_some() {
+                    let property=crate::engine_parameters::register_constant(&mut self.ir,node)?;
+                    let polar=number(node,"Bipolar",0.)?!=0.;
+                    let source=ir::ModulationSource::ConstantProperty{node:property.node,value:property.value,style:property.style,bipolar:polar};
+                    return Ok(Ok(Signal::Live{modulator:self.modulator(format!("constant-definition:{}",property.node),source),curve:if polar{bipolar}else{identity},bipolar:polar,scale:None,smoothing:0.,extra:None,shared:None}));
                 }
                 let value = number(node, "Value", 0.0)?.clamp(0.0, 1.0);
                 let value = match number(node, "Style", 0.0)? {
@@ -882,6 +984,8 @@ impl Translation {
                     return Ok(Err(gap("DAHDSR NoteOffRetrigger", "", NotModeled)));
                 }
                 let (modulator, velocity) = self.envelope(node)?;
+                let definition = *self.envelopes.get(&node.id()).ok_or_else(|| "envelope definition qualification missing".to_owned())?;
+                qualification.envelope(node, definition);
                 if velocity != ir::VelocityResponse::None {
                     return Ok(Err(gap(
                         "envelope VelocityAmount (envelope × velocity product)",
@@ -925,13 +1029,11 @@ impl Translation {
         }
     }
 
-    /// UVI runs a program- or layer-level source once, for every note it
-    /// serves. A program-level retriggered LFO becomes the IR's instrument-wide
-    /// LFO restarted by every voice start; how UVI's shared instance treats
-    /// overlapping notes is inferred, not measured, so it is reported. A
-    /// layer-level one (restarted by its layer's notes only) and shared
-    /// envelopes stay per voice, reported as approximated. Free-running LFOs
-    /// are already one shared cycle.
+    /// Retain the legacy unqualified attachment finding on every reference.
+    /// XML ancestry identifies its declaration, not a proved state/reset owner.
+    /// Existing non-output translation still reports its historical LFO restart
+    /// or per-voice approximation once; shared output qualification rejects that
+    /// missing law independently. Only share() deduplicates presentation.
     fn shared(&self, node: Node, modulators: Vec<ir::ModulatorRef>) -> Option<Shared> {
         let scope = node.parent_element()?.parent_element()?.tag_name().name();
         let retriggered = modulators.iter().any(|m| {
@@ -940,7 +1042,6 @@ impl Translation {
         let lfo = !modulators.is_empty();
         if !matches!(scope, "Program" | "Layer")
             || (lfo && !retriggered)
-            || self.shared_sources.contains(&node.id())
         {
             return None;
         }
@@ -1507,8 +1608,14 @@ mod tests {
         );
         let ir = crate::translate_bank(&xml).unwrap().0;
         assert_eq!(ir.zones.len(), 2);
-        for zone in &ir.zones {
-            assert_eq!(zone.routes.len(), 2, "{:?}", ir.unsupported);
+        assert!(ir.zones.iter().all(|zone|zone.routes.is_empty()),"global inputs must not become one evaluator per player");
+        assert_eq!(ir.source_indices.global_modulation.len(),2);
+        let inputs:Vec<_>=ir.source_indices.global_modulation.iter().flat_map(|entry|entry.sources.iter()).map(|source|ir.modulators[source.0].source.clone()).collect();
+        assert_eq!(inputs,vec![ir::ModulationSource::Controller(7),ir::ModulationSource::Controller(11)]);
+        for entry in &ir.source_indices.global_modulation{
+            assert_eq!(entry.routes.len(),1);
+            assert!(ir.processing_buses.iter().any(|bus|bus.bus==entry.outlet&&bus.owner==Some(entry.owner)));
+            assert!(ir.source_indices.output_controls.iter().any(|home|home.owner==entry.owner&&home.field==ir::SourceOwnerOutputField::Gain));
         }
         assert!(ir.unsupported.iter().all(|u| u.feature != "program or layer modulation"));
     }

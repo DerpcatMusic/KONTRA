@@ -111,6 +111,45 @@ struct PreparedBus {
     source_owner:Option<crate::prepare::PreparedSourceOwnerIndex>,
 }
 
+// Immutable actual source-definition and destination joins. A source is
+// canonical per retained generation/input owner/definition, not per bus or note.
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum ElementSourceKind {Controller(u8),Constant,Property{node:u32,value:crate::ControlId,style:crate::ControlId,bipolar:bool}}
+#[derive(Clone,Copy,PartialEq,Eq)]
+struct ElementSource {
+    owner:crate::prepare::PreparedSourceOwnerIndex,
+    identity:sampler_ir::ModulatorRef,
+    kind:ElementSourceKind,
+}
+impl ElementSource {fn controller(self)->Option<u8>{match self.kind{ElementSourceKind::Controller(cc)=>Some(cc),_=>None}}}
+struct ElementOutput {
+    owner:crate::prepare::PreparedSourceOwnerIndex,
+    input_owner:crate::prepare::PreparedSourceOwnerIndex,
+    bus:usize,
+    points:Box<[usize]>,
+}
+#[derive(Default)]
+struct PreparedElements {
+    modulation:crate::voice_mod::VoiceModulation,
+    sources:Box<[ElementSource]>,
+    inputs:Box<[crate::prepare::PreparedSourceOwnerIndex]>,
+    outputs:Box<[ElementOutput]>,
+    runtime_bytes:usize,
+    max_bytes:usize,
+}
+
+fn element_state_bytes(modulation:&crate::voice_mod::VoiceModulation,sources:usize,outputs:&[ElementOutput],inputs:usize,parameters:usize)->Result<usize,Error>{
+    if outputs.is_empty(){return Ok(0);}
+    let mut bytes=crate::voice_mod::VoiceModState::checked_storage_bytes(modulation.shape(),outputs.len(),outputs.len())?;
+    let points=outputs.iter().try_fold(0usize,|n,output|n.checked_add(output.points.len()).ok_or(Error::Capacity))?;
+    for amount in [std::alloc::Layout::array::<CoreElementMidiPoint>(sources).map_err(|_|Error::Capacity)?.size(),
+        std::alloc::Layout::array::<f64>(points).map_err(|_|Error::Capacity)?.size(),
+        std::alloc::Layout::array::<ControlRamp>(parameters).map_err(|_|Error::Capacity)?.size(),
+        std::alloc::Layout::array::<Option<(crate::ReceiverId,crate::PerformanceId)>>(inputs).map_err(|_|Error::Capacity)?.size()]
+    {bytes=bytes.checked_add(amount).ok_or(Error::Capacity)?;}
+    Ok(bytes)
+}
+
 #[derive(Default)]
 pub(super) struct PreparedBuses {
     nodes: Box<[PreparedBus]>,
@@ -131,6 +170,7 @@ pub(super) struct PreparedBuses {
     channel_workspace_bytes:usize,
     output_controls:Box<[CompiledOutputControl]>,
     output_control_bytes:usize,
+    elements:PreparedElements,
     /// The last caller-declared channel workspace ceiling is retained so
     /// later input-bus selection cannot silently change the admitted price.
     channel_workspace_limit:Option<usize>,
@@ -166,6 +206,10 @@ impl PreparedBuses {
             ]);
         }
         out
+    }
+
+    pub(crate) fn remap_element_controls(&mut self,resolve:impl Fn(crate::control::RealControlIndex)->Result<crate::control::RealControlIndex,Error>)->Result<(),Error>{
+        self.elements.modulation.remap_controls(resolve)
     }
 
     /// Convolution processors across the buses, in bus then processor order.
@@ -284,7 +328,7 @@ impl PreparedBuses {
             input: None,
             filters: filters.finish(),
             channel_workspace_bytes:0,
-            output_controls:Box::new([]),output_control_bytes:0,channel_workspace_limit:None,
+            output_controls:Box::new([]),output_control_bytes:0,elements:Default::default(),channel_workspace_limit:None,
             parameters: parameters.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
         })
@@ -459,13 +503,112 @@ impl Prepared {
         self.buses.output_controls=homes.into_boxed_slice();self.buses.output_control_bytes=bytes;
         self.validate_source_owner_output_controls()?;Ok(self)
     }
+    /// Compile output modulation on actual Program/Layer buses. Each source
+    /// roster entry names its true immutable definition; repeated references
+    /// share one source producer even across different output destinations.
+    /// None is an explicitly constant source, not an absent/fake controller.
+    pub fn with_source_output_modulation(mut self,
+        entries:Vec<(sampler_ir::SourceOwnerId,sampler_ir::SourceOwnerId,usize,crate::ModProgram,Vec<(sampler_ir::ModulatorRef,Option<u8>)>)>,
+        max_bytes:usize)->Result<Self,Error>{
+        use crate::voice_mod::VoiceModulation;
+        let mut programs=Vec::new();let mut bindings=Vec::new();let mut sources=Vec::<ElementSource>::new();let mut inputs=Vec::new();let mut outputs=Vec::new();
+        let count=entries.len();
+        if count>self.source_owners().rows().len(){return Err(Error::Capacity);}
+        programs.try_reserve_exact(count).map_err(|_|Error::Capacity)?;
+        bindings.try_reserve_exact(count).map_err(|_|Error::Capacity)?;
+        outputs.try_reserve_exact(count).map_err(|_|Error::Capacity)?;
+        let mut preparation=std::alloc::Layout::array::<(sampler_ir::SourceOwnerId,sampler_ir::SourceOwnerId,usize,crate::ModProgram,Vec<(sampler_ir::ModulatorRef,Option<u8>)>)>(entries.capacity()).map_err(|_|Error::Capacity)?.size();
+        for (owner,input_owner,bus,program,roster)in entries{
+            let owner=self.source_owner_index(owner).ok_or(Error::InvalidInput)?;
+            let input_owner=self.source_owner_index(input_owner).ok_or(Error::InvalidInput)?;
+            let input_definition=self.source_owners().get(input_owner).ok_or(Error::InvalidInput)?;
+            let output_definition=self.source_owners().get(owner).ok_or(Error::InvalidInput)?;
+            if input_definition.kind!=sampler_ir::SourceOwnerKind::Instrument
+                ||!matches!(output_definition.kind,sampler_ir::SourceOwnerKind::Instrument|sampler_ir::SourceOwnerKind::Layer)
+                ||(owner!=input_owner&&output_definition.parent!=Some(input_owner))
+            {return Err(Error::InvalidInput);}
+            if program.sources.iter().any(|source|matches!(source,crate::ModSource::Controller(_)))&&!inputs.contains(&input_owner){inputs.try_reserve_exact(1).map_err(|_|Error::Capacity)?;inputs.push(input_owner);}
+            if outputs.iter().any(|old:&ElementOutput|old.owner==owner)
+                ||self.buses.nodes.get(bus).is_none_or(|node|node.source_owner!=Some(owner))
+                ||program.sources.len()!=roster.len(){return Err(Error::InvalidInput);}
+            let mut points=Vec::new();points.try_reserve_exact(roster.len()).map_err(|_|Error::Capacity)?;
+            preparation=preparation.checked_add(std::alloc::Layout::array::<(sampler_ir::ModulatorRef,Option<u8>)>(roster.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+            for (index,(identity,controller))in roster.into_iter().enumerate(){
+                let kind=match (program.sources[index],controller){
+                    (crate::ModSource::Controller(a),Some(b))if a==b&&b<128=>ElementSourceKind::Controller(b),
+                    (crate::ModSource::Constant,None)=>ElementSourceKind::Constant,
+                    (crate::ModSource::ConstantProperty{node,value,style,bipolar},None)=>ElementSourceKind::Property{node,value,style,bipolar},
+                    _=>return Err(Error::InvalidInput),
+                };
+                let definition=ElementSource{owner:input_owner,identity,kind};
+                if sources.iter().any(|old|old.owner==input_owner&&old.identity==identity&&*old!=definition){return Err(Error::InvalidInput);}
+                let source=match sources.iter().position(|old|*old==definition){Some(source)=>source,None=>{
+                    sources.try_reserve_exact(1).map_err(|_|Error::Capacity)?;sources.push(definition);sources.len()-1
+                }};
+                points.push(source);
+            }
+            for route in &program.routes {
+                let field=match route.target.compiled(){
+                    Some(crate::voice_mod::CompiledTarget::Attenuate|crate::voice_mod::CompiledTarget::Decibels)=>SourceOwnerControl::Gain,
+                    Some(crate::voice_mod::CompiledTarget::Pan)=>SourceOwnerControl::Pan,
+                    _=>return Err(Error::InvalidInput),
+                };
+                if !self.buses.output_controls.iter().any(|home|home.owner==owner&&home.definition.field==field
+                    &&matches!(home.definition.target,SourceOwnerControlTarget::Bus{bus:target,..}if target==bus))
+                {return Err(Error::InvalidInput);}
+            }
+            bindings.push(Some(programs.len()));programs.push(program);
+            outputs.push(ElementOutput{owner,input_owner,bus,points:points.into_boxed_slice()});
+        }
+        preparation=preparation.checked_add(VoiceModulation::scoped_preparation_bytes(&programs,programs.capacity(),&bindings,bindings.capacity())?).ok_or(Error::Capacity)?;
+        for bytes in [std::alloc::Layout::array::<ElementSource>(sources.capacity()).map_err(|_|Error::Capacity)?.size(),
+            std::alloc::Layout::array::<ElementOutput>(outputs.capacity()).map_err(|_|Error::Capacity)?.size(),
+            outputs.iter().try_fold(0usize,|n,output|n.checked_add(output.points.len().checked_mul(size_of::<usize>()).ok_or(Error::Capacity)?).ok_or(Error::Capacity))?]{
+            preparation=preparation.checked_add(bytes).ok_or(Error::Capacity)?;
+        }
+        preparation=preparation.checked_add(std::alloc::Layout::array::<crate::prepare::PreparedSourceOwnerIndex>(inputs.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+        if preparation>max_bytes{return Err(Error::Capacity);}
+        let modulation=VoiceModulation::new_resolved(programs,bindings,vec![0;count],Vec::new(),|_|None,|id|self.real_control(id))?;
+        self.validate_constant_property_program(&modulation)?;
+        for output in 0..count{modulation.validate_element_program(u32::try_from(output).map_err(|_|Error::Capacity)?)?;}
+        let runtime_bytes=element_state_bytes(&modulation,sources.len(),&outputs,inputs.len(),self.buses.parameters.len())?;
+        if runtime_bytes>max_bytes{return Err(Error::Capacity);}
+        self.buses.elements=PreparedElements{modulation,sources:sources.into_boxed_slice(),inputs:inputs.into_boxed_slice(),outputs:outputs.into_boxed_slice(),runtime_bytes,max_bytes};
+        self.validate_source_owner_output_controls()?;Ok(self)
+    }
+    /// Immutable real source requirements for offaudio installation. Values
+    /// are deliberately absent: caller must supply the supported factory's
+    /// actual constructor defaults, rather than infer a global/channel bank.
+    pub fn source_controller_inputs(&self)->impl Iterator<Item=(sampler_ir::SourceOwnerId,sampler_ir::ModulatorRef,u8)>+'_ {
+        self.buses.elements.sources.iter().filter_map(|source|source.controller().map(|cc|
+            (self.source_owners().rows()[source.owner.index()].id,source.identity,cc)))
+    }
+    pub fn source_output_modulation_storage_bytes(&self)->usize{self.buses.elements.runtime_bytes}
+
     pub fn source_owner_output_binding_bytes(&self)->usize{self.buses.output_control_bytes}
+    pub(crate) fn validate_constant_property_element_inputs(&self)->Result<(),Error>{self.validate_constant_property_program(&self.buses.elements.modulation)}
     pub(crate) fn validate_source_owner_output_controls(&self)->Result<(),Error>{
         let bytes=self.buses.output_controls.len().checked_mul(size_of::<CompiledOutputControl>()).ok_or(Error::Capacity)?;
         if bytes!=self.buses.output_control_bytes{return Err(Error::InvalidInput);}
+        let elements=&self.buses.elements;
+        let element_bytes=element_state_bytes(&elements.modulation,elements.sources.len(),&elements.outputs,elements.inputs.len(),self.buses.parameters.len())?;
+        if element_bytes>elements.max_bytes{return Err(Error::Capacity);}
+        if element_bytes!=elements.runtime_bytes{return Err(Error::InvalidInput);}
         for old in &self.buses.output_controls {
             let current=self.checked_source_output_control(old.definition)?;
             if current.owner!=old.owner || current.lane!=old.lane{return Err(Error::InvalidInput);}
+        }
+        for (index,output)in self.buses.elements.outputs.iter().enumerate(){
+            self.buses.elements.modulation.validate_element_program(u32::try_from(index).map_err(|_|Error::Capacity)?)?;
+            for field in [SourceOwnerControl::Gain,SourceOwnerControl::Pan]{
+                if self.buses.elements.modulation.element_uses(index,field)?
+                    &&!self.buses.output_controls.iter().any(|home|home.owner==output.owner&&home.definition.field==field
+                        &&matches!(home.definition.target,SourceOwnerControlTarget::Bus{bus,..}if bus==output.bus))
+                {return Err(Error::InvalidInput);}
+            }
+            if output.points.iter().any(|&source|self.buses.elements.sources.get(source).is_none_or(|source|source.owner!=output.input_owner))
+                ||self.buses.nodes.get(output.bus).is_none_or(|bus|bus.source_owner!=Some(output.owner))
+            {return Err(Error::InvalidInput);}
         }
         self.voice_modulation.validate_provider_bindings(&self.processing_modulation,&self.region_processing)?;
         self.processing_modulation.validate_scoped_bindings(self.processing_scopes.len(),
@@ -593,6 +736,12 @@ impl ChannelBuffer {
     fn reset(&mut self){self.samples.fill(0.);self.pre.fill(0.);self.work.fill(0.);self.histories.fill(0.);self.dry.fill(0.);self.tone_history.fill([[0.;2];2]);}
 }
 
+// Explicit existing Core control-cell target reader. This is not the native
+// MidiEvent f32 current/target producer, whose32-point/event-offset/SSE law
+// requires a separately admitted initializer and operation order.
+#[derive(Clone,Copy,Default)]
+struct CoreElementMidiPoint {target:f64,accepted_at:u64,original_at:u64,initialized:bool}
+
 pub(super) struct BusState {
     buffers: Box<[Buffer]>,
     channels:Box<[Option<ChannelBuffer>]>,
@@ -615,6 +764,11 @@ pub(super) struct BusState {
     /// Input measurement is opt-in: unobserved buses do no extra sample scan.
     input_peaks: Box<[[f32; 2]]>,
     input_peak_enabled: Box<[bool]>,
+    element_sources:Box<[CoreElementMidiPoint]>,
+    element_bindings:Box<[Option<(crate::ReceiverId,crate::PerformanceId)>]>,
+    element_modulation:crate::voice_mod::VoiceModState,
+    element_points:Box<[f64]>,
+    element_parameters:Box<[ControlRamp]>,
 }
 /// Reset only the failing/expired actual bus's stateful Space owners. The
 /// immutable compilation roster is shared by legacy and typed signal paths.
@@ -625,6 +779,7 @@ fn clear_owned_bus_spaces(spaces:&mut[crate::dsp::Space],owners:&[usize],bus:usi
 
 impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
+        plan.validate_source_owner_output_controls()?;
         Ok(Self {
             buffers: allocate(plan.buses.len())?,
             channels:if plan.buses.nodes.iter().all(|node|node.signal.is_none()){Box::new([])}else{
@@ -653,8 +808,95 @@ impl BusState {
             peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
             input_peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
             input_peak_enabled: vec![false; plan.buses.len()].into_boxed_slice(),
+            element_sources:plan.buses.elements.sources.iter().map(|source|CoreElementMidiPoint{target:1.,initialized:source.controller().is_none(),..Default::default()}).collect(),
+            element_bindings:allocate(plan.buses.elements.inputs.len())?,
+            element_modulation:crate::voice_mod::VoiceModState::new_scoped(&plan.buses.elements.modulation,plan.buses.elements.outputs.len())?,
+            element_points:allocate(plan.buses.elements.outputs.iter().try_fold(0usize,|n,output|n.checked_add(output.points.len()).ok_or(Error::Capacity))?)?,
+            element_parameters:allocate(if plan.buses.elements.outputs.is_empty(){0}else{plan.buses.parameters.len()})?,
         })
     }
+    pub(crate) fn validate_element_readiness(&self,graph:&PreparedBuses)->Result<(),Error>{
+        if self.element_bindings.len()!=graph.elements.inputs.len()||self.element_sources.len()!=graph.elements.sources.len(){return Err(Error::InvalidInput);}
+        if self.element_bindings.iter().any(Option::is_none)||self.element_sources.iter().any(|state|!state.initialized){return Err(Error::NotReady);}
+        Ok(())
+    }
+
+    pub(crate) fn has_element_receiver(&self,receiver:crate::ReceiverId)->bool{
+        self.element_bindings.iter().flatten().any(|(id,_)|*id==receiver)
+    }
+    /// Installation requires every actual source's explicit initial value.
+    /// This function has no MIDI default table or global/channel fallback.
+    pub(crate) fn bind_element_inputs(&mut self,graph:&PreparedBuses,input_owner:crate::prepare::PreparedSourceOwnerIndex,
+        receiver:crate::ReceiverId,performance:crate::PerformanceId,initial:&[(sampler_ir::ModulatorRef,crate::ReceiverValue)],
+        at:u64,tempo:f64,controls:crate::control::RealValuesRef<'_>)->Result<(),Error>{
+        let input=graph.elements.inputs.iter().position(|owner|*owner==input_owner).ok_or(Error::InvalidInput)?;
+        if self.element_bindings[input].is_some(){return Err(Error::Busy);}
+        if initial.iter().any(|(_,value)|!value.normalized().is_finite()||!(0. ..=1.).contains(&value.normalized()))
+            ||initial.iter().enumerate().any(|(n,(id,_))|initial[..n].iter().any(|(old,_)|old==id))
+            ||initial.iter().any(|(id,_)|!graph.elements.sources.iter().any(|source|source.owner==input_owner&&source.identity==*id&&source.controller().is_some()))
+            ||graph.elements.sources.iter().filter(|source|source.owner==input_owner&&source.controller().is_some()).any(|source|!initial.iter().any(|(id,_)|*id==source.identity))
+        {return Err(Error::InvalidInput);}
+        for (index,output)in graph.elements.outputs.iter().enumerate(){if output.input_owner==input_owner{
+            self.element_modulation.validate_element_start(&graph.elements.modulation,index,index,output.points.len())?;
+            if output.points.iter().any(|&source|source>=self.element_sources.len()){return Err(Error::InvalidInput);}
+        }}
+        // No operation after this preflight can allocate or reject: rows and
+        // exact initialization identities belong to this prepared generation.
+        for (source,state)in graph.elements.sources.iter().zip(self.element_sources.iter_mut()){
+            if source.owner==input_owner{
+                if source.controller().is_none(){state.target=1.;state.initialized=true;}
+                for (identity,value)in initial{if *identity==source.identity{state.target=value.normalized();state.initialized=true;}}
+                state.accepted_at=at;state.original_at=at;
+            }
+        }
+        self.element_bindings[input]=Some((receiver,performance));
+        self.prepare_element_points(graph,at,tempo,controls,Some(input_owner))
+    }
+    pub(crate) fn validate_element_input(&self,graph:&PreparedBuses,receiver:crate::ReceiverId,performance:crate::PerformanceId,at:u64)->Result<(),Error>{
+        for (index,source)in graph.elements.sources.iter().enumerate(){
+            if source.controller().is_none(){continue;}
+            let input=graph.elements.inputs.iter().position(|owner|*owner==source.owner).ok_or(Error::InvalidInput)?;
+            if self.element_bindings[input]==Some((receiver,performance)){
+                let state=self.element_sources.get(index).ok_or(Error::InvalidInput)?;
+                if !state.initialized||state.accepted_at>at{return Err(Error::InvalidInput);}
+            }
+        }Ok(())
+    }
+    pub(crate) fn commit_element_input(&mut self,graph:&PreparedBuses,receiver:crate::ReceiverId,performance:crate::PerformanceId,
+        number:u8,value:f64,original_at:u64,at:u64){
+        for (source,state)in graph.elements.sources.iter().zip(self.element_sources.iter_mut()){
+            let accepted=graph.elements.inputs.iter().position(|owner|*owner==source.owner)
+                .is_some_and(|input|self.element_bindings[input]==Some((receiver,performance)));
+            if accepted&&source.controller()==Some(number){state.target=value;state.original_at=original_at;state.accepted_at=at;}
+        }
+    }
+    fn prepare_element_points(&mut self,graph:&PreparedBuses,at:u64,tempo:f64,controls:crate::control::RealValuesRef<'_>,initialize:Option<crate::prepare::PreparedSourceOwnerIndex>)->Result<(),Error>{
+        let mut offset=0usize;
+        for(index,output)in graph.elements.outputs.iter().enumerate(){
+            let end=offset.checked_add(output.points.len()).ok_or(Error::Capacity)?;
+            if initialize.is_some_and(|owner|owner!=output.input_owner){offset=end;continue;}
+            let points=self.element_points.get_mut(offset..end).ok_or(Error::InvalidInput)?;
+            if output.points.iter().all(|&source|self.element_sources.get(source).is_some_and(|state|state.initialized)){
+                for (point,&source)in points.iter_mut().zip(&output.points){*point=self.element_sources[source].target;}
+                let inputs=crate::voice_mod::ElementInputs{points,controls};
+                let clock=crate::voice_mod::Clock{rate:f64::from(graph.rate),tempo,now:at};
+                if initialize.is_some(){self.element_modulation.start_element(&graph.elements.modulation,index,index,&inputs,clock)?;}
+                else{
+                    if self.element_modulation.element_ramp(index).is_err(){self.element_modulation.start_element(&graph.elements.modulation,index,index,&inputs,clock)?;}
+                    // A lazy property-only owner needs the SAME first forecast
+                    // before PCM. Receiver installation keeps its old deferred
+                    // first forecast so an accepted same-F input is observed.
+                    self.element_modulation.advance_element(&graph.elements.modulation,index,&inputs,clock)?;
+                }
+            }else if initialize.is_none(){return Err(Error::InvalidInput);}
+            offset=end;
+        }Ok(())
+    }
+
+    pub(crate) fn prepare_element_outputs(&mut self,graph:&PreparedBuses,at:u64,tempo:f64,controls:crate::control::RealValuesRef<'_>)->Result<(),Error>{
+        self.prepare_element_points(graph,at,tempo,controls,None)
+    }
+
     /// Exchange convolution `slot` with `upload`: no allocation, state starts
     /// empty (the old tail stops), and the bus rings for the new impulse's tail.
     pub fn swap_convolution(
@@ -778,6 +1020,20 @@ impl BusState {
         output:&mut[Frame],outs:&mut[&mut[Frame]],offset:usize,at:u64,tone_cutoff:Option<f64>,tempo:f64,
         mut trace:Option<(&crate::trace::TraceGraph,&mut crate::trace::Recorder)>)->u64{
         let node=&graph.nodes[index];let Some(signal)=node.signal.as_ref()else{return 1;};
+        let element=graph.elements.outputs.iter().enumerate().find(|(_,output)|output.bus==index);
+        if let Some((row,output))=element{
+            let Ok(ramp)=self.element_modulation.element_ramp(row)else{return 1;};
+            self.element_parameters.copy_from_slice(&self.parameters);
+            for (field,from,to,multiply)in [
+                (SourceOwnerControl::Gain,ramp.from.scalar_gain,ramp.to.scalar_gain,true),
+                (SourceOwnerControl::Pan,ramp.from.scalar_pan,ramp.to.scalar_pan,false),
+            ]{
+                if let Some(home)=graph.output_controls.iter().find(|home|home.owner==output.owner&&home.definition.field==field){
+                    self.element_parameters[home.lane].project_owner(from,to,ramp.begin,ramp.end,multiply);
+                }
+            }
+        }
+        let parameters=if element.is_some(){&self.element_parameters}else{&self.parameters};
         let buffer=&mut self.buffers[index];
         if buffer.input_frames==0 && buffer.remaining==0 && !buffer.state_dirty && graph.input!=Some(index){return 0;}
         let Some(channel)=self.channels[index].as_mut()else{return 1;};
@@ -812,7 +1068,7 @@ impl BusState {
             let mut block=[[0.;BLOCK];2];
             for c in 0..2{for frame in 0..frames{block[c][frame]=f64::from(planes[c*stride+frame]);}}
             let fault=crate::dsp::process::<TRACE>(node.processors.as_ref(),states,&mut block,frames,
-                &self.parameters,at,&mut self.delay_samples,
+                parameters,at,&mut self.delay_samples,
                 &mut crate::dsp::svf::FilterContext{tempo,bank:&mut self.filters,expression:None,spaces:&mut self.spaces},
                 if TRACE{trace.as_mut().map(|(graph,recorder)|crate::trace::Section{recorder:&mut **recorder,graph,nodes:&graph.buses[index].stages,identity:Default::default()})}else{None});
             if fault || !crate::dsp::finite_states(&node.processors,states)
@@ -824,7 +1080,7 @@ impl BusState {
             Ok(())
         };
         let rendered=crate::topology::signal::render_program_with_chain(signal,&mut channel.work,&mut channel.histories,&mut channel.dry,
-            &self.parameters,graph.rate,at,produced,&Default::default(),&mut chain);
+            parameters,graph.rate,at,produced,&Default::default(),&mut chain);
         let position=match rendered {Ok(position)=>position,Err(_)=>{states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}};
         if channel.work[position..].iter().take(signal.output.get()*BLOCK).any(|v|!v.is_finite())
             || channel.histories.iter().any(|v|!v.is_finite()){states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
@@ -834,7 +1090,7 @@ impl BusState {
         if signal.output.get()==2{
             for f in 0..produced{self.peaks[index][0]=self.peaks[index][0].max(channel.samples[f].abs());self.peaks[index][1]=self.peaks[index][1].max(channel.samples[BLOCK+f].abs());}
             if TRACE{if let Some((g,r))=trace.as_mut(){let mut block=[[0.;BLOCK];2];for c in 0..2{for f in 0..produced{block[c][f]=f64::from(channel.samples[c*BLOCK+f]);}}
-                let id=g.buses[index].output;r.record(id,&block,&block,produced,[1.;2],true,Default::default(),&self.parameters,&g.nodes[id]);}}
+                let id=g.buses[index].output;r.record(id,&block,&block,produced,[1.;2],true,Default::default(),parameters,&g.nodes[id]);}}
         }
         buffer.state_dirty=true;buffer.dirty=true;
         if produced<len{channel.histories.fill(0.);states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);buffer.state_dirty=false;}

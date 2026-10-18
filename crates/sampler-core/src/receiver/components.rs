@@ -29,6 +29,8 @@ pub(crate) struct ReceiverComponents {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReceiverProvenance {
     Wire(super::Value),
+    /// Actual authored native seven-bit integer, never inferred from Core32.
+    Script7(u8),
     Script,
 }
 
@@ -45,6 +47,9 @@ pub(crate) struct CapturedReceiver {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReceiverActionKind {
+    /// Real Part/source-input admission whose channel has no selected-profile
+    /// voice audience. The physical origin/epoch remains actual, not manager.
+    ElementOnly,
     /// Interpret the actual forwarded controller number in its current profile.
     Controller,
     /// An explicitly configured selected-MPE timbre-to-controller bridge.

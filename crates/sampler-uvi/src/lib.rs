@@ -322,6 +322,10 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             );
         }
     }
+    // Also retain writable definitions which currently have no audio consumer.
+    for node in program.descendants().filter(|n|n.has_tag_name("ConstantModulation")&&n.attribute("ScriptLive").is_some()){
+        engine_parameters::register_constant(&mut out.ir,node).map_err(Translate::Invalid)?;
+    }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
     // Real insert controls exist only now. Join exact original placement and
     // semantic role; no placeholder control or output-field surrogate.
@@ -587,8 +591,8 @@ struct Translation {
     /// Per asset, its sample path as resolved for the loader: an absolute disk
     /// path for loose samples, or the authored bank-relative path for a bank.
     locations: Vec<String>,
-    /// Envelope modulators by their source node, with their velocity law.
-    envelopes: HashMap<roxmltree::NodeId, (ir::ModulatorRef, ir::VelocityResponse)>,
+    /// Actual source-node envelope definitions, velocity law and cached qualification.
+    envelopes: HashMap<roxmltree::NodeId, modulation::EnvelopeDefinition>,
     /// Shared modulators, routes and shapes by identity (see `modulation`).
     modulator_index: HashMap<String, ir::ModulatorRef>,
     /// Offaudio exact source-definition identity, never a runtime value cache.
@@ -728,7 +732,11 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
-        let (program_input,_program_outlet)=self.global_scope_bus(program,ir::Output::Master)?;
+        // The native builtin source factory/cache belongs to this actual
+        // Program. Layer output destinations delegate builtin MIDI lookup to
+        // the same resolved factory; XML ancestry alone is not a state policy.
+        let midi_input_owner=ir::SourceOwnerId::UviNode(u32::try_from(program.id().get_usize()).map_err(|_|"Program MIDI source identity overflow")?);
+        let (program_input,_program_outlet)=self.global_scope_bus(program,ir::Output::Master,midi_input_owner)?;
         let program_output=ir::Output::Bus(program_input);
         self.ir.input_bus=Some(program_input);
         for (_, bus) in &auxes {
@@ -741,7 +749,7 @@ impl Translation {
         {
             let mut scoped = program_scope.clone();
             scoped.extend(self.scope_connections(layer));
-            let (layer_input,layer_outlet)=self.global_scope_bus(layer,program_output)?;
+            let (layer_input,layer_outlet)=self.global_scope_bus(layer,program_output,midi_input_owner)?;
             let output=ir::Output::Bus(layer_input);
             let base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
@@ -830,7 +838,6 @@ impl Translation {
         }
         for connection in connections(keygroup) {
             let target=connection.attribute("Destination");
-            let before=self.ir.unsupported.len();
             if matches!(target,Some("Gain"|"Pan")) && modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default())
                 .is_some_and(|source|source.has_tag_name("ScriptEventModulation")){
                 return Err(format!("{}: shared ScriptEventModulation requires actual source/event ownership, not a nearest-processor guess",path(connection)));
@@ -845,12 +852,14 @@ impl Translation {
                 .filter(|node|number(*node,"Bypass",0.).is_ok_and(|value|value==0.));
             if let Some(envelope)=native_envelope {
                 let (source,velocity)=self.envelope(envelope)?;
+                self.qualify_envelope_output(connection, envelope)?;
                 let route=ir::RouteRef(self.ir.routes.len());
                 self.ir.routes.push(ir::Route{source,target:ir::Target::Amplitude,depth:ir::Depth::Normalized(1.),invert:false,shape:None,smoothing:ir::Time::ZERO,scale:None});
                 shared.routes.push(route);source_gate=Some(ir::SourceScopeGate{source,route,velocity});
-            }else{self.connect(connection,&mut shared)?;}
-            if matches!(target,Some("Gain"|"Pan")) && self.ir.unsupported.len()!=before {
-                return Err(format!("{}: shared output connection has no supported exact modulator program",path(connection)));
+            } else if matches!(target, Some("Gain" | "Pan")) {
+                self.connect_shared_output(connection, &mut shared)?;
+            } else {
+                self.connect(connection, &mut shared)?;
             }
         }
         let mut shared_routes:Vec<_>=shared.routes.iter().copied().filter(|route|matches!(self.ir.routes[route.0].target,ir::Target::Amplitude|ir::Target::Pan)).collect();
@@ -1256,8 +1265,8 @@ impl Translation {
     }
 
     fn envelope(&mut self, node: Node) -> Result<(ir::ModulatorRef, ir::VelocityResponse), String> {
-        if let Some(&found) = self.envelopes.get(&node.id()) {
-            return Ok(found);
+        if let Some(found) = self.envelopes.get(&node.id()) {
+            return Ok((found.modulator, found.velocity));
         }
         self.used.insert(node.id());
         let at = path(node);
@@ -1329,9 +1338,12 @@ impl Translation {
             scope: ir::Scope::Voice,
             source: ir::ModulationSource::Envelope(envelope),
         });
-        let found = (ir::ModulatorRef(self.ir.modulators.len() - 1), velocity);
+        let found = modulation::EnvelopeDefinition {
+            modulator: ir::ModulatorRef(self.ir.modulators.len() - 1), velocity,
+            limitation: modulation::envelope_limitation(node)?,
+        };
         self.envelopes.insert(node.id(), found);
-        Ok(found)
+        Ok((found.modulator, found.velocity))
     }
 
     fn asset(&mut self, at: &str, sample: &str) -> Option<ir::AssetRef> {
@@ -1486,6 +1498,13 @@ impl Translated {
         self.lua.occurrences()
     }
 
+    /// Explicit generic Core opt-in. This does not qualify native property
+    /// precision/smoothing/cadence, even when source-layout DSP is qualified.
+    /// Call after initialized translation, before assembly/publication.
+    pub fn declare_core_constant_target_reads(&mut self){
+        for definition in &mut self.instrument.source_indices.constant_properties{definition.law=ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead;}
+    }
+
     /// Start the program's Lua scripts on their own thread and mark the
     /// instrument as scripted: what they replace is no longer reported, what
     /// they use that is not modeled is. `None` when the program has none.
@@ -1504,6 +1523,7 @@ impl Translated {
         mut config: script::Config,
         state: Option<script::UiState>,
     ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+        require_ordinary_source_publication(&self.instrument).map_err(|error|sampler_kontakt::LoadError::Invalid{path:std::path::PathBuf::new(),reason:error.to_string()}.at(sampler_kontakt::Stage::Translate))?;
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
@@ -1618,6 +1638,16 @@ impl Translated {
 #[track_caller]
 pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Error>> {
     translate_untagged(path).map_err(|e| staged(e, path, sampler_kontakt::Stage::Translate))
+}
+
+/// Ordinary UVI publication still has no admitted native controller source
+/// installer/actor. Bare IR/Core-law construction remains available, but every
+/// ordinary eager-script and assembly path must refuse before side effects.
+fn require_ordinary_source_publication(ir:&ir::Instrument)->Result<(),Translate>{
+    if ir.source_indices.global_modulation.iter().any(|recipe|recipe.sources.iter().any(|source|
+        matches!(ir.modulators.get(source.0).map(|m|&m.source),Some(ir::ModulationSource::Controller(_))))) {
+        return Err(Translate::Invalid("global controller source requires actual prepublication receiver/actor installation".into()));
+    }Ok(())
 }
 
 /// Translate one program of an already opened `bank` to the IR, without its
@@ -2065,6 +2095,7 @@ fn assemble_streamed_cancelable(
     canceled:&(dyn Fn()->bool+Sync),
 )->Result<sampler_kontakt::Streamed,Box<dyn std::error::Error>> {
     if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
+    require_ordinary_source_publication(&instrument).map_err(|error|describe(Path::new(""),error))?;
     initial_playback_assets(&instrument,locations.len())?;
     if sources.len()!=locations.len() {return Err(initial_playback_error("stream/source count mismatch").into());}
     // A new-wide decoder refusal is fatal admission, never unreadable-zone
@@ -2332,6 +2363,10 @@ fn initialized_translation_configured(
     let promote_started = std::time::Instant::now();
     let text = promote(text, &files);
     let promote_ms = promote_started.elapsed().as_secs_f64() * 1000.;
+    // Pure translation guard precedes main/onLoad/onInit and any retained VM.
+    let (preflight,..)=translate_full(&text,source.clone()).map_err(|error|ScriptedTranslationFailure::Translate(Box::new(describe(path,error))))?;
+    require_ordinary_source_publication(&preflight).map_err(|error|ScriptedTranslationFailure::Translate(Box::new(describe(path,error))))?;
+    drop(preflight);
     let host = if profile {
         script::ScriptHost::new_profiled(&text, files.clone(), config, inspected)
     } else if inspected {
@@ -2579,7 +2614,8 @@ mod narrowed_impulse_tests {
 }
 
 /// Mark (`ScriptLive`) the ConstantModulation nodes the program's scripts can
-/// write, so the translator makes them live and the host drives them.
+/// write. The marker discovers the actual definition; it is not a listener ID.
+/// Runtime Value/Style live in the explicit generation ControlState binding.
 fn promote(text: String, scripts: &script::Scripts) -> String {
     let promoted = engine_parameters::promoted_constants(&text, scripts);
     let marks: Vec<_> = promoted
@@ -2781,6 +2817,7 @@ fn assemble(
     decoded: Vec<Result<audio::InitialDecoded, String>>,
     options: &sampler_kontakt::Options,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    require_ordinary_source_publication(&instrument).map_err(|error|describe(Path::new(""),error))?;
     initial_playback_assets(&instrument,locations.len())?;
     if decoded.len()!=locations.len() {return Err(initial_playback_error("decoded/source count mismatch").into());}
     bind_native_header_geometry(&mut instrument,&decoded.iter().map(|source|source.as_ref().ok().and_then(|decoded|decoded.original_channels.map(|channels|(channels,decoded.source.as_source().channels().get())))).collect::<Vec<_>>())?;

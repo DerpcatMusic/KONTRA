@@ -1306,12 +1306,21 @@ fn level_change(xml: &str) -> (f64, f64) {
         .attach_script(48000, Config::default())
         .unwrap()
         .unwrap();
+    // The unchanged settled-level fixture tests the declared Core property
+    // reader, not an unqualified native Constant temporal law.
+    translated.declare_core_constant_target_reads();
     let streamed =
         sampler_uvi::assemble_translated_streamed(translated, 48000, &Default::default()).unwrap();
     let limits = Limits::for_plan(&streamed.loaded.plan, 4, 4);
     let mut rt = Runtime::new(streamed.loaded.plan, limits)
         .unwrap()
         .with_stream_cache(streamed.cache);
+    // Explicit standalone property-only authority. This is not callback/MIDI
+    // admission and never discovers or falls back to a later active Plan.
+    let property_plan=rt.active_plan();
+    if rt.source_constant_properties(property_plan).unwrap().next().is_some(){
+        attached.driver.bind_source_properties(&rt,property_plan).unwrap();
+    }
     // Let the script thread's load-time commands arrive before the note.
     for _ in 0..20 {
         attached.driver.wake(&mut rt).unwrap();

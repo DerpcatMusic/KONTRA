@@ -167,6 +167,7 @@ impl Prepared {
         self.processing_modulation=Default::default();
         let ranges=vec![0;scopes.len()];
         let modulation=crate::voice_mod::VoiceModulation::new_resolved(programs,scopes,ranges,Vec::new(),|_|None,|id|self.real_control(id))?;
+        self.validate_constant_property_program(&modulation)?;
         for(scope,definition)in self.processing_scopes.iter().enumerate(){
             if !definition.parameters.is_empty()&&modulation.program(scope).is_none(){return Err(Error::InvalidInput);}
         }

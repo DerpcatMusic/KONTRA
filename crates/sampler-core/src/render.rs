@@ -200,6 +200,15 @@ impl Runtime {
         if outs.iter().any(|o| o.len() < output.len()) {
             return Err(Error::InvalidInput);
         }
+        // Source installation is explicit. Missing real input bindings refuse
+        // before due work, output writes, cursor advance or callback dispatch.
+        for generation in self.plans.slots.iter().filter_map(|slot|slot.value.as_ref()){
+            generation.dsp.buses.validate_element_readiness(&generation.prepared.buses)?;
+            if generation.prepared.source_output_modulation_storage_bytes()!=0&&!output.is_empty(){
+                let last=self.now.checked_add(u64::try_from(output.len()).map_err(|_|Error::ClockOverflow)?).and_then(|end|end.checked_sub(1)).ok_or(Error::ClockOverflow)?;
+                last.checked_div(super::voice_mod::CELL).and_then(|cell|cell.checked_add(1)).and_then(|cell|cell.checked_mul(super::voice_mod::CELL)).ok_or(Error::ClockOverflow)?;
+            }
+        }
         self.validate_external_render_prefix(output.len())?;
         let start = std::time::Instant::now();
         self.stream_fault = None;
@@ -325,6 +334,9 @@ impl Runtime {
             }
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 let start = offset + (at - self.now) as usize;
+                if g.dsp.buses.prepare_element_outputs(&g.prepared.buses,at,self.tempo,g.controls.base_reals()).is_err(){
+                    self.nonfinite_frames=self.nonfinite_frames.saturating_add(1);continue;
+                }
                 let faults = g.dsp.buses.render::<TRACE>(
                     &g.prepared.buses,
                     output,

@@ -1703,3 +1703,327 @@ fn binding148_r2_moving_base_matches_real_physical_midpoint_or_neutral_law_on_ac
         assert_eq!(actual.now(),530);assert_eq!(reference.now(),530);assert_eq!(actual.stats().nonfinite_frames,0);assert_eq!(actual.control_base_value(a,id),Ok(ControlValue::Real(700.)));
     }}}
 }
+
+
+// Actual retained-Plan input owner -> real post-FX outlet. No note is selected
+// to manufacture the Program source input. Explicit initial values belong to
+// this fixture; they are not a native constructor-default assertion.
+fn element_controller_plan(external:bool)->sampler_core::Prepared {
+    let mut instrument=explicit_output_instrument(false,true);
+    instrument.modulators.push(ir::Modulator{scope:ir::Scope::Master,source:ir::ModulationSource::Controller(7)});
+    instrument.routes.push(ir::Route::new(ir::ModulatorRef(0),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
+    instrument.source_indices.global_modulation.push(ir::SourceGlobalModulation{
+        owner:ir::SourceOwnerId::UviNode(0),input_owner:ir::SourceOwnerId::UviNode(0),outlet:ir::BusRef(0),
+        sources:vec![ir::ModulatorRef(0)],routes:vec![ir::RouteRef(0)]});
+    if external{
+        instrument.source_indices.owners[0].event_processors.push(ir::SourceEventProcessor{
+            id:ir::SourceEventProcessorId::UviNode(40),owner:ir::SourceOwnerId::UviNode(0),ordinal:0,
+            kind:"ScriptProcessor".into(),bypass:ir::SourceSwitch{saved:false,control:None}});
+    }
+    assert!(instrument.validate().is_ok());
+    let plan=lower(&instrument,48000,pcm(),|_,p|Ok(p)).unwrap();
+    assert_eq!(plan.source_controller_inputs().collect::<Vec<_>>(),vec![(ir::SourceOwnerId::UviNode(0),ir::ModulatorRef(0),7)]);
+    if external{
+        plan.with_source_controller_entries(vec![ir::SourceEventProcessorId::UviNode(40)],1,1<<20).unwrap()
+    }else{plan}
+}
+fn element_controller_runtime(external:bool)->(sampler_core::Runtime,sampler_core::ReceiverId){
+    let plan=element_controller_plan(external);let mut limits=sampler_core::Limits::for_plan(&plan,8,16);limits.channels=48;
+    let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
+    let owner=sampler_core::OwnedReceiver::new(&rt,0,0,sampler_core::ReceiverZone::Lower,1,8).unwrap();
+    let receiver=rt.bind_receiver(owner).unwrap();let plan=rt.active_plan();
+    rt.bind_receiver_source_input(receiver,plan,ir::SourceOwnerId::UviNode(0),&[(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits32(u32::MAX))]).unwrap();
+    (rt,receiver)
+}
+fn element_wire_cc(rt:&mut sampler_core::Runtime,receiver:sampler_core::ReceiverId,channel:u8,value:u32){
+    rt.apply_receiver(receiver,Some(sampler_core::ReceiverChannelVoice{version:sampler_core::ReceiverVersion::Midi1,group:0,channel,
+        message:sampler_core::ReceiverMessage::Control{index:7,value:sampler_core::ReceiverValue::Bits32(value)}}),false,None).unwrap();
+}
+fn element_ramp_literal(out:&[[f32;2]],from:f64,to:f64,begin:u64,end:u64,at:u64){
+    for (n,frame)in out.iter().enumerate(){let frame_at=at+n as u64;
+        let fraction=if frame_at<=begin{0.}else if frame_at>=end{1.}else{(frame_at-begin)as f64/(end-begin)as f64};
+        let expected=(0.1*(from+(to-from)*fraction))as f32;
+        for &sample in frame{assert!((sample-expected).abs()<3e-7,"frame={frame_at} actual={sample} expected={expected}");}
+    }
+}
+#[test]
+fn real_element_input_accepts_outside_mpe_voice_zone_without_channel_mirroring_or_heap(){
+    let(mut rt,receiver)=element_controller_runtime(false);let plan=rt.active_plan();let performance=rt.performance(0).unwrap();
+    let note=rt.trigger(pan_input(801),60,1.).unwrap();let address=sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:13};
+    let mut output=[[0.;2];64];
+    support::without_heap(||{element_wire_cc(&mut rt,receiver,13,0);rt.render(&mut output).unwrap();});
+    element_ramp_literal(&output,1.,0.,0,64,0);
+    assert_eq!(rt.channel_controller(performance,address,7),Ok(0),"element-only audience must not fabricate a selected-profile channel write");
+    assert!(rt.note(note).unwrap().2);assert_eq!(rt.voice_count(),2);assert_eq!(rt.active_plan(),plan);assert_eq!(rt.stats().nonfinite_frames,0);
+    support::without_heap(||{rt.note_off_exact(note,None).unwrap();rt.render(&mut output).unwrap();rt.flush_ended(|_|true);});
+    assert_eq!(rt.voice_count(),0);
+}
+#[test]
+fn element_only_callback_consume_wait_same_route_edit_and_checked_reroute_keep_real_audiences(){
+    use sampler_core::{ExternalOutput as O,ExternalOutputResult as R};
+    let(mut rt,receiver)=element_controller_runtime(true);let performance=rt.performance(0).unwrap();
+    let note=rt.trigger(pan_input(802),60,1.).unwrap();
+    element_wire_cc(&mut rt,receiver,13,0);let consumed=rt.pending_external_turn().unwrap().unwrap();
+    assert_eq!(consumed.logical_channel,Some(13));rt.begin_external_turn(consumed.input).unwrap();rt.complete_external_segment(consumed.input,None).unwrap();
+    let mut output=[[0.;2];16];support::without_heap(||rt.render(&mut output).unwrap());element_ramp_literal(&output,1.,1.,0,64,0);
+    element_wire_cc(&mut rt,receiver,13,0);let waiting=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(waiting.input).unwrap();
+    rt.complete_external_segment(waiting.input,Some(32)).unwrap();support::without_heap(||rt.render(&mut output).unwrap());
+    rt.service_external_boundary().unwrap();let resumed=rt.pending_external_turn().unwrap().unwrap();assert_eq!(resumed.input.behavior(),waiting.input.behavior());assert_eq!(resumed.resume_frame,32);
+    rt.begin_external_turn(resumed.input).unwrap();assert_eq!(rt.post_external_output(resumed.input,O::Controller{number:7,value:0}).unwrap(),R::Forwarded);
+    rt.complete_external_segment(resumed.input,None).unwrap();
+    let outside=sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:13};
+    assert_eq!(rt.channel_controller(performance,outside,7),Ok(0));
+    let mut tail=[[0.;2];32];support::without_heap(||rt.render(&mut tail).unwrap());element_ramp_literal(&tail,1.,1.,0,64,32);
+    // The existing absolute control-cell law is explicit: the accepted F32
+    // value enters the next future point, without priming away any transient.
+    support::without_heap(||rt.render(&mut tail).unwrap());element_ramp_literal(&tail,1.,0.,64,128,64);
+    element_wire_cc(&mut rt,receiver,13,u32::MAX);let routed=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(routed.input).unwrap();
+    assert_eq!(rt.post_external_output(routed.input,O::RoutedController{number:7,value:u32::MAX,channels:1}).unwrap(),R::Forwarded);
+    rt.complete_external_segment(routed.input,None).unwrap();
+    let manager=sampler_core::ChannelAddress{channel:0,..outside};assert_eq!(rt.channel_controller(performance,manager,7),Ok(u32::MAX));assert_eq!(rt.channel_controller(performance,outside,7),Ok(0));
+    assert_eq!(rt.stats().nonfinite_frames,0);assert!(rt.note(note).unwrap().2);
+}
+#[test]
+fn element_source_installation_rejects_incomplete_or_foreign_initialization_before_publication(){
+    let plan=element_controller_plan(false);let mut limits=sampler_core::Limits::for_plan(&plan,8,16);limits.channels=48;
+    let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();let owner=sampler_core::OwnedReceiver::new(&rt,0,0,sampler_core::ReceiverZone::Lower,1,8).unwrap();let receiver=rt.bind_receiver(owner).unwrap();let plan=rt.active_plan();
+    let source=ir::SourceOwnerId::UviNode(0);
+    for invalid in [vec![],vec![(ir::ModulatorRef(1),sampler_core::ReceiverValue::Bits32(u32::MAX))],vec![(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits7(1)),(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits7(2))]]{
+        assert_eq!(rt.bind_receiver_source_input(receiver,plan,source,&invalid),Err(Error::InvalidInput));assert_eq!(rt.now(),0);assert_eq!(rt.active_plan(),plan);assert_eq!(rt.note_count(),0);
+    }
+    rt.bind_receiver_source_input(receiver,plan,source,&[(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits32(u32::MAX))]).unwrap();
+    assert_eq!(rt.bind_receiver_source_input(receiver,plan,source,&[(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits7(0))]),Err(Error::Busy));
+    rt.trigger(pan_input(803),60,1.).unwrap();let mut output=[[0.;2];32];support::without_heap(||rt.render(&mut output).unwrap());element_ramp_literal(&output,1.,1.,0,64,0);assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+#[test]
+fn element_wire_seven_bit_point_is_native_raw_over127_not_upscaled_bank_fraction(){
+    let(mut rt,receiver)=element_controller_runtime(false);rt.trigger(pan_input(804),60,1.).unwrap();
+    rt.apply_receiver(receiver,Some(sampler_core::ReceiverChannelVoice{version:sampler_core::ReceiverVersion::Midi1,group:0,channel:13,
+        message:sampler_core::ReceiverMessage::Control{index:7,value:sampler_core::ReceiverValue::Bits7(64)}}),false,None).unwrap();
+    let mut output=[[0.;2];64];support::without_heap(||rt.render(&mut output).unwrap());
+    element_ramp_literal(&output,1.,64./127.,0,64,0);
+    let wrong=0.1*(1.+(0.5-1.)*63./64.);assert!((f64::from(output[63][0])-wrong).abs()>3e-4,"oracle must distinguish min-center-max channel-bank normalization");
+    assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+#[test]
+fn missing_element_binding_refuses_render_before_pcm_cursor_clock_or_due_publication(){
+    let plan=element_controller_plan(false);let mut limits=sampler_core::Limits::for_plan(&plan,8,16);limits.channels=48;
+    let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();let note=rt.trigger(pan_input(805),60,1.).unwrap();
+    let mut output=[[0.75;2];17];assert_eq!(rt.render(&mut output),Err(Error::NotReady));assert_eq!(output,[[0.75;2];17]);assert_eq!(rt.now(),0);assert!(rt.note(note).unwrap().2);
+    let mut seen=0;assert!(rt.visit_onset_voices(|voice|{assert_eq!(voice.cursor.traversal,0);seen+=1;true}));assert_eq!(seen,2);
+    let state=sampler_core::OwnedReceiver::new(&rt,0,0,sampler_core::ReceiverZone::Lower,1,8).unwrap();let receiver=rt.bind_receiver(state).unwrap();
+    rt.bind_receiver_source_input(receiver,rt.active_plan(),ir::SourceOwnerId::UviNode(0),&[(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits7(127))]).unwrap();
+    support::without_heap(||rt.render(&mut output).unwrap());element_ramp_literal(&output,1.,1.,0,64,0);assert_eq!(rt.now(),17);assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+#[test]
+fn authored_seven_bit_source_point_is_distinct_from_identical_core32_payload(){
+    use sampler_core::ExternalOutput as O;
+    let(mut seven,a)=element_controller_runtime(true);let(mut full,b)=element_controller_runtime(true);
+    seven.trigger(pan_input(806),60,1.).unwrap();full.trigger(pan_input(806),60,1.).unwrap();
+    // Both final channel-bank payloads are exactly identical. Their source
+    // provenance is an explicit API fact rather than an equality heuristic.
+    let value=sampler_core::ReceiverValue::Bits7(64).full_scale();assert_eq!(value,0x8000_0000);
+    for(rt,id,output)in[(&mut seven,a,O::Controller7{number:7,value:64}),(&mut full,b,O::Controller{number:7,value})]{
+        element_wire_cc(rt,id,13,value);let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+        support::without_heap(||{rt.post_external_output(turn.input,output).unwrap();rt.complete_external_segment(turn.input,None).unwrap();});
+    }
+    let mut raw=[[0.;2];64];let mut normalized=raw;
+    support::without_heap(||{seven.render(&mut raw).unwrap();full.render(&mut normalized).unwrap();});
+    element_ramp_literal(&raw,1.,64./127.,0,64,0);element_ramp_literal(&normalized,1.,f64::from(value)/f64::from(u32::MAX),0,64,0);
+    assert!((raw[63][0]-normalized[63][0]).abs()>3e-4);
+    for(rt,id)in[(&mut seven,a),(&mut full,b)]{
+        let perf=rt.performance(0).unwrap();let outside=sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:13};
+        assert_eq!(rt.channel_controller(perf,outside,7),Ok(0));
+        // Explicit checked reroute changes the audience; same-route replacement
+        // above remained element-only even though its Core32 payload was equal.
+        element_wire_cc(rt,id,13,value);let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+        support::without_heap(||{rt.post_external_output(turn.input,O::RoutedController7{number:7,value:64,channels:1}).unwrap();rt.complete_external_segment(turn.input,None).unwrap();});
+        assert_eq!(rt.channel_controller(perf,sampler_core::ChannelAddress{channel:0,..outside},7),Ok(value));
+        assert_eq!(rt.channel_controller(perf,outside,7),Ok(0));assert_eq!(rt.stats().nonfinite_frames,0);
+    }
+}
+#[test]
+fn malformed_authored_seven_bit_edits_leave_running_turn_owner_and_source_unchanged(){
+    use sampler_core::ExternalOutput as O;
+    let(mut actual,a)=element_controller_runtime(true);let(mut reference,b)=element_controller_runtime(true);
+    let note=actual.trigger(pan_input(807),60,1.).unwrap();reference.trigger(pan_input(807),60,1.).unwrap();
+    element_wire_cc(&mut actual,a,13,0);element_wire_cc(&mut reference,b,13,0);
+    let turn=actual.pending_external_turn().unwrap().unwrap();actual.begin_external_turn(turn.input).unwrap();
+    let expr=actual.expression_id(note).unwrap();let before=(actual.now(),actual.note(note).unwrap(),actual.expression(expr).unwrap(),actual.active_plan());
+    for output in[O::Controller7{number:128,value:64},O::Controller7{number:7,value:128},O::RoutedController7{number:7,value:64,channels:0},O::RoutedController7{number:7,value:64,channels:1<<13}]{
+        support::without_heap(||assert_eq!(actual.post_external_output(turn.input,output),Err(Error::InvalidInput)));
+        assert_eq!((actual.now(),actual.note(note).unwrap(),actual.expression(expr).unwrap(),actual.active_plan()),before);
+        assert_eq!(actual.running_external_turn(turn.input).unwrap().input,turn.input);
+    }
+    actual.post_external_output(turn.input,O::Controller7{number:7,value:64}).unwrap();actual.complete_external_segment(turn.input,None).unwrap();
+    let other=reference.pending_external_turn().unwrap().unwrap();reference.begin_external_turn(other.input).unwrap();reference.post_external_output(other.input,O::Controller7{number:7,value:64}).unwrap();reference.complete_external_segment(other.input,None).unwrap();
+    let mut out=[[0.;2];65];let mut expected=out;support::without_heap(||{actual.render(&mut out).unwrap();reference.render(&mut expected).unwrap();});assert_eq!(out,expected);element_ramp_literal(&out,1.,64./127.,0,64,0);
+}
+#[test]
+fn authored_seven_bit_mpe_timbre_keeps_real_member_gesture_precision(){
+    use sampler_core::{ExternalOutput as O,ReceiverMessage as M,ReceiverValue as V};
+    let(mut rt,receiver)=element_controller_runtime(true);
+    let start=rt.apply_receiver(receiver,Some(sampler_core::ReceiverChannelVoice{version:sampler_core::ReceiverVersion::Midi1,group:0,channel:1,
+        message:M::NoteOn{key:60,velocity:V::Bits7(100),attribute:Default::default()}}),false,None).unwrap();
+    let sampler_core::ReceiverApplied::Started(note)=start else{panic!("expected real selected member note")};
+    let expr=rt.expression_id(note).unwrap();assert_eq!(rt.expression(expr).unwrap().timbre,V::Bits7(64).full_scale());
+    rt.apply_receiver(receiver,Some(sampler_core::ReceiverChannelVoice{version:sampler_core::ReceiverVersion::Midi1,group:0,channel:1,
+        message:M::Control{index:74,value:V::Bits7(1)}}),false,None).unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(turn.input).unwrap();
+    support::without_heap(||{rt.post_external_output(turn.input,O::Controller7{number:74,value:33}).unwrap();rt.complete_external_segment(turn.input,None).unwrap();});
+    assert_eq!(rt.expression(expr).unwrap().timbre,V::Bits7(33).full_scale());
+    assert!(rt.note(note).unwrap().2);assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+#[test]
+fn spawned_actual_task_preserves_captured_element_only_audience_without_new_context_storage(){
+    use sampler_core::{ExternalOutput as O,SourceTaskFamily as T};
+    let plan=element_controller_plan(true).with_source_task_entries(vec![(ir::SourceEventProcessorId::UviNode(40),T::Spawned)],1).unwrap();
+    let mut limits=sampler_core::Limits::for_plan(&plan,8,16);limits.channels=48;
+    let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();let receiver=rt.bind_receiver(sampler_core::OwnedReceiver::new(&rt,0,0,sampler_core::ReceiverZone::Lower,1,8).unwrap()).unwrap();
+    rt.bind_receiver_source_input(receiver,rt.active_plan(),ir::SourceOwnerId::UviNode(0),&[(ir::ModulatorRef(0),sampler_core::ReceiverValue::Bits7(127))]).unwrap();
+    let note=rt.trigger(pan_input(808),60,1.).unwrap();element_wire_cc(&mut rt,receiver,13,0);
+    let parent=rt.pending_external_turn().unwrap().unwrap();rt.begin_external_turn(parent.input).unwrap();
+    let child=rt.spawn_source_task(parent.input,false).unwrap();rt.complete_external_segment(parent.input,None).unwrap();rt.service_external_boundary().unwrap();
+    let turn=rt.pending_external_turn().unwrap().unwrap();assert_eq!(turn.input.behavior(),child);rt.begin_external_turn(turn.input).unwrap();
+    support::without_heap(||{rt.post_external_output(turn.input,O::Controller{number:7,value:0}).unwrap();rt.complete_external_segment(turn.input,None).unwrap();});
+    let outside=sampler_core::ChannelAddress{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channel:13};
+    assert_eq!(rt.channel_controller(rt.performance(0).unwrap(),outside,7),Ok(0));assert!(rt.note(note).unwrap().2);
+    let mut output=[[0.;2];64];support::without_heap(||rt.render(&mut output).unwrap());element_ramp_literal(&output,1.,0.,0,64,0);
+    assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+
+//42g: actual definition properties use ControlState, never Note.mods/defaults.
+fn constant_property_ir(value:f64)->ir::Instrument{
+    let mut instrument=graph(true);
+    instrument.controls=vec![
+        ir::Control{key:"constant:value".into(),label:"Value".into(),value:ir::ControlValue::Continuous{min:f64::MIN,max:f64::MAX,default:value,unit:ir::ControlUnit::None},automation:ir::Automation::None},
+        ir::Control{key:"constant:style".into(),label:"Style".into(),value:ir::ControlValue::Toggle{default:false},automation:ir::Automation::None},
+    ];
+    instrument.source_indices.constant_properties.push(ir::SourceConstantProperty{node:88,owner:ir::SourceOwnerId::UviNode(0),value:ir::ControlRef(0),style:ir::ControlRef(1),bipolar:false,law:ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead});
+    instrument.modulators.push(ir::Modulator{scope:ir::Scope::Voice,source:ir::ModulationSource::ConstantProperty{node:88,value:ir::ControlRef(0),style:ir::ControlRef(1),bipolar:false}});
+    instrument.routes.push(ir::Route::new(ir::ModulatorRef(0),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
+    for zone in &mut instrument.zones{zone.routes.push(ir::RouteRef(0));}
+    instrument
+}
+fn constant_property_pcm()->Vec<Pcm>{(0..2).map(|_|Pcm::new(48000,vec![[0.1;2];4096].into_boxed_slice()).unwrap()).collect()}
+fn constant_property_plan(value:f64)->sampler_core::Prepared{
+    lower(&constant_property_ir(value),48000,constant_property_pcm(),|_,plan|Ok(plan)).unwrap()
+}
+fn constant_property_partition_render(runtime:&mut sampler_core::Runtime,output:&mut [[f32;2]],parts:&[usize]){
+    let mut offset=0;for &frames in parts{let end=offset+frames;runtime.render(&mut output[offset..end]).unwrap();offset=end;}assert_eq!(offset,output.len());
+}
+#[test]
+fn constant_definition_initial_target_matches_independent_static_gain_and_future_notes(){
+    use sampler_core::{Runtime,Limits,ControlValue,SourceConstantField as Field};
+    let plan=constant_property_plan(0.25);let limits=Limits::for_plan(&plan,8,8);
+    let mut actual=Runtime::new(plan,limits).unwrap();let plan=actual.active_plan();
+    let mut reference_ir=graph(true);for zone in &mut reference_ir.zones{zone.gain=ir::Gain::Linear(0.25);}
+    let reference_plan=lower(&reference_ir,48000,constant_property_pcm(),|_,plan|Ok(plan)).unwrap();let reference_limits=Limits::for_plan(&reference_plan,8,8);let mut reference=Runtime::new(reference_plan,reference_limits).unwrap();
+    assert_eq!(actual.source_constant_property(plan,88).unwrap().value,0.25);
+    let split_plan=constant_property_plan(0.25);let split_limits=Limits::for_plan(&split_plan,8,8);let mut split=Runtime::new(split_plan,split_limits).unwrap();let split_plan=split.active_plan();
+    let input=pan_input(42_001);let a=actual.trigger(input,60,1.).unwrap();let b=reference.trigger(input,60,1.).unwrap();let split_note=split.trigger(input,60,1.).unwrap();let mut output=[[0.;2];64];let mut expected=output;let mut split_output=output;
+    support::without_heap(||{actual.render(&mut output).unwrap();reference.render(&mut expected).unwrap();});
+    for (a,b)in output.iter().zip(expected){for c in 0..2{assert!((a[c]-b[c]).abs()<1e-7);}}
+    support::without_heap(||constant_property_partition_render(&mut split,&mut split_output,&[1,17,31,15]));assert_eq!(output,split_output);
+    let now=actual.now();let revision=actual.source_constant_property(plan,88).unwrap().revision;
+    support::without_heap(||{assert!(actual.set_source_constant_property(plan,88,Field::Value,ControlValue::Real(f64::NAN)).is_err());});
+    assert_eq!((actual.now(),actual.source_constant_property(plan,88).unwrap().revision),(now,revision));
+    support::without_heap(||{actual.set_source_constant_property(plan,88,Field::Value,ControlValue::Real(1.)).unwrap();});
+    split.set_source_constant_property(split_plan,88,Field::Value,ControlValue::Real(1.)).unwrap();
+    // Ordinary per-voice mix consumes the END of each sample: established
+    // envelope_attenuation_ramps_exactly_under_any_partition_without_heap law.
+    // This is distinct from the global ControlRamp absolute-time outlet path.
+    actual.render(&mut output).unwrap();
+    support::without_heap(||constant_property_partition_render(&mut split,&mut split_output,&[1,17,31,15]));assert_eq!(output,split_output);
+    for (index,frame)in output.iter().enumerate(){for c in 0..2{let expected=f64::from(expected[0][c])*(1.+3.*(index+1) as f64/64.);assert!((f64::from(frame[c])-expected).abs()<1e-7);}}
+    for c in 0..2{assert!((f64::from(output[0][c])-f64::from(expected[0][c])*(1.+3./64.)).abs()<1e-7,"first physical sample consumes one step");assert!((f64::from(output[63][c])-f64::from(expected[0][c])*4.).abs()<1e-7,"64th physical sample reaches target");}
+    split.release(split_note).unwrap();split.render(&mut split_output).unwrap();split.flush_ended(|_|true);
+    actual.render(&mut output).unwrap();
+    actual.release(a).unwrap();reference.release(b).unwrap();actual.render(&mut output).unwrap();reference.render(&mut expected).unwrap();actual.flush_ended(|_|true);reference.flush_ended(|_|true);
+    let fresh=actual.trigger(pan_input(42_002),60,1.).unwrap();actual.render(&mut output).unwrap();assert!(output.iter().flatten().any(|v|*v>0.01));
+    assert_eq!(actual.source_constant_property(plan,88).unwrap().value,1.);actual.release(fresh).unwrap();
+}
+#[test]
+fn constant_property_batch_invalid_late_field_preserves_raw_target_style_revision_and_pcm(){
+    use sampler_core::{Runtime,Limits,ControlValue,ControlWrite,SourceConstantField as Field};
+    let prepared=constant_property_plan(0.25);let limits=Limits::for_plan(&prepared,4,4);let mut runtime=Runtime::new(prepared,limits).unwrap();let plan=runtime.active_plan();
+    runtime.trigger(pan_input(42_003),60,1.).unwrap();let mut before=[[0.;2];32];runtime.render(&mut before).unwrap();
+    let old=runtime.source_constant_property(plan,88).unwrap();let binding=runtime.source_constant_properties(plan).unwrap().next().unwrap();
+    let mut writes=[ControlWrite{id:binding.value,value:ControlValue::Real(0.9)},ControlWrite{id:binding.style,value:ControlValue::Real(1.)}];writes.sort_by_key(|write|write.id);
+    support::without_heap(||assert!(runtime.edit_controls(plan,None,&writes).is_err()));
+    let now=runtime.now();assert_eq!(runtime.source_constant_property(plan,88).unwrap(),sampler_core::SourceConstantSnapshot{frame:now,..old});
+    let mut after=[[0.;2];32];runtime.render(&mut after).unwrap();assert_eq!(before,after);
+    assert!(runtime.set_source_constant_property(plan,88,Field::Style,ControlValue::Integer(1)).is_err());
+    runtime.set_source_constant_property(plan,88,Field::Style,ControlValue::Toggle(true)).unwrap();
+    runtime.set_source_constant_property(plan,88,Field::Value,ControlValue::Real(0.5)).unwrap();let mut trajectory=[[0.;2];96];
+    let split_prepared=constant_property_plan(0.25);let split_limits=Limits::for_plan(&split_prepared,4,4);let mut split=Runtime::new(split_prepared,split_limits).unwrap();let split_plan=split.active_plan();let split_note=split.trigger(pan_input(42_003),60,1.).unwrap();let mut split_prefix=[[0.;2];64];
+    support::without_heap(||constant_property_partition_render(&mut split,&mut split_prefix,&[1,17,31,15]));for frame in split_prefix{assert_eq!(frame,before[0]);}
+    split.set_source_constant_property(split_plan,88,Field::Style,ControlValue::Toggle(true)).unwrap();split.set_source_constant_property(split_plan,88,Field::Value,ControlValue::Real(0.5)).unwrap();let mut split_trajectory=trajectory;
+    for chunk in trajectory.chunks_mut(32){runtime.render(chunk).unwrap();}
+    support::without_heap(||constant_property_partition_render(&mut split,&mut split_trajectory,&[1,17,31,15,1,31]));assert_eq!(trajectory,split_trajectory);
+    for (index,frame)in trajectory.iter().enumerate(){for c in 0..2{let expected=f64::from(before[0][c])*(1.-(index+1).min(64) as f64/64.);assert!((f64::from(frame[c])-expected).abs()<1e-7,"declared Core64 route ramp at{index}");}}
+    for c in 0..2{assert!((f64::from(trajectory[0][c])-f64::from(before[0][c])*63./64.).abs()<1e-7,"first physical sample consumes one step");}assert_eq!(trajectory[63],[0.;2],"64th physical sample reaches exact zero");
+    split.release(split_note).unwrap();split.render(&mut split_prefix).unwrap();split.flush_ended(|_|true);
+    assert_eq!(&trajectory[64..],&[[0.;2];32],"Style1 tie is declared-Core0; source remains held");assert_eq!(runtime.voice_count(),2);
+    runtime.set_source_constant_property(plan,88,Field::Value,ControlValue::Real(7.)).unwrap();assert_eq!(runtime.source_constant_property(plan,88).unwrap().value,7.,"raw getter is finite authored Value; output clamps separately");
+}
+#[test]
+fn constant_role_schema_remap_missing_domain_and_capacity_are_prepublication_refusals(){
+    let prepared=constant_property_plan(0.25);let definitions=prepared.controls().to_vec();let properties=prepared.source_constant_properties().collect::<Vec<_>>();
+    assert!(prepared.source_constant_storage_bytes().unwrap()>0);
+    assert!(matches!(prepared.with_source_constant_properties(properties,0),Err(Error::Capacity)));
+    let mut reversed=definitions.clone();reversed.reverse();assert!(constant_property_plan(0.25).with_controls(reversed).is_ok());
+    assert!(constant_property_plan(0.25).with_controls(definitions.iter().copied().take(1).collect()).is_err());
+    let mut wrong=definitions;let style=constant_property_plan(0.25).source_constant_properties().next().unwrap().style;
+    let field=wrong.iter_mut().find(|field|field.id==style).unwrap();field.domain=sampler_core::ControlDomain::Real{min:0.,max:1.};field.default=sampler_core::ControlValue::Real(0.);
+    assert!(constant_property_plan(0.25).with_controls(wrong).is_err());
+}
+#[test]
+fn constant_old_generation_binding_never_retargets_or_prevents_actual_retirement(){
+    use sampler_core::{Runtime,Limits,ControlValue,SourceConstantField as Field};
+    let prepared=constant_property_plan(0.25);let limits=Limits::for_plan(&prepared,8,8);let(mut runtime,mut control)=Runtime::with_plan_updates(prepared,limits,3,2).unwrap();let old=runtime.active_plan();let note=runtime.trigger(pan_input(42_004),60,1.).unwrap();
+    let request=control.submit(Box::new(constant_property_plan(0.75))).unwrap();assert_eq!(runtime.poll_plan_update(),Ok(Some(request)));let new=runtime.active_plan();assert_ne!(old,new);
+    runtime.set_source_constant_property(old,88,Field::Value,ControlValue::Real(0.5)).unwrap();assert_eq!(runtime.source_constant_property(new,88).unwrap().value,0.75);
+    runtime.release(note).unwrap();let mut output=[[0.;2];128];runtime.render(&mut output).unwrap();runtime.flush_ended(|_|true);assert_eq!(runtime.collect_retired_plans(),1);
+    assert_eq!(runtime.source_constant_property(old,88),Err(Error::StaleHandle));assert_eq!(runtime.set_source_constant_property(old,88,Field::Value,ControlValue::Real(1.)),Err(Error::StaleHandle));assert_eq!(runtime.source_constant_property(new,88).unwrap().value,0.75);
+    runtime.set_source_constant_property(new,88,Field::Value,ControlValue::Real(0.625)).unwrap();let snapshot=runtime.source_constant_property(new,88).unwrap();let performance=runtime.performance(0).unwrap();
+    runtime.reset_protocol_controller_targets(performance,sampler_core::ChannelScope{protocol:sampler_core::Protocol::Midi1,port:0,group:0,channels:1},None).unwrap();assert_eq!(runtime.source_constant_property(new,88).unwrap(),snapshot);
+    runtime.panic();assert_eq!(runtime.source_constant_property(new,88).unwrap().value,0.625);
+}
+
+#[test]
+fn actual_property_only_global_output_starts_without_fictitious_receiver_and_keeps_core_cell_order(){
+    use sampler_core::{Runtime,Limits,ControlValue,SourceConstantField as Field};
+    let mut instrument=explicit_output_instrument(false,true);let value=ir::ControlRef(instrument.controls.len());let style=ir::ControlRef(value.0+1);
+    instrument.controls.push(ir::Control{key:"global-constant:value".into(),label:"actual definition Value".into(),value:ir::ControlValue::Continuous{min:f64::MIN,max:f64::MAX,default:0.25,unit:ir::ControlUnit::None},automation:ir::Automation::None});instrument.controls.push(ir::Control{key:"global-constant:style".into(),label:"actual definition Style".into(),value:ir::ControlValue::Toggle{default:false},automation:ir::Automation::None});
+    instrument.source_indices.constant_properties.push(ir::SourceConstantProperty{node:89,owner:ir::SourceOwnerId::UviNode(0),value,style,bipolar:false,law:ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead});
+    instrument.modulators.push(ir::Modulator{scope:ir::Scope::Master,source:ir::ModulationSource::ConstantProperty{node:89,value,style,bipolar:false}});instrument.routes.push(ir::Route::new(ir::ModulatorRef(0),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
+    instrument.source_indices.global_modulation.push(ir::SourceGlobalModulation{owner:ir::SourceOwnerId::UviNode(0),input_owner:ir::SourceOwnerId::UviNode(0),outlet:ir::BusRef(0),sources:vec![ir::ModulatorRef(0)],routes:vec![ir::RouteRef(0)]});
+    let prepared=lower(&instrument,48000,constant_property_pcm(),|_,plan|Ok(plan)).unwrap();assert!(prepared.source_controller_inputs().next().is_none());let limits=Limits::for_plan(&prepared,4,8);let mut rt=Runtime::new(prepared,limits).unwrap();let plan=rt.active_plan();rt.trigger(pan_input(42_005),60,1.).unwrap();let mut first=[[0.;2];32];support::without_heap(||rt.render(&mut first).unwrap());
+    for frame in first{for sample in frame{assert!((sample-0.025).abs()<3e-7);}}
+    support::without_heap(||{rt.set_source_constant_property(plan,89,Field::Value,ControlValue::Real(0.75)).unwrap();});
+    let mut tail=[[0.;2];96];support::without_heap(||{for part in tail.chunks_mut(32){rt.render(part).unwrap();}});
+    for (index,frame)in tail.iter().enumerate(){let expected=if index<32{0.025}else{0.025+0.05*(index-32)as f64/64.};for sample in frame{assert!((f64::from(*sample)-expected).abs()<3e-7,"Core cell frame{index}");}}
+    assert_eq!(rt.source_constant_property(plan,89).unwrap().value,0.75);assert_eq!(rt.stats().nonfinite_frames,0);assert_eq!(rt.voice_count(),2);
+}
+
+#[test]
+fn malformed_constant_definition_and_unqualified_native_law_never_reach_behavior_publication(){
+    for malformed in 0..4{
+        let mut instrument=constant_property_ir(0.25);assert!(instrument.validate().is_ok());
+        match malformed{
+            0=>instrument.source_indices.constant_properties[0].owner=ir::SourceOwnerId::UviNode(999),
+            1=>{let row=instrument.source_indices.constant_properties[0].clone();instrument.source_indices.constant_properties.push(row);},
+            2=>if let ir::ModulationSource::ConstantProperty{bipolar,..}=&mut instrument.modulators[0].source{*bipolar=true;},
+            _=>instrument.controls[1].value=ir::ControlValue::Continuous{min:0.,max:1.,default:0.,unit:ir::ControlUnit::None},
+        }
+        assert!(instrument.validate().is_err());let bound=std::cell::Cell::new(false);assert!(lower(&instrument,48000,constant_property_pcm(),|_,plan|{bound.set(true);Ok(plan)}).is_err());assert!(!bound.get());
+    }
+    let mut instrument=constant_property_ir(0.25);instrument.source_indices.constant_properties[0].law=ir::SourceConstantPropertyLaw::UnqualifiedNative;assert!(instrument.validate().is_ok());instrument.behaviors.push(ir::Behavior{name:"not-run".into(),language:ir::Language::Ksp,source:String::new(),slot:None,state:vec![],requires:vec![]});let bound=std::cell::Cell::new(false);
+    let error=lower(&instrument,48000,constant_property_pcm(),|_,plan|{bound.set(true);Ok(plan)}).err().unwrap();assert!(error.to_string().contains("declared-Core target reader"));assert!(!bound.get());
+}

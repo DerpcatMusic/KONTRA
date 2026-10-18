@@ -48,6 +48,9 @@ pub enum ExternalOutput {
     /// performs its declared seven-bit conversion before this API.
     Controller { number:u8,value:u32 },
     RoutedController { number:u8,value:u32,channels:u16 },
+    /// Native authored integer, retained independently of its channel-bank ABI.
+    Controller7 {number:u8,value:u8},
+    RoutedController7 {number:u8,value:u8,channels:u16},
     /// Value-only poly edit retains the captured key AND exact physical selector.
     PolyPressure {value:u32},
     /// Explicit new logical key/mask reselects execution owners, never host IDs.
@@ -231,6 +234,27 @@ impl Runtime {
                 }
                 ExternalOutputResult::Forwarded
             }
+            ExternalOutput::Controller7{number,value}|ExternalOutput::RoutedController7{number,value,..}=>{
+                if number>=128||value>=128{return Err(Error::InvalidInput);}
+                let routed=if let ExternalOutput::RoutedController7{channels,..}=output{
+                    if channels==0{return Err(Error::InvalidInput);}Some(channels)
+                }else{None};
+                let full=super::Value::Bits7(value).full_scale();
+                if let CapturedChannelAction::None=state.captured{
+                    if routed.is_some(){return Err(Error::InvalidInput);}
+                    // A true channel-less task keeps its established global
+                    // write law; it does not acquire a fabricated Part input.
+                    self.write_behavior_controller(id.callback,number,full)?;
+                }else{
+                    let mut event=self.external_controller_template(state)?;
+                    event.number=number;event.value=full;event.poly_key=None;event.poly_recipients=None;
+                    self.mark_script_controller(&mut event);
+                    if let Some(channels)=routed{self.route_external_controller(&mut event,channels)?;}
+                    if let Some(capture)=event.receiver.as_mut(){capture.provenance=super::components::ReceiverProvenance::Script7(value);}
+                    self.post_external_controller(id.callback,state,event)?;
+                }
+                ExternalOutputResult::Forwarded
+            }
             ExternalOutput::PolyPressure{value}|ExternalOutput::RoutedPolyPressure{value,..}=>{
                 let mut event=self.external_controller_template(state)?;
                 if matches!(output,ExternalOutput::PolyPressure{..})&&event.poly_key.is_none(){return Err(Error::InvalidInput);}
@@ -276,7 +300,10 @@ impl Runtime {
         Ok(result)
     }
     fn mark_script_controller(&self,event:&mut ControllerEvent){
-        if let Some(capture)=event.receiver.as_mut(){capture.provenance=super::components::ReceiverProvenance::Script;capture.kind=super::components::ReceiverActionKind::Controller;}
+        if let Some(capture)=event.receiver.as_mut(){
+            capture.provenance=super::components::ReceiverProvenance::Script;
+            if !matches!(capture.kind,super::components::ReceiverActionKind::ElementOnly){capture.kind=super::components::ReceiverActionKind::Controller;}
+        }
     }
     fn route_external_controller(&self,event:&mut ControllerEvent,channels:u16)->Result<(),Error>{
         if channels==0{return Err(Error::InvalidInput);}
@@ -284,7 +311,11 @@ impl Runtime {
         if let Some(capture)=event.receiver{
             let state=self.receiver(capture.receiver)?;let domain=super::state::OwnedReceiver::domain(event.origin.protocol)?;
             if (0..16u8).any(|channel|channels&(1<<channel)!=0&&!state.accepts_wire_channel(domain,channel)){return Err(Error::InvalidInput);}
-        }Ok(())
+        }
+        // An explicitly checked logical reroute obtains its real profile
+        // audience; a value-only edit above retains ElementOnly instead.
+        if let Some(capture)=event.receiver.as_mut(){capture.kind=super::components::ReceiverActionKind::Controller;}
+        Ok(())
     }
     fn external_controller_template(&self,state:ExternalState)->Result<ControllerEvent,Error>{
         match state.captured{

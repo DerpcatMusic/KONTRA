@@ -105,13 +105,14 @@ pub enum ModSource {
     Script(u16),
     /// [`Self::Script`] read as a bipolar source (-1..=1).
     ScriptBipolar(u16),
+    ConstantProperty{node:u32,value:crate::ControlId,style:crate::ControlId,bipolar:bool},
     /// The note's raw pitch bend ([`crate::Expression::bend`]), -1..=1.
     PitchBend,
 }
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
 }
 
@@ -354,6 +355,7 @@ enum InputSource {
     Constant,
     ReleaseCounter(u32),
     Script(u16),
+    ConstantProperty{node:u32,value:crate::ControlId,style:crate::ControlId,bipolar:bool},
     PitchBend,
 }
 
@@ -509,6 +511,33 @@ impl VoiceModulation {
             }
         }Ok(())
     }
+    pub(crate) fn validate_constant_properties(&self,valid:impl Fn(u32,crate::ControlId,crate::ControlId,bool)->bool)->Result<(),Error>{
+        for program in &self.programs{for source in &program.sources{
+            if let Prepared::Input(InputSource::ConstantProperty{node,value,style,bipolar})=*source{
+                if !valid(node,value,style,bipolar){return Err(Error::InvalidInput);}
+            }
+        }}Ok(())
+    }
+    /// Element input programs have a real controller-source producer and no
+    /// note-context/native source. Validate again after any program/schema edit.
+    pub(crate) fn validate_element_program(&self,index:u32)->Result<usize,Error>{
+        let p=self.programs.get(index as usize).ok_or(Error::InvalidInput)?;
+        if p.native.is_some()||p.provider_scope.is_some()
+            ||p.sources.iter().any(|s|!matches!(s,Prepared::Input(InputSource::Controller(cc)) if *cc<128) && !matches!(s,Prepared::Input(InputSource::Constant|InputSource::ConstantProperty{..})))
+            ||p.targets.iter().any(|t|!matches!(t,CompiledTarget::Attenuate|CompiledTarget::Decibels|CompiledTarget::Pan))
+        {return Err(Error::InvalidInput);}
+        Ok(p.sources.len())
+    }
+
+    pub(crate) fn element_uses(&self,index:usize,field:crate::SourceOwnerControl)->Result<bool,Error>{
+        self.validate_element_program(u32::try_from(index).map_err(|_|Error::Capacity)?)?;
+        Ok(self.programs[index].targets.iter().any(|target|match field{
+            crate::SourceOwnerControl::Gain=>matches!(target,CompiledTarget::Attenuate|CompiledTarget::Decibels),
+            crate::SourceOwnerControl::Pan=>matches!(target,CompiledTarget::Pan),
+            crate::SourceOwnerControl::OutputMute|crate::SourceOwnerControl::MidiMute=>false,
+        }))
+    }
+
     /// Revalidate compiled processor references after a control-side topology edit.
     /// The target kind and index must still belong to this prepared generation.
     pub(crate) fn validate_dsp_targets(
@@ -723,6 +752,7 @@ impl VoiceModulation {
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::Input(InputSource::ReleaseCounter(frames)),
                         ModSource::Script(id) | ModSource::ScriptBipolar(id) => Prepared::Input(InputSource::Script(id)),
+                        ModSource::ConstantProperty{node,value,style,bipolar}=>Prepared::Input(InputSource::ConstantProperty{node,value,style,bipolar}),
                         ModSource::PitchBend => Prepared::Input(InputSource::PitchBend),
                     })
                 })
@@ -968,6 +998,7 @@ impl VoiceModulation {
                             | Prepared::Input(InputSource::Random)
                             | Prepared::Input(InputSource::Constant)
                             | Prepared::Input(InputSource::Script(_))
+                            | Prepared::Input(InputSource::ConstantProperty{..})
                             | Prepared::Input(InputSource::PitchBend)
                     )
                 }) && program.routes.iter().all(|r| r.lag == 0)
@@ -1127,6 +1158,7 @@ impl InputSource {
             Self::Timbre => f64::from(inputs.timbre) * FULL_SCALE,
             Self::Random => uniform(hash(seed, index as u64, u64::MAX)),
             Self::Constant => 1.0,
+            Self::ConstantProperty{node,value,style,bipolar}=>inputs.controls.constant_property(node,value,style,bipolar),
             Self::PitchBend => inputs.bend,
             Self::Script(id) => (f64::from(inputs.script.get(id)) / 1_000_000.0).clamp(-1.0, 1.0),
             Self::ReleaseCounter(frames) => {
@@ -1171,10 +1203,13 @@ impl Program {
 
     /// Live depth control of route `i`, else its saved depth.
     fn base_depth(&self, i: usize, inputs: &Inputs<'_>) -> f64 {
+        self.base_depth_controls(i,inputs.controls)
+    }
+    fn base_depth_controls(&self,i:usize,controls:RealValuesRef<'_>)->f64{
         match self.controls.binary_search_by_key(&i, |c| c.0) {
             Ok(at) => {
                 let [depth, bypass] = self.controls[at].1;
-                if inputs.controls.get(bypass) == 0. { inputs.controls.get(depth) * self.routes[i].live_gain } else { 0. }
+                if controls.get(bypass) == 0. { controls.get(depth) * self.routes[i].live_gain } else { 0. }
             }
             Err(_) => self.routes[i].depth,
         }
@@ -1312,6 +1347,14 @@ impl<'a> Inputs<'a> {
             bend: expression.bend,
         }
     }
+}
+
+/// Actual source-owner points in this program's immutable source order.
+/// The owner produces them once; destination programs only borrow the view.
+/// Unlike Inputs this type cannot contain manufactured note context.
+pub(crate) struct ElementInputs<'a>{
+    pub points:&'a[f64],
+    pub controls:RealValuesRef<'a>,
 }
 
 /// Per-chunk results a voice renders with.
@@ -1756,6 +1799,63 @@ impl VoiceModState {
         self.times[voice] = [clock.now; 2];
     }
 
+    pub(crate) fn validate_element_start(&self,modulation:&VoiceModulation,row:usize,region:usize,points:usize)->Result<(),Error>{
+        let index=modulation.program(region).ok_or(Error::InvalidInput)?;
+        let sources=modulation.validate_element_program(index)?;
+        if row>=self.program.len()||row>=self.pending_restart.len()||points!=sources
+            ||self.previous_values.len()<self.sources.checked_mul(self.program.len()).ok_or(Error::Capacity)?
+        {return Err(Error::InvalidInput);}Ok(())
+    }
+
+    /// Initialize a real element output row at its installation frame. All
+    /// validation precedes state writes; the same priced scoped arrays are used.
+    pub(crate) fn start_element(&mut self,modulation:&VoiceModulation,row:usize,region:usize,
+        inputs:&ElementInputs<'_>,clock:Clock)->Result<(),Error>{
+        let index=modulation.program(region).ok_or(Error::InvalidInput)?;
+        self.validate_element_start(modulation,row,region,inputs.points.len())?;
+        if inputs.points.iter().any(|v|!v.is_finite()){return Err(Error::InvalidInput);}
+        let sources=inputs.points.len();
+        let p=&modulation.programs[index as usize];
+        self.program[row]=Some(index);self.seed[row]=0;self.age[row]=0;self.pending_start[row]=false;
+        self.pending_restart[row]=None;
+        let point=self.evaluate_points(p,row,inputs.controls,None,clock,0,true,(clock.now,0),ProviderView::empty(),
+            |source,index|match source{InputSource::ConstantProperty{node,value,style,bipolar}=>inputs.controls.constant_property(node,value,style,bipolar),_=>inputs.points[index]});
+        self.outputs[row]=point;self.previous[row]=point;self.times[row]=[clock.now;2];
+        let span=row*self.sources..row*self.sources+sources;
+        self.previous_values[span.clone()].copy_from_slice(&self.values[span]);
+        Ok(())
+    }
+
+    pub(crate) fn element_ramp(&self,row:usize)->Result<Ramp,Error>{
+        self.program(row).ok_or(Error::InvalidInput)?;
+        let [begin,end]=*self.times.get(row).ok_or(Error::InvalidInput)?;
+        Ok(Ramp{from:self.previous[row],to:self.outputs[row],begin,end,script_fade:None})
+    }
+
+    /// Forecast exactly once at the absolute shared control boundary. Source
+    /// points must be provided for that target by the canonical element owner.
+    pub(crate) fn advance_element(&mut self,modulation:&VoiceModulation,row:usize,
+        inputs:&ElementInputs<'_>,clock:Clock)->Result<Ramp,Error>{
+        let index=self.program(row).ok_or(Error::InvalidInput)?;
+        let sources=modulation.validate_element_program(index)?;
+        if inputs.points.len()!=sources||inputs.points.iter().any(|v|!v.is_finite())
+            ||self.previous_values.len()<self.sources.checked_mul(self.program.len()).ok_or(Error::Capacity)?
+        {return Err(Error::InvalidInput);}
+        let [_,end]=self.times[row];
+        if clock.now>=end{
+            let target=(clock.now/CELL).checked_add(1).and_then(|v|v.checked_mul(CELL)).ok_or(Error::Capacity)?;
+            let frames=u32::try_from(target.checked_sub(end).ok_or(Error::InvalidInput)?).map_err(|_|Error::Capacity)?;
+            let p=&modulation.programs[index as usize];
+            let span=row*self.sources..row*self.sources+sources;
+            self.previous_values[span.clone()].copy_from_slice(&self.values[span]);
+            let next=self.evaluate_points(p,row,inputs.controls,None,Clock{now:target,..clock},frames,false,(0,0),ProviderView::empty(),
+                |source,index|match source{InputSource::ConstantProperty{node,value,style,bipolar}=>inputs.controls.constant_property(node,value,style,bipolar),_=>inputs.points[index]});
+            self.previous[row]=std::mem::replace(&mut self.outputs[row],next);self.times[row]=[end,target];
+        }
+        let [begin,end]=self.times[row];
+        Ok(Ramp{from:self.previous[row],to:self.outputs[row],begin,end,script_fade:None})
+    }
+
     /// Constant native loop lanes respond at event fragments, independently of the source clock.
     pub fn loop_offsets(
         &self,
@@ -1900,7 +2000,22 @@ impl VoiceModState {
         onset: bool,
         restart:(u64,u64),provider:ProviderView<'_>,
     ) -> Outputs {
-        let native = p.native.as_ref().filter(|_| self.native.as_mut_slice().get(voice).is_some_and(Option::is_some));
+        let seed=self.seed[voice];
+        self.evaluate_points(p,voice,inputs.controls,Some(inputs),clock,frames,onset,restart,provider,
+            |source,index|source.input(inputs,seed,index))
+    }
+
+    // Both voice and element programs use this exact route/shape/lag/scalar
+    // evaluator. Element points are supplied by their real source owner; no
+    // Note, velocity, key, expression or arbitrary channel snapshot is made.
+    fn evaluate_points(
+        &mut self,p:&Program,voice:usize,controls:RealValuesRef<'_>,note_inputs:Option<&Inputs<'_>>,
+        clock:Clock,frames:u32,onset:bool,restart:(u64,u64),provider:ProviderView<'_>,
+        mut input_point:impl FnMut(InputSource,usize)->f64,
+    )->Outputs {
+        let native_context=p.native.as_ref().zip(note_inputs)
+            .filter(|_|self.native.as_mut_slice().get(voice).is_some_and(Option::is_some));
+        let native=native_context.map(|(program,_)|program);
         let seed = self.seed[voice];
         let age = self.age[voice].saturating_add(frames);
         self.age[voice] = age;
@@ -1921,7 +2036,7 @@ impl VoiceModState {
                 let mut phase = phases[i];
                 for &r in &p.phase_routes[i] {
                     let route = &p.routes[r];
-                    phase += p.base_depth(r, inputs)
+                    phase += p.base_depth_controls(r,controls)
                         * p.transform(route, values[route.source], p.bipolar[route.source]);
                 }
                 phases[i] = phase;
@@ -1937,7 +2052,7 @@ impl VoiceModState {
                         // LfoInputs.rate is relative to the saved rate.
                         let mut lane = p.rate_lane[i];
                         for &r in &p.rate_routes[i] {
-                            let base = p.base_depth(r, inputs);
+                            let base = p.base_depth_controls(r,controls);
                             let (v, d) = p.route_point(r, &p.routes[r], values, &mut lagged[r], &mut scale_lagged[r * SCALE_LAGS..][..SCALE_LAGS], base, frames, onset);
                             processor_values[r] = d * v;
                             if onset {
@@ -1983,7 +2098,7 @@ impl VoiceModState {
                 Prepared::Breakpoints(b) => f64::from(
                     self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
                 ),
-                Prepared::Input(input) => input.input(inputs, seed, i),
+                Prepared::Input(input) => input_point(input,i),
                 Prepared::Provider(source)=>provider.at(source.source,clock.now),
             };
             if p.cacheable || native.is_some() {
@@ -1991,14 +2106,14 @@ impl VoiceModState {
             }
             values[i] = value;
         }
-        let native_point = native.map(|native| {
+        let native_point = native_context.map(|(native,inputs)| {
             let state = self.native.as_mut_slice()[voice].as_mut().unwrap();
             // The pinned owner observes raw inputs and live intensity/bypass
             // values. Unrelated residual sources must not invalidate its cache.
             state.plan_controls_read_with_intensity(&native.plan,
                 |s,t| crate::whole_voice::read(inputs,s,t), 0, frames as usize,
                 |assignment, m| match p.native_controls[assignment] {
-                    Some(([depth, bypass], scale)) => if inputs.controls.get(bypass) == 0. { (inputs.controls.get(depth) / scale) as f32 } else { 0. },
+                    Some(([depth, bypass], scale)) => if controls.get(bypass) == 0. { (controls.get(depth) / scale) as f32 } else { 0. },
                     None => m.intensity,
                 })
         });
@@ -2012,14 +2127,14 @@ impl VoiceModState {
         out.pitch = native_point.map_or(0., |p| f64::from(p.1));
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
-        let mut controls = p.controls.iter().peekable();
+        let mut route_controls = p.controls.iter().peekable();
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
             let scale_lagged = &mut scale_lagged[i * SCALE_LAGS..][..SCALE_LAGS];
             // Bypass masks the route, not the source clock/lag; resume never restarts it.
-            let base = match controls.peek().copied() {
+            let base = match route_controls.peek().copied() {
                 Some(&(index, [depth, bypass])) if index == i => {
-                    controls.next();
-                    if inputs.controls.get(bypass) == 0. { inputs.controls.get(depth) * route.live_gain } else { 0. }
+                    route_controls.next();
+                    if controls.get(bypass) == 0. { controls.get(depth) * route.live_gain } else { 0. }
                 }
                 _ => route.depth,
             };
@@ -2027,7 +2142,8 @@ impl VoiceModState {
             match control {
                 crate::whole_voice::Route::Flex => continue,
                 crate::whole_voice::Route::External(assignment) => {
-                    let m = &native.unwrap().plan.description().mods.assignments()[assignment as usize];
+                    let Some((native,inputs))=native_context else {continue;};
+                    let m = &native.plan.description().mods.assignments()[assignment as usize];
                     let (source,target) = m.route.unwrap();
                     if target != crate::v1_voice_controls::Target::Module { continue; }
                     let input = crate::whole_voice::read(inputs, source, target);

@@ -193,8 +193,24 @@ fn unsupported_shared_pan_refuses_normal_translation_without_partial_plan() {
     let original=std::fs::read_to_string(&path).unwrap();
     for tag in ["Program","Layer"] {
         let old=format!("<{tag} Gain=\"1\">");let replacement=format!("{old}<Connections><SignalConnection Source=\"@MIDI CC 1\" Destination=\"Pan\" Ratio=\"1\"/></Connections>");
-        let xml=original.replace(&old,&replacement);assert_ne!(xml,original);std::fs::write(&path,xml).unwrap();
-        let error=sampler_uvi::translate_path(&path).err().expect("no per-player global-Pan fallback");assert!(error.to_string().contains("live global Gain/Pan requires the actual shared owner modulator; no per-source fallback"),"{error}");
+        let xml=original.replace(&old,&replacement);assert_ne!(xml,original);assert!(xml.contains(PAN_COUPLED),"same coupled nonlinear shared section must remain authored");std::fs::write(&path,&xml).unwrap();
+        // Translation now retains the actual definition/owner/outlet. That is
+        // not permission to publish an uninstalled global controller producer.
+        let mut translated=sampler_uvi::translate_path(&path).unwrap();let ir=&translated.instrument;
+        assert_eq!(ir.assets.len(),3);assert_eq!(ir.zones.len(),3);assert_eq!(translated.groups.len(),3);
+        assert!(ir.zones.iter().all(|zone|zone.pan.position==0.&&zone.routes.iter().all(|route|ir.routes[route.0].target!=sampler_ir::Target::Pan)),"global Pan must never be cloned/baked onto physical players");
+        let shared=ir.source_indices.processing.iter().find(|recipe|recipe.members.len()==3).expect("all three original players, including the dormant member, retain one shared section");assert_eq!(shared.members,vec![sampler_ir::ZoneRef(0),sampler_ir::ZoneRef(1),sampler_ir::ZoneRef(2)]);
+        assert_eq!(ir.source_indices.global_modulation.len(),1);let recipe=&ir.source_indices.global_modulation[0];assert_eq!(recipe.sources.len(),1);assert_eq!(recipe.routes.len(),1);
+        let owner=ir.source_indices.owners.iter().find(|owner|owner.id==recipe.owner).unwrap();assert_eq!(owner.kind,if tag=="Program"{sampler_ir::SourceOwnerKind::Instrument}else{sampler_ir::SourceOwnerKind::Layer});
+        assert_eq!(ir.source_indices.owners.iter().find(|owner|owner.id==recipe.input_owner).unwrap().kind,sampler_ir::SourceOwnerKind::Instrument);
+        let route=&ir.routes[recipe.routes[0].0];assert_eq!(route.target,sampler_ir::Target::Pan);assert_eq!(route.source,recipe.sources[0]);assert!(matches!(ir.modulators[route.source.0].source,sampler_ir::ModulationSource::Controller(1)));
+        let home=ir.source_indices.output_controls.iter().find(|home|home.owner==recipe.owner&&home.field==sampler_ir::SourceOwnerOutputField::Pan).expect("actual owner Pan home");
+        let sampler_ir::SourceOwnerControlTarget::Bus{bus,node}=home.target else{panic!("global output requires its actual bus operand");};assert_eq!(bus,recipe.outlet);
+        let output=ir.processing_buses.iter().find(|output|output.bus==bus).unwrap();assert_eq!(output.owner,Some(recipe.owner));
+        let sampler_ir::ProcessingSignalNode::Pan(pan)=&output.signal.nodes[node]else{panic!("actual explicit Pan role must resolve to its outlet operand");};assert_eq!(pan.position.control.as_deref(),Some(ir.controls[home.control.0].key.as_str()));
+        let before=ir.clone();
+        let error=translated.attach_script(RATE,Default::default()).err().expect("no eager Lua/Part publication without a real receiver/actor installer");assert_eq!(error.stage(),Some(sampler_kontakt::Stage::Translate));assert!(error.to_string().contains("global controller source requires actual prepublication receiver/actor installation"),"{error}");assert_eq!(translated.instrument,before);
+        let error=sampler_uvi::load(&path,RATE).err().expect("normal loader must not publish an unbound global source");assert!(error.to_string().contains("global controller source requires actual prepublication receiver/actor installation"),"{error}");assert_eq!(translated.instrument,before);assert_eq!(std::fs::read_to_string(&path).unwrap(),xml);
     }
 }
 #[test]

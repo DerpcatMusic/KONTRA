@@ -93,6 +93,7 @@ struct Pending {
     id: u64,
     status: Arc<Status>,
     thread: Thread,
+    processor: Option<usize>,
 }
 
 struct Worker {
@@ -190,7 +191,7 @@ impl DataLoads {
             shared
                 .deferred
                 .borrow_mut()
-                .push((pending.thread, args, super::PlayCreator::None));
+                .push((pending.thread, args, super::PlayCreator::None, pending.processor, super::input_authority::PreparedLuaOrigin::None));
         }
         Ok(())
     }
@@ -304,7 +305,7 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
                     status: status.clone(),
                 })
                 .map_err(|_| mlua::Error::runtime("loadData worker queue unavailable"))?;
-            loads.pending.push(Pending { id, status, thread });
+            loads.pending.push(Pending { id, status, thread, processor:s.processor.get() });
             Ok(task)
         })?,
     )

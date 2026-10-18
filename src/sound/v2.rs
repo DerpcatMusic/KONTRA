@@ -150,7 +150,22 @@ pub struct Part {
     grower: Option<Grower>,
     /// The program's Lua scripts: they choose which of its oscillators play.
     script: Option<Box<ScriptDriver>>,
+    /// Exact transport routing state; the Runtime remains sole token authority.
+    /// A retained result owns payloads until the Lua owner accepts the reply.
+    execution_actor:PartExecutionActor,
 }
+
+#[derive(Default)]
+struct PartExecutionActor {
+    enabled:bool,
+    pending:Option<sampler_core::ExternalTurn>,
+    reply:Option<sampler_uvi::script::AuthorityReply>,
+    fault:Option<sampler_core::Error>,
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(crate) enum ExecutionBoundary {Ready{frames:usize},Parked}
+
 
 /// Bytes the system could give a new allocation without swapping, from
 /// `/proc/meminfo`; `None` where that is unavailable.
@@ -413,7 +428,70 @@ impl Part {
             _stream: None,
             grower: None,
             script: None,
+            execution_actor:PartExecutionActor::default(),
         })
+    }
+
+    /// Inactive candidate setup only. The caller must have used the genuine
+    /// staged constructor and installed actual executable family entries. This
+    /// method does not install a worker or infer capability from XML metadata.
+    pub(crate) fn bind_execution_actor(&mut self,timeout:std::time::Duration)->Result<(),String>{
+        if self.execution_actor.enabled{return Err("execution actor already bound".into());}
+        let script=self.script.as_mut().ok_or("execution actor has no actual Lua owner")?;
+        script.bind_external_authority(&self.runtime,self.runtime.active_plan(),timeout)?;
+        self.execution_actor.enabled=true;Ok(())
+    }
+
+    fn service_execution_actor(&mut self)->Result<bool,sampler_core::Error>{
+        use sampler_uvi::script::{AuthorityOperation as Op,AuthorityValue as Value,AuthorityReply};
+        use sampler_core::Error;
+        if !self.execution_actor.enabled{return Ok(false);}
+        if let Some(error)=self.execution_actor.fault{return Err(error);}
+        let script=self.script.as_mut().ok_or(Error::NotReady)?;
+        if script.external_cancelled(){
+            self.execution_actor.fault=Some(Error::Canceled);self.runtime.abort_external_execution();return Err(Error::Canceled);
+        }
+        if let Some(reply)=self.execution_actor.reply.take(){
+            if let Err(reply)=script.reply_external_request(reply){self.execution_actor.reply=Some(reply);return Ok(true);}
+        }
+        // Bounded progress per rack phase. Yielding never advances any clock;
+        // the sole worker may revisit this same F without a host-thread wait.
+        for _ in 0..64 {
+            if script.external_reply_slots()==0{return Ok(true);}
+            let Some(request)=script.pop_external_request()else{break;};
+            let mut retired_command=None;
+            let valid=self.execution_actor.pending.is_some_and(|turn|turn.input==request.turn.input
+                &&turn.plan==request.turn.plan&&turn.processor==request.turn.processor
+                &&turn.owner==request.turn.owner&&turn.resume_frame==request.turn.resume_frame);
+            let live=if valid{self.runtime.running_external_turn(request.turn.input).map(|_|())}else{Err(Error::StaleHandle)};
+            let terminal=matches!(&request.operation,Op::Complete{..}|Op::Cancel);
+            let result=match request.operation{
+                Op::Validate=>live.map(|_|Value::Validated),
+                Op::QueryConstant{node}=>live.and_then(|_|self.runtime.source_constant_property(request.turn.plan,node).map(Value::Constant)),
+                Op::Post(output)=>live.and_then(|_|self.runtime.post_external_output(request.turn.input,output).map(Value::Posted)),
+                Op::Command(command)=>{
+                    let result=live.and_then(|_|script.apply_external_command(&mut self.runtime,request.turn,&command).map(|_|Value::Applied));
+                    retired_command=Some(command);result
+                },
+                Op::Complete{next_frame}=>live.and_then(|_|self.runtime.complete_external_segment(request.turn.input,next_frame).map(|_|Value::Completed)),
+                Op::Cancel=>live.and_then(|_|self.runtime.cancel_external_input(request.turn.input).map(|_|Value::Completed)),
+            };
+            if terminal&&valid&&self.runtime.running_external_turn(request.turn.input).is_err(){self.execution_actor.pending=None;}
+            let reply=AuthorityReply{input:request.turn.input,ordinal:request.ordinal,result,retired_command};
+            if let Err(reply)=script.reply_external_request(reply){self.execution_actor.reply=Some(reply);return Ok(true);}
+        }
+        if self.execution_actor.pending.is_some(){return Ok(true);}
+        let Some(pending)=self.runtime.service_external_boundary()? else{return Ok(false);};
+        if script.external_turn_slots()==0{return Ok(true);}
+        let turn=self.runtime.begin_external_turn(pending.input)?;
+        self.execution_actor.pending=Some(turn);
+        // Queue reservation was pure and this is the sole producer. A failure
+        // leaves the exact real turn retained for fault/terminal cleanup.
+        if let Err(error)=script.deliver_external_turn(turn){
+            self.execution_actor.fault=Some(error);self.runtime.abort_external_execution();
+            script.cancel_external_authority();return Err(error);
+        }
+        Ok(true)
     }
 
     // Mix changes frequently while dragging faders. Reuse the worker's
@@ -2170,6 +2248,28 @@ impl V2Core {
                 "persistent_buffer_bytes":p.persistence.as_ref().map_or(0, |s| s.values_bytes())})
         }).collect();
         serde_json::json!({"stage_ns":timings,"parts":states})
+    }
+
+    /// Every installed Part is serviced at its own actual local F before ANY
+    /// Part advances. The minimum is a frame DELTA, never a rack/local alias.
+    /// The normal synchronous render path is unchanged until the sole-owner
+    /// worker is installed; callers must honor Parked instead of rendering.
+    pub(crate) fn execution_boundary(&mut self,requested:usize)->Result<ExecutionBoundary,sampler_core::Error>{
+        let mut parked=false;
+        for part in self.parts.iter_mut().flatten(){parked|=part.service_execution_actor()?;}
+        if parked{return Ok(ExecutionBoundary::Parked);}
+        let mut frames=requested;
+        for part in self.parts.iter_mut().flatten(){
+            // Service ordinary native due work as well. A prepared Await with
+            // no actual owner is a pre-PCM admission error, never a reason to
+            // let earlier Parts advance or invent metadata-only activation.
+            if part.runtime.service_external_boundary()?.is_some(){
+                if !part.execution_actor.enabled{return Err(sampler_core::Error::NotReady);}
+                parked=true;continue;
+            }
+            frames=frames.min(part.runtime.external_render_frames(requested)?);
+        }
+        if parked{Ok(ExecutionBoundary::Parked)}else{Ok(ExecutionBoundary::Ready{frames})}
     }
 
     fn render_chunk(&mut self, frames: usize) -> Rendered<'_> {
@@ -9560,5 +9660,68 @@ mod shared_processor_binding148_product_tests {
         }
         for core in [&mut actual,&mut low,&mut high]{core.event(0,Event::midi1(0x80,60,64));render(core,8192);assert_eq!(core.parts[0].as_ref().unwrap().runtime.voice_count(),0);}
         drop(actual);drop(low);drop(high);std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod actual_actor_boundary42_tests {
+    use super::*;
+    use std::time::{Duration,Instant};
+    fn part(staged:bool,local_frame:usize)->Part{
+        let xml="<Program><EventProcessors><ScriptProcessor><script>function onInit() wait(1) end</script></ScriptProcessor></EventProcessors></Program>";
+        let translated=sampler_uvi::translate(xml,Path::new(".")).unwrap();
+        let processor=translated.instrument.source_indices.owners.iter().flat_map(|row|&row.event_processors).find(|row|row.kind=="ScriptProcessor").unwrap().id;
+        assert!(translated.instrument.assets.is_empty(),"task graph has no sample assets");
+        // The closure binds behaviors, not sample input; the actual task entry
+        // is compiled by with_source_task_entries immediately below.
+        let prepared=sampler_core::lower::lower(&translated.instrument,48000,vec![],|_,plan|Ok(plan)).unwrap()
+            .with_source_task_entries(vec![(processor,sampler_core::SourceTaskFamily::Init)],1).unwrap();
+        let limits=Limits::for_plan(&prepared,8,8);let mut rt=Runtime::new(prepared,limits).unwrap();
+        if local_frame!=0{rt.render(&mut vec![[0.;2];local_frame]).unwrap();}
+        let mut part=Part::new(rt,MixTree::instrument("Actual local frame")).unwrap();
+        let (host,_)=if staged{
+            sampler_uvi::scripted::ScriptThread::spawn_staged_with_ui_state(xml.into(),(),sampler_uvi::script::Config::default(),None)
+        }else{
+            sampler_uvi::scripted::ScriptThread::spawn_with_ui_state(xml.into(),(),sampler_uvi::script::Config::default(),None)
+        }.unwrap();
+        part.script=Some(Box::new(ScriptDriver::new(host,vec![],48000)));part
+    }
+    #[test]
+    fn real_late_part_turn_parks_all_parts_and_uses_local_delta_without_clock_alias(){
+        let mut core=V2Core::with_parts(2,48000.);
+        let early=part(true,0);let mut late=part(true,19);
+        late.bind_execution_actor(Duration::from_secs(2)).unwrap();
+        let plan=late.runtime.active_plan();let perf=late.runtime.performance(0).unwrap();
+        let context=sampler_core::SourceTaskHostContext{frame:19,tempo:120.,playing:false};
+        assert_eq!(late.runtime.start_source_tasks(plan,sampler_core::SourceTaskReason::Init(context),perf),Ok(1));
+        core.install(0,Some(Box::new(early)));core.install(1,Some(Box::new(late)));
+        assert_eq!(core.execution_boundary(64),Ok(ExecutionBoundary::Parked));
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(),0);assert_eq!(core.parts[1].as_ref().unwrap().runtime.now(),19);
+        let deadline=Instant::now()+Duration::from_secs(3);
+        loop{
+            match core.execution_boundary(64).unwrap(){
+                ExecutionBoundary::Ready{frames}=>{assert_eq!(frames,48);break;},
+                ExecutionBoundary::Parked=>{}
+            }
+            assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(),0);assert_eq!(core.parts[1].as_ref().unwrap().runtime.now(),19);
+            assert!(Instant::now()<deadline);std::thread::yield_now();
+        }
+        let _=core.render(48);
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(),48);assert_eq!(core.parts[1].as_ref().unwrap().runtime.now(),67);
+        assert_eq!(core.execution_boundary(1),Ok(ExecutionBoundary::Parked),"exclusive-end turn is serviced at actual local F67");
+    }
+    #[test]
+    fn real_await_without_installed_owner_refuses_before_earlier_part_pcm(){
+        let mut core=V2Core::with_parts(2,48000.);let early=part(true,0);let mut late=part(true,19);
+        let plan=late.runtime.active_plan();let perf=late.runtime.performance(0).unwrap();
+        late.runtime.start_source_tasks(plan,sampler_core::SourceTaskReason::Init(sampler_core::SourceTaskHostContext{frame:19,tempo:120.,playing:false}),perf).unwrap();
+        core.install(0,Some(Box::new(early)));core.install(1,Some(Box::new(late)));
+        assert_eq!(core.execution_boundary(64),Err(sampler_core::Error::NotReady));
+        assert_eq!(core.parts[0].as_ref().unwrap().runtime.now(),0);assert_eq!(core.parts[1].as_ref().unwrap().runtime.now(),19);
+    }
+    #[test]
+    fn eager_constructor_cannot_be_relabelled_as_first_frame_actor(){
+        let mut p=part(false,0);assert!(p.bind_execution_actor(Duration::from_secs(2)).is_err());
+        assert!(!p.execution_actor.enabled);assert_eq!(p.runtime.now(),0);assert!(p.runtime.pending_external_turn().unwrap().is_none());
     }
 }
