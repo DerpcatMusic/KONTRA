@@ -7899,3 +7899,151 @@ fn uvi_prepared_registry_audio_reads_and_control_enqueue_do_not_allocate_or_free
     });
     assert_eq!(calls,0,"fixed atomic lookup and bounded SPSC enqueue must not allocate/free on audio");
 }
+
+
+#[cfg(test)]
+mod uvi_activation_render_tests {
+    use super::*;
+    use sampler_uvi::script::{ScriptHost,Config};
+    struct Gesture {
+        host:ScriptHost,face:ir::Interface,values:ir_view::Values,state:ir_view::InputState,
+        assets:ir_view::Assets,ui:Ui,widget:usize,
+    }
+    impl Gesture {
+        fn new(on_press:bool)->Self{
+            let xml=format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(220,120);calls=0;local b=Button{{'B',bounds={{10,10,100,30}}}};b.triggeredOnMouseDown={on_press};b.changed=function(self,mods) calls=calls+1;seen=mods==nil and 'nil' or tostring(mods.shiftDown)..'|'..tostring(mods.commandDown)..'|'..tostring(mods.altDown) end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>");
+            let host=ScriptHost::new(&xml,(),Config::default()).unwrap();
+            let face=ir_view::resolved(&host.interface());
+            let widget=face.widgets.iter().position(|w|w.name=="B").unwrap();
+            let values=host.control_values().into_iter().collect();
+            let mut this=Self{host,face,values,state:Default::default(),assets:Default::default(),ui:theme::ui(),widget};
+            for _ in 0..3{this.tick(Input::default());}this
+        }
+        fn id(&self)->String{format!("gesture-ir-{}",self.widget)}
+        fn tick(&mut self,input:Input)->Vec<ir::UiActivation>{
+            let before=self.values.clone();
+            let tree=ir_view::view_state(&mut self.ui,"gesture",&self.face,ir::PageRef(0),&self.assets,ir::Presentation::Vector,1.,&mut self.values,&mut self.state);
+            self.ui.frame(tree,Some(Size::new(220.,120.)),input,1./60.).unwrap();
+            assert!(self.state.edits.is_empty(),"button actions must not duplicate scalar/KSP edits");
+            assert_eq!(self.values,before,"stateless UVI Button must not emit a later scalar reset");
+            let mut seen=Vec::new();
+            for edit in self.state.activations.drain(..){
+                assert_eq!(edit.widget.0,self.widget);let ir::Binding::Control(control)=self.face.widgets[self.widget].binding else{panic!("real control")};
+                self.host.activate_control(control,edit.activation).unwrap();seen.push(edit.activation);
+            }
+            seen
+        }
+        fn pointer(&mut self,at:Point,buttons:Buttons,mods:Mods)->Vec<ir::UiActivation>{self.tick(Input{pointer:PointerInput{pos:Some(at),buttons,mods,..Default::default()},..Default::default()})}
+        fn idle(&mut self)->Vec<ir::UiActivation>{self.tick(Input::default())}
+        fn count(&self)->String{self.host.global_text("calls")}
+    }
+    #[test]
+    fn uvi_pointer_release_vs_press_are_real_single_edges_without_scalar_pulses(){
+        for on_press in [false,true]{
+            let mut h=Gesture::new(on_press);let at=super::super::tests::center(&h.ui,&h.id());
+            let mods=Mods{shift:true,ctrl:true,alt:true,cmd:true};
+            assert!(h.pointer(at,Buttons::PRIMARY,mods).is_empty());
+            let press=h.pointer(at,Buttons::PRIMARY,mods);
+            assert_eq!(press.len(),usize::from(on_press));
+            assert_eq!(h.count(),if on_press{"1"}else{"0"});
+            for _ in 0..8{assert!(h.pointer(at,Buttons::PRIMARY,mods).is_empty());}
+            assert!(h.pointer(at,Buttons::default(),mods).is_empty());
+            let release=h.idle();assert_eq!(release.len(),usize::from(!on_press));
+            let payload=press.first().or(release.first()).unwrap();
+            assert_eq!(payload.origin,if on_press{ir::UiActivationOrigin::PointerDown}else{ir::UiActivationOrigin::PointerUp});
+            assert_eq!(payload.modifiers,Some(ir::UiModifiers{shift:true,ctrl:true,alt:true,cmd:true}));
+            assert_eq!(h.count(),"1");assert_eq!(h.host.global_text("seen"),"true|true|true");
+            for _ in 0..3{assert!(h.idle().is_empty());}assert_eq!(h.count(),"1");
+        }
+    }
+    #[test]
+    fn uvi_keyboard_uses_actual_key_modifiers_not_stale_pointer_modifiers(){
+        let mut h=Gesture::new(true);let id=h.id();h.ui.focus(id);
+        let pointer_mods=Mods{cmd:true,..Default::default()};
+        let key_mods=Mods{shift:true,ctrl:true,alt:true,cmd:false};
+        h.tick(Input{pointer:PointerInput{mods:pointer_mods,..Default::default()},keys:vec![KeyPress{key:Key::Enter,mods:key_mods}],..Default::default()});
+        let activation=h.idle();assert_eq!(activation.len(),1);assert_eq!(activation[0].origin,ir::UiActivationOrigin::Keyboard);
+        assert_eq!(activation[0].modifiers,Some(ir::UiModifiers{shift:true,ctrl:true,alt:true,cmd:false}));
+        assert_eq!(h.host.global_text("seen"),if cfg!(target_os="macos"){"true|false|true"}else{"true|true|true"});
+        assert_eq!(h.count(),"1");assert!(h.idle().is_empty());
+        // Space is the same explicit nonphysical product activation policy.
+        h.tick(Input{keys:vec![KeyPress{key:Key::Space,mods:Mods::default()}],..Default::default()});assert_eq!(h.idle().len(),1);assert_eq!(h.count(),"2");
+    }
+    #[test]
+    fn uvi_accessibility_activate_is_single_nonphysical_action_and_disabled_refuses(){
+        let mut h=Gesture::new(true);let id=h.id();
+        assert!(h.ui.request_action(SemanticAction::activate(&id)));assert!(h.ui.request_action(SemanticAction::activate(&id)));
+        let activation=h.idle();assert_eq!(activation.len(),1);assert_eq!(activation[0],ir::UiActivation{origin:ir::UiActivationOrigin::Accessibility,modifiers:None});
+        assert_eq!(h.host.global_text("seen"),"nil");assert_eq!(h.count(),"1");assert!(h.idle().is_empty());
+        h.face.widgets[h.widget].enabled=false;h.idle();h.idle();assert!(!h.ui.request_action(SemanticAction::activate(&id)));
+        assert!(h.idle().is_empty());assert_eq!(h.count(),"1");
+    }
+    #[test]
+    fn uvi_secondary_middle_and_dragged_release_do_not_become_button_callbacks(){
+        let mut h=Gesture::new(false);let at=super::super::tests::center(&h.ui,&h.id());
+        for button in [Button::Secondary,Button::Middle]{
+            let down=Buttons::default().set(button,true);h.pointer(at,down,Mods::default());h.pointer(at,down,Mods::default());h.pointer(at,Buttons::default(),Mods::default());assert!(h.idle().is_empty());
+        }
+        assert_eq!(h.count(),"0");
+        h.pointer(at,Buttons::PRIMARY,Mods::default());h.pointer(at,Buttons::PRIMARY,Mods::default());
+        let out=Point::new(210.,110.);h.pointer(out,Buttons::PRIMARY,Mods::default());h.pointer(out,Buttons::default(),Mods::default());assert!(h.idle().is_empty());assert_eq!(h.count(),"0");
+    }
+}
+
+
+#[cfg(test)]
+mod uvi_gesture_latch_tests {
+    use super::*;
+    use sampler_uvi::scripted::{Script,ScriptThread,UiBridge,UiSnapshot,HostInput};
+    use sampler_uvi::script::Config;
+    use std::{sync::Arc,time::{Duration,Instant}};
+    fn source(body:&str)->String{format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[setSize(220,120);{body}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>")}
+    fn until(mut ready:impl FnMut()->bool){let deadline=Instant::now()+Duration::from_secs(3);while !ready(){assert!(Instant::now()<deadline,"real owner publication did not complete");std::thread::sleep(Duration::from_millis(2));}}
+    fn control(ui:&UiBridge,name:&str)->ir::ControlId{let face=ui.interface();let row=face.widgets.iter().find(|row|row.name==name).unwrap();let ir::Binding::Control(id)=row.binding else{panic!("actual control")};id}
+    fn calls(ui:&UiBridge)->String{ui.interface().widgets.iter().find(|row|row.name=="State").unwrap().text.clone()}
+    struct Drawn{snapshot:UiSnapshot,face:ir::Interface,values:ir_view::Values,input:ir_view::InputState,assets:ir_view::Assets,ui:Ui}
+    impl Drawn{
+        fn new(ui:&Arc<UiBridge>)->Self{
+            let snapshot=ui.snapshot();let face=ir_view::resolved(snapshot.interface());
+            let mut drawn=Self{snapshot,face,values:ui.values().into_iter().collect(),input:Default::default(),assets:Default::default(),ui:theme::ui()};for _ in 0..3{drawn.tick(Input::default());}drawn
+        }
+        fn adopt(&mut self,ui:&Arc<UiBridge>){let next=ui.snapshot();self.face=ir_view::resolved(next.interface());self.input.adopt_uvi_schema(self.snapshot.same_owner(&next),&self.face);self.snapshot=next;self.values=ui.values().into_iter().collect();}
+        fn tick(&mut self,event:Input)->Vec<ir::UiActivation>{
+            let tree=ir_view::view_state(&mut self.ui,"latched",&self.face,ir::PageRef(0),&self.assets,ir::Presentation::Vector,1.,&mut self.values,&mut self.input);
+            self.ui.frame(tree,Some(Size::new(220.,120.)),event,1./60.).unwrap();assert!(self.input.edits.is_empty());
+            self.input.activations.drain(..).map(|action|action.activation).collect()
+        }
+        fn pointer(&mut self,down:bool)->Vec<ir::UiActivation>{self.tick(Input{pointer:PointerInput{pos:Some(Point::new(40.,25.)),buttons:if down{Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()})}
+        fn idle(&mut self)->Vec<ir::UiActivation>{self.tick(Input::default())}
+    }
+    const BASE:&str="local b=Button{'Gesture',bounds={10,10,100,30}};local state=Label{'State',bounds={10,65,180,20}};state.text='0';local count=0;b.changed=function() count=count+1;state.text=tostring(count) end;";
+    #[test]
+    fn unrelated_same_owner_schema_change_preserves_pending_release_target(){
+        let (_thread,loaded)=ScriptThread::spawn(source(&format!("{BASE}local extra=Button{{'Extra',bounds={{150,70,60,25}}}};extra.changed=function() extra.width=130 end")),(),Config::default()).unwrap();let mut d=Drawn::new(&loaded.ui);let id=control(&loaded.ui,"Gesture");
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());let old=d.snapshot.clone();assert!(old.edit(control(&loaded.ui,"Extra"),1.));until(||!old.same_schema(&loaded.ui.snapshot()));
+        assert!(old.same_owner(&loaded.ui.snapshot()));d.adopt(&loaded.ui);for _ in 0..4{assert!(d.pointer(true).is_empty());}
+        assert!(d.pointer(false).is_empty());let actions=d.idle();assert_eq!(actions.len(),1);assert_eq!(actions[0].origin,ir::UiActivationOrigin::PointerUp);assert!(d.snapshot.activate(id,actions[0]));until(||calls(&loaded.ui)=="1");assert!(d.idle().is_empty());
+    }
+    #[test]
+    fn replacing_actual_owner_cancels_held_capture_instead_of_retargeting_same_control_id(){
+        let (_old_thread,old)=ScriptThread::spawn(source(BASE),(),Config::default()).unwrap();let (_new_thread,new)=ScriptThread::spawn(source(BASE),(),Config::default()).unwrap();let mut d=Drawn::new(&old.ui);
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());assert!(!d.snapshot.same_owner(&new.ui.snapshot()));d.adopt(&new.ui);assert!(d.pointer(true).is_empty());assert!(d.pointer(false).is_empty());assert!(d.idle().is_empty());assert_eq!(calls(&old.ui),"0");assert_eq!(calls(&new.ui),"0");
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());assert!(d.pointer(false).is_empty());let actions=d.idle();assert_eq!(actions.len(),1);assert!(d.snapshot.activate(control(&new.ui,"Gesture"),actions[0]));until(||calls(&new.ui)=="1");assert_eq!(calls(&old.ui),"0");
+    }
+    #[test]
+    fn actual_queue_refused_press_cannot_become_release_after_current_phase_adoption(){
+        use std::sync::mpsc;
+        struct Held{entered:mpsc::Sender<()>,release:mpsc::Receiver<()>}
+        impl sampler_uvi::script::Files for Held{fn script(&self,name:&str)->Option<String>{assert_eq!(name,"hold");self.entered.send(()).unwrap();self.release.recv_timeout(Duration::from_secs(3)).unwrap();Some("return {}".into())}}
+        let (entered,waiting)=mpsc::channel();let (release,held)=mpsc::channel();
+        let text=format!("{BASE}b.triggeredOnMouseDown=true;local fill=Button{{'Fill',bounds={{150,10,60,25}}}};local mode=Button{{'Mode',bounds={{150,45,60,25}}}};mode.changed=function() b.triggeredOnMouseDown=false;b.width=130 end;function onController(e) require('hold') end");
+        let (mut thread,loaded)=ScriptThread::spawn(source(&text),Held{entered,release:held},Config::default()).unwrap();let mut d=Drawn::new(&loaded.ui);let gesture=control(&loaded.ui,"Gesture");let fill=control(&loaded.ui,"Fill");let mode=control(&loaded.ui,"Mode");
+        thread.input(HostInput::Controller{cc:1,value:64,channel:0});waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        for _ in 0..255{assert!(d.snapshot.edit(fill,1.));}assert!(d.snapshot.edit(mode,1.));
+        assert!(d.pointer(true).is_empty());let press=d.pointer(true);assert_eq!(press.len(),1);assert_eq!(press[0].origin,ir::UiActivationOrigin::PointerDown);
+        assert!(!d.snapshot.activate(gesture,press[0]),"actual shared 256-slot request queue must refuse the press");
+        release.send(()).unwrap();until(||loaded.ui.interface().widgets.iter().find(|w|w.name=="Gesture").is_some_and(|w|!w.activate_on_press));d.adopt(&loaded.ui);
+        for _ in 0..4{assert!(d.pointer(true).is_empty());}assert!(d.pointer(false).is_empty());assert!(d.idle().is_empty());assert_eq!(calls(&loaded.ui),"0");
+        assert!(d.pointer(true).is_empty());assert!(d.pointer(true).is_empty());assert!(d.pointer(false).is_empty());let fresh=d.idle();assert_eq!(fresh.len(),1);assert!(d.snapshot.activate(gesture,fresh[0]));until(||calls(&loaded.ui)=="1");assert!(d.idle().is_empty());
+    }
+}

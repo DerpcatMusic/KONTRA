@@ -100,6 +100,7 @@ enum UiRequest {
     SampleControl(sampler_core::SampleControl, mpsc::SyncSender<Result<(),String>>),
     SampleStream(sampler_kontakt::DynamicSources, mpsc::SyncSender<Result<(),String>>),
     Edit { generation:u64, id:ControlId, value:f64, drawn:bool },
+    Activate {generation:u64,id:ControlId,activation:sampler_ui_ir::UiActivation},
     Save(mpsc::SyncSender<Result<UiState, String>>),
     #[cfg(feature = "scan")]
     Audit(f64, mpsc::SyncSender<(Vec<Command>, Option<f64>)>),
@@ -176,6 +177,9 @@ fn process_ui_requests(
             UiRequest::SampleStream(sources,reply)=>{let _=reply.send(host.bind_sample_stream(sources));}
             UiRequest::Edit{generation,id,value,drawn} => {
                 ui.apply_control(host,generation,id,value,drawn,DiagnosticPhase::UiRequests);
+            }
+            UiRequest::Activate{generation,id,activation}=>{
+                ui.apply_activation(host,generation,id,activation,DiagnosticPhase::UiRequests);
             }
             UiRequest::Save(reply) => {
                 let _ = reply.send(host.save_ui_state());
@@ -802,6 +806,8 @@ struct UiControlSchema {
     page: usize,
     rect: [u64; 4],
     editable: bool,
+    activate_on_press:bool,
+    menu_cycle:bool,
 }
 struct UiAtomicCell { key: AtomicU64, value: AtomicU64 }
 struct UiPublished { face: Arc<Interface>, schema: Arc<Vec<UiControlSchema>>, schema_bytes:usize, generation: u64 }
@@ -832,8 +838,13 @@ impl UiSnapshot {
     pub fn same_schema(&self, other: &Self) -> bool {
         std::sync::Weak::ptr_eq(&self.owner, &other.owner) && self.generation() == other.generation()
     }
+    /// Actual UI owner identity only, not current schema/execution liveness.
+    pub fn same_owner(&self,other:&Self)->bool{std::sync::Weak::ptr_eq(&self.owner,&other.owner)}
     pub fn edit(&self, id: ControlId, value: f64) -> bool {
         self.owner.upgrade().is_some_and(|owner| owner.edit_generation(self.generation(), id, value, true))
+    }
+    pub fn activate(&self,id:ControlId,activation:sampler_ui_ir::UiActivation)->bool{
+        self.owner.upgrade().is_some_and(|owner|owner.activate_snapshot(self,id,activation))
     }
 }
 fn registry_key(id: ControlId) -> Option<u64> {
@@ -924,7 +935,7 @@ fn registry_projection(face:&Interface,budget:UiRegistryBudget,work:&mut UiSchem
             if registry_key(id).is_none()||!value.is_finite(){return Err("incoherent UVI control/value registry".into());}
             let menu:Vec<_>=if let Kind::Menu{items}=&widget.kind{items.iter().map(|item|(item.value,item.visible)).collect()}else{Vec::new()};
             schema_bytes=schema_bytes.checked_add(menu.capacity().checked_mul(std::mem::size_of::<(i32,bool)>()).ok_or("UVI menu payload overflow")?).ok_or("UVI schema payload overflow")?;
-            out.push(UiControlSchema{id,kind,domain,menu,parent:widget.parent.map(|p|p.0),page:widget.page.0,rect:[rect.x.to_bits(),rect.y.to_bits(),rect.width.to_bits(),rect.height.to_bits()],editable});
+            out.push(UiControlSchema{id,kind,domain,menu,parent:widget.parent.map(|p|p.0),page:widget.page.0,rect:[rect.x.to_bits(),rect.y.to_bits(),rect.width.to_bits(),rect.height.to_bits()],editable,activate_on_press:widget.activate_on_press,menu_cycle:widget.menu_cycle});
             values.push((id,value));
         }
     }
@@ -1109,6 +1120,11 @@ impl UiBridge {
     pub fn edit_snapshot(&self, snapshot:&UiSnapshot, id:ControlId, value:f64) -> bool {
         self.owns_snapshot(snapshot) && self.edit_generation(snapshot.generation(),id,value,true)
     }
+    pub fn activate_snapshot(&self,snapshot:&UiSnapshot,id:ControlId,activation:sampler_ui_ir::UiActivation)->bool{
+        if !self.owns_snapshot(snapshot)||!activation.valid()||(id.0&0xffff_ffff)!=0||self.read_control(id).is_none_or(|(generation,_)|generation!=snapshot.generation()){return false;}
+        if self.edits.try_send(UiRequest::Activate{generation:snapshot.generation(),id,activation}).is_err(){return false;}
+        self.owner.unpark();true
+    }
     fn registry_failure(&self,host:&ScriptHost,message:String) {
         // A work-admission refusal must not poison the last admitted atomic
         // cells/presentation. Its queued edits still repeat fresh inspection
@@ -1213,6 +1229,26 @@ impl UiBridge {
             generation==state.current.generation && state.current.schema.binary_search_by_key(&id,|row|row.id).ok().is_some_and(|at|!drawn||state.current.schema[at].editable)
         };
         if allowed && !self.stop.load(Ordering::Acquire) {let _=host.set_control(id,value);}
+    }
+    fn apply_activation(&self,host:&mut ScriptHost,generation:u64,id:ControlId,activation:sampler_ui_ir::UiActivation,caller_phase:DiagnosticPhase){
+        self.diagnostic_phase(DiagnosticPhase::UiExport);
+        let inspected=self.try_publish(host);
+        self.diagnostic_phase(caller_phase);
+        if let Err(error)=inspected{self.registry_failure(host,error);return;}
+        let allowed={
+            let state=self.face.state.lock().unwrap();
+            generation==state.current.generation&&state.current.schema.binary_search_by_key(&id,|row|row.id).ok().is_some_and(|at|{
+                let row=&state.current.schema[at];
+                let button=matches!(row.kind,5|6)||(row.kind==8&&row.menu_cycle);
+                let phase=match activation.origin {
+                    sampler_ui_ir::UiActivationOrigin::PointerDown=>row.activate_on_press,
+                    sampler_ui_ir::UiActivationOrigin::PointerUp=>!row.activate_on_press,
+                    sampler_ui_ir::UiActivationOrigin::Keyboard|sampler_ui_ir::UiActivationOrigin::Accessibility=>true,
+                };
+                row.editable&&button&&phase&&activation.valid()
+            })
+        };
+        if allowed&&!self.stop.load(Ordering::Acquire){let _=host.activate_control(id,activation);}
     }
     fn read_control(&self,id:ControlId)->Option<(u64,f64)> {
         if self.stop.load(Ordering::Acquire)||!self.registry_valid.load(Ordering::SeqCst) {return None;}

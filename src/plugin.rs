@@ -1748,6 +1748,16 @@ impl Shared {
         scripts.uvi.as_ref().is_some_and(|owner|owner.edit_snapshot(snapshot,control,value))
     }
 
+    pub(crate) fn activate_uvi_control_at(
+        &self,slot:usize,epoch:u64,snapshot:&sampler_uvi::scripted::UiSnapshot,
+        control:sampler_ui_ir::ControlId,activation:sampler_ui_ir::UiActivation,
+    )->bool{
+        let Some(part)=self.part(slot)else{return false;};
+        let scripts=part.scripts.lock_unpoisoned();
+        if part.generation.load(Ordering::Acquire)!=epoch||!activation.valid(){return false;}
+        scripts.uvi.as_ref().is_some_and(|owner|owner.activate_snapshot(snapshot,control,activation))
+    }
+
     /// Main-thread host automation uses the same epoch admission and reply queue.
     pub(crate) fn set_host_parameter_at(
         &self,
@@ -5351,5 +5361,205 @@ mod uvi_registry_part_tests {
         actual.scripts.lock_unpoisoned().uvi=Some(other.ui.clone());
         assert!(!params.shared.set_uvi_control_at(0,17,&drawn,dynamic,0.75),"same Part epoch cannot substitute a different real VM bridge");
         assert!(!actual.control_values().iter().any(|(id,_)|*id==dynamic),"retired original cell is not saved through the old static mirror");
+    }
+}
+
+
+#[cfg(all(test,feature="shots"))]
+mod uvi_gesture_baseline_tests {
+    use super::*;
+    use crate::ui::tests::Harness;
+    use moose::mui::mui::prelude::{Buttons,Input,Mods,Point,PointerInput};
+    use sampler_uvi::scripted::{DiagnosticPoll,UiBridge};
+    use std::{sync::Arc,time::{Duration,Instant}};
+    struct Fixture {
+        _directory:tempfile::TempDir,params:Arc<SamplerParams>,core:V2Core,
+        bridge:Arc<UiBridge>,editor:Harness,point:Point,down:bool,mods:Mods,unity:Vec<f32>,
+    }
+    impl Fixture {
+        fn new(on_down:bool)->Self {
+            let scratch=Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/ui-test-scratch");
+            std::fs::create_dir_all(&scratch).unwrap();
+            let directory=tempfile::Builder::new().prefix("uvi-gesture-").tempdir_in(&scratch).unwrap();
+            let mut writer=hound::WavWriter::create(directory.path().join("held.wav"),hound::WavSpec{channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
+            for _ in 0..32768 {writer.write_sample(16384i16).unwrap();}writer.finalize().unwrap();
+            let script=format!(r#"
+              makePerformanceView();setSize(240,120)
+              local button=Button{{'Gesture',bounds={{10,10,100,30}}}}
+              button.triggeredOnMouseDown={}
+              local status=Label{{'Status',bounds={{10,65,220,25}}}};status.text='0|idle'
+              local calls=0
+              button.changed=function(self,mods)
+                calls=calls+1
+                status.text=tostring(calls)..'|'..(mods and (tostring(mods.shiftDown)..'|'..tostring(mods.commandDown)..'|'..tostring(mods.altDown)) or 'nil')
+                Program:setParameter('Gain',mods and mods.shiftDown and 0.25 or 0.75)
+              end
+            "#,if on_down{"true"}else{"false"});
+            let xml=format!("<UVI4><Program Name='Actual gesture fixture' Gain='1'><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name='Tone' Gain='1'><Keygroups><Keygroup Name='Held' LowKey='60' HighKey='60' Gain='1'><Oscillators><SamplePlayer SamplePath='held.wav' BaseNote='60'/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>");
+            let preset=directory.path().join("gesture.uvip");std::fs::write(&preset,xml).unwrap();
+            let params=Arc::new(SamplerParams::new());
+            {let mut selection=params.selection.write_unpoisoned();selection.parts=vec![Part{path:preset.display().to_string(),streaming:Some(Streaming::RamOnly),view:3,..Default::default()}];selection.order=vec![0];}
+            // Same public normal loader/ready/install path as production, not
+            // an inspector script attachment or fabricated control registration.
+            let deadline=Instant::now()+Duration::from_secs(5);
+            loop {Load.run(&params);if params.shared.view.lock_unpoisoned().parts[0].tree.is_some(){break;}assert!(Instant::now()<deadline,"normal authored source failed to load");std::thread::sleep(Duration::from_millis(2));}
+            let actual=params.shared.part(0).unwrap();let bridge=actual.scripts.lock_unpoisoned().uvi.clone().expect("actual normal UVI owner");
+            let (slot,epoch,part)=params.shared.ready.pop().expect("normal loader produced actual Part");assert_eq!(slot,0);assert!(part.is_some());
+            let rate=f64::from_bits(params.shared.rate.load(Ordering::Acquire));let mut core=V2Core::with_parts(1,rate);core.install(slot,part);core.set_mix(&mix(&params.selection.read_unpoisoned()));
+            core.play(0,CoreEvent::midi1(0x90,60,100));
+            for _ in 0..4 {let _=core.render(64);}
+            let unity=core.render(64).buses[0][0][..64].to_vec();assert!(unity.iter().any(|sample|sample.abs()>0.01),"normal held source must sound before gesture");
+            assert_eq!(core.runtime_stats(0).unwrap().voices,1);
+            let editor=Harness::new(&params,1180.,780.);let widget=bridge.interface().widgets.iter().position(|widget|widget.name=="Gesture").expect("actual authored Gesture declaration");let id=format!("part-0-epoch-{epoch}-script-0-ir-{widget}");
+            let bounds=editor.ui.scene().unwrap().surface(&id).unwrap_or_else(||panic!("actual authored button not drawn: {id}")).frame;
+            let point=Point::new(bounds.x+bounds.size.width/2.,bounds.y+bounds.size.height/2.);
+            Self{_directory:directory,params,core,bridge,editor,point,down:false,mods:Mods{shift:true,ctrl:true,alt:true,cmd:true},unity}
+        }
+        fn tick(&mut self) {
+            self.editor.tick(Input{pointer:PointerInput{pos:Some(self.point),buttons:if self.down{Buttons::PRIMARY}else{Buttons::default()},mods:self.mods,..Default::default()},..Default::default()});
+            // Zero PCM service drains the REAL normal Driver queue without
+            // advancing the held source or manufacturing a rendered sample.
+            let _=self.core.render(0);service_current_ui(&self.params);self.params.shared.refresh_uvi(&self.params);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fn status(&self)->String {self.bridge.interface().widgets.iter().find(|widget|widget.name=="Status").unwrap().text.clone()}
+        fn first_callback(&mut self)->String {
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop {self.tick();let status=self.status();if status.starts_with("1|"){return status;}assert!(Instant::now()<deadline,"documented activation boundary reached but real changed callback did not execute; status={status}");}
+        }
+        fn drain_actual_owner(&mut self) {
+            let mut receipt=self.bridge.request_diagnostics(Duration::from_secs(3)).unwrap();let deadline=Instant::now()+Duration::from_secs(3);let mut complete=false;
+            loop {self.tick();match receipt.poll(){DiagnosticPoll::Pending=>{},DiagnosticPoll::Complete(_)=>complete=true,other=>panic!("actual owner diagnostic failed: {other:?}")};if complete&&receipt.commands_drained(){break;}assert!(Instant::now()<deadline,"real ordinary Driver did not pass the ordered command marker");}
+        }
+        fn assert_quarter_gain(&mut self){
+            self.drain_actual_owner();let rendered=self.core.render(64);let actual=&rendered.buses[0][0][..64];
+            for (sample,unity) in actual.iter().zip(&self.unity){assert!((f64::from(*sample)-f64::from(*unity)*0.25).abs()<2e-5,"gesture callback must set actual held PCM quarter gain: got{sample}, unity{unity}");}
+            let stats=self.core.runtime_stats(0).unwrap();assert_eq!(stats.voices,1);assert_eq!(stats.nonfinite_frames,0);assert_eq!(stats.voice_pool_refusals,0);
+        }
+    }
+    #[test]
+    fn normal_uvi_pointer_modifiers_reach_release_callback_and_held_pcm(){
+        let mut fixture=Fixture::new(false);fixture.down=true;for _ in 0..8 {fixture.tick();}
+        assert_eq!(fixture.status(),"0|idle","default activation must not fire on press/held");
+        fixture.down=false;let status=fixture.first_callback();
+        assert_eq!(status,"1|true|true|true","real pointer modifier booleans must reach the original callback, not nil or KSP bits");
+        fixture.assert_quarter_gain();
+    }
+    #[test]
+    fn normal_uvi_trigger_on_mouse_down_changes_held_pcm_before_release_once(){
+        let mut fixture=Fixture::new(true);fixture.down=true;for _ in 0..4 {fixture.tick();}fixture.drain_actual_owner();
+        assert_eq!(fixture.status(),"1|true|true|true","documented press activation must run before physical release after the actual owner marker");fixture.assert_quarter_gain();
+        for _ in 0..20 {fixture.tick();}assert_eq!(fixture.status(),"1|true|true|true","held frames must not retrigger");
+        fixture.down=false;for _ in 0..8 {fixture.tick();}fixture.drain_actual_owner();
+        assert_eq!(fixture.status(),"1|true|true|true","release must not duplicate a press activation");
+    }
+}
+#[cfg(all(test,feature="shots"))]
+mod uvi_gesture_policy_tests {
+    use super::*;
+    use crate::ui::tests::Harness;
+    use moose::mui::mui::prelude::{Buttons,Input,Mods,Point,PointerInput};
+    use sampler_uvi::scripted::{DiagnosticPoll,UiBridge};
+    use std::{sync::Arc,time::{Duration,Instant}};
+    struct Fixture {
+        _directory:tempfile::TempDir,params:Arc<SamplerParams>,core:V2Core,
+        bridge:Arc<UiBridge>,editor:Harness,point:Point,down:bool,mods:Mods,unity:Vec<f32>,id:String,width:f64,
+    }
+    impl Fixture {
+        fn new(on_down:bool)->Self {
+            let scratch=Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/ui-test-scratch");
+            std::fs::create_dir_all(&scratch).unwrap();
+            let directory=tempfile::Builder::new().prefix("uvi-gesture-").tempdir_in(&scratch).unwrap();
+            let mut writer=hound::WavWriter::create(directory.path().join("held.wav"),hound::WavSpec{channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
+            for _ in 0..32768 {writer.write_sample(16384i16).unwrap();}writer.finalize().unwrap();
+            let script=format!(r#"
+              makePerformanceView();setSize(240,120)
+              local button=Button{{'Gesture',bounds={{10,10,100,30}}}}
+              button.triggeredOnMouseDown={}
+              local status=Label{{'Status',bounds={{10,65,220,25}}}};status.text='0|idle'
+              local calls=0
+              button.changed=function(self,mods)
+                calls=calls+1
+                self.triggeredOnMouseDown=false;self.width=130
+                status.text=tostring(calls)..'|'..(mods and (tostring(mods.shiftDown)..'|'..tostring(mods.commandDown)..'|'..tostring(mods.altDown)) or 'nil')
+                Program:setParameter('Gain',mods and mods.shiftDown and 0.25 or 0.75)
+              end
+              function onController(e) if e.controller==3 then button.triggeredOnMouseDown=true;button.width=130 end end
+            "#,if on_down{"true"}else{"false"});
+            let xml=format!("<UVI4><Program Name='Actual gesture fixture' Gain='1'><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name='Tone' Gain='1'><Keygroups><Keygroup Name='Held' LowKey='60' HighKey='60' Gain='1'><Oscillators><SamplePlayer SamplePath='held.wav' BaseNote='60'/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>");
+            let preset=directory.path().join("gesture.uvip");std::fs::write(&preset,xml).unwrap();
+            let params=Arc::new(SamplerParams::new());
+            {let mut selection=params.selection.write_unpoisoned();selection.parts=vec![Part{path:preset.display().to_string(),streaming:Some(Streaming::RamOnly),view:3,..Default::default()}];selection.order=vec![0];}
+            // Same public normal loader/ready/install path as production, not
+            // an inspector script attachment or fabricated control registration.
+            let deadline=Instant::now()+Duration::from_secs(5);
+            loop {Load.run(&params);if params.shared.view.lock_unpoisoned().parts[0].tree.is_some(){break;}assert!(Instant::now()<deadline,"normal authored source failed to load");std::thread::sleep(Duration::from_millis(2));}
+            let actual=params.shared.part(0).unwrap();let bridge=actual.scripts.lock_unpoisoned().uvi.clone().expect("actual normal UVI owner");
+            let (slot,epoch,part)=params.shared.ready.pop().expect("normal loader produced actual Part");assert_eq!(slot,0);assert!(part.is_some());
+            let rate=f64::from_bits(params.shared.rate.load(Ordering::Acquire));let mut core=V2Core::with_parts(1,rate);core.install(slot,part);core.set_mix(&mix(&params.selection.read_unpoisoned()));
+            core.play(0,CoreEvent::midi1(0x90,60,100));
+            for _ in 0..4 {let _=core.render(64);}
+            let unity=core.render(64).buses[0][0][..64].to_vec();assert!(unity.iter().any(|sample|sample.abs()>0.01),"normal held source must sound before gesture");
+            assert_eq!(core.runtime_stats(0).unwrap().voices,1);
+            let editor=Harness::new(&params,1180.,780.);let widget=bridge.interface().widgets.iter().position(|widget|widget.name=="Gesture").expect("actual authored Gesture declaration");let id=format!("part-0-epoch-{epoch}-script-0-ir-{widget}");
+            let bounds=editor.ui.scene().unwrap().surface(&id).unwrap_or_else(||panic!("actual authored button not drawn: {id}")).frame;
+            let point=Point::new(bounds.x+bounds.size.width/2.,bounds.y+bounds.size.height/2.);
+            Self{_directory:directory,params,core,bridge,editor,point,down:false,mods:Mods{shift:true,ctrl:true,alt:true,cmd:true},unity,id,width:bounds.size.width}
+        }
+        fn tick(&mut self) {
+            self.editor.tick(Input{pointer:PointerInput{pos:Some(self.point),buttons:if self.down{Buttons::PRIMARY}else{Buttons::default()},mods:self.mods,..Default::default()},..Default::default()});
+            // Zero PCM service drains the REAL normal Driver queue without
+            // advancing the held source or manufacturing a rendered sample.
+            let _=self.core.render(0);service_current_ui(&self.params);self.params.shared.refresh_uvi(&self.params);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fn status(&self)->String {self.bridge.interface().widgets.iter().find(|widget|widget.name=="Status").unwrap().text.clone()}
+        fn first_callback(&mut self)->String {
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop {self.tick();let status=self.status();if status.starts_with("1|"){return status;}assert!(Instant::now()<deadline,"documented activation boundary reached but real changed callback did not execute; status={status}");}
+        }
+        fn drain_actual_owner(&mut self) {
+            let mut receipt=self.bridge.request_diagnostics(Duration::from_secs(3)).unwrap();let deadline=Instant::now()+Duration::from_secs(3);let mut complete=false;
+            loop {self.tick();match receipt.poll(){DiagnosticPoll::Pending=>{},DiagnosticPoll::Complete(_)=>complete=true,other=>panic!("actual owner diagnostic failed: {other:?}")};if complete&&receipt.commands_drained(){break;}assert!(Instant::now()<deadline,"real ordinary Driver did not pass the ordered command marker");}
+        }
+        fn assert_quarter_gain(&mut self){
+            self.drain_actual_owner();let rendered=self.core.render(64);let actual=&rendered.buses[0][0][..64];
+            for (sample,unity) in actual.iter().zip(&self.unity){assert!((f64::from(*sample)-f64::from(*unity)*0.25).abs()<2e-5,"gesture callback must set actual held PCM quarter gain: got{sample}, unity{unity}");}
+            let stats=self.core.runtime_stats(0).unwrap();assert_eq!(stats.voices,1);assert_eq!(stats.nonfinite_frames,0);assert_eq!(stats.voice_pool_refusals,0);
+        }
+    }
+
+    impl Fixture {
+        fn adopted_phase(&mut self,on_press:bool){
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop{
+                self.tick();
+                let owner=self.bridge.interface();let button=owner.widgets.iter().find(|widget|widget.name=="Gesture").unwrap();
+                let drawn=self.editor.ui.scene().unwrap().surface(&self.id).unwrap();
+                if button.activate_on_press==on_press&&drawn.frame.size.width>self.width*1.2{break;}
+                assert!(Instant::now()<deadline,"actual owner/new schema AND widened rendered Face were not adopted");
+            }
+            self.drain_actual_owner();
+        }
+    }
+    #[test]
+    fn normal_uvi_press_callback_phase_change_cannot_replay_its_release(){
+        let mut f=Fixture::new(true);let original=f.bridge.snapshot();f.down=true;
+        assert_eq!(f.first_callback(),"1|true|true|true","real press callback must complete through the normal owner");
+        f.adopted_phase(false);assert!(!original.same_schema(&f.bridge.snapshot()),"actual phase schema changed while physically held");
+        for _ in 0..8{f.tick();}assert_eq!(f.status(),"1|true|true|true");f.assert_quarter_gain();
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();
+        assert_eq!(f.status(),"1|true|true|true","a consumed physical press must stay consumed through current release-mode Face adoption");f.assert_quarter_gain();
+        f.down=true;for _ in 0..8{f.tick();}assert_eq!(f.status(),"1|true|true|true","fresh release-mode click waits for release");
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"2|true|true|true","the next genuine click remains usable exactly once");f.assert_quarter_gain();
+    }
+    #[test]
+    fn normal_uvi_release_to_press_change_cancels_held_gesture_without_synthetic_down(){
+        let mut f=Fixture::new(false);f.down=true;for _ in 0..8{f.tick();}assert_eq!(f.status(),"0|idle");
+        f.core.play(0,CoreEvent::midi1(0xb0,3,127));let _=f.core.render(0);f.adopted_phase(true);
+        for _ in 0..8{f.tick();}assert_eq!(f.status(),"0|idle","a policy change cannot manufacture a missing pointer-down");
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"0|idle","changed-policy held gesture is canceled");
+        f.down=true;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"1|true|true|true");
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"1|true|true|true");f.assert_quarter_gain();
     }
 }
