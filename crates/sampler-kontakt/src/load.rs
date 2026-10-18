@@ -1138,26 +1138,40 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
     // Entire graph and capability batch is pure before changing any roster.
     let mut resolved=Vec::with_capacity(instrument.source_indices.processing.len());
     let mut matrices=Vec::new();
+    let mut owner_roles=Vec::new();
     // This off-audio schema batch is independent of the live Instrument until
     // every owner, source and signal definition has been checked.
     let mut control_definitions=instrument.controls.clone();
     let mut next=instrument.processing_scopes.len();
     for recipe in &instrument.source_indices.processing {
+        let native=instrument.source_indices.uvi_native_processing.iter().find(|profile|profile.owner==recipe.owner)
+            .filter(|profile|profile.requested==Some(ir::UviNativeLayout::Code2)
+                && profile.members.iter().any(|(_,member)|member.is_some_and(|member|member.layout==ir::UviNativeLayout::Code6))
+                && !instrument.source_indices.processing_ports.iter().any(|port|port.owner==recipe.owner));
         let mut width=None;
-        for member in &recipe.members {
+        for (ordinal,member) in recipe.members.iter().enumerate() {
             let Some(asset)=instrument.zones[member.0].asset else {continue;};
             let actual=sources.get(asset.0).ok_or_else(||invalid("source processing asset is absent"))?.as_source().channels().get();
-            if width.replace(actual).is_some_and(|previous|previous!=actual) {
+            if let Some(native)=native {
+                let &(zone,input)=native.members.get(ordinal).ok_or_else(||invalid("native member ordinal missing"))?;
+                let input=input.ok_or_else(||invalid("native source has no genuine decoded header geometry"))?;
+                if zone!=*member || input.storage_channels!=actual || input.provenance!=ir::UviNativeSourceProvenance::PlainHeader {
+                    return Err(invalid("native source geometry differs from actual retained storage"));
+                }
+                width=Some(width.unwrap_or(0).max(input.layout.channels()));
+            }else if width.replace(actual).is_some_and(|previous|previous!=actual) {
                 return Err(invalid("mixed source layouts require explicit per-member layout edges"));
             }
         }
         let scope=if let Some(index)=recipe.compiled {index}else{let index=next;next=next.checked_add(1).ok_or_else(||invalid("source scope capacity overflow"))?;index};
         let mut definition=ir::ProcessingScope {members:recipe.members.clone(),sum:ir::ProcessingSumLaw::OrderedF32,
             cadence:ir::ProcessingCadence::CoreCell64,chain:recipe.chain,amplitude:recipe.amplitude,output:recipe.output,signal:None};
+        let mut signal_sites=None;
         if let Some(width)=width.filter(|width|*width!=2) {
-            let (signal,bindings)=source_processing_signal(instrument,recipe,scope,width,&mut control_definitions).map_err(|reason|invalid(&reason))?;
+            let (signal,bindings,sites)=source_processing_signal(instrument,recipe,scope,width,native,&mut control_definitions).map_err(|reason|invalid(&reason))?;
             definition.chain=None;
             definition.signal=Some(signal);
+            signal_sites=Some(sites);
             matrices.extend(bindings);
         } else if width==Some(2) {
             for (index,matrix) in instrument.source_indices.processing_matrices.iter().enumerate().filter(|(_,matrix)|matrix.owner==recipe.owner) {
@@ -1166,6 +1180,16 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
                     cells:source_matrix_cells(matrix,2,&mut control_definitions).map_err(|reason|invalid(&reason))?}));
             }
         }
+        let mut roles=Vec::new();
+        for role in &recipe.parameter_roles {
+            let chain=recipe.chain.and_then(|c|instrument.chains.get(c.0)).ok_or_else(||invalid("source scalar has no actual chain"))?;
+            let site=if let Some(sites)=&signal_sites {
+                ir::ScopeControlSite::SignalNode(*sites.get(role.chain_index).ok_or_else(||invalid("source scalar has no actual emitted signal site"))?)
+            }else if role.chain_index<chain.pre_amplitude.len(){ir::ScopeControlSite::ChainPre(role.chain_index)}
+            else{ir::ScopeControlSite::ChainPost(role.chain_index-chain.pre_amplitude.len())};
+            roles.push(ir::SourceOwnerOutputControl{owner:recipe.owner,field:role.field,target:ir::SourceOwnerControlTarget::ProcessingScope{scope,site},control:role.control});
+        }
+        owner_roles.extend(roles);
         resolved.push((scope,definition));
     }
     // Check the complete destination roster before publishing any schema row.
@@ -1181,11 +1205,21 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
             append_scope=append_scope.checked_add(1).ok_or_else(||invalid("source scope capacity overflow"))?;
         }
     }
+    // Re-materialization replaces this recipe's exact roles, never appends a
+    // second authority. Preserve unrelated directly authored bus/scope roles.
+    instrument.source_indices.output_controls.retain(|home|!instrument.source_indices.processing.iter().any(|recipe|
+        recipe.owner==home.owner && matches!(home.target,ir::SourceOwnerControlTarget::ProcessingScope{scope,..}if recipe.compiled==Some(scope))));
+    instrument.source_indices.output_controls.extend(owner_roles);
     instrument.controls=control_definitions;
     for (recipe,(index,definition)) in instrument.source_indices.processing.iter_mut().zip(resolved) {
         if recipe.compiled.is_some() {instrument.processing_scopes[index]=definition;}
         else {instrument.processing_scopes.push(definition);}
         recipe.compiled=Some(index);
+        for role in &mut recipe.parameter_roles {
+            role.compiled=instrument.source_indices.output_controls.iter().find_map(|home|
+                (home.owner==recipe.owner&&home.field==role.field).then_some(home.target)).and_then(|target|
+                    if let ir::SourceOwnerControlTarget::ProcessingScope{scope,site}=target{(scope==index).then_some(site)}else{None});
+        }
     }
     for matrix in &mut instrument.source_indices.processing_matrices {matrix.compiled=None;}
     for (index,binding) in matrices {
@@ -1217,14 +1251,16 @@ fn source_matrix_cells(
 /// chooses actual geometry. No decoder fold and no source-count/native-enum
 /// equivalence is implicit in the concrete caller-supplied output matrix.
 fn source_processing_signal(
-    instrument:&ir::Instrument,recipe:&ir::SourceProcessingRecipe,scope:usize,width:usize,control_definitions:&mut Vec<ir::Control>,
-)->Result<(ir::ProcessingSignal,Vec<(usize,ir::SourceProcessingMatrixBinding)>),String> {
+    instrument:&ir::Instrument,recipe:&ir::SourceProcessingRecipe,scope:usize,width:usize,native:Option<&ir::UviNativeProcessingProfile>,control_definitions:&mut Vec<ir::Control>,
+)->Result<(ir::ProcessingSignal,Vec<(usize,ir::SourceProcessingMatrixBinding)>,Vec<usize>),String> {
     if !(1..=12).contains(&width) {return Err("source graph width is outside its admitted channel domain".into());}
     let ports:Vec<_>=instrument.source_indices.processing_ports.iter().filter(|port|port.owner==recipe.owner).collect();
-    if ports.len()!=1 {return Err("wide source owner requires one explicit caller output matrix and layout provenance".into());}
-    let port=&ports[0].conversion;
-    if port.input.channels!=width || port.output.channels!=2 {return Err("caller output matrix differs from actual source working layout".into());}
-    let mut nodes=Vec::new();let mut controls=Vec::new();let mut matrices=Vec::new();let mut boundary_pan=None;
+    let port=if native.is_some(){None}else{
+        if ports.len()!=1 {return Err("wide source owner requires one explicit caller output matrix and layout provenance".into());}
+        let port=&ports[0].conversion;
+        if port.input.channels!=width || port.output.channels!=2 {return Err("caller output matrix differs from actual source working layout".into());}Some(port)
+    };
+    let mut nodes=Vec::new();let mut controls=Vec::new();let mut matrices=Vec::new();let mut boundary_pan=None;let mut sites=Vec::new();
     if let Some(chain_id)=recipe.chain {
         let chain=&instrument.chains[chain_id.0];
         if chain.scope!=ir::Scope::Voice || !chain.post_amplitude.is_empty() {
@@ -1233,6 +1269,7 @@ fn source_processing_signal(
         if instrument.routes.iter().any(|route|matches!(route.target,ir::Target::Processor{chain,..} if chain==chain_id)) {
             return Err("source channel processor modulation requires a compiled owner parameter binding".into());
         }
+        sites.resize(chain.pre_amplitude.len(),usize::MAX);
         for (index,processor) in chain.pre_amplitude.iter().enumerate() {
             let parameter=|constant,role|->Result<ir::SignalParameter,String>{
                 let bindings:Vec<_>=instrument.processor_controls.iter().filter(|binding|binding.chain==chain_id && binding.index==index).collect();
@@ -1243,7 +1280,7 @@ fn source_processing_signal(
             };
             if let ir::Processor::ExpressionPan(pan)=*processor {
                 if boundary_pan.is_some(){return Err("source owner has multiple expression Pan homes".into());}
-                boundary_pan=Some(ir::ChannelPan{position:parameter(pan.pan.position,ir::ProcessorParameter::Pan)?,offset:pan.offset,law:pan.pan.law,expression:true});
+                boundary_pan=Some((index,ir::ChannelPan{position:parameter(pan.pan.position,ir::ProcessorParameter::Pan)?,offset:pan.offset,law:pan.pan.law,expression:true}));
                 continue;
             }
             let node=match *processor {
@@ -1264,8 +1301,16 @@ fn source_processing_signal(
                     // Preserve ordinary voice-chain's explicit zero added tail
                     // for this processor. This is not a claim that a native IIR
                     // physically has finite duration.
-                    ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:parameter(hz,ir::ProcessorParameter::Cutoff)?,mode,
-                        arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:0})
+                    if let Some(site)=native.and_then(|profile|profile.one_poles.iter().find(|site|site.chain==chain_id&&site.index==index)) {
+                        let key=site.frequency_control.as_ref().ok_or("native OnePole Freq is outside its typed public range")?;
+                        let definition=ir::Control{key:key.clone(),label:"Freq".into(),value:ir::ControlValue::Continuous{min:20.,max:20000.,default:site.frequency,unit:ir::ControlUnit::Hertz},automation:ir::Automation::None};
+                        if let Some(existing)=control_definitions.iter().find(|control|control.key==*key){
+                            if existing!=&definition{return Err("native OnePole Freq schema differs from its actual source control".into());}
+                        }else{control_definitions.push(definition);}
+                        ir::ProcessingSignalNode::UviOnePole(ir::UviNativeOnePole{frequency:ir::SignalParameter{constant:site.frequency,control:Some(key.clone()),expression:None},tracking:site.tracking,mode:site.mode,
+                            cadence:ir::UviOnePoleCadence::FirstSetup32,tail_frames:0})
+                    }else{ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:parameter(hz,ir::ProcessorParameter::Cutoff)?,mode,
+                        arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:0})}
                 }
                 ir::Processor::StereoMatrix(_)=>{
                     let found:Vec<_>=instrument.source_indices.processing_matrices.iter().enumerate()
@@ -1284,14 +1329,34 @@ fn source_processing_signal(
                 }
                 _=>return Err("source channel processor requires its actual N-port kernel".into()),
             };
+            sites[index]=nodes.len();
             nodes.push(node);
         }
     }
-    nodes.push(ir::ProcessingSignalNode::Matrix(port.clone()));
-    // This is an explicit caller-declared stereo outlet law. Native wide
-    // descriptor-specific Pan admission remains a separate adapter contract.
-    if let Some(pan)=boundary_pan {nodes.push(ir::ProcessingSignalNode::Pan(pan));}
-    Ok((ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:width},nodes,controls},matrices))
+    let source_law=if let Some(native)=native {
+        let source=ir::UviNativeLayout::plain_header(width).ok_or("native working descriptor is unproved")?;
+        let destination=native.requested.ok_or("native caller descriptor missing")?;
+        if destination!=ir::UviNativeLayout::Code2{return Err("normal backend requires its real stereo Frame outlet".into());}
+        let pan=if let Some((index,pan))=boundary_pan {sites[index]=nodes.len();pan}
+            else{ir::ChannelPan{position:ir::SignalParameter{constant:0.,control:None,expression:None},offset:0.,law:ir::PanLaw::RaisedCosineCoreF64,expression:false}};
+        nodes.push(ir::ProcessingSignalNode::UviLayout(ir::UviNativeLayoutConvert{source,destination,pan:pan.position,pan_offset:pan.offset}));
+        // Explicit user extension home, separate from the native BASE Pan that
+        // descriptor6->2 ignores. Center is exactly unity; canonical expression
+        // remains per activation BEFORE different notes enter global buses.
+        nodes.push(ir::ProcessingSignalNode::Pan(ir::ChannelPan{position:ir::SignalParameter{constant:0.,control:None,expression:None},offset:0.,law:ir::PanLaw::RaisedCosineCoreF64,expression:true}));
+        let mut members=[None;16];
+        if native.members.len()!=recipe.members.len()||native.members.len()>members.len(){return Err("native source ordinal roster is inconsistent".into());}
+        for (ordinal,(zone,input))in native.members.iter().enumerate(){
+            if *zone!=recipe.members[ordinal]{return Err("native source ordinal identity is inconsistent".into());}
+            members[ordinal]=Some(input.ok_or("native source geometry remains unresolved")?);
+        }
+        ir::ProcessingSourceLaw::UviC997Layout{members}
+    }else{
+        nodes.push(ir::ProcessingSignalNode::Matrix(port.ok_or("explicit caller port disappeared")?.clone()));
+        if let Some((index,pan))=boundary_pan {sites[index]=nodes.len();nodes.push(ir::ProcessingSignalNode::Pan(pan));}
+        ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet
+    };
+    Ok((ir::ProcessingSignal{source_law,input:ir::SignalLayout{channels:width},nodes,controls},matrices,sites))
 }
 
 fn prepare_sources_inner(

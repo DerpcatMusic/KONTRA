@@ -9,8 +9,36 @@ pub(crate) struct Matrix {
     cells: Box<[PreparedParameter]>,
     law: ir::MatrixArithmetic,
 }
+pub(crate) struct UviLayout {
+    pub source:ir::UviNativeLayout,pub destination:ir::UviNativeLayout,
+    pan:super::stages::StageParameter,offset:f64,
+}
+impl UviLayout {
+    pub(crate) fn pan_control_lane(&self)->Option<usize>{if let PreparedParameter::Control(lane)=self.pan.base{Some(lane)}else{None}}
+    fn render(&self,input:&[f32],output:&mut[f32],frames:usize,stride:usize,parameters:&[ControlRamp],at:u64)->Result<(),Error>{
+        let ni=self.source.channels();let no=self.destination.channels();
+        if frames>stride || input.len()<(ni-1)*stride+frames || output.len()<(no-1)*stride+frames{return Err(Error::InvalidInput);}
+        for frame in 0..frames {
+            // Native wide converter does NOT read this Pan operand. It remains
+            // an actual compiled typed home; enhanced expression Pan is separate.
+            let gains=if self.source==ir::UviNativeLayout::Code2&&self.destination==ir::UviNativeLayout::Code2 {
+                ir::PanLaw::RaisedCosineCoreF64.gains((self.pan.base.value(parameters,at+frame as u64,None)+self.offset).clamp(-1.,1.))
+            }else{[1.;2]};
+            for row in 0..no {
+                let mut sum=0.0f32;
+                for column in 0..ni {
+                    let weight=self.source.weight(self.destination,column,row).ok_or(Error::UnsupportedSourceLayout)?;
+                    if weight!=0. {sum+=input[column*stride+frame]*weight;}
+                }
+                if self.source==ir::UviNativeLayout::Code2&&self.destination==ir::UviNativeLayout::Code2{sum=(f64::from(sum)*gains[row])as f32;}
+                if !sum.is_finite(){return Err(Error::InvalidInput);}output[row*stride+frame]=sum;
+            }
+        }Ok(())
+    }
+}
 pub(crate) enum Node {
     Matrix(Matrix),
+    UviLayout(UviLayout),
     Stage(super::stages::Stage),
     Mix { count: usize, lanes: [usize; 3] },
     BusChain,
@@ -120,7 +148,7 @@ pub(crate) fn compile(
 pub(crate) fn compile_program(plan:&Prepared,definition:&ir::ProcessingSignal,
     parameters:&mut Vec<ControlRange>,output:Option<ChannelCount>,allow_expression:bool)->Result<Signal,Error> {
     match definition.source_law {
-        ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet => {}
+        ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet | ir::ProcessingSourceLaw::UviC997Layout{..} => {}
     }
     // Shared normal lowering and public Core builders admit every binding
     // before lane compilation; ignored rows and last-writer-wins are invalid.
@@ -152,12 +180,20 @@ pub(crate) fn compile_program(plan:&Prepared,definition:&ir::ProcessingSignal,
         if !allow_expression && match operation {
             ir::ProcessingSignalNode::Gain(gain)=>gain.gain.expression.is_some(),
             ir::ProcessingSignalNode::OnePole(filter)=>filter.cutoff_hz.expression.is_some(),
+            ir::ProcessingSignalNode::UviOnePole(filter)=>filter.frequency.expression.is_some() || filter.tracking!=0.,
             ir::ProcessingSignalNode::Pan(pan)=>pan.expression || pan.position.expression.is_some(),
             _=>false,
         } {return Err(Error::InvalidInput);}
         while spans.last().is_some_and(|&(end, _)| end == node) {
             let (_, expected) = spans.pop().ok_or(Error::InvalidInput)?;
             if previous != expected { return Err(Error::InvalidInput); }
+        }
+        if let ir::ProcessingSignalNode::UviLayout(layout)=operation {
+            if previous.get()!=layout.source.channels() || !layout.pan_offset.is_finite() || layout.pan.expression.is_some()
+                || layout.source.weight(layout.destination,0,0).is_none() {return Err(Error::InvalidInput);}
+            let pan=super::stages::parameter(plan,&layout.pan,parameters,&mut domains,|v|v.is_finite()&&(-1. ..=1.).contains(&v),false)?;
+            nodes.push(Node::UviLayout(UviLayout{source:layout.source,destination:layout.destination,pan,offset:layout.pan_offset}));
+            previous=ChannelCount::new(layout.destination.channels())?;maximum=maximum.max(previous.get());continue;
         }
         if matches!(operation,ir::ProcessingSignalNode::BusChain) {
             if allow_expression || bus_chain || previous.get()!=2 || !spans.is_empty() {
@@ -540,12 +576,21 @@ impl crate::Runtime {
                 continue;
             };
             let member = generation.dsp.channel_sources.claim(voice.0.index);
+            let scope=&generation.prepared.processing_scopes[owner.template];
+            let native=match scope.signal.as_ref().map(|definition|&definition.source_law){
+                Some(ir::ProcessingSourceLaw::UviC997Layout{members})=>Some(members.get(ordinal).copied().flatten().ok_or(Error::UnsupportedSourceLayout)?),
+                _=>None,
+            };
             for channel in 0..signal.input.get() {
                 for frame in 0..frames {
                     let i = channel * crate::dsp::BLOCK + frame;
-                    match generation.prepared.processing_scopes[owner.template].sum {
-                        ir::ProcessingSumLaw::OrderedF32 => input[i] += member[i],
-                    }
+                    if let Some(native)=native {
+                        let destination=ir::UviNativeLayout::plain_header(signal.input.get()).ok_or(Error::UnsupportedSourceLayout)?;
+                        for original in 0..native.layout.channels(){
+                            let weight=native.layout.weight(destination,original,channel).ok_or(Error::UnsupportedSourceLayout)?;
+                            if weight!=0.{input[i]+=member[original*crate::dsp::BLOCK+frame]*weight;}
+                        }
+                    }else{match scope.sum {ir::ProcessingSumLaw::OrderedF32=>input[i]+=member[i]}}
                 }
             }
         }
@@ -563,6 +608,7 @@ pub(crate) fn render_stages(
     at: u64,
     stereo: &mut [crate::Frame],
     expression: &crate::Expression,
+    native_note:f64,
 ) -> Result<(), Error> {
     let signal = generation
         .prepared
@@ -577,9 +623,11 @@ pub(crate) fn render_stages(
     let mut work = generation.dsp.channel_work.claim(0);
     let mut histories = generation.dsp.owner_signal_history.claim(index);
     let mut dry = generation.dsp.channel_mix.claim(0);
+    for node in &signal.nodes{if let Node::Stage(stage)=node{stage.prepare_native_note(&mut histories,native_note)?;}}
     if signal.output.get()!=2 {return Err(Error::UnsupportedSourceLayout);}
+    let projected=generation.dsp.modulated_parameters.claim(0);
     let offset=render_program(signal,&mut work,&mut histories,&mut dry,
-        &generation.dsp.parameters,generation.prepared.rate,at,frames,expression)?;
+        if generation.dsp.owner_modulation.program(index).is_some(){&projected}else{&generation.dsp.parameters},generation.prepared.rate,at,frames,expression)?;
     for (i, frame) in stereo.iter_mut().take(frames).enumerate() {
         *frame = [work[offset+i], work[offset+crate::dsp::BLOCK+i]];
     }
@@ -605,8 +653,9 @@ pub(crate) fn render_wide_stages(
     let mut work=generation.dsp.channel_work.claim(0);
     let mut histories=generation.dsp.owner_signal_history.claim(index);
     let mut dry=generation.dsp.channel_mix.claim(0);
+    let projected=generation.dsp.modulated_parameters.claim(0);
     let offset=render_program(signal,&mut work,&mut histories,&mut dry,
-        &generation.dsp.parameters,generation.prepared.rate,at,frames,expression)?;
+        if generation.dsp.owner_modulation.program(index).is_some(){&projected}else{&generation.dsp.parameters},generation.prepared.rate,at,frames,expression)?;
     for frame in 0..frames {
         let level=owner.envelope.constant_level().unwrap_or_else(||owner.envelope.next());
         let gain=level*expression_gain;
@@ -665,6 +714,13 @@ fn range(&mut self, begin:usize, end:usize, alternate:&mut bool,
                 *alternate=!*alternate;
                 channels=matrix.output.get();
                 index+=1;
+            }
+            Node::UviLayout(layout)=>{
+                if channels!=layout.source.channels(){return Err(Error::InvalidInput);}
+                let(first,second)=self.work.split_at_mut(self.width);
+                if *alternate{layout.render(second,first,self.frames,stride,self.parameters,self.at)?;}
+                else{layout.render(first,second,self.frames,stride,self.parameters,self.at)?;}
+                *alternate=!*alternate;channels=layout.destination.channels();index+=1;
             }
             Node::BusChain => {
                 if channels!=2{return Err(Error::InvalidInput);}

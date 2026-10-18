@@ -61,6 +61,32 @@ pub struct ChannelBus {
     pub output:ChannelCount,
 }
 
+/// An actual source owner's compiled control home, separate from UI/catalog
+/// spelling. No value is cached here; the real generation owns the lane.
+#[derive(Clone,Copy,Debug,PartialEq,Eq,PartialOrd,Ord)]
+pub enum SourceOwnerControl {Gain,Pan,OutputMute,MidiMute}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ScopeControlSite {SignalNode(usize),ChainPre(usize),ChainPost(usize)}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceOwnerControlTarget {Bus{bus:usize,node:usize},ProcessingScope{scope:usize,site:ScopeControlSite}}
+
+/// Explicit author-declared immutable source-output role. Values remain in
+/// the ordinary generation control owner; this metadata grants no lifetime.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SourceOwnerOutputControl {
+    pub owner:sampler_ir::SourceOwnerId,
+    pub field:SourceOwnerControl,
+    pub target:SourceOwnerControlTarget,
+    pub control:crate::ControlId,
+}
+#[derive(Clone,Copy)]
+struct CompiledOutputControl {
+    definition:SourceOwnerOutputControl,
+    owner:crate::prepare::PreparedSourceOwnerIndex,
+    lane:usize,
+}
+
 /// Where a group's fader lives (see [`crate::Prepared::with_group_faders`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupFader {
@@ -103,6 +129,8 @@ pub(super) struct PreparedBuses {
     pub(super) input: Option<usize>,
     filters: crate::dsp::svf::PreparedFilters,
     channel_workspace_bytes:usize,
+    output_controls:Box<[CompiledOutputControl]>,
+    output_control_bytes:usize,
     /// The last caller-declared channel workspace ceiling is retained so
     /// later input-bus selection cannot silently change the admitted price.
     channel_workspace_limit:Option<usize>,
@@ -255,7 +283,8 @@ impl PreparedBuses {
             rate,
             input: None,
             filters: filters.finish(),
-            channel_workspace_bytes:0,channel_workspace_limit:None,
+            channel_workspace_bytes:0,
+            output_controls:Box::new([]),output_control_bytes:0,channel_workspace_limit:None,
             parameters: parameters.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
         })
@@ -264,6 +293,10 @@ impl PreparedBuses {
     /// Schema replacement validates these same bindings, never a mirror bank.
     pub(super) fn signal_domains(&self)->impl Iterator<Item=&(crate::ControlId,crate::ControlDomain)> {
         self.nodes.iter().filter_map(|node|node.signal.as_ref()).flat_map(|signal|signal.domains.iter())
+    }
+    pub(crate) fn output_control(&self,owner:sampler_ir::SourceOwnerId,field:SourceOwnerControl)->Result<crate::ControlId,Error>{
+        self.output_controls.binary_search_by_key(&(owner,field),|home|(home.definition.owner,home.definition.field))
+            .map(|index|self.output_controls[index].definition.control).map_err(|_|Error::InvalidInput)
     }
     pub(crate) fn input_channels(&self,index:usize)->Result<usize,Error> {
         Ok(self.nodes.get(index).ok_or(Error::InvalidInput)?.signal.as_ref().map_or(2,|signal|signal.input.get()))
@@ -345,6 +378,101 @@ impl PreparedBuses {
 }
 
 impl Prepared {
+    fn processing_output_lane(&self,scope:usize,field:SourceOwnerControl)->Option<usize>{
+        let index=self.processing_scopes.get(scope)?.source_owner?;
+        let owner=self.source_owners().get(index)?.id;
+        let home=self.buses.output_controls.binary_search_by_key(&(owner,field),|row|(row.definition.owner,row.definition.field)).ok()?;
+        let home=&self.buses.output_controls[home];
+        matches!(home.definition.target,SourceOwnerControlTarget::ProcessingScope{scope:index,..}if index==scope).then_some(home.lane)
+    }
+    pub(crate) fn has_processing_output_role(&self,scope:usize,field:SourceOwnerControl)->bool{self.processing_output_lane(scope,field).is_some()}
+    pub(crate) fn project_processing_outputs(&self,scope:usize,ramp:crate::voice_mod::Ramp,parameters:&mut[crate::dsp::control::ControlRamp]){
+        // Two bounded searches of the SAME immutable binding roster, not a
+        // render-time graph scan or another per-owner parameter bank.
+        for (field,from,to,multiply)in [
+            (SourceOwnerControl::Gain,ramp.from.scalar_gain,ramp.to.scalar_gain,true),
+            (SourceOwnerControl::Pan,ramp.from.scalar_pan,ramp.to.scalar_pan,false),
+        ]{
+            if let Some(lane)=self.processing_output_lane(scope,field){parameters[lane].project_owner(from,to,ramp.begin,ramp.end,multiply);}
+        }
+    }
+    fn checked_source_output_control(&self,definition:SourceOwnerOutputControl)->Result<CompiledOutputControl,Error>{
+        if definition.field==SourceOwnerControl::MidiMute{return Err(Error::InvalidInput);}
+        let owner=self.source_owner_index(definition.owner).ok_or(Error::InvalidInput)?;
+        let lane=match definition.target {
+            SourceOwnerControlTarget::Bus{bus,node}=>{
+        let bus=self.buses.nodes.get(bus).ok_or(Error::InvalidInput)?;
+        let signal=bus.signal.as_ref().ok_or(Error::InvalidInput)?;
+        if bus.source_owner!=Some(owner) || !bus.processors.is_empty() || signal.input!=signal.output {return Err(Error::InvalidInput);}
+        let mut phase=0;
+        for operation in &signal.nodes {
+            let crate::topology::signal::Node::Stage(stage)=operation else{return Err(Error::InvalidInput);};
+            let kind=stage.owner_outlet_kind().ok_or(Error::InvalidInput)?;
+            let next=match kind{SourceOwnerControl::Gain=>0,SourceOwnerControl::Pan=>1,SourceOwnerControl::OutputMute=>2,SourceOwnerControl::MidiMute=>return Err(Error::InvalidInput)};
+            if next<phase{return Err(Error::InvalidInput);}phase=next;
+        }
+        let Some(crate::topology::signal::Node::Stage(stage))=signal.nodes.get(node)else{return Err(Error::InvalidInput);};
+        let lane=stage.owner_control_lane(definition.field).ok_or(Error::InvalidInput)?;
+        if self.buses.parameters.get(lane).ok_or(Error::InvalidInput)?.control!=definition.control {return Err(Error::InvalidInput);}lane
+            },
+            SourceOwnerControlTarget::ProcessingScope{scope,site}=>{
+                let scope=self.processing_scopes.get(scope).ok_or(Error::InvalidInput)?;
+                if scope.source_owner!=Some(owner){return Err(Error::InvalidInput);}
+                let lane=match site {
+                    ScopeControlSite::SignalNode(node)=>{
+                        let index=match definition.target {SourceOwnerControlTarget::ProcessingScope{scope,..}=>scope,_=>return Err(Error::InvalidInput)};
+                        let signal=self.processing_signals.get(index).and_then(Option::as_ref).ok_or(Error::InvalidInput)?;
+                        // A role hidden inside a suppressible Mix cannot own the field.
+                        if signal.nodes.iter().enumerate().take(node).any(|(at,operation)|matches!(operation,crate::topology::signal::Node::Mix{count,..}if node-at<=*count)){return Err(Error::InvalidInput);}
+                        match signal.nodes.get(node){
+                            Some(crate::topology::signal::Node::Stage(stage))=>stage.scope_control_lane(definition.field).ok_or(Error::InvalidInput)?,
+                            Some(crate::topology::signal::Node::UviLayout(layout))if definition.field==SourceOwnerControl::Pan=>layout.pan_control_lane().ok_or(Error::InvalidInput)?,
+                            _=>return Err(Error::InvalidInput),
+                        }
+                    },
+                    ScopeControlSite::ChainPre(_)|ScopeControlSite::ChainPost(_)=>{
+                        let chain=self.voice_chains.view(scope.chain.ok_or(Error::InvalidInput)?);
+                        chain.source_control_lane(site,definition.field).ok_or(Error::InvalidInput)?
+                    },
+                };
+                if self.dsp_bindings.get(lane).ok_or(Error::InvalidInput)?.control!=definition.control{return Err(Error::InvalidInput);}lane
+            },
+        };
+        let domain=self.controls[self.control_index(definition.control)?].domain;
+        let valid=match definition.field{
+            SourceOwnerControl::Gain=>matches!(domain,crate::ControlDomain::Real{min,max}if min>=0.&&max<=f64::from(f32::MAX)),
+            SourceOwnerControl::Pan=>matches!(domain,crate::ControlDomain::Real{min,max}if min>=-1.&&max<=1.),
+            SourceOwnerControl::OutputMute=>domain==crate::ControlDomain::Toggle,
+            SourceOwnerControl::MidiMute=>false,
+        };
+        if !valid{return Err(Error::InvalidInput);}Ok(CompiledOutputControl{definition,owner,lane})
+    }
+    /// Explicit actual output roles, checked off audio against compiled operands.
+    pub fn with_source_owner_output_controls(mut self,definitions:Vec<SourceOwnerOutputControl>,max_binding_bytes:usize)->Result<Self,Error>{
+        let maximum=self.source_owners().rows().len().checked_mul(3).ok_or(Error::Capacity)?;
+        let bytes=definitions.len().checked_mul(size_of::<CompiledOutputControl>()).ok_or(Error::Capacity)?;
+        if definitions.len()>maximum || bytes>max_binding_bytes{return Err(Error::Capacity);}
+        let mut homes=Vec::new();homes.try_reserve_exact(definitions.len()).map_err(|_|Error::Capacity)?;
+        for definition in definitions{homes.push(self.checked_source_output_control(definition)?);}
+        homes.sort_unstable_by_key(|home|(home.definition.owner,home.definition.field));
+        if homes.windows(2).any(|pair|pair[0].definition.owner==pair[1].definition.owner&&pair[0].definition.field==pair[1].definition.field){return Err(Error::InvalidInput);}
+        self.buses.output_controls=homes.into_boxed_slice();self.buses.output_control_bytes=bytes;
+        self.validate_source_owner_output_controls()?;Ok(self)
+    }
+    pub fn source_owner_output_binding_bytes(&self)->usize{self.buses.output_control_bytes}
+    pub(crate) fn validate_source_owner_output_controls(&self)->Result<(),Error>{
+        let bytes=self.buses.output_controls.len().checked_mul(size_of::<CompiledOutputControl>()).ok_or(Error::Capacity)?;
+        if bytes!=self.buses.output_control_bytes{return Err(Error::InvalidInput);}
+        for old in &self.buses.output_controls {
+            let current=self.checked_source_output_control(old.definition)?;
+            if current.owner!=old.owner || current.lane!=old.lane{return Err(Error::InvalidInput);}
+        }
+        self.voice_modulation.validate_provider_bindings(&self.processing_modulation,&self.region_processing)?;
+        self.processing_modulation.validate_scoped_bindings(self.processing_scopes.len(),
+            |scope,field|self.has_processing_output_role(scope,field),
+            |scope|self.processing_scopes[scope].modulation_gate)
+
+    }
     /// Offaudio channel attachment. Actual owner/control/edge identities are
     /// verified before any runtime exists. Multiple definitions cannot alias.
     pub fn with_channel_buses(mut self,definitions:Vec<ChannelBus>,max_workspace_bytes:usize)->Result<Self,Error> {
@@ -397,6 +525,7 @@ impl Prepared {
     pub fn channel_bus_workspace_bytes(&self)->usize{self.buses.channel_workspace_bytes}
     pub(crate) fn validate_bus_signal_edges(&self)->Result<(),Error> {
         self.buses.validate_channel_configuration()?;
+        self.validate_source_owner_output_controls()?;
         for(index,scope)in self.processing_scopes.iter().enumerate(){
             let output=self.processing_signals.get(index).and_then(Option::as_ref).map_or(2,|signal|signal.output.get());
             let input=scope.bus.map_or(Ok(2),|bus|self.buses.input_channels(bus))?;

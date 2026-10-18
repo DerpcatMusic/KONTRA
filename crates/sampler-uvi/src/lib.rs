@@ -269,6 +269,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         locations: Vec::new(),
         envelopes: HashMap::new(),
         modulator_index: HashMap::new(),
+        modulator_nodes:HashMap::new(),
         route_index: HashMap::new(),
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
@@ -446,7 +447,14 @@ fn source_owners(program: Node, instrument: &ir::Instrument) -> Result<Vec<ir::S
         }
         owners.push(ir::SourceOwner { id, parent, kind: owner_kind,
             children: Vec::new(), groups, zones, predicates,
-            bypass: saved_switch(node, "Bypass")?, mute: saved_switch(node, "Mute")?,
+            bypass: saved_switch(node, "Bypass")?,
+            // Generic owner.mute is a reception predicate. Actual output Mute
+            // is independently bound at the retained global outlet above.
+            mute: if matches!(owner_kind,ir::SourceOwnerKind::Layer|ir::SourceOwnerKind::Instrument) {
+                let key=engine_parameters::scope_midi_mute_key(node.id().get_usize());
+                let control=instrument.controls.iter().position(|row|row.key==key).map(ir::ControlRef);
+                Some(ir::SourceSwitch{saved:number(node,"MidiMute",0.)?!=0.,control})
+            } else {saved_switch(node,"MidiMute")?},
             event_processors });
     }
     for index in 0..owners.len() {
@@ -571,6 +579,8 @@ struct Translation {
     envelopes: HashMap<roxmltree::NodeId, (ir::ModulatorRef, ir::VelocityResponse)>,
     /// Shared modulators, routes and shapes by identity (see `modulation`).
     modulator_index: HashMap<String, ir::ModulatorRef>,
+    /// Offaudio exact source-definition identity, never a runtime value cache.
+    modulator_nodes:HashMap<ir::ModulatorRef,roxmltree::NodeId>,
     route_index: HashMap<String, ir::RouteRef>,
     shape_index: HashMap<String, ir::ShapeRef>,
     /// Program- and layer-level source nodes already given their shared-state
@@ -613,15 +623,13 @@ impl Translation {
         });
     }
 
-    /// Program and layer connections act on the mixed signal of their scope.
-    /// Gain, pitch and pan modulation are linear in the mix, so each keygroup
-    /// below the scope takes the connection itself (`Self::keygroup`).
+    /// Source-domain connections remain on children. Audio Gain/Pan belong
+    /// to the actual global scope outlet, never ahead of each child chain.
     fn scope_connections<'a>(&mut self, scope: Node<'a, 'a>) -> Vec<Node<'a, 'a>> {
-        connections(scope).collect()
+        connections(scope).filter(|connection|!matches!(connection.attribute("Destination"),Some("Gain"|"Pan"))).collect()
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let gain = number(program, "Gain", 1.0)?;
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -707,12 +715,9 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
-        let program_output = self.insert_bus(program, ir::Output::Master)?;
-        self.ir.input_bus = if let ir::Output::Bus(bus) = program_output {
-            Some(bus)
-        } else {
-            None
-        };
+        let (program_input,_program_outlet)=self.global_scope_bus(program,ir::Output::Master)?;
+        let program_output=ir::Output::Bus(program_input);
+        self.ir.input_bus=Some(program_input);
         for (_, bus) in &auxes {
             self.ir.buses[bus.0].output = program_output;
         }
@@ -721,30 +726,19 @@ impl Translation {
             .filter(|n| n.has_tag_name("Layer"))
             .enumerate()
         {
-            if number(layer, "Mute", 0.0)? != 0.0 {
-                continue;
-            }
             let mut scoped = program_scope.clone();
             scoped.extend(self.scope_connections(layer));
-            let output = self.insert_bus(layer, program_output)?;
-            let pan = number(layer, "Pan", 0.0)?;
-            let mut base = ir::Group {
+            let (layer_input,layer_outlet)=self.global_scope_bus(layer,program_output)?;
+            let output=ir::Output::Bus(layer_input);
+            let base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
-                gain: ir::Gain::Linear(gain * number(layer, "Gain", 1.0)?),
-                pan: ir::Pan {
-                    position: pan.clamp(-1.0, 1.0),
-                    law: ir::PanLaw::Balance,
-                },
+                gain: ir::Gain::UNITY,
+                pan: ir::Pan {position:0.,law:ir::PanLaw::Balance},
                 output,
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
             for router in routers(layer) {
-                if number(router, "Bypass", 0.0)? != 0.0 {
-                    // A bypassed send carries nothing.
-                    self.used.insert(router.id());
-                    continue;
-                }
                 let Some(bus) = router
                     .attribute("Destination")
                     .and_then(|d| d.rsplit('/').next())
@@ -754,11 +748,10 @@ impl Translation {
                     continue;
                 };
                 self.used.insert(router.id());
-                base.sends.push(ir::GroupSend {
-                    to: bus,
-                    gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
-                    pre_fader: number(router, "PreFader", 0.0)? != 0.0,
-                });
+                let sender=if number(router,"PreFader",0.)?!=0.{layer_input}else{layer_outlet};
+                self.ir.buses[sender.0].sends.push(ir::Send{to:ir::Output::Bus(bus),
+                    gain:ir::Gain::Linear(if number(router,"Bypass",0.)?!=0.{0.}else{number(router,"Gain",1.)?}),
+                    position:ir::SendPosition::PostChain});
             }
             // Scripts address individual keygroups/oscillators, including
             // single-oscillator keygroups; no two original nodes may alias.
@@ -768,13 +761,6 @@ impl Translation {
             self.split = Some((ordinal + 1, base.clone()));
             if self.split.is_none() {
                 self.ir.groups.push(base);
-            }
-            if pan != 0.0 {
-                self.unsupported(
-                    &path(layer),
-                    "cos² balance pan law (linear balance used)",
-                    pan,
-                );
             }
             // (Split layers have no group of their own: every zone takes an
             // oscillator group, see `oscillator_group`.)
@@ -822,47 +808,50 @@ impl Translation {
         }
         // The amplitude envelope: a plain Gain connection from a DAHDSR. Every other
         // connection is a route or a static factor. AnalogADSR is not modeled (below).
-        let mut amplitude = None;
+        let amplitude:Option<(ir::ModulatorRef,ir::VelocityResponse)>=None;
+        let mut source_gate=None;
         let mut shared = modulation::Modulation::default();
         for connection in scoped {
             if connection.attribute("Destination")==Some("Pan") {return Err(format!("{}: Program/Layer Pan connection requires its retained global processing owner; no per-player fallback",path(*connection)));}
             self.connect_scoped(*connection, &mut shared)?;
         }
         for connection in connections(keygroup) {
-            let pan_connection=connection.attribute("Destination")==Some("Pan");
-            if pan_connection && !modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default()).is_some_and(|source|source.has_tag_name("ConstantModulation") && source.attribute("ScriptLive").is_none()) {
-                return Err(format!("{}: live keygroup Pan connection requires per-activation shared modulator state; no per-player fallback",path(connection)));
+            let target=connection.attribute("Destination");
+            let before=self.ir.unsupported.len();
+            if matches!(target,Some("Gain"|"Pan")) && modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default())
+                .is_some_and(|source|source.has_tag_name("ScriptEventModulation")){
+                return Err(format!("{}: shared ScriptEventModulation requires actual source/event ownership, not a nearest-processor guess",path(connection)));
             }
-            let previous_gaps=self.ir.unsupported.len();
-            let plain = number(connection, "Ratio", 1.0)? == 1.0
-                && number(connection, "Bypass", 0.0)? == 0.0
-                && number(connection, "Inverted", 0.0)? == 0.0
-                && number(connection, "ConnectionMode", 0.0)? == 0.0
-                && connection
-                    .attribute("Mapper")
-                    .unwrap_or_default()
-                    .is_empty()
-                && connection.children().all(|c| !c.is_element());
-            let envelope = modulation::source_node(
-                keygroup,
-                connection.attribute("Source").unwrap_or_default(),
-            )
-            .filter(|n| n.tag_name().name() == "DAHDSR")
-            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0));
-            match envelope {
-                Some(envelope)
-                    if connection.attribute("Destination") == Some("Gain")
-                        && plain
-                        && amplitude.is_none() =>
-                {
-                    amplitude = Some(self.envelope(envelope)?);
-                }
-                _ => self.connect(connection, &mut shared)?,
-            }
-            if pan_connection && (self.ir.unsupported.len()!=previous_gaps || shared.routes.iter().any(|route|self.ir.routes[route.0].target==ir::Target::Pan)) {
-                return Err(format!("{}: keygroup Pan connection has no supported constant shared operand; no partial translation",path(connection)));
+            let plain=target==Some("Gain")&&source_gate.is_none()
+                &&number(connection,"Ratio",1.)?==1.&&number(connection,"Bypass",0.)?==0.
+                &&number(connection,"Inverted",0.)?==0.&&number(connection,"ConnectionMode",0.)?==0.
+                &&connection.attribute("Mapper").unwrap_or_default().is_empty()
+                &&connection.children().all(|child|!child.is_element());
+            let native_envelope=plain.then(||modulation::source_node(keygroup,connection.attribute("Source").unwrap_or_default())).flatten()
+                .filter(|node|node.has_tag_name("DAHDSR"))
+                .filter(|node|number(*node,"Bypass",0.).is_ok_and(|value|value==0.));
+            if let Some(envelope)=native_envelope {
+                let (source,velocity)=self.envelope(envelope)?;
+                let route=ir::RouteRef(self.ir.routes.len());
+                self.ir.routes.push(ir::Route{source,target:ir::Target::Amplitude,depth:ir::Depth::Normalized(1.),invert:false,shape:None,smoothing:ir::Time::ZERO,scale:None});
+                shared.routes.push(route);source_gate=Some(ir::SourceScopeGate{source,route,velocity});
+            }else{self.connect(connection,&mut shared)?;}
+            if matches!(target,Some("Gain"|"Pan")) && self.ir.unsupported.len()!=before {
+                return Err(format!("{}: shared output connection has no supported exact modulator program",path(connection)));
             }
         }
+        let mut shared_routes:Vec<_>=shared.routes.iter().copied().filter(|route|matches!(self.ir.routes[route.0].target,ir::Target::Amplitude|ir::Target::Pan)).collect();
+        // Follow actual modulation dependencies, never leave a frequency/phase
+        // control in a physical player while moving its oscillator to the KG.
+        loop {
+            let sources:Vec<_>=shared_routes.iter().flat_map(|reference|{
+                let route=&self.ir.routes[reference.0];std::iter::once(route.source).chain(route.scale.map(|scale|scale.source))
+            }).collect();
+            let additions:Vec<_>=shared.routes.iter().copied().filter(|reference|!shared_routes.contains(reference)&&matches!(self.ir.routes[reference.0].target,ir::Target::SourceRate(source)|ir::Target::SourcePhase(source)if sources.contains(&source))).collect();
+            if additions.is_empty(){break;}shared_routes.extend(additions);
+        }
+        shared.routes.retain(|route|!shared_routes.contains(route));
+        let shared_gain_offset=std::mem::replace(&mut shared.gain,1.);
         let shared_pan_offset=std::mem::replace(&mut shared.pan,0.);
         let (amplitude, velocity) = match amplitude {
             Some((modulator, velocity)) => (Some(modulator), velocity),
@@ -914,6 +903,13 @@ impl Translation {
             processors.push(ir::Processor::Gain(ir::Gain::Linear(gain)));
             index
         };
+        // Authored static route factor is independent of the absolute public
+        // Gain base, at the SAME side of FX as that real field.
+        if shared_gain_offset!=1.{
+            let insertion=gain_index+1;
+            processors.insert(insertion,ir::Processor::Gain(ir::Gain::Linear(shared_gain_offset)));
+            for (_,first,_)in &mut placed{if *first>=insertion{*first+=1;}}
+        }
         // Native f2cc80 resolves the KG Pan at the outgoing boundary, after
         // shared inserts and either FXPostGain branch. This is one scalar
         // control/home; source-local player pan remains a separate operation.
@@ -1093,6 +1089,39 @@ impl Translation {
             });
         }
         if first_member < self.ir.zones.len() {
+            // Own the actual stateful KG definition once even when all of its
+            // outgoing consumers are physical targets. Resolve by source NodeId,
+            // not waveform/name equality or the nearest admitted player.
+            // Use the nearest STRUCTURAL definition owner, as in source_owners:
+            // a player's own source must not be promoted through its KG ancestor.
+            let mut owned_sources:Vec<_>=self.modulator_nodes.iter().filter_map(|(source,id)|{
+                let node=keygroup.document().get_node(*id)?;
+                (node.ancestors().find(|node|node.is_element()&&(
+                    matches!(node.tag_name().name(),"Program"|"Layer"|"Keygroup"|"SamplePlayer"|"AuxEffect")
+                    ||node.parent().is_some_and(|parent|parent.has_tag_name("Oscillators"))))
+                    .map(|node|node.id())==Some(keygroup.id())
+                    &&matches!(self.ir.modulators[source.0].source,ir::ModulationSource::Lfo(_)|ir::ModulationSource::Envelope(_)|ir::ModulationSource::Breakpoints(_)))
+                    .then_some(*source)
+            }).collect();
+            if let Some(gate)=source_gate{if !owned_sources.contains(&gate.source){owned_sources.push(gate.source);}}
+            // Complete incoming source-rate/phase and scaling dependencies. A
+            // route is moved by its genuine RouteRef and removed from every
+            // physical member, never run once per player.
+            loop {
+                let before=(owned_sources.len(),shared_routes.len());
+                for reference in shared_routes.clone(){
+                    let route=&self.ir.routes[reference.0];
+                    for source in std::iter::once(route.source).chain(route.scale.map(|scale|scale.source)){
+                        if !owned_sources.contains(&source){owned_sources.push(source);}
+                    }
+                }
+                let incoming:Vec<_>=self.ir.zones[first_member..].iter().flat_map(|zone|zone.routes.iter().copied()).chain(shared_routes.iter().copied())
+                    .filter(|reference|matches!(self.ir.routes[reference.0].target,ir::Target::SourceRate(source)|ir::Target::SourcePhase(source)if owned_sources.contains(&source))).collect();
+                for reference in incoming{if !shared_routes.contains(&reference){shared_routes.push(reference);}}
+                if before==(owned_sources.len(),shared_routes.len()){break;}
+            }
+            owned_sources.sort_by_key(|source|source.0);owned_sources.dedup();
+            for zone in &mut self.ir.zones[first_member..]{zone.routes.retain(|route|!shared_routes.contains(route));}
             if let Some(chain)=chain {
                 // Preserve every cell at the real chain coordinate. Decode and
                 // ordinary materialization choose the actual processing width.
@@ -1131,7 +1160,29 @@ impl Translation {
                     Some(ir::Output::Master) | None => None,
                 },
                 compiled: None,
+                parameter_roles: if let Some(chain)=chain {
+                    [ (ir::SourceOwnerOutputField::Gain,gain_index,ir::ProcessorParameter::Gain),
+                      (ir::SourceOwnerOutputField::Pan,pan_index,ir::ProcessorParameter::Pan) ]
+                        .into_iter().map(|(field,chain_index,parameter)|{
+                            let control=self.ir.processor_controls.iter().find(|binding|binding.chain==chain&&binding.index==chain_index&&binding.parameter==parameter)
+                                .ok_or_else(||format!("{at}: shared output scalar has no exact source binding"))?.control;
+                            Ok(ir::SourceScopeControlRole{field,chain_index,control,compiled:None})
+                        }).collect::<Result<Vec<_>,String>>()?
+                }else{Vec::new()},
+                sources:owned_sources,routes: shared_routes,source_gate,
             });
+            let recipe=self.ir.source_indices.processing.last().ok_or_else(||"native source recipe absent".to_owned())?;
+            let mut one_poles=Vec::new();
+            if let Some(chain)=recipe.chain {
+                for placement in self.insert_nodes.iter().filter(|entry|entry.chain==chain&&entry.count>0){
+                    if let Some(node)=u32::try_from(placement.node).ok().and_then(|id|keygroup.document().get_node(roxmltree::NodeId::new(id)))
+                        && node.has_tag_name("OnePole") {
+                        one_poles.push(fx::filter::native_one_pole_site(node,chain,placement.first)?);
+                    }
+                }
+            }
+            self.ir.source_indices.uvi_native_processing.push(ir::UviNativeProcessingProfile{owner:recipe.owner,
+                members:recipe.members.iter().map(|zone|(*zone,None)).collect(),one_poles,requested:None});
         }
         Ok(())
     }
@@ -1861,6 +1912,21 @@ fn initial_playback_error(reason:impl Into<String>)->sampler_kontakt::LoadError 
     sampler_kontakt::LoadError::Invalid {path:"initial file playback".into(),reason:reason.into()}
         .at(sampler_kontakt::Stage::Prepare)
 }
+/// This normal backend really emits stereo Frame. Its output request is
+/// propagated through Program/Layer default ports, not inferred from KG width.
+fn bind_native_header_geometry(instrument:&mut ir::Instrument,geometry:&[Option<(usize,usize)>])->Result<(),sampler_kontakt::LoadError>{
+    for profile in &mut instrument.source_indices.uvi_native_processing {
+        for (zone,slot)in &mut profile.members {
+            let definition=instrument.zones.get(zone.0).ok_or_else(||initial_playback_error("native geometry zone is absent"))?;
+            *slot=if let Some(asset)=definition.asset {
+                geometry.get(asset.0).copied().flatten().and_then(|(header,storage)|ir::UviNativeLayout::plain_header(header).map(|layout|
+                    ir::UviNativeSourceInput{layout,storage_channels:storage,provenance:ir::UviNativeSourceProvenance::PlainHeader}))
+            }else{Some(ir::UviNativeSourceInput{layout:ir::UviNativeLayout::Code1,storage_channels:0,provenance:ir::UviNativeSourceProvenance::UnloadedDefault})};
+        }
+        profile.requested=Some(ir::UviNativeLayout::Code2);
+    }Ok(())
+}
+
 fn initial_playback_assets(instrument:&ir::Instrument,source_count:usize)->Result<Vec<bool>,sampler_kontakt::LoadError> {
     if source_count!=instrument.assets.len() {return Err(initial_playback_error("asset/source count mismatch"));}
     for zone in &instrument.zones {
@@ -1974,6 +2040,7 @@ fn assemble_streamed_cancelable(
             return Err(initial_playback_error(reason.clone()).into());
         }
     }
+    bind_native_header_geometry(&mut instrument,&sources.iter().map(|source|source.as_ref().ok().and_then(|source|source.original_channels).map(|channels|(channels,if channels<=2{2}else{channels}))).collect::<Vec<_>>())?;
     let playbacks:Vec<_>=sources.iter().map(|s|match s {Ok(s)=>s.playback.clone(),Err(_)=>Ok(None)}).collect();
     apply_initial_playbacks(&mut instrument,&playbacks,&sources.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&sources) {
@@ -2461,7 +2528,7 @@ mod narrowed_impulse_tests {
             },
             |location,_| {
                 reads.push(location.to_owned());
-                Ok(audio::InitialDecoded {source:sampler_core::Pcm::new(48000,vec![[0.5,-0.5]].into_boxed_slice()).unwrap().into(),playback:Ok(None)})
+                Ok(audio::InitialDecoded {original_channels:Some(2),source:sampler_core::Pcm::new(48000,vec![[0.5,-0.5]].into_boxed_slice()).unwrap().into(),playback:Ok(None)})
             },
         ).unwrap();
         assert_eq!(reads, ["room.wav", "low.wav"]);
@@ -2679,6 +2746,7 @@ fn assemble(
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     initial_playback_assets(&instrument,locations.len())?;
     if decoded.len()!=locations.len() {return Err(initial_playback_error("decoded/source count mismatch").into());}
+    bind_native_header_geometry(&mut instrument,&decoded.iter().map(|source|source.as_ref().ok().and_then(|decoded|decoded.original_channels.map(|channels|(channels,decoded.source.as_source().channels().get())))).collect::<Vec<_>>())?;
     let playbacks:Vec<_>=decoded.iter().map(|d|match d {Ok(d)=>d.playback.clone(),Err(_)=>Ok(None)}).collect();
     apply_initial_playbacks(&mut instrument,&playbacks,&decoded.iter().map(Result::is_ok).collect::<Vec<_>>())?;
     for (location, result) in locations.iter().zip(&decoded) {

@@ -650,6 +650,17 @@ impl Runtime {
     /// script layers, and its cursor's step. None for a voice not yet started.
     /// Evaluated per voice, so the voices may be prepared ahead of rendering.
     pub(super) fn prepare_voice(&mut self, i: usize, at: u64, frames: usize) -> Option<Prelude> {
+        if !self.voices.slots[i].value.as_ref()?.started{return None;}
+        let voice_id=VoiceId(self.voices.id(i));
+        let provider_owner=self.voices.slots[i].value.as_ref().and_then(|voice|{
+            let (owner,_)=voice.processing?;
+            let state=self.processing_owners.get(owner.0)?;
+            let generation=self.plans.get(state.plan.0)?;
+            generation.modulation.provider_scope(&generation.prepared.voice_modulation,i).map(|_|owner)
+        });
+        if let Some(owner)=provider_owner&&self.prepare_processing_modulation(owner,at,crate::topology::ProcessingModulationPhase::Forecast).is_err(){
+            self.fail_processing_owner(owner);return None;
+        }
         let v = self.voices.slots[i].value.as_mut()?;
         if !v.started {
             return None;
@@ -660,7 +671,7 @@ impl Runtime {
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         let modulated = plan.modulation.program(i).is_some();
         let mut filter = None;
-        let points = plan.modulation.program(i).map(|_| {
+        let points = if plan.modulation.program(i).is_some() {
             let performance = self.selections[f.note.0.index].performance;
             let inputs = super::voice_mod::Inputs::new(
                 n,
@@ -685,16 +696,20 @@ impl Runtime {
             {
                 v.cursor = v.cursor.with_loop_offsets(offsets);
             }
-            let ramp = plan
-                .modulation
-                .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
+            let ramp=if let Some(scope)=plan.modulation.provider_scope(&plan.prepared.voice_modulation,i){
+                let (id,ordinal)=v.processing?;
+                let owner=self.processing_owners.get(id.0)?;
+                if owner.plan!=n.plan||owner.template!=scope||owner.members.get(ordinal).copied().flatten()!=Some(voice_id){return None;}
+                let provider=plan.dsp.owner_modulation.provider_view(&plan.prepared.processing_modulation,id.0.index,scope).ok()?;
+                plan.modulation.advance_provided(&plan.prepared.voice_modulation,i,&inputs,clock,provider,v.envelope.releasing()).ok()?
+            }else{plan.modulation.advance(&plan.prepared.voice_modulation,i,&inputs,clock)};
             let (from, to) = (ramp.from, ramp.to);
             filter = Some([
                 (from.filter[0] + to.filter[0]) * 0.5,
                 (from.filter[1] + to.filter[1]) * 0.5,
             ]);
-            ramp
-        });
+            Some(ramp)
+        }else{None};
         plan.project_wavetable(&mut v.cursor, v.group, i);
         // Script layers (render_segment chunks once a script writes one).
         let mut stop = false;

@@ -11,6 +11,9 @@ pub(crate) mod signal;
 pub(crate) mod stages;
 
 const MAX_MEMBERS: usize = 16;
+/// Actual scope program operand giving an explicitly declared source gate.
+#[derive(Clone,Copy,Debug)]
+pub struct ProcessingModulationGate {pub source:usize,pub route:usize,pub velocity:crate::VelocityCurve}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessingOwnerId(pub(super) Handle);
@@ -37,7 +40,13 @@ pub(super) struct PreparedScope {
     pub bus: Option<usize>,
     pub members: Box<[usize]>,
     pub signal: Option<sampler_ir::ProcessingSignal>,
+    pub modulation_gate:Option<ProcessingModulationGate>,
 }
+
+/// Admission freezes only the actual onset point; forecasts read current
+/// accepted inputs later, at the first physical prelude. Commit is separate.
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub(super) enum ProcessingModulationPhase {AdmissionOnset,Forecast,Commit}
 
 #[derive(Clone, Copy)]
 pub(super) struct ProcessingOwner {
@@ -50,6 +59,13 @@ pub(super) struct ProcessingOwner {
     tail_remaining: Option<u32>,
     pub(super) failed: bool,
     pub(super) published: bool,
+    modulation_started:bool,
+    modulation_prepared_at:Option<u64>,
+    modulation_prepared_closed:bool,
+    modulation_released:bool,
+    // Source lifetime derived from the SAME EG phase/control-point endpoint.
+    // This is not an envelope/value copy or an independent evaluator clock.
+    modulation_source_end:Option<u64>,
 }
 
 #[cfg(test)]
@@ -62,6 +78,53 @@ impl ProcessingOwner {
 }
 
 impl Prepared {
+    /// Binds programs to real ProcessingScope definitions. This does not install
+    /// a global/note-less modulator or activate an importer native profile.
+    pub fn with_processing_modulation(self,programs:Vec<crate::ModProgram>,scopes:Vec<Option<usize>>,max_state_bytes:usize)->Result<Self,Error>{
+        let gates=vec![None;scopes.len()];self.with_processing_modulation_gates(programs,scopes,gates,max_state_bytes)
+    }
+    pub fn with_processing_modulation_gates(mut self,programs:Vec<crate::ModProgram>,scopes:Vec<Option<usize>>,gates:Vec<Option<ProcessingModulationGate>>,max_state_bytes:usize)->Result<Self,Error>{
+        if gates.len()!=scopes.len(){return Err(Error::InvalidInput);}
+        if scopes.len()!=self.processing_scopes.len()||programs.len()>scopes.len()|| (0..programs.len()).any(|program|!scopes.contains(&Some(program))){return Err(Error::InvalidInput);}
+        for (scope,binding) in scopes.iter().enumerate(){
+            let Some(program)=binding else{continue;};
+            let program=programs.get(*program).ok_or(Error::InvalidInput)?;
+            for route in &program.routes {
+                let field=match route.target.compiled(){
+                    Some(crate::voice_mod::CompiledTarget::Pan)=>crate::SourceOwnerControl::Pan,
+                    Some(crate::voice_mod::CompiledTarget::Attenuate|crate::voice_mod::CompiledTarget::Decibels)=>crate::SourceOwnerControl::Gain,
+                    Some(crate::voice_mod::CompiledTarget::SourcePhase(_)|crate::voice_mod::CompiledTarget::SourceRate(_))=>continue,
+                    _=>return Err(Error::InvalidInput),
+                };
+                if !self.has_processing_output_role(scope,field){return Err(Error::InvalidInput);}
+            }
+        }
+        for (scope,gate)in gates.iter().enumerate(){
+            let Some(gate)=gate else{continue;};let index=scopes[scope].ok_or(Error::InvalidInput)?;
+            let program=&programs[index];let route=program.routes.get(gate.route).ok_or(Error::InvalidInput)?;
+            if !matches!(program.sources.get(gate.source),Some(crate::ModSource::Envelope(_)))
+                ||route.source!=gate.source||route.target!=crate::ModTarget::Attenuate||route.depth!=1.
+                ||route.invert||route.shape.is_some()||route.scale.is_some()||route.more_scales.iter().any(Option::is_some)
+                ||route.lag!=0||route.live_gain!=1.||route.unipolar
+                ||program.controls.iter().any(|(row,_)|*row==gate.route)
+                ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.){return Err(Error::InvalidInput);}
+        }
+        let preparation_bytes=crate::voice_mod::VoiceModulation::scoped_preparation_bytes(&programs,programs.capacity(),&scopes,scopes.capacity())?
+            .checked_add(std::alloc::Layout::array::<Option<ProcessingModulationGate>>(gates.capacity()).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;
+        if preparation_bytes>max_state_bytes{return Err(Error::Capacity);}
+        // This builder owns an unpublished candidate. Retire its previous
+        // compiled program before constructing replacement prepared arrays;
+        // errors still consume the candidate, never mutate a Runtime.
+        self.processing_modulation=Default::default();
+        let ranges=vec![0;scopes.len()];
+        let modulation=crate::voice_mod::VoiceModulation::new_resolved(programs,scopes,ranges,Vec::new(),|_|None,|id|self.real_control(id))?;
+        let minimum=crate::voice_mod::VoiceModState::checked_storage_bytes(modulation.shape(),1,self.processing_scopes.len())?;
+        if minimum>max_state_bytes.checked_sub(preparation_bytes).ok_or(Error::Capacity)?{return Err(Error::Capacity);}
+        self.voice_modulation.validate_provider_bindings(&modulation,&self.region_processing)?;
+        for (scope,gate)in self.processing_scopes.iter_mut().zip(gates){scope.modulation_gate=gate;}
+        self.processing_modulation=modulation;self.processing_modulation_limit=max_state_bytes.checked_sub(preparation_bytes).ok_or(Error::Capacity)?;Ok(self)
+    }
+
     pub fn processing_scope_count(&self) -> usize {
         self.processing_scopes.len()
     }
@@ -118,7 +181,7 @@ impl Runtime {
         };
         let activation = activation.ok_or(Error::ArithmeticOverflow)?;
         let scope = &prepared.processing_scopes[template];
-        let gate = scope.has_amplitude && !prepared.region_has_amplitude(region);
+        let gate = (scope.has_amplitude||scope.modulation_gate.is_some()) && !prepared.region_has_amplitude(region);
         let existing = self.processing_owners.slots.iter().position(|slot| {
             slot.value.as_ref().is_some_and(|owner| {
                 owner.note == note && owner.template == template && owner.activation == activation
@@ -151,7 +214,7 @@ impl Runtime {
             envelope: EnvelopeState::new(scope.envelope),
             tail_remaining: None,
             failed: false,
-            published: false,
+            published: false,modulation_started:false,modulation_prepared_at:None,modulation_prepared_closed:false,modulation_released:false,modulation_source_end:None,
         })?);
         self.notes
             .get_mut(note.0)
@@ -228,7 +291,7 @@ impl Runtime {
             .any(|id| self.voices.get(id.0).is_some_and(|v| v.family == family))
     }
     pub(super) fn release_processing_note(&mut self, note: NoteId) {
-        for slot in &mut self.processing_owners.slots {
+        for (index,slot) in self.processing_owners.slots.iter_mut().enumerate() {
             if let Some(owner) = slot.value.as_mut()
                 && owner.note == note
             {
@@ -236,8 +299,16 @@ impl Runtime {
                     .plans
                     .get(owner.plan.0)
                     .is_some_and(|p| p.prepared.processing_scopes[owner.template].has_amplitude);
-                if has {
-                    owner.envelope.release();
+                if has {owner.envelope.release();}
+                if let Some(generation)=self.plans.get_mut(owner.plan.0){
+                    if !owner.modulation_released{
+                        generation.dsp.owner_modulation.release(&generation.prepared.processing_modulation,index);
+                        if owner.modulation_started && let Some(gate)=generation.prepared.processing_scopes[owner.template].modulation_gate {
+                            let end=generation.dsp.owner_modulation.scope_gate_end(&generation.prepared.processing_modulation,index,gate.source,true);
+                            owner.modulation_source_end=match(owner.modulation_source_end,end){(Some(old),Some(new))=>Some(old.min(new)),(old,None)=>old,(None,end)=>end};
+                        }
+                        owner.modulation_released=true;
+                    }
                 }
             }
         }
@@ -261,9 +332,20 @@ impl Runtime {
                 .plans
                 .get(owner.plan.0)
                 .is_some_and(|p| p.prepared.processing_scopes[owner.template].has_amplitude);
-            if has && let Some(owner) = self.processing_owners.slots[index].value.as_mut() {
-                owner.envelope.release();
+            if has && let Some(owner) = self.processing_owners.slots[index].value.as_mut(){owner.envelope.release();}
+            // This is an explicit Core family-gate event (never source EOF).
+            // Preserve the same shared-family authority as the existing scope
+            // amplifier; an arbitrary physical member ending does not call it.
+            if let Some(state)=self.processing_owners.slots[index].value.as_mut()
+                &&!state.modulation_released
+                &&let Some(generation)=self.plans.get_mut(state.plan.0){
+                generation.dsp.owner_modulation.release(&generation.prepared.processing_modulation,index);
+                if state.modulation_started&&let Some(gate)=generation.prepared.processing_scopes[state.template].modulation_gate{
+                    let end=generation.dsp.owner_modulation.scope_gate_end(&generation.prepared.processing_modulation,index,gate.source,true);
+                    state.modulation_source_end=match(state.modulation_source_end,end){(Some(old),Some(new))=>Some(old.min(new)),(old,None)=>old,(None,end)=>end};
+                }state.modulation_released=true;
             }
+
         }
     }
     pub(super) fn choke_processing_family(&mut self, family: FamilyId, frames: u32) {
@@ -294,12 +376,72 @@ impl Runtime {
                 self.end_voice(source);
             }
         }
+        if let Some(generation)=self.plans.get_mut(owner.plan.0){generation.dsp.owner_modulation.stop(id.0.index);}
         self.processing_owners.remove(id.0);
         if let Some(note) = self.notes.get_mut(owner.note.0) {
             note.processing_owners -= 1;
         }
     }
 
+    /// The actual owner row is provisionally prepared before physical cursor
+    /// admission. Cold retries reseed only this unpublished row; shared restart
+    /// domains publish only once every member has its pinned onset admitted.
+    pub(super) fn prepare_processing_modulation(&mut self,id:ProcessingOwnerId,at:u64,phase:ProcessingModulationPhase)->Result<(),Error>{
+        let owner=self.processing_owners.get_mut(id.0).ok_or(Error::StaleHandle)?;
+        let note=self.notes.get(owner.note.0).ok_or(Error::StaleHandle)?;
+        let expression=self.expressions.get(note.expression.0).ok_or(Error::StaleHandle)?;
+        let generation=self.plans.get_mut(owner.plan.0).ok_or(Error::StaleHandle)?;
+        if generation.prepared.processing_modulation.is_empty(){return Ok(());}
+        let performance=self.selections[owner.note.0.index].performance;
+        let inputs=crate::voice_mod::Inputs::new(note,expression.value,
+            &self.performance_state.channel_current(performance,note.address).controllers,
+            self.release_times[owner.note.0.index].counter(note.key_down(),at),
+            &self.note_params[owner.note.0.index].mods,generation.controls.base_reals());
+        let clock=crate::voice_mod::Clock{rate:f64::from(self.rate),tempo:self.tempo,now:at};
+        let closed=owner.modulation_released||!note.gate();
+        if !owner.modulation_started&&owner.modulation_prepared_at!=Some(at){
+            generation.dsp.owner_modulation.start_scoped(&generation.prepared.processing_modulation,id.0.index,owner.template,&inputs,clock,owner.activation,closed);
+            if let Some(gate)=generation.prepared.processing_scopes[owner.template].modulation_gate{
+                owner.modulation_source_end=generation.dsp.owner_modulation.scope_gate_end(&generation.prepared.processing_modulation,id.0.index,gate.source,false);
+            }
+            // Physical consumers have no independent shared source. Only their
+            // own local state is deferred until this actual cold attempt.
+            for voice in owner.members.into_iter().flatten(){
+                generation.modulation.defer_provider_restart(&generation.prepared.voice_modulation,voice.0.index);
+            }
+            owner.modulation_prepared_at=Some(at);owner.modulation_prepared_closed=closed;
+        }else if !owner.modulation_started&&owner.modulation_prepared_closed!=closed{
+            // Release has already reached this real row through the existing
+            // note/family gate path. Keep its admitted phase/onset; no reset.
+            // An onset-only closed birth ends at its real initial point. An
+            // explicitly forecast row retains the ordinary future-point law.
+            if let Some(gate)=generation.prepared.processing_scopes[owner.template].modulation_gate{
+                let forecast=generation.dsp.owner_modulation.scoped_has_forecast(id.0.index,at)?;
+                let end=generation.dsp.owner_modulation.scope_gate_end(&generation.prepared.processing_modulation,id.0.index,gate.source,forecast);
+                owner.modulation_source_end=match(owner.modulation_source_end,end){(Some(old),Some(new))=>Some(old.min(new)),(old,None)=>old,(None,end)=>end};
+            }
+            owner.modulation_prepared_closed=closed;
+        }
+        // SampleStart observes times[F,F], with no implicit forecast during
+        // trigger. Accepted same-frame CC/rate/depth edits must reach the first
+        // future point, exactly as in the ordinary local source path.
+        if phase==ProcessingModulationPhase::AdmissionOnset{return Ok(());}
+        let mut ramp=generation.dsp.owner_modulation.advance(&generation.prepared.processing_modulation,id.0.index,&inputs,clock);
+        if phase==ProcessingModulationPhase::Commit&&!owner.modulation_started{
+            generation.dsp.owner_modulation.commit_scoped_start(id.0.index);
+            owner.modulation_released=closed;owner.modulation_started=true;
+        }
+        if phase==ProcessingModulationPhase::Commit{
+            if let Some(gate)=generation.prepared.processing_scopes[owner.template].modulation_gate{
+                let factor=match gate.velocity{crate::VelocityCurve::Constant=>1.,crate::VelocityCurve::Linear=>inputs.velocity,crate::VelocityCurve::Power(p)=>inputs.velocity.powf(p)};
+                ramp.from.scalar_gain*=factor;ramp.to.scalar_gain*=factor;
+            }
+            let mut parameters=generation.dsp.modulated_parameters.claim(0);
+            parameters.copy_from_slice(&generation.dsp.parameters);
+            generation.prepared.project_processing_outputs(owner.template,ramp,&mut parameters);
+        }
+        Ok(())
+    }
     pub(super) fn render_processing_owners(&mut self, output: &mut [Frame], at: u64) {
         // Existing render_segment already splits at CELL and events, so this
         // task runs <=BLOCK and parameter ramps use the identical absolute clock.
@@ -324,6 +466,10 @@ impl Runtime {
                 // cohorts. Shared envelope and DSP state rest until all members.
                 continue;
             }
+            // Start/evaluate only after every actual member has an admitted
+            // onset. Scheduled or cold unpublished source work cannot advance
+            // this owner or publish a shared restart domain.
+            if self.prepare_processing_modulation(id,at,ProcessingModulationPhase::Commit).is_err(){self.end_processing_owner(id);continue;}
             let Some(law) = self
                 .plans
                 .get(before.plan.0)
@@ -332,11 +478,9 @@ impl Runtime {
                 continue;
             };
             let mut sum = [[0.; 2]; crate::dsp::BLOCK];
-            let source_len = if before.tail_remaining.is_some() {
-                0
-            } else {
-                output.len().min(before.envelope.remaining())
-            };
+            let deadline=self.processing_owners.get(id.0).and_then(|owner|owner.modulation_source_end);
+            let source_remaining=before.envelope.remaining().min(deadline.map_or(usize::MAX,|end|usize::try_from(end.saturating_sub(at)).unwrap_or(usize::MAX)));
+            let source_len=if before.tail_remaining.is_some(){0}else{output.len().min(source_remaining)};
             let mut produced = 0usize;
             if explicit {
                 match self.render_signal_sources(&before, source_len, at) {
@@ -377,7 +521,7 @@ impl Runtime {
             }
             // Stop source reads exactly at the owning amplitude's termination;
             // shared post-amplitude state may still render its zero-input tail.
-            if source_len < output.len() && before.envelope.remaining() == source_len {
+            if source_remaining!=usize::MAX && source_len==source_remaining {
                 for source in before.members.into_iter().flatten() {
                     if self.voices.get(source.0).is_some() {
                         self.end_voice(source);
@@ -393,6 +537,7 @@ impl Runtime {
             let Some(expression) = self.expressions.get(note.expression.0) else {
                 continue;
             };
+            let native_note=match note.pitch{crate::NotePitch::Key(key)=>f64::from(key),crate::NotePitch::Absolute(pitch)=>pitch};
             let generation = match self.plans.get_mut(owner.plan.0) {
                 Some(p) => p,
                 None => continue,
@@ -432,7 +577,7 @@ impl Runtime {
                     continue;
                 }
             } else {
-            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &stage_expression).is_err() {
+            if explicit && signal::render_stages(generation, &owner, index, len, at, &mut sum[..len], &stage_expression,native_note).is_err() {
                 generation.dsp.owner_signal_history.claim(index).fill(0.);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
                 self.end_processing_owner(id);
@@ -447,12 +592,13 @@ impl Runtime {
                 for &bus in &chain.tap_buses {
                     generation.dsp.feeds[bus].samples = [[0.; crate::dsp::BLOCK]; 2];
                 }
+                let projected=generation.dsp.modulated_parameters.claim(0);
                 let context = crate::dsp::RenderContext {
                     controls: None,
                     amplifier: None,
                     expression: expression_gains,
                     delay: &mut delay[..chain.delay_frames],
-                    parameters: &generation.dsp.parameters,
+                    parameters: if generation.dsp.owner_modulation.program(index).is_some(){&projected}else{&generation.dsp.parameters},
                     filters: crate::dsp::svf::FilterContext {
                         tempo: self.tempo,
                         bank: filters,

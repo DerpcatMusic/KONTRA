@@ -27,7 +27,9 @@ use sampler_ir as ir;
 /// of the previous point per sample, which underflows to zero here.
 const NEGLIGIBLE_SMOOTH: f64 = 3e-7;
 
-/// Effects of an owner's connections on the zones it applies to.
+/// Parsed scalar/route effects. Ownership is assigned by the actual normal
+/// producer: player-local routes remain on zones; shared KG Gain/Pan routes
+/// move once to SourceProcessingRecipe and its real activation state.
 #[derive(Clone, Debug)]
 pub(crate) struct Modulation {
     pub routes: Vec<ir::RouteRef>,
@@ -599,6 +601,13 @@ impl Translation {
 
     /// What `connection`'s `Source` reads, seen from `owner`'s scope.
     fn signal(&mut self, owner: Node, connection: Node) -> Result<Result<Signal, Gap>, String> {
+        let result=self.signal_inner(owner,connection)?;
+        if let (Some(node),Ok(Signal::Live{modulator,extra,..}))=(source_node(owner,connection.attribute("Source").unwrap_or_default()),&result){
+            self.modulator_nodes.entry(*modulator).or_insert(node.id());
+            if let Some((source,_))=extra{self.modulator_nodes.entry(*source).or_insert(node.id());}
+        }Ok(result)
+    }
+    fn signal_inner(&mut self, owner: Node, connection: Node) -> Result<Result<Signal, Gap>, String> {
         use ir::Reason::{NotModeled, Unknown, UnknownLaw};
         let source = connection.attribute("Source").unwrap_or_default();
         let identity = vec![(0.0, 0.0), (1.0, 1.0)];
@@ -843,7 +852,10 @@ impl Translation {
                     ir::ModulationSource::Script(id)
                 };
                 Ok(Ok(Signal::Live {
-                    modulator: self.modulator(format!("{source:?}"), source),
+                    // EventId is a listener property. Distinct native source
+                    // definitions keep distinct homes even with the same id;
+                    // every reference to this actual node reuses its one home.
+                    modulator: self.modulator(format!("node {:?}", node.id()), source),
                     curve: if polar { bipolar } else { identity },
                     bipolar: polar,
                     scale: None,
@@ -1378,16 +1390,18 @@ mod tests {
     use sampler_ir as ir;
 
     /// One keygroup with `keygroup` connections and a player with `player` ones.
-    fn translate(sources: &str, keygroup: &str, player: &str) -> ir::Instrument {
-        let xml = format!(
+    fn normal_xml(sources: &str, keygroup: &str, player: &str) -> String {
+        format!(
             r#"<Program Name="t"><ControlSignalSources>{sources}</ControlSignalSources>
             <Mappers><ControlSignalMapper Name="Tent" Min="0" Max="1">0,0 1,0 0,0</ControlSignalMapper></Mappers>
             <Layers><Layer Name="L"><Keygroups><Keygroup Name="K">
             <Connections>{keygroup}</Connections>
             <Oscillators><SamplePlayer Name="P" SamplePath="a.wav"><Connections>{player}</Connections></SamplePlayer></Oscillators>
             </Keygroup></Keygroups></Layer></Layers></Program>"#
-        );
-        crate::translate_bank(&xml).unwrap().0
+        )
+    }
+    fn translate(sources: &str, keygroup: &str, player: &str) -> ir::Instrument {
+        crate::translate_bank(&normal_xml(sources,keygroup,player)).unwrap().0
     }
 
     /// Parser-only owner-faithful harness. It does not run the normal audio
@@ -1402,7 +1416,7 @@ mod tests {
         let doc=roxmltree::Document::parse(&xml).unwrap();
         let mut out=crate::Translation{ir:ir::Instrument::default(),source:crate::Source::Bank,
             assets:Default::default(),locations:Vec::new(),envelopes:Default::default(),
-            modulator_index:Default::default(),route_index:Default::default(),shape_index:Default::default(),
+            modulator_index:Default::default(),modulator_nodes:Default::default(),route_index:Default::default(),shape_index:Default::default(),
             shared_sources:Default::default(),used:Default::default(),
             #[cfg(feature="scan")] dropped_connections:Default::default(),
             #[cfg(feature="scan")] visited_connections:Default::default(),
@@ -1424,6 +1438,15 @@ mod tests {
         (route, &ir.modulators[route.source.0].source)
     }
 
+    /// A Gain/Pan connection belongs to the actual shared output owner.
+    /// Never search a physical route as a fallback: both rosters are asserted.
+    fn only_processing_route(ir:&ir::Instrument)->(&ir::Route,&ir::ModulationSource) {
+        assert_eq!(ir.source_indices.processing.len(),1);
+        assert!(ir.zones.iter().all(|zone|zone.routes.is_empty()));
+        let recipe=&ir.source_indices.processing[0];assert_eq!(recipe.routes.len(),1);
+        let route=&ir.routes[recipe.routes[0].0];(route,&ir.modulators[route.source.0].source)
+    }
+
     fn shape<'a>(ir: &'a ir::Instrument, route: &ir::Route) -> &'a [(f64, f64)] {
         &ir.shapes[route.shape.unwrap().0].points
     }
@@ -1435,7 +1458,7 @@ mod tests {
             r#"<SignalConnection Source="@VoiceParam Velocity" Destination="Gain" Ratio="0.75"/>"#,
             "",
         );
-        let (route, source) = only_route(&ir);
+        let (route, source) = only_processing_route(&ir);
         assert_eq!(source, &ir::ModulationSource::Velocity);
         assert_eq!(
             (route.target, route.depth, route.invert, route.shape),
@@ -1452,7 +1475,7 @@ mod tests {
             r#"<SignalConnection Source="@MIDI CC 11" Destination="Gain" Ratio="-1"/>"#,
             "",
         );
-        let (route, source) = only_route(&ir);
+        let (route, source) = only_processing_route(&ir);
         assert_eq!(source, &ir::ModulationSource::Controller(11));
         assert_eq!(
             (route.depth, route.invert),
@@ -1640,7 +1663,11 @@ mod tests {
                <SignalConnection Source="$Program/M" Destination="Pitch" Ratio="4"/>"#,
         );
         let zone = &ir.zones[0];
-        assert_eq!(zone.gain, ir::Gain::Linear(0.25));
+        assert_eq!(zone.gain, ir::Gain::UNITY,"the shared factor must not also multiply each physical source");
+        let recipe=&ir.source_indices.processing[0];let role=recipe.parameter_roles.iter().find(|role|role.field==ir::SourceOwnerOutputField::Gain).unwrap();
+        let chain=&ir.chains[recipe.chain.unwrap().0];
+        assert_eq!(chain.pre_amplitude[role.chain_index],ir::Processor::Gain(ir::Gain::UNITY));
+        assert_eq!(chain.pre_amplitude[role.chain_index+1],ir::Processor::Gain(ir::Gain::Linear(0.25)),"the original constant factor remains once at its actual shared output side");
         assert_eq!(zone.tune, ir::Pitch::Semitones(1.0));
         let (route, _) = only_route(&ir);
         // Ratio 12 × the macro's factor 0.25.
@@ -1744,11 +1771,10 @@ mod tests {
         );
         assert_eq!(scale.shape, None);
         // Through a gain (factor law) the product is not separable: reported.
-        let ir = translate(
-            lfo,
-            r#"<SignalConnection Source="$Program/V" Destination="Gain" Ratio="1"/>"#,
-            "",
-        );
+        let nonlinear=r#"<SignalConnection Source="$Program/V" Destination="Gain" Ratio="1"/>"#;
+        let ir=translate_connections(lfo,nonlinear,"");
+        let refusal=crate::translate_bank(&normal_xml(lfo,nonlinear,"")).err().expect("a shared unknown nonlinear law must refuse the whole plan").to_string();
+        assert!(refusal.contains("shared output connection has no supported exact modulator program"),"{refusal}");
         assert!(ir.zones[0].routes.is_empty());
         assert_eq!(
             ir.unsupported[0].feature,
@@ -1944,7 +1970,7 @@ mod tests {
 
     #[test]
     fn step_envelope_is_a_free_saw_through_a_staircase() {
-        let ir = translate(
+        let ir = translate_connections(
             r#"<StepEnvelope Name="S" SyncToHost="1" Freq="0.25" NumSteps="4" Levels="0,25 1 0 0,5 0,9"/>
                <StepEnvelope Name="B" Bipolar="1" Levels="0"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
@@ -1979,6 +2005,17 @@ mod tests {
             (ir.unsupported[0].feature.as_str(), ir.unsupported[0].reason),
             ("StepEnvelope", ir::Reason::UnknownLaw)
         );
+        // Keep the mixed valid/unknown parser case above intact, while proving
+        // that the valid source also reaches its normal shared output home.
+        let sources=r#"<StepEnvelope Name="S" SyncToHost="1" Freq="0.25" NumSteps="4" Levels="0,25 1 0 0,5 0,9"/>"#;
+        let valid=r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>"#;
+        let normal=translate(sources,valid,"");let (actual,_)=only_processing_route(&normal);
+        assert_eq!(shape_points(&normal,actual),shape_points(&ir,route));
+        assert_eq!((actual.target,actual.depth),(route.target,route.depth));
+        let mixed_sources=format!("{sources}<StepEnvelope Name='B' Bipolar='1' Levels='0'/>");
+        let mixed_routes=format!("{valid}<SignalConnection Source='$Program/B' Destination='Gain' Ratio='1'/>");
+        let refusal=crate::translate_bank(&normal_xml(&mixed_sources,&mixed_routes,"")).err().expect("unknown shared output may not publish a partial instrument").to_string();
+        assert!(refusal.contains("shared output connection has no supported exact modulator program"),"{refusal}");
     }
 
     #[test]
@@ -2007,5 +2044,64 @@ mod tests {
         // A program-level retriggered LFO is one instance restarted by every note.
         assert_eq!(ir.modulators[route.source.0].scope, ir::Scope::Master);
         assert!(ir.unsupported[0].value.contains("inferred, not measured"));
+    }
+}
+
+
+#[cfg(test)]
+mod script_event_definition_identity40 {
+    use super::*;
+
+    #[test]
+    fn actual_nodes_are_separate_script_event_property_homes_and_references_reuse_them() {
+        let xml=r#"<Program><ControlSignalSources>
+            <ScriptEventModulation Name="A" EventId="7" Bipolar="0"/>
+            <ScriptEventModulation Name="B" EventId="7" Bipolar="0"/>
+            </ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer>
+            <Connections><SignalConnection Source="$Program/A" Destination="Pitch" Ratio="1"/>
+            <SignalConnection Source="$Program/B" Destination="Pitch" Ratio="2"/>
+            <SignalConnection Source="$Program/A" Destination="Pitch" Ratio="3"/></Connections>
+            </SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let doc=roxmltree::Document::parse(xml).unwrap();
+        let player=doc.descendants().find(|node|node.has_tag_name("SamplePlayer")).unwrap();
+        let definitions:Vec<_>=doc.descendants().filter(|node|node.has_tag_name("ScriptEventModulation")).map(|node|node.id()).collect();
+        let mut out=crate::Translation{ir:ir::Instrument::default(),source:crate::Source::Bank,
+            assets:Default::default(),locations:Vec::new(),envelopes:Default::default(),
+            modulator_index:Default::default(),modulator_nodes:Default::default(),route_index:Default::default(),shape_index:Default::default(),
+            shared_sources:Default::default(),used:Default::default(),
+            #[cfg(feature="scan")] dropped_connections:Default::default(),
+            #[cfg(feature="scan")] visited_connections:Default::default(),
+            #[cfg(feature="scan")] native_player_ids:Default::default(),
+            osc_groups:Vec::new(),insert_nodes:Vec::new(),split:None};
+        let refs:Vec<_>=crate::connections(player).map(|connection|match out.signal(player,connection).unwrap(){
+            Ok(Signal::Live{modulator,..})=>modulator,_=>panic!("actual ScriptEvent connection must remain live"),
+        }).collect();
+        assert_ne!(refs[0],refs[1],"equal EventId is not a native definition identity");
+        assert_eq!(refs[0],refs[2],"two references to the same actual definition must reuse its home");
+        assert_eq!(out.ir.modulators.len(),2);
+        assert_eq!(out.modulator_nodes.len(),2);
+        assert_eq!(out.modulator_nodes.get(&refs[0]),Some(&definitions[0]));
+        assert_eq!(out.modulator_nodes.get(&refs[1]),Some(&definitions[1]));
+        for source in refs{assert_eq!(out.ir.modulators[source.0].source,ir::ModulationSource::Script(7));}
+        // These are real retained node homes, not a claim that EventId or
+        // Bypass has a newly implemented live native setter/DSP lane.
+    }
+
+    #[test]
+    fn legacy_absent_event_id_and_explicit_equal_listener_keep_distinct_definitions() {
+        let xml=r#"<Program><ControlSignalSources>
+            <ScriptEventModulation Name="ScriptEventModulation 7" Bipolar="1"/>
+            <ScriptEventModulation Name="Explicit" EventId="7" Bipolar="1"/>
+            </ControlSignalSources><Layers><Layer><Keygroups><Keygroup><Oscillators>
+            <SamplePlayer SamplePath="a.wav"><Connections>
+            <SignalConnection Source="$Program/ScriptEventModulation 7" Destination="Pitch" Ratio="1"/>
+            <SignalConnection Source="$Program/Explicit" Destination="Pitch" Ratio="2"/>
+            <SignalConnection Source="$Program/ScriptEventModulation 7" Destination="Pitch" Ratio="3"/>
+            </Connections></SamplePlayer></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let value=crate::translate_bank(xml).unwrap().0;
+        let refs:Vec<_>=value.zones[0].routes.iter().map(|route|value.routes[route.0].source).collect();
+        assert_ne!(refs[0],refs[1]);assert_eq!(refs[0],refs[2]);
+        for source in refs{assert_eq!(value.modulators[source.0].source,ir::ModulationSource::ScriptBipolar(7));}
+        assert!(value.unsupported.is_empty(),"{:?}",value.unsupported);
     }
 }

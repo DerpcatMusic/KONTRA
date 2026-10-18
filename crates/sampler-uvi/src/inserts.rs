@@ -27,32 +27,61 @@ pub struct InsertNode {
 pub(super) type Placed = (usize, usize, usize);
 
 impl Translation {
-    /// A program/layer insert sees the sum of its children, not each voice.
-    pub(super) fn insert_bus(
-        &mut self,
-        parent: Node,
-        output: ir::Output,
-    ) -> Result<ir::Output, String> {
-        let (processors, placed) = self.inserts(parent, false, None)?;
-        if placed.is_empty() {
-            return Ok(output);
+    /// One actual Program/Layer FX owner and one memoryless outlet on the
+    /// same owner graph. The explicit current Core stereo port is independent
+    /// of source file cardinality and of any native descriptor enum.
+    pub(super) fn global_scope_bus(
+        &mut self, parent:Node, output:ir::Output,
+    )->Result<(ir::BusRef,ir::BusRef),String>{
+        let at=path(parent);let node=parent.id().get_usize();
+        let owner=ir::SourceOwnerId::UviNode(u32::try_from(node).map_err(|_|format!("{at}: scope owner identity overflow"))?);
+        let gain=number(parent,"Gain",1.)?;let pan=number(parent,"Pan",0.)?;
+        if !gain.is_finite() || !(0. ..=f64::from(f32::MAX)).contains(&gain)
+            || !pan.is_finite() || !(-1. ..=1.).contains(&pan){return Err(format!("{at}: global outlet scalar outside supported real domain"));}
+        let mut modulation=super::modulation::Modulation::default();
+        for connection in super::connections(parent).filter(|connection|matches!(connection.attribute("Destination"),Some("Gain"|"Pan"))){
+            let before=self.ir.unsupported.len();self.connect_scoped(connection,&mut modulation)?;
+            if self.ir.unsupported.len()!=before || !modulation.routes.is_empty(){
+                return Err(format!("{}: live global Gain/Pan requires the actual shared owner modulator; no per-source fallback",path(connection)));
+            }
         }
-        let bus = ir::BusRef(self.ir.buses.len());
-        let chain = ir::ChainRef(self.ir.chains.len());
-        self.ir.chains.push(ir::Chain {
-            scope: ir::Scope::Bus(bus),
-            pre_amplitude: processors,
-            post_amplitude: Vec::new(),
-        });
-        self.place(chain, placed);
-        self.ir.buses.push(ir::Bus {
-            name: parent.attribute("Name").unwrap_or_default().into(),
-            chain: Some(chain),
-            sends: Vec::new(),
-            output,
-            gain: ir::Gain::UNITY,
-        });
-        Ok(ir::Output::Bus(bus))
+        let gain_key=engine_parameters::scope_gain_key(node);let pan_key=engine_parameters::scope_pan_key(node);
+        let mute_key=engine_parameters::scope_mute_key(node);let midi_key=engine_parameters::scope_midi_mute_key(node);
+        let muted=number(parent,"Mute",0.)?!=0.;let midi_muted=number(parent,"MidiMute",0.)?!=0.;
+        let gain_control=ir::ControlRef(self.ir.controls.len());
+        let pan_control=ir::ControlRef(self.ir.controls.len()+1);
+        let mute_control=ir::ControlRef(self.ir.controls.len()+2);
+        for (key,label,min,max,default)in [
+            (gain_key.clone(),"Scope Gain",0.,f64::from(f32::MAX),gain),
+            (pan_key.clone(),"Scope Pan",-1.,1.,pan),
+        ]{self.ir.controls.push(ir::Control{key,label:label.into(),value:ir::ControlValue::Continuous{min,max,default,unit:ir::ControlUnit::None},automation:ir::Automation::None});}
+        for (key,label,default)in [(mute_key.clone(),"Scope output Mute",muted),(midi_key,"Scope MidiMute reception",midi_muted)]{
+            self.ir.controls.push(ir::Control{key,label:label.into(),value:ir::ControlValue::Toggle{default},automation:ir::Automation::None});
+        }
+        let input=ir::BusRef(self.ir.buses.len());let outlet=ir::BusRef(input.0+1);
+        let (mut processors,mut placed)=self.inserts(parent,false,None)?;
+        if !processors.is_empty(){
+            let count=u16::try_from(processors.len()).map_err(|_|format!("{at}: global insert count overflow"))?;
+            processors.insert(0,ir::Processor::Mix{count,address:ir::SlotAddress{group:-1,slot:-1,generic:i32::try_from(node).map_err(|_|format!("{at}: global insert address overflow"))?},dry:0.,wet:1.,bypass:number(parent,"BypassInsertFX",0.)?!=0.});
+            for (_,first,_)in &mut placed{*first+=1;}
+        }
+        let has_chain=!processors.is_empty();let chain=ir::ChainRef(self.ir.chains.len());
+        self.ir.chains.push(ir::Chain{scope:ir::Scope::Bus(input),pre_amplitude:processors,post_amplitude:Vec::new()});self.place(chain,placed);
+        self.ir.buses.push(ir::Bus{name:format!("{} FX",parent.attribute("Name").unwrap_or(parent.tag_name().name())),chain:Some(chain),sends:vec![],output:ir::Output::Bus(outlet),gain:ir::Gain::UNITY});
+        self.ir.buses.push(ir::Bus{name:format!("{} outlet",parent.attribute("Name").unwrap_or(parent.tag_name().name())),chain:None,sends:vec![],output,gain:ir::Gain::UNITY});
+        let identity=ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:2},output:ir::SignalLayout{channels:2},cells:vec![1.,0.,0.,1.],arithmetic:ir::MatrixArithmetic::SeparateMulAddF32});
+        self.ir.processing_buses.push(ir::ProcessingBus{bus:input,owner:Some(owner),signal:ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:2},nodes:vec![if has_chain{ir::ProcessingSignalNode::BusChain}else{identity}],controls:vec![]},output:ir::SignalLayout{channels:2}});
+        let mut nodes=vec![ir::ProcessingSignalNode::Gain(ir::ChannelGain{gain:ir::SignalParameter{constant:gain,control:Some(gain_key),expression:None},arithmetic:ir::ChannelGainArithmetic::CoreGainF64ThenF32})];
+        if modulation.gain!=1.{nodes.push(ir::ProcessingSignalNode::Gain(ir::ChannelGain{gain:ir::SignalParameter{constant:modulation.gain,control:None,expression:None},arithmetic:ir::ChannelGainArithmetic::CoreGainF64ThenF32}));}
+        let pan_node=nodes.len();
+        nodes.push(ir::ProcessingSignalNode::Pan(ir::ChannelPan{offset:modulation.pan,position:ir::SignalParameter{constant:pan,control:Some(pan_key),expression:None},law:ir::PanLaw::RaisedCosineCoreF64,expression:false}));
+        nodes.push(ir::ProcessingSignalNode::Mute(ir::ChannelMute{muted,control:Some(mute_key)}));
+        let mute_node=nodes.len()-1;
+        for (field,node,control)in [(ir::SourceOwnerOutputField::Gain,0,gain_control),(ir::SourceOwnerOutputField::Pan,pan_node,pan_control),(ir::SourceOwnerOutputField::Mute,mute_node,mute_control)]{
+            self.ir.source_indices.output_controls.push(ir::SourceOwnerOutputControl{owner,field,target:ir::SourceOwnerControlTarget::Bus{bus:outlet,node},control});
+        }
+        self.ir.processing_buses.push(ir::ProcessingBus{bus:outlet,owner:Some(owner),signal:ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:2},nodes,controls:vec![]},output:ir::SignalLayout{channels:2}});
+        Ok((input,outlet))
     }
 
     /// Record `placed` entries (relative to one chain) once the chain is `chain`.
@@ -85,7 +114,8 @@ impl Translation {
         // its bus-scope inserts get the control-driven stages that
         // `engine_parameters::lanes` addresses.
         let scripted = !self.ir.behaviors.is_empty();
-        let live = scripted && !voice;
+        let global=matches!(parent.tag_name().name(),"Program"|"Layer");
+        let live = (scripted || global) && !voice;
         // An `.fxps` effect preset (`<FXPreset><Effect/></FXPreset>`) stands for its effect.
         let nodes: Vec<Node> = inserts
             .children()
@@ -100,7 +130,7 @@ impl Translation {
             let bypassed = number(node, "Bypass", 0.0)? != 0.0;
             // A keygroup chain is retained once even without an initial script.
             // A saved bypass must not erase the processor/history/control home.
-            let mix = (scripted || voice) && engine_parameters::bypassable(node);
+            let mix = (scripted || voice || global) && engine_parameters::bypassable(node);
             if bypassed && !mix {
                 // Exactly silent: nothing to translate (a script that enables it
                 // reports its write).

@@ -838,7 +838,8 @@ fn switch_error(error: &CoreError) -> Value {
     match error {
         CoreError::Canceled => json!({"kind":"Canceled"}),
         CoreError::Load(e) => {
-            json!({"kind":"Load","stage":e.stage.map(|s|format!("{s:?}")),"source_kind":e.kind.map(|k|format!("{k:?}"))})
+            json!({"kind":"Load","stage":e.stage.map(|s|format!("{s:?}")),"source_kind":e.kind.map(|k|format!("{k:?}")),
+                "source_location":e.at.map(|(file,line)|json!({"file":file,"line":line})),"message":e.message})
         }
         CoreError::Unsupported(_) => json!({"kind":"Unsupported"}),
         CoreError::Capacity(_) => json!({"kind":"Capacity"}),
@@ -2641,5 +2642,25 @@ mod tests {
         assert_eq!(report["completed_listener_callbacks_observed"], json!([]));
         assert_eq!(report["background_observation"], "pending_first_callbacks");
         assert!(report["frames"].as_u64().unwrap() < 96_000);
+    }
+}
+
+#[cfg(test)]
+mod load_refusal147_report_tests {
+    use super::*;
+    #[test]
+    fn load_refusal147_report_retains_user_diagnostic_and_typed_location() {
+        let error = CoreError::Load(crate::sound::LoadFailure {
+            message: "authored source layout refusal".into(),
+            stage: Some(sampler_kontakt::Stage::Prepare),
+            kind: Some(sampler_kontakt::Kind::Lower),
+            at: Some(("authored-loader.rs", 147)),
+        });
+        let report = switch_error(&error);
+        assert_eq!(report["kind"], "Load");
+        assert_eq!(report["stage"], "Prepare");
+        assert_eq!(report["source_kind"], "Lower");
+        assert_eq!(report["source_location"]["line"], 147);
+        assert_eq!(report["message"], "authored source layout refusal");
     }
 }

@@ -685,6 +685,7 @@ mod tests {
 
 
 pub(crate) struct InitialSource {
+    pub original_channels:Option<usize>,
     pub source:Arc<dyn AssetSource>,
     pub playback:Result<Option<sampler_ir::Playback>,String>,
     /// Fatal only for an actual initial sample-zone use. Impulse-only readers
@@ -702,11 +703,16 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
             // No legacy probe or decoder is constructed to carry this frozen
             // recipe. The initial sample-source gate refuses it before any
             // playback/instrument mutation; impulse-only uses remain separate.
-            return Ok(InitialSource {source:Arc::new(sample),playback:Ok(None),admission:Err(error.to_string())});
+            return Ok(InitialSource {source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
         }
         Err(error)=>return Err(error.to_string()),
     };
-    let frames=reader.frames();let rate=reader.rate();drop(reader);
+    let frames=reader.frames();let rate=reader.rate();let original_channels=reader.original_channels();drop(reader);
+    // Built-in encoded owners expose actual channels. The legacy Custom stereo
+    // closure does not: inspect its concrete SAME frozen UVI stream headers only
+    // AFTER dropping the initial reader, so decoder workspaces never overlap.
+    let original_channels=if sample.parts.len()>1{None}else if let Some(channels)=original_channels{Some(channels)}
+        else{Some(Stream::open_counted(&sample.parts[0],false).map_err(|e|e.to_string())?.channels)};
     let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
         let mut metadata=None;
         for origin in &sample.parts {
@@ -736,5 +742,5 @@ pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSour
         }
         Ok(metadata)
     } else {Ok(None)} })();
-    Ok(InitialSource {source:Arc::new(sample),playback,admission:Ok(())})
+    Ok(InitialSource {source:Arc::new(sample),original_channels,playback,admission:Ok(())})
 }

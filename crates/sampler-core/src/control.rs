@@ -649,7 +649,7 @@ impl Prepared {
         self.refresh_real_controls()?;
         let controls = &self.controls;
         let layout = &self.control_layout;
-        self.voice_modulation.remap_controls(|slot| {
+        let remap=|slot:RealControlIndex| {
             // The previous schema is the identity of every compiled input cell.
             let logical = previous_layout.reals.get(slot.0).ok_or(Error::InvalidInput)?.logical;
             let id = previous.get(logical).ok_or(Error::InvalidInput)?.id;
@@ -660,7 +660,9 @@ impl Prepared {
                 return Err(Error::InvalidInput);
             }
             layout.real(index)
-        })?;
+        };
+        self.voice_modulation.remap_controls(&remap)?;
+        self.processing_modulation.remap_controls(remap)?;
         Ok(self)
     }
 

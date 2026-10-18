@@ -318,8 +318,18 @@ pub struct ModProgram {
     pub envelope_controls: Vec<(usize, [Option<crate::ControlId>; 6])>,
 }
 
+/// Declarative source row of an actual compiled per-activation scope. Runtime
+/// reads must additionally validate its real ProcessingOwner/Plan generation.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ProcessingSourceRef {pub scope:usize,pub source:usize}
+/// Bind an existing physical program source slot to that real owner source.
+/// The original source descriptor is preparation metadata, not another state.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ModProvider {pub program:usize,pub source:usize,pub provider:ProcessingSourceRef}
+
 #[derive(Clone, Copy)]
 enum Prepared {
+    Provider(ProcessingSourceRef),
     Lfo(Lfo),
     Envelope(usize),
     /// Index into the program's breakpoint envelopes and the voice's segments.
@@ -357,6 +367,7 @@ struct Program {
     native_controls: Box<[Option<([RealControlIndex; 2], f64)>]>,
     native_flex_control: Option<(f64, Option<[RealControlIndex; 2]>)>,
     sources: Box<[Prepared]>,
+    provider_scope:Option<usize>,
     fades: Box<[Option<Box<[f32]>>]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
@@ -411,6 +422,85 @@ pub(crate) struct ModShape {
 }
 
 impl VoiceModulation {
+    /// Conservative checked preparation-window price for the scoped subset.
+    /// Includes owned caller vector capacities plus prepared arrays and compiler
+    /// temporary rows. Native whole-voice programs are not part of this path.
+    pub(crate) fn scoped_preparation_bytes(programs:&[ModProgram],program_capacity:usize,bindings:&[Option<usize>],binding_capacity:usize)->Result<usize,Error>{
+        fn add<T>(n:&mut usize,count:usize)->Result<(),Error>{
+            *n=n.checked_add(std::alloc::Layout::array::<T>(count).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?;Ok(())
+        }
+        let mut n=0;
+        add::<ModProgram>(&mut n,program_capacity)?;add::<Option<usize>>(&mut n,binding_capacity)?;
+        add::<Program>(&mut n,programs.len())?;add::<Option<u32>>(&mut n,bindings.len())?;add::<u32>(&mut n,bindings.len())?;
+        for p in programs {
+            // Bound preparation work before dependency-order / curve compiling.
+            if p.sources.len()>1024||p.routes.len()>4096||p.controls.len()>4096||p.shapes.len()>4096||p.breakpoints.len()>1024{return Err(Error::Capacity);}
+            add::<ModSource>(&mut n,p.sources.capacity())?;add::<ModRoute>(&mut n,p.routes.capacity())?;
+            add::<(usize,[crate::ControlId;2])>(&mut n,p.controls.capacity())?;
+            add::<(usize,[Option<crate::ControlId>;6])>(&mut n,p.envelope_controls.capacity())?;
+            add::<Vec<(f64,f64)>>(&mut n,p.shapes.capacity())?;add::<Breakpoints>(&mut n,p.breakpoints.capacity())?;
+            for curve in &p.shapes{add::<(f64,f64)>(&mut n,curve.capacity())?;add::<(f32,f32)>(&mut n,curve.len())?;}
+            for envelope in &p.breakpoints{add::<Breakpoint>(&mut n,envelope.points.capacity())?;}
+            let source=p.sources.len();let routes=p.routes.len();
+            add::<Prepared>(&mut n,source)?;add::<bool>(&mut n,source.checked_mul(2).ok_or(Error::Capacity)?)?;
+            add::<Option<Box<[f32]>>>(&mut n,source)?;add::<Envelope>(&mut n,source)?;
+            add::<[Option<RealControlIndex>;6]>(&mut n,source)?;add::<Shape>(&mut n,p.shapes.len())?;
+            // Owned source-rate/phase dependencies retain their incoming index
+            // rows. The compiler reserves exact per-target counts; each route
+            // contributes to at most one row, including box-conversion overlap.
+            add::<Vec<usize>>(&mut n,source.checked_mul(2).ok_or(Error::Capacity)?)?;
+            add::<Box<[usize]>>(&mut n,source.checked_mul(2).ok_or(Error::Capacity)?)?;
+            let dependencies=p.routes.iter().filter(|route|matches!(route.target.compiled(),Some(CompiledTarget::SourceRate(_)|CompiledTarget::SourcePhase(_)))).count();
+            add::<usize>(&mut n,dependencies.checked_mul(2).ok_or(Error::Capacity)?)?;
+            add::<usize>(&mut n,source)?;add::<f64>(&mut n,source)?;
+            add::<CompiledTarget>(&mut n,routes)?;add::<Option<NativeLaw>>(&mut n,routes)?;
+            add::<ModRoute>(&mut n,routes)?;add::<(usize,[RealControlIndex;2])>(&mut n,p.controls.len())?;
+            add::<Breakpoints>(&mut n,p.breakpoints.len())?;
+            add::<Option<usize>>(&mut n,p.breakpoints.len())?;add::<Breakpoints>(&mut n,p.breakpoints.len())?;
+            for source in &p.sources {
+                if matches!(source,ModSource::Lfo(Lfo{shape:LfoShape::DigitalSine{..}|LfoShape::NativeFaded{..},..})) {
+                    // Public KontaktLfoFade::from_saved enforces <=5000ms at
+                    // <=384kHz; its native /32 table has at most60001 values.
+                    add::<f32>(&mut n,60001)?;
+                }
+            }
+        }
+        // Covers prepared-box conversion and actual Vec builder overlap, not
+        // allocator headers/RSS or the caller's unrelated bank/source owners.
+        n.checked_mul(2).ok_or(Error::Capacity)
+    }
+    /// Required scalar homes are a compiled-program invariant, not merely an
+    /// attachment-time check. Roster/schema/topology replacement must preserve
+    /// the SAME actual scope home for every compiled scalar output.
+    pub(crate) fn validate_scoped_bindings(&self,scopes:usize,
+        mut home:impl FnMut(usize,crate::SourceOwnerControl)->bool,
+        mut gate:impl FnMut(usize)->Option<crate::ProcessingModulationGate>)->Result<(),Error>{
+        if (!self.programs.is_empty()||!self.regions.is_empty())&&self.regions.len()!=scopes{return Err(Error::InvalidInput);}
+        for scope in 0..scopes {
+            let program=self.program(scope).map(|index|self.programs.get(index as usize).ok_or(Error::InvalidInput)).transpose()?;
+            if let Some(program)=program {
+                for target in &program.targets {
+                    let field=match target {
+                        CompiledTarget::Attenuate|CompiledTarget::Decibels=>crate::SourceOwnerControl::Gain,
+                        CompiledTarget::Pan=>crate::SourceOwnerControl::Pan,
+                        CompiledTarget::SourceRate(_)|CompiledTarget::SourcePhase(_)=>continue,
+                        _=>return Err(Error::InvalidInput),
+                    };
+                    if !home(scope,field){return Err(Error::InvalidInput);}
+                }
+            }
+            if let Some(gate)=gate(scope){
+                let program=program.ok_or(Error::InvalidInput)?;
+                let route=program.routes.get(gate.route).ok_or(Error::InvalidInput)?;
+                if !matches!(program.sources.get(gate.source),Some(Prepared::Envelope(_)))
+                    ||route.source!=gate.source||route.target!=ModTarget::Attenuate||route.depth!=1.
+                    ||route.invert||route.shape.is_some()||route.scale.is_some()||route.more_scales.iter().any(Option::is_some)
+                    ||route.lag!=0||route.live_gain!=1.||route.unipolar
+                    ||program.controls.iter().any(|(row,_)|*row==gate.route)
+                    ||matches!(gate.velocity,crate::VelocityCurve::Power(p)if !p.is_finite()||p<=0.){return Err(Error::InvalidInput);}
+            }
+        }Ok(())
+    }
     /// Revalidate compiled processor references after a control-side topology edit.
     /// The target kind and index must still belong to this prepared generation.
     pub(crate) fn validate_dsp_targets(
@@ -505,21 +595,7 @@ impl VoiceModulation {
     }
     /// Bytes of [`VoiceModState`] one voice slot needs.
     pub fn bytes_per_voice(&self) -> usize {
-        use std::mem::size_of;
-        if self.is_empty() {
-            return 0;
-        }
-        usize::from(self.programs.iter().any(|p| p.native.is_some())) * size_of::<Option<crate::v1_voice_controls::ControlState>>()
-            + usize::from(self.programs.iter().any(|p| p.native.is_some())) * size_of::<std::sync::atomic::AtomicBool>()
-            + size_of::<Option<u32>>()
-            + size_of::<u64>()
-            + size_of::<u32>()
-            + 2 * size_of::<Outputs>()
-            + size_of::<[u64; 2]>()
-            + size_of::<[[f64; 2]; 2]>()
-            + self.sources * 2 * size_of::<f64>()
-            + self.routes * size_of::<f64>()
-            + self.envelopes * size_of::<EnvelopeState>()
+        VoiceModState::checked_storage_bytes(self.shape(),1,0).unwrap_or(usize::MAX)
     }
     #[cfg(test)]
     pub fn new(
@@ -545,6 +621,18 @@ impl VoiceModulation {
         resolve: impl Fn(crate::ParameterAddress) -> Option<usize>,
         control: impl Fn(crate::ControlId) -> Result<RealControlIndex, Error>,
     ) -> Result<Self, Error> {
+        Self::new_resolved_providers(programs,regions,start_ranges,native,Vec::new(),resolve,control)
+    }
+    pub(crate) fn new_resolved_providers(
+        programs:Vec<ModProgram>,regions:Vec<Option<usize>>,start_ranges:Vec<u32>,
+        native:Vec<Option<crate::whole_voice::Program>>,providers:Vec<(ModProvider,bool)>,
+        resolve:impl Fn(crate::ParameterAddress)->Option<usize>,
+        control:impl Fn(crate::ControlId)->Result<RealControlIndex,Error>,
+    )->Result<Self,Error>{
+        for (i,(binding,_))in providers.iter().enumerate(){
+            if programs.get(binding.program).and_then(|p|p.sources.get(binding.source)).is_none()
+                ||providers[..i].iter().any(|(old,_)|old.program==binding.program&&old.source==binding.source){return Err(Error::InvalidInput);}
+        }
         if start_ranges.len() != regions.len()
             || regions.iter().flatten().any(|p| *p >= programs.len())
             || programs.len() > u32::MAX as usize
@@ -553,12 +641,23 @@ impl VoiceModulation {
         }
         let mut native = native.into_iter();
         let mut compiled = Vec::with_capacity(programs.len());
-        for program in programs {
-            let mut envelopes = Vec::new();
+        for (program_index,program) in programs.into_iter().enumerate() {
+            let mut provider_scope=None;
+            for (binding,_)in providers.iter().filter(|(binding,_)|binding.program==program_index){
+                if provider_scope.is_some_and(|scope|scope!=binding.provider.scope){return Err(Error::InvalidInput);}
+                provider_scope=Some(binding.provider.scope);
+            }
+            let mut envelopes = Vec::with_capacity(program.sources.iter().filter(|source|matches!(source,ModSource::Envelope(_))).count());
+            std::alloc::Layout::array::<Option<usize>>(program.breakpoints.len()).map_err(|_|Error::Capacity)?;
+            let mut breakpoint_indices=vec![None;program.breakpoints.len()];
+            let mut active_breakpoints=Vec::new();
             let sources = program
                 .sources
                 .iter()
-                .map(|source| {
+                .enumerate().map(|(source_index,source)| {
+                    if let Some((binding,_))=providers.iter().find(|(binding,_)|binding.program==program_index&&binding.source==source_index){
+                        return Ok(Prepared::Provider(binding.provider));
+                    }
                     Ok(match *source {
                         ModSource::Lfo(lfo) => {
                             if let LfoShape::DigitalSine { level, .. }
@@ -598,7 +697,10 @@ impl VoiceModulation {
                             if !b.valid() {
                                 return Err(Error::InvalidInput);
                             }
-                            Prepared::Breakpoints(index)
+                            let actual=match breakpoint_indices[index]{Some(actual)=>actual,None=>{
+                                let actual=active_breakpoints.len();active_breakpoints.push(b.clone());breakpoint_indices[index]=Some(actual);actual
+                            }};
+                            Prepared::Breakpoints(actual)
                         }
                         ModSource::Velocity => Prepared::Input(InputSource::Velocity),
                         ModSource::Key => Prepared::Input(InputSource::Key),
@@ -663,7 +765,9 @@ impl VoiceModulation {
                     return Err(Error::InvalidInput);
                 }
             }
-            let mut phase_routes = vec![Vec::new(); sources.len()];
+            // Reserve exact incoming dependency rows before filling them, so
+            // scoped preparation can price actual backing without Vec growth.
+            let mut phase_routes:Vec<Vec<usize>>=(0..sources.len()).map(|target|Vec::with_capacity(program.routes.iter().filter(|route|matches!(route.target.compiled(),Some(CompiledTarget::SourcePhase(index))if index as usize==target)).count())).collect();
             for (index, route) in program.routes.iter().enumerate() {
                 if let Some(CompiledTarget::SourcePhase(target)) = route.target.compiled() {
                     let target = target as usize;
@@ -676,7 +780,7 @@ impl VoiceModulation {
                     phase_routes[target].push(index);
                 }
             }
-            let mut rate_routes = vec![Vec::new(); sources.len()];
+            let mut rate_routes:Vec<Vec<usize>>=(0..sources.len()).map(|target|Vec::with_capacity(program.routes.iter().filter(|route|matches!(route.target.compiled(),Some(CompiledTarget::SourceRate(index))if index as usize==target)).count())).collect();
             let mut rate_lane = vec![f64::NAN; sources.len()];
             for (index, route) in program.routes.iter().enumerate() {
                 if let Some(CompiledTarget::SourceRate(target)) = route.target.compiled() {
@@ -732,6 +836,7 @@ impl VoiceModulation {
             filter_indices.dedup();
             let mut envelope_controls = vec![[None; 6]; envelopes.len()];
             for &(source, ids) in &program.envelope_controls {
+                if matches!(sources.get(source),Some(Prepared::Provider(_))){continue;}
                 let Some(Prepared::Envelope(e)) = sources.get(source) else {
                     return Err(Error::InvalidInput);
                 };
@@ -773,6 +878,7 @@ impl VoiceModulation {
                 _ => None,
             }).collect();
             let native_program = native.next().flatten();
+            if provider_scope.is_some()&&native_program.is_some(){return Err(Error::InvalidInput);}
             let mut native_controls = native_program.as_ref().map_or_else(Vec::new, |n| {
                 vec![None; n.plan.description().mods.assignments().len()]
             });
@@ -835,13 +941,14 @@ impl VoiceModulation {
                 })
                 .collect::<Box<[_]>>();
             compiled.push(Program {
+                provider_scope,
                 laws: native_laws,
                 controls: controls.into_boxed_slice(),
                 fades,
                 native: native_program,
                 native_controls: native_controls.into_boxed_slice(),
                 native_flex_control,
-                bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
+                bipolar: program.sources.iter().enumerate().map(|(source,value)|providers.iter().find(|(binding,_)|binding.program==program_index&&binding.source==source).map_or_else(||value.bipolar(),|(_,bipolar)|*bipolar)).collect(),
                 cacheable: sources.iter().all(|s| {
                     matches!(
                         s,
@@ -869,7 +976,7 @@ impl VoiceModulation {
                 rate_lane: rate_lane.into_boxed_slice(),
                 envelopes: envelopes.into_boxed_slice(),
                 envelope_controls: envelope_controls.into_boxed_slice(),
-                breakpoints: program.breakpoints.into_boxed_slice(),
+                breakpoints: active_breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
                 start: reaches(&[ModTarget::SampleStart]),
@@ -915,28 +1022,31 @@ impl VoiceModulation {
         self.regions.get(region).copied().flatten()
     }
 
-    /// Start offset in source frames for a voice of `region` starting now.
-    pub fn start_offset(&self, region: usize, inputs: &Inputs<'_>, seed: u64) -> u32 {
-        let Some(program) = self.program(region) else {
-            return 0;
-        };
-        let program = &self.programs[program as usize];
-        if !program.start {
-            return 0;
+    /// The ordinary onset consumer. A provider-dependent onset must use the
+    /// explicitly borrowed real owner row, never a per-player approximation.
+    pub fn start_offset(&self, region:usize, inputs:&Inputs<'_>, seed:u64)->Result<u32,Error>{
+        self.start_offset_provided(region,inputs,seed,0,ProviderView::empty())
+    }
+    pub(crate) fn start_offset_provided(&self,region:usize,inputs:&Inputs<'_>,seed:u64,frame:u64,provider:ProviderView<'_>)->Result<u32,Error>{
+        let Some(index)=self.program(region)else{return Ok(0);};
+        let program=&self.programs[index as usize];
+        if program.provider_scope!=provider.scope{return Err(Error::InvalidInput);}
+        if program.provider_scope.is_some(){
+            if frame<provider.begin||frame>provider.end{return Err(Error::InvalidInput);}
+            for source in &program.sources{if let Prepared::Provider(source)=source{
+                if Some(source.scope)!=provider.scope||source.source>=provider.from.len()||source.source>=provider.to.len(){return Err(Error::InvalidInput);}
+            }}
         }
-        self.offset(program, region, |index| {
-            // Lfo and envelope values at the voice's first frame.
-            match program.sources[index] {
-                Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
-                    let signal = wave(lfo.shape, lfo.phase, seed ^ index as u64);
-                    program.fades[index].as_ref().map_or(signal, |gains| {
-                        f64::from(signal as f32 * gains[0])
-                    })
-                }
-                Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
-                Prepared::Input(input) => input.input(inputs, seed, index),
+        if !program.start{return Ok(0);}
+        Ok(self.offset(program,region,|index|match program.sources[index]{
+            Prepared::Lfo(lfo)if lfo.delay==0&&lfo.fade==0=>{
+                let signal=wave(lfo.shape,lfo.phase,seed^index as u64);
+                program.fades[index].as_ref().map_or(signal,|gains|f64::from(signal as f32*gains[0]))
             }
-        })
+            Prepared::Lfo(_)|Prepared::Envelope(_)|Prepared::Breakpoints(_)=>0.,
+            Prepared::Input(input)=>input.input(inputs,seed,index),
+            Prepared::Provider(source)=>provider.at(source.source,frame),
+        }))
     }
 
     /// Control-side proof, using the exact onset consumer below. A dependent
@@ -1200,6 +1310,9 @@ impl<'a> Inputs<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Outputs {
     pub gains: [f32; 2],
+    /// Already evaluated owner scalar operands, before the final Pan clamp/law.
+    pub scalar_gain:f64,
+    pub scalar_pan:f64,
     pub pitch: f64,
     /// Cutoff and Q factors for the voice chain's state-variable filters.
     pub filter: [f64; 2],
@@ -1211,7 +1324,7 @@ pub(crate) struct Outputs {
 impl Default for Outputs {
     fn default() -> Self {
         Self {
-            gains: [1.0; 2],
+            gains: [1.0; 2], scalar_gain:1., scalar_pan:0.,
             pitch: 0.0,
             filter: [1.0; 2],
             tone: 0.0,
@@ -1241,6 +1354,8 @@ pub(crate) struct VoiceModState {
     tone: Box<[[[f64; 2]; 2]]>,
     phase: Box<[f64]>,
     values: Box<[f64]>,
+    previous_values:Box<[f64]>,
+    pending_start:Box<[bool]>,
     lagged: Box<[f64]>,
     /// Lag state of each route's intensity assignments, `SCALE_LAGS` per route.
     scale_lagged: Box<[f64]>,
@@ -1251,14 +1366,63 @@ pub(crate) struct VoiceModState {
     /// Runtime frame and seed of the latest voice start: the restart of every
     /// shared retriggered LFO.
     restart: (u64, u64),
+    // Only the scoped evaluator has per-program shared restart domains. A
+    // pending row is invisible to every other row until publication commits.
+    restart_domains:Box<[(u64,u64)]>,
+    pending_restart:Box<[Option<(u64,u64)>]>,
 }
 
+/// Borrowed current/future source endpoints of one actual scoped state row.
+/// It carries no independent mutable value or clock and cannot outlive the row.
+#[derive(Clone,Copy)]
+pub(crate) struct ProviderView<'a>{scope:Option<usize>,from:&'a[f64],to:&'a[f64],begin:u64,end:u64}
+impl ProviderView<'_>{
+    fn empty()->Self{Self{scope:None,from:&[],to:&[],begin:0,end:0}}
+    fn at(&self,source:usize,frame:u64)->f64{
+        let from=self.from[source];let to=self.to[source];
+        if self.end==self.begin||frame>=self.end{return to;}
+        if frame<=self.begin{return from;}
+        let part=(frame-self.begin)as f64/(self.end-self.begin)as f64;
+        from+(to-from)*part
+    }
+}
 impl VoiceModState {
     pub fn new(modulation: &VoiceModulation, voices: usize) -> Result<Self, Error> {
         Self::with_shape(modulation.shape(), voices)
     }
 
+    pub(crate) fn new_scoped(modulation:&VoiceModulation, owners:usize)->Result<Self,Error>{
+        Self::checked_storage_bytes(modulation.shape(),owners,modulation.programs.len())?;
+        let mut state=Self::new(modulation,owners)?;
+        if !modulation.is_empty(){
+            state.restart_domains=crate::dsp::allocate(modulation.programs.len())?;
+            state.pending_restart=crate::dsp::allocate(owners)?;
+            state.previous_values=crate::dsp::allocate(modulation.sources.checked_mul(owners).ok_or(Error::Capacity)?)?;
+        }Ok(state)
+    }
+    /// Full backing-array geometry before allocation, including row projections,
+    /// all lag/processor/segment arrays and scoped restart transactions.
+    pub(crate) fn checked_storage_bytes(shape:ModShape,rows:usize,domains:usize)->Result<usize,Error>{
+        if shape.empty{return Ok(0);}
+        fn add<T>(total:&mut usize,count:usize)->Result<(),Error>{
+            let bytes=std::alloc::Layout::array::<T>(count).map_err(|_|Error::Capacity)?.size();
+            *total=total.checked_add(bytes).ok_or(Error::Capacity)?;Ok(())
+        }
+        let slots=|count:usize|count.checked_mul(rows).ok_or(Error::Capacity);
+        let mut n=0;
+        add::<Option<crate::v1_voice_controls::ControlState>>(&mut n,if shape.native{rows}else{0})?;
+        add::<std::sync::atomic::AtomicBool>(&mut n,if shape.native{rows}else{0})?;
+        add::<Option<u32>>(&mut n,rows)?;add::<u64>(&mut n,rows)?;add::<u32>(&mut n,rows)?;add::<bool>(&mut n,rows)?;
+        add::<f64>(&mut n,if domains==0{0}else{slots(shape.sources)?})?;
+        add::<Outputs>(&mut n,slots(2)?)?;add::<[u64;2]>(&mut n,rows)?;add::<[[f64;2];2]>(&mut n,rows)?;
+        add::<f64>(&mut n,slots(shape.sources.checked_mul(2).ok_or(Error::Capacity)?)?)?;
+        add::<f64>(&mut n,slots(shape.routes.checked_mul(3+SCALE_LAGS).ok_or(Error::Capacity)?)?)?;
+        add::<EnvelopeState>(&mut n,slots(shape.envelopes)?)?;add::<Segment>(&mut n,slots(shape.breakpoints)?)?;
+        add::<(u64,u64)>(&mut n,domains)?;
+        add::<Option<(u64,u64)>>(&mut n,if domains==0{0}else{rows})?;Ok(n)
+    }
     pub fn with_shape(modulation: ModShape, voices: usize) -> Result<Self, Error> {
+        Self::checked_storage_bytes(modulation,voices,0)?;
         let slots = |n: usize| n.checked_mul(voices).ok_or(Error::Capacity);
         if modulation.empty {
             return Ok(Self::empty());
@@ -1280,6 +1444,7 @@ impl VoiceModState {
             tone: crate::dsp::allocate(voices)?,
             phase: crate::dsp::allocate(slots(modulation.sources)?)?,
             values: crate::dsp::allocate(slots(modulation.sources)?)?,
+            previous_values:Box::new([]),pending_start:crate::dsp::allocate(voices)?,
             lagged: crate::dsp::allocate(slots(modulation.routes)?)?,
             scale_lagged: crate::dsp::allocate(slots(modulation.routes * SCALE_LAGS)?)?,
             processor_values: crate::dsp::allocate(slots(modulation.routes)?)?,
@@ -1290,7 +1455,7 @@ impl VoiceModState {
             )
             .collect(),
             segments: crate::dsp::allocate(slots(modulation.breakpoints)?)?,
-            restart: (0, 0),
+            restart: (0, 0),restart_domains:Box::new([]),pending_restart:Box::new([]),
         })
     }
 
@@ -1316,6 +1481,9 @@ impl VoiceModState {
         take(&mut self.tone, &mut larger.tone);
         take(&mut self.phase, &mut larger.phase);
         take(&mut self.values, &mut larger.values);
+        take(&mut self.pending_start,&mut larger.pending_start);
+        // This adopt path grows physical rows only. Scoped owner arrays retain
+        // their independent fixed capacity and are never moved/reseeded here.
         take(&mut self.lagged, &mut larger.lagged);
         take(&mut self.scale_lagged, &mut larger.scale_lagged);
         take(&mut self.processor_values, &mut larger.processor_values);
@@ -1343,14 +1511,14 @@ impl VoiceModState {
             times: Box::new([]),
             tone: Box::new([]),
             phase: Box::new([]),
-            values: Box::new([]),
+            values: Box::new([]),previous_values:Box::new([]),pending_start:Box::new([]),
             lagged: Box::new([]),
             scale_lagged: Box::new([]),
             processor_values: Box::new([]),
             previous_processor_values: Box::new([]),
             envelope: Box::new([]),
             segments: Box::new([]),
-            restart: (0, 0),
+            restart: (0, 0),restart_domains:Box::new([]),pending_restart:Box::new([]),
         }
     }
 
@@ -1478,20 +1646,35 @@ impl VoiceModState {
         &mut self, modulation: &VoiceModulation, voice: usize, region: usize,
         inputs: &Inputs<'_>, clock: Clock, seed: u64,
     ) { self.start_with_controls(modulation, voice, region, inputs, clock, seed, true); }
-    pub(crate) fn start_with_controls(
+    pub(crate) fn start_scoped(&mut self,modulation:&VoiceModulation,voice:usize,scope:usize,inputs:&Inputs<'_>,clock:Clock,seed:u64,closed:bool){
+        self.start_initial(modulation,voice,scope,inputs,clock,seed,false,closed);
+    }
+    pub(crate) fn start_with_controls(&mut self,modulation:&VoiceModulation,voice:usize,region:usize,inputs:&Inputs<'_>,clock:Clock,seed:u64,native_allowed:bool){
+        self.start_initial(modulation,voice,region,inputs,clock,seed,native_allowed,false);
+    }
+    fn start_initial(&mut self,modulation:&VoiceModulation,voice:usize,region:usize,inputs:&Inputs<'_>,clock:Clock,seed:u64,native_allowed:bool,initially_released:bool){
+        if let Some(program)=modulation.program(region)&&modulation.programs[program as usize].provider_scope.is_some(){
+            if let Some(slot)=self.program.get_mut(voice){*slot=Some(program);self.seed[voice]=seed;self.pending_start[voice]=true;}return;
+        }
+        self.start_initial_view(modulation,voice,region,inputs,clock,seed,native_allowed,initially_released,ProviderView::empty());
+    }
+    fn start_initial_view(
         &mut self,
         modulation: &VoiceModulation,
         voice: usize,
         region: usize,
         inputs: &Inputs<'_>,
         clock: Clock,
-        seed: u64, native_allowed: bool,
+        seed: u64, native_allowed: bool,initially_released:bool,provider:ProviderView<'_>,
     ) {
+        self.start_initial_program(modulation,voice,modulation.program(region),inputs,clock,seed,native_allowed,initially_released,provider);
+    }
+    fn start_initial_program(&mut self,modulation:&VoiceModulation,voice:usize,index:Option<u32>,inputs:&Inputs<'_>,clock:Clock,seed:u64,native_allowed:bool,initially_released:bool,provider:ProviderView<'_>){
         if let Some(state) = self.native.as_mut_slice().get_mut(voice) { *state = None; }
         let Some(program) = self.program.get_mut(voice) else {
             return;
         };
-        *program = modulation.program(region);
+        *program = index;
         let Some(index) = *program else {
             return;
         };
@@ -1503,8 +1686,10 @@ impl VoiceModState {
             self.native_starts += 1;
         }
         self.seed[voice] = seed;
+        self.pending_start[voice]=false;
         self.age[voice] = 0;
-        self.restart = (clock.now, seed);
+        if self.restart_domains.is_empty(){self.restart=(clock.now,seed);}
+        else{self.pending_restart[voice]=Some((clock.now,seed));}
         self.tone[voice] = [[0.0; 2]; 2];
         for (i, source) in p.sources.iter().enumerate() {
             if let Prepared::Lfo(lfo) = source {
@@ -1525,8 +1710,11 @@ impl VoiceModState {
         for segment in &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()] {
             *segment = Segment::default();
         }
-        self.outputs[voice] = self.evaluate(p, voice, inputs, clock, 0, true);
+        if initially_released{self.release(modulation,voice);}
+        let restart=self.restart_point(voice,index as usize);
+        self.outputs[voice] = self.evaluate(p, voice, inputs, clock, 0, true,restart,provider);
         self.previous[voice] = self.outputs[voice];
+        if !self.previous_values.is_empty(){let span=voice*self.sources..voice*self.sources+p.sources.len();self.previous_values[span.clone()].copy_from_slice(&self.values[span]);}
         self.times[voice] = [clock.now; 2];
     }
 
@@ -1579,10 +1767,32 @@ impl VoiceModState {
         }
     }
 
+    pub(crate) fn scoped_has_forecast(&self,voice:usize,at:u64)->Result<bool,Error>{
+        let times=self.times.get(voice).ok_or(Error::InvalidInput)?;Ok(times[1]>at)
+    }
+    pub(crate) fn scope_gate_end(&self,modulation:&VoiceModulation,voice:usize,source:usize,releasing:bool)->Option<u64>{
+        let p=&modulation.programs[self.program(voice)? as usize];
+        let Prepared::Envelope(envelope)=*p.sources.get(source)? else{return None;};
+        let remaining=self.envelope[voice*self.envelopes+envelope].remaining();
+        if remaining==usize::MAX{return None;}
+        let anchor=self.times[voice][1];
+        if remaining==0&&!releasing{return Some(anchor);}
+        // On release an already prepared endpoint still has its old value;
+        // the ended phase first appears at the next evaluated control point.
+        let duration=if releasing{remaining.max(1)}else{remaining};
+        let end=anchor.saturating_add(u64::try_from(duration).unwrap_or(u64::MAX));
+        Some(end.checked_add(CELL-1).map_or(u64::MAX,|rounded|rounded/CELL*CELL))
+    }
+    pub(crate) fn commit_scoped_start(&mut self,voice:usize){
+        if let Some(pending)=self.pending_restart.get_mut(voice).and_then(Option::take)
+            && let Some(program)=self.program(voice){self.restart_domains[program as usize]=pending;}
+    }
     pub fn stop(&mut self, voice: usize) {
+        if let Some(pending)=self.pending_restart.get_mut(voice){*pending=None;}
         if let Some(program) = self.program.get_mut(voice) {
             *program = None;
         }
+        if let Some(pending)=self.pending_start.get_mut(voice){*pending=false;}
     }
 
     pub(crate) fn wavetable_offsets(&self, voice: usize) -> [f32; 3] {
@@ -1597,19 +1807,24 @@ impl VoiceModState {
     /// entering a new cell evaluates its end once and segments inside a cell
     /// reuse it: output does not depend on how the host splits blocks.
     /// Segments must not cross a grid line.
-    pub fn advance(
+    pub fn advance(&mut self,modulation:&VoiceModulation,voice:usize,inputs:&Inputs<'_>,clock:Clock)->Ramp{
+        self.advance_view(modulation,voice,inputs,clock,ProviderView::empty())
+    }
+    fn advance_view(
         &mut self,
         modulation: &VoiceModulation,
         voice: usize,
         inputs: &Inputs<'_>,
-        mut clock: Clock,
+        mut clock: Clock,provider:ProviderView<'_>,
     ) -> Ramp {
         let [begin, end] = self.times[voice];
         if let (Some(program), true) = (self.program(voice), clock.now >= end) {
             let p = &modulation.programs[program as usize];
             let target = (clock.now / CELL + 1) * CELL;
             clock.now = target;
-            let next = self.evaluate(p, voice, inputs, clock, (target - end) as u32, false);
+            let restart=self.restart_point(voice,program as usize);
+            if !self.previous_values.is_empty(){let span=voice*self.sources..voice*self.sources+p.sources.len();self.previous_values[span.clone()].copy_from_slice(&self.values[span]);}
+            let next = self.evaluate(p, voice, inputs, clock, (target - end) as u32, false,restart,provider);
             self.previous[voice] = std::mem::replace(&mut self.outputs[voice], next);
             self.times[voice] = [end, target];
         } else if clock.now >= end {
@@ -1631,6 +1846,12 @@ impl VoiceModState {
         }
     }
 
+    /// The caller already selected this actual program. Pending scoped starts
+    /// use their own unpublished point; other owners see the committed domain.
+    fn restart_point(&self,voice:usize,program:usize)->(u64,u64){
+        if self.restart_domains.is_empty(){self.restart}
+        else{match self.pending_restart[voice]{Some(point)=>point,None=>self.restart_domains[program]}}
+    }
     fn evaluate(
         &mut self,
         p: &Program,
@@ -1639,6 +1860,7 @@ impl VoiceModState {
         clock: Clock,
         frames: u32,
         onset: bool,
+        restart:(u64,u64),provider:ProviderView<'_>,
     ) -> Outputs {
         let native = p.native.as_ref().filter(|_| self.native.as_mut_slice().get(voice).is_some_and(Option::is_some));
         let seed = self.seed[voice];
@@ -1689,7 +1911,7 @@ impl VoiceModState {
                         inputs_lfo.rate = crate::v1_voice_controls::LfoFrequency::hertz(lane as f32) / saved;
                     }
                     let hz = lfo.hertz(clock.tempo, inputs_lfo);
-                    let since = clock.now.saturating_sub(self.restart.0);
+                    let since = clock.now.saturating_sub(restart.0);
                     let age = if lfo.shared && lfo.retrigger {
                         u32::try_from(since).unwrap_or(u32::MAX)
                     } else {
@@ -1697,7 +1919,7 @@ impl VoiceModState {
                     };
                     let (phase, seed) = if lfo.shared && lfo.retrigger {
                         let t = since as f64 / clock.rate;
-                        (lfo.phase + hz * t, self.restart.1 ^ i as u64)
+                        (lfo.phase + hz * t, restart.1 ^ i as u64)
                     } else if lfo.retrigger
                         || !p.phase_routes[i].is_empty()
                         || !p.rate_routes[i].is_empty()
@@ -1724,6 +1946,7 @@ impl VoiceModState {
                     self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
                 ),
                 Prepared::Input(input) => input.input(inputs, seed, i),
+                Prepared::Provider(source)=>provider.at(source.source,clock.now),
             };
             if p.cacheable || native.is_some() {
                 changed |= values[i].to_bits() != value.to_bits();
@@ -1825,6 +2048,7 @@ impl VoiceModState {
             }
         }
         let gain = (gain * 10f64.powf(decibels / 20.0)).max(0.0);
+        out.scalar_gain=gain;out.scalar_pan=pan;
         let pan = pan.clamp(-1.0, 1.0);
         out.gains = [
             (gain * (1.0 - pan.max(0.0))) as f32,
@@ -2674,10 +2898,10 @@ mod tests {
             };
             state.start(&modulation, 0, 0, &inputs, clock(0), 1);
             let p = &modulation.programs[0];
-            state.evaluate(p, 0, &inputs, clock(600), 600, false);
+            state.evaluate(p, 0, &inputs, clock(600), 600, false,state.restart_point(0,0),ProviderView::empty());
             // A second note at 0.6 s restarts the shared cycle under voice 0.
             state.start(&modulation, 1, 0, &inputs, clock(600), 2);
-            state.evaluate(p, 0, &inputs, clock(700), 100, false).pitch
+            state.evaluate(p, 0, &inputs, clock(700), 100, false,state.restart_point(0,0),ProviderView::empty()).pitch
         };
         assert_eq!(
             pitch_of(false),
@@ -2685,5 +2909,143 @@ mod tests {
             "own cycle: 0.7 s is in its second half"
         );
         assert_eq!(pitch_of(true), 1.0, "restarted 0.1 s ago: first half");
+    }
+}
+
+#[cfg(test)]
+mod scoped_restart_tests {
+    use super::*;
+    fn program()->ModProgram {
+        ModProgram{sources:vec![ModSource::Lfo(Lfo{shape:LfoShape::Square,rate:LfoRate::Hertz(1.),phase:0.,delay:0,fade:0,retrigger:true,shared:true})],
+            routes:vec![ModRoute::new(0,ModTarget::Pan,1.)],..Default::default()}
+    }
+    #[test]
+    fn failed_unpublished_restart_keeps_other_owner_and_distinct_program_domain() {
+        let modulation=VoiceModulation::new(vec![program(),program()],vec![Some(0),Some(1)],vec![0;2]).unwrap();
+        let mut state=VoiceModState::new_scoped(&modulation,3).unwrap();
+        let cc=[0;128];let values=Default::default();
+        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[])};
+        let clock=|now|Clock{rate:1000.,tempo:120.,now};
+        state.start(&modulation,0,0,&inputs,clock(0),1);state.commit_scoped_start(0);
+        state.start(&modulation,1,0,&inputs,clock(600),2);
+        state.stop(1); // rejected source family never publishes its restart
+        let p=&modulation.programs[0];
+        assert_eq!(state.evaluate(p,0,&inputs,clock(700),700,false,state.restart_point(0,0),ProviderView::empty()).scalar_pan,-1.);
+        state.start(&modulation,2,1,&inputs,clock(700),3);state.commit_scoped_start(2);
+        assert_eq!(state.evaluate(p,0,&inputs,clock(750),50,false,state.restart_point(0,0),ProviderView::empty()).scalar_pan,-1.,"other program cannot reset this domain");
+        state.start(&modulation,1,0,&inputs,clock(750),4);state.commit_scoped_start(1);
+        assert_eq!(state.evaluate(p,0,&inputs,clock(800),50,false,state.restart_point(0,0),ProviderView::empty()).scalar_pan,1.,"successful same-program shared retrigger is published once");
+    }
+    #[test]
+    fn scoped_scalar_point_retains_unclamped_pan_and_gain_separately_from_legacy_balance() {
+        let program=ModProgram{sources:vec![ModSource::Constant],routes:vec![ModRoute::new(0,ModTarget::Pan,2.),ModRoute::new(0,ModTarget::Decibels,6.)],..Default::default()};
+        let modulation=VoiceModulation::new(vec![program],vec![Some(0)],vec![0]).unwrap();
+        let mut state=VoiceModState::new_scoped(&modulation,1).unwrap();let cc=[0;128];let values=Default::default();
+        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[])};
+        state.start(&modulation,0,0,&inputs,Clock{rate:48000.,tempo:120.,now:97},1);
+        let out=state.outputs[0];assert_eq!(out.scalar_pan,2.);assert!((out.scalar_gain-10f64.powf(6./20.)).abs()<1e-15);
+        assert_eq!(out.gains[0],0.);assert_eq!(out.gains[1],out.scalar_gain as f32);
+        assert_eq!(state.times[0],[97;2]);
+    }
+    #[test]
+    fn scoped_storage_preflight_prices_all_array_families_and_overflow() {
+        let modulation=VoiceModulation::new(vec![program()],vec![Some(0)],vec![0]).unwrap();let shape=modulation.shape();
+        let row=VoiceModState::checked_storage_bytes(shape,1,0).unwrap();
+        assert_eq!(modulation.bytes_per_voice(),row);
+        assert_eq!(VoiceModState::checked_storage_bytes(shape,4,1).unwrap(),row*4+4*shape.sources*std::mem::size_of::<f64>()+std::mem::size_of::<(u64,u64)>()+4*std::mem::size_of::<Option<(u64,u64)>>());
+        assert!(matches!(VoiceModState::checked_storage_bytes(shape,usize::MAX,1),Err(Error::Capacity)));
+    }
+}
+
+impl VoiceModulation {
+    pub(crate) fn source_bipolar(&self,source:ProcessingSourceRef)->Result<bool,Error>{
+        let program=self.program(source.scope).ok_or(Error::InvalidInput)?;
+        let program=&self.programs[program as usize];
+        if matches!(program.sources.get(source.source),None|Some(Prepared::Provider(_))){return Err(Error::InvalidInput);}
+        program.bipolar.get(source.source).copied().ok_or(Error::InvalidInput)
+    }
+    pub(crate) fn validate_provider_bindings(&self,owners:&VoiceModulation,regions:&[Option<(usize,usize)>])->Result<(),Error>{
+        if self.is_empty(){return Ok(());}
+        if regions.len()!=self.regions.len(){return Err(Error::InvalidInput);}
+        for (region,program)in self.regions.iter().enumerate(){
+            let Some(program)=program else{continue;};let p=&self.programs[*program as usize];
+            if let Some(scope)=p.provider_scope{
+                if regions[region].is_none_or(|(actual,_)|actual!=scope){return Err(Error::InvalidInput);}
+                for (index,source)in p.sources.iter().enumerate(){if let Prepared::Provider(source)=source{
+                    if source.scope!=scope||p.bipolar[index]!=owners.source_bipolar(*source)?{return Err(Error::InvalidInput);}
+                }}
+            }
+        }Ok(())
+    }
+    pub(crate) fn region_provider_scope(&self,region:usize)->Option<usize>{self.program(region).and_then(|program|self.programs[program as usize].provider_scope)}
+}
+impl VoiceModState {
+    pub(crate) fn provider_scope(&self,modulation:&VoiceModulation,voice:usize)->Option<usize>{self.program(voice).and_then(|program|modulation.programs[program as usize].provider_scope)}
+    pub(crate) fn provider_view(&self,modulation:&VoiceModulation,owner:usize,scope:usize)->Result<ProviderView<'_>,Error>{
+        let program=self.program(owner).ok_or(Error::NotReady)?;
+        if modulation.program(scope)!=Some(program)||self.previous_values.is_empty(){return Err(Error::InvalidInput);}
+        let count=modulation.programs[program as usize].sources.len();let begin=owner.checked_mul(self.sources).ok_or(Error::Capacity)?;
+        let end=begin.checked_add(count).ok_or(Error::Capacity)?;let [from,to]=self.times[owner];
+        Ok(ProviderView{scope:Some(scope),from:self.previous_values.get(begin..end).ok_or(Error::InvalidInput)?,to:self.values.get(begin..end).ok_or(Error::InvalidInput)?,begin:from,end:to})
+    }
+    fn validate_provider_view(&self,modulation:&VoiceModulation,voice:usize,provider:ProviderView<'_>,frame:u64)->Result<u32,Error>{
+        let index=self.program(voice).ok_or(Error::NotReady)?;let p=&modulation.programs[index as usize];
+        if p.provider_scope!=provider.scope||provider.scope.is_none()||provider.begin>frame||provider.end<frame{return Err(Error::InvalidInput);}
+        for source in &p.sources{if let Prepared::Provider(source)=source{
+            if Some(source.scope)!=provider.scope||source.source>=provider.from.len()||source.source>=provider.to.len(){return Err(Error::InvalidInput);}
+        }}Ok(index)
+    }
+    pub(crate) fn defer_provider_restart(&mut self,modulation:&VoiceModulation,voice:usize){
+        if self.provider_scope(modulation,voice).is_some(){self.pending_start[voice]=true;}
+    }
+    pub(crate) fn advance_provided(&mut self,modulation:&VoiceModulation,voice:usize,inputs:&Inputs<'_>,clock:Clock,provider:ProviderView<'_>,closed:bool)->Result<Ramp,Error>{
+        let index=self.validate_provider_view(modulation,voice,provider,clock.now)?;
+        let target=clock.now.checked_div(CELL).and_then(|n|n.checked_add(1)).and_then(|n|n.checked_mul(CELL)).ok_or(Error::ClockOverflow)?;
+        self.validate_provider_view(modulation,voice,provider,target)?;
+        if self.pending_start[voice]{let seed=self.seed[voice];self.start_initial_program(modulation,voice,Some(index),inputs,clock,seed,false,closed,provider);}
+        Ok(self.advance_view(modulation,voice,inputs,clock,provider))
+    }
+}
+
+
+#[cfg(test)]
+mod provider_allocation_accounting {
+    use super::*;
+    #[test]
+    fn provider_slots_have_no_duplicate_envelope_state_and_all_actual_arrays_are_priced(){
+        let envelope=Envelope::new(0,0,0,1.,97).unwrap();
+        let owner=VoiceModulation::new(vec![ModProgram{sources:vec![ModSource::Envelope(envelope)],..Default::default()}],vec![Some(0)],vec![0]).unwrap();
+        let physical=VoiceModulation::new_resolved_providers(vec![ModProgram{sources:vec![ModSource::Envelope(envelope)],routes:vec![ModRoute::new(0,ModTarget::Pitch,3.)],..Default::default()}],vec![Some(0)],vec![0],vec![None],
+            vec![(ModProvider{program:0,source:0,provider:ProcessingSourceRef{scope:0,source:0}},false)],|_|None,|_|Err(Error::InvalidInput)).unwrap();
+        assert_eq!(physical.envelopes,0);assert!(physical.programs[0].envelopes.is_empty());
+        assert!(matches!(physical.programs[0].sources[0],Prepared::Provider(ProcessingSourceRef{scope:0,source:0})));
+        let state=VoiceModState::new_scoped(&owner,7).unwrap();
+        let actual=std::mem::size_of_val(&*state.program)+std::mem::size_of_val(&*state.seed)+std::mem::size_of_val(&*state.age)
+            +std::mem::size_of_val(&*state.outputs)+std::mem::size_of_val(&*state.previous)+std::mem::size_of_val(&*state.times)
+            +std::mem::size_of_val(&*state.tone)+std::mem::size_of_val(&*state.phase)+std::mem::size_of_val(&*state.values)
+            +std::mem::size_of_val(&*state.previous_values)+std::mem::size_of_val(&*state.pending_start)
+            +std::mem::size_of_val(&*state.lagged)+std::mem::size_of_val(&*state.scale_lagged)
+            +std::mem::size_of_val(&*state.processor_values)+std::mem::size_of_val(&*state.previous_processor_values)
+            +std::mem::size_of_val(&*state.envelope)+std::mem::size_of_val(&*state.segments)
+            +std::mem::size_of_val(&*state.restart_domains)+std::mem::size_of_val(&*state.pending_restart);
+        assert_eq!(actual,VoiceModState::checked_storage_bytes(owner.shape(),7,1).unwrap());
+        assert!(matches!(VoiceModState::new_scoped(&owner,usize::MAX),Err(Error::Capacity)));
+    }
+}
+
+
+#[cfg(test)]
+mod provider_endpoint_precision {
+    use super::ProviderView;
+    #[test]
+    fn borrowed_source_endpoints_preserve_their_exact_bits_before_route_math(){
+        let from=[1.,-0.];let to=[f64::MIN_POSITIVE,0.];
+        let points=ProviderView{scope:Some(0),from:&from,to:&to,begin:17,end:64};
+        assert_eq!(points.at(0,17).to_bits(),1f64.to_bits());
+        assert_eq!(points.at(0,64).to_bits(),f64::MIN_POSITIVE.to_bits(),"one exact nonzero future point is not cancellation-rounded to0");
+        assert_eq!(points.at(1,17).to_bits(),(-0f64).to_bits());
+        assert_eq!(points.at(1,64).to_bits(),0f64.to_bits());
+        let simple_from=[0.];let simple_to=[1.];let middle=ProviderView{scope:Some(0),from:&simple_from,to:&simple_to,begin:0,end:64};
+        assert_eq!(middle.at(0,16),0.25);assert_eq!(middle.at(0,32),0.5);assert_eq!(middle.at(0,48),0.75);
     }
 }

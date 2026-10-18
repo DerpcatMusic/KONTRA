@@ -89,7 +89,7 @@ pub use source::storage::{
 };
 pub use source::bundle::SourceBundleRefusal;
 mod bus;
-pub use bus::{Bus, BusMix, BusPeakTap, BusSend, ChannelBus, GroupFader};
+pub use bus::{Bus, BusMix, BusPeakTap, BusSend, ChannelBus, GroupFader, SourceOwnerControl, SourceOwnerOutputControl, SourceOwnerControlTarget, ScopeControlSite};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
@@ -120,7 +120,7 @@ pub use engine_parameters::{
 mod parameter_registry;
 mod steal;
 mod topology;
-pub use topology::{ProcessingOwnerId, ProcessingOwnerSnapshot};
+pub use topology::{ProcessingOwnerId, ProcessingOwnerSnapshot,ProcessingModulationGate};
 pub use parameter_registry::{
     ParameterAddress, ParameterDescriptor, ParameterDisplay, ParameterLaw, ParameterRegistry,
     ParameterRole, ParameterScope, ParameterUnit, PreparedParameterRegistry,
@@ -134,6 +134,7 @@ pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
     Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModNative, ModProgram, ModRoute, ModScale, ModScaleLaw, ModSource,
+    ModProvider,ProcessingSourceRef,
     ModTarget, MORE_SCALES,
 };
 mod ownership;
@@ -1457,6 +1458,26 @@ impl Runtime {
         if let Some(g) = self.plans.get_mut(self.active_plan.0) {
             g.dsp.buses.take_input_peaks(each);
         }
+    }
+
+    /// Resolve the actual immutable compiled operand on this retained plan.
+    /// IDs alone do not pin its lifetime; real callbacks/tasks own that lease.
+    pub fn source_owner_control(&self,plan:PlanId,owner:sampler_ir::SourceOwnerId,
+        field:SourceOwnerControl)->Result<ControlId,Error>{
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let prepared=&generation.prepared;
+        let owner_index=prepared.source_owner_index(owner).ok_or(Error::InvalidInput)?;
+        let id=if field==SourceOwnerControl::MidiMute {
+            prepared.source_owners().get(owner_index).and_then(|row|row.mute.as_ref())
+                .and_then(|switch|switch.control).ok_or(Error::InvalidInput)?
+        }else{prepared.buses.output_control(owner,field)?};
+        let domain=prepared.controls[prepared.control_index(id)?].domain;
+        let valid=match field {
+            SourceOwnerControl::OutputMute|SourceOwnerControl::MidiMute=>domain==ControlDomain::Toggle,
+            SourceOwnerControl::Gain=>matches!(domain,ControlDomain::Real{min,max}if min>=0. && max<=f64::from(f32::MAX)),
+            SourceOwnerControl::Pan=>matches!(domain,ControlDomain::Real{min,max}if min>=-1. && max<=1.),
+        };
+        if !valid{return Err(Error::InvalidInput);}Ok(id)
     }
 
     /// Mix `bus` of the active plan from the next rendered frame on. Older

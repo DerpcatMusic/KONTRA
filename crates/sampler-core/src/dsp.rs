@@ -971,6 +971,15 @@ impl PreparedVoiceChain {
 impl PreparedChainRef<'_> {
     pub(super) fn pre_len(&self) -> usize { self.pre.len() }
     pub(super) fn post_len(&self) -> usize { self.post.len() }
+    pub(crate) fn source_control_lane(&self,site:crate::ScopeControlSite,field:crate::SourceOwnerControl)->Option<usize>{
+        let (list,node)=match site{crate::ScopeControlSite::ChainPre(n)=>(self.pre,n),crate::ScopeControlSite::ChainPost(n)=>(self.post,n),_=>return None};
+        if list.iter().enumerate().take(node).any(|(at,p)|matches!(p,ProcessorRef::Mix{count,..}|ProcessorRef::Branch{count,..}if node-at<=usize::from(*count))){return None;}
+        match (field,list.iter().nth(node)?){
+            (crate::SourceOwnerControl::Gain,ProcessorRef::ControlGain(lane))=>Some(*lane),
+            (crate::SourceOwnerControl::Pan,ProcessorRef::Pan{position:control::PreparedParameter::Control(lane),expression:true,..})=>Some(*lane),
+            _=>None,
+        }
+    }
     pub(crate) fn filter_indices(&self, stages: std::ops::Range<usize>) -> Vec<u32> {
         self.pre
             .iter()
@@ -1632,6 +1641,7 @@ pub(super) struct DspState {
     /// One `stride` of chain state per voice slot; claimed per voice.
     pub cells: Slab<ProcessorState>,
     pub owner_cells: Slab<ProcessorState>,
+    pub owner_modulation:crate::voice_mod::VoiceModState,
     pub owner_delays: Slab<[f64; 2]>,
     pub owner_signal_history: Slab<f64>,
     pub channel_sources: Slab<f32>,
@@ -1657,9 +1667,13 @@ pub(super) struct DspState {
     pub stretch_busy: u64,
 }
 impl DspState {
-    pub fn new(
+    pub fn new(plan:&Prepared,voices:usize,expressions:usize,lanes:usize)->Result<Self,Error>{
+        Self::new_with_owner_capacity(plan,voices,voices,expressions,lanes)
+    }
+    pub(crate) fn new_with_owner_capacity(
         plan: &Prepared,
         voices: usize,
+        owners:usize,
         expressions: usize,
         lanes: usize,
     ) -> Result<Self, Error> {
@@ -1681,21 +1695,29 @@ impl DspState {
         } else {
             0
         };
+        let bytes=crate::voice_mod::VoiceModState::checked_storage_bytes(plan.processing_modulation.shape(),owners,plan.processing_scopes.len())?;
+        let scratch=if plan.processing_modulation.is_empty(){0}else{
+            let rows=plan.dsp_bindings.len().checked_mul(MAX_LANES).ok_or(Error::Capacity)?;
+            std::alloc::Layout::array::<ControlRamp>(rows).map_err(|_|Error::Capacity)?.size()
+                .checked_add(std::alloc::Layout::array::<std::sync::atomic::AtomicBool>(MAX_LANES).map_err(|_|Error::Capacity)?.size()).ok_or(Error::Capacity)?
+        };
+        if bytes.checked_add(scratch).ok_or(Error::Capacity)?>plan.processing_modulation_limit{return Err(Error::Capacity);}
         Ok(Self {
             voices,
             stride,
             cells: Slab::new(allocate(cells)?, stride),
+            owner_modulation:crate::voice_mod::VoiceModState::new_scoped(&plan.processing_modulation,owners)?,
             owner_cells: {
-                let n = if plan.processing_scopes.is_empty() { 0 } else { voices };
+                let n = if plan.processing_scopes.is_empty() { 0 } else { owners };
                 Slab::new(allocate(stride.checked_mul(n).ok_or(Error::Capacity)?)?, stride)
             },
             owner_delays: {
-                let n = if plan.processing_scopes.is_empty() { 0 } else { voices };
+                let n = if plan.processing_scopes.is_empty() { 0 } else { owners };
                 Slab::new(allocate(delay_stride.checked_mul(n).ok_or(Error::Capacity)?)?, delay_stride)
             },
             owner_signal_history: {
                 let stride = plan.signal_history_words();
-                Slab::new(allocate(stride.checked_mul(voices).ok_or(Error::Capacity)?)?, stride)
+                Slab::new(allocate(stride.checked_mul(owners).ok_or(Error::Capacity)?)?, stride)
             },
             channel_sources: {
                 let stride = plan.signal_channels().checked_mul(BLOCK).ok_or(Error::Capacity)?;
@@ -1734,7 +1756,7 @@ impl DspState {
             ),
             delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
             modulated_parameters: {
-                let stride = if plan.voice_modulation.has_control_targets() {
+                let stride = if (plan.voice_modulation.has_control_targets()||!plan.processing_modulation.is_empty()) {
                     plan.dsp_bindings.len()
                 } else {
                     0
@@ -1847,7 +1869,7 @@ impl DspState {
         lanes: usize,
     ) -> Result<(), Error> {
         let lanes = lanes.clamp(1, MAX_LANES);
-        if plan.voice_modulation.has_control_targets() {
+        if (plan.voice_modulation.has_control_targets()||!plan.processing_modulation.is_empty()) {
             let stride = plan.dsp_bindings.len();
             let size = stride.checked_mul(lanes).ok_or(Error::Capacity)?;
             if self.modulated_parameters.len() < size {
