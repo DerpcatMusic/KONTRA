@@ -1462,3 +1462,244 @@ fn native67_typed_wide_expression_edits_preserve_sibling_history_and_reused_note
     assert_eq!(rt.now(),549);assert_eq!(rt.control_revision(plan),Ok(revision));let mut tail=[[0.;2];128];support::without_heap(||{rt.release(second).unwrap();rt.release(third).unwrap();rt.render(&mut tail).unwrap();rt.flush_ended(|input|{if input==source(671){endings[1]+=1;}else if input==source(672){endings[2]+=1;}else{panic!("duplicate/unexpected terminal: {input:?}");}true});});assert_eq!(endings,[1;3]);assert_eq!((rt.voice_count(),rt.processing_owner_count()),(0,0));assert_eq!(rt.now(),677);
     let stats=rt.stats();assert_eq!(stats.nonfinite_frames,0);assert_eq!(stats.stream_underruns,0);assert_eq!(stats.refused_starts,0);assert_eq!(stats.voice_pool_refusals,0);assert_eq!(stats.voice_drops,0);
 }
+
+
+// Implementation-dependent binding148 public cases. Baseline-compatible
+// importer/product tests remain separately frozen in tests02.
+fn binding148_graph(two_scopes:bool)->ir::Instrument{
+    let mut instrument=graph(true);
+    let filter=ir::Processor::Filter(ir::Filter{kind:ir::FilterKind::LowPass{poles:1},cutoff:ir::Frequency::Hertz(1000.),resonance:ir::Resonance::Q(0.7)});
+    instrument.chains.push(ir::Chain{scope:ir::Scope::Voice,pre_amplitude:vec![filter],post_amplitude:vec![]});
+    instrument.processing_scopes[0].chain=Some(ir::ChainRef(0));instrument.source_indices.processing[0].chain=Some(ir::ChainRef(0));
+    instrument.modulators.push(ir::Modulator{scope:ir::Scope::Voice,source:ir::ModulationSource::Velocity});
+    let count=if two_scopes{2}else{1};
+    if two_scopes {
+        for n in 2..4{instrument.assets.push(ir::Asset{location:ir::AssetLocation::Path(format!("binding148-{n}.wav")),encoding:ir::Encoding::Wav,residency:ir::AssetResidency::Resident,root_key:None,loops:vec![]});let mut z=instrument.zones[n-2].clone();z.asset=Some(ir::AssetRef(n));instrument.zones.push(z);}
+        instrument.chains.push(instrument.chains[0].clone());
+        let mut scope=instrument.processing_scopes[0].clone();scope.members=vec![ir::ZoneRef(2),ir::ZoneRef(3)];scope.chain=Some(ir::ChainRef(1));instrument.processing_scopes.push(scope);
+        let mut recipe=instrument.source_indices.processing[0].clone();recipe.owner=ir::SourceOwnerId::UviNode(4);recipe.members=vec![ir::ZoneRef(2),ir::ZoneRef(3)];recipe.chain=Some(ir::ChainRef(1));recipe.compiled=Some(1);instrument.source_indices.processing.push(recipe);
+        instrument.source_indices.owners[0].children.push(ir::SourceOwnerId::UviNode(4));instrument.source_indices.owners.extend([owner(4,Some(0),ir::SourceOwnerKind::Keygroup,&[5,6],&[2,3]),owner(5,Some(4),ir::SourceOwnerKind::Player,&[],&[2]),owner(6,Some(4),ir::SourceOwnerKind::Player,&[],&[3])]);
+    }
+    for scope in 0..count {
+        let control=ir::ControlRef(instrument.controls.len());instrument.controls.push(ir::Control{key:format!("binding148-freq-{scope}"),label:"same Frequency schema".into(),value:ir::ControlValue::Continuous{min:20.,max:20000.,default:1000.,unit:ir::ControlUnit::Hertz},automation:ir::Automation::None});
+        instrument.processor_controls.push(ir::ProcessorControl{control,chain:ir::ChainRef(scope),index:0,parameter:ir::ProcessorParameter::Cutoff,ramp:ir::Time::ZERO});
+        let owner=instrument.source_indices.processing[scope].owner;
+        instrument.source_indices.processing_parameters.push(ir::SourceProcessingParameter{owner,source_node:20+scope as u32,chain:ir::ChainRef(scope),index:0,parameter:ir::ProcessorParameter::Cutoff,control,law:ir::SourceProcessingParameterLaw::LegacyCutoffSemitoneMidpoint,fixed_factors:vec![],compiled:Some(ir::SourceProcessingParameterSite{scope,site:ir::ScopeControlSite::ChainPre(0)})});
+        let route=ir::RouteRef(instrument.routes.len());instrument.routes.push(ir::Route::new(ir::ModulatorRef(0),ir::Target::Processor{chain:ir::ChainRef(scope),index:0,parameter:ir::ProcessorParameter::Cutoff},ir::Depth::Pitch(ir::Pitch::Semitones(12.))));
+        instrument.source_indices.processing[scope].sources=vec![ir::ModulatorRef(0)];instrument.source_indices.processing[scope].routes=vec![route];
+    }instrument
+}
+fn binding148_core_plan(two:bool)->sampler_core::Prepared{
+    let instrument=binding148_graph(two);let pcm=(0..instrument.assets.len()).map(|n|Pcm::new(48000,(0..4096).map(|i|[if i%(31+n*2)<15{0.125}else{-0.125};2]).collect::<Vec<_>>().into_boxed_slice()).unwrap()).collect();
+    sampler_core::lower::lower_with(&instrument,48000,pcm,&sampler_core::lower::Options{mpe:None},|_,plan|Ok(plan)).unwrap()
+}
+#[test]
+fn binding148_cross_scope_same_kind_same_schema_target_is_not_current_owner(){
+    use sampler_core::{ModProgram,ModSource,ModRoute,ModTarget};let plan=binding148_core_plan(true);
+    let wrong=ModProgram{sources:vec![ModSource::Constant],routes:vec![ModRoute::new(0,ModTarget::ProcessingParameter(1,0),12.)],..Default::default()};
+    assert!(matches!(plan.with_processing_modulation(vec![wrong],vec![Some(0),Some(0)],1<<20),Err(Error::InvalidInput)),"another real scope's same-kind/same-schema binding is not authority");
+}
+#[test]
+fn binding148_physical_program_cannot_escape_to_valid_real_scope_parameter(){
+    use sampler_core::{ModProgram,ModSource,ModRoute,ModTarget};let plan=binding148_core_plan(false);
+    let program=ModProgram{sources:vec![ModSource::Constant],routes:vec![ModRoute::new(0,ModTarget::ProcessingParameter(0,0),12.)],..Default::default()};
+    assert!(matches!(plan.with_voice_modulation(vec![program],vec![Some(0);2],vec![0;2]),Err(Error::InvalidInput)));
+}
+#[test]
+fn binding148_malformed_original_or_compiled_operand_refuses_before_binder(){
+    for malformed in 0..6 {
+        let mut instrument=binding148_graph(false);match malformed {
+            0=>instrument.source_indices.processing_parameters[0].control=ir::ControlRef(usize::MAX),
+            1=>instrument.source_indices.processing_parameters[0].index=99,
+            2=>instrument.source_indices.processing_parameters[0].owner=ir::SourceOwnerId::UviNode(2),
+            3=>instrument.source_indices.processing_parameters[0].compiled=Some(ir::SourceProcessingParameterSite{scope:0,site:ir::ScopeControlSite::ChainPre(99)}),
+            4=>instrument.zones[0].routes.push(instrument.source_indices.processing[0].routes[0]),
+            _=>instrument.source_indices.processing_parameters.push(instrument.source_indices.processing_parameters[0].clone()),
+        }
+        let called=std::cell::Cell::new(false);let result=lower(&instrument,48000,pcm(),|_,plan|{called.set(true);Ok(plan)});assert!(result.is_err());assert!(!called.get());
+    }
+}
+#[test]
+fn binding148_shared_processor_control_render_and_release_use_no_heap_and_same_owner(){
+    use sampler_core::{ControlValue,ControlWrite};let plan=binding148_core_plan(false);let limits=sampler_core::Limits::for_plan(&plan,8,16);let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
+    let note=rt.trigger(pan_input(681),60,0.5).unwrap();let mut first=[[0.;2];127];support::without_heap(||rt.render(&mut first).unwrap());assert!(first.iter().flatten().any(|v|v.abs()>1e-4));
+    let mut identity=Vec::new();rt.visit_processing_owners(|o|identity.push((o.id,o.note,o.plan,o.sources)));let plan=rt.active_plan();let id=sampler_core::lower::ir_control_id("binding148-freq-0");
+    support::without_heap(||{rt.edit_controls(plan,None,&[ControlWrite{id,value:ControlValue::Real(4000.)}]).unwrap();rt.render(&mut first).unwrap();});
+    let mut after=Vec::new();rt.visit_processing_owners(|o|after.push((o.id,o.note,o.plan,o.sources)));assert_eq!(identity,after);assert_eq!(rt.note_plan(note),Ok(plan));
+    support::without_heap(||{rt.release(note).unwrap();rt.render(&mut first).unwrap();rt.flush_ended(|_|true);});assert_eq!(rt.stats().nonfinite_frames,0);assert_eq!(rt.processing_owner_count(),0);
+}
+#[test]
+fn binding148_old_generation_control_projection_cannot_mutate_replacement(){
+    use sampler_core::{ControlValue,ControlWrite};let plan=binding148_core_plan(false);let limits=sampler_core::Limits::for_plan(&plan,8,16);let(mut actual,mut transfer)=sampler_core::Runtime::with_plan_updates(plan,limits,3,2).unwrap();
+    let old=actual.active_plan();let note=actual.trigger(pan_input(682),60,0.5).unwrap();let mut out=[[0.;2];127];actual.render(&mut out).unwrap();
+    let request=transfer.submit(Box::new(binding148_core_plan(false))).unwrap();assert_eq!(actual.poll_plan_update(),Ok(Some(request)));let new=actual.active_plan();assert_ne!(old,new);
+    let id=sampler_core::lower::ir_control_id("binding148-freq-0");support::without_heap(||{actual.edit_controls(old,None,&[ControlWrite{id,value:ControlValue::Real(4000.)}]).unwrap();actual.render(&mut out).unwrap();});
+    assert_eq!(actual.control_base_value(old,id),Ok(ControlValue::Real(4000.)));assert_eq!(actual.control_base_value(new,id),Ok(ControlValue::Real(1000.)));assert_eq!(actual.note_plan(note),Ok(old));
+    let mut owners=0;actual.visit_processing_owners(|o|{assert_eq!(o.plan,old);owners+=1;});assert_eq!(owners,1);assert!(out.iter().flatten().any(|v|v.abs()>1e-4));assert_eq!(actual.stats().nonfinite_frames,0);
+    support::without_heap(||{actual.release(note).unwrap();actual.render(&mut out).unwrap();actual.flush_ended(|_|true);});assert_eq!(actual.processing_owner_count(),0);
+}
+
+#[test]
+fn binding148_same_control_same_coordinate_two_pole_replacement_is_not_the_bound_operand(){
+    use sampler_core::{ControlRange,Parameter,Processor,StateVariableFilter,SvfMode,VoiceChain};
+    let plan=binding148_core_plan(false);
+    let id=sampler_core::lower::ir_control_id("binding148-freq-0");
+    let chain=VoiceChain::new(vec![Processor::StateVariable(StateVariableFilter{mode:SvfMode::LowPass,
+        cutoff_hz:Parameter::Control(ControlRange{control:id,low:20.,high:20000.,ramp_frames:0}),q:Parameter::Constant(0.7)})],vec![],0);
+    // Same real control/schema/chain coordinate, different semantic processor.
+    let chain=chain.unwrap();assert!(matches!(plan.with_voice_chains(vec![chain],vec![None;2]),Err(Error::InvalidInput)));
+}
+#[test]
+fn binding148_ordered_fixed_frequency_fold_preserves_raw_control_base_and_live_edits(){
+    fn runtime(fold:bool)->sampler_core::Runtime{
+        let mut ir=binding148_graph(false);
+        if fold {
+            ir.source_indices.processing_parameters[0].law=ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore;
+            ir.source_indices.processing_parameters[0].fixed_factors=vec![ir::SourceFrequencyFold::MultiplyClamp(100.),ir::SourceFrequencyFold::MultiplyClamp(0.01)];
+            // The original importer chain has the real ordered fold already;
+            // its real raw control remains 1000. Ordered clamps yield 200.
+            if let ir::Processor::Filter(f)=&mut ir.chains[0].pre_amplitude[0]{f.cutoff=ir::Frequency::Hertz(200.);}
+        }else if let ir::ControlValue::Continuous{default,..}=&mut ir.controls[0].value{*default=200.;}
+        let source=(0..2).map(|_|Pcm::new(48000,(0..4096).map(|i|[if i%37<19{0.125}else{-0.1};2]).collect::<Vec<_>>().into_boxed_slice()).unwrap()).collect();
+        let plan=sampler_core::lower::lower(&ir,48000,source,|_,plan|Ok(plan)).unwrap();let limits=sampler_core::Limits::for_plan(&plan,8,16);sampler_core::Runtime::new(plan,limits).unwrap()
+    }
+    let mut target=runtime(true);let mut reference=runtime(false);target.trigger(pan_input(683),60,0.5).unwrap();reference.trigger(pan_input(684),60,0.5).unwrap();
+    let id=sampler_core::lower::ir_control_id("binding148-freq-0");let plan=target.active_plan();let other=reference.active_plan();
+    let mut got=[[0.;2];257];let mut expected=[[0.;2];257];
+    support::without_heap(||{target.render(&mut got).unwrap();reference.render(&mut expected).unwrap();});assert_eq!(got,expected);
+    assert_eq!(target.control_base_value(plan,id),Ok(sampler_core::ControlValue::Real(1000.)));
+    // 100*100 clamps at10000 then*.01 =>100, not original XML1000
+    // and not the folded200 from the previous accepted raw control.
+    support::without_heap(||{target.edit_controls(plan,None,&[sampler_core::ControlWrite{id,value:sampler_core::ControlValue::Real(100.)}]).unwrap();
+        reference.edit_controls(other,None,&[sampler_core::ControlWrite{id,value:sampler_core::ControlValue::Real(100.)}]).unwrap();
+        target.render(&mut got).unwrap();reference.render(&mut expected).unwrap();});assert_eq!(got,expected);
+    assert_eq!(target.control_base_value(plan,id),Ok(sampler_core::ControlValue::Real(100.)));assert_eq!(target.stats().nonfinite_frames,0);
+}
+#[test]
+fn binding148_route_slice_and_owner_state_share_one_checked_preparation_allowance(){
+    use sampler_core::{ModProgram,ModSource,ModRoute,ModTarget};
+    fn attempt(bytes:usize)->Result<sampler_core::Prepared,Error>{let plan=binding148_core_plan(false);
+        let p=ModProgram{sources:vec![ModSource::Constant],routes:(0..257).map(|_|ModRoute::new(0,ModTarget::ProcessingParameter(0,0),0.01)).collect(),..Default::default()};
+        plan.with_processing_modulation(vec![p],vec![Some(0)],bytes)
+    }
+    assert!(matches!(attempt(1),Err(Error::Capacity)));let mut low=1usize;let mut high=1<<20;assert!(attempt(high).is_ok());
+    // Public preparation boundary, not a duplicate private struct-size formula.
+    while high-low>1{let middle=low+(high-low)/2;if attempt(middle).is_ok(){high=middle;}else{low=middle;}}
+    assert!(matches!(attempt(high-1),Err(Error::Capacity)));let plan=attempt(high).unwrap();
+    let prepared_floor=high;
+    let limits=sampler_core::Limits::for_plan(&plan,8,16);assert_eq!(limits.voices,16);
+    // Prepared checks one minimum owner row. Runtime reserves its actual16
+    // owner rows PLUS generation projection scratch from the SAME allowance.
+    assert!(matches!(sampler_core::Runtime::new(plan,limits),Err(Error::Capacity)));
+    fn runtime_attempt(bytes:usize)->Result<sampler_core::Runtime,Error>{
+        let plan=attempt(bytes)?;let limits=sampler_core::Limits::for_plan(&plan,8,16);assert_eq!(limits.voices,16);
+        sampler_core::Runtime::new(plan,limits)
+    }
+    fn runtime_fits(bytes:usize)->bool{match runtime_attempt(bytes){Ok(_)=>true,Err(error)=>{assert_eq!(error,Error::Capacity);false}}}
+    // Test caller admission ceiling, matching the existing normal scoped
+    // allowance. It does not raise any production limit or promise a fit.
+    const RUNTIME_TEST_CEILING:usize=64*1024*1024;
+    let mut runtime_low=prepared_floor;let mut runtime_high=1<<20;
+    let mut admitted=runtime_fits(runtime_high);
+    // Initial1MiB probe plus at most SIX doublings reaches the finite64MiB
+    // ceiling. No acceptance there is a visible genuine test blocker.
+    for _ in 0..6{if admitted{break;}runtime_low=runtime_high;
+        runtime_high=runtime_high.checked_mul(2).filter(|&n|n<=RUNTIME_TEST_CEILING).expect("bounded runtime search must stay within normal64MiB allowance");
+        admitted=runtime_fits(runtime_high);
+    }
+    assert!(admitted,"Runtime16 has no public admission within the unchanged normal64MiB scoped allowance");
+    while runtime_high-runtime_low>1{let middle=runtime_low+(runtime_high-runtime_low)/2;
+        if runtime_fits(middle){runtime_high=middle;}else{runtime_low=middle;}
+    }
+    assert!(runtime_high>prepared_floor);
+    assert!(matches!(runtime_attempt(runtime_high-1),Err(Error::Capacity)));
+    let mut rt=runtime_attempt(runtime_high).unwrap();let mut output=[[0.;2];65];
+    // Offaudio measured public admission receipt, never an input to any law.
+    eprintln!("binding148-budget prepared_floor={prepared_floor} runtime_floor={runtime_high} ceiling={RUNTIME_TEST_CEILING} owners=16 sources=1 routes=257 public_modroute_bytes={}",std::mem::size_of::<ModRoute>());
+    support::without_heap(||{rt.trigger(pan_input(685),60,0.5).unwrap();rt.render(&mut output).unwrap();});
+    assert_eq!(rt.now(),65);assert_eq!((rt.voice_count(),rt.processing_owner_count()),(2,1));
+    assert!(output.iter().flatten().any(|v|v.abs()>1e-4));assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+// Correction R148-01: a fixed fold still requires its actual owner projector.
+fn binding148_r1_fixed_plan(two:bool,folded_reference:bool)->sampler_core::Prepared{
+    let mut ir=binding148_graph(two);
+    for recipe in &mut ir.source_indices.processing{recipe.sources.clear();recipe.routes.clear();}
+    for row in &mut ir.source_indices.processing_parameters{
+        if !folded_reference {row.law=ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore;
+            row.fixed_factors=vec![ir::SourceFrequencyFold::MultiplyClamp(100.),ir::SourceFrequencyFold::MultiplyClamp(0.01)];}
+    }
+    if folded_reference{for control in &mut ir.controls{if let ir::ControlValue::Continuous{default,..}=&mut control.value{*default=200.;}}}
+    let values=(0..ir.assets.len()).map(|_|Pcm::new(48000,(0..4096).map(|i|[if i%37<19{0.0625}else{-0.0625};2]).collect::<Vec<_>>().into_boxed_slice()).unwrap()).collect();
+    sampler_core::lower::lower_with(&ir,48000,values,&sampler_core::lower::Options{mpe:None},|_,plan|Ok(plan)).unwrap()
+}
+#[test]
+fn binding148_r1_zero_cleared_and_missing_program_maps_refuse_before_runtime(){
+    use sampler_core::ModProgram;
+    for (programs,scopes) in [(vec![],vec![]),(vec![],vec![None]),(vec![ModProgram::default()],vec![None])]{
+        let result=binding148_r1_fixed_plan(false,false).with_processing_modulation(programs,scopes,1<<20);
+        assert!(matches!(result,Err(Error::InvalidInput)),"retained folded home cannot lose the required actual program at preparation");
+    }
+    for (programs,scopes) in [(vec![],vec![None,None]),(vec![ModProgram::default()],vec![Some(0),None]),(vec![ModProgram::default()],vec![None,Some(0)])]{
+        let result=binding148_r1_fixed_plan(true,false).with_processing_modulation(programs,scopes,1<<20);
+        assert!(matches!(result,Err(Error::InvalidInput)),"one mapped scope cannot hide another owner's missing projector");
+    }
+}
+#[test]
+fn binding148_r1_explicit_empty_real_program_preserves_static_fold_pcm_and_base(){
+    let plan=binding148_r1_fixed_plan(true,false).with_processing_modulation(vec![sampler_core::ModProgram::default()],vec![Some(0),Some(0)],1<<20).unwrap();
+    let limits=sampler_core::Limits::for_plan(&plan,8,16);let mut actual=sampler_core::Runtime::new(plan,limits).unwrap();
+    let reference=binding148_r1_fixed_plan(true,true);let limits=sampler_core::Limits::for_plan(&reference,8,16);let mut reference=sampler_core::Runtime::new(reference,limits).unwrap();
+    actual.trigger(pan_input(686),60,1.).unwrap();reference.trigger(pan_input(687),60,1.).unwrap();
+    let mut got=[[0.;2];257];let mut expected=[[0.;2];257];support::without_heap(||{actual.render(&mut got).unwrap();reference.render(&mut expected).unwrap();});assert_eq!(got,expected);
+    assert!(got.iter().flatten().any(|v|v.abs()>1e-4));assert_eq!(actual.processing_owner_count(),2);assert_eq!(actual.voice_count(),4);
+    for scope in 0..2{let id=sampler_core::lower::ir_control_id(&format!("binding148-freq-{scope}"));assert_eq!(actual.control_base_value(actual.active_plan(),id),Ok(sampler_core::ControlValue::Real(1000.)));}
+    assert_eq!(actual.control_revision(actual.active_plan()),Ok(0));assert_eq!(actual.stats().nonfinite_frames,0);
+}
+fn binding148_r2_runtime(physical_reference:bool,wide:bool,semitones:f64,ramp_frames:u32)->sampler_core::Runtime{
+    let mut ir=binding148_graph(false);ir.routes[0].depth=ir::Depth::Pitch(ir::Pitch::Semitones(semitones));ir.processor_controls[0].ramp=ir::Time::Seconds(f64::from(ramp_frames)/48000.);
+    let source_count=if physical_reference{1}else{2};
+    if physical_reference {
+        ir.processing_scopes.clear();ir.source_indices.processing.clear();ir.source_indices.processing_parameters.clear();ir.source_indices.owners.clear();ir.zones.truncate(1);ir.assets.truncate(1);
+        ir.zones[0].chain=Some(ir::ChainRef(0));ir.zones[0].routes=vec![ir::RouteRef(0)];
+    }else if wide {
+        ir.processing_scopes[0].chain=None;
+        ir.processing_scopes[0].signal=Some(ir::ProcessingSignal{source_law:ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet,input:ir::SignalLayout{channels:6},
+            nodes:vec![ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:ir::SignalParameter{constant:1000.,control:Some("binding148-freq-0".into()),expression:None},mode:ir::ChannelOnePoleMode::LowPass,arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:0}),
+                ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:6},output:ir::SignalLayout{channels:2},cells:vec![1.,0.,0.,0.,0.5,0.,0.,1.,0.,0.,0.,0.5],arithmetic:ir::MatrixArithmetic::SeparateMulAddF32})],controls:vec![]});
+        ir.source_indices.processing_parameters[0].compiled=Some(ir::SourceProcessingParameterSite{scope:0,site:ir::ScopeControlSite::SignalNode(0)});
+    }
+    let sources=(0..source_count).map(|_|{
+        let magnitude=if physical_reference{if wide{0.1875}else{0.125}}else{0.0625};
+        let pcm=||Pcm::new(48000,(0..4096).map(|i|[if i%37<19{magnitude}else{-magnitude};2]).collect::<Vec<_>>().into_boxed_slice()).unwrap();
+        if !physical_reference&&wide {sampler_core::SourceStorageFamily::new_resident(sampler_core::ChannelCount::new(6).unwrap(),vec![pcm(),pcm(),pcm()]).unwrap().into()}else{pcm().into()}
+    }).collect();
+    let plan=sampler_core::lower::lower_sources_with(&ir,48000,sources,&sampler_core::lower::Options{mpe:None},|_,plan|Ok(plan)).unwrap();
+    let limits=sampler_core::Limits::for_plan(&plan,8,16);sampler_core::Runtime::new(plan,limits).unwrap()
+}
+#[test]
+fn binding148_r2_moving_base_matches_real_physical_midpoint_or_neutral_law_on_actual_chunks(){
+    use sampler_core::{ControlValue,ControlWrite,Event};
+    for wide in [false,true]{for ramp in [0,37]{for semitones in [0.,12.]{
+        let mut actual=binding148_r2_runtime(false,wide,semitones,ramp);let mut reference=binding148_r2_runtime(true,wide,semitones,ramp);
+        actual.trigger(pan_input(688),60,1.).unwrap();reference.trigger(pan_input(689),60,1.).unwrap();let mut warm=[[0.;2];17];let mut other=[[0.;2];17];
+        support::without_heap(||{actual.render(&mut warm).unwrap();reference.render(&mut other).unwrap();});
+        assert!(other.iter().flatten().any(|v|v.abs()>1e-4),"ordinary physical reference must sound before the moving-base edit");
+        assert!(warm.iter().flatten().zip(other.iter().flatten()).all(|(a,b)|(a-b).abs()<3e-7),"initial held history must agree before either live write");
+        let id=sampler_core::lower::ir_control_id("binding148-freq-0");let a=actual.active_plan();let b=reference.active_plan();
+        let mut owners=Vec::new();actual.visit_processing_owners(|o|owners.push((o.id,o.note,o.plan)));
+        support::without_heap(||{
+            actual.edit_controls(a,None,&[ControlWrite{id,value:ControlValue::Real(4000.)}]).unwrap();reference.edit_controls(b,None,&[ControlWrite{id,value:ControlValue::Real(4000.)}]).unwrap();
+            actual.schedule_event(41,Event::Control(a,ControlWrite{id,value:ControlValue::Real(8000.)})).unwrap();reference.schedule_event(41,Event::Control(b,ControlWrite{id,value:ControlValue::Real(8000.)})).unwrap();
+            actual.schedule_event(117,Event::Control(a,ControlWrite{id,value:ControlValue::Real(700.)})).unwrap();reference.schedule_event(117,Event::Control(b,ControlWrite{id,value:ControlValue::Real(700.)})).unwrap();
+        });
+        let mut got=[[0.;2];513];let mut expected=[[0.;2];513];let mut at=0;
+        for size in [1,17,31,7,64,3,29].into_iter().cycle(){if at==got.len(){break;}let end=(at+size).min(got.len());
+            support::without_heap(||{actual.render(&mut got[at..end]).unwrap();reference.render(&mut expected[at..end]).unwrap();});at=end;
+        }
+        let worst=got.iter().flatten().zip(expected.iter().flatten()).map(|(a,b)|(a-b).abs()).fold(0f32,f32::max);
+        assert!(worst<3e-7,"actual legacy consumer mismatch wide={wide} ramp={ramp} semitones={semitones} worst={worst}");
+        let mut after=Vec::new();actual.visit_processing_owners(|o|after.push((o.id,o.note,o.plan)));assert_eq!(owners,after);
+        assert_eq!(actual.now(),530);assert_eq!(reference.now(),530);assert_eq!(actual.stats().nonfinite_frames,0);assert_eq!(actual.control_base_value(a,id),Ok(ControlValue::Real(700.)));
+    }}}
+}

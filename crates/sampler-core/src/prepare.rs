@@ -1732,6 +1732,7 @@ programs = programs.into_boxed_slice();
                 {
                     return Err(Error::InvalidInput);
                 }
+                if matches!(route.target.scope,super::ParameterScope::ProcessingScope(_)){return Err(Error::InvalidInput);}
                 if route.target.compiled().is_some() {
                     continue;
                 }

@@ -39,6 +39,9 @@ pub(crate) struct Modulation {
     pub pitch: f64,
     /// Static pan offset from constant sources.
     pub pan: f64,
+    /// Accepted historical fixed Freq transforms in original connection order;
+    /// the real public base control remains the raw authored Freq value.
+    pub frequency_factors: Vec<(ir::ChainRef, usize, ir::SourceFrequencyFold)>,
 }
 
 impl Default for Modulation {
@@ -48,6 +51,7 @@ impl Default for Modulation {
             gain: 1.0,
             pitch: 0.0,
             pan: 0.0,
+            frequency_factors: Vec::new(),
         }
     }
 }
@@ -357,6 +361,12 @@ impl Translation {
                     Law::Add(ir::Target::Pitch) => out.pitch += ratio * value,
                     Law::Add(_) => out.pan += ratio * value,
                     Law::Frequency { chain, index } => {
+                        let factor=1000f64.powf(ratio*value);
+                        let step=if factor.is_nan()||factor<0.{return Err("fixed Frequency connection has an invalid historical multiplier".into());}
+                            else if factor==0.{ir::SourceFrequencyFold::LowerClamp}
+                            else if factor.is_infinite(){ir::SourceFrequencyFold::UpperClamp}
+                            else{ir::SourceFrequencyFold::MultiplyClamp(factor)};
+                        out.frequency_factors.push((chain,index,step));
                         let chain = &mut self.ir.chains[chain.0];
                         let processor = chain
                             .pre_amplitude
@@ -366,7 +376,7 @@ impl Translation {
                             .unwrap();
                         if let ir::Processor::Filter(filter) = processor {
                             if let ir::Frequency::Hertz(hz) = &mut filter.cutoff {
-                                *hz = (*hz * 1000f64.powf(ratio * value)).clamp(20.0, 20000.0);
+                                *hz = (*hz * factor).clamp(20.0, 20000.0);
                             }
                         }
                     }
@@ -1421,7 +1431,7 @@ mod tests {
             #[cfg(feature="scan")] dropped_connections:Default::default(),
             #[cfg(feature="scan")] visited_connections:Default::default(),
             #[cfg(feature="scan")] native_player_ids:Default::default(),
-            osc_groups:Vec::new(),insert_nodes:Vec::new(),split:None};
+            osc_groups:Vec::new(),insert_nodes:Vec::new(),split:None,processing_parameter_intents:Vec::new()};
         let kg=doc.descendants().find(|node|node.has_tag_name("Keygroup")).unwrap();
         let player=doc.descendants().find(|node|node.has_tag_name("SamplePlayer")).unwrap();
         let mut shared=super::Modulation::default();
@@ -2072,7 +2082,7 @@ mod script_event_definition_identity40 {
             #[cfg(feature="scan")] dropped_connections:Default::default(),
             #[cfg(feature="scan")] visited_connections:Default::default(),
             #[cfg(feature="scan")] native_player_ids:Default::default(),
-            osc_groups:Vec::new(),insert_nodes:Vec::new(),split:None};
+            osc_groups:Vec::new(),insert_nodes:Vec::new(),split:None,processing_parameter_intents:Vec::new()};
         let refs:Vec<_>=crate::connections(player).map(|connection|match out.signal(player,connection).unwrap(){
             Ok(Signal::Live{modulator,..})=>modulator,_=>panic!("actual ScriptEvent connection must remain live"),
         }).collect();

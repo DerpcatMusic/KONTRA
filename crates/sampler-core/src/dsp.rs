@@ -980,6 +980,17 @@ impl PreparedChainRef<'_> {
             _=>None,
         }
     }
+    pub(crate) fn processor_parameter_lane(&self,site:crate::ScopeControlSite,role:sampler_ir::ProcessorParameter,filters:&svf::PreparedFilters)->Option<usize>{
+        let (list,index)=match site{crate::ScopeControlSite::ChainPre(index)=>(self.pre,index),crate::ScopeControlSite::ChainPost(index)=>(self.post,index),_=>return None};
+        // Actual Mix/Branch shells retain bypass/history. A real enclosed
+        // operand is still the same operand; do not replace it with the shell.
+        if index>=list.len(){return None;}
+        match (list.get(index),role){
+            (ProcessorRef::StateVariable(handle),sampler_ir::ProcessorParameter::Cutoff)=>{
+                match filters.source_one_pole_cutoff(*handle)?{control::PreparedParameter::Control(lane)=>Some(lane),_=>None}
+            },_=>None,
+        }
+    }
     pub(crate) fn filter_indices(&self, stages: std::ops::Range<usize>) -> Vec<u32> {
         self.pre
             .iter()

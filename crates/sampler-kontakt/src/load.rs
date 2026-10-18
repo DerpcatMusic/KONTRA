@@ -1139,6 +1139,7 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
     let mut resolved=Vec::with_capacity(instrument.source_indices.processing.len());
     let mut matrices=Vec::new();
     let mut owner_roles=Vec::new();
+    let mut parameter_sites=Vec::new();
     // This off-audio schema batch is independent of the live Instrument until
     // every owner, source and signal definition has been checked.
     let mut control_definitions=instrument.controls.clone();
@@ -1190,6 +1191,15 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
             roles.push(ir::SourceOwnerOutputControl{owner:recipe.owner,field:role.field,target:ir::SourceOwnerControlTarget::ProcessingScope{scope,site},control:role.control});
         }
         owner_roles.extend(roles);
+        for (row,binding) in instrument.source_indices.processing_parameters.iter().enumerate().filter(|(_,row)|row.owner==recipe.owner){
+            if recipe.chain!=Some(binding.chain){return Err(invalid("shared processor binding belongs to another source chain"));}
+            let chain=instrument.chains.get(binding.chain.0).ok_or_else(||invalid("shared processor chain absent"))?;
+            let site=if let Some(sites)=&signal_sites {
+                ir::ScopeControlSite::SignalNode(*sites.get(binding.index).filter(|site|**site!=usize::MAX).ok_or_else(||invalid("shared processor emitted operand absent"))?)
+            }else if binding.index<chain.pre_amplitude.len(){ir::ScopeControlSite::ChainPre(binding.index)}
+            else{ir::ScopeControlSite::ChainPost(binding.index-chain.pre_amplitude.len())};
+            parameter_sites.push((row,ir::SourceProcessingParameterSite{scope,site}));
+        }
         resolved.push((scope,definition));
     }
     // Check the complete destination roster before publishing any schema row.
@@ -1210,6 +1220,7 @@ fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStor
     instrument.source_indices.output_controls.retain(|home|!instrument.source_indices.processing.iter().any(|recipe|
         recipe.owner==home.owner && matches!(home.target,ir::SourceOwnerControlTarget::ProcessingScope{scope,..}if recipe.compiled==Some(scope))));
     instrument.source_indices.output_controls.extend(owner_roles);
+    for (row,site) in parameter_sites {instrument.source_indices.processing_parameters[row].compiled=Some(site);}
     instrument.controls=control_definitions;
     for (recipe,(index,definition)) in instrument.source_indices.processing.iter_mut().zip(resolved) {
         if recipe.compiled.is_some() {instrument.processing_scopes[index]=definition;}
@@ -1266,8 +1277,14 @@ fn source_processing_signal(
         if chain.scope!=ir::Scope::Voice || !chain.post_amplitude.is_empty() {
             return Err("source channel graph requires its explicit amplitude boundary".into());
         }
-        if instrument.routes.iter().any(|route|matches!(route.target,ir::Target::Processor{chain,..} if chain==chain_id)) {
-            return Err("source channel processor modulation requires a compiled owner parameter binding".into());
+        for route in instrument.routes.iter().filter(|route|matches!(route.target,ir::Target::Processor{chain,..}if chain==chain_id)) {
+            let ir::Target::Processor{index,parameter,..}=route.target else{return Err("source channel route has no retained processor target".into());};
+            if !instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner&&binding.chain==chain_id&&binding.index==index&&binding.parameter==parameter){
+                return Err("source channel processor modulation requires an exact owned parameter binding".into());
+            }
+        }
+        if native.is_some()&&instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner){
+            return Err("native Frequency connection attachment and typed parameter cadence are unqualified; historical Core law cannot activate the native profile".into());
         }
         sites.resize(chain.pre_amplitude.len(),usize::MAX);
         for (index,processor) in chain.pre_amplitude.iter().enumerate() {

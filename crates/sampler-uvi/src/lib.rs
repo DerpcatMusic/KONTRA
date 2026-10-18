@@ -288,6 +288,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
+        processing_parameter_intents: Vec::new(),
     };
     out.program(program).map_err(Translate::Invalid)?;
     // Every authored user contributes, including a bypassed user sharing an
@@ -322,6 +323,17 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         }
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    // Real insert controls exist only now. Join exact original placement and
+    // semantic role; no placeholder control or output-field surrogate.
+    for (owner,source_node,chain,index,fixed_factors) in &out.processing_parameter_intents {
+        let bindings:Vec<_>=out.ir.processor_controls.iter().filter(|row|row.chain==*chain&&row.index==*index&&row.parameter==ir::ProcessorParameter::Cutoff).collect();
+        if bindings.len()!=1{return Err(Translate::Invalid("shared Frequency connection has no unique real Freq control".into()));}
+        out.ir.source_indices.processing_parameters.push(ir::SourceProcessingParameter{
+            owner:*owner,source_node:*source_node,chain:*chain,index:*index,parameter:ir::ProcessorParameter::Cutoff,
+            control:bindings[0].control,law:ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore,
+            fixed_factors:fixed_factors.clone(),compiled:None,
+        });
+    }
     engine_parameters::register_source_matrices(&mut out.ir);
     out.ir.register_compressor_controls();
     out.ir.source_indices.owners = source_owners(program, &out.ir)
@@ -600,6 +612,7 @@ struct Translation {
     insert_nodes: Vec<InsertNode>,
     /// The layer being translated, when a script may pick its oscillators.
     split: Option<(usize, ir::Group)>,
+    processing_parameter_intents: Vec<(ir::SourceOwnerId,u32,ir::ChainRef,usize,Vec<ir::SourceFrequencyFold>)>,
 }
 
 /// The IR group holding oscillator `osc` (1-based, counting bypassed ones) of
@@ -962,11 +975,23 @@ impl Translation {
                     .copied()
                 {
                     for connection in connections(insert) {
+                        let before=self.ir.unsupported.len();
                         self.connect_frequency(connection, chain, placed.first, &mut shared)?;
+                        if self.ir.unsupported.len()!=before{return Err(format!("{}: shared Frequency connection has no supported exact route law",path(connection)));}
                     }
                 }
             }
         }
+        // Freq connections are parsed AFTER the earlier Gain/Pan extraction.
+        // Move each actual consumer now, before physical sections clone routes;
+        // the later common dependency closure retains source-rate/phase/scales.
+        if let Some(chain)=chain {
+            for route in &shared.routes {
+                if matches!(self.ir.routes[route.0].target,ir::Target::Processor{chain:target,..}if target==chain)&&!shared_routes.contains(route){shared_routes.push(*route);}
+            }
+            shared.routes.retain(|route|!shared_routes.contains(route));
+        }
+        let frequency_factors=std::mem::take(&mut shared.frequency_factors);
         // One actual keygroup activation owns the insert chain. Source zones
         // retain their own cursor/amplitude; they do not each instantiate KG DSP.
         let first_member = self.ir.zones.len();
@@ -1172,6 +1197,18 @@ impl Translation {
                 sources:owned_sources,routes: shared_routes,source_gate,
             });
             let recipe=self.ir.source_indices.processing.last().ok_or_else(||"native source recipe absent".to_owned())?;
+            if let Some(chain)=recipe.chain {
+                for placement in self.insert_nodes.iter().filter(|row|row.chain==chain&&row.count>0){
+                    let dynamic=recipe.routes.iter().any(|route|matches!(self.ir.routes[route.0].target,ir::Target::Processor{chain:target,index,..}if target==chain&&index==placement.first));
+                    let factors:Vec<_>=frequency_factors.iter().filter(|(source,index,_)|*source==chain&&*index==placement.first).map(|(_,_,factor)|*factor).collect();
+                    if dynamic||!factors.is_empty(){
+                        let node=u32::try_from(placement.node).map_err(|_|"frequency source identity overflow".to_owned())?;
+                        let original=keygroup.document().get_node(roxmltree::NodeId::new(node)).ok_or_else(||"frequency source node absent".to_owned())?;
+                        if !original.has_tag_name("OnePole"){return Err("frequency binding source is not actual OnePole".into());}
+                        self.processing_parameter_intents.push((recipe.owner,node,chain,placement.first,factors));
+                    }
+                }
+            }
             let mut one_poles=Vec::new();
             if let Some(chain)=recipe.chain {
                 for placement in self.insert_nodes.iter().filter(|entry|entry.chain==chain&&entry.count>0){
