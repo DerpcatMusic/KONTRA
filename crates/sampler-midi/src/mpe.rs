@@ -210,3 +210,9 @@ impl Mpe {
         Ok(crate::BoundMpe::new(runtime.id(),id,manager))
     }
 }
+
+impl Mpe {
+    /// A full decision roster observed an unrecordable attack. This is a
+    /// fail-closed source-debt fence; CC/reset/panic do not rearm it.
+    pub fn wire_fenced(&self)->bool{self.state.wire_fenced()}
+}

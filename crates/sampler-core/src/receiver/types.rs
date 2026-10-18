@@ -211,3 +211,40 @@ impl ChannelVoice {
         }
     }
 }
+
+
+/// Real registered receiver attachment epoch; no Part/UI/controller epoch.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ReceiverWireEpoch { pub(crate) receiver:super::ReceiverId,pub(crate) serial:u64 }
+/// The actual physical-decision arena generation, never a vector position.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RawAdmissionId { pub(crate) receiver:super::ReceiverId,pub(crate) decision:crate::Handle }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RawTerminalId { pub(crate) admission:RawAdmissionId }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum RawDecisionPhase {Pending,Accepted,Rejected}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum RawRejection {Capacity,Profile,Canceled,Core(crate::Error)}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum RawAdmission {Pending(RawAdmissionId),Rejected{decision:RawAdmissionId,reason:RawRejection}}
+/// Original validated packet and immutable actual source at true ingress.
+#[derive(Clone,Copy,Debug)]
+pub struct RawAttackIntent {pub voice:ChannelVoice,pub source:crate::Input,pub frame:u64}
+/// Producer's actual accepted logical route, distinct from physical source.
+#[derive(Clone,Copy,Debug)]
+pub struct CapturedLogicalRawAttack {pub input:crate::Input,pub pitch:crate::NotePitch,pub velocity:f64,pub tuning:f64,pub silent:bool}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RawTerminalClaim {pub(crate) terminal:RawTerminalId,pub(crate) phase:RawDecisionPhase}
+impl RawTerminalClaim {
+    pub fn terminal(self)->RawTerminalId{self.terminal}
+    pub fn admission(self)->RawAdmissionId{self.terminal.admission}
+    pub fn phase(self)->RawDecisionPhase{self.phase}
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum RawTerminalOutcome {Released(crate::NoteId),AbsorbedRejected,AbsorbedAlreadySynthetic}
+/// Q is TOTAL queue+active+future obligations, not queued cells alone.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct WireAdmissionStatus {pub epoch:ReceiverWireEpoch,pub fenced_unknown_debt:bool,pub decisions:usize,pub pending:usize,pub accepted:usize,pub rejected:usize,pub claimed:usize,pub decision_capacity:usize,pub receipt_limit:usize,pub queued_receipts:usize,pub active_receipts:usize,pub future_receipts:usize,pub replacement_blocked:bool}
+
+impl RawAdmissionId {pub fn receiver(self)->super::ReceiverId{self.receiver}}
+impl RawTerminalId {pub fn admission(self)->RawAdmissionId{self.admission}}
