@@ -9507,3 +9507,58 @@ mod uvi_load_refusal147_tests {
         assert_eq!(actual.at, None);
     }
 }
+
+
+#[cfg(test)]
+mod shared_processor_binding148_product_tests {
+    use super::*;
+    use crate::sound::{CoreLoader,LoadRequest};
+    use std::path::{Path,PathBuf};
+    fn wav(samples:&[[i16;2]])->Vec<u8>{
+        let bytes=u32::try_from(samples.len()*4).unwrap();let mut out=b"RIFF".to_vec();out.extend((36+bytes).to_le_bytes());out.extend(b"WAVEfmt ");out.extend(16u32.to_le_bytes());out.extend(1u16.to_le_bytes());out.extend(2u16.to_le_bytes());out.extend(48000u32.to_le_bytes());out.extend(192000u32.to_le_bytes());out.extend(4u16.to_le_bytes());out.extend(16u16.to_le_bytes());out.extend(b"data");out.extend(bytes.to_le_bytes());for frame in samples{for v in frame{out.extend(v.to_le_bytes());}}out
+    }
+    fn patch(dir:&Path,name:&str,players:&[(&str,Vec<[i16;2]>,bool)],frequency:&str)->PathBuf{
+        let mut rows=String::new();for(file,samples,bypass)in players{
+            std::fs::write(dir.join(format!("{file}.wav")),wav(samples)).unwrap();
+            rows+=&format!(r#"<SamplePlayer SamplePath="{file}.wav" BaseNote="60" Gain="1" Bypass="{}"><PlaybackOptions Start="0" Stop="2048"><Loop Start="0" End="2048" Type="0"/></PlaybackOptions></SamplePlayer>"#,u8::from(*bypass));
+        }
+        let xml=format!(r#"<UVI4><Program Gain="1"><EventProcessors><ScriptProcessor><script>function onInit() end</script></ScriptProcessor></EventProcessors><Layers><Layer Gain="1"><Keygroups><Keygroup Gain="1" LowKey="60" HighKey="60"><Inserts><WaveShaper Mode="6" InputGain="0" OutputGain="0"/>{frequency}</Inserts><Oscillators>{rows}</Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>"#);
+        let path=dir.join(format!("{name}.uvip"));std::fs::write(&path,xml).unwrap();path
+    }
+    fn load(path:&Path)->V2Core{
+        let loaded=V2Loader.prepare(&LoadRequest{path:path.into(),sample_rate:48000.,..Default::default()},&mut |_|{},&||false).expect("normal nested V2 loader must admit actual shared processor binding");
+        let mut core=V2Core::with_parts(1,48000.);core.install(0,loaded.part);core.event(0,Event::midi1(0x90,60,96));core
+    }
+    fn render(core:&mut V2Core,frames:usize)->Vec<[f32;2]>{
+        let mut result=Vec::with_capacity(frames);while result.len()<frames{
+            let n=(frames-result.len()).min(127);core.begin_block(&crate::sound::BlockInfo{frames:n,offline:true,..Default::default()});
+            let rendered=core.render(n);for i in 0..n{let mut v=[0.;2];for(bus,live)in rendered.buses.iter().zip(rendered.live){if live{v[0]+=bus[0][i];v[1]+=bus[1][i];}}result.push(v);}
+            core.end_block(n,&mut |_|true);
+        }result
+    }
+    fn compare(actual:&[[f32;2]],expected:&[[f32;2]]){
+        assert_eq!(actual.len(),expected.len());let energy:f64=expected.iter().flatten().map(|v|f64::from(*v).powi(2)).sum();assert!(energy>1e-5,"normal product reference must sound");
+        let error:f64=actual.iter().flatten().zip(expected.iter().flatten()).map(|(a,b)|(f64::from(*a)-f64::from(*b)).powi(2)).sum();assert!(error/energy<1e-8,"nested shared-filter normalized PCM error {}",error/energy);
+    }
+    #[test]
+    fn normal_nested_v2_frequency_cc_updates_one_shared_filter_on_same_held_sources(){
+        static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+        let dir=PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch").join(format!("binding148-v2-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));std::fs::create_dir_all(&dir).unwrap();
+        let a:Vec<_>=(0..2048).map(|i|[if i%32<16{8192}else{-8192},if i%48<24{6144}else{-6144}]).collect();
+        let b:Vec<_>=a.iter().enumerate().map(|(i,v)|[-v[0]+if i%53<26{512}else{2048},-v[1]+if i%79<39{768}else{2304}]).collect();
+        let sum:Vec<_>=a.iter().zip(&b).map(|(a,b)|[a[0]+b[0],a[1]+b[1]]).collect();
+        let target=patch(&dir,"actual",&[("a",a,false),("b",b,false),("dormant",vec![[12000;2];2048],true)],r#"<OnePole Freq="1800" Mode="0"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.10034333188799373"/></Connections></OnePole>"#);
+        let lo=patch(&dir,"low",&[("sum-low",sum.clone(),false)],r#"<OnePole Freq="1800" Mode="0"/>"#);let hi=patch(&dir,"high",&[("sum-high",sum,false)],r#"<OnePole Freq="3600" Mode="0"/>"#);
+        let mut low=load(&lo);let mut high=load(&hi);let low_start=render(&mut low,4123);let high_start=render(&mut high,4123);
+        assert!(low_start.iter().flatten().zip(high_start.iter().flatten()).any(|(a,b)|(a-b).abs()>1e-4),"literal public references discriminate cutoff");
+        let mut actual=load(&target);compare(&render(&mut actual,4123),&low_start);
+        let runtime=&actual.parts[0].as_ref().unwrap().runtime;let mut identity=Vec::new();runtime.visit_processing_owners(|o|identity.push((o.id,o.note,o.plan,o.template,o.sources)));assert_eq!(identity.len(),1);assert_eq!(runtime.voice_count(),2);
+        for(value,raised)in [(127,true),(0,false),(127,true)]{
+            actual.event(0,Event::midi1(0xb0,1,value));let got=render(&mut actual,2048);let lo=render(&mut low,2048);let hi=render(&mut high,2048);compare(&got[256..],if raised{&hi[256..]}else{&lo[256..]});
+            let runtime=&actual.parts[0].as_ref().unwrap().runtime;let mut after=Vec::new();runtime.visit_processing_owners(|o|after.push((o.id,o.note,o.plan,o.template,o.sources)));assert_eq!(identity,after);
+            assert_eq!(runtime.voice_count(),2);let p=actual.problems(0);assert_eq!((p.capacity_drops,p.underruns,p.stream_errors,p.nonfinite,p.script_overruns,p.lua_faults),(0,0,0,0,0,0));
+        }
+        for core in [&mut actual,&mut low,&mut high]{core.event(0,Event::midi1(0x80,60,64));render(core,8192);assert_eq!(core.parts[0].as_ref().unwrap().runtime.voice_count(),0);}
+        drop(actual);drop(low);drop(high);std::fs::remove_dir_all(dir).unwrap();
+    }
+}
