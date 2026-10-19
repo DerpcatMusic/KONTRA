@@ -2253,7 +2253,7 @@ mod tests {
         ] {
             assert!(!copied.contains(excluded), "clipboard contains {excluded}");
         }
-        assert!(copied.contains("malformed(\"context)"), "copied reports retain bounded source context");
+        assert!(!copied.contains("malformed(\"context)"), "Info-level source context stays out of copied warning/error reports");
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
         moose::core::screenshot::save_png(
