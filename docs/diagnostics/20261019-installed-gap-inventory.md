@@ -130,6 +130,44 @@ cannot be addressed by identity.
 recognise the keyswitch script of the behaviour. The script still runs; what
 is missing is the articulation list the detector produces for the editor.
 
+## Where the native evidence starts
+
+The remaining gaps are not all the same kind of work. What each one needs,
+and where the search starts in `Kontakt8.exe` (SHA256
+`0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8`):
+
+* **The Ladder gain law and the HQ mode** (1,022 entries). The core itself is
+  checked against `FUN_140b00be2` (the process) and `FUN_140b06180` (the
+  prepare); what is unproved is the stored gain's law and the 2x resampled
+  path. The core's own note
+  (`crates/sampler-core/src/dsp/filter/ladder_kernel.rs`) names the pieces
+  outside the static comparisons: the public gain binding, the production HQ
+  ownership, the moving controls and the alternative cutoff path (flag
+  `0x49`). The oracle is the recorded native renders in
+  `docs/architecture-v2/KONTAKT_REFERENCE.md` and the `kemu` harness
+  (`tools/re/kemu.py`).
+* **The bipolar random generator** (550 entries). The generator is an LCG at
+  `0x140afe3b0`: `state = state * 0x41C64E6D + 0x3039`, with the state at
+  `[r14 + 0x30]` and the value scaled by `[r15 + 0x510c]`. The seed, the
+  cadence (when the state advances) and the value's range are still to be
+  recovered, and the source's own value domain is why
+  `laws::external_source_q` refuses the type.
+* **The native zone identity** (251 entries). The reader accepts the id only
+  for version `0x9a..=0x9c` with an 87-byte private, `word56 == 0` and the
+  id as the private's last `i32` (`-1` = none). The corpus also has
+  `(0x98, 83)`, `(0x99, 87)` and `(0x9a, 140..176)` privates with
+  `word56 == 1`; where the id sits in those layouts is the open question, and
+  the native's zone reader has not been located yet.
+* **The Convolution record** (17 entries). The `v0x70` payload of 121 bytes
+  is not parsed, and the field evidence is explicitly blocked
+  (`docs/re/kontakt-bindings/audit-probes.tsv`, `KE092`..`KE142`).
+* **The keyswitch script** (202 entries). The detector's rule is deliberate:
+  a key that *sounds* is not an articulation switch, so the Afflatus "Breath"
+  key is not one. What is reported is that a control key is declared and no
+  silent switch was recognised; the editor's articulation list is complete
+  for those patches. The remaining reports ("further switch keys") are a
+  second switch set the editor does not list.
+
 ## Reporting rules used by the tool
 
 * a report is one authored thing that the translator does not execute; the
