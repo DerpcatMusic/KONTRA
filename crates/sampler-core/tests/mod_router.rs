@@ -299,6 +299,64 @@ fn native_routes_agree_with_the_generic_path_on_modeled_targets() {
     }
 }
 
+/// An envelope stage time addressed as a modulation target moves the voice's
+/// own amplitude envelope: the family H law multiplies the stage's normalized
+/// knob, so a controller at 0 with half depth moves a 100 ms attack to the
+/// knob's half (about 13 ms).
+#[test]
+fn an_envelope_stage_route_scales_the_voice_amplitude_envelope() {
+    let attacked = |route: Option<ModRoute>| {
+        let pcm = (0..8192).map(|k| [k as f32 / 1000., 0.5]).collect();
+        let plan = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, pcm).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::new(4800, 0, 0, 1.0, 0).unwrap(),
+                playback: Playback::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap();
+        plan.with_voice_modulation(
+            vec![ModProgram {
+                controls: vec![],
+                breakpoints: vec![],
+                sources: vec![ModSource::Controller(1)],
+                routes: route.into_iter().collect(),
+                shapes: vec![],
+                envelope_controls: vec![],
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap()
+    };
+    // The helper's `start` holds controller 1 at 0, so the route's source is
+    // at its lowest value and the inner expression is 1 - 1 * 0.5.
+    let plain = gains(&mut start(attacked(None), 0), 6000, 0);
+    let routed = gains(
+        &mut start(
+            attacked(Some(ModRoute::new(0, ModTarget::VoiceEnvelopeStage(0), 0.5))),
+            0,
+        ),
+        6000,
+        0,
+    );
+    // The attack is shorter, so the envelope has reached further by frame 100.
+    assert!(routed[100] > plain[100] * 2.0, "{} {}", plain[100], routed[100]);
+    // Past the longer attack both are at the sustain: only the attack moved.
+    assert!((routed[5000] - plain[5000]).abs() < 1e-6);
+}
+
 /// The semantic source identities stay fixed while their dense indices move.
 /// Sine sources do not depend on the index-derived random seed.
 fn rate_scale_graph(order: [usize; 4], additional: bool, chained: bool, transitive: bool, native: bool) -> Prepared {

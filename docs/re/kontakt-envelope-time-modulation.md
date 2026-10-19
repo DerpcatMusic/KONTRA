@@ -153,6 +153,33 @@ scaled instead, and the envelope conversion pair is not emitted at all.
 * The native law path in `sampler-core/src/voice_mod.rs` now carries the
   source type's cube selection instead of assuming the un-cubed product.
 
+## What the implementation does with it
+
+An AHDSR stage time addressed as a modulation target (`ahdsr_attack`,
+`ahdsr_hold`, `ahdsr_decay`, `ahdsr_release`) is now executed:
+
+* the translator binds the target to the group's own amplitude envelope, the
+  internal AHDSR that drives the voice. Another AHDSR in the group is a
+  modulator source, so a route to it stays reported;
+* the core publishes the family H factor of the route: the stage's normalized
+  knob is multiplied by `C(1 - (1 - E) * i)`, with `C` the compiler's
+  `fcubic` for an external source of type 7..=13 and the identity otherwise;
+* the voice's own stage time follows its knob law when the voice starts: the
+  attack and hold stages use the 15 s range, the decay and release stages the
+  25 s range (`fconv_u2n_env_a`, `fconv_u2n_env_d`).
+
+On the installed corpus this removes 953 of the 962 reported routes: 36
+instruments lose the `modulation of a module parameter` report.
+
+Two limits are deliberate and reported:
+
+* the stage time is settled when the voice starts. A source that changes
+  while the stage runs does not move it, because the native envelope core's
+  update order is not recovered;
+* the external source types 9..=13 (the release velocity, the release
+  trigger counter and the constant) have no proved value domain, so their
+  routes keep the generic source preparation rather than the native one.
+
 ## What stays open
 
 * The source *producer* for the external types 9..=13 is not extracted, so

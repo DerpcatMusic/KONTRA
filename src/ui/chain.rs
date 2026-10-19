@@ -237,6 +237,13 @@ fn target_name(i: &ir::Instrument, t: ir::Target) -> String {
         }.into(),
         ir::Target::LoopStart => "Loop start".into(),
         ir::Target::LoopLength => "Loop length".into(),
+        ir::Target::EnvelopeStage { stage, .. } => match stage {
+            ir::EnvelopeStage::Attack => "Envelope attack",
+            ir::EnvelopeStage::Hold => "Envelope hold",
+            ir::EnvelopeStage::Decay => "Envelope decay",
+            ir::EnvelopeStage::Release => "Envelope release",
+        }
+        .into(),
         ir::Target::Control(c) => i
             .controls
             .get(c.0)

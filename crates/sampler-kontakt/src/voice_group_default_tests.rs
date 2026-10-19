@@ -53,6 +53,7 @@ fn omitted_voice_group_override_still_binds_its_native_shared_limit() {
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
         dormant_modulators: Default::default(),
+        amplitude_envelopes: vec![],
         send_taps: vec![],
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
