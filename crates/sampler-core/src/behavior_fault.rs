@@ -103,7 +103,7 @@ impl Runtime {
             callback_id: c.callback_id,
             ui_id: program.ui_id,
             site: site(pc),
-            instruction: program.code.get(pc).copied(),
+            instruction,
             registers,
             register_count: count,
             registers_omitted: program.locals.saturating_sub(count),
