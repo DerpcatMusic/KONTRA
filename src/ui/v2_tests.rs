@@ -2131,29 +2131,35 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
     let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
     let mut face = host.interface();
     let mut ui = theme::ui();
-    let mut values = ir_view::Values::default();
+    let mut values: ir_view::Values = host.control_values().into_iter().collect();
+    let mut input_state = ir_view::InputState::default();
     let assets = ir_view::Assets::default();
-    let tick = |ui: &mut Ui,
+    let mut tick = |ui: &mut Ui,
                 face: &ir::Interface,
                 values: &mut ir_view::Values,
                 host: &mut sampler_uvi::script::ScriptHost,
                 input| {
         let before = values.clone();
-        let root = ir_view::view(
+        let root = ir_view::view_state(
             ui,
+            "",
             face,
             ir::PageRef(0),
             &assets,
             ir::Presentation::Vector,
             1.,
             values,
+            &mut input_state,
         );
         ui.frame(root, Some(Size::new(200., 100.)), input, 1. / 60.)
             .unwrap();
-        for (&id, &value) in values.iter() {
-            if before.get(&id).copied().unwrap_or(0.) != value {
-                host.set_control(id, value).unwrap();
-            }
+        assert_eq!(*values, before, "UVI Button must not emit a scalar pulse or reset");
+        assert!(input_state.edits.is_empty());
+        for edit in input_state.activations.drain(..) {
+            let ir::Binding::Control(control) = face.widgets[edit.widget.0].binding else {
+                panic!("button has no control binding")
+            };
+            host.activate_control(control, edit.activation).unwrap();
         }
     };
     tick(&mut ui, &face, &mut values, &mut host, Input::default());
@@ -2197,7 +2203,8 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
         tick(&mut ui, &face, &mut values, &mut host, Input::default());
     }
     assert_eq!(host.global_text("clicks"), "2");
-    face.widgets[0].enabled = false;
+    let fire = face.widgets.iter().position(|widget| widget.name == "Fire").unwrap();
+    face.widgets[fire].enabled = false;
     tick(&mut ui, &face, &mut values, &mut host, Input::default());
     assert!(ui.scene().unwrap().surface("ir-1").is_some());
 }
