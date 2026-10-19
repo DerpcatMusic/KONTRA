@@ -24,6 +24,8 @@ use anyhow::{Context, ensure};
 mod uvi_meters;
 mod control_diagnostics;
 #[cfg(feature = "shots")]
+pub mod library_probe;
+#[cfg(feature = "shots")]
 pub mod uvi_diagnostics;
 #[cfg(feature = "shots")]
 mod residency_diagnostics;
