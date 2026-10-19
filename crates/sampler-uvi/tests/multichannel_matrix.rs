@@ -20,9 +20,14 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let scratch = std::env::var_os("TMPDIR").map(PathBuf::from)
-            .filter(|p| p.starts_with("/mnt/Windows11/"))
-            .unwrap_or_else(|| PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch"));
+        // A writable scratch directory: the runner's temporary directory when
+        // it is set, otherwise the workspace scratch, otherwise the platform
+        // temporary directory. A hard-coded workspace path is not writable on
+        // a CI runner.
+        let scratch = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| {
+            let local = PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+            if std::fs::create_dir_all(&local).is_ok() { local } else { std::env::temp_dir() }
+        });
         std::fs::create_dir_all(&scratch).unwrap();
         let path = scratch.join(format!("uvi-matrix-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir(&path).unwrap();
