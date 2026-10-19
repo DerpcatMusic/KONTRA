@@ -1,0 +1,139 @@
+# Installed-library gap inventory (Kontakt)
+
+Date: 2026-10-19. Tool: `crates/sampler-kontakt/examples/fx_survey.rs`.
+Corpus: `/mnt/MAIN_STORAGE/Libraries/Kontakt` (2,742 `.nki` instruments).
+
+This is the list of everything the Kontakt translator does not implement or does
+not translate, measured on the installed libraries rather than on a hand
+picked subset. It replaces the stale claims in
+`docs/architecture-v2/DSP_COVERAGE.md`, whose module tables were written
+against an older branch (it still lists Legacy HP1, the SV filters and the
+Formant filters as missing; `crates/sampler-kontakt/src/effects/filter.rs`
+implements all of them today, most of them bit-exact against the native
+classes).
+
+## How to reproduce
+
+```sh
+cargo run -p sampler-kontakt --release --example fx_survey -- /mnt/MAIN_STORAGE/Libraries/Kontakt
+ALL=1 FILES=1 VALUES=all cargo run -p sampler-kontakt --release --example fx_survey -- /mnt/MAIN_STORAGE/Libraries/Kontakt
+```
+
+* the plain run prints the corpus totals, the caveat counts and the effect
+  module table;
+* `ALL=1` adds one `FEATURE` line per reported feature, with the number of
+  instruments and the number of report entries;
+* `FILES=1` adds the instrument path of every reported feature;
+* `VALUES=<feature>` (or `VALUES=all`) prints the reported value, its scope
+  and the instrument it belongs to.
+
+The corpus contains a `KONTRA project recovery` tree that holds a second copy
+of several libraries. The counts below are deduplicated by instrument path;
+the raw run reports 29,677 entries because the copies are counted twice.
+
+## Corpus totals
+
+| Measure | Value |
+|---|---|
+| `.nki` files | 2,742 |
+| read | 2,742 (0 unreadable) |
+| instruments with at least one report | 397 (deduplicated) |
+| report entries | 3,757 (deduplicated) |
+| instruments with a dropped or untranslated effect | 6 |
+| instruments with a translated impulse response | 366 |
+
+Eleven libraries contribute: Areia (155 instruments), Afflatus Chapter II
+Brass (102), Solo (100), Pacific Ensemble Strings (22), Performance Samples
+Vista (7), Audio Imperia CHORUS (4), Una Corda Library (3), Shreddage 3.5
+E-Upright (1), Morphology Evolved (1), Conflux (1), ANALOG STRINGS (1).
+
+## The gaps, ordered by entries
+
+| Feature | Entries | Instruments | What is missing |
+|---|---:|---:|---|
+| `Filter: filter law` | 1,022 | 6 | The Ladder gain law and the 2x resampled (HQ) mode; the Daft audio core; the legacy cutoff boundary phase |
+| `modulation of a module parameter` | 962 | 36 | Envelope stage times (`ahdsr_attack`, `ahdsr_release`) addressed as a modulation target |
+| `external modulation from RandomBipolar` | 550 | 1 | The bipolar random generator: interval, cadence, seed |
+| `flex loop jump at the sustain row (+0x194)` | 504 | 4 | The Flex envelope's loop jump at its sustain row |
+| `native source zone identity` | 251 | 251 | The native zone identity of a saved source zone, so no ordinal alias is created |
+| `keyswitch script` | 202 | 201 | The static detection of a keyswitch script, so the articulation list stays empty |
+| `Solid G-EQ: Solid G-EQ smoothing` | 59 | 3 | The native 20 ms coefficient smoothing on knob changes |
+| `Solid G-EQ: live control` | 59 | 3 | Script access to the Solid G-EQ knobs |
+| `modulation of a modulator's intensity` | 42 | 1 | Modulating the intensity of another modulator |
+| `wavetable source` | 30 | 1 | The wavetable source mode 9 |
+| `effect` | 17 | 6 | The Convolution payload layout, the Jump amplifier models and the Rotator core |
+| `modulation target` | 16 | 1 | Wavetable targets whose stored intensity is zero |
+| `Tape Saturator: Creative FX live controls` | 11 | 4 | Live Tape Saturator knobs and their smoothing |
+| `Convolution: impulse response` | 10 | 2 | The impulse response resource |
+| `time machine pro Elastique backend` | 10 | 1 | The Elastique granular backend |
+| `Reverb (legacy): legacy reverb input lowpass` | 4 | 1 | The legacy reverb input lowpass |
+| `LFO waveform (id, multi weights, pulse width)` | 4 | 1 | The multi-weight LFO waveform |
+| `Convolution: IR size` | 2 | 1 | The impulse response block size |
+| `saved automation target` | 1 | 1 | A saved automation tag |
+| `Convolution: IR early/late crossover` | 1 | 1 | The early/late crossover point |
+
+## 1. Envelope stage times as a modulation target
+
+962 entries, 36 instruments, 817 of them `ahdsr_attack` and 136
+`ahdsr_release`. 292 of the entries are inert at the saved state (intensity
+0); 670 are audible (intensity 1 or a signed fraction).
+
+The route is an external modulation: the source is the release trigger
+counter and the destination is the group's AHDSR modulator. For example, in
+`Pacific - Ens Strings - 10 Cellos - Marcatos.nki` ten groups carry
+`ReleaseTriggerCounter -> ahdsr_attack` at full depth with a shaper.
+
+The native compiler for these targets is the same one the repository already
+models in `sampler-core/src/voice_mod/laws.rs`. `docs/re/kontakt-envelope-time-modulation.md`
+records what it emits, and this change fixes the one law that was wrong: the
+compiler cubes the inner expression for an external source of type 7..=13,
+and the previous code applied that cube only to a few target ids.
+
+What is still missing is the execution side: the envelope stage's own knob to
+time law, the moment a changed stage time becomes audible, and the source
+producer for the release trigger counter.
+
+## 2. The Ladder filter's gain law and HQ mode
+
+1,022 entries, 6 instruments, 904 of them in Morphology Evolved. The Ladder
+core itself is checked against the native code (`FUN_140b00be2`,
+`FUN_140b06180`): the cutoff law and table, the pole polynomial, the
+resonance, the feedback correction, the clip, the stages, the tap weights and
+the compensation, and the 2 ms ramp. Two parts are still unproved: the gain
+law, and the 2x resampled (HQ) mode. The Daft filter is weaker still: its
+saved controls and ramp scheduling are extracted, but its audio core and
+resampler are not recovered.
+
+## 3. The bipolar random generator
+
+550 entries, one instrument (Conflux). The external source type 13 has a
+classification path only; no generator, interval, cadence, RNG or seed is
+linked, so the source cannot produce a value.
+
+## 4. The Flex envelope's loop jump
+
+504 entries, four instruments (Audio Imperia CHORUS). The saved Flex record
+carries a byte at +0x194 that asks the envelope to jump at its sustain row.
+Its effect on the held envelope is not proved, so the envelope runs without it.
+
+## 5. Zone identity and keyswitch detection
+
+`native source zone identity` (251 instruments) reports that a saved source
+zone has no readable identity, so no ordinal alias is created and the zone
+cannot be addressed by identity.
+
+`keyswitch script` (201 instruments) reports that the static detector did not
+recognise the keyswitch script of the behaviour. The script still runs; what
+is missing is the articulation list the detector produces for the editor.
+
+## Reporting rules used by the tool
+
+* a report is one authored thing that the translator does not execute; the
+  value keeps the authored numbers, the scope names the rack or group, and
+  the path names the instrument;
+* a zero-intensity modulation target is still reported: the route is not
+  translated, even when it is inert at the saved state. The inventory counts
+  them separately;
+* a feature that is implemented but not measurable is not reported at all.
+  The `Filter: filter law` entries are the exception: they name the part of
+  the law that is still unproved.

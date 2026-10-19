@@ -366,6 +366,9 @@ struct NativeLaw {
     /// Source-domain argument (bipolar source).
     q: bool,
     table: Option<laws::Table>,
+    /// The external source's type selects the compiler's `fcubic` step
+    /// (types 7..=13, 0x140873120).
+    cubic: bool,
 }
 
 struct Program {
@@ -975,7 +978,15 @@ impl VoiceModulation {
                             Some(laws::Table::from_curve_samples(&samples))
                         }
                     };
-                    Some(NativeLaw { target: n.target, flags: n.flags, q, table })
+                    Some(NativeLaw {
+                        target: n.target,
+                        flags: n.flags,
+                        q,
+                        table,
+                        // The compiler cubes the inner expression for an
+                        // external source of type 7..=13 (0x140873120).
+                        cubic: (7..=13).contains(&n.source_type),
+                    })
                 })
                 .collect::<Box<[_]>>();
             compiled.push(Program {
@@ -2169,14 +2180,16 @@ impl VoiceModState {
             }
             match p.targets[i] {
                 CompiledTarget::Attenuate => match &p.laws[i] {
-                    // Family H, ordinary: x * (1 - (1 - E) * i), E already unipolar.
+                    // Family H: x * C(1 - (1 - E) * i), where C is the
+                    // compiler's `fcubic` for an external source of type
+                    // 7..=13 and the identity otherwise.
                     Some(law) => {
                         let ctx = laws::CombineCtx {
                             target: law.target,
                             route_flags: law.flags,
                             env_special: false,
                             direct_special: false,
-                            cubic_inner: false,
+                            cubic_inner: law.cubic,
                         };
                         gain = f64::from(laws::combine(&ctx, gain as f32, v as f32, d as f32));
                     }
