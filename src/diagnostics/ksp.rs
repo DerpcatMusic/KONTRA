@@ -31,7 +31,7 @@ pub(super) fn fault_data(
         .collect::<Vec<_>>();
     let read = |local: u16| {
         let index = usize::from(local).checked_sub(usize::from(fault.register_base))?;
-        (index < fault.register_count).then(|| fault.registers[index])
+        retained.get(index).copied()
     };
     let at = |base: u16, offset: u16| base.checked_add(offset).and_then(read);
     let operands = match fault.instruction {
