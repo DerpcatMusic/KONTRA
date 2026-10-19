@@ -55,6 +55,11 @@ The exact selection, current UVI catalogs, isolated reports and executable SHA-2
 
 These are the distinct retained diagnostic examples from the baseline, including compile warnings and admitted approximations. Repetition counts above are conversion records, not separate features. A runtime warning may reflect an authored script issue or the probe's limited host context.
 
+The `ahdsr_attack` and `ahdsr_release` entries of this baseline are no longer retained: an envelope stage time addressed as a modulation target is executed now (see
+[`docs/re/kontakt-envelope-time-modulation.md`](../re/kontakt-envelope-time-modulation.md) and the
+[installed-library gap inventory](20261019-installed-gap-inventory.md)). The `startPhase` and
+`frequency` entries are the LFO rate and phase targets of a module slot, which stay open.
+
 ### ANALOG STRINGS
 
 - Not translated: native source zone identity (not modelled yet): 95624 identities unavailable; no ordinal alias was created; 95624 zones: version=0x98 private_bytes=83 private_u16_at_56=Some(0)
@@ -120,12 +125,10 @@ These are the distinct retained diagnostic examples from the baseline, including
 
 ### Pacific Ensemble Strings
 
-- Not translated: modulation of a module parameter (not modelled yet): ahdsr_attack (<none>) destination slot 0
 
 ### Performance Samples Vista
 
 - Not translated: native source zone identity (not modelled yet): 12528 identities unavailable; no ordinal alias was created; 12528 zones: version=0x99 private_bytes=87 private_u16_at_56=Some(0)
-- Not translated: modulation of a module parameter (not modelled yet): ahdsr_attack (<none>) destination slot 0
 - KSP warning: write to %name lowered as set_controller
 
 ### Shreddage 3.5 E-Upright 1.0.1
@@ -149,7 +152,6 @@ These are the distinct retained diagnostic examples from the baseline, including
 - Not translated: Solid G-EQ: live control (not modelled yet)
 - Not translated: Solid G-EQ: Solid G-EQ smoothing (scaling or curve unverified)
 - Not translated: Filter: filter law (scaling or curve unverified): Legacy LP1 (Partial): legacy cutoff coefficient saturation and raw slew state verified in native setters/wrapper; transition boundary phase for out-of-range saved targets is not yet calibrated
-- Not translated: modulation of a module parameter (not modelled yet): ahdsr_attack () destination slot 1
 - Not translated: Tape Saturator: Creative FX live controls (not modelled yet)
 - KSP warning: $name clamped to its declared range
 - KSP warning: menu item 45 out of range for UI id 32847 (item count 45); set_menu_item_visibility ignored

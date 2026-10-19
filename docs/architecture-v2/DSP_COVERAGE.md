@@ -227,7 +227,7 @@ VWinds (40) uses OnePole (6,318), GainMatrix, DigitalEq, Convolver (376), Sample
 | Envelope follower | missing | unmeasured | 0 reported |  |
 | Glide / portamento | missing | unmeasured | not surveyed |  |
 | External MIDI / performance sources | partial | unmeasured | velocity, key, CC, pitch bend, aftertouch, constant, script, random mapped | RandomBipolar reported (1 instrument) |
-| Module-parameter modulation targets | partial | unmeasured | 1,311 instruments, 63,225 entries report 'modulation of a module parameter' | ahdsr_attack/release, eqGain1-3, filterCutoff, formantTalk, startPhase: see section 'Modulation targets' |
+| Module-parameter modulation targets | partial | unmeasured | 12 entries over 5 instruments report 'modulation of a module parameter' | The envelope stage times (`ahdsr_attack`/`ahdsr_release`) are executed; the LFO rate and start phase targets of a module slot stay open |
 | Signed modulation targets | partial | unmeasured | 1,111 instruments, 67,182 entries | playPos 65,354: sample start position targets |
 
 ## UVI/Falcon FX
