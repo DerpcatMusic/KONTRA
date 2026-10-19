@@ -20,7 +20,11 @@ pub(super) fn fault_data(
     fault: &BehaviorFault,
     instrument: Option<&sampler_ir::Instrument>,
 ) -> Value {
-    let registers = fault.registers[..fault.register_count]
+    let retained = fault
+        .registers
+        .get(..fault.register_count)
+        .unwrap_or(&fault.registers);
+    let registers = retained
         .iter()
         .enumerate()
         .map(|(register, value)| json!({"register":register + usize::from(fault.register_base),"bits":value}))
