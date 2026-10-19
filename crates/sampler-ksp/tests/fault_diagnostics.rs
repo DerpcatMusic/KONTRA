@@ -136,3 +136,38 @@ fn shared_ui_entries_keep_the_failing_callback_and_statement() {
         });
     }
 }
+
+#[test]
+fn high_operand_registers_survive_the_bounded_snapshot_window() {
+    let program = Program::new(vec![
+        Instruction::SetLocal {
+            local: 50,
+            value: -7,
+        },
+        Instruction::WaitMicros { local: 50 },
+    ])
+    .unwrap();
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(vec![program], None)
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        rt.start_plan_behavior(rt.active_plan(), 0).unwrap();
+        let mut seen = false;
+        rt.flush_behavior_diagnostics(|_, _, outcome, _, context| {
+            assert_eq!(outcome, Outcome::Fault(Error::InvalidInput));
+            let f = context.unwrap();
+            assert_eq!(
+                (f.register_base, f.register_count, f.registers[0]),
+                (50, 1, -7)
+            );
+            assert_eq!(f.registers_omitted, 50);
+            assert_eq!(f.pc, 1);
+            seen = true;
+            true
+        });
+        assert!(seen);
+    });
+}
