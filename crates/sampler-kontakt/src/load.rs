@@ -2025,6 +2025,12 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn warning_classes_mask_array_names_and_bounds_but_keep_element_type() {
+        assert_eq!(warning_class("array index -1 out of bounds for %private (length 2)"),
+            "array index -N out of bounds for %name (length N)");
+    }
+
+    #[test]
     fn initialization_warnings_keep_physical_script_slot_line_and_index() {
         let mut instrument = ir::Instrument::default();
         instrument.groups.push(ir::Group { name: "present".into(), ..Default::default() });
