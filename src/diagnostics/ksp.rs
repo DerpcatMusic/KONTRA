@@ -89,7 +89,8 @@ pub(super) fn fault_data(
             .find(|(index, behavior)| behavior.slot.unwrap_or(*index as u8) == slot)
             .map(|(_, behavior)| behavior.source.as_str())
     });
-    if let (Some(source), Some(digest), Some(site)) = (source, fault.source_digest, fault.site)
+    if let (Some(slot), Some(source), Some(digest), Some(site)) =
+        (fault.source_slot, source, fault.source_digest, fault.site)
         && sampler_ksp::source_fingerprint(source) == digest
         && let Some(excerpt) = super::script_excerpt(
             source,
