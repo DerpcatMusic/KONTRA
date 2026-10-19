@@ -10,7 +10,7 @@ pub fn diagnostic_detail<'a>(feature: &str, value: &'a str) -> Option<&'a str> {
                 .map_or(value, |(target, _)| target),
         ),
         "native source zone identity" | "script interface: $CONTROL_PAR_CURSOR_PICTURE[]" => Some(value),
-        "effect" | "Filter: filter type" | "Filter: filter law" | "Compressor: compressor mode"
+        "script" | "effect" | "Filter: filter type" | "Filter: filter law" | "Compressor: compressor mode"
         | "modulation of a modulator's intensity" => Some(value),
         _ if feature.starts_with("lua ") || feature.starts_with("external modulation from ") => {
             Some(value)

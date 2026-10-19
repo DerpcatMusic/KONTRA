@@ -2378,7 +2378,8 @@ impl Translation {
     ) -> bool {
         let [group, slot, ordinal] = address;
         let unit = match self.ir.routes[route.0].target {
-            ir::Target::Amplitude | ir::Target::Pan | ir::Target::SourceRate(_) => 1.,
+            ir::Target::Amplitude | ir::Target::Pan | ir::Target::SourceRate(_)
+                | ir::Target::Wavetable(_) => 1.,
             ir::Target::Pitch => 12.,
             // Module targets: depth units per unit of intensity, as the route's own law.
             ir::Target::Processor { .. } | ir::Target::Control(_) => {
