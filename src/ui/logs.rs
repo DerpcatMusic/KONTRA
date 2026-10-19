@@ -509,6 +509,33 @@ fn script_context(data: &serde_json::Value, source_expected: bool) -> String {
             listener["change"]
         );
     }
+    if let Some(fault) = data.get("ksp_fault").filter(|f| f.is_object()) {
+        let _ = writeln!(text, "VM: pc {} · callback ID {} · UI ID {} · sample time {}",
+            fault["pc"], fault["callback_id"], fault["ui_id"], fault["sample_time"]);
+        if let Some(hash) = fault["source_sha256"].as_str() {
+            let _ = writeln!(text, "Source SHA-256: {hash}");
+        }
+        if let Some(op) = fault["instruction"].as_str() {
+            let _ = writeln!(text, "Operation: {op}");
+        }
+        if fault["operands"].as_object().is_some_and(|o| !o.is_empty()) {
+            let _ = writeln!(text, "Operands: {}", fault["operands"]);
+        }
+        if let Some(registers) = fault["registers"].as_array() {
+            let registers = registers.iter().map(|r| format!("r{}={}", r["register"], r["bits"]))
+                .collect::<Vec<_>>().join(" ");
+            let _ = writeln!(text, "Registers (raw bits): {registers}");
+            if fault["registers_omitted"].as_u64().unwrap_or(0) > 0 {
+                let _ = writeln!(text, "Registers omitted: {}", fault["registers_omitted"]);
+            }
+        }
+        if let Some(callers) = fault["callers"].as_array().filter(|a| !a.is_empty()) {
+            let _ = writeln!(text, "Callers (innermost first): {}", serde_json::Value::Array(callers.clone()));
+        }
+        if fault["callers_omitted"].as_u64().unwrap_or(0) > 0 {
+            let _ = writeln!(text, "Callers omitted: {}", fault["callers_omitted"]);
+        }
+    }
     text
 }
 
@@ -537,9 +564,10 @@ const COPY_INSTRUMENTS: usize = 10;
 struct Problem {
     count: u64,
     wheres: Vec<String>,
+    contexts: Vec<String>,
 }
 
-/// Clipboard summaries name every distinct problem once with its count, never source excerpts or records.
+/// Clipboard reports retain bounded source and execution evidence for each problem.
 fn support_text(events: &[LogEvent]) -> Result<String, String> {
     use std::fmt::Write;
     let mut safe = serde_json::to_value(events).map_err(|e| e.to_string())?;
@@ -600,7 +628,7 @@ fn support_text(events: &[LogEvent]) -> Result<String, String> {
             reason = message;
         }
         if let Some(slot) = event["script_slot"].as_u64() {
-            let _ = write!(origin, " · script {}", slot + 1);
+            let _ = write!(origin, " · script slot {slot}");
         }
         if let Some(line) = event["line"].as_u64() {
             let _ = write!(origin, " · line {line}");
@@ -611,9 +639,15 @@ fn support_text(events: &[LogEvent]) -> Result<String, String> {
             impact = "the load stopped here".into();
         }
         let one_line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let weight = data["group"]["enabled"].as_u64().unwrap_or(0)
-            + data["group"]["bypassed"].as_u64().unwrap_or(0)
-            + data["group"]["unknown"].as_u64().unwrap_or(0);
+        let weight = if data["diagnostic_key"]["kind"] == "KspFault" {
+            // Each runtime row is evidence for one site; its group snapshot is
+            // cumulative across other sites and must not be summed again.
+            1
+        } else {
+            data["group"]["enabled"].as_u64().unwrap_or(0)
+                + data["group"]["bypassed"].as_u64().unwrap_or(0)
+                + data["group"]["unknown"].as_u64().unwrap_or(0)
+        };
         let count = locations
             .get(&key_of(event))
             .copied()
@@ -631,6 +665,10 @@ fn support_text(events: &[LogEvent]) -> Result<String, String> {
             ))
             .or_default();
         problem.count += count;
+        let context = script_context(data, data["ksp_fault"].is_object());
+        if !context.is_empty() && problem.contexts.len() < 2 && !problem.contexts.contains(&context) {
+            problem.contexts.push(context);
+        }
         if let Some(place) = data["where"].as_str().map(one_line)
             && problem.wheres.len() < 2
             && !problem.wheres.contains(&place)
@@ -688,6 +726,11 @@ fn support_text(events: &[LogEvent]) -> Result<String, String> {
                 let _ = write!(text, " · x{}", problem.count);
             }
             text.push('\n');
+            for context in &problem.contexts {
+                for line in context.lines() {
+                    let _ = writeln!(text, "    {line}");
+                }
+            }
         }
         if hidden > 0 {
             let _ = writeln!(text, "- +{hidden} more kinds ({hidden_count} occurrences)");
@@ -1685,6 +1728,28 @@ mod tests {
         assert!(capped.contains("- +28 more kinds (28 occurrences)"), "{capped}");
     }
 
+
+    #[test]
+    fn copied_runtime_fault_includes_operation_operands_and_bounded_source() {
+        let event: LogEvent = serde_json::from_value(json!({
+            "schema_version":1,"sequence":1,"timestamp_ms":0,"monotonic_ms":0,
+            "session_id":"fixture","level":"error","module":"runtime","event":"runtime_issue",
+            "path":"/home/private/Drums.nki","script_slot":0,"line":5,
+            "reason":"KSP on ui_control faulted: InvalidInput",
+            "data":{"source_excerpt":diagnostics::script_excerpt("on init\n declare ui_button $b\nend on\non ui_control($b)\n wait(-1)\nend on",1,5,Some(2)),
+                "ksp_fault":{"pc":7,"callback_id":6,"ui_id":1000000,"sample_time":480,
+                    "source_sha256":"fixture-digest","instruction":"WaitMicros { local: 0 }",
+                    "operands":{"microseconds":-1,"expected":"nonnegative duration"},
+                    "registers":[{"register":0,"bits":-1}],"registers_omitted":0,
+                    "callers":[],"callers_omitted":0}}
+        })).unwrap();
+        let text = support_text(&[event]).unwrap();
+        for expected in ["Drums.nki", "script slot 0", "line 5", "wait(-1)",
+            "WaitMicros", "microseconds", "-1", "r0=-1", "fixture-digest"] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+        assert!(!text.contains("/home/private"));
+    }
     #[test]
     fn identical_events_fold_into_one_row_with_a_count() {
         let gpu = |n: u64| -> LogEvent {
@@ -2184,11 +2249,11 @@ mod tests {
             "source_excerpt",
             "last_action",
             "MidiNote",
-            "malformed(\"context)",
             "Complete event record",
         ] {
             assert!(!copied.contains(excluded), "clipboard contains {excluded}");
         }
+        assert!(copied.contains("malformed(\"context)"), "copied reports retain bounded source context");
         let shot = Path::new("artifacts/diagnostics/log-panel-fixture.png");
         std::fs::create_dir_all(shot.parent().unwrap()).unwrap();
         moose::core::screenshot::save_png(

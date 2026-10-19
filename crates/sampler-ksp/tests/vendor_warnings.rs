@@ -40,3 +40,12 @@ fn output_channel_name_and_get_folder_evaluate_in_init() {
     let bad = warnings("on init\n declare @a\n @a := output_channel_name($NUM_OUTPUT_CHANNELS)\nend on");
     assert!(bad.iter().any(|m| m.contains("out of range")), "{bad:?}");
 }
+
+#[test]
+fn bounds_warnings_retain_actual_operand_domain_and_recovery() {
+    let messages = warnings("on init declare %a[2] declare $x := %a[-1] %a[2] := 7 set_key_color(128,0) declare ui_menu $m set_menu_item_value($m,13,0) end on");
+    assert!(messages.iter().any(|m| m.contains("index -1") && m.contains("%a (length 2)") && m.contains("read returns")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("index 2") && m.contains("write ignored")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("key 128") && m.contains("0..=127") && m.contains("set_key_color ignored")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("menu item 13") && m.contains("item count 0") && m.contains("ignored")), "{messages:?}");
+}

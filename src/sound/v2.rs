@@ -2977,12 +2977,12 @@ impl Core for V2Core {
         let mut refused = 0;
         for (index, part) in parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
-            part.runtime.flush_behaviors_at(|_, _, outcome, program| {
+            part.runtime.flush_behavior_diagnostics(|_, _, outcome, program, context| {
                 if matches!(
                     outcome,
                     sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
                 ) {
-                    part.fault_inbox.record(program, outcome);
+                    part.fault_inbox.record_context(program, outcome, context);
                 }
                 if let sampler_core::Outcome::Fault(error) = outcome {
                     part.problems.fault_program = program as u64 + 1;

@@ -118,7 +118,7 @@ pub fn range_bits(low: u8, high: u8) -> u128 {
 /// Preallocated RT-to-loader fault transport; messages are resolved only by the loader.
 #[derive(Debug)]
 pub struct FaultInbox {
-    pub(crate) queue: crossbeam_queue::ArrayQueue<(usize, sampler_core::Outcome)>,
+    pub(crate) queue: crossbeam_queue::ArrayQueue<(usize, sampler_core::Outcome, Option<sampler_core::BehaviorFault>)>,
     dropped: std::sync::atomic::AtomicU64,
 }
 impl Default for FaultInbox {
@@ -130,8 +130,12 @@ impl Default for FaultInbox {
     }
 }
 impl FaultInbox {
+    #[cfg(test)]
     pub(crate) fn record(&self, program: usize, outcome: sampler_core::Outcome) {
-        if self.queue.push((program, outcome)).is_err() {
+        self.record_context(program, outcome, None);
+    }
+    pub(crate) fn record_context(&self, program: usize, outcome: sampler_core::Outcome, context: Option<sampler_core::BehaviorFault>) {
+        if self.queue.push((program, outcome, context)).is_err() {
             self.dropped
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }

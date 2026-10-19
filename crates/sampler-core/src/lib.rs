@@ -71,6 +71,8 @@ pub use behavior::{
     BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, FadeCurve,
     Instruction, Outcome, Program, Velocity, WaitLifetime,
 };
+mod behavior_fault;
+pub use behavior_fault::{BehaviorFault, SourceSite, FAULT_CALLERS, FAULT_REGISTERS};
 mod stages;
 pub use stages::Stage;
 mod diagnose;
