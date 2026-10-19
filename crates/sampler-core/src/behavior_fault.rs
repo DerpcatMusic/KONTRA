@@ -59,8 +59,36 @@ impl Runtime {
                 .partition_point(|site| site.pc as usize <= pc);
             end.checked_sub(1).map(|index| program.source_sites[index])
         };
-        let count = program.locals.min(FAULT_REGISTERS);
-        let base = id.0.index * self.behavior_stride;
+        let instruction = program.code.get(pc).copied();
+        // Deep expressions can use high registers. Keep the operand window,
+        // rather than silently losing the failing input to the snapshot cap.
+        let register_base = match instruction {
+            Some(
+                Instruction::ReadScriptArray { index, .. }
+                | Instruction::WriteScriptArray { index, .. },
+            ) => index,
+            Some(
+                Instruction::WaitMicros { local }
+                | Instruction::WaitLocal { local }
+                | Instruction::MicrosToFrames { local },
+            ) => local,
+            Some(Instruction::PlayMidi { key, velocity, .. }) => key.min(velocity),
+            Some(Instruction::Op(crate::Op::EngineParameter { address, local, .. })) => {
+                address.min(local)
+            }
+            Some(Instruction::Op(
+                crate::Op::Store { key, local, .. } | crate::Op::SharedStore { key, local, .. },
+            )) => key.min(local),
+            Some(Instruction::Op(
+                crate::Op::Waveform { args, local, .. } | crate::Op::Midi { args, local, .. },
+            )) => args.min(local),
+            _ => 0,
+        };
+        let count = program
+            .locals
+            .saturating_sub(usize::from(register_base))
+            .min(FAULT_REGISTERS);
+        let base = id.0.index * self.behavior_stride + usize::from(register_base);
         let mut registers = [0; FAULT_REGISTERS];
         registers[..count].copy_from_slice(self.behavior_locals.get(base..base + count)?);
         let mut callers = [None; FAULT_CALLERS];
