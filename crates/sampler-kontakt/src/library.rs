@@ -608,6 +608,7 @@ fn translate(
     for index in 0..count {
         let mut zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
+        zone.source_id = out.ir.source_indices.zone_catalog.get(index).and_then(|z| z.id);
         if !zone_metadata.is_empty() {
             if let Some(id)=zone.source_id {
                 zone_routes.apply_initial(id,&mut zone).map_err(|reason|invalid(&reason))?;
@@ -3306,6 +3307,9 @@ struct RawZone {
 
 /// Complete physical order, independent of source/sample/playback admission.
 /// Unsupported/absent private identity is None, never ordinal+1 or region0.
+/// An identity stored on several zones names the first of them: Kontakt 8.8.0's
+/// zone lookup (`FUN_14088b7b0`) scans the zone list and returns the first match,
+/// so later zones with that identity cannot be addressed and are None here.
 fn source_zone_catalog(data:&[u8],groups:usize)->Result<Vec<ir::SourceZone>,String> {
     let mut reader=Cursor::new(data);
     let count=u32le(&mut reader).map_err(|e|e.to_string())?;
@@ -3315,12 +3319,10 @@ fn source_zone_catalog(data:&[u8],groups:usize)->Result<Vec<ir::SourceZone>,Stri
     for index in 0..count {
         let zone=raw_zone(&mut reader).map_err(|e|format!("zone {index}: {e}"))?;
         if zone.group>=groups {return Err(format!("zone {index} refers to missing group {}",zone.group));}
-        if let Some(id)=zone.source_id && !identities.insert(id) {
-            return Err(format!("duplicate native zone source identity {id}"));
-        }
+        let id=zone.source_id.filter(|id|identities.insert(*id));
         if !(0..=127).contains(&zone.source.low_key) || !(0..=127).contains(&zone.source.high_key)
             || zone.source.low_key>zone.source.high_key {return Err(format!("zone {index} has invalid source key bounds"));}
-        catalog.push(ir::SourceZone {id:zone.source_id,home:ir::SourceZoneHome {
+        catalog.push(ir::SourceZone {id,home:ir::SourceZoneHome {
             group:zone.group as u32,low_key:u8::try_from(zone.source.low_key).map_err(|_|"invalid source low key")?,
             high_key:u8::try_from(zone.source.high_key).map_err(|_|"invalid source high key")?,
         }});
@@ -3376,6 +3378,17 @@ mod empty_zone_tests {
         assert!(super::source_zone_metadata(&data[..data.len()-1],3).is_err());
         data[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(super::source_zone_metadata(&data,3).is_err());
+    }
+
+    #[test]
+    fn identity_shared_by_several_zones_names_the_first() {
+        let mut data = 3u32.to_le_bytes().to_vec();
+        data.extend(zone_record(0,2,60,61));
+        data.extend(zone_record(0,0,36,48));
+        data.extend(zone_record(7,1,80,90));
+        let ids:Vec<_>=super::source_zone_catalog(&data,3).unwrap().iter().map(|z|z.id).collect();
+        assert_eq!(ids,[Some(0),None,Some(7)]);
+        assert_eq!(super::source_zone_metadata(&data,3).unwrap(),[(0,[2,60,61]),(7,[1,80,90])].into());
     }
 
     #[test]
