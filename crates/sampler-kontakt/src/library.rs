@@ -527,9 +527,7 @@ fn translate(
     drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
-        let runtime = ir::GroupRef(out.ir.groups.len());
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-        out.ir.source_indices.groups.push(Some(runtime));
     }
     out.flush_retained_snapshot_state();
     for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
@@ -1633,6 +1631,34 @@ impl Translation {
             ),
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
+        // Publish the actual source and its physical-to-runtime identity before
+        // translating routes. Wavetable destinations inspect this owner; doing
+        // this after modulation silently rejected supported position/warp routes.
+        let runtime_group = ir::GroupRef(self.ir.groups.len());
+        if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
+            return Err(ni_file::Error::Generic(format!(
+                "{at}: invalid gain, pan or tune"
+            )));
+        }
+        self.ir.groups.push(ir::Group {
+            muted: v.muted,
+            wavetable,
+            time_stretch,
+            name: v.name.clone(),
+            gain: ir::Gain::Linear(f64::from(v.volume)),
+            pan: ir::Pan {
+                position: f64::from(v.pan.clamp(-1.0, 1.0)),
+                law: ir::PanLaw::Balance,
+            },
+            tune: ir::Pitch::Ratio(f64::from(v.tune)),
+            voice_limit,
+            monophonic_release: v.release_trigger && v.release_trigger_note_monophonic,
+            ..Default::default()
+        });
+        if self.ir.source_indices.groups.len() <= index {
+            self.ir.source_indices.groups.resize(index + 1, None);
+        }
+        self.ir.source_indices.groups[index] = Some(runtime_group);
         let mut chain = None;
         let mut filter_slots = Vec::new();
         self.lane_slots.clear();
@@ -2142,29 +2168,9 @@ impl Translation {
             }
             routes.extend(route);
         }
-        if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
-            return Err(ni_file::Error::Generic(format!(
-                "{at}: invalid gain, pan or tune"
-            )));
-        }
-        self.ir.groups.push(ir::Group {
-            muted: v.muted,
-            wavetable,
-            time_stretch,
-            name: v.name,
-            gain: ir::Gain::Linear(f64::from(v.volume)),
-            pan: ir::Pan {
-                position: f64::from(v.pan.clamp(-1.0, 1.0)),
-                law: ir::PanLaw::Balance,
-            },
-            tune: ir::Pitch::Ratio(f64::from(v.tune)),
-            voice_limit,
-            monophonic_release: v.release_trigger && v.release_trigger_note_monophonic,
-            ..Default::default()
-        });
         Ok(Some(GroupInfo {
             index,
-            group: ir::GroupRef(self.ir.groups.len() - 1),
+            group: runtime_group,
             release: v.release_trigger,
             tracking: v.key_tracking,
             reverse: v.reverse,
@@ -4740,6 +4746,55 @@ mod modulation {
         }
         out.ir.groups[0].wavetable = None;
         assert!(out.route("sample", ir::ModulatorRef(0), true, &target("wavetablePosition", 0.25), None).is_none());
+    }
+
+    /// Exercise the real source/group publication order, including a sparse
+    /// physical group index and an already translated non-wavetable sibling.
+    #[test]
+    fn group_translation_keeps_wavetable_routes_before_source_map_was_published() {
+        use ni_file::kontakt::objects::WavetableSource;
+        for admitted in [true, false] {
+            let mut out = translation();
+            out.group(0, &deferred_rate_group(false, false)).unwrap();
+            let targets = ["wavetablePosition", "warpFactor", "warpFactor2"]
+                .map(|name| target(name, 0.25)).to_vec();
+            let mut group = deferred_source_group(false, targets, false, true);
+            let mut private = Vec::new();
+            for _ in 0..136 {
+                private.extend(8u32.to_le_bytes());
+                private.extend([0; 8]);
+            }
+            private.extend([0; 24]);
+            private.extend([0, 0x13, 0]);
+            private.extend(8u32.to_le_bytes());
+            private.extend([0; 8]);
+            private.push(1);
+            let mut common = [0; 30];
+            common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
+            WavetableSource {
+                common, position: 0.25, phase: 0., phase_random: 0.,
+                form1: 0.5, form2: 0., form_type: if admitted { 17 } else { 2 },
+                form2_type: 1, quality: 1, inharmonic_enabled: false,
+                inharmonic: 0., mod_wave: 0, mod_type: 0, mod_amount: 0.,
+                mod_tune: 0., unknown_tail: [0; 16],
+            }.write(&mut private).unwrap();
+            private.extend([0xff; 22]);
+            group.0.private_data = private;
+            out.source_modulators(7, &group).unwrap();
+            let info = out.group(7, &group).unwrap().unwrap();
+            assert_eq!(info.group, ir::GroupRef(1));
+            assert_eq!(out.ir.source_indices.groups.len(), 8);
+            assert_eq!(out.ir.source_indices.groups[0], Some(ir::GroupRef(0)));
+            assert_eq!(out.ir.source_indices.groups[7], Some(info.group));
+            let routes: Vec<_> = info.routes.iter().filter(|r|
+                matches!(out.ir.routes[r.0].target, ir::Target::Wavetable(_))).collect();
+            assert_eq!(routes.len(), if admitted { 3 } else { 0 });
+            for route in routes {
+                assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(0.25));
+                assert!(out.ir.source_indices.route_controls.iter().any(|(r, _, _)| r == route));
+            }
+            assert_eq!(out.ir.groups[info.group.0].wavetable.is_some(), admitted);
+        }
     }
 
     #[test]
