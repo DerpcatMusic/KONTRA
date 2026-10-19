@@ -106,6 +106,7 @@ impl Runtime {
             instruction,
             registers,
             register_count: count,
+            register_base,
             registers_omitted: program.locals.saturating_sub(count),
             callers,
             callers_omitted: c.frames.callers().len().saturating_sub(FAULT_CALLERS),
