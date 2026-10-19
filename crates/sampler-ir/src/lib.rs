@@ -1735,6 +1735,10 @@ impl ModulationSource {
 pub struct Breakpoints {
     pub points: Vec<Breakpoint>,
     pub sustain: Option<usize>,
+    /// Inclusive (start, end) point indices of a gated loop: reaching `end`
+    /// returns to `start` instead of holding (Kontakt's Flex loop jump at the
+    /// sustain row, native advance 0x140ae57dd).
+    pub loop_range: Option<(usize, usize)>,
     /// Kontakt Flex release law (transition 0x140ae5450): the first release
     /// segment's duration is scaled by how far the current level has already
     /// travelled, instead of running its full length from wherever it starts.

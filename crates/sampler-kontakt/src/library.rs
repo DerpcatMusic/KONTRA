@@ -1844,16 +1844,10 @@ impl Translation {
                         }
                         // v0x12 tail bytes +0x194 (loop jump at the sustain row) and
                         // +0x195 (release adjustment bypass), runtime +0x321/+0x322.
-                        // Their effect on the held envelope is not proved.
+                        // The loop jump is executed (the envelope returns to the
+                        // point before the sustain row); the release adjustment
+                        // bypass has no proved effect on the held envelope.
                         if let Some(word) = flex.unknown_version_word() {
-                            if word & 0xff != 0 {
-                                self.unsupported(
-                                    &at,
-                                    "flex loop jump at the sustain row (+0x194)",
-                                    word & 0xff,
-                                    ir::Reason::UnknownLaw,
-                                );
-                            }
                             if word >> 8 != 0 {
                                 self.unsupported(
                                     &at,
@@ -1863,7 +1857,16 @@ impl Translation {
                                 );
                             }
                         }
-                        ir::ModulationSource::Breakpoints(flex_breakpoints(&flex))
+                        let breakpoints = flex_breakpoints(&flex);
+                        if word_loop_jump(&flex) && breakpoints.loop_range.is_none() {
+                            self.unsupported(
+                                &at,
+                                "flex loop jump at the sustain row (+0x194)",
+                                flex.unknown_index,
+                                ir::Reason::NotModeled,
+                            );
+                        }
+                        ir::ModulationSource::Breakpoints(breakpoints)
                     }
                     // Decoded, not executable: the five DBD floats, the glide
                     // fields and the follower coefficients have no proven
@@ -6133,6 +6136,17 @@ mod modulation {
         tail.extend([0; 13]);
         let b = flex_breakpoints(&flex(vec![point(1.0, 1.0, 0.5), point(1.0, 0.0, 0.5)], tail));
         assert!(!b.flex_release);
+        // The v0x12 loop-jump byte (+0x194) returns the envelope to the point
+        // before the sustain row instead of holding there.
+        let mut tail = vec![1, 0];
+        tail.extend([0; 13]);
+        let b = flex_breakpoints(&flex(
+            vec![point(1.0, 0.0, 0.5), point(1.0, 1.0, 0.5), point(1.0, 0.0, 0.5)],
+            tail,
+        ));
+        assert_eq!(b.sustain, Some(1));
+        assert_eq!(b.loop_range, Some((0, 1)));
+        assert!(b.flex_release);
     }
 }
 
@@ -6190,8 +6204,22 @@ fn flex_breakpoints(flex: &ni_file::kontakt::objects::EnvelopeFlex) -> ir::Break
     ir::Breakpoints {
         points,
         sustain: Some(flex.sustain as usize + lead),
+        // The saved loop-jump byte (+0x194) makes the envelope jump back to
+        // the point before the sustain row instead of holding there
+        // (native advance 0x140ae57dd).
+        loop_range: flex
+            .unknown_version_word()
+            .is_some_and(|word| word & 0xff != 0)
+            .then_some((flex.unknown_index as usize + lead, flex.sustain as usize + lead))
+            .filter(|&(start, end)| start <= end),
         flex_release: !flex.unknown_version_word().is_some_and(|word| word >> 8 != 0),
     }
+}
+
+/// Whether a saved Flex record asks for the loop jump at the sustain row
+/// (the +0x194 byte of the v0x12 tail).
+fn word_loop_jump(flex: &ni_file::kontakt::objects::EnvelopeFlex) -> bool {
+    flex.unknown_version_word().is_some_and(|word| word & 0xff != 0)
 }
 
 /// Exponential bow constant for a shaper or flex-envelope segment:

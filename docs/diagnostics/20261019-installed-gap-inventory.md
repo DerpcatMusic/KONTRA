@@ -37,8 +37,8 @@ the raw run reports 29,677 entries because the copies are counted twice.
 |---|---|
 | `.nki` files | 2,742 |
 | read | 2,742 (0 unreadable) |
-| instruments with at least one report | 375 (deduplicated) |
-| report entries | 2,807 (deduplicated) |
+| instruments with at least one report | 371 (deduplicated) |
+| report entries | 2,303 (deduplicated) |
 | instruments with a dropped or untranslated effect | 6 |
 | instruments with a translated impulse response | 366 |
 
@@ -52,9 +52,7 @@ E-Upright (1), Morphology Evolved (1), Conflux (1), ANALOG STRINGS (1).
 | Feature | Entries | Instruments | What is missing |
 |---|---:|---:|---|
 | `Filter: filter law` | 1,022 | 6 | The Ladder gain law and the 2x resampled (HQ) mode; the Daft audio core; the legacy cutoff boundary phase |
-| `modulation of a module parameter` | 12 | 5 | The LFO rate and start phase targets of a module slot |
 | `external modulation from RandomBipolar` | 550 | 1 | The bipolar random generator: interval, cadence, seed |
-| `flex loop jump at the sustain row (+0x194)` | 504 | 4 | The Flex envelope's loop jump at its sustain row |
 | `native source zone identity` | 251 | 251 | The native zone identity of a saved source zone, so no ordinal alias is created |
 | `keyswitch script` | 202 | 201 | The static detection of a keyswitch script, so the articulation list stays empty |
 | `Solid G-EQ: Solid G-EQ smoothing` | 59 | 3 | The native 20 ms coefficient smoothing on knob changes |
@@ -62,6 +60,7 @@ E-Upright (1), Morphology Evolved (1), Conflux (1), ANALOG STRINGS (1).
 | `modulation of a modulator's intensity` | 42 | 1 | Modulating the intensity of another modulator |
 | `wavetable source` | 30 | 1 | The wavetable source mode 9 |
 | `effect` | 17 | 6 | The Convolution payload layout, the Jump amplifier models and the Rotator core |
+| `modulation of a module parameter` | 12 | 5 | The LFO rate and start phase targets of a module slot |
 | `modulation target` | 16 | 1 | Wavetable targets whose stored intensity is zero |
 | `Tape Saturator: Creative FX live controls` | 11 | 4 | Live Tape Saturator knobs and their smoothing |
 | `Convolution: impulse response` | 10 | 2 | The impulse response resource |
@@ -90,7 +89,20 @@ the family H law and the stage's own knob law.
 953 of the 962 entries are closed. The remaining nine are the LFO rate and
 start phase targets of a module slot, which are a different gap.
 
-## 2. The Ladder filter's gain law and HQ mode
+## 2. The Flex envelope's loop jump at the sustain row
+
+This was the second largest gap: 504 entries over four instruments (Audio
+Imperia CHORUS). The saved Flex record carries a byte at +0x194 that asks
+the envelope to leave its sustain row instead of holding there, and the
+native advance takes the point before the sustain row as the next point
+(`0x140ae57dd`).
+
+The loop is executed now: the translator sets the IR's loop range from the
+saved flag and the `unknown_index`, and the core's segment state returns to
+the loop's start instead of holding. See
+[`docs/re/kontakt-flex-loop-jump.md`](../re/kontakt-flex-loop-jump.md).
+
+## 3. The Ladder filter's gain law and HQ mode
 
 1,022 entries, 6 instruments, 904 of them in Morphology Evolved. The Ladder
 core itself is checked against the native code (`FUN_140b00be2`,
@@ -101,17 +113,11 @@ law, and the 2x resampled (HQ) mode. The Daft filter is weaker still: its
 saved controls and ramp scheduling are extracted, but its audio core and
 resampler are not recovered.
 
-## 3. The bipolar random generator
+## 4. The bipolar random generator
 
 550 entries, one instrument (Conflux). The external source type 13 has a
 classification path only; no generator, interval, cadence, RNG or seed is
 linked, so the source cannot produce a value.
-
-## 4. The Flex envelope's loop jump
-
-504 entries, four instruments (Audio Imperia CHORUS). The saved Flex record
-carries a byte at +0x194 that asks the envelope to jump at its sustain row.
-Its effect on the held envelope is not proved, so the envelope runs without it.
 
 ## 5. Zone identity and keyswitch detection
 

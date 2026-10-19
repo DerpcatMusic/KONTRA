@@ -2491,7 +2491,7 @@ impl Lowering<'_> {
                 program.breakpoints.push(Breakpoints {
                     points,
                     sustain: b.sustain,
-                    loop_range: None,
+                    loop_range: b.loop_range,
                     flex_release: b.flex_release,
                 });
                 ModSource::Breakpoints(program.breakpoints.len() - 1)
