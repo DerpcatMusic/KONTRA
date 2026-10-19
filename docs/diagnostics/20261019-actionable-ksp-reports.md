@@ -32,3 +32,5 @@ The first corrected CI build reached the root unit suite and exposed four fixtur
 | Momentary-button UI fixture | Test host owns persistent renderer input state and consumes explicit activations | One action per click/keyboard event; no scalar edit/reset | Actual pointer/keyboard actions call the authored callback exactly once |
 
 The shared-filter and UVI envelope/button test bodies predate this PR. Production DSP/ownership guards remain unchanged.
+
+A repeat of the full root suite also exposed an asynchronous Table fixture race: waiting for any `3:` callback could observe the stationary value before the queued drag finished. The test now waits for the changed third-cell callback and matching atomic readback, retaining its `> 0.5` value assertion and three-second deadline. Keyboard activations supply their required modifier snapshot.
