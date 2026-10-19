@@ -14,7 +14,7 @@ pub(super) fn fault_data(
     let registers = fault.registers[..fault.register_count]
         .iter()
         .enumerate()
-        .map(|(register, value)| json!({"register":register,"bits":value}))
+        .map(|(register, value)| json!({"register":register + usize::from(fault.register_base),"bits":value}))
         .collect::<Vec<_>>();
     let read = |local: u16| {
         (usize::from(local) < fault.register_count).then(|| fault.registers[usize::from(local)])
