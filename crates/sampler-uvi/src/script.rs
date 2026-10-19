@@ -5169,11 +5169,21 @@ mod processor_completion_context42 {
     use super::*;
     use std::sync::atomic::{AtomicU64,Ordering};
     static NEXT:AtomicU64=AtomicU64::new(0);
+    /// A writable scratch directory: the runner's temporary directory when it
+    /// is set, otherwise the workspace scratch, otherwise the platform
+    /// temporary directory. A hard-coded workspace path is not writable on a
+    /// CI runner.
+    fn scratch_root()->std::path::PathBuf{
+        if let Some(dir)=std::env::var_os("TMPDIR"){return std::path::PathBuf::from(dir);}
+        let local=std::path::PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+        if std::fs::create_dir_all(&local).is_ok(){return local;}
+        std::env::temp_dir()
+    }
     struct DataFile(std::path::PathBuf);
     impl DataFile {
         fn new(value:&str)->Self{
-            let directory=std::path::Path::new("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
-            std::fs::create_dir_all(directory).unwrap();
+            let directory=scratch_root();
+            std::fs::create_dir_all(&directory).unwrap();
             let path=directory.join(format!("uvi-processor42-{}-{}.json",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
             std::fs::write(&path,value).unwrap();Self(path)
         }
