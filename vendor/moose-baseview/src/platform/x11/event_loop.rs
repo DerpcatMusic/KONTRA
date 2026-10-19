@@ -27,7 +27,7 @@ use x11rb::connection::Connection;
 use x11rb::errors::ConnectionError;
 use x11rb::protocol::randr::{ConnectionExt as _, ModeFlag, ModeInfo};
 use x11rb::protocol::xproto::{
-    ConnectionExt as _, EventMask, KeyPressEvent, KeyReleaseEvent, NotifyMode,
+    ConnectionExt as _, EventMask, KeyPressEvent, KeyReleaseEvent, NotifyDetail, NotifyMode,
 };
 use x11rb::protocol::Event as XEvent;
 use x11rb::CURRENT_TIME;
@@ -86,7 +86,20 @@ pub(crate) struct EventLoop {
     /// Key-downs the handler ignored and that were forwarded to the embed
     /// parent, so the matching key-up can be synthesized on focus loss/close.
     forwarded_keys: [Option<KeyPressEvent>; 256],
+    /// Mouse buttons held in this window, by X button number.
+    held_buttons: u16,
+    /// A pointer-detail FocusOut that arrived while a button was held; it
+    /// applies after the release so it cannot cancel the click in flight.
+    focus_out_after_release: bool,
+    /// Frames left before that FocusOut applies, once the button is up.
+    focus_out_in_frames: u8,
 }
+
+/// Frames between a release and a held-back FocusOut: MUI records the click
+/// on the release's frame and dispatches it on the next, and a focus loss
+/// before then cancels it (mui-baseview
+/// `a_focus_loss_two_frames_after_the_release_keeps_the_click`).
+const FOCUS_OUT_FRAMES: u8 = 2;
 
 impl EventLoop {
     pub fn new(
@@ -130,6 +143,9 @@ impl EventLoop {
             main_thread,
             pressed_keys: [false; 256],
             forwarded_keys: [None; 256],
+            held_buttons: 0,
+            focus_out_after_release: false,
+            focus_out_in_frames: 0,
 
             window,
             response_sender,
@@ -234,6 +250,12 @@ impl EventLoop {
         if let Err(e) = self.handler.on_frame() {
             self.trigger_fatal_error(e.into());
             return;
+        }
+        if self.focus_out_in_frames > 0 {
+            self.focus_out_in_frames -= 1;
+            if self.focus_out_in_frames == 0 {
+                self.focus_out();
+            }
         }
 
         self.drain_ime();
@@ -441,6 +463,16 @@ impl EventLoop {
         Ok(())
     }
 
+    fn focus_out(&mut self) {
+        self.window.is_focused.set(false);
+        let config = self.window.ime_configuration.borrow().clone();
+        self.window.set_ime_configuration(config);
+        self.drain_ime();
+        self.pressed_keys.fill(false);
+        self.release_forwarded_keys();
+        self.handle_event(Event::Window(WindowEvent::Unfocused));
+    }
+
     fn drain_ime(&mut self) {
         let events =
             self.window.ime.borrow_mut().as_mut().map(|ime| ime.drain()).unwrap_or_default();
@@ -623,6 +655,12 @@ impl EventLoop {
                         }));
                     }
                     detail => {
+                        // A new gesture before the held-back FocusOut applied:
+                        // it waits for this release instead.
+                        if std::mem::take(&mut self.focus_out_in_frames) > 0 {
+                            self.focus_out_after_release = true;
+                        }
+                        self.held_buttons |= 1u16.checked_shl(detail.into()).unwrap_or(0);
                         self.handle_event(Event::Mouse(MouseEvent::ButtonPressed {
                             button: mouse_id(detail),
                             modifiers: key_mods(event.state),
@@ -635,10 +673,14 @@ impl EventLoop {
                 if event.event == self.window.raw_id() && !(4..=7).contains(&event.detail) =>
             {
                 let button_id = mouse_id(event.detail);
+                self.held_buttons &= !1u16.checked_shl(event.detail.into()).unwrap_or(0);
                 self.handle_event(Event::Mouse(MouseEvent::ButtonReleased {
                     button: button_id,
                     modifiers: key_mods(event.state),
                 }));
+                if self.held_buttons == 0 && std::mem::take(&mut self.focus_out_after_release) {
+                    self.focus_out_in_frames = FOCUS_OUT_FRAMES;
+                }
             }
 
             ////
@@ -671,6 +713,8 @@ impl EventLoop {
             XEvent::FocusIn(event)
                 if event.event == self.window.raw_id() && !is_grab_transition(event.mode) =>
             {
+                self.focus_out_after_release = false;
+                self.focus_out_in_frames = 0;
                 self.window.is_focused.set(true);
                 let config = self.window.ime_configuration.borrow().clone();
                 self.window.set_ime_configuration(config);
@@ -678,16 +722,22 @@ impl EventLoop {
                 self.handle_event(Event::Window(WindowEvent::Focused));
             }
 
+            // NotifyPointer: focus stays on an ancestor (Bitwig moves it on
+            // every click) and only the pointer is here. The implicit grab
+            // still delivers the release, so the click finishes first and the
+            // focus loss applies FOCUS_OUT_FRAMES frames later.
             XEvent::FocusOut(e)
                 if e.event == self.window.raw_id() && !is_grab_transition(e.mode) =>
             {
-                self.window.is_focused.set(false);
-                let config = self.window.ime_configuration.borrow().clone();
-                self.window.set_ime_configuration(config);
-                self.drain_ime();
-                self.pressed_keys.fill(false);
-                self.release_forwarded_keys();
-                self.handle_event(Event::Window(WindowEvent::Unfocused));
+                if e.detail != NotifyDetail::POINTER {
+                    self.focus_out_after_release = false;
+                    self.focus_out_in_frames = 0;
+                    self.focus_out();
+                } else if self.held_buttons != 0 {
+                    self.focus_out_after_release = true;
+                } else if self.focus_out_in_frames == 0 {
+                    self.focus_out();
+                }
             }
 
             XEvent::MapNotify(e) => {
