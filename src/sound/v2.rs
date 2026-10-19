@@ -4581,7 +4581,7 @@ mod tests {
         core.install(0, loaded.part);
         assert!(ui.uvi.as_ref().unwrap().snapshot().activate(control, sampler_ui_ir::UiActivation {
             origin: sampler_ui_ir::UiActivationOrigin::Keyboard,
-            modifiers: None,
+            modifiers: Some(Default::default()),
         }));
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(1));
