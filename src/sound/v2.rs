@@ -1307,6 +1307,23 @@ fn widget_value(
 }
 
 impl V2Core {
+    #[cfg(any(test, feature = "shots"))]
+    pub fn scan_runtime_faults(&mut self, part: usize) -> Vec<(usize, sampler_core::Outcome)> {
+        let mut out = Vec::new();
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.runtime.flush_behaviors_at(|_, _, outcome, program| {
+                if matches!(
+                    outcome,
+                    sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
+                ) {
+                    out.push((program, outcome));
+                }
+                true
+            });
+        }
+        out
+    }
+
     /// Publish a host snapshot at the current rendered sample boundary. This
     /// intentionally does not begin another block or refill callback allowance.
     pub(crate) fn update_transport(&mut self, transport: super::Transport) {
@@ -1551,21 +1568,6 @@ impl V2Core {
             .as_ref()
             .unwrap()
             .addresses()
-    }
-    pub fn scan_runtime_faults(&mut self, part: usize) -> Vec<(usize, sampler_core::Outcome)> {
-        let mut out = Vec::new();
-        if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.runtime.flush_behaviors_at(|_, _, outcome, program| {
-                if matches!(
-                    outcome,
-                    sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
-                ) {
-                    out.push((program, outcome));
-                }
-                true
-            });
-        }
-        out
     }
     pub fn scan_lua(&self, part: usize) -> Option<sampler_uvi::script::ScanFaults> {
         self.parts
