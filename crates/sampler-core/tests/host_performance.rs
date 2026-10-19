@@ -36,6 +36,7 @@ fn source(kind: usize) -> ir::Instrument {
                     shape: ir::Curve::Linear,
                 }],
                 sustain: Some(0),
+                loop_range: None,
                 flex_release: false,
             })
         } else {

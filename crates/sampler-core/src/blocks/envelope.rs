@@ -832,12 +832,15 @@ impl Segment {
             frames -= left;
             self.age = len;
             self.level = point.level;
-            if !self.released && envelope.sustain == Some(self.index as usize) {
-                return self.level;
-            }
+            // A gated loop at the sustain row replaces the hold: the native
+            // advance (0x140ae57dd) takes the loop's start as the next point
+            // when the saved loop-jump byte is set.
             match envelope.loop_range {
                 Some((start, end)) if !self.released && self.index as usize == end => {
                     self.index = start as u32;
+                }
+                _ if !self.released && envelope.sustain == Some(self.index as usize) => {
+                    return self.level;
                 }
                 _ => self.index += 1,
             }
@@ -1229,9 +1232,27 @@ mod tests {
         assert!(!spin.valid(), "a zero-length loop would spin");
     }
 
+    /// The native advance (0x140ae57dd) takes the loop's start as the next
+    /// point when the envelope reaches the sustain row and the saved loop
+    /// jump is set, so the row is passed instead of held.
     #[test]
-    fn flex_curve_is_the_native_ratio_in_closed_form() {
-        assert_eq!(flex_ratio(0.5), 1.0);
+    fn a_gated_loop_at_the_sustain_row_replaces_the_hold() {
+        let p = |frames, level| Breakpoint { frames, level, curve: EnvelopeCurve::default() };
+        let points = vec![p(4, 0.0), p(4, 1.0), p(4, 0.0)];
+        let held = Breakpoints { points: points.clone(), sustain: Some(2), loop_range: None, flex_release: false };
+        let looping = Breakpoints { points, sustain: Some(2), loop_range: Some((1, 2)), flex_release: false };
+        let (held, looping) = (bp_levels(&held, None, 20), bp_levels(&looping, None, 20));
+        // Without the loop the envelope holds at the sustain row.
+        assert_eq!(held[11], 0.0);
+        assert_eq!(held[19], 0.0);
+        // With the loop it returns to the point before the sustain row.
+        assert_eq!(looping[11], 0.0);
+        assert_eq!(looping[15], 1.0, "the loop repeats the point before the sustain row");
+        assert_eq!(looping[19], 0.0);
+    }
+
+    #[test]
+    fn flex_curve_is_the_native_ratio_in_closed_form() {        assert_eq!(flex_ratio(0.5), 1.0);
         assert_eq!(flex_ratio(0.0), 1.0, "c == 0 is the linear branch, not the steepest");
         assert_eq!(flex_ratio(0.25), 49.0);
         assert!((flex_ratio(0.75) - (1.0f32 / 0.875 - 1.0).powi(2)).abs() < 1e-6);
