@@ -3457,12 +3457,33 @@ impl ScriptHost {
         Ok(self.global_text(name))
     }
 
-    fn default_processor(&self)->mlua::Result<input_authority::ContextGuard<'_>> {
-        let current=self.shared.processor.get();
-        let next=if current.is_some(){current}else{
-            match self.shared.processors.borrow().len(){0=>None,1=>Some(0),_=>return Err(mlua::Error::runtime("multiple ScriptProcessors require exact topology-stage delivery"))}
-        };
-        input_authority::enter(&self.lua,&self.shared,next)
+    /// The single non-bypassed owner for the document-level legacy input
+    /// entry points. A bypassed ScriptProcessor receives no callback, so it
+    /// may neither swallow the input nor make an active sibling ambiguous.
+    /// `None` means every processor is bypassed.
+    fn default_processor(&self)->mlua::Result<Option<input_authority::ContextGuard<'_>>> {
+        if let Some(current)=self.shared.processor.get(){
+            return input_authority::enter(&self.lua,&self.shared,Some(current)).map(Some);
+        }
+        let contexts=self.shared.processors.borrow();
+        let mut active=None;
+        for (index,context) in contexts.iter().enumerate() {
+            if self.processor_bypassed(context.address.processor).map_err(|error|mlua::Error::runtime(error))?{continue;}
+            if active.replace(index).is_some(){return Err(mlua::Error::runtime("multiple ScriptProcessors require exact topology-stage delivery"));}
+        }
+        match active {
+            Some(index)=>input_authority::enter(&self.lua,&self.shared,Some(index)).map(Some),
+            None=>Ok(None),
+        }
+    }
+
+    /// Enter the single legacy input owner, reporting a routing refusal once
+    /// and yielding `None` when every processor is bypassed.
+    fn begin_input(&self)->Option<input_authority::ContextGuard<'_>> {
+        match self.default_processor() {
+            Ok(guard)=>guard,
+            Err(error)=>{self.shared.find("lua input routing",&lua_error(error));None}
+        }
     }
 
     /// Start spawned threads until none remain.
@@ -3550,7 +3571,7 @@ impl ScriptHost {
 
     /// A note-on the host received, as the script's `onNote(e)`.
     pub fn note_on(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let Some(_processor)=self.begin_input() else{return;};
         self.shared.held.borrow_mut().insert(id, key & 127);
         self.shared.voices.borrow_mut().insert(id);
         self.shared.last_note_on.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
@@ -3571,7 +3592,7 @@ impl ScriptHost {
 
     /// A note-off for the note-on `id`: `onRelease(e)`, and wakes `waitForRelease`.
     pub fn note_off(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let processor=self.begin_input();
         self.shared.held.borrow_mut().remove(&id);
         let woken: Vec<Waiting> = {
             let mut waiting = self.shared.waiting.borrow_mut();
@@ -3588,6 +3609,9 @@ impl ScriptHost {
             );
             resume_with_prepared_origin(&self.lua, &self.shared, w.thread, MultiValue::new(), w.creator, w.processor,w.prepared_origin);
         }
+        // A bypassed processor still owns release bookkeeping, but receives no
+        // callback; the waking continuations above keep their own identity.
+        if processor.is_none() { self.cycle(); return; }
         let e = self.event(
             2,
             &[
@@ -3605,7 +3629,7 @@ impl ScriptHost {
     }
 
     pub fn controller(&mut self, controller: u8, value: u8, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let Some(_processor)=self.begin_input() else{return;};
         if !self.shared.processor_view.borrow().visibility.receives(controller) {return;}
         self.shared.processor_view.borrow().cc.borrow_mut()[usize::from(controller & 127)] = value;
         let e = self.event(
@@ -3631,7 +3655,7 @@ impl ScriptHost {
 
     /// Pitch bend in -1..=1.
     pub fn pitch_bend(&mut self, value: f64, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let Some(_processor)=self.begin_input() else{return;};
         self.deliver(
             "onPitchBend",
             4,
@@ -3644,7 +3668,7 @@ impl ScriptHost {
     }
 
     pub fn after_touch(&mut self, value: u8, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let Some(_processor)=self.begin_input() else{return;};
         self.deliver(
             "onAfterTouch",
             5,
@@ -3656,7 +3680,7 @@ impl ScriptHost {
     }
 
     pub fn poly_after_touch(&mut self, key: u8, value: u8, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let Some(_processor)=self.begin_input() else{return;};
         self.deliver(
             "onPolyAfterTouch",
             6,
@@ -3669,7 +3693,7 @@ impl ScriptHost {
     }
 
     pub fn program_change(&mut self, value: u8, channel: u8) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let Some(_processor)=self.begin_input() else{return;};
         self.deliver(
             "onProgramChange",
             7,
@@ -3683,7 +3707,7 @@ impl ScriptHost {
 
     /// The host's transport: `onTransport(playing)`.
     pub fn transport(&mut self, playing: bool) {
-        let _processor=match self.default_processor(){Ok(guard)=>guard,Err(error)=>{self.shared.find("lua input routing",&lua_error(error));return;}};
+        let processor=self.begin_input();
         let (at, value) = self.shared.beat_anchor.get();
         let elapsed = if self.shared.playing.get() {
             (self.shared.now.get() - at) * self.shared.tempo.get() / 60_000.
@@ -3694,6 +3718,9 @@ impl ScriptHost {
             .beat_anchor
             .set((self.shared.now.get(), value + elapsed));
         self.shared.playing.set(playing);
+        // Transport time is host state; only the callback belongs to a
+        // non-bypassed processor owner.
+        if processor.is_none() { return; }
         let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onTransport") else {
             return;
         };

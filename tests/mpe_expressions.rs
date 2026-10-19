@@ -48,7 +48,14 @@ impl Fixture {
     fn loaded(&self,format:Format)->sampler_kontakt::Loaded {
         let loaded=self.load_path(format,"owned");
         assert_eq!(loaded.instrument.zones.len(),1,"{format:?}");
-        let chain=loaded.instrument.zones[0].chain.expect("authored voice chain must survive translation");
+        // UVI keygroup inserts belong to the shared source-processing recipe;
+        // only a player-local chain is attached to the physical zone.
+        let chain=match format {
+            Format::Kontakt=>loaded.instrument.zones[0].chain,
+            Format::Uvi=>loaded.instrument.source_indices.processing.iter()
+                .find(|recipe|recipe.members.contains(&ir::ZoneRef(0)))
+                .and_then(|recipe|recipe.chain),
+        }.expect("authored voice chain must survive translation");
         let chain=&loaded.instrument.chains[chain.0];
         assert!(matches!(chain.scope,ir::Scope::Voice));
         let stages:Vec<_>=chain.pre_amplitude.iter().chain(&chain.post_amplitude).collect();
