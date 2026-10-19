@@ -17,7 +17,8 @@ pub(super) fn fault_data(
         .map(|(register, value)| json!({"register":register + usize::from(fault.register_base),"bits":value}))
         .collect::<Vec<_>>();
     let read = |local: u16| {
-        (usize::from(local) < fault.register_count).then(|| fault.registers[usize::from(local)])
+        let index = usize::from(local).checked_sub(usize::from(fault.register_base))?;
+        (index < fault.register_count).then(|| fault.registers[index])
     };
     let at = |base: u16, offset: u16| base.checked_add(offset).and_then(read);
     let operands = match fault.instruction {
