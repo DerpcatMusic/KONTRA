@@ -3393,6 +3393,15 @@ mod empty_zone_tests {
     }
 
     #[test]
+    fn missing_identity_diagnostics_retain_layout_counts_without_private_payloads() {
+        let mut data = 3u32.to_le_bytes().to_vec();
+        for id in [0, -1, -1] { data.extend(zone_record(id, 0, 60, 61)); }
+        let (catalog, detail) = super::source_zone_catalog_with_layouts(&data, 1).unwrap();
+        assert_eq!(catalog.iter().map(|zone| zone.id).collect::<Vec<_>>(), [Some(0), None, None]);
+        assert_eq!(detail, "2 zones: version=0x9a private_bytes=87 private_u16_at_56=Some(0)");
+    }
+
+    #[test]
     fn automation_tags_name_sliders_and_switches() {
         assert_eq!(super::automation_target("pts_script_slider_3_2"), Some((3, 2, false)));
         assert_eq!(super::automation_target("pts_script_switch_2_81"), Some((2, 81, true)));
