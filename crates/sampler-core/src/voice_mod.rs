@@ -153,6 +153,9 @@ pub(crate) enum CompiledTarget {
     SourceRate(u32),
     /// Offset of normalized position, first form amount, or second form amount.
     Wavetable(u8),
+    /// A stage time of the voice's amplitude envelope (Kontakt ids 184..187).
+    /// The stage index is the core's `EnvelopeStage` ordinal.
+    VoiceEnvelopeStage(u8),
     LoopStart,
     LoopLength,
 }
@@ -188,6 +191,11 @@ impl crate::ParameterAddress {
             (0, 18) => T::Wavetable(0),
             (0, 19) => T::Wavetable(1),
             (0, 20) => T::Wavetable(2),
+            (0, 21) => T::VoiceEnvelopeStage(0),
+            (0, 22) => T::VoiceEnvelopeStage(1),
+            (0, 23) => T::VoiceEnvelopeStage(2),
+            (0, 24) => T::VoiceEnvelopeStage(3),
+            (0, 25) => T::VoiceEnvelopeStage(4),
             (0, 15) => T::LoopStart,
             (0, 16) => T::LoopLength,
             _ => return None,
@@ -1381,6 +1389,9 @@ pub(crate) struct Outputs {
     /// Semitones below the tone filter's open cutoff; 0 bypasses it.
     pub tone: f64,
     pub wavetable: [f64; 3],
+    /// The family H factor of each amplitude envelope stage: the stage's
+    /// normalized knob is multiplied by it. 1.0 leaves the stage unchanged.
+    pub envelope_stage: [f64; 5],
 }
 
 impl Default for Outputs {
@@ -1391,6 +1402,7 @@ impl Default for Outputs {
             filter: [1.0; 2],
             tone: 0.0,
             wavetable: [0.; 3],
+            envelope_stage: [1.0; 5],
         }
     }
 }
@@ -2205,6 +2217,23 @@ impl VoiceModState {
                 CompiledTarget::SampleStart
                 | CompiledTarget::SourcePhase(_)
                 | CompiledTarget::SourceRate(_) => {}
+                CompiledTarget::VoiceEnvelopeStage(stage) => {
+                    // Family H: the stage's normalized knob is multiplied by
+                    // C(1 - (1 - E) * i). C is the compiler's `fcubic` for an
+                    // external source of type 7..=13 (0x140876753) and the
+                    // identity otherwise; the source is read in its unipolar
+                    // view (`need_uni`).
+                    let e = unipolar(v, bipolar);
+                    let inner = 1.0 - (1.0 - e) * d;
+                    let cubic = route
+                        .native
+                        .is_some_and(|n| (7..=13).contains(&n.source_type));
+                    out.envelope_stage[usize::from(stage)] = if cubic {
+                        f64::from(laws::fcubic(inner as f32))
+                    } else {
+                        inner
+                    };
+                }
                 CompiledTarget::LoopStart | CompiledTarget::LoopLength => {}
                 CompiledTarget::ProcessingParameter { .. }
                 | CompiledTarget::ProcessorCutoff(_)
@@ -3193,6 +3222,14 @@ impl VoiceModulation {
     pub(crate) fn region_provider_scope(&self,region:usize)->Option<usize>{self.program(region).and_then(|program|self.programs[program as usize].provider_scope)}
 }
 impl VoiceModState {
+    /// The amplitude envelope stage factors of one voice: 1.0 leaves a stage
+    /// at its authored time.
+    pub(crate) fn envelope_stages(&self, voice: usize) -> [f64; 5] {
+        self.outputs
+            .get(voice)
+            .map(|output| output.envelope_stage)
+            .unwrap_or([1.0; 5])
+    }
     pub(crate) fn provider_scope(&self,modulation:&VoiceModulation,voice:usize)->Option<usize>{self.program(voice).and_then(|program|modulation.programs[program as usize].provider_scope)}
     pub(crate) fn provider_view(&self,modulation:&VoiceModulation,owner:usize,scope:usize)->Result<ProviderView<'_>,Error>{
         let program=self.program(owner).ok_or(Error::NotReady)?;

@@ -2012,6 +2012,14 @@ pub enum Target {
     /// Truncated fractions of total sample frames, on a constrained forward loop.
     LoopStart,
     LoopLength,
+    /// A stage time of an AHDSR envelope, addressed as a modulation target.
+    /// The destination is the envelope modulator; the depth is the native
+    /// intensity of the route, and the law multiplies the stage's normalized
+    /// knob (see `sampler-core`'s `voice_mod::laws`).
+    EnvelopeStage {
+        source: ModulatorRef,
+        stage: EnvelopeStage,
+    },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -2020,6 +2028,18 @@ pub enum WavetableParameter {
     Position,
     Form1,
     Form2,
+}
+
+/// The stage of an AHDSR envelope a modulation target addresses (Kontakt
+/// ids 184..187: `ahdsr_attack`, `ahdsr_hold`, `ahdsr_decay`,
+/// `ahdsr_release`).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvelopeStage {
+    Attack,
+    Hold,
+    Decay,
+    Release,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
