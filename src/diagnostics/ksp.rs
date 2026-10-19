@@ -92,12 +92,8 @@ pub(super) fn fault_data(
     if let (Some(slot), Some(source), Some(digest), Some(site)) =
         (fault.source_slot, source, fault.source_digest, fault.site)
         && sampler_ksp::source_fingerprint(source) == digest
-        && let Some(excerpt) = super::script_excerpt(
-            source,
-            u32::from(fault.source_slot.unwrap()) + 1,
-            site.line,
-            Some(site.column),
-        )
+        && let Some(excerpt) =
+            super::script_excerpt(source, u32::from(slot) + 1, site.line, Some(site.column))
     {
         data["source_excerpt"] = excerpt;
     } else {
