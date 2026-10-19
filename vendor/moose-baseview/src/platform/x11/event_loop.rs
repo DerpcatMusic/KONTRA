@@ -93,6 +93,9 @@ pub(crate) struct EventLoop {
     focus_out_after_release: bool,
     /// Frames left before that FocusOut applies, once the button is up.
     focus_out_in_frames: u8,
+    /// Focus loss made the handler forget the pointer; the next press reports
+    /// its own position first, as a double click's second press has no motion.
+    cursor_forgotten: bool,
 }
 
 /// Frames between a release and a held-back FocusOut: MUI records the click
@@ -146,6 +149,7 @@ impl EventLoop {
             held_buttons: 0,
             focus_out_after_release: false,
             focus_out_in_frames: 0,
+            cursor_forgotten: false,
 
             window,
             response_sender,
@@ -470,6 +474,7 @@ impl EventLoop {
         self.drain_ime();
         self.pressed_keys.fill(false);
         self.release_forwarded_keys();
+        self.cursor_forgotten = true;
         self.handle_event(Event::Window(WindowEvent::Unfocused));
     }
 
@@ -641,6 +646,13 @@ impl EventLoop {
             }
 
             XEvent::ButtonPress(event) if event.event == self.window.raw_id() => {
+                if std::mem::take(&mut self.cursor_forgotten) {
+                    let physical_pos = PhysicalPosition::new(event.event_x, event.event_y);
+                    self.handle_event(Event::Mouse(MouseEvent::CursorMoved {
+                        position: physical_pos.cast(),
+                        modifiers: key_mods(event.state),
+                    }));
+                }
                 match event.detail {
                     4..=7 => {
                         self.handle_event(Event::Mouse(MouseEvent::WheelScrolled {

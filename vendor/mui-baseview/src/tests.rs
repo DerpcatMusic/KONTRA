@@ -1368,10 +1368,14 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
     struct Snapshot {
         marker: i16,
         down: bool,
+        at: bool,
         focused: bool,
         losses: u32,
         leaves: u32,
     }
+    /// Snapshot markers for events without a position of their own.
+    const UNFOCUSED: i16 = -1;
+    const PRESSED: i16 = -2;
     struct Probe {
         h: RefCell<Handler<Knob>>,
         cx: WindowContext,
@@ -1395,13 +1399,20 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
             }
             let mut h = self.h.borrow_mut();
             let status = h.on_event_inner(&event);
-            if let Event::Mouse(MouseEvent::CursorMoved { position, .. }) = event
-                && position.x >= 1000.
-            {
+            let marker = match event {
+                Event::Mouse(MouseEvent::CursorMoved { position, .. }) if position.x >= 1000. => {
+                    Some(position.x as i16)
+                }
+                Event::Window(WindowEvent::Unfocused) => Some(UNFOCUSED),
+                Event::Mouse(MouseEvent::ButtonPressed { .. }) => Some(PRESSED),
+                _ => None,
+            };
+            if let Some(marker) = marker {
                 self.send
                     .send(Snapshot {
-                        marker: position.x as i16,
+                        marker,
                         down: !h.driver.pointer().buttons.is_empty(),
+                        at: h.driver.pointer().pos.is_some(),
                         focused: self.cx.has_focus(),
                         losses: self.losses.get(),
                         leaves: self.leaves.get(),
@@ -1469,6 +1480,12 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
         .unwrap()
         .check()
         .unwrap();
+    let wait = |marker| loop {
+        let state = recv.recv_timeout(Duration::from_secs(3)).unwrap();
+        if state.marker == marker {
+            break state;
+        }
+    };
     let motion = |marker| {
         conn.send_event(
             false,
@@ -1488,12 +1505,7 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
         .unwrap()
         .check()
         .unwrap();
-        loop {
-            let state = recv.recv_timeout(Duration::from_secs(3)).unwrap();
-            if state.marker == marker {
-                break state;
-            }
-        }
+        wait(marker)
     };
     let press = || {
         conn.send_event(
@@ -1703,20 +1715,20 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
         !released.down && released.losses == pressed.losses,
         "the release completes before the focus loss: {released:?}"
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    let mut marker = 1013;
-    let applied = loop {
-        let state = motion(marker);
-        if state.losses > pressed.losses || std::time::Instant::now() > deadline {
-            break state;
-        }
-        marker += 1;
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    let applied = wait(UNFOCUSED);
     assert_eq!(
         applied.losses,
         pressed.losses + 1,
         "the held-back focus loss applies a few frames later"
+    );
+    // The loss forgot the pointer. The second click of a double click comes
+    // with no motion before it and must still land where it is.
+    focus(parent);
+    press();
+    let second = wait(PRESSED);
+    assert!(
+        second.down && second.at,
+        "a press after a focus loss carries its own position: {second:?}"
     );
     child.close();
     conn.destroy_window(parent).unwrap().check().unwrap();

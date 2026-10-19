@@ -113,6 +113,10 @@ a focus loss before then still cancels it. It then applies unchanged, as the
 same `Unfocused` as before. A FocusIn in between drops it; a new press re-arms
 it for that release. Every other FocusOut, including a focus move from the
 editor to an ancestor during a drag, still cancels at once. MUI is unchanged.
+A focus loss makes MUI forget the pointer position, and Bitwig sends one after
+every click, so the second press of a double click (no motion before it) hit
+nothing. The first press after any focus loss now reports its own coordinates
+as a `CursorMoved` first.
 Witnesses: `native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels`
 under Xvfb (fails without the patch) and
 `a_focus_loss_two_frames_after_the_release_keeps_the_click` (MUI's timing).
