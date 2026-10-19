@@ -74,8 +74,7 @@ pub(super) fn fault_data(
         _ => json!({}),
     };
     let mut data = json!({"schema":"ksp-fault-v1","pc":fault.pc,
-        "source_slot":fault.source_slot,"source_sha256":fault.source_digest.map(|digest|
-            digest.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),
+        "source_slot":fault.source_slot,"source_sha256":fault.source_digest.map(hex_digest),
         "callback":fault.callback,"callback_id":fault.callback_id,"ui_id":fault.ui_id,
         "site":fault.site.map(source_site),"instruction":fault.instruction.map(|op|format!("{op:?}")),
         "operands":operands,"registers":registers,"registers_omitted":fault.registers_omitted,
