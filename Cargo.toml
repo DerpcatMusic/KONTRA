@@ -191,3 +191,7 @@ required-features = ["shots"]
 [[example]]
 name = "ui_health"
 required-features = ["shots"]
+
+[[example]]
+name = "library_diagnostics"
+required-features = ["shots"]
