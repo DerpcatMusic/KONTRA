@@ -296,6 +296,7 @@ fn translate(
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
         dormant_modulators: Default::default(),
+        amplitude_envelopes: Vec::new(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -862,6 +863,9 @@ struct Translation {
     lane_slots: Vec<(usize, usize)>,
     /// (group, internal slot) of saved-bypassed modulators nothing can wake.
     dormant_modulators: std::collections::HashSet<(usize, usize)>,
+    /// Each group's own amplitude envelope, once its internal modulators are
+    /// indexed. A route can address a stage time only of that envelope.
+    amplitude_envelopes: Vec<Option<ir::ModulatorRef>>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
 }
@@ -1980,6 +1984,12 @@ impl Translation {
             envelope = Some(ir::ModulatorRef(self.ir.modulators.len() - 1));
         }
         let mut velocity = ir::VelocityResponse::None;
+        // The group's own amplitude envelope is known once its internal
+        // modulators are indexed; a route may address its stage times.
+        if self.amplitude_envelopes.len() <= index {
+            self.amplitude_envelopes.resize(index + 1, None);
+        }
+        self.amplitude_envelopes[index] = envelope;
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
             for (slot, modulation) in ExternalModArray32::try_from(chunk)?.slots()? {
                 let mut params = modulation.params()?;
@@ -2825,6 +2835,49 @@ impl Translation {
                 ))
             })
         });
+        // An AHDSR stage time addressed as a modulation target (ids 184..187).
+        // The destination is the group's envelope modulator; the compiler
+        // multiplies the stage's normalized knob by its family H product.
+        let envelope_target = (matches!(
+            target.param.as_str(),
+            "ahdsr_attack" | "ahdsr_hold" | "ahdsr_decay" | "ahdsr_release"
+        ))
+        .then(|| {
+            let destination = self.slot_modulator(source, usize::from(target.slot?))?;
+            // Only the group's own amplitude envelope carries the stage times
+            // a route can address; another AHDSR is a modulator source.
+            let group = self
+                .ir
+                .source_indices
+                .modulators
+                .iter()
+                .find(|m| m.runtime == Some(source))?
+                .group;
+            if self.amplitude_envelope(group) != Some(destination) {
+                return None;
+            }
+            let stage = match target.param.as_str() {
+                "ahdsr_attack" => ir::EnvelopeStage::Attack,
+                "ahdsr_hold" => ir::EnvelopeStage::Hold,
+                "ahdsr_decay" => ir::EnvelopeStage::Decay,
+                "ahdsr_release" => ir::EnvelopeStage::Release,
+                _ => return None,
+            };
+            // Only an AHDSR envelope carries stage times.
+            matches!(
+                self.ir.modulators[destination.0].source,
+                ir::ModulationSource::Envelope(_)
+            )
+            .then_some((
+                ir::Target::EnvelopeStage {
+                    source: destination,
+                    stage,
+                },
+                ir::Depth::Normalized(i),
+            ))
+        })
+        .flatten();
+        let addressed = addressed.or(envelope_target);
         let addressed = addressed.or_else(|| {
             let slot = i32::from(target.slot?);
             let group = self
@@ -4469,6 +4522,7 @@ mod modulation {
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
         dormant_modulators: Default::default(),
+            amplitude_envelopes: Vec::new(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
@@ -4882,6 +4936,65 @@ mod modulation {
             unknown_i16: -1,
             unknown_flags: 0x10,
         }
+    }
+
+    /// An AHDSR stage time addressed as a modulation target binds to the
+    /// group's own amplitude envelope. Another envelope in the group is a
+    /// modulator source, so the route stays reported.
+    #[test]
+    fn an_envelope_stage_route_binds_to_the_groups_amplitude_envelope() {
+        let mut out = translation();
+        // The group's amplitude envelope: an internal AHDSR at slot 0.
+        out.ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope::default()),
+        });
+        let envelope = ir::ModulatorRef(out.ir.modulators.len() - 1);
+        out.ir.source_indices.modulators.push(ir::SourceModulator {
+            group: 7,
+            slot: 0,
+            external: false,
+            name: String::new(),
+            runtime: Some(envelope),
+            settings: None,
+        });
+        // An external source in the same group.
+        out.ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(1000.)),
+        });
+        let external = ir::ModulatorRef(out.ir.modulators.len() - 1);
+        out.ir.source_indices.modulators.push(ir::SourceModulator {
+            group: 7,
+            slot: 5,
+            external: true,
+            name: String::new(),
+            runtime: Some(external),
+            settings: None,
+        });
+        out.amplitude_envelopes = vec![None; 8];
+        out.amplitude_envelopes[7] = Some(envelope);
+        let attack = ModTarget {
+            slot: Some(0),
+            ..target("ahdsr_attack", 1.0)
+        };
+        let route = out.route("g", external, true, &attack, None).unwrap();
+        assert_eq!(
+            out.ir.routes[route.0].target,
+            ir::Target::EnvelopeStage {
+                source: envelope,
+                stage: ir::EnvelopeStage::Attack
+            }
+        );
+        assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(1.0));
+        assert!(out.ir.unsupported.is_empty());
+        // Another envelope is not the voice's envelope: the route stays reported.
+        out.amplitude_envelopes[7] = None;
+        assert!(out.route("g", external, true, &attack, None).is_none());
+        assert_eq!(
+            out.ir.unsupported.last().unwrap().feature,
+            "modulation of a module parameter"
+        );
     }
 
     /// A saved-bypassed LFO with module targets keeps a live depth lane (unit =
@@ -6233,6 +6346,13 @@ impl Translation {
         let mods = &self.ir.source_indices.modulators;
         let group = mods.iter().find(|m| m.runtime == Some(source))?.group;
         mods.iter().find(|m| m.group == group && m.slot == slot && !m.external)?.runtime
+    }
+
+    /// The group's own amplitude envelope: the internal AHDSR whose primary
+    /// volume route drives the voice. Another AHDSR in the group is a
+    /// modulator source, not the voice's envelope.
+    fn amplitude_envelope(&self, group: usize) -> Option<ir::ModulatorRef> {
+        self.amplitude_envelopes.get(group).copied().flatten()
     }
 
     /// Attach each intensity assignment to the routes of the modulator it

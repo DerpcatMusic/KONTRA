@@ -37,8 +37,8 @@ the raw run reports 29,677 entries because the copies are counted twice.
 |---|---|
 | `.nki` files | 2,742 |
 | read | 2,742 (0 unreadable) |
-| instruments with at least one report | 397 (deduplicated) |
-| report entries | 3,757 (deduplicated) |
+| instruments with at least one report | 375 (deduplicated) |
+| report entries | 2,807 (deduplicated) |
 | instruments with a dropped or untranslated effect | 6 |
 | instruments with a translated impulse response | 366 |
 
@@ -52,7 +52,7 @@ E-Upright (1), Morphology Evolved (1), Conflux (1), ANALOG STRINGS (1).
 | Feature | Entries | Instruments | What is missing |
 |---|---:|---:|---|
 | `Filter: filter law` | 1,022 | 6 | The Ladder gain law and the 2x resampled (HQ) mode; the Daft audio core; the legacy cutoff boundary phase |
-| `modulation of a module parameter` | 962 | 36 | Envelope stage times (`ahdsr_attack`, `ahdsr_release`) addressed as a modulation target |
+| `modulation of a module parameter` | 12 | 5 | The LFO rate and start phase targets of a module slot |
 | `external modulation from RandomBipolar` | 550 | 1 | The bipolar random generator: interval, cadence, seed |
 | `flex loop jump at the sustain row (+0x194)` | 504 | 4 | The Flex envelope's loop jump at its sustain row |
 | `native source zone identity` | 251 | 251 | The native zone identity of a saved source zone, so no ordinal alias is created |
@@ -74,24 +74,21 @@ E-Upright (1), Morphology Evolved (1), Conflux (1), ANALOG STRINGS (1).
 
 ## 1. Envelope stage times as a modulation target
 
-962 entries, 36 instruments, 817 of them `ahdsr_attack` and 136
-`ahdsr_release`. 292 of the entries are inert at the saved state (intensity
-0); 670 are audible (intensity 1 or a signed fraction).
-
-The route is an external modulation: the source is the release trigger
-counter and the destination is the group's AHDSR modulator. For example, in
+This was the largest gap: 962 entries over 36 instruments, 817 of them
+`ahdsr_attack` and 136 `ahdsr_release`. The route is an external
+modulation: the source is the release trigger counter and the destination is
+the group's AHDSR modulator. For example, in
 `Pacific - Ens Strings - 10 Cellos - Marcatos.nki` ten groups carry
 `ReleaseTriggerCounter -> ahdsr_attack` at full depth with a shaper.
 
-The native compiler for these targets is the same one the repository already
-models in `sampler-core/src/voice_mod/laws.rs`. `docs/re/kontakt-envelope-time-modulation.md`
-records what it emits, and this change fixes the one law that was wrong: the
-compiler cubes the inner expression for an external source of type 7..=13,
-and the previous code applied that cube only to a few target ids.
+The stage times are executed now. The native compiler for these targets is
+the same one the repository already models in `sampler-core/src/voice_mod/laws.rs`;
+`docs/re/kontakt-envelope-time-modulation.md` records what it emits, and the
+route binds to the group's own amplitude envelope, whose stage time follows
+the family H law and the stage's own knob law.
 
-What is still missing is the execution side: the envelope stage's own knob to
-time law, the moment a changed stage time becomes audible, and the source
-producer for the release trigger counter.
+953 of the 962 entries are closed. The remaining nine are the LFO rate and
+start phase targets of a module slot, which are a different gap.
 
 ## 2. The Ladder filter's gain law and HQ mode
 

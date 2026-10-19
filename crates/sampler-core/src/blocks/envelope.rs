@@ -205,6 +205,12 @@ impl Envelope {
         // ponytail: live frame-valued setters use v2 until original native knob values reach this owner.
         self.native = None;
         self.controlled = true;
+        self.with_stage_time(stage, value)
+    }
+    /// One stage's own value, keeping the stage's curvature and the
+    /// envelope's ownership flags: a modulated time is still the envelope's
+    /// value, not a lane write.
+    pub(crate) fn with_stage_time(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {
         use crate::EnvelopeStage as S;
         let recurve = |curve: Curve, frames| {
             Curve::new(
@@ -320,6 +326,39 @@ impl EnvelopeState {
         };
         state.enter(Phase::Delay);
         state
+    }
+
+    /// Scale one stage's time by a modulation factor. The native family H
+    /// law multiplies the stage's normalized knob (0..=1) by the factor, so
+    /// the time follows the stage's own knob law: the attack and hold stages
+    /// use the 15 s range, the decay and release stages the 25 s range
+    /// (`crate::voice_mod::laws`).
+    pub(crate) fn scale_stage(&mut self, stage: crate::EnvelopeStage, factor: f64, rate: u32) {
+        if !factor.is_finite() || rate == 0 {
+            return;
+        }
+        let base = self.shape.control_value(stage);
+        if !base.is_finite() || base < 0.0 {
+            return;
+        }
+        use crate::voice_mod::laws;
+        let (to_unit, from_unit): (fn(f32) -> f32, fn(f32) -> f32) = match stage {
+            crate::EnvelopeStage::Attack | crate::EnvelopeStage::Hold => {
+                (laws::n2u_env_a, laws::u2n_env_a)
+            }
+            crate::EnvelopeStage::Decay | crate::EnvelopeStage::Release => {
+                (laws::n2u_env_d, laws::u2n_env_d)
+            }
+            _ => return,
+        };
+        let base_ms = (base * 1000.0 / f64::from(rate)) as f32;
+        let knob = (f64::from(to_unit(base_ms)) * factor).clamp(0.0, 1.0) as f32;
+        let frames = (f64::from(from_unit(knob)) * f64::from(rate) / 1000.0).round();
+        if !frames.is_finite() || frames < 0.0 {
+            return;
+        }
+        let frames = frames.min(f64::from(u32::MAX)) as u32;
+        self.shape = self.shape.with_stage_time(stage, frames);
     }
 
     fn duration(&self) -> u32 {
