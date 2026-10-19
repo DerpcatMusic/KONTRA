@@ -146,7 +146,8 @@ fn high_operand_registers_survive_the_bounded_snapshot_window() {
         },
         Instruction::WaitMicros { local: 50 },
     ])
-    .unwrap();
+    .unwrap()
+    .with_wait_lifetime(WaitLifetime::Callback);
     let plan = Prepared::new(48000, vec![], vec![], 0)
         .unwrap()
         .with_programs(vec![program], None)
