@@ -45,6 +45,10 @@ pub struct Environment {
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
+    /// The resource container's `data` folder: `.nka` file contents by
+    /// lowercase file name without extension, for `load_array(<array>, 2)` in
+    /// `on init`.
+    pub data_arrays: BTreeMap<String, Vec<u8>>,
     /// The instrument's MIDI object, including earlier slots' init selection.
     pub midi_object: sampler_core::MidiObject,
     /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
@@ -2099,6 +2103,30 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     && self.st.persistence[var.0 as usize] == Persistence::None
                 {
                     self.st.persistence[var.0 as usize] = Persistence::Snapshot;
+                }
+                // Mode 2 reads the resource container's data folder; in init
+                // Kontakt does it synchronously, so the next line sees it.
+                if self.callback_type == b::cb::INIT && self.int(args, 1)? == 2 {
+                    let name = &self.hir.vars[var.0 as usize].name;
+                    let file = name[1..].to_lowercase();
+                    let loaded = self.env.data_arrays.get(&file).and_then(|bytes| {
+                        let array = crate::array_file::array(self.hir, var).ok()?;
+                        let output =
+                            sampler_core::ArrayFileCompletion::from_bytes(array, bytes).ok()?;
+                        let range = array.offset as usize..(array.offset + array.len) as usize;
+                        if array.kind == sampler_core::ArrayFileKind::Text {
+                            for (cell, value) in range.zip(output.texts()) {
+                                self.st.texts[cell] = value.as_str().to_owned();
+                            }
+                        } else {
+                            self.st.cells[range].copy_from_slice(output.numbers());
+                        }
+                        Some(())
+                    });
+                    if loaded.is_none() {
+                        self.warn(span, format!("load_array: data/{file}.nka not loaded"));
+                    }
+                    return Ok(V::I(0));
                 }
                 self.request(builtin, args)?;
                 V::I(0)
