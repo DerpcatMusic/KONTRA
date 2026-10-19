@@ -2787,8 +2787,8 @@ fn refresh_problems(shared: &Shared) {
         if let Some(log) = v.runtime_log.as_mut() {
             let mut changed = log.counters(problems);
             if let Some(inbox) = &v.fault_inbox {
-                while let Some((callback, outcome)) = inbox.queue.pop() {
-                    log.fault(callback, outcome);
+                while let Some((callback, outcome, context)) = inbox.queue.pop() {
+                    log.fault_context(callback, outcome, context.as_ref(), v.instrument.as_deref());
                     changed = true;
                 }
                 let dropped = inbox.take_dropped();

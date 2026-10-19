@@ -462,13 +462,14 @@ fn translate(
     // Initializers may query/attach physical zones before effect/group DSP
     // admission. Read only bounded serialized metadata here, never samples.
     let span = crate::audit::Span::new("translate_zone_metadata_prepass");
-    out.ir.source_indices.zone_catalog = source_zone_catalog(zone_data,group_names.len())
+    let (catalog, identity_layouts) = source_zone_catalog_with_layouts(zone_data,group_names.len())
         .map_err(|reason|invalid(&reason))?;
+    out.ir.source_indices.zone_catalog = catalog;
     let zone_metadata = zone_catalog_homes(&out.ir.source_indices.zone_catalog);
     let unavailable=out.ir.source_indices.zone_catalog.iter().filter(|z|z.id.is_none()).count();
     if unavailable!=0 {
         out.unsupported("zone catalog","native source zone identity",
-            format!("{unavailable} identities unavailable; no ordinal alias was created"),ir::Reason::NotModeled);
+            format!("{unavailable} identities unavailable; no ordinal alias was created; {identity_layouts}"),ir::Reason::NotModeled);
     }
     drop(span);
     if let Some(snapshot) = snapshot {
@@ -3285,6 +3286,7 @@ impl Translation {
 #[derive(Clone)]
 struct RawZone {
     source_id: Option<u32>,
+    identity_layout: (u16, usize, Option<u16>),
     sample_present: bool,
     group: usize,
     start: u64,
@@ -3306,7 +3308,12 @@ struct RawZone {
 
 /// Complete physical order, independent of source/sample/playback admission.
 /// Unsupported/absent private identity is None, never ordinal+1 or region0.
+#[cfg(test)]
 fn source_zone_catalog(data:&[u8],groups:usize)->Result<Vec<ir::SourceZone>,String> {
+    source_zone_catalog_with_layouts(data, groups).map(|(catalog, _)| catalog)
+}
+fn source_zone_catalog_with_layouts(data:&[u8],groups:usize)->Result<(Vec<ir::SourceZone>, String),String> {
+    let mut layouts = std::collections::BTreeMap::new();
     let mut reader=Cursor::new(data);
     let count=u32le(&mut reader).map_err(|e|e.to_string())?;
     if count as usize>data.len()/8 {return Err("zone count exceeds the zone list".into());}
@@ -3315,6 +3322,9 @@ fn source_zone_catalog(data:&[u8],groups:usize)->Result<Vec<ir::SourceZone>,Stri
     for index in 0..count {
         let zone=raw_zone(&mut reader).map_err(|e|format!("zone {index}: {e}"))?;
         if zone.group>=groups {return Err(format!("zone {index} refers to missing group {}",zone.group));}
+        if zone.source_id.is_none() {
+            *layouts.entry(zone.identity_layout).or_insert(0usize) += 1;
+        }
         if let Some(id)=zone.source_id && !identities.insert(id) {
             return Err(format!("duplicate native zone source identity {id}"));
         }
@@ -3326,7 +3336,11 @@ fn source_zone_catalog(data:&[u8],groups:usize)->Result<Vec<ir::SourceZone>,Stri
         }});
     }
     if reader.position()!=data.len() as u64 {return Err("trailing zone-list bytes".into());}
-    Ok(catalog)
+    let summary = layouts.iter().take(8).map(|(&(version, private_len, word56), count)|
+        format!("{count} zones: version=0x{version:x} private_bytes={private_len} private_u16_at_56={word56:?}"))
+        .collect::<Vec<_>>().join("; ");
+    let omitted = layouts.len().saturating_sub(8);
+    Ok((catalog, if omitted > 0 { format!("{summary}; {omitted} more layouts omitted") } else { summary }))
 }
 fn zone_catalog_homes(catalog:&[ir::SourceZone])->std::collections::BTreeMap<u32,[i32;3]> {
     catalog.iter().filter_map(|z|Some((z.id?,[i32::try_from(z.home.group).ok()?,
@@ -3488,6 +3502,8 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
         source_id,
+        identity_layout: (source_zone.0.version, source_zone.0.private_data.len(),
+            source_zone.0.private_data.get(56..58).map(|b| u16::from_le_bytes([b[0],b[1]]))),
         sample_present,
         group,
         start: start as u64,

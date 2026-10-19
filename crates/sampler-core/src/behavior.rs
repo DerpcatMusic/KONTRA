@@ -463,6 +463,9 @@ pub struct Program {
     pub(super) script_cells: usize,
     pub(super) script_instance: Option<super::ScriptInstanceId>,
     pub(super) source_slot: i32,
+    pub(super) source_sites: Arc<[crate::SourceSite]>,
+    pub(super) source_digest: Option<[u8; 32]>,
+    pub(super) diagnostic_callback: Option<&'static str>,
     pub(super) wait_lifetime: WaitLifetime,
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
@@ -498,6 +501,26 @@ pub(super) fn distinct_code(
 }
 
 impl Program {
+    /// Sparse, sorted source map shared by every entry into a module.
+    pub fn with_source_sites(mut self, sites: Vec<crate::SourceSite>) -> Result<Self, Error> {
+        if sites.iter().any(|s| s.pc as usize >= self.code.len() || s.line == 0 || s.column == 0)
+            || sites.windows(2).any(|s| s[0].pc >= s[1].pc) {
+            return Err(Error::InvalidInput);
+        }
+        self.source_sites = sites.into();
+        Ok(self)
+    }
+
+    pub fn with_source_digest(mut self, digest: [u8; 32]) -> Self {
+        self.source_digest = Some(digest);
+        self
+    }
+
+    pub fn with_diagnostic_callback(mut self, callback: &'static str) -> Self {
+        self.diagnostic_callback = Some(callback);
+        self
+    }
+
     pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
         self.engine_symbols = symbols.into();
         self
@@ -940,6 +963,9 @@ impl Program {
             script_cells,
             script_instance: None,
             source_slot: -1,
+            source_sites: Arc::from([]),
+            source_digest: None,
+            diagnostic_callback: None,
             wait_lifetime: WaitLifetime::Gate,
             texts: Arc::from([]),
             engine_symbols: Arc::from([]),
@@ -1059,6 +1085,7 @@ pub(super) struct Continuation {
     pub owner: BehaviorOwner,
     pub program: usize,
     pub pc: usize,
+    pub last_pc: usize,
     pub outcome: Option<Outcome>,
     pub context: PlanContext,
     pub note_stage: Option<NoteStage>,
@@ -1150,6 +1177,7 @@ impl Runtime {
             note_stage,
             program,
             pc: entry,
+            last_pc: entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -1246,6 +1274,7 @@ impl Runtime {
             note_stage: None,
             program,
             pc: generation.prepared.programs[program].entry,
+            last_pc: generation.prepared.programs[program].entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -1355,7 +1384,7 @@ impl Runtime {
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
-        self.flush_behaviors_inner(&mut |id, owner, outcome, program| {
+        self.flush_behaviors_inner(&mut |id, owner, outcome, program, _| {
             accept(id, owner, outcome, program)
         });
     }
@@ -1369,12 +1398,20 @@ impl Runtime {
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome) -> bool,
     ) {
-        self.flush_behaviors_inner(&mut |id, owner, outcome, _| accept(id, owner, outcome));
+        self.flush_behaviors_inner(&mut |id, owner, outcome, _, _| accept(id, owner, outcome));
+    }
+
+    /// Fault context is copied before the continuation and its registers retire.
+    pub fn flush_behavior_diagnostics(
+        &mut self,
+        mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize, Option<crate::BehaviorFault>) -> bool,
+    ) {
+        self.flush_behaviors_inner(&mut accept);
     }
 
     fn flush_behaviors_inner(
         &mut self,
-        accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
+        accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize, Option<crate::BehaviorFault>) -> bool,
     ) {
         let mut next = self.behaviors.first;
         while let Some(i) = next {
@@ -1386,7 +1423,7 @@ impl Runtime {
                 continue;
             };
             let id = BehaviorId(self.behaviors.id(i));
-            if !accept(id, c.owner, outcome, c.program) {
+            if !accept(id, c.owner, outcome, c.program, self.behavior_fault(id)) {
                 return;
             }
             let _=self.release_task_run_parent(id);
@@ -1552,6 +1589,7 @@ impl Runtime {
                     };
                     continue;
                 }
+                self.behaviors.get_mut(id.0).unwrap().last_pc = c.pc;
                 let cost=if matches!(op,Instruction::AdvanceSourceNote){
                     match c.owner.note().and_then(|note|self.source_note_work_cost(note)){
                         Ok(cost) if cost<=self.behavior_fuel=>cost,
