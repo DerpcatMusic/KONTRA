@@ -1685,7 +1685,14 @@ mod library_acceptance09 {
 
     fn authored_directory(tag:&str)->std::path::PathBuf {
         static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
-        let path=std::path::PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch").join(format!("ui09-{tag}-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));
+        // A writable scratch directory: the runner's temporary directory when
+        // it is set, otherwise the workspace scratch, otherwise the platform
+        // temporary directory. A hard-coded workspace path is not writable on
+        // a CI runner.
+        let base=match std::env::var_os("TMPDIR"){Some(dir)=>std::path::PathBuf::from(dir),None=>{
+            let local=std::path::PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+            if std::fs::create_dir_all(&local).is_ok(){local}else{std::env::temp_dir()}}};
+        let path=base.join(format!("ui09-{tag}-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));
         std::fs::create_dir_all(&path).unwrap();path
     }
     #[test]
