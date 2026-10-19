@@ -92,7 +92,9 @@ impl Runtime {
             .min(FAULT_REGISTERS);
         let base = id.0.index * self.behavior_stride + usize::from(register_base);
         let mut registers = [0; FAULT_REGISTERS];
-        registers[..count].copy_from_slice(self.behavior_locals.get(base..base + count)?);
+        registers
+            .get_mut(..count)?
+            .copy_from_slice(self.behavior_locals.get(base..base + count)?);
         let mut callers = [None; FAULT_CALLERS];
         for (out, &pc) in callers.iter_mut().zip(c.frames.callers().iter().rev()) {
             *out = site(pc.saturating_sub(1) as usize);
