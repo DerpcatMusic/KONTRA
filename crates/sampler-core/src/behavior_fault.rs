@@ -57,7 +57,9 @@ impl Runtime {
             let end = program
                 .source_sites
                 .partition_point(|site| site.pc as usize <= pc);
-            end.checked_sub(1).map(|index| program.source_sites[index])
+            end.checked_sub(1)
+                .and_then(|index| program.source_sites.get(index))
+                .copied()
         };
         let instruction = program.code.get(pc).copied();
         // Deep expressions can use high registers. Keep the operand window,
