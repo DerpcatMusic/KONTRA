@@ -6,7 +6,10 @@ fn xml(script: &str) -> Arc<str> {
     format!("<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors></Program></UVI4>").into()
 }
 fn until(mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // The script owner runs on its own thread. CI executes this binary beside
+    // thousands of other tests, so a loaded runner may delay a ready owner far
+    // beyond the 3 ms of script time these fixtures actually need.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !done() {
         assert!(Instant::now() < deadline, "bounded owner fixture timeout");
         std::thread::sleep(Duration::from_millis(1));
