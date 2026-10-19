@@ -27,6 +27,7 @@ pub struct BehaviorFault {
     /// Raw VM register bits (real registers contain IEEE-754 bits).
     pub registers: [i64; FAULT_REGISTERS],
     pub register_count: usize,
+    pub register_base: u16,
     pub registers_omitted: usize,
     /// Innermost caller first; each site points at the call, not the return.
     pub callers: [Option<SourceSite>; FAULT_CALLERS],
