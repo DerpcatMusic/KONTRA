@@ -2,6 +2,15 @@
 use sampler_core::{BehaviorFault, Instruction as I, Op, SourceSite};
 use serde_json::{Value, json};
 
+fn hex_digest(digest: [u8; 32]) -> String {
+    use std::fmt::Write;
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
 fn source_site(site: SourceSite) -> Value {
     json!({"pc":site.pc,"offset":site.offset,"line":site.line,
         "column":site.column,"builtin":site.builtin})
