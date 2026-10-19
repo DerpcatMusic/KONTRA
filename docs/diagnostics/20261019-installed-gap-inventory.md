@@ -42,10 +42,11 @@ the raw run reports 29,677 entries because the copies are counted twice.
 | instruments with a dropped or untranslated effect | 6 |
 | instruments with a translated impulse response | 366 |
 
-Eleven libraries contribute: Areia (155 instruments), Afflatus Chapter II
-Brass (102), Solo (100), Pacific Ensemble Strings (22), Performance Samples
-Vista (7), Audio Imperia CHORUS (4), Una Corda Library (3), Shreddage 3.5
-E-Upright (1), Morphology Evolved (1), Conflux (1), ANALOG STRINGS (1).
+Ten libraries contribute: Areia (155 instruments), Afflatus Chapter II
+Brass (102), Solo (100), Performance Samples Vista (7), Una Corda Library
+(3), and one each from Shreddage 3.5 E-Upright, Morphology Evolved,
+Conflux and ANALOG STRINGS. Audio Imperia CHORUS no longer reports
+anything: its only gap was the Flex loop jump.
 
 ## The gaps, ordered by entries
 
