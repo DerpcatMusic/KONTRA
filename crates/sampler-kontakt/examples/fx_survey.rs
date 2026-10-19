@@ -31,7 +31,7 @@ fn main() {
     let mut files = Vec::new();
     nkis(Path::new(&root), &mut files);
     files.sort();
-    let (mut read, mut with_fx, mut with_ir) = (0, 0, 0);
+    let (mut read, mut failed, mut with_dropped_fx, mut with_ir, mut reported, mut entries) = (0, 0, 0, 0, 0, 0);
     let mut caveats = BTreeMap::<String, BTreeSet<usize>>::new();
     // ALL=1: every unsupported feature, by name, with instruments and entries.
     let mut features = BTreeMap::<String, (BTreeSet<usize>, usize)>::new();
@@ -39,19 +39,25 @@ fn main() {
     let mut modules = BTreeMap::<String, (BTreeSet<usize>, BTreeMap<&str, usize>)>::new();
     for (i, path) in files.iter().enumerate() {
         let Ok(kontakt) = sampler_kontakt::read(path) else {
+            failed += 1;
             continue;
         };
         read += 1;
         let mut any = false;
+        reported += usize::from(!kontakt.instrument.unsupported.is_empty());
+        entries += kontakt.instrument.unsupported.len();
         with_ir += usize::from(!kontakt.instrument.impulses.is_empty());
         for u in &kontakt.instrument.unsupported {
+            // VALUES=<feature> prints one feature; VALUES=all prints every entry.
             if let Some(want) = std::env::var_os("VALUES")
-                && u.feature == want.to_string_lossy()
+                && (want == "all" || u.feature == want.to_string_lossy())
             {
                 println!(
-                    "VALUE\t{}\t{}",
+                    "VALUE\t{}\t{}\t{}\t{}",
+                    u.feature,
                     u.value,
-                    u.location.split(' ').next().unwrap_or("")
+                    u.location,
+                    path.display()
                 );
             }
             let f = features.entry(u.feature.clone()).or_default();
@@ -103,10 +109,10 @@ fn main() {
             entry.0.insert(i);
             *entry.1.entry(rack).or_default() += 1;
         }
-        with_fx += usize::from(any);
+        with_dropped_fx += usize::from(any);
     }
     println!(
-        "{} files, {read} read, {with_fx} with active effects",
+        "{} files, {read} read, {failed} unreadable, {reported} with at least one report, {entries} entries, {with_dropped_fx} with a dropped/untranslated effect",
         files.len()
     );
     println!("{with_ir} instruments with a translated impulse response");
@@ -118,6 +124,11 @@ fn main() {
         rows.sort_by_key(|(_, (n, _))| std::cmp::Reverse(n.len()));
         for (feature, (n, entries)) in rows {
             println!("FEATURE\t{}\t{entries}\t{feature}", n.len());
+            if std::env::var_os("FILES").is_some() {
+                for &i in n {
+                    println!("FILE\t{feature}\t{}", files[i].display());
+                }
+            }
         }
     }
     let mut rows: Vec<_> = modules.into_iter().collect();

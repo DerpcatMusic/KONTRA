@@ -1,5 +1,17 @@
 # DSP coverage (Kontakt and UVI/Falcon)
 
+> **Status of this document (2026-10-19).** The module tables below were
+> written against an older branch and are stale: they still list the Legacy
+> HP1/LP1/LP2/LP4/HP2/HP4/BP2/BP4/BR4/LP6, the SV LP1/HP1/BP2/BP4/HP4/LP6/BP6/HP6/Notch filters, the AR
+> LP2/BP2/HP2/LP4/BP4/HP4, the Formant I filter, the Phaser, the Vowel A/B filters, the Pro-53, the
+> Legacy Ladder, the 3x2 Versatile, the Simple LP/HP, the Dual SKF and the Monark filters as missing,
+> while `crates/sampler-kontakt/src/effects/filter.rs` implements all of them today, most of them
+> bit-exact against the native classes. The current, corpus-measured list of
+> everything the translator does not implement is
+> [`docs/diagnostics/20261019-installed-gap-inventory.md`](../diagnostics/20261019-installed-gap-inventory.md).
+> The tables below are kept for the parts that were checked at the time; use
+> the inventory for the current gap list.
+
 Module lists come from the RE thread's `DSP_SYSTEM_INVENTORY.md` (59 Kontakt filters, 65 Kontakt effects, 10 source
 modes; 83 FX, 32 legacy processors, 24 oscillators and 16 modulation types for UVI/Falcon, the last including
 Constant Modulation). Status comes from the code on this branch (`sampler-core/src/dsp.rs`, `sampler-kontakt/src/effects.rs`,
