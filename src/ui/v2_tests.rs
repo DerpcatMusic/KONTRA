@@ -7888,7 +7888,11 @@ fn uvi_dynamic_table_renderer_keeps_real_scalar_component_action_path(){
         tick(PointerInput{pos:Some(Point::new(at.x,at.y-distance)),buttons:Buttons::PRIMARY,..Default::default()});
     }
     tick(PointerInput{pos:Some(Point::new(at.x,at.y-80.)),..Default::default()});
-    wait(&loaded.ui,"third cell callback",|f|f.widgets.iter().any(|w|w.name=="Status"&&w.text.starts_with("3:")));
+    // A callback for the initial stationary value can publish before the
+    // queued drag completes. Wait for the actual changed value and readback.
+    wait(&loaded.ui,"third cell callback",|f|f.widgets.iter().any(|w|w.name=="Status"
+        &&w.text.strip_prefix("3:").and_then(|value|value.parse::<f64>().ok()).is_some_and(|value|value>0.5))
+        &&loaded.ui.value(third).is_some_and(|value|value>0.5));
     assert!(loaded.ui.value(third).unwrap()>0.5);
 }
 
