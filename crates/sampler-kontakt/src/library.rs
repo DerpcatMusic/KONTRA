@@ -4758,7 +4758,7 @@ mod modulation {
             out.group(0, &deferred_rate_group(false, false)).unwrap();
             let targets = ["wavetablePosition", "warpFactor", "warpFactor2"]
                 .map(|name| target(name, 0.25)).to_vec();
-            let mut group = deferred_source_group(false, targets, false, true);
+            let mut group = deferred_source_group(true, targets, false, true);
             let mut private = Vec::new();
             for _ in 0..136 {
                 private.extend(8u32.to_le_bytes());
