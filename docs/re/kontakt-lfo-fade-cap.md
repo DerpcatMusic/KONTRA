@@ -22,8 +22,9 @@ They are not four independent gaps. The chain is:
    triangle, saw, noise]))` arm) and each is reported as
    `LFO waveform (id, multi weights, pulse width)`:
    `5 Some([1.0, 1.0, -0.277, 1.0, 0.0]) 0.5`.
-3. A refused modulator gets no runtime index (`source_indices.modulators[4]`
-   and `[5]` have `runtime: None`; slots 0..=3 and 7 do not).
+3. A refused modulator gets no runtime index (in
+   `ir.source_indices.modulators` the group's slot-4 and slot-5 entries carry
+   `runtime: None`; its slot-0..=3 and slot-7 entries do not).
 4. `route()` binds `startPhase` only to a destination that has a runtime
    (`Target::SourcePhase`), so with no destination it falls through to
    `modulation of a module parameter`.
@@ -104,7 +105,7 @@ this field's meaning.
 
 If it is a fade, the reader's bound can be restated as the tick bound
 `ms * rate / 32 * 0.001 <= 60000` at the actual rate, which admits this pair
-at every rate up to 192 kHz and keeps the table cap. If it is a delay, the
+at every rate up to 359 kHz and keeps the table cap. If it is a delay, the
 field should not reach `KontaktLfoFade` at all, `ir::Lfo::delay` should carry
 it, and the Multi admission needs its own evidence.
 
