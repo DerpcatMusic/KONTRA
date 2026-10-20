@@ -373,7 +373,7 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         m.side = false;
     }
     let mut mode = usize::from(m.mid_side);
-    let mode_el = segmented(ui, "stereo-mode", &["L/R", "M/S"], &mut mode);
+    let mode_el = segmented(ui, "stereo-mode", &["l/r", "m/s"], &mut mode);
     m.mid_side = mode == 1;
     let mut row_of = |ui: &mut Ui, m: &mut Model, slot: Slot, name: &str| -> El {
         row![
