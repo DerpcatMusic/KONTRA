@@ -51,6 +51,7 @@ pub fn of(id: &str) -> Option<&'static str> {
         "band-bypass" => "Enable or bypass the selected band.\nBypassing a band removes its effect on the Depth curve.",
         "band-delete" => "Delete the selected band.",
         "rail-stereo" | "rail-tilt" | "rail-scale" => "Closed side panel. Click to open.",
+        "range" => "Adjust the display range of the reduction graph.",
         "side-panel" => "Hide the side panel by double clicking on its background.",
         _ => return None,
     })

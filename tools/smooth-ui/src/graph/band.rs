@@ -23,7 +23,7 @@ pub struct Handle {
 pub struct Band {
     /// The centre, in hertz.
     pub frequency: f64,
-    /// The depth, in decibels. Negative cuts.
+    /// The depth control, in the steps the host gives it. A boost is above the zero line.
     pub depth: f64,
     /// The bandwidth, as the host's own Q.
     pub q: f64,
@@ -79,8 +79,8 @@ pub const SHAPES: [&str; 8] = [
 /// The bands at rest: the reference's four, then four that are not in the plot.
 pub const AT_REST_BANDS: [Band; BANDS] = [
     Band::at(168.0, 0.0, 0, true),
-    Band::at(650.0, -2.3, 2, true),
-    Band::at(3210.0, 3.2, 2, true),
+    Band::at(650.0, 3.6, 2, true),
+    Band::at(3210.0, -5.0, 2, true),
     Band::at(9410.0, 0.0, 7, true),
     Band::at(1000.0, 0.0, 2, false),
     Band::at(1000.0, 0.0, 2, false),
@@ -88,8 +88,20 @@ pub const AT_REST_BANDS: [Band; BANDS] = [
     Band::at(1000.0, 0.0, 2, false),
 ];
 
-/// The colours the bands wear, from the active theme's own four.
+/// The colours the bands wear.
 pub fn band_tints() -> [u32; 8] {
-    let t = theme::t();
-    [t.red, t.magenta, t.cyan, t.green, t.red, t.magenta, t.cyan, t.green]
+    theme::BAND_TINTS
+}
+
+/// The shape a band takes when it is added where the pointer is: a boost or
+/// a cut at the low or high end is a shelf or a cut filter, anything between
+/// is a bell, and flat is a bell.
+pub fn shape_for_drop(frequency: f64, depth_db: f64) -> usize {
+    match (depth_db > 0.0, depth_db < 0.0, frequency) {
+        (true, _, f) if f < 250.0 => 1,
+        (true, _, f) if f > 8000.0 => 6,
+        (_, true, f) if f < 250.0 => 0,
+        (_, true, f) if f > 8000.0 => 7,
+        _ => 2,
+    }
 }

@@ -25,10 +25,18 @@ pub const GRID_TOP: f64 = plot::GRID_TOP;
 pub const FREQ: [(f64, f64, &str); 8] = plot::FREQ;
 
 /// The level grid. Only three lines carry a number.
-pub const LEVEL: [f64; 6] = plot::LEVEL;
+pub const LEVEL_STEP: f64 = plot::LEVEL_STEP;
 
-/// How many pixels a decibel is worth on the plot.
+/// The display ranges the chip offers: grid lines per label, and the name.
+pub const RANGES: [(u32, &str); 4] = [(1, "-3"), (2, "-6"), (3, "-9"), (6, "-18")];
+pub const DEFAULT_RANGE: usize = 2;
+
+/// How many pixels a decibel is worth on the plot, for the white curve and
+/// the handles, and for the reduction.
 pub const PIXELS_PER_DECIBEL: f64 = plot::PIXELS_PER_DECIBEL;
+pub const REDUCTION_PIXELS_PER_DECIBEL: f64 = plot::REDUCTION_PIXELS_PER_DECIBEL;
+/// A band's depth control, in decibels on the curve per unit.
+pub const BAND_DB_PER_UNIT: f64 = plot::BAND_DB_PER_UNIT;
 
 /// Where a frequency sits on the plot's axis: the reference's own,
 /// `ln(f + 150)` evenly across the plot's width.
@@ -41,14 +49,14 @@ pub fn frequency_for_x(x: f64) -> f64 {
     f64::from(axis_frequency((x / PLOT_W) as f32))
 }
 
-/// Where a depth sits on the plot's axis. A cut is below the zero line.
+/// Where a depth sits on the plot's axis: a boost is above the zero line.
 pub fn y_for_depth(depth: f64) -> f64 {
-    ZERO + depth * PIXELS_PER_DECIBEL
+    ZERO - depth * BAND_DB_PER_UNIT * PIXELS_PER_DECIBEL
 }
 
 /// The depth at a place on the axis.
 pub fn depth_for_y(y: f64) -> f64 {
-    ((y - ZERO) / PIXELS_PER_DECIBEL).clamp(-10.0, 10.0)
+    ((ZERO - y) / (BAND_DB_PER_UNIT * PIXELS_PER_DECIBEL)).clamp(-10.0, 10.0)
 }
 
 #[cfg(test)]

@@ -185,15 +185,26 @@ pub mod plot {
     pub const W: f64 = RIGHT;
     pub const H: f64 = GRAPH;
 
+    /// The span the white curve and the handles are drawn over, and where
+    /// zero falls in it: the reference's own, 25.6 dB above the line and
+    /// 28.5 below it across the plot's height.
+    pub const SPAN_DB: f64 = 54.1;
+    pub const TOP_DB: f64 = 25.6;
+    /// The reduction curve's own span: 18 dB above zero, 20 below it.
+    pub const REDUCTION_SPAN_DB: f64 = 38.0;
+    /// A band's depth control is in steps of this many decibels on the curve.
+    pub const BAND_DB_PER_UNIT: f64 = 1.8;
     /// Where a flat response sits, in the plot's own space.
-    pub const ZERO: f64 = 199.0;
+    pub const ZERO: f64 = H * TOP_DB / SPAN_DB;
     /// The grid's top margin.
     pub const GRID_TOP: f64 = 16.0;
-    /// How many pixels a decibel is worth: three decibels per grid step.
-    pub const PIXELS_PER_DECIBEL: f64 = 65.0 / 3.0;
+    /// How many pixels a decibel of the white curve is worth.
+    pub const PIXELS_PER_DECIBEL: f64 = H / SPAN_DB;
+    /// How many pixels a decibel of the reduction curve is worth.
+    pub const REDUCTION_PIXELS_PER_DECIBEL: f64 = H / REDUCTION_SPAN_DB;
 
-    /// The level grid: one line per three decibels.
-    pub const LEVEL: [f64; 6] = [68.0, 134.0, 199.0, 264.0, 330.0, 395.0];
+    /// The level grid: a line every this many pixels at the default range.
+    pub const LEVEL_STEP: f64 = 65.5;
 
     /// The frequency grid: where each line sits, what it is worth, and what
     /// it is labelled.

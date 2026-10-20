@@ -327,6 +327,12 @@ pub const PAPER: Palette = Palette {
 /// White and graphite: a neutral near-white ground, graphite ink and plates,
 /// no hue anywhere but the four bands. The reference's geometry in a
 /// monochrome material.
+/// The eight colours the bands wear, in band order. They are the reference's
+/// own and the same in every palette: a band is told apart by its colour.
+pub const BAND_TINTS: [u32; 8] = [
+    0xF1768E, 0x5BB2DD, 0x4CA78E, 0xB76BDA, 0xF08C49, 0x8573EB, 0x7C7A8B, 0xF174C5,
+];
+
 pub const GRAPHITE: Palette = Palette {
     ground: 0xEEEFF1,
     page: 0xDDDEE1,

@@ -72,6 +72,8 @@ pub struct Model {
     pub low_latency: bool,
     /// The engine's quality: normal, high, ultra.
     pub quality: usize,
+    /// Which of the graph's display ranges the chip is on.
+    pub range: usize,
 }
 
 impl Default for Model {
@@ -93,6 +95,7 @@ impl Default for Model {
             delta: false,
             low_latency: false,
             quality: 0,
+            range: graph::DEFAULT_RANGE,
         }
     }
 }
@@ -112,13 +115,17 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // so opening it shows on this frame, not the next.
     let asks = presets::bar_asks(ui, &mut m.presets);
     m.actions.extend(asks.into_iter().map(Action::Preset));
+    // The chip steps through the display ranges.
+    if ui.get("range").clicked {
+        m.range = (m.range + 1) % graph::RANGES.len();
+    }
     stack![
         // The plot, under the toolbar's band.
         col![
             block(W, BAR).shrink(0),
             row![
                 block(LEFT, space::NONE).shrink(0),
-                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot)
+                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range)
             ]
             .w(W),
         ]

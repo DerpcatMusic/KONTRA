@@ -20,7 +20,7 @@ use mui::prelude::*;
 pub const PLOT_ID: &str = "plot";
 
 /// The plot itself, drawn from the engine's data and the handles it is given.
-pub fn plot(handles: &[Handle], view: &PlotView) -> El {
+pub fn plot(handles: &[Handle], view: &PlotView, range: usize) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let mut draws: Vec<Draw> = Vec::new();
@@ -87,14 +87,12 @@ pub fn plot(handles: &[Handle], view: &PlotView) -> El {
         draws.push(Draw::stroke(Path::polyline(edge, false), c(t.plot_ink), stroke::RULE));
     }
 
-    for &y in &LEVEL {
-        if (y - ZERO).abs() > plot::ZERO_MARGIN {
-            draws.push(Draw::stroke(
-                line(pt(0.0, y), pt(PLOT_W, y)),
-                ca(t.plot_ink, t.veil),
-                stroke::HAIR,
-            ));
-        }
+    for y in level_lines(range) {
+        draws.push(Draw::stroke(
+            line(pt(0.0, y), pt(PLOT_W, y)),
+            ca(t.plot_ink, t.veil),
+            stroke::HAIR,
+        ));
     }
     for &(x, _, _) in &FREQ {
         draws.push(Draw::stroke(
@@ -154,10 +152,10 @@ pub fn plot(handles: &[Handle], view: &PlotView) -> El {
         ticks_row()
             .anchor(Align::Start, Align::Start)
             .h(plot::TICK_ROW_H),
-        ticks_col()
+        ticks_col(range)
             .anchor(Align::End, Align::Start)
             .w(plot::LEVEL_CELL * 2.0 + space::TIGHT),
-        range_chip()
+        range_chip(range)
             .anchor(Align::End, Align::End)
             .offset(-space::XS, -(space::L + space::TIGHT)),
     ]
@@ -166,14 +164,14 @@ pub fn plot(handles: &[Handle], view: &PlotView) -> El {
 }
 
 /// The running range: the span the plot is showing, in the corner.
-fn range_chip() -> El {
+fn range_chip(range: usize) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     stack![
         block(plot::RANGE_W, plot::RANGE_H)
             .radius(SKIN.corners.field)
             .fill(ca(t.range_chip, t.chip_alpha)),
-        label("-9", ty::MICRO, c(t.ink_quiet))
+        label(RANGES[range].1, ty::MICRO, c(t.ink_quiet))
             .anchor(Align::Start, Align::Center)
             .offset(space::XS, space::NONE),
         glyph(Icon::Down, icon::SMALL, c(t.ink_quiet))
@@ -181,6 +179,8 @@ fn range_chip() -> El {
             .offset(-space::TIGHT, space::NONE),
     ]
     .size(plot::RANGE_W, plot::RANGE_H)
+    .tipped("range")
+    .cursor(Cursor::Hand)
 }
 
 /// A child of the plot, anchored where the design puts it.
@@ -214,17 +214,19 @@ fn ticks_row() -> El {
 
 /// The level labels: the same trick down the plot's right edge, for the two
 /// lines that carry a number.
-fn ticks_col() -> El {
+fn ticks_col(range: usize) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let cell = plot::LEVEL_CELL;
     let mut cells: Vec<El> = Vec::new();
     let mut top = 0.0;
-    for &(y, name) in &[(LEVEL[3], "-3"), (LEVEL[4], "-6")] {
+    let k = RANGES[range].0;
+    let names = [format!("-{k}"), format!("-{}", 2 * k)];
+    for (y, name) in below_zero(range).into_iter().zip(&names) {
         cells.push(block(0.0, y - cell / 2.0 - top).shrink(0));
         cells.push(
             centred(
-                label(name, ty::MICRO, c(t.ink_quiet)),
+                label(name.as_str(), ty::MICRO, c(t.ink_quiet)),
                 plot::LEVEL_COL_W,
                 cell,
             )
@@ -240,7 +242,35 @@ fn ticks_col() -> El {
 /// its decibels are held to -22..19.8, and a cut hangs below the zero line.
 fn gain_y(gain: f32) -> f64 {
     let db = (20.0 * gain.max(0.05).log10()).clamp(-22.0, 19.8);
-    (ZERO - f64::from(db) * PIXELS_PER_DECIBEL).clamp(GRID_TOP, PLOT_H)
+    (ZERO - f64::from(db) * REDUCTION_PIXELS_PER_DECIBEL).clamp(GRID_TOP, PLOT_H)
+}
+
+/// How far apart the grid's lines are at a range: a step of the range's own
+/// size, three of which make the default label.
+fn level_step(range: usize) -> f64 {
+    LEVEL_STEP * f64::from(RANGES[range].0) / 3.0
+}
+
+/// The grid's lines above and below the zero line, which carries its own.
+fn level_lines(range: usize) -> Vec<f64> {
+    let step = level_step(range);
+    let mut lines = Vec::new();
+    let mut n = 1.0;
+    while ZERO - n * step > GRID_TOP || ZERO + n * step < PLOT_H {
+        for y in [ZERO - n * step, ZERO + n * step] {
+            if (GRID_TOP..PLOT_H).contains(&y) {
+                lines.push(y);
+            }
+        }
+        n += 1.0;
+    }
+    lines
+}
+
+/// The two lines below zero that carry a number.
+fn below_zero(range: usize) -> [f64; 2] {
+    let step = level_step(range);
+    [ZERO + step, ZERO + 2.0 * step]
 }
 
 /// The depth curves: what the bands ask of the reduction. The second
@@ -252,7 +282,7 @@ fn depth_curves(draws: &mut Vec<Draw>, view: &PlotView) {
         (0..PLOT_BINS)
             .map(|index| {
                 let x = x_for_frequency(f64::from(plot_frequency(index)));
-                let y = (ZERO + f64::from(view.depth[channel][index]) * PIXELS_PER_DECIBEL)
+                let y = (ZERO - f64::from(view.depth[channel][index]) * PIXELS_PER_DECIBEL)
                     .clamp(GRID_TOP, PLOT_H);
                 pt(x, y)
             })

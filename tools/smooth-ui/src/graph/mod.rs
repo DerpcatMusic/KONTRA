@@ -23,6 +23,7 @@ pub fn response(
     bands: &mut [Band],
     selected: &mut usize,
     view: &PlotView,
+    range: usize,
 ) -> El {
     // A drag on a handle moves it. The tag is latched at the press, so it
     // names the band the gesture took even when the pointer has left it.
@@ -44,11 +45,13 @@ pub fn response(
         })
         && let Some(index) = bands.iter().position(|band| !band.active)
     {
+        let frequency = frequency_for_x(point.x);
+        let depth = depth_for_y(point.y);
         bands[index] = Band {
-            frequency: frequency_for_x(point.x),
-            depth: depth_for_y(point.y),
+            frequency,
+            depth,
             active: true,
-            ..Band::at(1000.0, 0.0, 2, true)
+            ..Band::at(1000.0, 0.0, shape_for_drop(frequency, depth * BAND_DB_PER_UNIT), true)
         };
         *selected = index;
     }
@@ -66,7 +69,7 @@ pub fn response(
             pill: band.is_edge(),
         })
         .collect();
-    draw::plot(&handles, view)
+    draw::plot(&handles, view, range)
 }
 
 /// The band the plot's handle gesture is holding, if any.
