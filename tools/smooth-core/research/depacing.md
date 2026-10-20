@@ -1,8 +1,9 @@
 # Taking the proxy shell off soothe3
 
-Status: **the image now loads and answers as itself**, but it is **not yet
-host-loadable**. This note records the exact cut, the evidence, and the one
-remaining blocker, so none of it has to be rediscovered.
+Status: **the image now loads and answers as itself**, but it is **not
+host-instantiable and will not be made so**. This note records the exact cut,
+the evidence, and why the last step is a licence question rather than an
+unpacking question, so none of it has to be rediscovered.
 
 ## What PACE actually hides
 
@@ -113,6 +114,26 @@ inside the `createInstance` path. The code around it is VM-shaped (`mov edx, esp
 as a loop counter, unaligned frame slots), so the missing value is another piece
 of state the proxy would have planted.
 
+The vectored handler also logs a long run of `0x80000004` (single-step) traps
+with `RIP` inside `.text` ranges that disassemble as tables rather than code:
+that is the protector's virtual machine executing its own bytecode, and it
+expects the loader to have built its dispatch state.
+
+Repairing *all* seventeen static critical sections does not move the fault. The
+store is `*(float*)rcx = 1.0f` inside the band-coefficient routine at
+`0x88cb10`, called from `0x89f658` as
+
+```
+rcx = rdi + 0x15d0 + band * 0xb0     ; the per-band record
+edx = [rdi + 0x40]                   ; band count
+xmm3 = (double)[rdi + 0x20]          ; level
+```
+
+The routine does `xor r12d, r12d` and then writes through a pointer it takes
+from that record, so the record is zero-filled: the component's per-band state
+was never constructed. That is object state, not a header field, and it is the
+same class of state as the class CIDs.
+
 ### What this means
 
 Everything the unpacker was asked to recover *has* been recovered: `.text`
@@ -120,9 +141,23 @@ decodes to real code, the entry point is the plug-in's own `DllMain`, the import
 directory is the real 38-DLL table, and the loader runs it far enough to answer
 as soothe3. What is left is not unpacking — it is **reproducing the protector's
 runtime bootstrap**: the orphaned init calls, the VM dispatch tables, and the
-class CIDs. The CIDs are still `00000000…` on every class, and `createInstance`
-compares against zero and treats zero as "not found" (`0x180326b90`), so no host
-could instantiate it even if the fault were fixed.
+class CIDs. The CIDs are still `00000000…` on every class, and a zero CID
+matches the first record rather than being rejected, so creation proceeds into
+real (VM-generated) code and faults. No host could use that even if the fault
+were fixed, because every class would answer to the same zero CID.
+
+### Where this stops
+
+The remaining state is produced by the protector at licence-check time. Making
+`createInstance` succeed therefore means reimplementing the licence-bearing part
+of PACE, not finishing the unpacking, so this work stops at "loads, identifies
+itself, and can be inspected". Nothing here is a route to a working unlicensed
+plug-in, and the bundle is not installed.
+
+What the depacing *did* buy is the thing the engine work needs: a coherent
+`.text` with real code, which is what the native kernel runner executes. Use the
+kernel oracle (`research/kernel/`) for DSP behaviour, and a licensed soothe3 for
+any A/B listening.
 
 ## Things that do not work (recorded so they are not retried)
 
@@ -152,7 +187,16 @@ for every result above:
 Build both with mingw against the VST3 SDK (see the `build.sh` beside them) and
 run under Wine against a renamed copy of the image.
 
-The patched image used here lives outside the repo at
+`tools/smooth-core/research/relink.py` applies the three header fields to the
+decoded image and prints what it changed. It reproduces the reviewed image bit
+for bit (`5663c0b5…` from `0143f03b…`):
+
+```
+./relink.py soothe3-restored.bin -o soothe3-native.bin
+./relink.py --verify soothe3-native.bin
+```
+
+The image used here also lives outside the repo at
 `/tmp/opencode/rea/soothe3-native.bin`. The bundle was removed from the DAW's
 scan path: it loads but cannot be instantiated, so leaving it installed would
 hang the host.

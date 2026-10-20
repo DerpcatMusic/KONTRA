@@ -28,6 +28,33 @@ using namespace Steinberg::Vst;
 
 static HMODULE g_module = nullptr;
 
+// Prints the faulting instruction and every stack word that looks like a return
+// address into the module, so the crash can be walked back by hand.
+static LONG WINAPI on_exception(EXCEPTION_POINTERS* info) {
+    auto base = static_cast<DWORD64>(reinterpret_cast<uintptr_t>(g_module));
+    DWORD64 rip = info->ContextRecord->Rip;
+    if (info->ExceptionRecord->ExceptionCode == 0x40010006 ||
+        info->ExceptionRecord->ExceptionCode == 0xe06d7363) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    printf("EXCEPTION code=%#lx rip rva=%#llx rsp=%p\n", info->ExceptionRecord->ExceptionCode,
+           static_cast<unsigned long long>(rip - base),
+           reinterpret_cast<void*>(info->ContextRecord->Rsp));
+    if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        printf("   access=%llu address=%p\n",
+               static_cast<unsigned long long>(info->ExceptionRecord->ExceptionInformation[0]),
+               reinterpret_cast<void*>(info->ExceptionRecord->ExceptionInformation[1]));
+    }
+    auto* sp = reinterpret_cast<const DWORD64*>(reinterpret_cast<uintptr_t>(info->ContextRecord->Rsp));
+    for (int i = 0; i < 128; i++) {
+        DWORD64 value = sp[i];
+        if (value >= base && value < base + 0x9000000ULL) {
+            printf("   stack[%3d] rva=%#llx\n", i, static_cast<unsigned long long>(value - base));
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 struct Job {
     IPluginFactory* factory;
     TUID cid;
@@ -184,6 +211,7 @@ static void enumerate(IPluginFactory* factory) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    AddVectoredExceptionHandler(1, on_exception);
 
     const char* mode = argc > 2 ? argv[2] : "enum";
     wchar_t path[MAX_PATH];
@@ -224,10 +252,18 @@ int main(int argc, char** argv) {
     // deadlocks (LockCount 0 instead of -1).
     {
         auto module_base = reinterpret_cast<unsigned char*>(g_module);
-        for (unsigned offset : {0x2779d78u, 0x2779db0u}) {
+        static const unsigned kLocks[] = {
+            0x1dd30c0u, 0x205bce0u, 0x26d6700u, 0x26d7988u, 0x26d79c0u,
+            0x26d79f8u, 0x26d7a30u, 0x2772e30u, 0x2777e60u, 0x2779910u,
+            0x2779b70u, 0x2779ce8u, 0x2779d20u, 0x2779d78u, 0x2779db0u,
+            0x2779f60u,
+        };
+        for (unsigned offset : kLocks) {
             auto* cs = reinterpret_cast<CRITICAL_SECTION*>(module_base + offset);
-            printf("cs 0x%x before: lockCount=%ld recursion=%ld owner=%p\n", offset,
-                   cs->LockCount, cs->RecursionCount, cs->OwningThread);
+            if (cs->LockCount != 0 || cs->OwningThread != nullptr) {
+                continue;
+            }
+            printf("cs 0x%x uninitialised -> fixing\n", offset);
             if (cs->LockCount == 0 && cs->OwningThread == nullptr) {
                 InitializeCriticalSection(cs);
                 printf("cs 0x%x initialised by hand -> lockCount=%ld\n", offset, cs->LockCount);
