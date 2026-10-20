@@ -831,6 +831,10 @@ impl PluginLogic for Smooth {
         // what was published is still settling.
         let telemetry = Arc::clone(&params.plot);
         let changed_telemetry = Arc::clone(&params.plot);
+        // A click leaves its action in the model for the next frame to do, so
+        // the editor asks for that frame rather than waiting for the engine.
+        let pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pending_in = Arc::clone(&pending);
         let mut published: u64 = 0;
         let mut seen: u64 = 0;
         let mut depth_for: Option<([BandRecord; 8], bool)> = None;
@@ -1013,13 +1017,14 @@ impl PluginLogic for Smooth {
             mirror.delta.set_value(i64::from(model.delta));
             mirror.low_latency.set_value(i64::from(model.low_latency));
             mirror.quality.set_value(model.quality as i64);
+            pending_in.store(!model.actions.is_empty(), std::sync::atomic::Ordering::Relaxed);
             tree
         })
         // The host may resize the window; the design scales to fit it.
         .resizable((W * 0.75, H * 0.75))
         .changed(move || {
             let sequence = changed_telemetry.sequence();
-            let changed = sequence != seen;
+            let changed = sequence != seen || pending.swap(false, std::sync::atomic::Ordering::Relaxed);
             seen = sequence;
             changed
         })

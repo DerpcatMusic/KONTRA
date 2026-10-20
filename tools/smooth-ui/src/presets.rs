@@ -117,7 +117,7 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
         p.search = search;
         p.top = 0;
     }
-    let search_el = field.el;
+    let search_el = field.el.fill(c(t.ink)).radius(radius::FIELD);
 
     let mut lines: Vec<El> = Vec::new();
     for &index in shown.iter().skip(p.top).take(VISIBLE) {
@@ -184,7 +184,7 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
         .align(Align::Center),
         col(lines).gap(space::TIGHT),
         row![
-            name_field.el.grow(1.0),
+            name_field.el.fill(c(t.ink)).radius(radius::FIELD).grow(1.0),
             action_pill("save").tipped("preset-save"),
             if can_delete {
                 action_pill("delete").tipped("preset-delete")
