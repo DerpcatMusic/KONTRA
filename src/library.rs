@@ -785,9 +785,11 @@ fn visit(
     }
     progress.folders.fetch_add(1, Ordering::Relaxed);
     let l = list(dir, progress);
+    // Loose banks at the root are libraries of their own, not the root's presets.
+    let presets = l.presets - if depth == 0 { l.banks.len() } else { 0 };
     let library = l.nicnt.is_some()
         || l.instruments
-        || (l.presets > 0 && (l.samples || l.monolith))
+        || (presets > 0 && (l.samples || l.monolith))
         // Below the root, a folder of presets: at the root, stray presets
         // must not hide the libraries beside them.
         || (depth > 0 && l.presets > 0);
@@ -1982,6 +1984,23 @@ pub(crate) mod tests {
             "clear bank must not receive an access warning"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "library-access")]
+    fn a_root_bank_beside_samples_does_not_hide_the_libraries_below() {
+        let root = tree(
+            "root-bank-samples",
+            &[
+                ("Samples/a.wav", ""),
+                ("Kontakt/Areia/Areia.nicnt", NICNT),
+                ("Kontakt/Areia/Areia.nki", ""),
+            ],
+        );
+        clear_bank(&root.join("Factory.ufs"));
+        let mut names: Vec<_> = found(&root, false).into_iter().map(|l| l.0).collect();
+        names.sort();
+        assert_eq!(names, ["Areia", "Factory"]);
     }
 
     #[test]
