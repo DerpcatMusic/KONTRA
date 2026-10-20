@@ -575,28 +575,37 @@ impl Engine {
     pub fn max_reduction_db(&self) -> f32 {
         self.max_reduction_db
     }
-    /// Approximate display resampling; no allocation, locks or string formatting.
-    pub fn plot_snapshot<const B: usize>(&self) -> [[f32; B]; 3] {
-        let mut plot = [[0.0; B]; 3];
-        for i in 0..B {
-            let frequency = 20.0 * 1000.0_f32.powf(i as f32 / (B - 1).max(1) as f32);
-            let bin = ((frequency / self.plan.owner_rate * self.plan.n as f32).round() as usize)
-                .min(self.plan.bins - 1);
-            plot[0][i] = 20.0
-                * self.channels[0].magnitude[bin]
-                    .max(self.channels[1].magnitude[bin])
-                    .max(1.0e-6)
-                    .log10();
+    /// The plot's frame: the input spectrum and the reduction each channel took,
+    /// resampled onto the plot's sweep. No allocation, locks or formatting.
+    pub fn plot_frame(&self) -> crate::plot::Frame {
+        let mut frame = crate::plot::Frame::default();
+        // The analysis window attenuates a steady tone by its mean; undo it so
+        // the display reads a sine at its own peak level.
+        let window_gain = self.window.len() as f32 / self.window.iter().sum::<f32>().max(1.0e-6);
+        for i in 0..crate::plot::PLOT_BINS {
+            let frequency = crate::plot::plot_frequency(i);
+            let to_bin = |f: f32| {
+                ((f / self.plan.owner_rate * self.plan.n as f32).round() as usize).min(self.plan.bins - 1)
+            };
+            let bin = to_bin(frequency);
+            // A display point stands for everything up to its neighbours' midpoints,
+            // so a narrow peak between two points is still seen: take the strongest bin.
+            let lo = to_bin(frequency * (crate::plot::plot_frequency(i.saturating_sub(1)) / frequency).sqrt());
+            let hi = to_bin(frequency * (crate::plot::plot_frequency((i + 1).min(crate::plot::PLOT_BINS - 1)) / frequency).sqrt());
+            let loudest = (lo.min(bin)..=hi.max(bin))
+                .map(|k| self.channels[0].magnitude[k].max(self.channels[1].magnitude[k]))
+                .fold(0.0_f32, f32::max);
+            frame.spectrum[i] = 20.0 * (window_gain * loudest).max(1.0e-6).log10();
             for c in 0..2 {
                 let gain = if self.last_bypass {
                     1.0
                 } else {
                     1.0 - self.last_mix + self.last_mix * exp32(self.channels[c].log_response[bin])
                 };
-                plot[c + 1][i] = -20.0 * gain.max(1.0e-6).log10();
+                frame.reduction[c][i] = -20.0 * gain.max(1.0e-6).log10();
             }
         }
-        plot
+        frame
     }
     pub fn reset(&mut self) {
         self.m_precursor.reset();

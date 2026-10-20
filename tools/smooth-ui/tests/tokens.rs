@@ -12,7 +12,13 @@
 use std::fs;
 
 /// The files that compose rather than define.
-const COMPOSED: [&str; 3] = ["src/view.rs", "src/skin.rs", "src/graph.rs"];
+const COMPOSED: [&str; 5] = [
+    "src/view.rs",
+    "src/skin.rs",
+    "src/graph/draw.rs",
+    "src/graph/mod.rs",
+    "src/graph/band.rs",
+];
 
 /// The layout calls that place or size something.
 const LAYOUT: [&str; 6] = [".gap(", ".pad(", ".size(", ".h(", ".w(", ".radius("];

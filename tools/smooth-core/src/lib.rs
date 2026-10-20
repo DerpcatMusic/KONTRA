@@ -41,6 +41,7 @@ pub mod conditioning;
 pub mod dsp;
 pub mod fractional_table;
 pub mod numerics;
+pub mod plot;
 pub mod precursor;
 pub mod projection;
 pub mod projection_log2_table;

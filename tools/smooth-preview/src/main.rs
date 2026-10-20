@@ -19,7 +19,7 @@ use mui::prelude::*;
 use mui::vello::vello_cpu::{Pixmap, RenderContext, Resources};
 use smooth_ui::Model;
 use smooth_ui::{H, W};
-use smooth_ui::{skin, view};
+use smooth_ui::view;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -69,10 +69,14 @@ use smooth_core::weighting::{
     BandRecord, NormalizedRecord, normalized_from_center, normalized_from_q, normalized_from_slope,
 };
 use smooth_core::{EngineBank, Settings};
-use smooth_ui::graph::{PLOT_BINS, Telemetry};
+use smooth_core::plot::{self, Telemetry};
 use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+mod presets;
+mod session;
 
 // ------------------------------------------------------------- parameters --
 
@@ -460,6 +464,13 @@ pub struct SmoothParams {
     /// editor reads it. Not a parameter.
     #[skip]
     pub plot: std::sync::Arc<Telemetry>,
+    /// The undo history and the two parameter sets. Not a parameter: it
+    /// outlives the editor window, so closing it does not lose the history.
+    #[skip]
+    pub session: std::sync::Mutex<session::Session>,
+    /// The preset library: the shipped presets, the user's, and which is loaded.
+    #[skip]
+    pub library: std::sync::Mutex<presets::Library>,
 }
 
 use SmoothParamsParamId as P;
@@ -725,6 +736,11 @@ impl SmoothParams {
 #[derive(Default)]
 pub struct Dsp {
     bank: Option<EngineBank>,
+    /// Samples since the plot was last published, and how many make a frame
+    /// of it: the editor draws sixty a second, so the engine publishes about
+    /// as often instead of once per block.
+    since_publish: usize,
+    publish_every: usize,
 }
 
 impl Dsp {
@@ -744,11 +760,15 @@ impl PluginLogic for Smooth {
     fn init(params: &SmoothParams, _cx: &InitContext) -> Dsp {
         Dsp {
             bank: Dsp::build(48_000.0, params.selection()).ok(),
+            since_publish: 0,
+            publish_every: 800,
         }
     }
 
     fn reset(state: &mut Dsp, params: &SmoothParams, config: &AudioConfig) {
         state.bank = Dsp::build(config.sample_rate, params.selection()).ok();
+        state.since_publish = 0;
+        state.publish_every = (config.sample_rate / 60.0) as usize;
     }
 
     fn process(
@@ -786,9 +806,11 @@ impl PluginLogic for Smooth {
             }
         }
         // The engine's own picture of what it is doing, for the plot.
-        params
-            .plot
-            .publish(bank.active().plot_snapshot::<PLOT_BINS>());
+        state.since_publish += frames;
+        if state.since_publish >= state.publish_every {
+            state.since_publish = 0;
+            params.plot.publish(&bank.active().plot_frame());
+        }
         ProcessStatus::Tail(bank.latency() as u32 + bank.plan().n as u32)
     }
 
@@ -804,14 +826,132 @@ impl PluginLogic for Smooth {
         smooth_ui::theme::from_env();
         let mirror = Arc::clone(&params);
         let mut model = view::Model {
-            telemetry: Arc::clone(&params.plot),
             ..view::Model::default()
         };
-        // The editor repaints when the engine publishes a new plot.
-        let plot = Arc::clone(&params.plot);
+        // The editor repaints when the engine publishes a new plot, and while
+        // what was published is still settling.
+        let telemetry = Arc::clone(&params.plot);
+        let changed_telemetry = Arc::clone(&params.plot);
+        let moving = Arc::new(AtomicBool::new(false));
+        let moving_in = Arc::clone(&moving);
+        let mut published: u64 = 0;
         let mut seen: u64 = 0;
+        let mut depth_for: Option<([BandRecord; 8], bool)> = None;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
+            // The plot: the engine's latest frame, or the last one settling
+            // while nothing is being published. The depth curve is the
+            // bands' own, so it is there with the transport stopped.
+            let sequence = telemetry.sequence();
+            if sequence != published {
+                published = sequence;
+                model.plot.advance(&telemetry.read());
+            } else if model.plot.live {
+                model.plot.idle();
+            }
+            moving_in.store(!model.plot.at_rest(), Ordering::Relaxed);
+            let settings = mirror.settings();
+            if depth_for != Some((settings.bands, settings.hard)) {
+                depth_for = Some((settings.bands, settings.hard));
+                if let Some(curves) = plot::depth_curves(&settings) {
+                    model.plot.depth = curves;
+                }
+            }
+            // The history and the two sets: what the toolbar asked for since
+            // the last frame is done first, then the live values are watched.
+            {
+                let mut session = mirror.session.lock().unwrap_or_else(|e| e.into_inner());
+                let snapshot = |params: &SmoothParams| -> session::Snapshot {
+                    let (ids, values) = params.collect_values();
+                    ids.into_iter().zip(values).collect()
+                };
+                let now = snapshot(&mirror);
+                for action in std::mem::take(&mut model.actions) {
+                    let restore = match action {
+                        view::Action::Preset(ask) => {
+                            let mut library =
+                                mirror.library.lock().unwrap_or_else(|e| e.into_inner());
+                            use smooth_ui::presets::Ask;
+                            match ask {
+                                Ask::Step(step) => {
+                                    if let Some(preset) = library.stepped(step).cloned() {
+                                        presets::apply(mirror.as_ref(), &preset);
+                                        library.current = Some(preset.name);
+                                    }
+                                }
+                                Ask::Load(name) => {
+                                    if let Some(preset) =
+                                        library.presets.iter().find(|p| p.name == name).cloned()
+                                    {
+                                        presets::apply(mirror.as_ref(), &preset);
+                                        library.current = Some(preset.name);
+                                    }
+                                }
+                                Ask::Favourite(name, on) => {
+                                    let _ = library.set_favourite(&name, on);
+                                }
+                                Ask::Save(name) => {
+                                    let category = library
+                                        .presets
+                                        .iter()
+                                        .find(|p| Some(&p.name) == library.current.as_ref())
+                                        .map_or_else(|| "user".to_string(), |p| p.category.clone());
+                                    let preset = presets::Preset {
+                                        name: name.clone(),
+                                        category,
+                                        creator: "you".to_string(),
+                                        favourite: false,
+                                        values: presets::capture(mirror.as_ref()),
+                                        factory: false,
+                                    };
+                                    if library.save(preset).is_ok() {
+                                        library.current = Some(name);
+                                    }
+                                }
+                                Ask::Delete(name) => {
+                                    let _ = library.delete(&name);
+                                    if library.current.as_ref() == Some(&name) {
+                                        library.current = None;
+                                    }
+                                }
+                            }
+                            None
+                        }
+                        view::Action::Undo => session.undo(&now),
+                        view::Action::Redo => session.redo(&now),
+                        view::Action::SwitchAb => Some(session.switch(&now)),
+                        view::Action::CopyAb => {
+                            session.copy_to_other(&now);
+                            None
+                        }
+                    };
+                    if let Some(values) = restore {
+                        mirror.restore_values(&values);
+                    }
+                }
+                let held = view::pointer_down(ui);
+                session.observe(&snapshot(&mirror), held);
+                {
+                    let library = mirror.library.lock().unwrap_or_else(|e| e.into_inner());
+                    model.presets.rows = library
+                        .presets
+                        .iter()
+                        .map(|p| smooth_ui::presets::Row {
+                            name: p.name.clone(),
+                            category: p.category.clone(),
+                            favourite: p.favourite,
+                            factory: p.factory,
+                        })
+                        .collect();
+                    model.presets.current = library
+                        .current
+                        .as_ref()
+                        .and_then(|name| library.presets.iter().position(|p| &p.name == name));
+                }
+                model.ab = session.active();
+                model.can_undo = session.can_undo();
+                model.can_redo = session.can_redo();
+            }
             let selected = model.selected.min(7);
             for slot in Slot::ALL {
                 let (param, say) = slot_param(slot, selected);
@@ -881,9 +1021,11 @@ impl PluginLogic for Smooth {
             mirror.quality.set_value(model.quality as i64);
             tree
         })
+        // The host may resize the window; the design scales to fit it.
+        .resizable((W * 0.75, H * 0.75))
         .changed(move || {
-            let sequence = plot.sequence();
-            let changed = sequence != seen;
+            let sequence = changed_telemetry.sequence();
+            let changed = sequence != seen || moving.load(Ordering::Relaxed);
             seen = sequence;
             changed
         })

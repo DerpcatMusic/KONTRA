@@ -8,6 +8,7 @@
 //! were put.
 
 use crate::graph;
+use crate::presets::{self, Presets};
 use crate::skin::*;
 use crate::slots::{self, Bind, Slider, Slot};
 use crate::theme;
@@ -22,12 +23,41 @@ pub const QUALITY_NAMES: [&str; 3] = ["normal", "high", "ultra"];
 /// proportion of the column's slack, not a distance.
 const NAME_SLACK: f64 = 1.4;
 
+/// Whether the primary pointer button is down: an edit that spans frames is
+/// one edit until it lets go.
+pub fn pointer_down(ui: &Ui) -> bool {
+    ui.pointer().buttons.contains(mui::input::Button::Primary)
+}
+
+/// What a press on the toolbar asks of the host side: the view cannot undo
+/// anything itself, so it says what was asked and the plug-in does it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Action {
+    Undo,
+    Redo,
+    /// Swap to the other parameter set.
+    SwitchAb,
+    /// Replace the other parameter set with a copy of this one.
+    CopyAb,
+    /// Something the preset menu asked for.
+    Preset(presets::Ask),
+}
+
 /// What the editor is showing.
 pub struct Model {
+    /// Which parameter set is live: 0 is a, 1 is b.
+    pub ab: usize,
+    /// The preset bar and its menu.
+    pub presets: Presets,
+    /// What the toolbar asked for since the plug-in last looked.
+    pub actions: Vec<Action>,
+    /// Whether there is anything to undo or to redo.
+    pub can_undo: bool,
+    pub can_redo: bool,
     /// The bands the graph's handles stand for.
     pub bands: [graph::Band; graph::BANDS],
-    /// What the engine is doing, read by the plot.
-    pub telemetry: std::sync::Arc<graph::Telemetry>,
+    /// What the plot draws: the engine's frame, eased, and the depth curves.
+    pub plot: graph::PlotView,
     pub soft: bool,
     /// Every continuous control: its normalised value and what it reads as.
     pub slots: [Slider; Slot::COUNT],
@@ -47,8 +77,13 @@ pub struct Model {
 impl Default for Model {
     fn default() -> Self {
         Self {
+            ab: 0,
+            presets: Presets::default(),
+            actions: Vec::new(),
+            can_undo: false,
+            can_redo: false,
             bands: graph::AT_REST_BANDS,
-            telemetry: std::sync::Arc::new(graph::Telemetry::default()),
+            plot: graph::PlotView::default(),
             soft: true,
             slots: slots::at_rest(),
             selected: 1,
@@ -79,7 +114,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             block(W, BAR).shrink(0),
             row![
                 block(LEFT, space::NONE).shrink(0),
-                graph::response(ui, &mut m.bands, &mut m.selected, &m.telemetry)
+                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot)
             ]
             .w(W),
         ]
@@ -89,6 +124,16 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             .w(W)
             .h(H)
             .anchor(Align::Start, Align::Start),
+        // The preset menu, under the toolbar.
+        {
+            let (menu, asks) = presets::menu(ui, &mut m.presets);
+            m.actions.extend(asks.into_iter().map(Action::Preset));
+            col![
+                block(W, BAR).shrink(0),
+                row![block(TOOLBAR_X, space::NONE).shrink(0), menu],
+            ]
+            .anchor(Align::Start, Align::Start)
+        },
         // The selected band's controls, along the plot's foot.
         col![
             block(W, BAR).shrink(0),
@@ -110,7 +155,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             .justify(Justify::Start)
             .anchor(Align::Start, Align::End),
         // The toolbar, over the rail.
-        row![block(TOOLBAR_X, space::NONE).shrink(0), bar()]
+        row![block(TOOLBAR_X, space::NONE).shrink(0), bar(ui, m)]
             .w(W)
             .justify(Justify::Start)
             .anchor(Align::Start, Align::Start),
@@ -276,16 +321,32 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
 ///
 /// Four groups on one row, spaced by the row's own gap: no spacer blocks, no
 /// optical fudge. Where a group starts follows from what is in it.
-fn bar() -> El {
+fn bar(ui: &mut Ui, m: &mut Model) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
+    let asks = presets::bar_asks(ui, &mut m.presets);
+    m.actions.extend(asks.into_iter().map(Action::Preset));
+    for (id, action) in [
+        ("undo", Action::Undo),
+        ("redo", Action::Redo),
+        ("ab-switch", Action::SwitchAb),
+        ("ab-copy", Action::CopyAb),
+    ] {
+        if ui.get(id).clicked {
+            m.actions.push(action);
+        }
+    }
     row![
         // The view controls, a tight group.
         row![text_button("sc"), icon_button(Icon::Headphones)].gap(space::XS),
-        preset_bar("Smooth vocal", "vocals"),
+        preset_bar(
+            m.presets.title(),
+            m.presets.current_row().map_or("", |r| r.category.as_str()),
+            m.presets.current_row().is_some_and(|r| r.favourite),
+        ),
         row![
-            row![icon_button(Icon::Undo), icon_button(Icon::Redo)].gap(space::XS),
-            row![pair_pill("a", "b", 0), compare_pill("a", "b")].gap(space::XS),
+            row![icon_button(Icon::Undo).id("undo"), icon_button(Icon::Redo).id("redo")].gap(space::XS),
+            row![pair_pill("a", "b", m.ab).id("ab-switch"), compare_pill("a", "b").id("ab-copy")].gap(space::XS),
         ]
         .gap(space::L),
         row![

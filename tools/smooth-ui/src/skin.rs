@@ -343,19 +343,26 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
 /// The current preset, its pager, and what it is for.
 ///
 /// One part, because it is one thing: the reference draws the title, the
-/// pager and the tags on a single plate at one height.
-pub fn preset_bar(title: &str, tag: &str) -> El {
+/// pager and the tags on a single plate at one height. The plate is a button
+/// that opens the menu; the pager's two arrows and the heart are buttons of
+/// their own.
+pub fn preset_bar(title: &str, tag: &str, favourite: bool) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     row![
         row![
-            glyph(Icon::Left, icon::CARET, c(t.ink)),
-            glyph(Icon::Right, icon::CARET, c(t.ink)),
+            glyph(Icon::Left, icon::CARET, c(t.ink)).id("preset-prev"),
+            glyph(Icon::Right, icon::CARET, c(t.ink)).id("preset-next"),
         ]
         .gap(space::L),
-        label(title, ty::LABEL, c(t.ink)).grow(1.0),
+        label(title, ty::LABEL, c(t.ink)).grow(1.0).id("preset-title"),
         row![
-            glyph(Icon::Heart, icon::SMALL, c(t.heart)),
+            glyph(
+                Icon::Heart,
+                icon::SMALL,
+                if favourite { c(t.heart) } else { ca(t.ink, t.veil_soft) },
+            )
+            .id("preset-heart"),
             glyph(Icon::Person, icon::BASE, c(t.ink)),
             outline_chip(tag),
         ]
@@ -368,6 +375,14 @@ pub fn preset_bar(title: &str, tag: &str) -> El {
     .radius(metric::PRESET_H / 2.0)
     .shrink(0)
     .fill(c(t.chip))
+    .id("preset-bar")
+}
+
+/// A pill that does something: a word on a plate.
+pub fn action_pill(s: &str) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    pill(vec![label(s, ty::CAPTION, c(t.ink))], c(t.chip))
 }
 
 // -------------------------------------------------------------- geometry ---
@@ -434,9 +449,12 @@ const RING: f64 = 6.5;
 const SEAM: f64 = 1.5;
 
 /// Where the value arc starts, clockwise from twelve o'clock, and how far a
-/// full turn of the range reaches.
-const ARC_START: f64 = 228.0;
-const ARC_SWEEP: f64 = 259.0;
+/// full turn of the range reaches. Both are the reference's: its knob stores
+/// the start as -0.375 of a turn and the sweep as 0.75 of a turn (the floats
+/// `0xbec00000` and `0x3f400000` in the knob's constructor), and its ring is
+/// `-6.5` px thick (`0xc0d00000`).
+const ARC_START: f64 = 225.0;
+const ARC_SWEEP: f64 = 270.0;
 
 /// A knob: a ring with an arc for `value`, and a flat body inside it.
 ///
@@ -508,7 +526,7 @@ pub fn knob(
     .id(id.clone())
     .focusable()
     .cursor(Cursor::Grab)
-    .tip(format!("{id}: drag up or down, Shift for fine"))
+    .tip(crate::tips::of(id.as_str()).map_or_else(|| format!("{id}: drag up or down, Shift for fine"), str::to_string))
     .a11y(A11y::Slider {
         value: *value,
         min: *range.start(),

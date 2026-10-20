@@ -19,6 +19,7 @@ cannot leave the screen, and `magick import` only sees what is on it.
 """
 import ctypes as C
 import pathlib
+import random
 import subprocess
 import sys
 import threading
@@ -146,7 +147,7 @@ def main():
             plugin.main(pointer)
             time.sleep(0.05)
 
-    def play(frames=8192, frequency=1000.0, events=None):
+    def play(frames=88200, frequency=1000.0, events=None):
         """Run the engine over a tone, so the plot has something to show.
 
         `events` is the output-event sink: give it the recorder and the block
@@ -164,7 +165,18 @@ def main():
         for start in range(0, frames, 256):
             for i in range(256):
                 index = start + i
-                sample = math.sin(2 * math.pi * frequency * index / 44100.0) * 0.5
+                # A voice-like signal: a 220 Hz source with a strong formant
+                # near 3 kHz and a ring at 7 kHz, over a little noise, so the
+                # plot has resonances to find.
+                t = index / 44100.0
+                sample = 0.0
+                for k in range(1, 60):
+                    f = 220.0 * k
+                    if f > 18000.0:
+                        break
+                    gain = 1.0 / k + 0.9 * math.exp(-((f - 3000.0) / 500.0) ** 2) + 0.5 * math.exp(-((f - 7000.0) / 250.0) ** 2)
+                    sample += gain * math.sin(2 * math.pi * f * t)
+                sample = sample * 0.12 + (random.random() - 0.5) * 0.01
                 arrays[0][i] = arrays[1][i] = sample
             process = Process(
                 start, 256, None, C.pointer(audio_in), C.pointer(audio_out), 1, 1,

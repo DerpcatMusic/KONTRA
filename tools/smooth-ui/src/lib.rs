@@ -11,11 +11,12 @@
 //! tree in a DAW window.
 
 pub mod graph;
-pub mod graph_data;
+pub mod presets;
 pub mod icons;
 pub mod skin;
 pub mod slots;
 pub mod theme;
+pub mod tips;
 pub mod tokens;
 pub mod view;
 
