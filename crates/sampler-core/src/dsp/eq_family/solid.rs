@@ -18,8 +18,10 @@
 //! - LP: an RBJ high-shelf cut plus a peak (below 60 kHz) or an RBJ low-pass (12 dB/oct), from
 //!   one of four table sets chosen by rate (46, 60, 120 kHz).
 //! Peaks are Orfanidis designs with a prescribed Nyquist gain (0x141ac4cf0). OPEN: coefficient
-//! smoothing (Kontakt builds the core with smoothing on: 20 ms in whole blocks, update
-//! 0x141ab4d70); here coefficients switch at the band stage's control rate.
+//! smoothing (Kontakt builds the core with smoothing on: 20 ms in whole blocks). The update
+//! address once recorded here, 0x141ab4d70, is an unrelated object helper in 8.13.1 (it sets a
+//! byte at +0x13da1 and calls 0x140acbe30 with a string at +0x13db0), so the law is still to be
+//! located from the setter; here coefficients switch at the band stage's control rate.
 use sampler_ir::fx::eq::{Kind, SolidSection};
 use std::f64::consts::PI;
 
