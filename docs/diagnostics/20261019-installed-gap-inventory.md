@@ -204,7 +204,16 @@ and where the search starts in `Kontakt8.exe` (SHA256
   `+0x13da1` and calls `0x140acbe30` with a string at `+0x13db0`, with
   `ws2_32` imports nearby — so the search has to restart from the setter, for
   a second coefficient set and the per-block step that matches "20 ms in
-  whole blocks".
+  whole blocks". The setter itself (`0x141ac70f0`) is a 34-parameter dispatch
+  (jump table at `0x1ac7220`, index byte table at `0x1ac7258`): it stores each
+  knob at `+0x13e30 + 4n`, marks two dirty flags (`+0x13e70`, `+0x13e80`) and
+  derives two values through the table evaluator `0x141a907c0` into `+0x13e60`
+  and `+0x13da4`. The process entry `0x141aaa620` is not the coefficient math
+  either: it selects one of about 32 implementations from mode flags
+  (`+0xef98..+0xef9c`, `+0x13da0`, `+0x13da1`, `+0x13e71`) through
+  `[0x1aaa8a8]`. So the ramp is either inside one of those implementations or
+  above the core in the engine-parameter layer — in which case the same 20 ms
+  would apply to every module's knobs, which no other row reports.
 
 ## Reporting rules used by the tool
 
