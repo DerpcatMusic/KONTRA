@@ -123,6 +123,7 @@ pub fn name_hash(name: &str) -> i32 {
 #[derive(Default)]
 pub struct Module {
     code: Vec<I>,
+    sites: Vec<(u32, Span, Option<&'static str>)>,
     texts: Vec<String>,
     group_table: Option<u16>,
     calls: Vec<(usize, FnId)>,
@@ -197,6 +198,7 @@ impl<'h> Unit<'h> {
             callback_type: cb,
             ui_id,
             code: module.code,
+            sites: module.sites,
             texts: module.texts,
             group_table: module.group_table,
             calls: module.calls,
@@ -207,6 +209,7 @@ impl<'h> Unit<'h> {
             span,
             statement_span: None,
             call_span: None,
+            current_builtin: None,
             tdepth: 0,
             signal,
         };
@@ -275,6 +278,7 @@ impl<'h> Unit<'h> {
         entries.push((index, ranges, ui_id.unwrap_or(0), span));
         let module = Module {
             code: g.code,
+            sites: g.sites,
             texts: g.texts,
             group_table: g.group_table,
             calls: g.calls,
@@ -291,8 +295,10 @@ impl<'h> Unit<'h> {
         })
     }
 
-    pub fn finish(&mut self, programs: &mut [Program]) -> Result<()> {
-        for (_, _, _, module) in std::mem::take(&mut self.modules) {
+    pub fn finish(&mut self, programs: &mut [Program], source: &str) -> Result<()> {
+        let starts: Vec<_> = std::iter::once(0).chain(source.bytes().enumerate()
+            .filter_map(|(i, b)| (b == b'\n').then_some(i + 1))).collect();
+        for (_, cb, _, module) in std::mem::take(&mut self.modules) {
             if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
                 eprintln!(
                     "AUDIT {{\"stage\":\"ksp_shared_module\",\"slot\":{},\"entries\":{},\"instructions\":{},\"instruction_bytes\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
@@ -317,8 +323,17 @@ impl<'h> Unit<'h> {
                     | "set_key_color" | "set_key_name" | "set_key_type" | "set_key_pressed"
                     | "set_key_pressed_support" | "set_keyrange" | "remove_keyrange" | "message"))
                 .map(|(id, _)| id as u16).collect();
+            let sites = module.sites.into_iter().map(|(pc, span, builtin)| {
+                let position = Fault { span, builtin, message: String::new() }
+                    .locate_indexed(source, crate::diag::Kind::Error, &starts);
+                sampler_core::SourceSite { pc, offset: position.offset as u32,
+                    line: position.line, column: position.column, builtin }
+            }).collect();
+            let callback = self.hir.callbacks.iter().find(|c| callback_type(c.kind) == cb)
+                .map(|c| callback_name(c.kind)).unwrap_or("generated callback");
             let shared = Program::new(module.code)
                 .and_then(|p| p.with_texts(&texts))
+                .and_then(|p| p.with_source_sites(sites))
                 .map_err(|e| Fault {
                     span: Span::default(),
                     builtin: None,
@@ -326,6 +341,8 @@ impl<'h> Unit<'h> {
                 })?
                 .with_wait_lifetime(WaitLifetime::Callback)
                 .with_source_slot(self.slot)
+                .with_diagnostic_callback(callback)
+                .with_source_digest(crate::source_fingerprint(source))
                 .with_snapshot_overlay_services(&snapshot_ui_services);
             for (index, ranges, ui_id, span) in module.entries {
                 // The initializer cache stores values/model metadata, not
@@ -391,7 +408,8 @@ impl<'h> Unit<'h> {
             );
         }
         Program::new(code)
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback)
+                .with_source_slot(self.slot).with_diagnostic_callback("on init engine replay"))
             .map_err(|e| Fault {
                 span: Span::default(),
                 builtin: None,
@@ -409,6 +427,7 @@ impl<'h> Unit<'h> {
             callback_type: b::cb::LISTENER,
             ui_id: None,
             code: Vec::new(),
+            sites: Vec::new(),
             texts: Vec::new(),
             group_table: None,
             calls: Vec::new(),
@@ -419,6 +438,7 @@ impl<'h> Unit<'h> {
             span,
             statement_span: None,
             call_span: None,
+            current_builtin: None,
             tdepth: 0,
             signal: Some(signal),
         };
@@ -467,6 +487,7 @@ impl<'h> Unit<'h> {
             .map(|p| {
                 p.with_wait_lifetime(WaitLifetime::Callback)
                     .with_source_slot(g.u.slot)
+                    .with_diagnostic_callback("listener driver")
             })
             .map_err(|e| Fault {
                 span,
@@ -528,6 +549,7 @@ struct Gen<'u, 'h> {
     callback_type: i32,
     ui_id: Option<i32>,
     code: Vec<I>,
+    sites: Vec<(u32, Span, Option<&'static str>)>,
     texts: Vec<String>,
     /// Base of the group names, appended once as consecutive text constants.
     group_table: Option<u16>,
@@ -540,6 +562,7 @@ struct Gen<'u, 'h> {
     span: Span,
     statement_span: Option<Span>,
     call_span: Option<Span>,
+    current_builtin: Option<&'static str>,
     tdepth: u32,
     /// The timer signal a listener body program serves.
     signal: Option<i32>,
@@ -579,6 +602,10 @@ impl Gen<'_, '_> {
             inspect
                 .ops
                 .push((self.statement_span.unwrap_or(self.span), crate::parity::operation_name(&op)));
+        }
+        let span = self.call_span.or(self.statement_span).unwrap_or(self.span);
+        if self.sites.last().is_none_or(|(_, previous, builtin)| *previous != span || *builtin != self.current_builtin) {
+            self.sites.push((self.code.len() as u32, span, self.current_builtin));
         }
         self.code.push(op);
         Ok(())
@@ -882,6 +909,13 @@ impl Gen<'_, '_> {
     // Expressions.
 
     fn value(&mut self, e: &Expr, dst: u16) -> Result<()> {
+        let previous = self.call_span.replace(e.span);
+        let result = self.value_inner(e, dst);
+        self.call_span = previous;
+        result
+    }
+
+    fn value_inner(&mut self, e: &Expr, dst: u16) -> Result<()> {
         if let Some(c) = fold(self.u.hir, e) {
             match c {
                 Const::Int(n) => return self.set(dst, i64::from(n)),
@@ -1707,8 +1741,10 @@ impl Gen<'_, '_> {
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         let previous = self.call_span.replace(span);
+        let previous_builtin = self.current_builtin.replace(builtin.name());
         let result = self.builtin_inner(builtin, args, dst, span);
         self.call_span = previous;
+        self.current_builtin = previous_builtin;
         result
     }
 
@@ -4376,3 +4412,14 @@ fn host_service(builtin: Builtin) -> Coverage {
 #[cfg(test)]
 #[path = "lower_display_ext_tests.rs"]
 mod display_ext_tests;
+
+fn callback_name(kind: CallbackKind) -> &'static str {
+    use CallbackKind::*;
+    match kind {
+        Init => "on init", Note => "on note", Release => "on release",
+        Controller => "on controller", PolyAt => "on poly_at", UiControl(_) => "on ui_control",
+        UiControls => "on ui_controls", UiUpdate => "on ui_update", Listener => "on listener",
+        PgsChanged => "on pgs_changed", PersistenceChanged => "on persistence_changed",
+        AsyncComplete => "on async_complete", Rpn => "on rpn", Nrpn => "on nrpn",
+    }
+}

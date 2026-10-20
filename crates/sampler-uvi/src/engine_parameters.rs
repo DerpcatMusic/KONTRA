@@ -216,6 +216,18 @@ pub(crate) fn live_names(node: roxmltree::Node) -> Vec<&'static str> {
             }
         }
     }
+    // A keygroup matrix is retained as the full authored N-port source matrix
+    // (`register_source_matrices`/`source_matrix_cells`), so every cell that the
+    // decoded working width admits has a runtime control even though the fixed
+    // stereo insert layout only names the 2x2 pair. A bus matrix keeps exactly
+    // the `lanes` it was translated with.
+    if kind == "GainMatrix" && !bus_scope(node) {
+        for p in parameters::definitions(kind) {
+            if matrix_cell(p.name).is_some() && !out.contains(&p.name) {
+                out.push(p.name);
+            }
+        }
+    }
     if bypassable(node) {
         out.push("Bypass");
     } else if kind == "AuxEffect"

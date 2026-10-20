@@ -903,7 +903,7 @@ impl Instrument {
                 return Err(invalid("source output port identity or explicit matrix is invalid"));
             }
         }
-        if self.processing_scopes.len() > 256 {
+        if self.processing_scopes.len() > crate::MAX_PROCESSING_SCOPES {
             return Err(ValidationError::ZoneRouting { owner: "processing scopes".into(),
                 reason: "processing scope definition capacity exceeded" });
         }

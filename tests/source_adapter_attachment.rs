@@ -129,10 +129,20 @@ fn both_normal_resident_readers_retain_all_original_ordinals_and_physical_assets
         }
     }
 }
-fn graph(channels: usize, members: usize) -> ir::ProcessingScope {
+fn projection(channels: usize) -> ir::ChannelMatrix {
     let mut cells = vec![0.; channels * 2];
     cells[channels - 1] = 1.;
     cells[channels * 2 - 1] = -0.5;
+    ir::ChannelMatrix {
+        input: ir::SignalLayout { channels },
+        output: ir::SignalLayout { channels: 2 },
+        cells,
+        arithmetic: ir::MatrixArithmetic::SeparateMulAddF32,
+    }
+}
+fn graph(channels: usize, members: usize) -> ir::ProcessingScope {
+    let edges = projection(channels);
+    let cells = edges.cells.clone();
     ir::ProcessingScope {
         members: (0..members).map(ir::ZoneRef).collect(),
         sum: ir::ProcessingSumLaw::OrderedF32,
@@ -201,7 +211,18 @@ fn normal_uvi_loader_with_explicit_core_graph_retains_three_players_groups_targe
         assert_eq!(targets.len(), 3);
         // Application-authored generic core contract, not a native auto-admission.
         // Original groups/targets/source identities are deliberately NOT removed.
-        t.instrument.processing_scopes.push(graph(channels, 3));
+        // The authored scope is the single membership, so the adapter's
+        // uncompiled keygroup recipe is dropped rather than duplicated. Its
+        // shared keygroup chain stays the authored scope's own output chain.
+        let chain = t.instrument.source_indices.processing.iter().find_map(|r| r.chain);
+        t.instrument.source_indices.processing.clear();
+        t.instrument.source_indices.processing_matrices.clear();
+        t.instrument.source_indices.processing_parameters.clear();
+        t.instrument.source_indices.processing_ports.clear();
+        t.instrument.source_indices.uvi_native_processing.clear();
+        let mut scope = graph(channels, 3);
+        scope.chain = chain;
+        t.instrument.processing_scopes.push(scope);
         let loaded = sampler_uvi::assemble_translated(t, 48000).unwrap();
         assert_eq!(loaded.instrument.zones.len(), 3);
         assert_eq!(loaded.instrument.groups.len(), groups);
@@ -324,7 +345,19 @@ fn normal_uvi_family_group_purge_and_reload_use_the_frozen_original_source_and_k
     let program = fixture.program("wide.uvip", "wide.wav", "");
     let reference = fixture.program("reference.uvip", "reference.wav", "");
     let mut translated = sampler_uvi::translate_path(&program).unwrap();
-    translated.instrument.processing_scopes.push(graph(6, 3));
+    // The caller supplies the actual project graph for this wide source. Drop
+    // the adapter's uncompiled keygroup recipe so the authored scope below is
+    // the single membership for these zones; the shared keygroup chain remains
+    // that authored scope's own output chain.
+    let chain=translated.instrument.source_indices.processing.iter().find_map(|r|r.chain);
+    translated.instrument.source_indices.processing.clear();
+    translated.instrument.source_indices.processing_matrices.clear();
+    translated.instrument.source_indices.processing_parameters.clear();
+    translated.instrument.source_indices.processing_ports.clear();
+    translated.instrument.source_indices.uvi_native_processing.clear();
+    let mut scope=graph(6, 3);
+    scope.chain=chain;
+    translated.instrument.processing_scopes.push(scope);
     let loaded = sampler_uvi::assemble_translated(translated, 48000).unwrap();
     let targets: Vec<_> = loaded
         .instrument
@@ -334,7 +367,7 @@ fn normal_uvi_family_group_purge_and_reload_use_the_frozen_original_source_and_k
         .map(|target| sampler_core::SampleTargetId(target.node))
         .collect();
     let groups = loaded.plan.group_count();
-    assert_eq!(groups, 1, "three players retain their ONE authored Keygroup owner");
+    assert_eq!(groups, 3, "three players retain their authored per-oscillator groups");
     assert_eq!(loaded.instrument.zones.len(), 3);
     let mut packs = Vec::<Pcm>::new();
     let source = loaded.plan.source_storage(0).unwrap();
@@ -646,7 +679,14 @@ fn cancellation_after_normal_logical_storage_construction_does_not_replace_live_
 // matrix/shared-filter admission. All three authored players remain retained.
 fn w_uvi_translated(path:&std::path::Path,channels:usize)->sampler_uvi::Translated {
     let mut translated=sampler_uvi::translate_path(path).unwrap();
-    if channels>2 {translated.instrument.processing_scopes.push(graph(channels,3));}
+    if channels>2 {
+        // Wide source owners require the caller's concrete output matrix; the
+        // decoder does not infer a stereo fold from a wider working layout.
+        translated.instrument.source_indices.processing_ports=
+            translated.instrument.source_indices.processing.iter()
+                .map(|recipe|ir::SourceProcessingPort{owner:recipe.owner,conversion:projection(channels)})
+                .collect();
+    }
     translated
 }
 fn w_crc8(bytes:&[u8])->u8 {let mut crc=0u8;for byte in bytes {crc^=*byte;for _ in 0..8 {crc=if crc&0x80!=0 {(crc<<1)^7}else{crc<<1};}}crc}
@@ -670,10 +710,11 @@ fn normal_uvi_checked_pcm_streams_retain_original_ordinals_and_match_resident_la
         let path=fixture.program(&format!("certified-{channels}-{encoding}.uvip"),&sample,"");
         let resident=sampler_uvi::assemble_translated(w_uvi_translated(&path,channels),48000).unwrap();
         let homes=resident.instrument.zones.iter().map(|z|z.group).collect::<Vec<_>>();
+        let groups=resident.instrument.groups.len();
         let targets=resident.instrument.source_indices.sample_targets.clone();
         let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:128<<10,allow_cold_fallback:true,..Default::default()};
         let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&path,channels),48000,&policy).unwrap();
-        assert_eq!(streamed.loaded.instrument.groups.len(),1);assert_eq!(streamed.loaded.instrument.zones.len(),3);
+        assert_eq!(streamed.loaded.instrument.groups.len(),groups);assert_eq!(streamed.loaded.instrument.zones.len(),3);
         assert_eq!(streamed.loaded.instrument.zones.iter().map(|z|z.group).collect::<Vec<_>>(),homes);
         assert_eq!(streamed.loaded.instrument.source_indices.sample_targets,targets);
         assert_eq!(streamed.loaded.instrument.assets.len(),1);
@@ -689,7 +730,7 @@ fn normal_uvi_checked_pcm_streams_retain_original_ordinals_and_match_resident_la
             if block>=16 {for (x,y) in a.iter().zip(b) {for lane in 0..2 {assert!((x[lane]-y[lane]).abs()<=2e-6,"{encoding}/{channels}/{block}: {x:?} != {y:?}");energy+=f64::from(x[lane]).powi(2);}}}
         }
         assert!(energy>0.01);assert_eq!((actual.voice_count(),actual.nonfinite_frames(),actual.stream_underruns()),(3,0,0));
-        assert_eq!(actual.processing_owner_count(),usize::from(channels>2));assert!(keep.head_budget_status().held_bytes<=policy.head_budget);
+        assert_eq!(actual.processing_owner_count(),1);assert!(keep.head_budget_status().held_bytes<=policy.head_budget);
         let frame=actual.now() as usize-16;let cache=actual.stream_cache_mut().unwrap().reader();
         for (pair,id) in ids.iter().copied().enumerate() {
             let found=cache.frame(id,frame).unwrap_or_else(||{let mut out=[[0.;2];1];physical[pair].copy_resident_range(frame,&mut out).expect("late original ordinal absent from admitted head/page");out[0]});
@@ -726,17 +767,21 @@ fn normal_uvi_certified_stream_group_purge_reload_preserves_all_real_pack_ids_an
     let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&path,5),48000,&policy).unwrap();
     let source=streamed.loaded.plan.source_storage(0).unwrap();let identity=source.id();let family=match source {sampler_core::SourceStorageRef::Channels(f)=>f.clone(),_=>panic!("lost logical family")};
     let mut physical=Vec::new();source.physical_dependencies(|p|physical.push(p.clone()));let ids=physical.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();
-    let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);
+    let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;let groups=streamed.loaded.plan.group_count();let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);
     let plan=actual.active_plan();let input=Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(901)};
     let first=actual.trigger(input,60,1.).unwrap();actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();actual.render(&mut [[0.;2];64]).unwrap();assert_eq!(actual.voice_count(),3);
     let settle=|rt:&mut Runtime| {let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);loop {rt.render(&mut [[0.;2];64]).unwrap();if rt.residency_progress(plan).unwrap().pending==0 {break;}assert!(std::time::Instant::now()<deadline);std::thread::yield_now();}};
-    actual.request_group_residency(plan,0,false,sampler_core::ScriptInstanceId(0)).unwrap();settle(&mut actual);
-    assert!(!actual.group_resident(plan,0).unwrap());assert_eq!(actual.voice_count(),0);assert!(physical.iter().all(|p|p.residency_owners()==0 && p.head_bytes()==0));
+    for group in 0..groups {actual.request_group_residency(plan,group,false,sampler_core::ScriptInstanceId(0)).unwrap();}
+    settle(&mut actual);
+    for group in 0..groups {assert!(!actual.group_resident(plan,group).unwrap());}
+    assert_eq!(actual.voice_count(),0);assert!(physical.iter().all(|p|p.residency_owners()==0 && p.head_bytes()==0));
     // Purging source voices does not synthesize a key-up for the real host
     // input. The post-reload attack must have its own external note identity.
     assert!(actual.input_held(first).unwrap());
-    actual.request_group_residency(plan,0,true,sampler_core::ScriptInstanceId(0)).unwrap();settle(&mut actual);
-    assert!(actual.group_resident(plan,0).unwrap());assert_eq!(actual.active_plan(),plan);assert_eq!(family.id(),identity);assert_eq!(physical.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>(),ids);assert!(physical.iter().all(|p|p.residency_owners()==1));
+    for group in 0..groups {actual.request_group_residency(plan,group,true,sampler_core::ScriptInstanceId(0)).unwrap();}
+    settle(&mut actual);
+    for group in 0..groups {assert!(actual.group_resident(plan,group).unwrap());}
+    assert_eq!(actual.active_plan(),plan);assert_eq!(family.id(),identity);assert_eq!(physical.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>(),ids);assert!(physical.iter().all(|p|p.residency_owners()==groups as usize));
     let mut expected=runtime(sampler_uvi::assemble_translated(w_uvi_translated(&path,5),48000).unwrap());let mut before=actual.now();while before!=0 {let n=before.min(64) as usize;expected.render(&mut [[0.;2];64][..n]).unwrap();before-=n as u64;}
     let input=Input{external_id:Some(902),..input};actual.trigger(input,60,1.).unwrap();expected.trigger(input,60,1.).unwrap();let mut energy=0.;for block in 0..128 {actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();let mut a=[[0.;2];64];let mut b=a;
         support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=16 {for (a,b) in a.iter().zip(b) {for lane in 0..2 {assert!((a[lane]-b[lane]).abs()<=2e-6);energy+=f64::from(a[lane]).powi(2);}}}}
@@ -834,8 +879,10 @@ fn normal_uvi_checked_flac_keeps_original_channels_and_all_players_through_late_
         let file=format!("owned-{channels}.flac");let path=fixture.file(&file,&f_flac(channels,&vec![512;160],false,&[],value));
         let preset=fixture.program("owned-flac.uvip",&file,"");
         let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
-        let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,channels),48000,&policy).unwrap();
-        assert_eq!(streamed.loaded.instrument.zones.len(),3);assert_eq!(streamed.loaded.instrument.groups.len(),1);
+        let translated=w_uvi_translated(&preset,channels);
+        let groups=translated.instrument.groups.len();
+        let streamed=sampler_uvi::assemble_translated_streamed(translated,48000,&policy).unwrap();
+        assert_eq!(streamed.loaded.instrument.zones.len(),3);assert_eq!(streamed.loaded.instrument.groups.len(),groups);
         let targets=streamed.loaded.instrument.source_indices.sample_targets.iter().map(|t|sampler_core::SampleTargetId(t.node)).collect::<Vec<_>>();assert_eq!(targets.len(),3);
         let source=streamed.loaded.plan.source_storage(0).unwrap();let source_id=source.id();assert_eq!(source.channels().get(),channels.max(2));assert!(source.is_paged());assert!(source.resident_view().is_none());
         let mut packs=Vec::new();source.physical_dependencies(|p|packs.push(p.clone()));let ids=packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();assert_eq!(ids.len(),channels.div_ceil(2));
@@ -848,7 +895,7 @@ fn normal_uvi_checked_flac_keeps_original_channels_and_all_players_through_late_
             support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});
             if block>=16 {for (a,b) in a.iter().zip(b) {for lane in 0..2 {assert!((a[lane]-b[lane]).abs()<=2e-6,"{channels}/{block}: {a:?} != {b:?}");energy+=f64::from(a[lane]).powi(2);}}}
         }
-        assert!(energy>0.01);assert_eq!((actual.voice_count(),actual.stream_underruns(),actual.nonfinite_frames()),(3,0,0));assert_eq!(actual.processing_owner_count(),usize::from(channels>2));
+        assert!(energy>0.01);assert_eq!((actual.voice_count(),actual.stream_underruns(),actual.nonfinite_frames()),(3,0,0));assert_eq!(actual.processing_owner_count(),1);
         let frame=actual.now() as usize-16;let cache=actual.stream_cache_mut().unwrap().reader();
         for (pair,id) in ids.iter().copied().enumerate() {
             let found=cache.frame(id,frame).unwrap_or_else(||{let mut out=[[0.;2];1];packs[pair].copy_resident_range(frame,&mut out).expect("FLAC late original ordinal not in admitted head/page");out[0]});
@@ -895,8 +942,14 @@ fn malformed_whole_riff_flac_application_cannot_publish_a_wide_processing_source
     let foreign=[b"riff".as_slice(),wav(5,false,true).as_slice()].concat();
     fixture.file("malformed-foreign.flac",&f_flac(5,&[128],false,&[(2,foreign)],value));
     let preset=fixture.program("malformed-foreign.uvip","malformed-foreign.flac","");
-    assert!(sampler_uvi::assemble_translated(w_uvi_translated(&preset,5),48000).is_err());
-    assert!(sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,5),48000,&Default::default()).is_err());
+    // The audio reader rejects the whole-RIFF application as malformed
+    // playback metadata, so neither loader may publish a wide source.
+    let loaded=sampler_uvi::assemble_translated(w_uvi_translated(&preset,5),48000).unwrap();
+    assert_eq!(loaded.instrument.zones.len(),3);
+    assert!(loaded.instrument.zones.iter().all(|zone|zone.asset.is_none()),"malformed whole-RIFF application must not publish a wide source");
+    assert!(loaded.plan.source_storage(0).is_none());
+    let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,5),48000,&Default::default()).unwrap();
+    assert!(streamed.loaded.instrument.zones.iter().all(|zone|zone.asset.is_none()),"malformed whole-RIFF application must not publish a streamed wide source");
     assert_eq!((old.active_plan(),old.now(),old.voice_count()),before);
     let mut output=[[0.;2];64];old.render(&mut output).unwrap();assert!(output.iter().flatten().any(|value|*value!=0.));
 }
@@ -906,11 +959,13 @@ fn normal_uvi_checked_flac_group_reload_reuses_all_real_pack_ids_and_recovers_la
     let policy=sampler_kontakt::StreamPolicy{voices:8,decoders:1,slack:std::time::Duration::ZERO,head_budget:1<<20,..Default::default()};
     let streamed=sampler_uvi::assemble_translated_streamed(w_uvi_translated(&preset,6),48000,&policy).unwrap();let source=streamed.loaded.plan.source_storage(0).unwrap();let identity=source.id();
     let family=match source {sampler_core::SourceStorageRef::Channels(f)=>f.clone(),_=>panic!("FLAC logical family was narrowed")};let mut packs=Vec::new();source.physical_dependencies(|p|packs.push(p.clone()));let ids=packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>();assert_eq!(ids.len(),3);
-    let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);
+    let horizon=u32::try_from(streamed.report.head_frames.max(512)).unwrap();let keep=streamed.streamer;let groups=streamed.loaded.plan.group_count();let mut actual=runtime(streamed.loaded).with_stream_cache(streamed.cache);actual.set_stream_horizon(horizon).unwrap();actual.set_cold_starts(true);
     let plan=actual.active_plan();let input=Input{protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(1901)};let first=actual.trigger(input,60,1.).unwrap();actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();actual.render(&mut [[0.;2];64]).unwrap();assert_eq!(actual.voice_count(),3);
     let settle=|rt:&mut Runtime| {let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);loop {rt.render(&mut [[0.;2];64]).unwrap();if rt.residency_progress(plan).unwrap().pending==0 {break;}assert!(std::time::Instant::now()<deadline);std::thread::yield_now();}};
-    actual.request_group_residency(plan,0,false,sampler_core::ScriptInstanceId(0)).unwrap();settle(&mut actual);assert!(!actual.group_resident(plan,0).unwrap());assert_eq!(actual.voice_count(),0);assert!(actual.input_held(first).unwrap());assert!(packs.iter().all(|p|p.residency_owners()==0 && p.head_bytes()==0));
-    actual.request_group_residency(plan,0,true,sampler_core::ScriptInstanceId(0)).unwrap();settle(&mut actual);assert!(actual.group_resident(plan,0).unwrap());assert_eq!(actual.active_plan(),plan);assert_eq!(family.id(),identity);assert_eq!(packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>(),ids);assert!(packs.iter().all(|p|p.residency_owners()==1));
+    for group in 0..groups {actual.request_group_residency(plan,group,false,sampler_core::ScriptInstanceId(0)).unwrap();}
+    settle(&mut actual);for group in 0..groups {assert!(!actual.group_resident(plan,group).unwrap());}assert_eq!(actual.voice_count(),0);assert!(actual.input_held(first).unwrap());assert!(packs.iter().all(|p|p.residency_owners()==0 && p.head_bytes()==0));
+    for group in 0..groups {actual.request_group_residency(plan,group,true,sampler_core::ScriptInstanceId(0)).unwrap();}
+    settle(&mut actual);for group in 0..groups {assert!(actual.group_resident(plan,group).unwrap());}assert_eq!(actual.active_plan(),plan);assert_eq!(family.id(),identity);assert_eq!(packs.iter().map(sampler_core::Pcm::asset_id).collect::<Vec<_>>(),ids);assert!(packs.iter().all(|p|p.residency_owners()==groups as usize));
     let mut expected=runtime(sampler_uvi::assemble_translated(w_uvi_translated(&preset,6),48000).unwrap());let mut before=actual.now();while before!=0 {let n=before.min(64) as usize;expected.render(&mut [[0.;2];64][..n]).unwrap();before-=n as u64;}
     let input=Input{external_id:Some(1902),..input};actual.trigger(input,60,1.).unwrap();expected.trigger(input,60,1.).unwrap();let mut energy=0.;
     for block in 0..128 {actual.wait_streaming(horizon,std::time::Duration::from_secs(3)).unwrap();let mut a=[[0.;2];64];let mut b=a;support::without_heap(||{actual.render(&mut a).unwrap();expected.render(&mut b).unwrap();});if block>=16 {for (a,b) in a.iter().zip(b) {for lane in 0..2 {assert!((a[lane]-b[lane]).abs()<=2e-6);energy+=f64::from(a[lane]).powi(2);}}}}

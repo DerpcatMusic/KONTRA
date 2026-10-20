@@ -220,7 +220,11 @@ fn generated_notes_and_controllers_cross_the_same_module_boundaries() {
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(3), 1), Ok(127));
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(3), 2), Ok(2));
         assert_eq!(rt.input_controller(domain, 3), Ok(0));
-        assert_eq!(rt.controller(domain, 3), Ok(u32::MAX));
+        // Generated script controllers reach the captured physical channel that
+        // owns the callback; they never mirror into the channel-less global bank.
+        assert_eq!(rt.channel_controller(domain, input(1).channel_address(), 3), Ok(u32::MAX));
+        assert_eq!(rt.channel_controller(domain, input(1).channel_address(), 2), Ok(u32::MAX));
+        assert_eq!(rt.controller(domain, 3), Ok(0));
         assert_eq!(rt.note_count(), 1);
         assert_eq!(rt.voice_count(), 2);
         rt.flush_behaviors(|_, _, outcome| {
