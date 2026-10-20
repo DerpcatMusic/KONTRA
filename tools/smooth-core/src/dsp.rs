@@ -710,8 +710,8 @@ impl Engine {
                 ((1.0 - mix) * dry[c] + wet_mix * wet[c]) * gain
             }
         });
-        // Sidechain listen hears the detector's own signal, through the output trim.
-        // ponytail: listen level and the reference's listen routing are not located; this is the named behavior.
+        // Sidechain listen hears the detector's own signal, through the output
+        // trim. The reference's listen routing is not located (research/engine-io.md).
         if settings.sidechain && settings.sidechain_listen {
             output = detector.map(|v| v * gain);
         }
