@@ -97,7 +97,7 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <Connections>
               <SignalConnection Source="$Program/Amp Env" Destination="Gain" Ratio="1"/>
               <SignalConnection Source="$Program/Vibrato" Destination="Pitch" Ratio="0.1"/>
-              <SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="0.5"/>
+              <SignalConnection Source="$Program/Steps" Destination="Pitch" Ratio="0.5"/>
             </Connections>
             <Oscillators>
               <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Pitch="0.25" Gain="0.8">
@@ -234,7 +234,7 @@ fn authored_program_translates_loads_and_renders() {
     assert_eq!(zone.pitch, ir::KeyTracking::Tracked { root: 60 });
     assert_eq!(zone.tune, ir::Pitch::Semitones(1.75));
     assert_eq!(zone.gain, ir::Gain::Linear(0.8));
-    assert_eq!(zone.velocity, ir::VelocityResponse::Power(2.0));
+    assert_eq!(zone.velocity, ir::VelocityResponse::None);
     assert_eq!((zone.playback.start, zone.playback.end), (10, Some(47000)));
     assert!(matches!(
         zone.playback.looping,
@@ -244,9 +244,22 @@ fn authored_program_translates_loads_and_renders() {
             ..
         })
     ));
-    assert!(zone.amplitude.is_some());
-    let ir::ModulationSource::Envelope(env) = &ir.modulators[zone.amplitude.unwrap().0].source
-    else {
+    // A plain keygroup Gain connection from a DAHDSR is the actual source gate,
+    // not a per-zone envelope copy: the gate owns the envelope and its velocity
+    // law once for every physical member.
+    assert!(zone.amplitude.is_none(), "the source gate owns the envelope");
+    let recipes: Vec<_> = ir
+        .source_indices
+        .processing
+        .iter()
+        .filter(|recipe| recipe.members.contains(&ir::ZoneRef(0)))
+        .collect();
+    assert_eq!(recipes.len(), 1, "one shared recipe for the authored keygroup");
+    let gate = recipes[0]
+        .source_gate
+        .expect("the authored plain DAHDSR Gain connection remains a real source gate");
+    assert_eq!(gate.velocity, ir::VelocityResponse::Power(2.0));
+    let ir::ModulationSource::Envelope(env) = &ir.modulators[gate.source.0].source else {
         panic!()
     };
     let k = 2.0 * ((1.5_f64) / (0.5)).ln();
@@ -267,7 +280,7 @@ fn authored_program_translates_loads_and_renders() {
     }
     // The vibrato is a route: +0.1 semitone per unit of a 5 Hz sine.
     let route = &ir.routes[zone.routes[0].0];
-    assert_eq!(zone.routes.len(), 2, "vibrato and the AHD gain route");
+    assert_eq!(zone.routes.len(), 2, "vibrato and the AHD pitch route");
     assert_eq!(route.target, ir::Target::Pitch);
     assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(0.1)));
     assert!(matches!(
