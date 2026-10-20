@@ -1307,6 +1307,23 @@ fn widget_value(
 }
 
 impl V2Core {
+    #[cfg(any(test, feature = "shots"))]
+    pub fn scan_runtime_faults(&mut self, part: usize) -> Vec<(usize, sampler_core::Outcome)> {
+        let mut out = Vec::new();
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.runtime.flush_behaviors_at(|_, _, outcome, program| {
+                if matches!(
+                    outcome,
+                    sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
+                ) {
+                    out.push((program, outcome));
+                }
+                true
+            });
+        }
+        out
+    }
+
     /// Publish a host snapshot at the current rendered sample boundary. This
     /// intentionally does not begin another block or refill callback allowance.
     pub(crate) fn update_transport(&mut self, transport: super::Transport) {
@@ -1551,21 +1568,6 @@ impl V2Core {
             .as_ref()
             .unwrap()
             .addresses()
-    }
-    pub fn scan_runtime_faults(&mut self, part: usize) -> Vec<(usize, sampler_core::Outcome)> {
-        let mut out = Vec::new();
-        if let Some(Some(p)) = self.parts.get_mut(part) {
-            p.runtime.flush_behaviors_at(|_, _, outcome, program| {
-                if matches!(
-                    outcome,
-                    sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
-                ) {
-                    out.push((program, outcome));
-                }
-                true
-            });
-        }
-        out
     }
     pub fn scan_lua(&self, part: usize) -> Option<sampler_uvi::script::ScanFaults> {
         self.parts
@@ -2977,12 +2979,12 @@ impl Core for V2Core {
         let mut refused = 0;
         for (index, part) in parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
-            part.runtime.flush_behaviors_at(|_, _, outcome, program| {
+            part.runtime.flush_behavior_diagnostics(|_, _, outcome, program, context| {
                 if matches!(
                     outcome,
                     sampler_core::Outcome::Fault(_) | sampler_core::Outcome::FuelExhausted
                 ) {
-                    part.fault_inbox.record(program, outcome);
+                    part.fault_inbox.record_context(program, outcome, context);
                 }
                 if let sampler_core::Outcome::Fault(error) = outcome {
                     part.problems.fault_program = program as u64 + 1;
@@ -4550,8 +4552,18 @@ mod tests {
         );
         let instrument = loaded.instrument.as_ref().unwrap();
         assert_eq!(instrument.zones.len(), 4);
-        assert!(instrument.zones.iter().all(|z| z.amplitude.is_some()
+        assert!(instrument.zones.iter().all(|z| z.amplitude.is_none()
             && matches!(z.playback.looping, sampler_ir::Looping::Continuous(_))));
+        assert_eq!(instrument.source_indices.processing.len(), 4);
+        for recipe in &instrument.source_indices.processing {
+            let gate = recipe.source_gate.expect("the keygroup owns its amplitude envelope");
+            assert_eq!(recipe.members.len(), 1);
+            assert!(recipe.sources.contains(&gate.source));
+            assert!(recipe.routes.contains(&gate.route));
+            assert!(matches!(instrument.modulators[gate.source.0].source,
+                sampler_ir::ModulationSource::Envelope(_)));
+            assert_eq!(instrument.routes[gate.route.0].target, sampler_ir::Target::Amplitude);
+        }
         assert_eq!(loaded.interfaces.len(), 1);
         let face = &loaded.interfaces[0];
         assert!(face.widgets.iter().any(|w| w.name == "Fire"));
@@ -4567,7 +4579,10 @@ mod tests {
         let mut ui = loaded.scripts;
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, loaded.part);
-        assert!(core.set_control(0, control, 1.));
+        assert!(ui.uvi.as_ref().unwrap().snapshot().activate(control, sampler_ui_ir::UiActivation {
+            origin: sampler_ui_ir::UiActivationOrigin::Keyboard,
+            modifiers: Some(Default::default()),
+        }));
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(1));
             _ = core.render(128);
@@ -9642,8 +9657,8 @@ mod shared_processor_binding148_product_tests {
     }
     #[test]
     fn normal_nested_v2_frequency_cc_updates_one_shared_filter_on_same_held_sources(){
-        static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
-        let dir=PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch").join(format!("binding148-v2-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));std::fs::create_dir_all(&dir).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let dir = temporary.path();
         let a:Vec<_>=(0..2048).map(|i|[if i%32<16{8192}else{-8192},if i%48<24{6144}else{-6144}]).collect();
         let b:Vec<_>=a.iter().enumerate().map(|(i,v)|[-v[0]+if i%53<26{512}else{2048},-v[1]+if i%79<39{768}else{2304}]).collect();
         let sum:Vec<_>=a.iter().zip(&b).map(|(a,b)|[a[0]+b[0],a[1]+b[1]]).collect();
@@ -9659,7 +9674,7 @@ mod shared_processor_binding148_product_tests {
             assert_eq!(runtime.voice_count(),2);let p=actual.problems(0);assert_eq!((p.capacity_drops,p.underruns,p.stream_errors,p.nonfinite,p.script_overruns,p.lua_faults),(0,0,0,0,0,0));
         }
         for core in [&mut actual,&mut low,&mut high]{core.event(0,Event::midi1(0x80,60,64));render(core,8192);assert_eq!(core.parts[0].as_ref().unwrap().runtime.voice_count(),0);}
-        drop(actual);drop(low);drop(high);std::fs::remove_dir_all(dir).unwrap();
+        drop(actual);drop(low);drop(high);
     }
 }
 

@@ -1447,7 +1447,7 @@ fn compile_initialized_inner(
             }
         }
     }
-    unit.finish(&mut programs).map_err(|f| f.locate(source))?;
+    unit.finish(&mut programs, source).map_err(|f| f.locate(source))?;
     let global_ui = entries
         .iter()
         .find(|e| e.kind == EntryKind::UiControls)
@@ -1763,4 +1763,9 @@ fn compile_initialized_inner(
                 .sum(),
         },
     })
+}
+
+/// Exact source identity used to bind runtime diagnostics to their source excerpt.
+pub fn source_fingerprint(source: &str) -> [u8; 32] {
+    setup::source_digest(source)
 }

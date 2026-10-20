@@ -1645,7 +1645,10 @@ impl OwnedReceiver {
                 match runtime.note_off_exact(pair.note,velocity){Ok(())|Err(Error::StaleHandle)|Err(Error::ClosedNote)=>{},Err(error)=>return Err(error)}
                 // Ordinary wire Off returns the exact owner to the adapter;
                 // its existing direct release callback is not duplicated here.
-                self.physical.decisions.remove(id);Ok((!pair.released).then_some(pair.note))
+                // A synthetic release already queued for the app does not
+                // discharge the real physical terminal: the adapter still
+                // owns that key-up and must apply it to this exact owner.
+                self.physical.decisions.remove(id);Ok(Some(pair.note))
             }
         }
     }

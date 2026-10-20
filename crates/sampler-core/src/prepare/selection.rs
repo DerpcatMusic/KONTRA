@@ -665,7 +665,7 @@ input.group>=16||input.channel>=16||input.key>=128
         let note_index = groups.map(|(index, _)| index);
         let groups = groups.map(|(index, view)| generation.groups.view(index, view));
         let mut required = ReleaseReserve::default();
-        let mut processing_scopes = [false; 256];
+        let mut processing_scopes = [0u64; sampler_ir::MAX_PROCESSING_SCOPES.div_ceil(64)];
         let mut stream_pages=0usize;
         let mut from = range.start;
         while from < range.end {
@@ -706,7 +706,7 @@ input.group>=16||input.channel>=16||input.key>=128
                             self.check_stream_selection_pages(stream_pages)?;
                         }
                         if let Some((scope, _)) = prepared.region_processing.get(c.region).copied().flatten() {
-                            processing_scopes[scope] = true;
+                            processing_scopes[scope / 64] |= 1 << (scope % 64);
                         }
                         count+=1;
                     }
@@ -718,7 +718,7 @@ input.group>=16||input.channel>=16||input.key>=128
             required.decisions += usize::from(choice.is_some());
             from = until;
         }
-        required.processing_owners = processing_scopes.iter().filter(|used| **used).count();
+        required.processing_owners = processing_scopes.iter().map(|word| word.count_ones() as usize).sum();
         if let Some(index) = trigger.release_index()
             && let Some(frames) = prepared.release_options[index].duration
         {
