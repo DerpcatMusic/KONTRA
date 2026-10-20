@@ -2723,8 +2723,13 @@ impl Lowering<'_> {
         use ir::fx::eq::Kind as S;
         match *p {
             ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
-            // A UviDigital band is several sections: `processors` lowers it and binds each.
-            ir::Processor::Eq(c) if c.count == 1 && c.bands[0].law != ir::fx::eq::Law::UviDigital => {
+            // A UviDigital or Solid band is several sections: `processors` lowers it
+            // and binds each, so one seeded stage here would drop the extra sections.
+            ir::Processor::Eq(c)
+                if c.count == 1
+                    && c.bands[0].law != ir::fx::eq::Law::UviDigital
+                    && !matches!(c.bands[0].law, ir::fx::eq::Law::Solid(_)) =>
+            {
                 Some(Processor::Eq(crate::dsp::eq_family::live_band(&c.bands[0])))
             }
             ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([

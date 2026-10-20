@@ -236,6 +236,10 @@ pub(crate) fn apply_writes(
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
             "ENGINE_PAR_GAIN3" if group >= 0 && generic == -1 => fx.apply_eq_gain(2, w.value),
+            // Solid G-EQ (0x44) knobs and switches: the saved record the reader parses.
+            parameter if fx.module == 0x44 => {
+                let _ = eq::solid_store(fx.version, &mut fx.public, parameter, w.value);
+            }
             _ => {}
         }
     }
@@ -891,12 +895,21 @@ pub(crate) fn chain_with(
             // Solid G-EQ (0x44): `params()` only yields its raw fields; eq.rs owns the mapping.
             _ if fx.module == 0x44 => {
                 flush(&mut combined, &mut filters, &mut out);
-                if dynamic.is_some() {
-                    notes.push(("live control".into(), "scripts cannot address Solid G-EQ knobs".into(), sampler_ir::Reason::NotModeled));
-                }
+                // One config per saved band so each band keeps its own script lanes
+                // (`Config::lanes`); a script addresses the slot, never a band.
                 match eq::solid_geq(fx.version, &fx.public, &mut notes) {
-                    Some(p) => {
-                        out.processors.push(p);
+                    Some(bands) => {
+                        let address = dynamic.map(|(group, generic)| sampler_ir::SlotAddress {
+                            group,
+                            slot: fx.slot as i32,
+                            generic,
+                        });
+                        for p in bands {
+                            out.processors.push(match address {
+                                Some(address) => p.at(address),
+                                None => p,
+                            });
+                        }
                         combined = gain;
                     }
                     None => modelled = false,
@@ -1781,6 +1794,127 @@ mod tests {
         assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress { slot: 1, ..address }, 0).is_err());
         rt.set_engine_parameter(address, 1_000_000).unwrap();
         assert_eq!(rt.engine_parameter(address), Ok(1_000_000));
+    }
+
+    /// The saved Solid G-EQ record v0x11 with every knob flat and only the low
+    /// pass enabled (eq.rs `read` order).
+    fn solid_payload() -> Vec<u8> {
+        let mut b = Vec::new();
+        for v in [0.5f32, 0.5] {
+            b.extend(v.to_le_bytes()); // LF gain, freq
+        }
+        b.push(0); // LF shelf
+        for _ in 0..6 {
+            b.extend(0.5f32.to_le_bytes()); // LMF gain, freq, Q; HMF gain, freq, Q
+        }
+        for _ in 0..2 {
+            b.extend(0.5f32.to_le_bytes()); // HF gain, freq
+        }
+        b.push(0); // HF shelf
+        for _ in 0..2 {
+            b.extend(0.5f32.to_le_bytes()); // HP freq, LP freq
+        }
+        b.extend([1u8, 0]); // LP on, HP off
+        b
+    }
+
+    /// A script-addressed Solid G-EQ: every band is one config with the band's own
+    /// lanes, the split renders exactly like the unaddressed module, and a `SEQ_`
+    /// write moves the band (all three LF shelf sections included).
+    #[test]
+    fn solid_geq_bands_are_live_and_the_split_is_audio_identical() {
+        let module = |address| {
+            let mut fx = slot(0x44, solid_payload(), 1.);
+            fx.version = 0x11;
+            super::chain_with(&[fx], super::Scope::Voice, None, address, (0, -1), &[])
+        };
+        let live = module(Some((0, -1)));
+        assert!(
+            live.notes.iter().all(|(_, feature, _, _)| feature != "live control"),
+            "{:?}",
+            live.notes
+        );
+        let bands: Vec<u8> = live
+            .processors
+            .iter()
+            .filter_map(|p| match p {
+                sampler_ir::Processor::Eq(c) => {
+                    assert_eq!(c.count, 1);
+                    assert_eq!(
+                        c.address,
+                        Some(sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 })
+                    );
+                    Some(c.band)
+                }
+                sampler_ir::Processor::Mix { count, address, .. } => {
+                    assert_eq!((*count, *address), (5, sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 }));
+                    None
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(bands, [0, 1, 2, 3, 5]);
+        let input = [[1.0f32, -0.5]; 4];
+        let plain = fx_probe(module(None).processors, 48_000., &input);
+        assert_eq!(fx_probe(live.processors.clone(), 48_000., &input), plain);
+        let address = |name: &str| sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id(name).unwrap(),
+            group: 0,
+            slot: 0,
+            generic: -1,
+        };
+        let gain = address("ENGINE_PAR_SEQ_LF_GAIN");
+        let mut rt = fx_runtime(live.processors, 48_000., &input);
+        assert_eq!(rt.engine_parameter(gain), Ok(500_000));
+        rt.set_engine_parameter(gain, 1_000_000).unwrap();
+        let mut raised = [[0.0f32; 2]; 4];
+        rt.render(&mut raised).unwrap();
+        assert_ne!(raised, plain, "the LF shelf follows its lane");
+    }
+
+    /// Recorded init writes reach the saved Solid G-EQ record: the identity knob
+    /// law for the twelve continuous knobs and the switch law for the enables.
+    #[test]
+    fn solid_geq_init_writes_reach_the_saved_record() {
+        let mut fx = slot(0x44, solid_payload(), 1.);
+        fx.version = 0x11;
+        let write = |parameter: &str, value: i32| sampler_ksp::EnginePar {
+            parameter: parameter.into(),
+            value,
+            group: 0,
+            slot: 0,
+            generic: -1,
+        };
+        super::apply_writes(
+            std::slice::from_mut(&mut fx),
+            &[
+                write("$ENGINE_PAR_SEQ_HF_GAIN", 1_000_000),
+                write("$ENGINE_PAR_SEQ_LF_BELL", 1),
+                write("$ENGINE_PAR_SEQ_HP", 1),
+                write("$ENGINE_PAR_SEQ_LP", 0),
+            ],
+            0,
+            -1,
+        );
+        let built = super::chain_with(&[fx], super::Scope::Voice, None, None, (0, -1), &[]);
+        let bands: Vec<(u8, sampler_ir::fx::eq::Kind, f32)> = built
+            .processors
+            .iter()
+            .map(|p| match p {
+                sampler_ir::Processor::Eq(c) => (c.band, c.bands()[0].kind, c.bands()[0].gain_db),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            bands,
+            [
+                (0, sampler_ir::fx::eq::Kind::Peak, 0.5),
+                (1, sampler_ir::fx::eq::Kind::Peak, 0.5),
+                (2, sampler_ir::fx::eq::Kind::Peak, 0.5),
+                (3, sampler_ir::fx::eq::Kind::HighShelf, 1.),
+                (4, sampler_ir::fx::eq::Kind::HighPass, 0.),
+            ]
+        );
     }
 
     #[test]
