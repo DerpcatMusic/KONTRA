@@ -137,8 +137,8 @@ pub const VOICE: Palette = Palette {
 
     panel_top: 0x9FB8D7,
     panel_bottom: 0x98B2D3,
-    rail_left: 0x849BBB,
-    rail_right: 0x9DB5D7,
+    rail_left: 0x8DA3C2,
+    rail_right: 0xA1B9DA,
     edge: 0x7088A9,
     edge_light: 0xCBD9EA,
 
