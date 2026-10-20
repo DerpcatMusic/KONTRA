@@ -269,6 +269,7 @@ impl Processor {
 }
 
 // Universal effect families (wave 4).
+pub(crate) mod biquad;
 pub(crate) mod color;
 pub(crate) mod dynamics;
 pub(crate) mod eq_family;
