@@ -288,6 +288,14 @@ const BAND_PARAMS: [(P, P); 4] = [
     (P::Band4Frequency, P::Band4Depth),
 ];
 
+/// Write a value to a parameter only when it does not already hold it, so a
+/// rebuild leaves a value the host just automated alone.
+fn write_plain(params: &SmoothParams, param: P, value: f64) {
+    if params.get_plain(u32::from(param)) != Some(value) {
+        params.set_plain(u32::from(param), value);
+    }
+}
+
 /// The parameter behind a control name.
 fn param_for(id: &str) -> Option<P> {
     match id {
@@ -528,13 +536,25 @@ impl PluginLogic for Smooth {
                     knob
                 };
             let tree = view::editor(ui, &mut model, &mut dial);
-            // A drag on a handle moved a band: tell the host. The knobs go
-            // through the bridge, so the host records them as gestures; a
-            // handle is not a widget, so its band is written straight to the
-            // parameter.
+            // A drag on a plot handle is a gesture too, and the plot is not a
+            // widget: the band's two parameters are bracketed here, so the host
+            // records the move instead of waking to a value that changed behind
+            // its back. The frame the pointer lets go names no parameter, and
+            // the bridge ends the edit.
+            drop(dial);
+            if let Some(index) = smooth_ui::graph::held(ui)
+                && let Some((frequency, depth)) = BAND_PARAMS.get(index)
+                && let Some(band) = model.bands.get(index)
+            {
+                bridge.drag_gesture(*frequency, band.frequency);
+                bridge.drag_gesture(*depth, band.depth);
+            }
+            // The bands at rest follow the host. A value the parameter already
+            // holds is not written back, so host automation is not fought
+            // frame by frame.
             for (index, (frequency, depth)) in BAND_PARAMS.iter().enumerate() {
-                mirror.set_plain(u32::from(*frequency), model.bands[index].frequency);
-                mirror.set_plain(u32::from(*depth), model.bands[index].depth);
+                write_plain(mirror.as_ref(), *frequency, model.bands[index].frequency);
+                write_plain(mirror.as_ref(), *depth, model.bands[index].depth);
             }
             // The switches are the engine's own choices: soft or hard, the
             // bypass, the compare, the short window, the quality.

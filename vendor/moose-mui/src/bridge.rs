@@ -300,6 +300,39 @@ impl<P: Params + ?Sized> Bridge<P> {
         })
     }
 
+    /// A gesture on a parameter no widget owns: a plot handle, a canvas, a
+    /// drag that is not a `Response`. `plain` is in the parameter's own
+    /// units.
+    ///
+    /// Call it on every frame of the drag. The first call opens the host's
+    /// edit and the value lands inside it; later calls only move the value.
+    /// A build that does not call it names the parameter to no `bind`, so
+    /// [`Bridge::end_unbound`] closes the gesture and the host is told the
+    /// edit ended -- the caller keeps no drag state of its own.
+    ///
+    /// ```ignore
+    /// if let Some(index) = graph::held(ui) {
+    ///     bridge.drag_gesture(P::Band1Frequency, model.bands[index].frequency);
+    /// }
+    /// ```
+    pub fn drag_gesture(&mut self, param: impl Into<u32>, plain: f64) {
+        let id = param.into();
+        // Naming the parameter is what keeps `end_unbound` from closing the
+        // edit while the drag is still going.
+        self.bound.push(id);
+        let Some(range) = self
+            .info(id)
+            .filter(|info| !info.flags.contains(ParamFlags::READONLY))
+            .map(|info| info.range)
+        else {
+            return;
+        };
+        if !self.is_open(id) {
+            self.begin(id);
+        }
+        self.set(id, range, range.normalize(plain));
+    }
+
     /// After a build: end the gestures no `bind` in it named. `MuiEditor`
     /// calls it; a host that drives the bridge itself calls it after every
     /// build, or a gesture whose control left the tree never ends.

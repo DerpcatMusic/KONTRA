@@ -223,12 +223,7 @@ pub fn depth_for_y(y: f64) -> f64 {
 pub fn response(ui: &Ui, bands: &mut [Band], telemetry: &Telemetry) -> El {
     // A drag on a handle moves it. The tag is latched at the press, so it
     // names the band the gesture took even when the pointer has left it.
-    let held = ui.pointer().buttons.contains(mui::input::Button::Primary);
-    if held
-        && let Some(tag) = ui.tag(PLOT_ID)
-        && let Some(index) = tag
-            .strip_prefix("band-")
-            .and_then(|text| text.parse::<usize>().ok())
+    if let Some(index) = held(ui)
         && let Some(point) = ui.local(PLOT_ID)
         && let Some(band) = bands.get_mut(index)
     {
@@ -248,6 +243,23 @@ pub fn response(ui: &Ui, bands: &mut [Band], telemetry: &Telemetry) -> El {
         })
         .collect();
     plot(&handles, telemetry, live)
+}
+
+/// The band the plot's handle gesture is holding, if any.
+///
+/// The plot is not a widget, so nothing in the scene reports a gesture for
+/// it: the press latches the shape's tag, and the tag names the band. A
+/// caller that owns the band parameters -- the plug-in's host bridge --
+/// asks this once per frame instead of re-deriving the tag, and a frame
+/// where the pointer has let go answers `None`.
+pub fn held(ui: &Ui) -> Option<usize> {
+    if !ui.pointer().buttons.contains(mui::input::Button::Primary) {
+        return None;
+    }
+    ui.tag(PLOT_ID)
+        .and_then(|tag| tag.strip_prefix("band-"))
+        .and_then(|text| text.parse::<usize>().ok())
+        .filter(|index| *index < BANDS)
 }
 
 /// The colours the bands wear, from the active theme's own four.

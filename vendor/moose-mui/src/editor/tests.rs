@@ -7,7 +7,7 @@ use crate::window::baseview::{self, Event, MouseEvent};
 use keyboard_types::{Key as HostKey, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use moose::prelude::*;
 use moose_core::editor::ClosureBridge;
-use mui::prelude::{Point, knob, toggle};
+use mui::prelude::{IntoEl, Point, knob, toggle};
 use mui::scene::prelude::row;
 use std::sync::Mutex;
 
@@ -560,6 +560,52 @@ fn closing_the_editor_reaches_the_cancel_callback() {
         called.load(Ordering::Relaxed),
         1,
         "a close releases app-owned gestures"
+    );
+}
+
+#[test]
+fn a_handle_drag_the_host_never_saw_as_a_widget_is_still_a_gesture() {
+    // The plot's handles are shapes, not widgets: nothing in the scene
+    // reports an edit for them. The build names the parameter for as long as
+    // the pointer holds the handle, and the bridge supplies the bracket.
+    let params = Arc::new(Synth::default());
+    let held = Arc::new(Mutex::new(false));
+    let dragging = held.clone();
+    let editor = MuiEditor::new(
+        params.clone(),
+        Ui::default(),
+        (400, 300),
+        move |ui, bridge| {
+            if *dragging.lock().unwrap() {
+                bridge.drag_gesture(10u32, 0.75);
+            }
+            knob(ui, "gain", "Gain", &mut 0.5, 0.0..=1.0).into_el()
+        },
+    )
+    // Rebuild every tick, the way a meter-driven editor does: the point of
+    // the test is what the build says, not what made it run.
+    .changed(|| true);
+    let (_editor, mut h, log) = open_with(&params, editor);
+    *held.lock().unwrap() = true;
+    // A repaint rebuilds the tree; moving the pointer is the cheapest way to
+    // ask for one without touching the handle.
+    for x in [10.0, 11.0] {
+        at(&mut h, Point::new(x, 10.0));
+        h.step();
+    }
+    assert_eq!(
+        calls(&log),
+        [Call::Begin(10), Call::Set(10, 0.75)],
+        "one bracket, one value, however many frames the drag lasts"
+    );
+    assert_eq!(params.gain.value(), 0.75, "the host applied the drag");
+    *held.lock().unwrap() = false;
+    at(&mut h, Point::new(12.0, 10.0));
+    h.step();
+    assert_eq!(
+        calls(&log),
+        [Call::End(10)],
+        "letting go closes the edit without the caller tracking it"
     );
 }
 

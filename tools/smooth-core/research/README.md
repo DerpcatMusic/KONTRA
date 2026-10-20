@@ -55,3 +55,62 @@ That closes the last of the research's three named frontiers in the shape
 path: the per-record curve is the common bandwidth filled with the detail's
 position scalar, and the shapes themselves are dispatched by `8aff30` to the
 eight helpers the round-2 report already listed.
+
+## The dispatch slot, bounded
+
+The shape path's `001040` is one of a family of thunks that all read the same
+word:
+
+```
+0x180001040  movsxd rax, dword [0x1821ed508]   ; -1 in the image
+0x180001047  lea    r10, [0x1821ebe78]
+0x18000104e  jmp    qword [r10 + rax*8]
+```
+
+The slot holds `0xffffffff` in the decoded image and has no writer anywhere
+in it: a displacement scan of every code section for a reference to
+`0x1821ed508` finds twelve readers (`movsxd`) and no store, and no `movabs`
+immediate carries its address either. The store belongs to the protector's
+own initialisation, and that cannot be observed here. The packed image never
+returns from `LoadLibrary` without its service -- a probe that loads it with
+no exception handler installed, leaving the protector's single-step control
+flow alone, still hangs -- and the relinked image keeps the slot at `-1`
+through `InitDll` and `GetPluginFactory`.
+
+What the slot selects is bounded by the tables it indexes. Each thunk owns
+one table for one operation, twelve entries wide, with entry 6 null and
+entry 7 a one-instruction stub (`0x180001030`, `0x180001060`). The entries
+are implementations of that operation, not data, so the slot is a dispatch
+level and never a musical parameter.
+
+For `001040` -- the fill of the curve record -- entries 0..5 are the same
+operation at different vector widths. Each null-checks the destination,
+rejects a non-positive count with `-6`, moves the scalar's bits out of
+`xmm0`, and reaches a broadcast fill (`0x181d88060`, `0x181d88a80`, ...);
+entry 4 (`0x180002300`) is the AVX path and splits at 2 MiB. They write the
+same bytes. The port generates the record by filling it with the scalar, so
+it is the result at any level, and `0x1800021e0` -- level 0 -- stays the
+documented stand-in.
+
+The kernel runner cannot execute these entries directly: they take the
+scalar in `xmm0`, and the bridge passes integer and float arguments through
+`rcx`/`rdx`/`r8`/`r9` only. The equivalence above is disassembly evidence,
+not an executed comparison, and is recorded as such.
+
+## Where the weighted reconstruction lands
+
+`8f03f0` is called from the soft and hard paths at `0x8e3f9e` and
+`0x8f5d0e`, both with the same three addresses:
+
+```
+lea rcx, [r13 + 0xf28]     ; destination
+lea rdx, [rbp + 0x3d00]    ; weights
+lea r8,  [rbp + 0x4110]    ; grid
+call 0x1808f03f0
+```
+
+so the response arrays live at **owner + 0xf28**, and the caller then walks
+them in 0x80-byte records (`lea rax, [rax + 0x80]`). An earlier note put the
+arrays at `O+0xe08`; the call sites say `0xf28`. Decoding one 0x80-byte
+record is the next step for the group and channel routing; until then the
+port keeps the two group shapes it has and refuses the larger ones.
