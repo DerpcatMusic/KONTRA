@@ -38,6 +38,23 @@ pub(crate) struct Coefficients {
     pub a: [f64; 2],
 }
 
+impl Coefficients {
+    /// `b / d[0]` over `1 + (d[1] / d[0]) z^-1 + (d[2] / d[0]) z^-2`.
+    pub fn normalised(b: [f64; 3], d: [f64; 3]) -> Self {
+        Self { b: b.map(|v| v / d[0]), a: [d[1] / d[0], d[2] / d[0]] }
+    }
+
+    /// Finite, with both poles strictly inside the unit circle.
+    pub fn is_stable(&self) -> bool {
+        let [a1, a2] = self.a;
+        self.b.iter().chain(&self.a).all(|v| v.is_finite()) && a2.abs() < 1. && 1. + a1 + a2 > 0. && 1. - a1 + a2 > 0.
+    }
+
+    pub fn to_array(self) -> [f64; 5] {
+        [self.b[0], self.b[1], self.b[2], self.a[0], self.a[1]]
+    }
+}
+
 /// Analogue prototype `(n2 s^2 + n1 s + n0) / (s^2 + d1 s + d0)` in units of the band frequency
 /// (`s` = Laplace variable divided by the band's radian frequency).
 struct Prototype {
@@ -138,7 +155,7 @@ pub(crate) fn matched(kind: Kind, rate: u32, hz: f64, q: f64, boost_db: f64) -> 
         _ => [b0, b1, b2],
     };
     let f = Coefficients { b, a: [a1, a2] };
-    (f.b.iter().chain(&f.a).all(|v| v.is_finite()) && a2.abs() < 1. && 1. + a1 + a2 > 0. && 1. - a1 + a2 > 0.).then_some(f)
+    f.is_stable().then_some(f)
 }
 
 /// RBJ cookbook biquad by the bilinear transform: `A = 10^(dB/40)`, `alpha = sin(w0) / 2q`. The
@@ -147,26 +164,56 @@ pub(crate) fn matched(kind: Kind, rate: u32, hz: f64, q: f64, boost_db: f64) -> 
 pub(crate) fn cookbook(kind: Kind, rate: u32, hz: f64, q: f64, boost_db: f64) -> Option<Coefficients> {
     let a = 10f64.powf(boost_db / 40.);
     let (sin, cos) = (TAU * hz / f64::from(rate)).sin_cos();
-    let alpha = sin / (2. * q);
+    let shape = match kind {
+        Kind::Peak => Shape::Peak,
+        Kind::LowShelf => Shape::LowShelf,
+        Kind::HighShelf => Shape::HighShelf,
+        Kind::LowPass => Shape::LowPass,
+        Kind::HighPass => Shape::HighPass,
+        Kind::BandPass => Shape::BandPass,
+        Kind::Notch => Shape::Notch,
+        _ => return None,
+    };
+    let (b, d) = rbj(shape, cos, sin / (2. * q), a);
+    Some(Coefficients::normalised(b, d))
+}
+
+/// The RBJ cookbook responses. Band-pass has unity peak gain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shape {
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+    AllPass,
+    Peak,
+    LowShelf,
+    HighShelf,
+}
+
+/// Unnormalised RBJ cookbook numerator and denominator at angle cosine `cos`, `alpha` (sin / 2Q)
+/// and amplitude `a = 10^(dB/40)` (only peaks and shelves read it). Low and high pass take the
+/// bilinear `(1 -/+ cos) / 2` numerators.
+pub(crate) fn rbj(shape: Shape, cos: f64, alpha: f64, a: f64) -> ([f64; 3], [f64; 3]) {
     let r = 2. * a.sqrt() * alpha;
     let (p, m) = (a + 1., a - 1.);
-    let (b, d) = match kind {
-        Kind::Peak => ([1. + alpha * a, -2. * cos, 1. - alpha * a], [1. + alpha / a, -2. * cos, 1. - alpha / a]),
-        Kind::LowShelf => (
+    let pole = [1. + alpha, -2. * cos, 1. - alpha];
+    match shape {
+        Shape::Peak => ([1. + alpha * a, -2. * cos, 1. - alpha * a], [1. + alpha / a, -2. * cos, 1. - alpha / a]),
+        Shape::LowShelf => (
             [a * (p - m * cos + r), 2. * a * (m - p * cos), a * (p - m * cos - r)],
             [p + m * cos + r, -2. * (m + p * cos), p + m * cos - r],
         ),
-        Kind::HighShelf => (
+        Shape::HighShelf => (
             [a * (p + m * cos + r), -2. * a * (m + p * cos), a * (p + m * cos - r)],
             [p - m * cos + r, 2. * (m - p * cos), p - m * cos - r],
         ),
-        Kind::LowPass => ([(1. - cos) / 2., 1. - cos, (1. - cos) / 2.], [1. + alpha, -2. * cos, 1. - alpha]),
-        Kind::HighPass => ([(1. + cos) / 2., -(1. + cos), (1. + cos) / 2.], [1. + alpha, -2. * cos, 1. - alpha]),
-        Kind::BandPass => ([alpha, 0., -alpha], [1. + alpha, -2. * cos, 1. - alpha]),
-        Kind::Notch => ([1., -2. * cos, 1.], [1. + alpha, -2. * cos, 1. - alpha]),
-        _ => return None,
-    };
-    Some(Coefficients { b: b.map(|v| v / d[0]), a: [d[1] / d[0], d[2] / d[0]] })
+        Shape::LowPass => ([(1. - cos) / 2., 1. - cos, (1. - cos) / 2.], pole),
+        Shape::HighPass => ([(1. + cos) / 2., -(1. + cos), (1. + cos) / 2.], pole),
+        Shape::BandPass => ([alpha, 0., -alpha], pole),
+        Shape::Notch => ([1., -2. * cos, 1.], pole),
+        Shape::AllPass => ([1. - alpha, -2. * cos, 1. + alpha], pole),
+    }
 }
 
 /// First-order matched design (one real pole; DC and Nyquist gains matched). `kind` is a
