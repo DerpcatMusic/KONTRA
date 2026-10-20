@@ -31,6 +31,8 @@ pub struct Model {
     pub soft: bool,
     /// Every continuous control: its normalised value and what it reads as.
     pub slots: [Slider; Slot::COUNT],
+    /// The band the band panel is showing.
+    pub selected: usize,
     /// Whether the rail's side panel is open.
     pub side: bool,
     /// The stereo mode: left/right (false) or mid/side (true).
@@ -49,6 +51,7 @@ impl Default for Model {
             telemetry: std::sync::Arc::new(graph::Telemetry::default()),
             soft: true,
             slots: slots::at_rest(),
+            selected: 1,
             side: false,
             mid_side: false,
             bypass: false,
@@ -76,7 +79,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             block(W, BAR).shrink(0),
             row![
                 block(LEFT, space::NONE).shrink(0),
-                graph::response(ui, &mut m.bands, &m.telemetry)
+                graph::response(ui, &mut m.bands, &mut m.selected, &m.telemetry)
             ]
             .w(W),
         ]
@@ -86,6 +89,14 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             .w(W)
             .h(H)
             .anchor(Align::Start, Align::Start),
+        // The selected band's controls, along the plot's foot.
+        col![
+            block(W, BAR).shrink(0),
+            row![block(LEFT, space::NONE).shrink(0), band_bar(ui, m, bind)],
+        ]
+        .size(W, H - FOOTER)
+        .justify(Justify::End)
+        .anchor(Align::Start, Align::Start),
         // The side panel the rail opens, over the plot.
         col![
             block(W, BAR).shrink(0),
@@ -407,4 +418,54 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     .fill(ca(t.ground, 0.94))
     .shrink(0)
     .id("side-panel")
+}
+
+// --------------------------------------------------------------- band bar --
+/// The selected band's controls: its shape, where it sits, how deep and how
+/// wide it is, its slope and balance, and the switches that bypass or remove
+/// it. The tooltips name each: the shape, the centre frequency, the depth
+/// curve's boost or cut, the bandwidth, the slope, the stereo balance.
+fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let index = m.selected.min(graph::BANDS - 1);
+    if !m.bands[index].active {
+        return block(space::NONE, space::NONE).shrink(0);
+    }
+    // The shape is one of eight: the dropdown cycles an index, the slot holds
+    // it as a step of seven.
+    let shape_el = {
+        let state = &mut m.slots[Slot::BandShape.index()];
+        bind(ui, Slot::BandShape, &mut state.norm, &mut |ui, id, norm| {
+            let mut choice = (*norm * 7.0).round() as usize;
+            let el = dropdown(ui, id, &graph::SHAPES, &mut choice);
+            *norm = choice as f64 / 7.0;
+            el
+        })
+    };
+    let mut bypass = m.bands[index].bypass;
+    let bypass_el = toggle_pill(ui, "band-bypass", "bypass", &mut bypass);
+    m.bands[index].bypass = bypass;
+    if ui.get("band-delete").clicked {
+        m.bands[index].active = false;
+    }
+    let mut pick = |ui: &mut Ui, slot: Slot| {
+        slot_slider(ui, bind, slot, &mut m.slots[slot.index()], metric::SLIDER_W)
+    };
+    row![
+        shape_el,
+        pick(ui, Slot::BandFrequency),
+        pick(ui, Slot::BandDepth),
+        pick(ui, Slot::BandWidth),
+        pick(ui, Slot::BandSlope),
+        pick(ui, Slot::BandBalance),
+        bypass_el,
+        text_button("x").id("band-delete"),
+    ]
+    .gap(space::XS)
+    .pad(space::XS)
+    .align(Align::Center)
+    .radius(radius::BOX)
+    .fill(ca(t.ground, 0.94))
+    .shrink(0)
 }

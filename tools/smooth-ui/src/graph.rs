@@ -118,6 +118,10 @@ pub const LEVEL: [f64; 6] = plot::LEVEL;
 /// Where a band's depth is dragged.
 #[derive(Clone, Copy)]
 pub struct Handle {
+    /// Which band it stands for.
+    pub index: usize,
+    /// Whether it is the band the panel is showing.
+    pub selected: bool,
     /// Centre, in the plot's space.
     pub x: f64,
     pub y: f64,
@@ -127,36 +131,75 @@ pub struct Handle {
     pub pill: bool,
 }
 
-/// One band, as the editor holds it: where it sits and how deep it cuts.
+/// One band, as the editor holds it: where it sits, how deep it cuts, and
+/// the shape that says what it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Band {
     /// The centre, in hertz.
     pub frequency: f64,
     /// The depth, in decibels. Negative cuts.
     pub depth: f64,
+    /// The bandwidth, as the host's own Q.
+    pub q: f64,
+    /// Which of the engine's eight shapes: low cut, low shelf, bell,
+    /// bandpass, band reject, tilt, high shelf, high cut.
+    pub shape: usize,
+    /// The slope of a cut or shelf, in decibels per octave.
+    pub slope: f64,
+    /// Where the band sits between the stereo channels, 0..1.
+    pub balance: f64,
+    /// Whether the band is in the plot at all.
+    pub active: bool,
+    /// Whether it is switched off while it stays in the plot.
+    pub bypass: bool,
+}
+
+impl Band {
+    const fn at(frequency: f64, depth: f64, shape: usize, active: bool) -> Self {
+        Self {
+            frequency,
+            depth,
+            q: 0.707,
+            shape,
+            slope: 6.0,
+            balance: 0.5,
+            active,
+            bypass: false,
+        }
+    }
+
+    /// The low cut, the low shelf, the high shelf and the high cut stand as
+    /// tall pills; the bands with a width are dots.
+    pub fn is_edge(&self) -> bool {
+        matches!(self.shape, 0 | 1 | 6 | 7)
+    }
 }
 
 /// How many bands the editor draws.
-pub const BANDS: usize = 4;
+pub const BANDS: usize = 8;
 
-/// The four bands at rest, as the reference shows them.
+/// The names of the engine's eight shapes.
+pub const SHAPES: [&str; 8] = [
+    "low cut",
+    "low shelf",
+    "bell",
+    "bandpass",
+    "band reject",
+    "tilt",
+    "high shelf",
+    "high cut",
+];
+
+/// The bands at rest: the reference's four, then four that are not in the plot.
 pub const AT_REST_BANDS: [Band; BANDS] = [
-    Band {
-        frequency: 168.0,
-        depth: 0.0,
-    },
-    Band {
-        frequency: 650.0,
-        depth: -2.3,
-    },
-    Band {
-        frequency: 3210.0,
-        depth: 3.2,
-    },
-    Band {
-        frequency: 9410.0,
-        depth: 0.0,
-    },
+    Band::at(168.0, 0.0, 0, true),
+    Band::at(650.0, -2.3, 2, true),
+    Band::at(3210.0, 3.2, 2, true),
+    Band::at(9410.0, 0.0, 7, true),
+    Band::at(1000.0, 0.0, 2, false),
+    Band::at(1000.0, 0.0, 2, false),
+    Band::at(1000.0, 0.0, 2, false),
+    Band::at(1000.0, 0.0, 2, false),
 ];
 
 /// Where a frequency sits on the plot's axis.
@@ -239,7 +282,12 @@ fn spectrum_y(db: f32, peak: f32) -> f64 {
 ///
 /// The handles are live: a drag on one moves it, and the band it stands for
 /// follows.
-pub fn response(ui: &Ui, bands: &mut [Band], telemetry: &Telemetry) -> El {
+pub fn response(
+    ui: &Ui,
+    bands: &mut [Band],
+    selected: &mut usize,
+    telemetry: &Telemetry,
+) -> El {
     // A drag on a handle moves it. The tag is latched at the press, so it
     // names the band the gesture took even when the pointer has left it.
     if let Some(index) = held(ui)
@@ -248,17 +296,39 @@ pub fn response(ui: &Ui, bands: &mut [Band], telemetry: &Telemetry) -> El {
     {
         band.frequency = frequency_for_x(point.x);
         band.depth = depth_for_y(point.y);
+        *selected = index;
+    }
+    // A double click on bare plot adds the next free band where it landed.
+    if ui.get(PLOT_ID).double_clicked
+        && let Some(point) = ui.local(PLOT_ID)
+        && !bands.iter().any(|band| {
+            band.active
+                && (x_for_frequency(band.frequency) - point.x).hypot(y_for_depth(band.depth) - point.y)
+                    < plot::DOT_R * 2.0
+        })
+        && let Some(index) = bands.iter().position(|band| !band.active)
+    {
+        bands[index] = Band {
+            frequency: frequency_for_x(point.x),
+            depth: depth_for_y(point.y),
+            active: true,
+            ..Band::at(1000.0, 0.0, 2, true)
+        };
+        *selected = index;
     }
     let live = telemetry.live();
     let tints = band_tints();
     let handles: Vec<Handle> = bands
         .iter()
         .enumerate()
+        .filter(|(_, band)| band.active)
         .map(|(index, band)| Handle {
+            index,
+            selected: index == *selected,
             x: x_for_frequency(band.frequency),
             y: y_for_depth(band.depth),
             tint: tints[index % tints.len()],
-            pill: index == 0 || index == BANDS - 1,
+            pill: band.is_edge(),
         })
         .collect();
     plot(&handles, telemetry, live)
@@ -282,9 +352,9 @@ pub fn held(ui: &Ui) -> Option<usize> {
 }
 
 /// The colours the bands wear, from the active theme's own four.
-fn band_tints() -> [u32; 4] {
+fn band_tints() -> [u32; 8] {
     let t = theme::t();
-    [t.red, t.magenta, t.cyan, t.green]
+    [t.red, t.magenta, t.cyan, t.green, t.red, t.magenta, t.cyan, t.green]
 }
 
 /// The name the plot carries, so the pointer can say which band it is on.
@@ -416,7 +486,8 @@ fn plot(handles: &[Handle], telemetry: &Telemetry, live: bool) -> El {
         stroke::CURVE,
     ));
 
-    for (index, h) in handles.iter().enumerate() {
+    for h in handles {
+        let index = h.index;
         let centre = pt(h.x, h.y);
         let (outer, inner) = if h.pill {
             (
@@ -431,6 +502,10 @@ fn plot(handles: &[Handle], telemetry: &Telemetry, live: bool) -> El {
         };
         draws.push(Draw::fill(outer.clone(), ca(t.handle, t.rim)).at(centre));
         draws.push(Draw::fill(inner, c(h.tint)).at(centre));
+        if h.selected {
+            // The band the panel is showing wears a ring.
+            draws.push(Draw::stroke(outer.clone(), c(t.plot_ink), stroke::RULE).at(centre));
+        }
         // The tag is how a drag knows which band it took.
         draws.push(Draw::hit(outer, format!("band-{index}")).at(centre));
     }

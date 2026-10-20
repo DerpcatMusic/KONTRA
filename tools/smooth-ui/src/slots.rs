@@ -27,10 +27,16 @@ pub enum Slot {
     AttackHigh,
     ReleaseLow,
     ReleaseHigh,
+    BandFrequency,
+    BandDepth,
+    BandWidth,
+    BandSlope,
+    BandBalance,
+    BandShape,
 }
 
 impl Slot {
-    pub const COUNT: usize = 15;
+    pub const COUNT: usize = 21;
     pub const ALL: [Slot; Slot::COUNT] = [
         Slot::Depth,
         Slot::Detail,
@@ -47,6 +53,12 @@ impl Slot {
         Slot::AttackHigh,
         Slot::ReleaseLow,
         Slot::ReleaseHigh,
+        Slot::BandFrequency,
+        Slot::BandDepth,
+        Slot::BandWidth,
+        Slot::BandSlope,
+        Slot::BandBalance,
+        Slot::BandShape,
     ];
 
     pub fn index(self) -> usize {
@@ -71,6 +83,12 @@ impl Slot {
             Slot::AttackHigh => "attack-high",
             Slot::ReleaseLow => "release-low",
             Slot::ReleaseHigh => "release-high",
+            Slot::BandFrequency => "band-frequency",
+            Slot::BandDepth => "band-depth",
+            Slot::BandWidth => "band-width",
+            Slot::BandSlope => "band-slope",
+            Slot::BandBalance => "band-balance",
+            Slot::BandShape => "band-shape",
         }
     }
 
@@ -86,6 +104,12 @@ impl Slot {
             Slot::MaxCut => (1.0, "24 dB"),
             Slot::Link => (1.0, "100 %"),
             Slot::Focus => (0.5, "0.50"),
+            Slot::BandFrequency => (0.5, "1.0 kHz"),
+            Slot::BandDepth => (0.5, "0.0 dB"),
+            Slot::BandWidth => (0.5, "0.71"),
+            Slot::BandSlope => (0.0, "6 dB/oct"),
+            Slot::BandBalance => (0.5, "linked"),
+            Slot::BandShape => (2.0 / 7.0, "bell"),
             _ => (0.5, "1.0"),
         }
     }

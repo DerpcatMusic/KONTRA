@@ -76,9 +76,6 @@ use std::sync::Arc;
 
 // ------------------------------------------------------------- parameters --
 
-/// The bands the editor draws: one handle each.
-const BANDS: usize = 4;
-
 /// What the host knows about SMOOTH.
 ///
 /// The ranges, defaults and units are soothe3's own, read from the declared
@@ -206,6 +203,21 @@ pub struct SmoothParams {
     /// How wide the first band is.
     #[param(name = "Band 1 q", range = "log(0.1, 10)", default = 0.707)]
     pub band1_q: FloatParam,
+    /// The shape of the first band.
+    #[param(name = "Band 1 shape", range = "discrete(0, 7)", default = 0)]
+    pub band1_shape: IntParam,
+    /// The slope of the first band's cuts and shelves.
+    #[param(name = "Band 1 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band1_slope: FloatParam,
+    /// The first band's stereo balance.
+    #[param(name = "Band 1 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band1_balance: FloatParam,
+    /// Whether the first band is in the plot at all.
+    #[param(name = "Band 1 active", range = "discrete(0, 1)", default = 1)]
+    pub band1_active: IntParam,
+    /// Whether the first band is bypassed.
+    #[param(name = "Band 1 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band1_bypass: IntParam,
     /// Where the second band sits.
     #[param(
         name = "Band 2 frequency",
@@ -225,6 +237,21 @@ pub struct SmoothParams {
     /// How wide the second band is.
     #[param(name = "Band 2 q", range = "log(0.1, 10)", default = 0.707)]
     pub band2_q: FloatParam,
+    /// The shape of the second band.
+    #[param(name = "Band 2 shape", range = "discrete(0, 7)", default = 2)]
+    pub band2_shape: IntParam,
+    /// The slope of the second band's cuts and shelves.
+    #[param(name = "Band 2 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band2_slope: FloatParam,
+    /// The second band's stereo balance.
+    #[param(name = "Band 2 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band2_balance: FloatParam,
+    /// Whether the second band is in the plot at all.
+    #[param(name = "Band 2 active", range = "discrete(0, 1)", default = 1)]
+    pub band2_active: IntParam,
+    /// Whether the second band is bypassed.
+    #[param(name = "Band 2 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band2_bypass: IntParam,
     /// Where the third band sits.
     #[param(
         name = "Band 3 frequency",
@@ -244,6 +271,21 @@ pub struct SmoothParams {
     /// How wide the third band is.
     #[param(name = "Band 3 q", range = "log(0.1, 10)", default = 0.707)]
     pub band3_q: FloatParam,
+    /// The shape of the third band.
+    #[param(name = "Band 3 shape", range = "discrete(0, 7)", default = 7)]
+    pub band3_shape: IntParam,
+    /// The slope of the third band's cuts and shelves.
+    #[param(name = "Band 3 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band3_slope: FloatParam,
+    /// The third band's stereo balance.
+    #[param(name = "Band 3 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band3_balance: FloatParam,
+    /// Whether the third band is in the plot at all.
+    #[param(name = "Band 3 active", range = "discrete(0, 1)", default = 1)]
+    pub band3_active: IntParam,
+    /// Whether the third band is bypassed.
+    #[param(name = "Band 3 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band3_bypass: IntParam,
     /// Where the fourth band sits.
     #[param(
         name = "Band 4 frequency",
@@ -263,32 +305,188 @@ pub struct SmoothParams {
     /// How wide the fourth band is.
     #[param(name = "Band 4 q", range = "log(0.1, 10)", default = 0.707)]
     pub band4_q: FloatParam,
+    /// The shape of the fourth band.
+    #[param(name = "Band 4 shape", range = "discrete(0, 7)", default = 2)]
+    pub band4_shape: IntParam,
+    /// The slope of the fourth band's cuts and shelves.
+    #[param(name = "Band 4 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band4_slope: FloatParam,
+    /// The fourth band's stereo balance.
+    #[param(name = "Band 4 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band4_balance: FloatParam,
+    /// Whether the fourth band is in the plot at all.
+    #[param(name = "Band 4 active", range = "discrete(0, 1)", default = 1)]
+    pub band4_active: IntParam,
+    /// Whether the fourth band is bypassed.
+    #[param(name = "Band 4 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band4_bypass: IntParam,
+    /// Where the fifth band sits.
+    #[param(
+        name = "Band 5 frequency",
+        range = "log(20, 20000)",
+        default = 1000.0,
+        unit = "Hz"
+    )]
+    pub band5_frequency: FloatParam,
+    /// How deep the fifth band cuts.
+    #[param(
+        name = "Band 5 depth",
+        range = "linear(-10, 10)",
+        default = 0.0,
+        unit = "dB"
+    )]
+    pub band5_depth: FloatParam,
+    /// How wide the fifth band is.
+    #[param(name = "Band 5 q", range = "log(0.1, 10)", default = 0.707)]
+    pub band5_q: FloatParam,
+    /// The shape of the fifth band.
+    #[param(name = "Band 5 shape", range = "discrete(0, 7)", default = 2)]
+    pub band5_shape: IntParam,
+    /// The slope of the fifth band's cuts and shelves.
+    #[param(name = "Band 5 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band5_slope: FloatParam,
+    /// The fifth band's stereo balance.
+    #[param(name = "Band 5 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band5_balance: FloatParam,
+    /// Whether the fifth band is in the plot at all.
+    #[param(name = "Band 5 active", range = "discrete(0, 1)", default = 0)]
+    pub band5_active: IntParam,
+    /// Whether the fifth band is bypassed.
+    #[param(name = "Band 5 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band5_bypass: IntParam,
+    /// Where the sixth band sits.
+    #[param(
+        name = "Band 6 frequency",
+        range = "log(20, 20000)",
+        default = 1000.0,
+        unit = "Hz"
+    )]
+    pub band6_frequency: FloatParam,
+    /// How deep the sixth band cuts.
+    #[param(
+        name = "Band 6 depth",
+        range = "linear(-10, 10)",
+        default = 0.0,
+        unit = "dB"
+    )]
+    pub band6_depth: FloatParam,
+    /// How wide the sixth band is.
+    #[param(name = "Band 6 q", range = "log(0.1, 10)", default = 0.707)]
+    pub band6_q: FloatParam,
+    /// The shape of the sixth band.
+    #[param(name = "Band 6 shape", range = "discrete(0, 7)", default = 2)]
+    pub band6_shape: IntParam,
+    /// The slope of the sixth band's cuts and shelves.
+    #[param(name = "Band 6 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band6_slope: FloatParam,
+    /// The sixth band's stereo balance.
+    #[param(name = "Band 6 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band6_balance: FloatParam,
+    /// Whether the sixth band is in the plot at all.
+    #[param(name = "Band 6 active", range = "discrete(0, 1)", default = 0)]
+    pub band6_active: IntParam,
+    /// Whether the sixth band is bypassed.
+    #[param(name = "Band 6 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band6_bypass: IntParam,
+    /// Where the seventh band sits.
+    #[param(
+        name = "Band 7 frequency",
+        range = "log(20, 20000)",
+        default = 1000.0,
+        unit = "Hz"
+    )]
+    pub band7_frequency: FloatParam,
+    /// How deep the seventh band cuts.
+    #[param(
+        name = "Band 7 depth",
+        range = "linear(-10, 10)",
+        default = 0.0,
+        unit = "dB"
+    )]
+    pub band7_depth: FloatParam,
+    /// How wide the seventh band is.
+    #[param(name = "Band 7 q", range = "log(0.1, 10)", default = 0.707)]
+    pub band7_q: FloatParam,
+    /// The shape of the seventh band.
+    #[param(name = "Band 7 shape", range = "discrete(0, 7)", default = 2)]
+    pub band7_shape: IntParam,
+    /// The slope of the seventh band's cuts and shelves.
+    #[param(name = "Band 7 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band7_slope: FloatParam,
+    /// The seventh band's stereo balance.
+    #[param(name = "Band 7 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band7_balance: FloatParam,
+    /// Whether the seventh band is in the plot at all.
+    #[param(name = "Band 7 active", range = "discrete(0, 1)", default = 0)]
+    pub band7_active: IntParam,
+    /// Whether the seventh band is bypassed.
+    #[param(name = "Band 7 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band7_bypass: IntParam,
+    /// Where the eighth band sits.
+    #[param(
+        name = "Band 8 frequency",
+        range = "log(20, 20000)",
+        default = 1000.0,
+        unit = "Hz"
+    )]
+    pub band8_frequency: FloatParam,
+    /// How deep the eighth band cuts.
+    #[param(
+        name = "Band 8 depth",
+        range = "linear(-10, 10)",
+        default = 0.0,
+        unit = "dB"
+    )]
+    pub band8_depth: FloatParam,
+    /// How wide the eighth band is.
+    #[param(name = "Band 8 q", range = "log(0.1, 10)", default = 0.707)]
+    pub band8_q: FloatParam,
+    /// The shape of the eighth band.
+    #[param(name = "Band 8 shape", range = "discrete(0, 7)", default = 2)]
+    pub band8_shape: IntParam,
+    /// The slope of the eighth band's cuts and shelves.
+    #[param(name = "Band 8 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    pub band8_slope: FloatParam,
+    /// The eighth band's stereo balance.
+    #[param(name = "Band 8 balance", range = "linear(0, 1)", default = 0.5)]
+    pub band8_balance: FloatParam,
+    /// Whether the eighth band is in the plot at all.
+    #[param(name = "Band 8 active", range = "discrete(0, 1)", default = 0)]
+    pub band8_active: IntParam,
+    /// Whether the eighth band is bypassed.
+    #[param(name = "Band 8 bypass", range = "discrete(0, 1)", default = 0)]
+    pub band8_bypass: IntParam,
     /// The live plot: the engine writes it from the audio thread, the
     /// editor reads it. Not a parameter.
     #[skip]
     pub plot: std::sync::Arc<Telemetry>,
-    /// The shape of the first band.
-    #[param(name = "Band 1 shape", range = "discrete(0, 7)", default = 0)]
-    pub band1_shape: IntParam,
-    /// The shape of the second band.
-    #[param(name = "Band 2 shape", range = "discrete(0, 7)", default = 2)]
-    pub band2_shape: IntParam,
-    /// The shape of the third band.
-    #[param(name = "Band 3 shape", range = "discrete(0, 7)", default = 7)]
-    pub band3_shape: IntParam,
-    /// The shape of the fourth band.
-    #[param(name = "Band 4 shape", range = "discrete(0, 7)", default = 2)]
-    pub band4_shape: IntParam,
 }
 
 use SmoothParamsParamId as P;
 
 /// The band parameters, in the order the graph draws its handles.
-const BAND_PARAMS: [(P, P); 4] = [
+const BAND_PARAMS: [(P, P); 8] = [
     (P::Band1Frequency, P::Band1Depth),
     (P::Band2Frequency, P::Band2Depth),
     (P::Band3Frequency, P::Band3Depth),
     (P::Band4Frequency, P::Band4Depth),
+    (P::Band5Frequency, P::Band5Depth),
+    (P::Band6Frequency, P::Band6Depth),
+    (P::Band7Frequency, P::Band7Depth),
+    (P::Band8Frequency, P::Band8Depth),
+];
+
+/// Every band's parameter ids: frequency, depth, q, shape, slope, balance,
+/// active, bypass.
+const BAND_IDS: [[P; 8]; 8] = [
+    [P::Band1Frequency, P::Band1Depth, P::Band1Q, P::Band1Shape, P::Band1Slope, P::Band1Balance, P::Band1Active, P::Band1Bypass],
+    [P::Band2Frequency, P::Band2Depth, P::Band2Q, P::Band2Shape, P::Band2Slope, P::Band2Balance, P::Band2Active, P::Band2Bypass],
+    [P::Band3Frequency, P::Band3Depth, P::Band3Q, P::Band3Shape, P::Band3Slope, P::Band3Balance, P::Band3Active, P::Band3Bypass],
+    [P::Band4Frequency, P::Band4Depth, P::Band4Q, P::Band4Shape, P::Band4Slope, P::Band4Balance, P::Band4Active, P::Band4Bypass],
+    [P::Band5Frequency, P::Band5Depth, P::Band5Q, P::Band5Shape, P::Band5Slope, P::Band5Balance, P::Band5Active, P::Band5Bypass],
+    [P::Band6Frequency, P::Band6Depth, P::Band6Q, P::Band6Shape, P::Band6Slope, P::Band6Balance, P::Band6Active, P::Band6Bypass],
+    [P::Band7Frequency, P::Band7Depth, P::Band7Q, P::Band7Shape, P::Band7Slope, P::Band7Balance, P::Band7Active, P::Band7Bypass],
+    [P::Band8Frequency, P::Band8Depth, P::Band8Q, P::Band8Shape, P::Band8Slope, P::Band8Balance, P::Band8Active, P::Band8Bypass],
 ];
 
 /// Write a value to a parameter only when it does not already hold it, so a
@@ -300,9 +498,17 @@ fn write_plain(params: &SmoothParams, param: P, value: f64) {
 }
 
 /// The parameter behind a slot, and how its plain value reads.
-fn slot_param(slot: Slot) -> (P, fn(f64) -> String) {
+fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
+    let ids = BAND_IDS[band.min(7)];
     fn one(v: f64) -> String {
         format!("{v:.1}")
+    }
+    fn times(v: f64) -> String {
+        if v < 1.0 {
+            format!("{v:.2}x")
+        } else {
+            format!("{v:.1}x")
+        }
     }
     match slot {
         Slot::Depth => (P::Depth, one),
@@ -314,12 +520,34 @@ fn slot_param(slot: Slot) -> (P, fn(f64) -> String) {
         Slot::MaxCut => (P::MaxCut, |v| format!("{v:.0} dB")),
         Slot::Link => (P::Link, |v| format!("{v:.0} %")),
         Slot::Focus => (P::Focus, |v| format!("{v:.2}")),
-        Slot::DetailLow => (P::DetailTiltLow, one),
-        Slot::DetailHigh => (P::DetailTiltHigh, one),
-        Slot::AttackLow => (P::AttackTiltLow, one),
-        Slot::AttackHigh => (P::AttackTiltHigh, one),
-        Slot::ReleaseLow => (P::ReleaseTiltLow, one),
-        Slot::ReleaseHigh => (P::ReleaseTiltHigh, one),
+        Slot::DetailLow => (P::DetailTiltLow, times),
+        Slot::DetailHigh => (P::DetailTiltHigh, times),
+        Slot::AttackLow => (P::AttackTiltLow, times),
+        Slot::AttackHigh => (P::AttackTiltHigh, times),
+        Slot::ReleaseLow => (P::ReleaseTiltLow, times),
+        Slot::ReleaseHigh => (P::ReleaseTiltHigh, times),
+        Slot::BandFrequency => (ids[0], |v| {
+            if v >= 10_000.0 {
+                format!("{:.0} kHz", v / 1000.0)
+            } else if v >= 1000.0 {
+                format!("{:.1} kHz", v / 1000.0)
+            } else {
+                format!("{v:.0} Hz")
+            }
+        }),
+        Slot::BandDepth => (ids[1], |v| format!("{v:.1} dB")),
+        Slot::BandWidth => (ids[2], |v| format!("{v:.2}")),
+        Slot::BandShape => (ids[3], |v| {
+            smooth_ui::graph::SHAPES[(v.round() as usize).min(7)].to_string()
+        }),
+        Slot::BandSlope => (ids[4], |v| format!("{v:.0} dB/oct")),
+        Slot::BandBalance => (ids[5], |v| {
+            if (v - 0.5).abs() < 0.005 {
+                "linked".to_string()
+            } else {
+                format!("{:+.0} %", (v - 0.5) * 200.0)
+            }
+        }),
     }
 }
 
@@ -328,6 +556,18 @@ fn slot_param(slot: Slot) -> (P, fn(f64) -> String) {
 /// Every conversion here is the one the reverse engineering established: the
 /// public value is turned into the engine's normalized form by the same
 /// helpers the research wrote, and the linear controls divide by their span.
+/// One band's parameters.
+struct Band<'a> {
+    frequency: &'a FloatParam,
+    depth: &'a FloatParam,
+    q: &'a FloatParam,
+    shape: &'a IntParam,
+    slope: &'a FloatParam,
+    balance: &'a FloatParam,
+    active: &'a IntParam,
+    bypass: &'a IntParam,
+}
+
 impl SmoothParams {
     fn settings(&self) -> Settings {
         let mut settings = Settings {
@@ -359,56 +599,110 @@ impl SmoothParams {
         settings
     }
 
-    /// The four bands the editor draws, in the engine's normalized form.
+    /// One band's parameters, by index.
+    fn band(&self, index: usize) -> Band<'_> {
+        match index {
+            0 => Band {
+                frequency: &self.band1_frequency,
+                depth: &self.band1_depth,
+                q: &self.band1_q,
+                shape: &self.band1_shape,
+                slope: &self.band1_slope,
+                balance: &self.band1_balance,
+                active: &self.band1_active,
+                bypass: &self.band1_bypass,
+            },
+            1 => Band {
+                frequency: &self.band2_frequency,
+                depth: &self.band2_depth,
+                q: &self.band2_q,
+                shape: &self.band2_shape,
+                slope: &self.band2_slope,
+                balance: &self.band2_balance,
+                active: &self.band2_active,
+                bypass: &self.band2_bypass,
+            },
+            2 => Band {
+                frequency: &self.band3_frequency,
+                depth: &self.band3_depth,
+                q: &self.band3_q,
+                shape: &self.band3_shape,
+                slope: &self.band3_slope,
+                balance: &self.band3_balance,
+                active: &self.band3_active,
+                bypass: &self.band3_bypass,
+            },
+            3 => Band {
+                frequency: &self.band4_frequency,
+                depth: &self.band4_depth,
+                q: &self.band4_q,
+                shape: &self.band4_shape,
+                slope: &self.band4_slope,
+                balance: &self.band4_balance,
+                active: &self.band4_active,
+                bypass: &self.band4_bypass,
+            },
+            4 => Band {
+                frequency: &self.band5_frequency,
+                depth: &self.band5_depth,
+                q: &self.band5_q,
+                shape: &self.band5_shape,
+                slope: &self.band5_slope,
+                balance: &self.band5_balance,
+                active: &self.band5_active,
+                bypass: &self.band5_bypass,
+            },
+            5 => Band {
+                frequency: &self.band6_frequency,
+                depth: &self.band6_depth,
+                q: &self.band6_q,
+                shape: &self.band6_shape,
+                slope: &self.band6_slope,
+                balance: &self.band6_balance,
+                active: &self.band6_active,
+                bypass: &self.band6_bypass,
+            },
+            6 => Band {
+                frequency: &self.band7_frequency,
+                depth: &self.band7_depth,
+                q: &self.band7_q,
+                shape: &self.band7_shape,
+                slope: &self.band7_slope,
+                balance: &self.band7_balance,
+                active: &self.band7_active,
+                bypass: &self.band7_bypass,
+            },
+            7 => Band {
+                frequency: &self.band8_frequency,
+                depth: &self.band8_depth,
+                q: &self.band8_q,
+                shape: &self.band8_shape,
+                slope: &self.band8_slope,
+                balance: &self.band8_balance,
+                active: &self.band8_active,
+                bypass: &self.band8_bypass,
+            },
+            _ => unreachable!("eight bands"),
+        }
+    }
+
+    /// The eight bands, in the engine's normalized form. A band that is not
+    /// active is an unused record; a bypassed one is used but not enabled, so
+    /// it leaves the depth curve alone.
     fn band_records(&self) -> [BandRecord; 8] {
-        let frequencies = [
-            self.band1_frequency.value(),
-            self.band2_frequency.value(),
-            self.band3_frequency.value(),
-            self.band4_frequency.value(),
-        ];
-        let depths = [
-            self.band1_depth.value(),
-            self.band2_depth.value(),
-            self.band3_depth.value(),
-            self.band4_depth.value(),
-        ];
-        let widths = [
-            self.band1_q.value(),
-            self.band2_q.value(),
-            self.band3_q.value(),
-            self.band4_q.value(),
-        ];
-        let shapes = [
-            self.band1_shape.value(),
-            self.band2_shape.value(),
-            self.band3_shape.value(),
-            self.band4_shape.value(),
-        ];
         std::array::from_fn(|index| {
-            // soothe3's declared defaults: a low cut at 100 Hz, a bell at
-            // 4 kHz, a high cut at 16 kHz, and a bell at 1 kHz. The bands
-            // past the fourth are declared but unused.
-            let (frequency, depth, width, shape) = if index < BANDS {
-                (
-                    frequencies[index],
-                    depths[index],
-                    widths[index],
-                    shapes[index].clamp(0, 7) as f32,
-                )
-            } else {
-                (1000.0, 0.0, 0.707, 2.0)
-            };
+            let band = self.band(index);
+            let active = band.active.value() >= 1;
             BandRecord::from_normalized(NormalizedRecord {
-                used: 1.0,
-                enabled: f32::from(index < BANDS),
-                frequency: normalized_from_center(frequency),
-                depth: (depth + 10.0) / 20.0,
-                q: normalized_from_q(width),
-                slope: normalized_from_slope(5.0),
-                focus: 0.5,
+                used: f32::from(active),
+                enabled: f32::from(active && band.bypass.value() < 1),
+                frequency: normalized_from_center(band.frequency.value()),
+                depth: (band.depth.value() + 10.0) / 20.0,
+                q: normalized_from_q(band.q.value()),
+                slope: normalized_from_slope(band.slope.value()),
+                focus: band.balance.value() as f32,
                 selector: 0.0,
-                shape: shape / 7.0,
+                shape: band.shape.value().clamp(0, 7) as f32 / 7.0,
             })
             .expect("bounded host band parameters")
         })
@@ -518,8 +812,9 @@ impl PluginLogic for Smooth {
         let mut seen: u64 = 0;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
+            let selected = model.selected.min(7);
             for slot in Slot::ALL {
-                let (param, say) = slot_param(slot);
+                let (param, say) = slot_param(slot, selected);
                 let id = u32::from(param);
                 let state = &mut model.slots[slot.index()];
                 state.norm = mirror.get_normalized(id).unwrap_or(state.norm);
@@ -531,15 +826,22 @@ impl PluginLogic for Smooth {
             model.delta = mirror.delta.value() >= 1;
             model.low_latency = mirror.low_latency.value() >= 1;
             model.quality = mirror.quality.value().clamp(0, 2) as usize;
-            for (index, (frequency, depth)) in BAND_PARAMS.iter().enumerate() {
-                model.bands[index].frequency =
-                    mirror.get_plain(u32::from(*frequency)).unwrap_or_default();
-                model.bands[index].depth = mirror.get_plain(u32::from(*depth)).unwrap_or_default();
+            for (index, ids) in BAND_IDS.iter().enumerate() {
+                let get = |i: usize| mirror.get_plain(u32::from(ids[i])).unwrap_or_default();
+                let band = &mut model.bands[index];
+                band.frequency = get(0);
+                band.depth = get(1);
+                band.q = get(2);
+                band.shape = get(3).round() as usize;
+                band.slope = get(4);
+                band.balance = get(5);
+                band.active = get(6) >= 1.0;
+                band.bypass = get(7) >= 1.0;
             }
 
             // The controls out: a drag on one is a gesture the host records.
             let mut bind = |ui: &mut Ui, slot: Slot, norm: &mut f64, part: &mut slots::Part| {
-                bridge.bind(ui, slot_param(slot).0, |ui, widget, host| {
+                bridge.bind(ui, slot_param(slot, selected).0, |ui, widget, host| {
                     let el = part(ui, widget.as_str(), host);
                     *norm = *host;
                     el
@@ -563,8 +865,11 @@ impl PluginLogic for Smooth {
             // holds is not written back, so host automation is not fought
             // frame by frame.
             for (index, (frequency, depth)) in BAND_PARAMS.iter().enumerate() {
-                write_plain(mirror.as_ref(), *frequency, model.bands[index].frequency);
-                write_plain(mirror.as_ref(), *depth, model.bands[index].depth);
+                let band = model.bands[index];
+                write_plain(mirror.as_ref(), *frequency, band.frequency);
+                write_plain(mirror.as_ref(), *depth, band.depth);
+                write_plain(mirror.as_ref(), BAND_IDS[index][6], f64::from(u8::from(band.active)));
+                write_plain(mirror.as_ref(), BAND_IDS[index][7], f64::from(u8::from(band.bypass)));
             }
             // The switches are the engine's own choices: soft or hard, the
             // bypass, the compare, the short window, the quality.
