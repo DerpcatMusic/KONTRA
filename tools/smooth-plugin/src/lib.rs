@@ -754,6 +754,8 @@ impl SmoothParams {
 #[derive(Default)]
 pub struct Dsp {
     bank: Option<EngineBank>,
+    /// The rate the bank was built for.
+    rate: f64,
     /// Samples since the plot was last published, and how many make a frame
     /// of it: the editor draws sixty a second, so the engine publishes about
     /// as often instead of once per block.
@@ -765,6 +767,13 @@ impl Dsp {
     /// A bank for the given rate, or the reason there is not one.
     fn build(rate: f64, selection: usize) -> Result<EngineBank, &'static str> {
         EngineBank::new(rate as f32, selection, false)
+    }
+
+    /// How long the engine keeps ringing after its input stops: its delay,
+    /// and the window it is still working through. The host reads this from
+    /// `clap.tail`, and returns `ProcessStatus::Tail` with the same value.
+    fn tail_samples(bank: &EngineBank) -> u32 {
+        (bank.latency() + bank.plan().n) as u32
     }
 }
 
@@ -778,15 +787,24 @@ impl PluginLogic for Smooth {
     fn init(params: &SmoothParams, _cx: &InitContext) -> Dsp {
         Dsp {
             bank: Dsp::build(48_000.0, params.selection()).ok(),
+            rate: 48_000.0,
             since_publish: 0,
             publish_every: 800,
         }
     }
 
     fn reset(state: &mut Dsp, params: &SmoothParams, config: &AudioConfig) {
-        state.bank = Dsp::build(config.sample_rate, params.selection()).ok();
         state.since_publish = 0;
         state.publish_every = (config.sample_rate / 60.0) as usize;
+        // CLAP calls reset on the audio thread, and a host may do so during
+        // playback. Building a bank allocates, so a reset at the rate the bank
+        // already runs at only forgets its history.
+        if let Some(bank) = state.bank.as_mut().filter(|_| state.rate == config.sample_rate) {
+            bank.reset();
+            return;
+        }
+        state.bank = Dsp::build(config.sample_rate, params.selection()).ok();
+        state.rate = config.sample_rate;
     }
 
     fn process(
@@ -796,31 +814,44 @@ impl PluginLogic for Smooth {
         _events: &EventList,
         _context: &mut ProcessContext,
     ) -> ProcessStatus {
+        // The host's buses need not match the engine's two lanes: a mono or
+        // absent input feeds the lanes it has (silence for an absent one), and
+        // every connected output is written -- output c carries lane
+        // min(c, lanes - 1). Leaving an output unwritten, or indexing a channel
+        // the host did not connect, is what a host hears as a dead plug-in.
+        let inputs = buffer.num_input_channels();
+        let outputs = buffer.num_output_channels();
         let Some(bank) = state.bank.as_mut() else {
+            // No engine at this rate: pass the signal through, rather than
+            // leave the outputs holding whatever the host had in them.
+            for channel in 0..outputs {
+                if inputs > 0 {
+                    // A sample copy, not `copy_from_slice`: a CLAP in-place host
+                    // hands in the same memory for input and output.
+                    let (input, output) = buffer.io_pair(channel.min(inputs - 1), channel);
+                    for (out, &sample) in output.iter_mut().zip(input) {
+                        *out = sample;
+                    }
+                } else {
+                    buffer.output(channel).fill(0.0);
+                }
+            }
             return ProcessStatus::Normal;
         };
+        let lanes = inputs.clamp(1, 2);
         let mut settings = params.settings();
-        settings.active_channels = buffer.num_input_channels().clamp(1, 2);
+        settings.active_channels = lanes;
         // A plan switch resets the engine's history: it may interrupt.
-        if bank.select(
-            params.selection(),
-            settings.mid_side && settings.active_channels == 2,
-        ) {
+        if bank.select(params.selection(), settings.mid_side && lanes == 2) {
             settings.mix = 1.0;
         }
-        let channels = settings.active_channels;
         let frames = buffer.num_samples();
         for frame in 0..frames {
-            let left = buffer.input(0)[frame];
-            let right = if channels > 1 {
-                buffer.input(1)[frame]
-            } else {
-                left
-            };
+            let left = if inputs > 0 { buffer.input(0)[frame] } else { 0.0 };
+            let right = if lanes > 1 { buffer.input(1)[frame] } else { left };
             let out = bank.active_mut().process_sample([left, right], &settings);
-            buffer.output(0)[frame] = out[0];
-            if channels > 1 {
-                buffer.output(1)[frame] = out[1];
+            for channel in 0..outputs {
+                buffer.output(channel)[frame] = out[channel.min(lanes - 1)];
             }
         }
         // The engine's own picture of what it is doing, for the plot.
@@ -829,12 +860,18 @@ impl PluginLogic for Smooth {
             state.since_publish = 0;
             params.plot.publish(&bank.active().plot_frame());
         }
-        ProcessStatus::Tail(bank.latency() as u32 + bank.plan().n as u32)
+        ProcessStatus::Tail(Dsp::tail_samples(bank))
     }
 
     /// The active engine's delay.
     fn latency(state: &Dsp) -> u32 {
         state.bank.as_ref().map_or(0, |bank| bank.latency() as u32)
+    }
+
+    /// The tail the status promises: a host that reads 0 here stops calling
+    /// process while the reverb-like ring-out is still audible.
+    fn tail(state: &Dsp) -> u32 {
+        state.bank.as_ref().map_or(0, Dsp::tail_samples)
     }
 
     fn editor(params: Arc<SmoothParams>) -> Box<dyn Editor> {
@@ -1214,5 +1251,134 @@ mod param_tests {
         let slope = params.band1_slope.range().normalize(f64::from(params.band1_slope.value()));
         assert!((slope - 0.5).abs() < 1e-3);
         assert!((normalized_from_slope(params.band1_slope.value()) - 0.5).abs() < 1e-3);
+    }
+}
+
+/// The host's buses are not the engine's: a mono or missing input and a
+/// different output count must still write every output the host connected.
+#[cfg(test)]
+mod host_io {
+    use super::*;
+
+    const SENTINEL: f32 = 0.25;
+
+    /// One block, as a host gives it: outputs prefilled with a sentinel, so a
+    /// sample the plug-in did not write is visible.
+    fn block(state: &mut Dsp, params: &SmoothParams, inputs: &[&[f32]], outputs: usize) -> Vec<Vec<f32>> {
+        let frames = inputs.first().map_or(512, |channel| channel.len());
+        let mut storage: Vec<Vec<f32>> = (0..outputs).map(|_| vec![SENTINEL; frames]).collect();
+        {
+            let mut views: Vec<&mut [f32]> = storage.iter_mut().map(Vec::as_mut_slice).collect();
+            let transport = TransportInfo::default();
+            let mut out_events = EventList::default();
+            let mut context = ProcessContext::new(&transport, 48_000.0, frames, &mut out_events);
+            let mut buffer = AudioBuffer::from_slices_checked(inputs, &mut views, frames);
+            Smooth::process(state, params, &mut buffer, &EventList::default(), &mut context);
+        }
+        storage
+    }
+
+    fn signal(frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let left = (0..frames).map(|i| (i as f32 * 0.37).sin() * 0.2).collect();
+        let right = (0..frames).map(|i| (i as f32 * 0.21).cos() * 0.2).collect();
+        (left, right)
+    }
+
+    fn prepared(params: &SmoothParams) -> Dsp {
+        let mut state = Dsp::default();
+        Smooth::reset(&mut state, params, &AudioConfig::new(48_000.0, 512));
+        state
+    }
+
+    fn written(channel: &[f32]) -> bool {
+        channel.iter().all(|v| v.is_finite() && *v != SENTINEL)
+    }
+
+    #[test]
+    fn every_connected_output_is_written_for_each_bus_shape() {
+        let params = SmoothParams::default();
+        let (left, right) = signal(512);
+
+        let stereo = block(&mut prepared(&params), &params, &[&left, &right], 2);
+        assert!(stereo.iter().all(|c| written(c)), "stereo in, stereo out left a sample unwritten");
+
+        let mono_out = block(&mut prepared(&params), &params, &[&left, &right], 1);
+        assert_eq!(mono_out.len(), 1);
+        assert!(written(&mono_out[0]), "stereo in, mono out left a sample unwritten");
+
+        // A mono input is one engine lane: both outputs carry it, identically.
+        let mono_in = block(&mut prepared(&params), &params, &[&left], 2);
+        assert!(mono_in.iter().all(|c| written(c)), "mono in, stereo out left a sample unwritten");
+        assert_eq!(mono_in[0], mono_in[1], "mono in, stereo out: the two outputs differ");
+
+        // No input bus: silence, and every output still written.
+        let no_input = block(&mut prepared(&params), &params, &[], 2);
+        assert!(no_input.iter().all(|c| written(c)), "no input bus left an output unwritten");
+    }
+
+    #[test]
+    fn with_no_engine_the_signal_passes_through() {
+        let params = SmoothParams::default();
+        let (left, right) = signal(512);
+        // A dead engine (no bank at this rate) must not leave the outputs as the
+        // host had them: the input comes out.
+        let stereo = block(&mut Dsp::default(), &params, &[&left, &right], 2);
+        assert_eq!(stereo[0], left);
+        assert_eq!(stereo[1], right);
+        let mono = block(&mut Dsp::default(), &params, &[&left], 2);
+        assert_eq!(mono[0], left);
+        assert_eq!(mono[1], left);
+    }
+
+    /// The tail the host reads from `clap.tail` must be the one the status
+    /// promises: a host that reads 0 stops calling process mid-ring-out.
+    #[test]
+    fn the_tail_the_host_reads_is_the_one_the_status_promises() {
+        let params = SmoothParams::default();
+        let mut state = prepared(&params);
+        let tail = Smooth::tail(&state);
+        assert!(tail > 0, "the engine rings after its input stops, so it has a tail");
+        let (left, right) = signal(512);
+        let inputs: [&[f32]; 2] = [&left, &right];
+        let mut storage = vec![vec![SENTINEL; 512]; 2];
+        let mut views: Vec<&mut [f32]> = storage.iter_mut().map(Vec::as_mut_slice).collect();
+        let transport = TransportInfo::default();
+        let mut out_events = EventList::default();
+        let mut context = ProcessContext::new(&transport, 48_000.0, 512, &mut out_events);
+        let mut buffer = AudioBuffer::from_slices_checked(&inputs, &mut views, 512);
+        let status = Smooth::process(&mut state, &params, &mut buffer, &EventList::default(), &mut context);
+        assert!(matches!(status, ProcessStatus::Tail(n) if n == tail), "status {status:?}, tail {tail}");
+    }
+
+    #[test]
+    fn the_plot_advances_while_the_plugin_processes() {
+        let params = SmoothParams::default();
+        let mut state = prepared(&params);
+        let (left, right) = signal(512);
+        let before = params.plot.sequence();
+        for _ in 0..8 {
+            block(&mut state, &params, &[&left, &right], 2);
+        }
+        // 8 blocks of 512 at 48 kHz is well over one 60 Hz frame, so the engine
+        // must have published at least once.
+        assert!(params.plot.sequence() > before, "the plot never published");
+    }
+}
+
+#[cfg(test)]
+mod reset_rt {
+    use super::*;
+
+    /// CLAP's reset runs on the audio thread: a host may call it during
+    /// playback (a transport jump, a loop). It must not allocate.
+    #[test]
+    fn a_reset_during_playback_does_not_allocate() {
+        let params = SmoothParams::default();
+        let mut state = Dsp::default();
+        Smooth::reset(&mut state, &params, &AudioConfig::new(48_000.0, 512));
+        let allocations = allocation_audit::count(|| {
+            Smooth::reset(&mut state, &params, &AudioConfig::new(48_000.0, 512));
+        });
+        assert_eq!(allocations, 0, "reset allocated {allocations} times on the audio thread");
     }
 }

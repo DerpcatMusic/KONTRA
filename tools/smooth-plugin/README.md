@@ -38,6 +38,8 @@ plug-in list.
 cargo test -p smooth-core -p smooth-plugin   # the engine's numerical contracts
 cargo test -p smooth-ui                      # the interface's rules
 python3 tools/smooth-plugin/scripts/clap_smoke.py ~/.clap/SMOOTH.clap
+python3 tools/smooth-plugin/scripts/clap_host_matrix.py ~/.clap/SMOOTH.clap   # --quick for a subset
+xvfb-run -a ~/.local/bin/pluginval-1.0.4 --strictness-level 10 --validate ~/.vst3/SMOOTH.vst3
 xvfb-run -a python3 tools/smooth-plugin/scripts/gui_shot.py ~/.clap/SMOOTH.clap shot.png
 xvfb-run -a -s "-screen 0 1600x1000x24" python3 tools/smooth-plugin/scripts/gui_shot.py \
     ~/.clap/SMOOTH.clap shot.png --click 95,93 636,458
