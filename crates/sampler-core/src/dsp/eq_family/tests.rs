@@ -317,3 +317,101 @@ fn uvi_digital_bands_match_the_native_design() {
         }
     }
 }
+
+/// Bit fingerprints of every biquad coefficient design over a parameter grid, pinned before the
+/// designs moved into `dsp::biquad`: any numerical change to a design fails here.
+mod design_fingerprints {
+    use super::super::kernel;
+    use crate::dsp::{filter::cascade, Biquad, FilterKind};
+    use sampler_ir::fx::eq::Kind;
+
+    const KINDS: [Kind; 10] = [
+        Kind::Level,
+        Kind::Peak,
+        Kind::LowShelf,
+        Kind::HighShelf,
+        Kind::FirstOrderLowShelf,
+        Kind::FirstOrderHighShelf,
+        Kind::LowPass,
+        Kind::HighPass,
+        Kind::BandPass,
+        Kind::Notch,
+    ];
+
+    struct Fnv(u64);
+    impl Fnv {
+        fn eat(&mut self, v: u64) {
+            for byte in v.to_le_bytes() {
+                self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        fn coefficients(&mut self, c: Option<[f64; 5]>) {
+            match c {
+                Some(c) => c.iter().for_each(|v| self.eat(v.to_bits())),
+                None => self.eat(u64::MAX),
+            }
+        }
+    }
+
+    fn grid(mut f: impl FnMut(u32, f64, f64, f64)) {
+        for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+            let mut hz = vec![1e-3, 0.4999 * f64::from(rate), 0.5 * f64::from(rate), 0.6 * f64::from(rate)];
+            let mut h = 10.;
+            while h < 0.5 * f64::from(rate) {
+                hz.push(h);
+                h *= 1.13;
+            }
+            for &hz in &hz {
+                for q in [0.05, 0.3, std::f64::consts::FRAC_1_SQRT_2, 1., 2.5, 10., 40.] {
+                    for db in [-30., -6.5, 0., 0.1, 6., 24.] {
+                        f(rate, hz, q, db);
+                    }
+                }
+            }
+        }
+    }
+
+    fn fingerprint(design: impl Fn(u32, f64, f64, f64, &mut Fnv)) -> u64 {
+        let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+        grid(|rate, hz, q, db| design(rate, hz, q, db, &mut h));
+        h.0
+    }
+
+    fn five(b: kernel::Biquad) -> [f64; 5] {
+        [b.b[0], b.b[1], b.b[2], b.a[0], b.a[1]]
+    }
+
+    #[test]
+    fn coefficient_designs_are_bit_identical() {
+        let native = fingerprint(|rate, hz, q, db, h| {
+            for kind in [
+                FilterKind::LowPass,
+                FilterKind::HighPass,
+                FilterKind::BandPass,
+                FilterKind::Notch,
+                FilterKind::AllPass,
+                FilterKind::Peak { gain_db: db },
+                FilterKind::LowShelf { gain_db: db },
+                FilterKind::HighShelf { gain_db: db },
+                FilterKind::FirstOrderLowShelf { gain_db: db },
+                FilterKind::FirstOrderHighShelf { gain_db: db },
+            ] {
+                h.coefficients(Biquad::new(rate, kind, hz, q).ok().map(|b| b.trace_coefficients()));
+            }
+        });
+        let cookbook = fingerprint(|rate, hz, q, db, h| {
+            KINDS.iter().for_each(|&k| h.coefficients(kernel::cookbook(k, rate, hz, q, db).map(five)));
+        });
+        let matched = fingerprint(|rate, hz, q, db, h| {
+            KINDS.iter().for_each(|&k| h.coefficients(kernel::design(k, rate, hz, q, db).map(five)));
+        });
+        let first_order = fingerprint(|rate, hz, q, db, h| {
+            KINDS.iter().for_each(|&k| h.coefficients(kernel::first_order(k, rate, hz, db).map(five)));
+        });
+        let kontakt = fingerprint(|rate, hz, q, _, h| {
+            (0..4).for_each(|mode| h.coefficients(Some(cascade::rbj(mode, hz / f64::from(rate), q))));
+        });
+        let got = [native, cookbook, matched, first_order, kontakt];
+        assert_eq!(got, [0x8eb3_3122_67b6_322b, 0x573e_e65e_842e_3e4b, 0x4bfc_94dc_3f48_85dc, 0x3b58_838f_c2ba_3d5d, 0x396e_3b26_2f76_4695]);
+    }
+}
