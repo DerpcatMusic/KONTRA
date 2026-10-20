@@ -216,12 +216,12 @@ pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
     .a11y(A11y::Toggle { on: *on })
 }
 
-/// A round plate under a glyph: a wash light enough to work on the bar, the
-/// footer, or the plot.
+/// A round plate under a glyph: a control you can press, so it reads as a
+/// solid chip against the bar whatever is behind it.
 pub fn disc(d: f64) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    block(d, d).radius(d / 2.0).fill(ca(t.plate, t.wash))
+    block(d, d).radius(d / 2.0).fill(c(t.chip))
 }
 
 /// A hollow circle, as a switch reads before it is on.

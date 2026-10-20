@@ -210,6 +210,11 @@ pub mod plot {
     pub const DOT_R: f64 = 7.0;
     pub const DOT_INNER_R: f64 = 4.6;
 
+    /// The soft edge on the material's top: how far one band of it reaches,
+    /// and how many bands it takes to fade into the background.
+    pub const GLOW_STEP: f64 = 3.0;
+    pub const GLOW_LAYERS: usize = 14;
+
     /// The well the plot sits in: its shadow's reach.
     pub const WELL_TOP: f64 = 9.0;
     pub const WELL_LEFT: f64 = 13.0;

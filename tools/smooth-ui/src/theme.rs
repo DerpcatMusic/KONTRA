@@ -123,6 +123,9 @@ pub struct Palette {
     pub chip_alpha: f32,
     /// The hairline that catches the plot's edge.
     pub edge_veil: f32,
+    /// One band of the soft edge where the plot's material meets its
+    /// background; the bands stack, so this is a fraction of the whole.
+    pub glow: f32,
 }
 
 /// The reference's own look: soothe3's cool blue, read off its pixels.
@@ -145,8 +148,8 @@ pub const VOICE: Palette = Palette {
     logo_accent: 0xC8DCF2,
     mark: 0xF2F4FA,
 
-    field: 0xC3D3E9,
-    chip: 0xC7D5E8,
+    field: 0xC1D1E4,
+    chip: 0xC2D0E5,
     chip_light: 0xC9D7EA,
     toggle: 0xC3CFE5,
     thumb: 0x8199C4,
@@ -162,7 +165,7 @@ pub const VOICE: Palette = Palette {
     grid: 0xB6CAE3,
     grid_base: 0xC6D8F0,
     fill_top: 0x8298CA,
-    fill_bottom: 0x7E96C6,
+    fill_bottom: 0x899ED2,
     plot_ink: 0xF2F4FA,
 
     red: 0xC46678,
@@ -187,6 +190,7 @@ pub const VOICE: Palette = Palette {
     rim: 0.96,
     chip_alpha: 0.90,
     edge_veil: 0.70,
+    glow: 0.015,
 };
 
 /// Stage light: a deep slate ground, cool ink turned pale, and the plot
@@ -251,6 +255,7 @@ pub const CONSOLE: Palette = Palette {
     rim: 0.95,
     chip_alpha: 0.85,
     edge_veil: 0.35,
+    glow: 0.016,
 };
 
 /// Morning paper: a warm, near-white ground with ink that is almost brown.
@@ -316,6 +321,7 @@ pub const PAPER: Palette = Palette {
     rim: 0.97,
     chip_alpha: 0.92,
     edge_veil: 0.85,
+    glow: 0.017,
 };
 
 /// A look, with the name a person picks it by.

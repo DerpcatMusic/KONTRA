@@ -331,6 +331,27 @@ fn plot(handles: &[Handle], telemetry: &Telemetry, live: bool) -> El {
         CURVE.iter().map(|&(x, y)| (x, y)).collect()
     };
 
+    // The material's edge glows: the reference fades the fill into the
+    // background over a few dozen pixels instead of cutting it off. Layered
+    // bands, each a step higher and a step fainter, stand in for a blur --
+    // they follow the same trace, so the light falls off the edge wherever
+    // the edge goes.
+    if !fill.is_empty() {
+        for layer in (1..=plot::GLOW_LAYERS).rev() {
+            let lift = layer as f64 * plot::GLOW_STEP;
+            let mut band: Vec<Point> = fill
+                .iter()
+                .map(|&(x, y)| pt(x, (y - lift).max(GRID_TOP)))
+                .collect();
+            band.push(pt(PLOT_W, PLOT_H));
+            band.push(pt(0.0, PLOT_H));
+            draws.push(Draw::fill(
+                Path::polyline(band, true),
+                ca(t.plot_ink, t.glow),
+            ));
+        }
+    }
+
     // The area under the spectrum, closed on the plot's baseline.
     if !fill.is_empty() {
         let mut area: Vec<Point> = fill.iter().map(|&(x, y)| pt(x, y)).collect();
