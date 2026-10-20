@@ -17,6 +17,9 @@ pub fn enable(on: bool) {
 }
 
 /// The tooltip for a control, if it has one and tooltips are on.
+/// Why the quality choice cannot be changed while low latency holds.
+pub const QUALITY_DISABLED: &str = "Quality settings are disabled in low latency mode.";
+
 pub fn of(id: &str) -> Option<&'static str> {
     if !ENABLED.load(Ordering::Relaxed) {
         return None;
@@ -38,7 +41,7 @@ pub fn of(id: &str) -> Option<&'static str> {
         "max-cut" => "Set the maximum reduction SMOOTH is allowed to make in dB.",
         "bypass" => "Bypass the processing.",
         "delta" => "Monitor the difference between wet and dry signals.",
-        "quality" => "Set the quality of processing. Higher quality settings increase CPU load.",
+        "quality" => "Set the quality of processing and choose between minimum phase (default) and linear phase processing. Higher quality settings increase CPU load while linear phase processing increases latency.",
         "lowlatency" => "Toggle the low latency mode on/off. The latency drops to 0-1 ms depending on sample rate.",
         "undo" => "Undo last action.",
         "redo" => "Redo last undone action.",

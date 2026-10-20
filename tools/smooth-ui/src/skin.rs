@@ -340,6 +340,23 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
         .a11y(A11y::Toggle { on: *choice > 0 })
 }
 
+/// A dropdown that cannot be changed: the chosen name, dimmed, with the reason
+/// for it in its tooltip (the quality choice while low latency holds).
+pub fn dropdown_unavailable(id: &str, name: &str, why: &str) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    block(metric::DROPDOWN_W, metric::FIELD_H)
+        .radius(SKIN.corners.field)
+        .fill(c(t.field))
+        .push(
+            label(name, ty::BODY, ca(t.ink, t.veil_soft))
+                .anchor(Align::Start, Align::Center)
+                .offset(space::L, space::NONE),
+        )
+        .tipped(id)
+        .tip(why)
+}
+
 /// The current preset, its pager, and what it is for.
 ///
 /// One part, because it is one thing: the reference draws the title, the
