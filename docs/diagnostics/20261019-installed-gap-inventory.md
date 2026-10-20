@@ -57,7 +57,7 @@ anything: its only gap was the Flex loop jump.
 | `native source zone identity` | 251 | 251 | The native zone identity of a saved source zone, so no ordinal alias is created |
 | `keyswitch script` | 202 | 201 | The static detection of a keyswitch script, so the articulation list stays empty |
 | `Solid G-EQ: Solid G-EQ smoothing` | 59 | 3 | The native 20 ms coefficient smoothing on knob changes |
-| `Solid G-EQ: live control` | 59 | 3 | Script access to the Solid G-EQ knobs |
+| `Solid G-EQ: live control` | 59 | 3 | **Closed after this survey**: script access is bound per band (`docs/re/kontakt-solid-geq-live-control.md`); the count is the pre-change measurement |
 | `modulation of a modulator's intensity` | 42 | 1 | Modulating the intensity of another modulator |
 | `wavetable source` | 30 | 1 | Three unmodelled source features, each present on every one of the 30: phase random 0.5, inharmonic enabled, and (on 23) a mod oscillator |
 | `effect` | 17 | 6 | The Convolution payload layout, the Jump amplifier models and the Rotator core |
@@ -190,18 +190,21 @@ and where the search starts in `Kontakt8.exe` (SHA256
   coefficient law itself is proved in
   `crates/sampler-core/src/dsp/eq_family/solid.rs` (splines, topology, the
   per-section designs, the 104 tables, setter `0x141ac70f0`, process
-  `0x141aaa620`). Two things are not. The smoothing: the update address the
-  core note cites, `0x141ab4d70`, does not hold it in this build — it
-  disassembles to a small object helper that sets a byte at `+0x13da1` and
-  calls `0x140acbe30` with a string at `+0x13db0`, with `ws2_32` imports
-  nearby — so the search has to restart from the setter, for a second
-  coefficient set and the per-block step that matches "20 ms in whole
-  blocks". The script binding is a separate problem: the knob order and
-  identity laws are measured (`docs/re/kontakt-bindings/filters_eq.tsv`, 16
-  `$ENGINE_PAR_SEQ_*` rows: 12 continuous plus the two bell and two on/off
-  switches), but the IR's live binding is role-based
-  (`ir::ProcessorParameter`) and one role cannot name two bands, so a live
-  Solid unit needs a per-band spindle the current shape cannot express.
+  `0x141aaa620`). The script binding is closed:
+  `docs/re/kontakt-solid-geq-live-control.md`. The module is translated as one
+  one-band `Config` per saved band, so each band carries its own
+  `$ENGINE_PAR_SEQ_*` lanes (twelve identity knobs from
+  `filters_eq.tsv`); the lanes reach every section of a multi-section band,
+  and recorded load-time writes go through `apply_writes`. The four switches
+  stay switches: a bell or a pass enable changes the band's `Kind`, which is
+  not a `ProcessorParameter`, so a live switch write is reported by the
+  runtime outcome instead of being bound. What is left is the smoothing: the
+  update address the core note cites, `0x141ab4d70`, does not hold it in this
+  build — it disassembles to a small object helper that sets a byte at
+  `+0x13da1` and calls `0x140acbe30` with a string at `+0x13db0`, with
+  `ws2_32` imports nearby — so the search has to restart from the setter, for
+  a second coefficient set and the per-block step that matches "20 ms in
+  whole blocks".
 
 ## Reporting rules used by the tool
 
