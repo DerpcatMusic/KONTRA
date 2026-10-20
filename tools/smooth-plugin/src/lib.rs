@@ -191,7 +191,7 @@ pub struct SmoothParams {
     /// Where the first band sits.
     #[param(
         name = "Band 1 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 100.0,
         unit = "Hz"
     )]
@@ -205,13 +205,13 @@ pub struct SmoothParams {
     )]
     pub band1_depth: FloatParam,
     /// How wide the first band is.
-    #[param(name = "Band 1 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 1 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band1_q: FloatParam,
     /// The shape of the first band.
     #[param(name = "Band 1 shape", range = "discrete(0, 7)", default = 0)]
     pub band1_shape: IntParam,
     /// The slope of the first band's cuts and shelves.
-    #[param(name = "Band 1 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 1 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band1_slope: FloatParam,
     /// The first band's stereo balance.
     #[param(name = "Band 1 balance", range = "linear(0, 1)", default = 0.5)]
@@ -225,7 +225,7 @@ pub struct SmoothParams {
     /// Where the second band sits.
     #[param(
         name = "Band 2 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 4000.0,
         unit = "Hz"
     )]
@@ -239,13 +239,13 @@ pub struct SmoothParams {
     )]
     pub band2_depth: FloatParam,
     /// How wide the second band is.
-    #[param(name = "Band 2 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 2 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band2_q: FloatParam,
     /// The shape of the second band.
     #[param(name = "Band 2 shape", range = "discrete(0, 7)", default = 2)]
     pub band2_shape: IntParam,
     /// The slope of the second band's cuts and shelves.
-    #[param(name = "Band 2 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 2 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band2_slope: FloatParam,
     /// The second band's stereo balance.
     #[param(name = "Band 2 balance", range = "linear(0, 1)", default = 0.5)]
@@ -259,7 +259,7 @@ pub struct SmoothParams {
     /// Where the third band sits.
     #[param(
         name = "Band 3 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 16000.0,
         unit = "Hz"
     )]
@@ -273,13 +273,13 @@ pub struct SmoothParams {
     )]
     pub band3_depth: FloatParam,
     /// How wide the third band is.
-    #[param(name = "Band 3 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 3 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band3_q: FloatParam,
     /// The shape of the third band.
     #[param(name = "Band 3 shape", range = "discrete(0, 7)", default = 7)]
     pub band3_shape: IntParam,
     /// The slope of the third band's cuts and shelves.
-    #[param(name = "Band 3 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 3 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band3_slope: FloatParam,
     /// The third band's stereo balance.
     #[param(name = "Band 3 balance", range = "linear(0, 1)", default = 0.5)]
@@ -293,7 +293,7 @@ pub struct SmoothParams {
     /// Where the fourth band sits.
     #[param(
         name = "Band 4 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 1000.0,
         unit = "Hz"
     )]
@@ -307,13 +307,13 @@ pub struct SmoothParams {
     )]
     pub band4_depth: FloatParam,
     /// How wide the fourth band is.
-    #[param(name = "Band 4 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 4 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band4_q: FloatParam,
     /// The shape of the fourth band.
     #[param(name = "Band 4 shape", range = "discrete(0, 7)", default = 2)]
     pub band4_shape: IntParam,
     /// The slope of the fourth band's cuts and shelves.
-    #[param(name = "Band 4 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 4 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band4_slope: FloatParam,
     /// The fourth band's stereo balance.
     #[param(name = "Band 4 balance", range = "linear(0, 1)", default = 0.5)]
@@ -327,7 +327,7 @@ pub struct SmoothParams {
     /// Where the fifth band sits.
     #[param(
         name = "Band 5 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 1000.0,
         unit = "Hz"
     )]
@@ -341,13 +341,13 @@ pub struct SmoothParams {
     )]
     pub band5_depth: FloatParam,
     /// How wide the fifth band is.
-    #[param(name = "Band 5 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 5 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band5_q: FloatParam,
     /// The shape of the fifth band.
     #[param(name = "Band 5 shape", range = "discrete(0, 7)", default = 2)]
     pub band5_shape: IntParam,
     /// The slope of the fifth band's cuts and shelves.
-    #[param(name = "Band 5 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 5 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band5_slope: FloatParam,
     /// The fifth band's stereo balance.
     #[param(name = "Band 5 balance", range = "linear(0, 1)", default = 0.5)]
@@ -361,7 +361,7 @@ pub struct SmoothParams {
     /// Where the sixth band sits.
     #[param(
         name = "Band 6 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 1000.0,
         unit = "Hz"
     )]
@@ -375,13 +375,13 @@ pub struct SmoothParams {
     )]
     pub band6_depth: FloatParam,
     /// How wide the sixth band is.
-    #[param(name = "Band 6 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 6 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band6_q: FloatParam,
     /// The shape of the sixth band.
     #[param(name = "Band 6 shape", range = "discrete(0, 7)", default = 2)]
     pub band6_shape: IntParam,
     /// The slope of the sixth band's cuts and shelves.
-    #[param(name = "Band 6 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 6 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band6_slope: FloatParam,
     /// The sixth band's stereo balance.
     #[param(name = "Band 6 balance", range = "linear(0, 1)", default = 0.5)]
@@ -395,7 +395,7 @@ pub struct SmoothParams {
     /// Where the seventh band sits.
     #[param(
         name = "Band 7 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 1000.0,
         unit = "Hz"
     )]
@@ -409,13 +409,13 @@ pub struct SmoothParams {
     )]
     pub band7_depth: FloatParam,
     /// How wide the seventh band is.
-    #[param(name = "Band 7 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 7 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band7_q: FloatParam,
     /// The shape of the seventh band.
     #[param(name = "Band 7 shape", range = "discrete(0, 7)", default = 2)]
     pub band7_shape: IntParam,
     /// The slope of the seventh band's cuts and shelves.
-    #[param(name = "Band 7 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 7 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band7_slope: FloatParam,
     /// The seventh band's stereo balance.
     #[param(name = "Band 7 balance", range = "linear(0, 1)", default = 0.5)]
@@ -429,7 +429,7 @@ pub struct SmoothParams {
     /// Where the eighth band sits.
     #[param(
         name = "Band 8 frequency",
-        range = "log(20, 20000)",
+        range = "offset_log(20, 20000, 150)",
         default = 1000.0,
         unit = "Hz"
     )]
@@ -443,13 +443,13 @@ pub struct SmoothParams {
     )]
     pub band8_depth: FloatParam,
     /// How wide the eighth band is.
-    #[param(name = "Band 8 q", range = "log(0.1, 10)", default = 0.707)]
+    #[param(name = "Band 8 q", range = "pivoted_log(0.1, 10, 0.707)", default = 0.707)]
     pub band8_q: FloatParam,
     /// The shape of the eighth band.
     #[param(name = "Band 8 shape", range = "discrete(0, 7)", default = 2)]
     pub band8_shape: IntParam,
     /// The slope of the eighth band's cuts and shelves.
-    #[param(name = "Band 8 slope", range = "log(6, 128)", default = 6.0, unit = "custom:dB/oct")]
+    #[param(name = "Band 8 slope", range = "log(6, 128)", default = 27.71, unit = "custom:dB/oct")]
     pub band8_slope: FloatParam,
     /// The eighth band's stereo balance.
     #[param(name = "Band 8 balance", range = "linear(0, 1)", default = 0.5)]
@@ -1148,5 +1148,23 @@ mod param_tests {
         assert_eq!(params.band2_frequency.value(), 4000.0);
         assert_eq!(params.band3_frequency.value(), 16000.0);
         assert_eq!(params.band4_frequency.value(), 1000.0);
+    }
+
+    #[test]
+    fn the_host_laws_are_the_engines_reference_laws() {
+        use smooth_core::weighting::{normalized_from_center, normalized_from_q, normalized_from_slope};
+        let params = SmoothParams::default();
+        for hz in [20.0_f32, 100.0, 1000.0, 4000.0, 20000.0] {
+            let host = params.band1_frequency.range().normalize(f64::from(hz));
+            assert!((host as f32 - normalized_from_center(hz)).abs() < 1e-5, "{hz} Hz");
+        }
+        for q in [0.1_f32, 0.707, 2.0, 10.0] {
+            let host = params.band1_q.range().normalize(f64::from(q));
+            assert!((host as f32 - normalized_from_q(q)).abs() < 1e-4, "q {q}");
+        }
+        // The reference's default slope sits at the middle of its knob.
+        let slope = params.band1_slope.range().normalize(f64::from(params.band1_slope.value()));
+        assert!((slope - 0.5).abs() < 1e-3);
+        assert!((normalized_from_slope(params.band1_slope.value()) - 0.5).abs() < 1e-3);
     }
 }

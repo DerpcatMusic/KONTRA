@@ -47,7 +47,7 @@ impl Band {
             depth,
             q: 0.707,
             shape,
-            slope: 6.0,
+            slope: 27.71,
             balance: 0.5,
             active,
             bypass: false,
