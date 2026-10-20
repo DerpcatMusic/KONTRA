@@ -2414,6 +2414,40 @@ pub(crate) fn process_channel_tone(chunk: &mut [f32], state: &mut [f64; 2], tone
     }
 }
 
+/// The same Tone primitive over interleaved stereo frames. Shared processing
+/// activations apply it once to their summed post-chain output, so the two
+/// channels keep independent integrators exactly as the mono path does.
+pub(crate) fn process_frame_tone(
+    frames: &mut [crate::Frame],
+    state: &mut [[f64; 2]; 2],
+    tone: f64,
+    rate: f64,
+) {
+    if tone < 0.0 {
+        let hz = (TONE_OPEN * rate * (tone / 12.0).exp2()).max(10.0);
+        let g = (std::f64::consts::PI * hz / rate).tan();
+        let k = std::f64::consts::SQRT_2;
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let (a2, a3) = (g * a1, g * g * a1);
+        for frame in frames {
+            for (sample, state) in frame.iter_mut().zip(state.iter_mut()) {
+                let [ic1, ic2] = &mut *state;
+                let v3 = f64::from(*sample) - *ic2;
+                let v1 = a1 * *ic1 + a2 * v3;
+                let v2 = *ic2 + a2 * *ic1 + a3 * v3;
+                *ic1 = 2.0 * v1 - *ic1;
+                *ic2 = 2.0 * v2 - *ic2;
+                *sample = v2 as f32;
+            }
+        }
+        for channel in state.iter_mut() {
+            *channel = channel.map(crate::dsp::flush);
+        }
+    } else {
+        *state = [[0.0; 2]; 2];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

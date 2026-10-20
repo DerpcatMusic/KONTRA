@@ -619,19 +619,25 @@ fn virtual_controllers_keep_signed_script_units_and_consumed_input() {
         "on init declare $bend declare $pressure end on on controller $bend := $PITCH_BEND $pressure := %CC[129] ignore_controller end on",
     );
     let domain = rt.performance(0).unwrap();
+    let address = input(1).channel_address();
     for (value, expected) in [(0, -8192), (0x80000000, 0), (u32::MAX, 8191)] {
         support::without_heap(|| {
-            rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, value)
+            rt.dispatch_controller(domain, address, 1, 128, value)
                 .unwrap();
             assert_eq!(cell(&rt, 0, 0), expected);
-            assert_eq!(rt.input_controller(domain, 128), Ok(value));
+            // A consumed virtual controller keeps its exact script unit in the
+            // captured physical channel; physical input never mirrors into the
+            // separate channel-less global bank.
+            assert_eq!(rt.channel_input_controller(domain, address, 128), Ok(value));
+            assert_eq!(rt.input_controller(domain, 128), Ok(0x80000000));
             assert_eq!(rt.controller(domain, 128), Ok(0x80000000));
         });
         rt.flush_behaviors(|_, _, _| true);
     }
-    rt.dispatch_controller(domain, input(1).channel_address(), 1, 129, u32::MAX)
+    rt.dispatch_controller(domain, address, 1, 129, u32::MAX)
         .unwrap();
     assert_eq!(cell(&rt, 0, 1), 127);
+    assert_eq!(rt.channel_input_controller(domain, address, 129), Ok(u32::MAX));
     assert_eq!(rt.controller(domain, 129), Ok(0));
 }
 
@@ -648,13 +654,17 @@ fn generated_pitch_bend_projects_into_the_next_script_stage() {
         ),
     ]);
     let domain = rt.performance(0).unwrap();
+    let address = input(1).channel_address();
     let n = note(&mut rt);
     support::without_heap(|| {
-        rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, 0x80000000)
+        rt.dispatch_controller(domain, address, 1, 128, 0x80000000)
             .unwrap();
         assert_eq!((cell(&rt, 1, 0), cell(&rt, 1, 1)), (8191, 128));
-        assert_eq!(rt.input_controller(domain, 128), Ok(0x80000000));
-        assert_eq!(rt.controller(domain, 128), Ok(u32::MAX));
+        assert_eq!(rt.channel_input_controller(domain, address, 128), Ok(0x80000000));
+        // The generated pitch bend lands in the captured physical channel that
+        // owns the callback; the explicit global domain keeps its own default.
+        assert_eq!(rt.channel_controller(domain, address, 128), Ok(u32::MAX));
+        assert_eq!(rt.controller(domain, 128), Ok(0x80000000));
         assert_eq!(rt.note_controller(n, 128), Ok(0x80000000));
     });
 }

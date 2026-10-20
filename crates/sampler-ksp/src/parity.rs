@@ -404,7 +404,7 @@ fn parity_report_with_detail(
             Err(f) => fail(&mut report, f),
         }
     }
-    if let Err(f) = unit.finish(&mut programs) {
+    if let Err(f) = unit.finish(&mut programs, source) {
         fail(&mut report, f);
     }
     let inspection = unit.inspection.take().unwrap();
