@@ -59,15 +59,15 @@ anything: its only gap was the Flex loop jump.
 | `Solid G-EQ: Solid G-EQ smoothing` | 59 | 3 | The native 20 ms coefficient smoothing on knob changes |
 | `Solid G-EQ: live control` | 59 | 3 | Script access to the Solid G-EQ knobs |
 | `modulation of a modulator's intensity` | 42 | 1 | Modulating the intensity of another modulator |
-| `wavetable source` | 30 | 1 | The wavetable source mode 9 |
+| `wavetable source` | 30 | 1 | Three unmodelled source features, each present on every one of the 30: phase random 0.5, inharmonic enabled, and (on 23) a mod oscillator |
 | `effect` | 17 | 6 | The Convolution payload layout, the Jump amplifier models and the Rotator core |
-| `modulation of a module parameter` | 12 | 5 | The LFO rate and start phase targets of a module slot |
+| `modulation of a module parameter` | 12 | 5 | The LFO rate and start phase targets of a module slot; four of them are derived from the LFO waveform row below |
 | `modulation target` | 16 | 1 | Wavetable targets whose stored intensity is zero |
 | `Tape Saturator: Creative FX live controls` | 11 | 4 | Live Tape Saturator knobs and their smoothing |
 | `Convolution: impulse response` | 10 | 2 | The impulse response resource |
 | `time machine pro Elastique backend` | 10 | 1 | The Elastique granular backend |
 | `Reverb (legacy): legacy reverb input lowpass` | 4 | 1 | The legacy reverb input lowpass |
-| `LFO waveform (id, multi weights, pulse width)` | 4 | 1 | The multi-weight LFO waveform |
+| `LFO waveform (id, multi weights, pulse width)` | 4 | 1 | The multi-weight LFO waveform, and the 5.3 s first saved value its admission refuses (`docs/re/kontakt-lfo-fade-cap.md`) |
 | `Convolution: IR size` | 2 | 1 | The impulse response block size |
 | `saved automation target` | 1 | 1 | A saved automation tag |
 | `Convolution: IR early/late crossover` | 1 | 1 | The early/late crossover point |
@@ -167,6 +167,20 @@ and where the search starts in `Kontakt8.exe` (SHA256
   silent switch was recognised; the editor's articulation list is complete
   for those patches. The remaining reports ("further switch keys") are a
   second switch set the editor does not list.
+* **The Multi LFO and the four derived route reports** (4 + 4 entries). All
+  30 wavetable sources in Morphology Evolved and the two Multi LFOs in
+  ANALOG STRINGS are refused at one guard: the translator reads the LFO's
+  first initial value as a fade of `5345.849` ms and its bound is 5000 ms.
+  That bound is the 60001-tick fade table at 384 kHz, not a limit of the
+  fade at 44.1 kHz. Whether the field is a fade or a delay is still open, and
+  it decides the fix; `docs/re/kontakt-lfo-fade-cap.md` has the measured
+  chain, both bounds and the render that would settle it.
+* **The wavetable sources** (30 entries, one instrument). Measured on all 30
+  groups: `phase_random = 0.5`, `inharmonic_enabled = true` and, on 23 of
+  them, `mod_type != 0` with a mod oscillator wave, amount and tune. The
+  form ids also leave the admitted set (23, 28, 29, 18, 30, 20, 19...). The
+  admission refuses at the first of these, so the row is three unimplemented
+  features plus a form-table extension, not one mode.
 
 ## Reporting rules used by the tool
 
