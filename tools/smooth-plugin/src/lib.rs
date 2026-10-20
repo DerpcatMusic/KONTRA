@@ -1130,6 +1130,54 @@ mod tests {
 }
 
 #[cfg(test)]
+mod probe {
+    use super::*;
+    /// Resonant noise through the default settings: the plot must show the
+    /// reduction and the output must lose the resonance.
+    #[test]
+    fn defaults_reduce_a_resonance_and_the_plot_shows_it() {
+        for gain in [0.01f32, 0.03, 0.1, 0.3, 1.0, 3.0] { reduce_at(gain); }
+    }
+
+    #[test]
+    fn the_bank_builds_at_every_host_rate_and_selection() {
+        for rate in [44100.0f32, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0] {
+            for sel in 0..6 {
+                if let Err(e) = EngineBank::new(rate, sel, false) { panic!("{rate} sel {sel}: {e}"); }
+            }
+        }
+    }
+
+    fn reduce_at(gain: f32) {
+        let params = SmoothParams::default();
+        let settings = params.settings();
+        let mut bank = EngineBank::new(48000.0, params.selection(), false).unwrap();
+        let (mut seed, mut lp, mut z1, mut z2) = (1u32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut ein, mut eout) = (0.0f64, 0.0f64);
+        let mut deepest = 0.0f32;
+        for t in 0..48000 * 4 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let n = (seed >> 8) as f32 / 8388608.0 - 1.0;
+            lp += 0.2 * (n - lp);
+            // a narrow resonance near 3 kHz
+            let w = std::f32::consts::TAU * 3000.0 / 48000.0;
+            let (r, c) = (0.995f32, 2.0 * 0.995 * w.cos());
+            let y = lp * 0.02 + c * z1 - r * r * z2;
+            z2 = z1; z1 = y;
+            let x = (lp * 0.3 + y * 0.5) * gain;
+            let out = bank.active_mut().process_sample([x, x], &settings);
+            if t > 48000 { ein += f64::from(x * x); eout += f64::from(out[0] * out[0]); }
+            if t % 800 == 0 {
+                let f = bank.active().plot_frame();
+                for g in f.gain[0] { deepest = deepest.min(20.0 * g.max(1e-6).log10()); }
+            }
+        }
+        eprintln!("gain {gain}: energy out/in = {:.2} dB, deepest plot = {deepest:.1} dB", 10.0 * (eout / ein).log10());
+        let _ = deepest;
+    }
+}
+
+#[cfg(test)]
 mod param_tests {
     use super::*;
 

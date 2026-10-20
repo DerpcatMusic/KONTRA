@@ -744,7 +744,7 @@ impl Engine {
             self.forward
                 .process_with_scratch(&mut ch.spectrum, &mut ch.scratch);
             for k in 0..p.bins {
-                ch.magnitude[k] = ch.spectrum[k].norm() * 2.0 / p.n as f32;
+                ch.magnitude[k] = ch.spectrum[k].norm();
             }
         }
         let mut weights_refreshed = false;
