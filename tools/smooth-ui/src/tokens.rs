@@ -58,8 +58,9 @@ pub mod ty {
     /// The wordmark, and nothing else.
     pub const WORDMARK: f64 = 28.0;
 
-    /// A name is set medium.
-    pub const WEIGHT: f32 = 620.0;
+    /// A name is set between book and medium: the reference's labels are
+    /// lighter than they first read at this size.
+    pub const WEIGHT: f32 = 500.0;
     /// A value is set lighter than the name above it.
     pub const WEIGHT_VALUE: f32 = 340.0;
     /// The wordmark is the lightest thing in the editor, and the roundest.
