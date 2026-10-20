@@ -8,6 +8,7 @@ use super::super::{
     control::{ControlRamp, PreparedParameter},
 };
 use super::{EqBand, Kind, Law, digital, kernel, solid};
+use crate::dsp::biquad::{self, Design};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Generic {
@@ -129,14 +130,14 @@ impl Generic {
 pub(super) fn design(rate: u32, law: Law, kind: Kind, poles: u8, hz: f64, q: f64, boost: f64) -> Option<kernel::Svf> {
     let first = matches!(kind, Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf)
         || (poles == 1 && matches!(kind, Kind::LowPass | Kind::HighPass));
-    let f = if first {
-        kernel::first_order(kind, rate, hz, boost)
+    let design = if first {
+        Design::FirstOrder
     } else if law == Law::Cookbook {
-        kernel::cookbook(kind, rate, hz, q, boost)
+        Design::Cookbook
     } else {
-        kernel::design(kind, rate, hz, q, boost)
+        Design::Matched
     };
-    kernel::Svf::from_biquad(&f?)
+    kernel::Svf::from_biquad(&biquad::design(design, kind, rate, hz, q, boost)?)
 }
 
 /// Both channels through one section, then flush the states.
