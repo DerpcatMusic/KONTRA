@@ -197,6 +197,12 @@ pub struct SmoothParams {
         default = 1.0
     )]
     pub release_tilt_high: FloatParam,
+    /// The detector listens to the sidechain input, not the main one.
+    #[param(name = "Sidechain", range = "discrete(0, 1)", default = 0)]
+    pub sidechain: IntParam,
+    /// Hear the detector instead of the processed signal.
+    #[param(name = "Sidechain listen", range = "discrete(0, 1)", default = 0)]
+    pub sidechain_listen: IntParam,
     /// Where the first band sits.
     #[param(
         name = "Band 1 frequency",
@@ -629,6 +635,8 @@ impl SmoothParams {
             output_db: self.output.value(),
             delta: self.delta.value() >= 1,
             bypass: self.bypass.value() >= 1,
+            sidechain: self.sidechain.value() >= 1,
+            sidechain_listen: self.sidechain_listen.value() >= 1,
             adaptive_baseline: false,
             ..Settings::default()
         };
@@ -786,6 +794,16 @@ impl PluginLogic for Smooth {
     type Params = SmoothParams;
     type DspState = Dsp;
 
+    /// Plain stereo, stereo with a stereo sidechain, then mono. Mono has no
+    /// sidechain: a two-channel input would not say which bus it is.
+    fn bus_layouts() -> Vec<BusLayout> {
+        vec![
+            BusLayout::stereo(),
+            BusLayout::stereo().with_sidechain_input("Sidechain", ChannelConfig::Stereo),
+            BusLayout::mono(),
+        ]
+    }
+
     fn init(params: &SmoothParams, _cx: &InitContext) -> Dsp {
         Dsp {
             bank: Dsp::build(48_000.0, params.selection()).ok(),
@@ -812,6 +830,8 @@ impl PluginLogic for Smooth {
         };
         let mut settings = params.settings();
         settings.active_channels = buffer.num_input_channels().clamp(1, 2);
+        // The sidechain bus follows the main pair; four input channels mean it is there.
+        settings.sidechain &= buffer.num_input_channels() >= 4;
         // A plan switch resets the engine's history: it may interrupt.
         if bank.select(
             params.selection(),
@@ -828,7 +848,14 @@ impl PluginLogic for Smooth {
             } else {
                 left
             };
-            let out = bank.active_mut().process_sample([left, right], &settings);
+            let detector = if settings.sidechain {
+                [buffer.input(2)[frame], buffer.input(3)[frame]]
+            } else {
+                [left, right]
+            };
+            let out = bank
+                .active_mut()
+                .process_sample_with_detector([left, right], detector, &settings);
             buffer.output(0)[frame] = out[0];
             if channels > 1 {
                 buffer.output(1)[frame] = out[1];
@@ -1226,5 +1253,21 @@ mod param_tests {
         let slope = params.band1_slope.range().normalize(f64::from(params.band1_slope.value()));
         assert!((slope - 0.5).abs() < 1e-3);
         assert!((normalized_from_slope(params.band1_slope.value()) - 0.5).abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod sidechain_layout {
+    use super::*;
+
+    /// The sidechain is a stereo aux bus on its own layout, and the plain
+    /// stereo layout stays available. Four input channels mean the sidechain
+    /// is there; two mean it is not.
+    #[test]
+    fn the_sidechain_layout_is_a_stereo_aux_bus() {
+        let layouts = <Smooth as PluginLogic>::bus_layouts();
+        assert!(layouts.iter().any(|l| l.total_input_channels() == 4));
+        assert!(layouts.iter().any(|l| l.total_input_channels() == 2
+            && l.sidechain_input_indices().next().is_none()));
     }
 }

@@ -119,6 +119,10 @@ pub struct Settings {
     pub output_db: f32,
     pub delta: bool,
     pub bypass: bool,
+    /// The detector analyses the sidechain input instead of the main one.
+    pub sidechain: bool,
+    /// Listen to the detector: the output is its signal, not the reduction.
+    pub sidechain_listen: bool,
     pub adaptive_baseline: bool,
     pub bands: [BandRecord; 8],
     /// Typed descriptor inputs. The host adapter declares tag0; source public tags are unclosed.
@@ -153,6 +157,8 @@ impl Default for Settings {
             output_db: 0.0,
             delta: false,
             bypass: false,
+            sidechain: false,
+            sidechain_listen: false,
             adaptive_baseline: false,
             bands: std::array::from_fn(|i| {
                 let mut record = BandRecord::flat(DEFAULT_CENTERS[i]);
@@ -614,18 +620,34 @@ impl Engine {
         self.max_reduction_db = 0.0;
     }
     pub fn process_sample(&mut self, input: [f32; 2], settings: &Settings) -> [f32; 2] {
+        self.process_sample_with_detector(input, input, settings)
+    }
+
+    /// `detector` is what the analysis listens to when the sidechain is on;
+    /// the reduction and the dry path always take `input`.
+    pub fn process_sample_with_detector(
+        &mut self,
+        input: [f32; 2],
+        detector: [f32; 2],
+        settings: &Settings,
+    ) -> [f32; 2] {
         self.active_channels = settings.active_channels.clamp(1, 2);
         let mid_side = settings.mid_side && self.active_channels == 2;
         self.last_mix = settings.mix.clamp(0.0, 1.0);
         self.last_bypass = settings.bypass;
         let input = input.map(|v| if v.is_finite() { v } else { 0.0 });
-        let conditioned = if mid_side {
-            [
-                (input[0] + input[1]) * std::f32::consts::FRAC_1_SQRT_2,
-                (input[0] - input[1]) * std::f32::consts::FRAC_1_SQRT_2,
-            ]
+        let detector = if settings.sidechain {
+            detector.map(|v| if v.is_finite() { v } else { 0.0 })
         } else {
             input
+        };
+        let conditioned = if mid_side {
+            [
+                (detector[0] + detector[1]) * std::f32::consts::FRAC_1_SQRT_2,
+                (detector[0] - detector[1]) * std::f32::consts::FRAC_1_SQRT_2,
+            ]
+        } else {
+            detector
         };
         for (index, ch) in self
             .channels
@@ -688,6 +710,11 @@ impl Engine {
                 ((1.0 - mix) * dry[c] + wet_mix * wet[c]) * gain
             }
         });
+        // Sidechain listen hears the detector's own signal, through the output trim.
+        // ponytail: listen level and the reference's listen routing are not located; this is the named behavior.
+        if settings.sidechain && settings.sidechain_listen {
+            output = detector.map(|v| v * gain);
+        }
         if self.active_channels == 1 {
             output[1] = output[0]; // Two-slot standalone/WAV adapter; mono hosts consume only lane 0.
         }
@@ -1442,6 +1469,78 @@ mod ring2 {
                 "{label}: ring energy {wet:.6} against {dry:.6} = {:.2} dB",
                 10.0 * (wet / dry).log10()
             );
+        }
+    }
+
+    /// Energy of the processed output against the delayed dry input, over the
+    /// ringing tone of `a_ringing_tone_is_pulled_down`, with the detector fed
+    /// `detector_on` (the tone) or silence.
+    fn sidechain_run(sidechain: bool, detector_on: bool) -> (f32, f32) {
+        let mut engine = Engine::new(
+            44100.0,
+            EngineConfig {
+                reduced_latency: true,
+                ..EngineConfig::default()
+            },
+        )
+        .unwrap();
+        let latency = engine.latency();
+        let settings = Settings {
+            depth: 0.8,
+            detail: 0.4,
+            attack: 0.0,
+            stereo_link: 0.0,
+            focus: 0.0,
+            sidechain,
+            ..Settings::default()
+        };
+        let (mut dry, mut wet) = (0.0f32, 0.0f32);
+        for t in 0..20000 {
+            let envelope = (-(t as f32) / (0.15 * 44100.0)).exp();
+            let tone = (TAU * 1000.0 * t as f32 / 44100.0).sin() * 0.5 * envelope;
+            let detector = if detector_on { [tone, tone] } else { [0.0, 0.0] };
+            let out = engine.process_sample_with_detector([tone, tone], detector, &settings);
+            if t > 2000 {
+                let reference = (TAU * 1000.0 * (t - latency) as f32 / 44100.0).sin()
+                    * 0.5
+                    * (-(t as f32 - latency as f32) / (0.15 * 44100.0)).exp();
+                dry += reference * reference;
+                wet += out[0] * out[0];
+            }
+        }
+        (dry, wet)
+    }
+
+    /// With the switch off the detector is ignored; with it on and fed the
+    /// same tone the reduction is the main input's exactly. A silent detector
+    /// does change the output: the engine's reduction of silence is the
+    /// reference-unverified part, so it is not pinned here.
+    #[test]
+    fn the_sidechain_detector_replaces_the_analysis_input() {
+        let (dry, off_tone) = sidechain_run(false, true);
+        let (_, off_silent) = sidechain_run(false, false);
+        let (_, on_tone) = sidechain_run(true, true);
+        let (_, on_silent) = sidechain_run(true, false);
+        assert!(off_tone < dry * 0.95, "the main input is reduced");
+        assert_eq!(off_tone, off_silent, "the detector is ignored with the switch off");
+        assert_eq!(on_tone, off_tone, "the same detector signal gives the same reduction");
+        assert_ne!(on_silent, off_tone, "the detector drives the reduction when on");
+    }
+
+    /// Listen hears the detector's own signal, not the processed one.
+    #[test]
+    fn sidechain_listen_outputs_the_detector() {
+        let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+        let settings = Settings {
+            sidechain: true,
+            sidechain_listen: true,
+            ..Settings::default()
+        };
+        for t in 0..4000 {
+            let input = [(t as f32 * 0.01).sin() * 0.3, 0.0];
+            let detector = [(t as f32 * 0.02).cos() * 0.2, (t as f32 * 0.03).sin() * 0.1];
+            let out = engine.process_sample_with_detector(input, detector, &settings);
+            assert_eq!(out, detector, "t={t}");
         }
     }
 }
