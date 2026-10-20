@@ -319,7 +319,7 @@ pub struct SmoothParams {
     #[param(name = "Band 4 balance", range = "linear(0, 1)", default = 0.5)]
     pub band4_balance: FloatParam,
     /// Whether the fourth band is in the plot at all.
-    #[param(name = "Band 4 active", range = "discrete(0, 1)", default = 1)]
+    #[param(name = "Band 4 active", range = "discrete(0, 1)", default = 0)]
     pub band4_active: IntParam,
     /// Whether the fourth band is bypassed.
     #[param(name = "Band 4 bypass", range = "discrete(0, 1)", default = 0)]
