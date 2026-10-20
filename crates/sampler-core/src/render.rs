@@ -677,6 +677,18 @@ impl Runtime {
         if !v.started {
             return None;
         }
+        let processing = v.processing;
+        let chained_owner = processing.and_then(|(owner, _)| {
+            let state = self.processing_owners.get(owner.0)?;
+            let generation = self.plans.get(state.plan.0)?;
+            Some(
+                generation
+                    .prepared
+                    .processing_scopes
+                    .get(state.template)
+                    .is_some_and(|scope| scope.chain.is_some()),
+            )
+        });
         let f = self.families.get(v.family.0).unwrap();
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
@@ -769,6 +781,21 @@ impl Runtime {
         } else {
             points
         };
+        let mut points = points;
+        if chained_owner == Some(true) {
+            // A shared processing chain owns the audible stage order; Tone is
+            // applied by the activation after that chain, not per member.
+            let tone = points.map_or(0., |r| (r.from.tone + r.to.tone) * 0.5);
+            if let Some((owner, _)) = processing
+                && let Some(state) = self.processing_owners.get_mut(owner.0)
+            {
+                state.tone = tone;
+            }
+            if let Some(ramp) = points.as_mut() {
+                ramp.from.tone = 0.0;
+                ramp.to.tone = 0.0;
+            }
+        }
         let pitch = match points {
             None => v.base_step * expression.rendered.ratio,
             Some(ramp) => {

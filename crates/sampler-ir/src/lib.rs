@@ -16,6 +16,11 @@ mod validate;
 pub use units::{Frequency, Gain, Pan, PanLaw, Pitch, Resonance, SourceFrames, Span, Time};
 pub use validate::{Reference, ValidationError};
 
+/// Upper bound on source processing scopes in one instrument. A scope is one
+/// authored source owner, so large multi-keygroup libraries legitimately need
+/// one per keygroup; this only bounds the definition roster, not live voices.
+pub const MAX_PROCESSING_SCOPES: usize = 4096;
+
 macro_rules! reference {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
         $(#[$doc])*
