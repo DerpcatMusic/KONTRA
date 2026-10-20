@@ -14,6 +14,7 @@ pub mod graph;
 pub mod graph_data;
 pub mod icons;
 pub mod skin;
+pub mod slots;
 pub mod theme;
 pub mod tokens;
 pub mod view;

@@ -9,6 +9,7 @@
 
 use crate::graph;
 use crate::skin::*;
+use crate::slots::{self, Bind, Slider, Slot};
 use crate::theme;
 use crate::tokens::{icon, metric, radius, space, ty};
 use mui::prelude::*;
@@ -28,12 +29,12 @@ pub struct Model {
     /// What the engine is doing, read by the plot.
     pub telemetry: std::sync::Arc<graph::Telemetry>,
     pub soft: bool,
-    pub depth: f64,
-    pub detail: f64,
-    pub attack: f64,
-    pub release: f64,
-    pub mix: f64,
-    pub out: f64,
+    /// Every continuous control: its normalised value and what it reads as.
+    pub slots: [Slider; Slot::COUNT],
+    /// Whether the rail's side panel is open.
+    pub side: bool,
+    /// The stereo mode: left/right (false) or mid/side (true).
+    pub mid_side: bool,
     pub bypass: bool,
     pub delta: bool,
     pub low_latency: bool,
@@ -47,12 +48,9 @@ impl Default for Model {
             bands: graph::AT_REST_BANDS,
             telemetry: std::sync::Arc::new(graph::Telemetry::default()),
             soft: true,
-            depth: 6.0,
-            detail: 6.3,
-            attack: 5.0,
-            release: 3.0,
-            mix: 100.0,
-            out: 0.0,
+            slots: slots::at_rest(),
+            side: false,
+            mid_side: false,
             bypass: false,
             delta: false,
             low_latency: false,
@@ -69,7 +67,7 @@ impl Default for Model {
 /// everything. That is why the toolbar's first button tucks under the rail
 /// while the footer's first switch sits clear of it -- the same layering, not
 /// a placement.
-pub fn editor(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
+pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     stack![
@@ -84,13 +82,19 @@ pub fn editor(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
         ]
         .anchor(Align::Start, Align::Start),
         // The rail, over the plot.
-        row![block(PANEL, space::NONE).shrink(0), rail()]
+        row![block(PANEL, space::NONE).shrink(0), rail(ui, m)]
             .w(W)
             .h(H)
             .anchor(Align::Start, Align::Start),
+        // The side panel the rail opens, over the plot.
+        col![
+            block(W, BAR).shrink(0),
+            row![block(LEFT, space::NONE).shrink(0), side_panel(ui, m, bind)],
+        ]
+        .anchor(Align::Start, Align::Start),
         // The footer, at the bottom of the window and over the rail's foot:
         // its first switch sits clear of the rail, as the reference's does.
-        row![block(FOOTER_X, space::NONE).shrink(0), footer(ui, m)]
+        row![block(FOOTER_X, space::NONE).shrink(0), footer(ui, m, bind)]
             .w(W)
             .justify(Justify::Start)
             .anchor(Align::Start, Align::End),
@@ -100,7 +104,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
             .justify(Justify::Start)
             .anchor(Align::Start, Align::Start),
         // The control column, over everything.
-        panel(ui, m, dial).anchor(Align::Start, Align::Start),
+        panel(ui, m, bind).anchor(Align::Start, Align::Start),
     ]
     .size(W, H)
     .radius(radius::WINDOW)
@@ -113,7 +117,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
 /// The spacers are what make it read: the slack between the groups is shared
 /// evenly, so the column breathes at any height instead of sitting at a
 /// hand-computed offset.
-fn panel(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
+fn panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     // The switch carries an index; the model carries the mode. The part runs
@@ -128,45 +132,13 @@ fn panel(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
         spacer().grow(NAME_SLACK),
         mode_el,
         spacer(),
-        control(
-            ui,
-            dial,
-            "depth",
-            "depth",
-            &mut m.depth,
-            0.0..=10.0,
-            metric::DIAL
-        ),
+        knob_control(ui, bind, m, Slot::Depth, "depth", metric::DIAL),
         spacer(),
-        control(
-            ui,
-            dial,
-            "detail",
-            "detail",
-            &mut m.detail,
-            0.0..=10.0,
-            metric::DIAL_SMALL
-        ),
+        knob_control(ui, bind, m, Slot::Detail, "detail", metric::DIAL_SMALL),
         spacer(),
         row![
-            control(
-                ui,
-                dial,
-                "attack",
-                "attack",
-                &mut m.attack,
-                0.0..=10.0,
-                metric::DIAL_SMALL
-            ),
-            control(
-                ui,
-                dial,
-                "release",
-                "release",
-                &mut m.release,
-                0.0..=10.0,
-                metric::DIAL_SMALL
-            ),
+            knob_control(ui, bind, m, Slot::Attack, "attack", metric::DIAL_SMALL),
+            knob_control(ui, bind, m, Slot::Release, "release", metric::DIAL_SMALL),
         ]
         .gap(space::M)
         .justify(Justify::SpaceBetween),
@@ -183,6 +155,18 @@ fn panel(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
     .align(Align::Center)
     .shrink(0)
     .fill(Gradient::vertical(c(t.panel_top), c(t.panel_bottom)))
+}
+
+/// One of the column's knobs, bound to its slot.
+fn knob_control(
+    ui: &mut Ui,
+    bind: &mut Bind,
+    m: &mut Model,
+    slot: Slot,
+    name: &str,
+    d: f64,
+) -> El {
+    control(ui, bind, slot, &mut m.slots[slot.index()], name, d)
 }
 
 /// The lockup at the top: the name over who makes it and which version.
@@ -209,7 +193,7 @@ fn brand() -> El {
 ///
 /// The three groups are one pitch apart, and the pitch is a token rather than
 /// a position: change `metric::RAIL_PITCH` and the rail re-spaces itself.
-fn rail() -> El {
+fn rail(ui: &mut Ui, m: &mut Model) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let mark = metric::RAIL_MARK;
@@ -220,7 +204,18 @@ fn rail() -> El {
     // line: the rail is one line wide, so the word keeps its own width and
     // the rail lays it over. A label squeezed to the rail's width would come
     // out as an ellipsis, and worse at any scale but one.
-    let group = |s: &str| {
+    // A press on a view's marker opens the panel; a double click on the grip,
+    // or on the panel's own background, closes it.
+    if ["rail-stereo", "rail-tilt", "rail-scale"]
+        .iter()
+        .any(|id| ui.get(*id).clicked)
+    {
+        m.side = true;
+    }
+    if ui.get("rail-grip").double_clicked {
+        m.side = false;
+    }
+    let group = |id: &str, s: &str| {
         col![
             block(mark, mark)
                 .radius(mark / 2.0)
@@ -235,6 +230,8 @@ fn rail() -> El {
         .gap(space::XS)
         .align(Align::Center)
         .shrink(0)
+        .id(id)
+        .cursor(Cursor::Grab)
     };
 
     // What one pitch leaves for the gap between two groups.
@@ -244,13 +241,14 @@ fn rail() -> El {
         block(metric::RAIL_GRIP_W, metric::RAIL_GRIP_H)
             .radius(metric::RAIL_GRIP_W / 2.0)
             .fill(c(t.thumb))
-            .shrink(0),
+            .shrink(0)
+            .id("rail-grip"),
         block(space::NONE, space::XL + space::XS).shrink(0),
-        group("stereo"),
+        group("rail-stereo", "stereo"),
         block(space::NONE, run).shrink(0),
-        group("tilt"),
+        group("rail-tilt", "tilt"),
         block(space::NONE, run).shrink(0),
-        group("scale"),
+        group("rail-scale", "scale"),
         spacer(),
     ]
     .pad((space::S, space::NONE))
@@ -301,7 +299,7 @@ fn bar() -> El {
 ///
 /// Three groups spread across the footer by the row itself: the slack is the
 /// layout's, not a spacer's.
-fn footer(ui: &mut Ui, m: &mut Model) -> El {
+fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     row![
@@ -315,12 +313,12 @@ fn footer(ui: &mut Ui, m: &mut Model) -> El {
         row![
             row![
                 label("mix", ty::CAPTION, c(t.ink)),
-                plate(&format!("{:.0} %", m.mix)),
+                slot_slider(ui, bind, Slot::Mix, &mut m.slots[Slot::Mix.index()], metric::FIELD_W),
             ]
             .gap(space::XS),
             row![
                 label("out", ty::CAPTION, c(t.ink)),
-                plate(&format!("{:.1} dB", m.out)),
+                slot_slider(ui, bind, Slot::Out, &mut m.slots[Slot::Out.index()], metric::FIELD_W),
             ]
             .gap(space::XS),
         ]
@@ -356,4 +354,57 @@ fn footer(ui: &mut Ui, m: &mut Model) -> El {
     .shrink(0)
     .grow(1.0)
     .fill(c(t.ground))
+}
+
+// ------------------------------------------------------------- side panel --
+/// What the rail opens: the stereo section, the tilt section, and the scale
+/// section, one panel over the plot's left edge.
+///
+/// The reference's tooltips name each control: the stereo mode and the two
+/// stereo amounts, the three tilts (each scales its setting below 500 Hz and
+/// above 2 kHz), and the deepest cut the engine may take.
+fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    if !m.side {
+        return block(space::NONE, space::NONE).shrink(0);
+    }
+    if ui.get("side-panel").double_clicked {
+        m.side = false;
+    }
+    let mut mode = usize::from(m.mid_side);
+    let mode_el = segmented(ui, "stereo-mode", &["L/R", "M/S"], &mut mode);
+    m.mid_side = mode == 1;
+    let mut row_of = |ui: &mut Ui, m: &mut Model, slot: Slot, name: &str| -> El {
+        row![
+            centred(label(name, ty::CAPTION, c(t.ink)), metric::SIDE_LABEL_W, metric::FIELD_H),
+            slot_slider(ui, bind, slot, &mut m.slots[slot.index()], metric::SLIDER_W),
+        ]
+        .gap(space::XS)
+        .align(Align::Center)
+        .shrink(0)
+    };
+    let title = |s: &str| label(s, ty::BODY, c(t.ink_quiet));
+    col![
+        title("stereo"),
+        mode_el,
+        row_of(ui, m, Slot::Link, "link"),
+        row_of(ui, m, Slot::Focus, "focus"),
+        title("tilt"),
+        row_of(ui, m, Slot::DetailLow, "detail low"),
+        row_of(ui, m, Slot::DetailHigh, "detail high"),
+        row_of(ui, m, Slot::AttackLow, "attack low"),
+        row_of(ui, m, Slot::AttackHigh, "attack high"),
+        row_of(ui, m, Slot::ReleaseLow, "release low"),
+        row_of(ui, m, Slot::ReleaseHigh, "release high"),
+        title("scale"),
+        row_of(ui, m, Slot::MaxCut, "max cut"),
+    ]
+    .gap(space::S)
+    .pad(space::L)
+    .w(metric::SIDE_W)
+    .radius(radius::BOX)
+    .fill(ca(t.ground, 0.94))
+    .shrink(0)
+    .id("side-panel")
 }

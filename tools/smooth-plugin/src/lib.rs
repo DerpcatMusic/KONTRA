@@ -70,8 +70,8 @@ use smooth_core::weighting::{
 };
 use smooth_core::{EngineBank, Settings};
 use smooth_ui::graph::{PLOT_BINS, Telemetry};
+use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 // ------------------------------------------------------------- parameters --
@@ -139,6 +139,9 @@ pub struct SmoothParams {
         unit = "%"
     )]
     pub link: FloatParam,
+    /// Left/right (0) or mid/side (1) stereo processing.
+    #[param(name = "Stereo mode", range = "discrete(0, 1)", default = 0)]
+    pub stereo_mode: IntParam,
     /// Where the channels are focused.
     #[param(name = "Stereo focus", range = "linear(0, 1)", default = 0.5)]
     pub focus: FloatParam,
@@ -296,14 +299,27 @@ fn write_plain(params: &SmoothParams, param: P, value: f64) {
     }
 }
 
-/// The parameter behind a control name.
-fn param_for(id: &str) -> Option<P> {
-    match id {
-        "depth" => Some(P::Depth),
-        "detail" => Some(P::Detail),
-        "attack" => Some(P::Attack),
-        "release" => Some(P::Release),
-        _ => None,
+/// The parameter behind a slot, and how its plain value reads.
+fn slot_param(slot: Slot) -> (P, fn(f64) -> String) {
+    fn one(v: f64) -> String {
+        format!("{v:.1}")
+    }
+    match slot {
+        Slot::Depth => (P::Depth, one),
+        Slot::Detail => (P::Detail, one),
+        Slot::Attack => (P::Attack, one),
+        Slot::Release => (P::Release, one),
+        Slot::Mix => (P::Mix, |v| format!("{v:.0} %")),
+        Slot::Out => (P::Output, |v| format!("{v:.1} dB")),
+        Slot::MaxCut => (P::MaxCut, |v| format!("{v:.0} dB")),
+        Slot::Link => (P::Link, |v| format!("{v:.0} %")),
+        Slot::Focus => (P::Focus, |v| format!("{v:.2}")),
+        Slot::DetailLow => (P::DetailTiltLow, one),
+        Slot::DetailHigh => (P::DetailTiltHigh, one),
+        Slot::AttackLow => (P::AttackTiltLow, one),
+        Slot::AttackHigh => (P::AttackTiltHigh, one),
+        Slot::ReleaseLow => (P::ReleaseTiltLow, one),
+        Slot::ReleaseHigh => (P::ReleaseTiltHigh, one),
     }
 }
 
@@ -328,7 +344,7 @@ impl SmoothParams {
             max_cut_db: self.max_cut.value(),
             stereo_link: self.link.value() / 100.0,
             focus: self.focus.value(),
-            mid_side: false,
+            mid_side: self.stereo_mode.value() >= 1,
             mix: self.mix.value() / 100.0,
             output_db: self.output.value(),
             delta: self.delta.value() >= 1,
@@ -502,12 +518,14 @@ impl PluginLogic for Smooth {
         let mut seen: u64 = 0;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
-            model.depth = mirror.depth.value() as f64;
-            model.detail = mirror.detail.value() as f64;
-            model.attack = mirror.attack.value() as f64;
-            model.release = mirror.release.value() as f64;
-            model.mix = mirror.mix.value() as f64;
-            model.out = mirror.output.value() as f64;
+            for slot in Slot::ALL {
+                let (param, say) = slot_param(slot);
+                let id = u32::from(param);
+                let state = &mut model.slots[slot.index()];
+                state.norm = mirror.get_normalized(id).unwrap_or(state.norm);
+                state.text = say(mirror.get_plain(id).unwrap_or_default());
+            }
+            model.mid_side = mirror.stereo_mode.value() >= 1;
             model.soft = mirror.mode.value() < 1;
             model.bypass = mirror.bypass.value() >= 1;
             model.delta = mirror.delta.value() >= 1;
@@ -519,29 +537,21 @@ impl PluginLogic for Smooth {
                 model.bands[index].depth = mirror.get_plain(u32::from(*depth)).unwrap_or_default();
             }
 
-            // The dials out: a drag on one is a gesture the host records.
-            let mut dial =
-                |ui: &mut Ui, id: &str, d: f64, value: &mut f64, range: RangeInclusive<f64>| {
-                    let Some(param) = param_for(id) else {
-                        return skin::knob(ui, id, value, range, d);
-                    };
-                    let (low, high) = (*range.start(), *range.end());
-                    let mut normalised = ((*value - low) / (high - low)).clamp(0.0, 1.0);
-                    let knob = bridge.bind(ui, param, |ui, widget, host| {
-                        let el = skin::knob(ui, widget, host, 0.0..=1.0, d);
-                        normalised = *host;
-                        el
-                    });
-                    *value = low + normalised * (high - low);
-                    knob
-                };
-            let tree = view::editor(ui, &mut model, &mut dial);
+            // The controls out: a drag on one is a gesture the host records.
+            let mut bind = |ui: &mut Ui, slot: Slot, norm: &mut f64, part: &mut slots::Part| {
+                bridge.bind(ui, slot_param(slot).0, |ui, widget, host| {
+                    let el = part(ui, widget.as_str(), host);
+                    *norm = *host;
+                    el
+                })
+            };
+            let tree = view::editor(ui, &mut model, &mut bind);
             // A drag on a plot handle is a gesture too, and the plot is not a
             // widget: the band's two parameters are bracketed here, so the host
             // records the move instead of waking to a value that changed behind
             // its back. The frame the pointer lets go names no parameter, and
             // the bridge ends the edit.
-            drop(dial);
+            drop(bind);
             if let Some(index) = smooth_ui::graph::held(ui)
                 && let Some((frequency, depth)) = BAND_PARAMS.get(index)
                 && let Some(band) = model.bands.get(index)
@@ -559,6 +569,7 @@ impl PluginLogic for Smooth {
             // The switches are the engine's own choices: soft or hard, the
             // bypass, the compare, the short window, the quality.
             mirror.mode.set_value(i64::from(!model.soft));
+            mirror.stereo_mode.set_value(i64::from(model.mid_side));
             mirror.bypass.set_value(i64::from(model.bypass));
             mirror.delta.set_value(i64::from(model.delta));
             mirror.low_latency.set_value(i64::from(model.low_latency));

@@ -47,9 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_scale(Some(scale));
 
     let mut model = Model::default();
-    let mut dial = skin::model_dial();
+    // SMOOTH_SIDE=1 renders the rail's side panel open.
+    model.side = std::env::var_os("SMOOTH_SIDE").is_some();
+    let mut bind = smooth_ui::slots::model_bind();
     for _ in 0..2 {
-        let root = view::editor(&mut ui, &mut model, &mut dial);
+        let root = view::editor(&mut ui, &mut model, &mut bind);
         ui.frame(root, Some(Size::new(W, H)), Input::default(), 1.0 / 60.0)?;
     }
 

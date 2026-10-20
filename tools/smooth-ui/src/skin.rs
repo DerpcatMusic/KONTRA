@@ -11,6 +11,7 @@
 //! surfaces, which no palette derivation reaches from a seed, so they are
 //! stated once, here, and nowhere else.
 
+use crate::slots::{Bind, Slider, Slot};
 use crate::theme;
 use crate::tokens::{icon, metric, radius, space, stroke, ty};
 use mui::prelude::*;
@@ -518,22 +519,25 @@ pub fn knob(
 /// One knob and its readout, stacked: the editor's whole control unit.
 ///
 /// The name goes above the dial, the value in a plate below it, and the three
-/// travel together wherever the row or column puts them.
+/// travel together wherever the row or column puts them. The knob edits the
+/// slot's normalised value through the bind, so it records automation in a
+/// host and moves a local number in a preview; the readout is the words the
+/// host gave the value.
 pub fn control(
     ui: &mut Ui,
-    dial: &mut Dial,
-    id: &str,
+    bind: &mut Bind,
+    slot: Slot,
+    state: &mut Slider,
     name: &str,
-    value: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
     d: f64,
 ) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     // The dial runs first: it may write a value the host just moved, and the
     // readout under it has to agree with the arc above it.
-    let dial_el = dial(ui, id, d, value, range);
-    let readout = format!("{:.1}", *value);
+    let dial_el = bind(ui, slot, &mut state.norm, &mut |ui, id, norm| {
+        knob(ui, id, norm, 0.0..=1.0, d)
+    });
     let halo = d + metric::TUCK - space::HAIR;
     col![
         caption(name, c(t.ink)),
@@ -541,7 +545,7 @@ pub fn control(
         // so the two never drift apart and no gap has to be hand-tuned.
         stack![
             dial_el.anchor(Align::Center, Align::Start),
-            reading(&readout).anchor(Align::Center, Align::End),
+            reading(&state.text).anchor(Align::Center, Align::End),
         ]
         .size(halo, halo - metric::TUCK + metric::FIELD_H)
         .shrink(0),
@@ -551,20 +555,57 @@ pub fn control(
     .shrink(0)
 }
 
-/// How a dial reaches its value.
+/// A text slider: a plate that says its value and is dragged sideways.
 ///
-/// Outside a host the value is a field on the model and [`knob`] edits it
-/// directly. Inside a plug-in the same dial is bound to a host parameter, so
-/// the same call site records automation instead of moving a local number.
-/// The view does not know which: it names the control and the range, and the
-/// dial decides where the value lives.
-pub type Dial<'a> =
-    dyn FnMut(&mut Ui, &str, f64, &mut f64, std::ops::RangeInclusive<f64>) -> El + 'a;
+/// The bar along its foot is the travel; a double click returns it to rest.
+/// It is the reference's `TextSlider`: the number is the control.
+pub fn text_slider(
+    ui: &Ui,
+    id: &str,
+    norm: &mut f64,
+    text: &str,
+    w: f64,
+    rest: f64,
+) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    ui.drag(id, norm, 0.0..=1.0, w * 3.0, false);
+    if ui.get(id).double_clicked {
+        *norm = rest;
+    }
+    let state = ui.state(id);
+    let lift = state.hover.max(state.press) as f32;
+    let bar = w * norm.clamp(0.0, 1.0);
+    field_at(w)
+        .push(centred(readout(text, ty::BODY, c(t.ink)), w, metric::FIELD_H))
+        .push(
+            block(bar, metric::SLIDER_BAR)
+                .fill(ca(t.ink, 0.35 + 0.25 * lift))
+                .anchor(Align::Start, Align::End),
+        )
+        .id(id)
+        .focusable()
+        .cursor(Cursor::Grab)
+        .a11y(A11y::Slider {
+            value: *norm,
+            min: 0.0,
+            max: 1.0,
+        })
+}
 
-/// The dial a preview uses: the knob, on the model.
-pub fn model_dial() -> impl FnMut(&mut Ui, &str, f64, &mut f64, std::ops::RangeInclusive<f64>) -> El
-{
-    |ui, id, d, value, range| knob(ui, id, value, range, d)
+/// A slot as a text slider, bound.
+pub fn slot_slider(
+    ui: &mut Ui,
+    bind: &mut Bind,
+    slot: Slot,
+    state: &mut Slider,
+    w: f64,
+) -> El {
+    let text = state.text.clone();
+    let rest = slot.rest().0;
+    bind(ui, slot, &mut state.norm, &mut |ui, id, norm| {
+        text_slider(ui, id, norm, &text, w, rest)
+    })
 }
 
 /// A segmented switch: one plate, one choice, and the chosen segment carries

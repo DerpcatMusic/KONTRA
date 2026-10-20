@@ -150,6 +150,11 @@ pub mod metric {
     /// A word turned on its side: one line tall, as wide as it is long.
     pub const RAIL_LABEL_H: f64 = 30.0;
     pub const RAIL_WORD_W: f64 = 36.0;
+    /// The side panel the rail opens, and a row of it.
+    pub const SIDE_W: f64 = 176.0;
+    pub const SIDE_LABEL_W: f64 = 60.0;
+    pub const SLIDER_W: f64 = 54.0;
+    pub const SLIDER_BAR: f64 = 2.0;
 }
 
 // -------------------------------------------------------------------- icons --
