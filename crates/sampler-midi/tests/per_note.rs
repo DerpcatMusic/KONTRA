@@ -404,7 +404,7 @@ fn transport_stop_queues_all_exact_raw_pairs_after_retirement_once_and_absorbs_o
 
 
 #[test]
-fn transport_stop_queue_capacity_refusal_preserves_raw_gate_and_existing_exact_pending_releases() {
+fn receipt_union_capacity_refuses_raw_attack_before_any_row_and_preserves_pending_releases() {
     let mut rt=runtime();let mut mpe=Mpe::new(&rt,7,3,Zone::Lower,1,1).unwrap();mpe.use_midi2_channel_voice().unwrap();mpe.enable_host_channel_projection().unwrap();
     let mut old=[None;2];
     for at in 0..2 {
@@ -418,12 +418,19 @@ fn transport_stop_queue_capacity_refusal_preserves_raw_gate_and_existing_exact_p
         // before reusing this one-entry physical-debt budget.
     }
     let on=[0x4390_4500,0xffff_0000];let source=input(Protocol::Midi2,7,0,69);
-    let Applied::Started(raw)=mpe.apply_silent_with_source(&mut rt,Packets::new(&on).next().unwrap().unwrap(),source).unwrap() else {panic!()};
     support::without_heap(|| {
-        let before=expression(&rt,raw);
-        assert_eq!(mpe.validate_all_physical_releases(),Err(Error::Capacity));assert_eq!(mpe.queue_all_physical_releases(),Err(Error::Capacity));
-        assert!(rt.input_held(raw).unwrap());assert_eq!(expression(&rt,raw),before);assert_eq!(rt.now(),0);
+        // Both queued receipts already occupy the whole callback union, so a
+        // third obligation cannot be reserved: admission refuses before any
+        // new row, Core gate or queued release changes.
+        let notes=rt.note_count();let expressions=rt.expression_count();let now=rt.now();
+        assert_eq!(mpe.apply_silent_with_source(&mut rt,Packets::new(&on).next().unwrap().unwrap(),source),Err(ApplyError::Core(Error::Capacity)));
+        assert_eq!((rt.note_count(),rt.expression_count(),rt.now()),(notes,expressions,now));
+        assert_eq!(mpe.validate_all_physical_releases(),Ok(()));assert_eq!(mpe.queue_all_physical_releases(),Ok(0));
         let mut index=0;mpe.drain_terminal_releases(|release|{assert_eq!(release.note,old[index].unwrap());index+=1;});assert_eq!(index,2);
+        // With the union drained, the same exact attack admits and a transport
+        // stop queues its release without publishing the Core gate.
+        let Applied::Started(raw)=mpe.apply_silent_with_source(&mut rt,Packets::new(&on).next().unwrap().unwrap(),source).unwrap() else {panic!()};
+        assert!(rt.input_held(raw).unwrap());
         assert_eq!(mpe.queue_all_physical_releases(),Ok(1));let mut count=0;mpe.drain_terminal_releases(|release|{assert_eq!((release.note,release.source),(raw,source));count+=1;});assert_eq!(count,1);
         assert!(rt.input_held(raw).unwrap(),"queue preparation alone never mutates Core gates");
         rt.release_all_notes();assert!(!rt.input_held(raw).unwrap_or(false));
@@ -492,7 +499,9 @@ fn native_and_raw_physical_capacity_are_separate_bounded_debts_without_callback_
         assert_eq!(mpe.native_physical_slots(),2);assert!(rt.input_held(raw).unwrap());
         assert_eq!(mpe.queue_all_physical_releases(),Ok(2));let mut count=0;mpe.drain_terminal_releases(|_|count+=1);assert_eq!(count,2);
         assert_eq!(mpe.release_native_physical(&mut rt,|_,candidate|candidate==source,None),Ok(1));mpe.drain_terminal_releases(|_|panic!("synthetic Native release repeated"));
-        assert_eq!(mpe.native_physical_slots(),1);assert!(rt.input_held(raw).unwrap(),"queue admission never publishes a Core release");
+        // The arena keeps its index span (the surviving raw row holds index 1),
+        // so the acknowledged Native row is a hole rather than a renumbered slot.
+        assert_eq!(mpe.native_physical_slots(),2);assert!(rt.input_held(raw).unwrap(),"queue admission never publishes a Core release");
     });
 }
 

@@ -639,7 +639,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         let v = &self.hir.vars[var.0 as usize];
         let len = v.len.unwrap_or(0);
         let Some(i) = u32::try_from(index).ok().filter(|i| *i < len) else {
-            self.warn(span, format!("array index {index} out of bounds"));
+            self.warn(span, format!("array index {index} out of bounds for {} (length {len}); read returns zero or empty text", v.name));
             return if v.ty == Ty::Str {
                 V::S(String::new())
             } else if v.ty == Ty::Real {
@@ -777,7 +777,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         let v = &self.hir.vars[var.0 as usize];
         let len = v.len.unwrap_or(0);
         let Some(i) = u32::try_from(index).ok().filter(|i| *i < len) else {
-            self.warn(span, format!("array index {index} out of bounds"));
+            self.warn(span, format!("array index {index} out of bounds for {} (length {len}); write ignored", v.name));
             return;
         };
         match v.home {
@@ -823,7 +823,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             ExprKind::SysElem(array, i) => {
                 let i = self.expr(i)?.int();
                 if !(0..array.len() as i32).contains(&i) {
-                    self.warn(e.span, format!("array index {i} out of bounds"));
+                    self.warn(e.span, format!("array index {i} out of bounds for {array:?} (length {}); read returns zero or empty text", array.len()));
                 }
                 if array.drop_kind().is_some() {
                     V::S(String::new())
@@ -1517,13 +1517,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let (id, index) = (self.int(args, 0)?, self.int(args, 1)?);
                 let value = self.arg(args, 2)?;
                 match self.ui_index(id) {
-                    Some(ui) => match self.menu(ui).get_mut(index as usize) {
+                    Some(ui) => {
+                        let len = self.menu(ui).len();
+                        match self.menu(ui).get_mut(index as usize) {
                         Some(item) => match builtin {
                             SetMenuItemStr => item.text = value.text(),
                             SetMenuItemVisibility => item.visible = value.int() != 0,
                             _ => item.value = value.int(),
                         },
-                        None => self.warn(span, format!("menu item {index} out of range")),
+                        None => self.warn(span, format!("menu item {index} out of range for UI id {id} (item count {len}); {} ignored", builtin.name())),
+                        }
                     },
                     None => self.warn(span, format!("unknown menu id {id}")),
                 }
@@ -1603,7 +1606,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         SetKeyPressed => k.pressed = Some(value.int()),
                         _ => k.name = Some(value.text()),
                     },
-                    None => self.warn(span, format!("key {key} out of range")),
+                    None => self.warn(span, format!("key {key} out of range (expected 0..=127); {} ignored", builtin.name())),
                 }
                 V::I(0)
             }

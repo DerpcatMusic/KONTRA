@@ -1984,9 +1984,11 @@ fn warning_class(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     let mut chars = message.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '$' {
+        if matches!(c, '$' | '%' | '?' | '!' | '~')
+            && chars.peek().is_some_and(|c| c.is_alphabetic() || *c == '_') {
             while chars.next_if(|c| c.is_alphanumeric() || *c == '_').is_some() {}
-            out.push_str("$name");
+            out.push(c);
+            out.push_str("name");
         } else if c.is_ascii_digit() {
             while chars.next_if(|c| c.is_ascii_digit()).is_some() {}
             out.push('N');
@@ -2046,6 +2048,12 @@ mod diagnostic_tests {
             }),
             "a successful projection must retain its UI gap in the instrument load report"
         );
+    }
+
+    #[test]
+    fn warning_classes_mask_array_names_and_bounds_but_keep_element_type() {
+        assert_eq!(warning_class("array index -1 out of bounds for %private (length 2)"),
+            "array index -N out of bounds for %name (length N)");
     }
 
     #[test]

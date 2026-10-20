@@ -9,8 +9,18 @@ const FRAMES:usize=2048;
 static NEXT:AtomicU64=AtomicU64::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
+    /// A writable scratch directory: the runner's temporary directory when it
+    /// is set, otherwise the workspace scratch, otherwise the platform
+    /// temporary directory. A hard-coded workspace path is not writable on a
+    /// CI runner.
+    fn scratch()->PathBuf{
+        if let Some(dir)=std::env::var_os("TMPDIR"){return PathBuf::from(dir);}
+        let local=PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+        if std::fs::create_dir_all(&local).is_ok(){return local;}
+        std::env::temp_dir()
+    }
     fn new()->Self {
-        let base=PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+        let base=Fixture::scratch();
         std::fs::create_dir_all(&base).unwrap();
         let p=base.join(format!("normal-kg-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
         std::fs::create_dir(&p).unwrap();Self(p)
