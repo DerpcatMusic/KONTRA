@@ -18,6 +18,7 @@ use std::{
 };
 
 pub mod grouped;
+mod ksp;
 pub const SCHEMA_VERSION: u32 = 1;
 pub const HISTORY_LIMIT: usize = 2048;
 const HISTORY_BYTES: usize = 2 * 1024 * 1024;
@@ -1891,7 +1892,14 @@ impl LoadTrace {
         if missing.feature.starts_with("script Warning: ") {
             impact = "compiled with this warning; inspect the reported script slot and line";
         }
-        let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        let script_warning = missing.feature.starts_with("script Warning: ");
+        let mut message = if script_warning {
+            let detail = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value)
+                .unwrap_or_else(|| missing.feature.strip_prefix("script Warning: ").unwrap_or("script warning"));
+            format!("KSP warning: {}", clip(detail, 400))
+        } else {
+            format!("Not translated: {} ({reason})", clip(&missing.feature, 160))
+        };
         let uvi = instrument.is_some_and(|i| i.source == sampler_ir::SourceFormat::Uvi);
         if uvi && missing.feature == "module" {
             // This value is the translator's module tag, not an authored parameter value.
@@ -1901,7 +1909,7 @@ impl LoadTrace {
             message = "setParameter supplied a value with the wrong parameter type; UVI ignores the write and keeps the old value".into();
             impact = "pass the parameter's expected value type; runtime LuaSetter diagnostics identify the supplied and expected types";
         }
-        if let Some(detail) = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value) {
+        if let Some(detail) = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value).filter(|_| !script_warning) {
             message.push_str(": ");
             message.push_str(&clip(detail, 200));
         }
@@ -1929,17 +1937,24 @@ impl LoadTrace {
                 .filter(|g| g.muted)
                 .map(|_| false)
         });
-        self.grouped_issue(
-            key,
-            location,
-            enabled,
-            // Preserve semantic names in the message; the typed key still folds repeated sites.
-            json!({"stage":"translate","code":"unsupported",
-                "message":message,
-                "where":clip(&missing.location, 160),
-                "impact":impact}),
-        );
+        let mut issue = json!({"stage":"translate","code":if script_warning {"script_warning"} else {"unsupported"},
+            "message":message,"where":clip(&missing.location, 160),"impact":impact});
+        if let (Some(slot), Some(line)) = (location.script_slot, location.line) {
+            issue["script_slot"] = json!(slot);
+            issue["line"] = json!(line);
+            let source = instrument.and_then(|i| i.behaviors.iter().enumerate()
+                .find(|(index, behavior)| behavior.slot.map(usize::from).unwrap_or(*index) == slot)
+                .map(|(_, behavior)| behavior.source.as_str()));
+            if let Some(source) = source
+                && let Some(excerpt) = script_excerpt(source, slot as u32 + 1, line as u32, None) {
+                issue["source_excerpt"] = excerpt;
+            } else {
+                issue["source_excerpt_unavailable"] = json!("Script source or reported line is unavailable");
+            }
+        }
+        self.grouped_issue(key, location, enabled, issue);
     }
+
     fn grouped_issue(
         &mut self,
         key: grouped::Key,

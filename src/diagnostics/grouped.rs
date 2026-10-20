@@ -47,6 +47,10 @@ pub struct Location {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callback_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub pc: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub native_slot: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rack: Option<usize>,
@@ -302,14 +306,48 @@ impl RuntimeLog {
             summary_logged: false,
         }
     }
+    #[cfg(test)]
     pub(crate) fn fault(&mut self, callback: usize, outcome: sampler_core::Outcome) {
+        self.fault_context(callback, outcome, None, None);
+    }
+    pub(crate) fn fault_context(&mut self, callback: usize, outcome: sampler_core::Outcome,
+        context: Option<&sampler_core::BehaviorFault>, instrument: Option<&sampler_ir::Instrument>) {
         let reason = match outcome {
             sampler_core::Outcome::Fault(error) => format!("{error:?}"),
             sampler_core::Outcome::FuelExhausted => "FuelExhausted".into(),
             _ => return,
         };
-        let detail = format!("KSP callback #{callback} faulted: {reason}");
-        self.add("KspFault", &reason, "Callback", Some(callback), 1, Some(detail));
+        let subject = context.and_then(|f| f.site?.builtin).unwrap_or("Callback");
+        let key = Key::new("KspFault", &reason, subject);
+        let mut location = Location::new(&self.path, self.program, "");
+        location.callback_index = Some(callback);
+        location.pc = context.map(|f| f.pc);
+        location.script_slot = context.and_then(|f| f.source_slot).map(usize::from);
+        location.line = context.and_then(|f| f.site).map(|s| s.line as usize);
+        location.column = context.and_then(|f| f.site).map(|s| s.column as usize);
+        // Retain separate evidence for distinct sites with the same error/builtin.
+        let first = !self.collector.rows.get(&key).is_some_and(|rows| rows.contains_key(&location));
+        self.collector.add(key.clone(), location.clone(), Some(true), 1);
+        if !first { return; }
+        let detail = context.map(|f| super::ksp::fault_data(f, instrument));
+        let mut message = format!("KSP {} faulted: {reason}", context.and_then(|f| f.callback).unwrap_or("callback"));
+        if let Some(fault) = context {
+            if let Some(site) = fault.site {
+                message.push_str(&format!(" · {} at line {}:{}", site.builtin.unwrap_or("script operation"), site.line, site.column));
+            }
+        } else {
+            message.push_str(" · execution context unavailable (legacy record)");
+        }
+        let mut data = serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,
+            "diagnostic_key":key,"location":location,"script_slot":location.script_slot,"line":location.line,
+            "group":self.collector.groups().into_iter().find(|g|g.key==key),"message":message,
+            "impact":"callback stopped; inspect the failing operation and operands below",
+            "ksp_fault":detail});
+        if let Some(detail) = &detail {
+            data["source_excerpt"] = detail["source_excerpt"].clone();
+            data["source_excerpt_unavailable"] = detail["source_excerpt_unavailable"].clone();
+        }
+        super::event(super::LogLevel::Error, "runtime", "runtime_issue", data);
     }
     pub(crate) fn lost(&mut self, count: u64) {
         self.add(
