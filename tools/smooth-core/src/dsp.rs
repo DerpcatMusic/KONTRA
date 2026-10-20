@@ -113,6 +113,9 @@ pub struct Settings {
     pub mix: f32,
     /// How long the mix gain takes to reach its target, in milliseconds.
     pub mix_smoothing_ms: f32,
+    /// Wet trim as a linear gain, 10^(dB/20). Scales only the processed
+    /// signal, before the mix; the output trim (`output_db`) follows the mix.
+    pub wet_gain: f32,
     pub output_db: f32,
     pub delta: bool,
     pub bypass: bool,
@@ -146,6 +149,7 @@ impl Default for Settings {
             mid_side: false,
             mix: 1.0,
             mix_smoothing_ms: 30.0,
+            wet_gain: 1.0,
             output_db: 0.0,
             delta: false,
             bypass: false,
@@ -672,13 +676,16 @@ impl Engine {
         self.mix_gain = ((target - self.mix_gain) * rate) + self.mix_gain;
         let mix = self.mix_gain;
         let gain = 10.0_f32.powf(settings.output_db.clamp(-24.0, 24.0) * 0.05);
+        // Reference coefficients: dry (1 - mix), wet (wet_gain * mix). Delta
+        // takes dry - wet at the same wet gain. Bypass ignores both trims.
+        let wet_mix = settings.wet_gain * mix;
         let mut output = std::array::from_fn(|c| {
             if settings.bypass {
                 dry[c]
             } else if settings.delta {
-                (dry[c] - wet[c]) * mix * gain
+                (dry[c] - wet[c]) * wet_mix * gain
             } else {
-                (dry[c] + mix * (wet[c] - dry[c])) * gain
+                ((1.0 - mix) * dry[c] + wet_mix * wet[c]) * gain
             }
         });
         if self.active_channels == 1 {
@@ -1239,6 +1246,55 @@ mod tests {
                     "{quality:?} phase={linear_phase} error={error}"
                 );
             }
+        }
+    }
+
+    /// The wet trim scales only the processed signal, before the mix. With no
+    /// reduction the wet is the delayed input, so each case is the delayed
+    /// input times (dry weight + wet weight). The dry weight is 1 - mix and
+    /// the wet weight is wet_gain * mix; bypass keeps the dry alone.
+    #[test]
+    fn the_wet_trim_scales_only_the_processed_signal() {
+        // mix, wet gain, bypass, delta -> dry weight, wet weight
+        let cases = [
+            (1.0_f32, 2.0_f32, false, false, 0.0_f32, 2.0_f32),
+            (0.5, 2.0, false, false, 0.5, 1.0),
+            (0.5, 2.0, true, false, 1.0, 0.0),
+            (1.0, 2.0, false, true, 0.0, 0.0),
+        ];
+        for (mix, wet_gain, bypass, delta, dry_weight, wet_weight) in cases {
+            let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+            let settings = Settings {
+                depth: 0.0,
+                mix,
+                wet_gain,
+                bypass,
+                delta,
+                mix_smoothing_ms: 0.0,
+                ..Settings::default()
+            };
+            let latency = engine.latency();
+            let mut history = vec![[0.0; 2]; latency + 1];
+            let mut error = 0.0_f32;
+            for t in 0..latency + 9000 {
+                let input = [
+                    (TAU * 997.0 * t as f32 / 44100.0).sin() * 0.4,
+                    (TAU * 311.0 * t as f32 / 44100.0).sin() * 0.2,
+                ];
+                history[t % (latency + 1)] = input;
+                let out = engine.process_sample(input, &settings);
+                if t >= latency {
+                    let reference = history[(t - latency) % (latency + 1)];
+                    for c in 0..2 {
+                        let expected = (dry_weight + wet_weight) * reference[c];
+                        error = error.max((out[c] - expected).abs());
+                    }
+                }
+            }
+            assert!(
+                error < 1.0e-4,
+                "mix={mix} wet={wet_gain} bypass={bypass} delta={delta} error={error}"
+            );
         }
     }
     /// The research's acceptance criterion, on the frequency the reference's

@@ -112,6 +112,15 @@ pub struct SmoothParams {
     /// The linear-phase plan.
     #[param(name = "Linear phase", range = "discrete(0, 1)", default = 0)]
     pub linear_phase: IntParam,
+    /// The wet trim: the level of the processed signal, before the mix. The
+    /// output trim below is after it.
+    #[param(
+        name = "Wet trim",
+        range = "linear(-18, 18)",
+        default = 0.0,
+        unit = "dB"
+    )]
+    pub wet_trim: FloatParam,
     /// Wet against dry.
     #[param(name = "Mix", range = "linear(0, 100)", default = 100.0, unit = "%")]
     pub mix: FloatParam,
@@ -615,6 +624,8 @@ impl SmoothParams {
             focus: self.focus.value(),
             mid_side: self.stereo_mode.value() >= 1,
             mix: self.mix.value() / 100.0,
+            // The reference stores 10^(dB * 0.05) for both trims.
+            wet_gain: 10.0_f32.powf(self.wet_trim.value() * 0.05),
             output_db: self.output.value(),
             delta: self.delta.value() >= 1,
             bypass: self.bypass.value() >= 1,
@@ -1189,6 +1200,7 @@ mod param_tests {
         assert_eq!(params.attack.value(), 5.0);
         assert_eq!(params.release.value(), 3.0);
         assert_eq!(params.mix.value(), 100.0);
+        assert_eq!(params.wet_trim.value(), 0.0);
         assert_eq!(params.output.value(), 0.0);
         assert_eq!(params.mode.value(), 0);
         assert_eq!(params.quality.value(), 0);
