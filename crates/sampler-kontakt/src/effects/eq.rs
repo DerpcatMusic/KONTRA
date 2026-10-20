@@ -9,7 +9,9 @@
 //!   generator 0x1409591c0 on one shared 32-frame counter. So one `legacy_band` processor per
 //!   band, in band order, is the native topology; flat bands are dropped as natively.
 //! - Solid G-EQ 0x44 (`BParFXSSLGEQ`, reader 0x140d029f0, v0x10 12 fields, v0x11 four more):
-//!   saved knobs into the native G_EQ law (`Law::Solid`, sampler-core eq_family/solid.rs).
+//!   saved knobs into the native G_EQ law (`Law::Solid`, sampler-core eq_family/solid.rs),
+//!   one one-band `Config` per saved band so each band keeps its own `$ENGINE_PAR_SEQ_*`
+//!   lanes (`docs/re/kontakt-solid-geq-live-control.md`).
 use super::{Notes, Reader};
 use sampler_ir::fx::eq::{Band, Config, Kind, Law, SolidSection};
 use sampler_ir::{Processor, Reason};
@@ -64,9 +66,68 @@ fn read(version: u16, public: &[u8]) -> Option<Saved> {
     r.0.is_empty().then_some(Saved { lf, lf_bell, lmf, hmf, hf, hf_bell, filters })
 }
 
-/// Solid G-EQ -> one `Config`. Saved field order (bindings: filters_eq.tsv): LF gain, freq, bell;
-/// LMF gain, freq, Q; HMF gain, freq, Q; HF gain, freq, bell; HP freq, LP freq, LP on, HP on.
-pub(super) fn solid_geq(version: u16, public: &[u8], notes: &mut Notes) -> Option<Processor> {
+/// Where one saved Solid G-EQ field sits in the serialized record: `at` is the
+/// byte offset of the f32 knob (or flag), `switch` the boolean fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SolidField {
+    Knob(usize),
+    Switch(usize),
+}
+
+/// The saved record order (packed one-byte flags): LF gain, freq, bell; LMF gain,
+/// freq, Q; HMF gain, freq, Q; HF gain, freq, bell; then v0x11 HP freq, LP freq,
+/// LP on, HP on. Engine-parameter names and laws are `filters_eq.tsv`.
+fn solid_field(version: u16, parameter: &str) -> Option<SolidField> {
+    use SolidField::{Knob, Switch};
+    Some(match (parameter.trim_start_matches('$'), version) {
+        ("ENGINE_PAR_SEQ_LF_GAIN", _) => Knob(0),
+        ("ENGINE_PAR_SEQ_LF_FREQ", _) => Knob(4),
+        ("ENGINE_PAR_SEQ_LF_BELL", _) => Switch(8),
+        ("ENGINE_PAR_SEQ_LMF_GAIN", _) => Knob(9),
+        ("ENGINE_PAR_SEQ_LMF_FREQ", _) => Knob(13),
+        ("ENGINE_PAR_SEQ_LMF_Q", _) => Knob(17),
+        ("ENGINE_PAR_SEQ_HMF_GAIN", _) => Knob(21),
+        ("ENGINE_PAR_SEQ_HMF_FREQ", _) => Knob(25),
+        ("ENGINE_PAR_SEQ_HMF_Q", _) => Knob(29),
+        ("ENGINE_PAR_SEQ_HF_GAIN", _) => Knob(33),
+        ("ENGINE_PAR_SEQ_HF_FREQ", _) => Knob(37),
+        ("ENGINE_PAR_SEQ_HF_BELL", _) => Switch(41),
+        ("ENGINE_PAR_SEQ_HP_FREQ", 0x11) => Knob(42),
+        ("ENGINE_PAR_SEQ_LP_FREQ", 0x11) => Knob(46),
+        ("ENGINE_PAR_SEQ_LP", 0x11) => Switch(50),
+        ("ENGINE_PAR_SEQ_HP", 0x11) => Switch(51),
+        _ => return None,
+    })
+}
+
+/// Apply one recorded script write (0..1000000) to the saved record: knobs are
+/// the identity law, switches store 1 when the written value is at least 1.
+pub(super) fn solid_store(version: u16, public: &mut [u8], parameter: &str, value: i32) -> bool {
+    match solid_field(version, parameter) {
+        Some(SolidField::Knob(at)) => match public.get_mut(at..at + 4) {
+            Some(field) => {
+                let stored = (f64::from(value) / 1_000_000.).clamp(0., 1.) as f32;
+                field.copy_from_slice(&stored.to_le_bytes());
+                true
+            }
+            None => false,
+        },
+        Some(SolidField::Switch(at)) => match public.get_mut(at) {
+            Some(field) => {
+                *field = u8::from(value >= 1);
+                true
+            }
+            None => false,
+        },
+        None => false,
+    }
+}
+
+/// Solid G-EQ -> one one-band `Config` per saved band, in signal order, each
+/// carrying the module's band index. One band per `Config` is what gives every
+/// band its own script lanes (`Config::lanes`), and the cascade is unchanged:
+/// `eq_family::lower` emits the sections of consecutive bands in order.
+pub(super) fn solid_geq(version: u16, public: &[u8], notes: &mut Notes) -> Option<Vec<Processor>> {
     let Some(s) = read(version, public) else {
         notes.push(("Solid G-EQ fields".into(), format!("v{version:#x} len {}", public.len()), Reason::InvalidValue));
         return None;
@@ -84,17 +145,17 @@ pub(super) fn solid_geq(version: u16, public: &[u8], notes: &mut Notes) -> Optio
         ..Band::new(kind, 0., 0., 0.)
     };
     let mut bands = vec![
-        band(if s.lf_bell { Kind::Peak } else { Kind::LowShelf }, SolidSection::LowFrequency, s.lf[1], 0., s.lf[0]),
-        band(Kind::Peak, SolidSection::LowMid, s.lmf[1], s.lmf[2], s.lmf[0]),
-        band(Kind::Peak, SolidSection::HighMid, s.hmf[1], s.hmf[2], s.hmf[0]),
-        band(if s.hf_bell { Kind::Peak } else { Kind::HighShelf }, SolidSection::HighFrequency, s.hf[1], 0., s.hf[0]),
+        (0, band(if s.lf_bell { Kind::Peak } else { Kind::LowShelf }, SolidSection::LowFrequency, s.lf[1], 0., s.lf[0])),
+        (1, band(Kind::Peak, SolidSection::LowMid, s.lmf[1], s.lmf[2], s.lmf[0])),
+        (2, band(Kind::Peak, SolidSection::HighMid, s.hmf[1], s.hmf[2], s.hmf[0])),
+        (3, band(if s.hf_bell { Kind::Peak } else { Kind::HighShelf }, SolidSection::HighFrequency, s.hf[1], 0., s.hf[0])),
     ];
     if let Some(([hp, lp], [lp_on, hp_on])) = s.filters {
         if hp_on {
-            bands.push(band(Kind::HighPass, SolidSection::HighPass, hp, 0., 0.));
+            bands.push((4, band(Kind::HighPass, SolidSection::HighPass, hp, 0., 0.)));
         }
         if lp_on {
-            bands.push(band(Kind::LowPass, SolidSection::LowPass, lp, 0., 0.));
+            bands.push((5, band(Kind::LowPass, SolidSection::LowPass, lp, 0., 0.)));
         }
     }
     notes.push((
@@ -104,7 +165,14 @@ pub(super) fn solid_geq(version: u16, public: &[u8], notes: &mut Notes) -> Optio
             .into(),
         Reason::UnknownLaw,
     ));
-    Config::new(&bands).map(Processor::Eq)
+    bands
+        .into_iter()
+        .map(|(index, band)| {
+            let mut config = Config::new(&[band])?;
+            config.band = index;
+            Some(Processor::Eq(config))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,22 +200,63 @@ mod tests {
     #[test]
     fn solid_geq_v11_has_four_bands_and_the_enabled_low_pass() {
         let mut notes = vec![];
-        let Some(Processor::Eq(c)) = solid_geq(0x11, &saved(0x11), &mut notes) else { panic!() };
-        let kinds: Vec<_> = c.bands().iter().map(|b| b.kind).collect();
-        assert_eq!(kinds, [Kind::Peak, Kind::Peak, Kind::Peak, Kind::HighShelf, Kind::LowPass]);
-        assert_eq!(c.bands()[1].law, Law::Solid(SolidSection::LowMid));
-        assert_eq!(c.bands()[1].gain_db, 0.75);
+        let Some(processors) = solid_geq(0x11, &saved(0x11), &mut notes) else { panic!() };
+        let bands: Vec<(u8, Kind, Law)> = processors
+            .iter()
+            .map(|p| match p {
+                Processor::Eq(c) => {
+                    assert_eq!(c.count, 1, "one band per config");
+                    (c.band, c.bands()[0].kind, c.bands()[0].law)
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            bands,
+            [
+                (0, Kind::Peak, Law::Solid(SolidSection::LowFrequency)),
+                (1, Kind::Peak, Law::Solid(SolidSection::LowMid)),
+                (2, Kind::Peak, Law::Solid(SolidSection::HighMid)),
+                (3, Kind::HighShelf, Law::Solid(SolidSection::HighFrequency)),
+                (5, Kind::LowPass, Law::Solid(SolidSection::LowPass)),
+            ]
+        );
+        let Processor::Eq(low_mid) = processors[1] else { panic!() };
+        assert_eq!(low_mid.bands()[0].gain_db, 0.75);
         assert!(!notes.is_empty());
     }
 
     #[test]
     fn solid_geq_v10_has_no_pass_filters_and_bad_fields_are_reported() {
         let mut notes = vec![];
-        let Some(Processor::Eq(c)) = solid_geq(0x10, &saved(0x10), &mut notes) else { panic!() };
-        assert_eq!(c.count, 4);
+        let Some(processors) = solid_geq(0x10, &saved(0x10), &mut notes) else { panic!() };
+        assert_eq!(processors.len(), 4);
         let mut short = saved(0x11);
         short.pop();
         assert!(solid_geq(0x11, &short, &mut vec![]).is_none());
+    }
+
+    #[test]
+    fn solid_store_writes_the_saved_fields_the_reader_sees() {
+        let mut public = saved(0x11);
+        // Identity knobs, the bell switch and the two v0x11 enables.
+        assert!(solid_store(0x11, &mut public, "ENGINE_PAR_SEQ_LF_GAIN", 250_000));
+        assert!(solid_store(0x11, &mut public, "$ENGINE_PAR_SEQ_LMF_Q", 900_000));
+        assert!(solid_store(0x11, &mut public, "ENGINE_PAR_SEQ_HF_FREQ", 1_000_000));
+        assert!(solid_store(0x11, &mut public, "ENGINE_PAR_SEQ_LF_BELL", 0));
+        assert!(solid_store(0x11, &mut public, "ENGINE_PAR_SEQ_HP", 1));
+        assert!(solid_store(0x11, &mut public, "ENGINE_PAR_SEQ_LP", 0));
+        let s = read(0x11, &public).expect("still a v0x11 record");
+        assert_eq!(s.lf[0], 0.25);
+        assert_eq!(s.lmf[2], 0.9);
+        assert_eq!(s.hf[1], 1.);
+        assert!(!s.lf_bell);
+        assert_eq!(s.filters, Some(([0.5, 0.5], [false, true])));
+        // A v0x10 record has no pass filters to write, and a short one refuses.
+        let mut v10 = saved(0x10);
+        assert!(!solid_store(0x10, &mut v10, "ENGINE_PAR_SEQ_HP_FREQ", 500_000));
+        assert!(!solid_store(0x11, &mut v10, "ENGINE_PAR_SEQ_SEQ", 1));
+        assert_eq!(v10, saved(0x10));
     }
 
     #[test]
