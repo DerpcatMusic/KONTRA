@@ -1368,10 +1368,14 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
     struct Snapshot {
         marker: i16,
         down: bool,
+        at: bool,
         focused: bool,
         losses: u32,
         leaves: u32,
     }
+    /// Snapshot markers for events without a position of their own.
+    const UNFOCUSED: i16 = -1;
+    const PRESSED: i16 = -2;
     struct Probe {
         h: RefCell<Handler<Knob>>,
         cx: WindowContext,
@@ -1395,13 +1399,20 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
             }
             let mut h = self.h.borrow_mut();
             let status = h.on_event_inner(&event);
-            if let Event::Mouse(MouseEvent::CursorMoved { position, .. }) = event
-                && position.x >= 1000.
-            {
+            let marker = match event {
+                Event::Mouse(MouseEvent::CursorMoved { position, .. }) if position.x >= 1000. => {
+                    Some(position.x as i16)
+                }
+                Event::Window(WindowEvent::Unfocused) => Some(UNFOCUSED),
+                Event::Mouse(MouseEvent::ButtonPressed { .. }) => Some(PRESSED),
+                _ => None,
+            };
+            if let Some(marker) = marker {
                 self.send
                     .send(Snapshot {
-                        marker: position.x as i16,
+                        marker,
                         down: !h.driver.pointer().buttons.is_empty(),
+                        at: h.driver.pointer().pos.is_some(),
                         focused: self.cx.has_focus(),
                         losses: self.losses.get(),
                         leaves: self.leaves.get(),
@@ -1469,6 +1480,12 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
         .unwrap()
         .check()
         .unwrap();
+    let wait = |marker| loop {
+        let state = recv.recv_timeout(Duration::from_secs(3)).unwrap();
+        if state.marker == marker {
+            break state;
+        }
+    };
     let motion = |marker| {
         conn.send_event(
             false,
@@ -1488,12 +1505,7 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
         .unwrap()
         .check()
         .unwrap();
-        loop {
-            let state = recv.recv_timeout(Duration::from_secs(3)).unwrap();
-            if state.marker == marker {
-                break state;
-            }
-        }
+        wait(marker)
     };
     let press = || {
         conn.send_event(
@@ -1637,6 +1649,149 @@ fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
         inside.leaves + 1,
         "real boundary exit is retained"
     );
+
+    // Bitwig keeps keyboard focus on an ancestor and moves it on every click,
+    // so the editor sees FocusIn/FocusOut with detail NotifyPointer around the
+    // press. The implicit grab still delivers the release here: the click
+    // completes, then the deferred focus loss applies.
+    let other = conn.generate_id().unwrap();
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        other,
+        root,
+        200,
+        0,
+        64,
+        64,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new(),
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    conn.map_window(other).unwrap().check().unwrap();
+    conn.warp_pointer(x11rb::NONE, id, 0, 0, 0, 0, 20, 20)
+        .unwrap()
+        .check()
+        .unwrap();
+    let focus = |window| {
+        conn.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+    };
+    focus(other);
+    focus(parent);
+    press();
+    let pressed = motion(1010);
+    focus(other);
+    let pointer_focus_lost = motion(1011);
+    assert!(
+        pointer_focus_lost.down && pointer_focus_lost.losses == pressed.losses,
+        "pointer-detail focus loss must not cancel the click in flight: {pointer_focus_lost:?}"
+    );
+    conn.send_event(
+        false,
+        id,
+        EventMask::BUTTON_RELEASE,
+        x11rb::protocol::xproto::ButtonReleaseEvent {
+            response_type: x11rb::protocol::xproto::BUTTON_RELEASE_EVENT,
+            detail: 1,
+            root,
+            event: id,
+            event_x: 24,
+            event_y: 24,
+            same_screen: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    let released = motion(1012);
+    assert!(
+        !released.down && released.losses == pressed.losses,
+        "the release completes before the focus loss: {released:?}"
+    );
+    let applied = wait(UNFOCUSED);
+    assert_eq!(
+        applied.losses,
+        pressed.losses + 1,
+        "the held-back focus loss applies a few frames later"
+    );
+    // The loss forgot the pointer. The second click of a double click comes
+    // with no motion before it and must still land where it is.
+    focus(parent);
+    press();
+    let second = wait(PRESSED);
+    assert!(
+        second.down && second.at,
+        "a press after a focus loss carries its own position: {second:?}"
+    );
     child.close();
     conn.destroy_window(parent).unwrap().check().unwrap();
+}
+
+/// Bitwig keeps keyboard focus on an ancestor and moves it on every click.
+/// The X11 loop holds that pointer-detail FocusOut back until two frames
+/// after the release (`FOCUS_OUT_FRAMES`), when MUI has dispatched the click.
+#[test]
+fn a_focus_loss_two_frames_after_the_release_keeps_the_click() {
+    struct Clicker(usize);
+    impl View for Clicker {
+        fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
+            let b = mui::prelude::button(ui, "b", "B");
+            self.0 += usize::from(b.changed);
+            b.into()
+        }
+        fn changed(&mut self) -> bool {
+            false
+        }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool {
+            false
+        }
+    }
+    let mouse = |e| Event::Mouse(e);
+    let press = mouse(MouseEvent::ButtonPressed {
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+    });
+    let release = mouse(MouseEvent::ButtonReleased {
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+    });
+    let lost = Event::Window(WindowEvent::Unfocused);
+    // `None` stands for one frame.
+    let clicks = |events: &[Option<&Event>]| {
+        let shared = Arc::new(Mutex::new(Shared {
+            ui: Ui::default(),
+            view: Clicker(0),
+        }));
+        let mut h = Handler::new(Arc::clone(&shared), Arc::default(), (200, 100), 1.);
+        h.step();
+        h.on_event_inner(&Event::Window(WindowEvent::Focused));
+        h.on_event_inner(&mouse(MouseEvent::CursorMoved {
+            position: PhysicalPosition::new(100., 50.),
+            modifiers: Modifiers::default(),
+        }));
+        h.step();
+        for e in events {
+            match e {
+                Some(e) => _ = h.on_event_inner(e),
+                None => _ = h.step(),
+            }
+        }
+        for _ in 0..4 {
+            h.step();
+        }
+        lock(&shared).view.0
+    };
+    let (p, r, l) = (Some(&press), Some(&release), Some(&lost));
+    assert_eq!(clicks(&[p, None, r]), 1, "harness: a plain click lands");
+    // The release's frame records the click and the next one dispatches it.
+    assert_eq!(clicks(&[p, None, r, None, None, l]), 1, "two frames after the release");
+    // A focus loss with the button still down cancels the gesture.
+    assert_eq!(clicks(&[p, None, l, r]), 0, "focus lost mid-click cancels");
 }
