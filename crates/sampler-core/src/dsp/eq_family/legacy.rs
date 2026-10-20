@@ -603,7 +603,7 @@ mod tests {
                         let hz = f64::from((u.clamp(0., 1.) * 19980. + 20.).min(0.49 * rate as f32));
                         let b = 2f64.powf(f64::from(w * 2.6666667461395264_f32 + 1. / 3.));
                         let boost = 120. * f64::from(g) * 2f64.log10();
-                        let matched = kernel::design(Kind::Peak, rate, hz, 1. / (b - 1. / b), boost).unwrap();
+                        let matched = crate::dsp::biquad::matched(Kind::Peak, rate, hz, 1. / (b - 1. / b), boost).unwrap();
                         let mut probe = 20.;
                         while probe < 20_000f64.min(0.49 * f64::from(rate)) {
                             let (n, m) = (kernel::response(&native, rate, probe), kernel::response(&matched, rate, probe));
