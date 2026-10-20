@@ -113,6 +113,53 @@ fn nka_sync_init_reads_integer_real_and_string_arrays_before_following_statement
 }
 
 #[test]
+fn nka_data_folder_load_in_init_is_read_before_following_statements() {
+    // Kontakt loads mode 2 (the resource container's data folder) synchronously
+    // in init; scripts lay out controls from the array on the next line.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+        declare $seen := %pos[1]
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.data_arrays
+        .insert("pos".into(), b"%pos\n10\n20\n".to_vec());
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 8, 0);
+    let rt = Runtime::new(plan, limits).unwrap();
+    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)), (10, 20, 20));
+}
+
+#[test]
+fn nka_file_longer_than_the_array_fills_the_declared_prefix() {
+    // An installed library's instruments share one data file; one declares
+    // fewer entries than the file holds, and Kontakt lays its UI out from it.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.data_arrays
+        .insert("pos".into(), b"%pos\n10\n20\n30\n".to_vec());
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 8, 0);
+    let rt = Runtime::new(plan, limits).unwrap();
+    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (10, 20));
+}
+
+#[test]
 fn nka_sync_save_roundtrips_all_three_types_and_explicit_load_does_not_persist() {
     let fixture = Fixture::new();
     let paths = [
@@ -885,7 +932,6 @@ fn nka_codec_strict_header_type_shape_utf8_numeric_and_payload_failures_preserve
         b"?data\n1\n2\n",
         b"data\n1\n2\n",
         b"%data\n1\n",
-        b"%data\n1\n2\n3\n",
         b"%data\n2147483648\n2\n",
         b"%data\n1\ninvalid\n",
         b"%data\n1\n\xff\n",
