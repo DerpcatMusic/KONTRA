@@ -147,7 +147,7 @@ def main():
             plugin.main(pointer)
             time.sleep(0.05)
 
-    def play(frames=88200, frequency=1000.0, events=None):
+    def play(frames=88200, frequency=1000.0, events=None, realtime=False, shoot=None):
         """Run the engine over a tone, so the plot has something to show.
 
         `events` is the output-event sink: give it the recorder and the block
@@ -186,6 +186,14 @@ def main():
             if status == 0:
                 print("process refused")
                 break
+            if realtime:
+                # A host calls at the buffer rate; the editor's loop runs between.
+                time.sleep(256 / 44100.0)
+                if (start // 256) % 4 == 0:
+                    plugin.main(pointer)
+                if shoot and start >= frames - 256 * 40:
+                    shoot()
+                    shoot = None
         plugin.stop(pointer)
 
     settle()
@@ -215,11 +223,13 @@ def main():
     if "--live" in sys.argv:
         # Play a tone through the engine, then photograph the plot again: the
         # reduction curve is the engine's own.
-        play()
-        settle()
         live = out.with_name(out.stem + "-live" + out.suffix)
-        subprocess.run(["magick", "import", "-window", str(parent), str(live)], check=True)
-        print(f"wrote {live}")
+
+        def shoot():
+            subprocess.run(["magick", "import", "-window", str(parent), str(live)], check=True)
+            print(f"wrote {live}")
+
+        play(realtime=True, shoot=shoot)
 
     if "--click" in sys.argv:
         # Click logical points in the editor's own 800x473 space: `--click
