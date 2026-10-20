@@ -99,3 +99,24 @@ CI step already runs it under Xvfb. This proves the X11 protocol correction;
 Fedora/GNOME/Wayland with the reporting Bitwig host still needs confirmation.
 
 Protocol: [Xlib sections 10.6.2 and 10.7](https://www.x.org/releases/X11R7.5/doc/libX11/libX11.html).
+
+## X11 pointer-detail focus during a click
+
+Bitwig (Linux, GNOME/XWayland) keeps keyboard focus on an ancestor of the
+editor and moves it on every click, so the editor receives FocusIn and FocusOut
+with detail `NotifyPointer` and mode `NotifyNormal` between press and release.
+That FocusOut cancelled MUI's held pointer, and no button ever completed a click.
+While a mouse button is held, such a FocusOut now waits for the release (the
+implicit pointer grab guarantees it arrives here) and then two more frames:
+MUI records the click on the release's frame and dispatches it on the next, and
+a focus loss before then still cancels it. It then applies unchanged, as the
+same `Unfocused` as before. A FocusIn in between drops it; a new press re-arms
+it for that release. Every other FocusOut, including a focus move from the
+editor to an ancestor during a drag, still cancels at once. MUI is unchanged.
+A focus loss makes MUI forget the pointer position, and Bitwig sends one after
+every click, so the second press of a double click (no motion before it) hit
+nothing. The first press after any focus loss now reports its own coordinates
+as a `CursorMoved` first.
+Witnesses: `native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels`
+under Xvfb (fails without the patch) and
+`a_focus_loss_two_frames_after_the_release_keeps_the_click` (MUI's timing).
