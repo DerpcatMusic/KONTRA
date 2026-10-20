@@ -215,6 +215,25 @@ pub fn depth_for_y(y: f64) -> f64 {
     ((y - ZERO) / PIXELS_PER_DECIBEL).clamp(-10.0, 10.0)
 }
 
+/// How far below the loudest bin the spectrum's fill reaches the plot's
+/// floor. The plot's own axis is a reduction axis -- a few decibels tall --
+/// and a spectrum spans a hundred, so the fill carries its own range.
+const SPECTRUM_RANGE_DB: f64 = 30.0;
+
+/// Below this, the engine has published no signal worth filling.
+const SPECTRUM_SILENCE_DB: f64 = -90.0;
+
+/// How many pixels a decibel of spectrum is worth.
+const SPECTRUM_PIXELS_PER_DECIBEL: f64 = (PLOT_H - ZERO) / SPECTRUM_RANGE_DB;
+
+/// Where a spectrum bin sits: the loudest bin touches the zero line, and a bin
+/// [`SPECTRUM_RANGE_DB`] below it reaches the plot's floor. The fill never
+/// rises above the zero line: it is material, not gain.
+fn spectrum_y(db: f32, peak: f32) -> f64 {
+    let below = (peak - db) as f64;
+    (ZERO + below * SPECTRUM_PIXELS_PER_DECIBEL).clamp(ZERO, PLOT_H)
+}
+
 /// The response plot: the reduction fill under the curve, the grid it is read
 /// against, and the handles that shape it.
 ///
@@ -277,9 +296,28 @@ fn plot(handles: &[Handle], telemetry: &Telemetry, live: bool) -> El {
     let t = theme::t();
     let mut draws: Vec<Draw> = Vec::new();
 
-    // The response: the reduction the engine took, or the reference's own
-    // trace when there is no engine to ask.
-    let reduction: Vec<(f64, f64)> = if live {
+    // The fill is the engine's spectrum, or the reference's own silhouette
+    // when there is no engine to ask. The line over it is what the engine is
+    // taking away: the reduction, at the zero line when nothing is cut.
+    let fill: Vec<(f64, f64)> = if live {
+        let values = telemetry.spectrum();
+        let peak = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        if (peak as f64) <= SPECTRUM_SILENCE_DB {
+            Vec::new()
+        } else {
+            (0..PLOT_BINS)
+                .map(|index| {
+                    (
+                        x_for_frequency(plot_frequency(index)),
+                        spectrum_y(values[index], peak),
+                    )
+                })
+                .collect()
+        }
+    } else {
+        REDUCTION.iter().map(|&(x, y)| (x, y)).collect()
+    };
+    let curve: Vec<(f64, f64)> = if live {
         let values = telemetry.reduction(0);
         (0..PLOT_BINS)
             .map(|index| {
@@ -290,37 +328,27 @@ fn plot(handles: &[Handle], telemetry: &Telemetry, live: bool) -> El {
             })
             .collect()
     } else {
-        REDUCTION.iter().map(|&(x, y)| (x, y)).collect()
-    };
-    let curve: Vec<(f64, f64)> = if live {
-        let values = telemetry.reduction(0);
-        (0..PLOT_BINS)
-            .map(|index| {
-                let x = x_for_frequency(plot_frequency(index));
-                let y = ZERO + values[index] as f64 * PIXELS_PER_DECIBEL;
-                (x, y)
-            })
-            .collect()
-    } else {
         CURVE.iter().map(|&(x, y)| (x, y)).collect()
     };
 
-    // The area under the reduction, closed on the plot's baseline.
-    let mut area: Vec<Point> = reduction.iter().map(|&(x, y)| pt(x, y)).collect();
-    area.push(pt(PLOT_W, PLOT_H));
-    area.push(pt(0.0, PLOT_H));
-    draws.push(Draw::fill(
-        Path::polyline(area, true),
-        Gradient::vertical(c(t.fill_top), c(t.fill_bottom)),
-    ));
-    draws.push(Draw::stroke(
-        Path::polyline(
-            reduction.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(),
-            false,
-        ),
-        ca(t.plot_ink, t.veil_soft),
-        stroke::RULE,
-    ));
+    // The area under the spectrum, closed on the plot's baseline.
+    if !fill.is_empty() {
+        let mut area: Vec<Point> = fill.iter().map(|&(x, y)| pt(x, y)).collect();
+        area.push(pt(PLOT_W, PLOT_H));
+        area.push(pt(0.0, PLOT_H));
+        draws.push(Draw::fill(
+            Path::polyline(area, true),
+            Gradient::vertical(c(t.fill_top), c(t.fill_bottom)),
+        ));
+        draws.push(Draw::stroke(
+            Path::polyline(
+                fill.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(),
+                false,
+            ),
+            ca(t.plot_ink, t.veil_soft),
+            stroke::RULE,
+        ));
+    }
 
     for &y in &LEVEL {
         if (y - ZERO).abs() > plot::ZERO_MARGIN {
@@ -471,4 +499,20 @@ fn ticks_col() -> El {
     }
     cells.push(spacer());
     col(cells).h(PLOT_H)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fill's own axis: the loudest bin on the zero line, and the range's
+    /// end on the plot's floor, so a spectrum reads against the same lines as
+    /// the reduction it sits under.
+    #[test]
+    fn the_spectrum_fill_reads_against_the_zero_line_and_the_floor() {
+        assert!((spectrum_y(-10.0, -10.0) - ZERO).abs() < 1.0e-9);
+        assert!((spectrum_y(-10.0 - SPECTRUM_RANGE_DB as f32, -10.0) - PLOT_H).abs() < 1.0e-6);
+        assert_eq!(spectrum_y(-120.0, -10.0), PLOT_H);
+        assert_eq!(spectrum_y(6.0, 0.0), ZERO);
+    }
 }
