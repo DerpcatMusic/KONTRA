@@ -73,7 +73,6 @@ use smooth_core::plot::{self, Telemetry};
 use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 mod presets;
 mod session;
@@ -832,8 +831,6 @@ impl PluginLogic for Smooth {
         // what was published is still settling.
         let telemetry = Arc::clone(&params.plot);
         let changed_telemetry = Arc::clone(&params.plot);
-        let moving = Arc::new(AtomicBool::new(false));
-        let moving_in = Arc::clone(&moving);
         let mut published: u64 = 0;
         let mut seen: u64 = 0;
         let mut depth_for: Option<([BandRecord; 8], bool)> = None;
@@ -846,10 +843,7 @@ impl PluginLogic for Smooth {
             if sequence != published {
                 published = sequence;
                 model.plot.advance(&telemetry.read());
-            } else if model.plot.live {
-                model.plot.idle();
             }
-            moving_in.store(!model.plot.at_rest(), Ordering::Relaxed);
             let settings = mirror.settings();
             if depth_for != Some((settings.bands, settings.hard)) {
                 depth_for = Some((settings.bands, settings.hard));
@@ -1025,7 +1019,7 @@ impl PluginLogic for Smooth {
         .resizable((W * 0.75, H * 0.75))
         .changed(move || {
             let sequence = changed_telemetry.sequence();
-            let changed = sequence != seen || moving.load(Ordering::Relaxed);
+            let changed = sequence != seen;
             seen = sequence;
             changed
         })

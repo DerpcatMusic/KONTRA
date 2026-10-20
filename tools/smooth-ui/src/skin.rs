@@ -213,7 +213,7 @@ pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
         ],
         c(t.field),
     )
-    .id(id)
+    .tipped(id)
     .a11y(A11y::Toggle { on: *on })
 }
 
@@ -336,7 +336,7 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
             ]
             .full(),
         )
-        .id(id)
+        .tipped(id)
         .a11y(A11y::Toggle { on: *choice > 0 })
 }
 
@@ -351,18 +351,18 @@ pub fn preset_bar(title: &str, tag: &str, favourite: bool) -> El {
     let t = theme::t();
     row![
         row![
-            glyph(Icon::Left, icon::CARET, c(t.ink)).id("preset-prev"),
-            glyph(Icon::Right, icon::CARET, c(t.ink)).id("preset-next"),
+            glyph(Icon::Left, icon::CARET, c(t.ink)).tipped("preset-prev"),
+            glyph(Icon::Right, icon::CARET, c(t.ink)).tipped("preset-next"),
         ]
         .gap(space::L),
-        label(title, ty::LABEL, c(t.ink)).grow(1.0).id("preset-title"),
+        label(title, ty::LABEL, c(t.ink)).grow(1.0).tipped("preset-title"),
         row![
             glyph(
                 Icon::Heart,
                 icon::SMALL,
                 if favourite { c(t.heart) } else { ca(t.ink, t.veil_soft) },
             )
-            .id("preset-heart"),
+            .tipped("preset-heart"),
             glyph(Icon::Person, icon::BASE, c(t.ink)),
             outline_chip(tag),
         ]
@@ -375,7 +375,7 @@ pub fn preset_bar(title: &str, tag: &str, favourite: bool) -> El {
     .radius(metric::PRESET_H / 2.0)
     .shrink(0)
     .fill(c(t.chip))
-    .id("preset-bar")
+    .tipped("preset-bar")
 }
 
 /// A pill that does something: a word on a plate.
@@ -601,7 +601,7 @@ pub fn text_slider(
                 .fill(ca(t.ink, 0.35 + 0.25 * lift))
                 .anchor(Align::Start, Align::End),
         )
-        .id(id)
+        .tipped(id)
         .focusable()
         .cursor(Cursor::Grab)
         .a11y(A11y::Slider {
@@ -624,6 +624,30 @@ pub fn slot_slider(
     bind(ui, slot, &mut state.norm, &mut |ui, id, norm| {
         text_slider(ui, id, norm, &text, w, rest)
     })
+}
+
+/// An element that names itself and carries what the reference says about it.
+pub trait Tipped {
+    fn tipped(self, id: &str) -> El;
+}
+impl Tipped for El {
+    fn tipped(self, id: &str) -> El {
+        let el = self.id(id);
+        match crate::tips::of(id) {
+            Some(text) => el.tip(text),
+            None => el,
+        }
+    }
+}
+
+/// A slider that is not available: the plate, dimmed, with nothing to drag.
+pub fn unavailable_slider(id: &str, text: &str, w: f64, why: &str) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    field_at(w)
+        .push(centred(readout(text, ty::BODY, ca(t.ink, t.veil_soft)), w, metric::FIELD_H))
+        .tipped(id)
+        .tip(why)
 }
 
 /// A segmented switch: one plate, one choice, and the chosen segment carries
@@ -664,7 +688,7 @@ pub fn segmented(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize) ->
         .radius(h / 2.0)
         .fill(c(t.toggle))
         .shrink(0)
-        .id(id)
+        .tipped(id)
         .a11y(A11y::Toggle { on: *chosen > 0 })
 }
 

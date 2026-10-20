@@ -1,4 +1,4 @@
-//! The plot, drawn: the reduction, the spectrum, the depth curves, the grid
+//! The plot, drawn: the reduction, the depth curves, the grid
 //! and its labels.
 //!
 //! The plot is one canvas with the tick labels and the range chip over it in a
@@ -10,7 +10,7 @@
 use super::axis::*;
 use super::axis::pt;
 use super::band::Handle;
-use super::data::{FLOOR_DB, PlotView};
+use super::data::PlotView;
 use crate::skin::*;
 use crate::theme;
 use crate::tokens::{icon, plot, space, stroke, ty};
@@ -31,8 +31,7 @@ pub fn plot(handles: &[Handle], view: &PlotView) -> El {
     let fill: Vec<(f64, f64)> = (0..PLOT_BINS)
         .map(|index| {
             let x = x_for_frequency(f64::from(plot_frequency(index)));
-            let y = (ZERO + f64::from(view.reduction[0][index]) * PIXELS_PER_DECIBEL).min(PLOT_H);
-            (x, y)
+            (x, gain_y(view.gain[0][index]))
         })
         .collect();
 
@@ -75,23 +74,17 @@ pub fn plot(handles: &[Handle], view: &PlotView) -> El {
         stroke::RULE,
     ));
 
-    // The input spectrum: a line of the signal itself, so the reduction can
-    // be read against what it is acting on.
-    if view.live && view.spectrum.iter().any(|db| *db > FLOOR_DB + 1.0) {
-        let line: Vec<Point> = (0..PLOT_BINS)
-            .map(|index| {
-                let frequency = plot_frequency(index);
-                pt(
-                    x_for_frequency(f64::from(frequency)),
-                    spectrum_y(view.spectrum[index], frequency),
-                )
-            })
+    // The second channel, when it is taking something different: the
+    // reference draws it as its own, darker, curve over the first.
+    if view.gain[0].iter().zip(&view.gain[1]).any(|(a, b)| (a - b).abs() > 1.0e-3) {
+        let edge: Vec<Point> = (0..PLOT_BINS)
+            .map(|index| pt(x_for_frequency(f64::from(plot_frequency(index))), gain_y(view.gain[1][index])))
             .collect();
-        draws.push(Draw::stroke(
-            Path::polyline(line, false),
-            ca(t.plot_ink, SPECTRUM_ALPHA),
-            stroke::HAIR,
-        ));
+        let mut area = edge.clone();
+        area.push(pt(PLOT_W, PLOT_H));
+        area.push(pt(0.0, PLOT_H));
+        draws.push(Draw::fill(Path::polyline(area, true), ca(t.plot_ink, t.glow)));
+        draws.push(Draw::stroke(Path::polyline(edge, false), c(t.plot_ink), stroke::RULE));
     }
 
     for &y in &LEVEL {
@@ -243,22 +236,11 @@ fn ticks_col() -> El {
     col(cells).h(PLOT_H)
 }
 
-/// How visible the spectrum line is.
-const SPECTRUM_ALPHA: f32 = 0.55;
-
-/// The spectrum's own scale: the top of the plot is this level, and the floor
-/// is [`SPECTRUM_SPAN_DB`] below it. Each octave above a kilohertz is lifted
-/// by [`SPECTRUM_TILT_DB`], so broadband programme reads level instead of
-/// sloping off.
-const SPECTRUM_TOP_DB: f32 = -10.0;
-const SPECTRUM_SPAN_DB: f32 = 90.0;
-const SPECTRUM_TILT_DB: f32 = 3.0;
-
-/// Where a spectrum point sits.
-fn spectrum_y(db: f32, frequency: f32) -> f64 {
-    let lifted = db + SPECTRUM_TILT_DB * (frequency / 1000.0).log2();
-    let fraction = ((SPECTRUM_TOP_DB - lifted) / SPECTRUM_SPAN_DB).clamp(0.0, 1.0);
-    GRID_TOP + f64::from(fraction) * (PLOT_H - GRID_TOP)
+/// Where a gain sits: the reference's own mapping. The gain's floor is 0.05,
+/// its decibels are held to -22..19.8, and a cut hangs below the zero line.
+fn gain_y(gain: f32) -> f64 {
+    let db = (20.0 * gain.max(0.05).log10()).clamp(-22.0, 19.8);
+    (ZERO - f64::from(db) * PIXELS_PER_DECIBEL).clamp(GRID_TOP, PLOT_H)
 }
 
 /// The depth curves: what the bands ask of the reduction. The second

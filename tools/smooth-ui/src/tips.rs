@@ -4,6 +4,9 @@
 //! with no entry is simply silent. The words are the reference's own,
 //! adjusted for the product's name.
 
+/// Why a band's depth is greyed out.
+pub const NO_DEPTH: &str = "Depth control not available for selected band shape";
+
 /// The tooltip for a control, if it has one.
 pub fn of(id: &str) -> Option<&'static str> {
     Some(match id {

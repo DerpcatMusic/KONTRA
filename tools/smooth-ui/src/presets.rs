@@ -185,9 +185,9 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
         col(lines).gap(space::TIGHT),
         row![
             name_field.el.grow(1.0),
-            action_pill("save").id("preset-save"),
+            action_pill("save").tipped("preset-save"),
             if can_delete {
-                action_pill("delete").id("preset-delete")
+                action_pill("delete").tipped("preset-delete")
             } else {
                 block(space::NONE, space::NONE).shrink(0)
             },

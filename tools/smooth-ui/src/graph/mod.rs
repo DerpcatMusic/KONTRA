@@ -1,8 +1,8 @@
-//! SMOOTH's visualizer: the reduction, the spectrum, the depth curves, and the
+//! SMOOTH's visualizer: the reduction, the depth curves, and the
 //! handles that shape them.
 //!
 //! Four parts: `axis` (where a frequency and a depth sit), `band` (what the
-//! editor holds for each band), `data` (the engine's frame, eased for the eye)
+//! editor holds for each band), `data` (the engine's frame, as it came)
 //! and `draw` (the canvas). This file is the interaction: a press on a
 //! handle takes a band, a drag moves it, a double click on bare plot adds one.
 
@@ -13,7 +13,7 @@ mod draw;
 
 pub use axis::*;
 pub use band::*;
-pub use data::{FLOOR_DB, PlotView};
+pub use data::PlotView;
 
 use draw::PLOT_ID;
 use mui::prelude::*;

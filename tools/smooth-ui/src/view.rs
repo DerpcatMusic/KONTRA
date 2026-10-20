@@ -108,6 +108,10 @@ impl Default for Model {
 pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
+    // The bar's presses first: the menu below is built from what they did,
+    // so opening it shows on this frame, not the next.
+    let asks = presets::bar_asks(ui, &mut m.presets);
+    m.actions.extend(asks.into_iter().map(Action::Preset));
     stack![
         // The plot, under the toolbar's band.
         col![
@@ -324,8 +328,6 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
 fn bar(ui: &mut Ui, m: &mut Model) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    let asks = presets::bar_asks(ui, &mut m.presets);
-    m.actions.extend(asks.into_iter().map(Action::Preset));
     for (id, action) in [
         ("undo", Action::Undo),
         ("redo", Action::Redo),
@@ -345,8 +347,8 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
             m.presets.current_row().is_some_and(|r| r.favourite),
         ),
         row![
-            row![icon_button(Icon::Undo).id("undo"), icon_button(Icon::Redo).id("redo")].gap(space::XS),
-            row![pair_pill("a", "b", m.ab).id("ab-switch"), compare_pill("a", "b").id("ab-copy")].gap(space::XS),
+            row![icon_button(Icon::Undo).tipped("undo"), icon_button(Icon::Redo).tipped("redo")].gap(space::XS),
+            row![pair_pill("a", "b", m.ab).tipped("ab-switch"), compare_pill("a", "b").tipped("ab-copy")].gap(space::XS),
         ]
         .gap(space::L),
         row![
@@ -478,7 +480,7 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     .radius(radius::BOX)
     .fill(ca(t.ground, 0.94))
     .shrink(0)
-    .id("side-panel")
+    .tipped("side-panel")
 }
 
 // --------------------------------------------------------------- band bar --
@@ -510,18 +512,24 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     if ui.get("band-delete").clicked {
         m.bands[index].active = false;
     }
+    // A cut or a reject has no gain to set: the depth slot is dimmed.
+    let no_depth = matches!((m.slots[Slot::BandShape.index()].norm * 7.0).round() as usize, 0 | 4 | 7);
     let mut pick = |ui: &mut Ui, slot: Slot| {
         slot_slider(ui, bind, slot, &mut m.slots[slot.index()], metric::SLIDER_W)
     };
     row![
         shape_el,
         pick(ui, Slot::BandFrequency),
-        pick(ui, Slot::BandDepth),
+        if no_depth {
+            unavailable_slider("band-depth", "n/a", metric::SLIDER_W, crate::tips::NO_DEPTH)
+        } else {
+            pick(ui, Slot::BandDepth)
+        },
         pick(ui, Slot::BandWidth),
         pick(ui, Slot::BandSlope),
         pick(ui, Slot::BandBalance),
         bypass_el,
-        text_button("x").id("band-delete"),
+        text_button("x").tipped("band-delete"),
     ]
     .gap(space::XS)
     .pad(space::XS)
