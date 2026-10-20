@@ -880,9 +880,6 @@ impl Engine {
                     &self.second_spatial[index],
                 );
             }
-            if std::env::var("SMOOTH_DIAG").is_ok() {
-                eprintln!("DIAG after residual = {}", self.channels[0].driver[12]);
-            }
             let weight = self.m_preparation.hard_weights();
             for ch in self.channels.iter_mut().take(self.active_channels) {
                 for k in 0..p.bins {
@@ -986,12 +983,6 @@ impl Engine {
                 );
                 ch.log_state[k] = update_log_state(ch.log_state[k], target, attack, release);
                 ch.log_response[k] = limit_log_response(ch.log_state[k], settings.max_cut_db);
-            }
-            if std::env::var("SMOOTH_DIAG").is_ok() {
-                eprintln!(
-                    "DIAG log state = {} -> after smoothing {}",
-                    ch.log_state[12], ch.log_response[12]
-                );
             }
             self.second_spatial[index].apply(&mut ch.log_response);
             for k in 0..p.bins {
@@ -1498,5 +1489,67 @@ mod ramp {
                 1.6634204387664795
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod level_scale {
+    use super::*;
+    use std::f32::consts::TAU;
+
+    /// Steady-state reduction of a 1 kHz tone at `level_db` dBFS, in dB.
+    fn tone_reduction_db(hard: bool, level_db: f32) -> f32 {
+        let mut engine = Engine::new(
+            44100.0,
+            EngineConfig {
+                reduced_latency: true,
+                ..EngineConfig::default()
+            },
+        )
+        .unwrap();
+        let settings = Settings {
+            hard,
+            depth: 0.8,
+            detail: 0.4,
+            attack: 0.0,
+            stereo_link: 0.0,
+            focus: 0.0,
+            ..Settings::default()
+        };
+        let amplitude = 10.0_f32.powf(level_db / 20.0);
+        let (mut dry, mut wet) = (0.0_f32, 0.0_f32);
+        for t in 0..20000 {
+            let tone = (TAU * 1000.0 * t as f32 / 44100.0).sin() * amplitude;
+            let out = engine.process_sample([tone, tone], &settings);
+            if t > 5000 {
+                let reference =
+                    (TAU * 1000.0 * (t - engine.latency()) as f32 / 44100.0).sin() * amplitude;
+                dry += reference * reference;
+                wet += out[0] * out[0];
+            }
+        }
+        10.0 * (wet / dry).log10()
+    }
+
+    /// The soft detector's reduction is the same at every level from -40 to
+    /// 0 dBFS: its log target is `-ln(max(m, 1))` and its envelope subtracts
+    /// in the log domain, so a level change only moves both sides together.
+    /// Below -40 dBFS the magnitudes approach the unit floor and the
+    /// reduction shrinks; `hard` is absolute by construction (`ln(m^2 + 1)`).
+    #[test]
+    fn soft_reduction_is_level_invariant_from_minus_40_to_0_dbfs() {
+        let levels = [-40.0_f32, -20.0, 0.0];
+        let reductions: Vec<f32> = levels
+            .iter()
+            .map(|&level| tone_reduction_db(false, level))
+            .collect();
+        for (level, reduction) in levels.iter().zip(&reductions) {
+            println!("soft level={level:>5} dB reduction={reduction:.3}");
+        }
+        let (low, high) = reductions
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+        assert!(high - low <= 0.1, "soft reduction spread {}", high - low);
+        assert!(high < -1.0, "soft tone reduction {high} dB");
     }
 }
