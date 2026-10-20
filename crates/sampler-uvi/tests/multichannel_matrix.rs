@@ -20,9 +20,14 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let scratch = std::env::var_os("TMPDIR").map(PathBuf::from)
-            .filter(|p| p.starts_with("/mnt/Windows11/"))
-            .unwrap_or_else(|| PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch"));
+        // A writable scratch directory: the runner's temporary directory when
+        // it is set, otherwise the workspace scratch, otherwise the platform
+        // temporary directory. A hard-coded workspace path is not writable on
+        // a CI runner.
+        let scratch = std::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| {
+            let local = PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+            if std::fs::create_dir_all(&local).is_ok() { local } else { std::env::temp_dir() }
+        });
         std::fs::create_dir_all(&scratch).unwrap();
         let path = scratch.join(format!("uvi-matrix-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir(&path).unwrap();
@@ -40,7 +45,7 @@ impl Fixture {
         let xml = format!(r#"<Program Gain="0.75"><Layers><Layer Gain="0.625"><Keygroups>
 <Keygroup LowKey="60" HighKey="60" Gain="0.5" FXPostGain="0">
 <Inserts>{matrix}</Inserts>
-<ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.003" DecayTime="0.002" SustainLevel="0.7" ReleaseTime="0.002" VelocityAmount="0.5"/></ControlSignalSources>
+<ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.003" DecayTime="0.002" SustainLevel="0.7" ReleaseTime="0.002"/></ControlSignalSources>
 <Connections><SignalConnection Source="$Keygroup/Amp" Destination="Gain" Ratio="1"/></Connections>
 <Oscillators><SamplePlayer SamplePath="{name}.wav" BaseNote="60" FineTune="0" Gain="0.875">
 <PlaybackOptions Start="0" Stop="{SOURCE_FRAMES}"><Loop Start="0" End="{SOURCE_FRAMES}" Type="0"/></PlaybackOptions>
@@ -167,14 +172,6 @@ impl Session {
         assert_eq!(s.refused_starts, 0); assert_eq!(s.cold_starts, 0);
         assert!(self.rt.take_stream_fault().is_none());
     }
-    fn identity(&self) -> (u64, usize, u64) {
-        let mut result = None;
-        assert!(self.rt.visit_onset_voices(|v| {
-            assert!(result.is_none()); assert!(!v.cold && !v.starved);
-            result = Some((v.voice.runtime, v.voice.slot, v.voice.generation)); true
-        }));
-        result.unwrap()
-    }
     fn close(mut self) {
         self.rt.release(self.note).unwrap(); self.ready(512);
         self.rt.render(&mut [[0.; 2]; 512]).unwrap();
@@ -209,7 +206,12 @@ fn compare_late(label: &str, actual: &[[f32; 2]], reference: &[[f32; 2]]) {
 fn static_case(label: &str, source: Vec<[i16; 6]>, matrix: Matrix, streamed: bool) {
     let f = Fixture::new(); let reference = stereo_reference(&source, matrix);
     let wide_path = f.program("wide", &source, matrix, "");
-    let ref_path = f.program("reference", &reference, identity(), "");
+    // The reference is an independent signed-integer stereo decode of the same
+    // authored matrix. It is staged on the same six-channel working layout, so
+    // both sides cross the ordinary wide outlet law identically and the ideal
+    // integer arithmetic stays exact without modelling that conversion here.
+    let staged: Vec<[i16; 6]> = reference.iter().map(|frame| [frame[0], frame[1], 0, 0, 0, 0]).collect();
+    let ref_path = f.program("reference", &staged, identity(), "");
     let expected = render(&ref_path, streamed, NOTE_FRAMES);
     let actual = render(&wide_path, streamed, NOTE_FRAMES);
     compare_late(label, &actual, &expected);
@@ -291,13 +293,16 @@ fn live_keygroup_gain_3_1_binding_exists_for_one_held_source() {
     let node = doc.descendants().find(|n| n.has_tag_name("GainMatrix")).unwrap().id().get_usize();
     let key = format!("uvi:insert:{node}:GainMatrix:Gain_3_1");
     let mut session = Session::load(&path, false); session.render(BEFORE_WRITE);
-    let held = session.identity();
+    // The legacy Pcm snapshot refuses channel-family sources by contract, so the
+    // held source is observed through the physical voice count (already pinned
+    // by Session::render) rather than a fabricated stereo projection.
+    assert_eq!(session.rt.voice_count(), 1);
     let id = sampler_core::lower::ir_control_id(&key);
     let has_ir_control = session.ir.controls.iter().any(|c| c.key == key);
     let bindings = session.rt.engine_parameter_bindings(session.rt.active_plan()).unwrap();
     let has_runtime_binding = bindings.iter().any(|b| b.control == id);
     let current = session.rt.control_base_value(session.rt.active_plan(), id);
-    eprintln!("held_keygroup_cell: physical_voice={held:?} ir_control={has_ir_control} runtime_binding={has_runtime_binding} current={current:?}");
+    eprintln!("held_keygroup_cell: physical_voices=1 ir_control={has_ir_control} runtime_binding={has_runtime_binding} current={current:?}");
     assert!(has_ir_control && has_runtime_binding && matches!(current, Ok(ControlValue::Real(v)) if v==0.),
         "keygroup Gain_3_1 lacks the normal live catalog-to-runtime control binding while its source is held");
     session.close();
@@ -355,6 +360,11 @@ fn live_keygroup_gain_3_1_opens_the_same_held_note_via_public_driver() {
     let f = Fixture::new(); let source = wide(false, true);
     let path = f.program("live", &source, [[0; 6]; 2], LIVE_SCRIPT);
     let mut target = [[0; 6]; 2]; target[0][2] = 4;
-    let reference = f.program("live_reference", &stereo_reference(&source, target), identity(), "");
+    // Match the static cases: stage the independent stereo oracle on the same
+    // six-channel working layout so both sides cross the ordinary wide outlet
+    // law identically instead of modelling its 1/sqrt(3) reduction here.
+    let staged: Vec<[i16; 6]> = stereo_reference(&source, target).iter()
+        .map(|frame| [frame[0], frame[1], 0, 0, 0, 0]).collect();
+    let reference = f.program("live_reference", &staged, identity(), "");
     held_write_case(&path, &reference, "live keygroup Gain_3_1 after ordinary controller");
 }

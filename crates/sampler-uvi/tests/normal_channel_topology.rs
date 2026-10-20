@@ -9,7 +9,17 @@ const FRAMES:usize=2048;
 static NEXT:AtomicU64=AtomicU64::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
-    fn new()->Self{let base=PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");let path=base.join(format!("normal-channel-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));std::fs::create_dir_all(&path).unwrap();Self(path)}
+    /// A writable scratch directory: the runner's temporary directory when it
+    /// is set, otherwise the workspace scratch, otherwise the platform
+    /// temporary directory. A hard-coded workspace path is not writable on a
+    /// CI runner.
+    fn scratch()->PathBuf{
+        if let Some(dir)=std::env::var_os("TMPDIR"){return PathBuf::from(dir);}
+        let local=PathBuf::from("/mnt/Windows11/DEV_WORKSPACE/BuildScratch");
+        if std::fs::create_dir_all(&local).is_ok(){return local;}
+        std::env::temp_dir()
+    }
+    fn new()->Self{let base=Fixture::scratch();let path=base.join(format!("normal-channel-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));std::fs::create_dir_all(&path).unwrap();Self(path)}
     fn program<const N:usize>(&self,name:&str,players:&[(&str,Vec<[i16;N]>,bool)],gain:f64,matrix:Option<[[i16;6];6]>,filter_bypass:bool)->PathBuf {
         let mut oscillator=String::new();for (file,samples,bypass) in players {
             std::fs::write(self.0.join(format!("{file}.wav")),wav(samples)).unwrap();
