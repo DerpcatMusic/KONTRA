@@ -71,6 +71,8 @@ pub use behavior::{
     BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, FadeCurve,
     Instruction, Outcome, Program, Velocity, WaitLifetime,
 };
+mod behavior_fault;
+pub use behavior_fault::{BehaviorFault, SourceSite, FAULT_CALLERS, FAULT_REGISTERS};
 mod stages;
 pub use stages::Stage;
 mod diagnose;
@@ -2523,7 +2525,13 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             while let Some(index) = child {
                 let state = self.notes.at_mut(index);
                 child = state.siblings.next;
+                // Stage 0 is the gate stage. A linked child whose entry stage is
+                // the gate follows the parent's gate release even when the note
+                // has no release callback at that stage.
+                let gate_stage = matches!(state.release_link, ReleaseLink::Stage(0))
+                    && self.release_times[note.0.index].release_stage.is_none();
                 if state.release_link == ReleaseLink::Gate
+                    || gate_stage
                     || (!cause.musical() && state.release_link != ReleaseLink::None)
                 {
                     state.sostenuto = false;

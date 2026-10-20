@@ -76,6 +76,11 @@ pub(super) struct ProcessingOwner {
     modulation_prepared_at:Option<u64>,
     modulation_prepared_closed:bool,
     modulation_released:bool,
+    /// Semitones below the tone filter's open cutoff for this activation's
+    /// post-chain Tone; 0 bypasses it. Recorded from the member voice ramp.
+    pub(super) tone: f64,
+    /// Two integrator pairs (left/right) for the post-chain Tone filter.
+    tone_state: [[f64; 2]; 2],
     // Source lifetime derived from the SAME EG phase/control-point endpoint.
     // This is not an envelope/value copy or an independent evaluator clock.
     modulation_source_end:Option<u64>,
@@ -309,6 +314,8 @@ impl Runtime {
             members: [None; MAX_MEMBERS],
             envelope: EnvelopeState::new(scope.envelope),
             tail_remaining: None,
+            tone: 0.0,
+            tone_state: [[0.0; 2]; 2],
             failed: false,
             published: false,modulation_started:false,modulation_prepared_at:None,modulation_prepared_closed:false,modulation_released:false,modulation_source_end:None,
         })?);
@@ -742,6 +749,22 @@ impl Runtime {
             if fault {
                 sum.fill([0.; 2]);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+            }
+            if !fault && scope.chain.is_some() {
+                // MPE Tone is a post-chain stage. Shared source-processing
+                // members render with it suppressed; the activation applies it
+                // once to the summed, post-chain output. Scopes with no
+                // authored chain keep the existing per-member Tone.
+                crate::voice_mod::process_frame_tone(
+                    &mut sum[..len],
+                    &mut owner.tone_state,
+                    owner.tone,
+                    f64::from(self.rate),
+                );
+                if sum[..len].iter().flatten().any(|v| !v.is_finite()) {
+                    sum.fill([0.; 2]);
+                    self.nonfinite_frames = self.nonfinite_frames.saturating_add(1);
+                }
             }
             let target = match scope.bus {
                 Some(bus) => generation.dsp.buses.input(bus, len),

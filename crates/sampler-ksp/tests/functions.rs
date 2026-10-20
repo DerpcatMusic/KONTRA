@@ -92,7 +92,8 @@ fn shared_function_waits_inherit_each_callback_and_return_without_an_extra_forwa
             assert_eq!(rt.voice_count(), 1, "wait in a function forwards its note");
             rt.key_up(note, None).unwrap();
             let domain = rt.performance(0).unwrap();
-            rt.dispatch_controller(domain, input(60).channel_address(), 1, 1, 0x12345678)
+            let address = input(60).channel_address();
+            rt.dispatch_controller(domain, address, 1, 1, 0x12345678)
                 .unwrap();
             rt.invoke_control(
                 control_context(&rt),
@@ -104,7 +105,11 @@ fn shared_function_waits_inherit_each_callback_and_return_without_an_extra_forwa
                 },
             )
             .unwrap();
-            assert_eq!(rt.controller(domain, 1), Ok(0x12345678));
+            // Every callback shares one function wait without a second forward,
+            // so the admitted CC reaches its captured physical channel exactly
+            // once and never mirrors into the explicit global domain.
+            assert_eq!(rt.channel_controller(domain, address, 1), Ok(0x12345678));
+            assert_eq!(rt.controller(domain, 1), Ok(0));
             assert_eq!(
                 rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
                 Ok(4)
@@ -379,8 +384,12 @@ fn function_and_callback_exit_deliver_note_release_controller_once_and_stop_plan
         rt.render(&mut audio).unwrap();
         assert_eq!(audio, [[0.5; 2]; 1], "one release layer, not duplicated or omitted");
         let domain = rt.performance(0).unwrap();
-        rt.dispatch_controller(domain, input(60).channel_address(), 1, 1, 0x12345678).unwrap();
-        assert_eq!(rt.controller(domain, 1), Ok(0x12345678));
+        let address = input(60).channel_address();
+        rt.dispatch_controller(domain, address, 1, 1, 0x12345678).unwrap();
+        // The forwarded controller reaches its captured physical channel once;
+        // the explicit global domain stays unmirrored.
+        assert_eq!(rt.channel_controller(domain, address, 1), Ok(0x12345678));
+        assert_eq!(rt.controller(domain, 1), Ok(0));
         rt.invoke_control(control_context(&rt), generation, None, ControlWrite {
             id: ControlId(7), value: ControlValue::Integer(1),
         }).unwrap();
