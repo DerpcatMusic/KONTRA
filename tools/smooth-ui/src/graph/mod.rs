@@ -10,10 +10,12 @@ mod axis;
 mod band;
 mod data;
 mod draw;
+mod model;
 
 pub use axis::*;
 pub use band::*;
 pub use data::PlotView;
+pub use model::{band_curve, curve};
 
 use draw::PLOT_ID;
 use mui::prelude::*;
@@ -75,7 +77,12 @@ pub fn response(
         .local(PLOT_ID)
         .filter(|p| show_frequency && (0.0..PLOT_W).contains(&p.x) && (0.0..PLOT_H).contains(&p.y))
         .map(|p| (p.x, p.y, frequency_for_x(p.x)));
-    draw::plot(&handles, view, range, cursor)
+    let white = model::curve(bands);
+    let own = bands
+        .get(*selected)
+        .filter(|band| band.active)
+        .map(|band| (model::band_curve(band), tints[*selected % tints.len()]));
+    draw::plot(&handles, view, range, cursor, &white, own.as_ref().map(|(c, tint)| (c, *tint)))
 }
 
 /// The band the plot's handle gesture is holding, if any.

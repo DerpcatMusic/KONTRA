@@ -1,4 +1,4 @@
-//! What the plot draws: the engine's gain and the depth curves the bands make.
+//! What the plot draws from the engine: the gain it is taking.
 //!
 //! The reference reads the engine's curve verbatim -- its ballistics are the
 //! engine's own attack and release -- so nothing here eases or smooths: a
@@ -11,15 +11,12 @@ use smooth_core::plot::{Frame, PLOT_BINS};
 pub struct PlotView {
     /// The gain each channel is taking, linear: one is no reduction.
     pub gain: [[f32; PLOT_BINS]; 2],
-    /// What the bands ask of the reduction, per channel, in dB. Positive is deeper.
-    pub depth: [[f32; PLOT_BINS]; 2],
 }
 
 impl Default for PlotView {
     fn default() -> Self {
         Self {
             gain: [[1.0; PLOT_BINS]; 2],
-            depth: [[0.0; PLOT_BINS]; 2],
         }
     }
 }

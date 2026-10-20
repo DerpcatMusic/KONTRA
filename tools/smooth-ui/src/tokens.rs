@@ -79,7 +79,9 @@ pub mod stroke {
     /// A drawn mark: an icon's stroke, a peak.
     pub const MARK: f64 = 1.4;
     /// The response curve itself.
-    pub const CURVE: f64 = 2.2;
+    pub const CURVE: f64 = 2.0;
+    /// The selected band's own curve.
+    pub const SELECTED: f64 = 2.5;
 }
 
 // ------------------------------------------------------------------- radii --

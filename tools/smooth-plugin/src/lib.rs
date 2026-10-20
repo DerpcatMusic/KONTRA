@@ -69,7 +69,7 @@ use smooth_core::weighting::{
     BandRecord, NormalizedRecord, normalized_from_center, normalized_from_q, normalized_from_slope,
 };
 use smooth_core::{EngineBank, Settings};
-use smooth_core::plot::{self, Telemetry};
+use smooth_core::plot::Telemetry;
 use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
 use std::sync::Arc;
@@ -858,7 +858,6 @@ impl PluginLogic for Smooth {
         let pending_in = Arc::clone(&pending);
         let mut published: u64 = 0;
         let mut seen: u64 = 0;
-        let mut depth_for: Option<([BandRecord; 8], bool)> = None;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
             // The plot: the engine's latest frame, or the last one settling
@@ -868,13 +867,6 @@ impl PluginLogic for Smooth {
             if sequence != published {
                 published = sequence;
                 model.plot.advance(&telemetry.read());
-            }
-            let settings = mirror.settings();
-            if depth_for != Some((settings.bands, settings.hard)) {
-                depth_for = Some((settings.bands, settings.hard));
-                if let Some(curves) = plot::depth_curves(&settings) {
-                    model.plot.depth = curves;
-                }
             }
             // The history and the two sets: what the toolbar asked for since
             // the last frame is done first, then the live values are watched.

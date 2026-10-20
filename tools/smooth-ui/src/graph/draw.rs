@@ -1,4 +1,4 @@
-//! The plot, drawn: the reduction, the depth curves, the grid
+//! The plot, drawn: the reduction, the white curve, the grid
 //! and its labels.
 //!
 //! The plot is one canvas with the tick labels and the range chip over it in a
@@ -20,7 +20,14 @@ use mui::prelude::*;
 pub const PLOT_ID: &str = "plot";
 
 /// The plot itself, drawn from the engine's data and the handles it is given.
-pub fn plot(handles: &[Handle], view: &PlotView, range: usize, cursor: Option<(f64, f64, f64)>) -> El {
+pub fn plot(
+    handles: &[Handle],
+    view: &PlotView,
+    range: usize,
+    cursor: Option<(f64, f64, f64)>,
+    white: &[f32; PLOT_BINS],
+    own: Option<(&[f32; PLOT_BINS], u32)>,
+) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let mut draws: Vec<Draw> = Vec::new();
@@ -107,7 +114,7 @@ pub fn plot(handles: &[Handle], view: &PlotView, range: usize, cursor: Option<(f
         ca(t.plot_ink, t.veil_strong),
         stroke::HAIR,
     ));
-    depth_curves(&mut draws, view);
+    white_curve(&mut draws, white, own);
 
     for h in handles {
         let index = h.index;
@@ -293,35 +300,25 @@ fn below_zero(range: usize) -> [f64; 2] {
     [ZERO + step, ZERO + 2.0 * step]
 }
 
-/// The depth curves: what the bands ask of the reduction. The second
-/// channel's, when it differs, is drawn darker under the first.
-fn depth_curves(draws: &mut Vec<Draw>, view: &PlotView) {
+/// Where a magnitude of the white curve sits: its own scale, 54.1 dB across
+/// the plot with zero a little above the middle.
+fn white_y(magnitude: f32) -> f64 {
+    let db = 20.0 * magnitude.max(2.0e-7).log10();
+    (ZERO - f64::from(db) * PIXELS_PER_DECIBEL).clamp(0.0, PLOT_H)
+}
+
+/// The white curve: what the bands ask of the reduction, and the selected
+/// band's own curve over it in its colour.
+fn white_curve(draws: &mut Vec<Draw>, white: &[f32; PLOT_BINS], own: Option<(&[f32; PLOT_BINS], u32)>) {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    let trace = |channel: usize| -> Vec<Point> {
+    let trace = |curve: &[f32; PLOT_BINS]| -> Vec<Point> {
         (0..PLOT_BINS)
-            .map(|index| {
-                let x = x_for_frequency(f64::from(plot_frequency(index)));
-                let y = (ZERO - f64::from(view.depth[channel][index]) * PIXELS_PER_DECIBEL)
-                    .clamp(GRID_TOP, PLOT_H);
-                pt(x, y)
-            })
+            .map(|index| pt(x_for_frequency(f64::from(plot_frequency(index))), white_y(curve[index])))
             .collect()
     };
-    let differs = view.depth[0]
-        .iter()
-        .zip(&view.depth[1])
-        .any(|(a, b)| (a - b).abs() > 0.05);
-    if differs {
-        draws.push(Draw::stroke(
-            Path::polyline(trace(1), false),
-            ca(t.plot_ink, t.veil_soft),
-            stroke::CURVE,
-        ));
+    draws.push(Draw::stroke(Path::polyline(trace(white), false), c(t.plot_ink), stroke::CURVE));
+    if let Some((curve, tint)) = own {
+        draws.push(Draw::stroke(Path::polyline(trace(curve), false), c(tint), stroke::SELECTED));
     }
-    draws.push(Draw::stroke(
-        Path::polyline(trace(0), false),
-        c(t.plot_ink),
-        stroke::CURVE,
-    ));
 }
