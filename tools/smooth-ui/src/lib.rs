@@ -13,6 +13,7 @@
 pub mod graph;
 pub mod presets;
 pub mod icons;
+pub mod menus;
 pub mod skin;
 pub mod slots;
 pub mod theme;

@@ -20,7 +20,7 @@ use mui::prelude::*;
 pub const PLOT_ID: &str = "plot";
 
 /// The plot itself, drawn from the engine's data and the handles it is given.
-pub fn plot(handles: &[Handle], view: &PlotView, range: usize) -> El {
+pub fn plot(handles: &[Handle], view: &PlotView, range: usize, cursor: Option<(f64, f64, f64)>) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let mut draws: Vec<Draw> = Vec::new();
@@ -155,12 +155,32 @@ pub fn plot(handles: &[Handle], view: &PlotView, range: usize) -> El {
         ticks_col(range)
             .anchor(Align::End, Align::Start)
             .w(plot::LEVEL_CELL * 2.0 + space::TIGHT),
+        frequency_tag(cursor),
         range_chip(range)
             .anchor(Align::End, Align::End)
             .offset(-space::XS, -(space::L + space::TIGHT)),
     ]
     .size(PLOT_W, PLOT_H)
     .shrink(0)
+}
+
+/// The frequency under the pointer, in the reference's own formats, beside it.
+fn frequency_tag(cursor: Option<(f64, f64, f64)>) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let Some((x, y, hertz)) = cursor else {
+        return block(space::NONE, space::NONE).shrink(0);
+    };
+    let text = if hertz >= 10_000.0 {
+        format!("{:.0} kHz", hertz / 1000.0)
+    } else if hertz >= 1000.0 {
+        format!("{:.1} kHz", hertz / 1000.0)
+    } else {
+        format!("{hertz:.0} Hz")
+    };
+    label(text.as_str(), ty::MICRO, c(t.ink_quiet))
+        .anchor(Align::Start, Align::Start)
+        .offset(x + space::M, y - space::L)
 }
 
 /// The running range: the span the plot is showing, in the corner.

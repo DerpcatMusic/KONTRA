@@ -7,9 +7,26 @@
 /// Why a band's depth is greyed out.
 pub const NO_DEPTH: &str = "Depth control not available for selected band shape";
 
-/// The tooltip for a control, if it has one.
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The "Show tooltips" preference: global, as the reference's is.
+static ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn enable(on: bool) {
+    ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// The tooltip for a control, if it has one and tooltips are on.
 pub fn of(id: &str) -> Option<&'static str> {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
     Some(match id {
+        "gear" => "Adjust plug-in settings.",
+        "help" => "Help and other helpful resources.",
+        "help-copy" => "Copy the version and system details to the clipboard, for a support request.",
+        "pref-ultra" => "\"Always render on ultra\" disables \"Low latency for all instances\".",
+        "pref-latency" => "\"Low latency for all instances\" disables \"Always render on ultra\".",
         "mode" => "Select the processing mode.\nsoft: adaptive threshold, reacts to relative levels of resonances.\nhard: fixed threshold, reacts to absolute levels of resonances.",
         "depth" => "Set the amount of processing. Higher values result in bigger cuts.",
         "detail" => "Control how detailed SMOOTH's cuts are. Higher detail results in narrower cuts.",

@@ -77,6 +77,9 @@ pub struct Model {
     /// The padlocks: a locked setting keeps its value when a preset loads.
     pub lock_quality: bool,
     pub lock_latency: bool,
+    /// Which toolbar menu is open, and the interface's preferences.
+    pub menu: crate::menus::Open,
+    pub prefs: crate::menus::Prefs,
 }
 
 impl Default for Model {
@@ -101,6 +104,8 @@ impl Default for Model {
             range: graph::DEFAULT_RANGE,
             lock_quality: false,
             lock_latency: false,
+            menu: crate::menus::Open::default(),
+            prefs: crate::menus::Prefs::default(),
         }
     }
 }
@@ -120,6 +125,8 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // so opening it shows on this frame, not the next.
     let asks = presets::bar_asks(ui, &mut m.presets);
     m.actions.extend(asks.into_iter().map(Action::Preset));
+    crate::menus::steer(ui, &mut m.menu);
+    crate::tips::enable(m.prefs.tooltips);
     if ui.get("lock-quality").clicked {
         m.lock_quality = !m.lock_quality;
     }
@@ -136,7 +143,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             block(W, BAR).shrink(0),
             row![
                 block(LEFT, space::NONE).shrink(0),
-                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range)
+                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range, m.prefs.frequency_near_cursor)
             ]
             .w(W),
         ]
@@ -156,6 +163,12 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             ]
             .anchor(Align::Start, Align::Start)
         },
+        // The settings or help menu, under the toolbar's right end.
+        col![
+            block(W, BAR).shrink(0),
+            row![spacer(), crate::menus::menu(ui, m.menu, &mut m.prefs)].w(W),
+        ]
+        .anchor(Align::Start, Align::Start),
         // The selected band's controls, along the plot's foot.
         col![
             block(W, BAR).shrink(0),
@@ -388,8 +401,8 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
         ]
         .gap(space::L),
         row![
-            mark_button("?"),
-            icon_button(Icon::Gear),
+            mark_button("?").tipped("help"),
+            icon_button(Icon::Gear).tipped("gear"),
             icon_button(Icon::Expand),
         ]
         .gap(space::XS),

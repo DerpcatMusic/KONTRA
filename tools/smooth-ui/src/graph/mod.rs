@@ -24,6 +24,7 @@ pub fn response(
     selected: &mut usize,
     view: &PlotView,
     range: usize,
+    show_frequency: bool,
 ) -> El {
     // A drag on a handle moves it. The tag is latched at the press, so it
     // names the band the gesture took even when the pointer has left it.
@@ -69,7 +70,12 @@ pub fn response(
             pill: band.is_edge(),
         })
         .collect();
-    draw::plot(&handles, view, range)
+    // The frequency under the pointer, when the preference asks for it.
+    let cursor = ui
+        .local(PLOT_ID)
+        .filter(|p| show_frequency && (0.0..PLOT_W).contains(&p.x) && (0.0..PLOT_H).contains(&p.y))
+        .map(|p| (p.x, p.y, frequency_for_x(p.x)));
+    draw::plot(&handles, view, range, cursor)
 }
 
 /// The band the plot's handle gesture is holding, if any.

@@ -124,6 +124,8 @@ pub mod metric {
     pub const DROPDOWN_W: f64 = 86.0;
     /// The preset bar. Wide enough for the title, the pager and the tags.
     pub const PRESET_W: f64 = 333.0;
+    /// The settings and help menus' width.
+    pub const MENU_W: f64 = 230.0;
     pub const PRESET_H: f64 = 21.0;
     /// The two-way switch.
     pub const SWITCH_W: f64 = 68.0;

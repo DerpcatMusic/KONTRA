@@ -74,6 +74,7 @@ use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
 use std::sync::Arc;
 
+mod config;
 mod presets;
 mod session;
 
@@ -843,8 +844,10 @@ impl PluginLogic for Smooth {
         smooth_ui::theme::from_env();
         let mirror = Arc::clone(&params);
         let mut model = view::Model {
+            prefs: config::load(),
             ..view::Model::default()
         };
+        let mut saved_prefs = model.prefs;
         // The editor repaints when the engine publishes a new plot, and while
         // what was published is still settling.
         let telemetry = Arc::clone(&params.plot);
@@ -1040,6 +1043,10 @@ impl PluginLogic for Smooth {
             mirror.delta.set_value(i64::from(model.delta));
             mirror.low_latency.set_value(i64::from(model.low_latency));
             mirror.quality.set_value(model.quality as i64);
+            if model.prefs != saved_prefs {
+                saved_prefs = model.prefs;
+                config::save(saved_prefs);
+            }
             mirror.locks.store(
                 u8::from(model.lock_quality) | (u8::from(model.lock_latency) << 1),
                 std::sync::atomic::Ordering::Relaxed,
