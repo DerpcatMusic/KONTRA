@@ -128,12 +128,13 @@ cargo test -p sampler-kontakt --lib solid_geq
 cargo test -p sampler-core --lib eq_family
 ```
 
-The corpus re-survey that should drop the 59 `Solid G-EQ: live control`
-entries (and print the 59 smoothing entries unchanged) is:
+The corpus re-survey was run on 2026-10-20:
 
 ```sh
 ALL=1 FILES=1 VALUES=all cargo run -p sampler-kontakt --release --example fx_survey -- /mnt/MAIN_STORAGE/Libraries/Kontakt
 ```
 
-It was not run for this change: the library volume was not mounted in this
-session, so the entry count above is still the 2026-10-19 measurement.
+It reports `Solid G-EQ: live control` zero times, where the 2026-10-19 run
+reported 59 entries over 3 instruments, and `Solid G-EQ: Solid G-EQ smoothing`
+still 59. `docs/diagnostics/20261019-installed-gap-inventory.md` records the
+same-tree totals for both runs.
