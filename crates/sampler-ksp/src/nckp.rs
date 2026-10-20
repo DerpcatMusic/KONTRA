@@ -238,8 +238,9 @@ fn control(name: String, kind: WidgetKind, v: &Json, parent: Option<&str>) -> Pe
         set("HIDE", Value::Int(hide));
     }
     let t = &v["text"];
-    let caption = t["string"].as_str().or(v["name"].as_str());
-    if let Some(s) = caption.filter(|s| !s.is_empty()) {
+    // An authored empty string is no text; leaving TEXT unset would show the
+    // variable name, Kontakt's default label for script-declared controls.
+    if let Some(s) = t["string"].as_str().or(v["name"].as_str()) {
         set("TEXT", Value::Text(s.into()));
     }
     // Port from 0cb7a8a0:src/ksp/performance_view.rs, View::font/controls.
@@ -364,6 +365,19 @@ mod tests {
         assert_eq!(view.controls[0].properties.iter().filter(|(name,_)|name.starts_with("$CONTROL_PAR_FONT_TYPE")).count(),6);
         assert!(view.controls[1].properties.contains(&("table_steps_shown".into(),Value::Int(8))));
         assert_eq!(omitted_field(&format!("{OMITTED_FIELD_PREFIX}text.font.custom: control type 999")),None);
+    }
+
+    #[test]
+    fn an_empty_text_string_is_no_text_not_the_default_label() {
+        let bytes = br#"{"value":{"performanceView":{"controls":[
+            {"index":8,"value":{"common":{"id":"Tab"},"image":"tab","text":{"string":""}}},
+            {"index":8,"value":{"common":{"id":"Named"},"text":{"string":"Main"}}}
+        ]}}}"#;
+        let (view, _) = parse(bytes).unwrap();
+        let text = |i: usize| view.controls[i].properties.iter()
+            .find(|(k, _)| k == "$CONTROL_PAR_TEXT").map(|(_, v)| v.clone());
+        assert_eq!(text(0), Some(Value::Text(String::new())));
+        assert_eq!(text(1), Some(Value::Text("Main".into())));
     }
 
     #[test]
