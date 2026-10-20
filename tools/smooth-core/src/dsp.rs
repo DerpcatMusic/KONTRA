@@ -1136,6 +1136,46 @@ mod tests {
         assert_eq!(update_baseline(1.0, 2.0, 0.25), 1.25);
         assert_eq!(update_baseline(2.0, 1.0, 0.5), 1.5);
     }
+    /// The internal layout adapter is one or two lanes. A host asking for
+    /// more gets the stereo engine bit for bit: the wider weighting law is
+    /// not decoded, so there is no third lane to run.
+    #[test]
+    fn a_wider_channel_request_is_the_stereo_engine() {
+        let config = EngineConfig::default();
+        let mut stereo = Engine::new(44100.0, config).unwrap();
+        let mut asked = Engine::new(44100.0, config).unwrap();
+        let two = Settings {
+            depth: 6.0,
+            ..Settings::default()
+        };
+        let eight = Settings {
+            active_channels: 8,
+            ..two
+        };
+        let mut loudest = 0.0_f32;
+        for t in 0..48000 {
+            let input = [
+                (TAU * 553.0 * t as f32 / 44100.0).sin() * 0.3,
+                (TAU * 1781.0 * t as f32 / 44100.0).sin() * 0.2,
+            ];
+            let a = stereo.process_sample(input, &two);
+            let b = asked.process_sample(input, &eight);
+            assert_eq!(a, b, "sample {t}");
+            loudest = loudest.max(a[0].abs()).max(a[1].abs());
+        }
+        assert!(loudest > 0.01, "nothing was compared: {loudest}");
+        assert_eq!(asked.active_channels(), 2);
+        let mut mono = Engine::new(44100.0, config).unwrap();
+        mono.process_sample([0.5, 0.5], &Settings::default());
+        mono.process_sample(
+            [0.5, 0.5],
+            &Settings {
+                active_channels: 0,
+                ..Settings::default()
+            },
+        );
+        assert_eq!(mono.active_channels(), 1);
+    }
     #[test]
     fn plan_sizes_preserve_f32_quantization_and_hops() {
         let cfg = EngineConfig::default();

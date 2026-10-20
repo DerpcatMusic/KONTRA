@@ -6,6 +6,16 @@ The picture is what a musician sees, so it is the honest check that the
 interface draws.
 
     xvfb-run -a python3 tools/smooth-plugin/scripts/gui_shot.py ~/.clap/SMOOTH.clap out.png
+    xvfb-run -s "-screen 0 1600x1000x24" python3 tools/smooth-plugin/scripts/gui_shot.py \\
+        ~/.clap/SMOOTH.clap out.png --drag --gesture-check
+
+`--drag` moves the first band's handle and photographs the result.
+`--gesture-check` then runs a block of audio and asserts the host heard the
+drag: one begin, the values, one end, per parameter. A handle is not a
+widget, so that is the only way the gesture can reach a host.
+
+Give Xvfb a screen at least as large as the window (1200x710): the pointer
+cannot leave the screen, and `magick import` only sees what is on it.
 """
 import ctypes as C
 import pathlib
@@ -73,6 +83,22 @@ def main():
     in_events = InEvents(None, size_fn, get_fn)
     out_events = OutEvents(None, push_fn)
 
+    # What the host hears back. `process` flushes the editor's queued param
+    # changes onto its output events, so a drag reaches the host only through
+    # a block of audio: the recorder is the check that it does.
+    heard = []
+
+    def record(_, event):
+        header = C.cast(event, C.POINTER(Header)).contents
+        if header.type in (5, 7, 8):
+            param = C.cast(event, C.POINTER(ParamEvent)).contents
+            value = param.value if header.type == 5 else None
+            heard.append((header.type, param.id, value))
+        return True
+
+    record_fn = C.CFUNCTYPE(C.c_bool, PTR, PTR)(record)
+    record_out = OutEvents(None, record_fn)
+
     def set_values(values):
         pending[:] = [
             ParamEvent(
@@ -120,8 +146,12 @@ def main():
             plugin.main(pointer)
             time.sleep(0.05)
 
-    def play(frames=8192, frequency=1000.0):
-        """Run the engine over a tone, so the plot has something to show."""
+    def play(frames=8192, frequency=1000.0, events=None):
+        """Run the engine over a tone, so the plot has something to show.
+
+        `events` is the output-event sink: give it the recorder and the block
+        reports what the editor told the host.
+        """
         import math
 
         print("activate:", plugin.activate(pointer, 44100.0, 1, 256))
@@ -138,7 +168,7 @@ def main():
                 arrays[0][i] = arrays[1][i] = sample
             process = Process(
                 start, 256, None, C.pointer(audio_in), C.pointer(audio_out), 1, 1,
-                C.pointer(in_events), C.pointer(out_events),
+                C.pointer(in_events), C.pointer(events or out_events),
             )
             status = plugin.process(pointer, C.byref(process))
             if status == 0:
@@ -149,6 +179,26 @@ def main():
     settle()
     subprocess.run(["magick", "import", "-window", str(parent), str(out)], check=True)
     print(f"wrote {out}")
+
+    def scale():
+        """The display's scale for the editor's own 800x473 space.
+
+        The window is opened larger than the editor's logical size, so the
+        geometry the server actually gave us -- not the size we asked for --
+        sets the pointer's pixels.
+        """
+        import re
+
+        geometry = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", str(parent)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        width = int(re.search(r"WIDTH=(\d+)", geometry).group(1))
+        height = int(re.search(r"HEIGHT=(\d+)", geometry).group(1))
+        print(f"window {width}x{height}, scale {width / 800.0:.2f}")
+        return width / 800.0, height / 473.0
 
     if "--live" in sys.argv:
         # Play a tone through the engine, then photograph the plot again: the
@@ -161,22 +211,11 @@ def main():
 
     if "--click" in sys.argv:
         # Click logical points in the editor's own 800x473 space: `--click
-        # x,y x,y`. The window is larger than the editor's logical size, so
-        # the geometry the display actually gave us sets the scale. Each click
-        # is photographed, so what the click did is visible rather than
-        # asserted.
+        # x,y x,y`. Each click is photographed, so what the click did is
+        # visible rather than asserted.
         import re
 
-        geometry = subprocess.run(
-            ["xdotool", "getwindowgeometry", "--shell", str(parent)],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        width = int(re.search(r"WIDTH=(\d+)", geometry).group(1))
-        height = int(re.search(r"HEIGHT=(\d+)", geometry).group(1))
-        sx, sy = width / 800.0, height / 473.0
-        print(f"window {width}x{height}, scale {sx:.2f}")
+        sx, sy = scale()
         rest = sys.argv[sys.argv.index("--click") + 1 :]
         for index, spec in enumerate(a for a in rest if re.fullmatch(r"\d+,\d+", a)):
             x, y = (int(v) for v in spec.split(","))
@@ -191,12 +230,12 @@ def main():
 
     if "--drag" in sys.argv:
         # Take a handle and move it: the first band sits at 100 Hz, on the
-        # zero line, a quarter of the way across the plot.
-        # The window is 800 by 473 logical; the display scales it, so the
-        # pointer works in physical pixels.
-        scale = 1200 / 800
-        start = (int(230 * scale), int(225 * scale))
-        end = (int(330 * scale), int(300 * scale))
+        # zero line, a quarter of the way across the plot. The pointer works
+        # in the display's pixels, so the editor's points are scaled by the
+        # window the server gave us.
+        sx, sy = scale()
+        start = (int(230 * sx), int(225 * sy))
+        end = (int(330 * sx), int(300 * sy))
         subprocess.run(["xdotool", "mousemove", str(start[0]), str(start[1])], check=True)
         settle()
         subprocess.run(["xdotool", "mousedown", "1"], check=True)
@@ -210,6 +249,27 @@ def main():
         dragged = out.with_name(out.stem + "-dragged" + out.suffix)
         subprocess.run(["magick", "import", "-window", str(parent), str(dragged)], check=True)
         print(f"wrote {dragged}")
+
+        if "--gesture-check" in sys.argv:
+            # A handle is not a widget, so its drag never reaches the host as
+            # a widget edit: the editor queues the gesture itself, and only a
+            # block of audio can flush it. That is the claim under test.
+            heard.clear()
+            play(events=record_out)
+            lines = []
+            for name in ("Band 1 frequency", "Band 1 depth"):
+                ident = infos[name].id
+                kinds = [kind for kind, seen, _ in heard if seen == ident]
+                values = [value for kind, seen, value in heard if seen == ident and kind == 5]
+                # One begin, the values, one end: a drag is one gesture, not
+                # a stream of edits a host would each have to bracket.
+                assert kinds == [7, *[5] * len(values), 8], (name, kinds)
+                assert len(set(values)) > 1, (name, values)
+                lines.append(
+                    f"{name}: one gesture, {len(values)} values, "
+                    f"{min(values):.6g} .. {max(values):.6g}"
+                )
+            print("gestures:\n  " + "\n  ".join(lines))
     assert gui.hide(pointer)
     gui.destroy(pointer)
     plugin.destroy(pointer)

@@ -187,6 +187,15 @@ pub fn selector_matches(selector: u8, tag: i32) -> bool {
         _ => false,
     }
 }
+/// The per-channel weight a band contributes, one lane per active channel.
+///
+/// The engine is a one- or two-lane engine: [`crate::dsp::Engine::process_sample`]
+/// clamps the host's channel count to 1..=2 before anything reaches here, so
+/// `channels > 2` cannot arrive from the product. The wider group is still
+/// reported as an error rather than indexed, because this is a public helper:
+/// the reference's focus law for a group of three or more lanes lives in its
+/// band-record construction, which is not decoded, and a guess is worse than
+/// a clear refusal.
 fn selected_weights(
     record: BandRecord,
     channels: usize,
@@ -195,6 +204,9 @@ fn selected_weights(
 ) -> Result<[Option<f32>; 2], &'static str> {
     if channels == 1 {
         return Ok([Some(1.0), None]);
+    }
+    if channels > 2 {
+        return Err("more active channels than the engine's lanes");
     }
     let first = (2.0 * (1.0 - record.focus)).clamp(0.0, 1.0);
     let second = (2.0 * record.focus).clamp(0.0, 1.0);
@@ -605,6 +617,34 @@ mod tests {
         assert!(selector_matches(7, 8));
         assert!(!selector_matches(7, 10));
         assert!(selector_matches(19, 19));
+    }
+    #[test]
+    fn a_group_wider_than_the_engine_is_an_error_not_a_panic() {
+        let grid = [0.0, 20.0, 200.0, 1000.0, 3000.0, 10000.0, 20000.0];
+        let mut records = [BandRecord::flat(1000.0); 8];
+        records[0].enabled = true;
+        let mut banks = WeightBanks::new(&grid);
+        // Three lanes in one group: the reference's focus law for that shape
+        // is not decoded, and the two-lane result would index past its own
+        // arrays. It must be refused, not indexed.
+        let wide = [ChannelGroup {
+            tag: 9,
+            first: 0,
+            count: 3,
+        }];
+        assert_eq!(
+            banks.build(&grid, &records, false, 3, &wide, false, 1.0),
+            Err("unsupported weighting geometry")
+        );
+        assert_eq!(
+            selected_weights(records[0], 3, &wide, false),
+            Err("more active channels than the engine's lanes")
+        );
+        // The same count is also wrong geometry for a two-lane request.
+        assert_eq!(
+            banks.build(&grid, &records, false, 2, &wide, false, 1.0),
+            Err("invalid weighting group geometry")
+        );
     }
     #[test]
     fn eight_shapes_focus_bandpass_selection_and_multiplicative_e() {

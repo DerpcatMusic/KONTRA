@@ -116,8 +116,11 @@ pub mod metric {
     pub const FIELD_H: f64 = 19.0;
     /// A value's plate, wide enough for a signed reading: `0.0 dB`.
     pub const FIELD_W: f64 = 62.0;
-    /// The engine's quality list.
-    pub const DROPDOWN_W: f64 = 80.0;
+    /// A dial's reading: wide enough for `10.0`, no wider.
+    pub const READING_W: f64 = 34.0;
+    /// The engine's quality list: wide enough for its longest entry and the
+    /// chevron that opens it.
+    pub const DROPDOWN_W: f64 = 86.0;
     /// The preset bar. Wide enough for the title, the pager and the tags.
     pub const PRESET_W: f64 = 333.0;
     pub const PRESET_H: f64 = 21.0;

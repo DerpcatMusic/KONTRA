@@ -18,8 +18,8 @@ below and the research's own dossiers describe the same bytes.
 | `rea-8ab6b0.md` | the E initializer | the per-channel spatial curve the port was missing |
 | `rea-8af3d0.md` | the Gaussian helper | the spatial operator's kernel |
 | `rea-8aff30.md` | the shape helper | the eight band shapes and their dispatch |
-| `rea-8f03f0.md` | the weighted reconstruction | the band weights' assembly |
-| `rea-8f78e0.md` | the projection | the weighted projection |
+| `rea-8f03f0.md` | the projection's wrapper | copies the records, then calls the projection |
+| `rea-8f78e0.md` | the weighted projection | channels × bands, one float weight each |
 
 Each file carries the REA's evidence envelope: the subject's hash, the
 provider and its version, the analysis profile, and the pseudocode.
@@ -97,20 +97,90 @@ scalar in `xmm0`, and the bridge passes integer and float arguments through
 `rcx`/`rdx`/`r8`/`r9` only. The equivalence above is disassembly evidence,
 not an executed comparison, and is recorded as such.
 
-## Where the weighted reconstruction lands
+## The weighted projection, and what `O+0xf28` is
 
 `8f03f0` is called from the soft and hard paths at `0x8e3f9e` and
 `0x8f5d0e`, both with the same three addresses:
 
 ```
-lea rcx, [r13 + 0xf28]     ; destination
+lea rcx, [r13 + 0xf28]     ; owner record set
 lea rdx, [rbp + 0x3d00]    ; weights
 lea r8,  [rbp + 0x4110]    ; grid
 call 0x1808f03f0
 ```
 
-so the response arrays live at **owner + 0xf28**, and the caller then walks
-them in 0x80-byte records (`lea rax, [rax + 0x80]`). An earlier note put the
-arrays at `O+0xe08`; the call sites say `0xf28`. Decoding one 0x80-byte
-record is the next step for the group and channel routing; until then the
-port keeps the two group shapes it has and refuses the larger ones.
+Those addresses are **inputs**. `8f03f0` copies the 0x410-byte record set
+(8 records of 0x80 plus a 0x10 trailer) from the weights and grid arrays
+onto its own frame, then calls
+`8f78e0(weights_copy, grid_copy, O + 0xf28 + 0x340)`. The owner set at
+`O+0xf28` is only addressed, never copied or written. An earlier note called
+`O+0xe08`, then `O+0xf28` the home of the arrays; both are inputs here.
+
+`8f78e0` (0x8f78e0..0x8f7bb7, three chained `.pdata` records) is the
+weighted projection itself. Per channel (count at `param_2 + 0x404`), it
+gathers that channel's destination pointers from `descriptor + 0x100`, then
+for every record calls the dispatched kernel at `0x1800011f0`:
+
+```
+dst = gathered[channel] + descriptor_offset[channel]*4 + record_base[i]
+n   = record count                         ; the 0x410 record set's trailer
+w   = *(float *)(record_pointer[i] + channel*4)   ; xmm1
+```
+
+`inc rsi` per channel and `add r15, 8` are the channel stride (the channel
+count is `[r12+0x404]`, checked at `0x8f7b9e`). So the kernel receives one
+float per band **per channel** — the same quantity `selected_weights`
+computes in `src/weighting.rs`. The float is addressed through the array
+the caller labels the grid; the caller's other array (`0x3d00`) supplies
+each record's base. Both are copies: `8f03f0` passes its own stack copies,
+never the owner's storage.
+
+`0x1800011f0` is a dispatch stub on the documented selector slot
+(`movsxd rax, [0x1821ed508]`, then `jmp [table + rax*8]`), so which kernel
+runs is a load-time choice, not a different result. It takes the weight in
+`xmm1`, which the kernel runner cannot set, so the arithmetic inside the
+selected implementation stays unexecuted here; the port matches the
+acceptance numbers with its own weighted blend.
+
+The descriptor at `O+0x1268` therefore says *where* the per-channel arrays
+are, not what they hold. The port owns its buffers, so the only thing to
+match is `weight[band][channel]`. Groups larger than two are the part of that
+law still refused: it is built upstream, in the band-record construction
+(`0x61c370` only fills the records' first qword with `base + offset*4` and
+advances by the aligned channel stride), not in either of these functions.
+
+### The channel arena, and why the larger group stays refused
+
+The float weights are not owned by the projection. `0x61c370` fills each
+record's first qword with a pointer into an arena owned by the source object
+at `[rbp+0x4a60]`:
+
+```
+record[i].qword0 = source.base + source.offset*4
+source.offset    = align16(source.offset + stride)
+```
+
+with `stride` read from the record set's trailer (`+0x404`, the channel
+count; the byte stride at `+0x408`) and the count from `+0x400`. So one band
+owns `channels` floats, and the projection indexes them as
+`record_pointer[i] + channel*4`. That is the whole published layout. The
+values in those floats are written by whichever function owns the `0x4a60`
+object; `0x8e0858` reads that slot in twenty places and never stores to it,
+so the builder is a different entry point and is not identified here.
+
+Two things follow, and both are recorded as final rather than pending:
+
+- **The law is unreachable in the product.** The adapter is one or two
+  lanes: `Engine::process_sample` clamps `active_channels` to `1..=2`, and
+  `WeightBanks::build` rejects anything outside that before a record is
+  read (`Err("unsupported weighting geometry")`). `selected_weights` also
+  refuses `channels > 2` directly, so a caller of the helper gets an error
+  instead of an index past the two-lane result. Pinning tests:
+  `a_wider_channel_request_is_the_stereo_engine` and
+  `a_group_wider_than_the_engine_is_an_error_not_a_panic`.
+- **The two-lane law is verified, not guessed.** `weight[band][channel]` is
+  a float per band per channel; for two lanes the port computes
+  `[2(1-focus), 2*focus]` clamped to `[0, 1]`, which is exactly what the
+  projection consumes. A third lane would need the upstream builder, and
+  porting a guess for it would put unverified numbers into a stereo product
+  that can never exercise them.

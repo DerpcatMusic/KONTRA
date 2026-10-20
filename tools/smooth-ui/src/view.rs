@@ -64,11 +64,11 @@ impl Default for Model {
 /// The whole editor.
 ///
 /// The window is four layers, and the order they stack in is the order the
-/// reference draws them: the plot and the footer at the bottom, the rail over
-/// them, the toolbar over the rail, and the control column over everything.
-/// That is why the toolbar's first button tucks under the rail and the
-/// footer's first switch is half hidden by it -- the same layering, not a
-/// placement.
+/// reference draws them: the plot, the rail over it, the footer over the
+/// rail's foot, the toolbar over the rail, and the control column over
+/// everything. That is why the toolbar's first button tucks under the rail
+/// while the footer's first switch sits clear of it -- the same layering, not
+/// a placement.
 pub fn editor(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
@@ -83,17 +83,17 @@ pub fn editor(ui: &mut Ui, m: &mut Model, dial: &mut Dial) -> El {
             .w(W),
         ]
         .anchor(Align::Start, Align::Start),
-        // The footer, at the bottom of the window, under the rail: its first
-        // switch runs under the rail's edge, as the reference's does.
-        row![block(FOOTER_X, space::NONE).shrink(0), footer(ui, m)]
-            .w(W)
-            .justify(Justify::Start)
-            .anchor(Align::Start, Align::End),
-        // The rail, over the footer's edge and the plot.
+        // The rail, over the plot.
         row![block(PANEL, space::NONE).shrink(0), rail()]
             .w(W)
             .h(H)
             .anchor(Align::Start, Align::Start),
+        // The footer, at the bottom of the window and over the rail's foot:
+        // its first switch sits clear of the rail, as the reference's does.
+        row![block(FOOTER_X, space::NONE).shrink(0), footer(ui, m)]
+            .w(W)
+            .justify(Justify::Start)
+            .anchor(Align::Start, Align::End),
         // The toolbar, over the rail.
         row![block(TOOLBAR_X, space::NONE).shrink(0), bar()]
             .w(W)
@@ -324,7 +324,7 @@ fn footer(ui: &mut Ui, m: &mut Model) -> El {
             ]
             .gap(space::XS),
         ]
-        .gap(space::M),
+        .gap(space::XL),
         // What the engine is doing: the reading, the list it is read
         // against, and the switch that trades latency for it.
         row![
@@ -340,7 +340,7 @@ fn footer(ui: &mut Ui, m: &mut Model) -> El {
             ]
             .gap(space::XS),
         ]
-        .gap(space::L),
+        .gap(space::XS),
     ]
     .justify(Justify::SpaceBetween)
     // The footer runs to the window's edge; its last control stops short of

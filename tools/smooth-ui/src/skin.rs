@@ -129,26 +129,38 @@ pub fn centred(s: El, w: f64, h: f64) -> El {
 }
 
 // ----------------------------------------------------------------- plates --
-/// A value's plate: the field a readout sits in.
-pub fn field() -> El {
+/// A value's plate: the field a readout sits in, at the given width.
+fn field_at(w: f64) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    block(metric::FIELD_W, metric::FIELD_H)
+    block(w, metric::FIELD_H)
         .radius(SKIN.corners.field)
         .fill(c(t.field))
         .shrink(0)
 }
 
-/// A plate a readout sits in, with the readout centred on it.
-///
-/// The plate is as wide as a signed reading (`0.0 dB`) so two of them line up
-/// in a row whatever they happen to say.
-pub fn plate(s: &str) -> El {
+/// A value's plate at the footer's field width: the field a row of readouts
+/// shares so they line up whatever they happen to say.
+pub fn field() -> El {
+    field_at(metric::FIELD_W)
+}
+
+fn plate_at(s: &str, w: f64) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    let w = metric::FIELD_W;
-    let h = metric::FIELD_H;
-    field().push(centred(readout(s, ty::BODY, c(t.ink)), w, h))
+    field_at(w).push(centred(readout(s, ty::BODY, c(t.ink)), w, metric::FIELD_H))
+}
+
+/// A footer plate: as wide as a signed reading (`0.0 dB`) so two of them line
+/// up in a row whatever they happen to say.
+pub fn plate(s: &str) -> El {
+    plate_at(s, metric::FIELD_W)
+}
+
+/// A dial's reading: the compact plate under a knob, as narrow as the value
+/// it states, because a dial is already its own column.
+pub fn reading(s: &str) -> El {
+    plate_at(s, metric::READING_W)
 }
 
 /// A pill: a row of things sharing one rounded plate at one height.
@@ -182,7 +194,11 @@ pub fn outline_chip(s: &str) -> El {
     .shrink(0)
 }
 
-/// A footer switch: a hollow ring and a name, on a wash.
+/// A footer switch: a hollow ring and a name, on the footer's own plate.
+///
+/// The footer sits on the darker ground, so a wash over it would read as a
+/// smudge rather than a plate; the reference gives these switches the same
+/// opaque plate the value fields use.
 pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
@@ -194,7 +210,7 @@ pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
             ring_dot(metric::RING, if *on { c(t.mark) } else { c(t.ink) }),
             label(name, ty::CAPTION, c(t.ink)),
         ],
-        ca(t.plate, t.wash_deep),
+        c(t.field),
     )
     .id(id)
     .a11y(A11y::Toggle { on: *on })
@@ -525,7 +541,7 @@ pub fn control(
         // so the two never drift apart and no gap has to be hand-tuned.
         stack![
             dial_el.anchor(Align::Center, Align::Start),
-            plate(&readout).anchor(Align::Center, Align::End),
+            reading(&readout).anchor(Align::Center, Align::End),
         ]
         .size(halo, halo - metric::TUCK + metric::FIELD_H)
         .shrink(0),

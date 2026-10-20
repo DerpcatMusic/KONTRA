@@ -15,6 +15,7 @@ type Build<P> = Box<dyn FnMut(&mut Ui, &mut Bridge<P>) -> El + Send>;
 type FileDrop =
     Box<dyn FnMut(&Ui, mui::prelude::Point, &[std::path::PathBuf], bool) -> bool + Send>;
 type Changed = Box<dyn FnMut() -> bool + Send>;
+type Cancel = Box<dyn FnMut(&Ui) + Send>;
 
 /// The model half: the app's build closure and the parameters it binds.
 pub(crate) struct Session<P: Params> {
@@ -23,7 +24,7 @@ pub(crate) struct Session<P: Params> {
     /// [`MuiEditor::changed`]: model state outside the bridge.
     changed: Option<Changed>,
     file_drop: Option<FileDrop>,
-    cancel: Option<Box<dyn FnMut(&Ui) + Send>>,
+    cancel: Option<Cancel>,
     /// Native window/renderer diagnostics, outside painting and audio.
     log: Option<window::LogHook>,
     /// The size `build` was designed at, fitted to the window; `None` is

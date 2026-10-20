@@ -489,11 +489,10 @@ fn zoom_at(editor: &MuiEditor<Synth>, physical: (u32, u32), scale: f64) -> f64 {
     h.driver.ui_scale() / scale
 }
 
+// The zooms are exact ratios of whole sizes, so `assert_eq!` is the right
+// comparison; `clippy::float_cmp` only fires on `==`, which this test does not
+// use.
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "the zooms are exact ratios of whole sizes"
-)]
 fn a_resized_window_fits_the_design_size_unless_the_zoom_is_fixed() {
     let params = Arc::new(Synth::default());
     let fit = editor(&params).resizable((200, 150));
