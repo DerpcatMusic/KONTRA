@@ -22,9 +22,27 @@ pub const PLOT_BINS: usize = 1024;
 pub const SWEEP_LOW: f32 = 20.0;
 pub const SWEEP_HIGH: f32 = 20_000.0;
 
-/// The frequency a plot point stands for.
+/// The reference's axis is `ln(f + 150)`, laid out evenly from 170 to 20150:
+/// a log axis whose low end is eased, so 20 Hz is the left edge and 20 kHz the
+/// right. The two ends are `ln(20 + 150)` and `ln(20000 + 150)`.
+pub const AXIS_OFFSET: f32 = 150.0;
+pub const AXIS_LOW: f32 = SWEEP_LOW + AXIS_OFFSET;
+pub const AXIS_HIGH: f32 = SWEEP_HIGH + AXIS_OFFSET;
+
+/// Where a frequency sits along the axis, zero at the left and one at the right.
+pub fn axis_position(frequency: f32) -> f32 {
+    let frequency = frequency.clamp(SWEEP_LOW, SWEEP_HIGH);
+    ((frequency + AXIS_OFFSET) / AXIS_LOW).ln() / (AXIS_HIGH / AXIS_LOW).ln()
+}
+
+/// The frequency at a place along the axis.
+pub fn axis_frequency(position: f32) -> f32 {
+    AXIS_LOW * (AXIS_HIGH / AXIS_LOW).powf(position.clamp(0.0, 1.0)) - AXIS_OFFSET
+}
+
+/// The frequency a plot point stands for: the points are even along the axis.
 pub fn plot_frequency(index: usize) -> f32 {
-    SWEEP_LOW * (SWEEP_HIGH / SWEEP_LOW).powf(index as f32 / (PLOT_BINS - 1) as f32)
+    axis_frequency(index as f32 / (PLOT_BINS - 1) as f32)
 }
 
 /// One frame of what the engine is doing.

@@ -5,7 +5,7 @@
 
 use crate::tokens::plot;
 use mui::prelude::*;
-pub use smooth_core::plot::{PLOT_BINS, SWEEP_HIGH, SWEEP_LOW, plot_frequency};
+pub use smooth_core::plot::{PLOT_BINS, SWEEP_HIGH, SWEEP_LOW, axis_frequency, axis_position, plot_frequency};
 
 /// A point in the plot's own space.
 pub fn pt(x: f64, y: f64) -> Point {
@@ -30,49 +30,16 @@ pub const LEVEL: [f64; 6] = plot::LEVEL;
 /// How many pixels a decibel is worth on the plot.
 pub const PIXELS_PER_DECIBEL: f64 = plot::PIXELS_PER_DECIBEL;
 
-/// Where a frequency sits on the plot's axis.
-///
-/// The axis is the reference's own: the frequency grid is not evenly spaced
-/// in decibels, so the mapping is read off the grid rather than assumed.
+/// Where a frequency sits on the plot's axis: the reference's own,
+/// `ln(f + 150)` evenly across the plot's width.
 pub fn x_for_frequency(frequency: f64) -> f64 {
-    let frequency = frequency.clamp(f64::from(SWEEP_LOW), f64::from(SWEEP_HIGH));
-    if frequency <= FREQ[0].1 {
-        // Below the first grid line, the axis runs on the same slope.
-        return FREQ[0].0
-            - (FREQ[0].1.ln() - frequency.ln()) / (FREQ[1].1.ln() - FREQ[0].1.ln())
-                * (FREQ[1].0 - FREQ[0].0);
-    }
-    for pair in FREQ.windows(2) {
-        let (x0, f0, _) = pair[0];
-        let (x1, f1, _) = pair[1];
-        if frequency <= f1 {
-            return x0 + (x1 - x0) * (frequency.ln() - f0.ln()) / (f1.ln() - f0.ln());
-        }
-    }
-    let (x0, f0, _) = FREQ[FREQ.len() - 2];
-    let (x1, f1, _) = FREQ[FREQ.len() - 1];
-    x1 + (x1 - x0) * (frequency.ln() - f1.ln()) / (f1.ln() - f0.ln())
+    PLOT_W * f64::from(axis_position(frequency as f32))
 }
 
 /// The frequency at a place on the axis.
 pub fn frequency_for_x(x: f64) -> f64 {
-    if x <= FREQ[0].0 {
-        let (x1, f1, _) = FREQ[1];
-        return (FREQ[0].1.ln() - (FREQ[0].0 - x) / (x1 - FREQ[0].0) * (f1.ln() - FREQ[0].1.ln()))
-            .exp();
-    }
-    for pair in FREQ.windows(2) {
-        let (x0, f0, _) = pair[0];
-        let (x1, f1, _) = pair[1];
-        if x <= x1 {
-            return (f0.ln() + (f1.ln() - f0.ln()) * (x - x0) / (x1 - x0)).exp();
-        }
-    }
-    let (x0, f0, _) = FREQ[FREQ.len() - 2];
-    let (x1, f1, _) = FREQ[FREQ.len() - 1];
-    (f1.ln() + (f1.ln() - f0.ln()) * (x - x1) / (x1 - x0)).exp()
+    f64::from(axis_frequency((x / PLOT_W) as f32))
 }
-
 
 /// Where a depth sits on the plot's axis. A cut is below the zero line.
 pub fn y_for_depth(depth: f64) -> f64 {
@@ -92,8 +59,18 @@ mod tests {
     fn the_axis_round_trips() {
         for frequency in [30.0, 100.0, 1000.0, 7500.0, 16000.0] {
             let back = frequency_for_x(x_for_frequency(frequency));
-            assert!((back / frequency - 1.0).abs() < 1.0e-9, "{frequency} -> {back}");
+            assert!((back / frequency - 1.0).abs() < 1.0e-4, "{frequency} -> {back}");
         }
         assert!((depth_for_y(y_for_depth(-3.5)) + 3.5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn the_axis_is_where_the_reference_drew_its_grid() {
+        // The grid lines were read off the reference; the formula the code
+        // gives is the same to a pixel and a half.
+        for (x, frequency, name) in FREQ {
+            let ours = x_for_frequency(frequency);
+            assert!((ours - x).abs() < 3.0, "{name}: {ours} against {x}");
+        }
     }
 }
