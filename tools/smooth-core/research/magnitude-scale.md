@@ -72,3 +72,26 @@ Measured with `tools/smooth-core/src/dsp.rs`, module `level_scale`:
 
 Until 1–3 are done, the port keeps raw `norm()` and the level test covers soft
 mode only.
+
+## End-to-end probe, default settings (`resonances_are_reduced_and_the_rest_is_left_alone`)
+
+Default `EngineConfig` (n = 4096) and `Settings::default()` (soft, depth 0.35,
+detail 0.5). Input: 1 kHz at 1.0, 3 kHz at 0.5, 300 Hz at 0.3, 10 kHz at 0.3,
+plus hiss at ±0.025, all scaled by the level. Reduction in dB, steady state.
+
+| level dBFS | 1 kHz | 3 kHz | 300 Hz | 10 kHz |
+|-----------:|------:|------:|-------:|-------:|
+| -60 | -0.30 | -3.01 | +0.00 | -8.24 |
+| -40 | -0.30 | -3.37 | +0.00 | -10.98 |
+| -20 | -0.30 | -3.37 | +0.00 | -10.98 |
+|   0 | -0.30 | -3.37 | +0.00 | -10.98 |
+
+- Off-resonance (300 Hz) is untouched.
+- The 1 kHz steady tone is **only 0.3 dB down**, the largest tone in the mix.
+  This does not meet the brief's "clearly audible reduction at resonances".
+  The likely cause is the default weighting, which is not yet checked against
+  the reference.
+- The 10 kHz tone takes the most reduction (11 dB), where the final weight
+  opens (see the note in `the_hard_detector_attenuates_where_the_final_weight_opens`).
+  A steady tone is a peak in every envelope, so it is pulled down wherever the
+  weights let it. Whether the reference behaves this way is unverified.
