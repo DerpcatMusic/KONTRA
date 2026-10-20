@@ -709,8 +709,8 @@ pub enum Icon {
     Heart,
     Person,
     Lock,
+    Locked,
     Globe,
-    Quality,
     Search,
     Speaker,
 }
@@ -732,8 +732,8 @@ impl Icon {
             Icon::Heart => crate::icons::HEART,
             Icon::Person => crate::icons::USER,
             Icon::Lock => crate::icons::UNLOCK,
+            Icon::Locked => crate::icons::LOCK,
             Icon::Globe => crate::icons::GLOBE,
-            Icon::Quality => crate::icons::UNLOCK,
             Icon::Search => crate::icons::SEARCH,
             Icon::Speaker => crate::icons::SPEAKER,
         }

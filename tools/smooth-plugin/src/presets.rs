@@ -40,11 +40,13 @@ pub fn capture<P: Params>(params: &P) -> BTreeMap<String, f64> {
 
 /// Load a preset: what it states, and the defaults for what it does not, so
 /// a preset sounds the same whatever was on the dials before it.
-pub fn apply<P: Params>(params: &P, preset: &Preset) {
+///
+/// A locked parameter keeps what it has: `locked` names them.
+pub fn apply<P: Params>(params: &P, preset: &Preset, locked: &[&str]) {
     let values: Vec<(u32, f64)> = params
         .param_infos()
         .iter()
-        .filter(|info| stored(info.name))
+        .filter(|info| stored(info.name) && !locked.contains(&info.name))
         .map(|info| {
             (
                 info.id,

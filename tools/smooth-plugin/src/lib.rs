@@ -470,9 +470,26 @@ pub struct SmoothParams {
     /// The preset library: the shipped presets, the user's, and which is loaded.
     #[skip]
     pub library: std::sync::Mutex<presets::Library>,
+    /// The padlocks, as bits: quality (with linear phase) and low latency.
+    #[skip]
+    pub locks: std::sync::atomic::AtomicU8,
 }
 
 use SmoothParamsParamId as P;
+
+/// What the padlocks hold fixed when a preset loads: the quality lock covers
+/// the quality and the phase mode, the other the low-latency switch.
+fn locked_names(params: &SmoothParams) -> Vec<&'static str> {
+    let bits = params.locks.load(std::sync::atomic::Ordering::Relaxed);
+    let mut names = Vec::new();
+    if bits & 1 != 0 {
+        names.extend(["Quality", "Linear phase"]);
+    }
+    if bits & 2 != 0 {
+        names.push("Low latency");
+    }
+    names
+}
 
 /// The band parameters, in the order the graph draws its handles.
 const BAND_PARAMS: [(P, P); 8] = [
@@ -591,7 +608,8 @@ impl SmoothParams {
             attack_high: self.attack_tilt_high.value(),
             release_low: self.release_tilt_low.value(),
             release_high: self.release_tilt_high.value(),
-            max_cut_db: self.max_cut.value(),
+            // The control's top is "no limit": the reference hands the engine 60 dB there.
+            max_cut_db: if self.max_cut.value() >= 23.97 { 60.0 } else { self.max_cut.value() },
             stereo_link: self.link.value() / 100.0,
             focus: self.focus.value(),
             mid_side: self.stereo_mode.value() >= 1,
@@ -873,7 +891,7 @@ impl PluginLogic for Smooth {
                             match ask {
                                 Ask::Step(step) => {
                                     if let Some(preset) = library.stepped(step).cloned() {
-                                        presets::apply(mirror.as_ref(), &preset);
+                                        presets::apply(mirror.as_ref(), &preset, &locked_names(&mirror));
                                         library.current = Some(preset.name);
                                     }
                                 }
@@ -881,7 +899,7 @@ impl PluginLogic for Smooth {
                                     if let Some(preset) =
                                         library.presets.iter().find(|p| p.name == name).cloned()
                                     {
-                                        presets::apply(mirror.as_ref(), &preset);
+                                        presets::apply(mirror.as_ref(), &preset, &locked_names(&mirror));
                                         library.current = Some(preset.name);
                                     }
                                 }
@@ -964,6 +982,11 @@ impl PluginLogic for Smooth {
             model.delta = mirror.delta.value() >= 1;
             model.low_latency = mirror.low_latency.value() >= 1;
             model.quality = mirror.quality.value().clamp(0, 2) as usize;
+            {
+                let bits = mirror.locks.load(std::sync::atomic::Ordering::Relaxed);
+                model.lock_quality = bits & 1 != 0;
+                model.lock_latency = bits & 2 != 0;
+            }
             for (index, ids) in BAND_IDS.iter().enumerate() {
                 let get = |i: usize| mirror.get_plain(u32::from(ids[i])).unwrap_or_default();
                 let band = &mut model.bands[index];
@@ -1017,6 +1040,10 @@ impl PluginLogic for Smooth {
             mirror.delta.set_value(i64::from(model.delta));
             mirror.low_latency.set_value(i64::from(model.low_latency));
             mirror.quality.set_value(model.quality as i64);
+            mirror.locks.store(
+                u8::from(model.lock_quality) | (u8::from(model.lock_latency) << 1),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             pending_in.store(!model.actions.is_empty(), std::sync::atomic::Ordering::Relaxed);
             tree
         })

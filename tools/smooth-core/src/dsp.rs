@@ -145,7 +145,7 @@ impl Default for Settings {
             focus: 0.5,
             mid_side: false,
             mix: 1.0,
-            mix_smoothing_ms: 10.0,
+            mix_smoothing_ms: 30.0,
             output_db: 0.0,
             delta: false,
             bypass: false,

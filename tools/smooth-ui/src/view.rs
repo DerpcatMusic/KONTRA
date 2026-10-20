@@ -74,6 +74,9 @@ pub struct Model {
     pub quality: usize,
     /// Which of the graph's display ranges the chip is on.
     pub range: usize,
+    /// The padlocks: a locked setting keeps its value when a preset loads.
+    pub lock_quality: bool,
+    pub lock_latency: bool,
 }
 
 impl Default for Model {
@@ -96,6 +99,8 @@ impl Default for Model {
             low_latency: false,
             quality: 0,
             range: graph::DEFAULT_RANGE,
+            lock_quality: false,
+            lock_latency: false,
         }
     }
 }
@@ -115,6 +120,12 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // so opening it shows on this frame, not the next.
     let asks = presets::bar_asks(ui, &mut m.presets);
     m.actions.extend(asks.into_iter().map(Action::Preset));
+    if ui.get("lock-quality").clicked {
+        m.lock_quality = !m.lock_quality;
+    }
+    if ui.get("lock-latency").clicked {
+        m.lock_latency = !m.lock_latency;
+    }
     // The chip steps through the display ranges.
     if ui.get("range").clicked {
         m.range = (m.range + 1) % graph::RANGES.len();
@@ -282,11 +293,29 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
     if ui.get("rail-grip").double_clicked {
         m.side = false;
     }
-    let group = |id: &str, s: &str| {
+    // A view's marker is dark when anything in it differs from its default.
+    let differs = |slots: &[Slot]| {
+        slots
+            .iter()
+            .any(|slot| (m.slots[slot.index()].norm - slot.rest().0).abs() > f64::EPSILON)
+    };
+    let changed = [
+        differs(&[Slot::Link, Slot::Focus]),
+        differs(&[
+            Slot::DetailLow,
+            Slot::DetailHigh,
+            Slot::AttackLow,
+            Slot::AttackHigh,
+            Slot::ReleaseLow,
+            Slot::ReleaseHigh,
+        ]),
+        differs(&[Slot::MaxCut]),
+    ];
+    let group = |id: &str, s: &str, changed: bool| {
         col![
             block(mark, mark)
                 .radius(mark / 2.0)
-                .fill(c(t.thumb))
+                .fill(if changed { c(t.selected) } else { c(t.thumb) })
                 .shrink(0),
             stack![label(s, ty::FINE, c(t.ink)).reserve(s)]
                 .size(word_w, label_h)
@@ -311,11 +340,11 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
             .shrink(0)
             .id("rail-grip"),
         block(space::NONE, space::XL + space::XS).shrink(0),
-        group("rail-stereo", "stereo"),
+        group("rail-stereo", "stereo", changed[0]),
         block(space::NONE, run).shrink(0),
-        group("rail-tilt", "tilt"),
+        group("rail-tilt", "tilt", changed[1]),
         block(space::NONE, run).shrink(0),
-        group("rail-scale", "scale"),
+        group("rail-scale", "scale", changed[2]),
         spacer(),
     ]
     .pad((space::S, space::NONE))
@@ -376,6 +405,13 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
 }
 
 // ----------------------------------------------------------------- footer --
+/// A padlock: closed when the setting it guards holds across presets.
+fn padlock(on: bool, id: &str) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    glyph(if on { Icon::Locked } else { Icon::Lock }, icon::BASE, c(t.ink)).tipped(id)
+}
+
 /// The mix, the output trim, and what the engine is doing.
 ///
 /// Three groups spread across the footer by the row itself: the slack is the
@@ -408,13 +444,13 @@ fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         // against, and the switch that trades latency for it.
         row![
             row![
-                glyph(Icon::Quality, icon::BASE, c(t.ink)),
+                padlock(m.lock_quality, "lock-quality"),
                 label("quality", ty::CAPTION, c(t.ink)),
             ]
             .gap(space::XS),
             dropdown(ui, "quality", &QUALITY_NAMES, &mut m.quality),
             row![
-                glyph(Icon::Lock, icon::BASE, c(t.ink)),
+                padlock(m.lock_latency, "lock-latency"),
                 toggle_pill(ui, "lowlatency", "low latency", &mut m.low_latency),
             ]
             .gap(space::XS),
