@@ -648,9 +648,9 @@ impl Icon {
             Icon::Headphones => crate::icons::HEADPHONES,
             Icon::Heart => crate::icons::HEART,
             Icon::Person => crate::icons::USER,
-            Icon::Lock => crate::icons::LOCK,
+            Icon::Lock => crate::icons::UNLOCK,
             Icon::Globe => crate::icons::GLOBE,
-            Icon::Quality => crate::icons::WAVEFORM,
+            Icon::Quality => crate::icons::UNLOCK,
             Icon::Search => crate::icons::SEARCH,
             Icon::Speaker => crate::icons::SPEAKER,
         }
