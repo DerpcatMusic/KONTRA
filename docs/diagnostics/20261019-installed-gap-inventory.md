@@ -208,6 +208,12 @@ and where the search starts in `Kontakt8.exe` (SHA256
 * a report is one authored thing that the translator does not execute; the
   value keeps the authored numbers, the scope names the rack or group, and
   the path names the instrument;
+* a modulation route whose source modulator was itself refused is not
+  reported a second time: the source's own report is the root cause, and the
+  routes it would have carried are not enumerated. In ANALOG STRINGS alone
+  116 modulators have no runtime and the 395 targets they address are dropped
+  this way (the two Multi LFOs in `docs/re/kontakt-lfo-fade-cap.md` are the
+  case that also loses a 0.79 volume route);
 * a zero-intensity modulation target is still reported: the route is not
   translated, even when it is inert at the saved state. The inventory counts
   them separately;
