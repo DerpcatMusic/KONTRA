@@ -25,6 +25,7 @@ pub fn of(id: &str) -> Option<&'static str> {
         "gear" => "Adjust plug-in settings.",
         "help" => "Help and other helpful resources.",
         "help-copy" => "Copy the version and system details to the clipboard, for a support request.",
+        "pref-size" => "Adjust the display size of the plug-in interface.",
         "pref-ultra" => "\"Always render on ultra\" disables \"Low latency for all instances\".",
         "pref-latency" => "\"Low latency for all instances\" disables \"Always render on ultra\".",
         "mode" => "Select the processing mode.\nsoft: adaptive threshold, reacts to relative levels of resonances.\nhard: fixed threshold, reacts to absolute levels of resonances.",

@@ -19,6 +19,13 @@ pub enum Open {
     Help,
 }
 
+/// The interface size steps, XS to XL: the window's width in points, as the
+/// reference's own settings read them. The height keeps the design's aspect.
+pub const SIZE_NAMES: [&str; 5] = ["XS", "S", "M", "L", "XL"];
+pub const SIZE_WIDTHS: [f64; 5] = [395.5, 508.5, 621.5, 791.0, 1017.0];
+/// The step a new instance opens at: L, the nearest to the design's own width.
+pub const SIZE_DEFAULT: usize = 3;
+
 /// The interface's preferences.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {
@@ -28,6 +35,8 @@ pub struct Prefs {
     pub low_latency_all: bool,
     pub listen_on_drag: bool,
     pub listen_delta: bool,
+    /// The interface size step, an index into [`SIZE_WIDTHS`].
+    pub size: usize,
 }
 
 impl Default for Prefs {
@@ -39,6 +48,7 @@ impl Default for Prefs {
             low_latency_all: false,
             listen_on_drag: false,
             listen_delta: false,
+            size: SIZE_DEFAULT,
         }
     }
 }
@@ -85,6 +95,8 @@ pub fn menu(ui: &mut Ui, open: Open, prefs: &mut Prefs) -> El {
             ] {
                 rows.push(toggle_pill(ui, id, name, value));
             }
+            // The interface size: five steps, the chosen one lit.
+            rows.push(segmented_at(ui, "pref-size", &SIZE_NAMES, &mut prefs.size, metric::MENU_W - space::L * 2.0));
             // The two render policies exclude each other, as the tooltips say.
             if prefs.always_ultra && !before.always_ultra {
                 prefs.low_latency_all = false;
@@ -117,4 +129,17 @@ pub fn menu(ui: &mut Ui, open: Open, prefs: &mut Prefs) -> El {
         .align(Align::Start)
         .shrink(0)
         .id(PANEL_ID)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_size_steps_are_the_reference_widths_and_grow() {
+        assert_eq!(SIZE_NAMES.len(), SIZE_WIDTHS.len());
+        assert!(SIZE_WIDTHS.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(SIZE_WIDTHS[SIZE_DEFAULT], 791.0);
+        assert_eq!(Prefs::default().size, SIZE_DEFAULT);
+    }
 }

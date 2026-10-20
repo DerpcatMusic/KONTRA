@@ -17,6 +17,7 @@ struct File {
     low_latency_all: bool,
     listen_on_drag: bool,
     listen_delta: bool,
+    size: usize,
 }
 
 impl Default for File {
@@ -34,6 +35,7 @@ impl From<Prefs> for File {
             low_latency_all: p.low_latency_all,
             listen_on_drag: p.listen_on_drag,
             listen_delta: p.listen_delta,
+            size: p.size,
         }
     }
 }
@@ -47,6 +49,7 @@ impl From<File> for Prefs {
             low_latency_all: f.low_latency_all,
             listen_on_drag: f.listen_on_drag,
             listen_delta: f.listen_delta,
+            size: f.size.min(smooth_ui::menus::SIZE_WIDTHS.len() - 1),
         }
     }
 }
