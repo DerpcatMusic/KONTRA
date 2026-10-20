@@ -146,12 +146,13 @@ and where the search starts in `Kontakt8.exe` (SHA256
   `0x49`). The oracle is the recorded native renders in
   `docs/architecture-v2/KONTAKT_REFERENCE.md` and the `kemu` harness
   (`tools/re/kemu.py`).
-* **The bipolar random generator** (550 entries). The generator is an LCG at
-  `0x140afe3b0`: `state = state * 0x41C64E6D + 0x3039`, with the state at
-  `[r14 + 0x30]` and the value scaled by `[r15 + 0x510c]`. The seed, the
-  cadence (when the state advances) and the value's range are still to be
-  recovered, and the source's own value domain is why
-  `laws::external_source_q` refuses the type.
+* **The bipolar random generator** (550 entries). The documented contract is
+  one constant random value in `-1..=1` per received note
+  (`docs/re/survey-conflux-gaps.md`), not a per-block redraw. No native
+  generator has been located for it: the `0x41C64E6D`/`0x3039` LCG at
+  `0x140afe3b0` is a filter dither, not this source. The seed, the cadence
+  and the value's range are therefore all still open, and the unproved value
+  domain is why `laws::external_source_q` refuses the type.
 * **The native zone identity** (251 entries). The reader accepts the id only
   for version `0x9a..=0x9c` with an 87-byte private, `word56 == 0` and the
   id as the private's last `i32` (`-1` = none). The corpus also has
@@ -167,14 +168,14 @@ and where the search starts in `Kontakt8.exe` (SHA256
   silent switch was recognised; the editor's articulation list is complete
   for those patches. The remaining reports ("further switch keys") are a
   second switch set the editor does not list.
-* **The Multi LFO and the four derived route reports** (4 + 4 entries). All
-  30 wavetable sources in Morphology Evolved and the two Multi LFOs in
-  ANALOG STRINGS are refused at one guard: the translator reads the LFO's
-  first initial value as a fade of `5345.849` ms and its bound is 5000 ms.
-  That bound is the 60001-tick fade table at 384 kHz, not a limit of the
-  fade at 44.1 kHz. Whether the field is a fade or a delay is still open, and
-  it decides the fix; `docs/re/kontakt-lfo-fade-cap.md` has the measured
-  chain, both bounds and the render that would settle it.
+* **The Multi LFO and the four derived route reports** (4 + 4 entries).
+  The two Multi LFOs in ANALOG STRINGS are refused at one guard: the
+  translator reads the LFO's first initial value as a fade of `5345.849` ms
+  and its bound is 5000 ms. That bound is the 60001-tick fade table at
+  384 kHz, not a limit of the fade at 44.1 kHz. Whether the field is a fade
+  or a delay is still open, and it decides the fix;
+  `docs/re/kontakt-lfo-fade-cap.md` has the measured chain, both bounds and
+  the render that would settle it.
 * **The wavetable sources** (30 entries, one instrument). Measured on all 30
   groups: `phase_random = 0.5`, `inharmonic_enabled = true` and, on 23 of
   them, `mod_type != 0` with a mod oscillator wave, amount and tune. The
