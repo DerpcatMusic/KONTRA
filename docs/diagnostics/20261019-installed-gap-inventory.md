@@ -62,9 +62,9 @@ anything: its only gap was the Flex loop jump.
 | `wavetable source` | 30 | 1 | Three unmodelled source features, each present on every one of the 30: phase random 0.5, inharmonic enabled, and (on 23) a mod oscillator |
 | `effect` | 17 | 6 | The Convolution payload layout, the Jump amplifier models and the Rotator core |
 | `modulation of a module parameter` | 12 | 5 | The LFO rate and start phase targets of a module slot; four of them are derived from the LFO waveform row below |
-| `modulation target` | 16 | 1 | Wavetable targets whose stored intensity is zero |
+| `modulation target` | 16 | 1 | The three wavetable mod-oscillator parameters (`wavetableInharmonic`, `wavetableModAmount`, `wavetableModFrequency`); every stored intensity is 0, so they are inert at the saved state but still routes |
 | `Tape Saturator: Creative FX live controls` | 11 | 4 | Live Tape Saturator knobs and their smoothing |
-| `Convolution: impulse response` | 10 | 2 | The impulse response resource |
+| `Convolution: impulse response` | 10 | 2 | The impulse index of the two `v0x70` records below: these 10 are derived from that layout, not a separate resource gap |
 | `time machine pro Elastique backend` | 10 | 1 | The Elastique granular backend |
 | `Reverb (legacy): legacy reverb input lowpass` | 4 | 1 | The legacy reverb input lowpass |
 | `LFO waveform (id, multi weights, pulse width)` | 4 | 1 | The multi-weight LFO waveform, and the 5.3 s first saved value its admission refuses (`docs/re/kontakt-lfo-fade-cap.md`) |
@@ -161,7 +161,11 @@ and where the search starts in `Kontakt8.exe` (SHA256
   the native's zone reader has not been located yet.
 * **The Convolution record** (17 entries). The `v0x70` payload of 121 bytes
   is not parsed, and the field evidence is explicitly blocked
-  (`docs/re/kontakt-bindings/audit-probes.tsv`, `KE092`..`KE142`).
+  (`docs/re/kontakt-bindings/audit-probes.tsv`, `KE092`..`KE142`). The 10
+  `Convolution: impulse response` entries are the same two Areia legato
+  instruments seen from the other side: with the payload unread their impulse
+  index stays `-1`, so those 10 close with the layout, not with a resource
+  lookup.
 * **The keyswitch script** (202 entries). The detector's rule is deliberate:
   a key that *sounds* is not an articulation switch, so the Afflatus "Breath"
   key is not one. What is reported is that a control key is declared and no
