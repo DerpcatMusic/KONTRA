@@ -181,6 +181,22 @@ and where the search starts in `Kontakt8.exe` (SHA256
   form ids also leave the admitted set (23, 28, 29, 18, 30, 20, 19...). The
   admission refuses at the first of these, so the row is three unimplemented
   features plus a form-table extension, not one mode.
+* **The two Solid G-EQ rows** (59 + 59 entries, 3 instruments). The
+  coefficient law itself is proved in
+  `crates/sampler-core/src/dsp/eq_family/solid.rs` (splines, topology, the
+  per-section designs, the 104 tables, setter `0x141ac70f0`, process
+  `0x141aaa620`). Two things are not. The smoothing: the update address the
+  core note cites, `0x141ab4d70`, does not hold it in this build — it
+  disassembles to a small object helper that sets a byte at `+0x13da1` and
+  calls `0x140acbe30` with a string at `+0x13db0`, with `ws2_32` imports
+  nearby — so the search has to restart from the setter, for a second
+  coefficient set and the per-block step that matches "20 ms in whole
+  blocks". The script binding is a separate problem: the knob order and
+  identity laws are measured (`docs/re/kontakt-bindings/filters_eq.tsv`, 16
+  `$ENGINE_PAR_SEQ_*` rows: 12 continuous plus the two bell and two on/off
+  switches), but the IR's live binding is role-based
+  (`ir::ProcessorParameter`) and one role cannot name two bands, so a live
+  Solid unit needs a per-band spindle the current shape cannot express.
 
 ## Reporting rules used by the tool
 
