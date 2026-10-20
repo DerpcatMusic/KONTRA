@@ -48,16 +48,31 @@ Brass (102), Solo (100), Performance Samples Vista (7), Una Corda Library
 Conflux and ANALOG STRINGS. Audio Imperia CHORUS no longer reports
 anything: its only gap was the Flex loop jump.
 
+### 2026-10-20 re-survey
+
+Two closures were measured with the same command on the same tree, before and
+after the change: 2,642 files, 0 unreadable, 271 instruments with a report and
+2,058 entries before; 115 and 1,895 after. The difference is exactly the 163
+`native source zone identity` entries, one per instrument, and a diff of the
+`FEATURE` tables shows no other row changed. `Solid G-EQ: live control` is
+absent in both runs (the count above is the 2026-10-19 measurement) and
+`Solid G-EQ: Solid G-EQ smoothing` still reports 59.
+
+The file count is not the 2,742 of the 2026-10-19 run: the volume was
+remounted between measurements, and a `find` on the same path later in the day
+listed 682 instruments, so the totals in this subsection belong to the run
+that printed them rather than to the current contents of the path.
+
 ## The gaps, ordered by entries
 
 | Feature | Entries | Instruments | What is missing |
 |---|---:|---:|---|
 | `Filter: filter law` | 1,022 | 6 | The Ladder gain law and the 2x resampled (HQ) mode; the Daft audio core; the legacy cutoff boundary phase |
 | `external modulation from RandomBipolar` | 550 | 1 | The bipolar random generator: interval, cadence, seed |
-| `native source zone identity` | 251 | 251 | The native zone identity of a saved source zone, so no ordinal alias is created |
+| `native source zone identity` | 251 | 251 | **Closed after this survey**: the identity is the terminal private `i32` at every native version branch (`docs/re/kontakt-zone-source-identity.md`); the 2026-10-20 re-survey reports none |
 | `keyswitch script` | 202 | 201 | The static detection of a keyswitch script, so the articulation list stays empty |
 | `Solid G-EQ: Solid G-EQ smoothing` | 59 | 3 | The native 20 ms coefficient smoothing on knob changes |
-| `Solid G-EQ: live control` | 59 | 3 | **Closed after this survey**: script access is bound per band (`docs/re/kontakt-solid-geq-live-control.md`); the count is the pre-change measurement |
+| `Solid G-EQ: live control` | 59 | 3 | **Closed and confirmed**: script access is bound per band (`docs/re/kontakt-solid-geq-live-control.md`) and the 2026-10-20 re-survey reports none; the count is the pre-change measurement |
 | `modulation of a modulator's intensity` | 42 | 1 | Modulating the intensity of another modulator |
 | `wavetable source` | 30 | 1 | Three unmodelled source features, each present on every one of the 30: phase random 0.5, inharmonic enabled, and (on 23) a mod oscillator |
 | `effect` | 17 | 6 | The Convolution payload layout, the Jump amplifier models and the Rotator core |
@@ -122,9 +137,15 @@ linked, so the source cannot produce a value.
 
 ## 5. Zone identity and keyswitch detection
 
-`native source zone identity` (251 instruments) reports that a saved source
-zone has no readable identity, so no ordinal alias is created and the zone
-cannot be addressed by identity.
+`native source zone identity` is closed. The identity is the terminal `i32` of
+the zone's private data at every version branch of the native reader
+(`0x140d0c760` dispatches `0x92..=0x9c` and all branches end in one `read_u32`
+into `+0xa4`), so the 83-, 87- and 140..176-byte privates all carry it. The
+old gate accepted only the 87-byte layout and treated byte 56 as a flag; that
+byte is a field of one layout and shifts in the longer ones. The law, the
+addresses and the tests are in
+`docs/re/kontakt-zone-source-identity.md`; the 2026-10-20 re-survey reports no
+instance of this row.
 
 `keyswitch script` (201 instruments) reports that the static detector did not
 recognise the keyswitch script of the behaviour. The script still runs; what
@@ -153,12 +174,17 @@ and where the search starts in `Kontakt8.exe` (SHA256
   `0x140afe3b0` is a filter dither, not this source. The seed, the cadence
   and the value's range are therefore all still open, and the unproved value
   domain is why `laws::external_source_q` refuses the type.
-* **The native zone identity** (251 entries). The reader accepts the id only
-  for version `0x9a..=0x9c` with an 87-byte private, `word56 == 0` and the
-  id as the private's last `i32` (`-1` = none). The corpus also has
-  `(0x98, 83)`, `(0x99, 87)` and `(0x9a, 140..176)` privates with
-  `word56 == 1`; where the id sits in those layouts is the open question, and
-  the native's zone reader has not been located yet.
+* **The native zone identity** (251 entries, closed 2026-10-20). The reader
+  accepts the id only for version `0x9a..=0x9c` with an 87-byte private,
+  `word56 == 0` and the id as the private's last `i32`; the corpus also had
+  `(0x98, 83)` and `(0x9a, 140..176)` privates with `word56 == 1`. The native
+  dispatch (`0x140d0c760`) settles it: every version branch ends in the same
+  `read_u32` into `+0xa4`, `0x99..=0x9c` read one aux count before it and
+  `0x92..=0x98` do not, and the variable-length sub-records (`0x142a78400`,
+  `0x140cf1330`) only shift the fields in between. The identity is therefore
+  the terminal `i32` at every admitted version; `private[56..58]` is layout
+  noise, and the mode guard at `private[4..8]` (accepted 0..2 by `0x140cf0360`)
+  is the only fixed-offset check. `docs/re/kontakt-zone-source-identity.md`.
 * **The Convolution record** (17 entries). The `v0x70` payload of 121 bytes
   is not parsed, and the field evidence is explicitly blocked
   (`docs/re/kontakt-bindings/audit-probes.tsv`, `KE092`..`KE142`). The 10

@@ -3426,19 +3426,24 @@ fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
 
 #[cfg(test)]
 mod empty_zone_tests {
-    fn zone_record(id:i32, group: u32, low: i16, high: i16) -> Vec<u8> {
+    fn zone_record_layout(version: u8, private_len: usize, id: i32, word56: u16, group: u32, low: i16, high: i16) -> Vec<u8> {
         let mut public = vec![0; 48];
         public[16..18].copy_from_slice(&low.to_le_bytes());
         public[18..20].copy_from_slice(&high.to_le_bytes());
         let mut record = group.to_le_bytes().to_vec();
-        record.extend([1, 0x9a, 0]);
-        record.extend(87u32.to_le_bytes());
-        let mut private=vec![0;87];private[83..87].copy_from_slice(&id.to_le_bytes());
+        record.extend([1, version, 0]);
+        record.extend(u32::try_from(private_len).unwrap().to_le_bytes());
+        let mut private=vec![0;private_len];
+        private[56..58].copy_from_slice(&word56.to_le_bytes());
+        private[private_len-4..].copy_from_slice(&id.to_le_bytes());
         record.extend(private);
         record.extend(48u32.to_le_bytes());
         record.extend(public);
         record.extend(0u32.to_le_bytes());
         record
+    }
+    fn zone_record(id: i32, group: u32, low: i16, high: i16) -> Vec<u8> {
+        zone_record_layout(0x9a, 87, id, 0, group, low, high)
     }
 
     #[test]
@@ -3462,6 +3467,18 @@ mod empty_zone_tests {
         let (catalog, detail) = super::source_zone_catalog_with_layouts(&data, 1).unwrap();
         assert_eq!(catalog.iter().map(|zone| zone.id).collect::<Vec<_>>(), [Some(0), None, None]);
         assert_eq!(detail, "2 zones: version=0x9a private_bytes=87 private_u16_at_56=Some(0)");
+    }
+
+    #[test]
+    fn every_native_private_layout_ends_with_its_identity() {
+        let mut data = 4u32.to_le_bytes().to_vec();
+        data.extend(zone_record_layout(0x9a, 87, 11, 0, 0, 60, 61));
+        data.extend(zone_record_layout(0x9a, 140, 12, 1, 0, 60, 61));
+        data.extend(zone_record_layout(0x9c, 152, 13, 1, 0, 60, 61));
+        data.extend(zone_record_layout(0x9c, 176, 14, 1, 0, 60, 61));
+        let (catalog, detail) = super::source_zone_catalog_with_layouts(&data, 1).unwrap();
+        assert_eq!(catalog.iter().map(|zone| zone.id).collect::<Vec<_>>(), [Some(11), Some(12), Some(13), Some(14)]);
+        assert!(detail.is_empty(), "{detail}");
     }
 
     #[test]
@@ -3502,12 +3519,11 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let so = StructuredObject::read(&mut *r).map_err(|e| e.to_string())?;
     let source_zone = Zone(so);
     let params = source_zone.params().map_err(|e| e.to_string())?;
-    // Unknown private variants retain no invented command identity.
-    let private=&source_zone.0.private_data;
-    let source_id = if matches!(source_zone.0.version,0x9a..=0x9c)
-        && private.len()==87 && private.get(56..58)==Some(&[0,0]) {
-        source_zone.source_id().map_err(|e|e.to_string())?
-    } else {None};
+    // Unknown private variants retain no invented command identity. The native
+    // private reader ends every version branch with the identity read, so the
+    // gate is the decoder, not a fixed length: an undecodable private stays
+    // `None` and the catalog reports the layout instead of aliasing an ordinal.
+    let source_id = source_zone.source_id().ok().flatten();
     let (start, end, start_mod) = (
         params.sample_start,
         params.sample_end,
