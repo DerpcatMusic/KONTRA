@@ -1361,10 +1361,11 @@ pub(super) fn widget_state(
             (false, true) => Use::Hover,
             _ => Use::Strip,
         };
-        wd.image(role)
-            .and_then(|a| assets.get(a))
+        [wd.image(role), wd.image(Use::Strip)]
+            .into_iter()
+            .flatten()
             .filter(|_| bitmap || wd.label_in_image())
-            .or(strip)
+            .find_map(|a| Some((a, assets.get(a)?)))
     };
     let fixed = wd
         .images
@@ -1613,11 +1614,11 @@ pub(super) fn widget_state(
             }
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
-                Some(p) => stack![
-                    block(w, h).radius(0).fill(
-                        picture(p, fixed.unwrap_or_else(|| state_frame(v > 0.5, p.len())))
-                            .unwrap_or(Fill::from(Role::Field)),
-                    ),
+                Some((a, p)) => stack![
+                    {
+                        let frame = fixed.unwrap_or_else(|| state_frame(v > 0.5, p.len()));
+                        art(face, a, p, frame, w, h, scale)
+                    },
                     button_caption()
                 ],
                 None => stack![button_caption()]
@@ -1635,11 +1636,11 @@ pub(super) fn widget_state(
             }
             let on = v > 0.5;
             match state_picture(on) {
-                Some(p) => stack![
-                    block(w, h).radius(0).fill(
-                        picture(p, fixed.unwrap_or_else(|| state_frame(on, p.len())))
-                            .unwrap_or(Fill::from(Role::Field)),
-                    ),
+                Some((a, p)) => stack![
+                    {
+                        let frame = fixed.unwrap_or_else(|| state_frame(on, p.len()));
+                        art(face, a, p, frame, w, h, scale)
+                    },
                     button_caption()
                 ],
                 None => stack![button_caption()]
