@@ -152,5 +152,5 @@ fn every_theme_is_distinct_and_selectable() {
         assert_eq!(theme::active().id, entry.id);
         assert_eq!(theme::t().ink, entry.palette.ink);
     }
-    theme::set("voice").expect("the default");
+    theme::set("graphite").expect("the default");
 }

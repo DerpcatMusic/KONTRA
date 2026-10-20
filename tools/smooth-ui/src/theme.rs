@@ -324,6 +324,73 @@ pub const PAPER: Palette = Palette {
     glow: 0.017,
 };
 
+/// White and graphite: a neutral near-white ground, graphite ink and plates,
+/// no hue anywhere but the four bands. The reference's geometry in a
+/// monochrome material.
+pub const GRAPHITE: Palette = Palette {
+    ground: 0xEEEFF1,
+    page: 0xDDDEE1,
+    bar: 0xF4F5F6,
+    heart: 0xC25064,
+
+    panel_top: 0xF6F7F8,
+    panel_bottom: 0xE9EAEC,
+    rail_left: 0xDCDDE0,
+    rail_right: 0xF0F1F2,
+    edge: 0xB4B6BB,
+    edge_light: 0xFFFFFF,
+
+    ink: 0x2B2D31,
+    ink_quiet: 0x6B6E75,
+    ink_logo: 0x2B2D31,
+    logo_accent: 0x9A9DA4,
+    mark: 0xFFFFFF,
+
+    field: 0xE1E2E5,
+    chip: 0xE8E9EB,
+    chip_light: 0xEFF0F1,
+    toggle: 0xDEDFE2,
+    thumb: 0xA3A6AD,
+    body: 0x2F3135,
+    body_hi: 0x3B3E43,
+    selected: 0x2B2D31,
+    on_selected: 0xF6F7F8,
+    ring_dark: 0xB7BAC0,
+    ring_light: 0xDADCE0,
+
+    graph_top: 0xF8F9FA,
+    graph_bottom: 0xEEEFF1,
+    grid: 0xD8DADE,
+    grid_base: 0xC6C8CD,
+    fill_top: 0x8A8D94,
+    fill_bottom: 0xA9ACB2,
+    plot_ink: 0x3A3C41,
+
+    red: 0xC4566B,
+    magenta: 0x9550B0,
+    cyan: 0x3D7E99,
+    green: 0x34856D,
+
+    plate: 0xFFFFFF,
+    shade: 0x2B2D31,
+    well: 0x5A5C62,
+    handle: 0xFFFFFF,
+    range_chip: 0xE4E5E8,
+
+    wash: 0.42,
+    wash_deep: 0.28,
+    veil: 0.16,
+    veil_strong: 0.30,
+    veil_soft: 0.40,
+    shade_alpha: 0.16,
+    well_alpha: 0.16,
+    well_edge: 0.14,
+    rim: 0.97,
+    chip_alpha: 0.92,
+    edge_veil: 0.85,
+    glow: 0.017,
+};
+
 /// A look, with the name a person picks it by.
 pub struct Theme {
     /// The name on the command line and in `SMOOTH_THEME`.
@@ -336,6 +403,11 @@ pub struct Theme {
 
 /// Every look that ships, in the order a picker should show them.
 pub const THEMES: &[Theme] = &[
+    Theme {
+        id: "graphite",
+        name: "Graphite",
+        palette: &GRAPHITE,
+    },
     Theme {
         id: "voice",
         name: "Voice",
@@ -353,8 +425,8 @@ pub const THEMES: &[Theme] = &[
     },
 ];
 
-/// The default, and the one parity is measured against.
-pub const DEFAULT: &Palette = &VOICE;
+/// The default. Parity with the reference is measured against `voice`.
+pub const DEFAULT: &Palette = &GRAPHITE;
 
 thread_local! {
     /// Which palette this thread draws with. The editor renders on one
