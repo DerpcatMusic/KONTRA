@@ -337,11 +337,25 @@ fn plot(handles: &[Handle], telemetry: &Telemetry, live: bool) -> El {
     // they follow the same trace, so the light falls off the edge wherever
     // the edge goes.
     if !fill.is_empty() {
+        // The halo is the same edge seen through a soft lens. A step in the
+        // trace would stack its bands into a bright column beside the step,
+        // and a blur has no steps in it to stack; so the halo's own edge is
+        // averaged over a few samples while the fill below keeps the trace
+        // exactly as the engine published it.
+        let edge: Vec<f64> = (0..fill.len())
+            .map(|i| {
+                let lo = i.saturating_sub(plot::GLOW_SOFTEN);
+                let hi = (i + plot::GLOW_SOFTEN).min(fill.len() - 1);
+                let span = &fill[lo..=hi];
+                span.iter().map(|p| p.1).sum::<f64>() / span.len() as f64
+            })
+            .collect();
         for layer in (1..=plot::GLOW_LAYERS).rev() {
             let lift = layer as f64 * plot::GLOW_STEP;
             let mut band: Vec<Point> = fill
                 .iter()
-                .map(|&(x, y)| pt(x, (y - lift).max(GRID_TOP)))
+                .zip(&edge)
+                .map(|(&(x, _), &y)| pt(x, (y - lift).max(GRID_TOP)))
                 .collect();
             band.push(pt(PLOT_W, PLOT_H));
             band.push(pt(0.0, PLOT_H));

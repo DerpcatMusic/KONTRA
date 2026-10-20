@@ -215,6 +215,9 @@ pub mod plot {
     /// and how many bands it takes to fade into the background.
     pub const GLOW_STEP: f64 = 3.0;
     pub const GLOW_LAYERS: usize = 14;
+    /// How many samples either side the halo's own edge is averaged over, so
+    /// a step in the trace cannot stack its bands into a bright column.
+    pub const GLOW_SOFTEN: usize = 3;
 
     /// The well the plot sits in: its shadow's reach.
     pub const WELL_TOP: f64 = 9.0;
