@@ -1,10 +1,13 @@
 //! Presets: the factory set, the user's own, and how they are read and written.
 //!
-//! A preset is a name, a category, a creator, and the values of the
-//! parameters it sets, keyed by the parameter's *name* so a file survives a
-//! reordering of the parameter list. User presets are one JSON file each in
-//! the user's config directory; factory presets are code and cannot be
-//! changed or deleted.
+//! A preset is one JSON file in the user's folder, shaped as the reference's
+//! `.preset` is: a name, a category from the reference's fourteen, a
+//! description, the author, the plug-in version and revision, and the values
+//! of the parameters it sets, keyed by the parameter's *name* so a file
+//! survives a reordering of the parameter list. Favourites are a list of
+//! names in a sidecar file, so a factory preset (which is code and cannot be
+//! changed) can still be one. The default pin is `user_default.preset`, a copy
+//! of the preset that new instances open with.
 
 use moose::prelude::Params;
 use serde::{Deserialize, Serialize};
@@ -15,17 +18,62 @@ use std::path::{Path, PathBuf};
 /// sound.
 const TRANSIENT: [&str; 2] = ["Bypass", "Delta"];
 
+/// The author's entry: who made the preset and what kind of preset it is. The
+/// reference marks a user preset with type 3 and reads factory ones as any
+/// other type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Author {
+    pub author_name: String,
+    pub author_type: u8,
+}
+
+/// The user's type; factory presets carry a different one.
+pub const AUTHOR_USER: u8 = 3;
+pub const AUTHOR_FACTORY: u8 = 1;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
     pub name: String,
+    /// One of [`CATEGORIES`].
     pub category: String,
-    pub creator: String,
     #[serde(default)]
-    pub favourite: bool,
-    /// Plain values by parameter name.
-    pub values: BTreeMap<String, f64>,
+    pub description: String,
+    pub author: Author,
+    #[serde(default)]
+    pub plugin_version: String,
+    #[serde(default = "first_revision")]
+    pub preset_revision: u32,
+    /// Plain values by parameter name. The older files called this `values`.
+    #[serde(alias = "values")]
+    pub params: BTreeMap<String, f64>,
     #[serde(skip)]
     pub factory: bool,
+    #[serde(skip)]
+    pub favourite: bool,
+}
+
+fn first_revision() -> u32 {
+    1
+}
+
+impl Preset {
+    /// A preset as the user saved it: the creator's name, the user's type.
+    pub fn new(name: &str, category: &str, creator: &str, params: BTreeMap<String, f64>) -> Self {
+        Self {
+            name: name.to_string(),
+            category: category.to_string(),
+            description: String::new(),
+            author: Author {
+                author_name: creator.to_string(),
+                author_type: AUTHOR_USER,
+            },
+            plugin_version: env!("CARGO_PKG_VERSION").to_string(),
+            preset_revision: 1,
+            params,
+            factory: false,
+            favourite: false,
+        }
+    }
 }
 
 /// The values of every parameter a preset stores, by name.
@@ -50,7 +98,7 @@ pub fn apply<P: Params>(params: &P, preset: &Preset, locked: &[&str]) {
         .map(|info| {
             (
                 info.id,
-                preset.values.get(info.name).copied().unwrap_or(info.default_plain),
+                preset.params.get(info.name).copied().unwrap_or(info.default_plain),
             )
         })
         .collect();
@@ -66,10 +114,16 @@ fn factory_preset(name: &str, category: &str, values: &[(&str, f64)]) -> Preset 
     Preset {
         name: name.to_string(),
         category: category.to_string(),
-        creator: "derpcat".to_string(),
-        favourite: false,
-        values: values.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        description: String::new(),
+        author: Author {
+            author_name: "derpcat".to_string(),
+            author_type: AUTHOR_FACTORY,
+        },
+        plugin_version: env!("CARGO_PKG_VERSION").to_string(),
+        preset_revision: 1,
+        params: values.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         factory: true,
+        favourite: false,
     }
 }
 
@@ -78,22 +132,22 @@ pub fn factory() -> Vec<Preset> {
     vec![
         factory_preset(
             "Smooth vocal",
-            "vocals",
+            "Vocals",
             &[("Depth", 6.0), ("Detail", 6.3), ("Attack", 5.0), ("Release", 3.0)],
         ),
         factory_preset(
             "Gentle touch",
-            "general",
+            "Misc",
             &[("Depth", 3.0), ("Detail", 4.0), ("Attack", 6.0), ("Release", 5.0)],
         ),
         factory_preset(
             "Deep clean",
-            "general",
+            "Misc",
             &[("Depth", 8.0), ("Detail", 7.0), ("Attack", 3.0), ("Release", 4.0), ("Mode", 1.0)],
         ),
         factory_preset(
             "Harsh vocal",
-            "vocals",
+            "Vocals",
             &[
                 ("Depth", 7.0),
                 ("Detail", 5.0),
@@ -106,7 +160,7 @@ pub fn factory() -> Vec<Preset> {
         ),
         factory_preset(
             "Sibilance",
-            "vocals",
+            "Vocals",
             &[
                 ("Depth", 7.0),
                 ("Detail", 6.0),
@@ -120,7 +174,7 @@ pub fn factory() -> Vec<Preset> {
         ),
         factory_preset(
             "Mud",
-            "mix",
+            "Master bus",
             &[
                 ("Depth", 5.0),
                 ("Detail", 3.0),
@@ -134,12 +188,12 @@ pub fn factory() -> Vec<Preset> {
         ),
         factory_preset(
             "Acoustic guitar",
-            "instruments",
+            "Guitar",
             &[("Depth", 5.0), ("Detail", 5.0), ("Attack", 4.0), ("Release", 5.0), ("Band 2 frequency", 2500.0)],
         ),
         factory_preset(
             "Drum bus",
-            "mix",
+            "Drums",
             &[("Depth", 4.0), ("Detail", 4.0), ("Attack", 2.0), ("Release", 2.0), ("Mode", 1.0)],
         ),
     ]
@@ -156,14 +210,21 @@ fn file_name(name: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    format!("{}.json", slug.trim_matches('-'))
+    format!("{}.preset", slug.trim_matches('-'))
 }
+
+/// The sidecar that lists the favourites by name.
+const FAVOURITES: &str = "favorite_presets.json";
+/// The pinned default: a copy of the preset new instances open with.
+const DEFAULT: &str = "user_default.preset";
 
 /// Everything the menu lists, and which preset is loaded.
 pub struct Library {
     pub presets: Vec<Preset>,
     /// The name of the loaded preset.
     pub current: Option<String>,
+    /// The name of the pinned default, if one is pinned.
+    pub default: Option<String>,
     dir: Option<PathBuf>,
 }
 
@@ -179,25 +240,47 @@ impl Library {
         let mut library = Self {
             presets: factory(),
             current: None,
+            default: None,
             dir,
         };
         library.rescan();
         library
     }
 
-    /// Read the user's folder again.
+    /// Read the user's folder again: the presets, the favourites, the pin.
     pub fn rescan(&mut self) {
         self.presets.retain(|p| p.factory);
-        let Some(dir) = &self.dir else { return };
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let favourites = self.read_favourites();
+        for preset in &mut self.presets {
+            preset.favourite = favourites.contains(&preset.name);
+        }
+        let Some(dir) = self.dir.clone() else { return };
+        let Ok(entries) = std::fs::read_dir(&dir) else { return };
         let mut found: Vec<Preset> = entries
             .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json" || x == "preset"))
+            .filter(|e| e.file_name() != FAVOURITES && e.file_name() != DEFAULT)
             .filter_map(|e| std::fs::read_to_string(e.path()).ok())
             .filter_map(|text| serde_json::from_str::<Preset>(&text).ok())
+            .map(|mut p| {
+                p.favourite = favourites.contains(&p.name);
+                p
+            })
             .collect();
         found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         self.presets.extend(found);
+        self.default = std::fs::read_to_string(dir.join(DEFAULT))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Preset>(&text).ok())
+            .map(|p| p.name);
+    }
+
+    fn read_favourites(&self) -> Vec<String> {
+        self.dir
+            .as_ref()
+            .and_then(|dir| std::fs::read_to_string(dir.join(FAVOURITES)).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
     }
 
     /// The preset `step` places from the loaded one, wrapping round the list.
@@ -229,31 +312,54 @@ impl Library {
         Ok(())
     }
 
-    /// Delete a user preset.
+    /// Delete a user preset. A deleted default is unpinned with it.
     pub fn delete(&mut self, name: &str) -> std::io::Result<()> {
         if let Some(dir) = &self.dir {
             match std::fs::remove_file(dir.join(file_name(name))) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
                 _ => {}
             }
+            if self.default.as_deref() == Some(name) {
+                let _ = std::fs::remove_file(dir.join(DEFAULT));
+            }
         }
         self.rescan();
         Ok(())
     }
 
-    /// Mark a preset a favourite or not. A factory preset's mark is kept in
-    /// a sidecar file, since the preset itself is code.
-    pub fn set_favourite(&mut self, name: &str, on: bool) -> std::io::Result<()> {
-        let Some(index) = self.presets.iter().position(|p| p.name == name) else {
-            return Ok(());
-        };
-        self.presets[index].favourite = on;
-        let preset = self.presets[index].clone();
-        if !preset.factory {
-            if let Some(dir) = &self.dir {
-                write(&dir.join(file_name(&preset.name)), &preset)?;
+    /// Pin a preset as the default new instances open with, or unpin it.
+    pub fn set_default(&mut self, name: &str, on: bool) -> std::io::Result<()> {
+        let Some(dir) = self.dir.clone() else { return Ok(()) };
+        if !on {
+            if self.default.as_deref() == Some(name) {
+                match std::fs::remove_file(dir.join(DEFAULT)) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                    _ => {}
+                }
             }
+        } else if let Some(preset) = self.presets.iter().find(|p| p.name == name).cloned() {
+            std::fs::create_dir_all(&dir)?;
+            write(&dir.join(DEFAULT), &preset)?;
         }
+        self.rescan();
+        Ok(())
+    }
+
+    /// Mark a preset a favourite or not. Every preset's mark lives in the
+    /// sidecar, factory ones included, so it survives a restart.
+    pub fn set_favourite(&mut self, name: &str, on: bool) -> std::io::Result<()> {
+        let Some(dir) = self.dir.clone() else { return Ok(()) };
+        let mut names = self.read_favourites();
+        names.retain(|n| n != name);
+        if on {
+            names.push(name.to_string());
+        }
+        std::fs::create_dir_all(&dir)?;
+        let text = serde_json::to_string_pretty(&names).map_err(std::io::Error::other)?;
+        let temporary = dir.join(format!("{FAVOURITES}.tmp"));
+        std::fs::write(&temporary, text)?;
+        std::fs::rename(temporary, dir.join(FAVOURITES))?;
+        self.rescan();
         Ok(())
     }
 }
@@ -261,7 +367,7 @@ impl Library {
 fn write(path: &Path, preset: &Preset) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(preset).map_err(std::io::Error::other)?;
     // Written beside and renamed over, so a crash never leaves half a preset.
-    let temporary = path.with_extension("json.tmp");
+    let temporary = path.with_extension("tmp");
     std::fs::write(&temporary, text)?;
     std::fs::rename(temporary, path)
 }
@@ -281,14 +387,13 @@ mod tests {
         let dir = scratch("a");
         let mut library = Library::open(Some(dir.clone()));
         let factory_count = library.presets.len();
-        let mut mine = factory_preset("My sound", "vocals", &[("Depth", 9.0)]);
-        mine.factory = false;
+        let mine = Preset::new("My sound", "Vocals", "you", BTreeMap::from([("Depth".to_string(), 9.0)]));
         library.save(mine.clone()).unwrap();
         assert_eq!(library.presets.len(), factory_count + 1);
 
         let reopened = Library::open(Some(dir.clone()));
         let found = reopened.presets.iter().find(|p| p.name == "My sound").unwrap();
-        assert_eq!(found.values["Depth"], 9.0);
+        assert_eq!(found.params["Depth"], 9.0);
         assert!(!found.factory);
 
         let mut clash = mine.clone();
@@ -301,8 +406,40 @@ mod tests {
     }
 
     #[test]
+    fn favourites_and_the_default_pin_survive_a_restart_for_factory_presets_too() {
+        let dir = scratch("b");
+        let mut library = Library::open(Some(dir.clone()));
+        library.set_favourite("Smooth vocal", true).unwrap();
+        library.set_default("Smooth vocal", true).unwrap();
+        let reopened = Library::open(Some(dir.clone()));
+        assert!(reopened.presets.iter().find(|p| p.name == "Smooth vocal").unwrap().favourite);
+        assert_eq!(reopened.default.as_deref(), Some("Smooth vocal"));
+        let mut library = reopened;
+        library.set_default("Smooth vocal", false).unwrap();
+        assert_eq!(Library::open(Some(dir.clone())).default, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_file_reads_the_reference_shape_and_the_older_values_key() {
+        let text = r#"{"name":"Old","category":"Vocals","author":{"author_name":"me","author_type":3},
+            "values":{"Depth":4.0}}"#;
+        let preset: Preset = serde_json::from_str(text).unwrap();
+        assert_eq!(preset.params["Depth"], 4.0);
+        assert_eq!(preset.preset_revision, 1);
+        assert_eq!(preset.author.author_type, AUTHOR_USER);
+    }
+
+    #[test]
+    fn every_factory_preset_sits_in_a_reference_category() {
+        for preset in factory() {
+            assert!(smooth_ui::presets::CATEGORIES.contains(&preset.category.as_str()), "{}", preset.name);
+        }
+    }
+
+    #[test]
     fn a_name_becomes_a_safe_file_name() {
-        assert_eq!(file_name("Vox / de-ess!"), "Vox---de-ess.json");
+        assert_eq!(file_name("Vox / de-ess!"), "Vox---de-ess.preset");
         assert!(!file_name("../../etc").contains('/'));
     }
 }

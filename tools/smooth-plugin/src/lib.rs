@@ -904,20 +904,21 @@ impl PluginLogic for Smooth {
                                 Ask::Favourite(name, on) => {
                                     let _ = library.set_favourite(&name, on);
                                 }
+                                Ask::Default(name, on) => {
+                                    let _ = library.set_default(&name, on);
+                                }
                                 Ask::Save(name) => {
                                     let category = library
                                         .presets
                                         .iter()
                                         .find(|p| Some(&p.name) == library.current.as_ref())
-                                        .map_or_else(|| "user".to_string(), |p| p.category.clone());
-                                    let preset = presets::Preset {
-                                        name: name.clone(),
-                                        category,
-                                        creator: "you".to_string(),
-                                        favourite: false,
-                                        values: presets::capture(mirror.as_ref()),
-                                        factory: false,
-                                    };
+                                        .map_or_else(|| "Misc".to_string(), |p| p.category.clone());
+                                    let preset = presets::Preset::new(
+                                        &name,
+                                        &category,
+                                        "you",
+                                        presets::capture(mirror.as_ref()),
+                                    );
                                     if library.save(preset).is_ok() {
                                         library.current = Some(name);
                                     }
@@ -955,6 +956,7 @@ impl PluginLogic for Smooth {
                             category: p.category.clone(),
                             favourite: p.favourite,
                             factory: p.factory,
+                            default: library.default.as_ref() == Some(&p.name),
                         })
                         .collect();
                     model.presets.current = library

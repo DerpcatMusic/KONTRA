@@ -11,6 +11,53 @@ use crate::theme;
 use crate::tokens::{icon, metric, radius, space, ty};
 use mui::prelude::*;
 
+/// The reference's fourteen preset categories, in its own order: the menu's
+/// category column lists them and a preset's file names one of them.
+pub const CATEGORIES: [&str; 14] = [
+    "Misc", "Bass", "Cleanup", "Drums", "Guitar", "Imaging", "Keys", "Master bus", "Orchestral",
+    "Vocals", "Mastering", "Mixbus", "Sidechain", "Sound Design",
+];
+
+/// Which presets the list lets through: the reference's filter choices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Filter {
+    #[default]
+    All,
+    Factory,
+    User,
+    Favourite,
+}
+
+impl Filter {
+    /// The next choice, as the filter chip steps through them.
+    pub fn next(self) -> Self {
+        match self {
+            Filter::All => Filter::Factory,
+            Filter::Factory => Filter::User,
+            Filter::User => Filter::Favourite,
+            Filter::Favourite => Filter::All,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Filter::All => "all",
+            Filter::Factory => "factory",
+            Filter::User => "user",
+            Filter::Favourite => "favourite",
+        }
+    }
+
+    fn admits(self, row: &Row) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Factory => row.factory,
+            Filter::User => !row.factory,
+            Filter::Favourite => row.favourite,
+        }
+    }
+}
+
 /// One line of the list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
@@ -19,6 +66,8 @@ pub struct Row {
     pub favourite: bool,
     /// Shipped with the plug-in: it cannot be deleted or saved over.
     pub factory: bool,
+    /// Pinned as the default that new instances open with.
+    pub default: bool,
 }
 
 /// What the menu and the bar above it show.
@@ -33,6 +82,8 @@ pub struct Presets {
     pub name: String,
     /// The first row the list shows.
     pub top: usize,
+    /// Which presets the list lets through.
+    pub filter: Filter,
 }
 
 /// How many rows the list shows at once.
@@ -45,6 +96,8 @@ pub enum Ask {
     Step(i32),
     Load(String),
     Favourite(String, bool),
+    /// Pin or unpin a preset as the default.
+    Default(String, bool),
     Save(String),
     Delete(String),
 }
@@ -60,14 +113,16 @@ impl Presets {
         self.current_row().map_or("init", |r| r.name.as_str())
     }
 
-    /// The rows the search lets through, as indices into `rows`.
+    /// The rows the search and the filter let through, as indices into `rows`.
     pub fn shown(&self) -> Vec<usize> {
         let needle = self.search.trim().to_lowercase();
         (0..self.rows.len())
             .filter(|&i| {
-                needle.is_empty()
-                    || self.rows[i].name.to_lowercase().contains(&needle)
-                    || self.rows[i].category.to_lowercase().contains(&needle)
+                let row = &self.rows[i];
+                self.filter.admits(row)
+                    && (needle.is_empty()
+                        || row.name.to_lowercase().contains(&needle)
+                        || row.category.to_lowercase().contains(&needle))
             })
             .collect()
     }
@@ -111,6 +166,10 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
         p.top = (p.top + 1).min(shown.len().saturating_sub(VISIBLE));
     }
 
+    if ui.get("preset-filter").clicked {
+        p.filter = p.filter.next();
+        p.top = 0;
+    }
     let mut search = p.search.clone();
     let field = text_input(ui, "preset-search", &mut search);
     if field.changed {
@@ -165,6 +224,11 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
     if ui.get("preset-save").clicked && !p.name.trim().is_empty() {
         asks.push(Ask::Save(p.name.trim().to_string()));
     }
+    if ui.get("preset-default").clicked
+        && let Some(row) = p.current_row()
+    {
+        asks.push(Ask::Default(row.name.clone(), !row.default));
+    }
     if ui.get("preset-delete").clicked
         && can_delete
         && let Some(row) = p.current_row()
@@ -175,6 +239,7 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
     let el = col![
         row![
             search_el.grow(1.0),
+            text_button(p.filter.name()).tipped("preset-filter"),
             glyph(Icon::Down, icon::BASE, c(t.ink)).id("preset-down"),
             glyph(Icon::Left, icon::BASE, c(t.ink))
                 .rotation(std::f64::consts::FRAC_PI_2)
@@ -186,6 +251,7 @@ pub fn menu(ui: &mut Ui, p: &mut Presets) -> (El, Vec<Ask>) {
         row![
             name_field.el.fill(c(t.ink)).radius(radius::FIELD).grow(1.0),
             action_pill("save").tipped("preset-save"),
+            action_pill("default").tipped("preset-default"),
             if can_delete {
                 action_pill("delete").tipped("preset-delete")
             } else {

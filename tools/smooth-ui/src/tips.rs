@@ -51,6 +51,8 @@ pub fn of(id: &str) -> Option<&'static str> {
         "preset-prev" => "Load the previous preset.",
         "preset-next" => "Load the next preset.",
         "preset-heart" => "Mark or unmark this preset as a Favorite.",
+        "preset-default" => "Set this preset as the default for new SMOOTH instances.",
+        "preset-filter" => "Filter the preset list: all, factory, user, or favourite presets.",
         "preset-save" => "Save current parameters as a new preset.",
         "preset-delete" => "Delete the current preset. This cannot be undone.",
         "preset-search" => "Search for presets. The search terms are matched against names and categories.",
