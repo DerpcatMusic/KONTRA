@@ -1,5 +1,6 @@
 //! Prepared voice-local processing. No vendor objects or mutable shared filter state.
 use crate::{Envelope, EnvelopeState, Error, Frame, Prepared, Voice};
+use biquad::{Coefficients, Shape};
 use sampler_pool::Slab;
 
 /// Native RBJ biquad responses. Band-pass has unity peak gain.
@@ -63,91 +64,43 @@ impl Biquad {
         let omega = std::f64::consts::TAU * (frequency_hz / f64::from(rate));
         let (sin, cos) = omega.sin_cos();
         let alpha = sin / (2. * q);
-        let mut denominator = [1. + alpha, -2. * cos, 1. - alpha];
-        let numerator = match kind {
-            FilterKind::LowPass => {
+        let amplitude = |gain_db: f64| {
+            if gain_db.is_finite() { Ok(10_f64.powf(gain_db / 40.)) } else { Err(Error::InvalidInput) }
+        };
+        let (numerator, denominator) = match kind {
+            FilterKind::LowPass | FilterKind::HighPass => {
                 // Half-angle form avoids subtractive cancellation near DC.
-                let half = (omega * 0.5).sin().powi(2);
-                [half, 2. * half, half]
-            }
-            FilterKind::HighPass => {
-                let half = (omega * 0.5).cos().powi(2);
-                [half, -2. * half, half]
-            }
-            FilterKind::BandPass => [alpha, 0., -alpha],
-            FilterKind::Notch => [1., -2. * cos, 1.],
-            FilterKind::AllPass => [1. - alpha, -2. * cos, 1. + alpha],
-            FilterKind::LowShelf { gain_db } | FilterKind::HighShelf { gain_db } => {
-                if !gain_db.is_finite() {
-                    return Err(Error::InvalidInput);
-                }
-                let amplitude = 10_f64.powf(gain_db / 40.);
-                let beta = 2. * amplitude.sqrt() * alpha;
-                let plus = amplitude + 1.;
-                let minus = amplitude - 1.;
-                if matches!(kind, FilterKind::LowShelf { .. }) {
-                    denominator = [
-                        plus + minus * cos + beta,
-                        -2. * (minus + plus * cos),
-                        plus + minus * cos - beta,
-                    ];
-                    [
-                        amplitude * (plus - minus * cos + beta),
-                        2. * amplitude * (minus - plus * cos),
-                        amplitude * (plus - minus * cos - beta),
-                    ]
+                let half = if matches!(kind, FilterKind::LowPass) {
+                    (omega * 0.5).sin().powi(2)
                 } else {
-                    denominator = [
-                        plus - minus * cos + beta,
-                        2. * (minus - plus * cos),
-                        plus - minus * cos - beta,
-                    ];
-                    [
-                        amplitude * (plus + minus * cos + beta),
-                        -2. * amplitude * (minus + plus * cos),
-                        amplitude * (plus + minus * cos - beta),
-                    ]
-                }
+                    (omega * 0.5).cos().powi(2)
+                };
+                let sign = if matches!(kind, FilterKind::LowPass) { 2. } else { -2. };
+                ([half, sign * half, half], [1. + alpha, -2. * cos, 1. - alpha])
             }
+            FilterKind::BandPass => biquad::rbj(Shape::BandPass, cos, alpha, 1.),
+            FilterKind::Notch => biquad::rbj(Shape::Notch, cos, alpha, 1.),
+            FilterKind::AllPass => biquad::rbj(Shape::AllPass, cos, alpha, 1.),
+            FilterKind::Peak { gain_db } => biquad::rbj(Shape::Peak, cos, alpha, amplitude(gain_db)?),
+            FilterKind::LowShelf { gain_db } => biquad::rbj(Shape::LowShelf, cos, alpha, amplitude(gain_db)?),
+            FilterKind::HighShelf { gain_db } => biquad::rbj(Shape::HighShelf, cos, alpha, amplitude(gain_db)?),
+            // First-order bilinear shelves (tan prewarp), unique to the sampler's filters.
             FilterKind::FirstOrderLowShelf { gain_db } | FilterKind::FirstOrderHighShelf { gain_db } => {
-                if !gain_db.is_finite() {
-                    return Err(Error::InvalidInput);
-                }
-                let amplitude = 10_f64.powf(gain_db / 40.);
+                let amplitude = amplitude(gain_db)?;
                 let g = (omega * 0.5).tan();
                 if matches!(kind, FilterKind::FirstOrderLowShelf { .. }) {
-                    denominator = [1. + g / amplitude, g / amplitude - 1., 0.];
-                    [1. + amplitude * g, amplitude * g - 1., 0.]
+                    ([1. + amplitude * g, amplitude * g - 1., 0.], [1. + g / amplitude, g / amplitude - 1., 0.])
                 } else {
-                    denominator = [1. + amplitude * g, amplitude * g - 1., 0.];
-                    [
-                        amplitude * (amplitude + g),
-                        amplitude * (g - amplitude),
-                        0.,
-                    ]
+                    (
+                        [amplitude * (amplitude + g), amplitude * (g - amplitude), 0.],
+                        [1. + amplitude * g, amplitude * g - 1., 0.],
+                    )
                 }
-            }
-            FilterKind::Peak { gain_db } => {
-                if !gain_db.is_finite() {
-                    return Err(Error::InvalidInput);
-                }
-                let amplitude = 10_f64.powf(gain_db / 40.);
-                denominator = [1. + alpha / amplitude, -2. * cos, 1. - alpha / amplitude];
-                [1. + alpha * amplitude, -2. * cos, 1. - alpha * amplitude]
             }
         };
-        let b = numerator.map(|value| value / denominator[0]);
-        let a = [
-            denominator[1] / denominator[0],
-            denominator[2] / denominator[0],
-        ];
-        if !b.iter().chain(&a).all(|v| v.is_finite())
-            || a[1].abs() >= 1.
-            || 1. + a[0] + a[1] <= 0.
-            || 1. - a[0] + a[1] <= 0.
-        {
-            return Err(Error::InvalidInput);
-        }
+        let Coefficients { b, a } = Some(Coefficients::normalised(numerator, denominator))
+            .filter(Coefficients::is_stable)
+            .ok_or(Error::InvalidInput)?;
         Ok(Self { rate, b, a })
     }
 }
