@@ -719,6 +719,27 @@ fn saved_values(state: &[(String, ir::Saved)]) -> sampler_ksp::SavedValues {
     (scalars, arrays)
 }
 
+/// The data-folder `.nka` files a script loads with a literal
+/// `load_array(<array>, 2)`, by lowercase array name without its sigil.
+fn data_arrays(
+    source: &str,
+    resources: &mut Resources,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    source
+        .split("load_array(")
+        .skip(1)
+        .filter_map(|call| {
+            let (array, mode) = call.split_once(')')?.0.split_once(',')?;
+            let stem = array.trim().get(1..)?.to_lowercase();
+            (mode.trim() == "2" && !stem.is_empty()).then_some(stem)
+        })
+        .filter_map(|stem| {
+            let bytes = resources.read(&format!("Resources/data/{stem}.nka"))?;
+            Some((stem, bytes))
+        })
+        .collect()
+}
+
 /// What a script may query while its `on init` runs.
 pub(crate) fn script_environment(
     behavior: &ir::Behavior,
@@ -773,6 +794,7 @@ fn script_environment_with_zones(
         persisted_arrays,
         instrument_persisted: None,
         performance_view,
+        data_arrays: Default::default(),
         midi_object: Default::default(),
         folders: Default::default(),
     }
@@ -905,6 +927,10 @@ pub(crate) fn initialize_scripts_with_zones(
                 performance_view,
                 Some(&zone_parameters),
             );
+            if let Some(resources) = resources.as_ref() {
+                environment.data_arrays =
+                    data_arrays(&behavior.source, &mut resources.borrow_mut());
+            }
             environment.snapshot_mode = snapshot_mode;
             environment.midi_object = midi_object.clone();
             environment.instrument_persisted =
