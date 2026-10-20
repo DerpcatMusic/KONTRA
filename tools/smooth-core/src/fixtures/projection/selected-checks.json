@@ -1,0 +1,57 @@
+{
+  "scope": "Only audited pure mathematical/matrix/parameter bodies; one fully qualified exact test per cargo invocation. No audio/input-output engine processing, hosts, emulation, listening, rendering or UI execution.",
+  "body_audit": "New tests read in authored patch; original projection tests read src/projection.rs prior spans219-289; reduction152-179; parameter test596-666 supplied by Graft.",
+  "debug": [
+    "projection_math::tests::packed_normal_pairs_match_independent_staged_fixtures",
+    "projection_math::tests::packed_pair_and_row_coefficient_domains_reject_invalid_values",
+    "projection_math::tests::forced_rounding_grid_and_upper_half_ties_cover_all_table_indices",
+    "projection_math::tests::packed_widths_and_double_coefficients_match_explicit_mapping_fixtures",
+    "projection_math::tests::opaque_seed_and_scalar_library_mappings_have_checked_admission",
+    "projection_math::tests::geometry_conversion_padding_and_size_bounds_need_no_large_allocation",
+    "projection_math::tests::coordinate_integer_rounding_and_separate_narrowing_match_math_fixtures",
+    "projection_math::tests::scalar_alternative_remains_a_distinct_conditional_program",
+    "projection_math::tests::current_cpu_mapping_is_bounded_and_preserves_fp_control",
+    "projection::tests::owned_bank_alignment_padding_and_independent_scratch_phases",
+    "projection::tests::matrix_dot_operand_padding_and_logical_reconstruction_contracts",
+    "projection::tests::declared_geometry_frontend_and_original_adapter_keep_allocation_bounds",
+    "projection::tests::stored_anchors_and_first_contiguous_support_contract",
+    "projection::tests::endpoint_tails_and_full_row_denominator_preserve_trimmed_mass_loss",
+    "projection::tests::supported_reconstruction_is_finite_without_forcing_analysis_unity",
+    "reduction::tests::clean_reduction_cancellation_phase_tail_and_chunk_fixtures",
+    "plugin::tests::normalized_eight_record_parameter_identity_and_conversion"
+  ],
+  "release": [
+    "projection_math::tests::packed_normal_pairs_match_independent_staged_fixtures",
+    "projection_math::tests::packed_pair_and_row_coefficient_domains_reject_invalid_values",
+    "projection_math::tests::forced_rounding_grid_and_upper_half_ties_cover_all_table_indices",
+    "projection_math::tests::packed_widths_and_double_coefficients_match_explicit_mapping_fixtures",
+    "projection_math::tests::opaque_seed_and_scalar_library_mappings_have_checked_admission",
+    "projection_math::tests::geometry_conversion_padding_and_size_bounds_need_no_large_allocation",
+    "projection_math::tests::coordinate_integer_rounding_and_separate_narrowing_match_math_fixtures",
+    "projection_math::tests::scalar_alternative_remains_a_distinct_conditional_program",
+    "projection_math::tests::current_cpu_mapping_is_bounded_and_preserves_fp_control",
+    "projection::tests::owned_bank_alignment_padding_and_independent_scratch_phases",
+    "projection::tests::matrix_dot_operand_padding_and_logical_reconstruction_contracts",
+    "projection::tests::declared_geometry_frontend_and_original_adapter_keep_allocation_bounds",
+    "projection::tests::supported_reconstruction_is_finite_without_forcing_analysis_unity",
+    "reduction::tests::clean_reduction_cancellation_phase_tail_and_chunk_fixtures"
+  ],
+  "initial_probe": "An additional exact packed_normal_pairs_match_independent_staged_fixtures debug invocation passed before the finalized selected run. Terminal completion output retained as initial-probe-completion.log; no broad filter.",
+  "window_debug": [
+    "window_frontend::tests::one_channel_periodic_coefficients_and_phase_zero_normalization",
+    "window_frontend::tests::reciprocal_mean_divisions_preserve_nonreassociation_witness",
+    "window_frontend::tests::cosine_mapping_raw_clamp_and_large_index_rounding_are_explicit",
+    "window_frontend::tests::constructor_lengths_and_processing_selection_are_distinct_and_bounded",
+    "window_frontend::tests::segmented_descriptor_chronology_one_channel_broadcast_and_equal_channels",
+    "window_frontend::tests::segmented_capacities_and_finite_admission_reject_before_mutation"
+  ],
+  "window_release": [
+    "window_frontend::tests::one_channel_periodic_coefficients_and_phase_zero_normalization",
+    "window_frontend::tests::reciprocal_mean_divisions_preserve_nonreassociation_witness",
+    "window_frontend::tests::cosine_mapping_raw_clamp_and_large_index_rounding_are_explicit",
+    "window_frontend::tests::constructor_lengths_and_processing_selection_are_distinct_and_bounded",
+    "window_frontend::tests::segmented_descriptor_chronology_one_channel_broadcast_and_equal_channels",
+    "window_frontend::tests::segmented_capacities_and_finite_admission_reject_before_mutation"
+  ],
+  "window_body_audit": "All6new pure coefficient/scalar/descriptor math bodies read during authoring; no stream/transform/audio/host/UI path"
+}
