@@ -318,6 +318,8 @@ const MAX_TEXT_LINES: i32 = 1 << 16;
 
 struct Eval<'h, const TRACK: bool> {
     hir: &'h Hir,
+    /// Kontakt's `while` count: shared by the loops of a pass, reset when one exits.
+    loop_iterations: u32,
     env: &'h Environment,
     st: Initial,
     fuel: u64,
@@ -369,6 +371,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
     });
     let mut e = Eval::<TRACK> {
         hir,
+        loop_iterations: 0,
         env: instrument.as_ref().unwrap_or(env),
         st: Initial {
             midi_object: env.midi_object.clone(),
@@ -624,6 +627,12 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
+                    // As in the VM: after the limit Kontakt warns and runs the next statement.
+                    if self.loop_iterations >= sampler_core::LOOP_LIMIT {
+                        self.warn(s.span, "while loop was terminated after 10 million iterations");
+                        break;
+                    }
+                    self.loop_iterations += 1;
                     if self.fuel == 0 {
                         #[cfg(feature = "scan")]
                         crate::scan::category("fuel-budget");
@@ -635,6 +644,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         Flow::Next | Flow::Continue => {}
                     }
                 }
+                self.loop_iterations = 0;
             }
             StmtKind::Select(value, cases) => {
                 let v = self.expr(value)?.int();

@@ -1155,6 +1155,24 @@ pub(super) struct Continuation {
     pub loop_hash: u64,
 }
 
+impl Continuation {
+    /// Every suspension: it ends a burst of continuous preemption, and
+    /// Kontakt's loop limit counts iterations without a wait.
+    pub(super) fn suspend(&mut self) {
+        self.waiting = true;
+        self.yielded_at = None;
+        (self.loop_iterations, self.loop_check) = (0, LOOP_FIRST_CHECK);
+    }
+}
+
+/// Hash of a callback's locals and a loop's watched cells, for `LoopGuard`.
+// ponytail: a 64-bit hash, not a copy; an equal hash of different states
+// would end the loop early. Copy the values if that is ever a concern.
+fn loop_hash(locals: &[i64], watched: &[i64]) -> u64 {
+    let mix = |hash: u64, value: i64| (hash ^ value as u64).wrapping_mul(0x100_0000_01b3).rotate_left(29);
+    locals.iter().chain(watched).fold(0xcbf2_9ce4_8422_2325, |hash, &value| mix(hash, value))
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Ready {
     Resume { id: BehaviorId, fuel: usize },
@@ -1881,6 +1899,45 @@ impl Runtime {
                         at as usize,
                         changed,
                     );
+                }
+                Instruction::LoopReset => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    (c.loop_iterations, c.loop_check) = (0, LOOP_FIRST_CHECK);
+                }
+                Instruction::LoopGuard { exit, watch } => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    if c.loop_iterations >= LOOP_LIMIT {
+                        (c.loop_iterations, c.loop_check) = (0, LOOP_FIRST_CHECK);
+                        next = exit as usize;
+                        self.loop_limits += 1;
+                    } else {
+                        c.loop_iterations += 1;
+                        let (count, check) = (c.loop_iterations, c.loop_check);
+                        if let Some(watch) = watch
+                            && (count == check || count == check + 1)
+                        {
+                            let mut watched = [0; 3];
+                            let mut found = true;
+                            for (value, &at) in watched.iter_mut().zip(&watch.cells[..usize::from(watch.len)]) {
+                                match cells.as_deref().and_then(|cells| cells.get(at as usize)) {
+                                    Some(&cell) => *value = cell,
+                                    None => found = false,
+                                }
+                            }
+                            if !found {
+                                break;
+                            }
+                            let hash = loop_hash(locals, &watched[..usize::from(watch.len)]);
+                            let c = self.behaviors.get_mut(id.0).unwrap();
+                            if count == check {
+                                c.loop_hash = hash;
+                            } else if hash == c.loop_hash {
+                                c.loop_iterations = LOOP_LIMIT;
+                            } else {
+                                c.loop_check = check.saturating_mul(2);
+                            }
+                        }
+                    }
                 }
                 _ => break,
             }
@@ -3120,12 +3177,7 @@ outcome.is_none()
         if self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        let c = self.behaviors.get_mut(id.0).unwrap();
-        c.waiting = true;
-        // A scheduled wait ends the current burst of continuous preemption,
-        // and Kontakt's loop limit counts iterations without a wait.
-        c.yielded_at = None;
-        (c.loop_iterations, c.loop_check) = (0, LOOP_FIRST_CHECK);
+        self.behaviors.get_mut(id.0).unwrap().suspend();
         self.queue(at, Action::Resume(id));
         Ok(true)
     }
@@ -3261,22 +3313,18 @@ outcome.is_none()
         Ok(note.0.index * self.note_stride + cell)
     }
 
-    /// Hash of a callback's locals and a loop's watched cells, for `LoopGuard`.
-    // ponytail: a 64-bit hash, not a copy; an equal hash of different states
-    // would end the loop early. Copy the values if that is ever a concern.
+    /// [`loop_hash`] of a callback's locals and a loop's watched cells.
     fn loop_state_hash(&mut self, id: BehaviorId, watch: LoopWatch) -> Result<u64, Error> {
-        let mix = |hash: u64, value: i64| (hash ^ value as u64).wrapping_mul(0x100_0000_01b3).rotate_left(29);
+        let mut watched = [0; 3];
+        for (value, &cell) in watched.iter_mut().zip(&watch.cells[..usize::from(watch.len)]) {
+            *value = *self.behavior_script_cell(id, cell)?;
+        }
         let base = id.0.index * self.behavior_stride;
-        let mut hash = self
+        let locals = self
             .behavior_locals
             .get(base..base + self.behavior_stride)
-            .ok_or(Error::InvalidInput)?
-            .iter()
-            .fold(0xcbf2_9ce4_8422_2325, |hash, &value| mix(hash, value));
-        for &cell in &watch.cells[..usize::from(watch.len)] {
-            hash = mix(hash, *self.behavior_script_cell(id, cell)?);
-        }
-        Ok(hash)
+            .ok_or(Error::InvalidInput)?;
+        Ok(loop_hash(locals, &watched[..usize::from(watch.len)]))
     }
 
     fn local_cell_mut(&mut self, id: BehaviorId, local: u16) -> Result<&mut i64, Error> {

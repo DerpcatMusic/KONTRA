@@ -236,3 +236,24 @@ fn a_while_loop_that_cannot_progress_ends_at_kontakts_limit_and_the_callback_con
     assert_eq!(rt.stats().loop_limits, 1);
     assert_eq!(rt.preemptions(), 0);
 }
+
+#[test]
+fn a_while_loop_in_on_init_ends_at_kontakts_limit_and_init_continues() {
+    let script = sampler_ksp::compile(
+        "on init
+            declare $x
+            declare ui_value_edit $after (0, 10, 1)
+            while (1 = 1)
+                $x := 0
+            end while
+            $after := 7
+        end on",
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+    )
+    .expect("Kontakt leaves the loop and finishes init");
+    let view = script.view();
+    let after = view.model().interface.widgets.iter().find(|w| w.name == "$after").unwrap();
+    assert_eq!(after.value, sampler_ksp::model::WidgetValue::Int(7));
+}

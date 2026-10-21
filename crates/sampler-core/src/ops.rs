@@ -1150,10 +1150,8 @@ impl Runtime {
                 {
                     let c = self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?;
                     if !c.disable_wait {
-                        c.waiting = true;
+                        c.suspend();
                         c.async_wait = Some(job);
-                        // An admitted async wait also ends continuous preemption.
-                        c.yielded_at = None;
                         return Ok(true);
                     }
                 }
