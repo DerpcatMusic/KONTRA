@@ -560,6 +560,7 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
         Slot::Attack => (P::Attack, one),
         Slot::Release => (P::Release, one),
         Slot::Mix => (P::Mix, |v| format!("{v:.0} %")),
+        Slot::WetTrim => (P::WetTrim, |v| format!("{v:.1} dB")),
         Slot::Out => (P::Output, |v| format!("{v:.1} dB")),
         Slot::MaxCut => (P::MaxCut, |v| format!("{v:.0} dB")),
         Slot::Link => (P::Link, |v| format!("{v:.0} %")),

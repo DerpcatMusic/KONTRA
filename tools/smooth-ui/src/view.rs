@@ -329,7 +329,7 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
             Slot::ReleaseLow,
             Slot::ReleaseHigh,
         ]),
-        differs(&[Slot::MaxCut]),
+        differs(&[Slot::MaxCut, Slot::WetTrim]),
     ];
     let group = |id: &str, s: &str, changed: bool| {
         col![
@@ -565,6 +565,7 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         row_of(ui, m, Slot::ReleaseLow, "release low"),
         row_of(ui, m, Slot::ReleaseHigh, "release high"),
         title("scale"),
+        row_of(ui, m, Slot::WetTrim, "wet trim"),
         row_of(ui, m, Slot::MaxCut, "max cut"),
     ]
     .gap(space::S)

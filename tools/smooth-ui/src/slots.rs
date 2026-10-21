@@ -44,10 +44,11 @@ pub enum Slot {
     Bypass,
     Delta,
     BandBypass,
+    WetTrim,
 }
 
 impl Slot {
-    pub const COUNT: usize = 28;
+    pub const COUNT: usize = 29;
     pub const ALL: [Slot; Slot::COUNT] = [
         Slot::Depth,
         Slot::Detail,
@@ -77,6 +78,7 @@ impl Slot {
         Slot::Bypass,
         Slot::Delta,
         Slot::BandBypass,
+        Slot::WetTrim,
     ];
 
     pub fn index(self) -> usize {
@@ -114,6 +116,7 @@ impl Slot {
             Slot::Bypass => "bypass",
             Slot::Delta => "delta",
             Slot::BandBypass => "band-bypass",
+            Slot::WetTrim => "wet-trim",
         }
     }
 
@@ -135,6 +138,7 @@ impl Slot {
             Slot::BandSlope => (0.0, "6 dB/oct"),
             Slot::BandBalance => (0.5, "linked"),
             Slot::BandShape => (2.0 / 7.0, "bell"),
+            Slot::WetTrim => (0.5, "0.0 dB"),
             Slot::Mode => (0.0, "soft"),
             Slot::StereoMode => (0.0, "l/r"),
             Slot::Quality => (0.0, "normal"),

@@ -1,7 +1,8 @@
 //! How a control answers the wheel, the reset gesture and the keyboard.
 //!
-//! Every continuous control reads the same gestures through [`nudge`]; every
-//! discrete one through [`step_choice`]. The value is always the control's own
+//! Every continuous control reads the same gestures through [`nudge`]; a switch
+//! with several choices through [`step_choice`]; a toggle only flips on a
+//! click or Enter, as it always did. The value is always the control's own
 //! normalised value, so a step follows the parameter's law (log, pivoted,
 //! skewed) without the control knowing which one it is. A change lands in the
 //! caller's `value`, and the bind turns it into a host gesture.
@@ -19,6 +20,9 @@ pub const STEP: f64 = 0.01;
 
 /// Of a step, under Shift or Ctrl: the fine adjustment.
 pub const FINE: f64 = 0.1;
+
+/// Of the range, per Page Up or Page Down.
+const PAGE: f64 = 0.1;
 
 /// How long a roll of the wheel stays one edit: see [`WHEEL_ROLL`].
 fn roll() -> Duration {
@@ -51,9 +55,6 @@ pub fn wheel_rolling() -> bool {
         .and_then(|at| *at)
         .is_some_and(|at| at.elapsed() < roll())
 }
-
-/// Of the range, per Page Up or Page Down.
-const PAGE: f64 = 0.1;
 
 thread_local! {
     /// When each control's wheel last turned it: a roll is one edit per control.

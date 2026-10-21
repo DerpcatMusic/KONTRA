@@ -39,6 +39,7 @@ pub fn of(id: &str) -> Option<&'static str> {
         "mix" => "Adjust the dry/wet mix of the output signal.\n0% for fully dry signal, 100% for fully processed signal.",
         "out" => "Adjust the output gain level.",
         "max-cut" => "Set the maximum reduction SMOOTH is allowed to make in dB.",
+        "wet-trim" => "Adjust the level of the processed signal before the mix. The output gain comes after it.",
         "bypass" => "Bypass the processing.",
         "delta" => "Monitor the difference between wet and dry signals.",
         "quality" => "Set the quality of processing and choose between minimum phase (default) and linear phase processing. Higher quality settings increase CPU load while linear phase processing increases latency.",
