@@ -101,7 +101,6 @@ impl AdaptiveFollower {
     }
 
     /// Process one call; at most [`Self::FRAME`] samples (more is unproved and ignored).
-    #[allow(clippy::manual_clamp)]
     pub fn process(&mut self, input: &[f32]) {
         let n = input.len();
         if n > Self::FRAME {
@@ -112,7 +111,15 @@ impl AdaptiveFollower {
             self.ring.copy_within(shift.., 0);
         }
         for (i, &x) in input.iter().enumerate() {
-            let target = (self.gain * x).max(0.0).min(1.0).abs();
+            // Native compares: a NaN target fails both bounds and passes through.
+            let mut target = self.gain * x;
+            if target <= 0.0 {
+                target = 0.0;
+            }
+            if 1.0 <= target {
+                target = 1.0;
+            }
+            let target = target.abs();
             let rise = if target - self.a < 0.0 { 0.0 } else { 1.0 };
             let a1 = self.a * self.first * (1.0 - rise) + target * rise;
             let k = if target - a1 < 0.0 { 0.0 } else { 1.0 };
@@ -169,6 +176,15 @@ mod tests {
         // A zero second coefficient makes r snap onto a.
         assert_eq!(f.r, 1.0);
         assert!(f.flag);
+    }
+
+    #[test]
+    fn adaptive_follower_passes_nan_through_like_the_native_compares() {
+        let mut f = AdaptiveFollower::new(1.0, 0.5, 0.5);
+        f.process(&[f32::NAN]);
+        assert!(f.a.is_nan() && f.r.is_nan());
+        f.process(&[0.0; 4]);
+        assert!(f.r.is_nan(), "a NaN state stays NaN");
     }
 
     #[test]
