@@ -77,3 +77,29 @@ test signal of `filter-responses` are reproduced (G4).
    addresses in the `cascade.rs` comments).
 2. Settle G2 with a low-frequency sweep on Kontakt (not a new decompile).
 3. Settle G4 with a level-matched res .9 measurement.
+
+## Universal filter design (shared linear core API)
+
+The filter family is one linear core plus separate transfer-function stages. Every filter lane
+(`filt-*`) plugs into these; a product module is a configuration of them, never a copy.
+
+- **Linear core, zero-delay state variable** (`dsp/filter/linear.rs`, `Zdf`): `new(g, k)` derives
+  the `k`-dependent part; `tick` / `tick_divided` run one sample on `[h, b, l]` with the live `g`.
+  The two methods are the two native dialects of the same recurrence: SV4 and SV6 multiply by the
+  reciprocal `1 / (gk + 1)`, SV2 and SV Multi divide. A core keeps the dialect its native loop uses,
+  so the vectors stay exact to the native rounding (a single dialect moved SV2 by 2e-6 and broke the
+  1e-6 vector gate).
+- **Transfer-function stages** (`dsp/filter/shaper.rs`): `Knee` (clamp then `(1 - w|c|) c`, with the
+  `Fused` or `Split` slope the family uses) and `pade` (`v(v²+27)/(9v²+27)`). A core places a shaper
+  on a state, a feedback path or an input; the shaper owns no state.
+- **Plug-in points for the other lanes**: a new SVF-type or cascaded section calls `Zdf`/`Knee`;
+  a biquad or SOS section stays in `biquad.rs`; a nonlinear feedback loop (ladder, AR, Daft) keeps its
+  own recurrence and only reuses `pade`/`Knee` where the native loop has the same curve.
+
+Duplicates removed in this unit: `sv_sat`/`sv_stage` and the inline SV4/SV6 loop (now `Zdf` + `Knee`),
+`kontaktfx::sat3` and `cascade::xp_sat::<0>` (now `shaper::pade`; the same operation order, so
+bit-identical). Not yet migrated (other lanes): `svf.rs` generic TPT recurrence, `cascade::soft`
+(Pro-53 / Versatile `(a - c|s|)s`), `ar_kernel::saturate`, `daft::soft` (f64, clamped at 3), and the
+ladder's inline Padé forms. Each differs in precision or clamp, so each needs its own vector check.
+
+Test added: `sv_classes_stay_bounded_at_full_resonance`. Existing vector tests unchanged and passing.
