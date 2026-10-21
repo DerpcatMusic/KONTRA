@@ -2,6 +2,8 @@
 
 **One free, open-source sampler for the libraries you paid for.**
 
+Under the hood it is **one engine**: a single universal set of sampler, synthesis and effect processing that is configured to match each emulated product exactly. Kontakt and UVI/Falcon support are extensions that map their formats onto it. See [docs/ENGINE.md](docs/ENGINE.md).
+
 <!-- derpcat-support -->
 <p align="center">
   <a href="https://www.patreon.com/derpcatmusic">

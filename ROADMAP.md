@@ -1,5 +1,9 @@
 # KONTRA roadmap
 
+## Architecture
+
+One engine with a universal, configurable set of sampler, synthesis, modulation and effect processing; each sampler is an extension that reads its formats and maps laws and controls onto it. See [docs/ENGINE.md](docs/ENGINE.md).
+
 ## Current work — in parallel
 
 | Sampler | Stage | Implementation |
