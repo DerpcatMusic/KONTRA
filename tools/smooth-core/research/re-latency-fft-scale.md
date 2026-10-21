@@ -830,3 +830,55 @@ The block completes for 26 blocks at all four rates in both modes. Iteration cap
   `IdentityDelay` is a stand-in for that output path, not a translation of it: its ring read rule
   (`start - latency`) is inferred from the delay, not from the code.
 - Ring length `groups << 12` is from section 17.1 (read), not re-checked here.
+
+## 20. Normal path call tree (translate-analysis pass 2, Unicorn trace, 2026-10-21)
+
+Tool: `re-tools/emulate/call_trace.py` (commit 57e4d2a59). It hooks every `call` site of the text range
+(decoded per corpus row: a linear sweep stops at the first data island) and logs callee, the four Win64
+register arguments, the two stack arguments and, with `--peek N`, the first N floats behind each pointer
+argument before and after the call. Run: `python -I call_trace.py --rate 48000 --block 2 [--peek 4]`.
+Evidence scope: identity band state, mode 0 (default stand-in), synthetic host, seeded noise input.
+
+### 20.1 Shape of one 512-sample block (48 kHz, mode 0), verified by the trace
+
+- Entry 0x890a00 -> 0x893de0 (mode gate) -> 0x8a3a90 -> 0x894d20 (latency term, 2304) -> **0x8ad640**.
+- 0x8ad640 does the workspace bump (align16, verified arithmetic), then calls exactly two workers:
+  **0x8b61a0** (analysis side, arg `obj+0x2c50`) and **0x8b7410** (synthesis side, arg `obj+8`).
+- 0x8b61a0 has one direct child that matters, **0x8c5f30** (the hop loop). 0x8b7410 has **0x8c68a0**
+  (its hop loop) plus the ring work at 0x899ab0 / 0x899cd0 (three and one calls per block).
+- **Hop size 128** (`r8 = 0x80` into 0x89b760 and every 0x10a0 copy), **FFT length 256** (`0x1cfd8f0` with
+  `r8 = 0x100`; per-hop frame 0x100 floats). The hop loop runs **4 times per 512-sample block**
+  (each of 0x8d9230 / 0x8dad80 appears once per hop). **verified (call counts and arguments).**
+- Per block, call counts: `0x1010` (real forward, 24 calls), `0x1280` (real inverse, 24), `0x1190`
+  (elementwise multiply, 16, each reaching `0x278c0`), `0x6181b0` (|Y|, 8, from `0x8e13a3`), `0x10a0`
+  copy (52), `0x10d0` zero fill (58 across the block). **verified.**
+- Call sites inside the hop loop of 0x8c5f30 (one hop, both channels):
+  memcpy of 16 bytes from a double parameter block (`0x17bb8d6` = IAT memcpy), `0x8e0390` x2 (input
+  staging per channel: `0x89b760` then copy `0x10a0` of 128 floats), `0x8d9230` (window/fold stage: calls
+  `0x8d98a0`, which reaches `0x8e04c0` = gain helper, and `0x8e7000`, `0x8e7150`), `0x8dad80` (copy of 128
+  floats into the output side, through `0x89b760` and `0x10a0`).
+- Forward/inverse in the analysis worker: `0x8e11bf` calls `0x1010` (r8 = spec `0x40339f00`, r9 = work);
+  `0x8e675d` calls `0x1010` and `0x8e6f05` calls `0x1280`. `0x8e6a23` calls `0x1190` (multiply, dst rcx,
+  a = rdx = window-like table `0x404c1c80`, b = r8 = frame, n = 0x100). **verified (argument pattern);
+  roles inferred from order.**
+- The thunks `0x1010`, `0x1280`, `0x10a0`, `0x1190`, `0x10d0`, `0x1220`, `0x1100`, `0x1340`, `0x1400`,
+  `0x1580`, `0x11f0` are all jump-table dispatchers (`movsxd` of a runtime selector, `jmp [table+sel*8]`).
+  **verified (disassembly).**
+
+### 20.2 Values seen at the first hop (block 2, peek 4)
+
+- `0x8c5f30` reads double-precision parameters from `rcx`/`rdx` (pairs `[x, 0]` are doubles, not floats).
+  These are not audio; the parameter-block role is open.
+- The audio staged for the first hop starts `[-0.2716, 0.2371, -0.1762, -0.1141]` (channel 0), matching the
+  seeded noise, so the 128-sample copy in `0x8e03fa` is the input hop. **verified (values).**
+
+### 20.3 Not done (what remains for the normal path)
+
+- No Rust translation of the hop math in this pass. The stages above are mapped, not decoded.
+- Still to decode, each as its own function with a fixture: `0x8c5f30` (hop loop body, parameters),
+  `0x8e0390` / `0x89b760` / `0x89b930` (staging and copy), `0x8d9230` / `0x8d98a0` / `0x8e7000` / `0x8e7150`
+  (window and fold), `0x8dad80` / `0x8c68a0` / `0x8db030` (overlap-add and output side), `0x8e67a0` and
+  `0x8e53c0` (ring split and output read), `0x899ab0` / `0x899cd0` (ring read), the window table at
+  `0x404c1c80` (its constructor formula is not yet read), and the FFT scale (1/N, software).
+- Zero-latency path (0x8acc30, 0x8b1630, 0x8dec70): not traced in this pass.
+- The yield of the 2304-sample delay per stage is not yet attributed to a read offset in the ring.
