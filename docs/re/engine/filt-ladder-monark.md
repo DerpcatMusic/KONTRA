@@ -91,5 +91,5 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   `shaper::soft`; same arithmetic, existing vectors unchanged.
 - Monark keeps its own input-side loop (`pade(clamp4(..))` per stage, `TINY` denormal offsets).
   Its stage is not `Tpt1`; expressing it needs a cell with a state-side shaper. Left as is.
-- Removed: the unused `Ladder::clear`.
+- `Ladder::clear` is test-only now (the audio path never calls it).
 
