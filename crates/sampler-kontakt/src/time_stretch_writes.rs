@@ -12,6 +12,8 @@
 //! - `GRAIN_LENGTH` -> `machine_float_2` (ms), TM1 only.
 //! - `FORMANT_SHIFT` -> `pro_float_1`, Pro only.
 //! - `TMPRO_KEEP_FORMANTS` -> `pro_flag_2`, Pro only.
+//! - `TRANSIENT_SIZE` -> `dfd_integer_1` (source positions), TM2 only.
+//! - `TM_LEGATO` -> `common_flag_11`, stored by all three kinds; no IR field consumes it yet.
 //!
 //! TM2 `SMOOTH` / `GRAIN_LENGTH` and Pro `SMOOTH` / `GRAIN_LENGTH` wrote no stored
 //! field in the sweep, so they are reported as unapplied rather than guessed.
@@ -33,6 +35,12 @@ const GRAIN_MS: [f64; 21] = [
     55.752308, 67.80926, 82.3833, 100.,
 ];
 
+/// Stored TM2 transient size (source positions) for raw 0, 0.1, ..., 1.0; the stored field
+/// is the full table, measured at the 0.1 grid (the default 2048 is not a point of this curve).
+const TRANSIENT_SIZE: [f64; 11] = [
+    100., 149., 220., 326., 482., 712., 1052., 1554., 2294., 3387., 5000.,
+];
+
 /// Apply every measured write for `stretch`'s kind. `write` reads the raw value
 /// of a named engine parameter from the script. Returns the parameters that were
 /// written but have no stored field for this kind, so the caller can report them.
@@ -42,6 +50,7 @@ pub(crate) fn apply(
 ) -> Vec<&'static str> {
     let tm1 = stretch.kind == ir::StretchKind::TimeMachine1;
     let pro = stretch.kind == ir::StretchKind::TimeMachinePro;
+    let tm2 = stretch.kind == ir::StretchKind::TimeMachine2;
     let mut unapplied = Vec::new();
     if let Some(raw) = write("ENGINE_PAR_SPEED") {
         stretch.speed = Law::Table(&SPEED).decode(raw) as f32;
@@ -77,6 +86,17 @@ pub(crate) fn apply(
         } else {
             unapplied.push("ENGINE_PAR_TMPRO_KEEP_FORMANTS");
         }
+    }
+    if let Some(raw) = write("ENGINE_PAR_TRANSIENT_SIZE") {
+        if tm2 {
+            stretch.transient_size = Law::Table(&TRANSIENT_SIZE).decode(raw).round() as u32;
+        } else {
+            unapplied.push("ENGINE_PAR_TRANSIENT_SIZE");
+        }
+    }
+    // `TM_LEGATO` writes a stored flag on every kind, but the IR has no field for it.
+    if write("ENGINE_PAR_TM_LEGATO").is_some() {
+        unapplied.push("ENGINE_PAR_TM_LEGATO");
     }
     unapplied
 }
@@ -152,5 +172,22 @@ mod tests {
         assert_eq!(pro.speed, 0.01);
         assert!((pro.formant_shift + 0.5).abs() < 1e-6);
         assert!(!pro.keep_formants);
+    }
+
+    /// TM2 transient size follows the measured stored curve; TM1 and Pro have no such field.
+    #[test]
+    fn transient_size_is_measured_on_tm2_only() {
+        let mut tm2 = tm(ir::StretchKind::TimeMachine2);
+        for (raw, want) in [(0, 100), (800_000, 2294), (1_000_000, 5000)] {
+            apply(&mut tm2, |n| {
+                (n == "ENGINE_PAR_TRANSIENT_SIZE").then_some(raw)
+            });
+            assert_eq!(tm2.transient_size, want, "transient at {raw}");
+        }
+        let mut pro = tm(ir::StretchKind::TimeMachinePro);
+        let unapplied = apply(&mut pro, |n| {
+            (n == "ENGINE_PAR_TRANSIENT_SIZE").then_some(500_000)
+        });
+        assert_eq!(unapplied, vec!["ENGINE_PAR_TRANSIENT_SIZE"]);
     }
 }
