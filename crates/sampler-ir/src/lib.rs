@@ -2642,6 +2642,8 @@ pub enum Processor {
     FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
+    /// Kontakt Ring Modulator: sine carrier, see `fx::ringmod`.
+    RingMod(fx::ringmod::Config),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
     TimeMod(fx::timemod::Config),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that

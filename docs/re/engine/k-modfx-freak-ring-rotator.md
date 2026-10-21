@@ -59,3 +59,21 @@ Confirmed from `source/kontakt8/` by name only. No DSP law is taken from it yet.
 - Freak: DSP core `ni::effektrig::dsp::freak::Freak` (`0141960000.c:2872`), already ported in `dsp/color/freak.rs`.
 
 Gap: the vtable slot tables are not in the export, so the process method behind each class cannot be named from the `.c` text. The Ring and Rotator DSP bodies are therefore not yet located. Next step: a vtable dump for these classes (or a read-only xref query on a copy of the Ghidra project), then the laws can be written here.
+
+## Ring Modulator: measured laws (Wine oracle, 2026-10-22)
+
+Method: `tools/kontakt-oracle/stimrender.py` with a 1.5 s constant 0.5 input, so the output is the carrier itself. The harness was fixed to send stored values as raw `ENGINE_PAR` integers (x 1e6); earlier runs had truncated fractional values to 0 or 1.
+
+| Measurement | Result | Law |
+| --- | --- | --- |
+| Carrier rate, FREQUENCY x in steps of 0.05 (slow) | 1 Hz at 0.0-0.10, 2.0 at 0.25, 7.5 at 0.5, 24 at 0.75, 80 at 1.0 | `0.625 * 128^x` Hz (fit within 1 zero-crossing per second) |
+| Carrier rate, fast mode, x = 0.25 / 0.5 / 0.75 / 1 | 105 / 353.5 / 1189.5 / 4000 Hz | slow law times 50 |
+| Wet level vs dry, RING = 1 | wet peak / dry level = 1.6000 | wet gain 1.6 |
+| Crossfade, RING = 0.5 | half the wet amplitude and half the dry mean | linear `(1-r) dry + r wet` |
+| Carrier shape, EDGE 0 | 3rd harmonic 3.7 %, 5th 0.8 %, 7th 0.3 % | sine plus a small 3rd (not yet explained) |
+| EDGE 0.5 / 1 | 3rd 0.6 % / 11 %, 5th 1.5 % / 4 % | EDGE reshapes the carrier; law not yet fit |
+| LFO amount 0.5 / 1 (DC input) | carrier rate shifts (about 90 Hz / 53 Hz zero-crossing count) | LFO frequency modulation; LFO rate and wave not yet measured |
+
+Implemented in this PR: `sampler_ir::fx::ringmod` (carrier Hz, mix, wet gain) and `sampler_core::dsp::ringmod` (sine carrier, linear crossfade, phase kept in the stage's delay storage). Tests: `carrier_rate_and_wet_gain_follow_the_measured_laws`, `dry_mix_is_bit_exact_and_phase_persists`.
+
+Not yet implemented, diagnosed as unsupported in the mapping: EDGE shaping, FM (input-driven), LFO (amount, rate, wave). The format mapping (`sampler-kontakt`) is the next step.
