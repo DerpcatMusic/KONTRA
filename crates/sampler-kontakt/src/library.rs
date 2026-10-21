@@ -2247,7 +2247,7 @@ impl Translation {
         let unapplied = time_stretch_writes::apply(&mut stretch, |name| {
             group_engine_write(&self.engine, name, index as i32)
         });
-        for name in ["ENGINE_PAR_SPEED_UNIT", "ENGINE_PAR_TRANSIENT_SIZE", "ENGINE_PAR_TM_LEGATO"] {
+        for name in ["ENGINE_PAR_SPEED_UNIT"] {
             if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::UnknownLaw);
             }
