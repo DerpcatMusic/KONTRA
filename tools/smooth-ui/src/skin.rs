@@ -611,7 +611,7 @@ pub fn knob(
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let id = id.into();
-    ui.drag(id.clone(), value, range.clone(), metric::DIAL * 2.5, true);
+    input::drag(ui, id.as_str(), value, range.clone());
     input::nudge(ui, id.as_str(), value, range.clone(), rest);
     let state = ui.state(id.clone());
     let lift = (state.hover.max(state.press)) as f32;
@@ -729,7 +729,7 @@ pub fn text_slider(
 ) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    ui.drag(id, norm, 0.0..=1.0, w * 3.0, false);
+    input::drag(ui, id, norm, 0.0..=1.0);
     input::nudge(ui, id, norm, 0.0..=1.0, rest);
     let state = ui.state(id);
     let lift = state.hover.max(state.press) as f32;

@@ -25,8 +25,8 @@ pub fn of(id: &str) -> Option<&'static str> {
         return None;
     }
     Some(match id {
-        "gear" => "Adjust plug-in settings.",
-        "help" => "Help and other helpful resources.",
+        "gear" => "Adjust plug-in settings and check for updates.",
+        "help" => "Manual, support, and other helpful resources.",
         "help-copy" => "Copy the version and system details to the clipboard, for a support request.",
         "pref-size" => "Adjust the display size of the plug-in interface.",
         "pref-ultra" => "\"Always render on ultra\" disables \"Low latency for all instances\".",
@@ -81,7 +81,27 @@ pub fn of(id: &str) -> Option<&'static str> {
         "lock-quality" => "Lock quality so that it doesn't change when switching presets.",
         "lock-latency" => "Lock low latency so that it doesn't change when switching presets.",
         "range" => "Adjust the display range of the reduction graph.",
-        "side-panel" => "Hide the side panel by double clicking on its background.",
+        "side-panel" => "Hide the side panel. You can alternatively hide the side panel by double clicking on its background.",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reference_wording_is_kept_where_it_was_recovered() {
+        assert_eq!(of("gear"), Some("Adjust plug-in settings and check for updates."));
+        assert_eq!(of("help"), Some("Manual, support, and other helpful resources."));
+        assert_eq!(
+            of("side-panel"),
+            Some("Hide the side panel. You can alternatively hide the side panel by double clicking on its background.")
+        );
+    }
+
+    #[test]
+    fn an_unknown_control_is_silent() {
+        assert_eq!(of("no-such-control"), None);
+    }
 }
