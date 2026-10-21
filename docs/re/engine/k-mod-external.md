@@ -69,3 +69,20 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
 2. Add a `Follower` and a `Glide` source to the shared IR and engine, general form (detector
    and ramp cores), with null or recorded tests once the laws are confirmed.
 3. Measure external sources and negative lag on the Wine oracle to get vectors.
+
+## Follower input and timing (decompile, FUN_140916350 -> FUN_140ae3de0)
+
+- The follower is processed per block inside the voice render (`FUN_140916350`), for each follower
+  modulator whose object flags bit 5 is set. It reads the per-group buffer `param_1[idx*16+6]`
+  and runs before `FUN_14088b480`.
+- Working hypothesis: the follower samples the group's audio at current-block timing.
+- Engine finding: `voice_mod::advance` runs before a voice renders its span, and the voice's own
+  audio depends on its modulation. Current-block audio is therefore not available to the modulation
+  step without changing render order. This needs a decision (one-block delay, or reordering render).
+- NaN: the native clamp compares `x <= 0` and `1 <= x`, so NaN passes through. Implemented and tested.
+
+## Glide setup (FUN_140cebba0, binary constants checked)
+
+- start = -1 (+1 for a downward interval), step = 1 / (time_s * rate), gain = |interval| / 12.
+- time: stored `BParGlide` float; multiplied by |interval| only for stored mode 1; time_ms * 0.001.
+- Implemented as `GlideRamp::kontakt_glide`. The interval is a per-note runtime input (not yet wired).
