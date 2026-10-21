@@ -252,6 +252,8 @@ pub(crate) enum Params {
     /// A native dynamics law (Limiter 0x1c, Transparent Limiter 0x5f), mapped
     /// at parse time.
     Dynamics(Result<sampler_ir::Processor, dynamics::Note>),
+    /// A native law that runs, with one stored field it does not model.
+    DynamicsNoted(sampler_ir::Processor, dynamics::Note),
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -462,11 +464,17 @@ impl Slot {
                 [r.flag()?, r.flag()?, r.flag()?],
             )),
             0x43 if self.version == 0x10 => Params::Dynamics(dynamics::transient(r.f32()?, r.f32()?, r.f32()?, r.i32()?)),
-            0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
-                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
-                [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
-                if self.version == 0x12 { Some(r.f32()?) } else { None },
-            )),
+            0x46 if (0x10..=0x12).contains(&self.version) => {
+                let bus = dynamics::bus_comp(
+                    [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                    [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
+                    if self.version == 0x12 { Some(r.f32()?) } else { None },
+                );
+                match bus {
+                    Ok((processor, Some(note))) => Params::DynamicsNoted(processor, note),
+                    other => Params::Dynamics(other.map(|(processor, _)| processor)),
+                }
+            }
             0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
             0x1a => Params::Inverter {
                 invert: r.flag()?,
@@ -1246,6 +1254,12 @@ pub(crate) fn chain_with(
                     }
                 }
             }
+            Some(Params::DynamicsNoted(processor, note)) => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors.push(processor.clone());
+                combined = gain;
+                notes.push(note.clone());
+            }
             Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 match dynamics::compressor(*mode, *threshold_db, *ratio, *attack_ms, *release_ms, *link) {
@@ -1407,7 +1421,7 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                match color::unproved(fx.module).or(timemod::unproved(fx.module)) {
+                match color::unproved(fx.module).or(timemod::unproved(fx.module)).or(dynamics::unproved(fx.module)) {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                     None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },
@@ -2854,6 +2868,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn supercharger_is_diagnosed_not_silently_passed() {
+        let authored = Slot { version: 0x51, ..slot(0x60, vec![0; 32], 1.0) };
+        let out = chain(&[authored], Scope::Bus);
+        assert!(out.processors.is_empty(), "no law is proven, so nothing may run");
+        assert!(out.notes.iter().any(|(_, feature, value, reason)| {
+            feature == "effect" && *reason == sampler_ir::Reason::NotModeled && value.contains("Supercharger GT")
+        }));
     }
 
     #[test]
