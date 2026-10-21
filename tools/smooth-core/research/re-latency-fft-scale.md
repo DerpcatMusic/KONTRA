@@ -602,3 +602,71 @@ host and stand-in state. Nothing here is a plug-in default, and no parity is cla
   now would invent those constants, so it was not started.
 - Next: decode the entry checks in `0x619fc0` (lines 98-135 of the annotated file) to find which host
   floats gate the output; then decode the fold indices from the code between lines 395 and 450.
+
+## 16. Why the detector ignores its input: the FFT kernels never see the samples (pass 10, Unicorn, 2026-10-21)
+
+Harness: `re-tools/emulate/detector_run.py` (fixed) and `re-tools/emulate/detector_probe.py` (new).
+Evidence scope: isolated emulation, synthetic host, stand-in state. Nothing here is a plug-in default.
+
+### Corrections to section 15
+
+- **Frame object too small.** `build_frame` allocated `arg1` as 0x100 bytes, and the detector
+  writes its working block at `arg1+0x120..0x2190`. The fix is a 0x4000-byte frame.
+- **Samples were never written.** `build_frame` allocated the channel buffer but did not fill it.
+  The section 15 run was therefore on silence. Fixed: `build_frame(emu, samples)`.
+- **The output is the host block, not `arg1`.** `*arg3 + 0x68 .. 0x1ffe` (2022 floats) is the output
+  and it is written by the detector at `0x61adff` and `0x61af58` (weighted-average and interpolation
+  stores). The block at `arg1+0x120` holds work values (constant 242.526 at index 10 onward here) and is
+  not the curve.
+- **Caller and frame.** `ReductionCurve::slot2` (`0x6b96f0`) passes `*(this+0x288)` as `arg1`, the engine
+  as `arg2`, the host block as `arg3`, and `(origin, extent)` as the rect (`x0,y0` then `w,h`). The
+  harness rect convention matches. `this+0x288` is written by `0x3829b0` (`003829b0.c:100`, which the
+  name hint calls `juce::TimeSliceThread::slot1`; the class is unclear and was not checked further).
+  That writes the object's vtable-bearing pointer, so it is a candidate producer, not confirmed.
+
+### Verified in this pass
+
+1. **The output is a function of the host weight tables only.** With a flat weight W on both
+   vectors, the output is `W` scaled and clamped (W = 1e-4 -> 0..1, W = 1 -> 1.0, W = 100 -> up to
+   10000). A sine at amplitude 0.9 and silence give identical output at every W tested.
+2. **The inverse, forward and magnitude kernels never receive the samples.** `detector_probe.py`
+   hooks the entries of `0x180007000` (inverse), `0x180001640` (forward) and `0x1806181b0`
+   (magnitude). Their inputs are `[1, 0, 1, 0, ...]` and `[1, 0, 0, 0 ...]`, built from the weight
+   vectors, for silence and for the sine, at group count 1 and 2.
+3. **The sample buffer is read**, at `0x61ac90` and `0x61ad4c..0x61ad7a` (about 1024 reads per group),
+   but those reads do not reach the output in this state.
+4. **No data-dependent branch on the signal path.** The executed-instruction sets for silence and a
+   0.9 sine are identical (7164 addresses each, zero difference).
+5. **Saturation.** Amplitudes 0, 1e-6 .. 0.9 all give the same output at group count 1. The values
+   written to the host block at `0x61adff` and `0x61af58` are exactly 1.0 for silence and sine.
+6. **Group count changes the output, not the dependence.** `S+0x4a0` (`**` gives the count) at 2
+   gives values up to about 2e4, still amplitude-independent. The stand-in count of 1 selects the
+   `cStack_aa8` branch (`uStack_a38 == 1`), which skips the frame branch.
+7. **Gate constants (read from the image).** `cStack_aa6` is set when a host float is below its
+   threshold: `host[0x398] < 0.05`, `host[0x97] > 0.5`, `host[0x3cb] > 0.5`, `host[0x3ac] < 0.01`,
+   `host[0] < 0.1` (`K1..K4` at `0x18209d0a0`, `0x18209d1c0`, `0x18209d060`, `0x18209d0c8`). An all-zero
+   host sets it. Opening those five host values does not change the amplitude dependence, so
+   `cStack_aa6` is not the gate that closes the output. `cStack_aa7` is `**(S+0x560)`, and `0` here.
+8. **Clamp range.** `log10` of the weights is multiplied by 20 and clamped to `[-22, 19.8]` dB (the
+   constants `0x18209da48 = -22`, `0x18209d6c8 = 20`, `0x18209d6c4 = 19.8`, `0x18209d088 = 1/38`).
+   With W = 1 the dB term is 0 and the output saturates at 1.0.
+
+### What this means for the blocker
+
+The detector is not gated by a host float in this state. It is fed the weight tables instead of the
+frame, because the frame channel list arrives in a state we have not built. The sample pointer is in
+`arg1+0x38`, and the FFT input path is built from `S+0x7a0/0x7b8` (`uStack_9c8`), so a stand-in
+with unity weights will always produce a constant output. The real input comes from the audio-thread
+process path that fills `ReductionCurve+0x288`. That path (`0x890a00` per the section 6 notes) is
+not emulated.
+
+### Still open
+
+1. The producer of the channel list at `this+0x288` (process path `0x890a00` and its callers). Run it
+   from its entry with a real `AudioBuffer`-like host object, then check that the kernel inputs depend
+   on the sine.
+2. The source of the group count `S+0x4a0` and the real weight vectors. Both are host state (section
+   10). At 48 kHz the constructor gives 1 group, which would select the frame-free branch. Either the
+   host sets a different count at 48 kHz, or the frame path is reached some other way.
+3. Steps 2 and 3 of the plan (fold indices, oracle) wait on (1). No oracle JSON was written in this pass.
+4. No SMOOTH change: `dsp.rs` is untouched, so no build, pluginval or CLAP run was needed for this pass.

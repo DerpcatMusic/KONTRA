@@ -15,6 +15,7 @@ Run with: python -I detector_run.py [--rate 48000] [--bins 1025]
 """
 
 import bisect
+import math
 import struct
 import sys
 from pathlib import Path
@@ -152,10 +153,17 @@ def dispatch(emu, S, rtype, payload):
     emu.call(DISPATCH, holder, rec, max_insns=10_000_000)
 
 
-def build_frame(emu, n):
-    """Channel list (the detector's arg1): +0x38 qword channel pointers, +0x40 count, +0x48 samples."""
-    frame = emu.arena(0x100)
+def build_frame(emu, samples):
+    """Channel list (the detector's arg1): +0x38 qword channel pointers, +0x40 count, +0x48 samples.
+
+    The detector writes its working block at arg1+0x120..0x2190 (see section 16), so the
+    object must be far larger than the channel list; a 0x100-byte arena let those writes
+    run into the sample buffer. The samples are written here: an all-zero buffer is silence.
+    """
+    n = len(samples)
+    frame = emu.arena(0x4000)
     buf = emu.arena(4 * n)
+    emu.wr(buf, struct.pack(f"<{n}f", *samples))
     emu.w64(frame + 0x38, buf)
     emu.w32(frame + 0x40, 1)
     emu.w32(frame + 0x48, n)
@@ -165,6 +173,8 @@ def build_frame(emu, n):
 def main(argv):
     rate = 48000.0
     bins = 1025
+    amp = 0.9
+    groups = 1
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -172,19 +182,27 @@ def main(argv):
             rate = float(args.pop(0))
         elif a == "--bins":
             bins = int(args.pop(0))
+        elif a == "--amp":
+            amp = float(args.pop(0))
+        elif a == "--groups":
+            groups = int(args.pop(0))
 
     emu, obj, _log = run_ctor(rate)
     S = build_state(emu, obj, rate, bins)
+    # **(S+0x4a0) is the group count the detector reads (1 at the stand-in default).
+    emu.w32(emu.r64(S + 0x4A0), groups)
     step = rate / (2 * (bins - 1))
     freqs = [k * step for k in range(bins)]
     unity = [1.0] * bins
     dispatch(emu, S, 0, freqs)
     dispatch(emu, S, 1, freqs)
-    dispatch(emu, S, 2, unity)
-    dispatch(emu, S, 3, unity)
-    print(f"host fill: rate={rate} bins={bins} N={2 * (bins - 1)} step={step:.3f} Hz")
+    dispatch(emu, S, 2, unity * groups)
+    dispatch(emu, S, 3, unity * groups)
+    print(f"host fill: rate={rate} bins={bins} groups={groups} N={2 * (bins - 1)} step={step:.3f} Hz")
 
-    frame = build_frame(emu, 2048)
+    n = 2048
+    samples = [amp * math.sin(2 * math.pi * 1000.0 * i / rate) for i in range(n)]
+    frame = build_frame(emu, samples)
     host_ptr = emu.arena(8)
     host_block = emu.arena(0x2000)
     emu.w64(host_ptr, host_block)
@@ -193,6 +211,8 @@ def main(argv):
     try:
         r = emu.call(DETECTOR, frame, obj, host_ptr, rect_lo, rect_hi, max_insns=400_000_000)
         print("detector returned", hex(r), "aborted=", emu.aborted)
+        out = [emu.rf32(host_block + 0x68 + 4 * i) for i in range(2022)]
+        print(f"host block 0x68..0x1ffe: min={min(out):.4f} max={max(out):.4f} (amp={amp}, groups={groups})")
     except RuntimeError as exc:
         report_fault(emu, exc)
 
