@@ -28,21 +28,34 @@ when it lands.
 - Law: three parallel second-order bandpasses, coefficients updated every four samples, 32-sample control
   clock. Evidence: tables 0x144fcea10..0x144fcebc0, setter 0x140b05ac0, radare2 hexdumps.
 - Engine: `Processor::Formant` (static) and `Processor::LiveFormant` (event-rate lanes, KSP `ENGINE_PAR_FORMANT_*`).
-- Gap: 15 ms native control ramps and the 32-sample wrapper clock are not wired (carried over from
-  `docs/re/kontakt-formant.md`). Static saved controls are exact to the recorded impulse vector.
+- Gap: live control ramps are not wired. Decompile (`FUN_140b00750`, audio): each band's state
+  accumulates a per-sample coefficient increment (`state += delta` at `+0x30..`), and the deltas are
+  recomputed every 4 frames (`(frame & 3) == 0`). `FUN_140b05ac0` writes the targets and deltas at
+  `+0x500..+0x540` and sets a dirty flag at `+0x530`. The 15 ms ramp length is not yet read as a constant.
+  The engine uses `Formant::compile` per fragment (no ramp), so live Formant timing is approximate.
+  Static saved controls are exact to the recorded impulse vector.
 
 ### Formant II (type 91)
 
 - Parameters: same three knobs as Formant I.
-- Law: same core, second table (rows 5..=9). The flag `second` adds 5 rows to the Talk position
-  (`FUN_140b054e0` as recorded in `formant.rs`). Tests: `second_table_starts_five_rows_in`,
-  `second_table_row_five_matches_libm_coefficients`.
+- Law: same core, second table (rows 5..=9). Confirmed in the decompile (Kontakt 8 export):
+  - `FUN_140b05ac0` (control setter): control index 3 stores `0.5 < value` into the flag at `+0x60`.
+  - `FUN_140b054e0` (Talk position): base offset `DAT_1447149f0` (5.0) when the flag is 1, else 0; then
+    `+ 4·Talk`, clamped to the last row. So the flag adds 5 rows.
+  - `FUN_1408faa30` (wrapper): four control streams (0..3), each clamped to [0,1], refreshed every 32 frames
+    (`+0x1bc` counter).
+  - Type 91 reaches the assignment in `FUN_1409619b0` at `case 0x5b`, which calls `FUN_140aefc60` (the
+    four-control dispatch through vtable `+0x1b0`). The value passed for control 3 comes from the caller's
+    arguments, which Ghidra did not recover, so the static flag value for type 91 is **confirmed as a
+    control-3 selector, not yet read as a constant**.
+  Tests: `second_table_starts_five_rows_in`, `second_table_row_five_matches_libm_coefficients`.
 - Engine: static `Processor::FormantII` through `FilterBank(Topology::FormantII)`.
 - Change in this unit: script/modulation lanes now drive Formant II through `Processor::LiveFormant { second: true }`
   instead of being dropped with a `NotModeled` note. The output for a given knob setting is identical to the
   static path by construction (same `Formant::compile`).
 - Gap / confidence: no measured Kontakt vector for Formant II output exists yet. Routing Formant II lanes
-  through the same setter is inferred from the shared core and is **unverified** against Kontakt.
+  through the same setter is now supported by the decompile (control 3 selector above). Lane routing is still
+  **unverified** against a Kontakt measurement.
 
 ### Phaser filter (type 13)
 
@@ -81,7 +94,7 @@ when it lands.
 
 | Module | Kontakt type | Engine now | Missing | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Formant I | 90 | static + live lanes (Talk/Sharp/Size) | 15 ms ramps, 32-sample clock | kontakt-formant.md, recorded impulse | Exact (static), Partial (live timing) |
+| Formant I | 90 | static + live lanes (Talk/Sharp/Size) | per-sample coefficient ramps (decompiled, not ported), 15 ms length unread | kontakt-formant.md, FUN_140b00750, FUN_140b05ac0 | Exact (static), Partial (live timing) |
 | Formant II | 91 | static table 2 + live lanes (this PR) | measured output vector; lane routing confirmed on Kontakt | formant.rs tests, core inference | Partial, unverified routing |
 | Phaser | 13 | static four-stage allpass | live Cutoff/Resonance lanes; feedback vector | timemod.rs test | Partial |
 | Vowel A | 14 | cascade VowelA, BP4 | live morph lanes; recorded vector | filter.rs (kemu) | Claimed exact, not re-run |
