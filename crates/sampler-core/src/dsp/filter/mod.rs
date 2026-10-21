@@ -20,6 +20,7 @@
 pub(crate) mod ar;
 pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
+pub(crate) mod chamberlin;
 pub(crate) mod daft;
 pub(crate) mod formant;
 pub(crate) mod linear;
