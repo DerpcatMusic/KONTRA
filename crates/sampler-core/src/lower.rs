@@ -3001,6 +3001,7 @@ impl Lowering<'_> {
                 None => Processor::TimeMod(config),
             },
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
+            ir::Processor::RingMod(config) => Processor::RingMod(config),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::FilterBank(c) => match c.topology {
                 ir::fx::filter::Topology::FormantII => {
