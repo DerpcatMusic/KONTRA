@@ -966,6 +966,7 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
 /// and Pro (8) carry the extra fields their controls need, DFD (3) none.
 /// (docs/architecture-v2/KONTAKT_OBJECTS.md's table naming 3 as Time Machine 2 and
 /// 5 as DFD is wrong; Conflux's 90 mode-3 groups are DFD.)
+const SOURCE_MODE_TONE: u32 = 1;
 const SOURCE_MODE_TM1: u32 = 2;
 const SOURCE_MODE_TM2: u32 = 5;
 const SOURCE_MODE_TM_PRO: u32 = 8;
@@ -991,7 +992,6 @@ fn machine_kind(mode: u32) -> Option<ir::Machine> {
 
 fn source_mode_name(mode: u32) -> &'static str {
     match mode {
-        1 => "Tone Machine",
         2 => "Time Machine",
         4 => "Beat Machine",
         5 => "Time Machine 2",
@@ -1035,6 +1035,7 @@ fn stretch_from_record(
         })
     };
     let kind = match params.mode {
+        SOURCE_MODE_TONE => ir::StretchKind::ToneMachine,
         SOURCE_MODE_TM1 => ir::StretchKind::TimeMachine1,
         SOURCE_MODE_TM2 => ir::StretchKind::TimeMachine2,
         SOURCE_MODE_TM_PRO => ir::StretchKind::TimeMachinePro,
@@ -1044,7 +1045,7 @@ fn stretch_from_record(
     if f("timing_value").is_some_and(|v| v > 1e-9) {
         notes.push(("time machine tempo-synced speed", format!("{speed}"), ir::Reason::UnknownLaw));
     }
-    if kind != ir::StretchKind::TimeMachine1 {
+    if !matches!(kind, ir::StretchKind::TimeMachine1 | ir::StretchKind::ToneMachine) {
         speed = speed.max(0.01);
     }
     if !(speed.is_finite() && (0.0..=64.0).contains(&speed)) {
@@ -1053,6 +1054,17 @@ fn stretch_from_record(
     }
     let mut t = ir::TimeStretch::new(kind, speed);
     match kind {
+        ir::StretchKind::ToneMachine => {
+            // Tone Machine shares the Time Machine 1 machine-record fields.
+            t.smooth = f("machine_float_1")?;
+            t.grain_ms = f("machine_float_2")?;
+            t.high_quality = b("machine_flag")?;
+            notes.push((
+                "tone machine backend (stand-in granular engine, unmeasured)",
+                "tone".into(),
+                ir::Reason::NotModeled,
+            ));
+        }
         ir::StretchKind::TimeMachine1 => {
             t.smooth = f("machine_float_1")?;
             t.grain_ms = f("machine_float_2")?;
@@ -1687,7 +1699,7 @@ impl Translation {
             Ok(source)
                 if matches!(
                     source.mode,
-                    SOURCE_MODE_TM1 | SOURCE_MODE_TM2 | SOURCE_MODE_TM_PRO
+                    SOURCE_MODE_TONE | SOURCE_MODE_TM1 | SOURCE_MODE_TM2 | SOURCE_MODE_TM_PRO
                 ) =>
             {
                 time_stretch = self.time_stretch(group, source.mode, &at, index);
@@ -6865,6 +6877,13 @@ mod time_machine_tests {
         let t = stretch_from_record(&tm1, &mut notes).unwrap();
         assert_eq!((t.kind, t.speed, t.smooth, t.grain_ms, t.high_quality), (ir::StretchKind::TimeMachine1, 1.0, 0.75, 12.5, false));
         assert!(notes.is_empty());
+        // Tone Machine (stored 1): TM1 machine-record fields, reported as an unmeasured stand-in.
+        let tone = parse(record(SOURCE_MODE_TONE, (-1.0, 0.0, 1.0), &tail));
+        let mut notes = Vec::new();
+        let t = stretch_from_record(&tone, &mut notes).unwrap();
+        assert_eq!((t.kind, t.smooth, t.grain_ms), (ir::StretchKind::ToneMachine, 0.75, 12.5));
+        assert!(notes.iter().any(|n| n.0.starts_with("tone machine backend")));
+        notes.clear();
         // TM2: transient copy B, size I, grain profile I; reported as stand-in.
         let ext = [1, 0xe8, 3, 0, 0, 2, 0, 0, 0];
         let tm2 = parse(record(SOURCE_MODE_TM2, (-1.0, 0.0, 1.0), &ext));
