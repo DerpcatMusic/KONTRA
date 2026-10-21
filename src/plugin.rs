@@ -383,6 +383,9 @@ pub struct Selection {
 }
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
+/// Largest saved UVI/script state blob a project may carry; save and load agree.
+const MAX_SAVED_STATE: usize = 8 << 20;
+
 pub const IDLE_SECONDS: f64 = 30.0;
 
 impl Selection {
@@ -511,6 +514,7 @@ impl SamplerParams {
             .enumerate()
         {
             part.attempted = None;
+            part.active_target = None;
             // Fence recalled state immediately, before the background loader
             // begins; cancellation/failure cannot give the old owner its identity.
             part.recalled_source = sources.get(slot).cloned();
@@ -1065,6 +1069,9 @@ pub struct Shared {
     _crash_session: Mutex<Option<crate::support::CrashSessionGuard>>,
 }
 
+/// Source, program, snapshot, rate bits, mpe, mpe upper, dynamics, streaming.
+pub(crate) type LoadTarget = (String, u32, String, u64, bool, bool, i16, Streaming);
+
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) resource_path: Option<PathBuf>,
@@ -1077,7 +1084,10 @@ pub(crate) struct PartView {
     pub(crate) uvi_snapshot: Option<sampler_uvi::scripted::UiSnapshot>,
     pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
+    pub(crate) attempted: Option<LoadTarget>,
+    /// What the committed instrument was built from. A request equal to it is a
+    /// no-op even after a canceled or failed switch; host recall clears it to force a reload.
+    pub(crate) active_target: Option<LoadTarget>,
     /// The committed source owning the visible model and live controls. A
     /// failed or pending replacement must never acquire its persistence state.
     pub(crate) active_source: Option<(String, u32, String)>,
@@ -1672,6 +1682,7 @@ impl Shared {
                     && let Some(uvi) = &scripts.uvi
                     && let Ok(state) = uvi.state()
                     && let Ok(state) = serde_json::to_string(&state)
+                    && state.len() <= MAX_SAVED_STATE
                 {
                     part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.uvi_state = state;
@@ -1681,6 +1692,7 @@ impl Shared {
                     .lock_unpoisoned()
                     .as_ref()
                     .and_then(|client| client.save_script_state())
+                    .filter(|state| state.len() <= MAX_SAVED_STATE)
                 {
                     part.script_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.script_state = state;
@@ -2428,7 +2440,7 @@ fn load_part_with(
     params: &SamplerParams,
     slot: usize,
     prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
-    prepare: impl FnOnce(
+    mut prepare: impl FnMut(
         &LoadRequest,
         &mut dyn FnMut(Progress),
         &(dyn Fn() -> bool + Sync),
@@ -2459,6 +2471,12 @@ fn load_part_with(
         let mut view = shared.view.lock_unpoisoned();
         let v = &mut view.parts[slot];
         if v.attempted.as_ref() == Some(&target) {
+            return false;
+        }
+        if v.active_target.as_ref() == Some(&target) {
+            // Back to what is still playing: nothing to rebuild, and a failed
+            // candidate may be picked again.
+            v.attempted = Some(target);
             return false;
         }
         let status = v.status.clone();
@@ -2518,21 +2536,21 @@ fn load_part_with(
     trace.detail("instance_id", shared.instance_id);
     trace.detail("sample_rate", rate);
     trace.stage("prepare");
-    let state = if part.uvi_state.is_empty()
+    // A bad saved blob must not make the preset unloadable: load defaults and say so.
+    let uvi_state = if part.uvi_state.is_empty()
         || part.uvi_state_source != serde_json::to_string(&source).unwrap()
     {
-        Ok(None)
-    } else if part.uvi_state.len() > 8 << 20 {
-        Err(CoreError::Invalid(
-            "Saved UVI UI state exceeds 8 MiB".into(),
-        ))
+        None
+    } else if part.uvi_state.len() > MAX_SAVED_STATE {
+        trace.detail("state_recovery", "Saved UVI UI state exceeds 8 MiB, using defaults");
+        None
     } else {
         serde_json::from_str(&part.uvi_state)
-            .map(Some)
-            .map_err(|_| CoreError::Invalid("Saved UVI UI state is malformed".into()))
+            .map_err(|_| trace.detail("state_recovery", "Saved UVI UI state is malformed, using defaults"))
+            .ok()
     };
     let request = LoadRequest {
-        uvi_state: state.as_ref().ok().cloned().flatten(),
+        uvi_state,
         path: part.path.clone().into(),
         program: part.program,
         sample_rate: rate,
@@ -2560,20 +2578,21 @@ fn load_part_with(
         let held = u32::from(p.0).min(u32::from(Progress::DONE.0) - 10);
         atoms.load_progress.store(held, Ordering::Relaxed)
     };
-    let result = state
-        .and_then(|_| match prepared {
-            Some(loaded) if !canceled() => Ok(loaded),
-            Some(_) => Err(CoreError::Canceled),
-            None => prepare(&request, &mut progress, &canceled),
-        })
-        .and_then(|mut loaded| {
+    let mut prepared = prepared;
+    let mut load = |progress: &mut dyn FnMut(Progress)| match prepared.take() {
+        Some(loaded) if !canceled() => Ok(loaded),
+        Some(_) => Err(CoreError::Canceled),
+        None => prepare(&request, progress, &canceled),
+    };
+    let saved_script = if part.script_state_source == serde_json::to_string(&source).unwrap() {
+        part.script_state.as_str()
+    } else {
+        ""
+    };
+    let finish = |mut loaded: crate::sound::Loaded<Option<Box<CorePart>>>, saved: &str| {
+        {
             let persistence = sampler_kontakt::audit::Span::new("persistence_prepare");
             if let Some(runtime) = loaded.part.as_mut() {
-                let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() {
-                    part.script_state.as_str()
-                } else {
-                    ""
-                };
                 runtime.prepare_persistence(&loaded.scripts.views, saved)?;
                 for (id, value) in &mut loaded.controls {
                     if let Some(current) = runtime.persistent_control_value(*id) {
@@ -2595,8 +2614,18 @@ fn load_part_with(
             if canceled() {
                 return Err(CoreError::Canceled);
             }
-            Ok((loaded, mapping_index, resource_revision))
-        });
+            Ok::<_, CoreError>((loaded, mapping_index, resource_revision))
+        }
+    };
+    let mut result = load(&mut progress).and_then(|loaded| finish(loaded, saved_script));
+    if !saved_script.is_empty()
+        && let Err(e) = &result
+        && !matches!(e, CoreError::Canceled)
+    {
+        // The restore may have half-applied; rebuild a pristine part with defaults.
+        trace.detail("state_recovery", format!("Saved script state rejected ({e}), using defaults"));
+        result = load(&mut progress).and_then(|loaded| finish(loaded, ""));
+    }
     let result = if canceled() {
         Err(CoreError::Canceled)
     } else {
@@ -2634,6 +2663,7 @@ fn load_part_with(
             let attempted = v.attempted.take();
             *v = PartView {
                 program: part.program,
+                active_target: attempted.clone(),
                 attempted,
                 active_source: Some(source.clone()),
                 recall_revision,
@@ -4388,28 +4418,6 @@ pub(crate) mod tests {
         assert_eq!(saved.script_state_source, "pending source identity");
         assert_eq!(saved.control_values.len(), 1);
         assert_eq!(saved.control_values[0].id(), sampler_ui_ir::ControlId(999));
-
-        // Invalid recalled state fails before the candidate can acquire any
-        // of the old instrument's live ownership or persistence data.
-        {
-            let mut selection = params.selection.write_unpoisoned();
-            let pending = &mut selection.parts[0];
-            pending.path = "malformed-state.uvip".into();
-            pending.uvi_state = "{bad JSON".into();
-            pending.uvi_state_source = serde_json::to_string(&pending.source()).unwrap();
-        }
-        assert!(load_part(
-            &params,
-            0,
-            Some(transaction_candidate("Invalid state"))
-        ));
-        assert!(params.shared.ready.pop().is_none());
-        assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
-        assert!(core.render(64).live[0]);
-        assert_eq!(
-            params.shared.view.lock_unpoisoned().parts[0].active_source,
-            previous.active_source
-        );
     }
 
     #[test]
