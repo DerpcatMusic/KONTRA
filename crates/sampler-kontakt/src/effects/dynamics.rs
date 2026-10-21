@@ -5,6 +5,7 @@
 //! `0x1409047a0`; cores `0x140ab2250`, `0x140ab2c80`, `0x140ab35d0`).
 
 use sampler_ir::fx::dynamics::{Config, Law, Link, Native};
+use super::{Lowering, Notes, Site};
 use sampler_ir::{Gain, Processor, Reason, Time};
 
 /// One note for the diagnostics: feature, detail, reason.
@@ -220,5 +221,206 @@ mod limiter_tests {
         };
         assert!(matches!(b.law, Law::KontaktBusComp { release: 1.0, link: true, .. }) && b.mix == f64::from(0.7f32));
         assert!(bus_comp([0.5; 6], [true, true], None).is_err());
+    }
+}
+
+/// The native dynamics cores (Limiter 0x1c and the other parse-time laws).
+pub(super) fn slot_dynamics(b: &mut Lowering, s: &Site, notes: &mut Notes, result: &Result<Processor, Note>) -> bool {
+    b.flush();
+    match result.clone() {
+        Ok(processor) => {
+            b.out.processors.push(processor);
+            b.combined = s.gain;
+            true
+        }
+        Err(note) => {
+            notes.push(note);
+            false
+        }
+    }
+}
+
+/// `BParFXCompressor` (0x19): the mode selects the native law.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn slot_compressor(
+    b: &mut Lowering,
+    s: &Site,
+    notes: &mut Notes,
+    mode: f32,
+    threshold_db: f32,
+    ratio: f32,
+    attack_ms: f32,
+    release_ms: f32,
+    link: bool,
+) -> bool {
+    b.flush();
+    match compressor(mode, threshold_db, ratio, attack_ms, release_ms, link) {
+        Ok(processor) => {
+            b.out.processors.push(processor);
+            b.combined = s.gain;
+            true
+        }
+        Err(note) => {
+            notes.push(note);
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::effects::*;
+    use crate::effects::test_support::*;
+
+    #[test]
+    fn compressor_modes_without_a_core_are_not_modeled() {
+        for mode in [3i32, -1] {
+            let mut bytes = mode.to_le_bytes().to_vec();
+            for v in [-12f32, 0.5, 10., 100.] {
+                bytes.extend(v.to_le_bytes());
+            }
+            bytes.push(0);
+            let mut fx = slot(0x19, bytes, 1.);
+            fx.version = 0x70;
+            let built = crate::effects::chain(&[fx], crate::effects::Scope::Voice);
+            assert!(
+                built.processors.is_empty(),
+                "mode {mode} has no core"
+            );
+            assert!(built.notes.iter().any(|(_, feature, _, reason)| {
+                feature.ends_with("compressor mode") && *reason == sampler_ir::Reason::NotModeled
+            }));
+        }
+    }
+
+    #[test]
+    fn enhanced_compressor_uses_native_detector_and_integer_selector() {
+        let mut payload = 1i32.to_le_bytes().to_vec();
+        for value in [-6.0f32, 0.5, 1.0, 100.0] { payload.extend(value.to_le_bytes()); }
+        payload.push(0);
+        let mut fx = slot(0x19, payload.clone(), 1.0); fx.version = 0x70;
+        let built = chain(&[fx], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors, 120., &[[1., -0.5]; 4]);
+        for (actual, expected) in output.iter().zip([0.999157310f32, 0.997557640, 0.995283782, 0.992414534]) { assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}"); }
+        assert_eq!(output[0][1], -0.5);
+        *payload.last_mut().unwrap() = 1;
+        let mut fx = slot(0x19, payload, 1.0); fx.version = 0x70;
+        let linked = chain(&[fx], Scope::Voice);
+        assert!(linked.notes.is_empty(), "{:?}", linked.notes);
+        assert_eq!(fx_probe(linked.processors, 120., &[[1., -1.]])[0], [1., -1.]);
+    }
+
+    #[test]
+    fn compressor_output_and_bypass_init_writes_use_the_shared_slot_law() {
+        // Pinned v1 0cb7a8a0, engine/params.rs: effect_gain = 16*x^3.
+        // The shared service's rounded unity differs by less than 0.00005 dB.
+        for value in [0, 125_919, 396_851, 560_434, 1_000_000] {
+            let native = 16.0 * (f64::from(value) / 1_000_000.0).powi(3);
+            let gain = f64::from(engine_gain(value));
+            if native > 0.0 {
+                assert!((20.0 * (gain / native).log10()).abs() < 0.00005);
+            } else {
+                assert_eq!(gain, 0.0);
+            }
+        }
+        assert_eq!(engine_gain(-1), 0.0);
+        assert_eq!(engine_gain(i32::MAX), engine_gain(1_000_000));
+        let mut fx = slot(0x19, Vec::new(), 1.0);
+        fx.slot = 1;
+        let mut writes = vec![
+            sampler_ksp::EnginePar {
+                parameter: "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN".into(),
+                value: 560_434,
+                group: -1,
+                slot: 1,
+                generic: 1,
+            },
+            sampler_ksp::EnginePar {
+                parameter: "$ENGINE_PAR_EFFECT_BYPASS".into(),
+                value: 1,
+                group: -1,
+                slot: 1,
+                generic: 1,
+            },
+        ];
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert!(fx.bypass && fx.output_set);
+        assert!((20.0 * f64::from(fx.output_gain).log10() - 8.99385).abs() < 0.0001);
+        writes[1].value = 0;
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert!(!fx.bypass);
+    }
+
+    #[test]
+    #[ignore = "installed library metadata probe; run through kontakto-heavy"]
+    fn analog_saved_compressor_state() {
+        let path = std::path::Path::new(
+            "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+        );
+        if !path.exists() {
+            return;
+        }
+        let chunks = crate::read_chunks(path).unwrap();
+        let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+        let racks = program_racks(&program, &[], |_, _| panic!("rack decode failed"));
+        let (_, insert) = racks
+            .iter()
+            .find(|(name, _)| name == "instrument insert")
+            .unwrap();
+        let compressors: Vec<_> = insert.iter().filter(|slot| slot.module == 0x19).collect();
+        assert_eq!(compressors.len(), 1);
+        let fx = compressors[0];
+        eprintln!(
+            "saved compressor slot={} bypass={} output_gain={} output_db={}",
+            fx.slot,
+            fx.bypass,
+            fx.output_gain,
+            20.0 * f64::from(fx.output_gain).log10()
+        );
+        assert_eq!(fx.slot, 1);
+        assert!(!fx.bypass);
+        let v1_gain = 16.0 * (560_434.0f64 / 1_000_000.0).powi(3);
+        assert!((f64::from(fx.output_gain) - v1_gain).abs() < 1e-6);
+        assert!(
+            (20.0 * (f64::from(fx.output_gain) / f64::from(engine_gain(560_434))).log10()).abs()
+                < 0.00005
+        );
+    }
+
+    #[test]
+    fn classic_compressor_slot_is_the_native_classic_law_with_its_link_flag() {
+        let mut bytes = Vec::new();
+        for x in [0.0f32, -18.0, 0.25, 10.0, 120.0] {
+            bytes.extend(x.to_le_bytes());
+        }
+        bytes.push(1);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
+        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
+            panic!("{:?}", built.processors)
+        };
+        use sampler_ir::fx::dynamics::{Law, Link, Native};
+        assert_eq!(c.law, Law::KontaktClassic(Native { threshold_db: -18.0, ratio: 0.25 }));
+        assert_eq!(c.link, Link::Mean);
+        assert_eq!(c.attack.seconds(), 0.01);
+        assert_eq!(c.release.seconds(), 0.12);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    #[test]
+    fn pro_compressor_is_the_native_pro_law_and_always_max_linked() {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        for x in [-18.0f32, 0.25, 10.0, 120.0] {
+            bytes.extend(x.to_le_bytes());
+        }
+        bytes.push(1);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
+        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
+            panic!("{:?}", built.processors)
+        };
+        use sampler_ir::fx::dynamics::{Law, Link};
+        assert!(matches!(c.law, Law::KontaktPro(_)));
+        assert_eq!(c.link, Link::Max);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 }

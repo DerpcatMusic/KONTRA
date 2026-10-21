@@ -21,7 +21,8 @@
 //! - 0x7a Reverb Delight: field binding measured, cores not extracted;
 //!   reported unmodeled with the reason in the slot's `effect` note.
 
-use super::{Impulses, Notes};
+use super::{Impulses, ImpulseRequest, Lowering, Notes, Site, Decoded};
+use sampler_ir::{Processor, Reason, SlotAddress};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
 use sampler_ir::fx::space::{Config, Freeverb, Galois, Network, Topology};
 
@@ -281,5 +282,164 @@ mod tests {
         // RV_SIZE at 1: comb feedback 0.95.
         rebuilt.set(sampler_ir::ProcessorParameter::Size, 1.0);
         assert!((rebuilt.network.unwrap().freeverb.unwrap().feedback - 0.95).abs() < 1e-6);
+    }
+
+    use crate::effects::*;
+    use crate::effects::test_support::*;
+
+    #[test]
+    fn convolution_auto_gain_sums_energy_in_f32() {
+        let recipe = crate::effects::Convolution {
+            decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
+            late: [1., 20., 20_000.], xpoint: 0.5,
+            flags: [false, true, false, false, false],
+            curve_x: Vec::new(), curve_db: Vec::new(), ir_index: 0,
+        };
+        let mut frames = vec![[0.0001, 0.00005]; 10_001];
+        frames[0] = [1., 0.5];
+        let impulse = crate::effects::restore_impulse(&recipe, (44_100, frames)).unwrap();
+        // The wrapper's f32 sum (0x140ab6740) of 1 + 10000·1e-8 stays 1.0.
+        assert_eq!(impulse.left[0].to_bits(), 0x3f3504f3);
+        assert_eq!(impulse.right[0], impulse.left[0] * 0.5);
+    }
+
+    /// Airy (type 1): fields land on core controls (apply `0x140abb190`);
+    /// a 40 ms predelay becomes `√((40·0.0125))/2`.
+    #[test]
+    fn raum_airy_maps_fields_to_core_controls() {
+        let mut bytes = 1i32.to_le_bytes().to_vec();
+        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
+        bytes.extend([1, 0]);
+        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0);
+        let array = effect_fixture(0x65, 0x10, &bytes);
+        let slots = rack(&array, |_, error| panic!("{error}"));
+        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        assert_eq!(core[9], 0.5);
+        assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
+        assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
+        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
+        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
+    }
+
+    #[test]
+    fn reverb_drives_the_native_galois_core() {
+        let v = [0.0, 0.5, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9];
+        let n = space::galois(&v, &mut Vec::new()).network.unwrap();
+        assert_eq!(n.topology, sampler_ir::fx::space::Topology::Galois);
+        let g = n.galois.unwrap();
+        assert!(!g.hall);
+        assert_eq!(g.controls, [0.5, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 1.0, 0.9]);
+        // Time shows 3.2k ms at x = 0.5 (KONTAKT_REFERENCE s.21).
+        assert!((n.decay_seconds - 3.18).abs() < 0.01);
+    }
+
+    #[test]
+    fn galois_reverb_room_type_is_a_native_u32_enum() {
+        // Kontakt 8.13.1 FUN_140d019f0 reads a u32 room type before nine floats.
+        // Hall (1) used to decode as the f32 1.4e-45 and play as a room.
+        let mut public = 1u32.to_le_bytes().to_vec();
+        for x in [0.25f32, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
+            public.extend(x.to_le_bytes());
+        }
+        let mut hall = slot(0x59, public, 1.0);
+        hall.version = 0x10;
+        let Some(Params::Reverb(v)) = hall.params() else { panic!("hall reverb decodes") };
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[1], 0.25);
+        let mut notes = Vec::new();
+        let core = space::galois(&v, &mut notes).network.unwrap().galois.unwrap();
+        assert!(core.hall, "type 1 runs the Hall core");
+        hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(hall.params().is_none(), "Kontakt throws on room type 2");
+    }
+}
+
+/// Rebuild an impulse with the same shaping path; cache metadata carries no audio.
+pub(crate) fn restore_impulse(
+    c: &Convolution,
+    decoded: Decoded,
+) -> Result<sampler_ir::Impulse, String> {
+    let mut store = Vec::new();
+    let mut decoded = Some(decoded);
+    let mut load = |_| {
+        decoded
+            .take()
+            .ok_or_else(|| "impulse already consumed".to_owned())
+    };
+    convolution(
+        c,
+        ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } },
+        &mut Impulses {
+            store: &mut store,
+            load: &mut load,
+            recipes: None,
+        },
+        &mut Vec::new(),
+    )?;
+    store.pop().ok_or_else(|| "missing shaped impulse".into())
+}
+
+
+
+
+/// Reverb / Galois (0x59) on a bus.
+pub(super) fn slot_galois(b: &mut Lowering, s: &Site, notes: &mut Notes, v: &[f32; 10]) -> bool {
+    b.flush();
+    b.out.processors.push(Processor::Space(galois(v, notes)));
+    b.combined = s.gain;
+    true
+}
+
+/// Legacy Reverb (0x15) on a bus.
+pub(super) fn slot_legacy_reverb(b: &mut Lowering, s: &Site, notes: &mut Notes, v: &[f32; 5]) -> bool {
+    b.flush();
+    b.out.processors.push(Processor::Space(legacy(v, notes)));
+    b.combined = s.gain;
+    true
+}
+
+/// Plate Reverb (0x57) on a bus.
+pub(super) fn slot_plate(b: &mut Lowering, s: &Site, notes: &mut Notes, v: &[f32; 5]) -> bool {
+    b.flush();
+    b.out.processors.push(Processor::Space(plate(v, notes)));
+    b.combined = s.gain;
+    true
+}
+
+/// Raum (0x65, Grounded or Airy) on a bus.
+pub(super) fn slot_raum(b: &mut Lowering, s: &Site, notes: &mut Notes, core: &[f32; 20], synced: bool) -> bool {
+    b.flush();
+    b.out.processors.push(Processor::Space(raum(core, synced, notes)));
+    b.combined = s.gain;
+    true
+}
+
+/// Convolution (0x16) on a bus: the impulse is loaded through the file table.
+pub(super) fn slot_convolution(
+    b: &mut Lowering,
+    s: &Site,
+    notes: &mut Notes,
+    c: &Convolution,
+    impulses: &mut Impulses,
+) -> bool {
+    let request = ImpulseRequest {
+        index: c.ir_index,
+        address: SlotAddress { group: s.physical.0, slot: s.fx.slot as i32, generic: s.physical.1 },
+    };
+    match convolution(c, request, impulses, notes) {
+        Ok(impulse) => {
+            b.flush();
+            b.out.processors.push(Processor::Space(sampler_ir::fx::space::Config::convolution(
+                impulse,
+                if s.mix { 0.0 } else { f64::from(s.fx.dry_level) },
+                if s.mix { 1.0 } else { s.wet },
+            )));
+            true
+        }
+        Err(why) => {
+            notes.push(("impulse response".into(), why, Reason::NotModeled));
+            false
+        }
     }
 }
