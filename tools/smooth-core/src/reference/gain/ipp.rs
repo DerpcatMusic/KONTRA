@@ -4,9 +4,9 @@
 //! with the selector at RVA `0x21ed508`. Each thunk below was identified by running it under
 //! emulation (selector 0, the SSE path) on known vectors (`research/re-tools/emulate/gain_trace.py`
 //! and section 21 of the notes). Element-wise ops are exact f32 operations in the order given.
-//! Two are not bit-exact models of IPP's internals: `dot_prod` (IPP's summation order is not a
-//! simple sequential or lane order; modelled as an f64 sum rounded once) and `ln`/`exp` (IPP's
-//! approximations are within about 1 ULP of the correctly rounded value).
+//! `dot_prod` follows IPP's SSE lane order (bit-exact, see its doc). `ln`/`exp` are not
+//! bit-exact models of IPP's internals (its approximations are within about 1 ULP of the
+//! correctly rounded value).
 //!
 //! The real plug-in may dispatch to an AVX2 variant (selector 0x14) that can fuse `add_product*`
 //! into FMA; the emulator pins the SSE variant, which rounds the product and the sum separately.
@@ -130,14 +130,47 @@ pub fn add_product(s1: &[f32], s2: &[f32], p: &mut [f32]) {
     }
 }
 
-/// `0x180001400` ippsDotProd_32f(s1, s2, len, &dp). Modelled as an f64 sum rounded once
-/// (see the module docs).
+/// `0x180001400` ippsDotProd_32f(s1, s2, len, &dp), SSE variant `0x1d6a510`, aligned path.
+///
+/// Up to 15 elements: products of pairs go to two f32 lanes (an odd tail joins lane 1), result
+/// `lane1 + lane0`. From 16: four `mulps`/`addps` accumulators over blocks of 16 (lane `i % 16`),
+/// a pair/single tail into lanes 0/1, then `(a0 + a1) + (a2 + a3)` lane-wise, then
+/// `(v1 + v3) + (v0 + v2)`. Bit-exact against the emulated thunk on 400 random vectors
+/// (16-byte aligned operands, as the body's tables and arena buffers are). Misaligned operands
+/// take a scalar prologue in IPP and are not modelled.
 pub fn dot_prod(s1: &[f32], s2: &[f32]) -> f32 {
-    let mut acc = 0.0f64;
-    for (&a, &b) in s1.iter().zip(s2) {
-        acc += f64::from(a) * f64::from(b);
+    let n = s1.len().min(s2.len());
+    if n <= 15 {
+        let (mut l0, mut l1) = (0.0f32, 0.0f32);
+        let mut i = 0;
+        while i + 2 <= n {
+            l0 += s1[i] * s2[i];
+            l1 += s1[i + 1] * s2[i + 1];
+            i += 2;
+        }
+        if i < n {
+            l1 += s1[i] * s2[i];
+        }
+        return l1 + l0;
     }
-    acc as f32
+    let mut acc = [0.0f32; 16];
+    let mut i = 0;
+    while i + 16 <= n {
+        for (j, a) in acc.iter_mut().enumerate() {
+            *a += s1[i + j] * s2[i + j];
+        }
+        i += 16;
+    }
+    while i + 2 <= n {
+        acc[0] += s1[i] * s2[i];
+        acc[1] += s1[i + 1] * s2[i + 1];
+        i += 2;
+    }
+    if i < n {
+        acc[0] += s1[i] * s2[i];
+    }
+    let v: [f32; 4] = std::array::from_fn(|j| (acc[j] + acc[4 + j]) + (acc[8 + j] + acc[12 + j]));
+    (v[1] + v[3]) + (v[0] + v[2])
 }
 
 /// `0x1801c8500` ippsLn_32f(src, dst, len).

@@ -7,10 +7,11 @@
 //!
 //! Pipeline (addresses are the body's own blocks):
 //!
-//! 1. `0x8e0629..0x8e06ee` zero the output view and the frame scratch; the frame is built
-//!    and transformed by [`Callees::spectrum`] (`0x894a70`, `0x894210`, `0x8e67a0`, `0x8e6da0`,
-//!    the sidechain path `0x8e0ab8`, and the IPP real FFT `0x1010`).
-//! 2. `0x8e1390` per-bin magnitude `0x6181b0` into `D` (ch x bins).
+//! 1. `0x8e0629..0x8e06ee` zero the output view and the frame scratch.
+//! 2. [`Callees::magnitudes`]: frame building (`0x894a70`, `0x894210`, `0x8e67a0`, `0x8e6da0`,
+//!    the sidechain path `0x8e0ab8`), the IPP real FFT `0x1010` and the magnitude kernel
+//!    `0x6181b0` (`magnitude.rs`) into `D` (ch x bins). The front sits behind the callee
+//!    boundary because its IPP tails (FFT, rsqrtps-based sqrt) are not plug-in code.
 //! 3. `0x8e13b5` more than two channels: `0x8ec2a0`, `0x8ec320` on `D`.
 //! 4. `0x8e13dc..0x8e15af` spectral-flatness gate ([`flatness_gate`]).
 //! 5. Quality 1 (`arg8`, `0x8e15c9`): floor `D` at `10^((focus*20-60)/20) * 0x89ad70(D)`.
@@ -102,8 +103,8 @@ pub struct Params {
 /// The plug-in callees the body makes. Bank 0 of [`Callees::bin_smooth`] is the record array
 /// at `+0x15b8`, bank 1 the one at `+0x20b8` (record `c` at `+c*0xb0`).
 pub trait Callees {
-    /// Frame building and the forward FFT: per channel, CCS spectrum of `2 * bins` floats.
-    fn spectrum(&mut self, spec: &mut View);
+    /// Frame building, forward FFT and `0x6181b0`: per channel, `bins` magnitudes into `D`.
+    fn magnitudes(&mut self, d: &mut View);
     /// `0x8ec2a0` then `0x8ec320` (more than two channels).
     fn multi_pre(&mut self, d: &mut View);
     /// `0x89ad70`: a level from `D` (quality 1).
@@ -131,7 +132,6 @@ pub trait Callees {
 /// Body scratch (the arena allocations), sized once.
 #[derive(Clone, Debug, Default)]
 pub struct Scratch {
-    pub spec: View,
     pub d: View,
     pub e: View,
     pub g: View,
@@ -148,7 +148,6 @@ impl Scratch {
     pub fn new(channels: usize, bins: usize) -> Self {
         let v = |n: usize| vec![vec![0.0; n]; channels];
         Self {
-            spec: v(2 * bins),
             d: v(bins),
             e: v(BANDS),
             g: v(bins),
@@ -192,7 +191,7 @@ pub fn flatness_gate(d: &mut [f32], n4: usize) {
 /// `0x8e1960..0x8e1b2e`: per channel in order, `v = dot(D[c][..32], 0x209a800) * 10^-0.45`
 /// is subtracted from every channel; then `D = max(D, 0)`.
 pub fn floor_subtract(d: &mut View, table: &[f32; 32]) {
-    let p = 10f32.powf(-0.45);
+    let p = 10f32.powf(f32::from_bits(0xbee6_6667)); // 0x209d9a4: -0.45000002, not -0.45f32
     for c in 0..d.len() {
         let v = ipp::dot_prod(&d[c][..32], table) * p;
         for ch in d.iter_mut() {
@@ -317,14 +316,11 @@ pub fn body(an: &mut Analyzer, p: &Params, out: &mut View, cb: &mut impl Callees
     for ch in out.iter_mut() {
         ipp::zero(ch);
     }
-    cb.spectrum(&mut sc.spec);
     let d = &mut sc.d;
     for c in 0..n {
         ipp::zero(&mut d[c]);
     }
-    for c in 0..n {
-        super::super::magnitude::magnitude_bins(&mut d[c], &sc.spec[c]);
-    }
+    cb.magnitudes(d);
     if n > 2 {
         cb.multi_pre(d);
     }
@@ -480,5 +476,241 @@ fn mul_view(p: &mut View, m: &View) {
         if let Some(k) = pick(m, c, n) {
             ipp::mul_i(k, &mut p[c]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Replay check against `fixtures/gain_body.bin` (`research/re-tools/emulate/gain_fx_body.py`):
+    //! the body runs on the recorded entry state, callees return their recorded outputs, and
+    //! every callee input and the final output and states are compared with the emulator.
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const FIXTURE: &[u8] = include_bytes!("../fixtures/gain_body.bin");
+    /// Relative tolerance, `|a - b| <= TOL * max(1, |b|)`.
+    const TOL: f32 = 1e-6;
+
+    type Recs = BTreeMap<String, Vec<f32>>;
+
+    fn parse() -> Recs {
+        let mut r = Recs::new();
+        let mut i = 0;
+        let u32_at = |i: usize| u32::from_le_bytes(FIXTURE[i..i + 4].try_into().unwrap()) as usize;
+        while i < FIXTURE.len() {
+            let n = u32_at(i);
+            let name = std::str::from_utf8(&FIXTURE[i + 4..i + 4 + n]).unwrap().to_owned();
+            i += 4 + n;
+            let m = u32_at(i);
+            i += 4;
+            let v = FIXTURE[i..i + 4 * m]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            i += 4 * m;
+            r.insert(name, v);
+        }
+        r
+    }
+
+    fn view(r: &Recs, key: &str) -> View {
+        let ch = r[&format!("{key}/ch")][0] as usize;
+        (0..ch).map(|c| r[&format!("{key}/{c}")].clone()).collect()
+    }
+
+    struct Check {
+        errs: Vec<String>,
+        worst: f32,
+    }
+
+    impl Check {
+        fn cmp(&mut self, what: &str, got: &[f32], want: &[f32]) {
+            assert_eq!(got.len(), want.len(), "{what}: length");
+            let mut bad = 0;
+            for (k, (&a, &b)) in got.iter().zip(want).enumerate() {
+                let rel = (a - b).abs() / b.abs().max(1.0);
+                if a.to_bits() != b.to_bits() && !(rel <= TOL) {
+                    if bad < 3 {
+                        self.errs.push(format!("{what}[{k}]: got {a:e} want {b:e}"));
+                    }
+                    bad += 1;
+                }
+                if rel.is_finite() {
+                    self.worst = self.worst.max(rel);
+                }
+            }
+            if bad > 3 {
+                self.errs.push(format!("{what}: {bad} bins off"));
+            }
+            if std::env::var_os("GAIN_DEBUG").is_some() {
+                let diff = got.iter().zip(want).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                eprintln!("    {what}: {diff}/{} not bit-exact", got.len());
+            }
+        }
+        fn cmp_view(&mut self, what: &str, got: &View, want: &View) {
+            assert_eq!(got.len(), want.len(), "{what}: channels");
+            for (c, (g, w)) in got.iter().zip(want).enumerate() {
+                self.cmp(&format!("{what}/{c}"), g, w);
+            }
+        }
+    }
+
+    struct Replay<'a> {
+        r: &'a Recs,
+        pfx: String,
+        k: usize,
+        chk: Check,
+    }
+
+    impl Replay<'_> {
+        fn next(&mut self, name: &str) -> String {
+            let base = format!("{}/call/{:03}", self.pfx, self.k);
+            self.k += 1;
+            assert!(self.r.contains_key(&format!("{base}/fn/{name}")), "{base}: expected {name}");
+            base
+        }
+        fn io(&mut self, name: &str, v: &mut View) {
+            let b = self.next(name);
+            self.chk.cmp_view(&format!("{b} {name} in"), v, &view(self.r, &format!("{b}/in")));
+            *v = view(self.r, &format!("{b}/out"));
+        }
+    }
+
+    impl Callees for Replay<'_> {
+        fn magnitudes(&mut self, d: &mut View) {
+            *d = view(self.r, &format!("{}/mag", self.pfx));
+        }
+        fn multi_pre(&mut self, _: &mut View) {
+            panic!("multi_pre: no >2-channel fixture");
+        }
+        fn flat_level(&mut self, d: &View) -> f32 {
+            let b = self.next("flat_level");
+            self.chk.cmp_view(&format!("{b} flat_level in"), d, &view(self.r, &format!("{b}/in")));
+            self.r[&format!("{b}/ret")][0]
+        }
+        fn bin_smooth(&mut self, bank: usize, c: usize, dst: &mut [f32], src: Option<&[f32]>) {
+            let b = self.next("bin_smooth");
+            assert_eq!(self.r[&format!("{b}/bank")][0] as usize, bank, "{b} bank");
+            assert_eq!(self.r[&format!("{b}/c")][0] as usize, c, "{b} channel");
+            let want = view(self.r, &format!("{b}/in"));
+            self.chk.cmp(&format!("{b} bin_smooth in"), src.unwrap_or(dst), &want[0]);
+            dst.copy_from_slice(&view(self.r, &format!("{b}/out"))[0]);
+        }
+        fn link(&mut self, p: &mut View, _: f32) {
+            self.io("link", p);
+        }
+        fn link_multi(&mut self, p: &mut View) {
+            self.io("link_multi", p);
+        }
+        fn band_analysis(&mut self, d: &View, e: &mut View) {
+            let b = self.next("band_analysis");
+            self.chk.cmp_view(&format!("{b} band_analysis in"), d, &view(self.r, &format!("{b}/in")));
+            *e = view(self.r, &format!("{b}/out"));
+        }
+        fn band_state(&mut self, e: &View, _: f32, state: &mut View) {
+            let b = self.next("band_state");
+            self.chk.cmp_view(&format!("{b} band_state in"), e, &view(self.r, &format!("{b}/in")));
+            *state = view(self.r, &format!("{b}/out"));
+        }
+        fn band_spread(&mut self, r: &mut View) {
+            self.io("band_spread", r);
+        }
+        fn band_synthesis(&mut self, l: &View, g: &mut View) {
+            let b = self.next("band_synthesis");
+            self.chk.cmp_view(&format!("{b} band_synthesis in"), l, &view(self.r, &format!("{b}/in")));
+            *g = view(self.r, &format!("{b}/out"));
+        }
+        fn multi_post(&mut self, _: &mut View) {
+            panic!("multi_post: no >2-channel fixture");
+        }
+        fn out_smooth(&mut self, a: &mut View, _: f32, _: bool) {
+            self.io("out_smooth", a);
+        }
+    }
+
+    /// Every libm call the body made in the emulator, recomputed with Rust's `f32`/`f64` ops.
+    #[test]
+    fn libm_sites_bit_exact() {
+        let r = parse();
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for (k, v) in r.iter().filter(|(k, _)| k.contains("/libm/")) {
+            let f = |i: usize| v[i];
+            let d = |i: usize| f64::from_bits(u64::from(v[i].to_bits()) | u64::from(v[i + 1].to_bits()) << 32);
+            let ok = match v[0] as u32 {
+                1 => f(1).ln().to_bits() == f(2).to_bits(),
+                2 => f(1).exp().to_bits() == f(2).to_bits(),
+                3 => f(1).powf(f(2)).to_bits() == f(3).to_bits(),
+                4 => d(1).powf(d(3)).to_bits() == d(5).to_bits(),
+                c => panic!("{k}: libm code {c}"),
+            };
+            n += 1;
+            if !ok {
+                bad.push(format!("{k}: {v:?}"));
+            }
+        }
+        assert!(n > 0);
+        assert!(bad.is_empty(), "{} of {n} libm results differ:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    #[test]
+    fn body_matches_emulator_replay() {
+        let r = parse();
+        let entries: std::collections::BTreeSet<String> =
+            r.keys().map(|k| k.split('/').take(2).collect::<Vec<_>>().join("/")).collect();
+        let mut fails = Vec::new();
+        for pfx in &entries {
+            let g = |k: &str| r[&format!("{pfx}/{k}")][0];
+            let pre = |k: &str| view(&r, &format!("{pfx}/pre/{k}"));
+            let (n, bins) = (g("an/channels") as usize, g("an/bins") as usize);
+            let mut an = Analyzer {
+                channels: n,
+                bins,
+                hop: g("an/hop") as u64,
+                rate: g("an/rate"),
+                long: g("an/long") != 0.0,
+                weights: pre("weights"),
+                mask: pre("mask"),
+                curve: pre("curve"),
+                final_mul: pre("final_mul"),
+                link_mul: pre("link_mul"),
+                spec_state: pre("spec_state"),
+                spec_rise: pre("spec_rise"),
+                spec_fall: pre("spec_fall"),
+                out_state: pre("out_state"),
+                out_rise: pre("out_rise"),
+                out_fall: pre("out_fall"),
+                band_state: pre("band_state"),
+            };
+            let p = Params {
+                depth: g("p/depth"),
+                focus: g("p/focus"),
+                link: g("p/link"),
+                out_smooth: g("p/out_smooth"),
+                max_cut_db: g("p/max_cut_db"),
+                flag52: g("p/flag52") != 0.0,
+                flag53: g("p/flag53") != 0.0,
+                quality1: g("p/quality1") != 0.0,
+            };
+            let mut out = vec![vec![0.0; bins]; n];
+            let mut sc = Scratch::new(n, bins);
+            let mut cb = Replay { r: &r, pfx: pfx.clone(), k: 0, chk: Check { errs: Vec::new(), worst: 0.0 } };
+            body(&mut an, &p, &mut out, &mut cb, &mut sc);
+            let calls = r.keys().filter(|k| k.starts_with(&format!("{pfx}/call/")) && k.contains("/fn/")).count();
+            assert_eq!(cb.k, calls, "{pfx}: callee count");
+            let post = |k: &str| view(&r, &format!("{pfx}/post/{k}"));
+            cb.chk.cmp_view("out", &out, &post("out"));
+            cb.chk.cmp_view("spec_state", &an.spec_state, &post("spec_state"));
+            cb.chk.cmp_view("out_state", &an.out_state, &post("out_state"));
+            cb.chk.cmp_view("band_state", &an.band_state, &post("band_state"));
+            eprintln!("{pfx}: {} calls, worst rel {:e}, {} mismatches", calls, cb.chk.worst, cb.chk.errs.len());
+            for e in &cb.chk.errs {
+                eprintln!("  {e}");
+            }
+            if !cb.chk.errs.is_empty() {
+                fails.push(pfx.clone());
+            }
+        }
+        assert!(fails.is_empty(), "mismatch in {fails:?}");
     }
 }
