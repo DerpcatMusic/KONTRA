@@ -83,46 +83,45 @@ path (`lower.rs`) sets the form-mode range to 0..33 and other values to 0..1.
 
 ## Tone Machine (serialized mode 1)
 
-### Current engine behaviour
+### Engine behaviour (after this unit)
 
-- Kontakt mode 1 is **not** mapped. `library.rs` falls through to the generic
-  arm and reports `"Tone Machine source (played as a sampler)"` with mode 1.
-  Audio is therefore wrong (plain sampler playback, no pitch/formant engine).
-- `SOURCE_MODE_TM1` is 2 (Time Machine 1). Mode 1 does not share Time Machine's
-  stretch path and must not be routed through `StretchKind::TimeMachine1`.
-- `docs/architecture-v2/DSP_COVERAGE.md` records Tone Machine as `missing`,
-  `unmeasured`, zero corpus instances.
-- No `Tone`-named engine core exists for this mode. The existing `Tone`
-  matches are the post-chain tone filter and colour stages, which are unrelated.
+- Stored mode 1 maps to `StretchKind::ToneMachine` and to
+  `time_machine::Mode::ToneMachine` in the shared time-stretch engine. It is no
+  longer "played as a sampler".
+- Saved fields: the Time Machine 1 machine record (Smooth F, Grain F, HQ B) as
+  the repo's record comment says mode 1 shares field shapes with mode 2. The
+  stored speed and timing flag follow Time Machine 1 (no 0.01 floor; speed 0
+  freezes; tempo-sync reported).
+- Backend: `Scheduler::Grains` with `grain_ms 30, overlap 4, search 0.5`.
+  These constants are **UNMEASURED** and are a labelled stand-in. The importer
+  reports the mode as `NotModeled` ("stand-in granular engine, unmeasured"), so
+  the audio is not claimed as parity.
+- `DSP_COVERAGE.md` still records Tone Machine as unmeasured.
 
 ### Parameters (public documentation, unverified)
 
 Secondary source (Elephorm course, French; not NI): Smooth, Speed, Formant,
-DC Filter, Legato. Described as granular pitch/formant change independent of
-playback speed. NI's manual (Kontakt 5 §20.3 excerpt) says it adjusts speed and
-pitch of samples independently. **Names, ranges, defaults and the saved field
-layout for mode 1 are not yet recorded in the repo** and must come from the
-Kontakt 8 decompile and a saved Tone Machine instrument. Do not guess.
+DC Filter, Legato. NI's manual (Kontakt 5 §20.3 excerpt) says it adjusts speed
+and pitch of samples independently. Formant, DC Filter and Legato have no saved
+field mapping yet.
 
-| Field | Saved location | Law / units | Status |
-| --- | --- | --- | --- |
-| Speed, Pitch | — | — | unknown |
-| Formant, DC filter, Legato, Smooth | — | — | unknown |
+### Unknowns to resolve by oracle measurement or decompile
+
+1. Tone Machine grain size, overlap, alignment search, window (replace the
+   stand-in constants).
+2. Whether the speed floor and freeze semantics match Time Machine 1.
+3. Formant, DC filter and Legato saved fields and their laws.
+4. Whether Tone Machine's record really matches Time Machine 1 (repo comment
+   only; no saved Tone Machine instrument checked).
 
 ### Gap table
 
-| Requirement | Engine status | Gap | Owner step |
-| --- | --- | --- | --- |
-| Tone Machine readout (granular or otherwise) | Missing | Whole algorithm | Decompile + measure |
-| Tone Machine saved-field decode | Missing | Mode 1 record layout | Decompile |
-| Tone Machine diagnostic | Present (played-as-sampler report) | Keep until DSP exists | Done |
-| Wavetable quality parameter | Silent ignore | Read and diagnose or implement | Decompile |
-| Wavetable amplitude forms | Missing | Laws | Decompile |
-| Wavetable blinds/fold/exp/log/sync forms | Missing | Laws | Decompile |
-| Wavetable phase randomness | Rejected + diagnosed | Generator law | Decompile |
-| Wavetable inharmonic / modulation oscillator | Rejected + diagnosed | FM/PM/RM and clocks | Decompile |
-| Live `wavetableModFrequency/Amount/Inharmonic` routes | Missing | No target | Decompile |
-| Anti-aliasing / readout kernel | Unverified | Kernel and sample-rate law | Decompile + measure |
+| Requirement | Engine status | Gap |
+| --- | --- | --- |
+| Tone Machine mapping and engine slot | Done (stand-in, `NotModeled`) | Constants |
+| Tone Machine readout parity | Missing | Measure against Kontakt |
+| Formant / DC filter / Legato | Missing | Fields and laws |
+| Tone Machine record layout | Repo evidence only | Saved-instrument check |
 
 ## Implementation plan (after READY)
 
