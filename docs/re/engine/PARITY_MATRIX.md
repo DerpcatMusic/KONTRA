@@ -17,7 +17,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Beat Machine | unknown | none | |
 | S1200 Machine | unknown | none | |
 | MP60 Machine | unknown | none | |
-| Voice/group/zone engine (RR, release triggers, stealing, legato, choke) | unknown | none | |
+| Voice/group/zone engine (RR, release triggers, stealing, legato, choke) | partial | decomp | Victim walk located (0140860000.c FUN_14086fea0): four kill modes match ordering; Any key (+0x51c), tie-breaks, steal fade and per-key record open. See k-voice-engine.md |
 
 ## Filters (filt-sv, filt-ladder-monark, filt-ar-daft, filt-legacy, filt-multi-versatile, filt-formant-effect)
 
@@ -201,7 +201,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Multi Digital | unknown | none | |
 | Step modulator | unknown | none | |
 | Envelope follower | unknown | none | |
-| Glide | unknown | none | |
+| Glide | missing | decomp | Modulator 0x0B decoded but unexecuted: no caller found for pitch/time to ramp (library.rs:1885). Engine has blocks/glide.rs, unmapped |
 | External MIDI/performance sources | unknown | none | |
 | Modulation routing (target, depth/polarity, shaping, smoothing) | unknown | none | |
 
