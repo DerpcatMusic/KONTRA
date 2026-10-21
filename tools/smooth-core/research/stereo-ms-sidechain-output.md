@@ -123,6 +123,24 @@ and delta targets). Checked against the code this round, with no differences:
   section 1 above.
 - `dsp-remaining.md` section 1 said the shape-5 copy looked inverted. It is not (section 3).
 
+## Round 2: the helper is bit-exact; where it applies
+
+- **Bit-exact fixture.** `research/re-tools/emulate/mid_side_fixture.py` writes
+  `src/reference/fixtures/mid_side.json` (52 cases: 24 encode, 24 decode, 4 copy). `mid_side_pair`
+  reproduces every destination sample bit for bit (test `mid_side_helper_matches_the_emulated_helper_bit_for_bit`).
+- **Encode site `0x8928a3` (flag 1)** is reached only when, in order: `+0xa6` (stereo M/S) is set
+  (`0x892781`), the bypass byte `+0xa9` is clear (`0x892796`), and `[rbp+0x130]` is not negative
+  (`0x8927a6`, the group index used as `r9 = idx << 5`). The shape the same block reads for the
+  group is `+0x124` (`0x8927ba`), the setter's shape index 26, not `+0x128`. So the solo filter
+  is the one place that reads the selector field.
+- **Decode site `0x892d0c` (flag 0)** is in the output section, after the solo path, with its own
+  gates (not decoded). A second decode call is at `0x89a5bc` (wrapper `0x89a4f0`, callers listed
+  in the notes above).
+- **Not verified:** which buffers the encode and decode act on. With M/S on and a band used, the
+  trace (`0x8a3b20` entry hook) saw no helper call at all, so neither site was reached. The value
+  of `[rbp+0x130]` was not read; the gate has to be set (or its writer found) before the stereo
+  output can be checked.
+
 ## Tools
 
 - `re-tools/emulate/stereo_pair_probe.py`: emulates `0x8a3b20` and checks the formulas.

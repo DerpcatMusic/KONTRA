@@ -857,6 +857,41 @@ mod tests {
         }
     }
 
+    /// `0x8a3b20` against the emulated helper, bit for bit. Flag 1 is the encode site
+    /// (`0x1808928a3`, gain 0.5), flag 0 the decode site (`0x18089a5bc`, gain 1.0). Mode 1 copies
+    /// the first channel.
+    #[test]
+    fn mid_side_helper_matches_the_emulated_helper_bit_for_bit() {
+        const MS: &str = include_str!("fixtures/mid_side.json");
+        let fixture: serde_json::Value = serde_json::from_str(MS).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(cases.len() >= 50, "fixture covers encode, decode and copy");
+        for (idx, case) in cases.iter().enumerate() {
+            let src = [f32s(&case["src"][0]), f32s(&case["src"][1])];
+            let want = [f32s(&case["out"][0]), f32s(&case["out"][1])];
+            let flag = case["flag"].as_u64().unwrap();
+            let mode = case["mode"].as_u64().unwrap();
+            if mode == 1 {
+                assert_eq!(want[0], src[0], "case {idx}: copy of the first channel");
+                continue;
+            }
+            let gain = if flag == 1 { 0.5 } else { 1.0 };
+            for (i, (&l, &r)) in src[0].iter().zip(&src[1]).enumerate() {
+                let (m, s) = mid_side_pair(l, r, gain);
+                assert_eq!(
+                    m.to_bits(),
+                    want[0][i].to_bits(),
+                    "case {idx} sample {i} mid"
+                );
+                assert_eq!(
+                    s.to_bits(),
+                    want[1][i].to_bits(),
+                    "case {idx} sample {i} side"
+                );
+            }
+        }
+    }
+
     #[test]
     fn mid_side_round_trips_at_unity_after_half_on_encode() {
         let (m, s) = mid_side_pair(0.6, 0.2, 0.5);
