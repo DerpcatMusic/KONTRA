@@ -194,7 +194,11 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x77 | 0x79 => {
+        // Reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but the Chainsaw ctor, apply and
+        // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are
+        // not guessed from the Big Fuzz layout.
+        0x77 => "Chainsaw: record reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but its ctor, apply, kernel and parameter names are not extracted",
+        0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
         _ => return None,
@@ -230,6 +234,14 @@ mod tests {
         let mut bad = saved.clone();
         bad[0].value = Integer(3);
         assert!(typed_core(0x66, &bad).is_none());
+    }
+
+    #[test]
+    fn chainsaw_is_diagnosed_and_never_mapped_onto_big_fuzz_knobs() {
+        use EffectValue::{Byte, Float};
+        let saved = fields(vec![Float(0.5), Float(0.5), Float(0.5), Float(0.5), Byte(1)]);
+        assert!(typed_core(0x77, &saved).is_none());
+        assert!(unproved(0x77).is_some_and(|why| why.starts_with("Chainsaw")));
     }
 
     #[test]
