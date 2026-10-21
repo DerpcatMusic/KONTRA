@@ -1950,26 +1950,38 @@ impl Shared {
     fn refresh_uvi(&self, params: &SamplerParams) {
         let parts = self.parts.lock_unpoisoned().clone();
         for (slot, part) in parts.iter().enumerate() {
-            let mut scripts = part.scripts.lock_unpoisoned();
-            let Some(uvi) = scripts.uvi.clone() else {
-                continue;
+            // Commit holds `view` and then takes `scripts`; take them in that
+            // order only. `scripts` is released before `view` is requested, and the
+            // generation read under it fences a commit that lands in between.
+            let (uvi, generation) = {
+                let mut scripts = part.scripts.lock_unpoisoned();
+                let Some(uvi) = scripts.uvi.clone() else {
+                    continue;
+                };
+                if scripts.uvi_source
+                    != params
+                        .selection
+                        .read_unpoisoned()
+                        .parts
+                        .get(slot)
+                        .map(Part::source)
+                {
+                    continue;
+                }
+                let revision = uvi.revision();
+                if revision == scripts.uvi_revision {
+                    continue;
+                }
+                scripts.uvi_revision = revision;
+                (uvi, part.generation.load(Ordering::Acquire))
             };
-            if scripts.uvi_source
-                != params
-                    .selection
-                    .read_unpoisoned()
-                    .parts
-                    .get(slot)
-                    .map(Part::source)
+            if let Some(view) = self
+                .view
+                .lock_unpoisoned()
+                .parts
+                .get_mut(slot)
+                .filter(|view| view.generation == generation)
             {
-                continue;
-            }
-            let revision = uvi.revision();
-            if revision == scripts.uvi_revision {
-                continue;
-            }
-            scripts.uvi_revision = revision;
-            if let Some(view) = self.view.lock_unpoisoned().parts.get_mut(slot) {
                 self.ui_activity.add(UiCount::PublicationCalls, 1);
                 let snapshot=uvi.snapshot();
                 let changed=view.publish_interface(snapshot.interface());
@@ -2188,7 +2200,7 @@ fn prepare_snapshot(
         },
     };
     let result = V2Loader.prepare_serviced(
-        &load, &mut |_| {}, &|| !current(), &mut || service_current_ui(params),
+        &load, &mut |_| {}, &|| !current(), &mut || control_tick(params),
     );
     if !current() {
         trace.detail(
@@ -2291,6 +2303,55 @@ fn service_current_ui(params: &SamplerParams) {
     });
 }
 
+/// The mixer, routing, scans, discard drain and UI handoffs. None of it needs the
+/// loader, so it also runs from the load wait: a mute or fader move made while a
+/// preset prepares reaches the audio thread within one wait tick.
+fn control_tick(params: &SamplerParams) {
+    let shared = &params.shared;
+    shared.flush_ready();
+    service_current_ui(params);
+    // UVI publication retains its existing source/lock policy.
+    shared.refresh_uvi(params);
+    shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
+    // Dropping what the audio thread replaced is this thread's job.
+    while shared.discard.pop().is_some() {}
+    shared
+        .midi_thru
+        .store(params.selection.read_unpoisoned().midi_thru, Ordering::Release);
+    poll_libraries(shared);
+    route(params);
+    align(params);
+    push_mix(params);
+    refresh_problems(shared);
+}
+
+fn push_mix(params: &SamplerParams) {
+    let shared = &params.shared;
+    let selection = params.selection.read_unpoisoned();
+    let mut mix = mix(&selection);
+    if let Some(plan) = &shared.published.lock_unpoisoned().0 {
+        mix.timing = plan.clone();
+    }
+    let view = shared.view.lock_unpoisoned();
+    mix.articulation_routes = selection
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(slot, p)| {
+            let instrument = view.parts.get(slot)?.instrument.as_deref()?;
+            let (keys, switching) = p
+                .articulation_overlay
+                .routing(instrument, p.switching)
+                .ok()?;
+            Some(Arc::new(crate::sound::articulation::Routing {
+                keys,
+                switching,
+            }))
+        })
+        .collect();
+    let _ = shared.controls.force_push(mix);
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -2300,48 +2361,11 @@ impl BackgroundTask for Load {
         shared.flush_ready();
         service_current_ui(params);
         snapshot_reuse::poll(params);
-        // UVI publication retains its existing source/lock policy. The load
-        // heartbeat only services the bounded core effect/control handoff.
-        shared.refresh_uvi(params);
-        shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
-        // Dropping what the audio thread replaced is this thread's job.
-        while shared.discard.pop().is_some() {}
         load_multi(params);
         let selection = params.selection.read_unpoisoned().clone();
         shared.ensure_parts(selection.parts.len());
         shared.prepare_growth();
-        shared
-            .midi_thru
-            .store(selection.midi_thru, Ordering::Release);
-        poll_libraries(shared);
-        route(params);
-        align(params);
-        let push_mix = || {
-            let selection = params.selection.read_unpoisoned();
-            let mut mix = mix(&selection);
-            if let Some(plan) = &shared.published.lock_unpoisoned().0 {
-                mix.timing = plan.clone();
-            }
-            let view = shared.view.lock_unpoisoned();
-            mix.articulation_routes = selection
-                .parts
-                .iter()
-                .enumerate()
-                .map(|(slot, p)| {
-                    let instrument = view.parts.get(slot)?.instrument.as_deref()?;
-                    let (keys, switching) = p
-                        .articulation_overlay
-                        .routing(instrument, p.switching)
-                        .ok()?;
-                    Some(Arc::new(crate::sound::articulation::Routing {
-                        keys,
-                        switching,
-                    }))
-                })
-                .collect();
-            let _ = shared.controls.force_push(mix);
-        };
-        push_mix();
+        control_tick(params);
         let mut snapshot = prepare_snapshot(params);
         let mut loaded = false;
         for slot in 0..shared.grown.load(Ordering::Acquire) as usize {
@@ -2358,7 +2382,7 @@ impl BackgroundTask for Load {
             align(params);
             // New trees: route their nodes and size their settings.
             route(params);
-            push_mix();
+            push_mix(params);
         }
         refresh_problems(shared);
     }
@@ -2431,7 +2455,7 @@ fn load_part(
 ) -> bool {
     load_part_with(params, slot, prepared, |request, progress, canceled| {
         V2Loader.prepare_serviced(
-            request, progress, canceled, &mut || service_current_ui(params),
+            request, progress, canceled, &mut || control_tick(params),
         )
     })
 }
@@ -2748,18 +2772,20 @@ fn load_part_with(
             v.instrument = loaded.instrument;
             v.mapping_index = mapping_index;
             v.keys = loaded.scripts.keys();
-            *atoms.scripts.lock_unpoisoned() = loaded.scripts;
+            // Dropping the old script thread / streamer joins threads: do it after `view` is released.
+            let old_scripts = std::mem::replace(&mut *atoms.scripts.lock_unpoisoned(), loaded.scripts);
             let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
             atoms
                 .resident_bytes
                 .store(held.unwrap_or(full), Ordering::Relaxed);
             atoms.full_bytes.store(full, Ordering::Relaxed);
-            *atoms.stream.lock_unpoisoned() = loaded.stream;
+            let old_stream = std::mem::replace(&mut *atoms.stream.lock_unpoisoned(), loaded.stream);
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms
                 .load_progress
                 .store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
+            drop((old_scripts, old_stream));
             shared.publish_part((slot, generation, loaded.part));
             true
         }
@@ -5348,6 +5374,36 @@ mod transport_event_tests;
 #[cfg(test)]
 mod uvi_registry_part_tests {
     use super::*;
+    /// F-01: a commit holds `view` while it writes `scripts`; the UVI refresh (host save,
+    /// loader tick) must never wait for `view` while holding `scripts`.
+    #[test]
+    fn uvi_refresh_does_not_hold_scripts_while_waiting_for_view() {
+        use sampler_uvi::scripted::ScriptThread;
+        use std::time::Duration;
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[Knob('K',0.25,0,1)]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let (_thread,loaded)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+        let params=SamplerParams::new();params.shared.ensure_parts(1);
+        params.selection.write_unpoisoned().parts=vec![Part{path:"order.uvip".into(),..Default::default()}];
+        let atoms=params.shared.part(0).unwrap();atoms.generation.store(3,Ordering::Release);
+        {
+            let mut scripts=atoms.scripts.lock_unpoisoned();
+            scripts.uvi=Some(loaded.ui.clone());
+            scripts.uvi_source=Some(params.selection.read_unpoisoned().parts[0].source());
+            scripts.uvi_revision=loaded.ui.revision().wrapping_add(1);
+        }
+        params.shared.view.lock_unpoisoned().parts[0].generation=3;
+        std::thread::scope(|scope|{
+            let commit=params.shared.view.lock_unpoisoned();
+            let refresh=scope.spawn(||params.shared.refresh_uvi(&params));
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(!refresh.is_finished(),"refresh waits for the view");
+            assert!(atoms.scripts.try_lock().is_ok(),"commit's next step (scripts) must not be blocked by refresh");
+            drop(commit);
+            refresh.join().unwrap();
+        });
+        assert!(params.shared.view.lock_unpoisoned().parts[0].uvi_snapshot.is_some());
+    }
+
     #[test]
     fn uvi_dynamic_registry_joins_part_display_save_epoch_and_drawn_owner(){
         use sampler_uvi::scripted::ScriptThread;
