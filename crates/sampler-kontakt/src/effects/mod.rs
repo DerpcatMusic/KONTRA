@@ -906,6 +906,27 @@ pub(crate) fn chain_with(
                 if matches!(kind, 70 | 71) && !extra.is_empty() =>
             {
                 modelled = filter::slot_daft(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
+            Some(Params::Filter {
+                kind,
+                cutoff,
+                resonance,
+                extra,
+            }) if matches!(kind, 70 | 71) && !extra.is_empty() => {
+                // The Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY
+                // "Daft parameter laws and scheduling". The leading value is the
+                // Gain control; modulation adds to the saved normalized knob.
+                // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
+                out.filter_slots
+                    .push((fx.slot, out.processors.len() + filters.len()));
+                let mapped = filter::template(*kind).expect("Daft rows are in the table");
+                let mut config = mapped.config;
+                // Native gain setter (FUN_140b05290) takes the signed leading value unclamped.
+                config.drive = f64::from(extra[0]);
+                config.cutoff = f64::from(*cutoff).clamp(0.0, 1.0);
+                config.resonance = f64::from(*resonance).clamp(0.0, 1.0);
+                filters.extend(config.processors(None).expect("Daft rows configure"));
+                note_fidelity(&mut notes, *kind, &mapped);
+                combined = product(gain, combined);
             }
             Some(Params::Filter { kind, cutoff, resonance, extra }) => {
                 modelled = filter::slot_filter(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)

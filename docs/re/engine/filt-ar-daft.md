@@ -1,148 +1,132 @@
 # Engine unit: AR LP/HP/BP (2, 4, 2/4) and Daft / Daft HP (Kontakt 8)
 
-Status: **design and refactor landed; Kontakt-measured laws still open.** The user decided not to wait
-for the decompile (2026-10-21). Kontakt 8 READY is still absent, so the decompiled constants are unconfirmed.
+Status: decompiled Kontakt 8.13.1 (`source/kontakt8/`, READY) and the image constants read from
+`re-binaries/Kontakt8.exe` confirm the AR cutoff law and the Daft loop, gain, cutoff, feedback,
+resonance, output, resampler and knees. Kontakt-recorded audio is still not compared (Wine oracle
+not run for these units). Confidence: high on constants and recurrence order, medium on start-up and
+ramp-clock timing (see open items).
 
-## Design (universal filter, shared with filt-sv)
+Scope: Kontakt 8 only. Code: `crates/sampler-core/src/dsp/filter/` (`ar.rs`, `ar_kernel.rs`,
+`daft.rs`, `table.rs`, shared `linear.rs` `Zdf`, `shaper.rs` `Knee`, `dsp/kaiser.rs` x2 resampler);
+mapping: `crates/sampler-kontakt/src/effects/`; neutral config: `crates/sampler-ir/src/{fx/filter.rs,lib.rs}`.
 
-Built on filt-sv's shared core (`linear::Zdf`, `shaper::Knee`, `shaper::pade`).
+## Shared pieces
 
-- **AR (done, bit-identical).** Each AR section is `Zdf::new(g, 2(1-feedback))` run through
-  `Zdf::tick` with `STATE_KNEE`, i.e. `Slope::Direct(0.0005)` clamped to +-1000 (`shaper.rs`
-  gained the `Direct` slope, the AR order `c - (|c| c) w`). `ar_kernel::saturate` is deleted.
-  Evidence: the old and new section and knee arithmetic agree bit for bit over 2e5 section and
-  2e6 knee probes, and the end-to-end golden hash `ar_kernel::tests::output_is_bit_stable`
-  (0x9167fd7b74bd03ae) is the same for the old and new kernels.
-- **Daft (kept, not bit-identical).** Its loop is a different discretisation: it stores the band and
-  low states, not the high-pass state `Zdf` keeps, and damps the band state with `2 - res*feedback`.
-  So it cannot run on `Zdf` without changing its output. Its saturator `soft` (f64, clamp at 3) is
-  the Padé curve of `shaper::pade` (f32, no clamp), not bit-equal, so `daft::soft` stays. Daft's
-  2x wrapper is `oversample.rs`. Golden hash `daft::tests::output_is_bit_stable` is unchanged.
-- Not moved: `cascade::soft` and `cascade::sv_sat` (filt-sv's). Ladder's per-stage curve and the
-  AR detector stay in their cores.
+- **Table** (`filter/table.rs`): one exponential table for AR and Daft. `FUN_1404d14d0` fills
+  `T[i] = f32(pow(2, i*(1/60) - 20))`, i in 0..2400 (constants `2.0`, `1/60`, `20.0` read as f64 from
+  `0x144714998`, `0x144714938`, `0x144761788`). Lookup (`FUN_140b04a30`, `FUN_140b04c80`):
+  signed 16-bit index; negative reads 0; interior `frac * (T[i+1]-T[i]) + T[i]`.
+  Past index 2400: Daft reads the native tail `0x14a6b7100` (`1.7526e-37`, then clamps to 1 Hz);
+  AR reads the last entry (its native vectors require it; the decompile's AR path is not
+  separately confirmed here). `dynamics/computer.rs` keeps the last-entry behaviour.
+- **Knees** (`filter/shaper.rs`): `Knee { limit, slope }`. AR's state knee is `Slope::Direct(0.0005)`
+  at limit 1000 (`c - (|c| c) w`). Daft's two knees are `Fused` (below).
+- **Zdf** (`filter/linear.rs`, filt-sv): AR sections run on it bit-identically.
+- **x2 resampler** (`dsp/kaiser.rs`): `FUN_140ae22e0` configures two objects per Daft channel:
+  `(rate, 2, 1, 1)` selects mode 4 (`FUN_140ae2c40`, x2 up) and `(rate, 1, 2, 1)` mode 5
+  (`FUN_140ae3300`, x2 down). Both are the Kaiser 16-tap x2 pair already in `kaiser.rs`; the
+  wrapper `FUN_140ae2190` processes whole blocks, which is equivalent to per-sample up then down.
 
-## Measurement status (Wine oracle)
+## AR family (saved 100..=108)
 
-- Not run in this pass. Blockers: no Daft gain ENGINE_PAR id is recorded (`docs/re/kontakt-bindings/
-  filters_eq.tsv` has none), and `audit-probes.tsv` rows CORE-FILTERS-029/030/031 are BLOCKED-AUDIO.
-  The oracle scripts (`tools/kontakt-oracle/stimrender.py`, `eqrender.py`) write to `/tmp/w3`; that
-  must move to `/data/dev` scratch before a run.
-- Next step: find the Daft gain id with `probe_fx.py` (state-only sweep), then render a level sweep
-  through `stimrender.py` at several gain/resonance settings and fit the saturator curve.
+### Identity and modes
+Saved 100..108 → internal 76..84 → `BFilterDJ` (wrapper selector `FUN_140af0080`, core `FilterDJ`).
+Mode table as before: 100→0 2-pole LP, 101→1 BP, 102→2 HP, 103→3 4-pole LP, 104→4 4-pole BP,
+105→5 4-pole HP, 106→6 combined LP, 107→7 combined BP, 108→8 combined HP.
 
-`/data/dev/workspace/Research/KONTRA/source/kontakt8/READY` does not exist yet, and the
-`kontakt8/` export directory is empty (Ghidra project `Kontakt8.lock` is present in `source/ghidra/`).
-Nothing below was taken from new decompilation. Every address cited is from existing repo evidence.
+### Laws (confirmed against `FUN_140b04a30`, `Kontakt8.exe`)
+- Cutoff position: `min(x*145, 140) * 5 + 1381.881591796875`; constants 145.0 (`0x144fcfe48`),
+  140.0 (`0x144fcfe44`), 5.0 (`0x1447149f0`), 1381.88 (`0x144f38d20`).
+- Hz via the shared table. Pole polynomial: `((f^4 w^3 c1 + f^2 w c2) w + pi) f w` with `c1 = 40.80263`
+  (`0x144fcfe28`), `c2 = 10.335426` (`0x144fcfe04`), `w = 1/rate`, `pi = 0x1447149d4`. Matches
+  `ar_kernel::targets` term for term, including the left-to-right order.
+- Section, detector, floor and gain constants: covered by the 243 static/ramp vectors
+  (`ar_native_vectors.json`, binary identity recorded in `w15-ar-native.md`) at the 2e-6 tolerance;
+  the Rust checkpoints pass (6 focused tests) and the golden hash `ar_kernel::tests::output_is_bit_stable`
+  holds across the refactors below.
 
-Scope: Kontakt 8 only. Format mapping lives in `crates/sampler-kontakt/src/effects/`;
-the shared engine lives in `crates/sampler-core/src/dsp/filter/`; neutral config in
-`crates/sampler-ir/src/fx/filter.rs` and `crates/sampler-ir/src/lib.rs` (`Ar`, `Daft`).
-
-## 1. AR family (saved types 100..=108)
-
-### Identity
-- Saved 100..=108 map to internal 76..=84 and to one native class, `BFilterDJ`, whose core is
-  `NI::KONTRAFX::FilterDJ` (`docs/audit-2026-10-10/w15-ar-native.md`, "Identity").
-- Mode table (saved → mode, topology, output): 100→0 2-pole LP, 101→1 2-pole BP, 102→2 2-pole HP,
-  103→3 4-pole LP, 104→4 4-pole BP (separate branch), 105→5 4-pole HP, 106→6 combined 2/4 LP,
-  107→7 combined 2/4 BP, 108→8 combined 2/4 HP.
-- Documented intent (Kontakt Manual, filter reference, `#ar-*`): resonance decreases with high
-  input amplitude and increases at low levels; 2-pole 12 dB/oct, 4-pole 24 dB/oct; combined modes mix
-  the two- and four-pole responses.
-
-### Parameters
-| Control | Units | Range | Default | Notes |
-|---|---|---|---|---|
-| Cutoff (`ENGINE_PAR_CUTOFF`) | stored normalized | 0..=1 | saved value | Law: table `T[i] = 2^(i/60 − 20)`, adjacent-f32 interpolation, position `min(145·x, 140)·5 + 1381.881591796875`; pole coefficient is a 5th-order polynomial in frequency/rate (native cutoff `0x140b04a30`). |
-| Resonance (`ENGINE_PAR_RESONANCE`) | stored normalized | 0..=1 | saved value | Normalized ramp, updated before scale (`0x140af1d54..d78`). |
-| Subtype | saved id | 100..=108 | — | Selects mode. |
-
-Clock and ramps: 32-frame control quantum; ramp duration `max(1, trunc(rate·0.001/32 + 0.5))` quanta;
-a pending request restarts the full duration even if unchanged; steps with square < 1e-15 snap to target
-(`0x140b03300`, `0x140b03360..3a5`, `0x140b03424`). Wrapper clock `0x1408f9d90` keeps its own 32-frame
-countdown. Per-channel state: 9 f32 cells at core offset `0x70`, stride `0x24`; sections clamp integrator
-states before soft saturation; a shared stereo detector follows band output, releases with rate scaling
-and reduces feedback as level rises (`0x140afedc0` dispatcher, `0x140af0632` static, `0x140af1f30` ramp).
-
-### Evidence in repo
-- `crates/sampler-core/src/dsp/filter/ar_kernel.rs`: independent equations; test
-  `all_subtypes_match_original_instructions_at_native_checkpoints` (PASS, run 2026-10-21).
-- `crates/sampler-core/src/dsp/filter/ar.rs`: 22 stereo cells, test-only runtime. Tests
-  `ar_test_only_runtime_matches_natural_native_wrapper_checkpoints`,
-  `ar_test_only_runtime_preserves_quantum_state_across_partitions`,
-  `ar_low_pass_2_4_matches_the_kontakt_recording`, pending-request and tiny-step tests (all PASS, 6/6 focused).
-- Vectors: `ar_native_vectors.json` (81 synthetic scenarios, 243 static/ramp/retune cases, max error 0.0),
-  `ar_runtime_vectors.json` (180 cases, strict 2e-6).
-- Native binary identity and hashes: see `w15-ar-native.md`.
+### Refactor done
+- `ar_kernel` section runs `Zdf::tick` with `STATE_KNEE` (`Slope::Direct(0.0005)`, limit 1000). The old
+  `saturate` is deleted; old and new knee and section arithmetic agree bit for bit (2e6 knee,
+  2e5 section probes). End-to-end hash unchanged.
+- `ar_kernel`'s own table and lookup moved to `table.rs` (`Past::LastEntry`).
 
 ### Gap table (AR)
-| Behaviour | Engine status | Gap |
+| Behaviour | Status |
+|---|---|
+| Cutoff position, Hz table, pole polynomial | confirmed (decompile + image constants) |
+| Table recipe | confirmed (`FUN_1404d14d0`), now shared |
+| Section / detector / state knee | covered by vectors (2e-6); `Zdf` + `Knee` bit-identical to the old arithmetic |
+| Past-table lookup | AR vectors say last entry; the decompile's cutoff function writes the tail. Unreachable (max index 2081), recorded, not changed |
+| Start-up of lanes and ramp clock | covered by vectors for the tested ramps; native ctor path not modelled |
+| Host recording (Kontakt-rendered audio) | **open**: Wine oracle not run |
+| CPU at 300 voices | **open**: quiet run not done |
+
+## Daft (saved 70 = LP, 71 = HP)
+
+### Identity and parameters (confirmed, `FUN_140b05900` dispatcher)
+Setter index: 0 gain (`FUN_140b05290`), 1 cutoff (`FUN_140b04c80`), 2 resonance (`FUN_140b05900`
+case 2), 3 response (`FUN_140b05900` case 3). Object `NI::KONTRAFX::FilterDaft` (`FUN_140af4550`
+ctor), prepare `FUN_140afd210(rate, block)`, process `FUN_140affa30`, ramp `FUN_140acb6c0`.
+
+| Lane (ramped) | Native target | Law (confirmed) |
 |---|---|---|
-| All 9 modes, cutoff/resonance laws, 32-frame clock | Covered (`ar_kernel`, `ar.rs`) | None proven in Rust beyond repo vectors. |
-| Ramp state, pending-request priority, partition invariance | Covered | Tests are test-only (`cfg(test)`); the runtime reserves 22 cells in the shipped `Core::Ar` path. |
-| Config → IR → kernel mapping (`effects/mod.rs` arm at ~1175) | Covered for 100..=108 | None. |
-| Host-recorded acceptance (real Kontakt PCM) | Not covered | Needs calibrated paired captures; `Fidelity::Exact` label in `filter.rs` rests on vectors, not host audio. |
-| Wrapper rounding: `f32(rate_inverse·2092.3…)` grouping | Covered by the kernel | None. |
-| Native CRT `pow` last-bit equivalence | Not proven | Table initialized from the verified law. Expected ≪ 2e-6. |
-| Clock: 64-frame source vs 32-frame control | Open (`W15_NATIVE_CUTOFF.md`) | Whole-block timing parity not established. |
-| CPU acceptance | Open | Needs a quiet run. |
+| 0 gain amplitude (`0x48e50`) | `lookup(x*119.589409 + 1200)` | no clamp on the signed leading value (`0x144fc5450`, `0x144fc4b50`); unity at 0; +12 dB at 1 |
+| 1 cutoff Hz (`0x48e54`) | `clamp(lookup(x*625 + 1481.881592), 1, 30000)` | `0x144fcfe6c`, `0x144fcfe80`, `0x144fcfea4` |
+| 2 feedback (`0x48e58`) | `1.6 - min(hz*0.5, 14000) * 5.714285725844093e-5` | `0x144714964`, `0x144fcfea0`, `0x144fcfc8c`; derived from the target cutoff |
+| 3 resonance (`0x48e5c`) | `1 - (1-x)^2` (f32 order as native) | `FUN_140b05900` case 2 |
+| response (immediate, not ramped) | LP weight 1 and HP weight 0 below 0.5; the reverse from 0.5 | `trunc(2x)` clamped to 0..1, set by `FUN_140b05900` case 3 |
 
-Decision: no AR change in this unit. Its Rust checks pass against the recorded vectors, so the
-`Exact` label stays. Re-check it after the Kontakt 8 decompile finishes.
+Ramp (`FUN_140acb6c0`): per control quantum, countdown on the object's clock; delta
+`(target - current) * (1 / (quanta * 32 * 2))` in f32, snapped below 1e-15; `quanta = trunc(2 rate
+* 0.002 / 64 + 0.5)`, at least one (`0x144f3860c` = 0.002). Lanes advance once per 2x sample.
 
-## 2. Daft (saved 70 = LP, 71 = HP)
+### Per 2x-sample loop (`FUN_140affa30`, transcribed in f32 with the native order)
+Constants read from the image: stage A series `pi^4/120`, `pi^2/12`, `pi/2`; stage B series
+`2 pi^4/15`, `pi^2/3`, `pi` (all at `0x144fcfd40..`, `0x144fcfe08..`, `0x144714960`, `0x1447149d4`);
+drive `0.6` (`0x144725080`); damping `0.8` (`0x144f38820`); output trim `1.2` (`0x144fcfd68`); output
+gain `1.8` (`0x144714980`); knees: `(1 - 0.5|c|) c` at clamp 1 (`0x14470bad4`, `0x144714a54`) and
+`(1 - 0.125|c|) c` at clamp 4 (`0x144f39df4`, `0x144f38e04`, `0x1447149e4`).
 
-### Identity
-- Native class `BFilterDaft` owning `NI::KONTRAFX::FilterDaft` at wrapper offset `0x210`
-  (`docs/re/DSP_SYSTEM_INVENTORY.md`, "Daft parameter laws and scheduling").
-- Parameter setter `0x140b05900`; cutoff tail-call `0x140b04c80`; table initializer `0x1404d14d0`.
-- Internal selector: wrapper `0x140af0170` maps internal 68→mode 0 (LP), 69→mode 1 (HP), other values→0.
-  The internal-to-saved mapping (68/69 vs 70/71) is **not proven**; the code cites v1's stored-ID table
-  (`effects/mod.rs` ~1198, marked `ponytail: unverified`).
+Stage A runs at the quarter angle `tan(pi f / (4 rate))`, stage B at the full angle
+`tan(pi f / (2 rate))`, both as the native truncated series. Each sample: input `gain * x * 0.6`;
+a two-stage zero-delay update with states `[band-high, band, low]`; the first knee on the high
+state, fed back with the feedback lane; the second knee on the stage output; output
+`((sat - low) * HP + low * LP) * (1.8 - 1.2 r^2)`.
 
-### Parameters
-| Control | Units | Range | Default | Notes |
-|---|---|---|---|---|
-| Gain (leading value of extra params) | stored normalized | see below | saved value | Kernel: amplitude `lookup(x·119.58941 + 1200)`, unity at 0, 3.981133 (+12 dB) at 1, 0.707950 at −0.25. Mapping clamps to 0..=1 (`effects/mod.rs` ~1200). **Conflict with the signed test, see open questions.** |
-| Cutoff | stored normalized | 0..=1 | saved value | Kernel: table `2^(i/60−20)`; cutoff Hz runs 25.956726 at 0 to 30 000 at 1 (`parameter_laws` test, values from `DSP_SYSTEM_INVENTORY`). |
-| Resonance | stored normalized | 0..=1 | saved value | Kernel: 0.5 → 0.75 (`targets` element 2). |
-| Response | derived from saved id | 0 (LP) / 1 (HP) | — | Kernel: response control 0.49 → 0 (LP), 0.5 → 1 (HP). The mapping sets it from the saved id. |
+Resampling: Kaiser x2 up before the loop, x2 down after (`dsp/kaiser.rs`). The previous stand-in
+(linear up, two-tap down, soft rational saturator, single tan) is removed.
 
-Clock: 32-frame quantum (absolute sample clock, not per-instance countdown); ramp length about
-2 ms in whole quanta (`ceil(0.002·rate/32).max(1)`), per `ramp_length_follows_the_sample_rate`.
-
-### Evidence in repo
-- `crates/sampler-core/src/dsp/filter/daft.rs`: 2x oversampled trapezoidal SVF; tests
-  `parameter_laws_match_the_specified_table_points` and `ramp_length_follows_the_sample_rate` (PASS).
-- `crates/sampler-kontakt/src/effects/mod.rs` tests `daft_filter_slot_keeps_its_normalized_controls` and
-  `ladder_and_daft_cutoff_routes_retain_the_authored_physical_slot` (PASS).
-- `docs/architecture-v2/W15_NATIVE_CUTOFF.md`: Daft route amount test (−0.143 dB residual, +8.0 dB HF change on
-  Analog Strings); this only checks routing, not the kernel.
+### Changes made in this pass (native vs previous kernel)
+- Loop replaced: previous single-stage TPT with the rational `soft` is gone. The native two-stage loop
+  and both knees are in `daft.rs`; the rational `soft` and the local 2x helpers are deleted
+  (`filter/oversample.rs` removed).
+- Feedback is a ramped lane derived from the target cutoff (was recomputed from the ramped cutoff).
+- Cutoff is clamped to 1..30000 Hz only (was also clamped to 0.45 rate).
+- Ramp quanta uses the native rounding (was `ceil`): 22.05 kHz gives 1 quantum, not 2.
+- Gain is unclamped in the kernel (signed input), and the Kontakt mapping no longer clamps
+  `extra[0]` to 0..1 (native setter takes the signed value).
+- Table and tail: shared `table.rs`, Daft reads the native tail past index 2400.
+- Golden hashes recorded from this kernel (`daft::tests::output_is_bit_stable`, responses LP and HP).
+  The old hashes are invalid by design.
 
 ### Gap table (Daft)
-| Behaviour | Engine status | Gap |
-|---|---|---|
-| Cutoff and resonance laws, table points | Covered (`parameter_laws`) | Table values come from the inventory, not from a native run here. |
-| Ramp length, 32-frame cadence | Partially covered | Cadence follows the absolute clock; the native per-instance countdown is unverified. |
-| Gain law (sign, range, curve) | **Not proven** | Mapping clamps to 0..=1; kernel test assumes signed gain. |
-| Saturation transfer | **Stand-in** (`soft()`, rational tanh; CORE-FILTERS-029) | Native transfer not recovered. |
-| Oversampling / resampler (linear up, two-tap down) | **Stand-in** | Native resampler not recovered (CORE-FILTERS-030/031). |
-| Feedback nonlinearity | **Missing** | Not recovered. |
-| Stored id 70/71 vs internal 68/69 | **Unproven** | Depends on v1 table; verify with the decompile and with a saved-file oracle. |
-| Routing / physical slot / Mix-block retention | Covered | None. |
-| Audio kernel vs Kontakt recordings | Not covered | Needs calibrated captures. Daft is `Fidelity::Partial` (correct). |
+| Behaviour | Status |
+|---|---|
+| Gain, cutoff, feedback, resonance, response laws | confirmed (image constants, setter dispatch) |
+| Table recipe and tail | confirmed (`FUN_1404d14d0`, `FUN_140b04c80`) |
+| Two-stage loop, constants, order | transcribed from `FUN_140affa30`; golden hash guards it; **not yet confirmed against Kontakt audio** |
+| Knees (clamp 1 / 0.5 and clamp 4 / 0.125) | confirmed as constants; placement as in the loop |
+| 2x resampler | confirmed as Kaiser x2 (mode 4 up, mode 5 down); reuses `kaiser.rs` (its taps are documented there) |
+| Ramp clock | approximated: 32-frame control quantum, countdown and snap as `FUN_140acb6c0`; the caller clock (`FUN_140b03620`, `FUN_140b00b80`) not traced in full |
+| Start-up | **open**: native lanes start at zero in the ctor and ramp in; this kernel snaps to the first target |
+| Response mode ramp | native sets the weights immediately; matched |
+| Kontakt audio | **open**: Wine oracle (level sweep at several gain and resonance settings) not run |
 
-## Open questions (to close after READY)
-1. Daft Gain: does the native law accept negative leading values? If yes, drop the mapping clamp in
-   `effects/mod.rs` (Daft arm) and the `drive` clamp in the kernel path.
-2. Daft saturation and resampler: recover from the `FilterDaft` process routine; replace `soft()` and
-   `inputs`/`out` interpolation only with the recovered form.
-3. Daft id 70/71 vs internal 68/69: confirm through the constructor table and the wrapper selector.
-4. AR clock: confirm the 64-frame source vs 32-frame control relationship in the dispatcher.
-
-## Plan once READY exists
-1. Grep `source/kontakt8/` and `source/INDEX.md` for `FilterDaft`, `FilterDJ`, `0x140b05900`,
-   `0x140af0170`, `0x140b04c80`.
-2. Recover the Daft gain law, saturation and resampler; add a bit-exact golden test or recorded-vector test.
-3. Map the signed gain (if confirmed) in the Kontakt arm only; keep the kernel shared.
-4. Draft PR until the decompile closes open questions 1–3.
+## Open items (in order)
+1. Trace the native ramp caller (`FUN_140b03620`, `FUN_140b00b80`) for the countdown and start-up.
+2. Wine-oracle level sweep of Daft LP and HP (gain 0 and +1, resonance 0 and 1, cutoff 0.2 / 0.6 / 0.95)
+   against this kernel's probe response (recorded: passband gain 1.08 at zero resonance; LP cutoff
+   sweeps monotone; HP mirrors LP).
+3. AR past-table tail: resolve the decompile (tail) vs vector (last entry) conflict if an AR input
+   ever reaches index 2400.
