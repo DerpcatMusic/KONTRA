@@ -81,12 +81,21 @@ def with_overrides(over):
 
 CASES = [
     # name, params, extra (discrete), entries (4..7 short, 8 long after two blocks)
-    ("base", PARAMS, "", [4, 5, 8]),
-    ("q1", with_overrides({0: 0.9, 5: 0.3}), "2=1", [4, 8]),
+    ("base", PARAMS, "", [4, 8]),
+    ("q1", with_overrides({0: 0.9, 5: 0.3}), "2=1", [4]),
     ("flag53", PARAMS, "15=1", [4]),
     ("flag52", with_overrides({0: 0.6, 5: 0.8}), "16=1", [4]),
     ("side", PARAMS, "14=1", [4]),
+    # per-channel views: one-channel object views widened to two distinct channels at entry
+    ("perchan", PARAMS, "", [4]),
+    ("perchan_q1", with_overrides({0: 0.9, 5: 0.3}), "2=1", [4]),
+    # broadcast: two-channel object views narrowed to their channel 0 at entry
+    ("narrow", PARAMS, "", [4, 8]),
+    ("narrow_q1", with_overrides({0: 0.9, 5: 0.3}), "2=1", [4]),
 ]
+NARROW = ("link_mul", "final_mul", "band_state")
+# views widened in the perchan cases (channel 1 = channel 0 scaled by 0.9..1.1 per bin)
+WIDEN = ("weights", "mask", "curve", "final_mul", "link_mul", "spec_rise", "spec_fall", "out_rise", "out_fall")
 
 def f32s(emu, ptr, n):
     return np.frombuffer(emu.rd(ptr, 4 * n), np.float32).copy()
@@ -102,6 +111,38 @@ def obj_view(emu, base):
     ch = emu.r32(base + 0x80)
     ln = emu.r32(base + 0x88)
     return [f32s(emu, emu.r64(base + 8 * c), ln) for c in range(ch)]
+
+
+def widen(emu, an, seed):
+    """Make each one-channel view in WIDEN two-channel (channel 1 = channel 0 * U(0.9, 1.1))."""
+    rng = np.random.default_rng(seed)
+    for name in WIDEN:
+        base = an + OBJ_VIEWS[name]
+        if emu.r32(base + 0x80) != 1:
+            continue
+        ln = emu.r32(base + 0x88)
+        v0 = f32s(emu, emu.r64(base), ln)
+        v1 = (v0 * rng.uniform(0.9, 1.1, ln)).astype(np.float32)
+        p = emu.arena(4 * ln + 64)
+        p = (p + 15) // 16 * 16
+        emu.wr(p, v1.tobytes())
+        emu.w64(base + 8, p)
+        emu.w32(base + 0x80, 2)
+
+
+def narrow(emu, an):
+    """Make each two-channel view in NARROW one-channel (keeps channel 0)."""
+    for name in NARROW:
+        base = an + OBJ_VIEWS[name]
+        if emu.r32(base + 0x80) == 2:
+            emu.w32(base + 0x80, 1)
+
+
+def reshape(emu, case, an, seed):
+    if case.startswith("perchan"):
+        widen(emu, an, seed)
+    elif case.startswith("narrow"):
+        narrow(emu, an)
 
 
 def capture(case, params, extra, entries, recs):
@@ -151,6 +192,7 @@ def capture(case, params, extra, entries, recs):
         put("p/flag52", emu.rd(cfg + 0x52, 1)[0])
         put("p/flag53", emu.rd(cfg + 0x53, 1)[0])
         put("p/quality1", emu.rd(rsp + 0x40, 1)[0])  # arg8 (stack slot 8)
+        reshape(emu, case, an, st["n"])
         for name, off in OBJ_VIEWS.items():
             put(f"pre/{name}", obj_view(emu, an + off))
         ret = emu.r64(rsp)

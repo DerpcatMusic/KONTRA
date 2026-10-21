@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from unicorn import UC_HOOK_CODE  # noqa: E402
 
 import gain_cfg  # noqa: E402
-from gain_fx_body import CASES  # noqa: E402
+from gain_fx_body import CASES, reshape  # noqa: E402
+from unicorn.x86_const import UC_X86_REG_RCX  # noqa: E402
 from gain_setup import BODY_LO, extra_params, make_session, run_block  # noqa: E402
 from pe_emu import IMAGE_BASE, Emulator  # noqa: E402
 
@@ -30,8 +31,10 @@ def main():
         sess = make_session(params + extra_params(extra))
         st = {"n": -1}
 
-        def on_entry(uc, a, s, u, st=st):
+        def on_entry(uc, a, s, u, st=st, sess=sess, case=case, entries=entries):
             st["n"] += 1
+            if st["n"] in entries:
+                reshape(sess.emu, case, sess.emu.reg(UC_X86_REG_RCX), st["n"])
 
         def on_code(uc, a, s, u, st=st, entries=entries):
             r = a - IMAGE_BASE
