@@ -120,3 +120,13 @@ The venv is `uv venv` on the dev drive with `unicorn`, `capstone`, `pefile`
   `python -I process_oracle.py --rates 44100,96000,192000` (about 4 minutes each rate pair) and
   `python -I process_oracle.py --rates 48000` (levels and noise, about 4 minutes), then
   `python -I detector_reach.py` (about 1 minute).
+
+## Sidechain (research/stereo-ms-sidechain-output.md section 2 and 8)
+
+- `sidechain_fixture.py`: detector mux (side pointer), meter (host id 13, per 512 sub-block), listen
+  (side delayed by the latency times the out-trim ramp), focus snippet `0x892b34..0x892bf7`, setter
+  case `0x5b` (solo) and the 23-entry layout table `0x56cad0`. Writes
+  `src/reference/fixtures/sidechain.json`, read by `src/reference/sidechain.rs` tests. Run with
+  `python -I sidechain_fixture.py ../../../../src/reference/fixtures/sidechain.json` (about 2 min).
+- Pitfall: the group list `[obj+0x18]` is empty in the stand-in, so the per-group loop and the detector
+  analysis never run. The focus snippet is run in isolation for that reason.

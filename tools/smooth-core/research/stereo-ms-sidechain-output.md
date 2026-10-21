@@ -52,17 +52,30 @@ The detector therefore reads M at `(L+R)/2`, which is 3 dB below the old value.
 Link (`stereo_pair`) applies per bin before M/S is taken and is not M/S-specific. The
 reference's order was not checked.
 
-## 2. Sidechain (`+0xa5`): mux and listen — partly decoded
+## 2. Sidechain (`+0xa5`): mux, listen and meter — verified (emulated)
 
-- Setters `0x89445b`, `0x89467e` write `+0xa5` (sidechain) and `+0xa6` (stereo mode).
-- `0x890a00` does **not** read `+0xa5`. The corpus reader list is wrong for that function.
-  The earlier notes say the detector source depends on whether the 4th argument is null
-  (`0x890bee`). That is still the best evidence and is not decoded further.
-- Not changed: the port analyses the sidechain input when `sidechain` is on and the main
-  input otherwise. This is the reading the brief describes, and the port keeps it.
-- Sidechain listen routing: open (see `engine-io.md`).
-- Meter slot 13: the largest signed detector sample since the last frame (earlier
-  verification, unchanged).
+Evidence: `re-tools/emulate/sidechain_fixture.py`, `src/reference/sidechain.rs`.
+
+- **Mux (`0x890bee`, verified in the asm).** `r11 = side pointer`. Non-null: the analysis frame is
+  staged from the side table (`0x894b00` into `rbp+0x29d0`). Null: staged from the main table
+  (`rbp+0x2530`). Both are copied to `rbp+0xe00`. The block never reads `+0xa5` (no displacement
+  `0xa5` in `0x890a00..0x893bd7`). Emulated: sidechain flag 0 and 1 give bit-identical outputs and
+  meters. The earlier "reads of `+0xa5`" in `re-corpus-findings.md` were the setter.
+- **Listen (`+0xa7`, verified emulated).** Read into `[rsp+0x33]` at `0x890a7d`, tested at `0x892e43`.
+  With listen on and a side pair the output is `side[k - 2304] * g_out[k]`: the side delayed by the
+  block latency and multiplied by the out-trim ramp, stepped on the absolute sample index (error
+  2e-6 in the Python model; the Rust check is 1e-6 relative). Mix, wet and dry gains do not apply.
+  With no side pointer the output is zero. Bypass with listen: the output is the delayed main input
+  (ratio 1.000000 for `k >= 2304`), so bypass wins; the first 2304 samples in that case are not
+  analysed.
+- **Meter (host id 13, `0x893928`, verified emulated).** One value per 512-sample sub-block, so
+  `ceil(N/512)` values. Value = max over channels of `|side|` over the sub-block (`0x1800013d0`
+  is `ippsMaxAbs_32f`). **Corrects the earlier "signed max"**: the emulated block returns the
+  absolute peak (a negative sample of -0.68 gives 0.68). No side pointer or a silent side: 0.
+  Independent of the main input. Unsmoothed, linear.
+- **Listen gain targets.** The out-trim record is the same as the output stage (`0xbf58`). The
+  ramp runs over the whole block, so at the first output sample the gain has already moved (0.6018
+  at `k = 0` for -6 dB, not 1).
 
 ## 3. Band solo (param 91): the shape-to-filter table is verified
 
@@ -127,3 +140,28 @@ and delta targets). Checked against the code this round, with no differences:
 - Pitfall: the IPP wrappers at `0x10a0`, `0x1070`, `0x11c0`, `0x15b0` dispatch through
   `[0x1821ed508]`, which is set by `0x181dae2a0`. Call that first in the emulator.
 - Pitfall: the `0x1070` scalar is passed in `xmm1`, not `rdx`. Pass it by a register write.
+
+## 8. Setter case 0x5b (band solo) and layouts — verified (emulated)
+
+- **Case `0x5b` (`0x894545`).** `r9 = roundf(clamp(v, 0, 8))` (libm at `0x1817bb92a`, then
+  `cvttss2si`), `eax = min(r9 - 1, 7)` with a **signed** compare (`cmovg`). So value 0 gives -1
+  (no solo), 0.4 gives -1, 0.5 gives 0, 8 gives 7, 9 gives 7. **The decompile's "value 0 -> index 7"
+  is wrong**: the asm uses a signed compare, and the parameter table's `uint(idx-1,max7)` wording
+  is not what the code does. Table: `solo_band_index` in `src/reference/sidechain.rs`.
+- **Band fields.** The band record is `obj + 0x10c + 0x20*band`, with the generic handler `0x89466e`
+  (`band = (id - 0x13) / 9`, field = remainder). Remainder 6 (`+0x120`) is the **band balance**
+  (`Band k focus`, id `0x19 + 9*(k-1)`). Port `focus` is that balance (`plugin/src/lib.rs:840`).
+- **Focus snippet (`0x892b34..0x892bf7`, verified).** `f = [r9 + r15 + 0x120]`, applied when the group
+  has two channels (`[rdi+0x10] == 2`). `gL = clamp((1-f)*2)`, `gR = clamp(f*2)`, each applied with
+  `ippsMulC_32f_I` (`0x180001220`) to the group's channel pair (`[rsp+0x40+8*ch]`, `+8`). Bit-exact
+  on the isolated snippet for 17 balances, including clamps. A zero gain writes `+0.0`.
+  **Not verified:** which band `r9` selects outside solo (`[rbp-8]` is set only on the solo path, so
+  the non-solo value is open), and which buffers the group loop feeds (the analysis frame or the
+  output). The group list is empty in the stand-in (see below), so the loop does not run.
+- **Harness blocker.** `[obj+0x18]` (the group list) is empty after construction. The layout builder
+  `0x88acb0` returns a function-local static whose guard does not initialise under emulation. So the
+  per-group loop and the analysis (`0x619fc0`, per the notes) never run in the process harness.
+  Fixing this unblocks the focus path end to end, and the link and M/S order.
+- **Layouts (`0x56cad0`, verified).** Index to channel count, 23 entries:
+  `0,1,2,3,4,4,5,6,6,7,7,7,8,8,8,10,9,10,12,14,16,14,16` (index 2 is stereo). The group tables for
+  these layouts (`0x88acb0`, 23 static switch cases of `(kind, count)` pairs) are not decoded.

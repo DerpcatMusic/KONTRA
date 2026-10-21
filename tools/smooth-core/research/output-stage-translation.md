@@ -36,8 +36,7 @@ M/S helper `0x8a3b20`. Code: `src/reference/output.rs`. Evidence: emulated binar
 
 - **M/S helper 0x8a3b20.** `dst = (g(s0+s1), g(s0-s1))`. Encode `g = 0.5` at `0x1808928a3`; decode
   `g = 1.0` at `0x18089a5bc`. Matches `stereo_pair_probe.py` (error < 1e-7, not bit-exact).
-- **Focus weights** `gL = clamp(2(1-f))`, `gR = clamp(2f)` (`0x180890c92`). From the decompile, not
-  re-checked here.
+- **Focus weights** `gL = clamp(2(1-f))`, `gR = clamp(2f)` (snippet `0x892b34..0x892bf7`): verified bit-exact on the isolated snippet (`sidechain.rs`). Which band's `f` and which buffers: open.
 
 ## Output sum (verified by emulation, `process_output_block`)
 
@@ -82,9 +81,8 @@ solo, or a changed FFT path) is needed to check it.
   `stereo-ms-sidechain-output.md`). Coefficient smoothing toward its target (one-pole rate
   `*(record+0x38)`) is not decoded. `process_output_block` panics on `solo_active`.
 - **Solo records** (`main +0xbf40`, `solo +0xbf4c`): their ramps are not in the fixture (solo off).
-- **Sidechain meter** (`sidechain_input_level`, host id 13) near `0x893928`: not read.
-- **Setter case `0x5b` edge case.** The decompile gives value 0 -> index 7 (unsigned `uVar11 - 1`).
-  Not checked in the asm; the fixture only uses 0 and 1..8, and the Rust side does not model it.
-- **Sidechain listen (`+0xa7`)** and **`+0x236`** setter: not decoded (the fixture writes `+0x236` directly).
+- **Sidechain meter** (`sidechain_input_level`, host id 13): translated in `src/reference/sidechain.rs` (absolute peak of the side per 512 sub-block, verified).
+- **Setter case `0x5b`:** translated (`solo_band_index`): signed `min(round(v) - 1, 7)`, so 0 gives -1 (no solo). The decompile's 'value 0 -> index 7' is wrong.
+- **Sidechain listen (`+0xa7`)**: translated (`listen_block`), verified emulated with the out-trim ramp. **`+0x236`** setter: not decoded (the fixture writes `+0x236` directly).
 - **Clipping**: none found in the translated region; not checked.
 - **Wet/dry role** (see caveat above).
