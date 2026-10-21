@@ -61,3 +61,9 @@ fn supported_engine_parameter_in_range_is_not_reported() {
         "{w:?}"
     );
 }
+
+#[test]
+fn display_query_of_a_catalog_parameter_without_an_id_is_reported() {
+    let w = warnings("on init declare @t end on on note @t := get_engine_par_disp($ENGINE_PAR_WT_MOD_AMOUNT, -1, -1, -1) end on");
+    assert!(w.iter().any(|m| m.contains("get_engine_par_disp") && m.contains("not supported")), "{w:?}");
+}

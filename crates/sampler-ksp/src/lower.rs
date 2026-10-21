@@ -1472,6 +1472,9 @@ impl Gen<'_, '_> {
                 args,
             ) => {
                 // Ext shares set_engine_par's address layout; arg 1 is its supplied value.
+                if self.engine_par_unsupported(args) {
+                    self.ignore(*builtin, "engine parameter is not supported; text is empty");
+                }
                 self.engine_address(args, free, *builtin == Builtin::GetEngineParDispExt)?;
                 let value = if *builtin == Builtin::GetEngineParDispExt {
                     self.arg(args, 1, free + 4)?;
@@ -3173,14 +3176,16 @@ impl Gen<'_, '_> {
     /// A catalog constant without an engine id is Kontakt's, not a typo, so it is named as
     /// unsupported. A constant group index outside `-1..groups` is Kontakt's "Invalid group
     /// index!"; with no groups declared the index is not checked.
-    fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<&'static str> {
-        if let Some(name) = self.engine_par_name(args) {
-            if name.starts_with("ENGINE_PAR_")
+    fn engine_par_unsupported(&self, args: &[Arg]) -> bool {
+        self.engine_par_name(args).is_some_and(|name| {
+            name.starts_with("ENGINE_PAR_")
                 && sampler_core::engine_parameter_id(&name).is_none()
                 && crate::builtins::is_vendor_constant(&format!("${name}"))
-            {
-                return Some("engine parameter is not supported; ignored");
-            }
+        })
+    }
+    fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<&'static str> {
+        if self.engine_par_unsupported(args) {
+            return Some("engine parameter is not supported; ignored");
         }
         let group = self.const_int(args, group_arg)?;
         let groups = self.u.groups.len() as i32;
