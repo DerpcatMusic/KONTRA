@@ -76,4 +76,4 @@ Method: `tools/kontakt-oracle/stimrender.py` with a 1.5 s constant 0.5 input, so
 
 Implemented in this PR: `sampler_ir::fx::ringmod` (carrier Hz, mix, wet gain) and `sampler_core::dsp::ringmod` (sine carrier, linear crossfade, phase kept in the stage's delay storage). Tests: `carrier_rate_and_wet_gain_follow_the_measured_laws`, `dry_mix_is_bit_exact_and_phase_persists`.
 
-Not yet implemented, diagnosed as unsupported in the mapping: EDGE shaping, FM (input-driven), LFO (amount, rate, wave). The format mapping (`sampler-kontakt`) is the next step.
+Not yet implemented, diagnosed as unsupported in the mapping: EDGE shaping, FM (input-driven), LFO (amount, rate, wave). Format mapping: `crates/sampler-kontakt/src/effects/ringmod.rs` reads the saved fields 0..7 (bindings order, typed by the NI schema) into `Processor::RingMod`; non-default edge, FM, LFO wave and amount are reported as unmeasured and the module is not marked modelled. Tests: `carrier_frequency_follows_the_measured_points` (slow and fast points) and `unmeasured_parameters_are_reported_not_modelled`.
