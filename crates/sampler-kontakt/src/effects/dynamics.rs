@@ -11,6 +11,18 @@ use sampler_ir::{Gain, Processor, Reason, Time};
 /// One note for the diagnostics: feature, detail, reason.
 pub(super) type Note = (String, String, Reason);
 
+/// Why a dynamics module has no processor yet, for the diagnostic note. Only
+/// modules whose saved fields are read but whose law is unproven belong here.
+pub(super) fn unproved(module: u16) -> Option<&'static str> {
+    Some(match module {
+        0x60 => {
+            "Supercharger GT: saved fields read, but no verified law (variant identity, \
+             transfer curve, detector and timing not extracted; see docs/re/engine/dyn-compressors.md)"
+        }
+        _ => return None,
+    })
+}
+
 /// `BParFXCompressor`: integer mode, threshold dB, saved ratio (0..=1), attack
 /// and release ms, stereo-link byte.
 pub(super) fn compressor(
@@ -175,8 +187,13 @@ pub(super) fn transient(attack: f32, sustain: f32, gain: f32, clip: i32) -> Resu
 /// float. Floats feed core controls 0..=4 (threshold, makeup, attack, release,
 /// ratio) and 7 (mix), bytes 5 (link) and 6 (side-chain) of `BEffectSSLGBusComp`
 /// (setter `0x1409a9d40`, no clamp). That order is inferred from the core ids,
-/// not traced; the trailing float has no traced binding and is ignored.
-pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<f32>) -> Result<Processor, Note> {
+/// not traced. The v0x12 trailing float has no traced binding: the processor
+/// still runs, and the note reports the field as unmodelled.
+pub(super) fn bus_comp(
+    v: [f32; 6],
+    [link, sidechain]: [bool; 2],
+    tail: Option<f32>,
+) -> Result<(Processor, Option<Note>), Note> {
     if !v.iter().all(|x| (0.0..=1.0).contains(x)) {
         return Err(("solid bus comp parameters".into(), format!("{v:?}"), Reason::InvalidValue));
     }
@@ -184,7 +201,7 @@ pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<
         return Err(("solid bus comp external side-chain".into(), String::new(), Reason::NotModeled));
     }
     let [threshold, makeup, attack, release, ratio, mix] = v.map(f64::from);
-    Ok(Processor::Dynamics(Config {
+    let processor = Processor::Dynamics(Config {
         address: None,
         law: Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link },
         attack: Time::Milliseconds(0.0),
@@ -192,7 +209,9 @@ pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<
         link: if link { Link::Max } else { Link::Off },
         makeup: Gain::UNITY,
         mix,
-    }))
+    });
+    let note = tail.map(|t| ("solid bus comp trailing field".into(), format!("{t}"), Reason::NotModeled));
+    Ok((processor, note))
 }
 
 #[cfg(test)]
@@ -216,7 +235,8 @@ mod limiter_tests {
         let Ok(Processor::Dynamics(t)) = transient(1.0, 0.5, 0.5, 1) else { panic!() };
         assert!(matches!(t.law, Law::KontaktTransient { attack: 1.0, clip: true, .. }));
         assert!(transient(0.5, 0.5, 0.5, 2).is_err());
-        let Ok(Processor::Dynamics(b)) = bus_comp([0.5, 0.2, 0.5, 1.0, 1.0, 0.7], [true, false], Some(0.6)) else {
+        let Ok((Processor::Dynamics(b), Some(_))) = bus_comp([0.5, 0.2, 0.5, 1.0, 1.0, 0.7], [true, false], Some(0.6))
+        else {
             panic!()
         };
         assert!(matches!(b.law, Law::KontaktBusComp { release: 1.0, link: true, .. }) && b.mix == f64::from(0.7f32));
