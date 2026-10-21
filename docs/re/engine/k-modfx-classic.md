@@ -193,3 +193,27 @@ law to the shared delay line.
 - Chorus base delay: low. Flagged.
 - Choral: medium-high on the two kemu vectors.
 - Flair, Phasis, Vibrato/Chorus: no implementation; no confidence claim.
+
+## Decompile check (Kontakt 8 export, READY)
+
+Confirmed from the decompiled source, read as data:
+
+- Legacy Chorus audio (`FUN_140aa0510`) runs two heads: head 1 with base
+  `+0x31c` frames and head 2 with base `+0x320` frames. The setter for the
+  chorus case (`FUN_1409619b0`, case 0x3d) sets head 2 to `head1 >> 1`, so
+  the two-head structure and the 2:1 base ratio in the engine are right.
+- Head 1 base is `(int)(F * sample_rate * 0.001)`, clamped to 0x1000, where
+  `F` is a float read from a sub-object field (`+8`). The setter for that
+  field is not yet identified: `FUN_140d00760` (reader, v0x50/0x51) writes
+  +0xc/+0x10/+0x14 and +0x30, and `FUN_140ab5da0` writes +0x18/+0x24/+0x28
+  plus a bool at +8. These do not line up cleanly, so the source of `F` is
+  still open. Until it is found, the zero base in the engine is unverified.
+- The chorus excursion uses the sub-object `+0xc` (Depth) with constant
+  `DAT_144f38b30`; the LFO2 phase offset is 0.015 cycles.
+
+Oracle hypothesis, not yet verified: the first echo (425 frames) equals
+`head2 = base >> 1` with `base = 850`, and the second echo (905) equals
+`base + ~55` frames of excursion. That needs a controlled measurement
+(LFO that actually runs, Depth steps across the full range) before the engine
+uses it. Until then the Legacy Chorus base stays 0 and Chorus is reported as
+an open gap, not fixed.
