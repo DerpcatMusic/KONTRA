@@ -29,6 +29,12 @@ pub fn pointer_down(ui: &Ui) -> bool {
     ui.pointer().buttons.contains(mui::input::Button::Primary)
 }
 
+/// Whether an edit is still open: the pointer is down, or the wheel is still
+/// rolling. A roll of notches is one edit, so one undo step.
+pub fn edit_open(ui: &Ui) -> bool {
+    pointer_down(ui) || crate::input::wheel_rolling()
+}
+
 /// What a press on the toolbar asks of the host side: the view cannot undo
 /// anything itself, so it says what was asked and the plug-in does it.
 #[derive(Clone, Debug, PartialEq)]

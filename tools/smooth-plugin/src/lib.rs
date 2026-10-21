@@ -1019,7 +1019,7 @@ impl PluginLogic for Smooth {
                         mirror.restore_values(&values);
                     }
                 }
-                let held = view::pointer_down(ui);
+                let held = view::edit_open(ui);
                 session.observe(&snapshot(&mirror), held);
                 {
                     let library = mirror.library.lock().unwrap_or_else(|e| e.into_inner());

@@ -551,7 +551,7 @@ pub fn knob(
     .id(id.clone())
     .focusable()
     .cursor(Cursor::Grab)
-    .tip(crate::tips::of(id.as_str()).map_or_else(|| format!("{id}: drag up or down, Shift for fine"), str::to_string))
+    .tipped(id.as_str())
     .a11y(A11y::Slider {
         value: *value,
         min: *range.start(),
