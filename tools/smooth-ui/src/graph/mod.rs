@@ -139,7 +139,7 @@ pub fn response(
         .get(*selected)
         .filter(|band| band.active)
         .map(|band| (model::band_curve(band), tints[*selected % tints.len()]));
-    // The pointer says what the plot will do: a handle grabs, a drag grabs harder.
+    // The cursor says what a press here will do: a handle grabs, a held one is grabbed.
     let shape = if gesture.drag.is_some() {
         Cursor::Grabbing
     } else if hovered.is_some() {
