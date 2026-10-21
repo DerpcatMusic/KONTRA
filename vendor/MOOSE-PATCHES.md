@@ -144,8 +144,7 @@ validation, not a native DAW recall or whole-process C++ allocation claim.
 call (a flush spelled as a process) had them dropped. The zero-frame path now
 applies `ParamChange` events the way `params_flush` does (the same
 `convert_input_events` and `set_plain` sweep) and returns `CONTINUE`. No audio
-is rendered. Checked by `tools/removed/scripts/clap_host_matrix.py`
-(`edge_flush`). Upstream: additive; worth offering to MOOSE as is.
+is rendered. Checked by a CLAP host-matrix test (`edge_flush`). Upstream: additive; worth offering to MOOSE as is.
 
 ## Latency changes ask for a restart, not `changed()`
 
@@ -167,6 +166,6 @@ keymap holds a reference to the context, so each editor open leaked one
 keymap and one context: 54 kB of malloc memory per open in a live-allocation
 trace (71 kB/cycle by mallinfo2 in the soak). The keymap is now unref'd once
 the state holds it; dropping the state frees both. Checked by
-`tools/removed/scripts/clap_gui_soak.py soak --max-live-slope 20`, which
+a 200-cycle GUI open/close soak, which
 measured 71.4 kB/cycle before and 0.3 to 0.5 kB/cycle after (200 cycles). Upstream:
 worth offering to MOOSE as is.

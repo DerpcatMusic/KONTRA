@@ -18,11 +18,3 @@ midi_input_ports = 4
 midi_output_ports = 1
 # Per-note events: CLAP note expressions reach each key (MPE).
 midi2_input = true
-
-[[plugin]]
-name = "SMOOTH"
-bundle_id = "smooth"
-crate = "removed"
-category = "effect"
-fourcc = "Smth"
-vst3_subcategory = "Fx"
