@@ -51,17 +51,17 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Ladder Notch | unknown | none | |
 | Monark | unknown | none | |
 | PRO-53 | unknown | none | |
-| AR LP2 | unknown | none | |
-| AR LP4 | unknown | none | |
-| AR LP2/4 | unknown | none | |
-| AR HP2 | unknown | none | |
-| AR HP4 | unknown | none | |
-| AR HP2/4 | unknown | none | |
-| AR BP2 | unknown | none | |
-| AR BP4 | unknown | none | |
-| AR BP2/4 | unknown | none | |
-| Daft | unknown | none | |
-| Daft HP | unknown | none | |
+| AR LP2 | partial | vector | Kernel matches native vectors (2e-6, ar_native_vectors.json, 81 scenarios). Cutoff law decomp-confirmed. Host recording and CPU acceptance open (docs/re/engine/filt-ar-daft.md). |
+| AR LP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR LP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR HP2 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR HP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR HP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR BP2 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR BP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| AR BP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
+| Daft | partial | decomp | Two-stage loop, knees, gain/cutoff/feedback/resonance/response laws and Kaiser x2 transcribed from FUN_140affa30 with image constants; golden hash only. Start-up, ramp clock and Kontakt audio open. |
+| Daft HP | partial | decomp | Same loop as Daft (response 1). Golden hash only; Kontakt audio open. |
 | Legacy LP1 | unknown | none | |
 | Legacy LP2 | unknown | none | |
 | Legacy LP4 | unknown | none | |
