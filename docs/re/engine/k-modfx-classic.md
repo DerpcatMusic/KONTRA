@@ -53,7 +53,7 @@ today; add a shape selector only if a second product needs it.
   `effects::timemod::tests::legacy_chorus_and_flanger_render_native_kemu_vectors`
   (kemu-rendered native f32 bits), partition-independence test.
 
-Gap (READY): the kemu vectors were rendered from a Kontakt 8.13.1 binary
+Gap: the kemu vectors were rendered from a Kontakt 8.13.1 binary
 under the old oracle, not from the current export. Re-check the feedback
 sign and the 0.95 factor against the decompiled setter 0x1409637f0 and audio
 0x140aa2350. Stereo spread here is only the 0.25-cycle right phase; confirm
@@ -72,6 +72,28 @@ there is no second spread control.
   built on it. It was reasoned from the container memset and kemu runs, not
   from a recovered store.
 - Evidence: `legacy_chorus_and_flanger_render_native_kemu_vectors`.
+
+Wine-oracle measurement (Kontakt 8.13.1 through `tools/kontakt-oracle/eqrender.py`,
+`Effects/Chorus` INIT preset, Speed 0, Phase 0, impulse in, scratch renders
+under `/data/dev/workspace/scratch/k-modfx-classic/`):
+
+- A bypassed reference is silent in the wet path. With the chorus active the
+  impulse response is two clean echoes: about 425 frames (8.85 ms) and 905
+  frames (18.85 ms) at 48 kHz, equal level, with a fractional split
+  (424/425 and 904/905) consistent with a second head exactly 480 frames
+  (10 ms) later.
+- Those echoes are not frozen by Speed 0: five identical Depth-0 steps moved
+  the first echo 425 -> 457 -> 515 -> 536 -> 494 frames, so the modulation
+  runs at a floor rate even at Speed 0.
+- Depth 0 and Depth 1 produced the same echo series over the same step order
+  (425, 458, 517, 536 in both runs), so Depth did not visibly scale the
+  excursion in this measurement.
+
+This contradicts the current mapping: the engine's base delay is 0 frames,
+so Kontakt's ~8.85 ms echoes cannot be produced, and the kemu vectors were
+rendered from that zero base. Those vectors must not be treated as Kontakt
+truth until the base and LFO floor are explained. The Wine measurement is
+the stronger evidence; the decompile is needed for the exact law.
 
 READY: confirm the base-delay source (writer 0x140d104e0 / container slot
 +0x58, audio 0x140aa0510). If the base is nonzero in the saved file, the
@@ -148,7 +170,7 @@ law to the shared delay line.
 |---|---|---|---|---|---|
 | Legacy Phaser | 0x14 | implemented (SweepLaw::Legacy, 4 stages) | none verified; LFO shape from oscillator description | focused test passes | confirm sync fallback and shape |
 | Legacy Flanger | 0x12 | implemented (LegacyModDelay) | none found; kemu-only vectors | 2 tests pass | re-check feedback sign, 0.95, setter 0x1409637f0 |
-| Legacy Chorus | 0x11 | implemented, Depth looks inert | base delay source; likely mapping error | kemu vector test passes | confirm base delay at +0x58 / 0x140aa0510 |
+| Legacy Chorus | 0x11 | implemented on a zero base; contradicted by Kontakt | ~8.85 ms base, 10 ms second head, speed-floor LFO, Depth law | kemu vector test passes; Wine echoes measured | exact law from decompile |
 | Choral | 0x5d | implemented (VoiceBank, 4 modes) | per-flag coverage | 2 kemu vectors pass | confirm mode table sharing |
 | Flair | 0x5c | unsupported (reported) | pitch note writer, resampler, start phase, core | `unproved` | yes |
 | Phasis | 0x5b | unsupported (reported) | field binding, oversampling resampler, core law | TSV measurements | yes |
