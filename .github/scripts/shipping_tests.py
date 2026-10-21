@@ -372,7 +372,9 @@ def non_integration_commands(plan):
     return [["cargo", "test", "--locked", "--profile", "release"] + packages +
             ["--lib", "--bins", "--message-format=json-render-diagnostics"],
             ["cargo", "test", "--locked", "--profile", "release"] + packages + ["--doc"],
-            ["cargo", "build", "--locked", "--profile", "release"] + packages + ["--examples"]]
+            # Examples are never executed or shipped; the ci profile (no thin LTO) only
+            # skips per-example LTO links, which dominated this step's wall time.
+            ["cargo", "build", "--locked", "--profile", "ci"] + packages + ["--examples"]]
 
 
 def check_source(source, stamped=True):
