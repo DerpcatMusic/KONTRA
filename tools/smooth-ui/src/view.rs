@@ -58,6 +58,8 @@ pub struct Model {
     pub bands: [graph::Band; graph::BANDS],
     /// What the plot draws: the engine's frame, eased, and the depth curves.
     pub plot: graph::PlotView,
+    /// The plot's gestures in progress, and the changes it asks of the bands.
+    pub gesture: graph::Gesture,
     pub soft: bool,
     /// Every continuous control: its normalised value and what it reads as.
     pub slots: [Slider; Slot::COUNT],
@@ -92,6 +94,7 @@ impl Default for Model {
             can_redo: false,
             bands: graph::AT_REST_BANDS,
             plot: graph::PlotView::default(),
+            gesture: graph::Gesture::default(),
             soft: true,
             slots: slots::at_rest(),
             selected: 1,
@@ -143,7 +146,7 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             block(W, BAR).shrink(0),
             row![
                 block(LEFT, space::NONE).shrink(0),
-                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range, m.prefs.frequency_near_cursor)
+                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range, m.prefs.frequency_near_cursor, &mut m.gesture)
             ]
             .w(W),
         ]
