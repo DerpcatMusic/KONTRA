@@ -157,3 +157,21 @@ The engine's speed, smooth and grain change with these writes, while `FORMANT_SH
 The Wine oracle (`tools/kontakt-oracle/render.py` with a Lua probe; PipeWire `kontra_ref` sink) can
 render Kontakt audio. No native Time Machine audio render has been captured, so no row is at
 `parity` in the audio sense: the laws above are parameter-level measurements.
+
+## Per-instance state blocks (decompile, `0140d20000.c`)
+
+Each Time Machine voice owns one state block, allocated and constructed by:
+
+| Allocator | Block (bytes) | Constructor | Class |
+| --- | --- | --- | --- |
+| `FUN_140d203e0` | 0xd8 (216) | `FUN_140cd9470` | `BTimeMachine` (TM1) |
+| `FUN_140d204c0` | 200 (0xc8) | `FUN_140cd9320` | `BTimeMachine2` (TM2) |
+| `FUN_140d205e0` | 0x1d0 (464) | `FUN_140cd9380` | `BTimeMachine3` (Pro) |
+
+Correction: `FUN_140d202f0` (0x1800 block, constructor `FUN_140cd8ea0`, vtable `BMPC60`) is the
+MPC60 Machine state, and `FUN_140d20350` (0x1fc0 block, constructor `FUN_140cd9220`, vtable
+`BSP1200`) is the S1200 Machine state. Neither is a Time Machine.
+
+The process loops of the TM2 and Pro states are not identified yet. They are reached through
+vtables, and the `CPSOLA*` and `CElastique*` methods carry no names in the export, so the cores
+below remain unimplemented.
