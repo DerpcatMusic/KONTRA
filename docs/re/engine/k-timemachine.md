@@ -129,3 +129,19 @@ Verified in the export (function names are `FUN_<addr>`; identity comes from cla
 | Pro Keep Formants / Formant Shift / Env Order | constructor defaults found (order 128, env 2); setters open |
 | Pro v0x100 legacy record | open |
 | TM1 HQ path, tempo-sync law | open (not in this pass) |
+
+## KSP parameter wiring (parity-matrix finding)
+
+`docs/architecture-v2/KSP_AUDIT_ENGINE_PAR.tsv` marks these engine parameters as
+"mirror/outbox; no engine consumer": `$ENGINE_PAR_SPEED`, `$ENGINE_PAR_SMOOTH`,
+`$ENGINE_PAR_GRAIN_LENGTH`, `$ENGINE_PAR_FORMANT_SHIFT`, `$ENGINE_PAR_TM_LEGATO` and
+`$ENGINE_PAR_TMPRO_KEEP_FORMANTS`. A KSP script that sets them changes nothing in the engine, while
+the same controls loaded from a .nki record do take effect. This gap belongs to the
+k-ksp-engine-params lane (engine-parameter ids); the Time Machine side is the consumer that must
+read them once that lane applies the values.
+
+## Oracle status
+
+The Wine oracle (`tools/kontakt-oracle/render.py` with a Lua probe; PipeWire `kontra_ref` sink) can
+render Kontakt audio, and `probes/audit_levels.lua` already creates Time Machine 1/2/Pro groups. No
+native Time Machine render has been captured or committed, so no row is at `parity`.

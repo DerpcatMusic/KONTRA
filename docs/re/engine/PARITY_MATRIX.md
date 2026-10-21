@@ -17,6 +17,12 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Beat Machine | missing | decomp (partial) | Stored mode 4; no BBeatMachine class found; `BSlice` (0x90-byte object, `0140d20000.c:700`) and `disallow_group` beatmachine message (`0140870000.c`) are the only leads. Slice/pattern law unlocated. See docs/re/engine/k-beat-s1200-mp60.md |
 | S1200 Machine | partial | decomp + focused golden tests | Stored mode 6; filter modes 1..=5 run (AA IIR, mode biquads, 26 kHz hold, quantiser) on voices with `Group.machine`. Filter modes 0, 6, 7 not recovered; no render comparison against Kontakt yet. See docs/re/engine/k-beat-s1200-mp60.md |
 | MP60 Machine | missing | decomp (partial) + focused golden tests | Stored mode 7; IIR chain (stage 1, 12-bit quantiser, stage 2) with constants from the constructor, DC/stability and block-invariance tests; rate law and source fetch not decoded; not wired. See docs/re/engine/k-beat-s1200-mp60.md |
+| Time Machine | partial | decomp | Native two-reader scheduler (`time_machine.rs`); speed/smooth/grain from .nki records only. KSP `$ENGINE_PAR_SPEED`, `SMOOTH`, `GRAIN_LENGTH` have no engine consumer. Tempo-sync law and HQ path open. Spec `docs/re/engine/k-timemachine.md`. |
+| Time Machine 2 | partial | decomp | WSOLA stand-in, not PSOLA. Engine classes, ctor defaults and UI located in decompile (`BTimeMachine2`, `CPSOLAAnalysisRT`); Transient Copy/Size/Grain profile carried in IR but dropped at `lower.rs::stretch_spec`. No native vector yet. |
+| Time Machine Pro | partial | decomp | WSOLA stand-in in place of Elastique Pro V3 (`BTM3ElastiqueWrapper`). Keep Formants / Formant Shift / Env Order carried, unused; `$ENGINE_PAR_TMPRO_KEEP_FORMANTS` and `FORMANT_SHIFT` have no engine consumer. Ctor defaults: order 128. No native vector yet. |
+| Beat Machine | unknown | none | |
+| S1200 Machine | unknown | none | |
+| MP60 Machine | unknown | none | |
 | Voice/group/zone engine (RR, release triggers, stealing, legato, choke) | unknown | none | |
 
 ## Filters (filt-sv, filt-ladder-monark, filt-ar-daft, filt-legacy, filt-multi-versatile, filt-formant-effect)
