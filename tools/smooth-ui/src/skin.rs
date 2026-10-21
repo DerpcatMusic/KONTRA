@@ -253,6 +253,54 @@ pub fn ring_dot(d: f64, ink: Color) -> El {
     .shrink(0)
 }
 
+/// A band's number, on a disc in the band's own colour: the reference names the
+/// selected band this way.
+pub fn index_badge(n: usize, hex: u32) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let d = metric::BUTTON;
+    block(d, d)
+        .radius(d / 2.0)
+        .fill(c(hex))
+        .push(centred(label(&n.to_string(), ty::CAPTION, c(t.mark)), d, d))
+        .shrink(0)
+}
+
+/// A power symbol: a broken ring with a stem, drawn as strokes so it keeps its
+/// weight at any size.
+fn power_glyph(d: f64, ink: Color) -> El {
+    canvas(move |s| {
+        let (cx, cy) = (s.width / 2.0, s.height / 2.0);
+        let r = s.width.min(s.height) * 0.3;
+        let ring: Vec<Point> = (0..=24).map(|i| pt(cx, cy, r, 45.0 + 270.0 * i as f64 / 24.0)).collect();
+        vec![
+            Draw::stroke(Path::polyline(ring, false), ink, stroke::CURVE),
+            Draw::stroke(line(Point::new(cx, cy - r * 1.2), Point::new(cx, cy - r * 0.1)), ink, stroke::CURVE),
+        ]
+    })
+    .size(d, d)
+    .shrink(0)
+}
+
+/// A band's on/off switch as the reference draws it: a round disc with a power
+/// symbol, dark while the band is working and light while it is bypassed.
+pub fn power_switch(ui: &mut Ui, id: &str, on: &mut bool) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    if ui.get(id).activated() {
+        *on = !*on;
+    }
+    let d = metric::BUTTON;
+    let (fill, ink) = if *on { (c(t.selected), c(t.mark)) } else { (c(t.chip), c(t.ink)) };
+    block(d, d)
+        .radius(d / 2.0)
+        .fill(fill)
+        .push(centred(power_glyph(metric::RING, ink), d, d))
+        .shrink(0)
+        .tipped(id)
+        .a11y(A11y::Toggle { on: *on })
+}
+
 /// A round button with a glyph on it: the toolbar's shape.
 pub fn icon_button(icon: Icon) -> El {
     // The active palette: the parts read tokens, never literals.

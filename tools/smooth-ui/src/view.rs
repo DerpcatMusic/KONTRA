@@ -389,7 +389,8 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
     }
     row![
         // The view controls, a tight group.
-        row![text_button("sc"), icon_button(Icon::Headphones)].gap(space::XS),
+        // The sidechain's mark leads the group, as the reference's bar does.
+        row![edge_rail(t.thumb), text_button("sc"), icon_button(Icon::Headphones)].gap(space::XS),
         preset_bar(
             m.presets.title(),
             m.presets.current_row().map_or("", |r| r.category.as_str()),
@@ -578,9 +579,10 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             el
         })
     };
-    let mut bypass = m.bands[index].bypass;
-    let bypass_el = toggle_pill(ui, "band-bypass", "bypass", &mut bypass);
-    m.bands[index].bypass = bypass;
+    // The switch is on while the band works: the reference's power symbol.
+    let mut enabled = !m.bands[index].bypass;
+    let bypass_el = power_switch(ui, "band-bypass", &mut enabled);
+    m.bands[index].bypass = !enabled;
     if ui.get("band-delete").clicked {
         m.bands[index].active = false;
     }
@@ -593,6 +595,8 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     let tint = theme::BAND_TINTS[index % theme::BAND_TINTS.len()];
     row![
         edge_rail(tint),
+        index_badge(index + 1, tint),
+        bypass_el,
         shape_el,
         pick(ui, Slot::BandFrequency),
         if no_depth {
@@ -603,7 +607,6 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         pick(ui, Slot::BandWidth),
         pick(ui, Slot::BandSlope),
         pick(ui, Slot::BandBalance),
-        bypass_el,
         icon_button(Icon::Trash).tipped("band-delete"),
         edge_rail(tint),
     ]

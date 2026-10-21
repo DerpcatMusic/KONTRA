@@ -29,10 +29,10 @@ Evidence:
 | 6 | Rail | Rail words are 9 px; reference rail words are larger and read clearly beside the dots. | ref rail `stereo`/`tilt`/`scale` vs baseline | fixed (10 px) |
 | 7 | Band bar | `x` delete is a text glyph; reference uses a trash icon in a disc at the bar's right end. | `06_band_controls`, `07_node_controls` | fixed (trash glyph, hand-drawn path) |
 | 8 | Band bar | Band bar has no coloured band rail at its left and right ends. Reference has a band-colour bar on each side inside a white-edged plate. | `06_band_controls` | fixed (band-tint edge rails) |
-| 9 | Header | No sidechain/accent mark left of the `sc` button. Reference has a short vertical accent bar. | ref top-left `|` at x≈418 | open |
-| 10 | Band bar | Bypass is a text pill; reference uses a power-glyph disc (dark when on) beside the band index. | `07_node_controls` | open (needs power glyph) |
+| 9 | Header | No sidechain/accent mark left of the `sc` button. Reference has a short vertical accent bar. | ref top-left `|` at x≈418 | fixed (graphite rail) |
+| 10 | Band bar | Bypass is a text pill; reference uses a power-glyph disc (dark when on) beside the band index. | `07_node_controls` | fixed (power disc) |
 | 11 | Band bar | Shape is a text dropdown (`bell`); reference uses an 8-cell icon grid of shape glyphs with the chosen one in a dark square. | `06_band_controls` | open (larger refactor, shape glyphs) |
-| 12 | Band bar | Band index badge (`2` in a disc) absent. | `06_band_controls` | open |
+| 12 | Band bar | Band index badge (`2` in a disc) absent. | `06_band_controls` | fixed |
 | 13 | Readouts | Value text is 11 px; reference values read ~12–13 px at the same plate size. | ref `5.0`, `100 %`, `0.0 dB` | open (needs `ty` ladder decision) |
 | 14 | Wordmark | Reference wordmark is a heavier, rounder lockup with a light last glyph (`soothe3`) and a logo mark beside `oeksound`. Ours is the product name in ink. | ref top-left | open (identity; not a parity item) |
 | 15 | Footer | Padlock icons are small next to labels; reference padlocks are the same size as the label cap height. | `08_footer` | open |
