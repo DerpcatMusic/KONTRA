@@ -8,8 +8,9 @@
 //!   assumed (fully wet).
 //! - 0x15 legacy: exact network and setter laws (`FUN_140aa3d10`,
 //!   `FUN_14094c760`, case 0x3e of `FUN_1409619b0`): Freeverb delay lengths,
-//!   feedback, damping, channel mix, predelay in ms. Only the input lowpass's
-//!   cutoff-to-pole law is stood in (reported as an UnknownLaw note).
+//!   feedback, damping, channel mix, predelay in ms, and the two-pole input
+//!   low-pass (`0x14095b2d0`, `0x14082a0b0`). The low-pass law is INFERRED from
+//!   the decompile, not native-captured.
 //! - 0x57 Plate: the native core (`sampler_core` `dsp/space/design/plate.rs`),
 //!   matched to the emulated core's impulse response.
 //! - 0x16 Convolution: Reverse, early/late filters and composition, the
@@ -24,7 +25,7 @@
 use super::{Impulses, ImpulseRequest, Lowering, Notes, Site, Decoded};
 use sampler_ir::{Processor, Reason, SlotAddress};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
-use sampler_ir::fx::space::{Config, Freeverb, Galois, Network, Topology};
+use sampler_ir::fx::space::{Config, Freeverb, Galois, InputFilter, Network, Topology};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Convolution {
@@ -126,32 +127,26 @@ pub(super) fn convolution(
 /// size, stereo, colour, damping, each 0..1. The setter (case 0x3e of
 /// `FUN_1409619b0`) turns them into: comb feedback `size*0.3 + 0.65`, comb
 /// damping coefficient `1 - (1-colour)*0.35`, channel-mix weight
-/// `(stereo+1)/2`, an input lowpass at normalized cutoff
-/// `(1-damping)*0.75 + 0.25`, fixed allpass gain 0.5 and input gain 0.015.
-pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
+/// `(stereo+1)/2`, the input low-pass at normalized cutoff
+/// `(1-damping)*0.75 + 0.25` (a two-pole Butterworth biquad, see
+/// [`InputFilter::Butterworth2`]), fixed allpass gain 0.5 and input gain 0.015.
+pub(super) fn legacy(v: &[f32; 5], _notes: &mut Notes) -> Config {
     let predelay_ms = f64::from(v[0].clamp(0.0, 180.0));
     let [_, size, stereo, colour, damping] = v.map(|x| x.clamp(0.0, 1.0));
     let feedback = size * 0.3 + 0.65;
     let damp = 1.0 - (1.0 - colour) * 0.35;
     let width = (stereo + 1.0) * 0.5;
     let cutoff = (1.0 - damping) * 0.75 + 0.25;
-    notes.push((
-        "legacy reverb input lowpass".into(),
-        format!(
-            "normalized cutoff {cutoff}: Kontakt runs a shared biquad-prototype filter whose prototype coefficients are not in the static image; a one-pole at 20 Hz * 1000^cutoff stands in"
-        ),
-        UnknownLaw,
-    ));
     Config::network(Network {
         topology: Topology::Freeverb,
         predelay_seconds: predelay_ms * 0.001,
-        input_cutoff_hz: 20.0 * 1000f64.powf(f64::from(cutoff)),
         freeverb: Some(Freeverb {
             feedback: f64::from(feedback),
             damp: f64::from(damp),
             allpass: 0.5,
             input_gain: f64::from(0.015f32),
             width: f64::from(width),
+            input_filter: InputFilter::Butterworth2 { x: f64::from(cutoff) },
         }),
         ..Network::DEFAULT
     })
@@ -267,7 +262,7 @@ mod tests {
         let c = legacy(&[90.0, 0.5, 1.0, 0.5, 0.5], &mut notes);
         let n = c.network.unwrap();
         assert!((n.predelay_seconds - 0.09).abs() < 1e-12);
-        assert_eq!(notes.len(), 1);
+        assert!(notes.is_empty());
         // size .5 -> 0.8, colour .5 -> 1 - .5*.35, stereo 1 -> width 1.
         let f = n.freeverb.unwrap();
         assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
@@ -315,7 +310,7 @@ mod tests {
             rebuilt.set(lane.role, lane.value);
         }
         let (a, b) = (rebuilt.network.unwrap(), c.network.unwrap());
-        assert!((a.predelay_seconds - b.predelay_seconds).abs() < 1e-9 && (a.input_cutoff_hz / b.input_cutoff_hz - 1.).abs() < 1e-5);
+        assert!((a.predelay_seconds - b.predelay_seconds).abs() < 1e-9);
         assert_eq!(a.freeverb, b.freeverb);
         // RV_SIZE at 1: comb feedback 0.95.
         rebuilt.set(sampler_ir::ProcessorParameter::Size, 1.0);
