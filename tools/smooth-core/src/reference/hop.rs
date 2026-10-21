@@ -346,14 +346,19 @@ impl NormalPath {
     /// `block` must be a multiple of 128 (the short hop) and at most `max_block`.
     /// The short stage runs once per 128 samples (0x8c5f30's loop), then the
     /// long stage takes the whole block (0x8c68a0).
-    pub fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], gain: &mut impl BinGain) {
-        let m = input.first().map_or(0, |s| s.len());
+    pub fn process<I: AsRef<[f32]>, O: AsMut<[f32]>>(
+        &mut self,
+        input: &[I],
+        output: &mut [O],
+        gain: &mut impl BinGain,
+    ) {
+        let m = input.first().map_or(0, |s| s.as_ref().len());
         let hop = self.short.hop;
         assert_eq!(m % hop, 0, "block {m} is not a multiple of the short hop");
         for start in (0..m).step_by(hop) {
             let t0 = self.short.time();
             for (c, src) in input.iter().enumerate() {
-                self.short.push(c, &src[start..start + hop]);
+                self.short.push(c, &src.as_ref()[start..start + hop]);
             }
             self.short.advance(hop, gain);
             for (c, mid) in self.mid.iter_mut().enumerate() {
@@ -366,7 +371,7 @@ impl NormalPath {
         }
         self.long.advance(m, gain);
         for (c, out) in output.iter_mut().enumerate() {
-            self.long.read(c, t0, out);
+            self.long.read(c, t0, out.as_mut());
         }
     }
 }
@@ -424,6 +429,16 @@ mod tests {
         let mut dst = floats(&o["dst"]);
         add_product(&floats(&o["src"]), o["c"].as_f64().unwrap() as f32, &mut dst);
         assert_eq!(dst, floats(&o["out"]), "0x11f0");
+        // 0x13a0 `dst -= src` (the resampler residual) and 0x1370 `dst += src` (its output add)
+        for (name, sign) in [("sub_0x13a0", -1.0f32), ("add_0x1370", 1.0)] {
+            let kk = &k[name];
+            let got: Vec<f32> = floats(&kk["dst"])
+                .iter()
+                .zip(floats(&kk["src"]))
+                .map(|(d, s)| if sign < 0.0 { d - s } else { d + s })
+                .collect();
+            assert_eq!(got, floats(&kk["out"]), "{name}");
+        }
     }
 
     /// Every array of one emulated hop, short and long stage, channel 0.

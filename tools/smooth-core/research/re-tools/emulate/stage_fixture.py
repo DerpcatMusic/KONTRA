@@ -88,7 +88,15 @@ def kernels(emu, rng):
     ps, pd = put(src), put(dst)
     emu.call(image_va(0x11F0), ps, pd, pd, m, floats=(0.0, 0.5), max_insns=10_000_000)
     ola = {"src": src.tolist(), "dst": dst.tolist(), "c": 0.5, "out": get(pd, m)}
-    return {"mul_0x1520": mul, "ola_0x11f0": ola}
+    a = rng.standard_normal(m).astype(np.float32)
+    b = rng.standard_normal(m).astype(np.float32)
+    pa, pb = put(a), put(b)
+    emu.call(image_va(0x13A0), pa, pb, m, max_insns=10_000_000)
+    sub = {"src": a.tolist(), "dst": b.tolist(), "out": get(pb, m)}
+    pa, pb = put(a), put(b)
+    emu.call(image_va(0x1370), pa, pb, m, max_insns=10_000_000)
+    add = {"src": a.tolist(), "dst": b.tolist(), "out": get(pb, m)}
+    return {"mul_0x1520": mul, "ola_0x11f0": ola, "sub_0x13a0": sub, "add_0x1370": add}
 
 
 def hop_arrays(recs, frame):

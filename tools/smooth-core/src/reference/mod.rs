@@ -3,3 +3,4 @@
 
 pub mod analysis;
 pub mod hop;
+pub mod resample;
