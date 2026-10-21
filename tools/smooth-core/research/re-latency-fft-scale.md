@@ -799,3 +799,19 @@ The block completes for 26 blocks at all four rates in both modes. Iteration cap
   gives 0. The PDC rule stays open.
 - The caller of the factory `0x88e3a0`, and of the helper `0x8e0858`.
 - Not done: no SMOOTH source change, no PDC change, no plug-in parity, no native host or pluginval run.
+
+## 18. Magnitude kernel 0x6181b0 translated (2026-10-21, emulation, bit-level)
+
+Harness: `re-tools/emulate/reference_magnitude_fixture.py` writes `src/reference/fixtures/magnitude.json`.
+**verified** (emulation, 2304 bins over 41 cases, bins 1..1000, selector pinned to 0):
+
+- Stage one is `dst[k] = re*re + im*im` over interleaved `(re, im)` input, f32, no FMA. Bit-exact.
+- Stage two is an indirect tail call `(*table[sel])(dst, dst, n)`, selector at RVA `0x21ed508`
+  (file value -1, runtime init writes 0 or 0x14), table at `0x21ecae8`. Slot 0 is `0x1c8740`, which is
+  `jmp [rip+x]` through the pointer at RVA `0x21ece78`, which holds `0x233f40`. `0x233f40` is IPP sqrt
+  (`IPPCODE` range, 0x2a0-byte frame). Its output differs from correctly rounded `sqrt` by at most 1 ULP
+  (1899 of 2304 bins exact, the rest ±1 ULP).
+- The README correction in section 7 stands: `0x6181b0` returns `|Y|`, not the power. The
+  "no sqrt routine is called" wording in section 7 is wrong; the sqrt is reached through the tail.
+
+Translation: `src/reference/magnitude.rs`. IPP sqrt is modelled as `f32::sqrt` (documented, ±1 ULP).
