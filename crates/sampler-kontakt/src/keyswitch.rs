@@ -83,7 +83,11 @@ pub(crate) fn translate(
                         high: c.cc_max as u8,
                     }
                 }
-                3 if c.cycle_class > 0 => ir::StartTest::RoundRobin(c.cycle_class as u32),
+                // Kontakt 8.13.1 cycle round robin (0x140876bd0 / 0x144f180b8): stored
+                // positions are 0-based, the cycle length is max stored + 1 and one
+                // instrument counter advances on every note. StartTest positions are
+                // 1-based, so stored 0 (the first step) becomes 1.
+                3 if c.cycle_class >= 0 => ir::StartTest::RoundRobin(c.cycle_class as u32 + 1),
                 4 => ir::StartTest::Random,
                 _ => {
                     instrument.unsupported.push(ir::Unsupported {
@@ -260,6 +264,8 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
         (Some(low), Some(high)) if (0..=high).contains(&low) && high <= 127 => {
             Ok((low as u8..=high as u8).collect())
         }
+        // A range sized by saved state to nothing (`LOW + 0 - 1`) switches no keys.
+        (Some(low), Some(high)) if high < low && (0..=127).contains(&low) => Ok(Vec::new()),
         (Some(_), Some(_)) => Err(format!("{what} {line:?} is outside 0..=127")),
         _ => Err(format!("{what} in {line:?} depends on runtime state")),
     };
@@ -350,7 +356,11 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
     }
     // The first indexed range is the articulation set; without one, all
     // single-key switches together. Anything else is a further switch set.
-    let primary: Vec<usize> = match patterns.iter().position(|p| p.range) {
+    let primary: Vec<usize> = match patterns
+        .iter()
+        .position(|p| p.range && p.keys.as_ref().is_ok_and(|k| !k.is_empty()))
+        .or_else(|| patterns.iter().position(|p| p.range && p.keys.is_err()))
+    {
         Some(first) => vec![first],
         None => (0..patterns.len()).collect(),
     };
@@ -371,6 +381,11 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
             (Ok(_), false) => {}
             (Err(why), false) => unmapped.push(why.clone()),
         }
+    }
+    // An indexed range sized by saved state to one key is a one-articulation
+    // patch: nothing to switch, unlike a single-key toggle.
+    if keys.len() < 2 && primary.first().is_some_and(|&i| patterns[i].range && patterns[i].keys.is_ok()) {
+        return Detection::None;
     }
     if keys.len() < 2 {
         return match (keys.first(), hints(&lines, &env)) {
@@ -946,6 +961,14 @@ end on
         assert!(
             matches!(detect(hinted, &[]), Detection::Unrecognized(why) if why.contains("control keys [24]"))
         );
+        // A range sized to nothing by saved state is inert; the next range is the set.
+        let empty = "on init\n declare $low := 20\n declare $count := 0\nend on\non note\n\
+            if (in_range($EVENT_NOTE, $low, $low + $count - 1))\n $o := $EVENT_NOTE - $low\n end if\n\
+            if (in_range($EVENT_NOTE, 24, 27))\n $ks := $EVENT_NOTE - 24\n end if\nend on";
+        assert!(matches!(detect(empty, &[]), Detection::Found(f) if f.keys.len() == 4));
+        let one = "on init\n declare $low := 12\n declare $arts := 0\nend on\non note\n\
+            if (in_range($EVENT_NOTE, $low, $low + $arts))\n $art := $EVENT_NOTE - $low\n end if\nend on";
+        assert!(matches!(detect(one, &[]), Detection::None));
         let toggle = "on init\nend on\non note\n if ($EVENT_NOTE = 24)\n $legato := 1\n exit\n end if\nend on";
         assert!(
             matches!(detect(toggle, &[]), Detection::Unrecognized(why) if why.contains("single"))

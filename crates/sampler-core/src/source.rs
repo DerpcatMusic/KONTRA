@@ -1,9 +1,16 @@
 //! Immutable per-region playback metadata and independent per-voice cursors.
 use crate::{
     Error, Frame,
-    envelope::EnvelopeState,
+    blocks::envelope::EnvelopeState,
     resample::{DECIMATION_REACH, Kernel, MAX_STEP, MIN_STEP},
 };
+
+pub(super) mod reuse;
+pub(crate) mod storage;
+pub(crate) mod channels;
+pub(crate) mod bundle;
+#[cfg(test)]
+mod mix_experiment;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
@@ -204,6 +211,7 @@ impl Playback {
         }
         let mut cursor = Cursor {
             wavetable: self.wavetable,
+            wavetable_base: self.wavetable,
             start: self.start,
             end,
             direction: self.direction,
@@ -223,6 +231,8 @@ impl Playback {
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
             cold_hold: false,
+            start_runway: 0,
+            bounded_demand: false,
             lead: 0,
         };
         if let Some(range) = self.loop_range
@@ -353,6 +363,7 @@ impl CursorTemplate {
         let wavetable = extra.and_then(|extra| extra.wavetable);
         let mut cursor = Cursor {
             wavetable,
+            wavetable_base: wavetable,
             start: self.start,
             end: self.end,
             direction: self.direction,
@@ -370,6 +381,8 @@ impl CursorTemplate {
             fade_in: 0,
             fade_frames: self.fade_frames,
             cold_hold: false,
+            start_runway: 0,
+            bounded_demand: false,
             lead: self.lead,
         };
         if let Some(frames) = self.loop_control_crossfade {
@@ -382,6 +395,7 @@ impl CursorTemplate {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Cursor {
     wavetable: Option<crate::Wavetable>,
+    wavetable_base: Option<crate::Wavetable>,
     start: usize,
     end: usize,
     direction: Direction,
@@ -404,10 +418,18 @@ pub(super) struct Cursor {
     fade_frames: u32,
     /// Initial storage hold; lifecycle events still end an unsounded voice.
     cold_hold: bool,
+    /// Pending first-render runway contract; zero after admission to playback.
+    /// Held cursors use it on scalar/batched/parallel source paths.
+    start_runway: u32,
+    /// Keep bounded streaming geometry after the onset contract is released.
+    bounded_demand: bool,
     /// Frames between this view's start and the zone's sample start, where playback begins:
     /// the view reaches back to a loop that starts before the sample start.
     lead: u64,
 }
+
+#[cfg(test)]
+std::thread_local! { static DIRECT_TAP_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 struct ReadAddress {
     primary: usize,
@@ -525,12 +547,25 @@ impl Cursor {
     pub(super) fn wavetable(&self) -> Option<crate::Wavetable> {
         self.wavetable
     }
-    pub(super) fn set_wavetable_controls(&mut self, [position, form1, form2]: [f32; 3]) {
-        if let Some(source) = &mut self.wavetable {
+    pub(super) fn set_wavetable_controls(
+        &mut self,
+        [position, form1, form2, form1_type, form2_type]: [f32; 5],
+    ) {
+        if let Some(source) = &mut self.wavetable_base {
+            source.form1_type = form1_type as u8;
+            source.form2_type = form2_type as u8;
             source.position = position;
             source.form1 = form1;
             source.form2 = form2;
         }
+    }
+    pub(super) fn set_wavetable_offsets(&mut self, [position, form1, form2]: [f32; 3]) {
+        self.wavetable = self.wavetable_base.map(|mut base| {
+            base.position = (base.position + position).clamp(0., 1.);
+            base.form1 = (base.form1 + form1).clamp(0., 1.);
+            base.form2 = (base.form2 + form2).clamp(0., 1.);
+            base
+        });
     }
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward
@@ -642,6 +677,9 @@ impl Cursor {
     pub(super) fn trace_start(&self) -> u64 {
         self.start as u64
     }
+    pub(super) fn trace_phase(&self) -> (u64, f64, Option<u64>) {
+        (self.position, self.fraction, self.index(self.position as i128).map(|i| i as u64))
+    }
     pub(super) fn trace_position(&self) -> u64 {
         self.index(self.position as i128)
             .map_or(self.start as u64, |i| i as u64)
@@ -695,12 +733,18 @@ impl Cursor {
 
     // Prepared candidates and validated expression changes supply this rate.
     pub(super) fn with_step(mut self, step: f64) -> Self {
+        self.set_step(step);
+        self
+    }
+
+    /// Update live pitch without copying the cursor's independent loop history.
+    #[inline]
+    pub(super) fn set_step(&mut self, step: f64) {
         debug_assert!(
             self.wavetable.is_some() && step.is_finite() && step > 0.
                 || (MIN_STEP..=MAX_STEP).contains(&step)
         );
         self.step = step;
-        self
     }
 
     fn first_boundary(&self, loop_range: Loop) -> u64 {
@@ -793,6 +837,16 @@ impl Cursor {
         self.starvation.is_some()
     }
 
+    pub(super) fn with_start_runway(mut self, frames: u32) -> Self {
+        self.start_runway = if frames > 1 { frames } else { 0 };
+        self.bounded_demand = frames > 1;
+        self
+    }
+
+    pub(crate) fn bounded_demand(&self) -> bool { self.bounded_demand }
+    pub(crate) fn pending_start_runway(&self) -> u32 { self.start_runway }
+    pub(crate) fn admit_start_runway(&mut self) { self.start_runway = 0; }
+
     /// Start silent, waiting for its stream window (a cold start).
     pub(super) fn cold(mut self) -> Self {
         self.starvation = Some(0);
@@ -807,6 +861,12 @@ impl Cursor {
 
     pub(super) fn holding_onset(&self) -> bool {
         self.cold_hold
+    }
+    /// A complete default-one processing-owner admission cleared only the
+    /// hold. Existing starvation/recovery fade and all source history remain
+    /// owned by the ordinary next source render.
+    pub(crate) fn admit_processing_cold_start(&mut self) {
+        self.cold_hold = false;
     }
 
     /// One millisecond of native fade from the last complete resampled frame.
@@ -984,6 +1044,19 @@ impl Cursor {
                     LoopShape::Crossfade { .. } | LoopShape::EqualPowerCrossfade { .. }
                 )
             })
+    }
+
+    /// Analysis clock of the time-stretch source (see
+    /// [`StretchEngine::render_with`]): the source position under the cursor,
+    /// loops, start/end and release exits already resolved, after the cursor
+    /// moved `elapsed` output frames on at its step (the time axis; pitch lives
+    /// in the engine). `None` once the traversal has ended. A forward read:
+    /// reverse playback is not a stretch mode yet.
+    pub(super) fn analysis(&mut self, elapsed: usize) -> Option<f64> {
+        for _ in 0..elapsed {
+            self.advance();
+        }
+        Some(self.index(i128::from(self.position))? as f64 + self.fraction)
     }
 
     fn advance(&mut self) {
@@ -1225,7 +1298,18 @@ impl Cursor {
             let radius = kernel.window(self.step());
             let left = self.index(position - i128::from(radius));
             let right = self.index(position + i128::from(radius));
-            let contiguous = if self.crossfaded() {
+            // Endpoints alone do not prove a span: a wrap around exactly half
+            // a loop can resemble a reverse window, and a reflection can
+            // resemble a forward one. Prove there is no traversal boundary
+            // within the complete window before borrowing physical samples.
+            let clear_window = self.loops.is_none()
+                && left.is_some()
+                && u64::try_from(position - i128::from(radius)).ok().is_some_and(|first| {
+                    let mut window = *self;
+                    window.position = first;
+                    window.span().1 >= 2 * radius as usize + 1
+                });
+            let contiguous = if self.crossfaded() || !clear_window {
                 None
             } else {
                 match (left, right) {
@@ -1343,6 +1427,31 @@ impl Cursor {
             None => return 0,
         };
         let output = &mut output[..count];
+        if kernel.uses_cubic(self.step()) && self.step() == 1.0 && self.fraction == 0.0 {
+            // Port v1 0cb7a8a0:src/engine/voice.rs::taps centre-tap run.
+            // NI Source Module loop/crossfade scope is unchanged: the span above
+            // already proves neither leg is crossfading. Preserve v2 arithmetic
+            // and signed-zero cubic results; this is not a different DSP law.
+            #[cfg(test)]
+            DIRECT_TAP_RUNS.set(DIRECT_TAP_RUNS.get() + 1);
+            let constant = envelope.constant_level();
+            for (i, frame) in output.iter_mut().enumerate() {
+                let centre = span[i + radius as usize];
+                let source = if centre.iter().any(|v| *v == 0.0) {
+                    // Zero's sign can depend on the cubic's neighbouring terms.
+                    kernel.sample_window(0.0, 1.0, &span[i..i + width])
+                } else {
+                    centre
+                };
+                let level = constant.unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+                self.last = if source.iter().all(|v| v.is_finite()) { source } else { [0.; 2] };
+            }
+            self.position += count as u64;
+            return count;
+        }
         if kernel.uses_cubic(self.step()) && output.len() >= 4 {
             sampler_simd::dispatch(
                 #[inline(always)]
@@ -1355,6 +1464,7 @@ impl Cursor {
                 (self, output, envelope),
                 #[inline(always)]
                 |(this, output, envelope)| {
+                    // Retain the established baseline on unmeasured targets.
                     this.run(
                         span,
                         width,
@@ -1368,15 +1478,14 @@ impl Cursor {
                 },
                 #[inline(always)]
                 |(this, output, envelope)| {
-                    this.run(
+                    this.run_polyphase_four::<true>(
                         span,
                         width,
                         output,
                         envelope,
                         gain,
                         gains,
-                        #[inline(always)]
-                        |f, w| bank.dot::<true>(f, w),
+                        bank,
                     )
                 },
             ),
@@ -1443,6 +1552,50 @@ impl Cursor {
         );
     }
 
+    /// Bank-only four-output run. Every phase recurrence, envelope advance and
+    /// mix association is identical to `run`; incomplete groups use that loop.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run_polyphase_four<const FUSED: bool>(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        bank: &crate::resample::Polyphase,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step(), 0, self.last);
+        let (chunks, tail) = output.as_chunks_mut::<4>();
+        for chunk in chunks {
+            let mut phases = [0.; 4];
+            let mut windows = [&span[..0]; 4];
+            for i in 0..4 {
+                phases[i] = fraction;
+                windows[i] = &span[offset..offset + width];
+                let phase = fraction + step;
+                let whole = phase as i64;
+                fraction = phase - whole as f64;
+                offset += whole as usize;
+            }
+            let sources = bank.dot_four::<FUSED>(phases, windows);
+            for (frame, source) in chunk.iter_mut().zip(sources) {
+                last = if source.iter().all(|value| value.is_finite()) { source } else { [0.; 2] };
+                let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+                for channel in 0..2 {
+                    frame[channel] += source[channel] * gain * gains[channel] * level;
+                }
+            }
+        }
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
+        self.run(&span[offset..], width, tail, envelope, gain, gains,
+            #[inline(always)]
+            |f, w| bank.dot::<FUSED>(f, w));
+    }
+
     /// The [`Self::render_run`] frame loop over one contiguous span, with the
     /// cursor in locals; same arithmetic as [`Self::advance`].
     #[inline(always)]
@@ -1479,6 +1632,79 @@ impl Cursor {
         self.last = last;
     }
 
+    /// Resolve a bounded virtual source span once when a loop seam, reflection
+    /// or reverse traversal prevents a physical contiguous run. Every frame
+    /// keeps the scalar kernel's exact tap count (including its zero padding),
+    /// interpolation arithmetic and phase recurrence. Preflight reads happen
+    /// before any cursor, envelope or output state commits.
+    fn render_gathered(
+        &mut self,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) -> usize {
+        if self.wavetable.is_some()
+            || self.loops.is_some()
+            || self.step() >= 2.0 && !pcm.levels().is_empty()
+            || self.step() == 1.0 && self.fraction == 0.0
+        {
+            return 0;
+        }
+        let step = self.step();
+        let radius = kernel.window(step);
+        let width = 2 * radius as usize + 1;
+        if width > GATHER {
+            return 0;
+        }
+        let limit = self.limit().unwrap_or(u64::MAX);
+        let (mut position, mut fraction) = (self.position, self.fraction);
+        let (mut count, mut length) = (0, width);
+        // Match advance's repeated additions; a product can round differently
+        // at a finite source end or at the last available stream window.
+        for _ in 0..output.len().min(envelope.remaining()) {
+            if position >= limit {
+                break;
+            }
+            let offset = (position - self.position) as usize;
+            if offset > GATHER - width {
+                break;
+            }
+            let phase = fraction + step;
+            let whole = phase as i64;
+            let Some(next) = position.checked_add(whole as u64) else {
+                break;
+            };
+            fraction = phase - whole as f64;
+            position = next;
+            length = offset + width;
+            count += 1;
+        }
+        if count < 2 {
+            return 0;
+        }
+        let mut gathered = [[0.0; 2]; GATHER];
+        let first = i128::from(self.position) - i128::from(radius);
+        for (offset, frame) in gathered[..length].iter_mut().enumerate() {
+            let Some(source) = self.read(pcm, first + offset as i128) else {
+                return 0;
+            };
+            *frame = source;
+        }
+        self.run(
+            &gathered[..length],
+            width,
+            &mut output[..count],
+            envelope,
+            gain,
+            gains,
+            |f, w| kernel.sample_window(f, step, w),
+        );
+        count
+    }
+
     fn render_filtered(
         &mut self,
         pcm: &(impl ReadFrames + ?Sized),
@@ -1498,6 +1724,13 @@ impl Cursor {
                     self.render_run(pcm, &mut output[rendered..], envelope, gain, gains, kernel);
                 if run > 0 {
                     rendered += run;
+                    continue;
+                }
+                let gathered = self.render_gathered(
+                    pcm, &mut output[rendered..], envelope, gain, gains, kernel,
+                );
+                if gathered > 0 {
+                    rendered += gathered;
                     continue;
                 }
             }
@@ -1565,8 +1798,365 @@ fn mix<'a>(
     }
 }
 
+// Baseline-only test adapter for the contiguous entry point. Production still
+// calls the unchanged iterator mixer; the experiment replaces this test-only
+// adapter only after its same-cohort callback baseline has been frozen.
+#[cfg(test)]
+fn mix_contiguous(input: &[Frame], output: &mut [Frame], envelope: &mut EnvelopeState,
+    gain: f32, gains: [f32; 2]) {
+    mix(input.iter(), output, envelope, gain, gains);
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn in_place_step_preserves_full_cursor_and_independent_continuation() {
+        // Literal old by-value updater, independent of the new wrapper/setter.
+        fn before(mut cursor: Cursor, step: f64) -> Cursor {
+            debug_assert!(cursor.wavetable.is_some() && step.is_finite() && step > 0.
+                || (MIN_STEP..=MAX_STEP).contains(&step));
+            cursor.step = step;
+            cursor
+        }
+        let pcm: Vec<Frame> = (0..6144).map(|i| {
+            [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()]
+        }).collect();
+        for quality in [crate::ResampleQuality::Realtime, crate::ResampleQuality::High] {
+            let kernel = Kernel::new(quality);
+            for direction in [Direction::Forward, Direction::Reverse] {
+                for shape in [LoopShape::Wrap, LoopShape::PingPong,
+                    LoopShape::Crossfade { frames: 9 }, LoopShape::EqualPowerCrossfade { frames: 9 }] {
+                    for mode in 0..4 {
+                        if mode == 3 && direction == Direction::Reverse { continue; }
+                        let range = Loop { start: 32, end: 71, mode: LoopMode::UntilRelease,
+                            shape, passes: std::num::NonZeroU32::new(7) };
+                        let mut playback = Playback { direction, ..Playback::default() };
+                        match mode {
+                            0 => (),
+                            1 => playback.loop_range = Some(range),
+                            2 => {
+                                playback.loop_slots[0] = Some(LoopSlot { range, tuning: 0.731 });
+                                playback.loop_slots[7] = Some(LoopSlot {
+                                    range: Loop { start: 87, end: 120, ..range }, tuning: 1.201,
+                                });
+                            },
+                            _ => playback.wavetable = Some(crate::Wavetable::default()),
+                        }
+                        let frames = if mode == 3 { pcm.len() } else { 160 };
+                        let mut old = playback.cursor(frames, 48000, 48000).unwrap();
+                        old.position = 20;
+                        old.fraction = 0.37;
+                        let mut new = old;
+                        for tick in 0..240 {
+                            let step = [MIN_STEP, 0.731, 1., 1.201, 3.17, MAX_STEP][tick % 6];
+                            let step = if mode == 3 && tick % 11 == 0 { 27.31 } else { step };
+                            old = before(old, step);
+                            new.set_step(step);
+                            assert_eq!(format!("{old:?}"), format!("{new:?}"));
+                            assert_eq!(old.step.to_bits(), new.step.to_bits());
+                            assert_eq!(old.fraction.to_bits(), new.fraction.to_bits());
+                            assert_eq!(old.last.map(f32::to_bits), new.last.map(f32::to_bits));
+                            assert_eq!(old.done(), new.done());
+                            assert_eq!(old.sample(pcm.as_slice(), &kernel).map(|f| f.map(f32::to_bits)),
+                                new.sample(pcm.as_slice(), &kernel).map(|f| f.map(f32::to_bits)));
+                            old.advance();
+                            new.advance();
+                            if tick == 79 { old.release(); new.release(); }
+                        }
+                        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn scalar_frames(
+        cursor: &mut Cursor,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        kernel: &Kernel,
+    ) -> usize {
+        let mut count = 0;
+        for frame in output {
+            if cursor.done() || envelope.done() {
+                break;
+            }
+            let Some(source) = cursor.sample(pcm, kernel) else { break };
+            cursor.last = if source.iter().all(|v| v.is_finite()) { source } else { [0.; 2] };
+            let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+            for channel in 0..2 {
+                frame[channel] += source[channel] * 0.731 * [0.7, -0.2][channel] * level;
+            }
+            cursor.advance();
+            count += 1;
+        }
+        count
+    }
+
+    // Exact pre-gather production path, including its existing contiguous run.
+    // Use this for full-stage receipts; the all-scalar reference above instead
+    // tests the new gather kernel independently of that existing optimization.
+    fn before_gather_frames(
+        cursor: &mut Cursor,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        kernel: &Kernel,
+    ) -> usize {
+        let mut rendered = 0;
+        while rendered < output.len() && !cursor.done() && !envelope.done() {
+            let n = cursor.render_run(pcm, &mut output[rendered..], envelope, 0.731, [0.7, -0.2], kernel);
+            if n > 0 { rendered += n; continue; }
+            let n = scalar_frames(cursor, pcm, &mut output[rendered..rendered+1], envelope, kernel);
+            if n == 0 { break; }
+            rendered += n;
+        }
+        rendered
+    }
+
+    #[test]
+    fn gathered_seams_match_scalar_pcm_phase_envelope_and_release() {
+        let pcm: Vec<Frame> = (0..128).map(|i| match i % 11 {
+            0 => [-0.0, 0.0],
+            1 => [f32::MIN_POSITIVE, -f32::MIN_POSITIVE],
+            _ => [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()],
+        }).collect();
+        for quality in [crate::ResampleQuality::Realtime, crate::ResampleQuality::High] {
+            let kernel = Kernel::new(quality);
+            for direction in [Direction::Forward, Direction::Reverse] {
+                for shape in [LoopShape::Wrap, LoopShape::PingPong,
+                    LoopShape::Crossfade { frames: 9 }, LoopShape::EqualPowerCrossfade { frames: 9 }] {
+                    for step in [0.25, 0.731, 1., 1.201, 2., 3.17, 16.] {
+                        for released in [false, true] {
+                            let mut initial = Playback {
+                                direction,
+                                loop_range: Some(Loop { start: 32, end: 53, mode: LoopMode::UntilRelease, shape, passes: None }),
+                                ..Playback::default()
+                            }.cursor(pcm.len(), 48000, 48000).unwrap().with_step(step);
+                            initial.position = 119;
+                            initial.fraction = 0.37;
+                            if released { initial.release(); }
+                            let (mut old, mut new) = (initial, initial);
+                            let mut old_env = EnvelopeState::new(crate::Envelope::new(5, 2, 17, 0.1, 13).unwrap());
+                            let mut new_env = old_env;
+                            let mut expected = vec![[0.123, -0.567]; 257];
+                            let mut actual = expected.clone();
+                            let want = scalar_frames(&mut old, pcm.as_slice(), &mut expected, &mut old_env, &kernel);
+                            let mut got = 0;
+                            while got < actual.len() && !new.done() && !new_env.done() {
+                                let n = new.render_gathered(pcm.as_slice(), &mut actual[got..], &mut new_env, 0.731, [0.7, -0.2], &kernel);
+                                got += if n > 0 { n } else {
+                                    scalar_frames(&mut new, pcm.as_slice(), &mut actual[got..got+1], &mut new_env, &kernel)
+                                };
+                            }
+                            assert_eq!(got, want, "{quality:?} {direction:?} {shape:?} {step} release={released}");
+                            assert_eq!(actual.iter().map(|v| v.map(f32::to_bits)).collect::<Vec<_>>(), expected.iter().map(|v| v.map(f32::to_bits)).collect::<Vec<_>>());
+                            assert_eq!((new.position, new.fraction.to_bits(), new.last.map(f32::to_bits)), (old.position, old.fraction.to_bits(), old.last.map(f32::to_bits)));
+                            assert_eq!((new_env.current().to_bits(), new_env.remaining()), (old_env.current().to_bits(), old_env.remaining()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_kernel_endpoints_cannot_alias_a_reverse_physical_window() {
+        let pcm: Vec<Frame> = (0..4096).map(|i| [(i as f32 * 0.02).sin(), (i as f32 * 0.07).cos()]).collect();
+        for quality in [crate::ResampleQuality::Realtime, crate::ResampleQuality::High] {
+            let kernel = Kernel::new(quality);
+            for direction in [Direction::Forward, Direction::Reverse] {
+                for shape in [LoopShape::Wrap, LoopShape::PingPong] {
+                    let mut cursor = Playback { direction, loop_range: Some(Loop { start: 64, end: 128, shape, mode: LoopMode::Continuous, passes: None }), ..Playback::default() }
+                        .cursor(pcm.len(), 48000, 48000).unwrap().with_step(1.201);
+                    for _ in 0..400 {
+                        let position = i128::from(cursor.position);
+                        let expected = kernel.sample(cursor.fraction, cursor.step(), |offset| cursor.read(pcm.as_slice(), position + i128::from(offset)).unwrap());
+                        assert_eq!(cursor.sample(pcm.as_slice(), &kernel).unwrap().map(f32::to_bits), expected.map(f32::to_bits), "{quality:?} {direction:?} {shape:?} at={position}");
+                        cursor.advance();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gathered_production_partition_matches_previous_runs() {
+        let pcm: Vec<Frame> = (0..4096).map(|i| [(i as f32 * 0.02).sin(), (i as f32 * 0.07).cos()]).collect();
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let initial = Playback { loop_range: Some(Loop { start: 64, end: 128, shape: LoopShape::Wrap, mode: LoopMode::Continuous, passes: None }), ..Playback::default() }
+            .cursor(pcm.len(), 48000, 48000).unwrap().with_step(1.201);
+        let (mut old, mut new) = (initial, initial);
+        let (mut old_env, mut new_env) = (EnvelopeState::new(crate::Envelope::default()), EnvelopeState::new(crate::Envelope::default()));
+        for iteration in 0..100 {
+            let mut expected = [[0.; 2]; 256];
+            let mut actual = expected;
+            let want = before_gather_frames(&mut old, pcm.as_slice(), &mut expected, &mut old_env, &kernel);
+            let got = new.render_filtered(pcm.as_slice(), &mut actual, &mut new_env, 0.731, [0.7, -0.2], &kernel);
+            assert_eq!((got, new.position, new.fraction.to_bits()), (want, old.position, old.fraction.to_bits()));
+            for (frame, (a,b)) in actual.iter().zip(expected).enumerate() {
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "iteration={iteration} frame={frame} actual={a:?} expected={b:?}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "optimized, paired seam stage CPU receipt; run without concurrent builds"]
+    fn gathered_seam_cpu_receipt() {
+        use std::{hint::black_box, time::Instant};
+        let pcm: Vec<Frame> = (0..4096).map(|i| [(i as f32 * 0.02).sin(), (i as f32 * 0.07).cos()]).collect();
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        for shape in [LoopShape::Wrap, LoopShape::PingPong, LoopShape::Crossfade { frames: 16 }] {
+            let initial = Playback { loop_range: Some(Loop { start: 64, end: 128, shape, mode: LoopMode::Continuous, passes: None }), ..Playback::default() }
+                .cursor(pcm.len(), 48000, 48000).unwrap().with_step(1.201);
+            for round in 0..4 {
+                let mut elapsed = [0.; 2];
+                let mut checksums = [0.; 2];
+                for candidate in [round % 2, 1 - round % 2] {
+                    let mut cursors = vec![initial; 300];
+                    let mut envelopes = vec![EnvelopeState::new(crate::Envelope::default()); 300];
+                    let mut output = [[0.; 2]; 256];
+                    let started = Instant::now();
+                    for iteration in 0..16000 {
+                        output.fill([0.; 2]);
+                        let i = iteration % cursors.len();
+                        if candidate == 0 {
+                            assert_eq!(before_gather_frames(&mut cursors[i], pcm.as_slice(), black_box(&mut output), &mut envelopes[i], &kernel), output.len());
+                        } else {
+                            assert_eq!(cursors[i].render_filtered(pcm.as_slice(), black_box(&mut output), &mut envelopes[i], 0.731, [0.7, -0.2], &kernel), output.len());
+                        }
+                        checksums[candidate] += f64::from(black_box(output[255][0]));
+                    }
+                    elapsed[candidate] = started.elapsed().as_secs_f64();
+                }
+                assert_eq!(checksums[0].to_bits(), checksums[1].to_bits(), "{shape:?} round={round}");
+                println!("seam_cpu_receipt shape={shape:?} round={round} scalar_ms={:.3} gathered_ms={:.3} ratio={:.4} checksum={:016x}", elapsed[0]*1000., elapsed[1]*1000., elapsed[1]/elapsed[0], checksums[0].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn gathered_missing_page_preflight_is_atomic_and_preserves_ready_prefix() {
+        struct Partial<'a> { frames: &'a [Frame], missing: std::ops::Range<usize> }
+        impl ReadFrames for Partial<'_> {
+            fn frame(&self, index: usize) -> Option<Frame> {
+                (!self.missing.contains(&index)).then(|| self.frames.get(index).copied()).flatten()
+            }
+            fn span(&self, _: std::ops::Range<usize>) -> Option<&[Frame]> { None }
+        }
+        let frames: Vec<Frame> = (0..128).map(|i| [(i as f32 * 0.2).sin(); 2]).collect();
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [LoopShape::Wrap, LoopShape::PingPong, LoopShape::Crossfade { frames: 9 }] {
+                let initial = Playback { direction, loop_range: Some(Loop { start: 32, end: 96, shape, mode: LoopMode::Continuous, passes: None }), ..Playback::default() }
+                    .cursor(frames.len(), 48000, 48000).unwrap().with_step(0.731);
+                let missing = if direction == Direction::Forward { 80..81 } else { 47..48 };
+                let pcm = Partial { frames: &frames, missing };
+                let mut cursor = initial;
+                let mut env = EnvelopeState::new(crate::Envelope::default());
+                let mut output = [[0.123, -0.567]; 128];
+                assert_eq!(cursor.render_gathered(&pcm, &mut output, &mut env, 0.731, [0.7, -0.2], &kernel), 0);
+                assert_eq!(output, [[0.123, -0.567]; 128]);
+                assert_eq!((cursor.position, cursor.fraction, cursor.last), (initial.position, initial.fraction, initial.last));
+                assert_eq!(env.current(), 1.);
+                // A failed large preflight must not consume its otherwise ready
+                // prefix. Smaller runs still publish exactly the scalar frames.
+                let (mut old, mut new) = (initial, initial);
+                let (mut old_env, mut new_env) = (env, env);
+                let mut expected = output;
+                let mut actual = output;
+                let want = scalar_frames(&mut old, &pcm, &mut expected, &mut old_env, &kernel);
+                assert!(want > 0 && want < output.len());
+                let got = new.render_gathered(&pcm, &mut actual[..want], &mut new_env, 0.731, [0.7, -0.2], &kernel);
+                assert_eq!(got, want);
+                assert_eq!(actual.map(|v| v.map(f32::to_bits)), expected.map(|v| v.map(f32::to_bits)));
+                assert_eq!((new.position, new.fraction, new.last), (old.position, old.fraction, old.last));
+            }
+        }
+    }
+
+    #[test]
+    fn integer_crossfade_runs_skip_cubic_and_preserve_pcm_cursor_and_envelope() {
+        use super::*;
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let pcm: Vec<Frame> = (0..600)
+            .map(|i| match i % 13 {
+                0 => [-0.0, 0.0],
+                1 => [f32::MIN_POSITIVE, -f32::MIN_POSITIVE],
+                _ => [(i as f32 * 0.731).sin(), (i as f32 * 0.417).cos()],
+            })
+            .collect();
+        for len in [1, 3, 4, 63, 64, 65] {
+            for shape in [
+                Envelope::default(),
+                Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                    EnvelopeCurve::exponential(2.).unwrap(),
+                    EnvelopeCurve::exponential(-3.).unwrap(),
+                    EnvelopeCurve::default(),
+                ),
+            ] {
+                let mut old = Playback {
+                    loop_range: Some(Loop {
+                        start: 160,
+                        end: 500,
+                        mode: LoopMode::Continuous,
+                        shape: LoopShape::Crossfade { frames: 80 },
+                        passes: None,
+                    }),
+                    ..Playback::default()
+                }
+                .cursor(pcm.len(), 48000, 48000)
+                .unwrap();
+                old.position = 20;
+                let mut new = old;
+                let mut expected = vec![[0.123, -0.567]; len];
+                let mut actual = expected.clone();
+                let mut old_env = EnvelopeState::new(shape);
+                let mut new_env = old_env;
+                old.run(
+                    &pcm[18..],
+                    5,
+                    &mut expected,
+                    &mut old_env,
+                    0.731,
+                    [0.7, -0.2],
+                    |f, w| kernel.sample_window(f, 1., w),
+                );
+                DIRECT_TAP_RUNS.set(0);
+                assert_eq!(
+                    new.render_run(
+                        pcm.as_slice(),
+                        &mut actual,
+                        &mut new_env,
+                        0.731,
+                        [0.7, -0.2],
+                        &kernel
+                    ),
+                    len
+                );
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+                }
+                assert_eq!(
+                    (new.position, new.fraction, new.last.map(f32::to_bits)),
+                    (old.position, old.fraction, old.last.map(f32::to_bits))
+                );
+                assert_eq!(new_env.current().to_bits(), old_env.current().to_bits());
+                assert_eq!(new_env.remaining(), old_env.remaining());
+                assert_eq!(
+                    DIRECT_TAP_RUNS.get(),
+                    1,
+                    "integer clear spans must use the centre-tap run"
+                );
+            }
+        }
+    }
+
+
     #[test]
     #[ignore = "focused CPU/work witness; 64x is deliberately injected past admission for diagnosis"]
     fn pitch_limit_increase_work_witness() {
@@ -1676,6 +2266,51 @@ mod tests {
     }
 
     #[test]
+    fn polyphase_columns_preserve_output_cursor_envelope_and_partial_tails() {
+        use crate::{Envelope, EnvelopeCurve};
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let span: Vec<Frame> = (0..256).map(|i| {
+            match i % 19 {
+                0 => [-0., 0.], 1 => [f32::from_bits(1), -f32::from_bits(1)],
+                _ => [(i as f32 * 0.173).sin(), -(i as f32 * 0.319).cos()],
+            }
+        }).collect();
+        for step in [1.000000001, 1.03, 1.17, 1.3, 1.5, 1.7, 1.9, 2.] {
+            let bank = kernel.polyphase(step).unwrap();
+            for fraction in [0., 0.123456789, 0.999999999] {
+                for len in 0..=65 {
+                    for shape in [Envelope::default(), Envelope::new(5, 2, 17, 0.1, 13).unwrap().with_curves(
+                        EnvelopeCurve::exponential(2.).unwrap(), EnvelopeCurve::exponential(-3.).unwrap(), EnvelopeCurve::default())] {
+                        let mut old = Playback::default().cursor(256, 48000, 48000).unwrap();
+                        old.step = step; old.fraction = fraction;
+                        let mut new = old;
+                        let mut old_env = EnvelopeState::new(shape);
+                        let mut new_env = old_env;
+                        let mut expected = vec![[0.123, -0.567]; len];
+                        let mut actual = expected.clone();
+                        sampler_simd::dispatch_fused((&mut old, &mut expected[..], &mut old_env),
+                            #[inline(always)]
+                            |(old, out, env)| old.run(&span, bank.width(), out, env, 0.731, [0.7, -0.2], |f,w| bank.dot::<false>(f,w)),
+                            #[inline(always)]
+                            |(old, out, env)| old.run(&span, bank.width(), out, env, 0.731, [0.7, -0.2], |f,w| bank.dot::<true>(f,w)));
+                        sampler_simd::dispatch_fused((&mut new, &mut actual[..], &mut new_env),
+                            #[inline(always)]
+                            |(new, out, env)| new.run_polyphase_four::<false>(&span, bank.width(), out, env, 0.731, [0.7, -0.2], bank),
+                            #[inline(always)]
+                            |(new, out, env)| new.run_polyphase_four::<true>(&span, bank.width(), out, env, 0.731, [0.7, -0.2], bank));
+                        assert_eq!(actual.iter().map(|x| x.map(f32::to_bits)).collect::<Vec<_>>(), expected.iter().map(|x| x.map(f32::to_bits)).collect::<Vec<_>>());
+                        assert_eq!(new.position, old.position);
+                        assert_eq!(new.fraction.to_bits(), old.fraction.to_bits());
+                        assert_eq!(new.last.map(f32::to_bits), old.last.map(f32::to_bits));
+                        assert_eq!(new_env.remaining(), old_env.remaining());
+                        for _ in 0..64 { assert_eq!(new_env.next().to_bits(), old_env.next().to_bits()); }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cubic_columns_preserve_scalar_output_cursor_and_envelope() {
         use super::*;
         use crate::{Envelope, EnvelopeCurve};
@@ -1743,8 +2378,6 @@ mod tests {
             }
         }
     }
-
-    use super::*;
 
     #[test]
     fn compact_templates_preserve_cursor_paths_and_independent_loop_release() {
@@ -2162,6 +2795,77 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
+mod time_machine;
+
+/// [`stretch_block`] mixed into `output` the way `Cursor::render` mixes a
+/// sampler voice: scaled by the voice envelope (when `enveloped`), `gain` and
+/// the channel `gains`.
+pub(super) fn stretch_mix(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    output: &mut [Frame],
+    gain: f32,
+    gains: [f32; 2],
+    enveloped: bool,
+) -> usize {
+    let mut raw = [[0.; 2]; 256];
+    let mut done = 0;
+    while done < output.len() && !(enveloped && voice.envelope.done()) {
+        let mut n = (output.len() - done).min(raw.len());
+        if enveloped {
+            n = n.min(voice.envelope.remaining());
+        }
+        let got = stretch_block(engine, voice, pcm, &mut raw[..n]);
+        for (out, frame) in output[done..done + got].iter_mut().zip(&raw) {
+            let amplitude = if enveloped { voice.envelope.next() * gain } else { gain };
+            for c in 0..2 {
+                out[c] += frame[c] * amplitude * gains[c];
+            }
+        }
+        done += got;
+        if got < n {
+            break;
+        }
+    }
+    done
+}
+
+/// One block of a time-stretch voice: the cursor is the analysis clock, the
+/// engine plays the pitch. The first block configures and starts the engine
+/// (pre-roll included). A frozen voice (speed 0) holds the clock still.
+pub(super) fn stretch_block(
+    engine: &mut StretchEngine,
+    voice: &mut crate::Voice,
+    pcm: &(impl ReadFrames + ?Sized),
+    out: &mut [Frame],
+) -> usize {
+    let Some(link) = voice.stretch.as_mut() else {
+        return 0;
+    };
+    let frozen = link.spec.speed == 0.;
+    let params = StretchParams {
+        advance: if frozen { 0. } else { voice.cursor.step() },
+        step: voice.stretch_step,
+        smooth: link.spec.smooth,
+        grain_ms: link.spec.grain_ms,
+    };
+    if !link.started {
+        engine.configure(link.spec.mode, link.spec.hq);
+        let Some(from) = voice.cursor.analysis(0) else {
+            return 0;
+        };
+        engine.start_clocked(pcm, link.frames, from, params);
+        link.started = true;
+    }
+    let cursor = &mut voice.cursor;
+    engine.render_with(pcm, params, out, |elapsed| cursor.analysis(if frozen { 0 } else { elapsed }))
+}
+#[allow(unused_imports)] // wired by the voice source in a later commit
+pub(crate) use time_machine::{
+    Engine as StretchEngine, Mode as StretchMode, Params as StretchParams, Region as StretchRegion,
+    Spec as StretchSpec, VOICES as STRETCH_VOICES,
+};
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
 /// Largest window `render_run` gathers across storage boundaries.
@@ -2170,6 +2874,11 @@ const GATHER: usize = 1024;
 pub(super) trait ReadFrames {
     fn frame(&self, index: usize) -> Option<Frame>;
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
+    /// Availability only; implementations may check page geometry without
+    /// decoding/copying frames. Never submit requests or partially consume data.
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        range.into_iter().all(|index| self.frame(index).is_some())
+    }
     /// Copy `range` into `out` (its length), across storage boundaries;
     /// `false` if any frame is missing.
     fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
@@ -2197,6 +2906,9 @@ pub(super) struct Resident<'a> {
     pub levels: &'a [Box<[Frame]>],
 }
 impl ReadFrames for Resident<'_> {
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        self.frames.get(range).is_some()
+    }
     fn frame(&self, index: usize) -> Option<Frame> {
         self.frames.frame(index)
     }
@@ -2208,6 +2920,9 @@ impl ReadFrames for Resident<'_> {
     }
 }
 impl ReadFrames for [Frame] {
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        self.get(range).is_some()
+    }
     fn frame(&self, index: usize) -> Option<Frame> {
         self.get(index).copied()
     }
@@ -2230,6 +2945,16 @@ impl PagedFrames<'_> {
     }
 }
 impl ReadFrames for PagedFrames<'_> {
+    fn covers(&self, range: std::ops::Range<usize>) -> bool {
+        crate::prepare::uncovered(self.head, range, |frames| {
+            let page_frames = crate::PAGE_FRAMES;
+            (frames.start / page_frames..=(frames.end - 1) / page_frames).all(|page| {
+                self.cache.span(self.asset,
+                    frames.start.max(page * page_frames)..frames.end.min((page + 1) * page_frames)
+                ).is_some()
+            })
+        })
+    }
     fn frame(&self, index: usize) -> Option<Frame> {
         match self.range(index) {
             Some((start, frames)) => Some(frames.frame(index - start)),
@@ -2272,6 +2997,45 @@ impl ReadFrames for PagedFrames<'_> {
             at = end;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod stretch_clock_tests {
+    use super::*;
+
+    #[test]
+    fn a_looped_cursor_clocks_the_stretch_engine_past_the_end_of_the_sample() {
+        let src: Vec<Frame> = (0..8000)
+            .map(|n| {
+                let v = (std::f32::consts::TAU * 441. * n as f32 / 48000.).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        let mut cursor = Playback {
+            loop_range: Some(Loop {
+                start: 2000,
+                end: 6000,
+                mode: LoopMode::Continuous,
+                shape: LoopShape::Wrap,
+                passes: None,
+            }),
+            ..Default::default()
+        }
+        .cursor(8000, 48000, 48000)
+        .unwrap();
+        let params = StretchParams::default();
+        let mut engine = StretchEngine::new(StretchMode::TimeMachine2, false, 48000);
+        engine.start_clocked(&src[..], src.len(), 0., params);
+        let mut block = [[0.; 2]; 480];
+        let mut loudest = 0f32;
+        for _ in 0..200 {
+            // 96,000 output frames: far past the 8,000-frame sample.
+            let n = engine.render_with(&src[..], params, &mut block, |elapsed| cursor.analysis(elapsed));
+            assert_eq!(n, block.len());
+            loudest = block.iter().flatten().fold(loudest, |m, v| m.max(v.abs()));
+        }
+        assert!(loudest > 0.2 && !cursor.done());
     }
 }
 

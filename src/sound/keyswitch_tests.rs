@@ -7,6 +7,7 @@ fn fixture(owner: ir::SwitchOwner) -> (V2Core, ir::Instrument) {
         assets: (0..3)
             .map(|n| ir::Asset {
                 location: ir::AssetLocation::Path(format!("{n}.wav")),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),
@@ -367,19 +368,30 @@ fn keyswitch_cell_modes_route_actual_source_values_and_user_overrides() {
 }
 
 #[test]
-fn keyswitch_program_messages_without_a_selector_are_counted() {
+fn keyswitch_program_messages_without_a_selector_update_program_state() {
     let (mut core, inst) = fixture(ir::SwitchOwner::Native);
     route(&mut core, &inst, &Overlay::default());
     assert!(core.select_articulation(0, 2));
     core.event(0, Event::midi1(0xc0, 0, 0));
-    assert_eq!(core.problems(0).ignored_input, 1);
+    assert_eq!(core.problems(0).ignored_input, 0);
     core.event(0, Event::Ump([0x40c0_0000, 0]));
-    assert_eq!(core.problems(0).ignored_input, 2);
+    assert_eq!(core.problems(0).ignored_input, 0);
+    let runtime = &core.parts[0].as_ref().unwrap().runtime;
+    for protocol in [sampler_core::Protocol::Midi1, sampler_core::Protocol::Midi2] {
+        assert_eq!(
+            runtime.program_selection(runtime.performance(0).unwrap(), sampler_core::ChannelAddress {
+                protocol, port: WIRE.port, group: 0, channel: 0,
+            }).unwrap(),
+            Some(sampler_core::ProgramSelection { program: 0, bank: [0, 0] }),
+            "accepted state is separate from articulation selection",
+        );
+    }
+    assert_eq!(runtime.program_playback_capability(runtime.active_plan()).unwrap(), sampler_core::ProgramPlaybackCapability::NoPresetCatalog);
     core.render(16);
     assert_eq!(
         core.articulation(0),
         Some(2),
-        "unhandled program changes leave selection unchanged"
+        "Program state without a matching selector leaves articulation unchanged"
     );
 }
 

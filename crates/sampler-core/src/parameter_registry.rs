@@ -10,6 +10,9 @@ pub enum ParameterScope {
     Group(u32),
     Bus(u32),
     Plan,
+    /// Actual shared activation scope, distinct from every physical voice and
+    /// public Group/Bus/Plan lane. Append preserves existing variant ordering.
+    ProcessingScope(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -161,9 +164,26 @@ impl ParameterAddress {
     pub const SampleStart: Self = Self::legacy(0, 12);
     pub const LoopStart: Self = Self::legacy(0, 15);
     pub const LoopLength: Self = Self::legacy(0, 16);
+    pub const WavetablePosition: Self = Self::legacy(0, 18);
+    pub const WavetableForm1: Self = Self::legacy(0, 19);
+    pub const WavetableForm2: Self = Self::legacy(0, 20);
     /// Start phase of a program-local LFO, read once at voice onset.
     pub const fn SourcePhase(node: u32) -> Self {
         Self::legacy(node, 14)
+    }
+    /// A stage time of the voice's own amplitude envelope, addressed as a
+    /// modulation target (Kontakt ids 184..187). The stage index is the
+    /// core's `EnvelopeStage` ordinal.
+    pub const fn VoiceEnvelopeStage(stage: u8) -> Self {
+        Self::legacy(0, 21 + stage as u32)
+    }
+    /// Rate of a program-local LFO on Kontakt's normalized frequency lane (ID26).
+    pub const fn SourceRate(node: u32) -> Self {
+        Self::legacy(node, 17)
+    }
+    /// An exact binding within the CURRENT shared owner's prepared scope.
+    pub const fn ProcessingParameter(scope: u32, binding: u32) -> Self {
+        Self { scope: ParameterScope::ProcessingScope(scope), node: binding, parameter: 0 }
     }
     pub const fn ProcessorCutoff(node: u32) -> Self {
         Self::legacy(node, 6)

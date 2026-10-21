@@ -142,6 +142,94 @@ impl Zone {
     }
 }
 
+
+impl Zone {
+    /// Source-defined KSP zone identity, independent of ZoneList position.
+    ///
+    /// Original Kontakt8 0fe6356e: version dispatch 0x140d0c760 picks a private
+    /// reader by version (`0x92..=0x9c`, `0x96` throws) and every branch ends
+    /// in the same tail at 0x140d0cce5: one `read_u32` stored to
+    /// `(zone+0x10)+0xa4`. `0x99..=0x9c` additionally read an aux count just
+    /// before it (`+0x5c`); `0x92..=0x98` do not. So the identity is the
+    /// terminal i32 of the private at every admitted version, whatever
+    /// variable-length sub-records (`0x142a78400`, `0x140cf1330`) precede it.
+    /// That is why the saved privates differ in length (83, 87, 140..176) yet
+    /// all end with the same field; byte 56 is layout noise, not a flag.
+    ///
+    /// The private's first field is a u32 read into `+0xa8`, then `0x140cf0360`
+    /// reads the mode at `+4` and throws unless it is 0, 1 or 2. The public
+    /// six-byte prefix contains different user/sample/owner fields. No ordinal
+    /// is fabricated: a private that does not decode gives an error, not an id.
+    pub fn source_id(&self) -> Result<Option<u32>, Error> {
+        if self.0.version == 0x96 || !(0x92..=0x9c).contains(&self.0.version) {
+            return Err(Error::Static("Unverified zone source identity version"));
+        }
+        let private = &self.0.private_data;
+        if private.len() < 8 {
+            return Err(Error::Static("Unverified zone source identity private layout"));
+        }
+        // cf0360 accepts only these three values before the auxiliary mask.
+        if u32::from_le_bytes(private[4..8].try_into().unwrap()) > 2 {
+            return Err(Error::Static("Invalid zone private mode"));
+        }
+        let n = private.len();
+        match i32::from_le_bytes(private[n - 4..n].try_into().unwrap()) {
+            -1 => Ok(None),
+            id if id >= 0 => Ok(Some(id as u32)),
+            _ => Err(Error::Static("Invalid zone source identity")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+    fn zone(id:i32) -> Zone {
+        let mut private_data=vec![0;87];
+        private_data[83..87].copy_from_slice(&id.to_le_bytes());
+        let mut public_data=vec![0;48];
+        public_data[42..48].copy_from_slice(&[0,1,255,255,255,255]);
+        Zone(StructuredObject {version:0x9c,private_data,public_data,children:Vec::new()})
+    }
+    #[test]
+    fn explicit_zero_and_sparse_native_ids_do_not_use_public_owner_or_ordinal() {
+        for id in [0,7,2018] {assert_eq!(zone(id).source_id().unwrap(),Some(id as u32));}
+        assert_eq!(zone(-1).source_id().unwrap(),None);
+        assert!(zone(-2).source_id().is_err());
+    }
+    #[test]
+    fn every_private_length_takes_its_terminal_i32_as_identity() {
+        // The native reader's last read is the identity at every admitted
+        // version, so variable-length privates (83, 140..176) keep the id last.
+        for len in [12, 83, 87, 88, 140, 152, 176, 512] {
+            let mut z=zone(7);z.0.private_data.resize(len,0);
+            let n=len;z.0.private_data[n-4..].copy_from_slice(&7i32.to_le_bytes());
+            assert_eq!(z.source_id().unwrap(),Some(7),"private length {len}");
+        }
+        for len in [0,4] {
+            let mut z=zone(7);z.0.private_data.resize(len,0);
+            assert!(z.source_id().is_err(),"private length {len}");
+        }
+    }
+    #[test]
+    fn version_branches_that_share_the_identity_tail_are_admitted_and_0x96_is_not() {
+        for version in 0x92..=0x9c {
+            let mut z=zone(7);z.0.version=version;
+            if version==0x96 {assert!(z.source_id().is_err());} else {assert_eq!(z.source_id().unwrap(),Some(7));}
+        }
+        let mut high=zone(7);high.0.version=0x9d;
+        assert!(high.source_id().is_err());
+    }
+    #[test]
+    fn bad_mode_and_negative_ids_are_errors_not_identities() {
+        let mut z=zone(7);z.0.private_data[4]=3;
+        assert!(z.source_id().is_err());
+        z.0.private_data[4]=0;
+        let n=z.0.private_data.len();z.0.private_data[n-4..].copy_from_slice(&(-2i32).to_le_bytes());
+        assert!(z.source_id().is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;

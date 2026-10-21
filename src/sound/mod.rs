@@ -21,12 +21,15 @@
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
 pub mod articulation;
+#[cfg(test)]
+mod stream_accounting_tests;
 pub mod edits;
 pub(crate) mod effect_controls;
 pub mod event;
 pub mod mics;
 pub mod mix;
 pub mod report;
+pub(crate) mod resource_revision;
 pub mod tree;
 pub mod v2;
 pub(crate) mod waveform;
@@ -40,6 +43,18 @@ pub const BUSES: usize = 16;
 /// Initial rack storage for existing sessions; this is not a part-count limit.
 pub const RACK_SLOTS: usize = 16;
 pub use crate::plugin::automation_ids::HOST_AUTOMATION_SLOTS;
+/// A host automation slot's route into one control, from the plan's bindings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostBinding {
+    pub address: u16,
+    /// The bound widget and its control, in UI IR identities.
+    pub widget: sampler_ui_ir::ControlId,
+    pub control: sampler_ui_ir::ControlId,
+    /// The normalized window the host value is mapped through.
+    pub low: f64,
+    pub high: f64,
+    pub domain: sampler_core::ControlDomain,
+}
 /// How far a part tunes, in semitones either way.
 pub const TUNE_RANGE: f32 = 36.0;
 /// One stereo block: `[left, right]`.
@@ -222,14 +237,25 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Bytes held in memory: start data plus the page pool.
+    /// Initial assets' resident frames/octaves, reserved heads and page pool.
+    /// Head reservations include staged and retired generations until control
+    /// reclaims them. Dynamic source revisions have separate ownership and
+    /// accounting; this is initial sample storage, not total process RSS.
     pub fn resident_bytes(&self) -> u64 {
-        let heads: usize = self
+        let physical = self.streamer.physical_budget();
+        let non_heads: usize = self
             .assets
             .iter()
-            .map(sampler_core::Pcm::resident_bytes)
+            .map(|pcm| {
+                // Reclaim unpinned old heads on control before observing the
+                // shared reservation, without counting current heads twice.
+                pcm.head_bytes();
+                pcm.resident_non_head_bytes_outside(&physical)
+            })
             .sum();
-        (heads + self.report.pool_bytes) as u64
+        non_heads
+            .saturating_add(physical.status().held_bytes)
+            .saturating_add(self.report.pool_bytes) as u64
     }
 
     /// Drop the start data of samples not played since `before` (the part's
@@ -258,7 +284,12 @@ pub struct KeyLook {
 /// A part's script interfaces as its scripts change them at run time.
 #[derive(Default)]
 pub struct ScriptUi {
+    pub(crate) snapshot_reuse: Option<std::sync::Arc<v2::snapshot_reuse::Descriptor>>,
+    /// The resolved instrument owning these resources, including when the
+    /// selected preset is a snapshot rather than an instrument file.
+    pub resource_path: Option<std::path::PathBuf>,
     pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
+    pub uvi_meter_buses: std::sync::Arc<[sampler_uvi::meters::Binding]>,
     pub uvi_revision: u64,
     pub uvi_source: Option<(String, u32, String)>,
     /// By script instance ([`sampler_core::ScriptInstanceId`]).

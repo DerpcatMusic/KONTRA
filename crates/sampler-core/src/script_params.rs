@@ -158,6 +158,8 @@ impl Layer {
         }
     }
 
+    pub(crate) fn has_source_pan(self) -> bool { self.pan != 0. }
+
     pub fn semitones(self) -> f64 {
         self.pitch
     }
@@ -465,6 +467,14 @@ impl std::ops::IndexMut<usize> for NoteParamsPool {
 }
 
 impl NoteParams {
+    /// A candidate admitted to a wide source must not inherit an old stereo
+    /// source-pan operand, including a transition still straddling the grid.
+    pub(crate) fn has_source_pan(&self, now: u64) -> bool {
+        let begin = now - now % super::voice_mod::CELL;
+        self.layer.has_source_pan()
+            || self.layer_at(begin).has_source_pan()
+            || self.layer_at(begin.saturating_add(super::voice_mod::CELL)).has_source_pan()
+    }
     pub fn layer_at(&self, now: u64) -> Layer {
         let Some((from, start)) = self.transition else {
             return self.layer;
@@ -507,6 +517,83 @@ impl ModValues {
 }
 
 impl Runtime {
+
+    /// Explicit off-audio numeric readback. Allocates only when called; never
+    /// installs a tap, services commands, changes the clock, or reads a source.
+    pub fn diagnostic_group_gain(&self, group: u32) -> Option<serde_json::Value> {
+        self.diagnostic_group_gain_in(self.active_plan, group)
+    }
+
+    fn diagnostic_group_gain_in(&self, plan: crate::PlanId, group: u32) -> Option<serde_json::Value> {
+        use serde_json::json;
+        let generation = self.plans.get(plan.0)?;
+        let index = group as usize;
+        let current = generation.script.groups.get(index)?;
+        let authored = generation.script.authored.get(index)?;
+        let prepared_fader = generation.prepared.group_faders.get(index).and_then(Option::as_ref);
+        let bus = generation.script.fader.get(index).copied().flatten();
+        let fader = bus.and_then(|b| generation.dsp.buses.fader.get(b)).copied();
+        Some(json!({"at":self.now,"group":group,"authored_db":authored.decibels,
+            "current_db":current.decibels,"current_db_linear":10f64.powf(current.decibels/20.),
+            "group_pan":current.pan,"group_attenuate":current.attenuate,
+            "instrument_db":generation.script.instrument.decibels,
+            "instrument_pan":generation.script.instrument.pan,
+            "instrument_attenuate":generation.script.instrument.attenuate,
+            "script_voice_gains":generation.script.layer(Some(group)).gains(1.),
+            "fader_bus":bus,"actual_fader_linear":fader,
+            "prepared_fader_initial":prepared_fader.map(|f|f.initial),
+            "bus_path":self.diagnostic_bus_path(plan,bus),
+            "scope":"Current group state and actual fader, distinct from floored dB reconstruction; no source or stage-input observation"}))
+    }
+
+    fn diagnostic_bus_path(&self, plan: crate::PlanId, mut bus: Option<usize>) -> serde_json::Value {
+        use serde_json::json;
+        let Some(generation) = self.plans.get(plan.0) else { return serde_json::Value::Null; };
+        let mut rows = Vec::new();
+        let mut seen = Vec::new();
+        while let Some(index) = bus {
+            if rows.len()==16 || seen.contains(&index) { break; }
+            seen.push(index);
+            let Some(mix)=generation.dsp.buses.mix.get(index) else { break; };
+            rows.push(json!({"bus":index,"mix_gain":mix.gain,"output_bus":mix.output,
+                "actual_fader_linear":generation.dsp.buses.fader.get(index),
+                "existing_output_peak":generation.dsp.buses.peak(index,crate::BusPeakTap::Output).ok(),
+                "existing_input_peak":generation.dsp.buses.peak(index,crate::BusPeakTap::Input).ok()}));
+            bus=mix.output;
+        }
+        json!({"buses":rows,"complete":bus.is_none(),
+            "peak_scope":"Existing cumulative meters since their last ordinary drain; input null means disabled/unavailable. No meter enabled or reset by this query; these are not note-window stage measurements"})
+    }
+
+    /// Generation-fenced current occupied voice. Query at most a bounded number
+    /// of physical identities from visit_onset_voices, between render calls.
+    pub fn diagnostic_voice_gain(&self, physical: crate::trace::onset::PhysicalVoice) -> Option<serde_json::Value> {
+        use serde_json::json;
+        let slot=self.voices.slots.get(physical.slot)?;
+        let voice=slot.value.as_ref()?;
+        if crate::trace::onset::PhysicalVoice::from(crate::VoiceId(self.voices.id(physical.slot)))!=physical { return None; }
+        let generation=self.plans.get(voice.plan.0)?;
+        let family=self.families.get(voice.family.0)?;
+        let note=self.notes.get(family.note.0)?;
+        let expression=self.expressions.get(note.expression.0)?;
+        let params=self.note_params[family.note.0.index];
+        let group=generation.script.layer(voice.group);
+        let note_layer=params.layer_at(self.now);
+        let note_fade=params.fade.map_or(1.,|f|f.at(self.now));
+        let voice_fade=voice.script_fade.map_or(1.,|f|f.at(self.now));
+        Some(json!({"at":self.now,"physical":physical,"group":voice.group,
+            "source_zone":voice.source_zone,"sample":voice.sample,
+            "key":note.pitch.key(),"velocity":note.velocity,"started":voice.started,
+            "region_voice_gain":voice.gain,"last_applied_gains":voice.last_gains,
+            "envelope_current":voice.envelope.current(),"expression_gains":expression.rendered.gains,
+            "script_params_active":self.script_params,"script_group_gains":group.gains(1.),
+            "script_note_gains":note_layer.gains(1.),"note_fade":note_fade,"voice_fade":voice_fade,
+            "composed_script_gains":group.stack(note_layer).gains(note_fade*voice_fade),
+            "group_state":voice.group.and_then(|g|self.diagnostic_group_gain_in(voice.plan,g)),
+            "voice_bus":voice.bus,"voice_chain":voice.chain,
+            "bus_path":self.diagnostic_bus_path(voice.plan,voice.bus),
+            "scope":"Read-only actual voice factors; last_applied_gains is the existing last-chunk bound, excludes envelope and downstream DSP/faders. Current script factors are not a replay of modulation ramps. Source PCM not inspected"}))
+    }
     /// Diagnostics: log every script parameter write (`change_vol`, group
     /// volume, `set_event_par`, envelope stages). Allocates; keep it off the
     /// audio path.
@@ -520,6 +607,41 @@ impl Runtime {
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
+    }
+
+    /// Whether this exact note owns an authored-deadline-admitted voice. This
+    /// reads Voice.started only: not first PCM, audibility, gain/mute, envelope,
+    /// decoded source width or a cold-onset policy. Release tails stay included.
+    /// Work follows only this note's actual family/voice lists, with no source
+    /// scan, allocation, scheduling, clock advancement or last-value cache.
+    pub fn note_has_started_voices(&self,note:NoteId)->Result<bool,Error>{
+        let mut family=self.notes.get(note.0).ok_or(Error::StaleHandle)?.first_family;
+        let mut families_seen=0usize;let mut voices_seen=0usize;
+        while let Some(index)=family{
+            if families_seen==self.families.count(){return Err(Error::InvalidInput);}families_seen+=1;
+            let current=self.families.slots.get(index.get()).and_then(|slot|slot.value.as_ref()).ok_or(Error::InvalidInput)?;
+            if current.note!=note{return Err(Error::InvalidInput);}
+            let expected=crate::FamilyId(self.families.id(index.get()));
+            let mut voice=current.first_voice;
+            while let Some(index)=voice{
+                if voices_seen==self.voices.count(){return Err(Error::InvalidInput);}voices_seen+=1;
+                let current=self.voices.slots.get(index.get()).and_then(|slot|slot.value.as_ref()).ok_or(Error::InvalidInput)?;
+                if current.family!=expected{return Err(Error::InvalidInput);}
+                if current.started{return Ok(true);}
+                voice=current.siblings.next;
+            }
+            family=current.siblings.next;
+        }
+        Ok(false)
+    }
+
+    /// Read the accepted quantized script-modulation value on this exact live
+    /// note. This is the existing stored target, not an instantaneous smoothed
+    /// DSP/source projection, default inference, or another frontend value bank.
+    pub fn note_script_value(&self,note:NoteId,id:u16)->Result<f64,Error>{
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let value=self.note_params[note.0.index].mods.values.get(usize::from(id)).copied().ok_or(Error::InvalidInput)?;
+        Ok(f64::from(value)/1_000_000.)
     }
 
     /// Set a note's "from script" modulator `id` for a frontend that drives
@@ -570,6 +692,12 @@ impl Runtime {
         };
         if !value.is_finite() {
             return Err(Error::InvalidInput);
+        }
+        if target == ModTarget::Pan && (value * scale).round() as i64 != 0 {
+            let note = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+            if !self.plans.get(note.plan.0).ok_or(Error::StaleHandle)?.prepared.source_pan_key_supported(note.pitch.key()) {
+                return Err(Error::UnsupportedSourceLayout);
+            }
         }
         self.script_params = true;
         let params = &mut self.note_params[note.0.index];
@@ -744,6 +872,29 @@ impl Runtime {
         })
     }
 
+    fn validate_source_pan_write(&mut self, plan: crate::PlanId, scope: ParamScope, index: i64) -> Result<(), Error> {
+        match scope {
+            ParamScope::Group => {
+                if !self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_pan_group_supported(index) {
+                    return Err(Error::UnsupportedSourceLayout);
+                }
+            }
+            ParamScope::Note => {
+                let Ok(event) = i32::try_from(index) else { return Ok(()); };
+                let range = self.event_targets(plan, event)?;
+                // Preflight every matching row before the first retained layer write.
+                for slot in range {
+                    if self.event_selected(plan, event, slot) {
+                        let note = self.notes.slots[slot].value.as_ref().ok_or(Error::StaleHandle)?;
+                        if !self.plans.get(note.plan.0).ok_or(Error::StaleHandle)?.prepared.source_pan_key_supported(note.pitch.key()) {
+                            return Err(Error::UnsupportedSourceLayout);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn write_param(
         &mut self,
         plan: crate::PlanId,
@@ -753,6 +904,7 @@ impl Runtime {
         value: i64,
         relative: bool,
     ) -> Result<(), Error> {
+        if target == ModTarget::Pan && value != 0 { self.validate_source_pan_write(plan, scope, index)?; }
         self.script_params = true;
         if let Some(log) = &mut self.write_log {
             log.push(format!(
@@ -848,7 +1000,8 @@ impl Runtime {
             }
             crate::EventInfo::Source => i64::from(self.note_events[note.0.index].creator_slot),
             crate::EventInfo::MidiChannel => {
-                i64::from(self.notes.get(note.0).unwrap().address.channel)
+                let note = self.notes.get(note.0).unwrap();
+                i64::from(note.input_source.map_or(note.address.channel, |source| source.channel))
             }
             crate::EventInfo::ZoneId => {
                 let mut highest = -1;
@@ -954,6 +1107,42 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn amplifier_prepares_gain_slopes_once_with_exact_pcm_and_fade_clock() {
+        use crate::voice_mod::{Outputs, Ramp, SAMPLE_GAIN_CALLS};
+        use crate::FadeCurve::*;
+        for curve in [Linear, EqualPower, SCurve, Exponential, Logarithmic] {
+            for fade in [None, Some(Fade { from:0.17, to:0.89, start:37, frames:65, curve, stop:false }),
+                Some(Fade { from:0.89, to:0.17, start:37, frames:65, curve, stop:true })] {
+                for (begin, end) in [(0,0), (0,64), (37,102), (u64::MAX-128,u64::MAX-64)] {
+                    let ramp = Ramp { from:Outputs { gains:[0.037, -0.], ..Default::default() },
+                        to:Outputs { gains:[0.981, 0.713], ..Default::default() }, begin,end,script_fade:fade };
+                    let times = [0,36,37,38,63,64,65,101,102,103,u64::MAX-65,u64::MAX];
+                    let expected: Vec<_> = times.iter().map(|&at| ramp.gains_at(at)).collect();
+                    SAMPLE_GAIN_CALLS.set(0);
+                    let prepared = ramp.prepare_gains();
+                    for (&at, original) in times.iter().zip(expected) {
+                        let got = prepared.at(at);
+                        for c in 0..2 {
+                            assert_eq!(got[c].to_bits(), original[c].to_bits(), "{curve:?} frame {at}");
+                            for sample in [0., -0., 0.731, -0.29, f64::MIN_POSITIVE] {
+                                let level = 0.73119f64;
+                                assert_eq!((sample * (level * f64::from(got[c]))).to_bits(),
+                                    (sample * (level * f64::from(original[c]))).to_bits());
+                            }
+                        }
+                    }
+                    assert_eq!(SAMPLE_GAIN_CALLS.get(), 0, "sample loop must reuse prepared slopes");
+                }
+            }
+            SAMPLE_GAIN_CALLS.set(0);
+            // Exercise the production voice-chain amplifier, not only the reader.
+            let audio = curved_audio(curve, false, true, 65);
+            assert!(audio.iter().flatten().any(|x| *x > 0.));
+            assert_eq!(SAMPLE_GAIN_CALLS.get(), 0, "chain render must use prepared slopes");
+        }
+    }
     use super::*;
 
     #[test]
@@ -1130,6 +1319,7 @@ mod tests {
         let instrument = ir::Instrument {
             assets: vec![ir::Asset {
                 location: ir::AssetLocation::Path("a".into()),
+                residency: Default::default(),
                 encoding: ir::Encoding::Wav,
                 root_key: None,
                 loops: Vec::new(),
@@ -1194,6 +1384,20 @@ mod tests {
             "{pre} {post} {tap}"
         );
         assert!((master - (0.25 + 0.5 + 0.25)).abs() < 1e-3, "{master}");
+        let clock = rt.now();
+        let initial = rt.diagnostic_group_gain(0).unwrap();
+        assert_eq!(initial["actual_fader_linear"], serde_json::json!(0.5));
+        assert!(rt.diagnostic_group_gain(1).is_none());
+        let mut physical = None;
+        rt.visit_onset_voices(|v| { physical=Some(v.voice); false });
+        let physical=physical.unwrap();
+        let current=rt.diagnostic_voice_gain(physical).unwrap();
+        assert_eq!(current["group"], serde_json::json!(0));
+        assert!(rt.diagnostic_voice_gain(crate::trace::onset::PhysicalVoice {
+            generation:physical.generation.wrapping_add(1),..physical
+        }).is_none());
+        assert_eq!(rt.now(),clock);
+        assert_eq!(rt.diagnostic_group_gain(0).unwrap(),initial);
         let plan = rt.active_plan;
         rt.write_param(
             plan,
@@ -1206,6 +1410,10 @@ mod tests {
         .unwrap();
         let ([pre, post, _], master) = peaks(&mut rt);
         let fader = 10f32.powf(-12.0 / 20.0);
+        let state=rt.diagnostic_group_gain(0).unwrap();
+        assert_eq!(state["current_db"],serde_json::json!(-12.));
+        assert!((state["actual_fader_linear"].as_f64().unwrap()-f64::from(fader)).abs()<1e-7);
+
         assert!((pre - 0.5).abs() < 1e-3, "pre-fader send moved: {pre}");
         assert!((post - 0.5 * fader).abs() < 1e-3, "{post}");
         assert!(

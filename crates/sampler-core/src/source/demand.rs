@@ -23,23 +23,21 @@ impl Runtime {
         frames: u32,
         mut accept: impl FnMut(SampleDemand) -> bool,
     ) -> Result<bool, Error> {
-        let Some(VoiceDemand {
-            cursor,
-            envelope,
-            at,
-            frames,
-            asset,
-        }) = self.voice_demand(voice, frames)?
-        else {
-            return Ok(true);
-        };
-        Ok(cursor.visit_demand(frames, envelope, |offset, frames| {
-            accept(SampleDemand {
-                asset,
-                frames,
-                deadline: at + u64::from(offset),
-            })
-        }))
+        let Some(demand) = self.voice_demand(voice, frames)? else { return Ok(true); };
+        let mut complete = true;
+        for ordinal in 0..demand.source.physical_count() {
+            let asset = demand.source.physical(ordinal).ok_or(Error::InvalidInput)?.asset_id();
+            let mut visit = |offset, frames| {
+                let keep = accept(SampleDemand { asset, frames, deadline: demand.at + u64::from(offset) });
+                complete &= keep; keep
+            };
+            if demand.cursor.bounded_demand() && demand.frames > 0 {
+                for (range, offset) in demand.cursor.runway_reach(demand.frames).into_iter().flatten() {
+                    if !visit(offset, range) { return Ok(false); }
+                }
+            } else if !demand.cursor.visit_demand(demand.frames, demand.envelope, visit) { return Ok(false); }
+        }
+        Ok(complete)
     }
 
     /// A voice's cursor at its rendered pitch over the horizon, from its
@@ -48,7 +46,7 @@ impl Runtime {
         &self,
         voice: VoiceId,
         frames: u32,
-    ) -> Result<Option<VoiceDemand>, Error> {
+    ) -> Result<Option<VoiceDemand<'_>>, Error> {
         let end = self
             .now
             .checked_add(u64::from(frames))
@@ -56,6 +54,8 @@ impl Runtime {
         let v = self.voices.get(voice.0).ok_or(Error::StaleHandle)?;
         let family = self.families.get(v.family.0).unwrap();
         let note = self.notes.get(family.note.0).unwrap();
+        let source = self.plans.get(note.plan.0).unwrap().source(v.sample).ok_or(Error::NotReady)?;
+        if source.stereo().is_none() && !source.is_paged() { return Ok(None); }
         let at = if v.started {
             self.now
         } else {
@@ -71,31 +71,78 @@ impl Runtime {
         }
         let expression = self.expressions.get(note.expression.0).unwrap();
         Ok(Some(VoiceDemand {
-            cursor: if self.offline && v.started {
+            cursor: if v.started && self.offline {
                 v.cursor
+            } else if v.started && v.cursor.bounded_demand() {
+                // Keep the last rendered voice/script factor, while projecting
+                // expression writes already applied since that render. Keeping
+                // the old total step would lose the current expression value.
+                let step = v.base_step * expression.rendered.ratio * v.mod_pitch.1;
+                v.cursor.with_step(if v.cursor.wavetable().is_some() {
+                    step
+                } else {
+                    step.clamp(crate::resample::MIN_STEP, crate::resample::MAX_STEP)
+                })
             } else {
                 v.cursor.with_step(v.base_step * expression.rendered.ratio)
             },
             envelope: v.envelope,
             at,
             frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
-            asset: self.plans.get(note.plan.0).unwrap().prepared.pcm[v.sample].asset_id(),
+            source,
         }))
     }
 }
 
-pub(crate) struct VoiceDemand {
+pub(crate) struct VoiceDemand<'a> {
     pub cursor: Cursor,
     pub envelope: EnvelopeState,
     pub at: u64,
     pub frames: u32,
-    pub asset: AssetId,
+    pub source: crate::SourceStorageRef<'a>,
 }
 
 /// Up to four physical ranges, each with the output offset first needing it.
 pub(crate) type LoopReach = [Option<(Range<usize>, u32)>; 4];
 
 impl Cursor {
+    /// At most four physical spans, independent of the requested output count.
+    /// Unsupported fast geometry (reflections, finite exits, native slots,
+    /// wavetable) conservatively requires the complete source view. Admission
+    /// refuses views exceeding the existing page pool rather than waiting for
+    /// an impossible footprint. This is a geometric bound, not an RT timing claim.
+    pub(crate) fn runway_reach(self, frames: u32) -> LoopReach {
+        if frames == 0 || self.done() { return Default::default(); }
+        if self.loops.is_some() || self.wavetable.is_some() || self.exit.is_some() {
+            return [Some((self.start..self.end, 0)), None, None, None];
+        }
+        let cursor = self.segment_cursor();
+        if let Some((range, _, _)) = cursor.linear_reach(frames - 1) {
+            return [(!range.is_empty()).then_some((range, 0)), None, None, None];
+        }
+        if let Some(reach) = cursor.loop_reach(frames - 1) { return reach; }
+        [Some((self.start..self.end, 0)), None, None, None]
+    }
+
+    pub(crate) fn runway_ready(
+        self, frames: u32, envelope: EnvelopeState,
+        mut available: impl FnMut(Range<usize>) -> bool,
+    ) -> bool {
+        if frames == 0 || self.done() || envelope.done() { return true; }
+        if frames == 1 { return self.visit_demand(1, envelope, |_, r| available(r)); }
+        self.runway_reach(frames).into_iter().flatten().all(|(r, _)| available(r))
+    }
+
+    /// Control-only initial forward geometry. The established demand law must
+    /// prove the complete interpolation window stays before a loop transition.
+    pub(crate) fn initial_forward_window(self, frames: u32, step: f64) -> Option<Range<usize>> {
+        if self.direction != Direction::Forward || self.controlled_loop.is_some()
+            || !(super::MIN_STEP..=super::MAX_STEP).contains(&step)
+        { return None; }
+        let (range, _, _) = self.with_step(step).linear_reach(frames)?;
+        (!range.is_empty()).then_some(range)
+    }
+
     /// Physical frames a stretch of `frames` output frames may read, when that
     /// stretch maps linearly (before any loop boundary or crossfade): a
     /// superset of `visit_demand`'s ranges, ignoring envelope ends. With the
@@ -205,6 +252,7 @@ impl Cursor {
         }
         // Reach helpers include the window at their endpoint; the final read
         // of N output frames is at N-1, without a phantom next-frame guard.
+        let output_frames = frames;
         let frames = frames - 1;
         let pages = |r: Range<usize>| {
             if r.is_empty() {
@@ -213,6 +261,10 @@ impl Cursor {
                 (r.end - 1) / PAGE_FRAMES - r.start / PAGE_FRAMES + 1
             }
         };
+        if self.bounded_demand {
+            let reach = self.runway_reach(output_frames);
+            return reach_pages(reach);
+        }
         if let Some((range, _, _)) = self.linear_reach(frames) {
             return pages(range);
         }
@@ -276,6 +328,23 @@ impl Cursor {
         let span = ((f64::from(frames) * step).ceil() as usize)
             .saturating_add(2 * crate::resample::Kernel::radius(step) as usize + 1);
         pages(view).min(legs * (span.div_ceil(PAGE_FRAMES) + 1))
+    }
+
+    /// Phase-independent physical page bound for a retained logical family.
+    /// Reuses the existing fallback span/leg law even when the current fast
+    /// linear reach happens to align to fewer pages. Source heads may retire;
+    /// reservation must not grow merely because playback crossed a page edge.
+    pub(crate) fn family_reservation_pages(&self,frames:u32)->usize {
+        if frames==0 || self.start>=self.end {return 0;}
+        let full=(self.end-1)/crate::PAGE_FRAMES-self.start/crate::PAGE_FRAMES+1;
+        if self.bounded_demand && (self.loops.is_some() || self.wavetable.is_some() || self.exit.is_some()) {return full;}
+        let (step,legs)=if let Some(loops)=self.loops {
+            let tuning=loops.slots.iter().flatten().fold(1.0f64,|max,slot|max.max(slot.tuning));
+            (self.step*tuning,2*loops.slots.iter().flatten().count()+1)
+        } else {(self.step,if self.loop_range.is_some_and(|r|r.shape!=crate::LoopShape::PingPong) {2}else{1})};
+        let span=((f64::from(frames-1)*step).ceil() as usize)
+            .saturating_add((2*crate::resample::Kernel::radius(step) as usize).saturating_add(1));
+        full.min(legs.saturating_mul(span.div_ceil(crate::PAGE_FRAMES).saturating_add(1)))
     }
 
     /// Output frames until a linear stretch (see `linear_reach`) first reads
@@ -367,6 +436,24 @@ impl Cursor {
         }
         true
     }
+}
+
+/// Four-element sorting and union counting; no page or output-frame traversal.
+fn reach_pages(reach: LoopReach) -> usize {
+    let mut ranges = [(usize::MAX, usize::MAX); 4];
+    for (i, (range, _)) in reach.into_iter().flatten().enumerate() {
+        if !range.is_empty() {
+            ranges[i] = (range.start / crate::PAGE_FRAMES, (range.end - 1) / crate::PAGE_FRAMES + 1);
+        }
+    }
+    ranges.sort_unstable();
+    let (mut count, mut end) = (0usize, 0usize);
+    for (start, next) in ranges {
+        if start == usize::MAX { break; }
+        count += next.saturating_sub(start.max(end));
+        end = end.max(next);
+    }
+    count
 }
 
 fn extend(
@@ -807,5 +894,92 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_runway_tests {
+    use super::*;
+    use crate::{Envelope, Loop, LoopMode, LoopShape, Playback};
+
+    #[test]
+    fn startup_runway_superset_cannot_certify_a_missing_actual_interpolation_tap() {
+        let envelope = || EnvelopeState::new(Envelope::default());
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for step in [0.75f64, 1., 1.5, 4.] {
+                for shape in [None, Some(LoopShape::Wrap), Some(LoopShape::PingPong),
+                    Some(LoopShape::Crossfade { frames: 32 }), Some(LoopShape::EqualPowerCrossfade { frames: 32 })] {
+                    let playback = Playback { start: 5952, end: Some(8192), direction,
+                        loop_range: shape.map(|shape| Loop { start: 6000, end: 6400,
+                            mode: LoopMode::Continuous, shape, passes: None }),
+                        ..Default::default() };
+                    let cursor = playback.cursor(12288, 48000, 48000).unwrap().with_step(step);
+                    let mut exact = std::collections::BTreeSet::new();
+                    assert!(cursor.visit_demand(1019, envelope(), |_, range| { exact.extend(range); true }));
+                    assert!(cursor.runway_ready(1019, envelope(), |_| true));
+                    // Probe every demanded tap, including both crossfade legs.
+                    for missing in exact {
+                        assert!(!cursor.runway_ready(1019, envelope(), |range| !range.contains(&missing)),
+                            "false readiness: {direction:?} {step} {shape:?} missing={missing}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn linear_startup_geometry_is_one_span_and_a_dsp_proxy_cannot_shorten_it() {
+        let cursor = Playback { start: 5952, ..Default::default() }
+            .cursor(12288, 48000, 48000).unwrap();
+        let proxy = EnvelopeState::new(Envelope::one_shot(0, 65, 0));
+        let mut count = 0;
+        assert!(!cursor.runway_ready(1019, proxy, |range| {
+            count += 1;
+            assert_eq!(range, 5952..6971);
+            range.end <= 5952 + 89
+        }));
+        assert_eq!(count, 1, "simple startup admission cannot walk 1019 frames");
+    }
+}
+
+#[cfg(test)]
+mod bounded_runway_tests {
+    use super::*;
+    use crate::{Envelope, Loop, LoopMode, LoopShape, Playback};
+
+    #[test]
+    fn near_maximum_complex_loop_contract_has_one_conservative_probe() {
+        for shape in [LoopShape::PingPong, LoopShape::Wrap] {
+            let mut cursor = Playback { start: 0, end: Some(32),
+                loop_range: Some(Loop { start: 0, end: 4, mode: LoopMode::Continuous,
+                    shape, passes: std::num::NonZeroU32::new(2) }), ..Default::default() }
+                .cursor(32, 48000, 48000).unwrap().with_start_runway(u32::MAX);
+            cursor.release(); // finite exit/reflection cannot use the fast reach
+            let mut probes = 0;
+            assert!(!cursor.runway_ready(u32::MAX, EnvelopeState::new(Envelope::default()), |r| {
+                probes += 1; !r.contains(&31)
+            }));
+            assert_eq!(probes, 1);
+            assert_eq!(cursor.reservation_pages(u32::MAX), 1);
+            assert!(cursor.runway_ready(u32::MAX, EnvelopeState::new(Envelope::default()), |_| true));
+        }
+    }
+
+    #[test]
+    fn conservative_complex_footprint_covers_exact_finite_native_slot_reads() {
+        let cursor = Playback { loop_slots: [Some(crate::LoopSlot { range: Loop {
+                start: 8, end: 16, mode: LoopMode::Continuous, shape: LoopShape::PingPong,
+                passes: std::num::NonZeroU32::new(3) }, tuning: 4. }), None, None,
+                None, None, None, None, None], ..Default::default() }
+            .cursor(64, 48000, 48000).unwrap().with_start_runway(1019);
+        let reaches = cursor.runway_reach(1019);
+        let mut exact_probes = 0;
+        assert!(cursor.visit_demand(1019, EnvelopeState::new(Envelope::default()), |_, r| {
+            exact_probes += 1;
+            assert!(reaches.iter().flatten().any(|(span, _)| span.start <= r.start && span.end >= r.end));
+            true
+        }));
+        assert!(exact_probes > 0);
+        assert!(reaches.iter().flatten().count() <= 4);
     }
 }

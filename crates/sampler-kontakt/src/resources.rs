@@ -11,10 +11,11 @@ const LIMIT: u64 = 32 << 20;
 pub struct Resources {
     files: BTreeMap<String, Vec<PathBuf>>,
     containers: Vec<PathBuf>,
-    open: Vec<ResourceContainer>,
+    open: Vec<(ResourceContainer, &'static str)>,
     failures: Vec<String>,
     indexed: bool,
     root: PathBuf,
+    discovery_failure: Option<&'static str>,
 }
 fn entries(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
@@ -26,33 +27,79 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     files.sort();
     files
 }
-fn loose_files(root: &Path) -> Vec<PathBuf> {
+fn container_paths(dir: &Path) -> (Vec<PathBuf>, Option<&'static str>) {
+    let mut paths = Vec::new();
+    let mut failure = None;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (paths, Some("Resource namespace could not be read"));
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            failure = Some("Resource namespace could not be read");
+            continue;
+        };
+        // A Samples folder can contain hundreds of thousands of samples.
+        // Retain only container paths, not a sorted temporary copy of them all.
+        if Path::new(&entry.file_name())
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt"))
+        {
+            paths.push(entry.path());
+        }
+    }
+    (paths, failure)
+}
+fn loose_files(
+    root: &Path,
+    entry_limit: usize,
+    depth_limit: usize,
+) -> (Vec<PathBuf>, Option<&'static str>) {
     let mut pending = vec![(root.to_path_buf(), 0)];
     let mut files = Vec::new();
     let mut count = 0;
+    let mut failure = None;
     while let Some((dir, depth)) = pending.pop() {
-        for path in entries(&dir) {
+        let children = std::fs::read_dir(&dir).and_then(|entries| {
+            entries
+                .take(entry_limit.saturating_sub(count).saturating_add(1))
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()
+        });
+        let Ok(mut children) = children else {
+            failure = Some("Resource namespace could not be read");
+            continue;
+        };
+        children.sort();
+        for path in children {
             count += 1;
-            if count > 65536 {
-                return files;
+            if count > entry_limit {
+                return (files, Some("Resource namespace exceeds discovery bounds"));
             }
             let Ok(meta) = path.symlink_metadata() else {
+                failure = Some("Resource namespace could not be read");
                 continue;
             };
             if meta.is_file() {
                 files.push(path);
-            } else if meta.is_dir() && depth < 32 {
-                pending.push((path, depth + 1));
+            } else if meta.is_dir() {
+                if depth < depth_limit {
+                    pending.push((path, depth + 1));
+                } else {
+                    failure = Some("Resource namespace exceeds discovery bounds");
+                }
             }
         }
     }
-    files
+    (files, failure)
 }
 fn named(p: &Path, name: &str) -> bool {
     p.file_name()
         .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))
 }
 fn normalize(name: &str) -> Option<String> {
+    if name.len() > 4096 || name.contains('\0') {
+        return None;
+    }
     let name = name.replace(['\\', '|'], "/");
     if name.starts_with('/')
         || name.contains(':')
@@ -65,6 +112,108 @@ fn normalize(name: &str) -> Option<String> {
     Some(name.to_lowercase())
 }
 impl Resources {
+    /// Resource ownership of one preset program. A multi may contain a factory
+    /// MIDI tool and a library instrument whose NativeUI entries are both
+    /// named `main`; the saved BProgram/F0 reference disambiguates them.
+    pub fn for_program(instrument: &Path, program: u32) -> Result<Self, LoadError> {
+        use ni_file::kontakt::objects::{Bank, FileNameListPreK51, Program};
+        // Synthetic UI fixtures have only a loose Resources tree.
+        if !instrument.is_file() {
+            return Ok(Self::of(instrument));
+        }
+        let chunks = crate::read_chunks(instrument)?;
+        let decode = |what, error| LoadError::decode(instrument, what, error);
+        let selected = if let Some(chunk) = chunks.find_first(3) {
+            let bank = Bank::try_from(chunk).map_err(|e| decode("resource bank", e))?;
+            let mut slots: Vec<_> = bank
+                .slot_list()
+                .map_err(|e| decode("resource slots", e))?
+                .slots
+                .into_iter()
+                .collect();
+            slots.sort_by_key(|(slot, _)| *slot);
+            let mut programs = Vec::new();
+            for (_, slot) in slots {
+                programs.extend(
+                    slot.program_list()
+                        .map_err(|e| decode("resource programs", e))?
+                        .programs,
+                );
+            }
+            programs.into_iter().nth(program as usize)
+        } else if program == 0 {
+            chunks
+                .find_first(0x28)
+                .map(Program::try_from)
+                .transpose()
+                .map_err(|e| decode("resource program", e))?
+        } else {
+            None
+        };
+        let selected = selected.ok_or_else(|| LoadError::Invalid {
+            path: instrument.into(),
+            reason: "resource program is absent".into(),
+        })?;
+        let specials = match chunks
+            .filename_tables()
+            .map_err(|e| decode("resource filenames", e))?
+        {
+            Some(table) => table.special_filetable,
+            None => chunks
+                .find_first(0x3d)
+                .map(FileNameListPreK51::try_from)
+                .transpose()
+                .map_err(|e| decode("resource legacy filenames", e))?
+                .map(|t| t.special_filetable)
+                .unwrap_or_default(),
+        };
+        Self::program_resources(instrument, &selected, &specials)
+    }
+
+    fn program_resources(
+        instrument: &Path,
+        program: &ni_file::kontakt::objects::Program,
+        specials: &std::collections::HashMap<u32, String>,
+    ) -> Result<Self, LoadError> {
+        let invalid = |reason: &str| LoadError::Invalid {
+            path: instrument.into(),
+            reason: reason.into(),
+        };
+        let record = program
+            .public_record()
+            .map_err(|e| LoadError::decode(instrument, "resource owner", e))?;
+        // Every negative reference is an empty filename (F0 helper 0x140cfb6d0,
+        // `js` at 0x140cfb6ea); the wire value stays in the program record.
+        let Some(reference) = record.resource_container_filename_ref.filter(|r| *r >= 0) else {
+            return Ok(Self::of(instrument));
+        };
+        let name = specials
+            .get(&(reference as u32))
+            .ok_or_else(|| invalid("authored resource container reference is absent"))?;
+        if name.is_empty() {
+            return Ok(Self::of(instrument));
+        }
+        if !Path::new(&name.replace('\\', "/"))
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt"))
+        {
+            return Err(invalid(
+                "authored resource owner is not a resource container",
+            ));
+        }
+        let base = Self::of(instrument);
+        let mut resolver = crate::Samples::new(base.root());
+        let container = resolver
+            .resolve(instrument.parent().unwrap_or(Path::new(".")), name)?
+            .filter(|p| p.is_file())
+            .ok_or_else(|| invalid("authored resource container is unavailable"))?;
+        // Rebase loose resources as well as the archive. Never let another
+        // program's same-named module satisfy an explicit resource owner.
+        let mut owned = Self::of(&container);
+        owned.containers = vec![container];
+        Ok(owned)
+    }
+
     pub fn of(instrument: &Path) -> Self {
         let path = std::fs::canonicalize(instrument).unwrap_or_else(|_| {
             std::path::absolute(instrument).unwrap_or_else(|_| instrument.into())
@@ -95,10 +244,13 @@ impl Resources {
             .to_path_buf();
         let mut files = BTreeMap::<String, Vec<PathBuf>>::new();
         let mut containers = Vec::new();
+        let mut discovery_failure = None;
         for folder in ancestors.into_iter().take_while(|p| p.starts_with(&root)) {
             let here = entries(folder);
             for res in here.iter().filter(|p| named(p, "Resources")) {
-                for entry in loose_files(res) {
+                let (loose, failure) = loose_files(res, 65536, 32);
+                discovery_failure = discovery_failure.or(failure);
+                for entry in loose {
                     if let Ok(relative) = entry.strip_prefix(res) {
                         let key = format!(
                             "resources/{}",
@@ -122,7 +274,9 @@ impl Resources {
                 .iter()
                 .filter(|p| p.is_dir() && !named(p, "Instruments"))
             {
-                containers.extend(entries(sub).iter().filter(is_container).cloned());
+                let (paths, failure) = container_paths(sub);
+                containers.extend(paths);
+                discovery_failure = discovery_failure.or(failure);
             }
         }
         containers.sort_by_key(|p| {
@@ -140,6 +294,7 @@ impl Resources {
             failures: Vec::new(),
             indexed: false,
             root,
+            discovery_failure,
         }
     }
 
@@ -158,8 +313,25 @@ impl Resources {
         paths
     }
 
+    /// Whether the complete bounded lookup namespace was observed. A partial
+    /// directory walk cannot authorize reuse of an already compiled script.
+    pub fn namespace_complete(&self) -> bool {
+        self.discovery_failure.is_none()
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    /// Namespace authority selected before any payload read, for local timing
+    /// receipts. Missing names still remain missing; this does not search aliases.
+    pub fn authority_for(&self, path: &str) -> &'static str {
+        if normalize(path).is_some_and(|p| self.files.contains_key(&p)) {
+            "kontakt-loose"
+        } else if !self.containers.is_empty() {
+            "kontakt-container"
+        } else {
+            "kontakt-library"
+        }
     }
     fn index(&mut self) {
         if self.indexed {
@@ -168,7 +340,17 @@ impl Resources {
         self.indexed = true;
         for path in &self.containers {
             match ResourceContainer::open(path) {
-                Ok(container) => self.open.push(container),
+                Ok(container) => self.open.push((
+                    container,
+                    if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+                    {
+                        "kontakt-nicnt"
+                    } else {
+                        "kontakt-nkr"
+                    },
+                )),
                 Err(e) => self.failures.push(e.to_string()),
             }
         }
@@ -199,7 +381,7 @@ impl Resources {
             .filter(|n| n.starts_with(&prefix))
             .cloned()
             .collect();
-        for container in &self.open {
+        for (container, _) in &self.open {
             names.extend(
                 container
                     .names()
@@ -212,6 +394,15 @@ impl Resources {
     }
     /// None means absent. Invalid, ambiguous, corrupt and inaccessible resources remain errors.
     pub fn read_result(&mut self, path: &str) -> Result<Option<Vec<u8>>, LoadError> {
+        self.read_with_origin_result(path)
+            .map(|found| found.map(|(bytes, _)| bytes))
+    }
+    /// Same resolver and bounded read, with the successful authority for local
+    /// diagnostics. No extra lookup or payload decode is performed.
+    pub fn read_with_origin_result(
+        &mut self,
+        path: &str,
+    ) -> Result<Option<(Vec<u8>, &'static str)>, LoadError> {
         let root = self.root.clone();
         let invalid = |reason: &str| LoadError::Invalid {
             path: root.clone(),
@@ -239,16 +430,19 @@ impl Resources {
             if bytes.len() as u64 > LIMIT {
                 return Err(invalid("Resource exceeds 32 MiB"));
             }
-            return Ok(Some(bytes));
+            return Ok(Some((bytes, "kontakt-loose")));
         }
         self.index();
-        for container in &mut self.open {
+        for (container, origin) in &mut self.open {
             if let Some(bytes) = container.read(&path)? {
-                return Ok(Some(bytes));
+                return Ok(Some((bytes, *origin)));
             }
         }
         if !self.failures.is_empty() {
             return Err(invalid("Resource container could not be indexed"));
+        }
+        if let Some(reason) = self.discovery_failure {
+            return Err(invalid(reason));
         }
         Ok(None)
     }
@@ -296,6 +490,124 @@ fn script_text(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incomplete_loose_namespace_is_not_reported_as_a_missing_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "kontakt-resource-discovery-bounds-{}",
+            std::process::id()
+        ));
+        let resources = root.join("Resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        for name in ["a.bin", "b.bin", "c.bin"] {
+            std::fs::write(resources.join(name), name.as_bytes()).unwrap();
+        }
+        let (files, failure) = super::loose_files(&resources, 2, 32);
+        assert_eq!(files.len(), 2);
+        assert_eq!(failure, Some("Resource namespace exceeds discovery bounds"));
+        let mut hidden = resources.clone();
+        for depth in 0..33 {
+            hidden.push(format!("d{depth}"));
+        }
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("hidden.bin"), b"not indexed").unwrap();
+        let mut source = super::Resources::of(&root.join("fixture.nki"));
+        assert_eq!(
+            source.read_result("Resources/a.bin").unwrap(),
+            Some(b"a.bin".to_vec())
+        );
+        let error = source.read_result("Resources/absent.bin").unwrap_err();
+        assert!(
+            matches!(error, crate::LoadError::Invalid { reason, .. } if reason == "Resource namespace exceeds discovery bounds")
+        );
+        assert_eq!(source.authority_for("Resources/a.bin"), "kontakt-loose");
+        for path in ["bad\0path", "", ".", "../escape"] {
+            assert!(super::normalize(path).is_none());
+        }
+        assert!(super::normalize(&"x".repeat(4097)).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn program_container_reference_disambiguates_same_named_native_modules() {
+        use ni_file::kontakt::{StructuredObject, objects::Program};
+        let root = std::env::temp_dir().join(format!(
+            "kontakt-program-resource-owner-{}",
+            std::process::id()
+        ));
+        let library = root.join("Library");
+        let factory = library.join("Factory/Tool");
+        for (folder, text) in [
+            (&library, b"library main".as_slice()),
+            (&factory, b"controller main".as_slice()),
+        ] {
+            std::fs::create_dir_all(folder.join("Resources/native_ui")).unwrap();
+            std::fs::create_dir_all(folder.join("Samples")).unwrap();
+            std::fs::write(folder.join("Resources/native_ui/main.nui"), text).unwrap();
+            // Empty valid NKR index; loose resources keep their documented precedence.
+            let mut archive = 0x5e70ac54u32.to_le_bytes().to_vec();
+            archive.extend(0x110u16.to_le_bytes());
+            archive.extend([0; 16]);
+            std::fs::write(folder.join("Samples/owner.nkr"), archive).unwrap();
+        }
+        std::fs::create_dir_all(library.join("Instruments")).unwrap();
+        let path = library.join("Instruments/Multi.nkm");
+        let specials = [
+            (0, "Samples/owner.nkr".into()),
+            (1, "Factory/Tool/Samples/owner.nkr".into()),
+        ]
+        .into();
+        let program = |reference: i32| {
+            // Verified v0x91 BProgram prefix and F0; no later optional suffix.
+            let mut public_data = vec![0; 70];
+            public_data.extend(reference.to_le_bytes());
+            Program(StructuredObject {
+                version: 0x91,
+                public_data,
+                private_data: vec![],
+                children: vec![],
+            })
+        };
+        assert_eq!(
+            super::Resources::of(&path)
+                .read("Resources/native_ui/main.nui")
+                .unwrap(),
+            b"library main"
+        );
+        for (reference, expected) in [
+            (0, b"library main".as_slice()),
+            (1, b"controller main".as_slice()),
+        ] {
+            let mut owned =
+                super::Resources::program_resources(&path, &program(reference), &specials).unwrap();
+            assert_eq!(
+                owned.read("Resources/native_ui/main.nui").unwrap(),
+                expected
+            );
+            assert_eq!(
+                owned
+                    .locations()
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|e| e == "nkr"))
+                    .count(),
+                1,
+                "only the authored container can satisfy this program's module names"
+            );
+        }
+        assert!(
+            super::Resources::program_resources(&path, &program(7), &specials).is_err(),
+            "an unresolved owner must not silently borrow the library's main"
+        );
+        // Every negative F0 is an empty native filename (0x140cfb6d0, js at
+        // 0x140cfb6ea), not an index into the special-filetable.
+        let mut empty =
+            super::Resources::program_resources(&path, &program(-7), &specials).unwrap();
+        assert_eq!(
+            empty.read("Resources/native_ui/main.nui").unwrap(),
+            b"library main"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn linked_scripts_reload_from_resources_and_decode_saved_encodings() {
         let dir =

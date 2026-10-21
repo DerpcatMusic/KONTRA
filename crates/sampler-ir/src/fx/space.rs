@@ -1,0 +1,383 @@
+//! `space` family: the shared names for every reverb and convolution effect.
+//!
+//! One [`Config`] describes an algorithmic network, a partitioned convolution,
+//! or both summed, with the dry/wet mix. Kontakt's legacy Reverb, Galois,
+//! Plate, Raum and Convolution and UVI's reverb and IR effects all fill this
+//! in; the DSP lives in `sampler_core::dsp::space`.
+//!
+//! Fields are physical values in seconds, hertz, dB and linear gain. A format
+//! converts its own controls to these and reports the conversion as generic
+//! when the native law is not proved.
+
+use crate::ImpulseRef;
+
+/// Which delay-network layout the algorithmic part runs.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Topology {
+    /// Eight modulated delay lines coupled by a Hadamard matrix, with
+    /// per-line damping, input allpass diffusion and an optional three-band
+    /// decay. The general-purpose hall/room.
+    #[default]
+    Fdn,
+    /// Eight parallel damped feedback combs into four serial allpasses: the
+    /// structure the legacy Kontakt Reverb (0x15) proves and UVI's older
+    /// reverbs share.
+    CombAllpass,
+    /// A figure-eight tank of two modulated allpass / delay / damping loops
+    /// fed by an input diffuser, crossed over to two output taps.
+    Plate,
+    /// UVI Diffusion: only the input allpass diffuser (no feedback tank),
+    /// gain [`Network::diffusion`] (`0..=1`), lengths from
+    /// [`Network::diffusion_start_ms`].
+    Diffuser,
+    /// The exact Kontakt legacy Reverb (0x15) network, driven by
+    /// [`Network::freeverb`] and `predelay_seconds`/`input_cutoff_hz`.
+    Freeverb,
+    /// The exact Kontakt Reverb (Galois, 0x59) core, driven by
+    /// [`Network::galois`]: 31 modulated delay lines coupled by an orthogonal
+    /// m-sequence matrix, Room or Hall tables, allpass diffusion, a 200 Hz
+    /// low shelf and a high cut. It does its own predelay, width and mix;
+    /// the other `Network` fields only describe it (UI, tail length).
+    Galois,
+    /// The exact UVI SparkVerb engine, driven by [`Network::spark`]: `2^q`
+    /// prime-length lines coupled by a Hadamard matrix, two-shelf feedback
+    /// filters, per-line cent-depth modulation, an optional input diffuser.
+    /// It does its own predelay and width; the unit's dry/wet mixes it.
+    SparkVerb,
+    /// The exact UVI Plain/Gate/Filtered/Delayed Reverb node (Jezar's
+    /// Freeverb), driven by [`Network::uvi_reverb`], `predelay_seconds` and
+    /// `gate_seconds`.
+    Jezar,
+    /// The exact Kontakt Plate Reverb (0x57) core, driven by
+    /// [`Network::kontakt_plate`]: 20 input allpasses and shelves, a tapped
+    /// input ring (early reflections and line injection), 16 lines through
+    /// per-line two-shelf biquads and a Hadamard matrix, four panned groups.
+    KontaktPlate,
+    /// The exact Kontakt Raum (0x65) core, driven by [`Network::raum`]: a
+    /// predelay with a filtered feedback path, the 31-line
+    /// `GaloisReverbExtended` kernel (Grounded, Airy) or the Cosmic allpass
+    /// chain, then a low shelf, a high cut and Raum's own mix.
+    Raum,
+}
+
+/// UVI's legacy reverb controls (node `0x141312050`) in native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UviReverb {
+    pub decay_time: f32,
+    pub high_damp: f32,
+    /// FilteredReverb's input filter, `-1..=1` (negative low-pass, positive
+    /// high-pass, 0 off).
+    pub cutoff: f32,
+}
+
+/// UVI SparkVerb's controls (Workstation 4.0.9, engine `0x1416799a0`) in
+/// their native units.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SparkVerb {
+    /// Lines are `2^quality` (Quality 2..=4 in the catalog).
+    pub quality: u8,
+    pub room_m: f32,
+    pub shape: f32,
+    pub decay: f32,
+    pub decay_low: f32,
+    pub decay_high: f32,
+    pub freq_low: f32,
+    pub freq_high: f32,
+    pub low_cut: bool,
+    pub high_cut: bool,
+    pub mod_cents: f32,
+    pub mod_hz: f32,
+    /// Delay-read interpolation (Mode): 0 floor, 1 linear, 2 Lagrange.
+    pub mode: u8,
+    pub freeze: bool,
+    /// Input diffuser gain and first length in ms, when on.
+    pub diffuser: Option<(f32, f32)>,
+    pub width: f32,
+    pub rolloff_hz: f32,
+    pub predelay_seconds: f32,
+}
+
+impl SparkVerb {
+    /// The tail the host keeps ringing (0x141321310): twice the RT60 of the
+    /// slowest band plus the predelay is covered by `2·` this; frozen, 60 s.
+    pub fn tail_seconds(&self) -> f64 {
+        let band = |on: bool, v: f32| if on { 1.0 } else { f64::from(v) };
+        let slowest = 1f64.max(band(self.low_cut, self.decay_low)).max(band(self.high_cut, self.decay_high));
+        if self.freeze { 60.0 } else { (0.1 * f64::from(self.room_m) * f64::from(self.decay) * slowest).clamp(0.01, 60.0) }
+    }
+}
+
+/// The ten normalized controls (`0..=1`) of the Kontakt Reverb core setter
+/// `FUN_141aea370`, in its index order: time, size, damping, modulation,
+/// diffusion, predelay, high cut, low shelf, internal dry/wet, stereo.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Galois {
+    /// Hall (`true`, saved type 1) or Room core: the dispatcher's control 10
+    /// (`FUN_1409ab2c0`, `>= 0.5` runs the core built with flag 1, whose
+    /// lines are the longer ones).
+    pub hall: bool,
+    pub controls: [f32; 10],
+}
+
+impl Galois {
+    pub const TIME: usize = 0;
+    pub const SIZE: usize = 1;
+    pub const DAMPING: usize = 2;
+    pub const MODULATION: usize = 3;
+    pub const DIFFUSION: usize = 4;
+    pub const PREDELAY: usize = 5;
+    pub const HIGH_CUT: usize = 6;
+    pub const LOW_SHELF: usize = 7;
+    pub const MIX: usize = 8;
+    pub const STEREO: usize = 9;
+}
+
+/// Direct coefficients of the Kontakt legacy Reverb network (`FUN_140aa3d10`):
+/// eight damped combs into four allpasses behind a predelay, with the native
+/// Freeverb delay lengths.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Freeverb {
+    /// Comb feedback gain.
+    pub feedback: f64,
+    /// Comb damping coefficient `d`: `store = out*d + (1-d)*store`.
+    pub damp: f64,
+    /// Allpass gain `g`.
+    pub allpass: f64,
+    /// Input gain ahead of the network.
+    pub input_gain: f64,
+    /// Channel-mix weight `w` in `0..=1` (`1` keeps the channels apart): the
+    /// input becomes `b*mean + (1-b)*x` with `b = 2*(1-w)`.
+    pub width: f64,
+}
+
+/// Decay ratios of the low and high bands against the mid band.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecayBands {
+    /// Decay time below `low_hz` as a multiple of `Network::decay_seconds`.
+    pub low: f64,
+    /// Decay time above `high_hz` as a multiple of `Network::decay_seconds`.
+    pub high: f64,
+    pub low_hz: f64,
+    pub high_hz: f64,
+}
+
+/// The algorithmic part of a [`Config`]. Stereo in, wet stereo out.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Network {
+    pub topology: Topology,
+    /// Seconds for the tail to fall 60 dB (mid band).
+    pub decay_seconds: f64,
+    /// Scale of the delay lengths: room size. `0.05..=1.5`.
+    pub size: f64,
+    pub predelay_seconds: f64,
+    /// Feedback lowpass, Hz.
+    pub damping_hz: f64,
+    /// Different decay in the low and high bands; `None` is one band.
+    pub bands: Option<DecayBands>,
+    /// Peak delay-time modulation, seconds.
+    pub modulation_seconds: f64,
+    /// Rate of that modulation, Hz.
+    pub modulation_hz: f64,
+    /// Allpass coefficient of the input diffuser (and of the comb layout's
+    /// serial allpasses), `0..=0.75` (`0..=1` for [`Topology::Diffuser`]).
+    pub diffusion: f64,
+    /// [`Topology::Diffuser`]'s shortest allpass, ms.
+    pub diffusion_start_ms: f64,
+    /// Input lowpass, Hz.
+    pub input_cutoff_hz: f64,
+    /// Linear level of the early-reflection taps added to the wet signal;
+    /// zero is off.
+    pub early: f64,
+    /// Wet change below about 250 Hz in dB; zero or negative.
+    pub low_shelf_db: f64,
+    /// Wet stereo width: 0 mono, 1 as generated.
+    pub width: f64,
+    /// A gated reverb: the wet signal closes this long after the input falls
+    /// silent.
+    pub gate_seconds: Option<f64>,
+    /// Feedback of the predelay line (an echo before the tank), `0..=0.95`.
+    pub echo_feedback: f64,
+    /// Coefficients for [`Topology::Freeverb`]; ignored by other topologies.
+    pub freeverb: Option<Freeverb>,
+    /// Controls for [`Topology::Galois`]; ignored by other topologies.
+    pub galois: Option<Galois>,
+    /// Controls for [`Topology::SparkVerb`]; ignored by other topologies.
+    pub spark: Option<SparkVerb>,
+    /// Controls for [`Topology::Jezar`]; ignored by other topologies.
+    pub uvi_reverb: Option<UviReverb>,
+    /// Kontakt Plate controls (decay, low shelf, high damp, predelay,
+    /// stereo; each `0..=1`) for [`Topology::KontaktPlate`].
+    pub kontakt_plate: Option<[f32; 5]>,
+    /// Kontakt Raum core controls by core index (`0..=1` each) for
+    /// [`Topology::Raum`]: 0 mix, 1 predelay, 6 feedback, 7 high cut, 8 low
+    /// shelf, 9 type (`int(3x)`: Grounded, Airy, Cosmic), 10 decay, 11 size,
+    /// 12 damping, 13 modulation, 14 rate, 15 diffusion, 16 freeze, 17
+    /// reverb, 18 sparse, 19 input gain.
+    pub raum: Option<[f32; 20]>,
+}
+
+impl Network {
+    /// A mid-sized hall with every extra off.
+    pub const DEFAULT: Network = Network {
+        topology: Topology::Fdn,
+        decay_seconds: 2.0,
+        size: 1.0,
+        predelay_seconds: 0.0,
+        damping_hz: 6_000.0,
+        bands: None,
+        modulation_seconds: 0.000_75,
+        modulation_hz: 0.7,
+        diffusion: 0.375,
+        diffusion_start_ms: 5.0,
+        input_cutoff_hz: 20_000.0,
+        early: 0.0,
+        low_shelf_db: 0.0,
+        width: 1.0,
+        gate_seconds: None,
+        echo_feedback: 0.0,
+        freeverb: None,
+        galois: None,
+        spark: None,
+        uvi_reverb: None,
+        kontakt_plate: None,
+        raum: None,
+    };
+}
+
+/// One reverb or convolution unit over a stereo signal (bus or master scope).
+///
+/// `output = dry * input + wet * (network(input) + input * impulse)`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Config {
+    /// The script slot whose `ENGINE_PAR_*` writes reach [`Config::lanes`].
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<crate::SlotAddress>,
+    pub network: Option<Network>,
+    /// The impulse response (already shaped by the importing profile) the
+    /// input is convolved with; adds no latency.
+    pub impulse: Option<ImpulseRef>,
+    /// Linear gain of the unprocessed input.
+    pub dry: f64,
+    /// Linear gain of the network and convolution sum.
+    pub wet: f64,
+}
+
+impl Config {
+    /// A network alone, wet only (the dry path is the bus's other send).
+    pub const fn network(network: Network) -> Self {
+        Self { address: None, network: Some(network), impulse: None, dry: 0.0, wet: 1.0 }
+    }
+
+    /// A convolution alone, mixed `dry * x + wet * (x * impulse)`.
+    pub const fn convolution(impulse: ImpulseRef, dry: f64, wet: f64) -> Self {
+        Self { address: None, network: None, impulse: Some(impulse), dry, wet }
+    }
+
+    /// Live knobs of a script-addressed Kontakt legacy Reverb (0x15), each
+    /// holding its stored value (fx_legacy_delay_reverb_mod.tsv: predelay ms
+    /// by table, the rest identity); [`Config::set`] applies the setter.
+    pub fn lanes(&self) -> Vec<super::Lane> {
+        use super::{Lane, Law, tables};
+        use crate::ProcessorParameter as P;
+        let (Some(_), Some(n)) = (self.address, self.network) else { return Vec::new() };
+        if let (Topology::SparkVerb, Some(s)) = (n.topology, n.spark) {
+            // UVI SparkVerb: each lane is the unit's own field.
+            use super::uvi_lane;
+            return [
+                uvi_lane(P::Gain, self.wet, 0., 1.),
+                uvi_lane(P::Response, self.dry, 0., 1.),
+                uvi_lane(P::Size, f64::from(s.room_m), 0., 100.),
+                uvi_lane(P::Time, f64::from(s.decay), 0., 20.),
+                uvi_lane(P::Damping, f64::from(s.decay_low), 0., 20.),
+                uvi_lane(P::Colour, f64::from(s.decay_high), 0., 20.),
+                uvi_lane(P::Predelay, n.predelay_seconds, 0., 0.1),
+                uvi_lane(P::Width, f64::from(s.width), 0., 1.),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+        }
+        let (Topology::Freeverb, Some(f)) = (n.topology, n.freeverb) else { return Vec::new() };
+        let cutoff = (n.input_cutoff_hz / 20.).log(1000.);
+        vec![
+            Lane::new("ENGINE_PAR_RV_PREDELAY", P::Predelay, n.predelay_seconds * 1e3, Law::Table(&tables::RV_PREDELAY)),
+            Lane::new("ENGINE_PAR_RV_SIZE", P::Size, (f.feedback - 0.65) / 0.3, Law::Identity),
+            Lane::new("ENGINE_PAR_RV_STEREO", P::Width, f.width * 2. - 1., Law::Identity),
+            Lane::new("ENGINE_PAR_RV_COLOUR", P::Colour, 1. - (1. - f.damp) / 0.35, Law::Identity),
+            Lane::new("ENGINE_PAR_RV_DAMPING", P::Damping, 1. - (cutoff - 0.25) / 0.75, Law::Identity),
+        ]
+    }
+
+    /// Write the stored value of lane `role` through the legacy Reverb setter
+    /// (case 0x3e of 0x1409619b0; sampler-kontakt `effects::space::legacy`).
+    pub fn set(&mut self, role: crate::ProcessorParameter, stored: f64) {
+        use crate::ProcessorParameter as P;
+        match role {
+            P::Gain if self.network.is_some_and(|n| n.spark.is_some()) => return self.wet = stored,
+            P::Response if self.network.is_some_and(|n| n.spark.is_some()) => return self.dry = stored,
+            _ => {}
+        }
+        let Some(n) = &mut self.network else { return };
+        if let Some(s) = &mut n.spark {
+            let v = stored as f32;
+            match role {
+                P::Size => s.room_m = v,
+                P::Time => s.decay = v,
+                P::Damping => s.decay_low = v,
+                P::Colour => s.decay_high = v,
+                P::Predelay => {
+                    n.predelay_seconds = stored;
+                    s.predelay_seconds = v;
+                }
+                P::Width => {
+                    s.width = v;
+                    n.width = f64::from(v).clamp(0.0, 1.0);
+                }
+                _ => {}
+            }
+            n.decay_seconds = s.tail_seconds();
+            return;
+        }
+        let Some(f) = &mut n.freeverb else { return };
+        let v = f64::from((stored as f32).clamp(0., 1.));
+        match role {
+            P::Predelay => n.predelay_seconds = stored.clamp(0., 180.) * 1e-3,
+            P::Size => f.feedback = f64::from(v as f32 * 0.3 + 0.65),
+            P::Width => f.width = f64::from((v as f32 + 1.) * 0.5),
+            P::Colour => f.damp = f64::from(1. - (1. - v as f32) * 0.35),
+            P::Damping => n.input_cutoff_hz = 20. * 1000f64.powf(f64::from((1. - v as f32) * 0.75 + 0.25)),
+            _ => {}
+        }
+    }
+
+    /// Whether any field is NaN or infinite.
+    pub fn finite(&self) -> bool {
+        let net = self.network.is_none_or(|n| {
+            let band = n.bands.is_none_or(|b| [b.low, b.high, b.low_hz, b.high_hz].iter().all(|v| v.is_finite()));
+            band && n.gate_seconds.is_none_or(f64::is_finite)
+                && n.freeverb.is_none_or(|f| [f.feedback, f.damp, f.allpass, f.input_gain, f.width].iter().all(|v| v.is_finite()))
+                && n.galois.is_none_or(|g| g.controls.iter().all(|v| v.is_finite()))
+                && n.uvi_reverb.is_none_or(|u| [u.decay_time, u.high_damp, u.cutoff].iter().all(|v| v.is_finite()))
+                && n.kontakt_plate.is_none_or(|p| p.iter().all(|v| v.is_finite()))
+                && n.raum.is_none_or(|p| p.iter().all(|v| v.is_finite()))
+                && n.spark.is_none_or(|s| {
+                    let (g, ms) = s.diffuser.unwrap_or((0.0, 0.0));
+                    [s.room_m, s.shape, s.decay, s.decay_low, s.decay_high, s.freq_low, s.freq_high, s.mod_cents, s.mod_hz, s.width, s.rolloff_hz, s.predelay_seconds, g, ms]
+                        .iter()
+                        .all(|v| v.is_finite())
+                })
+                && [n.decay_seconds, n.size, n.predelay_seconds, n.damping_hz, n.modulation_seconds, n.modulation_hz, n.diffusion, n.diffusion_start_ms, n.input_cutoff_hz, n.early, n.low_shelf_db, n.width, n.echo_feedback]
+                    .iter()
+                    .all(|v| v.is_finite())
+        });
+        net && self.dry.is_finite() && self.wet.is_finite()
+    }
+}

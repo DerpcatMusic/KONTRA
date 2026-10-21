@@ -79,8 +79,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    # Cold release-profile test executables exhausted the former 40-minute job.
-    timeout-minutes: 90
+    # Shipping integration executables compile in eight independent jobs below.
+    # Keep the existing 180-minute shipping / 90-minute ordinary bounds.
+    timeout-minutes: ${{ inputs.release_validation && 180 || 90 }}
     concurrency:
       group: ci-linux-${{ github.workflow }}-${{ inputs.release_validation && github.sha || github.ref }}
       cancel-in-progress: true
@@ -141,10 +142,24 @@ jobs:
         # checked only as dependencies.
         run: cargo clippy --locked --profile "$CI_PROFILE" --all-targets $CRATES
       - name: test
+        if: ${{ !inputs.release_validation }}
+        # Ordinary PR CI retains its complete default-target command.
         # library-access is already a default feature; this includes access::*.
+        run: cargo test --locked --profile "$CI_PROFILE" $CRATES
+      - name: Shipping library, binary, documentation and example coverage
+        if: inputs.release_validation
+        # Match Cargo's default target coverage: examples build, never execute.
+        # Only integration executables move to the shipping-only matrix.
         run: |
-          cargo test --locked --profile "$CI_PROFILE" $CRATES
-          cargo test --locked --profile "$CI_PROFILE" -p kontra-native-host --lib
+          cargo metadata --locked --no-deps --format-version 1 > shipping-unit-metadata.json
+          python3 .github/scripts/shipping_tests.py plan \
+            --metadata shipping-unit-metadata.json --crates "$CRATES" --source "$GITHUB_SHA" \
+            --plan shipping-unit-plan.json
+          python3 .github/scripts/shipping_tests.py units \
+            --metadata shipping-unit-metadata.json --crates "$CRATES" --source "$GITHUB_SHA" \
+            --plan shipping-unit-plan.json --receipt shipping-unit-receipt.json --log shipping-unit.log
+      - name: Native host library tests
+        run: cargo test --locked --profile "$CI_PROFILE" -p kontra-native-host --lib
       - name: Native host lifecycle and software-GL presentation
         env:
           WGPU_BACKEND: gl
@@ -172,6 +187,160 @@ jobs:
           path: ui-plugin/
           retention-days: 7
           if-no-files-found: error
+
+  shipping-plan:
+    needs: changes
+    if: inputs.release_validation && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Nightly shipping identity
+        if: inputs.release_validation || github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/test_version.py
+          python3 tools/version.py nightly --write
+          test "$(python3 tools/version.py nightly-dirty)" = false
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - name: Inventory the exact shipping integration targets
+        id: plan
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > shipping-metadata.json
+          python3 .github/scripts/shipping_tests.py plan \
+            --metadata shipping-metadata.json --crates "$CRATES" --source "$GITHUB_SHA" \
+            --plan shipping-test-plan.json --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shipping-test-plan-${{ github.sha }}
+          path: shipping-test-plan.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+  shipping-tests:
+    needs: [changes, shipping-plan]
+    if: inputs.release_validation && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.shipping-plan.outputs.matrix) }}
+    concurrency:
+      group: ci-shipping-integration-${{ github.workflow }}-${{ github.sha }}-${{ matrix.shard }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Nightly shipping identity
+        if: inputs.release_validation || github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          python3 tools/test_version.py
+          python3 tools/version.py nightly --write
+          test "$(python3 tools/version.py nightly-dirty)" = false
+          echo "KONTRA_NIGHTLY_BUILD=1" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - name: System libraries (X11, OpenGL/Vulkan, ALSA, JACK)
+        run: |
+          mkdir -p ui-plugin/editor-debs/partial
+          sudo apt-get update
+          # Retain the exact packages for offline editor setup on the same runner image.
+          sudo apt-get -o Dir::Cache::archives="$PWD/ui-plugin/editor-debs" \
+            -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+            dbus-x11 mesa-utils vulkan-tools ffmpeg unzip ripgrep libegl1 \
+            libfreetype6 libfontconfig1 libxext6 libxrender1 libxinerama1 \
+            build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev \
+            libgl1-mesa-dev libgl1-mesa-dri libvulkan-dev mesa-vulkan-drivers xvfb xauth \
+            libasound2-dev libjack-jackd2-dev
+          # apt owns partial/; Cargo must be able to scan the workspace.
+          sudo chmod -R a+rX ui-plugin/editor-debs
+          (cd ui-plugin/editor-debs && sha256sum *.deb > SHA256SUMS)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shipping-test-plan-${{ github.sha }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: linux-release-integration-${{ matrix.shard }}
+          save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+          cache-on-failure: true
+          cache-workspace-crates: true
+      - name: Execute and attest the assigned integration targets
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARD_ID: ${{ matrix.shard_id }}
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > shipping-metadata.json
+          python3 .github/scripts/shipping_tests.py run \
+            --metadata shipping-metadata.json --crates "$CRATES" --source "$GITHUB_SHA" \
+            --plan shipping-test-plan.json --shard "$SHARD" --shard-id "$SHARD_ID" \
+            --receipt "receipt-$SHARD.json" --log "shipping-test-$SHARD.log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success()
+        with:
+          name: shipping-test-receipt-${{ matrix.shard }}-${{ github.sha }}
+          path: receipt-${{ matrix.shard }}.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: shipping-test-log-${{ matrix.shard }}-${{ github.sha }}
+          path: shipping-test-${{ matrix.shard }}.log
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+  shipping-coverage:
+    needs: [changes, shipping-plan, shipping-tests]
+    if: ${{ always() && inputs.release_validation && needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require every shipping matrix job
+        env:
+          PLAN: ${{ needs.shipping-plan.result }}
+          TESTS: ${{ needs.shipping-tests.result }}
+        run: |
+          test "$PLAN" = success
+          test "$TESTS" = success
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shipping-test-plan-${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shipping-test-receipt-*-${{ github.sha }}
+          path: shipping-receipts
+          merge-multiple: true
+      - name: Require the exact integration executable union
+        run: |
+          python3 .github/scripts/shipping_tests.py aggregate --source "$GITHUB_SHA" \
+            --plan shipping-test-plan.json --receipts shipping-receipts
 
   editor:
     needs: [changes, linux]
@@ -268,7 +437,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [changes, linux, windows, macos, editor]
+    needs: [changes, linux, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -280,6 +449,10 @@ jobs:
           WINDOWS: ${{ needs.windows.result }}
           MACOS: ${{ needs.macos.result }}
           EDITOR: ${{ needs.editor.result }}
+          RELEASE_VALIDATION: ${{ inputs.release_validation && 'true' || 'false' }}
+          SHIPPING_PLAN: ${{ needs.shipping-plan.result }}
+          SHIPPING_TESTS: ${{ needs.shipping-tests.result }}
+          SHIPPING_COVERAGE: ${{ needs.shipping-coverage.result }}
         run: |
           test "$CHANGES" = success
           if [ "$CODE" = true ]; then
@@ -293,4 +466,15 @@ jobs:
             test "$WINDOWS" = skipped
             test "$MACOS" = skipped
             test "$EDITOR" = skipped
+          fi
+          if [ "$RELEASE_VALIDATION" = true ]; then
+            test "$CODE" = true
+            test "$SHIPPING_PLAN" = success
+            test "$SHIPPING_TESTS" = success
+            test "$SHIPPING_COVERAGE" = success
+          else
+            test "$RELEASE_VALIDATION" = false
+            test "$SHIPPING_PLAN" = skipped
+            test "$SHIPPING_TESTS" = skipped
+            test "$SHIPPING_COVERAGE" = skipped
           fi

@@ -8,12 +8,18 @@
 //! than dropped.
 #![forbid(unsafe_code)]
 
+pub mod fx;
 pub mod kontakt;
 pub mod units;
 mod validate;
 
 pub use units::{Frequency, Gain, Pan, PanLaw, Pitch, Resonance, SourceFrames, Span, Time};
 pub use validate::{Reference, ValidationError};
+
+/// Upper bound on source processing scopes in one instrument. A scope is one
+/// authored source owner, so large multi-keygroup libraries legitimately need
+/// one per keygroup; this only bounds the definition roster, not live voices.
+pub const MAX_PROCESSING_SCOPES: usize = 4096;
 
 macro_rules! reference {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
@@ -73,6 +79,11 @@ pub struct Instrument {
     /// Physical source indices, retained across omissions and key-range filtering.
     pub source_indices: SourceIndices,
     pub zones: Vec<Zone>,
+    /// Native source identity -> fully translated destination recipes.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_routing: Vec<ZoneRouting>,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_routing_mode: Option<u8>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
     /// Independent nested selectors (see [`Axis`]), beside the articulation.
@@ -84,7 +95,15 @@ pub struct Instrument {
     /// Transfer curves routes apply to their source value.
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
+    /// Explicit per-selection-activation processor owners. This namespace is
+    /// independent of GroupRef, selection families and source storage packs.
+    /// Empty retains the existing singleton source execution exactly.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_scopes: Vec<ProcessingScope>,
     pub buses: Vec<Bus>,
+    /// Explicit channel programs on existing GLOBAL bus owners, never voice activations.
+    #[cfg_attr(feature="cache",serde(default))]
+    pub processing_buses:Vec<ProcessingBus>,
     /// Sum entering the instrument/program inserts, after upstream group buses.
     /// Direct outputs before this point bypass instrument-level processing.
     pub input_bus: Option<BusRef>,
@@ -130,6 +149,12 @@ pub struct Instrument {
     pub native_family: Option<NativeFamily>,
     /// Native groups with an active sample-start modulation target.
     pub native_start_mod_groups: Option<Vec<u32>>,
+    /// A snapshot load: each behavior's own saved state before the snapshot's
+    /// values replaced it (`behaviors[i].state`); empty otherwise. Scripts run
+    /// `on persistence_changed` with it first, as Kontakt loads the instrument
+    /// and then applies the snapshot.
+    #[cfg_attr(feature = "cache", serde(skip))]
+    pub snapshot_base_state: Vec<Vec<(String, Saved)>>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -225,6 +250,59 @@ pub enum DspSlotReason {
 pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
+    /// Original source-owner hierarchy. Identities are document-local native
+    /// addresses, not runtime handles, display names, or processing-owner IDs.
+    /// The compiled plan/actual runtime owner supplies generation fencing.
+    /// Empty is legacy metadata absence, never proof that all scopes coincide.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub owners: Vec<SourceOwner>,
+    /// Source-defined shared processing recipes. No width is guessed during
+    /// XML/container translation; the normal loader binds actual source ports.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing: Vec<SourceProcessingRecipe>,
+    /// Exact original processor operands on a real per-activation owner. These
+    /// are not output Gain/Pan roles or a cache of current parameter values.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_parameters: Vec<SourceProcessingParameter>,
+    /// Full authored matrices, before actual source geometry is known. These
+    /// cells are not an early decoder fold or a guessed two-channel graph.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_matrices: Vec<SourceProcessingMatrix>,
+    /// Explicit caller-supplied conversion at the source-owner output port.
+    /// Absent is not permission to drop wide channels or infer native enums.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub processing_ports: Vec<SourceProcessingPort>,
+    /// Current UVI native source/header and primitive profile. Pending geometry
+    /// is resolved by the ordinary reader, never from physical Stereo packing.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub uvi_native_processing: Vec<UviNativeProcessingProfile>,
+    /// Explicit actual output-field roles, never inferred from processor kind.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub output_controls:Vec<SourceOwnerOutputControl>,
+    /// Executable modulation at a real Program/Layer output, supplied by the
+    /// resolved element MIDI source domain. Never copied to member zones.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub global_modulation:Vec<SourceGlobalModulation>,
+    /// Writable Constant definitions; property controls are not listener inputs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub constant_properties:Vec<SourceConstantProperty>,
+    /// Original physical order. Empty for caches without native identity metadata.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub zone_catalog: Vec<SourceZone>,
+    /// Authored sample-player identities, independent of asset renumbering.
+    /// An initially empty player retains complete dormant zone recipes.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub sample_targets: Vec<SourceSampleTarget>,
+    /// SamplePlayer zones without program-owned PlaybackOptions. Initial source
+    /// loading inherits file playback for these zones, never root/tune/gain.
+    /// Presence is explicit: an empty stored PlaybackOptions suppresses inheritance.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub file_playback_zones: Vec<ZoneRef>,
+    /// One logical six-channel source, stored as three ordinary stereo assets.
+    /// Empty in legacy translations. These dependencies must survive narrowing;
+    /// their presence never authorizes a consumer to fall back to the first pack.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_bundles: Vec<SourceBundle>,
     pub modulators: Vec<SourceModulator>,
     /// Original Kontakt AHDSR setter values; normalized curves cannot recover v1 bits.
     pub ahdsrs: Vec<SourceAhdsr>,
@@ -236,7 +314,206 @@ pub struct SourceIndices {
     pub control_aliases: Vec<SourceControlAlias>,
     /// Admitted outgoing route -> live depth and internal-source bypass controls.
     pub route_controls: Vec<(RouteRef, ControlRef, ControlRef)>,
+    /// Intensity assignments beyond a route's first (`Route::scale`), in
+    /// application order; each combination's input is the previous result.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub chained_scales: Vec<(RouteRef, RouteScale)>,
+    /// Routes whose target law reads the source's unipolar view ((v + 1) / 2 of a
+    /// bipolar source): FUN_140873040's `need_uni` targets outside its signed sets.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub unipolar_routes: Vec<RouteRef>,
+    /// Native identity of Kontakt external routes with a proved source type.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub native_routes: Vec<(RouteRef, NativeRoute)>,
     pub slots: Vec<Option<usize>>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceZoneHome {
+    pub group: u32,
+    pub low_key: u8,
+    pub high_key: u8,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceZone {
+    pub id: Option<u32>,
+    pub home: SourceZoneHome,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneRouting {
+    pub source_zone: u32,
+    pub group: u32,
+    pub low_key: u8,
+    pub high_key: u8,
+    pub variants: Vec<ZoneRouteVariant>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneRouteVariant {
+    pub group: u32,
+    /// Unavailable destinations retain their identity and never become a fallback.
+    pub zone: Option<ZoneRef>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceSampleTarget {
+    pub node: u32,
+    pub zones: Vec<ZoneRef>,
+}
+
+/// A real source address in the importing instrument's document namespace.
+/// Kontakt's physical group/zone indices are deliberately not UVI XML node IDs.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceOwnerId {
+    UviNode(u32),
+    KontaktInstrument,
+    KontaktGroup(u32),
+    KontaktZone(u32),
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceOwnerKind {
+    Instrument,
+    Layer,
+    Keygroup,
+    Player,
+    Aux,
+    KontaktGroup,
+    KontaktZone,
+}
+
+/// A retained source property. A binding is real only when it names a typed
+/// control; the saved value alone does not pretend to implement live updates.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSwitch {
+    pub saved: bool,
+    pub control: Option<ControlRef>,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceEventProcessorId {
+    UviNode(u32),
+    KontaktScriptSlot(u32),
+}
+
+/// EVERY direct authored event-list member, including unsupported processors.
+/// `ordinal` counts the original full list, not only ScriptProcessor entries.
+/// This row is source metadata, not a VM, callback token, or execution admission.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEventProcessor {
+    pub id: SourceEventProcessorId,
+    pub owner: SourceOwnerId,
+    pub ordinal: u32,
+    pub kind: String,
+    pub bypass: SourceSwitch,
+}
+
+/// Known native input predicates. An unsupported predicate remains explicit;
+/// its absence from an adapter cannot silently mean "accept every event".
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceInputPredicate {
+    Keys(KeyRange),
+    Velocities(VelocityRange),
+    Channel(u8),
+    Unsupported { field: String },
+}
+
+/// Source topology and semantic membership shared by the audio and event
+/// producers. `children` is direct original order. `zones`/`groups` are actual
+/// translated references within this owner's subtree, not guessed names.
+/// The kind does NOT choose a DSP lifetime: UVI KG activation processing,
+/// Kontakt per-voice groups and instrument buses compile their own proven law.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceOwner {
+    pub id: SourceOwnerId,
+    pub parent: Option<SourceOwnerId>,
+    pub kind: SourceOwnerKind,
+    pub children: Vec<SourceOwnerId>,
+    pub groups: Vec<GroupRef>,
+    pub zones: Vec<ZoneRef>,
+    pub predicates: Vec<SourceInputPredicate>,
+    pub bypass: Option<SourceSwitch>,
+    pub mute: Option<SourceSwitch>,
+    pub event_processors: Vec<SourceEventProcessor>,
+}
+
+/// Initial storage recipe for ONE source/zone, not three selectable voices.
+/// Pack order is fixed: input channels (1,2), (3,4), (5,6). Geometry applies
+/// identically to all packs; source pitch and Playback remain on the zone.
+/// This semantic record does not assert native oscillator grouping or width.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceBundle {
+    pub zone: ZoneRef,
+    pub packs: [AssetRef; 3],
+    pub geometry: SourceBundleGeometry,
+    /// Original logical player/resource identities, independent of asset compaction.
+    pub player: u32,
+    pub logical_asset: u32,
+    /// Immutable resource identity. No PCM, URI or decoder state is retained here.
+    pub origin: [u8; 32],
+    pub boundary: SourceMatrixBoundary,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceBundleGeometry {
+    pub rate: u32,
+    pub frames: u64,
+}
+
+/// Authored position of the first width-reducing matrix. Coordinates and control
+/// identities remain explicit so deleting a prefix cannot renumber later slots.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceMatrixBoundary {
+    pub node: u32,
+    pub chain: ChainRef,
+    pub section: SourceBoundarySection,
+    pub index: usize,
+    /// Twelve independent signed cells. Coordinates are zero-based; XML's
+    /// Gain_i_j has input i and output j, not row-major XML field order.
+    pub cells: [SourceMatrixCell; 12],
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceBoundarySection {
+    BeforeAmplitude,
+    AfterAmplitude,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceMatrixCell {
+    pub input: u8,
+    pub output: u8,
+    pub coefficient: f64,
+    pub control: Option<ControlRef>,
+    pub ramp: Time,
+}
+
+/// What a Kontakt external route record says about its law: the native target
+/// id (registry id of the serialized target name), the target flag byte and
+/// the external source type (+0x544). Consumed by sampler-core
+/// `voice_mod::laws`.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeRoute {
+    pub target: u16,
+    pub flags: u8,
+    pub source_type: u8,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -371,11 +648,35 @@ pub enum SourceFormat {
 
 // ---------------------------------------------------------------- assets
 
+/// Minimum storage required by an authored sample user. Shared immutable
+/// sources must retain the strongest requirement of all their users.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AssetResidency {
+    /// The source may use resident attacks with disk-streamed tails.
+    #[default]
+    Streamable,
+    /// The complete base PCM must be resident before publishing the part.
+    Resident,
+}
+
+impl AssetResidency {
+    pub const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Resident, _) | (_, Self::Resident) => Self::Resident,
+            _ => Self::Streamable,
+        }
+    }
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asset {
     pub location: AssetLocation,
     pub encoding: Encoding,
+    /// A source-level minimum, independent of the host's preferred cache mode.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub residency: AssetResidency,
     /// Recorded pitch stored with the audio, if any.
     pub root_key: Option<u8>,
     /// Loops stored with the audio (e.g. a WAV `smpl` chunk).
@@ -412,9 +713,16 @@ pub enum Encoding {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
+    /// Saved mute preserves the complete definition for live unmute.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub muted: bool,
     /// Strictly admitted Kontakt cycle oscillator, independent of sample root/rate.
     #[cfg_attr(feature = "cache", serde(default))]
     pub wavetable: Option<Wavetable>,
+    /// Independent time/pitch source (Kontakt Time Machine family). Absent for
+    /// plain sampler playback, where transposition also changes tempo.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub time_stretch: Option<TimeStretch>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -425,6 +733,10 @@ pub struct Group {
     pub output: Output,
     /// Index into [`Instrument::voice_limits`] shared by this group's voices.
     pub voice_limit: Option<usize>,
+    /// Additional source resource domain (e.g. standard/HQ Time Machine Pro).
+    /// Indexes Instrument::voice_limits independently of the voice group.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_voice_limit: Option<usize>,
     /// A release-trigger group where playing a note again cuts that note's
     /// release samples still sounding (Kontakt manual, Release Trigger
     /// "Monophonic").
@@ -436,7 +748,66 @@ pub struct Group {
     pub tap: Option<GroupTap>,
 }
 
-/// Saved controls for v1's admitted 2048-frame Kontakt wavetable subset.
+/// Which time-stretch engine configuration a group's source uses. The engine
+/// is shared (`sampler-core` `StretchEngine`); the kind only picks its
+/// configuration, so formats add kinds without new DSP code paths.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StretchKind {
+    TimeMachine1,
+    TimeMachine2,
+    TimeMachinePro,
+}
+
+/// Saved controls of a time-stretch source. Pitch is the group/zone tuning
+/// plus key tracking, exactly as for sampler playback; these controls only
+/// decouple tempo from it.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TimeStretch {
+    pub kind: StretchKind,
+    /// Playback speed as a ratio of the original; 0 freezes the position.
+    pub speed: f32,
+    /// Time Machine 1: Smooth as stored (0..=1) and Grain in milliseconds.
+    pub smooth: f32,
+    pub grain_ms: f32,
+    /// Time Machine 1 HQ analysis / Time Machine Pro resource class.
+    pub high_quality: bool,
+    /// Time Machine 2 controls as stored: Transient Copy, Transient Size (in
+    /// source positions) and the analysis Grain profile index (0..=4).
+    /// Carried for the TM2 engine; the stand-in engine does not use them.
+    pub transient_copy: bool,
+    pub transient_size: u32,
+    pub grain_profile: u32,
+    /// Time Machine Pro controls as stored (Keep Formants, Frm Shift, Env
+    /// Order); carried, unused until a Pro backend exists.
+    pub keep_formants: bool,
+    pub formant_shift: f32,
+    pub env_order: f32,
+}
+impl TimeStretch {
+    /// Neutral controls (authored defaults are not established).
+    pub fn new(kind: StretchKind, speed: f32) -> Self {
+        Self {
+            kind,
+            speed,
+            smooth: 0.5,
+            grain_ms: 20.,
+            high_quality: false,
+            transient_copy: false,
+            transient_size: 0,
+            grain_profile: 0,
+            keep_formants: false,
+            formant_shift: 0.,
+            env_order: 0.25,
+        }
+    }
+    pub fn valid(self) -> bool {
+        self.speed.is_finite() && (0. ..=64.).contains(&self.speed)
+    }
+}
+
+/// Saved controls for the measured 2048-frame Kontakt wavetable subset.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Wavetable {
@@ -444,17 +815,22 @@ pub struct Wavetable {
     pub phase: f32,
     pub form1: f32,
     pub form2: f32,
-    /// Native phase-form IDs: 0 (identity) or 16 (ASYM2MP).
+    /// Native phase-form IDs, independent of UI menu order.
     pub form1_type: u8,
     pub form2_type: u8,
 }
 impl Wavetable {
+    /// Phase-only forms verified against Kontakt's 0x140567aa0 instructions.
+    /// Amplitude forms and the unmeasured phase forms remain outside admission.
+    pub const fn supports_form(kind: u8) -> bool {
+        matches!(kind, 0 | 7..=12 | 14..=17 | 31..=33)
+    }
     pub fn valid(self) -> bool {
         [self.position, self.phase, self.form1, self.form2]
             .iter()
             .all(|v| v.is_finite() && (0. ..=1.).contains(v))
-            && matches!(self.form1_type, 0 | 16)
-            && matches!(self.form2_type, 0 | 16)
+            && Self::supports_form(self.form1_type)
+            && Self::supports_form(self.form2_type)
     }
 }
 
@@ -519,6 +895,9 @@ pub struct VoiceLimit {
     pub kill: Kill,
     pub prefer_released: bool,
     pub fade: Time,
+    /// Voice domains in the same set cut other domains in that set.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub exclusive_set: Option<u32>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -537,7 +916,9 @@ pub enum Kill {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
-    pub asset: AssetRef,
+    /// None is an authored, dormant sample player, not a missing decoded file.
+    /// Its complete mapping remains available for a future sample transaction.
+    pub asset: Option<AssetRef>,
     pub group: Option<GroupRef>,
     pub keys: KeyRange,
     pub velocities: VelocityRange,
@@ -580,31 +961,49 @@ impl Instrument {
                 .chain(&processors.post_amplitude)
                 .enumerate()
             {
-                let Processor::Compressor(c) = *processor else {
+                let Processor::Dynamics(c) = *processor else {
                     continue;
+                };
+                use fx::dynamics::Law;
+                // These are physical editor controls, in the DSP law's units.
+                // Native is not a domain: Feedback takes linear input drive and
+                // ratio 1..20, unlike the original compressor's dB / 0..1 knobs.
+                let (input_label, input_low, input_high, input_unit, ratio_low, ratio_high, attack_low, release_low) = match c.law {
+                    Law::Generic(_) => ("Threshold", -60., 0., ControlUnit::Decibels, 1., 20., 0., 0.),
+                    Law::KontaktClassic(_) | Law::KontaktPro(_) =>
+                        ("Threshold", -68., -3., ControlUnit::Decibels, 0., 1., 0., 0.),
+                    Law::KontaktEnhanced(_) =>
+                        ("Threshold", -68., -3., ControlUnit::Decibels, 0., 1., 0.000_001, 0.),
+                    Law::KontaktFeedback { .. } =>
+                        ("Input gain", 10_f64.powf(-0.5), 100., ControlUnit::None, 1., 20., 0.000_1, 0.05),
+                    Law::KontaktLimiter(_) =>
+                        ("Input gain", -24., 24., ControlUnit::Decibels, 0., 0., 0., 0.),
+                    // These cores either ignore the four generic knobs or use
+                    // different controls. Do not invent a compressor editor.
+                    _ => continue,
                 };
                 for (parameter, label, default, low, high, unit) in [
                     (
                         ProcessorParameter::Threshold,
-                        "Threshold",
-                        c.threshold_db,
-                        -60_f64,
-                        0_f64,
-                        ControlUnit::Decibels,
+                        input_label,
+                        c.threshold(),
+                        input_low,
+                        input_high,
+                        input_unit,
                     ),
                     (
                         ProcessorParameter::Ratio,
                         "Ratio",
-                        c.ratio,
-                        1_f64,
-                        20_f64,
+                        c.ratio(),
+                        ratio_low,
+                        ratio_high,
                         ControlUnit::None,
                     ),
                     (
                         ProcessorParameter::Attack,
                         "Attack",
                         c.attack.seconds(),
-                        0_f64,
+                        attack_low,
                         1_f64,
                         ControlUnit::Seconds,
                     ),
@@ -612,17 +1011,24 @@ impl Instrument {
                         ProcessorParameter::Release,
                         "Release",
                         c.release.seconds(),
-                        0_f64,
+                        release_low,
                         5_f64,
                         ControlUnit::Seconds,
                     ),
                 ] {
+                    if matches!(c.law, Law::KontaktLimiter(_))
+                        && matches!(parameter, ProcessorParameter::Ratio | ProcessorParameter::Attack) {
+                        continue;
+                    }
                     if existing.contains(&(chain, index, parameter as u8)) {
                         continue;
                     }
                     let control = ControlRef(self.controls.len());
+                    // Labels can become more precise without changing a saved
+                    // editor control's identity (the historical key was Threshold).
+                    let key_label = if parameter == ProcessorParameter::Threshold { "Threshold" } else { label };
                     self.controls.push(Control {
-                        key: format!("compressor:{chain}:{index}:{label}"),
+                        key: format!("compressor:{chain}:{index}:{key_label}"),
                         label: label.into(),
                         value: ControlValue::Continuous {
                             min: low.min(default),
@@ -737,13 +1143,106 @@ impl Instrument {
             old += 1;
             retained
         });
+        for scope in &mut self.processing_scopes {
+            if let Some(signal)=&mut scope.signal {
+                if let ProcessingSourceLaw::UviC997Layout{members}=&mut signal.source_law {
+                    let old=*members;*members=[None;16];let mut output=0;
+                    for (ordinal,zone)in scope.members.iter().enumerate(){
+                        if remap.get(zone.0).copied().unwrap_or(Some(*zone)).is_some(){if output<16{members[output]=old.get(ordinal).copied().flatten();}output+=1;}
+                    }
+                }
+            }
+            scope.members = scope.members.iter().filter_map(|z| {
+                // Preserve dangling public refs for validate(), never drop them.
+                remap.get(z.0).copied().unwrap_or(Some(*z))
+            }).collect();
+        }
+        let mut processing_remap = vec![None; self.processing_scopes.len()];
+        let mut processing_old = 0;
+        let mut processing_next = 0;
+        self.processing_scopes.retain(|scope| {
+            let keep = !scope.members.is_empty();
+            if keep { processing_remap[processing_old] = Some(processing_next); processing_next += 1; }
+            processing_old += 1;
+            keep
+        });
+        self.source_indices.output_controls.retain_mut(|home| {
+            if let SourceOwnerControlTarget::ProcessingScope{scope,..}=&mut home.target {
+                match processing_remap.get(*scope).copied().unwrap_or(Some(*scope)) {
+                    Some(next)=>*scope=next, None=>return false,
+                }
+            } true
+        });
+        for recipe in &mut self.source_indices.processing {
+            recipe.members = recipe.members.iter().filter_map(|zone| {
+                remap.get(zone.0).copied().unwrap_or(Some(*zone))
+            }).collect();
+            recipe.compiled = recipe.compiled.and_then(|old| {
+                processing_remap.get(old).copied().unwrap_or(Some(old))
+            });
+        }
+        self.source_indices.processing.retain(|recipe| !recipe.members.is_empty());
+        self.source_indices.processing_parameters.retain_mut(|parameter| {
+            if !self.source_indices.processing.iter().any(|recipe|recipe.owner==parameter.owner&&recipe.chain==Some(parameter.chain)){return false;}
+            if let Some(compiled)=&mut parameter.compiled {
+                match processing_remap.get(compiled.scope).copied().unwrap_or(Some(compiled.scope)) {
+                    Some(next)=>compiled.scope=next,None=>parameter.compiled=None,
+                }
+            }true
+        });
+        for profile in &mut self.source_indices.uvi_native_processing {
+            profile.members=profile.members.iter().filter_map(|(zone,input)|remap.get(zone.0).copied().unwrap_or(Some(*zone)).map(|zone|(zone,*input))).collect();
+        }
+        self.source_indices.uvi_native_processing.retain(|profile|!profile.members.is_empty());
+        for matrix in &mut self.source_indices.processing_matrices {
+            if let Some(binding)=&mut matrix.compiled {
+                if let Some(scope)=processing_remap.get(binding.scope).copied().flatten() {
+                    binding.scope=scope;
+                } else { matrix.compiled=None; }
+            }
+        }
+        // Keep every native owner and event-list identity after narrowing.
+        // Only actual translated zone references change. Dangling public refs
+        // remain visible for validate(), rather than becoming a missing owner.
+        for owner in &mut self.source_indices.owners {
+            owner.zones = owner.zones.iter().filter_map(|zone| {
+                remap.get(zone.0).copied().unwrap_or(Some(*zone))
+            }).collect();
+        }
         for zone in &mut self.source_indices.zones {
             *zone = zone.and_then(|z| remap[z.0]);
         }
+        for route in &mut self.zone_routing {
+            for variant in &mut route.variants {
+                variant.zone = variant.zone.and_then(|z| remap[z.0]);
+            }
+        }
+        for target in &mut self.source_indices.sample_targets {
+            target.zones = target.zones.iter().filter_map(|z| remap[z.0]).collect();
+        }
+        self.source_indices.sample_targets.retain(|t| !t.zones.is_empty());
+        self.source_indices.file_playback_zones=self.source_indices.file_playback_zones.iter()
+            .filter_map(|z|remap[z.0]).collect();
+        // Malformed public recipes remain malformed for validate(); never turn
+        // a dangling owner into a silently removed wide-source declaration.
+        self.source_indices.source_bundles.retain_mut(|bundle| {
+            match remap.get(bundle.zone.0) {
+                Some(Some(zone)) => { bundle.zone = *zone; true }
+                Some(None) => false,
+                None => true,
+            }
+        });
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
-            if let Some(used) = used.get_mut(zone.asset.0) {
+            if let Some(used) = zone.asset.and_then(|a| used.get_mut(a.0)) {
                 *used = true;
+            }
+        }
+        for bundle in &self.source_indices.source_bundles {
+            for asset in bundle.packs {
+                if let Some(used) = used.get_mut(asset.0) {
+                    *used = true;
+                }
             }
         }
         let kept: Vec<usize> = (0..self.assets.len()).filter(|&i| used[i]).collect();
@@ -757,22 +1256,36 @@ impl Instrument {
             used[index - 1]
         });
         for zone in &mut self.zones {
-            zone.asset = AssetRef(
+            zone.asset = zone.asset.map(|asset| AssetRef(
                 renumbered
-                    .get(zone.asset.0)
+                    .get(asset.0)
                     .copied()
-                    .unwrap_or(zone.asset.0),
-            );
+                    .unwrap_or(asset.0),
+            ));
+        }
+        for bundle in &mut self.source_indices.source_bundles {
+            for asset in &mut bundle.packs {
+                // Every valid dependency was marked above; dangling refs stay
+                // outside the compacted table and fail structural validation.
+                if let Some(index) = renumbered.get(asset.0) {
+                    *asset = AssetRef(*index);
+                }
+            }
         }
         kept
     }
 }
 
 impl Zone {
+    /// An authored mapping with no sample bound yet. Requires an explicit
+    /// source sample-target identity before structural validation/lowering.
+    pub fn dormant() -> Self {
+        Self { asset: None, ..Self::new(AssetRef(0)) }
+    }
     /// Full key and velocity range, root key 60, no processing.
     pub fn new(asset: AssetRef) -> Self {
         Self {
-            asset,
+            asset: Some(asset),
             group: None,
             keys: KeyRange::FULL,
             velocities: VelocityRange::FULL,
@@ -1202,12 +1715,14 @@ pub enum ModulationSource {
     Script(u16),
     /// The same script value for a bipolar source, kept in -1..=1.
     ScriptBipolar(u16),
+    /// Declared-Core target reader, never native smoothing or a listener value.
+    ConstantProperty { node:u32, value:ControlRef, style:ControlRef, bipolar:bool },
 }
 
 impl ModulationSource {
     /// Whether values span -1..=1 rather than 0..=1.
     pub fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_))
+        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
 }
 
@@ -1220,6 +1735,14 @@ impl ModulationSource {
 pub struct Breakpoints {
     pub points: Vec<Breakpoint>,
     pub sustain: Option<usize>,
+    /// Inclusive (start, end) point indices of a gated loop: reaching `end`
+    /// returns to `start` instead of holding (Kontakt's Flex loop jump at the
+    /// sustain row, native advance 0x140ae57dd).
+    pub loop_range: Option<(usize, usize)>,
+    /// Kontakt Flex release law (transition 0x140ae5450): the first release
+    /// segment's duration is scaled by how far the current level has already
+    /// travelled, instead of running its full length from wherever it starts.
+    pub flex_release: bool,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1297,9 +1820,62 @@ pub struct Lfo {
     pub retrigger: bool,
 }
 
+/// Kontakt's native LFO waveforms (BLfo* processors, `modulators.md`): the
+/// recovered 4096-entry tables with four-point interpolation, the width-driven
+/// rectangle, and the seeded held-noise grid. Outputs are raw (they ring past
+/// +-1); nothing here is an ideal waveform.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeWave {
+    Sine,
+    Saw,
+    Triangle,
+    /// Pulse width in 0..1.
+    Rectangle(f32),
+    /// Held noise updated twice per cycle; start phase must be below 0.5.
+    Held,
+    /// Kontakt Multi (`digital` false, BLfoMulti 0x140b07290) or Digital Multi
+    /// (`digital` true, BLfoMultiDigital 0x140b078d0): a signed five-component
+    /// mix. `weights` are in native runtime order: sine, doubled saw, triangle,
+    /// pulse, held noise. `width` is the pulse width in 0..1.
+    Multi {
+        weights: [f32; 5],
+        width: f32,
+        normalize: bool,
+        digital: bool,
+    },
+    /// A UVI Workstation LFO waveform (`WaveFormType` 0..=6, see [`UviWave`]).
+    Uvi(UviWave),
+}
+
+/// UVI Workstation 4.0.9 LFO waveforms with a closed-form table or recurrence
+/// (`WaveFormType` ids; registry 0x1410f5d00, process 0x1410f8ca0). The chaos
+/// ids 7 and 8 are stateful Euler maps with unproved defaults, and id 9 is a
+/// stored user table; neither is representable here.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UviWave {
+    /// 0: 256-entry sine table, linear interpolation (table 0x1428393a0).
+    Sinus,
+    /// 1: +1 for entries 0..128, -1 from 128 (table 0x1428397b0).
+    Square,
+    /// 2: 0, +1, 0, -1, 0 at quarter cycles (table 0x142839bc0).
+    Triangle,
+    /// 3: -1 to +1 over entries 0..255 (table 0x142839fd0).
+    RampUp,
+    /// 4: +1 to -1 over entries 0..255 (table 0x14283a3e0).
+    RampDown,
+    /// 5: odd harmonics 1..17 (table 0x14283a7f0).
+    AnalogSquare,
+    /// 6: a new value from the native congruential generator at each wrap.
+    RandomHold,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LfoShape {
+    /// A native Kontakt waveform.
+    Native(NativeWave),
     /// Saved retriggered Digital Multi sine, with an unsynchronized false-mode fade.
     /// `fade_ms` retains the original serialized milliseconds, not a linear ramp.
     DigitalSine { level: f64, fade_ms: f32 },
@@ -1313,6 +1889,11 @@ pub enum LfoShape {
     Triangle,
     /// +1 for the first half cycle.
     Square,
+    /// +1 for the first `width` (0..=1) of the cycle, then -1.
+    Rectangle(f64),
+    /// Weighted mix of sine, rectangle(`width`), triangle, saw-up and
+    /// sample-and-hold, divided by max(1, sum(abs(weights))) when `normalize`.
+    Multi { weights: [f64; 5], width: f64, normalize: bool },
     /// -1 to +1.
     SawUp,
     /// +1 to -1.
@@ -1321,6 +1902,11 @@ pub enum LfoShape {
     SampleAndHold,
     /// A new uniform value each cycle, reached linearly by the cycle's end.
     Random,
+    /// A native waveform under Kontakt's saved LFO fade-in (`fade_ms` > 0,
+    /// unsynchronized): the BLfo fade outside the waveform kernels (Multi
+    /// 0x140b07290 and Digital Multi 0x140b078d0 carry none), the law of
+    /// `sampler_core::KontaktLfoFade`. Replaces the linear `Lfo::fade_in`.
+    NativeFaded { wave: NativeWave, fade_ms: f32 },
 }
 
 /// A piecewise-linear transfer curve over 0..=1, as ascending `(input, output)`
@@ -1368,6 +1954,26 @@ pub struct Route {
 pub struct RouteScale {
     pub source: ModulatorRef,
     pub shape: Option<ShapeRef>,
+    /// How `source` combines with the route's saved depth.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub law: ScaleLaw,
+    /// Lag of the assignment's processed source, milliseconds to 99% of a step.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub lag_ms: f64,
+}
+
+/// Combination law of a [`RouteScale`].
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ScaleLaw {
+    /// depth × shape(x).
+    #[default]
+    Multiply,
+    /// Kontakt modulation of a modulator's intensity (native law ID25, see
+    /// sampler-core `ModScaleLaw::KontaktIntensity`): `depth` is the scaling
+    /// assignment's intensity, `flags` its stored target flags, `unit` the
+    /// route's depth per unit of its saved normalized intensity.
+    KontaktIntensity { depth: f64, flags: u8, unit: f64 },
 }
 
 impl Route {
@@ -1401,13 +2007,47 @@ pub enum Target {
     Control(ControlRef),
     /// Absolute source cycle position, sampled at note onset, replacing its saved phase.
     SourcePhase(ModulatorRef),
+    /// Rate of a program-local LFO, added to its saved rate as `depth × source`
+    /// on Kontakt's normalized frequency lane (law ID26, see sampler-core
+    /// `CompiledTarget::SourceRate`). Depth is `Normalized`.
+    SourceRate(ModulatorRef),
+    /// Per-voice normalized wavetable source lane, added to the saved/live base.
+    Wavetable(WavetableParameter),
     /// Truncated fractions of total sample frames, on a constrained forward loop.
     LoopStart,
     LoopLength,
+    /// A stage time of an AHDSR envelope, addressed as a modulation target.
+    /// The destination is the envelope modulator; the depth is the native
+    /// intensity of the route, and the law multiplies the stage's normalized
+    /// knob (see `sampler-core`'s `voice_mod::laws`).
+    EnvelopeStage {
+        source: ModulatorRef,
+        stage: EnvelopeStage,
+    },
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WavetableParameter {
+    Position,
+    Form1,
+    Form2,
+}
+
+/// The stage of an AHDSR envelope a modulation target addresses (Kontakt
+/// ids 184..187: `ahdsr_attack`, `ahdsr_hold`, `ahdsr_decay`,
+/// `ahdsr_release`).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvelopeStage {
+    Attack,
+    Hold,
+    Decay,
+    Release,
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProcessorParameter {
     Response,
     Width,
@@ -1422,6 +2062,8 @@ pub enum ProcessorParameter {
     /// Hertz, on a Filter (live: scripted insert effects).
     Frequency,
     Quality,
+    /// Octaves: a UVI DigitalEq band's width (band pass, notch, peak).
+    Bandwidth,
     /// Decibels: a Filter's boost or a Gain's level.
     GainDecibels,
     /// Decibels subtracted from `GainDecibels` (a relative shelf).
@@ -1433,6 +2075,34 @@ pub enum ProcessorParameter {
     CellLR,
     CellRL,
     CellRR,
+    /// Normalized knobs of a script-addressed Kontakt effect module (native
+    /// engine-parameter lanes): Classic Saturation shape, Distortion drive and
+    /// damping, Formant I talk/sharp/size, Lo-Fi bits/frequency/noise/color.
+    Shape,
+    Drive,
+    Damping,
+    /// Kontakt Skreamer's normalized tone, bass, brightness and internal mix.
+    Tone,
+    Bass,
+    Bright,
+    Mix,
+    FormantTalk,
+    FormantSharp,
+    FormantSize,
+    LoFiBits,
+    LoFiFrequency,
+    LoFiNoise,
+    LoFiColor,
+    /// Stored knobs of script-addressed Kontakt delay, modulation and reverb
+    /// units (the family's `set` applies the native setter).
+    Time,
+    Feedback,
+    Depth,
+    Speed,
+    Phase,
+    Size,
+    Colour,
+    Predelay,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1445,6 +2115,437 @@ pub enum Depth {
 }
 
 // ---------------------------------------------------------------- DSP
+
+/// One actual XML ConstantModulation definition, independent of destinations.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceConstantProperty {
+    pub node:u32,pub owner:SourceOwnerId,pub value:ControlRef,pub style:ControlRef,pub bipolar:bool,
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub law:SourceConstantPropertyLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub enum SourceConstantPropertyLaw {
+    #[default] UnqualifiedNative,
+    /// Explicit caller-declared Core target reader, retaining Core route cadence.
+    DeclaredCoreTargetRead,
+}
+
+/// One actual global destination and its resolved accepted-element input.
+/// Identities are source/plan metadata; the Runtime must bind the real receiver
+/// capability before any such outlet can execute. A destination owner is not
+/// itself permission to invent a MIDI channel or per-note input context.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceGlobalModulation {
+    pub owner:SourceOwnerId,
+    pub input_owner:SourceOwnerId,
+    pub outlet:BusRef,
+    pub sources:Vec<ModulatorRef>,
+    pub routes:Vec<RouteRef>,
+}
+
+/// A native source-owner recipe, resolved on the ordinary loader after actual
+/// SourceStorage geometry is available. This is not a second render engine.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingRecipe {
+    /// Authored display label only; all joins use owner/member identities.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub name: String,
+    pub owner: SourceOwnerId,
+    pub lifetime: SourceProcessingLifetime,
+    /// Authored order, including saved-bypass and dormant source definitions.
+    pub members: Vec<ZoneRef>,
+    pub chain: Option<ChainRef>,
+    pub amplitude: Option<ModulatorRef>,
+    pub output: Option<BusRef>,
+    /// Actual materialized ProcessingScope index; None is untranslated geometry.
+    /// This index is never a source/native identity or runtime liveness token.
+    pub compiled: Option<usize>,
+    /// Scalar roles retain original chain coordinates until actual source layout is known.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub parameter_roles: Vec<SourceScopeControlRole>,
+    /// Real original sources owned by this activation, including sources whose
+    /// only outgoing consumer is a retained physical player. No dummy route.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub sources: Vec<ModulatorRef>,
+    /// One program per actual activation, never one copy per physical member.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub routes: Vec<RouteRef>,
+    /// Only an actual native plain amplitude connection grants source lifetime.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub source_gate:Option<SourceScopeGate>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct SourceScopeGate {pub source:ModulatorRef,pub route:RouteRef,pub velocity:VelocityResponse}
+
+/// A separately named projection law. Historical UVI import behavior is not
+/// evidence of the current native Frequency connection/cadence implementation.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceProcessingParameterLaw {
+    /// Existing ordered per-route midpoint semitone sum -> exp2(sum/12).
+    LegacyCutoffSemitoneMidpoint,
+    /// Historical Freq connection: depth carries 12*log2(1000)*Ratio.
+    /// Native dynamic attachment remains separately unqualified.
+    HistoricalUviFrequencyThreeDecadeCore,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingParameter {
+    pub owner: SourceOwnerId,
+    /// Original actual source processor node, not a VM or runtime slot.
+    pub source_node: u32,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub parameter: ProcessorParameter,
+    pub control: ControlRef,
+    pub law: SourceProcessingParameterLaw,
+    /// Ordered accepted fixed-source multipliers, each followed by the
+    /// historical20..20000Hz clamp BEFORE live connection modulation.
+    pub fixed_factors: Vec<SourceFrequencyFold>,
+    pub compiled: Option<SourceProcessingParameterSite>,
+}
+/// Fixed-source historical Freq operation. Under/overflow of the positive
+/// multiplier becomes a typed clamp, never a nonfinite retained value.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SourceFrequencyFold { MultiplyClamp(f64), LowerClamp, UpperClamp }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceProcessingParameterSite { pub scope: usize, pub site: ScopeControlSite }
+
+/// The typed operand site within one real per-activation owner.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ScopeControlSite {SignalNode(usize),ChainPre(usize),ChainPost(usize)}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct SourceScopeControlRole {
+    pub field: SourceOwnerOutputField,
+    pub chain_index: usize,
+    pub control: ControlRef,
+    pub compiled: Option<ScopeControlSite>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum SourceOwnerControlTarget {Bus{bus:BusRef,node:usize},ProcessingScope{scope:usize,site:ScopeControlSite}}
+
+/// Exact author-declared source-output field role on one actual operand.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq,PartialOrd,Ord)]
+pub enum SourceOwnerOutputField {Gain,Pan,Mute}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct SourceOwnerOutputControl {
+    pub owner:SourceOwnerId,
+    pub field:SourceOwnerOutputField,
+    pub target:SourceOwnerControlTarget,
+    pub control:ControlRef,
+}
+
+/// An original matrix node and its original ordered chain coordinate. Native
+/// source addresses identify definitions only; PlanId/Arc owns their liveness.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingMatrix {
+    pub owner: SourceOwnerId,
+    pub node: u32,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub matrix: ChannelMatrix,
+    /// Bounded immutable schemas retained by the source adapter; only cells in
+    /// the actual admitted working layout become mutable IR controls.
+    pub control_definitions: Vec<SourceProcessingCellDefinition>,
+    /// Actual shared IR control references, never a consumer-reconstructed native name.
+    pub controls: Vec<SourceProcessingCell>,
+    /// Actual postdecode binding, absent until ordinary materialization.
+    pub compiled: Option<SourceProcessingMatrixBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingMatrixBinding {
+    pub scope: usize,
+    /// None denotes the retained ordinary stereo chain coordinate above.
+    pub signal_node: Option<usize>,
+    pub layout: SignalLayout,
+    pub cells: Vec<SourceProcessingCell>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingCellDefinition {
+    pub input: usize,
+    pub output: usize,
+    pub control: Control,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceProcessingCell {
+    pub input: usize,
+    pub output: usize,
+    pub control: ControlRef,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceProcessingPort {
+    pub owner: SourceOwnerId,
+    /// Concrete caller matrix; its input count is checked against actual
+    /// SourceStorage. Choosing this is an explicit Core graph contract, never
+    /// automatic native descriptor provenance from a file channel count.
+    pub conversion: ChannelMatrix,
+}
+
+/// Descriptor identities joined to the current SamplePlayer header path.
+/// Names encode the ORIGINAL numeric descriptor, not inferred speaker labels.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UviNativeLayout { Code1, Code2, Code6 }
+impl UviNativeLayout {
+    pub const fn channels(self)->usize {match self {Self::Code1=>1,Self::Code2=>2,Self::Code6=>6}}
+    /// Only valid plain decoded-header counts with an admitted attachment law.
+    pub fn plain_header(channels:usize)->Option<Self>{match channels{1=>Some(Self::Code1),2=>Some(Self::Code2),6=>Some(Self::Code6),_=>None}}
+    /// Current source-image profile. Distinct from programmable matrix cells.
+    /// Unknown pairs refuse; there is no general zero-padding fallback.
+    pub fn weight(self,to:Self,input:usize,output:usize)->Option<f32>{
+        if input>=self.channels() || output>=to.channels(){return None;}
+        let selected=match(self,to){
+            (Self::Code1,Self::Code6)=>input==0&&output==2,
+            (Self::Code2,Self::Code6)=>input==output,
+            (Self::Code6,Self::Code6)|(Self::Code2,Self::Code2)|(Self::Code1,Self::Code1)=>input==output,
+            (Self::Code6,Self::Code2)=>output==0&&(input==0||input==4)||output==1&&(input==1||input==5),
+            _=>return None,
+        };
+        Some(if !selected{0.}else if self==Self::Code6&&to==Self::Code2{f32::from_bits(0x3f13cd3a)}else{1.})
+    }
+}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct UviNativeSourceInput {pub layout:UviNativeLayout,pub storage_channels:usize,pub provenance:UviNativeSourceProvenance}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UviNativeSourceProvenance {PlainHeader,UnloadedDefault}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeOnePoleSite {pub chain:ChainRef,pub index:usize,pub frequency:f64,pub frequency_control:Option<String>,pub tracking:f64,pub mode:ChannelOnePoleMode}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeProcessingProfile {
+    pub owner:SourceOwnerId,
+    pub members:Vec<(ZoneRef,Option<UviNativeSourceInput>)>,
+    pub one_poles:Vec<UviNativeOnePoleSite>,
+    /// Set only by the actual application backend output contract, not XML kind.
+    pub requested:Option<UviNativeLayout>,
+}
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeLayoutConvert {pub source:UviNativeLayout,pub destination:UviNativeLayout,pub pan:SignalParameter,pub pan_offset:f64}
+/// Numerical primitive and control-frontier contracts are separate. This is
+/// the proved native first-setup32 / prepared-whole-invocation distinction;
+/// the caller supplies actual setup boundaries, never absolute clock%32.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UviOnePoleCadence { PreparedInvocation, FirstSetup32 }
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct UviNativeOnePole {pub frequency:SignalParameter,pub tracking:f64,pub mode:ChannelOnePoleMode,pub cadence:UviOnePoleCadence,pub tail_frames:u32}
+
+/// Native scope lifetime evidence, separate from numerical sample profiles.
+/// Kontakt Group ownership is deliberately not inferred from its display name.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceProcessingLifetime { UviKeygroupActivation }
+
+/// One per-attack shared processing definition. Only selected members of this
+/// activation contribute, in this authored order. Each member keeps its source
+/// clock, local chain and local amplitude; this section runs ONCE after their sum.
+/// Its optional amplitude is an additional explicit boundary, not an inferred
+/// envelope instance from the declaration's ancestry. No global group sharing.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingScope {
+    pub members: Vec<ZoneRef>,
+    /// Explicit precision boundary, not a format or compiler default.
+    pub sum: ProcessingSumLaw,
+    /// Explicit processing clock domain. This first schedule preserves core's
+    /// existing absolute CELL cadence; it does not stand for UVI's native32.
+    pub cadence: ProcessingCadence,
+    pub chain: Option<ChainRef>,
+    pub amplitude: Option<ModulatorRef>,
+    /// None emits to the instrument input; Some is the existing bus identity.
+    pub output: Option<BusRef>,
+    /// Explicit source/sum layouts and projection before the existing stereo section.
+    /// Absence retains the exact original stereo processing schedule.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub signal: Option<ProcessingSignal>,
+}
+
+/// Ordered discrete-channel port, separate from physical packing and native descriptors.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalLayout { pub channels: usize }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessingSignal {
+    /// Existing f32 resampling, f64 source gain/amplitude sections, f32 member outlet.
+    pub source_law: ProcessingSourceLaw,
+    pub input: SignalLayout,
+    pub nodes: Vec<ProcessingSignalNode>,
+    pub controls: Vec<ProcessingCellBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProcessingSignalNode {
+    Matrix(ChannelMatrix),
+    /// A width-preserving ordered span, sharing the ordinary slot controls and
+    /// their ramp law. Fully bypassed spans hold the inner processor histories.
+    Mix(ChannelMix),
+    /// Existing memoryless Core rectifier applied independently to each retained channel.
+    Rectifier(Rectifier),
+    /// Width-preserving generic core-law stage, before the explicit projection.
+    Gain(ChannelGain),
+    /// One independent history per processing owner and original channel.
+    OnePole(ChannelOnePole),
+    /// Current original f32 N/stereo kernel. Existing CoreOnePoleF64 unchanged.
+    UviOnePole(UviNativeOnePole),
+    /// True descriptor conversion, not programmable GainMatrix. Its Pan operand
+    /// is retained but current wide6->2 does not read it.
+    UviLayout(UviNativeLayoutConvert),
+    /// One scalar Pan at a declared stereo boundary. Its explicit expression
+    /// home consumes canonical note pan exactly once; other Pan stages do not.
+    Pan(ChannelPan),
+    /// Invoke the enclosing global bus's actual existing stereo processor
+    /// chain at this exact top-level point. No source or foreign-chain target.
+    BusChain,
+    /// Silence only this explicit signal outlet while upstream processors and
+    /// source clocks continue. The canonical Toggle never overwrites Gain.
+    Mute(ChannelMute),
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMute {
+    pub muted: bool,
+    /// Actual canonical Toggle control; no real-valued surrogate or ramp.
+    pub control: Option<String>,
+}
+/// A typed real stage parameter. A control binds to the existing generation's
+/// value/ramp owner; the constant is used only in the absence of a binding.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignalParameter {
+    pub constant: f64,
+    pub control: Option<String>,
+    /// Optional per-note factor on the retained global base. Absence preserves
+    /// the original authored sound and does not install an enhancement node.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub expression: Option<SignalExpressionBinding>,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalExpressionSource { Pressure, Timbre }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SignalExpressionBinding {
+    pub source: SignalExpressionSource,
+    pub law: SignalExpressionLaw,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SignalExpressionLaw {
+    /// Gain base times an event-rate linear, nonnegative factor.
+    LinearFactor { zero: f64, one: f64 },
+    /// OnePole Hertz base times 2^mapped_octaves. No hidden destination clamp.
+    Octaves { zero: f64, one: f64 },
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMix {
+    /// Number of following nodes, including nested Mix markers.
+    pub count: u16,
+    pub address: SlotAddress,
+    pub dry: f64,
+    pub wet: f64,
+    pub bypass: bool,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelGain { pub gain: SignalParameter, pub arithmetic: ChannelGainArithmetic }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelPan {
+    /// Immutable source connection offset, separate from the mutable scalar base.
+    pub offset: f64,
+    pub position: SignalParameter,
+    pub law: PanLaw,
+    pub expression: bool,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelGainArithmetic { CoreGainF64ThenF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelOnePole {
+    pub cutoff_hz: SignalParameter,
+    pub mode: ChannelOnePoleMode,
+    pub arithmetic: ChannelOnePoleArithmetic,
+    /// Explicit bounded zero-input continuation after the last source ends.
+    /// This is an authored truncation policy, not the exact finite life of an IIR.
+    pub tail_frames: u32,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleMode { LowPass, HighPass }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelOnePoleArithmetic {
+    /// Existing core f64 recurrence/Hertz conversion/segment-end history flush.
+    /// This does not select either native UVI f32 sample kernel.
+    CoreOnePoleF64,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSourceLaw {
+    CoreF64GainAmplitudeF32Outlet,
+    /// Same source clock/local Core sections; only these explicit member layout
+    /// edges and downstream named primitives select the current native laws.
+    /// Fixed existing16-member capacity is priced in the actual enum layout.
+    UviC997Layout {members:[Option<UviNativeSourceInput>;16]},
+}
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMatrix {
+    pub input: SignalLayout,
+    pub output: SignalLayout,
+    /// Row-major cells: output ordinal * input channels + input ordinal.
+    pub cells: Vec<f64>,
+    pub arithmetic: MatrixArithmetic,
+}
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatrixArithmetic { SeparateMulAddF32 }
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessingCellBinding {
+    pub node: usize,
+    pub input: usize,
+    pub output: usize,
+    pub control: String,
+}
+
+/// The first executable source-edge summation contract. Member blocks have
+/// binary32 storage; contributions add in authored order with a binary32 store
+/// after EVERY addition. Native UVI constant/vector helper equivalence remains
+/// a separate adapter proof, never inferred merely from choosing this variant.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingSumLaw { OrderedF32 }
+
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingCadence { CoreCell64 }
 
 /// Serial processors in one scope. A voice chain splits around the amplitude
 /// envelope because nonlinear stages sound different on each side of it.
@@ -1460,22 +2561,13 @@ pub struct Chain {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Processor {
     Gain(Gain),
-    /// Native smoothed gain with a dry input contribution.
-    Gainer {
-        gain: Gain,
-        dry: f64,
-    },
-    /// Native width 0..1 (.5 identity), balance -1..1 and optional pseudo stereo.
-    StereoModeller {
-        width: f64,
-        pan: f64,
-        pseudo: bool,
-    },
+    /// Drive, character and utility: one superset configured per native unit.
+    Color(fx::color::Config),
     Pan(Pan),
     Filter(Filter),
-    /// Kontakt legacy one-band EQ: native normalized frequency/width and displayed dB.
-    /// Separate from generic Peak filters and the v1 TPT approximation.
-    KontaktLegacyEq(KontaktLegacyEq),
+    /// The universal EQ superset: a serial cascade of bands under generic, Kontakt legacy or
+    /// Solid G-EQ laws (see `fx::eq`).
+    Eq(fx::eq::Config),
     Delay {
         time: Time,
         feedback: f64,
@@ -1484,28 +2576,12 @@ pub enum Processor {
     /// Linear stereo mix: rows are output left/right, columns input
     /// left/right. Width, balance, polarity and channel swaps.
     StereoMatrix([[f64; 2]; 2]),
-    /// Algorithmic stereo reverb over a summed signal: bus and master scope.
-    Reverb(Reverb),
-    /// Feed-forward compressor on the stereo pair.
-    Compressor(Compressor),
-    /// Native Enhanced detector: threshold dB, saved ratio, attack/release ms.
-    KontaktEnhancedCompressor { knobs: [f32; 4], link: bool },
-    /// Memoryless rectification of both channels.
-    Rectify(Rectifier),
-    /// Kontakt Classic Saturation, signed saved Shape (-1..1).
-    Saturation(f32),
-    /// Script-addressed Classic Saturation; the saved static form remains above.
-    LiveSaturation { shape: f32, address: SlotAddress },
-    LiveDistortion { transistor: bool, drive: f32, damping: f32, address: SlotAddress },
-    /// Kontakt Tube/Transistor Distortion, saved normalized Drive and Damping.
-    Distortion { transistor: bool, drive: f32, damping: f32 },
-    /// Pinned v1 Lo-Fi approximation; saved normalized controls.
-    LoFi {
-        bits: f32,
-        frequency: f32,
-        noise: f32,
-        color: f32,
-    },
+    /// Reverb and convolution over a summed signal: bus and master scope.
+    Space(fx::space::Config),
+    /// Every compressor, limiter, gate and expander: one configurable superset.
+    Dynamics(fx::dynamics::Config),
+    /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
+    LiveFormant { knobs: [f32; 3], address: SlotAddress },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
@@ -1514,10 +2590,12 @@ pub enum Processor {
     Ar(Ar),
     /// Native Formant I: saved Talk, Sharp, Size normalized controls.
     Formant([f32; 3]),
+    /// A filter-family configuration with no dedicated variant yet (Formant II).
+    FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
-    /// Legacy Phaser: normalized Depth, Feedback, Phase; native free/synced Speed.
-    LegacyPhaser { depth: f32, feedback: f32, phase: f32, speed: f32, period_unit: Option<f32> },
+    /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
+    TimeMod(fx::timemod::Config),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
     /// slot's existing bypass control; insert bypass still passes dry audio.
     SendReturnGate {
@@ -1533,13 +2611,6 @@ pub enum Processor {
         first: bool,
         last: bool,
     },
-    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
-    /// master scope. Convolution adds no latency.
-    Convolution {
-        impulse: ImpulseRef,
-        dry: f64,
-        wet: f64,
-    },
     /// The next `count` processors of the chain run beside the unprocessed
     /// signal: `dry` of it passes around them, `wet` of their output follows,
     /// and `bypass` swaps both for the dry signal alone. A script can change
@@ -1551,14 +2622,53 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+    /// The single explicit canonical note-Pan home of a shared source owner.
+    /// Its scalar/control value is combined with projected note Pan before
+    /// evaluating the declared law. Not valid on an ordinary source chain.
+    ExpressionPan(OwnedPan),
 }
 
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct KontaktLegacyEq {
-    pub frequency: f32,
-    pub bandwidth: f32,
-    pub gain_db: f32,
+/// Canonical shared Pan home: its base remains the public Pan/control value.
+/// Constant source connections add after the base trajectory and before one clamp.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct OwnedPan {pub pan:Pan,pub offset:f64}
+
+impl Processor {
+    /// The same unit addressed by a script slot, so [`Processor::lanes`] are
+    /// live. A unit that already names its slot (an EQ band) keeps it.
+    pub fn at(self, address: SlotAddress) -> Self {
+        match self {
+            Self::Color(c) if c.address.is_none() => Self::Color(c.at(address)),
+            Self::Dynamics(c) if c.address.is_none() => Self::Dynamics(fx::dynamics::Config { address: Some(address), ..c }),
+            Self::Eq(c) if c.address.is_none() => Self::Eq(fx::eq::Config { address: Some(address), ..c }),
+            Self::TimeMod(c) => Self::TimeMod(fx::timemod::Config { address: Some(address), ..c }),
+            Self::Space(c) => Self::Space(fx::space::Config { address: Some(address), ..c }),
+            Self::Ar(a) => Self::Ar(Ar { address: Some(address), ..a }),
+            Self::Daft(d) => Self::Daft(Daft { address: Some(address), ..d }),
+            p => p,
+        }
+    }
+    /// The unit's script slot and its live knobs; no knobs without a slot.
+    pub fn lanes(&self) -> Option<(SlotAddress, Vec<fx::Lane>)> {
+        let (address, lanes) = match self {
+            Self::Color(c) => (c.address, c.lanes()),
+            Self::Dynamics(c) => (c.address, c.lanes()),
+            Self::Eq(c) => (c.address, c.lanes()),
+            Self::TimeMod(c) => (c.address, c.lanes()),
+            Self::Space(c) => (c.address, c.lanes()),
+            // BParFXFilter CUTOFF and RESONANCE store the write (filters_eq.tsv identity).
+            Self::Ar(Ar { address, cutoff, resonance, .. }) | Self::Daft(Daft { address, cutoff, resonance, .. }) => (
+                *address,
+                vec![
+                    fx::Lane::new("ENGINE_PAR_CUTOFF", ProcessorParameter::Cutoff, *cutoff, fx::Law::Identity),
+                    fx::Lane::new("ENGINE_PAR_RESONANCE", ProcessorParameter::Resonance, *resonance, fx::Law::Identity),
+                ],
+            ),
+            _ => return None,
+        };
+        Some((address?, lanes))
+    }
 }
 
 /// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
@@ -1566,6 +2676,9 @@ pub struct KontaktLegacyEq {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Daft {
+    /// The script slot whose `ENGINE_PAR_CUTOFF`/`RESONANCE` reach the knobs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<SlotAddress>,
     pub gain: f64,
     pub cutoff: f64,
     pub resonance: f64,
@@ -1578,6 +2691,9 @@ pub struct Daft {
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ar {
+    /// The script slot whose `ENGINE_PAR_CUTOFF`/`RESONANCE` reach the knobs.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub address: Option<SlotAddress>,
     pub mode: u8,
     pub cutoff: f64,
     pub resonance: f64,
@@ -1603,22 +2719,6 @@ pub enum Rectifier {
     Full,
     /// `max(x, 0)`.
     Half,
-}
-
-/// A feed-forward compressor. The level law is the textbook hard-knee one;
-/// only the linked detector (signed channel mean) is recovered from Kontakt.
-// ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
-#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Compressor {
-    pub threshold_db: f64,
-    /// At least 1.
-    pub ratio: f64,
-    pub attack: Time,
-    pub release: Time,
-    pub makeup: Gain,
-    /// Detect on the signed mean of both channels and apply one gain to both.
-    pub link: bool,
 }
 
 /// Where a script finds an effect slot: `set_engine_par`'s group, slot and
@@ -1666,27 +2766,28 @@ pub struct ImpulseShape {
     pub normalize: bool,
     /// A SampledReverb (its own gain references) rather than a Convolver.
     pub sampled_reverb: bool,
+    /// Play the response backwards.
+    pub reverse: bool,
+    /// Scale to Kontakt's Auto Gain (see `shape_impulse`).
+    pub auto_gain: bool,
+    /// Volume envelope knots `[time fraction, dB]`, interpolated in amplitude.
+    pub envelope: Option<[[f32; 2]; 8]>,
+    /// Kontakt's early/late filters and their crossfade.
+    pub filters: Option<ImpulseFilters>,
+    /// Predelay frames `(int)((rate·ms)·0.001)` in f32 (Kontakt's wrapper)
+    /// instead of rounded.
+    pub truncate_pre_delay: bool,
 }
 
-/// Physical reverb settings; an importing profile maps its own controls
-/// here. Wet signal only: the dry path is the bus's other send.
+/// Kontakt Convolution's early and late filters: `[low cut, high cut]` Hz
+/// each, the early response up to `crossover` (a fraction of the length)
+/// and the late one after it. `None` filters the whole response with `late`.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reverb {
-    /// Seconds for the tail to fall 60 dB.
-    pub decay_seconds: f64,
-    /// Room size as a scale of the reference line lengths, 0.05..=1.5.
-    pub size: f64,
-    pub damping_hz: f64,
-    pub modulation_seconds: f64,
-    /// Input diffusion, 0..=0.75.
-    pub diffusion: f64,
-    pub predelay_seconds: f64,
-    pub input_cutoff_hz: f64,
-    /// Wet low-frequency change in dB (zero or negative).
-    pub low_shelf_db: f64,
-    /// 0 mono .. 1 full width.
-    pub width: f64,
+pub struct ImpulseFilters {
+    pub early: [f32; 2],
+    pub late: [f32; 2],
+    pub crossover: Option<f32>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1719,6 +2820,17 @@ pub enum Output {
     #[default]
     Master,
     Bus(BusRef),
+}
+
+/// One channel graph bound to an existing BusRef. Output layout is explicit;
+/// source cardinality never implies a native descriptor or conversion matrix.
+#[cfg_attr(feature="cache",derive(serde::Serialize,serde::Deserialize))]
+#[derive(Clone,Debug,PartialEq)]
+pub struct ProcessingBus {
+    pub bus:BusRef,
+    pub owner:Option<SourceOwnerId>,
+    pub signal:ProcessingSignal,
+    pub output:SignalLayout,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -1947,6 +3059,9 @@ pub enum Reason {
     /// Recognized and representable, but how the source maps it to sound
     /// (its scaling, curve or timing law) is not established.
     UnknownLaw,
+    /// The law is unverified and the feature was omitted, rather than executed
+    /// by an approximation. Preserve that distinction in every host report.
+    UnknownLawOmitted,
 }
 
 /// A feature name with its numbers and paths removed, so equal causes group:

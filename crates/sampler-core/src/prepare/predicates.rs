@@ -28,7 +28,7 @@ impl Prepared {
         regions: Vec<Vec<ControllerCondition>>,
         max_conditions: usize,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if self.zone_routing.is_some() || regions.len() != self.regions.len() {
             return Err(Error::InvalidInput);
         }
         let count = regions
@@ -191,9 +191,10 @@ impl Matching {
         state: &State,
         velocity: f64,
         groups: Option<&[u64]>,
+        routing: Option<&super::zone_routing::State>,
     ) -> Option<Candidate> {
         loop {
-            let candidate = self.next(prepared, Some(state), Some(velocity))?;
+            let candidate = self.next(prepared, Some(state), Some(velocity), routing)?;
             let group = prepared
                 .region_groups
                 .get(candidate.region)
@@ -221,8 +222,9 @@ impl Matching {
         prepared: &Prepared,
         state: Option<&State>,
         velocity: Option<f64>,
+        routing: Option<&super::zone_routing::State>,
     ) -> Option<Candidate> {
-        if state.is_none() || prepared.conditions.is_empty() {
+        if routing.is_none() && (state.is_none() || prepared.conditions.is_empty()) {
             for index in self.ranges.iter_mut().flatten() {
                 let candidate = prepared.candidates[index];
                 let r = prepared.regions[candidate.region];
@@ -234,18 +236,16 @@ impl Matching {
         }
         while self.which < 2 {
             let range = &mut self.ranges[self.which];
+            if let Some(routing) = routing {
+                range.start = routing.next_eligible(range.clone()).unwrap_or(range.end);
+            }
             if range.start >= range.end {
                 self.which += 1;
                 self.through = 0;
                 continue;
             }
-            if range.start >= self.through {
-                let condition =
-                    prepared.regions[prepared.candidates[range.start].region].conditions;
-                // Same-condition microphones are contiguous within sequence/articulation.
-                // A run is evaluated once per pass, including rejected velocity layers.
-                // ponytail: identical sets in different runs are reevaluated; add a
-                // generation-owned sparse cache only if measured large mappings need it.
+            if state.is_some() && !prepared.conditions.is_empty() && range.start >= self.through {
+                let condition = prepared.regions[prepared.candidates[range.start].region].conditions;
                 self.through = prepared.condition_ends[range.start].min(range.end);
                 let active = state.is_none_or(|state| {
                     condition.is_none_or(|index| {

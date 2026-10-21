@@ -55,3 +55,68 @@ and sends `RedrawRequested`; showing a window also sends that event. The
 KONTRA native host invalidates its GPU cache for that event and for explicit
 full-redraw/resize requests. This gives a freshly shown/restored embedded editor
 a complete frame even when its model has not changed.
+
+## macOS open-state query
+
+`WindowHandle::is_open` returns the inverse of the `closed` flag. That flag starts
+false and becomes true when the view closes or deallocates, so the query now
+matches the public `Window::is_open` contract. This one-line correction was
+verified against those lifecycle writes; it has not been exercised on AppKit in
+this Linux checkout.
+
+## Linux editor controller ownership
+
+The additive `ThreadedWindow::create` path accepts no host callbacks and returns
+an auto-`Send` X11 worker controller. Native `WindowContext`, handler, and drawable
+ownership remain on the existing worker. The original `Window` and its optional
+owner-thread `HostCallbacks` remain `!Send`; both paths share request/join logic.
+KONTRA's Linux MUI editor uses the no-host controller without an unsafe `Send`
+assertion. Windows/macOS still use their legacy editor handle and are separate
+ownership work.
+
+Control-thread close joins even if the request channel has disconnected. Dropping
+the controller inside its own native callback requests close and defers teardown
+until that callback returns, avoiding self-join. Embedded close never adopts the
+floating-window timeout/detach policy. Each controller has its own worker/channel
+and atomic metadata, so an old close cannot address a reopened worker.
+
+## X11 temporary grabs (issue #77)
+
+The editor retains logical focus through `NotifyGrab`/`NotifyUngrab`. These
+keyboard events redirect input temporarily without changing `XGetInputFocus`;
+forwarding them as deactivation cleared MUI's held pointer and cancelled the
+click or drag. Real `NotifyNormal` and `NotifyWhileGrabbed` focus changes still
+clear held state and cancel gestures. Pointer-grab activation's pseudo crossing
+is ignored; normal and ungrab crossings still reconcile the pointer.
+
+`kontra-native-host`'s ignored
+`native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels` test uses
+actual keyboard/pointer grabs on an isolated X server and the production MUI
+input adapter, without a GPU. It fails at the held-gesture assertion on the
+original loop and passes with this patch. It also checks genuine deactivation
+(normal and while grabbed) and physical pointer exit. The existing native host
+CI step already runs it under Xvfb. This proves the X11 protocol correction;
+Fedora/GNOME/Wayland with the reporting Bitwig host still needs confirmation.
+
+Protocol: [Xlib sections 10.6.2 and 10.7](https://www.x.org/releases/X11R7.5/doc/libX11/libX11.html).
+
+## X11 pointer-detail focus during a click
+
+Bitwig (Linux, GNOME/XWayland) keeps keyboard focus on an ancestor of the
+editor and moves it on every click, so the editor receives FocusIn and FocusOut
+with detail `NotifyPointer` and mode `NotifyNormal` between press and release.
+That FocusOut cancelled MUI's held pointer, and no button ever completed a click.
+While a mouse button is held, such a FocusOut now waits for the release (the
+implicit pointer grab guarantees it arrives here) and then two more frames:
+MUI records the click on the release's frame and dispatches it on the next, and
+a focus loss before then still cancels it. It then applies unchanged, as the
+same `Unfocused` as before. A FocusIn in between drops it; a new press re-arms
+it for that release. Every other FocusOut, including a focus move from the
+editor to an ancestor during a drag, still cancels at once. MUI is unchanged.
+A focus loss makes MUI forget the pointer position, and Bitwig sends one after
+every click, so the second press of a double click (no motion before it) hit
+nothing. The first press after any focus loss now reports its own coordinates
+as a `CursorMoved` first.
+Witnesses: `native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels`
+under Xvfb (fails without the patch) and
+`a_focus_loss_two_frames_after_the_release_keeps_the_click` (MUI's timing).

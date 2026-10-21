@@ -33,6 +33,7 @@ pub(super) enum Action {
     Start(VoiceId),
     Event(Event),
     Resume(super::BehaviorId),
+    EventValuePost(super::EventPostId),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +55,8 @@ impl Scheduled {
 }
 
 impl Runtime {
+    pub fn next_scheduled_frame(&self)->Option<u64>{self.commands.first().map(|command|command.at)}
+
     pub(super) fn available_commands(&self) -> usize {
         self.command_limit - self.commands.len() - self.reserved_commands
     }
@@ -62,9 +65,19 @@ impl Runtime {
     /// drain previously submitted work due now. Future capacity failure is explicit;
     /// immediate key/pedal release never requires a free queue entry.
     pub fn schedule_event(&mut self, at: u64, event: Event) -> Result<(), Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         self.check_time(at)?;
         if at == self.now {
             self.apply_due();
+        }
+        if let Event::Controller(id,number,value)=event {
+            let performance=self.performance_index(id)?;
+            if matches!(number,128|129)&&self.has_receiver_performance(performance){
+                // Future global virtual writes need a retained typed receiver
+                // action, not a silently infallible legacy Event projection.
+                if at!=self.now{return Err(Error::InvalidInput);}
+                return self.publish_global_receiver_controller(performance,number,value);
+            }
         }
         match event {
             Event::Control(plan, write) => {
@@ -277,6 +290,10 @@ impl Runtime {
     }
 
     pub(super) fn apply_due(&mut self) {
+        if self.external_execution_aborted{return;}
+        if self.
+publishing_receiver || self.external_clock_blocked()
+{return;}
         if self.executing_due {
             return;
         }
@@ -286,6 +303,7 @@ impl Runtime {
         while self.commands.first().is_some_and(|c| c.at <= self.now) {
             match self.commands.remove(0).action {
                 Action::Resume(id) => self.resume_behavior(id),
+                Action::EventValuePost(id)=>self.apply_event_value_post(id),
                 Action::Start(id) => {
                     self.voices.get_mut(id.0).unwrap().started = true;
                 }
@@ -304,6 +322,7 @@ impl Runtime {
                     self.apply_event(event);
                 }
             }
+        if self.external_clock_blocked(){break;}
         }
         self.executing_due = false;
     }
@@ -315,9 +334,11 @@ impl Runtime {
             Action::Resume(id) => {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
-                    if let super::behavior::PlanContext::Controller(event) = &mut c.context {
-                        controller_reserves += std::mem::take(&mut event.reserved);
-                    }
+                    controller_reserves += match &mut c.context {
+                        super::behavior::PlanContext::Controller(event)=>std::mem::take(&mut event.reserved),
+                        super::behavior::PlanContext::Program(event)=>std::mem::take(&mut event.reserved),
+                        _=>0,
+                    };
                     false
                 } else {
                     let keep = match c.owner {
@@ -336,6 +357,7 @@ impl Runtime {
                     keep
                 }
             }
+            Action::EventValuePost(id)=>self.event_posts.get(id.0).is_some_and(|post|post.is_pending()),
             Action::Start(v) => self.voices.get(v.0).is_some(),
             Action::Event(Event::ChokeFamily(id, _)) => self.families.get(id.0).is_some(),
             Action::Event(Event::ReleaseFamily(id)) => {
@@ -384,6 +406,15 @@ impl Runtime {
             }
             keep
         });
+        // Cancellation may originate from a closed gate rather than an explicit
+        // cancel_behavior call. Preserve every accepted async job as a failure.
+        for index in 0..self.behaviors.slots.len() {
+            if self.behaviors.slots[index].value.is_some_and(|c| c.outcome.is_some()) {
+                let id=super::BehaviorId(self.behaviors.id(index));
+                self.cancel_zone_parameters(id);
+                let _=self.release_task_run_parent(id);
+            }
+        }
     }
 
     /// Remove queued control writes, including an unexecuted boundary event. Does not change

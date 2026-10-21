@@ -9,12 +9,16 @@ pub fn diagnostic_detail<'a>(feature: &str, value: &'a str) -> Option<&'a str> {
                 .split_once(" intensity ")
                 .map_or(value, |(target, _)| target),
         ),
-        "effect" | "Filter: filter type" | "Compressor: compressor mode" => Some(value),
+        "native source zone identity" | "script interface: $CONTROL_PAR_CURSOR_PICTURE[]" => Some(value),
+        "script" | "effect" | "Filter: filter type" | "Filter: filter law" | "Compressor: compressor mode"
+        | "modulation of a modulator's intensity" => Some(value),
         _ if feature.starts_with("lua ") || feature.starts_with("external modulation from ") => {
             Some(value)
         }
         _ if feature.starts_with("script ")
             && (value.starts_with("array index ")
+                || value.starts_with("key ")
+                || value.starts_with("menu item ")
                 || value.starts_with("find_group: group not found; ")
                 || feature.split_once(": ").is_some_and(|(_, builtin)| {
                     value

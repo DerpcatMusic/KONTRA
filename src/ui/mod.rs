@@ -33,6 +33,10 @@ mod editor;
 mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod health;
+#[cfg(feature = "shots")]
+pub(crate) mod offline_preview;
+#[cfg(feature = "shots")]
+pub(crate) mod offline_lifecycle;
 mod inside;
 mod ir_view;
 #[allow(dead_code)]
@@ -247,6 +251,9 @@ struct Watch {
     disk: f32,
     disk_read: u64,
     disk_counter: Option<&'static AtomicU64>,
+    /// Test seam like `disk_counter`: the picture revision is process-wide,
+    /// so parallel tests that finish pictures would wake an idle watch.
+    picture_revision: Option<fn() -> u64>,
     /// The audio thread's render and rendered time when last sampled.
     busy: (u64, u64),
     /// When the readouts were last sampled.
@@ -333,7 +340,7 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
-        pictures::revision().hash(&mut h);
+        self.picture_revision.map_or_else(pictures::revision, |f| f()).hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);
@@ -352,9 +359,12 @@ impl Watch {
         // A scan's progress, a size measured, a setting changed.
         p.shared.libraries.stamp().hash(&mut h);
         let (loading, pending) = {
+            // File drops and preset publication hold selection before view.
+            // Keep the fingerprint in that order so drawing cannot deadlock
+            // with the background worker while a preset receipt is published.
+            let selection = read(&p.selection);
             let view = lock(&p.shared.view);
             fingerprint(&view, &mut h);
-            let selection = read(&p.selection);
             let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
                 || (0..view.parts.len().max(selection.parts.len())).any(|n| {
@@ -1758,6 +1768,8 @@ mod keyboard_tests;
 mod loop_audit;
 #[cfg(test)]
 mod popup_tests;
+#[cfg(test)]
+mod authored_properties_tests;
 #[cfg(test)]
 pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
     tests::audit_frames(p)

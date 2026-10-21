@@ -1,0 +1,117 @@
+{
+  "cells": [
+    {
+      "behavior_errors": 0,
+      "block": 256,
+      "event_errors": 0,
+      "held": {
+        "audio_thread_heap_calls": 0,
+        "blocks": 1875,
+        "max_us": 876,
+        "mean_percent_core": 5.59723671,
+        "p50_percent_core": 5.066718750000001,
+        "p50_us": 270.225,
+        "p99_percent_core": 10.9535625,
+        "p99_us": 584.19,
+        "pcm_fingerprint": "108c54aa67b791a5",
+        "peak": 1.3786338567733765,
+        "rms": 0.22794297731503924,
+        "thread_cpu": {
+          "blocks": 1875,
+          "max_us": 670,
+          "mean_percent_core": 5.409913850000001,
+          "p50_percent_core": 4.9725,
+          "p50_us": 265.2,
+          "p99_percent_core": 10.023750000000001,
+          "p99_us": 534.6
+        },
+        "voices_max": 16,
+        "voices_min": 16
+      },
+      "idle": {
+        "audio_thread_heap_calls": 0,
+        "blocks": 1875,
+        "max_us": 33,
+        "mean_percent_core": 0.10370315000000001,
+        "p50_percent_core": 0.0883125,
+        "p50_us": 4.71,
+        "p99_percent_core": 0.30920625,
+        "p99_us": 16.491,
+        "pcm_fingerprint": "54738d7161a01b25",
+        "peak": 0.0,
+        "rms": 0.0,
+        "thread_cpu": {
+          "blocks": 1875,
+          "max_us": 29,
+          "mean_percent_core": 0.11730245000000002,
+          "p50_percent_core": 0.10350000000000001,
+          "p50_us": 5.52,
+          "p99_percent_core": 0.301875,
+          "p99_us": 16.1
+        },
+        "voices_max": 0,
+        "voices_min": 0
+      },
+      "notes": 1,
+      "post_release": {
+        "audio_thread_heap_calls": 0,
+        "blocks": 1875,
+        "max_us": 34,
+        "mean_percent_core": 0.12628868000000001,
+        "p50_percent_core": 0.1164375,
+        "p50_us": 6.21,
+        "p99_percent_core": 0.3136875,
+        "p99_us": 16.73,
+        "pcm_fingerprint": "54738d7161a01b25",
+        "peak": 0.0,
+        "rms": 0.0,
+        "thread_cpu": {
+          "blocks": 1875,
+          "max_us": 29,
+          "mean_percent_core": 0.14235935,
+          "p50_percent_core": 0.134625,
+          "p50_us": 7.18,
+          "p99_percent_core": 0.2745,
+          "p99_us": 14.64
+        },
+        "voices_max": 0,
+        "voices_min": 0
+      },
+      "programs": 1,
+      "release": {
+        "audio_thread_heap_calls": 0,
+        "blocks": 1875,
+        "max_us": 291,
+        "mean_percent_core": 0.17888075000000003,
+        "p50_percent_core": 0.0855,
+        "p50_us": 4.56,
+        "p99_percent_core": 2.6104125000000002,
+        "p99_us": 139.222,
+        "pcm_fingerprint": "a67b9308911ee859",
+        "peak": 0.7595887184143066,
+        "rms": 0.01794409446531106,
+        "thread_cpu": {
+          "blocks": 1875,
+          "max_us": 289,
+          "mean_percent_core": 0.18967442,
+          "p50_percent_core": 0.10125000000000002,
+          "p50_us": 5.4,
+          "p99_percent_core": 2.593125,
+          "p99_us": 138.3
+        },
+        "voices_max": 16,
+        "voices_min": 0
+      },
+      "scenario": "afflatus",
+      "stream_underruns": 0
+    }
+  ],
+  "failures": [],
+  "format": "sampler-perf-sustain-1",
+  "loadavg": "19.89 21.41 23.83 5/5823 2238001\n",
+  "multi_routing": "all physical programs auditioned on MIDI channel 1; rack channel/fader routing is not modeled",
+  "rate": 48000,
+  "release_settle_seconds": 8,
+  "seconds_per_phase": 10.0,
+  "threads": 1
+}

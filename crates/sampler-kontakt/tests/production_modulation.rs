@@ -69,8 +69,11 @@ fn internal(
         Lfo {
             structured: false,
             version: 0x72,
-            waveform: 1,
-            initial_values: [0., rate, 0.5, 0.],
+            // Native sine (modulators.md BLfoSine table, exactly 1.0 at a quarter
+            // cycle): a held +1 for these slow-rate ownership checks. The rectangle
+            // these fixtures used rises through the pulse table from phase 0.
+            waveform: 0,
+            initial_values: [0., rate, 0.5, 0.25],
             records: [
                 LfoRecord {
                     flag: false,
@@ -429,7 +432,6 @@ fn serialized_lfo_live_intensity_bypass_reaches_pcm_without_compacting_slots() {
         address("ENGINE_PAR_MOD_TARGET_INTENSITY", 0, 1),
         address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, -1),
         address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 2),
-        address("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", 7, 1),
     ] {
         assert_eq!(
             rt.set_engine_parameter(unbound, 500000),
@@ -437,6 +439,17 @@ fn serialized_lfo_live_intensity_bypass_reaches_pcm_without_compacting_slots() {
         );
     }
     close(last(&mut rt), [0.25, 0.5]);
+    // The MP writer aliases this same admitted depth through the signed cubic
+    // law. Its physical target is still slot 1; the sibling remains unchanged.
+    support::without_heap(|| {
+        rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", 7, 1), 750000)
+            .unwrap();
+    });
+    assert_eq!(rt.engine_parameter(depth).unwrap(), 125000);
+    close(last(&mut rt), [0.3125, 0.5]);
+    rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", 7, 1), 250000)
+        .unwrap();
+    close(last(&mut rt), [0.4375, 0.5]);
 }
 
 #[test]
@@ -505,7 +518,7 @@ fn serialized_retrigger_off_ahdsr_live_controls_remain_unbound() {
 }
 
 #[test]
-fn serialized_invert_is_not_replaced_by_positive_or_mp_intensity() {
+fn serialized_invert_composes_with_linear_and_signed_cubic_intensity() {
     let f = fixture_inverted(false, false, true, true);
     let mut rt = runtime(&f);
     rt.trigger(input(1), 60, 1.).unwrap();
@@ -513,11 +526,11 @@ fn serialized_invert_is_not_replaced_by_positive_or_mp_intensity() {
     rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_INTENSITY", 7, 1), 250000)
         .unwrap();
     close(last(&mut rt), [0.5, 0.5]); // positive .25 * inverted -1 + sibling .25
-    assert_eq!(
-        rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", 7, 1), 0),
-        Err(Error::InvalidInput)
-    );
-    close(last(&mut rt), [0.5, 0.5]);
+    rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", 7, 1), 500000).unwrap();
+    close(last(&mut rt), [0.375, 0.5]); // zero main depth leaves the sibling
+    rt.set_engine_parameter(address("ENGINE_PAR_MOD_TARGET_MP_INTENSITY", 7, 1), 250000)
+        .unwrap();
+    close(last(&mut rt), [0.3125, 0.5]); // negative depth composes with the saved inversion
 }
 
 #[test]

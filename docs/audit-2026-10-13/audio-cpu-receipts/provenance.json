@@ -1,0 +1,13 @@
+{
+  "binary_sha256": "b505f24033c13537d4fc97541da5cf2eda7e4d3f9a8e6c00a238ffcf9d467594",
+  "frozen_path": "/home/derpcat/.t3/worktrees/KONTAKTO/gpt-cpu/artifacts/audio-cpu/before-bin",
+  "engine_base": "ce0a2e61",
+  "harness_commit": "e0e40a71",
+  "profile": "release with debug=1, strip=none, force-frame-pointers=yes",
+  "conditions": "CONTENDED; Ryzen 7 7800X3D; one render thread; 48k; default source quality",
+  "limitations": [
+    "Before harness did not count bootstrap errors or reject external file/MIDI services.",
+    "First 256 diagnostic had no active profiler. Second had user-only profiler; timing under profiler is not acceptance.",
+    "Full 12-cell run was stopped by coordinator under NEVER BUILD rule. No after or v1 measurements."
+  ]
+}

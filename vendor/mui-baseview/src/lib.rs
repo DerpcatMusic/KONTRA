@@ -236,6 +236,44 @@ pub fn open<V: View + Send + 'static>(
     shared: Arc<Mutex<Shared<V>>>,
     requests: Arc<Requests>,
 ) -> Option<Window> {
+    let sink = Arc::clone(&shared);
+    let (settings, handler) = prepare_open(parent, title, size, scale, shared, requests)?;
+    Window::create(settings, handler)
+        .and_then(|w| w.show().map(|()| w))
+        .map_err(|e| log(&sink, &format!("mui-baseview: window failed ({e})")))
+        .ok()
+}
+
+/// Linux editor window with an auto-Send controller and no main-thread host
+/// callbacks. Native rendering and teardown remain on the X11 worker.
+#[cfg(target_os = "linux")]
+pub fn open_threaded<V: View + Send + 'static>(
+    parent: &impl HasWindowHandle,
+    title: &str,
+    size: (u32, u32),
+    scale: Option<f64>,
+    shared: Arc<Mutex<Shared<V>>>,
+    requests: Arc<Requests>,
+) -> Option<baseview::ThreadedWindow> {
+    let sink = Arc::clone(&shared);
+    let (settings, handler) = prepare_open(parent, title, size, scale, shared, requests)?;
+    baseview::ThreadedWindow::create(settings, handler)
+        .and_then(|w| w.show().map(|()| w))
+        .map_err(|e| log(&sink, &format!("mui-baseview: window failed ({e})")))
+        .ok()
+}
+
+fn prepare_open<V: View + Send + 'static>(
+    parent: &impl HasWindowHandle,
+    title: &str,
+    size: (u32, u32),
+    scale: Option<f64>,
+    shared: Arc<Mutex<Shared<V>>>,
+    requests: Arc<Requests>,
+) -> Option<(
+    WindowSettings,
+    impl FnOnce(WindowContext) -> Result<Adapter<V>, HandlerError> + Send + 'static,
+)> {
     // A headless host (mui-cut's adapter) takes the view instead.
     if mui::host::headless::offer(&shared, size) {
         return None;
@@ -292,12 +330,7 @@ pub fn open<V: View + Send + 'static>(
     let settings = settings(title, size)
         .with_parent(parent)
         .with_scale_factor_override(scale);
-    let sink = Arc::clone(&shared);
-    let window =
-        Window::create(settings, build(shared, requests, true)).and_then(|w| w.show().map(|()| w));
-    window
-        .map_err(|e| log(&sink, &format!("mui-baseview: window failed ({e})")))
-        .ok()
+    Some((settings, build(shared, requests, true)))
 }
 
 /// Run a top-level window of `size` logical points at the system scale, until
@@ -473,8 +506,7 @@ impl<V: View> Handler<V> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .map(|hook| timing::Capture::new(hook, size, scale));
-        let forced_cpu =
-            std::env::var("MUI_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("cpu"));
+        let forced_cpu = std::env::var("MUI_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("cpu"));
         Self {
             shared,
             requests,

@@ -65,6 +65,9 @@ impl FadeCurve {
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
+    AwaitExternal { processor: sampler_ir::SourceEventProcessorId },
+    /// Compiled native document router, executed under normal callback fuel/outcome.
+    AdvanceSourceNote,
     ForwardAttack,
     ForwardReleaseGroups,
     SuppressAttack,
@@ -87,6 +90,13 @@ pub enum Instruction {
     },
     /// The captured full-resolution value of this callback's input event.
     ReadControllerValue {
+        local: u16,
+    },
+    ReadPolyPressureKey {
+        local: u16,
+    },
+    /// Index in `local` is replaced by the full-resolution stage-owned value.
+    ReadPolyPressure {
         local: u16,
     },
     /// Latest input value in the callback's performance domain, including consumed CCs.
@@ -453,6 +463,9 @@ pub struct Program {
     pub(super) script_cells: usize,
     pub(super) script_instance: Option<super::ScriptInstanceId>,
     pub(super) source_slot: i32,
+    pub(super) source_sites: Arc<[crate::SourceSite]>,
+    pub(super) source_digest: Option<[u8; 32]>,
+    pub(super) diagnostic_callback: Option<&'static str>,
     pub(super) wait_lifetime: WaitLifetime,
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
@@ -465,6 +478,11 @@ pub struct Program {
     /// be rescanned per entry (a 3.1M-instruction module took seconds).
     pub(super) starts_program: bool,
     pub(super) writes_slots: bool,
+    pub(super) snapshot_overlay_safe: bool,
+    /// Frontend semantics omitted from bytecode can only deny admission.
+    pub(super) snapshot_frontend_opaque: bool,
+    pub(super) snapshot_overlay_services: Arc<[u16]>,
+    pub(super) snapshot_listener_driver: Option<u32>,
 }
 /// One program per distinct code body (and script instance when `by_instance`):
 /// entries into a shared module all carry the same `Arc`, and whole-code
@@ -483,6 +501,26 @@ pub(super) fn distinct_code(
 }
 
 impl Program {
+    /// Sparse, sorted source map shared by every entry into a module.
+    pub fn with_source_sites(mut self, sites: Vec<crate::SourceSite>) -> Result<Self, Error> {
+        if sites.iter().any(|s| s.pc as usize >= self.code.len() || s.line == 0 || s.column == 0)
+            || sites.windows(2).any(|s| s[0].pc >= s[1].pc) {
+            return Err(Error::InvalidInput);
+        }
+        self.source_sites = sites.into();
+        Ok(self)
+    }
+
+    pub fn with_source_digest(mut self, digest: [u8; 32]) -> Self {
+        self.source_digest = Some(digest);
+        self
+    }
+
+    pub fn with_diagnostic_callback(mut self, callback: &'static str) -> Self {
+        self.diagnostic_callback = Some(callback);
+        self
+    }
+
     pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
         self.engine_symbols = symbols.into();
         self
@@ -516,6 +554,8 @@ impl Program {
                 }
             }
         }
+        self.snapshot_listener_driver = self.snapshot_listener_driver
+            .and_then(|body| body.checked_add(u32::try_from(base).ok()?));
         self
     }
 
@@ -574,6 +614,9 @@ impl Program {
         ) = Self::requirements(instructions)?;
         self.entry = entry;
         self.ui_id = ui_id;
+        self.snapshot_overlay_safe = !self.snapshot_frontend_opaque
+            && crate::control::snapshot_callback_safe(&self.code, ranges, &self.snapshot_overlay_services);
+        self.snapshot_listener_driver = None;
         Ok(self)
     }
 
@@ -589,7 +632,7 @@ impl Program {
         let requires_note = instructions.clone().any(|op| {
             matches!(
                 op,
-                Instruction::ForwardAttack
+                Instruction::AdvanceSourceNote | Instruction::ForwardAttack
                     | Instruction::ForwardReleaseGroups
                     | Instruction::SuppressAttack
                     | Instruction::SuppressRelease
@@ -624,6 +667,7 @@ impl Program {
                     | Instruction::ReadControllerGroup { .. }
                     | Instruction::ReadControllerChannel { .. }
                     | Instruction::ReadControllerValue { .. }
+                    | Instruction::ReadPolyPressureKey { .. }
             )
         });
         let requires_performance = requires_controller
@@ -631,6 +675,7 @@ impl Program {
                 matches!(
                     op,
                     Instruction::ReadInputController { .. }
+                        | Instruction::ReadPolyPressure { .. }
                         | Instruction::SendParameter { .. }
                         | Instruction::WriteController { .. }
                         | Instruction::PlayMidi { .. }
@@ -695,6 +740,8 @@ impl Program {
             | Instruction::ReadControllerGroup { local }
             | Instruction::ReadControllerChannel { local }
             | Instruction::ReadControllerValue { local }
+            | Instruction::ReadPolyPressureKey { local }
+            | Instruction::ReadPolyPressure { local }
             | Instruction::ControllerToMidi7 { local }
             | Instruction::ControllerFromMidi7 { local }
             | Instruction::ReadEventId { local }
@@ -903,6 +950,10 @@ impl Program {
             requires_performance,
             requires_controller,
             requires_note,
+            snapshot_overlay_safe: crate::control::snapshot_callback_safe(&code, &[0..code.len()], &[]),
+            snapshot_frontend_opaque: false,
+            snapshot_overlay_services: Arc::from([]),
+            snapshot_listener_driver: None,
             code: code.into(),
             entry: 0,
             ui_id: 0,
@@ -912,6 +963,9 @@ impl Program {
             script_cells,
             script_instance: None,
             source_slot: -1,
+            source_sites: Arc::from([]),
+            source_digest: None,
+            diagnostic_callback: None,
             wait_lifetime: WaitLifetime::Gate,
             texts: Arc::from([]),
             engine_symbols: Arc::from([]),
@@ -979,17 +1033,48 @@ impl NoteStage {
     }
 }
 
+/// Capture belongs to a callback instance, not the note's admission snapshot.
+/// Forked plan work retains this exact origin/epoch/stage through waits.
+#[derive(Clone,Copy,Debug)]
+pub(super) struct NoteControllerContext {
+    pub performance:usize,
+    pub origin:super::ChannelAddress,
+    pub source:super::ChannelAddress,
+    pub epoch:u64,
+    pub stage:usize,
+    pub receiver:Option<super::ReceiverId>,
+    pub policy_epochs:[u64;16],
+    pub host_epochs:Option<[u64;16]>,
+    pub physical_event:Option<super::PhysicalReleaseEvent>
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlanContext {
     Bare,
+    Task(super::receiver::task::TaskContext),
+    NoteControllers(NoteControllerContext),
     Controller(super::controller_event::ControllerEvent),
+    Program(super::receiver::channel_event::ProgramEvent),
     Control(super::control::ControlEvent),
 }
 impl PlanContext {
-    fn stage(self) -> Option<usize> {
+    pub(super) fn receiver(self)->Option<super::ReceiverId> {
+        match self {
+            Self::Bare=>None,
+            Self::Task(task)=>task.domain.receiver(),
+            Self::Control(event)=>event.receiver.map(|capture|capture.receiver),
+            Self::NoteControllers(context)=>context.receiver,
+            Self::Controller(event)=>event.receiver.map(|target|target.receiver),
+            Self::Program(event)=>event.receiver,
+        }
+    }
+    pub(super) fn stage(self) -> Option<usize> {
         match self {
             Self::Bare => None,
+            Self::Task(task)=>task.domain.stage(),
+            Self::NoteControllers(context)=>Some(context.stage),
             Self::Controller(event) => Some(event.stage),
+            Self::Program(event) => Some(event.stage),
             Self::Control(event) => Some(event.stage),
         }
     }
@@ -1000,6 +1085,7 @@ pub(super) struct Continuation {
     pub owner: BehaviorOwner,
     pub program: usize,
     pub pc: usize,
+    pub last_pc: usize,
     pub outcome: Option<Outcome>,
     pub context: PlanContext,
     pub note_stage: Option<NoteStage>,
@@ -1015,6 +1101,8 @@ pub(super) struct Continuation {
     pub parameter: Option<super::plan_programs::ParameterMessage>,
     pub async_result: Option<(i32, i32)>,
     pub async_wait: Option<i32>,
+    pub external: Option<super::receiver::external::ExternalState>,
+    pub external_sequence: u64
 }
 
 #[derive(Clone, Copy)]
@@ -1054,6 +1142,7 @@ impl Runtime {
         program: usize,
         note_stage: Option<NoteStage>,
     ) -> Result<BehaviorId, Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         if program >= plan.programs.len() || plan.programs[program].requires_controller {
@@ -1066,35 +1155,47 @@ impl Runtime {
         if !self.behavior_room(1) {
             return Err(Error::Capacity);
         }
-        let n = self.notes.get_mut(note.0).unwrap();
+        let n = self.notes.get(note.0).unwrap();
         let work = n.work + 1;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
+        let entry = plan.programs[program].entry;
+        let locals = plan.programs[program].locals;
+        let performance=self.selections[note.0.index].performance;
+        let origin=n.address;
+        let source=self.note_events[note.0.index].source_route.map(|route|route.source).or(n.input_source).map_or(origin,|source|source.channel_address());
+        let expression=n.expression;
+        let epoch=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:1<<origin.channel})[usize::from(origin.channel)];
+        let receiver=self.expression_receiver(expression).map(|component|component.receiver);
+        let policy_epochs=self.performance_state.epochs(performance,super::ChannelScope{protocol:origin.protocol,port:origin.port,group:origin.group,channels:u16::MAX});
+        let host_epochs=receiver.map(|receiver|self.receiver_host_epochs(receiver,performance)).transpose()?.flatten();
+        let context=NoteControllerContext{performance,origin,source,epoch,stage:note_stage.map_or(self.note_events[note.0.index].entry,NoteStage::index),receiver,policy_epochs,host_epochs,physical_event:None
+};
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
-            context: PlanContext::Bare,
+            context: PlanContext::NoteControllers(context),
             parameter: None,
             note_stage,
             program,
-            pc: plan.programs[program].entry,
+            pc: entry,
+            last_pc: entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
             wait_carry: 0,
             callback_id: {
-                self.last_callback_id = self
-                    .last_callback_id
-                    .checked_add(1)
-                    .ok_or(Error::Capacity)?;
-                self.last_callback_id
+                crate::prepare::zone_routing::allocate_callback_id(
+                    &mut self.last_callback_id, self.callback_id_reservations)?
             },
             waiting: false,
             disable_wait: false,
             async_result: None,
             async_wait: None,
+            external:None,
+            external_sequence:0,
         })?);
-        n.work = work;
+        self.notes.get_mut(note.0).unwrap().work = work;
         let begin = id.0.index * self.behavior_stride;
-        self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
+        self.behavior_locals[begin..begin + locals].fill(0);
         Ok(id)
     }
 
@@ -1115,6 +1216,7 @@ impl Runtime {
         program: usize,
         context: PlanContext,
     ) -> Result<(), Error> {
+        if self.external_execution_aborted{return Err(Error::Canceled);}
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let program = generation
             .prepared
@@ -1172,21 +1274,21 @@ impl Runtime {
             note_stage: None,
             program,
             pc: generation.prepared.programs[program].entry,
+            last_pc: generation.prepared.programs[program].entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
             wait_carry: 0,
             callback_id: {
-                self.last_callback_id = self
-                    .last_callback_id
-                    .checked_add(1)
-                    .ok_or(Error::Capacity)?;
-                self.last_callback_id
+                crate::prepare::zone_routing::allocate_callback_id(
+                    &mut self.last_callback_id, self.callback_id_reservations)?
             },
             waiting: false,
             disable_wait: false,
             async_result: None,
             async_wait: None,
+            external: None,
+            external_sequence: 0
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1269,7 +1371,9 @@ impl Runtime {
             if let BehaviorOwner::Note(note) = c.owner {
                 self.release_now(note, super::ReleaseCause::BehaviorCancelled)?;
             }
+            self.cancel_zone_parameters(id);
             self.cancel_closed_work();
+            self.release_task_run_parent(id)?;
         }
         Ok(())
     }
@@ -1280,7 +1384,7 @@ impl Runtime {
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
-        self.flush_behaviors_inner(&mut |id, owner, outcome, program| {
+        self.flush_behaviors_inner(&mut |id, owner, outcome, program, _| {
             accept(id, owner, outcome, program)
         });
     }
@@ -1294,12 +1398,20 @@ impl Runtime {
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome) -> bool,
     ) {
-        self.flush_behaviors_inner(&mut |id, owner, outcome, _| accept(id, owner, outcome));
+        self.flush_behaviors_inner(&mut |id, owner, outcome, _, _| accept(id, owner, outcome));
+    }
+
+    /// Fault context is copied before the continuation and its registers retire.
+    pub fn flush_behavior_diagnostics(
+        &mut self,
+        mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize, Option<crate::BehaviorFault>) -> bool,
+    ) {
+        self.flush_behaviors_inner(&mut accept);
     }
 
     fn flush_behaviors_inner(
         &mut self,
-        accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
+        accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize, Option<crate::BehaviorFault>) -> bool,
     ) {
         let mut next = self.behaviors.first;
         while let Some(i) = next {
@@ -1311,9 +1423,10 @@ impl Runtime {
                 continue;
             };
             let id = BehaviorId(self.behaviors.id(i));
-            if !accept(id, c.owner, outcome, c.program) {
+            if !accept(id, c.owner, outcome, c.program, self.behavior_fault(id)) {
                 return;
             }
+            let _=self.release_task_run_parent(id);
             self.release_controller_reserve(id);
             self.record_script_state_outcome(id);
             self.behaviors.remove(id.0);
@@ -1330,6 +1443,10 @@ impl Runtime {
     /// cancellations always wait for flush_behaviors. Allocation-free; the scan
     /// runs only when the arena is short.
     pub(super) fn behavior_room(&mut self, needed: usize) -> bool {
+        if crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, needed).is_err() {
+            return false;
+        }
         let available = self.behaviors.available();
         if available >= needed {
             return true;
@@ -1345,6 +1462,7 @@ impl Runtime {
             })
             .count();
         if available + finished < needed {
+            self.record_control_admission_failure(needed);
             return false;
         }
         let mut i = 0;
@@ -1353,6 +1471,7 @@ impl Runtime {
                 && c.outcome == Some(Outcome::Finished)
             {
                 let id = BehaviorId(self.behaviors.id(i));
+                let _=self.release_task_run_parent(id);
                 self.release_controller_reserve(id);
                 self.record_script_state_outcome(id);
                 self.behaviors.remove(id.0);
@@ -1377,6 +1496,7 @@ impl Runtime {
 
     pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
         // Behind a preempted callback of the same instrument: keep event order.
+        if self.behaviors.get(id.0).is_some_and(|c|c.external.is_some_and(|state|state.blocks_dispatch())) { return; }
         let plan = self.behaviors.get(id.0).map(|c| c.owner);
         let plan = plan.and_then(|o| self.behavior_plan(o).ok());
         if self
@@ -1394,7 +1514,7 @@ impl Runtime {
     }
 
     pub(super) fn drain_behavior(&mut self) {
-        if self.dispatching_behavior || self.behavior_ready.is_empty() {
+        if self.publishing_receiver || self.dispatching_behavior || self.behavior_ready.is_empty() && !self.has_ready_zone_completions() {
             return;
         }
         let time = self.behavior_time_left;
@@ -1403,100 +1523,128 @@ impl Runtime {
         self.dispatching_behavior = true;
         // A bounded explicit stack preserves synchronous nested callback ordering.
         // Each suspended caller retains its own remaining fuel, never a Rust frame.
-        while let Some(ready) = self.behavior_ready.last().copied() {
-            let index = self.behavior_ready.len() - 1;
-            let (id, fuel) = match ready {
-                Ready::Resume { id, fuel } => (id, fuel),
-                Ready::Release { note, stage } => {
-                    self.behavior_ready.pop();
-                    self.note_events[note.0.index].release_queued = false;
-                    if self.notes.get(note.0).unwrap().gate() {
-                        if let Some(stage) = stage {
-                            self.advance_release_stage(note, stage);
-                        } else {
-                            self.key_up_with_cause(note, None, super::ReleaseCause::Script)
-                                .expect("retained generated note release");
+        loop {
+            while let Some(ready) = self.behavior_ready.last().copied() {
+                let index = self.behavior_ready.len() - 1;
+                let (id, fuel) = match ready {
+                    Ready::Resume { id, fuel } => (id, fuel),
+                    Ready::Release { note, stage } => {
+                        self.behavior_ready.pop();
+                        self.note_events[note.0.index].release_queued = false;
+                        if self.notes.get(note.0).unwrap().gate() {
+                            if let Some(stage) = stage {
+                                self.advance_release_stage(note, stage);
+                            } else {
+                                self.key_up_with_cause(note, None, super::ReleaseCause::Script)
+                                    .expect("retained generated note release");
+                            }
                         }
+                        self.notes.get_mut(note.0).unwrap().work -= 1;
+                        continue;
                     }
-                    self.notes.get_mut(note.0).unwrap().work -= 1;
+                };
+                // A finished callback retires at once; a stale entry is skipped.
+                let Some(c) = self.behaviors.get(id.0).copied() else {
+                    self.behavior_ready.pop();
+                    continue;
+                };
+                if c.outcome.is_some() {
+                    self.release_controller_reserve(id);
+                    self.behavior_ready.pop();
                     continue;
                 }
-            };
-            // A finished callback retires at once; a stale entry is skipped.
-            let Some(c) = self.behaviors.get(id.0).copied() else {
-                self.behavior_ready.pop();
-                continue;
-            };
-            if c.outcome.is_some() {
-                self.release_controller_reserve(id);
-                self.behavior_ready.pop();
-                continue;
-            }
-            let plan = &self
-                .plans
-                .get(self.behavior_plan(c.owner).unwrap().0)
-                .unwrap()
-                .prepared;
-            let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
-                self.flush_deferred(id);
-                self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
-                self.release_controller_reserve(id);
-                self.behavior_ready.remove(index);
-                continue;
-            };
-            if time_check_steps >= 64 {
-                time_check_steps = 0;
-                if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
-                    self.block_fuel_left = 0;
-                }
-            }
-            if fuel == 0 || self.block_fuel_left == 0 {
-                self.behavior_ready.remove(index);
-                self.yield_behavior(id);
-                continue;
-            }
-            // Bound the interval between clock checks without timing every instruction.
-            let slice = if started.is_some() { 256 } else { usize::MAX };
-            let ran = self.run_straight(id, fuel.min(self.block_fuel_left).min(slice));
-            if ran > 0 {
-                time_check_steps = time_check_steps.saturating_add(ran);
-                self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
-                self.behavior_ready[index] = Ready::Resume {
-                    id,
-                    fuel: fuel - ran,
+                let plan = &self
+                    .plans
+                    .get(self.behavior_plan(c.owner).unwrap().0)
+                    .unwrap()
+                    .prepared;
+                let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
+                    self.flush_zone_parameters(id);
+                    self.flush_deferred(id);
+                    self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
+                    self.release_controller_reserve(id);
+                    self.behavior_ready.remove(index);
+                    continue;
                 };
-                continue;
-            }
-            time_check_steps += 1;
-            self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
-            self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
-            self.behaviors.get_mut(id.0).unwrap().pc += 1;
-            let stepped = self.behavior_step(id, c.owner, op);
-            if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
-                // The callback waited, ended or faulted: notes it played start now.
-                self.flush_deferred(id);
-            }
-            match stepped {
-                Ok(true) => {
-                    if self.behaviors.get(id.0).unwrap().outcome.is_some() {
-                        self.release_controller_reserve(id);
-                    }
-                    self.behavior_ready.remove(index);
-                }
-                Ok(false) => {
-                    // Outbox full: the emit rewound its pc; resume next block.
-                    if std::mem::take(&mut self.ops.outbox_full) {
-                        self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
+                if time_check_steps >= 64 {
+                    time_check_steps = 0;
+                    if started.zip(time).is_some_and(|(start, left)| start.elapsed() >= left) {
+                        self.block_fuel_left = 0;
                     }
                 }
-                // Kontakt ignores a script's call on a note that already ended
-                // (play_note on a released parent, forwarding a dropped note).
-                Err(Error::ClosedNote) => {}
-                Err(error) => {
-                    self.fail_behavior(id, Outcome::Fault(error));
+                if fuel == 0 || self.block_fuel_left == 0 {
                     self.behavior_ready.remove(index);
+                    self.yield_behavior(id);
+                    continue;
+                }
+                // Bound the interval between clock checks without timing every instruction.
+                let slice = if started.is_some() { 256 } else { usize::MAX };
+                let ran = self.run_straight(id, fuel.min(self.block_fuel_left).min(slice));
+                if ran > 0 {
+                    time_check_steps = time_check_steps.saturating_add(ran);
+                    self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
+                    self.behavior_ready[index] = Ready::Resume {
+                        id,
+                        fuel: fuel - ran,
+                    };
+                    continue;
+                }
+                self.behaviors.get_mut(id.0).unwrap().last_pc = c.pc;
+                let cost=if matches!(op,Instruction::AdvanceSourceNote){
+                    match c.owner.note().and_then(|note|self.source_note_work_cost(note)){
+                        Ok(cost) if cost<=self.behavior_fuel=>cost,
+                        Ok(_)=>{self.fail_behavior(id,Outcome::Fault(Error::Capacity));self.behavior_ready.remove(index);continue;}
+                        Err(error)=>{self.fail_behavior(id,Outcome::Fault(error));self.behavior_ready.remove(index);continue;}
+                    }
+                }else{1};
+                if cost>fuel||cost>self.block_fuel_left{
+                    self.behavior_ready.remove(index);self.yield_behavior(id);continue;
+                }
+                time_check_steps=time_check_steps.saturating_add(cost);
+                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - cost };
+                self.block_fuel_left = self.block_fuel_left.saturating_sub(cost);
+                self.behaviors.get_mut(id.0).unwrap().pc += 1;
+                let stepped = self.behavior_step(id, c.owner, op);
+                if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
+                    // Zone commit precedes deferred attacks at actual wait/end.
+                    // This ordering is KONTRA policy; no native ordering claim.
+                    if stepped == Ok(true) {
+                        self.flush_zone_parameters(id);
+                    } else if stepped.is_err() {
+                        self.cancel_zone_parameters(id);
+                    }
+                    self.flush_deferred(id);
+                }
+                match stepped {
+                    Ok(true) => {
+                        if self.behaviors.get(id.0).unwrap().outcome.is_some() {
+                            self.release_controller_reserve(id);
+                        }
+                        self.behavior_ready.remove(index);
+                    }
+                    Ok(false) => {
+                        // Outbox full: the emit rewound its pc; resume next block.
+                        if std::mem::take(&mut self.ops.outbox_full) {
+                            self.behavior_ready[index] = Ready::Resume { id, fuel: 0 };
+                        }
+                    }
+                    // Kontakt ignores a script's call on a note that already ended
+                    // (play_note on a released parent, forwarding a dropped note).
+                    Err(Error::ClosedNote) => {}
+                    Err(error) => {
+                        self.fail_behavior(id, Outcome::Fault(error));
+                        self.behavior_ready.remove(index);
+                    }
                 }
             }
+            // Entries have settled before completion admissions can push work.
+            // One completion at a time preserves callback/waiter order with LIFO
+            // dispatch and keeps callback execution on this bounded explicit stack.
+            let serviced = match self.service_zone_completions() {
+                Ok(serviced) => serviced,
+                Err(error) => { self.fault = Some((0, error)); false },
+            };
+            if self.behavior_ready.is_empty() && !serviced { break; }
         }
         if let Some((start, left)) = started.zip(time) {
             self.behavior_time_left = Some(left.saturating_sub(start.elapsed()));
@@ -1763,7 +1911,13 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
-            Instruction::ForwardController => {
+            Instruction::AdvanceSourceNote=>{self.advance_source_note(owner.note()?)?;}
+            Instruction::AwaitExternal { processor } => {
+                self.await_external_input(id, processor)?;
+                return Ok(true);
+            }
+            Instruction::
+ForwardController => {
                 self.forward_controller(id)?;
                 self.flush_deferred(id);
             }
@@ -1776,15 +1930,18 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerPort { local } => {
-                let value = self.controller_event_mut(id)?.origin.port;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).port;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerGroup { local } => {
-                let value = self.controller_event_mut(id)?.origin.group;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).group;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerChannel { local } => {
-                let value = self.controller_event_mut(id)?.origin.channel;
+                let event=*self.controller_event_mut(id)?;
+                let value = event.receiver.map_or(event.origin,|receiver|receiver.source).channel;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerValue { local } => {
@@ -2050,7 +2207,9 @@ impl Runtime {
                         let c = slot.value?;
                         (i64::from(c.callback_id) == callback
                             && c.waiting
-                            && c.outcome.is_none()
+                            && c.external.is_none()
+                            && c.
+outcome.is_none()
                             && self.behavior_plan(c.owner).ok() == Some(plan))
                         .then(|| BehaviorId(self.behaviors.id(index)))
                     });
@@ -2518,6 +2677,15 @@ impl Runtime {
                         });
                 *self.local_cell_mut(id, local)? = i64::from(held);
             }
+            Instruction::ReadPolyPressureKey { local } => {
+                let key = self.controller_event_mut(id)?.poly_key.ok_or(Error::InvalidInput)?;
+                *self.local_cell_mut(id, local)? = i64::from(key);
+            }
+            Instruction::ReadPolyPressure { local } => {
+                let key = u8::try_from(*self.local_cell_mut(id, local)?).map_err(|_| Error::InvalidInput)?;
+                let value = self.behavior_poly_pressure(id, key)?;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
             Instruction::SendParameter {
                 kind,
                 address,
@@ -2545,7 +2713,12 @@ impl Runtime {
             }
             Instruction::StartProgram { program } => {
                 let plan = self.behavior_plan(owner)?;
-                let context = self.behaviors.get(id.0).unwrap().context;
+                let context = match self.behaviors.get(id.0).unwrap().context {
+                    // A fork inherits provenance/epochs, never ownership of its
+                    // parent's already-reserved original forwarding path.
+                    PlanContext::Program(event)=>PlanContext::Program(crate::receiver::channel_event::ProgramEvent{pending:false,reserved:0,..event}),
+                    context=>context,
+                };
                 match self.start_plan_context(plan, program as usize, context) {
                     Ok(_) | Err(Error::Capacity) => {}
                     Err(error) => return Err(error),
@@ -2697,6 +2870,18 @@ impl Runtime {
                 if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
                     return Err(Error::InvalidInput);
                 }
+                let key=u8::try_from(key).map_err(|_|Error::InvalidInput)?;
+                // KSP reports the effective integer selection key, unlike
+                // UVI's physical callback key. Keep an inherited absolute
+                // parent's fractional pitch when play_note remaps that key.
+                let pitch = if let (BehaviorOwner::Note(parent), Inheritance::Expression) = (owner, inheritance) {
+                    match self.notes.get(parent.0).ok_or(Error::StaleHandle)?.pitch {
+                        super::NotePitch::Absolute(parent) =>
+                            super::NotePitch::Absolute(f64::from(key) + parent - f64::from(super::NotePitch::Absolute(parent).key())),
+                        super::NotePitch::Key(_) => super::NotePitch::Key(key),
+                    }
+                } else { super::NotePitch::Key(key) };
+                if !pitch.valid() { return Err(Error::InvalidInput); }
                 // Reserve the external identity before publishing any child/audio.
                 // Failed admission may leave a numeric gap, never a reused ID.
                 let source_id = result
@@ -2704,7 +2889,7 @@ impl Runtime {
                     .transpose()?;
                 let child = self.play_behavior(
                     id,
-                    super::NotePitch::Key(key as u8),
+                    pitch,
                     velocity as f64 / 127.,
                     inheritance,
                     duration,
@@ -2739,6 +2924,7 @@ impl Runtime {
     /// Start the notes `id` played since it last waited, with the group
     /// selection it left them (Kontakt starts played notes when the callback
     /// yields, so scripts adjust them right after `play_note`).
+    pub(super)
     fn flush_deferred(&mut self, id: BehaviorId) {
         while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
             let (_, note, entry) = self.deferred.remove(at);
@@ -2764,6 +2950,13 @@ impl Runtime {
                     Ok(false) | Err(Error::ClosedNote) => {}
                     // No room once the selection was edited: drop the note.
                     Err(_) => {
+                        // Zone commit precedes this final admission. Report the
+                        // representability/capacity refusal instead of silently
+                        // implying that the routed deferred attack sounded.
+                        let plan = self.notes.get(note.0).unwrap().plan;
+                        if self.plans.get(plan.0).unwrap().prepared.zone_routing.is_some() {
+                            self.refused_starts = self.refused_starts.saturating_add(1);
+                        }
                         let _ = self.suppress_attack(note);
                     }
                 }
@@ -2850,6 +3043,7 @@ impl Runtime {
         Ok(true)
     }
 
+    pub(super)
     fn play_behavior(
         &mut self,
         id: BehaviorId,
@@ -2892,8 +3086,12 @@ impl Runtime {
                 let (origin, performance) = if let PlanContext::Controller(event) = callback.context
                 {
                     (event.origin, event.performance)
+                } else if let PlanContext::Program(event) = callback.context {
+                    (event.origin,event.performance)
                 } else if let PlanContext::Control(event) = callback.context {
                     (event.origin, event.performance)
+                } else if let PlanContext::NoteControllers(context)=callback.context {
+                    (context.origin,context.performance)
                 } else {
                     return Err(Error::InvalidInput);
                 };
@@ -2985,6 +3183,8 @@ impl Runtime {
     }
 
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
+        self.cancel_zone_parameters(id);
+        let _=self.release_task_run_parent(id);
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
         if let Outcome::Fault(error) = outcome {

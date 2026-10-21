@@ -3,6 +3,72 @@
 use sampler_core::{Input, Limits, Protocol, Runtime};
 use sampler_ir as ir;
 
+// These authored fixtures join native XML identities to their exact retained homes.
+// They intentionally do not use global control order or compact away Mix owners.
+fn fixture_owner_inserts(
+    xml: &str,
+    owner_kind: &str,
+    owner_name: &str,
+    insert_kinds: &[&str],
+) -> (ir::SourceOwnerId, Vec<usize>) {
+    let doc = sampler_uvi::parse_program_xml(xml).unwrap();
+    let owners: Vec<_> = doc.descendants().filter(|node|
+        node.has_tag_name(owner_kind) && node.attribute("Name") == Some(owner_name)
+    ).collect();
+    assert_eq!(owners.len(), 1, "the exact authored owner must be unique");
+    let owner = owners[0];
+    let lists: Vec<_> = owner.children().filter(|node| node.has_tag_name("Inserts")).collect();
+    assert_eq!(lists.len(), 1, "one direct canonical insert list");
+    let inserts: Vec<_> = lists[0].children().filter(|node| node.is_element()).collect();
+    assert_eq!(inserts.iter().map(|node| node.tag_name().name()).collect::<Vec<_>>(), insert_kinds);
+    (ir::SourceOwnerId::UviNode(u32::try_from(owner.id().get_usize()).unwrap()),
+        inserts.iter().map(|node| node.id().get_usize()).collect())
+}
+
+fn fixture_recipe(instrument: &ir::Instrument, owner: ir::SourceOwnerId) -> &ir::SourceProcessingRecipe {
+    let recipes: Vec<_> = instrument.source_indices.processing.iter()
+        .filter(|recipe| recipe.owner == owner).collect();
+    assert_eq!(recipes.len(), 1, "one shared recipe for the actual authored owner");
+    recipes[0]
+}
+
+fn fixture_insert_index(instrument: &ir::Instrument, chain: ir::ChainRef, node: usize) -> usize {
+    let stages = &instrument.chains[chain.0].pre_amplitude;
+    let wrappers: Vec<_> = stages.iter().enumerate().filter_map(|(index, stage)| match stage {
+        ir::Processor::Mix { address, count, dry, wet, bypass }
+            if address.generic == i32::try_from(node).unwrap() && address.group == -1 && address.slot == -1 => {
+                assert_eq!((*count, *dry, *wet, *bypass), (1, 0., 1., false));
+                Some(index)
+            }
+        _ => None,
+    }).collect();
+    assert_eq!(wrappers.len(), 1, "the authored insert has its own exact bypass boundary");
+    let index = wrappers[0] + 1;
+    assert!(index < stages.len());
+    index
+}
+
+fn fixture_insert_control(
+    instrument: &ir::Instrument,
+    node: usize,
+    kind: &str,
+    field: &str,
+    parameter: ir::ProcessorParameter,
+) -> ir::ProcessorControl {
+    let key = format!("uvi:insert:{node}:{kind}:{field}");
+    let controls: Vec<_> = instrument.controls.iter().enumerate()
+        .filter(|(_, control)| control.key == key).collect();
+    assert_eq!(controls.len(), 1, "exact native element and catalog field");
+    let reference = ir::ControlRef(controls[0].0);
+    let bindings: Vec<_> = instrument.processor_controls.iter()
+        .filter(|binding| binding.control == reference).collect();
+    assert_eq!(bindings.len(), 1, "one exact catalog processor operand");
+    let binding = *bindings[0];
+    assert_eq!(binding.parameter, parameter);
+    assert_eq!(binding.index, fixture_insert_index(instrument, binding.chain, node));
+    binding
+}
+
 #[test]
 fn large_falcon_program_xml_is_bounded_without_rejecting_installed_node_counts() {
     let xml = format!("<Program>{}</Program>", "<Properties/>".repeat(210_000));
@@ -31,7 +97,7 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <Connections>
               <SignalConnection Source="$Program/Amp Env" Destination="Gain" Ratio="1"/>
               <SignalConnection Source="$Program/Vibrato" Destination="Pitch" Ratio="0.1"/>
-              <SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="0.5"/>
+              <SignalConnection Source="$Program/Steps" Destination="Pitch" Ratio="0.5"/>
             </Connections>
             <Oscillators>
               <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Pitch="0.25" Gain="0.8">
@@ -76,6 +142,69 @@ fn wav(rate: u32, frames: &[i16]) -> Vec<u8> {
 }
 
 #[test]
+fn empty_missing_and_failed_initial_samples_keep_complete_dormant_recipes() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-dormant-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bad.wav"), b"not audio").unwrap();
+    let xml = r#"<Program><Layers><Layer Name="Dynamic"><Keygroups>
+      <Keygroup Name="Region" LowKey="0" HighKey="127" Gain="0.5">
+       <ControlSignalSources><DAHDSR Name="Amp" AttackTime="0.01" ReleaseTime="0.2"/><LFO Name="Vibrato" Freq="5"/></ControlSignalSources>
+       <Connections><SignalConnection Source="$Keygroup/Amp" Destination="Gain" Ratio="1"/><SignalConnection Source="$Keygroup/Vibrato" Destination="Pitch" Ratio="0.3"/></Connections>
+       <Inserts><OnePole Name="Tone" Freq="1000"/></Inserts>
+       <Oscillators><SamplePlayer Name="Empty" BaseNote="60" CoarseTune="-2"/>
+       <SamplePlayer Name="Missing" SamplePath="missing.wav" BaseNote="72"/>
+       <SamplePlayer Name="Unreadable" SamplePath="bad.wav" BaseNote="48"/></Oscillators>
+      </Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let path = dir.join("Dormant.uvip");
+    std::fs::write(&path, xml).unwrap();
+    let authored = sampler_uvi::translate(xml, &dir).unwrap().instrument;
+    authored.validate().unwrap();
+    assert_eq!((authored.zones.len(), authored.assets.len(), authored.source_indices.sample_targets.len()), (3, 1, 3));
+    let loaded = sampler_uvi::load(&path, 48_000).unwrap();
+    loaded.instrument.validate().unwrap();
+    assert_eq!((loaded.instrument.zones.len(), loaded.instrument.assets.len()), (3, 0));
+    assert_eq!(loaded.plan.region_count(), 3);
+    assert_eq!(loaded.plan.sample_count(), 0);
+    assert_eq!(loaded.plan.candidate_count(), 3 * 128);
+    for (zone, expected) in loaded.instrument.zones.iter().zip(&authored.zones) {
+        assert!(zone.asset.is_none());
+        assert_eq!((zone.pitch, zone.tune, zone.gain, zone.chain, zone.amplitude, &zone.routes),
+            (expected.pitch, expected.tune, expected.gain, expected.chain, expected.amplitude, &expected.routes));
+        assert_eq!((zone.keys.low, zone.keys.high), (0, 127));
+        assert!(zone.chain.is_none(), "shared inserts are not duplicated per physical member");
+        assert!(zone.amplitude.is_none(), "the actual source gate owns the envelope");
+        assert_eq!(zone.routes.len(), 1);
+    }
+    let (owner, insert_nodes) = fixture_owner_inserts(xml, "Keygroup", "Region", &["OnePole"]);
+    let recipe = fixture_recipe(&loaded.instrument, owner);
+    let expected = fixture_recipe(&authored, owner);
+    assert_eq!(recipe.members, vec![ir::ZoneRef(0), ir::ZoneRef(1), ir::ZoneRef(2)]);
+    assert_eq!((&recipe.members, recipe.chain, recipe.amplitude, &recipe.sources, &recipe.routes, recipe.source_gate),
+        (&expected.members, expected.chain, expected.amplitude, &expected.sources, &expected.routes, expected.source_gate));
+    let gate = recipe.source_gate.expect("the authored plain DAHDSR Gain connection remains a real source gate");
+    assert!(recipe.sources.contains(&gate.source));
+    assert!(recipe.routes.contains(&gate.route));
+    assert_eq!(loaded.instrument.modulators[gate.source.0], authored.modulators[gate.source.0]);
+    assert!(matches!(loaded.instrument.modulators[gate.source.0].source, ir::ModulationSource::Envelope(_)));
+    let route = &loaded.instrument.routes[gate.route.0];
+    assert_eq!((route.source, route.target, route.depth), (gate.source, ir::Target::Amplitude, ir::Depth::Normalized(1.)));
+    let cutoff = fixture_insert_control(&loaded.instrument, insert_nodes[0], "OnePole", "Freq", ir::ProcessorParameter::Cutoff);
+    assert_eq!(Some(cutoff.chain), recipe.chain);
+    assert!(matches!(loaded.instrument.chains[cutoff.chain.0].pre_amplitude[cutoff.index], ir::Processor::Filter(_)));
+    assert!(matches!(loaded.instrument.controls[cutoff.control.0].value,
+        ir::ControlValue::Continuous { default: 1000., unit: ir::ControlUnit::Hertz, .. }));
+    let limits = Limits::for_plan(&loaded.plan, 4, 8);
+    let mut runtime = Runtime::new(loaded.plan, limits).unwrap();
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) };
+    runtime.trigger(input, 60, 1.).unwrap();
+    let mut pcm = [[1.; 2]; 64];
+    runtime.render(&mut pcm).unwrap();
+    assert_eq!(pcm, [[0.; 2]; 64]);
+    assert_eq!(runtime.voice_count(), 0, "no fabricated silent asset or source voice");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn authored_program_translates_loads_and_renders() {
     let dir = std::env::temp_dir().join(format!("sampler-uvi-fixture-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("samples")).unwrap();
@@ -94,14 +223,18 @@ fn authored_program_translates_loads_and_renders() {
     );
     assert_eq!(
         (ir.groups.len(), ir.zones.len(), ir.assets.len()),
-        (2, 1, 1), // the script may pick one of the keygroup's two oscillators
+        (3, 3, 1), // dormant and bypassed players keep their complete scripted identities
     );
+    assert_eq!(ir.source_indices.sample_targets.len(), 3);
+    assert!(ir.zones[1].asset.is_none());
+    assert!(ir.groups[ir.zones[2].group.unwrap().0].muted);
+    ir.validate().unwrap();
     let zone = &ir.zones[0];
     assert_eq!((zone.keys.low, zone.keys.high), (48, 72));
     assert_eq!(zone.pitch, ir::KeyTracking::Tracked { root: 60 });
     assert_eq!(zone.tune, ir::Pitch::Semitones(1.75));
     assert_eq!(zone.gain, ir::Gain::Linear(0.8));
-    assert_eq!(zone.velocity, ir::VelocityResponse::Power(2.0));
+    assert_eq!(zone.velocity, ir::VelocityResponse::None);
     assert_eq!((zone.playback.start, zone.playback.end), (10, Some(47000)));
     assert!(matches!(
         zone.playback.looping,
@@ -111,9 +244,22 @@ fn authored_program_translates_loads_and_renders() {
             ..
         })
     ));
-    assert!(zone.amplitude.is_some());
-    let ir::ModulationSource::Envelope(env) = &ir.modulators[zone.amplitude.unwrap().0].source
-    else {
+    // A plain keygroup Gain connection from a DAHDSR is the actual source gate,
+    // not a per-zone envelope copy: the gate owns the envelope and its velocity
+    // law once for every physical member.
+    assert!(zone.amplitude.is_none(), "the source gate owns the envelope");
+    let recipes: Vec<_> = ir
+        .source_indices
+        .processing
+        .iter()
+        .filter(|recipe| recipe.members.contains(&ir::ZoneRef(0)))
+        .collect();
+    assert_eq!(recipes.len(), 1, "one shared recipe for the authored keygroup");
+    let gate = recipes[0]
+        .source_gate
+        .expect("the authored plain DAHDSR Gain connection remains a real source gate");
+    assert_eq!(gate.velocity, ir::VelocityResponse::Power(2.0));
+    let ir::ModulationSource::Envelope(env) = &ir.modulators[gate.source.0].source else {
         panic!()
     };
     let k = 2.0 * ((1.5_f64) / (0.5)).ln();
@@ -134,13 +280,13 @@ fn authored_program_translates_loads_and_renders() {
     }
     // The vibrato is a route: +0.1 semitone per unit of a 5 Hz sine.
     let route = &ir.routes[zone.routes[0].0];
-    assert_eq!(zone.routes.len(), 2, "vibrato and the AHD gain route");
+    assert_eq!(zone.routes.len(), 2, "vibrato and the AHD pitch route");
     assert_eq!(route.target, ir::Target::Pitch);
     assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(0.1)));
     assert!(matches!(
         ir.modulators[route.source.0].source,
         ir::ModulationSource::Lfo(ir::Lfo {
-            shape: ir::LfoShape::Sine,
+            shape: ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Sinus)),
             rate: ir::Frequency::Hertz(5.0),
             ..
         })
@@ -596,6 +742,36 @@ fn wave_shaper_rectifies_and_comp_exp_compresses() {
 }
 
 #[test]
+fn maximizer_lifts_to_the_ceiling() {
+    let out = through(r#"<Maximizer Threshold="-40" Ceiling="-3" CeilingMode="2"/>"#, "maximizer");
+    let peak = out[2000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    assert!((peak - 10f32.powf(-3. / 20.)).abs() < 0.02, "{peak}");
+}
+
+#[test]
+fn bit_crusher_holds_quantizes_and_mixes_like_the_native_kernel() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "crusher-plain");
+    let changes = |out: &[[f32; 2]]| out[1000..].windows(2).filter(|w| w[0][0] != w[1][0]).count();
+    // 4 bits: every output is a multiple of 1/16; a 6 kHz target rate holds
+    // each capture for about eight 48 kHz frames.
+    let crushed = through(
+        r#"<BitCrusher EffectiveSampleRate="6000" BitSize="4" Drive="0" Cutoff="0" Mix="1"/>"#,
+        "crusher",
+    );
+    assert!(crushed[1000..].iter().flatten().all(|x| ((x * 16.0).round() - x * 16.0).abs() < 1e-3));
+    assert!(changes(&crushed) * 3 < changes(&plain), "{} {}", changes(&crushed), changes(&plain));
+    // Mix 0 is the untouched input.
+    let dry = through(r#"<BitCrusher BitSize="4" Mix="0"/>"#, "crusher-dry");
+    for (a, b) in dry.iter().zip(&plain) {
+        assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    }
+    // A positive Cutoff is a high-pass above 6.6 kHz: a 440 Hz tone is removed.
+    let peak = |out: &[[f32; 2]]| out[1000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let high = through(r#"<BitCrusher BitSize="24" EffectiveSampleRate="48000" Cutoff="1"/>"#, "crusher-hp");
+    assert!(peak(&high) < peak(&plain) * 0.2, "{} {}", peak(&high), peak(&plain));
+}
+
+#[test]
 fn track_delay_moves_the_impulse_without_feedback() {
     let plain = through(r#"<Gain Volume="1"/>"#, "delay-plain");
     let delayed = through(r#"<TrackDelay DelayTime="0.01"/>"#, "track-delay");
@@ -608,6 +784,23 @@ fn track_delay_moves_the_impulse_without_feedback() {
 }
 
 #[test]
+fn time_modulation_inserts_run_on_the_universal_engine() {
+    let plain = through(r#"<Gain Volume="1"/>"#, "tm-plain");
+    let delayed = through(r#"<FxDelay DelayTime="0.01" Feedback="0" Mix="1"/>"#, "tm-fxdelay");
+    assert!(delayed[..470].iter().flatten().all(|x| x.abs() < 1e-7));
+    for (actual, expected) in delayed[490..].iter().zip(&plain[10..]) {
+        for c in 0..2 {
+            assert!((actual[c] - expected[c]).abs() < 2e-3, "linear read of an integer delay");
+        }
+    }
+    for tag in ["Chorus", "Flanger", "Phaser", "Phasor", "WhiteChorus", "TapeEcho", "DualDelay"] {
+        let out = through(&format!(r#"<{tag} Mix="0.5"/>"#), &format!("tm-{tag}"));
+        assert!(out.iter().flatten().all(|x| x.is_finite()), "{tag}");
+        assert!(out[2000..].iter().flatten().any(|x| x.abs() > 1e-3), "{tag} stays audible");
+    }
+}
+
+#[test]
 fn program_and_layer_inserts_are_distinct_summed_scopes() {
     let xml = insert_program(None)
         .replace("<Layers>", r#"<Inserts><GainMatrix Gain_1_1="0" Gain_2_1="1" Gain_1_2="0" Gain_2_2="0"/></Inserts><Layers>"#)
@@ -615,23 +808,47 @@ fn program_and_layer_inserts_are_distinct_summed_scopes() {
     let instrument = sampler_uvi::translate(&xml, std::path::Path::new("."))
         .unwrap()
         .instrument;
-    let layer = instrument.groups[0].output;
-    let ir::Output::Bus(layer) = layer else {
-        panic!("missing layer bus")
+    let (layer_owner, layer_inserts) = fixture_owner_inserts(&xml, "Layer", "Main", &["GainMatrix"]);
+    let (program_owner, program_inserts) = fixture_owner_inserts(&xml, "Program", "Inserts", &["GainMatrix"]);
+    let layer_row = instrument.source_indices.owners.iter().find(|row| row.id == layer_owner).unwrap();
+    assert_eq!(layer_row.parent, Some(program_owner));
+    assert_eq!(instrument.groups.len(), 1);
+    let ir::Output::Bus(layer_fx) = instrument.groups[0].output else { panic!("missing layer FX input") };
+    let outlet = |owner| {
+        let rows: Vec<_> = instrument.source_indices.output_controls.iter()
+            .filter(|row| row.owner == owner && row.field == ir::SourceOwnerOutputField::Gain).collect();
+        assert_eq!(rows.len(), 1);
+        let ir::SourceOwnerControlTarget::Bus { bus, .. } = rows[0].target else { panic!("global outlet must be a bus") };
+        bus
     };
-    let ir::Output::Bus(program) = instrument.buses[layer.0].output else {
-        panic!("missing program bus")
-    };
-    assert_ne!(layer, program);
-    let chain = |bus: ir::BusRef| &instrument.chains[instrument.buses[bus.0].chain.unwrap().0];
-    assert!(matches!(
-        chain(layer).pre_amplitude[0],
-        ir::Processor::StereoMatrix([[0., 0.], [1., 0.]])
-    ));
-    assert!(matches!(
-        chain(program).pre_amplitude[0],
-        ir::Processor::StereoMatrix([[0., 1.], [0., 0.]])
-    ));
+    let layer_out = outlet(layer_owner);
+    let program_out = outlet(program_owner);
+    assert_eq!(instrument.buses[layer_fx.0].output, ir::Output::Bus(layer_out));
+    let ir::Output::Bus(program_fx) = instrument.buses[layer_out.0].output else { panic!("missing parent Program FX input") };
+    assert_eq!(instrument.buses[program_fx.0].output, ir::Output::Bus(program_out));
+    assert_eq!(instrument.buses[program_out.0].output, ir::Output::Master);
+    let mut buses = [layer_fx.0, layer_out.0, program_fx.0, program_out.0];
+    buses.sort_unstable();
+    assert!(buses.windows(2).all(|pair| pair[0] != pair[1]), "FX and memoryless outlets are distinct owners");
+    for (owner, fx, out, node, expected) in [
+        (layer_owner, layer_fx, layer_out, layer_inserts[0], [[0., 0.], [1., 0.]]),
+        (program_owner, program_fx, program_out, program_inserts[0], [[0., 1.], [0., 0.]]),
+    ] {
+        for bus in [fx, out] {
+            let rows: Vec<_> = instrument.processing_buses.iter().filter(|row| row.bus == bus).collect();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].owner, Some(owner));
+        }
+        assert!(instrument.buses[out.0].chain.is_none());
+        let chain = instrument.buses[fx.0].chain.expect("actual FX chain");
+        assert_eq!(instrument.chains[chain.0].scope, ir::Scope::Bus(fx));
+        let index = fixture_insert_index(&instrument, chain, node);
+        let ir::SourceOwnerId::UviNode(owner_node) = owner else { panic!("authored UVI owner") };
+        assert!(matches!(instrument.chains[chain.0].pre_amplitude[0],
+            ir::Processor::Mix { address, count: 2, dry: 0., wet: 1., bypass: false }
+                if address.generic == i32::try_from(owner_node).unwrap() && address.group == -1 && address.slot == -1));
+        assert_eq!(instrument.chains[chain.0].pre_amplitude[index], ir::Processor::StereoMatrix(expected));
+    }
 }
 
 #[test]
@@ -650,7 +867,7 @@ fn three_band_shelves_uniform_gain_is_a_level_change() {
 }
 
 #[test]
-fn one_pole_frequency_connections_keep_the_native_three_decade_law() {
+fn one_pole_frequency_connections_keep_the_historical_core_three_decade_law() {
     let dir = std::env::temp_dir().join(format!("sampler-uvi-cutoff-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("samples")).unwrap();
     std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
@@ -674,11 +891,13 @@ fn one_pole_frequency_connections_keep_the_native_three_decade_law() {
         panic!("cutoff depth must be exponential");
     };
     assert!((depth.semitones() - 6.0 * 1000f64.log2()).abs() < 1e-10);
-    assert!(
-        ir.zones
-            .iter()
-            .any(|zone| zone.routes.contains(&sampler_ir::RouteRef(index)))
-    );
+    let reference=sampler_ir::RouteRef(index);
+    let owners:Vec<_>=ir.source_indices.processing.iter().filter(|recipe|recipe.routes.contains(&reference)).collect();
+    assert_eq!(owners.len(),1,"actual shared Frequency route belongs to one source processing owner");
+    assert_eq!(owners[0].routes.iter().filter(|&&r|r==reference).count(),1);
+    assert!(ir.zones.iter().all(|zone|!zone.routes.contains(&reference)),"physical players must not reevaluate the shared filter connection");
+    assert!(ir.source_indices.processing_parameters.iter().any(|binding|binding.owner==owners[0].owner
+        &&binding.law==sampler_ir::SourceProcessingParameterLaw::HistoricalUviFrequencyThreeDecadeCore));
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -690,19 +909,24 @@ fn one_pole_connections_address_each_stage_in_a_shared_voice_chain() {
     std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
     let xml = insert_program(None).replace("<Oscillators>", r#"<Inserts><OnePole Name="Low" Freq="1000"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.5"/></Connections></OnePole><OnePole Name="High" Freq="2000" Mode="1"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Freq" Ratio="0.25"/></Connections></OnePole></Inserts><Oscillators>"#);
     let ir = sampler_uvi::translate(&xml, &dir).unwrap().instrument;
-    let stages: Vec<_> = ir
-        .routes
-        .iter()
-        .filter_map(|r| match r.target {
-            ir::Target::Processor {
-                index,
-                parameter: ir::ProcessorParameter::Cutoff,
-                ..
-            } => Some(index),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(stages, vec![0, 1]);
+    let (owner, nodes) = fixture_owner_inserts(&xml, "Keygroup", "K", &["OnePole", "OnePole"]);
+    let recipe = fixture_recipe(&ir, owner);
+    let mut sites = Vec::new();
+    for (node, cc) in nodes.into_iter().zip([1, 2]) {
+        let binding = fixture_insert_control(&ir, node, "OnePole", "Freq", ir::ProcessorParameter::Cutoff);
+        assert_eq!(Some(binding.chain), recipe.chain);
+        let routes: Vec<_> = ir.routes.iter().enumerate().filter(|(_, route)|
+            route.target == (ir::Target::Processor { chain: binding.chain, index: binding.index, parameter: ir::ProcessorParameter::Cutoff })
+        ).collect();
+        assert_eq!(routes.len(), 1, "each authored Frequency connection has its own exact operand");
+        let reference = ir::RouteRef(routes[0].0);
+        assert!(matches!(ir.modulators[routes[0].1.source.0].source, ir::ModulationSource::Controller(actual) if actual == cc));
+        assert_eq!(recipe.routes.iter().filter(|&&row| row == reference).count(), 1);
+        assert!(ir.zones.iter().all(|zone| !zone.routes.contains(&reference)));
+        sites.push(binding.index);
+    }
+    assert!(sites[0] < sites[1], "original authored insert order survives both bypass shells");
+    assert_eq!(ir.routes.iter().filter(|route| matches!(route.target, ir::Target::Processor { parameter: ir::ProcessorParameter::Cutoff, .. })).count(), 2);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -715,26 +939,77 @@ fn typed_one_pole_catalog_controls_reach_distinct_live_processors() {
     let instrument = sampler_uvi::translate(&xml, std::path::Path::new("."))
         .unwrap()
         .instrument;
-    assert_eq!(
-        instrument.processor_controls.len(),
-        2,
-        "catalog controls must bind actual processor lanes"
-    );
-    assert_ne!(
-        instrument.processor_controls[0].index,
-        instrument.processor_controls[1].index
-    );
-    for control in &instrument.controls {
-        assert!(matches!(
-            control.value,
-            ir::ControlValue::Continuous {
-                min: 20.,
-                max: 20000.,
-                unit: ir::ControlUnit::Hertz,
-                ..
-            }
-        ));
+    let (owner, nodes) = fixture_owner_inserts(&xml, "Keygroup", "K", &["OnePole", "OnePole"]);
+    let recipe = fixture_recipe(&instrument, owner);
+    let mut homes = Vec::new();
+    for (node, default) in nodes.into_iter().zip([500., 8000.]) {
+        let binding = fixture_insert_control(&instrument, node, "OnePole", "Freq", ir::ProcessorParameter::Cutoff);
+        assert_eq!(Some(binding.chain), recipe.chain);
+        assert!(matches!(instrument.chains[binding.chain.0].pre_amplitude[binding.index], ir::Processor::Filter(_)));
+        assert_eq!(instrument.controls[binding.control.0].value, ir::ControlValue::Continuous {
+            min: 20., max: 20000., default, unit: ir::ControlUnit::Hertz,
+        });
+        homes.push(binding);
     }
+    assert_ne!(homes[0].control, homes[1].control);
+    assert!(homes[0].index < homes[1].index);
+    let cutoff_homes: Vec<_> = instrument.processor_controls.iter()
+        .filter(|binding| Some(binding.chain) == recipe.chain && binding.parameter == ir::ProcessorParameter::Cutoff).collect();
+    assert_eq!(cutoff_homes, homes.iter().collect::<Vec<_>>(), "exactly the two actual filter operands, independent of KG Gain/Pan and global outlet controls");
+}
+
+#[test]
+fn digital_eq_slope_sets_the_pass_band_order() {
+    let xml = insert_program(None).replace(
+        "<Oscillators>",
+        r#"<Inserts><DigitalEq Enabled1="1" Type1="1" Slope1="3" Freq1="80" Enabled2="1" Type2="0" Slope2="5" Freq2="9000"/></Inserts><Oscillators>"#,
+    );
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    let bands: Vec<_> = instrument
+        .chains
+        .iter()
+        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+        .filter_map(|p| match p {
+            ir::Processor::Eq(c) => Some((c.bands()[0].kind, c.bands()[0].poles)),
+            _ => None,
+        })
+        .collect();
+    // Slope 3 is order 4 (24 dB/oct), slope 5 order 8 (48 dB/oct), under the native band design.
+    assert_eq!(bands, [(ir::fx::eq::Kind::HighPass, 4), (ir::fx::eq::Kind::LowPass, 8)]);
+}
+
+#[test]
+fn fx_preset_legacy_eqs_translate_under_the_cookbook_law() {
+    let xml = insert_program(None).replace(
+        "<Oscillators>",
+        r#"<Inserts><FXPreset><TwoBandEq LowGain="6" HighFreq="8000" HighGain="-3"/></FXPreset><ThreeBandEq MidQ="0.5" MidGain="4"/><ParametricEQ Enable1="1" Freq1="40" Q1="2" Enable3="1" Gain3="5"/></Inserts><Oscillators>"#,
+    );
+    let instrument = sampler_uvi::translate(&xml, std::path::Path::new(".")).unwrap().instrument;
+    use ir::fx::eq::{Kind, Law};
+    let bands: Vec<_> = instrument
+        .chains
+        .iter()
+        .flat_map(|c| c.pre_amplitude.iter().chain(&c.post_amplitude))
+        .filter_map(|p| match p {
+            ir::Processor::Eq(c) => Some(c.bands().to_vec()),
+            _ => None,
+        })
+        .flatten()
+        .map(|b| (b.kind, b.law, b.frequency, b.q, b.gain_db))
+        .collect();
+    let c = Law::Cookbook;
+    assert_eq!(
+        bands,
+        [
+            (Kind::LowShelf, c, 80., 0.5, 6.),
+            (Kind::HighShelf, c, 8000., 0.5, -3.),
+            (Kind::LowShelf, c, 80., 0.5, 0.),
+            (Kind::Peak, c, 2500., 2.5, 4.),
+            (Kind::HighShelf, c, 10000., 0.5, 0.),
+            (Kind::HighPass, c, 40., 2., 0.),
+            (Kind::Peak, c, 180., 0.7, 5.),
+        ]
+    );
 }
 
 #[test]
@@ -772,15 +1047,26 @@ fn initialized_controller_and_widget_cutoff_writes_change_production_pcm() {
         </script></ScriptProcessor></EventProcessors><Layers>"#,
         );
     let path = dir.join("Live.uvip");
-    std::fs::write(&path, xml).unwrap();
+    std::fs::write(&path, &xml).unwrap();
     let mut translated = sampler_uvi::translate_path(&path).unwrap();
     let mut attached = translated
         .attach_script(48000, Config::default())
         .unwrap()
         .unwrap();
     assert!(attached.findings.is_empty(), "{:?}", attached.findings);
-    let ids: Vec<_> = translated.inserts.iter().map(|i| i.node).collect();
-    let control = sampler_core::lower::ir_control_id(&translated.instrument.controls[0].key);
+    let (owner, ids) = fixture_owner_inserts(&xml, "Keygroup", "K", &["OnePole", "OnePole"]);
+    let recipe = fixture_recipe(&translated.instrument, owner);
+    let cutoff = fixture_insert_control(&translated.instrument, ids[0], "OnePole", "Freq", ir::ProcessorParameter::Cutoff);
+    assert_eq!(Some(cutoff.chain), recipe.chain);
+    for (node, default) in ids.iter().copied().zip([1000., 8000.]) {
+        let binding = fixture_insert_control(&translated.instrument, node, "OnePole", "Freq", ir::ProcessorParameter::Cutoff);
+        let placements: Vec<_> = translated.inserts.iter().filter(|row| row.node == node).collect();
+        assert_eq!(placements.len(), 1);
+        assert_eq!((placements[0].chain, placements[0].first, placements[0].count), (binding.chain, binding.index, 1));
+        assert!(matches!(translated.instrument.controls[binding.control.0].value,
+            ir::ControlValue::Continuous { default: actual, unit: ir::ControlUnit::Hertz, .. } if actual == default));
+    }
+    let control = sampler_core::lower::ir_control_id(&translated.instrument.controls[cutoff.control.0].key);
     let loaded = sampler_uvi::assemble_translated(translated, 48000).unwrap();
     let limits = Limits::for_plan(&loaded.plan, 4, 4);
     let mut rt = Runtime::new(loaded.plan, limits).unwrap();
@@ -898,15 +1184,24 @@ fn streamed_bus_gain_has_live_catalog_defaults_and_controller_readback() {
     </script></ScriptProcessor></EventProcessors><Layers>"#,
     );
     let path = dir.join("Bus.uvip");
-    std::fs::write(&path, xml).unwrap();
+    std::fs::write(&path, &xml).unwrap();
     let mut translated = sampler_uvi::translate_path(&path).unwrap();
     let mut attached = translated
         .attach_script(48000, Config::default())
         .unwrap()
         .unwrap();
     assert!(attached.findings.is_empty(), "{:?}", attached.findings);
-    let node = translated.inserts[0].node;
-    let control = sampler_core::lower::ir_control_id(&translated.instrument.controls[0].key);
+    let (owner, nodes) = fixture_owner_inserts(&xml, "Program", "Inserts", &["Gain"]);
+    let node = nodes[0];
+    let binding = fixture_insert_control(&translated.instrument, node, "Gain", "Volume", ir::ProcessorParameter::Gain);
+    let placements: Vec<_> = translated.inserts.iter().filter(|row| row.node == node).collect();
+    assert_eq!(placements.len(), 1);
+    assert_eq!((placements[0].chain, placements[0].first, placements[0].count), (binding.chain, binding.index, 1));
+    let ir::Scope::Bus(fx) = translated.instrument.chains[binding.chain.0].scope else { panic!("Program insert must be a bus processor") };
+    assert!(translated.instrument.processing_buses.iter().any(|row| row.bus == fx && row.owner == Some(owner)));
+    assert!(matches!(translated.instrument.controls[binding.control.0].value,
+        ir::ControlValue::Continuous { default: 0.25, .. }));
+    let control = sampler_core::lower::ir_control_id(&translated.instrument.controls[binding.control.0].key);
     let streamed =
         sampler_uvi::assemble_translated_streamed(translated, 48000, &Default::default()).unwrap();
     let limits = Limits::for_plan(&streamed.loaded.plan, 4, 4);
@@ -1024,12 +1319,21 @@ fn level_change(xml: &str) -> (f64, f64) {
         .attach_script(48000, Config::default())
         .unwrap()
         .unwrap();
+    // The unchanged settled-level fixture tests the declared Core property
+    // reader, not an unqualified native Constant temporal law.
+    translated.declare_core_constant_target_reads();
     let streamed =
         sampler_uvi::assemble_translated_streamed(translated, 48000, &Default::default()).unwrap();
     let limits = Limits::for_plan(&streamed.loaded.plan, 4, 4);
     let mut rt = Runtime::new(streamed.loaded.plan, limits)
         .unwrap()
         .with_stream_cache(streamed.cache);
+    // Explicit standalone property-only authority. This is not callback/MIDI
+    // admission and never discovers or falls back to a later active Plan.
+    let property_plan=rt.active_plan();
+    if rt.source_constant_properties(property_plan).unwrap().next().is_some(){
+        attached.driver.bind_source_properties(&rt,property_plan).unwrap();
+    }
     // Let the script thread's load-time commands arrive before the note.
     for _ in 0..20 {
         attached.driver.wake(&mut rt).unwrap();

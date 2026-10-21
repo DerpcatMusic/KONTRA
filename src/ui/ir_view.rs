@@ -52,6 +52,16 @@ impl Picture {
             window,
         }
     }
+    /// Keep decoded pixels while expressing their viewport in paint coordinates.
+    /// Wallpaper base-frame offsets belong to source selection, not placement.
+    pub(super) fn with_window(&self, window: Option<[u32; 4]>) -> Self {
+        Self {
+            frames: self.frames.clone(),
+            indices: self.indices.clone(),
+            count: self.count,
+            window,
+        }
+    }
     fn len(&self) -> usize {
         self.count
     }
@@ -68,7 +78,7 @@ impl Picture {
 }
 
 /// The frame of `frames` a control at `value` in `min..=max` shows.
-fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
+pub(super) fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     let span = max - min;
     let t = if span == 0. {
         0.
@@ -79,7 +89,7 @@ fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
 }
 
 /// UVI mappers operate on normalized positions, including drag and strip frames.
-fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
+pub(super) fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
     if range.max == range.min {
         return if inverse { 0. } else { range.min };
     }
@@ -146,20 +156,20 @@ fn drive_mapped(
     held
 }
 
-/// The frame a switch or button shows: Kontakt's strips run off, on, then
-/// pressed and hovered states.
-fn switch_frame(on: bool, frames: usize) -> usize {
-    usize::from(on).min(frames.saturating_sub(1))
-}
+#[path = "wave_view.rs"]
+mod wave_view;
 
 /// Decoded images the interface draws, by asset index; `None` failed to load.
 #[derive(Default)]
 pub struct Assets {
     loaded: HashMap<usize, Option<Arc<Picture>>>,
+    wallpapers: HashMap<usize, Option<Arc<Picture>>>,
     fonts: HashMap<usize, Option<Font>>,
     pub meter: Option<Arc<dyn Fn(Option<u32>, u8) -> [f32; 2] + Send + Sync>>,
     identities: HashMap<usize, ir::Asset>,
     preparation: Option<super::picture_worker::Preparation>,
+    wave_views: Option<wave_view::Preparation>,
+    wave_version: u64,
     /// Bumped when the face's widgets change (Face::sync); keys retained widgets.
     pub(super) epoch: u64,
     /// Hash of which pictures and fonts are loaded; keys retained widgets.
@@ -167,6 +177,10 @@ pub struct Assets {
 }
 
 impl Assets {
+    #[cfg(test)]
+    pub(super) fn worker_identity(&self) -> Option<usize> {
+        self.preparation.as_ref().map(|p| p.worker_identity())
+    }
     pub fn prepare(
         &mut self,
         path: &std::path::Path,
@@ -176,8 +190,34 @@ impl Assets {
         scale: f64,
         values: &Values,
     ) {
-        if self.preparation.as_ref().is_none_or(|p| p.path() != path) {
-            self.preparation = Some(super::picture_worker::Preparation::new(path));
+        self.prepare_owned(path, None, face, page, presentation, scale, values);
+    }
+    pub fn prepare_for_program(
+        &mut self, path: &std::path::Path, program: u32, face: &Interface,
+        page: PageRef, presentation: Presentation, scale: f64, values: &Values,
+    ) {
+        self.prepare_owned(path, Some(program), face, page, presentation, scale, values);
+    }
+    fn prepare_owned(
+        &mut self, path: &std::path::Path, program: Option<u32>, face: &Interface,
+        page: PageRef, presentation: Presentation, scale: f64, values: &Values,
+    ) {
+        if face.widgets.iter().any(|w| w.uvi_wave_view_request.is_some()) {
+            if self.wave_views.as_ref().is_none_or(|p| !p.same_owner(path, program)) {
+                self.wave_views = Some(wave_view::Preparation::new(path, program));
+            }
+            let wave = self.wave_views.as_mut().unwrap();
+            wave.prepare(face, page, scale);
+            self.version ^= self.wave_version.rotate_left(17) ^ wave.revision.rotate_left(17);
+            self.wave_version = wave.revision;
+        } else if self.wave_views.take().is_some() {
+            self.version ^= self.wave_version.rotate_left(17);
+            self.wave_version = 0;
+        }
+        if self.preparation.as_ref().is_none_or(|p| p.path() != path || p.program() != program) {
+            self.preparation = Some(program.map_or_else(
+                || super::picture_worker::Preparation::new(path),
+                |program| super::picture_worker::Preparation::new_for_program(path, program)));
         }
         let prepared =
             self.preparation
@@ -188,9 +228,14 @@ impl Assets {
             return;
         }
         self.loaded.clear();
+        self.wallpapers.clear();
         self.fonts.clear();
-        for (n, picture, font) in prepared {
+        for (n, picture, font, plane) in prepared {
             if let Some(picture) = picture {
+                if plane == super::picture_worker::Plane::Wallpaper {
+                    self.wallpapers.insert(n, Some(picture));
+                    continue;
+                }
                 // Knobs sharing one strip each need their own frame of it.
                 let merged = match self.loaded.remove(&n).flatten() {
                     Some(have) if have.window == picture.window && have.count == picture.count => {
@@ -218,9 +263,9 @@ impl Assets {
             v(&mut h);
             std::hash::Hasher::finish(&h)
         };
-        let entry = |n: &usize, p: &Option<Arc<Picture>>| {
+        let entry = |plane: u8, n: &usize, p: &Option<Arc<Picture>>| {
             let frames = p.iter().flat_map(|p| p.indices.iter().zip(&p.frames));
-            hash(&|h| std::hash::Hash::hash(&(n, p.as_ref().map(|p| (p.window, p.count))), h))
+            hash(&|h| std::hash::Hash::hash(&(plane, n, p.as_ref().map(|p| (p.window, p.count))), h))
                 .wrapping_add(
                     frames
                         .map(|(i, f)| hash(&|h| std::hash::Hash::hash(&(i, Arc::as_ptr(f) as usize), h)))
@@ -230,12 +275,31 @@ impl Assets {
         self.version = self
             .loaded
             .iter()
-            .map(|(n, p)| entry(n, p))
+            .map(|(n, p)| entry(0, n, p))
+            .chain(self.wallpapers.iter().map(|(n, p)| entry(1, n, p)))
             .chain(self.fonts.keys().map(|n| (*n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
-            .fold(0, u64::wrapping_add);
+            .fold(0, u64::wrapping_add) ^ self.wave_version.rotate_left(17);
     }
     pub fn pending(&self) -> usize {
         self.preparation.as_ref().map_or(0, |p| p.pending())
+            + self.wave_views.as_ref().map_or(0, |p| p.pending())
+    }
+
+    /// Numeric-only observations from the real manual display provider.
+    #[cfg(feature = "shots")]
+    pub fn wave_view_observations(&self, face: &Interface) -> serde_json::Value {
+        let rows: Vec<_> = face.widgets.iter().enumerate().filter_map(|(n, widget)| {
+            let request = widget.uvi_wave_view_request.as_ref()?;
+            let prepared = self.wave_views.as_ref().and_then(|p| p.get(WidgetRef(n), request));
+            Some(serde_json::json!({"widget":n,"visible":face.visible(WidgetRef(n)),
+                "status":self.wave_views.as_ref().map_or("not_prepared", |p| p.status(WidgetRef(n), request)),
+                "frames":prepared.map(|p| p.envelope.frames),"sample_rate":prepared.map(|p| p.envelope.sample_rate),
+                "bins":prepared.map(|p| p.envelope.peaks.len()),
+                "binding_requested":request.binding != ir::UviWaveViewBinding::Unspecified}))
+        }).collect();
+        serde_json::json!({"scope":"actual authorized manual display source; native binding/paint unverified",
+            "rows":rows,"requested_resolved_envelopes":self.wave_views.as_ref().map(|p| p.counts()),
+            "stale_results":self.wave_views.as_ref().map(|p| p.stale),"request_limit_drops":self.wave_views.as_ref().map(|p| p.dropped)})
     }
 
     #[cfg(feature = "shots")]
@@ -245,10 +309,18 @@ impl Assets {
             .map_or(Default::default(), |p| p.scan)
     }
     #[cfg(feature = "shots")]
+    pub fn probes(&self) -> &[super::pictures::AssetProbe] {
+        self.preparation.as_ref().map_or(&[], |p| p.probes())
+    }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize {
+        self.preparation.as_ref().map_or(0, |p| p.probe_dropped())
+    }
+    #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
-        self.preparation
-            .as_ref()
-            .map_or(Vec::new(), |p| p.failures())
+        let mut failures = self.preparation.as_ref().map_or(Vec::new(), |p| p.failures());
+        if let Some(waves) = &self.wave_views { failures.extend(waves.failures()); }
+        failures
     }
     #[cfg(feature = "shots")]
     pub fn completed_key_bytes(&self) -> Vec<(String, usize)> {
@@ -303,10 +375,20 @@ impl Assets {
         self.loaded.get(&a.0)?.as_ref()
     }
 
+    /// Runtime preparation keeps raw wallpaper viewports separate from control
+    /// frames of the same asset. Synchronous/manual assets have one full image.
+    pub(super) fn wallpaper(&self, a: ir::AssetRef) -> Option<&Arc<Picture>> {
+        if self.preparation.is_some() {
+            self.wallpapers.get(&a.0)?.as_ref()
+        } else {
+            self.get(a)
+        }
+    }
+
     /// Bytes of decoded pixels held, each image counted once.
     pub fn bytes(&self) -> usize {
         if let Some(p) = &self.preparation {
-            return p.bytes();
+            return p.bytes() + self.wave_views.as_ref().map_or(0, |p| p.bytes());
         }
         let mut seen = std::collections::HashSet::new();
         self.loaded
@@ -322,15 +404,43 @@ impl Assets {
 /// Values the interface shows, by control.
 pub type Values = HashMap<ControlId, f64>;
 
+/// Committed scalar readback, then typed state, then the authored kind default.
+/// Keep non-scalar payloads and numeric bit patterns under the painter's policy.
+pub(super) fn effective_value(widget: &ir::Widget, values: &Values) -> f64 {
+    if let Binding::Control(control) = widget.binding
+        && let Some(value) = values.get(&control)
+    {
+        return *value;
+    }
+    match widget.value.as_ref() {
+        Some(ir::Value::Integer(value)) => f64::from(*value),
+        Some(ir::Value::Real(value)) => *value,
+        _ => match &widget.kind {
+            Kind::Knob { range, .. }
+            | Kind::Slider { range, .. }
+            | Kind::ValueEdit { range, .. } => range.default,
+            _ => widget.initial_value,
+        },
+    }
+}
+
 /// Runtime snapshots and pending widget edits, retained by the owning Face.
 #[derive(Default)]
 pub struct InputState {
     pub values: HashMap<WidgetRef, ir::Value>,
     pub meters: HashMap<WidgetRef, f64>,
+    /// Raw Kontra bus observations; never coerced to a native scalar meter.
+    pub uvi_meters: HashMap<WidgetRef, sampler_uvi::meters::Observation>,
     pub peaks: HashMap<WidgetRef, Arc<[(f32, f32)]>>,
     pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
+    /// UVI primary actions retain their input origin; numeric edits stay scalar.
+    pub activations:Vec<ActivationEdit>,
+    // One actual primary capture, not a per-widget history or an engine ID.
+    uvi_pointer:UviPointerGesture,
     menu: Option<WidgetRef>,
+    menu_path: Vec<String>,
+    menu_hovered: Option<String>,
     typing: Option<(String, String)>,
     drafts: HashMap<WidgetRef, String>,
     cursors: HashMap<WidgetRef, usize>,
@@ -343,7 +453,34 @@ pub struct InputState {
     pub(super) generated: Option<Arc<super::generated::Layout>>,
 }
 
+#[derive(Clone,Copy,Default)]
+enum UviPointerGesture {
+    #[default]
+    Idle,
+    Held{widget:WidgetRef,control:ControlId,on_press:bool,consumed:bool},
+    // Owner/schema/view retirement cancels a physical capture until button-up;
+    // it cannot turn the previous owner's press into a new target's release.
+    Cancelled,
+}
 impl InputState {
+    pub fn reset_drafts(&mut self){
+        *self=Self{uvi_pointer:UviPointerGesture::Cancelled,..Default::default()};
+    }
+    pub fn cancel_pointer(&mut self){self.uvi_pointer=UviPointerGesture::Cancelled;}
+    pub fn adopt_uvi_schema(&mut self,same_owner:bool,face:&Interface){
+        let previous=self.uvi_pointer;
+        self.reset_drafts();
+        if let UviPointerGesture::Held{widget,control,on_press,..}=previous
+            && same_owner&&face.source==ir::Source::FalconLua
+            && face.widgets.get(widget.0).is_some_and(|row|row.binding==Binding::Control(control)
+                &&row.activate_on_press==on_press
+                &&(matches!(row.kind,Kind::Button{..})||(matches!(row.kind,Kind::Menu{..})&&row.menu_cycle)))
+        {self.uvi_pointer=previous;}
+    }
+    pub fn finish_pointer_frame(&mut self,ui:&Ui){
+        if !ui.pointer().buttons.contains(Button::Primary){self.uvi_pointer=UviPointerGesture::Idle;}
+    }
+
     /// Retained widgets must rebuild when an editor opens, changes draft, or
     /// closes even if its committed control value has not changed yet.
     pub(super) fn numeric_revision(&self) -> u64 {
@@ -355,6 +492,8 @@ impl InputState {
         })
     }
 }
+
+pub struct ActivationEdit {pub widget:WidgetRef,pub activation:ir::UiActivation}
 
 pub struct Edit {
     pub widget: WidgetRef,
@@ -470,7 +609,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
             );
         }
     };
-    if let Some(pic) = page.background.image.and_then(|a| assets.get(a))
+    if let Some(pic) = page.background.image.and_then(|a| assets.wallpaper(a))
         && let Some(img) = pic.at(page.background.frame as usize)
     {
         let [wx, wy, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
@@ -493,20 +632,16 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         }
         let w = &face.widgets[at.0];
         let r = face.page_rect(at);
-        if x < r.x as f64
-            || y < r.y as f64
-            || x >= (r.x as f64 + r.width as f64)
-            || y >= (r.y as f64 + r.height as f64)
-        {
-            continue;
-        }
-        if let Some(c) = w.colors.background {
+        let contains = |width: f64, height: f64| {
+            x >= r.x && y >= r.y && x < r.x + width && y < r.y + height
+        };
+        if let Some(c) = w.colors.background.filter(|_| contains(r.width, r.height)) {
             blend(&mut rgb, c);
         }
         if w.hide.background {
             continue;
         }
-        if let Some(img) = w
+        if let Some((asset, img)) = w
             .images
             .iter()
             .find(|i| i.role == Use::Background)
@@ -514,17 +649,49 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
                 assets
                     .get(i.asset)
                     .and_then(|p| p.at(i.frame.unwrap_or(0) as usize))
+                    .map(|image| (i.asset, image))
             })
         {
+            let [width, height] = label_background_size(face, at, asset, [r.width, r.height], 1.);
+            if !contains(width, height) {
+                continue;
+            }
             sample(
                 &mut rgb,
                 img,
-                (x - r.x as f64) / r.width.max(1.) as f64 * img.width as f64,
-                (y - r.y as f64) / r.height.max(1.) as f64 * img.height as f64,
+                (x - r.x) / width.max(1.) * img.width as f64,
+                (y - r.y) / height.max(1.) * img.height as f64,
             );
         }
     }
     0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 140.
+}
+
+/// Kontakt Label text/control bounds and its picture's bounds are independent.
+/// NI's resizable flags decide which picture axes may follow WIDTH/HEIGHT.
+fn label_background_size(
+    face: &Interface,
+    widget: WidgetRef,
+    asset: ir::AssetRef,
+    control: [f64; 2],
+    scale: f64,
+) -> [f64; 2] {
+    if !matches!(face.source, ir::Source::Ksp { .. } | ir::Source::PerformanceView)
+        || !matches!(face.widgets[widget.0].kind, Kind::Label)
+    {
+        return control;
+    }
+    let Some(ir::Asset { kind: ir::AssetKind::Image(meta), .. }) = face.assets.get(asset.0) else {
+        return control;
+    };
+    let Some(size) = meta.size else { return control };
+    let mut result = control;
+    for (axis, intrinsic) in [size.width * scale, size.height * scale].into_iter().enumerate() {
+        if !meta.stretch[axis] && intrinsic.is_finite() && intrinsic > 0. {
+            result[axis] = intrinsic;
+        }
+    }
+    result
 }
 
 fn art(
@@ -570,6 +737,7 @@ fn retained_art(
         ir::AssetKind::Image(m) => m,
         _ => ir::ImageMeta::default(),
     };
+    let [w, h] = label_background_size(face, n, asset, [w, h], scale);
     let r = face.page_rect(n);
     // The retained fill owns the image Arc, so this pointer cannot be reused
     // while that tree is live. Parent placement/clipping is rebuilt outside it;
@@ -591,10 +759,23 @@ fn retained_art(
             meta.margins.right,
         ),
     );
-    ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
+    let image = ui.memo(format!("{}-background", target(namespace, n)), deps, |_| {
         art(face, asset, p, frame, w, h, scale)
-    })
+    });
+    if matches!(face.source, ir::Source::Ksp { .. } | ir::Source::PerformanceView)
+        && matches!(face.widgets[n.0].kind, Kind::Label)
+    {
+        // A smaller fixed picture still starts at the control's authored
+        // position; the overlay's default alignment would center it instead.
+        image.at(0., 0.)
+    } else {
+        image
+    }
 }
+
+#[cfg(test)]
+#[path = "picture_geometry_tests.rs"]
+mod picture_geometry_tests;
 
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
 /// first cell's corner; `set_ui_height` rows are [`GRID_ROW_HEIGHT`] tall.
@@ -757,7 +938,7 @@ pub fn view_state(
         },
     ));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
-    if let Some(pic) = p.background.image.and_then(|a| assets.get(a))
+    if let Some(pic) = p.background.image.and_then(|a| assets.wallpaper(a))
         && let Some(img) = pic.at(p.background.frame as usize)
     {
         let [x, y, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
@@ -880,6 +1061,10 @@ pub fn view_state(
     if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) {
         layers.push(popup);
     }
+    if let Some(popup) = value_popup(ui, namespace, face, scale, values) {
+        layers.push(popup);
+    }
+    input.finish_pointer_frame(ui);
     stack(layers)
         .w(w)
         .h(h)
@@ -1036,6 +1221,35 @@ fn gesture(w: &ir::Widget, scale: f64, knob: bool) -> (bool, f64) {
     (vertical, travel * scale)
 }
 
+fn uvi_activation(ui:&Ui,id:&str,widget:WidgetRef,control:ControlId,on_press:bool,input:&mut InputState)->Option<ir::UiActivation>{
+    let response=ui.get(id);
+    let raw=|mods:Mods|ir::UiModifiers{shift:mods.shift,ctrl:mods.ctrl,alt:mods.alt,cmd:mods.cmd};
+    if let UviPointerGesture::Held{widget:original,control:target,on_press:phase,..}=input.uvi_pointer
+        && original==widget&&(target!=control||phase!=on_press)
+    {input.uvi_pointer=UviPointerGesture::Cancelled;}
+    if response.pressed&&response.button==Some(Button::Primary)&&matches!(input.uvi_pointer,UviPointerGesture::Idle){
+        // Spend the physical gesture BEFORE enqueue; a refused press is never
+        // retried as a release after queue/schema/owner changes.
+        input.uvi_pointer=UviPointerGesture::Held{widget,control,on_press,consumed:on_press};
+        if on_press{return Some(ir::UiActivation{origin:ir::UiActivationOrigin::PointerDown,modifiers:Some(raw(response.mods))});}
+    }
+    if response.released&&response.clicked_with(Button::Primary)
+        && let UviPointerGesture::Held{widget:original,control:target,on_press:false,consumed:false}=input.uvi_pointer
+        && original==widget&&target==control&&!on_press
+    {
+        input.uvi_pointer=UviPointerGesture::Idle;
+        return Some(ir::UiActivation{origin:ir::UiActivationOrigin::PointerUp,modifiers:Some(raw(response.mods))});
+    }
+    // Key modifiers belong to the actual focused KeyPress, not pointer state.
+    if let Some(key)=ui.keys(id).iter().find(|key|matches!(key.key,Key::Enter|Key::Space)){
+        return Some(ir::UiActivation{origin:ir::UiActivationOrigin::Keyboard,modifiers:Some(raw(key.mods))});
+    }
+    if response.clicked_with(Button::Primary)&&!response.pressed&&!response.released{
+        return Some(ir::UiActivation{origin:ir::UiActivationOrigin::Accessibility,modifiers:None});
+    }
+    None
+}
+
 fn quantized(value: f64, range: &ir::Range) -> f64 {
     let value = match range.step.filter(|s| s.is_finite() && *s > 0.) {
         Some(step) => range.min + ((value - range.min) / step).round() * step,
@@ -1147,10 +1361,11 @@ pub(super) fn widget_state(
             (false, true) => Use::Hover,
             _ => Use::Strip,
         };
-        wd.image(role)
-            .and_then(|a| assets.get(a))
+        [wd.image(role), wd.image(Use::Strip)]
+            .into_iter()
+            .flatten()
             .filter(|_| bitmap || wd.label_in_image())
-            .or(strip)
+            .find_map(|a| Some((a, assets.get(a)?)))
     };
     let fixed = wd
         .images
@@ -1158,19 +1373,24 @@ pub(super) fn widget_state(
         .find(|i| i.role == Use::Strip)
         .and_then(|i| i.frame)
         .map(|f| f as usize);
+    let held = ui.get(id.as_str()).held;
+    let state_frame = |on, frames| {
+        if matches!(
+            face.source,
+            ir::Source::Ksp { .. } | ir::Source::PerformanceView
+        ) {
+            ir::kontakt_picture_frame(on, held, hovered, frames)
+        } else if frames >= 6 && matches!(wd.kind, Kind::Button { .. } | Kind::Switch) {
+            // UVI setStripImage: off/on, hovered off/on, held off/on.
+            // The native Kontakt order above is deliberately different.
+            usize::from(on) + if held { 4 } else if hovered { 2 } else { 0 }
+        } else {
+            usize::from(on).min(frames.saturating_sub(1))
+        }
+    };
     let control = match wd.binding {
         Binding::Control(c) => Some(c),
         _ => None,
-    };
-    let initial = match wd.value.as_ref() {
-        Some(ir::Value::Integer(value)) => f64::from(*value),
-        Some(ir::Value::Real(value)) => *value,
-        _ => match &wd.kind {
-            Kind::Knob { range, .. }
-            | Kind::Slider { range, .. }
-            | Kind::ValueEdit { range, .. } => range.default,
-            _ => wd.initial_value,
-        },
     };
     let mut enabled = wd.enabled;
     let mut opacity = wd.opacity;
@@ -1184,16 +1404,25 @@ pub(super) fn widget_state(
         parent = p.parent;
     }
     let can_edit = enabled && wd.intercepts_mouse;
+    let uvi_button=face.source==ir::Source::FalconLua
+        &&(matches!(wd.kind,Kind::Button{..})||(matches!(wd.kind,Kind::Menu{..})&&wd.menu_cycle));
+    let activation=if can_edit&&uvi_button{control.and_then(|control|uvi_activation(ui,&id,n,control,wd.activate_on_press,input))}else{None};
+    if let Some(activation)=activation{input.activations.push(ActivationEdit{widget:n,activation});}
     let policy = if face.source == ir::Source::FalconLua {
         GesturePolicy::Falcon
     } else {
         GesturePolicy::Kontakt
     };
     let numeric_edit = input.typing.as_ref().is_some_and(|(at, _)| at == &id);
-    let mut v = control
-        .and_then(|c| values.get(&c).copied())
-        .unwrap_or(initial);
-    let state = usize::from(v > 0.5)
+    let mut v = effective_value(wd, values);
+    // KSP responsive menu "on" is the open popup, not its selected value.
+    // Port the state selection from v1 0cb7a8a0:src/ui/perf_view.rs.
+    let on = if matches!(wd.kind, Kind::Menu { .. }) {
+        input.menu == Some(n)
+    } else if face.source == ir::Source::FalconLua && matches!(wd.kind, Kind::Button { momentary: true }) {
+        can_edit && held
+    } else { v > 0.5 };
+    let state = usize::from(on)
         + if ui.get(id.as_str()).held {
             2
         } else if hovered {
@@ -1213,7 +1442,7 @@ pub(super) fn widget_state(
     let before = v;
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink = match style {
-        Some(s) if !own_face && s.color.a > 0 => Fill::from(colour(s.color)),
+        Some(s) if bitmap || !own_face => Fill::from(colour(s.color)),
         _ if !own_face && light_under(face, assets, n) => Fill::from(Color::srgb(0.1, 0.1, 0.1)),
         _ => Fill::from(Role::Ink),
     };
@@ -1230,6 +1459,26 @@ pub(super) fn widget_state(
             None,
             false,
         )
+    };
+    let button_shift = if wd.text_shift_on_press && ui.get(id.as_str()).held {
+        scale
+    } else {
+        0.
+    };
+    let button_caption = || {
+        super::render_art::words(
+            if wd.hide.title { "" } else { &wd.text },
+            style,
+            assets,
+            bitmap,
+            ink.clone(),
+            w,
+            h,
+            scale,
+            wd.text_y,
+            false,
+        )
+        .offset(button_shift, button_shift)
     };
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
@@ -1358,24 +1607,21 @@ pub(super) fn widget_state(
         }
         Kind::Button { momentary: true } => {
             // UVI Button is stateless: one callback per activation, including keyboard.
-            if can_edit {
-                v = if face.source == ir::Source::FalconLua {
-                    if ui.get(id.as_str()).activated() {
-                        1.
-                    } else {
-                        0.
-                    }
-                } else {
-                    if ui.get(id.as_str()).held { 1. } else { 0. }
-                };
+            // UVI Button has no persistent value. Its separate activation
+            // payload must not make a scalar pulse (or a later reset edit).
+            if can_edit && face.source != ir::Source::FalconLua {
+                v = if ui.get(id.as_str()).held { 1. } else { 0. };
             }
             let pressed = can_edit && ui.get(id.as_str()).held;
             match state_picture(pressed) {
-                Some(p) => block(w, h).radius(0).fill(
-                    picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len())))
-                        .unwrap_or(Fill::from(Role::Field)),
-                ),
-                None => row![words(wd.text.clone())]
+                Some((a, p)) => stack![
+                    {
+                        let frame = fixed.unwrap_or_else(|| state_frame(v > 0.5, p.len()));
+                        art(face, a, p, frame, w, h, scale)
+                    },
+                    button_caption()
+                ],
+                None => stack![button_caption()]
                     .align(Align::Center)
                     .justify(Justify::Center)
                     .radius(1)
@@ -1385,16 +1631,19 @@ pub(super) fn widget_state(
             .a11y(A11y::Button)
         }
         Kind::Button { .. } | Kind::Switch => {
-            if can_edit && ui.get(id.as_str()).activated() {
+            if can_edit && (if uvi_button{activation.is_some()}else{ui.get(id.as_str()).activated()}) {
                 v = if v > 0.5 { 0. } else { 1. };
             }
             let on = v > 0.5;
             match state_picture(on) {
-                Some(p) => block(w, h).radius(0).fill(
-                    picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.len())))
-                        .unwrap_or(Fill::from(Role::Field)),
-                ),
-                None => row![words(wd.text.clone())]
+                Some((a, p)) => stack![
+                    {
+                        let frame = fixed.unwrap_or_else(|| state_frame(on, p.len()));
+                        art(face, a, p, frame, w, h, scale)
+                    },
+                    button_caption()
+                ],
+                None => stack![button_caption()]
                     .align(Align::Center)
                     .justify(Justify::Center)
                     .radius(1)
@@ -1422,10 +1671,12 @@ pub(super) fn widget_state(
                 .iter()
                 .position(|i| f64::from(i.value) == v)
                 .or((!shown.is_empty()).then_some(0));
-            if can_edit && ui.get(id.as_str()).activated() && !shown.is_empty() {
+            if can_edit && (if uvi_button{activation.is_some()}else{ui.get(id.as_str()).activated()}) && !shown.is_empty() {
                 if wd.menu_cycle {
                     v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
                 } else {
+                    input.menu_path.clear();
+                    input.menu_hovered = None;
                     input.menu = if input.menu == Some(n) { None } else { Some(n) };
                 }
             }
@@ -1434,34 +1685,44 @@ pub(super) fn widget_state(
                 .find(|i| f64::from(i.value) == v)
                 .map(|i| i.text.clone())
                 .unwrap_or_default();
-            match strip {
+            let content = |label| {
+                let mut parts = vec![words(label).flex(1).min_w(0)];
+                if wd.menu_arrow && !wd.menu_cycle {
+                    parts.push(glyph(Icon::Down, TIGHT * 2. * scale, wd.colors.arrow.map_or(secondary(), |c| Fill::from(colour(c)))));
+                }
+                row(parts).align(Align::Center).pad((TIGHT * scale, 0.))
+            };
+            let menu = match strip {
                 Some(p) => stack![
-                    block(w, h)
-                        .radius(0)
-                        .fill(picture(p, 0).unwrap_or(Fill::from(Role::Field))),
-                    row![words(label)]
-                        .align(Align::Center)
-                        .pad((TIGHT * scale, 0.))
+                    block(w, h).radius(0).fill(
+                        picture(
+                            p,
+                            fixed.unwrap_or_else(|| {
+                                if face.source == ir::Source::FalconLua {
+                                    0
+                                } else {
+                                    state_frame(input.menu == Some(n), p.len())
+                                }
+                            })
+                        )
+                        .unwrap_or(Fill::from(Role::Field))
+                    ),
+                    content(label)
                         .w(w)
                         .h(h)
                 ],
-                // An authored Lua menu has its own backdrop (often a blank one over
-                // the page art): text only, never the generic tinted box and caret.
+                // Authored background images remain the menu's backdrop.
                 None if face.source == ir::Source::FalconLua
                     && wd.image(Use::Background).is_some() =>
                 {
-                    row![words(label).flex(1).min_w(0)]
-                        .align(Align::Center)
-                        .pad((TIGHT * scale, 0.))
+                    content(label)
                 }
-                None => row![
-                    words(label).flex(1).min_w(0),
-                    glyph(Icon::Down, TIGHT * 2. * scale, secondary())
-                ]
-                .align(Align::Center)
-                .pad((TIGHT * scale, 0.))
-                .fill(Role::Ink.alpha(0.08)),
-            }
+                None => content(label).fill(Role::Ink.alpha(0.08)),
+            };
+            let menu = if let Some(ink) = wd.colors.outline {
+                menu.stroke(colour(ink)).stroke_width(scale)
+            } else { menu };
+            menu
             .focusable()
             .a11y(A11y::Button)
         }
@@ -1563,6 +1824,11 @@ pub(super) fn widget_state(
         ),
         Kind::LevelMeter { orientation } => {
             let level = input.meters.get(&n).copied().unwrap_or_else(|| {
+                // A Falcon element/input/sum request needs an exact provider.
+                // An unavailable tap must not display the Program output.
+                if face.source == ir::Source::FalconLua {
+                    return 0.;
+                }
                 let (bus, channel) = match wd.binding {
                     Binding::Meter { bus, channel } => (bus, channel),
                     _ => (None, 0),
@@ -1597,6 +1863,8 @@ pub(super) fn widget_state(
             steps_shown,
         } if !wd.components.is_empty() => {
             let shown = steps_shown.unwrap_or(*columns).min(*columns) as usize;
+            let edge = wd.table_inner_edge.filter(|edge| !edge.visible || edge.color.is_some());
+            let mut samples = Vec::with_capacity(shown);
             let bars = (0..shown)
                 .map(|c| {
                     let cid = wd.components.get(c).copied();
@@ -1633,14 +1901,18 @@ pub(super) fn widget_state(
                     if let Some(id) = cid {
                         values.insert(id, value);
                     }
+                    samples.push(value);
                     editor
                         .unwrap_or_else(|| {
-                            super::render_art::table(
-                                vec![value],
-                                *range,
-                                *bipolar,
-                                wd.colors,
-                            )
+                            if edge.is_some() {
+                                // Keep the cell's exact input identity over a
+                                // single continuous table drawing.
+                                block(0., 0.)
+                            } else {
+                                super::render_art::table_with_style(
+                                    vec![value], *range, *bipolar, wd.colors, None, wd.table_fill,
+                                )
+                            }
                         })
                         .flex(1)
                         .h(h)
@@ -1654,7 +1926,16 @@ pub(super) fn widget_state(
                         })
                 })
                 .collect::<Vec<_>>();
-            row(bars).gap(1).w(w).h(h)
+            let cells = row(bars).gap(if edge.is_some() { 0. } else { 1. }).w(w).h(h);
+            if edge.is_some() {
+                stack![
+                    super::render_art::table_with_style(samples, *range, *bipolar, wd.colors, edge, wd.table_fill)
+                        .w(w).h(h),
+                    cells
+                ].w(w).h(h)
+            } else {
+                cells
+            }
         }
         Kind::Table {
             columns,
@@ -1731,7 +2012,7 @@ pub(super) fn widget_state(
                 }
             }
             samples.truncate(shown);
-            super::render_art::table(samples, *range, *bipolar, wd.colors)
+            super::render_art::table_with_style(samples, *range, *bipolar, wd.colors, wd.table_inner_edge, wd.table_fill)
                 .cursor(Cursor::Crosshair)
                 .focusable()
         }
@@ -2039,13 +2320,26 @@ pub(super) fn widget_state(
             }
             col(rows).gap(0).scroll().fill(Role::Ink.alpha(0.06))
         }
-        Kind::Waveform | Kind::Wavetable { .. } => super::render_art::waveform(
-            input.peaks.get(&n).cloned().unwrap_or_default(),
-            wd.waveform.clone(),
-            input.wave_duration_us.get(&n).copied(),
-            wd.colors,
-            wd.hide.background,
-        ),
+        Kind::Waveform | Kind::Wavetable { .. } => {
+            if let Some(request) = &wd.uvi_wave_view_request {
+                let envelope = assets.wave_views.as_ref().and_then(|p| p.get(n, request));
+                // Only the exact current manual provider can supply these peaks.
+                // Kontakt/input-state peaks and bound cursor data cannot substitute.
+                let mut colors = wd.colors;
+                if let Some(high) = request.colors.high_wave
+                    && request.colors.low_wave == Some(high) { colors.wave = Some(high); }
+                super::render_art::waveform(
+                    envelope.map(|e| e.envelope.peaks.clone()).unwrap_or_default(),
+                    None, envelope.map(|e| e.envelope.duration_us), colors,
+                    wd.hide.background, request.colors.axis,
+                )
+            } else {
+                super::render_art::waveform(
+                    input.peaks.get(&n).cloned().unwrap_or_default(), wd.waveform.clone(),
+                    input.wave_duration_us.get(&n).copied(), wd.colors, wd.hide.background, None,
+                )
+            }
+        },
         Kind::MouseArea => {
             let response = ui.get(id.as_str());
             if can_edit && (response.pressed || response.released) {
@@ -2073,7 +2367,7 @@ pub(super) fn widget_state(
     if let Some(c) = control
         && wd.components.is_empty()
     {
-        if can_edit && v.to_bits() != before.to_bits() {
+        if can_edit && !uvi_button && v.to_bits() != before.to_bits() {
             let response = ui.get(id.as_str());
             let mods = if numeric_edit || matches!(wd.kind, Kind::Menu { .. } | Kind::ValueEdit { .. }) {
                 Mods::default()
@@ -2194,6 +2488,32 @@ pub(super) fn widget_state(
     }
 }
 
+/// Non-interactive value readout pinned to the active authored control. The
+/// source chooses whether it exists; it never replaces an authored tooltip.
+fn value_popup(ui: &Ui, namespace: &str, face: &Interface, scale: f64, values: &Values) -> Option<El> {
+    let (n, wd) = face.widgets.iter().enumerate().find_map(|(index, wd)| {
+        let n = WidgetRef(index);
+        if wd.popup_display != Some(true) || !wd.enabled || !face.visible(n)
+            || !matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. }) { return None; }
+        let response=ui.get(target(namespace,n));
+        (response.held || response.dragged || response.wheel != Vec2::ZERO || !ui.keys(target(namespace,n)).is_empty()).then_some((n,wd))
+    })?;
+    let Binding::Control(control) = wd.binding else { return None; };
+    let (range, display) = match &wd.kind {
+        Kind::Knob { range, display } => (range, display.clone()),
+        Kind::Slider { range, .. } => (range, ir::Display::default()),
+        _ => return None,
+    };
+    let value=values.get(&control).copied().unwrap_or(range.default);
+    let shown=wd.value_text.clone().unwrap_or_else(|| display.format_value(value,range.step==Some(1.),face.source));
+    Some(stack![caption(shown).fill(Role::Ink)]
+        .anchor(Align::Start,Align::Start)
+        .pad((SPACE*scale,TIGHT*scale))
+        .fill(Role::Raised).radius(4.)
+        .pin(Pin::to(target(namespace,n)).area(Area::BottomStart).gap(TIGHT*scale).fallback(Area::TopStart))
+        .id(format!("/{}-value-popup",target(namespace,n))))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn menu_popup(
     ui: &mut Ui,
@@ -2209,14 +2529,25 @@ pub(super) fn menu_popup(
     let wd = face.widgets.get(n.0)?;
     let Kind::Menu { items } = &wd.kind else {
         input.menu = None;
+        input.menu_path.clear();
+        input.menu_hovered = None;
         return None;
     };
     let anchor = target(namespace, n);
     let popup = format!("{anchor}-popup");
     if !wd.enabled || !face.visible(n) || ui.dismissed(&[popup.as_str(), anchor.as_str()]) {
         input.menu = None;
+        input.menu_path.clear();
+        input.menu_hovered = None;
         return None;
     }
+    if let Some(tree) = &wd.menu_hierarchy {
+        return menu_hierarchy::popup(
+            ui, namespace, face, n, tree, scale, values, input, width, height,
+        );
+    }
+    input.menu_path.clear();
+    input.menu_hovered = None;
     let mut rows = Vec::new();
     for (at, item) in items.iter().enumerate().filter(|(_, item)| item.visible) {
         let id = format!("{anchor}-item-{at}");
@@ -2238,6 +2569,8 @@ pub(super) fn menu_popup(
         rows.push(
             caption(item.text.clone())
                 .pad((TIGHT * scale, SPACE * scale))
+                .h(CONTROL * scale)
+                .w(Len::Pct(100.))
                 .fill(Role::Ink)
                 .focusable()
                 .a11y(A11y::Button)
@@ -2284,6 +2617,9 @@ pub(super) fn menu_popup(
             .at(x, y),
     )
 }
+
+#[path = "menu_hierarchy.rs"]
+mod menu_hierarchy;
 
 /// Detect the owning target before validating a payload, so an invalid batch
 /// cannot fall through into a rack/instrument drop.
@@ -2765,6 +3101,9 @@ mod page_layout_tests {
     #[test]
     fn retained_photo_does_not_skip_knob_menu_or_live_meter_reads() {
         let (mut face, mut assets) = photo_face();
+        // This fixture exercises Kontakt's legacy output provider. Falcon
+        // element taps require their dedicated resolved request/readback path.
+        face.source = ir::Source::Ksp { slot: 0 };
         face.pages[0].size = ir::Size { width: 240.0, height: 140.0 };
         face.widgets.push(ir::Widget::new("menu", PageRef(0), ir::Rect::new(110, 10, 100, 24), Kind::Menu {
             items: vec![

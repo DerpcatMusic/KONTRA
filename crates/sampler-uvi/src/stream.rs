@@ -3,7 +3,7 @@
 //! read, never written out) is decoded a window at a time through the same
 //! decoder a full load uses, so a streamed frame equals the loaded frame.
 
-use sampler_kontakt::{AssetSource, SampleReader};
+use sampler_kontakt::{AssetSource, EncodedChannelReader, FileIdentity, SampleReader};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -11,19 +11,12 @@ use std::{
     sync::Arc,
 };
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::{Decoder, DecoderOptions},
-    errors::Error as AudioError,
-    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
-    io::{MediaSource, MediaSourceStream},
+    io::MediaSource,
     meta::{Limit, MetadataOptions},
-    probe::Hint,
 };
 
 /// Bytes per file read; a multiple of the cipher's 512-byte blocks.
 const CHUNK: usize = 32 << 10;
-/// A read this far past the decoded window decodes forward rather than seeks.
-const SKIP_FRAMES: u64 = 16384;
 
 /// Where one encoded audio file's bytes live.
 #[derive(Clone)]
@@ -51,7 +44,7 @@ impl Origin {
                     0,
                     meta.len(),
                     None,
-                    Guard::Loose(meta.len(), meta.modified().ok()),
+                    Guard::Loose(FileIdentity::capture(&meta)?),
                 )
             }
             #[cfg(feature = "library-access")]
@@ -80,14 +73,38 @@ impl Origin {
             buf: Vec::new(),
             at: 0,
             riff: false,
+            repair_riff: true,
         })
+    }
+}
+
+struct FrozenOrigin {
+    origin: Origin,
+    loose: Option<FileIdentity>,
+}
+impl FrozenOrigin {
+    fn admit(origin: Origin) -> io::Result<Self> {
+        let loose = match &origin {
+            Origin::File(path) => Some(FileIdentity::capture(&std::fs::metadata(path)?)?),
+            #[cfg(feature = "library-access")]
+            Origin::Member { .. } => None,
+        };
+        Ok(Self { origin, loose })
+    }
+    fn open(&self, counted: bool) -> io::Result<Bytes> {
+        let mut bytes = self.origin.open(counted)?;
+        if let Some(stamp) = &self.loose {
+            stamp.check(&bytes.file)?;
+            bytes.guard = Guard::Loose(stamp.clone());
+        }
+        Ok(bytes)
     }
 }
 
 /// What a read re-checks, so a library changed under a stream fails cleanly.
 enum Guard {
-    /// Length and modification time of a loose file when it was opened.
-    Loose(u64, Option<std::time::SystemTime>),
+    /// Shared immutable file identity captured when the source was admitted.
+    Loose(FileIdentity),
     #[cfg(feature = "library-access")]
     Bank(Arc<crate::ufs::Ufs>),
 }
@@ -95,13 +112,7 @@ enum Guard {
 impl Guard {
     fn check(&self, file: &File) -> io::Result<()> {
         match self {
-            Self::Loose(len, modified) => {
-                let meta = file.metadata()?;
-                if meta.len() != *len || meta.modified().ok() != *modified {
-                    return Err(invalid("sample file changed while streaming"));
-                }
-                Ok(())
-            }
+            Self::Loose(stamp) => stamp.check(file),
             #[cfg(feature = "library-access")]
             Self::Bank(ufs) => ufs.check_snapshot(file).map_err(invalid),
         }
@@ -122,6 +133,7 @@ struct Bytes {
     buf: Vec<u8>,
     at: u64,
     riff: bool,
+    repair_riff: bool,
 }
 
 impl Read for Bytes {
@@ -164,7 +176,7 @@ impl Read for Bytes {
                 self.riff = self.buf.starts_with(b"RIFF");
             }
             // Symphonia needs a consistent RIFF extent; banks do not always keep one.
-            if self.riff && start == 0 && self.buf.len() >= 8 {
+            if self.repair_riff && self.riff && start == 0 && self.buf.len() >= 8 {
                 self.buf[4..8].copy_from_slice(&((self.size - 8) as u32).to_le_bytes());
             }
         }
@@ -201,154 +213,46 @@ fn invalid(e: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
 }
 
-/// One encoded file, read by frame position.
+/// One normal guarded encoded source, delegated to the shared packet owner.
 struct Stream {
-    format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
-    track: u32,
+    reader: EncodedChannelReader,
     channels: usize,
     rate: u32,
     frames: u64,
-    buffer: Option<SampleBuffer<f32>>,
-    /// Interleaved samples of the last decoded packet, from frame `start`.
-    window: Vec<f32>,
-    start: u64,
 }
 
 impl Stream {
-    fn open_counted(origin: &Origin, counted: bool) -> io::Result<Self> {
-        let stream = MediaSourceStream::new(Box::new(origin.open(counted)?), Default::default());
+    fn open_counted(origin: &FrozenOrigin, counted: bool) -> io::Result<Self> {
         let metadata = MetadataOptions {
             limit_metadata_bytes: Limit::Maximum(2 << 20),
             limit_visual_bytes: Limit::Maximum(2 << 20),
         };
-        let mut format = symphonia::default::get_probe()
-            .format(&Hint::new(), stream, &FormatOptions::default(), &metadata)
-            .map_err(|e| invalid(format!("not WAV, AIFF or FLAC: {e}")))?
-            .format;
-        let track = format
-            .default_track()
-            .ok_or_else(|| invalid("no audio track"))?;
-        let (id, params) = (track.id, track.codec_params.clone());
-        let rate = params
-            .sample_rate
-            .ok_or_else(|| invalid("undeclared sample rate"))?;
-        let channels = params
-            .channels
-            .ok_or_else(|| invalid("undeclared channel count"))?
-            .count();
-        let frames = match params.n_frames {
-            Some(n) => n,
-            None => {
-                let mut total = 0;
-                loop {
-                    match format.next_packet() {
-                        Ok(p) if p.track_id() == id => total += p.dur,
-                        Ok(_) => {}
-                        Err(AudioError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                            break;
-                        }
-                        Err(e) => return Err(invalid(e)),
-                    }
-                }
-                format
-                    .seek(
-                        SeekMode::Accurate,
-                        SeekTo::TimeStamp {
-                            ts: 0,
-                            track_id: id,
-                        },
-                    )
-                    .map_err(invalid)?;
-                total
-            }
-        };
-        if rate == 0 || channels == 0 || frames == 0 {
-            return Err(invalid("invalid audio dimensions"));
-        }
-        let decoder = symphonia::default::get_codecs()
-            .make(&params, &DecoderOptions::default())
-            .map_err(invalid)?;
+        let reader = EncodedChannelReader::open_legacy(Box::new(origin.open(counted)?), &metadata)?;
         Ok(Self {
-            format,
-            decoder,
-            track: id,
-            channels,
-            rate,
-            frames,
-            buffer: None,
-            window: Vec::new(),
-            // Nothing decoded yet: the first packet is frame 0.
-            start: 0,
+            channels: reader.channels(),
+            rate: reader.rate(),
+            frames: reader.frames(),
+            reader,
         })
     }
 
-    fn window_end(&self) -> u64 {
-        self.start + (self.window.len() / self.channels) as u64
-    }
-
-    /// Decode the next packet into the window.
-    fn advance(&mut self) -> io::Result<()> {
-        loop {
-            let packet = self.format.next_packet().map_err(invalid)?;
-            if packet.track_id() != self.track {
-                continue;
-            }
-            let decoded = self.decoder.decode(&packet).map_err(invalid)?;
-            let buffer = self.buffer.get_or_insert_with(|| {
-                SampleBuffer::new(decoded.capacity() as u64, *decoded.spec())
-            });
-            buffer.copy_interleaved_ref(decoded);
-            self.window.clear();
-            self.window.extend_from_slice(buffer.samples());
-            self.start = packet.ts();
-            return Ok(());
-        }
-    }
-
-    /// Fill `out` (whole interleaved frames) from frame `start`.
     fn read(&mut self, start: u64, out: &mut [f32]) -> io::Result<()> {
-        let channels = self.channels;
-        let end = start + (out.len() / channels) as u64;
-        if end > self.frames {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        let mut at = start;
-        while at < end {
-            let window_end = self.window_end();
-            if at >= self.start && at < window_end {
-                let n = end.min(window_end) - at;
-                let from = ((at - self.start) as usize) * channels;
-                let to = ((at - start) as usize) * channels;
-                let len = n as usize * channels;
-                out[to..to + len].copy_from_slice(&self.window[from..from + len]);
-                at += n;
-                continue;
-            }
-            // Decode forward when the target is at or just past the window,
-            // else seek (to a frame at or before it).
-            if !(at >= window_end && at - window_end < SKIP_FRAMES) {
-                let to = SeekTo::TimeStamp {
-                    ts: at,
-                    track_id: self.track,
-                };
-                let sought = self.format.seek(SeekMode::Accurate, to).map_err(invalid)?;
-                self.decoder.reset();
-                self.window.clear();
-                self.start = sought.actual_ts;
-            }
-            self.advance()?;
-        }
-        Ok(())
+        self.reader.read_interleaved(start, out)
     }
 }
 
 /// An audio resource: one file, or a bundle of synchronized mono files.
 pub(crate) struct Sample {
-    pub parts: Vec<Origin>,
+    parts: Vec<FrozenOrigin>,
 }
 
 impl AssetSource for Sample {
+    fn open_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        self.open_accounted_channels(false,workspace_limit)
+    }
+    fn open_stream_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        self.open_accounted_channels(true,workspace_limit)
+    }
     fn open(&self) -> io::Result<SampleReader> {
         self.open_counted(false)
     }
@@ -358,6 +262,47 @@ impl AssetSource for Sample {
 }
 
 impl Sample {
+    fn new(parts: Vec<Origin>) -> io::Result<Self> {
+        Ok(Self {
+            parts: parts
+                .into_iter()
+                .map(FrozenOrigin::admit)
+                .collect::<io::Result<_>>()?,
+        })
+    }
+    fn open_accounted_channels(&self,counted:bool,workspace_limit:usize)->io::Result<Option<SampleReader>> {
+        if self.parts.len()>2 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI multipart stream needs owned decoder/container admission"));}
+        let mut admitted=None;
+        for part in &self.parts {
+            // The bounded header-discovery owner precedes the ordinary format
+            // probe. It is the same one CHUNK32KiB guarded Bytes buffer retained
+            // by a successful new-wide decoder, not an encoded source copy.
+            let origin_cost=CHUNK.checked_add(size_of::<Bytes>()).ok_or_else(||invalid("origin workspace overflow"))?;
+            if origin_cost>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"owned UVI header workspace admission"));}
+            let mut bytes=part.open(counted)?;
+            let profile=crate::sample_metadata::encoded_stream_admission(&mut bytes,origin_cost)?;
+            if let Some(profile)=profile {
+                if self.parts.len()!=1 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI multipart stream needs owned decoder/container admission"));}
+                let reader=(||->io::Result<SampleReader> {
+                    if profile.accounted_workspace_bytes()>workspace_limit {return Err(io::Error::new(io::ErrorKind::OutOfMemory,"accounted UVI encoded workspace admission"));}
+                    bytes.seek(SeekFrom::Start(0))?;
+                    let metadata=MetadataOptions {limit_metadata_bytes:Limit::Maximum(0),limit_visual_bytes:Limit::Maximum(0)};
+                    let reader=match profile {
+                        crate::sample_metadata::StreamAdmission::Pcm(profile)=>EncodedChannelReader::open_checked_pcm(Box::new(bytes),&metadata,profile,workspace_limit)?,
+                        crate::sample_metadata::StreamAdmission::Flac(profile)=>EncodedChannelReader::open_checked_flac(Box::new(bytes),profile,workspace_limit)?,
+                    };
+                    SampleReader::accounted_encoded(reader)
+                })().map_err(|error|crate::sample_metadata::wide_stream_refusal(format!("wide UVI owned decoder/container admission: {error}")))?;
+                admitted=Some(reader);
+            } else {
+                // Preserve the legacy mono/stereo owner and its existing
+                // conversion, metadata and bundle rules exactly.
+                let reader=Stream::open_counted(part,counted)?;
+                if reader.channels>2 {return Err(crate::sample_metadata::wide_stream_refusal("wide UVI stream needs owned decoder/container admission"));}
+            }
+        }
+        Ok(admitted)
+    }
     fn open_counted(&self, counted: bool) -> io::Result<SampleReader> {
         let mut streams = self
             .parts
@@ -411,10 +356,129 @@ impl Sample {
     }
 }
 
+pub(crate) fn sample_resource(
+    parts: Vec<Origin>,
+    geometry_override: bool,
+) -> Result<crate::script::SampleResource, String> {
+    if parts.is_empty() || parts.len() > 12 {
+        return Err("invalid sample channel bundle".into());
+    }
+    let opened = std::time::Instant::now();
+    let sample = Sample::new(parts).map_err(|e| e.to_string())?;
+    let reader = sample.open().map_err(|e| e.to_string())?;
+    let reader_open_ns = opened.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    let headers = std::time::Instant::now();
+    let mut metadata = None;
+    for origin in &sample.parts {
+        let mut bytes = origin.open(false).map_err(|e| e.to_string())?;
+        bytes.repair_riff = false;
+        let found =
+            crate::sample_metadata::parse_reader(&mut bytes, reader.frames(), geometry_override)
+                .map_err(|e| format!("sample file metadata {e:?}"))?;
+        if metadata.is_some_and(|old| old != found) {
+            return Err("channel bundle has inconsistent playback metadata".into());
+        }
+        metadata = Some(found);
+    }
+    let metadata = metadata.unwrap();
+    let channels = metadata
+        .channels
+        .ok_or("sample channel metadata unavailable")?;
+    let bits = metadata
+        .bits
+        .ok_or("sample bit depth metadata unavailable")?;
+    if channels > 2 || sample.parts.len() > 2 {
+        return Err("dynamic multi-channel source routing unsupported".into());
+    }
+    let count = sample.parts.len();
+    Ok(crate::script::SampleResource {
+        source: Arc::new(sample),
+        reader: Some(reader),
+        playback: metadata.playback(),
+        base_note: metadata.base_note,
+        fine_tune: metadata.fine_tune,
+        geometry_error: metadata.geometry_error.map(|e| format!("{e:?}")),
+        format_code: match metadata.format {
+            crate::sample_metadata::Format::Wav => 0,
+            crate::sample_metadata::Format::Aiff => 1,
+            crate::sample_metadata::Format::Flac => 7,
+        },
+        channels: if count > 1 { count as u16 } else { channels },
+        bits,
+        tempo: metadata.tempo,
+        timings: crate::script::SampleSourceTimings {
+            reader_open_ns,
+            metadata_ns: headers.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            ..Default::default()
+        },
+    })
+}
+
+pub(crate) fn loose_sample_resource(
+    dir: &std::path::Path,
+    request: crate::script::SamplePath<'_>,
+    geometry_override: bool,
+) -> Result<crate::script::SampleResource, String> {
+    let started = std::time::Instant::now();
+    let path = request.path.replace('\\', "/");
+    if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+        return Err("invalid sample path".into());
+    }
+    if path.starts_with('$') || path.to_ascii_lowercase().contains(".ufs/") {
+        return Err("sample reference requires its authored bank authority".into());
+    }
+    let split = |path: &str| -> Result<Vec<std::path::PathBuf>, String> {
+        if let Some((base, names)) = path.split_once('*') {
+            let names: Vec<_> = names.split('*').collect();
+            if !base.ends_with('/') || names.is_empty() || names.len() > 12
+                || names.iter().any(|n| n.is_empty() || n.contains('/')) {
+                return Err("invalid sample channel bundle".into());
+            }
+            Ok(names.into_iter().map(|name| format!("{base}{name}").into()).collect())
+        } else { Ok(vec![path.into()]) }
+    };
+    let files = split(&path)?;
+    let explicit = std::path::Path::new(&path).is_absolute();
+    // No host process CWD or unknown multi participates in this authority.
+    // An explicitly authored absolute path retains its exact old meaning.
+    let mut roots = Vec::new();
+    if explicit { roots.push(std::path::PathBuf::new()); }
+    else {
+        if let Some(script) = request.script_directory { roots.push(dir.join(script)); }
+        roots.push(dir.to_owned());
+    }
+    for (candidate, root) in roots.into_iter().enumerate() {
+        let paths: Vec<_> = files.iter().map(|p| root.join(p)).collect();
+        let mut missing = false;
+        for path in &paths {
+            match std::fs::metadata(path) {
+                Ok(m) if m.is_file() => {},
+                Ok(_) => return Err("sample source is not a regular file".into()),
+                Err(e) if e.kind()==io::ErrorKind::NotFound => { missing=true; break; },
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        if missing { continue; }
+        // Once a complete origin exists, corrupt headers, permissions and
+        // source-identity failures are final, never a different-file fallback.
+        let lookup_ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let mut resource = sample_resource(paths.into_iter().map(Origin::File).collect(), geometry_override)?;
+        resource.timings.path_candidates = candidate as u32 + 1;
+        resource.timings.lookup_ns = lookup_ns;
+        return Ok(resource);
+    }
+    Err("sample source is missing from the available script/program contexts".into())
+}
+
 /// The source of a loose file or bundle, checked by opening it once.
 pub(crate) fn source(parts: Vec<Origin>) -> Result<Arc<dyn AssetSource>, String> {
-    let sample = Sample { parts };
-    sample.open().map_err(|e| e.to_string())?;
+    let sample = Sample::new(parts).map_err(|e| e.to_string())?;
+    // New-wide sources must pass their normal guarded preprobe before the
+    // legacy allocating probe is considered. Header discovery does not create
+    // or publish Runtime storage and its bounded owner is dropped offaudio.
+    if sample.open_channels(8<<20).map_err(|e|e.to_string())?.is_none() {
+        sample.open().map_err(|e| e.to_string())?;
+    }
     Ok(Arc::new(sample))
 }
 
@@ -446,6 +510,30 @@ mod tests {
     }
 
     #[test]
+    fn loose_sample_contexts_fallback_only_when_missing_and_keep_explicit_paths_exact() {
+        let dir=std::env::temp_dir().join(format!("uvi-source-context-{}",std::process::id()));
+        let module=dir.join("Scripts/Engine");
+        std::fs::create_dir_all(&module).unwrap();
+        let bytes=wav(64,1,false);
+        std::fs::write(dir.join("tone.wav"),&bytes).unwrap();
+        let request=crate::script::SamplePath {path:"tone.wav",script_directory:Some("Scripts/Engine")};
+        let resource=loose_sample_resource(&dir,request,false).unwrap();
+        assert_eq!(resource.timings.path_candidates,2);
+        assert_eq!(resource.reader.unwrap().frames(),64);
+        std::fs::write(module.join("tone.wav"),b"corrupt chosen sample").unwrap();
+        assert!(loose_sample_resource(&dir,request,false).is_err(),"corrupt module candidate cannot fall through to good program sample");
+        std::fs::remove_file(module.join("tone.wav")).unwrap();
+        std::fs::create_dir(module.join("tone.wav")).unwrap();
+        assert!(loose_sample_resource(&dir,request,false).err().unwrap().contains("regular file"));
+        let explicit=dir.join("tone.wav");
+        let explicit=explicit.to_str().unwrap();
+        let resource=loose_sample_resource(&dir,crate::script::SamplePath {path:explicit,script_directory:Some("nonexistent")},false).unwrap();
+        assert_eq!(resource.timings.path_candidates,1);
+        assert!(loose_sample_resource(&dir,crate::script::SamplePath {path:"$Other.ufs/tone.wav",script_directory:None},false).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn v1_disk_counter_excludes_loads_and_counts_physical_uvi_reads() {
         use std::sync::atomic::Ordering::Relaxed;
         let dir = std::env::temp_dir().join(format!("uvi-read-counter-{}", std::process::id()));
@@ -453,9 +541,7 @@ mod tests {
         let path = dir.join("sample.wav");
         let bytes = wav(40000, 2, false);
         std::fs::write(&path, &bytes).unwrap();
-        let source = Sample {
-            parts: vec![Origin::File(path)],
-        };
+        let source = Sample::new(vec![Origin::File(path)]).unwrap();
         let before = sampler_kontakt::DISK_READ.load(Relaxed);
         let mut reader = source.open().unwrap();
         reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
@@ -487,7 +573,7 @@ mod tests {
         ];
         for (parts, bytes) in cases {
             let (full, _) = crate::audio::decode(&bytes).unwrap();
-            let mut reader = Sample { parts }.open().unwrap();
+            let mut reader = Sample::new(parts).unwrap().open().unwrap();
             assert_eq!((reader.frames(), reader.rate()), (full.frames.len(), 44100));
             // Forward, backward, within a window, across the skip threshold, and the end.
             let end = full.frames.len();
@@ -520,11 +606,10 @@ mod tests {
         for truncate in [false, true] {
             let path = dir.join(format!("{truncate}.wav"));
             std::fs::write(&path, &bytes).unwrap();
-            let mut reader = Sample {
-                parts: vec![Origin::File(path.clone())],
-            }
-            .open()
-            .unwrap();
+            let mut reader = Sample::new(vec![Origin::File(path.clone())])
+                .unwrap()
+                .open()
+                .unwrap();
             let mut out = vec![[0.0; 2]; 100];
             reader.read(0, &mut out).unwrap();
             let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -540,4 +625,122 @@ mod tests {
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
+    #[test]
+    #[cfg(unix)]
+    fn admitted_loose_identity_survives_reader_eviction_without_rebinding_to_new_file() {
+        let dir = std::env::temp_dir().join(format!("uvi-source-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = wav(50000, 2, false);
+        for action in ["rewrite", "replace", "remove"] {
+            let path = dir.join(format!("{action}.wav"));
+            std::fs::write(&path, &original).unwrap();
+            let source = Sample::new(vec![Origin::File(path.clone())]).unwrap();
+            let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let mut opened = source.open().unwrap();
+            let mut out = [[0.; 2]; 32];
+            opened.read(0, &mut out).unwrap();
+            if action == "remove" {
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                let mut replacement = original.clone();
+                replacement[45000..45032].fill(127);
+                if action == "replace" {
+                    let other = dir.join("replacement.wav");
+                    std::fs::write(&other, &replacement).unwrap();
+                    std::fs::File::options()
+                        .write(true)
+                        .open(&other)
+                        .unwrap()
+                        .set_times(std::fs::FileTimes::new().set_modified(stamp))
+                        .unwrap();
+                    std::fs::rename(other, &path).unwrap();
+                } else {
+                    std::fs::write(&path, &replacement).unwrap();
+                    std::fs::File::options()
+                        .write(true)
+                        .open(&path)
+                        .unwrap()
+                        .set_times(std::fs::FileTimes::new().set_modified(stamp))
+                        .unwrap();
+                }
+            }
+            assert!(
+                source.open_stream().is_err(),
+                "evicted {action} reader must never reopen new bytes as old revision"
+            );
+            // A still-open handle either serves retained old bytes or fails its
+            // original stamp check. It cannot return this replacement's data.
+            if opened.read(11000, &mut out).is_ok() {
+                let mut old = std::io::Cursor::new(original.clone());
+                let mut data = vec![0; original.len()];
+                use std::io::Read;
+                old.read_exact(&mut data).unwrap();
+                let (full, _) = crate::audio::decode(&[data]).unwrap();
+                assert_eq!(out, full.frames[11000..11032]);
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+
+pub(crate) struct InitialSource {
+    pub original_channels:Option<usize>,
+    pub source:Arc<dyn AssetSource>,
+    pub playback:Result<Option<sampler_ir::Playback>,String>,
+    /// Fatal only for an actual initial sample-zone use. Impulse-only readers
+    /// retain their prior domain; no recipe or dummy playback is fabricated.
+    pub admission:Result<(),String>,
+}
+/// Same frozen normal source as `source`, plus optional initial file playback.
+/// No dynamic-sample admission or channel-routing policy is changed here.
+pub(crate) fn initial_source(parts:Vec<Origin>,inherit:bool)->Result<InitialSource,String> {
+    let sample=Sample::new(parts).map_err(|e|e.to_string())?;
+    let reader=match sample.open_channels(8<<20) {
+        Ok(Some(reader))=>reader,
+        Ok(None)=>sample.open().map_err(|e|e.to_string())?,
+        Err(error) if crate::sample_metadata::is_wide_stream_refusal(&error)=> {
+            // No legacy probe or decoder is constructed to carry this frozen
+            // recipe. The initial sample-source gate refuses it before any
+            // playback/instrument mutation; impulse-only uses remain separate.
+            return Ok(InitialSource {source:Arc::new(sample),original_channels:None,playback:Ok(None),admission:Err(error.to_string())});
+        }
+        Err(error)=>return Err(error.to_string()),
+    };
+    let frames=reader.frames();let rate=reader.rate();let original_channels=reader.original_channels();drop(reader);
+    // Built-in encoded owners expose actual channels. The legacy Custom stereo
+    // closure does not: inspect its concrete SAME frozen UVI stream headers only
+    // AFTER dropping the initial reader, so decoder workspaces never overlap.
+    let original_channels=if sample.parts.len()>1{None}else if let Some(channels)=original_channels{Some(channels)}
+        else{Some(Stream::open_counted(&sample.parts[0],false).map_err(|e|e.to_string())?.channels)};
+    let playback=(|| -> Result<Option<sampler_ir::Playback>,String> { if inherit {
+        let mut metadata=None;
+        for origin in &sample.parts {
+            let mut discovery=origin.open(false).map_err(|e|e.to_string())?;
+            let profile=crate::sample_metadata::encoded_stream_admission(&mut discovery,CHUNK+size_of::<Bytes>()).map_err(|e|e.to_string())?;
+            let channels=if let Some(profile)=profile {
+                if profile.frames()!=frames as u64 {return Err("initial source frame geometry changed".into());}
+                profile.channels()
+            } else {
+                let header=Stream::open_counted(origin,false).map_err(|e|e.to_string())?;
+                if header.frames!=frames as u64 || header.rate!=rate {
+                    return Err("channel bundle has inconsistent initial source geometry".into());
+                }
+                header.channels
+            };
+            drop(discovery);
+            let mut bytes=origin.open(false).map_err(|e|e.to_string())?;
+            bytes.repair_riff=false;
+            let found=crate::sample_metadata::parse_reader(&mut bytes,frames,false)
+                .map_err(|e|format!("initial sample playback metadata {e:?}"))?;
+            if found.channels.map(usize::from)!=Some(channels) {
+                return Err("initial playback channel metadata differs from decoder".into());
+            }
+            let playback=found.initial_ir_playback().map_err(|e|format!("initial sample playback conversion {e:?}"))?;
+            if metadata.is_some_and(|old|old!=playback) {return Err("channel bundle has inconsistent initial playback".into());}
+            metadata=Some(playback);
+        }
+        Ok(metadata)
+    } else {Ok(None)} })();
+    Ok(InitialSource {source:Arc::new(sample),original_channels,playback,admission:Ok(())})
 }

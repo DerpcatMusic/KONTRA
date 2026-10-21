@@ -12,7 +12,7 @@ pub(crate) struct Index {
     source: Arc<ir::Instrument>,
     counts: Vec<usize>,
     links: Vec<Vec<usize>>,
-    source_ids: Vec<u32>,
+    zone_count: usize,
     rectangles: Arc<[(usize, u8, u8, u8, u8)]>,
     bounds: Vec<(u8, u8)>,
     first: Vec<Option<usize>>,
@@ -29,7 +29,9 @@ impl Index {
         let mut bounds = vec![(127, 0); counts.len() + 1];
         let mut first = vec![None; counts.len() + 1];
         let mut keys = vec![Vec::new(); 256];
-        for (n, z) in inst.zones.iter().enumerate() {
+        let mut zone_count = 0;
+        for (n, z) in physical_zones(inst) {
+            zone_count += 1;
             let g = group(z, inst);
             counts[g] += 1;
             for b in [g, counts.len()] {
@@ -121,7 +123,7 @@ impl Index {
             names,
             search,
             ids: crate::sound::articulation::identities(&inst.articulations),
-            source_ids: crate::sound::waveform::source_ids(inst),
+            zone_count,
             rectangles: rectangles(inst),
         }
     }
@@ -216,18 +218,28 @@ fn color(g: usize) -> Color {
     Color::oklch(0.72, 0.09, golden_hue(200., g))
 }
 fn sample(inst: &ir::Instrument, z: &ir::Zone) -> String {
-    match inst.assets.get(z.asset.0).map(|a| &a.location) {
+    match z.asset.and_then(|a| inst.assets.get(a.0)).map(|a| &a.location) {
         Some(ir::AssetLocation::Path(p)) => p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned(),
         Some(ir::AssetLocation::KontaktFile { id }) => format!("Container sample {id}"),
         None => "Sample unavailable".into(),
     }
+}
+/// Prepared route recipes are execution storage, not additional authored zones.
+/// This projection is built on the load worker, never during a mapping frame.
+fn physical_zones(inst: &ir::Instrument) -> impl Iterator<Item = (usize, &ir::Zone)> {
+    let primary = (!inst.source_indices.zone_catalog.is_empty()).then(|| {
+        inst.source_indices.zones.iter().flatten().map(|zone| zone.0).collect::<HashSet<_>>()
+    });
+    inst.zones.iter().enumerate().filter(move |(n, _)| {
+        primary.as_ref().is_none_or(|primary| primary.contains(n))
+    })
 }
 /// Reference links only: composed predicates remain the core's selection authority.
 fn links(inst: &ir::Instrument) -> Vec<Vec<usize>> {
     let mut links: Vec<Vec<usize>> = inst.groups.iter().map(|group| {
         inst.articulations.iter().enumerate().filter(|(_, a)| group.start.iter().any(|s| matches!(s.test, ir::StartTest::Key {low, high} if a.switch_keys.iter().any(|k| (low..=high).contains(k))))).map(|(n, _)| n).collect()
     }).chain(std::iter::once(Vec::new())).collect();
-    for z in &inst.zones {
+    for (_, z) in physical_zones(inst) {
         if let Some(a) = z.articulation
             && a.0 < inst.articulations.len()
         {
@@ -276,9 +288,7 @@ fn takes(inst: &ir::Instrument, z: &ir::Zone) -> String {
 }
 #[cfg(test)]
 fn stack(inst: &ir::Instrument, picked: Option<usize>, key: u8, vel: u8) -> Vec<usize> {
-    inst.zones
-        .iter()
-        .enumerate()
+    physical_zones(inst)
         .filter(|(_, z)| {
             picked.is_none_or(|g| group(z, inst) == g)
                 && (z.keys.low..=z.keys.high).contains(&key)
@@ -309,10 +319,8 @@ fn point(at: Point, size: Size, bounds: (u8, u8)) -> Option<(u8, u8)> {
 #[cfg(test)]
 fn fit(inst: &ir::Instrument, picked: Option<usize>) -> (u8, u8) {
     let (mut low, mut high) = (127, 0);
-    for z in inst
-        .zones
-        .iter()
-        .filter(|z| picked.is_none_or(|g| group(z, inst) == g))
+    for (_, z) in physical_zones(inst)
+        .filter(|(_, z)| picked.is_none_or(|g| group(z, inst) == g))
     {
         low = low.min(z.keys.low);
         high = high.max(z.keys.high);
@@ -338,10 +346,8 @@ fn pan(bounds: (u8, u8), direction: i16) -> (u8, u8) {
 }
 fn rectangles(inst: &ir::Instrument) -> Arc<[(usize, u8, u8, u8, u8)]> {
     // Overlapping takes share paint geometry; their identities remain in the IR and stack.
-    let mut rectangles = inst
-        .zones
-        .iter()
-        .map(|z| {
+    let mut rectangles = physical_zones(inst)
+        .map(|(_, z)| {
             (
                 group(z, inst),
                 z.keys.low,
@@ -409,19 +415,29 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .scene()
         .and_then(|s| s.surface("editor-root"))
         .is_some_and(|s| s.frame.size.height < 700.);
-    // Keep the inspector inside both the resized part and the keyboard boundary.
-    let map_height = ui
+    // The part fills the rack; the space left under (or missing from) the last row is
+    // shared between the zone map, the overlapping-zone list and the waveform, so the
+    // tab always ends at the part's bottom edge instead of at fixed heights.
+    let base = if compact { (64., STACK_ROW, 40.) } else { (144., STACK_ROW * 2., 64.) };
+    let (map_height, stack_height, wave_height) = ui
         .scene()
         .and_then(|scene| {
-            let map = scene.surface(&format!("map-{slot}"))?.frame;
-            let status = scene.surface(&format!("map-wave-status-{slot}"))?.frame;
-            let part = scene.surface(&format!("part-{slot}"))?.frame;
+            let frame = |id: String| scene.surface(&id).map(|s| s.frame);
+            let map = frame(format!("map-{slot}"))?;
+            let status = frame(format!("map-wave-status-{slot}"))?;
+            let part = frame(format!("part-{slot}"))?;
             let rack = scene.surface("rack-view")?.frame;
+            let stack = frame(format!("map-stack-{slot}")).map_or(base.1, |f| f.size.height);
+            let wave = frame(format!("map-wave-{slot}")).map_or(base.2, |f| f.size.height);
             let bottom = (part.y + part.size.height - 1.).min(rack.y + rack.size.height) - INSET;
-            Some(map.size.height + bottom - (status.y + status.size.height.max(SMALL + 2.)))
+            let spare = bottom - (status.y + status.size.height.max(SMALL + 2.));
+            Some((
+                (map.size.height + spare * 0.55).max(32.),
+                (stack + spare * 0.15).max(STACK_ROW),
+                (wave + spare * 0.30).max(base.2),
+            ))
         })
-        .unwrap_or(if compact { 64. } else { 144. })
-        .clamp(32., if compact { 64. } else { 144. });
+        .unwrap_or(base);
     let changed = cx
         .state
         .inside
@@ -447,7 +463,9 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             ..Default::default()
         };
         ui.set_scroll(format!("map-stack-{slot}"), [0., 0.]);
-        if let Some(z) = inst.zones.first() {
+        if let Some(n) = index.first(None) {
+            st.mapping.selected = n;
+            let z = &inst.zones[n];
             let (k, v) = midpoint(z);
             st.mapping.stack = index.stack(None, k, v);
         }
@@ -548,7 +566,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                             caption(label.clone()).lines(1).min_w(0).flex(1)
                         ]
                         .gap(TIGHT)
-                        .pad((0, SPACE))
+                        .pad(edges(SPACE, BAR_GUTTER, SPACE, 0.))
                         .h(20.)
                         .focusable()
                         .a11y(A11y::Toggle { on })
@@ -614,7 +632,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
                         ]
                         .gap(TIGHT)
                         .h(CONTROL)
-                        .pad((0, TIGHT))
+                        .pad(edges(TIGHT, BAR_GUTTER, TIGHT, 0.))
                         .align(Align::Center)
                         .focusable()
                         .a11y(A11y::Toggle { on })
@@ -746,7 +764,6 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             });
         }
     }
-    let stack_height = if compact { STACK_ROW } else { STACK_ROW * 2. };
     walk_stack(
         ui,
         slot,
@@ -885,7 +902,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
             ]
             .gap(TIGHT)
             .h(STACK_ROW)
-            .pad((0, TIGHT))
+            .pad(edges(TIGHT, BAR_GUTTER, TIGHT, 0.))
             .focusable()
             .a11y(A11y::Toggle { on })
             .named(label.clone())
@@ -898,7 +915,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         search,
         caption(format!(
             "{} zones · {} {}",
-            inst.zones.len(),
+            index.zone_count,
             inst.groups.len(),
             if inst.groups.len() == 1 {
                 "group"
@@ -912,7 +929,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
         .min_w(0)
         .tip(format!(
             "{} zones · {} groups in this instrument",
-            inst.zones.len(),
+            index.zone_count,
             inst.groups.len()
         )),
         caption(format!("{}–{}", note_name(bounds.0), note_name(bounds.1)))
@@ -969,7 +986,7 @@ pub(super) fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &Arc<ir::Instrum
     ]
     .gap(TIGHT)
     .align(Align::Center);
-    let inspector = inspector(ui, cx, slot, inst, compact);
+    let inspector = inspector(ui, cx, slot, inst, compact, wave_height);
     col![
         head,
         grid,
@@ -1076,7 +1093,14 @@ fn sample_start(playback: &ir::Playback, frames: u64) -> u64 {
     }
 }
 
-fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compact: bool) -> El {
+fn inspector(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    slot: usize,
+    inst: &ir::Instrument,
+    compact: bool,
+    wave_height: f64,
+) -> El {
     let st = &cx.state.inside[&slot].mapping;
     let n = st.selected;
     let Some(z) = inst.zones.get(n) else {
@@ -1087,14 +1111,9 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
         .scene()
         .and_then(|s| s.surface(&id))
         .map_or(512, |s| s.frame.size.width.ceil().clamp(1., 4096.) as usize);
-    let source = st
-        .index
-        .as_ref()
-        .and_then(|index| index.source_ids.get(n))
-        .copied();
     let part = cx.p.shared.part(slot);
     let epoch = cx.view.parts[slot].generation;
-    let full = source.and_then(|zone| part.as_ref()?.zone_waveform(zone, epoch, bins));
+    let full = part.as_ref().and_then(|part| part.mapping_waveform_window(n, epoch, bins, None));
     let total = full.as_ref().map_or(0, |e| e.frames);
     let st = &mut cx.state.inside.get_mut(&slot).unwrap().mapping;
     if st.wave.is_none_or(|(zone, _)| zone != n) {
@@ -1172,15 +1191,12 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
     let envelope = if bounds == (0, total) {
         full.clone()
     } else {
-        source.and_then(|zone| {
-            part.as_ref()?
-                .zone_waveform_window(zone, epoch, bins, Some(bounds))
-        })
+        part.as_ref().and_then(|part| part.mapping_waveform_window(n, epoch, bins, Some(bounds)))
     };
     let envelope = envelope.filter(|e| e.range == bounds);
     let root = match z.pitch {
         ir::KeyTracking::Tracked { root } | ir::KeyTracking::Scaled { root, .. } => Some(root),
-        ir::KeyTracking::Fixed => inst.assets.get(z.asset.0).and_then(|a| a.root_key),
+        ir::KeyTracking::Fixed => z.asset.and_then(|a| inst.assets.get(a.0)).and_then(|a| a.root_key),
     };
     let gain = 20. * z.gain.linear().log10();
     let pan = z.pan.position;
@@ -1302,7 +1318,7 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 
         draws
     })
-    .h(if compact { 40. } else { 64. })
+    .h(wave_height)
     .w(Len::Pct(100.))
     .clip()
     .named("Sample waveform with source-frame playback, loop, release-exit and crossfade boundaries; wheel to zoom, horizontal scroll to pan")
@@ -1358,6 +1374,34 @@ fn inspector(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument, compa
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_mapping_excludes_execution_recipes_and_keeps_physical_identity() {
+        let mut inst = ir::Instrument {
+            source: ir::SourceFormat::Kontakt { version: 0x9c },
+            ..Default::default()
+        };
+        inst.groups.resize_with(2, ir::Group::default);
+        for (group, key) in [(0, 60), (1, 72), (0, 1), (1, 120), (1, 127)] {
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.group = Some(ir::GroupRef(group));
+            zone.keys = ir::KeyRange { low: key, high: key };
+            inst.zones.push(zone);
+        }
+        inst.source_indices.zones = vec![Some(ir::ZoneRef(1)), None, Some(ir::ZoneRef(0))];
+        inst.source_indices.zone_catalog = [0, 7, 2018].map(|id| ir::SourceZone {
+            id: Some(id),
+            home: ir::SourceZoneHome { group: 0, low_key: 0, high_key: 127 },
+        }).into();
+        let index = Index::new(&Arc::new(inst));
+        assert_eq!(index.zone_count, 2);
+        assert_eq!(index.counts, vec![1, 1, 0]);
+        assert_eq!(index.stack(None, 60, 64), vec![0]);
+        assert_eq!(index.stack(None, 72, 64), vec![1]);
+        for key in [1, 120, 127] { assert!(index.stack(None, key, 64).is_empty()); }
+        assert_eq!(index.fit(None), (60, 83));
+        assert_eq!(index.rectangles.len(), 2);
+        assert_eq!(crate::sound::waveform::source_ids(&index.source), vec![Some(2018), Some(0), None, None, None]);
+    }
     #[test]
     fn mapping_worker_index_54k_keeps_identity_and_bounded_key_membership() {
         let mut inst = ir::Instrument::default();

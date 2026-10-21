@@ -1,6 +1,11 @@
 //! Byte-exact public FX fields. Units are serialized units, not KSP knob values.
-//! See docs/architecture-v2/KONTAKT_FX_MOD_FORMAT.md for evidence and limits.
-use crate::Error;
+//! Layouts, versions and validation come from Kontakt 8.13.1's own readers (`native_schema`);
+//! the names below are hand-assigned where evidence exists. See
+//! docs/architecture-v2/KONTAKT_FX_MOD_FORMAT.md for evidence and limits.
+use crate::{
+    kontakt::native_schema::{self, Undecoded},
+    Error,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EffectValue {
@@ -152,7 +157,7 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
             ("flag_9", 'b'),
         ],
         0x59 => &[
-            ("room_type", 'f'),
+            ("room_type", 'i'), // u32 enum 0/1: Kontakt 8.13.1 FUN_140d019f0
             ("time", 'f'),
             ("size", 'f'),
             ("damping", 'f'),
@@ -167,318 +172,195 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
     })
 }
 
-// Native typed-reader framing. Names and physical laws remain unassigned.
-fn extended_schema(module: u16, version: u16) -> Option<&'static str> {
-    Some(match (module, version) {
-        (0x15, 0x50) => "fffff",               // Reverb
-        (0x4d, 0x10) => "ffffffbb",            // Jump
-        (0x56, 0x10) => "ffffffb",             // DStortion
-        (0x5b, 0x51) => "fffffffffbbbfffb",    // Phasis
-        (0x5c, 0x51) => "ffffffffffbiiifffb",  // Flair
-        (0x5d, 0x51) => "fffffffbbi",          // Choral
-        (0x60, 0x51) => "fffffffiiiib",        // Supercharger
-        (0x63, 0x10) => "ffffffbbbfffb",       // PsycheDelay
-        (0x65, 0x10) => "iffffffffffffbbfffb", // Raum
-        (0x66, 0x10) => "iffffffffffb",        // Bite
-        (0x68, 0x10) => "fffffffffffffbbbbbi", // Freak
-        (0x69, 0x10) => "iiffffb",             // VibratoChorus
-        (0x6a, 0x10) => "fffffffbf",           // WowFlutter
-        (0x72, 0x1) => "ffffbbbb",             // Gater
-        (0x74, 0x1) => "ffffbbb",              // ReverseGrain
-        (0x5a, 0x10) => "iffffffffffbbbfffb",
-        (0x5a, 0x11) => "iffffffffffbbbfffbffffb",
-        (0x5a, 0x12) => "iffffffffffbbbfffbffffbfffffffffb",
-        _ => return None,
-    })
-}
-const FIELD_NAMES: [&str; 40] = [
+const FIELD_NAMES: [&str; 64] = [
     "param_0", "param_1", "param_2", "param_3", "param_4", "param_5", "param_6", "param_7",
     "param_8", "param_9", "param_10", "param_11", "param_12", "param_13", "param_14", "param_15",
     "param_16", "param_17", "param_18", "param_19", "param_20", "param_21", "param_22", "param_23",
     "param_24", "param_25", "param_26", "param_27", "param_28", "param_29", "param_30", "param_31",
     "param_32", "param_33", "param_34", "param_35", "param_36", "param_37", "param_38", "param_39",
+    "param_40", "param_41", "param_42", "param_43", "param_44", "param_45", "param_46", "param_47",
+    "param_48", "param_49", "param_50", "param_51", "param_52", "param_53", "param_54", "param_55",
+    "param_56", "param_57", "param_58", "param_59", "param_60", "param_61", "param_62", "param_63",
 ];
 
-struct Reader<'a>(&'a [u8]);
-impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
-        let (head, rest) = self
-            .0
-            .split_first_chunk::<N>()
-            .ok_or(Error::Static("Truncated FX parameter"))?;
-        self.0 = rest;
-        Ok(*head)
-    }
-    fn float(&mut self) -> Result<f32, Error> {
-        Ok(f32::from_le_bytes(self.take()?))
-    }
-    fn integer(&mut self) -> Result<i32, Error> {
-        Ok(i32::from_le_bytes(self.take()?))
-    }
-    fn list(&mut self) -> Result<Vec<f32>, Error> {
-        let count = u32::from_le_bytes(self.take()?) as usize;
-        if count > self.0.len() / 4 {
-            return Err(Error::Static("Truncated FX parameter list"));
-        }
-        (0..count).map(|_| self.float()).collect()
-    }
-}
-
 impl EffectParameters {
-    /// Unknown IDs return None; recognized layouts must consume the entire payload.
-    /// Floats/bytes retain exact bits; consumers validate physical ranges separately.
+    /// Decode an effect's stored parameters exactly as Kontakt 8.13.1's own reader does
+    /// (`native_schema`): the stored version selects the layout, validated values are checked,
+    /// and every byte must be accounted for. Unknown IDs and versions return None.
+    ///
+    /// Field order is the native read order. Names come from the hand table when its kinds
+    /// agree position by position (older versions read a prefix of newer ones); otherwise
+    /// they stay generic. Floats/bytes retain exact bits; consumers validate physical ranges.
     pub fn read(module: u16, version: u16, public: &[u8]) -> Result<Option<Self>, Error> {
-        if module == 0x1d && version != 0x80 {
+        let Some(class) = native_schema::class_of(module, version) else {
+            return Ok(None);
+        };
+        if !class.starts_with("BParFX") || class == "BParFX" {
             return Ok(None);
         }
-        let mut r = Reader(public);
-        let mut fields = Vec::new();
-        let mut push = |name, value| fields.push(EffectField { name, value });
-        if let Some(schema) = extended_schema(module, version) {
-            for (index, kind) in schema.bytes().enumerate() {
-                push(
-                    FIELD_NAMES[index],
-                    match kind {
-                        b'b' => EffectValue::Byte(r.take::<1>()?[0]),
-                        b'i' => EffectValue::Integer(r.integer()?),
-                        _ => EffectValue::Float(r.float()?),
-                    },
-                );
+        let decoded = native_schema::decode(module, version, public).map_err(|e| match e {
+            Undecoded::Truncated if matches!(module, 0x16 | 0x17) => {
+                Error::Static("Truncated FX parameter list")
             }
-        } else if let Some(mut layout) = effect_layout(module) {
-            if version == 0x50 {
-                layout = &layout[..match module {
-                    0x10 | 0x14 => 4,
-                    0x11 => 3,
-                    0x12 => 5,
-                    _ => layout.len(),
-                }];
-            }
-            if module == 0x46 {
-                layout = &layout[..match version {
-                    0x10 => 7,
-                    0x11 => 8,
-                    _ => layout.len(),
-                }];
-            }
-            for &(name, kind) in layout {
-                push(
-                    name,
-                    match kind {
-                        'b' => EffectValue::Byte(r.take::<1>()?[0]),
-                        'i' => EffectValue::Integer(r.integer()?),
-                        _ => EffectValue::Float(r.float()?),
-                    },
-                );
-            }
-        } else {
-            match module {
-                0x17 => {
-                    push("sends", EffectValue::Floats(r.list()?));
-                    push("outputs", EffectValue::Floats(r.list()?));
-                }
-                0x16 => {
-                    push("decimation", EffectValue::Float(r.float()?));
-                    push("block_size", EffectValue::Integer(r.integer()?));
-                    for name in [
-                        "predelay_ms",
-                        "early_length",
-                        "early_low_cut_hz",
-                        "early_high_cut_hz",
-                        "late_length",
-                        "late_low_cut_hz",
-                        "late_high_cut_hz",
-                        "xpoint",
-                    ] {
-                        push(name, EffectValue::Float(r.float()?));
-                    }
-                    for name in [
-                        "reverse",
-                        "auto_gain",
-                        "preserve_length",
-                        "bypass_latency_compensation",
-                        "volume_envelope",
-                    ] {
-                        push(name, EffectValue::Byte(r.take::<1>()?[0]));
-                    }
-                    push("curve_x", EffectValue::Floats(r.list()?));
-                    push("curve_db", EffectValue::Floats(r.list()?));
-                    push("ir_index", EffectValue::Integer(r.integer()?));
-                }
-                0x18 => {
-                    let kind = r.integer()?;
-                    push("filter_type", EffectValue::Integer(kind));
-                    if (30..=41).contains(&kind) && version == 0x92 {
-                        push("native_flag", EffectValue::Byte(r.take::<1>()?[0]));
-                    }
-                    if r.integer()? != kind {
-                        return Err(Error::Static("Mismatched filter types"));
-                    }
-                    if (22..=24).contains(&kind) {
-                        for band in 0..(kind - 21) as usize {
-                            for &name in &[
-                                ["frequency_1_hz", "bandwidth_1_octaves", "gain_1_db"],
-                                ["frequency_2_hz", "bandwidth_2_octaves", "gain_2_db"],
-                                ["frequency_3_hz", "bandwidth_3_octaves", "gain_3_db"],
-                            ][band]
-                            {
-                                push(name, EffectValue::Float(r.float()?));
-                            }
-                        }
-                    } else {
-                        if matches!(kind, 30..=41 | 70 | 71) {
-                            push("leading_value", EffectValue::Float(r.float()?));
-                        }
-                        push("cutoff", EffectValue::Float(r.float()?));
-                        push("resonance", EffectValue::Float(r.float()?));
-                        if !r.0.is_empty() {
-                            if r.0.len() % 4 != 0 {
-                                return Err(Error::Static("Partial filter parameter"));
-                            }
-                            push(
-                                "extra",
-                                EffectValue::Floats(
-                                    (0..r.0.len() / 4)
-                                        .map(|_| r.float())
-                                        .collect::<Result<_, _>>()?,
-                                ),
-                            );
-                        }
-                    }
-                }
-                _ => return Ok(None),
-            }
+            Undecoded::Truncated => Error::Static("Truncated FX parameter"),
+            Undecoded::Trailing(_) => Error::Static("Trailing FX parameter bytes"),
+            other => Error::Generic(format!("{class} 0x{version:X}: {other:?}")),
+        })?;
+        let reads: Vec<&native_schema::Field> = decoded.fields.iter().filter(|f| f.depth == 0).collect();
+        let kind = |f: &native_schema::Field| match f.kind {
+            'F' => 'f',
+            'I' => 'i',
+            'B' => 'b',
+            other => other,
+        };
+        // The hand names describe the Shaper only, not the SurroundPanner sharing SerType 0x1D.
+        let named = effect_layout(module)
+            .filter(|_| module != 0x1d || version == 0x80)
+            .filter(|names| {
+                names.len() >= reads.len()
+                    && reads.iter().zip(names.iter()).all(|(f, &(_, c))| kind(f) == c)
+            });
+        let mut fields = Vec::with_capacity(reads.len());
+        for (index, f) in reads.iter().enumerate() {
+            let name = named.map_or_else(
+                || FIELD_NAMES.get(index).copied().unwrap_or("param_n"),
+                |n| n[index].0,
+            );
+            let raw = f.value.unwrap_or(0);
+            fields.push(EffectField {
+                name,
+                value: match f.kind {
+                    'F' => EffectValue::Float(f32::from_bits(raw as u32)),
+                    'B' => EffectValue::Byte(raw as u8),
+                    'H' => EffectValue::Integer(raw as u16 as i32),
+                    _ => EffectValue::Integer(raw as u32 as i32),
+                },
+            });
         }
-        if module == 0x44 && version == 0x11 {
-            push("param_12", EffectValue::Float(r.float()?));
-            push("param_13", EffectValue::Float(r.float()?));
-            push("flag_14", EffectValue::Byte(r.take::<1>()?[0]));
-            push("flag_15", EffectValue::Byte(r.take::<1>()?[0]));
-        }
-        if !r.0.is_empty() {
-            return Err(Error::Static("Trailing FX parameter bytes"));
-        }
-        Ok(Some(Self {
-            module,
-            version,
-            fields,
-        }))
+        Ok(Some(Self { module, version, fields }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn fixed_layouts_preserve_packed_fields_and_require_exact_lengths() {
-        for module in 0..=0x64 {
-            let Some(layout) = effect_layout(module) else {
-                continue;
-            };
-            let mut bytes = Vec::new();
-            for (i, &(_, kind)) in layout.iter().enumerate() {
-                if kind == 'b' {
-                    bytes.push(0xa5);
-                } else if kind == 'i' {
-                    bytes.extend((i as i32 + 17).to_le_bytes());
-                } else {
+
+    /// Bytes for a layout of float/int/byte kinds with recognizable values.
+    fn bytes_for(kinds: impl Iterator<Item = char>) -> (Vec<u8>, Vec<EffectValue>) {
+        let (mut bytes, mut expected) = (Vec::new(), Vec::new());
+        for (i, kind) in kinds.enumerate() {
+            match kind {
+                'b' => {
+                    bytes.push(0);
+                    expected.push(EffectValue::Byte(0));
+                }
+                'i' => {
+                    bytes.extend(0i32.to_le_bytes());
+                    expected.push(EffectValue::Integer(0));
+                }
+                _ => {
                     bytes.extend((i as f32 + 0.25).to_le_bytes());
+                    expected.push(EffectValue::Float(i as f32 + 0.25));
                 }
             }
-            let version = match module {
-                0x1d => 0x80,
-                0x10 | 0x11 | 0x12 | 0x14 => 0x51,
-                0x46 => 0x12,
-                _ => 0x50,
+        }
+        (bytes, expected)
+    }
+
+    #[test]
+    fn hand_names_describe_the_native_layouts_and_native_framing_is_exact() {
+        let mut checked = 0;
+        for info in native_schema::readers() {
+            if !info.class.starts_with("BParFX") || info.class == "BParFX" || info.status != "typed" {
+                continue;
+            }
+            let Some(names) = effect_layout(info.sertype).filter(|_| info.sertype != 0x1d || info.current == 0x80) else {
+                continue;
             };
-            let parsed = EffectParameters::read(module, version, &bytes)
-                .unwrap()
+            let kinds: Vec<char> = names.iter().map(|&(_, c)| c).collect();
+            // The hand table names one stored version's layout (the newest it was written for):
+            // find the version whose native layout is exactly that kind sequence.
+            let Some(version) = info.versions.iter().flat_map(|&(lo, hi)| lo..=hi).find(|&v| {
+                native_schema::synthesize(info.sertype, v)
+                    .ok()
+                    .and_then(|b| native_schema::decode(info.sertype, v, &b).ok())
+                    .is_some_and(|d| {
+                        d.fields.iter().filter(|f| f.depth == 0).map(|f| match f.kind {
+                            'F' => 'f',
+                            'I' => 'i',
+                            'B' => 'b',
+                            o => o,
+                        }).eq(kinds.iter().copied())
+                    })
+            }) else {
+                continue;
+            };
+            let (bytes, expected) = bytes_for(kinds.iter().copied());
+            let parsed = EffectParameters::read(info.sertype, version, &bytes)
+                .unwrap_or_else(|e| panic!("{} 0x{version:X}: {e}", info.class))
                 .unwrap();
-            for (i, field) in parsed.fields.iter().enumerate() {
-                assert_eq!(field.name, layout[i].0);
-                assert_eq!(
-                    field.value,
-                    if layout[i].1 == 'b' {
-                        EffectValue::Byte(0xa5)
-                    } else if layout[i].1 == 'i' {
-                        EffectValue::Integer(i as i32 + 17)
-                    } else {
-                        EffectValue::Float(i as f32 + 0.25)
-                    }
+            assert_eq!(
+                parsed.fields.iter().map(|f| f.value.clone()).collect::<Vec<_>>(),
+                expected,
+                "{}",
+                info.class
+            );
+            for (f, &(name, _)) in parsed.fields.iter().zip(names.iter()) {
+                assert_eq!(f.name, name, "{}", info.class);
+            }
+            for end in 0..bytes.len() {
+                assert!(
+                    EffectParameters::read(info.sertype, version, &bytes[..end]).is_err(),
+                    "{} accepted a {end}-byte prefix",
+                    info.class
                 );
             }
-            for end in 0..bytes.len() {
-                assert!(EffectParameters::read(module, version, &bytes[..end]).is_err());
-            }
-            bytes.push(0);
-            assert!(EffectParameters::read(module, version, &bytes).is_err());
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert!(EffectParameters::read(info.sertype, version, &longer).is_err());
+            checked += 1;
         }
+        assert!(checked >= 8, "only {checked} hand layouts compared");
     }
+
     #[test]
-    fn native_extended_layouts_preserve_field_types_and_complete_boundaries() {
-        for (module, version) in [
-            (0x15, 0x50),
-            (0x4d, 0x10),
-            (0x56, 0x10),
-            (0x5b, 0x51),
-            (0x5c, 0x51),
-            (0x5d, 0x51),
-            (0x60, 0x51),
-            (0x63, 0x10),
-            (0x65, 0x10),
-            (0x66, 0x10),
-            (0x68, 0x10),
-            (0x69, 0x10),
-            (0x6a, 0x10),
-            (0x72, 0x1),
-            (0x74, 0x1),
-            (0x5a, 0x10),
-            (0x5a, 0x11),
-            (0x5a, 0x12),
-        ] {
-            let schema = extended_schema(module, version).unwrap();
-            let mut bytes = Vec::new();
-            let mut expected = Vec::new();
-            for (index, kind) in schema.bytes().enumerate() {
-                expected.push(match kind {
-                    b'b' => {
-                        bytes.push(0xa5);
-                        EffectValue::Byte(0xa5)
-                    }
-                    b'i' => {
-                        let n = -(index as i32) - 17;
-                        bytes.extend(n.to_le_bytes());
-                        EffectValue::Integer(n)
-                    }
-                    _ => {
-                        let n = index as f32 + 0.25;
-                        bytes.extend(n.to_le_bytes());
-                        EffectValue::Float(n)
-                    }
-                });
+    fn every_native_effect_layout_round_trips_with_exact_boundaries() {
+        let mut checked = 0;
+        for info in native_schema::readers() {
+            if !info.class.starts_with("BParFX") || info.class == "BParFX" || info.status != "typed" {
+                continue;
             }
-            let params = EffectParameters::read(module, version, &bytes)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                params
-                    .fields
-                    .iter()
-                    .map(|f| f.value.clone())
-                    .collect::<Vec<_>>(),
-                expected
-            );
-            for end in 0..bytes.len() {
-                assert!(EffectParameters::read(module, version, &bytes[..end]).is_err());
+            for &(lo, hi) in info.versions {
+                for version in lo..=hi {
+                    let Ok(bytes) = native_schema::synthesize(info.sertype, version) else { continue };
+                    let p = EffectParameters::read(info.sertype, version, &bytes)
+                        .unwrap_or_else(|e| panic!("{} 0x{version:X}: {e}", info.class))
+                        .unwrap();
+                    assert!(!p.fields.is_empty(), "{}", info.class);
+                    for end in 0..bytes.len() {
+                        assert!(
+                            EffectParameters::read(info.sertype, version, &bytes[..end]).is_err(),
+                            "{} 0x{version:X} accepted a {end}-byte prefix",
+                            info.class
+                        );
+                    }
+                    let mut longer = bytes.clone();
+                    longer.push(0);
+                    assert!(EffectParameters::read(info.sertype, version, &longer).is_err());
+                    checked += 1;
+                }
             }
-            bytes.push(0);
-            assert!(EffectParameters::read(module, version, &bytes).is_err());
-            assert_eq!(
-                EffectParameters::read(module, 0xffff, &bytes).unwrap(),
-                None
-            );
         }
+        assert!(checked > 80, "only {checked} effect layouts");
     }
+
+    #[test]
+    fn unknown_kinds_and_versions_are_not_decoded() {
+        assert_eq!(EffectParameters::read(0xfe, 0x10, &[0; 8]).unwrap(), None);
+        assert_eq!(EffectParameters::read(0x64, 0x10, &[]).unwrap(), None); // version Kontakt never wrote
+        assert_eq!(EffectParameters::read(0x10, 0x99, &[0; 40]).unwrap(), None);
+    }
+
     #[test]
     fn effect_storage_preserves_kind_version_float_bits_and_unassigned_bytes() {
         // Own storage fixture only: this does not establish Tape's physical laws.
@@ -496,17 +378,12 @@ mod tests {
         }
         assert_eq!(parsed.fields[3].value, EffectValue::Byte(0xa5));
         assert_eq!(bytes, original);
-        assert!(
-            EffectParameters::read(0xfe, 0x10, &bytes)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            bytes, original,
-            "an unknown kind must not mutate or alias the payload"
-        );
+        assert!(EffectParameters::read(0xfe, 0x10, &bytes).unwrap().is_none());
+        assert_eq!(bytes, original, "an unknown kind must not mutate or alias the payload");
     }
 
+    /// Ladder filter (kind 33) at v0x92: u32 type, a flag byte, the type again, then floats.
+    /// Convolution (0x16): a u32 block size and two counted curves are plain native reads.
     #[test]
     fn ladder_and_convolution_do_not_reinterpret_integer_or_flag_bytes() {
         let mut bytes = 33i32.to_le_bytes().to_vec();
@@ -516,19 +393,18 @@ mod tests {
             bytes.extend(value.to_le_bytes());
         }
         let p = EffectParameters::read(0x18, 0x92, &bytes).unwrap().unwrap();
+        assert_eq!(p.fields[0].value, EffectValue::Integer(33));
         assert_eq!(p.fields[1].value, EffectValue::Byte(0xa5));
-        assert_eq!(p.fields[3].value, EffectValue::Float(0.75));
-        bytes[5] = 34;
-        assert!(EffectParameters::read(0x18, 0x92, &bytes).is_err());
+        assert_eq!(p.fields[2].value, EffectValue::Integer(33));
+        assert_eq!(p.fields[4].value, EffectValue::Float(0.75));
         let mut ir = 1f32.to_le_bytes().to_vec();
         ir.extend(1024i32.to_le_bytes());
         ir.extend([0; 32]);
         ir.extend([0, 1, 0, 1, 0]);
         ir.extend([0; 8]);
         ir.extend((-1i32).to_le_bytes());
-        let p = EffectParameters::read(0x16, 0x10, &ir).unwrap().unwrap();
+        let p = EffectParameters::read(0x16, 0x70, &ir).unwrap().unwrap();
         assert_eq!(p.fields[1].value, EffectValue::Integer(1024));
         assert_eq!(p.fields.last().unwrap().value, EffectValue::Integer(-1));
-        assert_eq!(EffectParameters::read(0x64, 0x10, &[]).unwrap(), None);
     }
 }

@@ -113,6 +113,53 @@ fn nka_sync_init_reads_integer_real_and_string_arrays_before_following_statement
 }
 
 #[test]
+fn nka_data_folder_load_in_init_is_read_before_following_statements() {
+    // Kontakt loads mode 2 (the resource container's data folder) synchronously
+    // in init; scripts lay out controls from the array on the next line.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+        declare $seen := %pos[1]
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.data_arrays
+        .insert("pos".into(), b"%pos\n10\n20\n".to_vec());
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 8, 0);
+    let rt = Runtime::new(plan, limits).unwrap();
+    assert_eq!((cell(&rt, 0), cell(&rt, 1), cell(&rt, 2)), (10, 20, 20));
+}
+
+#[test]
+fn nka_file_longer_than_the_array_fills_the_declared_prefix() {
+    // An installed library's instruments share one data file; one declares
+    // fewer entries than the file holds, and Kontakt lays its UI out from it.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.data_arrays
+        .insert("pos".into(), b"%pos\n10\n20\n30\n".to_vec());
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    let plan = script
+        .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 8, 0);
+    let rt = Runtime::new(plan, limits).unwrap();
+    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (10, 20));
+}
+
+#[test]
 fn nka_sync_save_roundtrips_all_three_types_and_explicit_load_does_not_persist() {
     let fixture = Fixture::new();
     let paths = [
@@ -885,7 +932,6 @@ fn nka_codec_strict_header_type_shape_utf8_numeric_and_payload_failures_preserve
         b"?data\n1\n2\n",
         b"data\n1\n2\n",
         b"%data\n1\n",
-        b"%data\n1\n2\n3\n",
         b"%data\n2147483648\n2\n",
         b"%data\n1\ninvalid\n",
         b"%data\n1\n\xff\n",
@@ -1041,4 +1087,212 @@ fn nka_external_init_is_not_cached_or_replayed_from_an_old_cache() {
         )
         .is_err()
     );
+}
+
+// Append to the existing source-free sampler-ksp/tests/array_file.rs target.
+#[test]
+fn nka_eight_large_reads_admit_without_leasing_write_snapshot_payloads() {
+    let fixture = Fixture::new();
+    let text = fixture.write(
+        "read-names.nka",
+        &format!("!names\n{}", "disk name\n".repeat(4000)),
+    );
+    let numeric = fixture.write(
+        "read-numeric.nka",
+        &format!("%data\n{}", "37\n".repeat(16000)),
+    );
+    let source = format!(
+        r#"on init declare %data[16000] declare !names[4000]
+        declare $job declare $request declare $count declare $seen
+        end on
+        on pgs_changed
+            if (($request mod 2) = 0) $job := load_array_str(!names, "{text}")
+            else $job := load_array_str(%data, "{numeric}") end if
+            inc($request)
+        end on
+        on async_complete inc($count) $seen := $NI_ASYNC_ID end on"#
+    );
+    let (mut rt, entry) = runtime(&source);
+    let mut pending = Vec::with_capacity(ARRAY_FILE_JOBS);
+    for index in 0..ARRAY_FILE_JOBS {
+        run(&mut rt, entry);
+        assert_eq!(cell(&rt, 16000), index as i64 + 1);
+        pending.push(effects(&mut rt).pop().unwrap());
+    }
+    run(&mut rt, entry);
+    assert_eq!(
+        cell(&rt, 16000),
+        -1,
+        "the ninth metadata owner is refused without a fabricated completion"
+    );
+    assert!(effects(&mut rt).is_empty());
+    assert_eq!(cell(&rt, 16002), 0);
+    for (index, effect) in pending.into_iter().enumerate().rev() {
+        let mut output = capture(&rt, &effect);
+        assert!(
+            output.numbers().is_empty() && output.texts().is_empty(),
+            "read capture contains metadata only"
+        );
+        output.perform_read_only().unwrap();
+        if index % 2 == 0 {
+            assert_eq!(output.texts()[3999].as_str(), "disk name");
+        } else {
+            assert_eq!(output.numbers()[15999], 37);
+        }
+        complete(&mut rt, effect.plan, &mut output);
+        assert_eq!(cell(&rt, 16003), effect.args[0]);
+        support::without_heap(|| {
+            assert_eq!(
+                rt.complete_array_file(effect.plan, &mut output),
+                Err(Error::StaleHandle)
+            )
+        });
+    }
+    assert_eq!(cell(&rt, 16002), ARRAY_FILE_JOBS as i64);
+    run(&mut rt, entry);
+    let reused = effects(&mut rt).pop().unwrap();
+    assert_eq!(
+        reused.args[0],
+        ARRAY_FILE_JOBS as i64 + 1,
+        "a refused owner consumes no async ID"
+    );
+    let mut output = capture(&rt, &reused);
+    output.perform_read_only().unwrap();
+    complete(&mut rt, reused.plan, &mut output);
+    assert_eq!(cell(&rt, 16002), ARRAY_FILE_JOBS as i64 + 1);
+}
+
+#[test]
+fn nka_full_write_snapshot_pool_leaves_read_owners_and_preserves_request_snapshots() {
+    let fixture = Fixture::new();
+    let text = fixture.write(
+        "mixed-input.nka",
+        &format!("!names\n{}", "disk name\n".repeat(4000)),
+    );
+    let saved = fixture.path("mixed-output.nka");
+    let slots = snapshot_jobs(16000, 4000);
+    assert!((1..ARRAY_FILE_JOBS).contains(&slots));
+    let source = format!(
+        r#"on init declare %data[16000] declare !names[4000]
+        declare $job declare $request declare $count declare $seen
+        end on
+        on pgs_changed
+            %data[0] := 100 + $request
+            !names[0] := "snapshot-" & $request
+            if ($request <= {slots} or $request = {})
+                if (($request mod 2) = 0) $job := save_array_str(!names, "{saved}")
+                else $job := save_array_str(%data, "{saved}") end if
+            else $job := load_array_str(!names, "{text}") end if
+            %data[0] := -99 !names[0] := "mutated"
+            inc($request)
+        end on
+        on async_complete inc($count) $seen := $NI_ASYNC_ID end on"#,
+        ARRAY_FILE_JOBS + 2
+    );
+    let (mut rt, entry) = runtime(&source);
+    let mut pending = Vec::with_capacity(ARRAY_FILE_JOBS);
+    for _ in 0..slots {
+        run(&mut rt, entry);
+        pending.push(effects(&mut rt).pop().unwrap());
+    }
+    run(&mut rt, entry); // There is still metadata room, but no write snapshot room.
+    assert_eq!(cell(&rt, 16000), -1);
+    assert!(effects(&mut rt).is_empty());
+    for _ in slots..ARRAY_FILE_JOBS {
+        run(&mut rt, entry);
+        pending.push(effects(&mut rt).pop().unwrap());
+    }
+    assert_eq!(pending.len(), ARRAY_FILE_JOBS);
+    run(&mut rt, entry); // Now metadata itself is full.
+    assert_eq!(cell(&rt, 16000), -1);
+    assert!(effects(&mut rt).is_empty());
+    let first = pending.remove(0);
+    let mut output = capture(&rt, &first);
+    assert_eq!(output.texts()[0].as_str(), "snapshot-0");
+    output.perform().unwrap();
+    complete(&mut rt, first.plan, &mut output);
+    run(&mut rt, entry); // Explicit later write reuses the released lease.
+    let reused = effects(&mut rt).pop().unwrap();
+    assert_eq!(reused.args[0], ARRAY_FILE_JOBS as i64 + 1);
+    pending.push(reused);
+    for (index, effect) in pending.into_iter().enumerate().rev() {
+        let mut output = capture(&rt, &effect);
+        let original_request = if index < slots - 1 {
+            Some(index + 1)
+        } else if index == ARRAY_FILE_JOBS - 1 {
+            Some(ARRAY_FILE_JOBS + 2)
+        } else {
+            None
+        };
+        if let Some(request) = original_request {
+            if request % 2 == 0 {
+                assert_eq!(output.texts()[0].as_str(), format!("snapshot-{request}"));
+            } else {
+                assert_eq!(output.numbers()[0], 100 + request as i64);
+            }
+            output.perform().unwrap();
+        } else {
+            assert!(output.texts().is_empty() && output.numbers().is_empty());
+            output.perform_read_only().unwrap();
+            assert_eq!(output.texts()[3999].as_str(), "disk name");
+        }
+        complete(&mut rt, effect.plan, &mut output);
+        assert_eq!(cell(&rt, 16003), effect.args[0]);
+    }
+    assert_eq!(cell(&rt, 16002), ARRAY_FILE_JOBS as i64 + 1);
+}
+
+#[test]
+fn nka_cancel_releases_write_leases_and_late_completion_cannot_release_the_reused_lease() {
+    let fixture = Fixture::new();
+    let saved = fixture.path("cancel-write.nka");
+    let source = format!(
+        r#"on init declare !names[16384]
+        declare $job declare $request declare $count end on
+        on pgs_changed !names[0] := "snapshot-" & $request
+            $job := save_array_str(!names, "{saved}") inc($request)
+        end on
+        on async_complete inc($count) end on"#
+    );
+    let (mut rt, entry) = runtime(&source);
+    let slots = snapshot_jobs(0, 16384);
+    let mut old = Vec::with_capacity(slots);
+    for _ in 0..slots {
+        run(&mut rt, entry);
+        old.push(effects(&mut rt).pop().unwrap());
+    }
+    let mut stale = capture(&rt, &old[0]);
+    support::without_heap(|| rt.panic());
+    let mut fresh = Vec::with_capacity(slots);
+    for _ in 0..slots {
+        run(&mut rt, entry);
+        fresh.push(effects(&mut rt).pop().unwrap());
+    }
+    support::without_heap(|| {
+        assert_eq!(
+            rt.complete_array_file(stale_plan(&old), &mut stale),
+            Err(Error::StaleHandle)
+        )
+    });
+    run(&mut rt, entry);
+    assert_eq!(
+        cell(&rt, 0),
+        -1,
+        "late old completion must not free a live reused snapshot lease"
+    );
+    assert!(effects(&mut rt).is_empty());
+    for (index, effect) in fresh.into_iter().enumerate().rev() {
+        let mut output = capture(&rt, &effect);
+        assert_eq!(
+            output.texts()[0].as_str(),
+            format!("snapshot-{}", slots + index)
+        );
+        output.perform().unwrap();
+        complete(&mut rt, effect.plan, &mut output);
+    }
+    assert_eq!(cell(&rt, 2), slots as i64);
+}
+
+fn stale_plan(effects: &[Effect]) -> PlanId {
+    effects[0].plan
 }

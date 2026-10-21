@@ -64,12 +64,29 @@ class Gates(unittest.TestCase):
                            ("success", "success", "skipped", "success"),
                            ("success", "success", "success", "failure")):
                 env = dict(os.environ, CODE=code, CHANGES=changes,
-                           LINUX=native[0], WINDOWS=native[1], MACOS=native[2], EDITOR=native[3])
+                           LINUX=native[0], WINDOWS=native[1], MACOS=native[2], EDITOR=native[3],
+                           RELEASE_VALIDATION="false", SHIPPING_PLAN="skipped",
+                           SHIPPING_TESTS="skipped", SHIPPING_COVERAGE="skipped")
                 result = subprocess.run(["bash", "-e", "-c", gate], env=env)
                 expected = changes == "success" and (
                     (code == "true" and native == ("success",) * 4) or
                     (code == "false" and native == ("skipped",) * 4))
                 self.assertEqual(result.returncode == 0, expected, (code, changes, native))
+
+    def test_shipping_required_gate_states(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        gate = textwrap.dedent(workflow.split("      - name: Require every applicable check\n", 1)[1].split("        run: |\n", 1)[1])
+        states = ("success", "failure", "cancelled", "skipped")
+        for release, code, shipping in itertools.product(("true", "false", ""), ("true", "false"), itertools.product(states, repeat=3)):
+            native = "success" if code == "true" else "skipped"
+            env = dict(os.environ, CODE=code, CHANGES="success", LINUX=native,
+                       WINDOWS=native, MACOS=native, EDITOR=native,
+                       RELEASE_VALIDATION=release, SHIPPING_PLAN=shipping[0],
+                       SHIPPING_TESTS=shipping[1], SHIPPING_COVERAGE=shipping[2])
+            result = subprocess.run(["bash", "-e", "-c", gate], env=env)
+            expected = ((release == "true" and code == "true" and shipping == ("success",) * 3)
+                        or (release == "false" and shipping == ("skipped",) * 3))
+            self.assertEqual(result.returncode == 0, expected, (release, code, shipping))
 
     def test_snapshot_graph(self):
         nightly = (ROOT / ".github/workflows/nightly.yml").read_text()
@@ -102,12 +119,12 @@ class Gates(unittest.TestCase):
         self.assertNotIn("paths-ignore", ci)
         self.assertIn("FORCE: ${{ inputs.release_validation ||", ci)
         self.assertIn("python3 tools/version.py check\n          python3 tools/version.py self-test", ci)
-        self.assertEqual(ci.count("      - name: Nightly shipping identity"), 3)
-        self.assertEqual(ci.count('echo "KONTRA_NIGHTLY_BUILD=1"'), 3)
-        self.assertEqual(ci.count("python3 tools/test_version.py"), 4)
-        self.assertEqual(ci.count("python3 tools/version.py nightly-dirty"), 3)
-        self.assertEqual(ci.count("if: inputs.release_validation || github.event_name == 'pull_request'"), 3)
-        self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos, editor]", ci)
+        self.assertEqual(ci.count("      - name: Nightly shipping identity"), 5)
+        self.assertEqual(ci.count('echo "KONTRA_NIGHTLY_BUILD=1"'), 5)
+        self.assertEqual(ci.count("python3 tools/test_version.py"), 6)
+        self.assertEqual(ci.count("python3 tools/version.py nightly-dirty"), 5)
+        self.assertEqual(ci.count("if: inputs.release_validation || github.event_name == 'pull_request'"), 5)
+        self.assertIn("    if: always()\n    needs: [changes, linux, windows, macos, editor, shipping-plan, shipping-tests, shipping-coverage]", ci)
         self.assertIn("    uses: ./.github/workflows/plugin-ui.yml", ci)
         self.assertNotIn("cargo test --release --features library-access", ci)
 

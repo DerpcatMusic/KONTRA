@@ -22,6 +22,7 @@ pub enum Context {
     Note,
     Release,
     Controller,
+    PolyAt,
     /// Instrument-owned callback (UI control, listener, ...), no originating event.
     Plan,
 }
@@ -122,11 +123,14 @@ pub fn name_hash(name: &str) -> i32 {
 #[derive(Default)]
 pub struct Module {
     code: Vec<I>,
+    sites: Vec<(u32, Span, Option<&'static str>)>,
     texts: Vec<String>,
     group_table: Option<u16>,
     calls: Vec<(usize, FnId)>,
     starts: Vec<u32>,
     ends: Vec<u32>,
+    /// Bytecode positions where source semantics were omitted, never opcodes.
+    opaque: Vec<usize>,
     entries: Vec<(usize, Vec<Range<usize>>, i32, Span)>,
 }
 
@@ -194,15 +198,18 @@ impl<'h> Unit<'h> {
             callback_type: cb,
             ui_id,
             code: module.code,
+            sites: module.sites,
             texts: module.texts,
             group_table: module.group_table,
             calls: module.calls,
             starts: module.starts,
             ends: module.ends,
+            opaque: module.opaque,
             loops: Vec::new(),
             span,
             statement_span: None,
             call_span: None,
+            current_builtin: None,
             tdepth: 0,
             signal,
         };
@@ -271,11 +278,13 @@ impl<'h> Unit<'h> {
         entries.push((index, ranges, ui_id.unwrap_or(0), span));
         let module = Module {
             code: g.code,
+            sites: g.sites,
             texts: g.texts,
             group_table: g.group_table,
             calls: g.calls,
             starts: g.starts,
             ends: g.ends,
+            opaque: g.opaque,
             entries,
         };
         self.modules[module_index].3 = module;
@@ -286,8 +295,10 @@ impl<'h> Unit<'h> {
         })
     }
 
-    pub fn finish(&mut self, programs: &mut [Program]) -> Result<()> {
-        for (_, _, _, module) in std::mem::take(&mut self.modules) {
+    pub fn finish(&mut self, programs: &mut [Program], source: &str) -> Result<()> {
+        let starts: Vec<_> = std::iter::once(0).chain(source.bytes().enumerate()
+            .filter_map(|(i, b)| (b == b'\n').then_some(i + 1))).collect();
+        for (_, cb, _, module) in std::mem::take(&mut self.modules) {
             if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
                 eprintln!(
                     "AUDIT {{\"stage\":\"ksp_shared_module\",\"slot\":{},\"entries\":{},\"instructions\":{},\"instruction_bytes\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
@@ -300,17 +311,47 @@ impl<'h> Unit<'h> {
                 );
             }
             let texts: Vec<_> = module.texts.iter().map(String::as_str).collect();
+            // Service IDs are script-local. Only effects whose host consumer
+            // edits presentation metadata may run in a same-owner snapshot.
+            let snapshot_ui_services: Vec<_> = self.services.iter().enumerate()
+                .filter(|(_, builtin)| matches!(builtin.name(),
+                    "set_control_par" | "set_control_par_str" | "set_control_par_real"
+                    | "set_control_par_arr" | "set_control_par_str_arr" | "set_control_par_real_arr"
+                    | "set_text" | "set_knob_label" | "set_control_help" | "hide_part"
+                    | "set_knob_defval" | "set_knob_unit" | "set_table_steps_shown"
+                    | "move_control" | "move_control_px" | "set_skin_offset" | "set_ui_color"
+                    | "set_key_color" | "set_key_name" | "set_key_type" | "set_key_pressed"
+                    | "set_key_pressed_support" | "set_keyrange" | "remove_keyrange" | "message"))
+                .map(|(id, _)| id as u16).collect();
+            let sites = module.sites.into_iter().map(|(pc, span, builtin)| {
+                let position = Fault { span, builtin, message: String::new() }
+                    .locate_indexed(source, crate::diag::Kind::Error, &starts);
+                sampler_core::SourceSite { pc, offset: position.offset as u32,
+                    line: position.line, column: position.column, builtin }
+            }).collect();
+            let callback = self.hir.callbacks.iter().find(|c| callback_type(c.kind) == cb)
+                .map(|c| callback_name(c.kind)).unwrap_or("generated callback");
             let shared = Program::new(module.code)
                 .and_then(|p| p.with_texts(&texts))
+                .and_then(|p| p.with_source_sites(sites))
                 .map_err(|e| Fault {
                     span: Span::default(),
                     builtin: None,
                     message: format!("invalid lowered module: {e:?}"),
                 })?
                 .with_wait_lifetime(WaitLifetime::Callback)
-                .with_source_slot(self.slot);
+                .with_source_slot(self.slot)
+                .with_diagnostic_callback(callback)
+                .with_source_digest(crate::source_fingerprint(source))
+                .with_snapshot_overlay_services(&snapshot_ui_services);
             for (index, ranges, ui_id, span) in module.entries {
-                programs[index] = shared
+                // The initializer cache stores values/model metadata, not
+                // Programs: fresh lowering always reconstructs this proof.
+                let opaque = ranges.iter().any(|range| {
+                    let first = module.opaque.partition_point(|at| *at < range.start);
+                    module.opaque.get(first).is_some_and(|at| *at < range.end)
+                });
+                let program = shared
                     .clone()
                     .with_entry(ranges[0].start, &ranges, ui_id)
                     .map_err(|e| Fault {
@@ -318,6 +359,11 @@ impl<'h> Unit<'h> {
                         builtin: None,
                         message: format!("invalid lowered entry: {e:?}"),
                     })?;
+                programs[index] = if opaque {
+                    program.without_snapshot_overlay()
+                } else {
+                    program
+                };
             }
         }
         Ok(())
@@ -329,8 +375,13 @@ impl<'h> Unit<'h> {
     pub fn engine_start(
         &mut self,
         writes: &[([i32; 4], i32)],
-        purges: &[(i32, i32)],
     ) -> Result<Program> {
+        let cost=writes.len().checked_mul(6).ok_or_else(||Fault {
+            span:Span::default(),builtin:None,message:"engine startup instruction budget exceeded".into()
+        })?;
+        self.budget=self.budget.checked_sub(cost).ok_or_else(||Fault {
+            span:Span::default(),builtin:None,message:"engine startup instruction budget exceeded".into()
+        })?;
         let mut code = Vec::new();
         for &(address, value) in writes {
             for (i, v) in address.into_iter().enumerate() {
@@ -349,21 +400,6 @@ impl<'h> Unit<'h> {
                 write: true,
             }));
         }
-        for &(group, value) in purges {
-            code.push(I::SetLocal {
-                local: 0,
-                value: i64::from(group),
-            });
-            code.push(I::SetLocal {
-                local: 1,
-                value: i64::from(value),
-            });
-            code.push(I::Op(Op::Purge {
-                group: 0,
-                local: 1,
-                write: true,
-            }));
-        }
         if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
             eprintln!(
                 "AUDIT {{\"stage\":\"ksp_engine_start_code\",\"slot\":{},\"instructions\":{}}}",
@@ -372,7 +408,8 @@ impl<'h> Unit<'h> {
             );
         }
         Program::new(code)
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback)
+                .with_source_slot(self.slot).with_diagnostic_callback("on init engine replay"))
             .map_err(|e| Fault {
                 span: Span::default(),
                 builtin: None,
@@ -390,15 +427,18 @@ impl<'h> Unit<'h> {
             callback_type: b::cb::LISTENER,
             ui_id: None,
             code: Vec::new(),
+            sites: Vec::new(),
             texts: Vec::new(),
             group_table: None,
             calls: Vec::new(),
             starts: Vec::new(),
             ends: Vec::new(),
+            opaque: Vec::new(),
             loops: Vec::new(),
             span,
             statement_span: None,
             call_span: None,
+            current_builtin: None,
             tdepth: 0,
             signal: Some(signal),
         };
@@ -443,9 +483,11 @@ impl<'h> Unit<'h> {
         g.emit(I::Wait(480))?;
         g.emit(I::Jump { target: top })?;
         Program::new(g.code)
+            .and_then(Program::with_snapshot_listener_driver)
             .map(|p| {
                 p.with_wait_lifetime(WaitLifetime::Callback)
                     .with_source_slot(g.u.slot)
+                    .with_diagnostic_callback("listener driver")
             })
             .map_err(|e| Fault {
                 span,
@@ -484,6 +526,21 @@ fn callback_type(kind: CallbackKind) -> i32 {
     }
 }
 
+/// One append-only code slot awaiting a target. Only the branch emitters mint
+/// this token, and `land` consumes it exactly once without downcasting code.
+struct PendingBranch {
+    at: usize,
+    local: Option<u16>,
+}
+impl PendingBranch {
+    fn instruction(self, target: usize) -> I {
+        match self.local {
+            Some(local) => I::JumpIfZero { local, target },
+            None => I::Jump { target },
+        }
+    }
+}
+
 struct Gen<'u, 'h> {
     u: &'u mut Unit<'h>,
     ctx: Context,
@@ -492,17 +549,20 @@ struct Gen<'u, 'h> {
     callback_type: i32,
     ui_id: Option<i32>,
     code: Vec<I>,
+    sites: Vec<(u32, Span, Option<&'static str>)>,
     texts: Vec<String>,
     /// Base of the group names, appended once as consecutive text constants.
     group_table: Option<u16>,
     calls: Vec<(usize, FnId)>,
     starts: Vec<u32>,
     ends: Vec<u32>,
+    opaque: Vec<usize>,
     /// Condition position of each enclosing `while`, for `continue`.
     loops: Vec<usize>,
     span: Span,
     statement_span: Option<Span>,
     call_span: Option<Span>,
+    current_builtin: Option<&'static str>,
     tdepth: u32,
     /// The timer signal a listener body program serves.
     signal: Option<i32>,
@@ -543,6 +603,10 @@ impl Gen<'_, '_> {
                 .ops
                 .push((self.statement_span.unwrap_or(self.span), crate::parity::operation_name(&op)));
         }
+        let span = self.call_span.or(self.statement_span).unwrap_or(self.span);
+        if self.sites.last().is_none_or(|(_, previous, builtin)| *previous != span || *builtin != self.current_builtin) {
+            self.sites.push((self.code.len() as u32, span, self.current_builtin));
+        }
         self.code.push(op);
         Ok(())
     }
@@ -553,25 +617,33 @@ impl Gen<'_, '_> {
         self.code.len()
     }
     /// Placeholder branch, patched by `land`.
-    fn jump_if_zero(&mut self, local: u16) -> Result<usize> {
+    fn jump_if_zero(&mut self, local: u16) -> Result<PendingBranch> {
         let at = self.here();
         self.emit(I::JumpIfZero { local, target: 0 })?;
-        Ok(at)
+        Ok(PendingBranch {
+            at,
+            local: Some(local),
+        })
     }
-    fn jump(&mut self) -> Result<usize> {
+    fn jump(&mut self) -> Result<PendingBranch> {
         let at = self.here();
         self.emit(I::Jump { target: 0 })?;
-        Ok(at)
+        Ok(PendingBranch { at, local: None })
     }
-    fn land(&mut self, at: usize) {
+    fn land(&mut self, branch: PendingBranch) {
         let target = self.here();
-        match &mut self.code[at] {
-            I::Jump { target: t } | I::JumpIfZero { target: t, .. } => *t = target,
-            _ => unreachable!("patched instruction is a branch"),
-        }
+        let at = branch.at;
+        self.code[at] = branch.instruction(target);
     }
     fn warn(&mut self, message: impl Into<String>) {
+        self.mark_opaque();
         self.report(None, crate::diag::Kind::Warning, message.into());
+    }
+    fn mark_opaque(&mut self) {
+        let at = self.code.len();
+        if self.opaque.last() != Some(&at) {
+            self.opaque.push(at);
+        }
     }
     fn report(&mut self, builtin: Option<Builtin>, kind: crate::diag::Kind, message: String) {
         if self.u.warnings.len() < 1000 {
@@ -604,6 +676,7 @@ impl Gen<'_, '_> {
         }
     }
     fn ignore(&mut self, builtin: Builtin, why: &str) {
+        self.mark_opaque();
         self.cover(builtin, Coverage::Ignored);
         let message = format!("{} {why}", builtin.name());
         self.report(Some(builtin), crate::diag::Kind::Unsupported, message);
@@ -615,7 +688,7 @@ impl Gen<'_, '_> {
         match self.ctx {
             Context::Note => self.emit(I::ForwardAttack),
             Context::Release => self.emit(I::ForwardReleaseGroups),
-            Context::Controller => self.emit(I::ForwardController),
+            Context::Controller | Context::PolyAt => self.emit(I::ForwardController),
             Context::Plan => Ok(()),
         }
     }
@@ -836,6 +909,13 @@ impl Gen<'_, '_> {
     // Expressions.
 
     fn value(&mut self, e: &Expr, dst: u16) -> Result<()> {
+        let previous = self.call_span.replace(e.span);
+        let result = self.value_inner(e, dst);
+        self.call_span = previous;
+        result
+    }
+
+    fn value_inner(&mut self, e: &Expr, dst: u16) -> Result<()> {
         if let Some(c) = fold(self.u.hir, e) {
             match c {
                 Const::Int(n) => return self.set(dst, i64::from(n)),
@@ -1051,6 +1131,7 @@ impl Gen<'_, '_> {
             SysVar::CcNum if self.ctx == Context::Controller => {
                 I::ReadControllerNumber { local: dst }
             }
+            SysVar::PolyAtNum if self.ctx == Context::PolyAt => I::ReadPolyPressureKey { local: dst },
             SysVar::WidgetInteraction(field) => {
                 I::Op(Op::ReadWidgetInteraction { local: dst, field })
             }
@@ -1119,7 +1200,7 @@ impl Gen<'_, '_> {
 
     fn sys_readable(&self, array: SysArray) -> bool {
         match array {
-            SysArray::Cc | SysArray::KeyDown => true,
+            SysArray::Cc | SysArray::KeyDown | SysArray::PolyAt => true,
             SysArray::EventPar => self.ui_id.is_some() || self.note_context(),
             SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
@@ -1148,6 +1229,10 @@ impl Gen<'_, '_> {
                 })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            SysArray::PolyAt => {
+                self.emit(I::ReadPolyPressure { local: at })?;
+                self.emit(I::ControllerToMidi7 { local: at })
+            }
             SysArray::EventPar if self.note_context() => {
                 let (event, bound) = (reg(at, 1)?, reg(at, 2)?);
                 self.set(bound, 0)?;
@@ -1250,9 +1335,15 @@ impl Gen<'_, '_> {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
                     Const::Str(s) => TextPart::Constant(self.constant(&s)),
-                    _ => return Ok(()),
+                    _ => {
+                        self.mark_opaque();
+                        return Ok(());
+                    }
                 },
-                _ => return Ok(()),
+                _ => {
+                    self.mark_opaque();
+                    return Ok(());
+                }
             },
             ExprKind::LoadElem(v, index) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Texts { offset, len } => {
@@ -1262,7 +1353,10 @@ impl Gen<'_, '_> {
                         index: free,
                     })
                 }
-                _ => return Ok(()),
+                _ => {
+                    self.mark_opaque();
+                    return Ok(());
+                }
             },
             ExprKind::Builtin(Builtin::GroupName, args) => {
                 let name = self
@@ -1284,6 +1378,27 @@ impl Gen<'_, '_> {
                     _ => {
                         self.warn("group_name of an unknown group is empty");
                         return Ok(());
+                    }
+                }
+            }
+            ExprKind::Builtin(Builtin::OutputChannelName, args) => {
+                // As at init (eval.rs): the plugin's output channels are "Output N";
+                // an index beyond them names nothing.
+                self.cover(Builtin::OutputChannelName, Coverage::Native);
+                let name = |i: i32| format!("Output {}", i + 1);
+                if let Some(index) = self.const_int(args, 0) {
+                    let text = if (0..b::NUM_OUTPUT_CHANNELS).contains(&index) { name(index) } else { String::new() };
+                    TextPart::Constant(self.constant(&text))
+                } else {
+                    self.arg(args, 0, free)?;
+                    let base = self.texts.len() as u16;
+                    for i in 0..b::NUM_OUTPUT_CHANNELS {
+                        self.texts.push(name(i));
+                    }
+                    TextPart::Table {
+                        base,
+                        count: b::NUM_OUTPUT_CHANNELS as u16,
+                        index: free,
                     }
                 }
             }
@@ -1626,8 +1741,10 @@ impl Gen<'_, '_> {
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], dst: u16, span: Span) -> Result<()> {
         let previous = self.call_span.replace(span);
+        let previous_builtin = self.current_builtin.replace(builtin.name());
         let result = self.builtin_inner(builtin, args, dst, span);
         self.call_span = previous;
+        self.current_builtin = previous_builtin;
         result
     }
 
@@ -2085,11 +2202,12 @@ impl Gen<'_, '_> {
                 self.land(end);
                 true
             }
-            IgnoreController if self.ctx == Context::Controller => {
+            IgnoreController if matches!(self.ctx, Context::Controller | Context::PolyAt) => {
                 self.emit(I::SuppressController)?;
                 true
             }
             IgnoreController => {
+                self.mark_opaque();
                 self.cover(builtin, Coverage::Native);
                 self.report(
                     None,
@@ -2422,10 +2540,10 @@ impl Gen<'_, '_> {
                 true
             }
             PurgeGroup | GetPurgeState => {
-                self.arg(args, 0, t)?;
                 if builtin == PurgeGroup {
                     self.arg(args, 1, dst)?;
                 }
+                self.arg(args, 0, t)?;
                 self.emit(I::Op(Op::Purge {
                     group: t,
                     local: dst,
@@ -2434,10 +2552,11 @@ impl Gen<'_, '_> {
                 true
             }
             SetEnginePar | GetEnginePar => {
-                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
+                // Ascending registers: the value's evaluation uses those above it.
                 if builtin == SetEnginePar {
                     self.arg(args, 1, dst)?;
                 }
+                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
                 self.emit(I::Op(Op::EngineParameter {
                     address: dst + 1,
                     local: dst,
@@ -2700,7 +2819,16 @@ impl Gen<'_, '_> {
                 }))?;
                 true
             }
-            GetZonePar => {
+            GetNumZones => {
+                self.emit(I::Op(Op::SourceZoneCount {local:dst}))?;
+                true
+            }
+            GetZoneId => {
+                self.arg(args,0,dst)?;
+                self.emit(I::Op(Op::SourceZoneIdentity {index:dst,local:dst}))?;
+                true
+            }
+            GetZonePar | SetZonePar => {
                 let selectors =
                     ["$ZONE_PAR_GROUP", "$ZONE_PAR_LOW_KEY", "$ZONE_PAR_HIGH_KEY"].map(|name| {
                         self.u
@@ -2713,11 +2841,18 @@ impl Gen<'_, '_> {
                 if let Some(parameter) = self.const_int(args, 1)
                     && !selectors.contains(&Some(parameter))
                 {
-                    self.ignore(builtin, "zone parameter is not implemented; result 0");
-                    return self.set(dst, 0);
+                    self.ignore(builtin, "zone parameter is outside the represented routing subset; live operation rejects");
                 }
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, dst + 1)?;
+                if builtin == SetZonePar {
+                    self.arg(args,2,dst+2)?;
+                    self.emit(I::Op(Op::SetZoneParameter {
+                        zone:dst, parameter:dst+1, value:dst+2, result:dst,
+                        selectors:selectors.map(|s|s.unwrap_or(0)),
+                        present:selectors.iter().enumerate().fold(0,|mask,(i,s)|mask|(u8::from(s.is_some())<<i)),
+                    }))?;
+                } else {
                 self.emit(I::Op(Op::ZoneParameter {
                     zone: dst,
                     parameter: dst + 1,
@@ -2730,6 +2865,7 @@ impl Gen<'_, '_> {
                         }),
                     local: dst,
                 }))?;
+                }
                 true
             }
             AddMenuItem => {
@@ -2890,7 +3026,7 @@ impl Gen<'_, '_> {
             // Instrument, presentation and logging services the engine does not own.
             ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
             | SetEventParArr | SetNoteController | WillNeverTerminate | RedirectOutput
-            | SetZonePar | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
+            | SetVoiceLimit | LoadIrSample | AttachLevelMeter | AddTextLine
             | MoveControl | MoveControlPx | SetSkinOffset | SetUiColor | FsNavigate | SetNksNavName | SetNksNavPar | ResetNksNav
             | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed | SetKeyPressedSupport
             | SetKeyrange | RemoveKeyrange | Message | LoadArray | SaveArray | PgsSetStrKeyVal
@@ -2903,9 +3039,10 @@ impl Gen<'_, '_> {
             }
             _ => {
                 let why = match builtin {
-                    AllowGroup | DisallowGroup | IgnoreEvent | GetEventPar => {
+                    AllowGroup | DisallowGroup | IgnoreEvent => {
                         "needs the originating note event; ignored"
                     }
+                    GetEventPar => "this event parameter is not implemented; result 0",
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
@@ -3775,13 +3912,14 @@ impl Gen<'_, '_> {
         self.cover(Builtin::PlayNote, Coverage::Native);
         match self.const_int(args, 3) {
             Some(0) => return self.emit(play(DurationValue::Fixed(Duration::UntilSilent))),
-            Some(-1) if self.note_context() => {
-                return self.emit(play(DurationValue::Fixed(Duration::Gate)));
-            }
-            Some(-1) => {
-                self.warn("play_note duration -1 needs a note callback; faults at runtime");
-                self.set(frames, -1)?;
-                return self.emit(play(DurationValue::Frames(frames)));
+            Some(value) if value < 0 => {
+                // Native command 0x50 retains a negative duration only when
+                // the note callback supplies an originating note owner.
+                return self.emit(play(DurationValue::Fixed(if self.ctx == Context::Note {
+                    Duration::Gate
+                } else {
+                    Duration::UntilSilent
+                })));
             }
             Some(_) => {
                 self.arg(args, 3, frames)?;
@@ -3793,21 +3931,18 @@ impl Gen<'_, '_> {
         // Runtime-selected sentinels.
         self.arg(args, 3, frames)?;
         let mut exits = Vec::new();
-        for (value, duration) in [(0, Duration::UntilSilent), (-1, Duration::Gate)] {
-            self.set(scratch, value)?;
+        for (comparison, duration) in [
+            (Cmp::Equal, Duration::UntilSilent),
+            (Cmp::Greater, if self.ctx == Context::Note { Duration::Gate } else { Duration::UntilSilent }),
+        ] {
+            self.set(scratch, 0)?;
             self.emit(I::CompareLocal {
                 lhs: scratch,
                 rhs: frames,
-                comparison: Cmp::Equal,
+                comparison,
             })?;
             let miss = self.jump_if_zero(scratch)?;
-            self.emit(play(if value == -1 && !self.note_context() {
-                // A parent-gate sentinel has no meaning without a note; the
-                // positive-frame check faults before publishing anything.
-                DurationValue::Frames(frames)
-            } else {
-                DurationValue::Fixed(duration)
-            }))?;
+            self.emit(play(DurationValue::Fixed(duration)))?;
             exits.push(self.jump()?);
             self.land(miss);
         }
@@ -3838,7 +3973,7 @@ impl Gen<'_, '_> {
         self.set(base + 3, i64::from(MENU_TAG))
     }
 
-    fn menu_missing(&mut self, base: u16, field: i32, presence: i32) -> Result<usize> {
+    fn menu_missing(&mut self, base: u16, field: i32, presence: i32) -> Result<PendingBranch> {
         // Menu values are signed-32; the 64-bit sentinel cannot be an item value.
         self.set(base + 1, i64::from(presence))?;
         self.set(base + 4, i64::MIN)?;
@@ -3887,11 +4022,12 @@ impl Gen<'_, '_> {
     }
 
     fn indexed_value(&mut self, args: &[Arg], dst: u16, write: bool) -> Result<()> {
-        self.arg(args, 0, dst + 1)?;
-        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
+        // Ascending registers: each evaluation uses those above its target.
         if write {
             self.arg(args, 2, dst)?;
         }
+        self.arg(args, 0, dst + 1)?;
+        self.arg(args, if write { 3 } else { 2 }, dst + 2)?;
         self.indexed_value_at(dst + 1, dst + 2, dst, dst + 3, write)
     }
 
@@ -4113,6 +4249,9 @@ impl Gen<'_, '_> {
                     local: dst,
                     write: false,
                 }))?;
+                if builtin == Builtin::GetControlPar {
+                    self.menu_selected_index(args, dst)?;
+                }
                 self.land(skip);
             } else {
                 self.emit(I::Op(Op::ControlAt {
@@ -4273,3 +4412,14 @@ fn host_service(builtin: Builtin) -> Coverage {
 #[cfg(test)]
 #[path = "lower_display_ext_tests.rs"]
 mod display_ext_tests;
+
+fn callback_name(kind: CallbackKind) -> &'static str {
+    use CallbackKind::*;
+    match kind {
+        Init => "on init", Note => "on note", Release => "on release",
+        Controller => "on controller", PolyAt => "on poly_at", UiControl(_) => "on ui_control",
+        UiControls => "on ui_controls", UiUpdate => "on ui_update", Listener => "on listener",
+        PgsChanged => "on pgs_changed", PersistenceChanged => "on persistence_changed",
+        AsyncComplete => "on async_complete", Rpn => "on rpn", Nrpn => "on nrpn",
+    }
+}

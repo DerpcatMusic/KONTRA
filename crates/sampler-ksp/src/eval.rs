@@ -6,6 +6,9 @@ use crate::hir::*;
 use crate::model::{self, Key, KeyRange, MenuItem, Request, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Saved scalars and arrays by variable name.
+pub type SavedValues = (BTreeMap<String, Value>, BTreeMap<String, Vec<Value>>);
+
 /// Instrument facts the script may query while initializing.
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
@@ -23,21 +26,71 @@ pub struct Environment {
     /// Saved array contents by variable name (`%a`, `?r`); a longer save is
     /// cut to the declared length, a shorter one restores a prefix.
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
+    /// A snapshot load: the instrument's own saved values (`persisted` holds the
+    /// snapshot's). Kontakt loads the instrument, runs `on persistence_changed`,
+    /// then applies the snapshot and runs it again; scripts tell the passes
+    /// apart (ANALOG STRINGS re-routes its double-buffered buses on the second).
+    pub instrument_persisted: Option<SavedValues>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
     pub engine_values: BTreeMap<[i32; 4], i32>,
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// Physical source zone id -> group, low key, high key.
     pub zones: BTreeMap<u32, [i32; 3]>,
+    /// Physical order and source-defined IDs; not dense DSP region order.
+    pub zone_catalog: Vec<sampler_ir::SourceZone>,
+    /// Current global instrument policy inherited from earlier physical slots.
+    pub snapshot_mode: model::SnapshotMode,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
+    /// The resource container's `data` folder: `.nka` file contents by
+    /// lowercase file name without extension, for `load_array(<array>, 2)` in
+    /// `on init`.
+    pub data_arrays: BTreeMap<String, Vec<u8>>,
     /// The instrument's MIDI object, including earlier slots' init selection.
     pub midi_object: sampler_core::MidiObject,
     /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
     /// empty entry is a folder the host does not have.
     pub folders: [String; 4],
+    /// Host transport values for `$DURATION_*`, `$SIGNATURE_*` and `$NI_BPM`. The
+    /// manual makes them tempo dependent, so with `None` `on init` reading one
+    /// is a fault; no fixed 120 BPM / 4/4 is invented.
+    pub transport: Option<Transport>,
+}
+
+/// Host-provided transport values, in the units of the matching KSP variables.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Transport {
+    pub quarter: i32,
+    pub eighth: i32,
+    pub sixteenth: i32,
+    pub quarter_triplet: i32,
+    pub eighth_triplet: i32,
+    pub sixteenth_triplet: i32,
+    pub bar: i32,
+    pub signature_num: i32,
+    pub signature_denom: i32,
+    pub tempo: i32,
+}
+
+impl Transport {
+    /// A host with no playing transport: 120 BPM in 4/4. A loader that has no
+    /// DAW transport at load time passes this explicitly (reads are warned),
+    /// instead of every script that reads `$SIGNATURE_NUM` failing to initialize.
+    pub const STANDALONE: Self = Self {
+        quarter: 500_000,
+        eighth: 250_000,
+        sixteenth: 125_000,
+        quarter_triplet: 333_333,
+        eighth_triplet: 166_666,
+        sixteenth_triplet: 83_333,
+        bar: 2_000_000,
+        signature_num: 4,
+        signature_denom: 4,
+        tempo: 120,
+    };
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -117,6 +170,24 @@ fn statement_has_array_file(stmt: &StmtKind) -> bool {
         }
         StmtKind::Call(_) => false,
     }
+}
+
+#[cfg(feature="cache")]
+pub(crate) fn uses_array_file(hir:&Hir)->bool {
+    let mut pending:Vec<&[Stmt]>=hir.callbacks.iter().map(|c|c.body.as_slice())
+        .chain(hir.functions.iter().map(|f|f.body.as_slice())).collect();
+    while let Some(body)=pending.pop() {
+        for statement in body {
+            if statement_has_array_file(&statement.kind) {return true;}
+            match &statement.kind {
+                StmtKind::If(_,yes,no)=>{pending.push(yes);pending.push(no);}
+                StmtKind::While(_,body)=>pending.push(body),
+                StmtKind::Select(_,cases)=>pending.extend(cases.iter().map(|c|c.body.as_slice())),
+                _=>{},
+            }
+        }
+    }
+    false
 }
 
 pub fn int_arith(op: Arith, a: i32, b: i32) -> i32 {
@@ -204,8 +275,10 @@ impl V {
 }
 
 /// Initial state after `on init`.
+#[derive(Clone)]
 pub struct Initial {
     pub midi_object: sampler_core::MidiObject,
+    pub residency: Vec<model::InitialResidencyRequest>,
     pub cells: Vec<i64>,
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
@@ -217,6 +290,8 @@ pub struct Initial {
     pub warnings: Vec<Fault>,
     /// `set_engine_par` writes keyed `(parameter, group, slot, generic)`.
     pub engine: HashMap<[i32; 4], i32>,
+    /// Committed physical-source metadata replacements; never creates a zone.
+    pub zone_parameters: BTreeMap<u32, [i32; 3]>,
     /// Integer `$CONTROL_PAR_*` mirror keyed `(ui id, parameter)`.
     pub properties: HashMap<(i32, i32), i32>,
     pub text_properties: HashMap<(i32, i32), String>,
@@ -241,10 +316,14 @@ struct Eval<'h, const TRACK: bool> {
     consumed: BTreeSet<VarId>,
     pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
+    residency_pass: model::ResidencyPass,
     async_result: Option<(i32, i32)>,
     async_depth: u8,
+    zone_batch: crate::zone_routing::InitialZoneBatch,
     current_statement: Option<u32>,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
+    /// `random()`'s stream, seeded as the runtime's.
+    random: u64,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -258,11 +337,19 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
 fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initial> {
     let mut model = model::Model::default();
     model.interface.keys = vec![Key::default(); 128];
+    // A snapshot load first runs as the instrument, with its own saved values.
+    let instrument = env.instrument_persisted.as_ref().map(|(persisted, arrays)| Environment {
+        persisted: persisted.clone(),
+        persisted_arrays: arrays.clone(),
+        instrument_persisted: None,
+        ..env.clone()
+    });
     let mut e = Eval::<TRACK> {
         hir,
-        env,
+        env: instrument.as_ref().unwrap_or(env),
         st: Initial {
             midi_object: env.midi_object.clone(),
+            residency: Vec::new(),
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
@@ -270,6 +357,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
             model,
             warnings: Vec::new(),
             engine: HashMap::new(),
+            zone_parameters: BTreeMap::new(),
             properties: HashMap::new(),
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),
@@ -279,10 +367,13 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
+        residency_pass: model::ResidencyPass::InstrumentPersistence,
         async_result: None,
         async_depth: 0,
+        zone_batch: Default::default(),
         current_statement: None,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
+        random: sampler_core::RANDOM_SEED,
     };
     #[cfg(feature = "scan")]
     crate::scan::present(
@@ -304,26 +395,35 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         #[cfg(feature = "scan")]
         crate::scan::phase("init", r.as_ref().err());
         r?;
+        e.finish_zone_batch(init.span, true)?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
-    for (i, var) in hir.vars.iter().enumerate() {
-        if !e.consumed.contains(&VarId(i as u32))
-            && (e.st.persistence[i] != Persistence::None
-                || matches!(var.home, Home::Control(_))
-                    && e.env
-                        .control_values
-                        .contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
-        {
-            e.restore(VarId(i as u32));
-        }
-    }
+    e.restore_saved(false);
     e.callback_type = b::cb::PERSISTENCE_CHANGED;
-    if let Some(cb) = hir
+    let persistence_changed = hir
         .callbacks
         .iter()
-        .find(|c| c.kind == CallbackKind::PersistenceChanged)
-    {
+        .find(|c| c.kind == CallbackKind::PersistenceChanged);
+    if instrument.is_some() {
+        // The instrument's pass runs to its end state here, waits elapsed as
+        // in init; a pass that fails leaves no trace (the single-pass load).
+        // ponytail: shares init's fuel, so a polling loop spends it before
+        // the rollback; give the pass its own budget if a library hits that.
+        if let Some(cb) = persistence_changed {
+            let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone(), e.zone_batch.clone());
+            let ok = e.block(&cb.body).and_then(|_| e.finish_zone_batch(cb.span, true)).is_ok();
+            e.st.warnings.truncate(before.0.warnings.len());
+            if !ok {
+                (e.st, e.fuel, e.consumed, e.pending_menus, e.zone_batch) = before;
+            }
+        }
+        // Then the snapshot: every saved value, read in init or not.
+        e.env = env;
+        e.residency_pass = model::ResidencyPass::SnapshotPersistence;
+        e.restore_saved(true);
+    }
+    if let Some(cb) = persistence_changed {
         if may_suspend(hir, &cb.body, true) {
             e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
             #[cfg(feature = "scan")]
@@ -331,7 +431,9 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         } else {
             #[cfg(feature = "scan")]
             crate::scan::stage("persistence_changed");
-            let result = e.block(&cb.body);
+            let body = e.block(&cb.body);
+            let finish = e.finish_zone_batch(cb.span, body.is_ok());
+            let result = body.map(|_|()).and(finish);
             #[cfg(feature = "scan")]
             crate::scan::phase("persistence_changed", result.as_ref().err());
             e.st.model.persistence_completion = match result {
@@ -384,6 +486,34 @@ pub fn declared_range(ui: &Ui) -> Option<(i32, i32)> {
 }
 
 impl<const TRACK: bool> Eval<'_, TRACK> {
+    fn finish_zone_batch(&mut self, span: Span, commit: bool) -> Result<()> {
+        if self.zone_batch.is_empty() { return Ok(()); }
+        // A worker can finish finite metadata work. Clock/file waits require a
+        // scheduled runtime callback, never a replayed initializer prefix.
+        if self.hir.callbacks.iter().find(|c| c.kind == CallbackKind::AsyncComplete)
+            .is_some_and(|c| may_suspend(self.hir, &c.body, true)) {
+            return fault(span, "zone async completion requires runtime scheduling");
+        }
+        if self.async_depth >= 8 { return fault(span, "zone async completion nesting limit"); }
+        let completed = if commit { self.zone_batch.commit(&mut self.st.zone_parameters) }
+            else { self.zone_batch.abort() };
+        let mut failure=None;
+        for (id,success) in completed {
+            self.async_depth += 1;
+            let previous = (self.callback_type, self.async_result);
+            self.callback_type = b::cb::ASYNC_COMPLETE;
+            self.async_result = Some((id,i32::from(success)));
+            let result = if let Some(cb) = self.hir.callbacks.iter().find(|c| c.kind == CallbackKind::AsyncComplete) {
+                let body=self.block(&cb.body);
+                let finish=self.finish_zone_batch(cb.span, body.is_ok());
+                body.map(|_|()).and(finish)
+            } else { Ok(()) };
+            (self.callback_type,self.async_result) = previous;
+            self.async_depth -= 1;
+            if failure.is_none() {failure=result.err();}
+        }
+        failure.map_or(Ok(()),Err)
+    }
     fn warn(&mut self, span: Span, message: impl Into<String>) {
         if self.st.warnings.len() < 1000 {
             self.st.warnings.push(Fault {
@@ -509,7 +639,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         let v = &self.hir.vars[var.0 as usize];
         let len = v.len.unwrap_or(0);
         let Some(i) = u32::try_from(index).ok().filter(|i| *i < len) else {
-            self.warn(span, format!("array index {index} out of bounds"));
+            self.warn(span, format!("array index {index} out of bounds for {} (length {len}); read returns zero or empty text", v.name));
             return if v.ty == Ty::Str {
                 V::S(String::new())
             } else if v.ty == Ty::Real {
@@ -533,6 +663,23 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
     }
 
     /// Applies the saved value of a persistent variable, if the file has one.
+    /// Restore every persistent variable (and host-saved control) from the
+    /// environment; `all` includes those `read_persistent_var` already read.
+    fn restore_saved(&mut self, all: bool) {
+        for (i, var) in self.hir.vars.iter().enumerate() {
+            if (all || !self.consumed.contains(&VarId(i as u32)))
+                && (self.st.persistence[i] != Persistence::None
+                    || matches!(var.home, Home::Control(_))
+                        && self
+                            .env
+                            .control_values
+                            .contains_key(&crate::derived_control_id(self.env.slot, &var.name)))
+            {
+                self.restore(VarId(i as u32));
+            }
+        }
+    }
+
     fn restore(&mut self, var: VarId) {
         let v = &self.hir.vars[var.0 as usize];
         let conv = |value: &Value| match value {
@@ -630,7 +777,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         let v = &self.hir.vars[var.0 as usize];
         let len = v.len.unwrap_or(0);
         let Some(i) = u32::try_from(index).ok().filter(|i| *i < len) else {
-            self.warn(span, format!("array index {index} out of bounds"));
+            self.warn(span, format!("array index {index} out of bounds for {} (length {len}); write ignored", v.name));
             return;
         };
         match v.home {
@@ -671,12 +818,12 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 if matches!(sys, EventId | EventNote | EventVelocity | NoteHeld | CcNum) {
                     self.warn(e.span, format!("{sys:?} has no event in on init; reads 0"));
                 }
-                V::I(self.sys(*sys))
+                V::I(self.sys(*sys, e.span)?)
             }
             ExprKind::SysElem(array, i) => {
                 let i = self.expr(i)?.int();
                 if !(0..array.len() as i32).contains(&i) {
-                    self.warn(e.span, format!("array index {i} out of bounds"));
+                    self.warn(e.span, format!("array index {i} out of bounds for {array:?} (length {}); read returns zero or empty text", array.len()));
                 }
                 if array.drop_kind().is_some() {
                     V::S(String::new())
@@ -737,26 +884,40 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         })
     }
 
-    fn sys(&self, sys: b::SysVar) -> i32 {
+    fn sys(&mut self, sys: b::SysVar, span: Span) -> Result<i32> {
         use b::SysVar::*;
-        match sys {
+        if matches!(
+            sys,
+            DurationQuarter | DurationEighth | DurationSixteenth | DurationQuarterTriplet
+                | DurationEighthTriplet | DurationSixteenthTriplet | DurationBar
+                | SignatureNum | SignatureDenom | Tempo
+        ) {
+            let Some(t) = self.env.transport else {
+                return fault(span, format!("{sys:?} depends on host transport, which `on init` does not have"));
+            };
+            self.warn(span, format!("{sys:?} read in on init takes the host transport the loader supplied"));
+            return Ok(match sys {
+                DurationQuarter => t.quarter,
+                DurationEighth => t.eighth,
+                DurationSixteenth => t.sixteenth,
+                DurationQuarterTriplet => t.quarter_triplet,
+                DurationEighthTriplet => t.eighth_triplet,
+                DurationSixteenthTriplet => t.sixteenth_triplet,
+                DurationBar => t.bar,
+                SignatureNum => t.signature_num,
+                SignatureDenom => t.signature_denom,
+                _ => t.tempo,
+            });
+        }
+        Ok(match sys {
             NumGroups => self.env.groups.len() as i32,
             CallbackType => self.callback_type,
             AsyncId => self.async_result.map_or(0, |v| v.0),
             AsyncExitStatus => self.async_result.map_or(0, |v| v.1),
-            DurationQuarter => 500_000,
-            DurationEighth => 250_000,
-            DurationSixteenth => 125_000,
-            DurationQuarterTriplet => 333_333,
-            DurationEighthTriplet => 166_666,
-            DurationSixteenthTriplet => 83_333,
-            DurationBar => 2_000_000,
-            SignatureNum | SignatureDenom => 4,
-            Tempo => 120,
             NumOutputChannels => b::NUM_OUTPUT_CHANNELS,
             CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
-        }
+        })
     }
 
     fn arg(&mut self, args: &[Arg], i: usize) -> Result<V> {
@@ -772,11 +933,11 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
     fn text(&mut self, args: &[Arg], i: usize) -> Result<String> {
         Ok(self.arg(args, i)?.text())
     }
-    fn var(args: &[Arg], i: usize) -> VarId {
-        match &args[i] {
-            Arg::Var(v, _) => *v,
-            Arg::Place(p) => p.var(),
-            _ => unreachable!("sema checks variable arguments"),
+    fn var(args: &[Arg], i: usize, span: Span) -> Result<VarId> {
+        match args.get(i) {
+            Some(Arg::Var(v, _)) => Ok(*v),
+            Some(Arg::Place(p)) => Ok(p.var()),
+            _ => fault(span, "expected a variable argument"),
         }
     }
 
@@ -902,7 +1063,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         for c in &view.controls {
             let Some(id) = ui_id(&c.name) else { continue };
             for (name, value) in &c.properties {
-                let Some(par) = b::control_par(name) else {
+                let Some(par) = b::control_par(name)
+                    .or_else(|| (name == "table_steps_shown").then_some(TABLE_STEPS_SHOWN)) else {
                     self.warn(
                         span,
                         format!("{}: unknown performance view property {name}", c.name),
@@ -916,6 +1078,22 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     },
                     (_, Value::Int(n)) => V::I(*n),
                     (_, Value::Real(r)) => V::R(*r),
+                    (_, Value::Text(t)) if name.starts_with("$CONTROL_PAR_FONT_TYPE") => {
+                        // NCKP uses the same custom-font identity as get_font_id;
+                        // resolve after any fonts registered earlier in on init.
+                        if let Ok(id) = t.parse::<i32>() { V::I(id) }
+                        else if t.is_empty() || t.contains(['/', '\\']) {
+                            self.warn(span, "invalid bitmap font resource name; using the default font");
+                            V::I(0)
+                        } else {
+                            let fonts = &mut self.st.model.interface.fonts;
+                            let index = fonts.iter().position(|f| f == t).unwrap_or_else(|| {
+                                fonts.push(t.clone());
+                                fonts.len() - 1
+                            });
+                            V::I(26 + index as i32)
+                        }
+                    }
                     (_, Value::Text(t)) => V::S(t.clone()),
                 };
                 self.set_property(id, par, value, span);
@@ -960,7 +1138,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
 
     fn waveform(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use sampler_core::waveform::Property;
-        let var = Self::var(args, 0);
+        let var = Self::var(args, 0, span)?;
         let ui = self.ui_of(var);
         let id = ui.map(|i| b::FIRST_UI_ID + i as i32);
         let name = self.hir.vars[var.0 as usize].name.to_string();
@@ -974,7 +1152,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             return Ok(V::I(0));
         };
         if builtin == Builtin::AttachZone {
-            if selector <= 0 || !self.env.zones.contains_key(&(selector as u32)) {
+            if selector < 0 || !self.env.zones.contains_key(&(selector as u32)) {
                 self.warn(span, "waveform source zone is absent from the physical-source environment");
                 return Ok(V::I(0));
             }
@@ -1061,8 +1239,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
         Ok(match builtin {
             Exit | Continue => V::I(0),
             Inc | Dec => {
-                let Arg::Place(place) = &args[0] else {
-                    unreachable!()
+                let Some(Arg::Place(place)) = args.first() else {
+                    return fault(span, "inc/dec requires a variable");
                 };
                 let current = match place {
                     Place::Var(v) => self.read_var(*v),
@@ -1116,10 +1294,11 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let (a, n) = (self.int(args, 0)?, self.int(args, 1)?);
                 V::I(a.wrapping_shr(n as u32))
             }
+            // The documented range law with the runtime's own stream: Kontakt's seed is
+            // unproved, and any value in range is one it may draw.
             Random => {
-                // Deterministic during init; scripts only see an in-range value.
-                let (lo, hi) = (self.int(args, 0)?, self.int(args, 1)?);
-                V::I(lo.min(hi))
+                let (a, b) = (self.int(args, 0)?, self.int(args, 1)?);
+                V::I(sampler_core::random(&mut self.random, a, b) as i32)
             }
             IntToReal | Real => V::R(f64::from(self.int(args, 0)?)),
             RealToInt | Int => V::I(real_to_int(self.arg(args, 0)?.real())),
@@ -1148,12 +1327,12 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             MsToTicks => V::I((i64::from(self.int(args, 0)?) * 960 / 500_000) as i32),
             TicksToMs => V::I((i64::from(self.int(args, 0)?) * 500_000 / 960) as i32),
             NumElements => V::I(
-                self.hir.vars[Self::var(args, 0).0 as usize]
+                self.hir.vars[Self::var(args, 0, span)?.0 as usize]
                     .len
                     .unwrap_or(1) as i32,
             ),
             Search => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 let needle = self.arg(args, 1)?;
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let (lo, hi) = if args.len() == 4 {
@@ -1177,7 +1356,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(found)
             }
             Sort => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 let descending = self.int(args, 1)? != 0;
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let (lo, hi) = if args.len() == 4 {
@@ -1203,14 +1382,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             ArrayEqual => {
-                let (a, b2) = (Self::var(args, 0), Self::var(args, 1));
+                let (a, b2) = (Self::var(args, 0, span)?, Self::var(args, 1, span)?);
                 let len = self.hir.vars[a.0 as usize].len.unwrap_or(0);
                 // Sema admits only same-sized declared integer arrays.
                 let equal = (0..len as i32)
                     .all(|i| self.read_elem(a, i, span).int() == self.read_elem(b2, i, span).int());
                 V::I(i32::from(equal))
             }
-            GetUiId => V::I(b::FIRST_UI_ID + self.ui_of(Self::var(args, 0)).unwrap_or(0) as i32),
+            GetUiId => {
+                V::I(b::FIRST_UI_ID + self.ui_of(Self::var(args, 0, span)?).unwrap_or(0) as i32)
+            }
             SetControlPar | SetControlParReal | SetControlParStr => {
                 let (id, par, value) = (self.int(args, 0)?, self.int(args, 1)?, self.arg(args, 2)?);
                 self.set_property(id, par, value, span);
@@ -1261,7 +1442,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 }
             }
             SetText | SetKnobLabel | SetControlHelp | AddTextLine => {
-                let ui = self.ui_of(Self::var(args, 0));
+                let ui = self.ui_of(Self::var(args, 0, span)?);
                 let text = self.text(args, 1)?;
                 let par = match builtin {
                     SetText | AddTextLine => b::CONTROL_PAR_TEXT,
@@ -1283,7 +1464,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             SetKnobUnit | SetKnobDefval | HidePart | SetTableStepsShown => {
-                if let Some(ui) = self.ui_of(Self::var(args, 0)) {
+                if let Some(ui) = self.ui_of(Self::var(args, 0, span)?) {
                     let par = match builtin {
                         SetKnobUnit => b::CONTROL_PAR_UNIT,
                         SetKnobDefval => b::CONTROL_PAR_DEFAULT_VALUE,
@@ -1298,7 +1479,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             MoveControl | MoveControlPx => {
-                if let Some(ui) = self.ui_of(Self::var(args, 0)) {
+                if let Some(ui) = self.ui_of(Self::var(args, 0, span)?) {
                     let id = b::FIRST_UI_ID + ui as i32;
                     let (x, y) = (self.int(args, 1)?, self.int(args, 2)?);
                     let (px, py) = if builtin == MoveControl {
@@ -1312,7 +1493,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             AddMenuItem => {
-                let ui = self.ui_of(Self::var(args, 0));
+                let ui = self.ui_of(Self::var(args, 0, span)?);
                 let (text, value) = (self.text(args, 1)?, self.int(args, 2)?);
                 if let Some(ui) = ui {
                     self.menu(ui).push(MenuItem {
@@ -1327,7 +1508,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                             .and_then(|i| items.get(i))
                             .or_else(|| items.first())
                             .map_or(0, |item| item.value);
-                        self.write_var(Self::var(args, 0), V::I(selected));
+                        self.write_var(Self::var(args, 0, span)?, V::I(selected));
                     }
                 }
                 V::I(0)
@@ -1336,13 +1517,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 let (id, index) = (self.int(args, 0)?, self.int(args, 1)?);
                 let value = self.arg(args, 2)?;
                 match self.ui_index(id) {
-                    Some(ui) => match self.menu(ui).get_mut(index as usize) {
+                    Some(ui) => {
+                        let len = self.menu(ui).len();
+                        match self.menu(ui).get_mut(index as usize) {
                         Some(item) => match builtin {
                             SetMenuItemStr => item.text = value.text(),
                             SetMenuItemVisibility => item.visible = value.int() != 0,
                             _ => item.value = value.int(),
                         },
-                        None => self.warn(span, format!("menu item {index} out of range")),
+                        None => self.warn(span, format!("menu item {index} out of range for UI id {id} (item count {len}); {} ignored", builtin.name())),
+                        }
                     },
                     None => self.warn(span, format!("unknown menu id {id}")),
                 }
@@ -1422,7 +1606,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         SetKeyPressed => k.pressed = Some(value.int()),
                         _ => k.name = Some(value.text()),
                     },
-                    None => self.warn(span, format!("key {key} out of range")),
+                    None => self.warn(span, format!("key {key} out of range (expected 0..=127); {} ignored", builtin.name())),
                 }
                 V::I(0)
             }
@@ -1479,6 +1663,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             SetSnapshotType => {
+                if self.callback_type != b::cb::INIT {
+                    self.warn(span, "set_snapshot_type is valid only in on init");
+                    return Ok(V::I(0));
+                }
                 let value = self.int(args, 0)?;
                 self.st.model.snapshot_mode =
                     model::SnapshotMode::from_native(value).ok_or_else(|| Fault {
@@ -1486,6 +1674,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         builtin: Some("set_snapshot_type"),
                         message: "invalid snapshot mode".into(),
                     })?;
+                self.st.model.snapshot_mode_write = Some(model::SnapshotModeWrite {
+                    mode: self.st.model.snapshot_mode,
+                    offset: span.start,
+                });
                 V::I(0)
             }
             DisableLogging | WatchVar | WatchArrayIdx | ExposeControls | ShowLibraryTab
@@ -1496,7 +1688,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             MakePersistent | MakeInstrPersistent => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 self.st.persistence[var.0 as usize] = if builtin == MakeInstrPersistent {
                     Persistence::Instrument
                 } else {
@@ -1505,7 +1697,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 V::I(0)
             }
             ReadPersistentVar => {
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 self.restore(var);
                 self.consumed.insert(var);
                 V::I(0)
@@ -1660,6 +1852,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             WaitAsync => {
                 let id = self.int(args, 0)?;
+                self.finish_zone_batch(span, true)?;
                 // Init completes MIDI jobs synchronously; only clock waits defer their callback.
                 let deferred = self
                     .hir
@@ -1810,7 +2003,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             FsGetFilename => V::S(String::new()),
             GetScale => {
                 let scale = self.int(args, 0)?;
-                let var = Self::var(args, 1);
+                let var = Self::var(args, 1, span)?;
                 let len = self.hir.vars[var.0 as usize].len.unwrap_or(0) as i32;
                 let notes = b::scale(scale).map(|s| s.1);
                 if notes.is_none() {
@@ -1848,33 +2041,95 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     Some("$ZONE_PAR_GROUP") => Some(0),
                     Some("$ZONE_PAR_LOW_KEY") => Some(1),
                     Some("$ZONE_PAR_HIGH_KEY") => Some(2),
-                    _ => None,
+                    _ => return fault(span, "zone parameter has no represented getter"),
                 };
                 V::I(
                     field
                         .and_then(|field| {
-                            self.env
-                                .zones
-                                .get(&u32::try_from(zone).ok()?)
+                            self.st.zone_parameters.get(&u32::try_from(zone).ok()?)
+                                .or_else(|| self.env.zones.get(&u32::try_from(zone).ok()?))
                                 .map(|values| values[field])
                         })
-                        .unwrap_or(0),
+                        .unwrap_or(-1),
                 )
             }
             AttachZone | SetUiWfProperty | GetUiWfProperty => self.waveform(builtin, args, span)?,
-            GetNumZones | GetZoneId | GetPurgeState | GetVoiceLimit
+            GetPurgeState => {
+                self.warn(span,"get_purge_state during initialization has no physical residency authority; startup query remains unsupported");
+                V::I(0)
+            }
+            GetNumZones => V::I(self.env.zone_catalog.len().min(i32::MAX as usize) as i32),
+            GetZoneId => {
+                let ordinal=self.int(args,0)?;
+                V::I(usize::try_from(ordinal).ok().and_then(|i| self.env.zone_catalog.get(i))
+                    .and_then(|z|z.id).and_then(|id|i32::try_from(id).ok()).unwrap_or(-1))
+            }
+            GetVoiceLimit
             | EventStatus | GetEventPar | GetEventParArr | GetEventMark => V::I(0),
-            // No host consumes zone writes (FindZone finds nothing at init), and
-            // Conflux issues three million of them: logging each cost ~1 GB.
-            SetZonePar => V::I(0),
+            SetZonePar => {
+                let zone = self.int(args,0)?;
+                let selector = self.int(args,1)?;
+                let value = self.int(args,2)?;
+                let parameter = match symbol_name(self.hir,selector).as_deref() {
+                    Some("$ZONE_PAR_GROUP") => sampler_core::ZoneParameter::Group,
+                    Some("$ZONE_PAR_LOW_KEY") => sampler_core::ZoneParameter::LowKey,
+                    Some("$ZONE_PAR_HIGH_KEY") => sampler_core::ZoneParameter::HighKey,
+                    _ => return fault(span,"zone parameter has no represented routing consumer"),
+                };
+                let mode = self.st.model.snapshot_mode_write.map_or(self.env.snapshot_mode, |w|w.mode);
+                if mode.saves_engine() {
+                    return fault(span,"normal-zone writes require active snapshot policy 2 or 3; user-zone provenance is unavailable");
+                }
+                if self.callback_type == b::cb::INIT {
+                    crate::zone_routing::write_initial(&self.env.zones,&mut self.st.zone_parameters,
+                        self.env.groups.len(),zone,parameter,value).map_err(|message|Fault {
+                            span,builtin:Some("set_zone_par"),message:message.into()
+                        })?;
+                    V::I(-1)
+                } else {
+                    if self.async_depth >= 8 { return fault(span,"zone async completion nesting limit"); }
+                    if self.hir.callbacks.iter().find(|c|c.kind==CallbackKind::AsyncComplete)
+                        .is_some_and(|c|may_suspend(self.hir,&c.body,true)) {
+                        return fault(span,"zone async completion requires runtime scheduling");
+                    }
+                    let id=self.zone_batch.queue(&self.env.zones,&self.st.zone_parameters,
+                        self.env.groups.len(),&mut self.st.midi_object,zone,parameter,value)
+                        .map_err(|message|Fault {span,builtin:Some("set_zone_par"),message:message.into()})?;
+                    V::I(id)
+                }
+            },
             LoadArray => {
                 // NI load/save contract: load_array in init implicitly persists
                 // its target; saved state is restored after the init callback.
-                let var = Self::var(args, 0);
+                let var = Self::var(args, 0, span)?;
                 if self.callback_type == b::cb::INIT
                     && self.st.persistence[var.0 as usize] == Persistence::None
                 {
                     self.st.persistence[var.0 as usize] = Persistence::Snapshot;
+                }
+                // Mode 2 reads the resource container's data folder; in init
+                // Kontakt does it synchronously, so the next line sees it.
+                if self.callback_type == b::cb::INIT && self.int(args, 1)? == 2 {
+                    let name = &self.hir.vars[var.0 as usize].name;
+                    let file = name[1..].to_lowercase();
+                    let loaded = self.env.data_arrays.get(&file).and_then(|bytes| {
+                        let array = crate::array_file::array(self.hir, var).ok()?;
+                        let output =
+                            sampler_core::ArrayFileCompletion::from_bytes(array, bytes).ok()?;
+                        let range = array.offset as usize..(array.offset + array.len) as usize;
+                        if array.kind == sampler_core::ArrayFileKind::Text {
+                            for (cell, value) in range.zip(output.texts()) {
+                                self.st.texts[cell] = value.as_str().to_owned();
+                            }
+                        } else {
+                            self.st.cells[range].copy_from_slice(output.numbers());
+                        }
+                        Some(())
+                    });
+                    if loaded.is_none() {
+                        self.warn(span, format!("load_array: data/{file}.nka not loaded"));
+                    }
+                    return Ok(V::I(0));
                 }
                 self.request(builtin, args)?;
                 V::I(0)
@@ -1887,7 +2142,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     );
                     V::I(-1)
                 } else {
-                    let var = Self::var(args, 0);
+                    let var = Self::var(args, 0, span)?;
                     let path = self.text(args, 1)?;
                     let id = self.st.midi_object.allocate_async_id().map_err(|_| Fault {
                         span,
@@ -1939,7 +2194,28 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     V::I(id)
                 }
             }
-            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
+            PurgeGroup => {
+                let group=self.int(args,0)?;
+                let mode=self.int(args,1)?;
+                if self.callback_type != b::cb::PERSISTENCE_CHANGED || group < 0 || !(0..=1).contains(&mode) {
+                    self.warn(span,"purge_group startup replay requires a documented persistence callback, nonnegative group and mode 0 or 1");
+                    V::I(-1)
+                } else {
+                    if self.st.residency.len() >= sampler_core::InitialGroupResidency::MAX_REQUESTS {
+                        return fault(span,"startup residency request budget exceeded");
+                    }
+                    let async_id=self.st.midi_object.allocate_async_id().map_err(|_|Fault {
+                        span,builtin:Some(builtin.name()),message:"startup async identity exhausted".into()
+                    })?;
+                    self.request(builtin,args)?;
+                    self.st.residency.push(model::InitialResidencyRequest {
+                        group,reload:mode!=0,async_id,source_slot:self.env.slot,
+                        pass:self.residency_pass,offset:span.start,
+                    });
+                    V::I(async_id)
+                }
+            }
+            SetVoiceLimit | LoadIrSample | SaveArray | AttachLevelMeter
             | FsNavigate | LoadNativeUi | SetNksNavName
             | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
@@ -1955,11 +2231,16 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 }
                 V::I(0)
             }
+            Wait | WaitTicks => {
+                self.finish_zone_batch(span, true)?;
+                self.warn(span,format!("{} has no clock delay in on init",builtin.name()));
+                V::I(0)
+            }
             PlayNote | NoteOff | IgnoreEvent | ChangeVol | ChangeTune | ChangePan | ChangeVelo
             | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr | AllowGroup
             | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds | IgnoreController
             | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter | WillNeverTerminate
-            | RedirectOutput | Wait | WaitTicks | StopWait => {
+            | RedirectOutput | StopWait => {
                 self.warn(span, format!("{} has no effect in on init", builtin.name()));
                 V::I(0)
             }
@@ -2014,5 +2295,38 @@ fn placeholder() -> model::Widget {
         callback: None,
         persistence: Persistence::None,
         location: None,
+    }
+}
+
+#[cfg(test)]
+mod doctor_argument_tests {
+    use super::*;
+    use crate::builtins::SysArray;
+    #[test]
+    fn invalid_variable_argument_shapes_return_positioned_faults() {
+        let span = Span::new(13, 21);
+        for arg in [
+            Arg::Expr(Expr {
+                ty: Ty::Int,
+                span,
+                kind: ExprKind::Int(7),
+            }),
+            Arg::Key("key".into()),
+            Arg::SysArray(SysArray::KeyDown),
+        ] {
+            let error = Eval::<false>::var(&[arg], 0, span).unwrap_err();
+            assert_eq!(error.span, span);
+            assert_eq!(error.message, "expected a variable argument");
+        }
+        assert_eq!(Eval::<false>::var(&[], 0, span).unwrap_err().span, span);
+        let var = VarId(4);
+        assert_eq!(
+            Eval::<false>::var(&[Arg::Var(var, span)], 0, span).unwrap(),
+            var
+        );
+        assert_eq!(
+            Eval::<false>::var(&[Arg::Place(Place::Var(var))], 0, span).unwrap(),
+            var
+        );
     }
 }

@@ -230,6 +230,7 @@ fn ir_lowering_reaches_the_oscillator_with_tune_and_ignores_saved_root_and_loops
     let instrument = ir::Instrument {
         assets: vec![ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
@@ -291,6 +292,7 @@ fn addressed_wave_plan(data: &[[f32; 2]], source: Wavetable, chain: bool) -> Pre
     let mut instrument = ir::Instrument {
         assets: vec![ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
@@ -322,6 +324,80 @@ fn addressed_wave_plan(data: &[[f32; 2]], source: Wavetable, chain: bool) -> Pre
         .unwrap()
     } else {
         plan
+    }
+}
+
+#[test]
+fn source_lane_modulation_is_per_voice_additive_and_keeps_phase_under_live_writes() {
+    use sampler_ir as ir;
+    let data: Vec<_> = (0..2 * CYCLE).map(|i| {
+        [(std::f32::consts::TAU * (i % CYCLE) as f32 / CYCLE as f32).sin()
+            * if i < CYCLE { 1. } else { 0.25 }; 2]
+    }).collect();
+    for (parameter, name, lane) in [
+        (ir::WavetableParameter::Position, "ENGINE_PAR_WT_POSITION", 0),
+        (ir::WavetableParameter::Form1, "ENGINE_PAR_WT_FORM", 1),
+        (ir::WavetableParameter::Form2, "ENGINE_PAR_WT_FORM2", 2),
+    ] {
+        for threads in [1, 2] {
+            let base = Wavetable { phase: 0.17, position: 0.25,
+                form1_type: 16, form1: 0.25, form2_type: 16, form2: 0.25,
+                ..Default::default() };
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.group = Some(ir::GroupRef(0));
+            zone.velocity = ir::VelocityResponse::None;
+            zone.routes = vec![ir::RouteRef(0)];
+            let instrument = ir::Instrument {
+                assets: vec![ir::Asset { location: ir::AssetLocation::Path("synthetic.wav".into()),
+                    residency: Default::default(),
+                    encoding: ir::Encoding::Wav, root_key: None, loops: vec![] }],
+                groups: vec![ir::Group { wavetable: Some(base), ..Default::default() }],
+                zones: vec![zone],
+                modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Velocity }],
+                routes: vec![ir::Route::new(ir::ModulatorRef(0), ir::Target::Wavetable(parameter), ir::Depth::Normalized(0.5))],
+                ..Default::default()
+            };
+            let prepared = sampler_core::lower::lower(&instrument, 48000,
+                vec![Pcm::new(48000, data.clone().into_boxed_slice()).unwrap()], |_, p| Ok(p)).unwrap();
+            let limits = Limits { notes: 64, performances: 1, families: 64, expressions: 64,
+                voices: 64, commands: 4, channels: 0, decisions: 0, behaviors: 0,
+                behavior_fuel: 0, behavior_cells: 0, note_cells: 0 };
+            let mut rt = Runtime::new(prepared, limits).unwrap().with_threads(sampler_core::Threads::Fixed(threads));
+            let mut phase = f64::from(base.phase) * CYCLE as f64;
+            let step = 440. * CYCLE as f64 / 48000.;
+            for block in 0..3 {
+                let mut expected = [[0.; 2]; 64];
+                for voice in 0..64 {
+                    let velocity = if voice % 2 == 0 { 0.2 } else { 0.8 };
+                    let mut source = base;
+                    let value = if block < 2 { 0.25 } else { 0.7 } + 0.5 * velocity as f32;
+                    match lane { 0 => source.position = value.min(1.), 1 => source.form1 = value.min(1.), _ => source.form2 = value.min(1.) }
+                    let mut single = [[0.; 2]; 64];
+                    oracle(&data, source, phase, step, &mut single);
+                    for (sum, single) in expected.iter_mut().zip(single) {
+                        for c in 0..2 { sum[c] += single[c]; }
+                    }
+                }
+                let mut actual = [[0.; 2]; 64];
+                support::without_heap(|| {
+                    if block == 0 {
+                        for voice in 0..64 {
+                            let mut note = input(69); note.external_id = Some(voice);
+                            rt.trigger(note, 69, if voice % 2 == 0 { 0.2 } else { 0.8 }).unwrap();
+                        }
+                    }
+                    if block == 2 {
+                        rt.set_engine_parameter(wave_address(name, 0), 700_000).unwrap();
+                        assert_eq!(rt.engine_parameter(wave_address(name, 0)).unwrap(), 700_000);
+                    }
+                    for chunk in actual.chunks_mut(if threads == 1 { 7 } else { 31 }) { rt.render(chunk).unwrap(); }
+                });
+                for (a, b) in actual.iter().zip(expected) {
+                    assert!((a[0] - b[0]).abs() < 0.0001, "lane {lane} threads {threads} block {block}: {a:?} {b:?}");
+                }
+                for _ in 0..64 { phase = (phase + step).rem_euclid(CYCLE as f64); }
+            }
+        }
     }
 }
 fn wave_address(name: &str, group: i32) -> sampler_core::EngineParameterAddress {
@@ -430,9 +506,126 @@ fn live_wave_writes_reach_active_voices_in_single_batch_and_parallel_paths_witho
 fn wave_control_schema_cannot_replace_amounts_with_integer_values() {
     let data = vec![[0.; 2]; CYCLE];
     let plan = addressed_wave_plan(&data, Wavetable::default(), false);
-    assert_eq!(plan.engine_parameter_bindings().len(), 3);
+    assert_eq!(plan.engine_parameter_bindings().len(), 5);
     let mut controls = plan.controls().to_vec();
     controls[0].domain = sampler_core::ControlDomain::Integer { min: 0, max: 1 };
     controls[0].default = sampler_core::ControlValue::Integer(0);
     assert!(plan.with_controls(controls).is_err());
+}
+
+#[test]
+fn addressed_phase_form_switch_changes_held_sound_without_restarting_the_clock() {
+    let data: Vec<_> = (0..CYCLE).map(|i| [i as f32 / CYCLE as f32; 2]).collect();
+    let source = Wavetable {
+        phase: 0.17,
+        form1: 0.125,
+        form1_type: 16,
+        ..Default::default()
+    };
+    let plan = addressed_wave_plan(&data, source, false);
+    let mut rt = Runtime::new(
+        plan,
+        Limits {
+            notes: 1,
+            performances: 1,
+            families: 1,
+            expressions: 1,
+            voices: 1,
+            commands: 4,
+            channels: 0,
+            decisions: 0,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+            note_cells: 0,
+        },
+    )
+    .unwrap();
+    let mut before = [[0.; 2]; 37];
+    support::without_heap(|| {
+        rt.trigger(input(69), 69, 1.).unwrap();
+        rt.render(&mut before).unwrap();
+        rt.set_engine_parameter(wave_address("ENGINE_PAR_WT_FORM_MODE", 7), 0)
+            .unwrap();
+        assert_eq!(
+            rt.engine_parameter(wave_address("ENGINE_PAR_WT_FORM_MODE", 7))
+                .unwrap(),
+            0
+        );
+    });
+    let mut source = source;
+    source.form1_type = 0;
+    let step = 440. * CYCLE as f64 / 48000.;
+    let mut phase = f64::from(source.phase) * CYCLE as f64;
+    for _ in 0..37 {
+        phase = (phase + step).rem_euclid(CYCLE as f64);
+    }
+    let mut expected = [[0.; 2]; 41];
+    oracle(&data, source, phase, step, &mut expected);
+    let mut actual = [[0.; 2]; 41];
+    support::without_heap(|| rt.render(&mut actual).unwrap());
+    assert_eq!(
+        actual, expected,
+        "mode changes must preserve the oscillator phase"
+    );
+}
+
+#[test]
+fn phase_form_controls_reject_unproved_or_fractional_modes_atomically() {
+    use sampler_core::{
+        ControlValue, ControlWrite, EngineParameterLaw, EngineParameterOffset, Error,
+    };
+    let data = vec![[0.; 2]; CYCLE];
+    let plan = addressed_wave_plan(&data, Wavetable::default(), false);
+    let address = wave_address("ENGINE_PAR_WT_FORM_MODE", 7);
+    let control = plan
+        .engine_parameter_bindings()
+        .iter()
+        .find(|binding| binding.address == address)
+        .unwrap()
+        .control;
+    let limits = Limits::for_plan(&plan, 1, 4);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        assert_eq!(
+            rt.set_engine_offsets(&[EngineParameterOffset {
+                address,
+                offset: 0.001
+            }]),
+            Err(Error::InvalidInput),
+            "discrete selectors have no normalized offset law"
+        );
+        assert_eq!(rt.engine_parameter(address).unwrap(), 0);
+    });
+    for value in [1., 18., 8.5] {
+        let plan = addressed_wave_plan(&data, Wavetable::default(), false);
+        let mut controls = plan.controls().to_vec();
+        controls
+            .iter_mut()
+            .find(|definition| definition.id == control)
+            .unwrap()
+            .default = ControlValue::Real(value);
+        assert!(
+            plan.with_controls(controls).is_err(),
+            "invalid defaults must not enter a voice"
+        );
+        support::without_heap(|| {
+            assert_eq!(
+                EngineParameterLaw::WavetableForm.normalized_value(value),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(
+                rt.edit_controls(
+                    rt.active_plan(),
+                    None,
+                    &[ControlWrite {
+                        id: control,
+                        value: ControlValue::Real(value)
+                    }]
+                ),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.engine_parameter(address).unwrap(), 0);
+        });
+    }
 }

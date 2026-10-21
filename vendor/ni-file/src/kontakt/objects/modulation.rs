@@ -11,9 +11,10 @@ use crate::{
     Error,
 };
 
-/// Group/source parameters stored without a module slot byte. The six
-/// wavetable names map to native target IDs 11..=16; both native target
-/// readers and writers omit the module slot for these IDs.
+/// Group/source parameters stored without a module slot byte: the native
+/// target registry's group/source IDs 2, 3, 6, 7, 8, 11..=19, 21, 176, 177 and
+/// 244, not only wavetables (IDs 11..=16 are the six wavetable names). Both
+/// native target readers and writers omit the module slot for these IDs.
 const GROUP_TARGETS: [&str; 18] = [
     "volume",
     "pan",
@@ -46,8 +47,11 @@ pub struct ModTarget {
     pub param: String,
     /// Modulation depth; every local preset stores 0..=1.
     pub intensity: f32,
-    /// Lag (smoothing) time; the Kontakt manual gives this knob in milliseconds.
-    pub lag_ms: u16,
+    /// Signed 16-bit route lag (target stride 0x30, +0xe in the native route
+    /// compiler FUN_140873040). Positive values are the manual's milliseconds;
+    /// negative values select a different native smoothing law whose cadence is
+    /// unproved, so consumers must report them rather than smooth.
+    pub lag_ms: i16,
     /// KSP target name (`find_target`); `<none>` or empty when unnamed.
     pub name: String,
     /// Owning module slot for module parameters; `None` for group parameters.
@@ -170,7 +174,9 @@ pub enum ModSource {
 ///
 /// Type:           Chunk<StructuredObject>, fields in private data
 /// SerType:        0x0C
-/// Versions:       0x100, 0x101, 0x102, 0x103, 0x104
+/// Versions:       0x100, 0x101, 0x102, 0x103, 0x104, 0x105
+/// Kontakt 8.13.1 reader FUN_140d09620 (vtable slot 11; slot 2 returns 0x105):
+/// 0x105 shares the 0x104 layout exactly.
 /// Kontakt 7:      BParExternalMod
 #[derive(Debug)]
 pub struct ExternalMod(pub StructuredObject);
@@ -190,7 +196,9 @@ pub struct ExternalModParams {
     /// for some CCs), two when unassigned.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_source_data: Vec<u8>,
-    /// Additional private footer bytes: one in v0x103, two in v0x104.
+    /// Additional private footer bytes: one in v0x103, two in v0x104/0x105
+    /// (Kontakt 8.13.1 FUN_140d09620 stores them as two flag bytes at +0x550/+0x551;
+    /// +0x550 defaults to 1 before v0x103).
     /// Their semantics are unknown; retain them without treating them as flags.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_tail: Vec<u8>,
@@ -198,7 +206,7 @@ pub struct ExternalModParams {
 
 impl ExternalMod {
     pub fn params(&self) -> Result<ExternalModParams, Error> {
-        if !matches!(self.0.version, 0x100..=0x104) {
+        if !matches!(self.0.version, 0x100..=0x105) {
             return Err(Error::Generic(format!(
                 "Unsupported BParExternalMod version 0x{:X}",
                 self.0.version
@@ -220,9 +228,9 @@ impl ExternalMod {
         };
         let unknown_source_data = reader.read_bytes(unknown_len)?;
         let unknown_id = reader.read_u32_le()?;
-        // The native versioned reader appends one byte at 0x103, then a
-        // second at 0x104. The common source/target layout is unchanged.
-        let tail_len = self.0.version.saturating_sub(0x102) as usize;
+        // Kontakt 8.13.1 FUN_140d09620: one flag byte from 0x103, a second from
+        // 0x104; 0x105 reads exactly the 0x104 layout.
+        let tail_len = footer_len(self.0.version);
         let unknown_tail = reader.read_bytes(tail_len)?;
         ensure_consumed(&reader)?;
 
@@ -235,6 +243,10 @@ impl ExternalMod {
             unknown_tail,
         })
     }
+}
+
+fn footer_len(version: u16) -> usize {
+    version.min(0x104).saturating_sub(0x102) as usize
 }
 
 impl TryFrom<&Chunk> for ExternalMod {
@@ -300,7 +312,7 @@ pub(crate) fn read_targets(
         }
         let unknown_i16 = reader.read_i16_le()?;
         let unknown_flags = reader.read_u8()?;
-        let lag_ms = reader.read_u16_le()?;
+        let lag_ms = reader.read_i16_le()?;
         let name = read_assignment_name(reader, legacy)?;
         let slot = if GROUP_TARGETS.contains(&param.as_str()) {
             None
@@ -466,7 +478,7 @@ mod tests {
 
     #[test]
     fn all_external_source_shapes_keep_signed_depth_shaper_smoothing_and_version_footer() {
-        for version in 0x100u16..=0x104 {
+        for version in 0x100u16..=0x105 {
             for source in 1u32..=12 {
                 let mut data = 1u32.to_le_bytes().to_vec();
                 data.extend(5u32.to_le_bytes());
@@ -474,7 +486,8 @@ mod tests {
                 data.extend(0.25f32.to_le_bytes());
                 data.extend((-1i16).to_le_bytes());
                 data.push(0x12);
-                data.extend(250u16.to_le_bytes());
+                let lag: i16 = if source % 2 == 0 { -250 } else { 250 };
+                data.extend(lag.to_le_bytes());
                 data.extend(0u32.to_le_bytes());
                 data.push(1);
                 data.extend([1, 1]);
@@ -494,7 +507,7 @@ mod tests {
                 data.extend(17u32.to_le_bytes());
                 data.extend(std::iter::repeat_n(
                     0xa5,
-                    version.saturating_sub(0x102) as usize,
+                    footer_len(version),
                 ));
                 let object = ExternalMod(StructuredObject {
                     version,
@@ -505,13 +518,13 @@ mod tests {
                 let p = object.params().unwrap();
                 assert_eq!(p.targets[0].signed_intensity(), -0.25);
                 assert!(p.targets[0].invert);
-                assert_eq!(p.targets[0].lag_ms, 250);
+                assert_eq!(p.targets[0].lag_ms, if source % 2 == 0 { -250 } else { 250 });
                 let ShaperCurve::Table(table) = &p.targets[0].shaper.as_ref().unwrap().curve else {
                     panic!("table")
                 };
                 assert_eq!(table.len(), 128);
                 assert_eq!((table[0], table[127]), (0.0, 1.0));
-                assert_eq!(p.unknown_tail.len(), version.saturating_sub(0x102) as usize);
+                assert_eq!(p.unknown_tail.len(), footer_len(version));
                 let expected = match source {
                     1 => ModSource::PitchBend,
                     2 => ModSource::PolyAftertouch,

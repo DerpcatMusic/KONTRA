@@ -526,9 +526,10 @@
       "summary": "Return the documented ui_menu entry index for CONTROL_PAR_VALUE",
       "source_commits": [
         "1f62da4c8f155c315715a71cf9d40ff4a2dd85a1",
-        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640"
+        "f2c59e2c6f7e60660d869fd5aae7fe99fab4c640",
+        "15a6bd13fb6d2bed01dd7886479b780db659161d"
       ],
-      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain. Extension validated in after403 batch: Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified.",
+      "validation": "Root reports focused ui_menu CONTROL_PAR_VALUE runtime gate passed in the twelve-check runtime set. no every-menu or Lua UI parity claim. Root accepted this narrow logical unit after the complete focused gates and actual replay verdict: six Analog runtime-fault lists empty at 1bbd31c, three Morphology snapshots applied without init/runtime faults, nonfinite samples or measured underruns; unsupported source warnings remain. Extension validated in after403 batch: Product a8c29411380e0c60b9b6671b8697a0c305ce6da5: workspace2224/0/269ignored; scheduler48/0, reader45/0/1ignored, keyswitch3; focused bytecode/zone/class/keyboard and compilation/offline/GPU checks PASS. Native Conflux1/Vista2/browser1, scanner15/15 audible/12Original unchanged; full quick retry72/72 loaded/68audible, finite/zero audio allocations, strict stuck guards PASS. First quick retirement variability retained and also observed in frozen403 A/B. Receipts w0-batch-after403/combined-verdict.json and native-verdict.json. Full gestures/native payload fidelity and quiet CPU/RSS/deadline/retirement stability remain unverified. Follow-up 15a6bd13 closes the dynamic-selector path of this same logical getter defect: all11 focused menu checks pass, including nonconsecutive values, hidden selected rows and variable parameter selectors; combined library-access root796 passed/53 ignored, then snapshot integration30 passed/1 ignored. Actual Una Corda/Analog gesture and native parity remain separate evidence.",
       "accepted": true
     },
     {
@@ -1180,9 +1181,10 @@
       "source_commits": [
         "597266e8ba5baea872cc44f6432a3ca8f594bcc2",
         "224d11883646fc87032682b47d064c5145654c15",
-        "cabde651d5c3696ad8ce205423b3564952c45068"
+        "cabde651d5c3696ad8ce205423b3564952c45068",
+        "470ddd24ce7dbbffa0a656cffabe274d6bcab9ba"
       ],
-      "validation": "Accepted scoped outcome. Fresh isolated source 4a4f5ca7765668c5adcd4928a20ca092be373578 passed locked all-targets/all-features checking, test compilation and production build; all 477 tracked source hashes remained unchanged. Frozen lib-test cef99c9623cb passed all 590 library regressions (30 ignored), all 59 reporter regressions and the actual manual-export regression; frozen playback-test 5faf6f575afe passed all 89 playback regressions (4 ignored). The parent source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed six Ladder, ten BUFFR durable-file, eleven flight-recorder and one optional-date vendor regression, plus strict-MPE/native VST3 processing gates; the 4a correction changes only the authored reporter actor-lifecycle tests. Final versioned production identity and host gates are prepared separately before export. Production GitHub crash-upload/issue creation and Mac user-crash cause remain unverified. Independent double/scalar/PCM, rate, bounded resonance, partition/reset and zero-heap references pass. Generated math tables only. High Quality oversampling, other Ladder modes and full audible/native transition equivalence remain unproved.",
+      "validation": "Accepted scoped outcome. Fresh isolated source 4a4f5ca7765668c5adcd4928a20ca092be373578 passed locked all-targets/all-features checking, test compilation and production build; all 477 tracked source hashes remained unchanged. Frozen lib-test cef99c9623cb passed all 590 library regressions (30 ignored), all 59 reporter regressions and the actual manual-export regression; frozen playback-test 5faf6f575afe passed all 89 playback regressions (4 ignored). The parent source 9c1f7d149652f537683fbb58a5912ecf5a4bc12c passed six Ladder, ten BUFFR durable-file, eleven flight-recorder and one optional-date vendor regression, plus strict-MPE/native VST3 processing gates; the 4a correction changes only the authored reporter actor-lifecycle tests. Final versioned production identity and host gates are prepared separately before export. Production GitHub crash-upload/issue creation and Mac user-crash cause remain unverified. Independent double/scalar/PCM, rate, bounded resonance, partition/reset and zero-heap references pass. Generated math tables only. High Quality oversampling, other Ladder modes and full audible/native transition equivalence remain unproved. Follow-up strict native float ordering:117/117 complete1024-frame stereo native hashes/checkpoints exact across the retained HQ-off static control/selector grid at3 rates; complete core487 passed/11 ignored and55 affected integrations passed/1 ignored. This does not admit HQ or unproved host transition laws.",
       "accepted": true
     },
     {
@@ -4636,6 +4638,502 @@
       "category": "Fixed",
       "release_note": "Wait for actual Conflux callback audit readiness and completion before reporting its result.",
       "validation": "The audit previously skipped initial plan/program settling and rendered eight blocks without draining commands. A full 256-effect outbox suspended emission with Outcome::None, while the gate judged labels before callback completion. Core Emit rewinds and suspends on backpressure; production hosting interleaves command drain. The corrected audit retains the same sampled IDs, uses bounded initial settling and render/drain service until callback completion, records actual readiness and retains strict labels and the exact three-effect assertion. This is an audit-service correction, not a production behavior fix or a native Conflux parity claim. Coordinator passing exact-source callback-gate receipt: Parent exact ignored ui::loop_audit::loop_audit_conflux compiled and passed1/1 on the same installed Conflux and original sampled IDs. Finite startup completed in15 blocks,1481effects serviced; recurring listener drivers classified from compiler metadata and remaindiagnostic. Both controlcallbacks Finished in1block each with0faults/0newstalls; one emitted/applied3UIeffects including set_knob_label, the other1set_control_par_str. Strict exact-three-effects assertion and labeltargetproperty readback passed; publication changed/noop checks passed. New authored timerclassification regression included in666root passes. Complete-reviewed-product-build exited0. Receipt conflux-passing-callback-receipt.json in external evidence root. Auditonly correction; no production callback fix or native parity claimed.. Coordinator combined exact-source regression and product-build receipt: Source b44473c9e14ae4fcf42af562ee8684331ca1473f; coordinator release-mode all14/all-targets checks with final root serial rerun: 2325 distinct target tests passed, 153 ignored (666 root tests passed); 18 synthetic Python sweep-admission tests passed; actual current executable absent-probe rejection passed without artifacts. Final reviewed CLAP/VST3 library and standalone product build exited0. Fresh 1495/1495 static library inspections reconciled with0 integrityfaults; 17 selected initializedIR,9complete UI models and8incomplete. Current Conflux/Bartok/Clarinet CPU editor gates passed. Original-byte checks passed1222Kontakt records and3937Workstation cases. Evidence root /mnt/MAIN_STORAGE/kontra-runs/native-parity-20261013. Scope limits: no new whole-corpus musical audition or nativehost comparison; ConfluxVector authoredlayout remainsunsupported; UVI OnePole port and async loadSample remainopen; native SIMD/multiband/lifecycle and liveworker timing unverified. Clean versioned artifact identity checked separately after metadata commit.."
+    },
+    {
+      "id": "kontakt-8131-external-mod-0x105",
+      "summary": "Accept BParExternalMod 0x105 (Kontakt 8.13.1 reader FUN_140d09620)",
+      "source_commits": [
+        "fa81a1c7ebec7951d148564a75f837dd946bb6c3",
+        "ddb34935138954962d5a13dceaf2686e07a1aaa1"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Instruments saved by Kontakt 8.13 load again.",
+      "validation": "Kontakt-saved fixture failed with 'Unsupported BParExternalMod version 0x105'; native_oracle test passes."
+    },
+    {
+      "id": "galois-reverb-room-type-enum",
+      "summary": "Decode GaloisReverb room type as the native u32 enum",
+      "source_commits": [
+        "f48d53028b9188059bcaef1d2cef9fdd97d76c01"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Hall reverbs no longer play as Room.",
+      "validation": "Reader FUN_140d019f0 reads a validated u32; f32 decode turned 1 into 1.4e-45; galois_reverb_room_type_is_a_native_u32_enum."
+    },
+    {
+      "id": "ssl-geq-v11-fields",
+      "summary": "Read SSL G-EQ v0x11 trailing fields from the native layout",
+      "source_commits": [
+        "f48d53028b9188059bcaef1d2cef9fdd97d76c01"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "SSL G-EQ presets saved by newer Kontakt decode completely.",
+      "validation": "Native reader layout FFBFFFFFFFFBFFBB; generated layouts drive EffectParameters."
+    },
+    {
+      "id": "kontakt-db-law-bus-faders",
+      "summary": "Use Kontakt's 6 dB-per-doubling law for script bus faders",
+      "source_commits": [
+        "ddb34935138954962d5a13dceaf2686e07a1aaa1"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Script-set bus volumes match Kontakt's level.",
+      "validation": "Measured with the native oracle: stored gain = 2^(dB/6); kontakt_volume_db_is_six_db_per_doubling."
+    },
+    {
+      "id": "cycle-round-robin-zero-based",
+      "summary": "Treat stored cycle round-robin positions as 0-based",
+      "source_commits": [
+        "0ea2670603ed1cd0cd4ae1ce98dc57d1e98292fe"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Round-robin groups play in Kontakt's order; first-position groups are no longer dropped.",
+      "validation": "Native evaluator 0x140876bd0; group_start_conditions_match_what_kontakt_stored."
+    },
+    {
+      "id": "voice-release-cross-plan",
+      "summary": "Qualify monophonic release and voice limits by plan",
+      "source_commits": [
+        "9939af454e0f0e691a1ca2a0437be5bf40baa68d",
+        "53650365f501fe86a39ac298805717d801a47881"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Releases and voice limits no longer cut notes in other instruments.",
+      "validation": "Cross-plan isolation and twelve-layer replacement tests failed first."
+    },
+    {
+      "id": "kontakt-exclusive-voice-groups",
+      "summary": "Apply Kontakt exclusive voice groups",
+      "source_commits": [
+        "53650365f501fe86a39ac298805717d801a47881"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Exclusive voice groups cut each other like Kontakt.",
+      "validation": "Translation and isolation tests failed first."
+    },
+    {
+      "id": "purge-group-residency",
+      "summary": "Make purge_group release and reload sample residency",
+      "source_commits": [
+        "54ea85f9113ea098e9fdc007c49c36de25e6424c"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Purged groups free memory and cost no CPU; unpurge reloads with async completion.",
+      "validation": "12 core + 3 Kontakt focused tests; synthetic residency 1984->0 bytes."
+    },
+    {
+      "id": "muted-groups-retained",
+      "summary": "Retain muted group definitions for live unmute",
+      "source_commits": [
+        "54ea85f9113ea098e9fdc007c49c36de25e6424c"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Unmuting a saved-muted group plays it.",
+      "validation": "saved_muted_group_can_unmute_without_reloading_its_definition."
+    },
+    {
+      "id": "kontakt-archive-sample-identity",
+      "summary": "Canonicalize archive members and resolve relocated archive prefixes",
+      "source_commits": [
+        "d29003e1fa9eff72e099c7f42a1ed785d70b8e42",
+        "be0a7c5be41af2a7ec49e9150cc5a5e8608ca145"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Samples inside moved or differently spelled archives are found.",
+      "validation": "Two spelling mismatches -> zero; relocated fixture resolves."
+    },
+    {
+      "id": "voice-group-default-overrides",
+      "summary": "Bind omitted voice-group overrides to Kontakt defaults",
+      "source_commits": [
+        "c51a1cffae796dbfa1b1b83ba986cd776b77356e"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Groups using default voice groups get their voice limit instead of an error.",
+      "validation": "Native writer omits defaults; oracle confirms default 1 voice/oldest/10 ms."
+    },
+    {
+      "id": "bus-sleep-history-clears",
+      "summary": "Let silent buses sleep without repeated history clears",
+      "source_commits": [
+        "27464058f6de552c30b997e210fe50aff31282f2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Idle effect buses stop costing CPU.",
+      "validation": "101 repeated clears -> 1; exact sleep/wake PCM."
+    },
+    {
+      "id": "dormant-graph-traversal",
+      "summary": "Skip traversal of dormant plans",
+      "source_commits": [
+        "90083347a67c0ad84120c97672121c583c0223b8"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Instruments with nothing playing cost no CPU per block.",
+      "validation": "32 idle tile traversals -> 0 with identical PCM."
+    },
+    {
+      "id": "conflux-controller-skin",
+      "summary": "Resolve NativeUI resources per program",
+      "source_commits": [
+        "13ac41a05946f1a419669bc76dbd817e5557bb48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Conflux multi controller programs show their own skin, not Conflux's unbound one.",
+      "validation": "Program-owned resource tests for three multis."
+    },
+    {
+      "id": "conflux-vector-layout",
+      "summary": "Project the authored NativeUI layout for Conflux Vector",
+      "source_commits": [
+        "13ac41a05946f1a419669bc76dbd817e5557bb48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Conflux's Vector page no longer overlaps controls.",
+      "validation": "Vector geometry regression failed first."
+    },
+    {
+      "id": "nckp-presentation-fields",
+      "summary": "Import NCKP fonts, press states and table prefixes",
+      "source_commits": [
+        "13ac41a05946f1a419669bc76dbd817e5557bb48"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Kontakt UIs show their custom fonts and pressed states.",
+      "validation": "378/378 Conflux controls, zero parser diagnostics."
+    },
+    {
+      "id": "module-parameter-modulation",
+      "summary": "Route modulation to modulator rate/amount and effect knobs",
+      "source_commits": [
+        "130a2394587abfe9d5a31c4427252214dd6cb093",
+        "d771c9c0e4385bfc8d4ca7b4e413fbdfdffccff6"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Conflux LFO motion and Analog Strings formant/lo-fi/drive modulation play.",
+      "validation": "Dropped routes: Conflux 2,207 -> 0 (excl. 550 random sources); ANALOG STRINGS 6,065 -> 1,902."
+    },
+    {
+      "id": "kontakt-lfo-native-waveforms",
+      "summary": "Use Kontakt's own LFO waveform tables",
+      "source_commits": [
+        "1d6b868742484ba883628c13a06e6f0331fa3f6b"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Kontakt LFO saw, random and pulse-width shapes play instead of being dropped.",
+      "validation": "Native 4096-entry tables with the spec's interpolation; LFO mapping test."
+    },
+    {
+      "id": "ni-file-native-readers",
+      "summary": "Decode Kontakt objects with Kontakt's own reader programs",
+      "source_commits": [
+        "fab549ae6764cef595b63debdbb379980df925a2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Kontakt objects decode exactly or report what is undecoded (14 -> 105 of 118 classes).",
+      "validation": "Round trip of every reader at every version; Rust/Python executors agree on 297 streams."
+    },
+    {
+      "id": "uvi-ui-inventory-iteration",
+      "summary": "Avoid repeated per-entry Lua iterator guards during complete UVI UI inventory export",
+      "source_commits": [
+        "057d6f1cda5e5469a672a64e70f19f2d550aa305",
+        "57d4dcd611740bf4842e6a939424844caf93cdfe",
+        "ea844c04fbdd5bf30b067c48a5a996d3e6466f62"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Full UVI UI inventory exports use a faster iterator while retaining the complete authored model.",
+      "validation": "48 complete synthetic models agree; full geometry and exact Bitmap/Vector PNG oracle passes; ordinary UVI163 and scan173 tests pass; integrated 0.3.477 root785 passed/53 ignored. Paired typical synthetic export caller CPU improves18\u201320%; no universal real-bank speed or native parity claim. Follow-up57d4 promotes fresh plain-scalar projection with canonical fallback:80 full authored models exact, full geometry and Bitmap/Vector pixels exact; scan177 passed/12 ignored. Contended paired caller-thread CPU ratios ordinary0.451/sparse0.458/all-document0.682/mixed0.780/all-metatable0.999; external compilers present in every timing sample, so quiet and real-bank speedup remain unverified. Combined root796 passed/53 ignored. No retained cache, hidden-widget pruning or native parity claim. Follow-up identical immutable presentation writes retain UI revision and avoid export; mutable/metamethod writes retain side effects. Five focused checks and full UVI scan182 passed/12 ignored; real unseeded worker proves8 identical controller updates retain the same interface and one actual text change publishes once. No universal bank speedup claim."
+    },
+    {
+      "id": "source-rate-complete-scaling-dependencies",
+      "summary": "Order all source-rate scaling dependencies before evaluation and reject instantaneous cycles",
+      "source_commits": [
+        "d7b4530b94ea0c2dc80a857512573b438aa94cfa"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Order all source-rate scaling dependencies before evaluation and reject instantaneous cycles.",
+      "validation": "Rendered PCM, primary/additional source-scale, cycle refusal, unsupported phase-scale and reuse oracles fail before the correction and pass after it;95 integration checks pass with1 pre-existing ignored. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "source-phase-preserves-saved-lfo-base",
+      "summary": "Preserve saved LFO phase when applying onset phase modulation",
+      "source_commits": [
+        "d3d087c66c2e2ad0b0dfecff633a3b755efc6f7c"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preserve saved LFO phase when applying onset phase modulation.",
+      "validation": "Original Kontakt instruction probes and independent getter/builder/binding witnesses establish saved base plus modulation, not modulation from zero; authored unit/PCM RED-to-GREEN and29 targeted checks pass; corrected saved-phase integration oracle retained. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "macos-window-open-state-query",
+      "summary": "Report macOS native window open state without inverting the closed flag",
+      "source_commits": [
+        "fc94ce441c1ebb8d3994f9798abf9b2f801bec68"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Report macOS native window open state without inverting the closed flag.",
+      "validation": "Source review and platform-neutral lifetime coverage confirm the query polarity; Linux integrated root suite passes. Actual macOS host execution remains pending hosted validation. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "linux-window-worker-ownership",
+      "summary": "Keep Linux native window state and callbacks on their owning worker",
+      "source_commits": [
+        "9752e84ebd65f21f6bd021e3ad6f62afba49d5f8"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Keep Linux native window state and callbacks on their owning worker.",
+      "validation": "Additive auto-Send control handle replaces unsafe cross-thread native-window transfer on Linux. Native host26 unit checks, ownership type assertion, baseview27 checks and five actual isolated X11 lifecycle cases pass, including failed construction and callback self-close; non-Linux legacy ownership remains outside this slice. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "x11-parent-hook-generation-retention",
+      "summary": "Retain X11 parent notifications through first open and editor reopen",
+      "source_commits": [
+        "08616d3eed9c2856ad431840cdc9375c0034e583"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Retain X11 parent notifications through first open and editor reopen.",
+      "validation": "Retained hook plus weak per-open identity preserves current parent notifications and rejects late old teardown.22 unit checks pass with1 native case ignored by default; actual isolated first-open, pre-frame close and reopen test passes. Integrated checkpoint95ac0d7d passes807 root tests/53 ignored/0 failed and builds the UI inspector."
+    },
+    {
+      "id": "prepared-final-modulation-topology",
+      "summary": "Reject invalid final modulation topology before parallel voice publication",
+      "source_commits": [
+        "ce990dd88a71f15a5411fd1b0e00df81535acd24"
+      ],
+      "validation": "Five constructor regressions and mixed-generation PCM/state/all-thread heap witness passed on authored sources; optimization remains unapplied. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "parallel-audible-gain-history",
+      "summary": "Keep worker audible gain history synchronized with actual rendered state",
+      "source_commits": [
+        "ce990dd88a71f15a5411fd1b0e00df81535acd24"
+      ],
+      "validation": "Actual worker/history oracle and mixed-generation exact PCM/state/heap witness passed; no CPU speedup claim. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "settled-ui-assets-dirty-latch",
+      "summary": "Stop republishing unchanged settled image and font owners",
+      "source_commits": [
+        "5a375f590d133a5d13f743f8c1e644e982ab8b67"
+      ],
+      "validation": "Genuine repeated-publication RED and corrected worker/Face exact-pixel retained-owner controls passed. Historical source collector limits documented in UI_ASSET_RETENTION.md. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "required-pending-artwork-retention",
+      "summary": "Retain identical pending artwork across unrelated metadata changes",
+      "source_commits": [
+        "759298f7db3eb657815bdcc4cf7e059ef7d4b59f"
+      ],
+      "validation": "Actual decoder RED observed two reads/two decodes per case; GREEN one/one for roster and presentation changes. Full coherent UI cohort92 passed/3 ignored with tracked+untracked source closure. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "exact-artwork-request-deduplication",
+      "summary": "Deduplicate repeated exact artwork uses despite aliased asset entries",
+      "source_commits": [
+        "759298f7db3eb657815bdcc4cf7e059ef7d4b59f"
+      ],
+      "validation": "Actual dispatch RED three requests/two unique/two pending; GREEN two/two/two. Obsolete epoch completion fences and full92-pass cohort preserved. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "native-ladder-preparation-association",
+      "summary": "Preserve original floating-point association in Ladder feedback preparation",
+      "source_commits": [
+        "5e9d3e8d6027f64cd14c54da7c072701266a8027"
+      ],
+      "validation": "Twelve original captured coefficient states and all282 static native stereo cases match exactly after correction; all577536 captured f32 words equal.78 affected regression tests passed/1 ignored. Production HQ ownership/import remains gated. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-explicit-script-event-id",
+      "summary": "Honor independent authored UVI ScriptEvent IDs rather than display-name suffixes",
+      "source_commits": [
+        "825a3196b7a6e6a9498c3255dfb19c8654710a3a"
+      ],
+      "validation": "Actual VWinds source name suffix7 carries EventId12.21 importer tests passed, including15 explicit valid/invalid cases and existing absent-field polarity behavior. Native LFO merger gates remain separate. Combined release checkpoint checks and native deployment are pending; individual source evidence is not an installed-version claim.",
+      "accepted": true
+    },
+    {
+      "id": "cold-shipping-test-build-time-budget",
+      "summary": "Allow cold shipping-profile test compilation to finish without dropping any release checks",
+      "source_commits": [
+        "9967cb32b75bb76689c10ee3fc3d3d0d275b861b"
+      ],
+      "validation": "Hosted attempt1 exhausted90minutes during compilation with no test harness started and a cold cache. Existing workflow lint, script tests, signing/publication mocks and version tests pass after the narrow release-only180minute budget change. Ordinary CI remains90minutes; all test/profile/native/editor/signing/license/required gates remain unchanged.180minute completion remains subject to hosted execution.",
+      "accepted": true
+    },
+    {
+      "id": "snapshot-menu-live-roster",
+      "summary": "Resolve saved preset menu positions against the live audio-owned menu values.",
+      "source_commits": [
+        "bf83b3ce84da802c74732e304495d433b84323c2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Resolve saved preset menu positions against the live audio-owned menu values.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "ui-effective-default-frame",
+      "summary": "Use committed or authored default control values consistently for artwork requests and painting.",
+      "source_commits": [
+        "004237ae5ff87d8f48226c438eae6d51a1613666"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Use committed or authored default control values consistently for artwork requests and painting.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "residency-callback-backpressure",
+      "summary": "Keep rendering and script clocks progressing when async residency callbacks await capacity.",
+      "source_commits": [
+        "fcb7a1c8f2d1a8ae7920bb7e911f04eaa5d2f438"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Keep rendering and script clocks progressing when async residency callbacks await capacity.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "explicit-preset-state-replacement",
+      "summary": "Discard stale project captures when the user explicitly selects a preset.",
+      "source_commits": [
+        "3ea1afce6da0c660cae7dd4db8cdcb976100a9b1"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Discard stale project captures when the user explicitly selects a preset.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "array-read-write-pool-ownership",
+      "summary": "Keep metadata read admission independent of immutable array-write snapshot capacity.",
+      "source_commits": [
+        "4a0e106981157ae96c3af9fc3afa0e095f97f938"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Keep metadata read admission independent of immutable array-write snapshot capacity.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "scripted-zone-routing-transaction",
+      "summary": "Apply bounded scripted source and zone routing with exact async completion ownership.",
+      "source_commits": [
+        "ca8731ae32d476d38b551f9764db81d596def44a"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Apply bounded scripted source and zone routing with exact async completion ownership.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "signed-mapper-interior-zero-crossing",
+      "summary": "Preserve signed modulation mapper slopes across interior zero crossings.",
+      "source_commits": [
+        "18303dac1dd31ead6532ded50e390a3486d8463f"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preserve signed modulation mapper slopes across interior zero crossings.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "ksp-declared-array-scale-destination",
+      "summary": "Reject runtime-owned system arrays as get_scale destinations before evaluation.",
+      "source_commits": [
+        "1a1ae4f5d2fd5f33202a6fc2e9d41b6688b51ee3"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Reject runtime-owned system arrays as get_scale destinations before evaluation.",
+      "validation": "Reviewed implementation and focused regression receipts; coordinated common02 source cohort: 1,954 passed, 69 ignored, zero failed. Release-candidate and hosted shipping checks bind their own revisions; see docs/diagnostics/20261016-release-checkpoint.md."
+    },
+    {
+      "id": "coordinated-streamed-attack-readiness",
+      "summary": "Start layered sampler voices together after their requested initial stream demand is ready.",
+      "source_commits": [
+        "376e9ece32c01e0a796db579786f36e0269b38f2"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Start layered sampler voices together after their requested initial stream demand is ready.",
+      "validation": "27 startup controls plus legacy onset, release, parallel and page-pool regressions pass in common02. One real Areia Full Ensemble Spiccato Slow capture: 19 logical attacks, 342 voices, zero contribution-start spread on every attack, zero underruns and zero trace loss. Cold admission waits remain; 78 pacing misses and failed planned RR matching preclude native/perceptual or quiet timing claims. Stretch instruments remain on the legacy path."
+    },
+    {
+      "id": "mandatory-residency-optional-anchor-fallback",
+      "summary": "Preserve mandatory resident PCM when optional preload anchors exceed the payload quota.",
+      "source_commits": [
+        "e7a880883fa4171f23be33539dd9ce65abf02d34"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Preserve mandatory resident PCM when optional preload anchors exceed the payload quota.",
+      "validation": "Unchanged public UVI residency binary reproduces cap-128 failure; corrected public target passes all three cases, with 61 Kontakt stream cases passing. Exact mandatory boundary, optional anchor admission, source errors and cancellation remain checked."
+    },
+    {
+      "id": "macos-complete-notice-inventory",
+      "summary": "Require the complete bundled notice inventory in macOS archives and universal publication.",
+      "source_commits": [
+        "b5517cc72c8840feda9a0582d8eb02b9f502fa99"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Include the bundled assistant-font and FastLZ notices on macOS and reject missing legal inventory before composing or publishing an installer.",
+      "validation": "Real Mach-O synthetic composition suite passes with missing assistant font, FastLZ, BUFFR license and provenance rejection controls; publication and packaging safety suites pass. Original Apple signing/notarization/native install/rollback gates remain mandatory. This is notice completeness, not clearance of the documented ni-file permission gap."
+    },
+    {
+      "id": "kontakt-initializer-behavior-shape",
+      "summary": "Invalidate cached Kontakt initialization when the public behavior roster or KSP language shape changes.",
+      "source_commits": [
+        "dd94552755ceeb0aee2b65b163a26d51b40cbc37"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Reinitialize changed script rosters instead of indexing stale Kontakt initializer state.",
+      "validation": "Causal appended-behavior panic reproduced before the guard; all 279 Kontakt library tests passed after it, including six behavior-shape/source-identity regressions (9 unrelated explicit ignores). Original branch Clippy stopped on older DSP debt already corrected in this release branch. Exact combined-candidate tests/Clippy and hosted shipping checks remain separate required receipts."
+    },
+    {
+      "id": "shipping-integration-target-shards",
+      "summary": "Distribute shipping integration-test compilation across eight runners while requiring exact target and feature coverage.",
+      "source_commits": [
+        "e462be9abdd5c352e8a5cebb2cfc554453157452"
+      ],
+      "accepted": true,
+      "category": "Fixed",
+      "release_note": "Distribute shipping integration tests across runners without dropping tests or changing the shipping profile.",
+      "validation": "74 workflow safety tests, actionlint and Nightly packaging/signing/install safety checks pass. Real all-fourteen release Cargo proofs pass 26 tests with one explicit manual survey ignored; emitted features, duplicate target names and inspector binary use verified with unchanged source hashes. Final stamped-source planning and actual hosted shipping/native/editor/signing/publication retain separate required identities; cold-time recovery is not yet measured."
     }
   ]
 }

@@ -45,6 +45,11 @@ pub(super) fn gate_diagnostics() -> Vec<String> {
     GATE_DIAGNOSTICS.with(|state| state.borrow().values().cloned().collect())
 }
 #[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_package(slot: usize) -> Option<(u64, Arc<Package>)> {
+    let id = GATE_PAINTED.with(|state| state.borrow().get(&slot).copied())?;
+    LOCAL.with(|local| local.borrow().get(&id).map(|local| (id, local.package.clone())))
+}
+#[cfg(all(test, feature = "shots"))]
 pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
     fn visit(node: &Table, slot: u64, out: &mut Vec<(String, &'static str)>) {
         let kind = string(node, "kind");
@@ -106,6 +111,57 @@ pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
         out
     })
 }
+
+/// Captions and pointer identities from the evaluated composition, for the
+/// installed-library page capture gate. No callback is invoked by the probe.
+#[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_caption_targets(slot: usize) -> Vec<(String, String)> {
+    fn captions(node: &Table, out: &mut Vec<String>) {
+        if string(node, "kind") == "Text"
+            && let Ok(props) = node.get::<Table>("props")
+        {
+            out.push(string(&props, "text"));
+        }
+        for child in tables(node, "children").unwrap_or_default() {
+            captions(&child, out);
+        }
+    }
+    fn visit(node: &Table, session: u64, out: &mut Vec<(String, String)>) {
+        let modifiers = tables(node, "modifiers").unwrap_or_default();
+        if modifiers.iter().any(|m| string(m, "name") == "on_tap_gesture") {
+            let mut text = Vec::new();
+            captions(node, &mut text);
+            if !text.is_empty() {
+                out.push((text.join(" "), format!("nui-{session}-{}", string(node, "path"))));
+            }
+        }
+        for child in tables(node, "children").unwrap_or_default() {
+            visit(&child, session, out);
+        }
+        for modifier in modifiers {
+            if let Ok(child) = modifier.get::<Table>("value") {
+                match string(&modifier, "name").as_str() {
+                    "background" | "overlay" => visit(&child, session, out),
+                    "popover" => {
+                        if let Ok(content) = child.get::<Table>("content") {
+                            visit(&content, session, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    LOCAL.with(|local| {
+        let mut out = Vec::new();
+        if let Some(session) = GATE_PAINTED.with(|p| p.borrow().get(&slot).copied())
+            && let Some(graph) = local.borrow().get(&session).and_then(|l| l.graph.clone())
+        {
+            visit(&graph, session, &mut out);
+        }
+        out
+    })
+}
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 #[cfg(test)]
 pub(super) fn audit_memory(collect: bool) -> usize {
@@ -137,6 +193,20 @@ pub(super) fn audit_assets() -> (usize, usize, usize) {
             })
     })
 }
+#[derive(Clone, Copy)]
+enum ViewScale {
+    Fixed(f64),
+    Fitted { room: Size, setting: f32 },
+}
+impl ViewScale {
+    fn resolve(self, authored: Size) -> f64 {
+        match self {
+            Self::Fixed(scale) => scale,
+            Self::Fitted { room, setting } => super::part::scale_to_fit(room, authored, setting),
+        }
+    }
+}
+
 pub(super) struct State {
     id: u64,
     activity: Option<Arc<Activity>>,
@@ -146,6 +216,11 @@ pub(super) struct State {
     failed: bool,
     failure: Option<String>,
     started: bool,
+    lowered: bool,
+    /// Frames the first draw still spreads over: the VM is made on one, the
+    /// graph first rendered on the next, and lowered on the third, so no one
+    /// frame pays all of them (Conflux: 30 + 25 + 28 ms, then MUI layout).
+    stages: u8,
     entry: String,
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
@@ -232,29 +307,55 @@ impl Drop for State {
 }
 impl State {
     pub fn new(path: &Path, entry: &str, controls: Vec<(ir::Source, usize, ir::Widget)>) -> Self {
+        Self::new_for_program(path, 0, entry, controls)
+    }
+    pub fn new_for_program(
+        path: &Path,
+        program: u32,
+        entry: &str,
+        controls: Vec<(ir::Source, usize, ir::Widget)>,
+    ) -> Self {
+        Self::with_package(path, program, entry, controls, None)
+    }
+    /// The caller has proved the same complete resource namespace. Mutable Lua,
+    /// bindings, gestures and drafts always belong to the new State's identity.
+    pub(super) fn with_package(
+        path: &Path,
+        program: u32,
+        entry: &str,
+        controls: Vec<(ir::Source, usize, ir::Widget)>,
+        package: Option<Arc<Package>>,
+    ) -> Self {
         let path = path.to_path_buf();
         let (done, loading) = std::sync::mpsc::sync_channel(1);
         let canceled = Arc::new(AtomicBool::new(false));
-        let cancel = canceled.clone();
-        let _ = std::thread::Builder::new()
-            .name("native-resources".into())
-            .spawn(move || {
-                let result =
-                    Package::load_cancel(&path, || cancel.load(Ordering::Acquire)).map(Arc::new);
-                if !cancel.load(Ordering::Acquire) {
-                    let _ = done.send(result);
-                    super::picture_worker::completed();
-                }
-            });
+        let warm = package.is_some();
+        if !warm {
+            let cancel = canceled.clone();
+            let _ = std::thread::Builder::new()
+                .name("native-resources".into())
+                .spawn(move || {
+                    let result = Package::load_cancel_for_program(&path, program, || {
+                        cancel.load(Ordering::Acquire)
+                    })
+                    .map(Arc::new);
+                    if !cancel.load(Ordering::Acquire) {
+                        let _ = done.send(result);
+                        super::picture_worker::completed();
+                    }
+                });
+        }
         Self {
             id: NEXT.fetch_add(1, Ordering::Relaxed),
             activity: None,
             loading,
             canceled,
-            package: None,
+            package,
             failed: false,
             failure: None,
             started: false,
+            lowered: false,
+            stages: if warm { 0 } else { 2 },
             entry: entry.into(),
             seed: controls,
             size: Size::new(970., 600.),
@@ -263,6 +364,14 @@ impl State {
             #[cfg(feature = "shots")]
             graph_work: None,
         }
+    }
+    pub(super) fn reusable_package(&self) -> Option<Arc<Package>> {
+        if self.failed || !self.lowered || self.stages != 0 {
+            return None;
+        }
+        self.package.as_ref()
+            .filter(|package| package.complete())
+            .cloned()
     }
     pub fn bytes(&self) -> usize {
         self.package.as_ref().map_or(0, |p| p.images.bytes())
@@ -317,6 +426,14 @@ impl State {
             .map_or(Default::default(), |p| p.images.scan())
     }
     #[cfg(feature = "shots")]
+    pub fn probes(&self) -> Vec<super::pictures::AssetProbe> {
+        self.package.as_ref().map_or(Vec::new(), |p| p.images.probes())
+    }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize {
+        self.package.as_ref().map_or(0, |p| p.images.probe_dropped())
+    }
+    #[cfg(feature = "shots")]
     pub fn font_success(&self) -> Option<usize> {
         self.package.as_ref().map(|p| p.fonts.len())
     }
@@ -354,12 +471,39 @@ impl State {
     pub fn view(
         &mut self,
         ui: &mut Ui,
-        _slot: usize,
+        slot: usize,
         scale: f64,
         face: &ir::Interface,
         values: &super::ir_view::Values,
         input: &super::ir_view::InputState,
     ) -> El {
+        self.view_scaled(ui, slot, ViewScale::Fixed(scale), face, values, input)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn view_fitted(
+        &mut self,
+        ui: &mut Ui,
+        slot: usize,
+        room: Size,
+        setting: f32,
+        face: &ir::Interface,
+        values: &super::ir_view::Values,
+        input: &super::ir_view::InputState,
+    ) -> El {
+        self.view_scaled(ui, slot, ViewScale::Fitted { room, setting }, face, values, input)
+    }
+    fn view_scaled(
+        &mut self,
+        ui: &mut Ui,
+        _slot: usize,
+        scaling: ViewScale,
+        face: &ir::Interface,
+        values: &super::ir_view::Values,
+        input: &super::ir_view::InputState,
+    ) -> El {
+        // Existing events belong to the previous graph. A fresh owner has no
+        // old graph/gesture targets to consult.
+        let scale = scaling.resolve(self.size);
         let slot = self.id as usize;
         if let Ok(result) = self.loading.try_recv() {
             match result {
@@ -408,6 +552,12 @@ impl State {
                         drafts: HashMap::new(),
                     },
                 );
+                if self.stages > 0 {
+                    self.stages -= 1;
+                    // Wake the editor for the next stage.
+                    super::picture_worker::completed();
+                    return Ok(caption("Loading the authored interface…").pad(12.));
+                }
             }
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
@@ -448,6 +598,12 @@ impl State {
                 self.graph_work = Some(session.graph_work());
             }
             let graph = graph?;
+            if self.stages > 0 && local.graph.is_none() {
+                self.stages -= 1;
+                local.graph = Some(graph);
+                super::picture_worker::completed();
+                return Ok(caption("Loading the authored interface…").pad(12.));
+            }
             #[cfg(feature = "shots")]
             {
                 // An audit figure: walking 1700 nodes each frame would dwarf the frame.
@@ -467,6 +623,9 @@ impl State {
             }
             let authored = authored_size(&graph);
             self.size = authored;
+            // Fit this incoming graph before lowering its first frame. Keep
+            // the single authored lookup and its original evaluation order.
+            let scale = scaling.resolve(authored);
             // While the Lua graph is the one lowered last frame, MUI keeps the
             // lowered, laid-out subtree; a hover or press inside it rebuilds.
             let editing = session.text_fields().iter().any(|path| ui.focused(format!("nui-{slot}-{path}-text").as_str()));
@@ -483,6 +642,7 @@ impl State {
             };
             drop(_p);
             if let Some(error) = error { return Err(error); }
+            self.lowered = true;
             local.graph = Some(graph);
             #[cfg(all(test, feature = "shots"))]
             GATE_PAINTED.with(|painted| {
@@ -2226,6 +2386,8 @@ mod tests {
             failed: false,
             failure: None,
             started: false,
+            lowered: false,
+            stages: 0,
             entry: "main".into(),
             seed: Vec::new(),
             size: Size::new(970., 600.),
@@ -3095,6 +3257,8 @@ mod tests {
             failed: false,
             failure: None,
             started: false,
+            lowered: false,
+            stages: 0,
             entry: "main".into(),
             seed: vec![
                 (face.source, 0, widget.clone()),
@@ -3766,7 +3930,8 @@ mod tests {
                     .map(move |(n, w)| (f.source, n, w.clone()))
             })
             .collect();
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package =
+            Arc::new(Package::load_cancel_for_program(&path, program as u32, || false).unwrap());
         let session = Session::new(package, &entry, controls).unwrap();
         println!(
             "NATIVE_WORK_INIT program={program} checkpoints={} checkpoint_budget=500000",
@@ -3929,7 +4094,8 @@ mod tests {
                     .map(move |(n, w)| (f.source, n, w.clone()))
             })
             .collect();
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package =
+            Arc::new(Package::load_cancel_for_program(&path, program as u32, || false).unwrap());
         let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls).unwrap();
         let graph = session.fresh();

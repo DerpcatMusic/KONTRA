@@ -3,7 +3,7 @@
 //! carried over is returned with the plan, never dropped silently.
 
 use crate::{Kontakt, LoadError, Resources};
-use sampler_core::{Pcm, Prepared, lower::LowerError};
+use sampler_core::{Pcm, Prepared, SourceStorage, lower::LowerError};
 use sampler_ir as ir;
 use sampler_ksp::model::Value;
 use std::{ops::RangeInclusive, path::Path};
@@ -148,13 +148,16 @@ pub fn load(
 }
 
 /// [`load`], stopping with [`LoadError::Canceled`] once `canceled` returns true;
-/// it is polled before each sample is decoded and before lowering.
+/// it is polled before reading the container, before each sample is decoded, and before lowering.
 pub fn load_cancelable(
     path: &Path,
     options: &Options,
     progress: impl FnMut(Progress),
     canceled: impl Fn() -> bool,
 ) -> Result<Loaded, LoadError> {
+    if canceled() {
+        return Err(LoadError::Canceled);
+    }
     let options = Options {
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
@@ -182,33 +185,30 @@ pub fn load_read(
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     progress(Progress::Translated {
         zones: instrument.zones.len(),
         assets: kept.len(),
     });
-    let mut pcm = Vec::with_capacity(kept.len());
+    let mut sources = Vec::with_capacity(kept.len());
     for (done, &asset) in kept.iter().enumerate() {
-        if canceled() {
-            return Err(LoadError::Canceled);
+        if canceled() {return Err(LoadError::Canceled);}
+        let sample=&locations[asset];
+        progress(Progress::Decoding{done,total:kept.len(),sample});
+        let storage=samples.decode_source(sample).map_err(|e|e.at(crate::Stage::SampleResolve))?;
+        if let SourceStorage::Stereo(pcm)=&storage {
+            // The old stereo residency recipe and actual AssetId are unchanged.
+            let source=samples.source(sample).map_err(|e|e.at(crate::Stage::SampleResolve))?;
+            let length=pcm.frame_count();
+            pcm.set_residency_loader(move || {
+                let mut reader=crate::SampleReader::open(&source).map_err(|_|sampler_core::Error::NotReady)?;
+                let mut frames=vec![[0.;2];length];reader.read(0,&mut frames).map_err(|_|sampler_core::Error::NotReady)?;
+                Ok(vec![(0,frames.into_boxed_slice())])
+            }).map_err(|e|LoadError::Invalid{path:sample.clone(),reason:e.to_string()})?;
         }
-        let sample = &locations[asset];
-        progress(Progress::Decoding {
-            done,
-            total: kept.len(),
-            sample,
-        });
-        let decoded = samples
-            .decode(sample)
-            .map_err(|e| e.at(crate::Stage::SampleResolve))?;
-        let frames = decoded.frames.into_boxed_slice();
-        pcm.push(Pcm::new(decoded.rate, frames).map_err(|e| {
-            LoadError::Invalid {
-                path: sample.clone(),
-                reason: e.to_string(),
-            }
-            .at(crate::Stage::SampleResolve)
-        })?);
+        // A resident family retains the complete immutable cohort. Existing
+        // normal group/target admission still decides whether it can publish.
+        sources.push(storage);
     }
     if canceled() {
         return Err(LoadError::Canceled);
@@ -218,7 +218,7 @@ pub fn load_read(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    finish_kept(instrument, pcm, labels, options, initialized).map(|(loaded, _)| loaded)
+    finish_sources_kept(instrument, sources, labels, options, initialized).map(|(loaded, _)| loaded)
 }
 
 /// Load the Kontakt instrument at `path` streamed: only the frames where
@@ -268,7 +268,7 @@ pub fn load_read_streamed_cancelable(
         initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     progress(Progress::Translated {
         zones: instrument.zones.len(),
         assets: kept.len(),
@@ -304,8 +304,24 @@ pub fn load_read_streamed_cancelable(
         );
     }
     drop(span);
-    let opened = crate::stream::Streamer::open(registry, options.rate, policy, 32, canceled)?;
-    if !hit && !canceled() {
+    let requirements=instrument.assets.iter().map(|a|a.residency).collect::<Vec<_>>();
+    let opened = crate::stream::Streamer::open_required(
+        registry,&requirements,
+        options.rate,
+        policy,
+        32,
+        canceled,
+        &mut |done, total| {
+            if let Some(&sample) = listed.get(done.min(total.saturating_sub(1))) {
+                progress(Progress::Decoding {
+                    done,
+                    total,
+                    sample,
+                })
+            }
+        },
+    )?;
+    if !hit && !canceled() && opened.logical_sources.is_none() {
         if let Some(preset) = options.library.as_deref() {
             crate::header_cache::store(preset, &listed, &sources, &opened.assets);
         }
@@ -314,37 +330,46 @@ pub fn load_read_streamed_cancelable(
     if canceled() {
         return Err(LoadError::Canceled);
     }
-    let pcm = opened.assets.clone();
+    let logical=opened.logical_sources.clone().unwrap_or_else(||opened.assets.iter().cloned().map(SourceStorage::Stereo).collect());
     progress(Progress::Lowering);
     let labels = kept
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, initialized)?;
-    crate::Streamed::new(loaded, opened, kept)
+    let (loaded, kept) = finish_sources_kept(instrument, logical, labels, options, initialized)?;
+    crate::Streamed::new_sources(loaded, opened, kept, canceled)
 }
 
 /// Stream an instrument translated by another loader: `sources[i]` and
 /// `labels[i]` belong to asset `i`. As [`load_streamed`], without the Kontakt
 /// container: only zone starts and a page pool are resident.
 pub fn stream_instrument(
-    mut instrument: ir::Instrument,
+    instrument: ir::Instrument,
     sources: Vec<std::sync::Arc<dyn crate::AssetSource>>,
     labels: Vec<String>,
     options: &Options,
     policy: &crate::StreamPolicy,
 ) -> Result<crate::Streamed, LoadError> {
+    stream_instrument_cancelable(instrument,sources,labels,options,policy,&||false)
+}
+pub fn stream_instrument_cancelable(
+    mut instrument:ir::Instrument,sources:Vec<std::sync::Arc<dyn crate::AssetSource>>,labels:Vec<String>,
+    options:&Options,policy:&crate::StreamPolicy,canceled:&(dyn Fn()->bool+Sync),
+)->Result<crate::Streamed,LoadError> {
+    if canceled(){return Err(LoadError::Canceled);}
     let (low, high) = (*options.keys.start(), *options.keys.end());
-    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let kept = retain_key_window(&mut instrument,low,high);
     let listed = kept
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
         .collect();
-    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false)?;
-    let pcm = opened.assets.clone();
+    let requirements=instrument.assets.iter().map(|a|a.residency).collect::<Vec<_>>();
+    let opened=crate::stream::Streamer::open_required(listed,&requirements,options.rate,policy,32,canceled,&mut|_,_|())?;
+    let logical=opened.logical_sources.clone().unwrap_or_else(||opened.assets.iter().cloned().map(SourceStorage::Stereo).collect());
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
-    crate::Streamed::new(loaded, opened, kept)
+    let (loaded, kept) = finish_sources_kept(instrument, logical, labels, options, None)?;
+    if canceled(){return Err(LoadError::Canceled);}
+    crate::Streamed::new_sources(loaded, opened, kept, canceled)
 }
 
 /// Fit each zone to its decoded audio (`pcm[i]` and `labels[i]` belong to
@@ -361,16 +386,42 @@ pub fn finish(
 
 /// [`finish`], also returning the assets the plan kept, in its order.
 fn finish_kept(
-    mut instrument: ir::Instrument,
-    pcm: Vec<Pcm>,
-    labels: Vec<String>,
-    options: &Options,
+    instrument: ir::Instrument, pcm: Vec<Pcm>, labels: Vec<String>, options: &Options,
     initialized: Option<ScriptInit>,
 ) -> Result<(Loaded, Vec<Pcm>), LoadError> {
+    let (loaded,kept)=finish_sources_kept(instrument,pcm.into_iter().map(SourceStorage::Stereo).collect(),labels,options,initialized)?;
+    let kept=kept.into_iter().map(|source|match source {SourceStorage::Stereo(pcm)=>Ok(pcm),SourceStorage::Channels(_)=>Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"stereo finish retained a channel family".into()})}).collect::<Result<Vec<_>,_>>()?;
+    Ok((loaded,kept))
+}
+
+/// Finish ordinary resident logical sources. Entry i remains exactly asset i;
+/// physical packs never become aliases, extra zones, or implicit projections.
+/// Scripts, key/playback fitting and controls use the same pipeline as finish.
+pub fn finish_sources(instrument:ir::Instrument,sources:Vec<SourceStorage>,labels:Vec<String>,options:&Options)
+    ->Result<Loaded,LoadError> {
+    finish_sources_kept(instrument,sources,labels,options,None).map(|(loaded,_)|loaded)
+}
+fn finish_sources_kept(
+    mut instrument:ir::Instrument,sources:Vec<SourceStorage>,labels:Vec<String>,options:&Options,
+    initialized:Option<ScriptInit>,
+)->Result<(Loaded,Vec<SourceStorage>),LoadError> {
+    if sources.len()!=instrument.assets.len() || labels.len()!=sources.len() {
+        return Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"logical source/asset/label count mismatch".into()});
+    }
+    if instrument.zones.iter().any(|zone|zone.asset.is_some_and(|asset|asset.0>=sources.len())
+        || zone.group.is_some_and(|group|group.0>=instrument.groups.len())) {
+        return Err(LoadError::Invalid{path:options.library.clone().unwrap_or_default(),reason:"logical zone refers to an absent source or group".into()});
+    }
+    if !instrument.source_indices.processing.is_empty() {
+        instrument.validate().map_err(|error| LoadError::Invalid {
+            path: options.library.clone().unwrap_or_default(), reason: error.to_string(),
+        })?;
+    }
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
         let mut report = Vec::new();
-        let audio = &pcm[zone.asset.0];
+        let Some(asset) = zone.asset else { continue; };
+        let audio = sources[asset.0].as_source();
         let group_tune = zone
             .group
             .map_or(0.0, |g| instrument.groups[g.0].tune.semitones());
@@ -393,7 +444,7 @@ fn finish_kept(
             ));
             playable[index] = false;
         }
-        let location = format!("zone {index} ({})", labels[zone.asset.0]);
+        let location = format!("zone {index} ({})", labels[asset.0]);
         instrument
             .unsupported
             .extend(report.into_iter().map(|(feature, value)| ir::Unsupported {
@@ -403,20 +454,31 @@ fn finish_kept(
                 reason: ir::Reason::InvalidValue,
             }));
     }
+    // A source-native shared section is one authored operation. Fitting away a
+    // failed member would alter the sum before its nonlinear/shared state and
+    // erase the very identity needed to diagnose it. Dormant players (no asset)
+    // remain valid; existing unowned legacy zone-drop policy is unchanged.
+    if instrument.source_indices.processing.iter().any(|recipe| recipe.members.iter()
+        .any(|member| !playable[member.0])) {
+        return Err(LoadError::Invalid {
+            path: options.library.clone().unwrap_or_default(),
+            reason: "shared source member could not preserve its authored playback geometry".into(),
+        });
+    }
     let mut index = 0;
     let used = instrument.retain_zones(|_| {
         index += 1;
         playable[index - 1]
     });
-    let pcm = pcm
+    let sources = sources
         .into_iter()
         .enumerate()
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
         .collect::<Vec<_>>();
-    let kept = pcm.clone();
+    let kept = sources.clone();
     Ok((
-        prepare_inner(instrument, pcm, options, initialized)
+        prepare_sources_inner(instrument, sources, options, initialized)
             .map_err(|e| e.at(crate::Stage::Prepare))?,
         kept,
     ))
@@ -492,6 +554,17 @@ fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) 
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
 /// (`ratio` is the asset rate over the output rate). `false` when none remain.
+fn retain_key_window(instrument:&mut ir::Instrument,low:u8,high:u8)->Vec<usize> {
+    let routed:std::collections::BTreeSet<_>=instrument.zone_routing.iter()
+        .flat_map(|route|route.variants.iter().filter_map(|v|v.zone.map(|z|z.0))).collect();
+    let mut index=0usize;
+    instrument.retain_zones(|zone| {
+        let keep=routed.contains(&index)||(zone.keys.low<=high&&zone.keys.high>=low);
+        index+=1;
+        keep
+    })
+}
+
 fn fit_keys(
     zone: &mut ir::Zone,
     group_tune: f64,
@@ -629,6 +702,44 @@ pub fn prepare(
     prepare_inner(instrument, pcm, options, None).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
+/// A behavior's saved state as the KSP evaluator's scalar and array values.
+fn saved_values(state: &[(String, ir::Saved)]) -> sampler_ksp::SavedValues {
+    let (mut scalars, mut arrays) = sampler_ksp::SavedValues::default();
+    for (name, saved) in state {
+        let name = name.clone();
+        match saved {
+            ir::Saved::Int(n) => _ = scalars.insert(name, Value::Int(*n as i32)),
+            ir::Saved::Real(r) => _ = scalars.insert(name, Value::Real(*r)),
+            ir::Saved::Text(t) => _ = scalars.insert(name, Value::Text(t.clone())),
+            ir::Saved::Ints(v) => _ = arrays.insert(name, v.iter().map(|n| Value::Int(*n as i32)).collect()),
+            ir::Saved::Reals(v) => _ = arrays.insert(name, v.iter().map(|r| Value::Real(*r)).collect()),
+            ir::Saved::Texts(v) => _ = arrays.insert(name, v.iter().cloned().map(Value::Text).collect()),
+        }
+    }
+    (scalars, arrays)
+}
+
+/// The data-folder `.nka` files a script loads with a literal
+/// `load_array(<array>, 2)`, by lowercase array name without its sigil.
+fn data_arrays(
+    source: &str,
+    resources: &mut Resources,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    source
+        .split("load_array(")
+        .skip(1)
+        .filter_map(|call| {
+            let (array, mode) = call.split_once(')')?.0.split_once(',')?;
+            let stem = array.trim().get(1..)?.to_lowercase();
+            (mode.trim() == "2" && !stem.is_empty()).then_some(stem)
+        })
+        .filter_map(|stem| {
+            let bytes = resources.read(&format!("Resources/data/{stem}.nka"))?;
+            Some((stem, bytes))
+        })
+        .collect()
+}
+
 /// What a script may query while its `on init` runs.
 pub(crate) fn script_environment(
     behavior: &ir::Behavior,
@@ -638,9 +749,23 @@ pub(crate) fn script_environment(
     zones: &[ir::Zone],
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
+    script_environment_with_zones(behavior, index, groups, source, zones, performance_view, None)
+}
+
+fn script_environment_with_zones(
+    behavior: &ir::Behavior,
+    index: usize,
+    groups: Vec<String>,
+    source: &ir::SourceIndices,
+    zones: &[ir::Zone],
+    performance_view: sampler_ksp::model::PerformanceView,
+    metadata: Option<&std::collections::BTreeMap<u32, [i32; 3]>>,
+) -> sampler_ksp::Environment {
+    let (persisted, persisted_arrays) = saved_values(&behavior.state);
     sampler_ksp::Environment {
         evaluation_budget: None,
         coverage: None,
+        transport: Some(sampler_ksp::Transport::STANDALONE),
         groups,
         engine_values: source
             .engine_values
@@ -658,54 +783,18 @@ pub(crate) fn script_environment(
             })
             .collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
-        zones: source
-            .zones
-            .iter()
-            .enumerate()
-            .filter_map(|(index, zone)| {
-                let zone = zones.get(zone.as_ref()?.0)?;
-                let group = zone.group.map_or(-1, |group| {
-                    source
-                        .groups
-                        .iter()
-                        .position(|entry| *entry == Some(group))
-                        .map_or(group.0 as i32, |index| index as i32)
-                });
-                Some((
-                    index as u32 + 1,
-                    [group, i32::from(zone.keys.low), i32::from(zone.keys.high)],
-                ))
-            })
-            .collect(),
+        snapshot_mode: Default::default(),
+        zone_catalog: source.zone_catalog.clone(),
+        zones: metadata.cloned().unwrap_or_else(|| source.zone_catalog.iter().filter_map(|z| {
+            Some((z.id?,[i32::try_from(z.home.group).ok()?,i32::from(z.home.low_key),i32::from(z.home.high_key)]))
+        }).collect()),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
-        persisted: behavior
-            .state
-            .iter()
-            .filter_map(|(name, saved)| {
-                let value = match saved {
-                    ir::Saved::Int(n) => Value::Int(*n as i32),
-                    ir::Saved::Real(r) => Value::Real(*r),
-                    ir::Saved::Text(t) => Value::Text(t.clone()),
-                    _ => return None,
-                };
-                Some((name.clone(), value))
-            })
-            .collect(),
-        persisted_arrays: behavior
-            .state
-            .iter()
-            .filter_map(|(name, saved)| {
-                let values = match saved {
-                    ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
-                    ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
-                    ir::Saved::Texts(v) => v.iter().cloned().map(Value::Text).collect(),
-                    _ => return None,
-                };
-                Some((name.clone(), values))
-            })
-            .collect(),
+        persisted,
+        persisted_arrays,
+        instrument_persisted: None,
         performance_view,
+        data_arrays: Default::default(),
         midi_object: Default::default(),
         folders: Default::default(),
     }
@@ -736,6 +825,38 @@ pub(crate) struct ScriptInit {
     pub resources: Option<Resources>,
 }
 
+/// Only final physical source identities, independent of dense IR ordering.
+/// Raw metadata preserves authored keys when playback admission narrows them.
+fn admitted_zone_metadata(instrument: &ir::Instrument) -> std::collections::BTreeMap<u32, [i32; 3]> {
+    if instrument.source_indices.zone_catalog.len()!=instrument.source_indices.zones.len() {return Default::default();}
+    instrument.source_indices.zone_catalog.iter().zip(&instrument.source_indices.zones)
+        .filter_map(|(source,entry)| {
+            instrument.zones.get(entry.as_ref()?.0)?.asset?;
+            Some((source.id?,[i32::try_from(source.home.group).ok()?,
+                i32::from(source.home.low_key),i32::from(source.home.high_key)]))
+        }).collect()
+}
+
+pub(crate) fn admit_initialized_zone_sources(instrument: &mut ir::Instrument, initialized: &mut ScriptInit) {
+    let metadata = admitted_zone_metadata(instrument);
+    for (index, state) in initialized.states.iter_mut().enumerate() {
+        let Some(Ok(state)) = state else { continue; };
+        for rejected in state.admit_source_zones(metadata.clone()) {
+            let slot = instrument.behaviors[index].slot.unwrap_or(index.min(u8::MAX.into()) as u8);
+            let feature = match rejected.reason {
+                sampler_ksp::WaveformSourceReason::Unavailable => "waveform source unavailable after admission",
+                sampler_ksp::WaveformSourceReason::IdentityChanged => "waveform source identity changed before admission",
+            };
+            instrument.unsupported.push(ir::Unsupported {
+                location: format!("script slot {slot} waveform {} source zone {}", rejected.ui, rejected.zone),
+                feature: feature.into(),
+                value: "Attachment and its properties omitted; no source identity was substituted".into(),
+                reason: ir::Reason::NotModeled,
+            });
+        }
+    }
+}
+
 /// A positioned KSP failure retained from the translated instrument's own initialization.
 #[derive(Clone, Debug)]
 pub struct ScriptInitFault {
@@ -750,9 +871,22 @@ pub(crate) fn initialize_scripts(
     groups: Vec<String>,
     control_values: &[(sampler_core::ControlId, i32)],
 ) -> ScriptInit {
+    let metadata = admitted_zone_metadata(instrument);
+    initialize_scripts_with_zones(instrument, library, groups, control_values, &metadata)
+}
+
+pub(crate) fn initialize_scripts_with_zones(
+    instrument: &mut ir::Instrument,
+    library: Option<&Path>,
+    groups: Vec<String>,
+    control_values: &[(sampler_core::ControlId, i32)],
+    metadata: &std::collections::BTreeMap<u32, [i32; 3]>,
+) -> ScriptInit {
     let resources = library.map(Resources::of).map(std::cell::RefCell::new);
     let mut views = Vec::new();
     let mut midi_object = sampler_core::MidiObject::default();
+    let mut zone_parameters = metadata.clone();
+    let mut snapshot_mode = sampler_ksp::model::SnapshotMode::default();
     let mut faults = vec![None; instrument.behaviors.len()];
     let states = instrument
         .behaviors
@@ -784,15 +918,23 @@ pub(crate) fn initialize_scripts(
                     }),
                 }
             }
-            let mut environment = script_environment(
+            let mut environment = script_environment_with_zones(
                 behavior,
                 index,
                 groups.clone(),
                 &instrument.source_indices,
                 &instrument.zones,
                 performance_view,
+                Some(&zone_parameters),
             );
+            if let Some(resources) = resources.as_ref() {
+                environment.data_arrays =
+                    data_arrays(&behavior.source, &mut resources.borrow_mut());
+            }
+            environment.snapshot_mode = snapshot_mode;
             environment.midi_object = midi_object.clone();
+            environment.instrument_persisted =
+                instrument.snapshot_base_state.get(index).map(|state| saved_values(state));
             environment.folders = script_folders(library);
             environment.control_values.extend(
                 control_values
@@ -811,7 +953,12 @@ pub(crate) fn initialize_scripts(
                     sampler_ksp::Limits::LIBRARY,
                     &environment,
                 )
-                .inspect(|initialized| midi_object = initialized.midi_object().clone())
+
+                .inspect(|initialized| {
+                    midi_object = initialized.midi_object().clone();
+                    zone_parameters.extend(initialized.zone_parameters().iter().map(|(&id,&home)|(id,home)));
+                    if let Some(write)=initialized.snapshot_mode_write() {snapshot_mode=write.mode;}
+                })
                 .map_err(|e| {
                     faults[index] = Some(e.clone());
                     e.to_string()
@@ -887,26 +1034,38 @@ fn compile_ui_initialized(
     Option<Resources>,
 ) {
     let (rate, scripts) = (options.rate, options.scripts);
-    // Reuse translated init only for the same host state; late callers may supply different overrides.
-    let initialized = initialized.filter(|init| init.control_values == options.control_values);
+    // The public instrument may have gained/removed behaviors or changed their
+    // languages since translation. Reuse only a matching initialization shape;
+    // otherwise initialize the current instrument through the ordinary path.
+    // Same-shape KSP source changes still fail compile_initialized's digest check.
+    let initialized = initialized.filter(|init| {
+        init.control_values == options.control_values
+            && init.states.len() == instrument.behaviors.len()
+            && init
+                .states
+                .iter()
+                .zip(&instrument.behaviors)
+                .all(|(state, behavior)| {
+                    state.is_some() == (behavior.language == ir::Language::Ksp)
+                })
+    });
+    let mut initialized = initialized.unwrap_or_else(|| {
+        let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
+        initialize_scripts(instrument, options.library.as_deref(), groups, &options.control_values)
+    });
+    admit_initialized_zone_sources(instrument, &mut initialized);
     let ScriptInit {
         mut states,
+        faults,
         resources,
         ..
-    } = initialized.unwrap_or_else(|| {
-        let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
-        initialize_scripts(
-            instrument,
-            options.library.as_deref(),
-            groups,
-            &options.control_values,
-        )
-    });
+    } = initialized;
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut names = Vec::new();
     let resources = resources.map(std::cell::RefCell::new);
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
+        let mut error_line = faults.get(index).and_then(|fault| fault.as_ref()).map(|fault| fault.line);
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => states[index]
@@ -914,7 +1073,10 @@ fn compile_ui_initialized(
                 .expect("KSP initialized")
                 .and_then(|init| {
                     sampler_ksp::compile_initialized(&behavior.source, rate, limits, &[], init)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| {
+                            error_line = Some(e.line);
+                            e.to_string()
+                        })
                 }),
             ref other => Err(format!("{other:?} has no frontend")),
         };
@@ -951,7 +1113,8 @@ fn compile_ui_initialized(
                 compiled.push(script);
             }
             Err(error) => instrument.unsupported.push(ir::Unsupported {
-                location: behavior.name.clone(),
+                location: format!("script slot {} {}{}", behavior.slot.map_or(index, usize::from),
+                    behavior.name, error_line.map_or_else(String::new, |line| format!(" line {line}"))),
                 feature: "script".into(),
                 value: error,
                 reason: ir::Reason::NotModeled,
@@ -994,13 +1157,262 @@ fn compile_ui_initialized(
     )
 }
 
-fn prepare_inner(
-    mut instrument: ir::Instrument,
-    pcm: Vec<Pcm>,
-    options: &Options,
-    initialized: Option<ScriptInit>,
-) -> Result<Loaded, LoadError> {
+fn prepare_inner(instrument:ir::Instrument,pcm:Vec<Pcm>,options:&Options,initialized:Option<ScriptInit>) ->Result<Loaded,LoadError> {
+    prepare_sources_inner(instrument,pcm.into_iter().map(SourceStorage::Stereo).collect(),options,initialized)
+}
+/// Bind source-native recipes only after ordinary readers supplied actual
+/// immutable source geometry. Both resident and streamed loaders reach here.
+fn bind_source_processing(instrument: &mut ir::Instrument, sources: &[SourceStorage], options: &Options) -> Result<(), LoadError> {
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: options.library.clone().unwrap_or_default(), reason: reason.into(),
+    };
+    instrument.validate().map_err(|error| invalid(&error.to_string()))?;
+    // Entire graph and capability batch is pure before changing any roster.
+    let mut resolved=Vec::with_capacity(instrument.source_indices.processing.len());
+    let mut matrices=Vec::new();
+    let mut owner_roles=Vec::new();
+    let mut parameter_sites=Vec::new();
+    // This off-audio schema batch is independent of the live Instrument until
+    // every owner, source and signal definition has been checked.
+    let mut control_definitions=instrument.controls.clone();
+    let mut next=instrument.processing_scopes.len();
+    for recipe in &instrument.source_indices.processing {
+        let native=instrument.source_indices.uvi_native_processing.iter().find(|profile|profile.owner==recipe.owner)
+            .filter(|profile|profile.requested==Some(ir::UviNativeLayout::Code2)
+                && profile.members.iter().any(|(_,member)|member.is_some_and(|member|member.layout==ir::UviNativeLayout::Code6))
+                && !instrument.source_indices.processing_ports.iter().any(|port|port.owner==recipe.owner));
+        let mut width=None;
+        for (ordinal,member) in recipe.members.iter().enumerate() {
+            let Some(asset)=instrument.zones[member.0].asset else {continue;};
+            let actual=sources.get(asset.0).ok_or_else(||invalid("source processing asset is absent"))?.as_source().channels().get();
+            if let Some(native)=native {
+                let &(zone,input)=native.members.get(ordinal).ok_or_else(||invalid("native member ordinal missing"))?;
+                let input=input.ok_or_else(||invalid("native source has no genuine decoded header geometry"))?;
+                if zone!=*member || input.storage_channels!=actual || input.provenance!=ir::UviNativeSourceProvenance::PlainHeader {
+                    return Err(invalid("native source geometry differs from actual retained storage"));
+                }
+                width=Some(width.unwrap_or(0).max(input.layout.channels()));
+            }else if width.replace(actual).is_some_and(|previous|previous!=actual) {
+                return Err(invalid("mixed source layouts require explicit per-member layout edges"));
+            }
+        }
+        let scope=if let Some(index)=recipe.compiled {index}else{let index=next;next=next.checked_add(1).ok_or_else(||invalid("source scope capacity overflow"))?;index};
+        let mut definition=ir::ProcessingScope {members:recipe.members.clone(),sum:ir::ProcessingSumLaw::OrderedF32,
+            cadence:ir::ProcessingCadence::CoreCell64,chain:recipe.chain,amplitude:recipe.amplitude,output:recipe.output,signal:None};
+        let mut signal_sites=None;
+        if let Some(width)=width.filter(|width|*width!=2) {
+            let (signal,bindings,sites)=source_processing_signal(instrument,recipe,scope,width,native,&mut control_definitions).map_err(|reason|invalid(&reason))?;
+            definition.chain=None;
+            definition.signal=Some(signal);
+            signal_sites=Some(sites);
+            matrices.extend(bindings);
+        } else if width==Some(2) {
+            for (index,matrix) in instrument.source_indices.processing_matrices.iter().enumerate().filter(|(_,matrix)|matrix.owner==recipe.owner) {
+                if Some(matrix.chain)!=recipe.chain {return Err(invalid("source matrix has no actual chain coordinate"));}
+                matrices.push((index,ir::SourceProcessingMatrixBinding{scope,signal_node:None,layout:ir::SignalLayout{channels:2},
+                    cells:source_matrix_cells(matrix,2,&mut control_definitions).map_err(|reason|invalid(&reason))?}));
+            }
+        }
+        let mut roles=Vec::new();
+        for role in &recipe.parameter_roles {
+            let chain=recipe.chain.and_then(|c|instrument.chains.get(c.0)).ok_or_else(||invalid("source scalar has no actual chain"))?;
+            let site=if let Some(sites)=&signal_sites {
+                ir::ScopeControlSite::SignalNode(*sites.get(role.chain_index).ok_or_else(||invalid("source scalar has no actual emitted signal site"))?)
+            }else if role.chain_index<chain.pre_amplitude.len(){ir::ScopeControlSite::ChainPre(role.chain_index)}
+            else{ir::ScopeControlSite::ChainPost(role.chain_index-chain.pre_amplitude.len())};
+            roles.push(ir::SourceOwnerOutputControl{owner:recipe.owner,field:role.field,target:ir::SourceOwnerControlTarget::ProcessingScope{scope,site},control:role.control});
+        }
+        owner_roles.extend(roles);
+        for (row,binding) in instrument.source_indices.processing_parameters.iter().enumerate().filter(|(_,row)|row.owner==recipe.owner){
+            if recipe.chain!=Some(binding.chain){return Err(invalid("shared processor binding belongs to another source chain"));}
+            let chain=instrument.chains.get(binding.chain.0).ok_or_else(||invalid("shared processor chain absent"))?;
+            let site=if let Some(sites)=&signal_sites {
+                ir::ScopeControlSite::SignalNode(*sites.get(binding.index).filter(|site|**site!=usize::MAX).ok_or_else(||invalid("shared processor emitted operand absent"))?)
+            }else if binding.index<chain.pre_amplitude.len(){ir::ScopeControlSite::ChainPre(binding.index)}
+            else{ir::ScopeControlSite::ChainPost(binding.index-chain.pre_amplitude.len())};
+            parameter_sites.push((row,ir::SourceProcessingParameterSite{scope,site}));
+        }
+        resolved.push((scope,definition));
+    }
+    // Check the complete destination roster before publishing any schema row.
+    // New indices must be the checked append sequence; old bindings must still
+    // address an existing scope. Keep malformed plans on the typed error path.
+    let existing_scopes=instrument.processing_scopes.len();
+    let mut append_scope=existing_scopes;
+    for (recipe,(index,_)) in instrument.source_indices.processing.iter().zip(&resolved) {
+        if recipe.compiled.is_some() {
+            if *index>=existing_scopes {return Err(invalid("compiled source processing scope is absent"));}
+        } else {
+            if *index!=append_scope {return Err(invalid("source processing append roster is inconsistent"));}
+            append_scope=append_scope.checked_add(1).ok_or_else(||invalid("source scope capacity overflow"))?;
+        }
+    }
+    // Re-materialization replaces this recipe's exact roles, never appends a
+    // second authority. Preserve unrelated directly authored bus/scope roles.
+    instrument.source_indices.output_controls.retain(|home|!instrument.source_indices.processing.iter().any(|recipe|
+        recipe.owner==home.owner && matches!(home.target,ir::SourceOwnerControlTarget::ProcessingScope{scope,..}if recipe.compiled==Some(scope))));
+    instrument.source_indices.output_controls.extend(owner_roles);
+    for (row,site) in parameter_sites {instrument.source_indices.processing_parameters[row].compiled=Some(site);}
+    instrument.controls=control_definitions;
+    for (recipe,(index,definition)) in instrument.source_indices.processing.iter_mut().zip(resolved) {
+        if recipe.compiled.is_some() {instrument.processing_scopes[index]=definition;}
+        else {instrument.processing_scopes.push(definition);}
+        recipe.compiled=Some(index);
+        for role in &mut recipe.parameter_roles {
+            role.compiled=instrument.source_indices.output_controls.iter().find_map(|home|
+                (home.owner==recipe.owner&&home.field==role.field).then_some(home.target)).and_then(|target|
+                    if let ir::SourceOwnerControlTarget::ProcessingScope{scope,site}=target{(scope==index).then_some(site)}else{None});
+        }
+    }
+    for matrix in &mut instrument.source_indices.processing_matrices {matrix.compiled=None;}
+    for (index,binding) in matrices {
+        instrument.source_indices.processing_matrices[index].controls=binding.cells.clone();
+        instrument.source_indices.processing_matrices[index].compiled=Some(binding);
+    }
+    Ok(())
+}
+
+fn source_matrix_cells(
+    matrix:&ir::SourceProcessingMatrix,width:usize,controls:&mut Vec<ir::Control>,
+)->Result<Vec<ir::SourceProcessingCell>,String> {
+    let mut cells=Vec::new();
+    for cell in matrix.control_definitions.iter().filter(|cell|cell.input<width && cell.output<width) {
+        let control=if let Some(index)=controls.iter().position(|control|control.key==cell.control.key) {
+            if controls[index]!=cell.control {
+                return Err("source matrix control schema differs from the retained authored definition".into());
+            }
+            index
+        } else {
+            let index=controls.len();controls.push(cell.control.clone());index
+        };
+        cells.push(ir::SourceProcessingCell{input:cell.input,output:cell.output,control:ir::ControlRef(control)});
+    }
+    Ok(cells)
+}
+
+/// The source adapter retains raw coordinates; this ordinary materializer
+/// chooses actual geometry. No decoder fold and no source-count/native-enum
+/// equivalence is implicit in the concrete caller-supplied output matrix.
+fn source_processing_signal(
+    instrument:&ir::Instrument,recipe:&ir::SourceProcessingRecipe,scope:usize,width:usize,native:Option<&ir::UviNativeProcessingProfile>,control_definitions:&mut Vec<ir::Control>,
+)->Result<(ir::ProcessingSignal,Vec<(usize,ir::SourceProcessingMatrixBinding)>,Vec<usize>),String> {
+    if !(1..=12).contains(&width) {return Err("source graph width is outside its admitted channel domain".into());}
+    let ports:Vec<_>=instrument.source_indices.processing_ports.iter().filter(|port|port.owner==recipe.owner).collect();
+    let port=if native.is_some(){None}else{
+        if ports.len()!=1 {return Err("wide source owner requires one explicit caller output matrix and layout provenance".into());}
+        let port=&ports[0].conversion;
+        if port.input.channels!=width || port.output.channels!=2 {return Err("caller output matrix differs from actual source working layout".into());}Some(port)
+    };
+    let mut nodes=Vec::new();let mut controls=Vec::new();let mut matrices=Vec::new();let mut boundary_pan=None;let mut sites=Vec::new();
+    if let Some(chain_id)=recipe.chain {
+        let chain=&instrument.chains[chain_id.0];
+        if chain.scope!=ir::Scope::Voice || !chain.post_amplitude.is_empty() {
+            return Err("source channel graph requires its explicit amplitude boundary".into());
+        }
+        for route in instrument.routes.iter().filter(|route|matches!(route.target,ir::Target::Processor{chain,..}if chain==chain_id)) {
+            let ir::Target::Processor{index,parameter,..}=route.target else{return Err("source channel route has no retained processor target".into());};
+            if !instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner&&binding.chain==chain_id&&binding.index==index&&binding.parameter==parameter){
+                return Err("source channel processor modulation requires an exact owned parameter binding".into());
+            }
+        }
+        if native.is_some()&&instrument.source_indices.processing_parameters.iter().any(|binding|binding.owner==recipe.owner){
+            return Err("native Frequency connection attachment and typed parameter cadence are unqualified; historical Core law cannot activate the native profile".into());
+        }
+        sites.resize(chain.pre_amplitude.len(),usize::MAX);
+        for (index,processor) in chain.pre_amplitude.iter().enumerate() {
+            let parameter=|constant,role|->Result<ir::SignalParameter,String>{
+                let bindings:Vec<_>=instrument.processor_controls.iter().filter(|binding|binding.chain==chain_id && binding.index==index).collect();
+                if bindings.len()>1 || bindings.first().is_some_and(|binding|binding.parameter!=role) {
+                    return Err("source channel parameter has an unsupported or ambiguous control binding".into());
+                }
+                Ok(ir::SignalParameter{constant,control:bindings.first().map(|binding|instrument.controls[binding.control.0].key.clone()),expression:None})
+            };
+            if let ir::Processor::ExpressionPan(pan)=*processor {
+                if boundary_pan.is_some(){return Err("source owner has multiple expression Pan homes".into());}
+                boundary_pan=Some((index,ir::ChannelPan{position:parameter(pan.pan.position,ir::ProcessorParameter::Pan)?,offset:pan.offset,law:pan.pan.law,expression:true}));
+                continue;
+            }
+            let node=match *processor {
+                ir::Processor::Mix{count,address,dry,wet,bypass}=>ir::ProcessingSignalNode::Mix(ir::ChannelMix{count,address,dry,wet,bypass}),
+                ir::Processor::Gain(gain)=>ir::ProcessingSignalNode::Gain(ir::ChannelGain{
+                    gain:parameter(gain.linear(),ir::ProcessorParameter::Gain)?,arithmetic:ir::ChannelGainArithmetic::CoreGainF64ThenF32}),
+                ir::Processor::Color(config) if matches!(config.curve,ir::fx::color::Curve::Rectifier(_))=>{
+                    let ir::fx::color::Curve::Rectifier(mode)=config.curve else {return Err("source rectifier type is absent".into());};
+                    if config!=ir::fx::color::Config::rectifier(mode) {
+                        return Err("source rectifier has additional stages requiring their actual N-port kernels".into());
+                    }
+                    ir::ProcessingSignalNode::Rectifier(mode)
+                }
+                ir::Processor::Filter(ir::Filter{kind,cutoff:ir::Frequency::Hertz(hz),..})=>{
+                    let mode=match kind {ir::FilterKind::LowPass{poles:1}=>ir::ChannelOnePoleMode::LowPass,
+                        ir::FilterKind::HighPass{poles:1}=>ir::ChannelOnePoleMode::HighPass,
+                        _=>return Err("source channel filter requires its actual N-port kernel".into())};
+                    // Preserve ordinary voice-chain's explicit zero added tail
+                    // for this processor. This is not a claim that a native IIR
+                    // physically has finite duration.
+                    if let Some(site)=native.and_then(|profile|profile.one_poles.iter().find(|site|site.chain==chain_id&&site.index==index)) {
+                        let key=site.frequency_control.as_ref().ok_or("native OnePole Freq is outside its typed public range")?;
+                        let definition=ir::Control{key:key.clone(),label:"Freq".into(),value:ir::ControlValue::Continuous{min:20.,max:20000.,default:site.frequency,unit:ir::ControlUnit::Hertz},automation:ir::Automation::None};
+                        if let Some(existing)=control_definitions.iter().find(|control|control.key==*key){
+                            if existing!=&definition{return Err("native OnePole Freq schema differs from its actual source control".into());}
+                        }else{control_definitions.push(definition);}
+                        ir::ProcessingSignalNode::UviOnePole(ir::UviNativeOnePole{frequency:ir::SignalParameter{constant:site.frequency,control:Some(key.clone()),expression:None},tracking:site.tracking,mode:site.mode,
+                            cadence:ir::UviOnePoleCadence::FirstSetup32,tail_frames:0})
+                    }else{ir::ProcessingSignalNode::OnePole(ir::ChannelOnePole{cutoff_hz:parameter(hz,ir::ProcessorParameter::Cutoff)?,mode,
+                        arithmetic:ir::ChannelOnePoleArithmetic::CoreOnePoleF64,tail_frames:0})}
+                }
+                ir::Processor::StereoMatrix(_)=>{
+                    let found:Vec<_>=instrument.source_indices.processing_matrices.iter().enumerate()
+                        .filter(|(_,matrix)|matrix.owner==recipe.owner && matrix.chain==chain_id && matrix.index==index).collect();
+                    if found.len()!=1 {return Err("wide matrix has no unique full authored source definition".into());}
+                    let (matrix_index,matrix)=found[0];
+                    if width>matrix.matrix.input.channels || width>matrix.matrix.output.channels {return Err("source matrix is narrower than its actual working port".into());}
+                    let mut cells=Vec::with_capacity(width*width);
+                    for output in 0..width {for input in 0..width {cells.push(matrix.matrix.cells[output*matrix.matrix.input.channels+input]);}}
+                    let bound=source_matrix_cells(matrix,width,control_definitions)?;
+                    for cell in &bound {controls.push(ir::ProcessingCellBinding{node:nodes.len(),input:cell.input,output:cell.output,
+                        control:control_definitions[cell.control.0].key.clone()});}
+                    matrices.push((matrix_index,ir::SourceProcessingMatrixBinding{scope,signal_node:Some(nodes.len()),layout:ir::SignalLayout{channels:width},cells:bound}));
+                    ir::ProcessingSignalNode::Matrix(ir::ChannelMatrix{input:ir::SignalLayout{channels:width},output:ir::SignalLayout{channels:width},cells,
+                        arithmetic:matrix.matrix.arithmetic})
+                }
+                _=>return Err("source channel processor requires its actual N-port kernel".into()),
+            };
+            sites[index]=nodes.len();
+            nodes.push(node);
+        }
+    }
+    let source_law=if let Some(native)=native {
+        let source=ir::UviNativeLayout::plain_header(width).ok_or("native working descriptor is unproved")?;
+        let destination=native.requested.ok_or("native caller descriptor missing")?;
+        if destination!=ir::UviNativeLayout::Code2{return Err("normal backend requires its real stereo Frame outlet".into());}
+        let pan=if let Some((index,pan))=boundary_pan {sites[index]=nodes.len();pan}
+            else{ir::ChannelPan{position:ir::SignalParameter{constant:0.,control:None,expression:None},offset:0.,law:ir::PanLaw::RaisedCosineCoreF64,expression:false}};
+        nodes.push(ir::ProcessingSignalNode::UviLayout(ir::UviNativeLayoutConvert{source,destination,pan:pan.position,pan_offset:pan.offset}));
+        // Explicit user extension home, separate from the native BASE Pan that
+        // descriptor6->2 ignores. Center is exactly unity; canonical expression
+        // remains per activation BEFORE different notes enter global buses.
+        nodes.push(ir::ProcessingSignalNode::Pan(ir::ChannelPan{position:ir::SignalParameter{constant:0.,control:None,expression:None},offset:0.,law:ir::PanLaw::RaisedCosineCoreF64,expression:true}));
+        let mut members=[None;16];
+        if native.members.len()!=recipe.members.len()||native.members.len()>members.len(){return Err("native source ordinal roster is inconsistent".into());}
+        for (ordinal,(zone,input))in native.members.iter().enumerate(){
+            if *zone!=recipe.members[ordinal]{return Err("native source ordinal identity is inconsistent".into());}
+            members[ordinal]=Some(input.ok_or("native source geometry remains unresolved")?);
+        }
+        ir::ProcessingSourceLaw::UviC997Layout{members}
+    }else{
+        nodes.push(ir::ProcessingSignalNode::Matrix(port.ok_or("explicit caller port disappeared")?.clone()));
+        if let Some((index,pan))=boundary_pan {sites[index]=nodes.len();nodes.push(ir::ProcessingSignalNode::Pan(pan));}
+        ir::ProcessingSourceLaw::CoreF64GainAmplitudeF32Outlet
+    };
+    Ok((ir::ProcessingSignal{source_law,input:ir::SignalLayout{channels:width},nodes,controls},matrices,sites))
+}
+
+fn prepare_sources_inner(
+    mut instrument:ir::Instrument,sources:Vec<SourceStorage>,options:&Options,initialized:Option<ScriptInit>,
+)->Result<Loaded,LoadError> {
     let rate = options.rate;
+    bind_source_processing(&mut instrument, &sources, options)?;
     host_volume(&mut instrument);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let ui_span = crate::audit::Span::new("script_ui_prepare");
@@ -1023,7 +1435,7 @@ fn prepare_inner(
             Default::default()
         };
         let lowered =
-            sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+            sampler_core::lower::lower_sources_with(&instrument, rate, sources, &lower_options, |_, plan| {
                 Ok(plan)
             });
         instrument.behaviors = behaviors;
@@ -1092,10 +1504,11 @@ fn prepare_inner(
             });
         }
     }
+    automation.extend(fixed_automation(&compiled, &automation));
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
     let lower_span = crate::audit::Span::new("core_lower_bindings");
     let lowered =
-        sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+        sampler_core::lower::lower_sources_with(&instrument, rate, sources, &lower_options, |_, plan| {
             sampler_ksp::bind_modules(compiled, plan)
                 .and_then(|plan| plan.with_automation_bindings(automation))
                 .map_err(|e| LowerError::Behavior {
@@ -1113,6 +1526,31 @@ fn prepare_inner(
         scripts,
         resources,
     })
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn canceled_path_load_does_not_read_a_container_or_emit_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("must-not-be-read.nki");
+        let mut progress_calls = 0;
+        let result = load_cancelable(
+            &missing,
+            &Options::default(),
+            |_| progress_calls += 1,
+            || true,
+        );
+        assert!(matches!(result, Err(LoadError::Canceled)));
+        assert_eq!(progress_calls, 0);
+        assert!(!missing.exists());
+        assert!(matches!(
+            load_cancelable(&missing, &Options::default(), |_| {}, || false),
+            Err(LoadError::Io { .. })
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1147,6 +1585,7 @@ mod volume_tests {
         let mut ir = ir::Instrument::default();
         ir.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("x".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: Vec::new(),
@@ -1248,9 +1687,71 @@ mod dynamics_tests {
     }
 }
 
+/// Host slots a script fixes with `$CONTROL_PAR_AUTOMATION_ID` (set in `on init` or by a
+/// performance view's `hostAutomation`): Kontakt exposes the control at that host address
+/// without any saved assignment. A saved assignment of the same control or address wins.
+// ponytail: init-time ids only; a later set_control_par(AUTOMATION_ID) rebind isn't followed.
+fn fixed_automation(
+    compiled: &[sampler_ksp::Script],
+    saved: &[sampler_core::AutomationBinding],
+) -> Vec<sampler_core::AutomationBinding> {
+    let mut out: Vec<sampler_core::AutomationBinding> = Vec::new();
+    for script in compiled {
+        for w in &script.model().interface.widgets {
+            let Some(id) = w.int("$CONTROL_PAR_AUTOMATION_ID").and_then(|n| u16::try_from(n).ok()).filter(|n| *n < 2048) else {
+                continue;
+            };
+            let source = sampler_core::AutomationSource::HostParameter(id);
+            let taken = |b: &sampler_core::AutomationBinding| {
+                b.source == source || (b.source_slot == script.slot() && b.ui_id == w.ui_id)
+            };
+            if w.unresolved
+                || w.control.is_none()
+                || w.int("$CONTROL_PAR_ALLOW_AUTOMATION") == Some(0)
+                || saved.iter().chain(&out).any(taken)
+            {
+                continue;
+            }
+            out.push(sampler_core::AutomationBinding {
+                source,
+                source_slot: script.slot(),
+                ui_id: w.ui_id,
+                low: 0.,
+                high: 1.,
+                soft_takeover: false,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod automation_tests {
     use super::*;
+    #[test]
+    fn automation_id_binds_the_host_slot_and_runs_the_callback() {
+        let mut instrument = ir::Instrument::default();
+        instrument.behaviors.push(ir::Behavior {
+            name: "fixed".into(), language: ir::Language::Ksp, slot: Some(1), state: vec![], requires: vec![],
+            source: "on init declare ui_slider $a(0,100) declare ui_slider $b(0,100) declare $seen \
+                     set_control_par(get_ui_id($a),$CONTROL_PAR_AUTOMATION_ID,5) \
+                     set_control_par(get_ui_id($b),$CONTROL_PAR_AUTOMATION_ID,6) \
+                     set_control_par(get_ui_id($b),$CONTROL_PAR_ALLOW_AUTOMATION,0) end on \
+                     on ui_control($a) $seen := $a end on on ui_control($b) $seen := 1000 end on".into(),
+        });
+        let loaded = prepare(instrument, vec![], &Options::default()).unwrap();
+        let bound: Vec<_> = loaded.plan.automation_bindings().iter().map(|b| b.source).collect();
+        assert_eq!(bound, [sampler_core::AutomationSource::HostParameter(5)]);
+        let limits = sampler_core::Limits::for_plan(&loaded.plan, 4, 8);
+        let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
+        let context = sampler_core::ControlContext {
+            performance: rt.performance(0).unwrap(),
+            origin: sampler_core::ChannelAddress { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0 },
+            channels: 1,
+        };
+        rt.dispatch_host_parameter(context, 5, 0.5).unwrap();
+        assert_eq!(rt.script_cell(rt.active_plan(), sampler_core::ScriptInstanceId(0), 0), Ok(50));
+    }
     #[test]
     fn saved_target_counts_only_sliders_in_its_physical_slot() {
         let mut instrument = ir::Instrument::default();
@@ -1303,6 +1804,7 @@ mod native_lookup_tests {
         let mut instrument = ir::Instrument::default();
         instrument.assets.push(ir::Asset {
             location: ir::AssetLocation::Path("synthetic.wav".into()),
+            residency: Default::default(),
             encoding: ir::Encoding::Wav,
             root_key: None,
             loops: vec![],
@@ -1488,9 +1990,11 @@ fn warning_class(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     let mut chars = message.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '$' {
+        if matches!(c, '$' | '%' | '?' | '!' | '~')
+            && chars.peek().is_some_and(|c| c.is_alphabetic() || *c == '_') {
             while chars.next_if(|c| c.is_alphanumeric() || *c == '_').is_some() {}
-            out.push_str("$name");
+            out.push(c);
+            out.push_str("name");
         } else if c.is_ascii_digit() {
             while chars.next_if(|c| c.is_ascii_digit()).is_some() {}
             out.push('N');
@@ -1553,6 +2057,12 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn warning_classes_mask_array_names_and_bounds_but_keep_element_type() {
+        assert_eq!(warning_class("array index -1 out of bounds for %private (length 2)"),
+            "array index -N out of bounds for %name (length N)");
+    }
+
+    #[test]
     fn initialization_warnings_keep_physical_script_slot_line_and_index() {
         let mut instrument = ir::Instrument::default();
         instrument.groups.push(ir::Group { name: "present".into(), ..Default::default() });
@@ -1566,5 +2076,134 @@ mod diagnostic_tests {
         let warnings = &instrument.unsupported;
         assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 7" && w.value.contains("find_group") && w.value.contains("-1")), "{warnings:?}");
         assert!(warnings.iter().any(|w| w.location == "script slot 3 Lookup line 4" && w.value.contains("array index 9 out of bounds")), "{warnings:?}");
+    }
+}
+
+#[cfg(test)]
+#[path = "zone_init_tests.rs"]
+mod zone_init_tests;
+
+#[cfg(test)]
+mod initialization_shape_tests {
+    use super::*;
+
+    fn behavior(slot: u8, language: ir::Language) -> ir::Behavior {
+        ir::Behavior {
+            name: format!("shape slot {slot}"),
+            language,
+            slot: Some(slot),
+            state: vec![],
+            requires: vec![],
+            source: "on init\n declare ui_knob $Value(0, 127, 1)\nend on".into(),
+        }
+    }
+
+    fn translated(behaviors: Vec<ir::Behavior>) -> Kontakt {
+        let mut instrument = ir::Instrument {
+            behaviors,
+            ..Default::default()
+        };
+        let initialized = initialize_scripts(&mut instrument, None, vec![], &[]);
+        Kontakt {
+            instrument,
+            locations: vec![],
+            samples: crate::Samples::new(Path::new(".")),
+            initialized: Some(initialized),
+        }
+    }
+
+    #[test]
+    fn unchanged_behavior_shape_consumes_existing_initialization_once() {
+        take_script_init_runs();
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        assert_eq!(take_script_init_runs(), 1);
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 3);
+        assert_eq!(take_script_init_runs(), 0);
+        assert!(kontakt.initialized.is_none());
+    }
+
+    #[test]
+    fn appended_ksp_behavior_reinitializes_before_indexing_cached_states() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        kontakt
+            .instrument
+            .behaviors
+            .push(behavior(4, ir::Language::Ksp));
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(
+            scripts
+                .iter()
+                .map(|script| script.slot())
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(interfaces.len(), 2);
+        assert_eq!(take_script_init_runs(), 2);
+    }
+
+    #[test]
+    fn language_change_reinitializes_instead_of_unwrapping_absent_ksp_state() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Lua)]);
+        kontakt.instrument.behaviors[0].language = ir::Language::Ksp;
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 3);
+        assert_eq!(take_script_init_runs(), 1);
+    }
+
+    #[test]
+    fn removed_behavior_invalidates_the_cached_roster() {
+        let mut kontakt = translated(vec![
+            behavior(3, ir::Language::Ksp),
+            behavior(4, ir::Language::Ksp),
+        ]);
+        kontakt.instrument.behaviors.remove(0);
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(scripts[0].slot(), 4);
+        assert_eq!(take_script_init_runs(), 1);
+    }
+
+    #[test]
+    fn changed_shape_retains_initializer_failure_as_a_script_diagnostic() {
+        let mut kontakt = translated(vec![]);
+        let mut invalid = behavior(3, ir::Language::Ksp);
+        invalid.source = "on init\n get_scale(0, %CC)\nend on".into();
+        kontakt.instrument.behaviors.push(invalid);
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert!(scripts.is_empty());
+        assert!(interfaces.is_empty());
+        assert_eq!(take_script_init_runs(), 1);
+        assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
+            diagnostic.location == "script slot 3 shape slot 3 line 2"
+                && diagnostic.feature == "script"
+                && diagnostic.value.contains("get_scale")
+        }));
+    }
+
+    #[test]
+    fn same_shape_source_change_still_reports_source_identity_failure() {
+        let mut kontakt = translated(vec![behavior(3, ir::Language::Ksp)]);
+        kontakt.instrument.behaviors[0].source.push('\n');
+        take_script_init_runs();
+        let (scripts, interfaces, _) = kontakt.compile_ui(&Options::default());
+        assert!(scripts.is_empty());
+        assert!(interfaces.is_empty());
+        assert_eq!(take_script_init_runs(), 0);
+        assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
+            diagnostic.feature == "script"
+                && diagnostic
+                    .value
+                    .contains("initialized source identity changed")
+        }));
     }
 }

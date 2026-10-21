@@ -393,15 +393,22 @@ fn runtime_zone_getter_preserves_source_ids_and_dynamic_parameter_identity() {
             Prepared::new(48000,vec![Pcm::new(48000,Box::from([[1.;2];64])).unwrap()],vec![Region {
                 sample:0,key_low:7,key_high:94,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,
                 envelope:Envelope::default(),playback:Playback::default()
-            }],128)?.with_groups(3,vec![Some(2)])?.with_source_zones(vec![73])
+            }],128)?.with_groups(3,vec![Some(2)])?
+                // A legacy event ID cannot grant a native command identity.
+                .with_source_zones(vec![1])?
+                .with_source_zone_identities(vec![sampler_core::SourceZoneIdentity {
+                    id: Some(73),
+                    home: sampler_core::SourceZoneHome {group:2,low_key:7,high_key:94},
+                    region: Some(0),
+                }],1,4096)
         });
     assert_eq!(cell(&rt, 0), 2);
     assert_eq!(cell(&rt, 1), 7);
     assert_eq!(cell(&rt, 2), 94);
     assert_eq!(
         cell(&rt, 3),
-        0,
-        "source hole must not resolve to runtime region zero"
+        -1,
+        "legacy event ID must not resolve as a native command identity"
     );
 }
 
@@ -434,10 +441,23 @@ fn runtime_zone_getter_does_not_match_absent_parameter_selectors() {
                 128,
             )?
             .with_groups(3, vec![Some(2)])?
-            .with_source_zones(vec![73])
+            .with_source_zone_identities(
+                vec![sampler_core::SourceZoneIdentity {
+                    id: Some(73),
+                    home: sampler_core::SourceZoneHome {
+                        group: 2,
+                        low_key: 7,
+                        high_key: 94,
+                    },
+                    region: Some(0),
+                }],
+                1,
+                4096,
+            )
         },
     );
-    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (7, 0));
+    // Zero must not alias either selector absent from this script's symbol table.
+    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (7, -1));
 }
 
 #[test]
@@ -451,7 +471,7 @@ fn init_zone_getter_reads_authored_physical_zone_fields() {
     );
     assert_eq!(
         [cell(&rt, 0), cell(&rt, 1), cell(&rt, 2), cell(&rt, 3)],
-        [2, 7, 94, 0]
+        [2, 7, 94, -1]
     );
 }
 
@@ -516,6 +536,71 @@ fn menu_control_properties_report_selected_index_and_live_item_count() {
     assert_eq!(
         (cell(&rt, 1), cell(&rt, 2), cell(&rt, 3), cell(&rt, 4)),
         (1, 2, 1, -1)
+    );
+}
+
+#[test]
+fn menu_value_getters_use_selected_index_for_constant_and_variable_arguments() {
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",20) add_menu_item($m,\"second\",80)
+        $m := 80 declare $id declare $par
+        declare $constant declare $variable_id declare $variable_par declare $both declare $raw end on
+        on note
+            $id := get_ui_id($m) $par := $CONTROL_PAR_VALUE
+            $constant := get_control_par(get_ui_id($m),$CONTROL_PAR_VALUE)
+            $variable_id := get_control_par($id,$CONTROL_PAR_VALUE)
+            $variable_par := get_control_par(get_ui_id($m),$par)
+            $both := get_control_par($id,$par)
+            $raw := $m
+        end on",
+        &[],
+    );
+    assert_eq!(
+        (
+            cell(&rt, 2),
+            cell(&rt, 3),
+            cell(&rt, 4),
+            cell(&rt, 5),
+            cell(&rt, 6)
+        ),
+        (1, 1, 1, 1, 80)
+    );
+}
+
+#[test]
+fn variable_menu_value_getter_tracks_hidden_changed_missing_and_empty_selections() {
+    let rt = run(
+        "on init declare ui_menu $m add_menu_item($m,\"first\",20) add_menu_item($m,\"second\",80)
+        declare ui_menu $empty
+        declare ui_knob $knob(0,100,1) $knob := 37
+        declare $id declare $par declare $default declare $hidden declare $missing declare $changed
+        declare $empty_index declare $ordinary declare $raw end on
+        on note
+            $id := get_ui_id($m) $par := $CONTROL_PAR_VALUE
+            $default := get_control_par($id,$par)
+            $m := 80
+            set_menu_item_visibility($id,1,0)
+            $hidden := get_control_par($id,$par)
+            set_menu_item_value($id,1,93)
+            $missing := get_control_par($id,$par)
+            $m := 93 $changed := get_control_par($id,$par)
+            $empty_index := get_control_par(get_ui_id($empty),$par)
+            $ordinary := get_control_par(get_ui_id($knob),$par)
+            $raw := $m
+        end on",
+        &[],
+    );
+    assert_eq!(
+        (
+            cell(&rt, 2),
+            cell(&rt, 3),
+            cell(&rt, 4),
+            cell(&rt, 5),
+            cell(&rt, 6),
+            cell(&rt, 7),
+            cell(&rt, 8)
+        ),
+        (-1, 1, -1, 1, -1, 37, 93)
     );
 }
 

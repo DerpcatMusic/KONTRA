@@ -137,6 +137,13 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// O(1) readiness of finite startup admissions, without advancing callbacks
+    /// or scanning sample residency. Live authored waits remain separate.
+    pub fn startup_work_pending(&self,plan:crate::PlanId)->Result<bool,Error> {
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok(generation.start_cursor < generation.prepared.plan_programs.len()
+            || generation.initial_residency.pending()!=0)
+    }
     /// Admission is atomic for an emitted message's immediate fanout. No heap
     /// queue: each admitted receiver owns its payload in the bounded callback
     /// arena and is scheduled by the existing explicit dispatch stack.
@@ -167,7 +174,10 @@ impl Runtime {
         };
         // Keep the captured physical address, not a guessed channel from a mask.
         let (performance, origin, channels) = match callback.context {
+            PlanContext::Task(task)=>match task.domain{super::receiver::task::TaskDomain::Captured{performance,origin,channels,..}=>(performance,origin,channels),_=>return Err(Error::InvalidInput)},
+            PlanContext::NoteControllers(context)=>(context.performance,context.origin,1<<context.origin.channel),
             PlanContext::Controller(event) => (event.performance, event.origin, event.channels),
+            PlanContext::Program(event) => (event.performance, event.origin, event.channels),
             PlanContext::Control(event) => (event.performance, event.origin, event.channels),
             PlanContext::Bare => {
                 let note = match callback.owner {
@@ -197,9 +207,8 @@ impl Runtime {
             .callbacks
             .checked_add(needed)
             .ok_or(Error::Capacity)?;
-        self.last_callback_id
-            .checked_add(i32::try_from(needed).map_err(|_| Error::Capacity)?)
-            .ok_or(Error::Capacity)?;
+        crate::prepare::zone_routing::callback_id_preflight(
+            self.last_callback_id, self.callback_id_reservations, needed)?;
         if !self.behavior_room(needed) {
             return Err(Error::Capacity);
         }
@@ -227,6 +236,9 @@ impl Runtime {
                 performance,
                 origin,
                 channels,
+                controller_epochs: self.controller_target_epochs(id)?,
+                controller_secondary: self.controller_secondary_target(id)?,
+                receiver:self.behavior_receiver_capture(id)?,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
@@ -249,6 +261,10 @@ impl Runtime {
         signal: u16,
     ) -> Result<(), Error> {
         let performance = self.behavior_performance(id).ok();
+        let controller_epochs = self.controller_target_epochs(id)?;
+        let controller_origin = self.controller_origin(id)?;
+        let controller_secondary = self.controller_secondary_target(id)?;
+        let receiver=self.behavior_receiver_capture(id)?;
         let count = self
             .plans
             .get(plan.0)
@@ -264,13 +280,16 @@ impl Runtime {
             let context = performance.map_or(PlanContext::Bare, |(performance, scope)| {
                 PlanContext::Control(crate::control::ControlEvent {
                     performance,
-                    origin: crate::ChannelAddress {
+                    origin: controller_origin.unwrap_or(crate::ChannelAddress {
                         protocol: scope.protocol,
                         port: scope.port,
                         group: scope.group,
                         channel: scope.channels.trailing_zeros().min(15) as u8,
-                    },
+                    }),
                     channels: scope.channels,
+                    controller_epochs,
+                    controller_secondary,
+                    receiver,
                     stage: p.stage,
                     interaction: crate::WidgetInteraction::default(),
                 })
@@ -284,20 +303,17 @@ impl Runtime {
         Ok(())
     }
 
-    /// Start the active plan's plan programs once. Full callback capacity or
-    /// no performance skips them.
+    /// Start in retained order. Full capacity keeps the next start for a later
+    /// boundary rather than silently losing persistence/listener callbacks.
     pub(super) fn start_plan_programs(&mut self) {
         self.start_midi_jobs(self.active_plan);
-        if self.started_plan == Some(self.active_plan) {
-            return;
-        }
-        self.started_plan = Some(self.active_plan);
         if self.performance_state.current.is_empty() {
             return;
         }
         let plan = self.active_plan;
         let count = self.plans.get(plan.0).unwrap().prepared.plan_programs.len();
-        for i in 0..count {
+        while self.plans.get(plan.0).unwrap().start_cursor < count {
+            let i=self.plans.get(plan.0).unwrap().start_cursor;
             let p = self.plans.get(plan.0).unwrap().prepared.plan_programs[i];
             let context = PlanContext::Control(crate::control::ControlEvent {
                 performance: 0,
@@ -308,10 +324,15 @@ impl Runtime {
                     channel: 0,
                 },
                 channels: 1,
+                controller_epochs: None,
+                controller_secondary: None,
+                receiver:None,
                 stage: p.stage,
                 interaction: crate::WidgetInteraction::default(),
             });
-            let _ = self.start_plan_context(plan, p.program, context);
+            if self.start_plan_context(plan,p.program,context).is_err() {break;}
+            self.plans.get_mut(plan.0).unwrap().start_cursor+=1;
         }
+        if self.plans.get(plan.0).unwrap().start_cursor == count {self.started_plan=Some(plan);}
     }
 }

@@ -702,7 +702,7 @@ fn cpu_presentation_fixture(resize_failure: bool) {
             ui: Ui::default(),
             view: Green,
         }));
-        let window = Window::create(
+        let window = baseview::ThreadedWindow::create(
             settings("MUI CPU regression", (240, 200))
                 .with_resizable(false)
                 .with_scale_factor_override(Some(1.0)),
@@ -734,7 +734,7 @@ fn cpu_presentation_fixture(resize_failure: bool) {
         .expect("CPU window");
         window.show().unwrap();
         let result = recv.recv_timeout(Duration::from_secs(30));
-        window.close();
+        std::thread::spawn(move || window.close()).join().unwrap();
         result
             .expect("CPU frame callback")
             .expect("CPU presentation");
@@ -1286,7 +1286,7 @@ fn native_destroyed_parent_and_drawable_stop_callbacks() {
         let (id_send, id_recv) = channel();
         let counter = Arc::clone(&callbacks);
         let close_counter = Arc::clone(&closes);
-        let child = Window::create(settings, move |cx| {
+        let child = baseview::ThreadedWindow::create(settings, move |cx| {
             let id = match cx.window_handle()?.as_raw() {
                 raw_window_handle::RawWindowHandle::Xlib(h) => h.window as u32,
                 raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get(),
@@ -1323,7 +1323,7 @@ fn native_destroyed_parent_and_drawable_stop_callbacks() {
             .expect("destroyed drawable must release its native handler");
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         let finished = callbacks.load(Ordering::SeqCst);
-        child.close();
+        std::thread::spawn(move || child.close()).join().unwrap();
         assert_eq!(callbacks.load(Ordering::SeqCst), finished);
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         if !parented {
@@ -1339,4 +1339,459 @@ fn a_same_size_resize_requires_native_presentation() {
     h.unpainted = false;
     h.resized(WindowSize::from_logical(LogicalSize::new(640., 400.), 1.));
     assert!(h.unpainted);
+}
+
+/// A grab redirects device events but does not change XGetInputFocus. Treating
+/// its FocusOut as deactivation cancels every MUI click/drag in flight (#77).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 display; run under Xvfb"]
+fn native_temporary_grabs_preserve_gestures_but_real_focus_loss_cancels() {
+    use raw_window_handle::{HandleError, WindowHandle, XcbWindowHandle};
+    use std::num::NonZeroU32;
+    use std::sync::mpsc::{Sender, channel};
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        ButtonPressEvent, ConnectionExt, CreateWindowAux, EventMask, GrabMode, GrabStatus,
+        InputFocus, KeyButMask, MotionNotifyEvent, WindowClass,
+    };
+
+    struct Parent(NonZeroU32);
+    impl HasWindowHandle for Parent {
+        #[expect(unsafe_code, reason = "the test owns the parent through child close")]
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            // SAFETY: this fixture owns the mapped parent until the child closes.
+            Ok(unsafe { WindowHandle::borrow_raw(XcbWindowHandle::new(self.0).into()) })
+        }
+    }
+    #[derive(Debug)]
+    struct Snapshot {
+        marker: i16,
+        down: bool,
+        at: bool,
+        focused: bool,
+        losses: u32,
+        leaves: u32,
+    }
+    /// Snapshot markers for events without a position of their own.
+    const UNFOCUSED: i16 = -1;
+    const PRESSED: i16 = -2;
+    struct Probe {
+        h: RefCell<Handler<Knob>>,
+        cx: WindowContext,
+        losses: Cell<u32>,
+        leaves: Cell<u32>,
+        send: Sender<Snapshot>,
+    }
+    impl WindowHandler for Probe {
+        fn on_frame(&self) -> Result<(), HandlerError> {
+            Ok(())
+        }
+        fn resized(&self, _: WindowSize) -> Result<(), HandlerError> {
+            Ok(())
+        }
+        fn on_event(&self, event: Event) -> EventStatus {
+            if matches!(event, Event::Window(WindowEvent::Unfocused)) {
+                self.losses.set(self.losses.get() + 1);
+            }
+            if matches!(event, Event::Mouse(MouseEvent::CursorLeft)) {
+                self.leaves.set(self.leaves.get() + 1);
+            }
+            let mut h = self.h.borrow_mut();
+            let status = h.on_event_inner(&event);
+            let marker = match event {
+                Event::Mouse(MouseEvent::CursorMoved { position, .. }) if position.x >= 1000. => {
+                    Some(position.x as i16)
+                }
+                Event::Window(WindowEvent::Unfocused) => Some(UNFOCUSED),
+                Event::Mouse(MouseEvent::ButtonPressed { .. }) => Some(PRESSED),
+                _ => None,
+            };
+            if let Some(marker) = marker {
+                self.send
+                    .send(Snapshot {
+                        marker,
+                        down: !h.driver.pointer().buttons.is_empty(),
+                        at: h.driver.pointer().pos.is_some(),
+                        focused: self.cx.has_focus(),
+                        losses: self.losses.get(),
+                        leaves: self.leaves.get(),
+                    })
+                    .unwrap();
+            }
+            status
+        }
+    }
+
+    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None).unwrap();
+    let root = conn.setup().roots[screen].root;
+    let parent = conn.generate_id().unwrap();
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        parent,
+        root,
+        0,
+        0,
+        64,
+        64,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new(),
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    conn.map_window(parent).unwrap().check().unwrap();
+    let (send, recv) = channel();
+    let (id_send, id_recv) = channel();
+    let child = baseview::ThreadedWindow::create(
+        settings("KONTRA native focus regression", (64, 64))
+            .with_parent(&Parent(NonZeroU32::new(parent).unwrap())),
+        move |cx| {
+            let id = match cx.window_handle()?.as_raw() {
+                raw_window_handle::RawWindowHandle::Xlib(h) => h.window as u32,
+                raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get(),
+                _ => unreachable!(),
+            };
+            id_send.send(id).unwrap();
+            Ok(Probe {
+                h: RefCell::new(handler((64, 64), 1.)),
+                cx,
+                losses: Cell::new(0),
+                leaves: Cell::new(0),
+                send,
+            })
+        },
+    )
+    .unwrap();
+    let id = id_recv.recv_timeout(Duration::from_secs(3)).unwrap();
+    child.show().unwrap();
+    // Map acknowledgement precedes focus requests; no sleep or compositor needed.
+    assert_eq!(
+        conn.get_window_attributes(id)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .map_state,
+        x11rb::protocol::xproto::MapState::VIEWABLE
+    );
+    conn.set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let wait = |marker| loop {
+        let state = recv.recv_timeout(Duration::from_secs(3)).unwrap();
+        if state.marker == marker {
+            break state;
+        }
+    };
+    let motion = |marker| {
+        conn.send_event(
+            false,
+            id,
+            EventMask::POINTER_MOTION,
+            MotionNotifyEvent {
+                response_type: x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
+                root,
+                event: id,
+                event_x: marker,
+                event_y: 24,
+                same_screen: true,
+                state: KeyButMask::BUTTON1,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+        wait(marker)
+    };
+    let press = || {
+        conn.send_event(
+            false,
+            id,
+            EventMask::BUTTON_PRESS,
+            ButtonPressEvent {
+                response_type: x11rb::protocol::xproto::BUTTON_PRESS_EVENT,
+                detail: 1,
+                root,
+                event: id,
+                event_x: 24,
+                event_y: 24,
+                same_screen: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    };
+    press();
+    let before = motion(1001);
+    assert!(before.focused && before.down, "native setup: {before:?}");
+    assert_eq!(
+        conn.grab_keyboard(
+            false,
+            parent,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status,
+        GrabStatus::SUCCESS
+    );
+    assert_eq!(conn.get_input_focus().unwrap().reply().unwrap().focus, id);
+    let grabbed = motion(1002);
+    conn.ungrab_keyboard(x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let restored = motion(1003);
+    assert!(
+        grabbed.down && grabbed.focused && grabbed.losses == before.losses,
+        "a temporary keyboard grab must not cancel the drag: {grabbed:?}"
+    );
+    assert!(
+        restored.down && restored.focused && restored.losses == before.losses,
+        "ungrab must not introduce deactivation: {restored:?}"
+    );
+
+    // Actual focus changes during a grab use NotifyWhileGrabbed, not NotifyGrab.
+    assert_eq!(
+        conn.grab_keyboard(
+            false,
+            parent,
+            x11rb::CURRENT_TIME,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status,
+        GrabStatus::SUCCESS
+    );
+    conn.set_input_focus(InputFocus::PARENT, parent, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let lost_during_grab = motion(1004);
+    conn.ungrab_keyboard(x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(
+        !lost_during_grab.down && !lost_during_grab.focused,
+        "real focus loss while grabbed must still cancel: {lost_during_grab:?}"
+    );
+    assert_eq!(lost_during_grab.losses, before.losses + 1);
+
+    conn.set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    press();
+    assert!(motion(1005).down);
+    conn.set_input_focus(InputFocus::PARENT, parent, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let lost_normally = motion(1006);
+    assert!(
+        !lost_normally.down && !lost_normally.focused,
+        "ordinary deactivation still cancels: {lost_normally:?}"
+    );
+    assert_eq!(lost_normally.losses, before.losses + 2);
+    // Pointer grabs generate pseudo crossing events as well. They must not
+    // forget the pointer while the cursor has not physically left the editor.
+    conn.warp_pointer(x11rb::NONE, id, 0, 0, 0, 0, 20, 20)
+        .unwrap()
+        .check()
+        .unwrap();
+    let inside = motion(1007);
+    assert_eq!(
+        conn.grab_pointer(
+            false,
+            parent,
+            EventMask::POINTER_MOTION,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            x11rb::NONE,
+            x11rb::NONE,
+            x11rb::CURRENT_TIME
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .status,
+        GrabStatus::SUCCESS
+    );
+    let pointer_grabbed = motion(1008);
+    conn.ungrab_pointer(x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_eq!(
+        pointer_grabbed.leaves, inside.leaves,
+        "pseudo crossing is not an actual pointer leave"
+    );
+    conn.warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, 100, 100)
+        .unwrap()
+        .check()
+        .unwrap();
+    let outside = motion(1009);
+    assert_eq!(
+        outside.leaves,
+        inside.leaves + 1,
+        "real boundary exit is retained"
+    );
+
+    // Bitwig keeps keyboard focus on an ancestor and moves it on every click,
+    // so the editor sees FocusIn/FocusOut with detail NotifyPointer around the
+    // press. The implicit grab still delivers the release here: the click
+    // completes, then the deferred focus loss applies.
+    let other = conn.generate_id().unwrap();
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        other,
+        root,
+        200,
+        0,
+        64,
+        64,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new(),
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    conn.map_window(other).unwrap().check().unwrap();
+    conn.warp_pointer(x11rb::NONE, id, 0, 0, 0, 0, 20, 20)
+        .unwrap()
+        .check()
+        .unwrap();
+    let focus = |window| {
+        conn.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+    };
+    focus(other);
+    focus(parent);
+    press();
+    let pressed = motion(1010);
+    focus(other);
+    let pointer_focus_lost = motion(1011);
+    assert!(
+        pointer_focus_lost.down && pointer_focus_lost.losses == pressed.losses,
+        "pointer-detail focus loss must not cancel the click in flight: {pointer_focus_lost:?}"
+    );
+    conn.send_event(
+        false,
+        id,
+        EventMask::BUTTON_RELEASE,
+        x11rb::protocol::xproto::ButtonReleaseEvent {
+            response_type: x11rb::protocol::xproto::BUTTON_RELEASE_EVENT,
+            detail: 1,
+            root,
+            event: id,
+            event_x: 24,
+            event_y: 24,
+            same_screen: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    let released = motion(1012);
+    assert!(
+        !released.down && released.losses == pressed.losses,
+        "the release completes before the focus loss: {released:?}"
+    );
+    let applied = wait(UNFOCUSED);
+    assert_eq!(
+        applied.losses,
+        pressed.losses + 1,
+        "the held-back focus loss applies a few frames later"
+    );
+    // The loss forgot the pointer. The second click of a double click comes
+    // with no motion before it and must still land where it is.
+    focus(parent);
+    press();
+    let second = wait(PRESSED);
+    assert!(
+        second.down && second.at,
+        "a press after a focus loss carries its own position: {second:?}"
+    );
+    child.close();
+    conn.destroy_window(parent).unwrap().check().unwrap();
+}
+
+/// Bitwig keeps keyboard focus on an ancestor and moves it on every click.
+/// The X11 loop holds that pointer-detail FocusOut back until two frames
+/// after the release (`FOCUS_OUT_FRAMES`), when MUI has dispatched the click.
+#[test]
+fn a_focus_loss_two_frames_after_the_release_keeps_the_click() {
+    struct Clicker(usize);
+    impl View for Clicker {
+        fn build(&mut self, ui: &mut Ui, _: &Input) -> El {
+            let b = mui::prelude::button(ui, "b", "B");
+            self.0 += usize::from(b.changed);
+            b.into()
+        }
+        fn changed(&mut self) -> bool {
+            false
+        }
+        fn request_resize(&mut self, _: u32, _: u32) -> bool {
+            false
+        }
+    }
+    let mouse = |e| Event::Mouse(e);
+    let press = mouse(MouseEvent::ButtonPressed {
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+    });
+    let release = mouse(MouseEvent::ButtonReleased {
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+    });
+    let lost = Event::Window(WindowEvent::Unfocused);
+    // `None` stands for one frame.
+    let clicks = |events: &[Option<&Event>]| {
+        let shared = Arc::new(Mutex::new(Shared {
+            ui: Ui::default(),
+            view: Clicker(0),
+        }));
+        let mut h = Handler::new(Arc::clone(&shared), Arc::default(), (200, 100), 1.);
+        h.step();
+        h.on_event_inner(&Event::Window(WindowEvent::Focused));
+        h.on_event_inner(&mouse(MouseEvent::CursorMoved {
+            position: PhysicalPosition::new(100., 50.),
+            modifiers: Modifiers::default(),
+        }));
+        h.step();
+        for e in events {
+            match e {
+                Some(e) => _ = h.on_event_inner(e),
+                None => _ = h.step(),
+            }
+        }
+        for _ in 0..4 {
+            h.step();
+        }
+        lock(&shared).view.0
+    };
+    let (p, r, l) = (Some(&press), Some(&release), Some(&lost));
+    assert_eq!(clicks(&[p, None, r]), 1, "harness: a plain click lands");
+    // The release's frame records the click and the next one dispatches it.
+    assert_eq!(clicks(&[p, None, r, None, None, l]), 1, "two frames after the release");
+    // A focus loss with the button still down cancels the gesture.
+    assert_eq!(clicks(&[p, None, l, r]), 0, "focus lost mid-click cancels");
 }

@@ -2,15 +2,63 @@ name: Website
 on:
   push:
     branches: [main]
-    paths: ['website/**', '.github/workflows/pages.yml']
+  pull_request:
+    paths: ['website/**', 'tools/corpus-health/**', 'tools/library-inspector.html', 'tools/coverage/**', 'crates/**', 'vendor/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: github-pages
+  group: github-pages-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.0
+          targets: wasm32-unknown-emscripten
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: browser-inspector
+          cache-on-failure: true
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 --branch 6.0.12 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          test "$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)" = 35ff8a6d150541276abbc6bae512ca90bcfbe220
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.12
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.12
+      - name: Check static site
+        run: |
+          python3 website/check.py
+          node website/test-releases.cjs
+          node website/test-compatibility.cjs
+          python3 website/test_build_site.py
+      - name: Build site and live compatibility table
+        run: python3 website/build_site.py "$RUNNER_TEMP/kontra-site"
+      - name: Build and test browser inspector
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          python3 website/build_inspector.py "$RUNNER_TEMP/kontra-site"
+          "$EMSDK_NODE" website/test-inspector.mjs "$RUNNER_TEMP/kontra-site"
+          python3 website/check.py "$RUNNER_TEMP/kontra-site"
+      - name: Include runtime notices and source bundles
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          cargo install cargo-about --version 0.9.2 --features cli --locked
+          python3 tools/licenses.py --output "$RUNNER_TEMP/kontra-site/licenses"
+          cp LICENSE THIRD_PARTY.md "$RUNNER_TEMP/kontra-site/"
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: ${{ runner.temp }}/kontra-site
   deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
     runs-on: ubuntu-24.04
     permissions:
       pages: write
@@ -19,21 +67,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check static site
-        run: |
-          python3 website/check.py
-          node website/test-releases.cjs
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-      - name: Prepare public files
-        run: |
-          mkdir -p /tmp/kontra-site/assets
-          cp website/*.html website/styles.css website/releases.js /tmp/kontra-site/
-          cp website/assets/* /tmp/kontra-site/assets/
-      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
-        with:
-          path: /tmp/kontra-site
       - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
         id: deployment

@@ -69,6 +69,20 @@ impl UserData for Task {
     }
 }
 
+/// Resource APIs share the same task identity/status contract even when a
+/// resource cannot be supplied. Failure is a completed task, never nil passed
+/// to a completion callback and never a fabricated successful resource load.
+pub(super) fn completed_task(lua: &Lua, id: u64, success: bool) -> mlua::Result<mlua::AnyUserData> {
+    lua.create_userdata(Task {
+        id,
+        status: Arc::new(Status {
+            state: AtomicU8::new(FINISHED),
+            cancel: AtomicBool::new(false),
+            success: AtomicBool::new(success),
+        }),
+    })
+}
+
 struct Request {
     id: u64,
     path: String,
@@ -79,6 +93,7 @@ struct Pending {
     id: u64,
     status: Arc<Status>,
     thread: Thread,
+    processor: Option<usize>,
 }
 
 struct Worker {
@@ -176,7 +191,7 @@ impl DataLoads {
             shared
                 .deferred
                 .borrow_mut()
-                .push((pending.thread, args, None));
+                .push((pending.thread, args, super::PlayCreator::None, pending.processor, super::input_authority::PreparedLuaOrigin::None));
         }
         Ok(())
     }
@@ -290,7 +305,7 @@ pub(super) fn install(lua: &Lua, shared: &std::rc::Rc<Shared>) -> mlua::Result<(
                     status: status.clone(),
                 })
                 .map_err(|_| mlua::Error::runtime("loadData worker queue unavailable"))?;
-            loads.pending.push(Pending { id, status, thread });
+            loads.pending.push(Pending { id, status, thread, processor:s.processor.get() });
             Ok(task)
         })?,
     )

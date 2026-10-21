@@ -19,7 +19,8 @@ pub struct NcwReader<R> {
     pub header: NcwHeader,
     /// Byte offset of each block, relative to `header.data_offset`.
     pub block_offsets: Vec<u32>,
-    /// Sample format declared by the first block of the file.
+    /// Sample format declared by the first block of the file, checked against
+    /// the header's sample-format word where the format defines one.
     pub sample_format: SampleFormat,
     /// Reader position after the last decoded block, if nothing moved it since.
     position: Option<u64>,
@@ -28,6 +29,15 @@ pub struct NcwReader<R> {
 }
 
 impl<R: Read + Seek> NcwReader<R> {
+    /// Bytes of this decoder's owned heap workspaces, excluding the underlying
+    /// byte reader. Capacities include reusable channel buffers and the seek
+    /// table, so callers can bound persistent decoder caches after a read.
+    pub fn workspace_bytes(&self) -> usize {
+        self.block_offsets.capacity() * std::mem::size_of::<u32>()
+            + self.channels.capacity() * std::mem::size_of::<Vec<i32>>()
+            + self.channels.iter().map(|channel| channel.capacity() * std::mem::size_of::<i32>()).sum::<usize>()
+    }
+
     /// Parse the file header and block offset table.
     pub fn read(mut reader: R) -> Result<Self, Error> {
         let header = NcwHeader::read(&mut reader)?;
@@ -66,6 +76,17 @@ impl<R: Read + Seek> NcwReader<R> {
             }
             None => SampleFormat::Pcm,
         };
+
+        // Header word and block flags are separate roles; where the header
+        // defines the output type, a block that disagrees has no proved
+        // meaning, so refuse it instead of picking one.
+        if let Some(float) = header.declared_float() {
+            if float != (sample_format == SampleFormat::Float) {
+                return Err(Error::InvalidHeader(
+                    "header sample-format word contradicts the block flags",
+                ));
+            }
+        }
 
         Ok(Self {
             reader,
@@ -231,4 +252,22 @@ fn validate_offsets(header: &NcwHeader, offsets: &[u32]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    #[test]
+    fn workspace_accounting_keeps_reused_channel_capacity_after_a_partial_block() {
+        let samples: Vec<i32> = (0..513).flat_map(|i| [i * 2, -i * 2]).collect();
+        let data = crate::encode_pcm(&samples, crate::PcmSpec { channels: 2, bits_per_sample: 16, sample_rate: 48000 }, crate::StereoMode::Direct).unwrap();
+        let mut reader = NcwReader::read(std::io::Cursor::new(data)).unwrap();
+        let index_bytes = reader.workspace_bytes();
+        assert!(index_bytes >= reader.block_offsets.len() * 4);
+        assert_eq!(reader.decode_block(0).unwrap()[0].len(), 512);
+        let full = reader.workspace_bytes();
+        assert!(full >= index_bytes + 2 * 512 * 4);
+        assert_eq!(reader.decode_block(1).unwrap()[0].len(), 1);
+        assert_eq!(reader.workspace_bytes(), full);
+    }
 }

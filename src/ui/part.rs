@@ -8,6 +8,13 @@ use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, Presentation};
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "shots"))]
+#[path = "part/asset_retention_tests.rs"]
+mod asset_retention_tests;
+#[cfg(all(test, feature = "shots"))]
+#[path = "part/native_retention_tests.rs"]
+mod native_retention_tests;
+
 /// One current raw materialization per source, never a history of publications.
 #[derive(Default)]
 struct SourceProjection {
@@ -57,7 +64,9 @@ pub struct Face {
     sources: Vec<SourceProjection>,
     updates: Arc<[ir::InterfacePatch]>,
     path: std::path::PathBuf,
+    program: u32,
     generation: u64,
+    resource_revision: Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
     revision: u64,
     patch: ir::InterfacePatch,
     pub page: ir::PageRef,
@@ -69,6 +78,7 @@ pub struct Face {
     values: ir_view::Values,
     pub input: ir_view::InputState,
     native: Option<super::native_ui::State>,
+    uvi_snapshot:Option<sampler_uvi::scripted::UiSnapshot>,
 }
 
 impl Face {
@@ -79,25 +89,84 @@ impl Face {
         shown: usize,
         presentation: Presentation,
     ) -> Self {
+        Self::new_for_program(path, generation, from, shown, presentation, 0)
+    }
+
+    fn new_for_program(
+        path: &std::path::Path,
+        generation: u64,
+        from: Arc<[ir::Interface]>,
+        shown: usize,
+        presentation: Presentation,
+        program: u32,
+    ) -> Self {
+        Self::with_assets(path, generation, from, shown, presentation, program, Default::default(), None)
+    }
+
+    fn shares_resources(
+        &self, path: &std::path::Path, program: u32,
+        revision: &Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
+    ) -> bool {
+        self.path == path && self.program == program
+            && revision.is_some() && self.resource_revision == *revision
+    }
+
+    fn refresh_generation(
+        &mut self, generation: u64, from: Arc<[ir::Interface]>, shown: usize,
+        presentation: Presentation,
+    ) {
+        let navigation = (self.shown < from.len()
+            && same_bindings(&self.from[self.shown], &from[self.shown])
+            && self.from[self.shown].pages == from[self.shown].pages)
+            .then_some((self.shown, self.page));
+        let assets = std::mem::take(&mut self.assets);
+        let package = self.native.as_ref().and_then(|state| state.reusable_package());
+        let revision = self.resource_revision.clone();
+        let mut next = Self::with_assets(
+            &self.path, generation, from, shown, presentation, self.program, assets, package,
+        );
+        next.resource_revision = revision;
+        next.input.cancel_pointer();
+        if let Some((shown, page)) = navigation {
+            next.show(shown);
+            next.page.0 = page.0.min(next.face.pages.len().saturating_sub(1));
+        }
+        *self = next;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_assets(
+        path: &std::path::Path,
+        generation: u64,
+        from: Arc<[ir::Interface]>,
+        shown: usize,
+        presentation: Presentation,
+        program: u32,
+        assets: ir_view::Assets,
+        package: Option<Arc<super::native_runtime::Package>>,
+    ) -> Self {
         let face = ir_view::resolved(&from[shown]);
         let mut out = Self {
             sources: (0..from.len()).map(|_| SourceProjection::default()).collect(),
             updates: Arc::from([]),
             from,
             path: path.into(),
+            program,
             generation,
+            resource_revision: None,
             revision: u64::MAX,
             patch: Default::default(),
             page: ir::PageRef(0),
             shown,
             face,
-            assets: Default::default(),
+            assets,
             presentation,
             values: Default::default(),
             input: Default::default(),
             native: None,
+            uvi_snapshot:None,
         };
-        out.sync();
+        out.sync_with_package(package);
         out
     }
 
@@ -124,7 +193,7 @@ impl Face {
             if self.shown >= self.from.len() {
                 self.shown = fallback;
                 self.page = ir::PageRef(0);
-                self.input = Default::default();
+                self.input.reset_drafts();
             }
             Some(previous)
         } else {
@@ -175,7 +244,7 @@ impl Face {
     fn show(&mut self, shown: usize) {
         self.shown = shown;
         self.page = ir::PageRef(0);
-        self.input = Default::default();
+        self.input.reset_drafts();
         self.face = ir_view::resolved(self.sources[shown].interface(&self.from[shown]));
         self.patch = self.sources[shown].patch.clone();
         self.sync();
@@ -228,12 +297,17 @@ impl Face {
     }
 
     fn sync(&mut self) {
+        self.sync_with_package(None);
+    }
+
+    fn sync_with_package(&mut self, package: Option<Arc<super::native_runtime::Package>>) {
         self.assets.epoch += 1;
         let entry = self.face.native_ui.as_ref().map(|n| n.entry.as_str());
         if self.native.as_ref().map(|n| n.entry()) != entry {
             self.native = entry.map(|entry| {
-                super::native_ui::State::new(
+                super::native_ui::State::with_package(
                     &self.path,
+                    self.program,
                     entry,
                     self.from
                         .iter()
@@ -246,14 +320,16 @@ impl Face {
                                 .map(move |(n, w)| (f.source, n, w.clone()))
                         })
                         .collect(),
+                    package,
                 )
             });
         }
         if self.native.is_some() && self.presentation == Presentation::Bitmap {
             return;
         }
-        self.assets.prepare(
+        self.assets.prepare_for_program(
             &self.path,
+            self.program,
             &self.face,
             self.page,
             self.presentation,
@@ -263,16 +339,17 @@ impl Face {
     }
 }
 
-fn view_available(face: &ir::Interface, patch: Option<&ir::InterfacePatch>) -> bool {
+pub(super) fn view_available(face: &ir::Interface, patch: Option<&ir::InterfacePatch>) -> bool {
     patch.and_then(|p| p.performance).unwrap_or(face.performance)
         || patch.and_then(|p| p.native_ui.as_ref()).unwrap_or(&face.native_ui).is_some()
         || patch.and_then(|p| p.widget_count).unwrap_or(face.widgets.len()) > 0
 }
 
-/// Authored performance and native requests win, in source declaration order.
+/// A NativeUI request owns the composition; its controls may live in another
+/// script's classic performance view. Declaration order breaks ties.
 fn main_face(faces: &[ir::Interface], updates: &[ir::InterfacePatch]) -> Option<usize> {
-    (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.performance).unwrap_or(faces[n].performance))
-        .or_else(|| (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.native_ui.as_ref()).unwrap_or(&faces[n].native_ui).is_some()))
+    (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.native_ui.as_ref()).unwrap_or(&faces[n].native_ui).is_some())
+        .or_else(|| (0..faces.len()).find(|&n| updates.get(n).and_then(|p| p.performance).unwrap_or(faces[n].performance)))
         .or_else(|| (0..faces.len()).find(|&n| view_available(&faces[n], updates.get(n))))
 }
 
@@ -314,10 +391,10 @@ pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
     if room.height > 0. && authored.height > 0. {
         fit = fit.min(room.height / authored.height);
     }
-    if fit >= 1. { fit.floor() } else { fit }
+    fit
 }
 
-fn room_height(ui: &Ui, slot: usize) -> f64 {
+pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
     let (Some(rack), Some(part), Some(stage)) = (
         scene.surface("rack-view"),
@@ -329,10 +406,9 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     let tabs = scene
         .surface(&format!("face-bar-{slot}"))
         .map_or(0., |s| s.frame.size.height);
-    let perf = scene
-        .surface(&format!("perf-{slot}"))
-        .map_or(0., |s| s.frame.size.height);
-    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - perf).max(0.)
+    // Less the one-point rule at the part's foot, so a lone part ends exactly at the
+    // rack's bottom edge (its resize edge stays inside the view, nothing scrolls).
+    (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - 1.).max(0.)
 }
 
 pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteraction {
@@ -355,8 +431,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let projection = activity.span(Phase::UiProjectionSync);
     let from = cx.view.parts.get(slot)?.interfaces.clone();
     let main = main_face(&from, &cx.view.parts[slot].updates)?;
-    let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
     let published = &cx.view.parts[slot];
+    let path = published.resource_path.clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(&cx.selection.parts[slot].path));
     let generation = published.generation;
     let mode = mode(cx, slot);
     let presentation = if mode == crate::library::ViewMode::Original {
@@ -364,17 +441,34 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     } else {
         Presentation::Vector
     };
-    let stale = cx
-        .state
-        .faces
-        .get(&slot)
-        .is_none_or(|f| f.path != path || f.generation != generation);
+    let stale = cx.state.faces.get(&slot).is_none_or(|f| {
+        f.path != path
+            || f.generation != generation
+            || f.program != published.program
+    });
     if stale {
         activity.add(Count::FaceNew, 1);
-        cx.state.faces.insert(
-            slot,
-            Face::new(&path, generation, from.clone(), main, presentation),
-        );
+        // A new audio generation must clear drafts, values and native Lua state,
+        // but an unchanged resource namespace keeps its worker and decoded art.
+        // Asset descriptors are checked again by Preparation::prepare.
+        let program = published.program;
+        if let Some(face) = cx.state.faces.get_mut(&slot)
+            && face.shares_resources(&path, program, &published.resource_revision)
+        {
+            face.refresh_generation(generation, from.clone(), main, presentation);
+        } else {
+            let mut next = Face::new_for_program(
+                &path,
+                generation,
+                from.clone(),
+                main,
+                presentation,
+                program,
+            );
+            next.resource_revision = published.resource_revision.clone();
+            next.input.cancel_pointer();
+            cx.state.faces.insert(slot, next);
+        }
     }
     let face = cx.state.faces.get_mut(&slot)?;
     if !Arc::ptr_eq(&face.from, &from)
@@ -394,6 +488,17 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         activity.add(Count::NativeWidgets, widgets as u64);
         face.revision = published.ui_revision;
     }
+    let same_uvi_schema=match (&face.uvi_snapshot,&published.uvi_snapshot) {
+        (None,None)=>true,(Some(old),Some(next))=>old.same_schema(next),_=>false,
+    };
+    if !same_uvi_schema {
+        // Drafts retire, but a real physical capture is not reborn by schema
+        // adoption. Preserve only the exact same owner's target and phase.
+        let same_owner=matches!((&face.uvi_snapshot,&published.uvi_snapshot),(Some(old),Some(next)) if old.same_owner(next));
+        face.input.adopt_uvi_schema(same_owner,&face.face);
+        face.values.clear();
+    }
+    face.uvi_snapshot=published.uvi_snapshot.clone();
     if face.presentation != presentation {
         face.presentation = presentation;
         face.sync();
@@ -570,6 +675,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     if let Some(shared) = &shared {
         face.input.values.extend(shared.widget_values(&face.face));
         face.input.meters = shared.widget_meters(&face.face, generation);
+        face.input.uvi_meters = shared.uvi_widget_meters(&face.face, generation);
         let waveforms =
             shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
         face.input.wave_duration_us = waveforms
@@ -582,9 +688,10 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             .collect();
     }
     drop(readback);
-    if face.native.is_none() || face.presentation != Presentation::Bitmap {
-        face.assets.prepare(
+    if face.native.is_none() || mode == crate::library::ViewMode::Kontra {
+        face.assets.prepare_for_program(
             &face.path,
+            face.program,
             &face.face,
             face.page,
             face.presentation,
@@ -592,8 +699,15 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             &face.values,
         );
     }
+    #[cfg(all(test, feature = "shots"))]
+    super::widget_gate::library_face_receipt(
+        slot, generation, face.shown, face.page, face.presentation,
+        face.uvi_snapshot.as_ref(), &face.assets,
+    );
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
-    let view = if mode == crate::library::ViewMode::Original
+    // Both authored presentations lower the evaluated graph to live MUI
+    // primitives. Raw KSP rectangles are parameter handles, not this layout.
+    let view = if mode != crate::library::ViewMode::Kontra
         && let Some(native) = &mut face.native
     {
         native.set_activity(&activity);
@@ -611,12 +725,11 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             native.update_view(current, &face.values, &typed, &meters);
         }
         drop(projection);
-        let authored = native.authored();
-        let scale = scale_to_fit(Size::new(avail, room), authored, cx.settings.view_scale);
-        let view = native.view(
+        let view = native.view_fitted(
             ui,
             slot,
-            scale,
+            Size::new(avail, room),
+            cx.settings.view_scale,
             face.sources[face.shown].interface(&face.from[face.shown]),
             &face.values,
             &face.input,
@@ -686,6 +799,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             &mut face.input,
         )
     };
+    // Generated views can call widget_state directly; retire the same actual
+    // physical capture even when no current widget survives to see its release.
+    face.input.finish_pointer_frame(ui);
     let mut edits: std::collections::HashMap<
         ir::WidgetRef,
         (
@@ -699,6 +815,17 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         entry.0.insert(edit.index, edit.value);
     }
     let mut edited_controls = std::collections::HashSet::new();
+    for edit in face.input.activations.drain(..){
+        let Some(widget)=face.face.widgets.get(edit.widget.0)else{continue;};
+        let ir::Binding::Control(id)=widget.binding else{continue;};
+        // Even a refused gesture must not replay through the scalar fallback.
+        edited_controls.insert(id);
+        let admitted=face.uvi_snapshot.as_ref().filter(|snapshot|snapshot.interface().source==face.face.source)
+            .is_some_and(|snapshot|cx.p.shared.activate_uvi_control_at(slot,generation,snapshot,id,edit.activation));
+        if !admitted{face.values.remove(&id);face.input.values.remove(&edit.widget);}
+        #[cfg(all(test,feature="shots"))]
+        if admitted&&slot==0{super::widget_gate::submitted_control(id);}
+    }
     for (n, (edits, interaction)) in edits {
         let Some(widget) = face.face.widgets.get(n.0) else {
             continue;
@@ -712,14 +839,17 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         };
         #[cfg(all(test, feature = "shots"))]
         let indices = edits.keys().copied().collect::<Vec<_>>();
-        let admitted = cx.p.shared.set_widget_batch_at(
-            slot,
-            generation,
-            source_slot,
-            widget,
-            edits.into_iter().collect(),
-            interaction,
-        );
+        let admitted = if let Some(snapshot)=face.uvi_snapshot.as_ref().filter(|snapshot|snapshot.interface().source==face.face.source) {
+            // UVI Table components retain their scalar path below; native/KSP
+            // pointer button/modifier batches keep their existing route.
+            match (&widget.binding,edits.len(),edits.get(&0)) {
+                (ir::Binding::Control(id),1,Some(ir::Value::Integer(value)))=>cx.p.shared.set_uvi_control_at(slot,generation,snapshot,*id,f64::from(*value)),
+                (ir::Binding::Control(id),1,Some(ir::Value::Real(value)))=>cx.p.shared.set_uvi_control_at(slot,generation,snapshot,*id,*value),
+                _=>false,
+            }
+        }else{
+            cx.p.shared.set_widget_batch_at(slot,generation,source_slot,widget,edits.into_iter().collect(),interaction)
+        };
         #[cfg(all(test, feature = "shots"))]
         if admitted && slot == 0 {
             super::widget_gate::submitted_widget(widget, &indices);
@@ -733,7 +863,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             && now != was
             && !edited_controls.contains(&id)
         {
-            let _admitted = cx.p.shared.set_control_at(slot, generation, id, now);
+            let _admitted = if let Some(snapshot)=face.uvi_snapshot.as_ref().filter(|snapshot|snapshot.interface().source==face.face.source) {
+                cx.p.shared.set_uvi_control_at(slot,generation,snapshot,id,now)
+            }else{cx.p.shared.set_control_at(slot,generation,id,now)};
             #[cfg(all(test, feature = "shots"))]
             if _admitted && slot == 0 {
                 super::widget_gate::submitted_control(id);
@@ -749,8 +881,11 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                 .pad((TIGHT, INSET))
                 .w(Len::Pct(100.))
                 .shrink(0),
+            // Fills the part's room; the fitted view sits centred on both axes.
             row![spacer(), view, spacer()]
+                .align(Align::Center)
                 .w(Len::Pct(100.))
+                .when(room > 0., |e| e.min_h(room))
                 .shrink(0)
                 .id(format!("face-{slot}"))
         ]
@@ -850,16 +985,17 @@ pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> St
     }
 }
 
-/// What the part plays and listens to, in one line under its header: the
-/// articulation (with its effective trigger), the instrument volume, the dynamics
-/// controller it waits for (one click sets where it starts) and MPE.
-pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
-    let v = cx.view.parts.get(slot)?;
+/// What the part plays and listens to, as chips for the header's second row:
+/// the articulation (with its effective trigger) and
+/// the dynamics controller it waits for (one click sets where it starts).
+fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Vec<El> {
+    let Some(v) = cx.view.parts.get(slot) else {
+        return Vec::new();
+    };
     let (inst, report) = (v.instrument.clone(), v.report.clone());
     if inst.is_none() && report.is_none() {
-        return None;
+        return Vec::new();
     }
-    let mut rows = Vec::new();
     let mut items = Vec::new();
     if let Some(inst) = inst.as_deref() {
         if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
@@ -871,26 +1007,16 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
                 inside::mode(cx, slot, inst),
             );
             let text = format!("{} · {}", a.name, inside::input_label(&input));
-            rows.push(
-                row![
-                    caption("Articulation").fill(secondary()).lines(1).shrink(0),
-                    body(text.clone()).lines(1).flex(1).min_w(0)
-                ]
-                .gap(SPACE)
-                .align(Align::Center)
-                .tip(text)
+            items.push(
+                row![caption(text.clone()).fill(secondary()).lines(1).flex(1).min_w(0).justify(Justify::End)]
+                    .align(Align::Center)
+                    .basis(text_basis(&text))
+                    .shrink(3)
+                    .grow(0)
+                    .min_w(0)
+                    .tip(text)
                 .named("Articulation")
                 .id(format!("perf-art-{slot}")),
-            );
-        }
-        if let Some(text) = volume_text(inst) {
-            items.push(
-                row![caption("Volume").fill(secondary()), body(text).lines(1)]
-                    .gap(SPACE)
-                    .align(Align::Center)
-                    .shrink(0)
-                    .tip("The instrument's saved volume until CC7 arrives; then CC7 cubed")
-                    .id(format!("perf-vol-{slot}")),
             );
         }
     }
@@ -906,7 +1032,7 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     if !moving.is_empty() {
         let now = cx.selection.parts[slot].dynamics;
         let mut picked = now;
-        let tabs = [(-1, "Kontakt"), (64, "64"), (127, "127")]
+        let tabs = [(-1, "Auto"), (64, "64"), (127, "127")]
             .into_iter()
             .map(|(value, label)| {
                 let (hit, el) = latch(
@@ -930,6 +1056,7 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             .map_or(0, |d| d.1);
         let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
         let words = badge_text(&moving.join("/"), picked, loaded, needs);
+        let basis = text_basis(&words);
         let badge = if words.starts_with("Needs") {
             caption(words.clone()).fill(Role::Warning).tip(format!(
                 "{words}\nNear-silent until the controller moves; set where it starts"
@@ -938,73 +1065,72 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             caption(words.clone()).fill(secondary()).tip(words)
         };
         items.push(
-            row![
-                badge
-                    .lines(1)
-                    .flex(1)
-                    .min_w(0)
-                    .id(format!("perf-needs-{slot}")),
-                segmented(tabs).shrink(0)
-            ]
-            .gap(SPACE)
-            .align(Align::Center)
-            .flex(1)
-            .min_w(CONTROL * 9.),
+            badge
+                .lines(1)
+                .justify(Justify::End)
+                .basis(basis)
+                .grow(0)
+                .min_w(0)
+                .id(format!("perf-needs-{slot}")),
         );
+        items.push(segmented(tabs).shrink(0));
     }
-    if !items.is_empty() {
-        rows.push(
-            row(items)
-                .wrap()
-                .gap(SPACE * 2.)
-                .line_gap(TIGHT)
-                .align(Align::Center),
-        );
-    }
-    Some(
-        col(rows)
-            .gap(TIGHT)
-            .align(Align::Stretch)
-            .pad((INSET, TIGHT))
-            .w(Len::Pct(100.))
-            .shrink(0)
-            .id(format!("perf-{slot}")),
-    )
+    items
 }
 
-/// The part's view switch, then the view: its interface, articulations,
-/// mapping, sound or info.
-pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
+/// A caption's natural width, as a flex basis it can shrink from.
+// ponytail: two-class glyph estimate fitted to the UI font; measure the
+// text if labels clip early or leave gaps.
+fn text_basis(text: &str) -> f64 {
+    let em: f64 = text
+        .chars()
+        .map(|c| if c.is_ascii_uppercase() || c.is_ascii_digit() { 0.64 } else { 0.41 })
+        .sum();
+    (em * SMALL).ceil() + 2.
+}
+
+/// The header's second row: the view switch (interface, articulations,
+/// mapping, sound, info) at the left, the performance context (articulation,
+/// controller needs, dynamics start) right-aligned; the context gives way
+/// first, truncating behind tooltips. The row is `None` when the part has neither.
+pub fn header_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (inside::View, Option<El>) {
     let (view, tabs) = inside::bar(ui, cx, slot);
-    let perf = performance(ui, cx, slot);
-    if view == inside::View::Interface
-        && let Some(face) = interface(ui, cx, slot, tabs.clone())
-    {
-        return col(perf.into_iter().chain([face]).collect::<Vec<_>>())
-            .gap(0)
-            .align(Align::Stretch)
-            .w(Len::Pct(100.))
-            .shrink(0)
-            .id(format!("stage-{slot}"));
+    let context = performance(ui, cx, slot);
+    if tabs.is_none() && context.is_empty() {
+        return (view, None);
     }
-    let tabs = tabs.map(|t| {
-        row![t, spacer()]
-            .align(Align::Center)
-            .pad((TIGHT, INSET))
-            .w(Len::Pct(100.))
-            .shrink(0)
-    });
-    let body = inside::view(ui, cx, slot, view).unwrap_or_else(|| spacer().h(0));
-    col(perf
+    let items: Vec<El> = tabs
         .into_iter()
-        .chain(tabs)
-        .chain([body])
-        .collect::<Vec<_>>())
-    .gap(0)
-    .align(Align::Stretch)
-    .w(Len::Pct(100.))
-    .shrink(0)
-    .id(format!("stage-{slot}"))
+        .chain([spacer().flex(1).min_w(0)])
+        .chain(context)
+        .collect();
+    let row2 = row(items)
+        .gap(SPACE)
+        .align(Align::Center)
+        .h(Len::Pct(100.));
+    (view, Some(row2))
+}
+
+/// The picked view's body: its interface, articulations, mapping, sound or info.
+pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
+    let content = if view == inside::View::Interface
+        && let Some(face) = interface(ui, cx, slot, None)
+    {
+        face
+    } else {
+        // Every tab reaches the part's bottom edge, like the interface does; taller
+        // content still grows the part and scrolls the rack.
+        let room = room_height(ui, slot);
+        inside::view(ui, cx, slot, view)
+            .map(|el| if room > 0. { el.min_h(room) } else { el })
+            .unwrap_or_else(|| spacer().h(0))
+    };
+    col![content]
+        .gap(0)
+        .align(Align::Stretch)
+        .w(Len::Pct(100.))
+        .shrink(0)
+        .id(format!("stage-{slot}"))
 }
 
 #[cfg(test)]
@@ -1037,6 +1163,38 @@ mod tests {
             widgets: vec![widget],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn preset_generation_keeps_unchanged_art_worker_but_clears_old_values_and_gestures() {
+        use crate::sound::resource_revision::ResourceRevision;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.nki");
+        std::fs::write(&path, b"synthetic owner").unwrap();
+        let resources = sampler_kontakt::Resources::of(&path);
+        let revision = Arc::new(ResourceRevision::capture(&path, 0, &resources).unwrap());
+        let mut face = Face::new_for_program(
+            &path, 0, vec![projection_fixture(0)].into(), 0, Presentation::Vector, 0,
+        );
+        face.resource_revision = Some(revision.clone());
+        let worker = face.assets.worker_identity().unwrap();
+        face.values.insert(ir::ControlId(999999), 123.);
+        face.input.values.insert(ir::WidgetRef(999999), ir::Value::Integer(123));
+        assert!(face.shares_resources(&path, 0, &Some(revision.clone())));
+        let mut next = projection_fixture(0);
+        next.widgets[0].value_text = Some("New preset".into());
+        face.refresh_generation(1, vec![next].into(), 0, Presentation::Vector);
+        assert_eq!(face.generation, 1);
+        assert_eq!(face.assets.worker_identity(), Some(worker));
+        assert!(!face.values.contains_key(&ir::ControlId(999999)));
+        assert!(!face.input.values.contains_key(&ir::WidgetRef(999999)));
+        assert_eq!(face.face.widgets[0].value_text.as_deref(), Some("New preset"));
+        assert!(!face.shares_resources(&path, 0, &None));
+        assert!(!face.shares_resources(&path, 1, &Some(revision.clone())));
+        std::fs::write(&path, b"changed synthetic owner").unwrap();
+        let changed = Arc::new(ResourceRevision::capture(&path, 0, &resources).unwrap());
+        assert_ne!(revision, changed);
+        assert!(!face.shares_resources(&path, 0, &Some(changed)));
     }
 
     #[test]
@@ -1287,7 +1445,7 @@ mod tests {
         assert!(native.widgets.is_empty() && !native.performance);
         assert!(performance.widgets.is_empty() && performance.pages[0].background.color.is_some());
         let mut faces = vec![auxiliary, native, performance];
-        assert_eq!(main_face(&faces, &[]), Some(2));
+        assert_eq!(main_face(&faces, &[]), Some(1));
         faces[2].performance = false;
         assert_eq!(main_face(&faces, &[]), Some(1));
         faces[1].native_ui = None;
@@ -1304,6 +1462,47 @@ mod tests {
         patches[2].performance = Some(false);
         patches[1].native_ui = Some(Some(ir::NativeUi { entry: "updated".into() }));
         assert_eq!(main_face(&faces, &patches), Some(1));
+    }
+
+    #[test]
+    fn native_composition_wins_over_an_earlier_classic_performance_source() {
+        let classic = projection_fixture(1);
+        let mut native = projection_fixture(4);
+        native.native_ui = Some(ir::NativeUi { entry: "main".into() });
+        assert_eq!(main_face(&[classic, native], &[]), Some(1),
+            "the NativeUI request owns the composition even when its controls live in another script");
+    }
+
+    #[test]
+    fn original_and_vector_keep_the_same_native_composition_and_pointer_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(dir.path().join("Resources/native_ui/main.nui"),
+            "local ui=require('native_ui')\nreturn function() return @ui.Rectangle {color=ui.Color(20,40,60)}.frame(width=96,height=48).on_tap_gesture({complete=function() end}) end").unwrap();
+        let p = Arc::new(crate::plugin::SamplerParams::new());
+        p.selection.write().unwrap().parts = vec![crate::plugin::Part {
+            path:dir.path().join("fixture.nki").to_string_lossy().into_owned(), view:1, ..Default::default()
+        }];
+        let mut raw = projection_fixture(0);
+        raw.widgets.clear();
+        raw.native_ui = Some(ir::NativeUi {entry:"main".into()});
+        p.shared.view.lock().unwrap().parts[0].interfaces = vec![raw].into();
+        let mut h = super::super::tests::Harness::new(&p,1180.,780.);
+        let native = |h: &super::super::tests::Harness| h.ui.scene().unwrap().surfaces()
+            .filter(|s|s.key.as_str().starts_with("nui-") && s.key.as_str().ends_with("-root/component"))
+            .map(|s|(s.key.to_string(),s.frame)).collect::<Vec<_>>();
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(5);
+        while native(&h).is_empty() {
+            assert!(std::time::Instant::now()<deadline,"NativeUI fixture did not paint");
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        let authored = native(&h);
+        h.press("face-vector-0");
+        h.idle(4);
+        assert_eq!(native(&h),authored,"Vector must project the evaluated graph, keeping geometry and live targets");
+        assert!(!h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().contains("-ir-0")),
+            "classic placeholder geometry must not accompany the native composition");
     }
 
     #[test]
@@ -1416,6 +1615,9 @@ mod tests {
         assert_eq!(scale_to_fit(Size::new(1200., 400.), page, 0.), 0.5);
         assert_eq!(scale_to_fit(Size::new(300., 1600.), page, 0.), 0.5);
         assert_eq!(scale_to_fit(Size::new(1200., 2000.), page, 0.), 2.);
+        // Fit is uniform and fractional: the page fills the tighter axis exactly.
+        assert_eq!(scale_to_fit(Size::new(900., 1600.), page, 0.), 1.5);
+        assert_eq!(scale_to_fit(Size::new(1500., 1000.), page, 0.), 1.25);
         for zoom in [1., 1.5, 2.] {
             assert_eq!(
                 scale_to_fit(Size::new(300., 400.), page, zoom),

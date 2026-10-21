@@ -18,6 +18,7 @@ use std::{
 };
 
 pub mod grouped;
+mod ksp;
 pub const SCHEMA_VERSION: u32 = 1;
 pub const HISTORY_LIMIT: usize = 2048;
 const HISTORY_BYTES: usize = 2 * 1024 * 1024;
@@ -491,7 +492,7 @@ fn prepare_event(session_id: &str, started: Instant, value: Value) -> (LogEvent,
         } else if event_name == "issue" {
             if matches!(
                 data["code"].as_str(),
-                Some("failed" | "initialization_failed")
+                Some("failed" | "initialization_failed" | "script_compile_failed")
             ) {
                 LogLevel::Error
             } else {
@@ -1886,11 +1887,25 @@ impl LoadTrace {
                 "scaling or curve unverified",
                 "approximated, may sound different",
             ),
+            R::UnknownLawOmitted => ("scaling or curve unverified", "plays without it"),
         };
         if missing.feature.starts_with("script Warning: ") {
             impact = "compiled with this warning; inspect the reported script slot and line";
         }
-        let mut message = format!("Not translated: {} ({reason})", clip(&missing.feature, 160));
+        let script_failure = missing.feature == "script";
+        if script_failure {
+            impact = "script did not compile; its callbacks are unavailable";
+        }
+        let script_warning = missing.feature.starts_with("script Warning: ");
+        let mut message = if script_failure {
+            "KSP compilation failed".into()
+        } else if script_warning {
+            let detail = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value)
+                .unwrap_or_else(|| missing.feature.strip_prefix("script Warning: ").unwrap_or("script warning"));
+            format!("KSP warning: {}", clip(detail, 400))
+        } else {
+            format!("Not translated: {} ({reason})", clip(&missing.feature, 160))
+        };
         let uvi = instrument.is_some_and(|i| i.source == sampler_ir::SourceFormat::Uvi);
         if uvi && missing.feature == "module" {
             // This value is the translator's module tag, not an authored parameter value.
@@ -1900,7 +1915,7 @@ impl LoadTrace {
             message = "setParameter supplied a value with the wrong parameter type; UVI ignores the write and keeps the old value".into();
             impact = "pass the parameter's expected value type; runtime LuaSetter diagnostics identify the supplied and expected types";
         }
-        if let Some(detail) = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value) {
+        if let Some(detail) = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value).filter(|_| !script_warning) {
             message.push_str(": ");
             message.push_str(&clip(detail, 200));
         }
@@ -1928,17 +1943,24 @@ impl LoadTrace {
                 .filter(|g| g.muted)
                 .map(|_| false)
         });
-        self.grouped_issue(
-            key,
-            location,
-            enabled,
-            // Preserve semantic names in the message; the typed key still folds repeated sites.
-            json!({"stage":"translate","code":"unsupported",
-                "message":message,
-                "where":clip(&missing.location, 160),
-                "impact":impact}),
-        );
+        let mut issue = json!({"stage":"translate","code":if script_failure {"script_compile_failed"} else if script_warning {"script_warning"} else {"unsupported"},
+            "message":message,"where":clip(&missing.location, 160),"impact":impact});
+        if let (Some(slot), Some(line)) = (location.script_slot, location.line) {
+            issue["script_slot"] = json!(slot);
+            issue["line"] = json!(line);
+            let source = instrument.and_then(|i| i.behaviors.iter().enumerate()
+                .find(|(index, behavior)| behavior.slot.map(usize::from).unwrap_or(*index) == slot)
+                .map(|(_, behavior)| behavior.source.as_str()));
+            if let Some(source) = source
+                && let Some(excerpt) = script_excerpt(source, slot as u32 + 1, line as u32, None) {
+                issue["source_excerpt"] = excerpt;
+            } else {
+                issue["source_excerpt_unavailable"] = json!("Script source or reported line is unavailable");
+            }
+        }
+        self.grouped_issue(key, location, enabled, issue);
     }
+
     fn grouped_issue(
         &mut self,
         key: grouped::Key,
@@ -2693,6 +2715,36 @@ mod tests {
     }
 
     #[test]
+    fn compile_failure_reports_cause_source_site_and_unavailable_callbacks() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("Bass.nki"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        let instrument = sampler_ir::Instrument {
+            behaviors: vec![sampler_ir::Behavior {
+                name: "Console".into(), language: sampler_ir::Language::Ksp,
+                source: "on init\n get_scale(0, %CC)\nend on".into(),
+                slot: Some(3), state: vec![], requires: vec![],
+            }],
+            ..Default::default()
+        };
+        trace.missing(&Missing {
+            location: "script slot 3 Console line 2".into(), feature: "script".into(),
+            value: "2:2: get_scale: unsupported argument".into(), reason: MissingReason::NotModeled,
+        }, Some(&instrument));
+        let report = trace.finish("loaded");
+        let issue = &report["issues"][0];
+        assert_eq!(issue["code"], "script_compile_failed");
+        assert!(issue["message"].as_str().unwrap().contains("get_scale: unsupported argument"));
+        assert_eq!(issue["script_slot"], 3);
+        assert_eq!(issue["line"], 2);
+        assert!(issue["source_excerpt"].is_object());
+        assert_eq!(issue["impact"], "script did not compile; its callbacks are unavailable");
+        let (event, _, _) = prepare_event("test", Instant::now(), json!({"event":"issue","data":issue}));
+        assert_eq!(event.level, LogLevel::Error);
+    }
+
+    #[test]
     fn uvi_missing_module_and_approximation_name_the_source_path() {
         use crate::sound::report::{Missing, MissingReason};
         let directory = tempfile::tempdir().unwrap();
@@ -2735,6 +2787,22 @@ mod tests {
         assert!(report["issues"][0]["message"].as_str().unwrap().contains("setParameter"));
         assert!(report["issues"][0]["message"].as_str().unwrap().contains("UVI ignores the write"));
         assert!(report["issues"][0]["impact"].as_str().unwrap().contains("supplied and expected types"));
+    }
+
+    #[test]
+    fn omitted_unverified_routes_report_that_the_route_does_not_play() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("route.nki"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        trace.missing(&Missing {
+            location: "group 0 external modulation slot 1".into(),
+            feature: "external modulation from RandomBipolar".into(),
+            value: "RANDOM -> PITCH".into(), reason: MissingReason::UnknownLawOmitted,
+        }, None);
+        let report = trace.finish("loaded");
+        assert_eq!(report["issues"][0]["impact"], "plays without it");
+        assert!(report["issues"][0]["message"].as_str().unwrap().contains("scaling or curve unverified"));
     }
 
     #[test]

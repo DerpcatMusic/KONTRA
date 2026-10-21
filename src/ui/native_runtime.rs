@@ -29,6 +29,10 @@ struct ImageCache {
     bytes: usize,
     #[cfg(feature = "shots")]
     scan: super::pictures::Scan,
+    #[cfg(feature = "shots")]
+    probes: Vec<super::pictures::AssetProbe>,
+    #[cfg(feature = "shots")]
+    probe_dropped: usize,
 }
 pub(super) struct Images {
     cache: Arc<Mutex<ImageCache>>,
@@ -49,6 +53,10 @@ impl Images {
                 bytes: 0,
                 #[cfg(feature = "shots")]
                 scan: Default::default(),
+                #[cfg(feature = "shots")]
+                probes: Vec::new(),
+                #[cfg(feature = "shots")]
+                probe_dropped: 0,
             })),
         }
     }
@@ -93,10 +101,18 @@ impl Images {
     pub fn bytes(&self) -> usize {
         self.cache.lock_unpoisoned().bytes
     }
+    fn complete(&self) -> bool {
+        let cache = self.cache.lock_unpoisoned();
+        cache.pending.is_empty() && cache.loaded.values().all(Option::is_some)
+    }
     #[cfg(feature = "shots")]
     pub fn scan(&self) -> super::pictures::Scan {
         self.cache.lock_unpoisoned().scan
     }
+    #[cfg(feature = "shots")]
+    pub fn probes(&self) -> Vec<super::pictures::AssetProbe> { self.cache.lock_unpoisoned().probes.clone() }
+    #[cfg(feature = "shots")]
+    pub fn probe_dropped(&self) -> usize { self.cache.lock_unpoisoned().probe_dropped }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
         self.cache
@@ -109,6 +125,11 @@ impl Images {
     }
 }
 impl Package {
+    /// Sources/fonts finish before publication. Requested images must also have
+    /// settled successfully before another control generation can reuse them.
+    pub(super) fn complete(&self) -> bool {
+        self.images.complete()
+    }
     #[cfg(test)]
     pub(super) fn audit_bytes(&self) -> usize {
         self.members.values().map(|b| b.len()).sum::<usize>()
@@ -147,8 +168,12 @@ impl Package {
         Self::load_cancel(path, || false)
     }
     pub fn load_cancel(path: &Path, canceled: impl Fn() -> bool) -> anyhow::Result<Self> {
+        Self::load_cancel_for_program(path, 0, canceled)
+    }
+    pub fn load_cancel_for_program(path: &Path, program: u32, canceled: impl Fn() -> bool) -> anyhow::Result<Self> {
         anyhow::ensure!(!canceled(), "NativeUI preparation canceled");
-        let mut source = Source::of(path);
+        let mut source = Source::for_program(path, program)
+            .map_err(|e| anyhow::anyhow!("NativeUI resource {}", super::pictures::resource_category(e)))?;
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
         let mut font_names = Vec::new();
@@ -168,6 +193,9 @@ impl Package {
             {
                 continue;
             }
+            #[cfg(any(feature = "shots", test))]
+            let font_probe_start = (!relative.ends_with(".nui")).then(|| source.begin_probe(
+                &ir::Asset { path: name.clone(), kind: ir::AssetKind::TrueTypeFont }, 0, [0; 2], None));
             let bytes = source
                 .read_result(&name)
                 .map_err(|e| {
@@ -186,8 +214,12 @@ impl Package {
             if relative.ends_with(".nui") {
                 members.insert(relative, Arc::from(bytes));
             } else {
-                let font =
-                    Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?;
+                #[cfg(any(feature = "shots", test))]
+                let decode_start = std::time::Instant::now();
+                let decoded = Font::new(bytes);
+                #[cfg(any(feature = "shots", test))]
+                source.finish_font_probe(font_probe_start.unwrap(), decode_start, decoded.as_ref().ok());
+                let font = decoded.map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?;
                 let (names, weight) = font_metadata(&font);
                 total += names
                     .iter()
@@ -211,6 +243,10 @@ impl Package {
             bytes: 0,
             #[cfg(feature = "shots")]
             scan: source.scan,
+            #[cfg(feature = "shots")]
+            probes: source.take_probes(),
+            #[cfg(feature = "shots")]
+            probe_dropped: source.probe_dropped(),
         }));
         let worker_cache = Arc::downgrade(&cache);
         std::thread::Builder::new()
@@ -251,6 +287,10 @@ impl Package {
                     #[cfg(feature = "shots")]
                     {
                         cache.scan = source.scan;
+                        for probe in source.take_probes() {
+                            if cache.probes.len() < super::pictures::PROBE_LIMIT { cache.probes.push(probe); }
+                            else { cache.probe_dropped += 1; }
+                        }
                     }
                     cache.bytes += bytes;
                     cache.pending.remove(&name);
@@ -745,6 +785,9 @@ impl Session {
             mlua::LuaOptions::default(),
         )?;
         lua.set_memory_limit(128 * 1024 * 1024)?;
+        // This VM is built on the editor thread at the first frame showing the
+        // instrument; native-compiling every chunk there added ~70 ms to Conflux.
+        lua.enable_jit(false);
         lua.globals().set(
             "print",
             lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
@@ -1209,6 +1252,21 @@ impl Session {
 mod tests {
     use super::*;
     #[test]
+    fn native_package_reuse_requires_successful_image_completion() {
+        let images = Images::presentation_fixture();
+        assert!(images.complete());
+        images.cache.lock_unpoisoned().pending.insert("photo.png".into());
+        assert!(!images.complete(), "a queued image is not reusable");
+        {
+            let mut cache = images.cache.lock_unpoisoned();
+            cache.pending.clear();
+            cache.loaded.insert("photo.png".into(), None);
+        }
+        assert!(!images.complete(), "a failed image is not reusable");
+        images.presentation_complete("photo.png", Arc::new(Image::rgba(1, 1, vec![0, 0, 0, 255]).unwrap()));
+        assert!(images.complete());
+    }
+    #[test]
     fn editor_memory_drops_unresolved_child_factories() {
         let lua = Lua::new();
         lua.load("package={loaded={}} ").exec().unwrap();
@@ -1357,6 +1415,10 @@ mod tests {
                     bytes: 0,
                     #[cfg(feature = "shots")]
                     scan: Default::default(),
+                    #[cfg(feature = "shots")]
+                    probes: Vec::new(),
+                    #[cfg(feature = "shots")]
+                    probe_dropped: 0,
                 })),
             },
         });
@@ -1552,7 +1614,7 @@ mod tests {
             return function()
                 p:set_value(0.75)
                 return @ui.ZStack { @ui.Text {text=tostring(meter:level_value()),}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
-            end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
+            end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default(),#[cfg(feature="shots")] probes:Vec::new(),#[cfg(feature="shots")] probe_dropped:0}))}});
         let font = Font::new(super::super::theme::NOTO_SANS).unwrap();
         let (names, weight) = font_metadata(&font);
         assert!(names.iter().any(|n| n == "Noto Sans"));

@@ -426,8 +426,90 @@ fn bus_mix_scales_a_bus_and_redirects_only_its_own_output() {
 }
 
 #[test]
+fn input_meter_taps_measure_the_sum_before_inserts_and_preserve_output_taps() {
+    for block in [1, 3, 64] {
+        let prepared = plan(vec![[1., -0.5]; 8], 1)
+            .with_buses(
+                vec![
+                    Bus {
+                        processors: vec![Processor::Gain(2.)],
+                        sends: vec![send(Some(1), 1.), send(Some(2), 1.)],
+                        tail_frames: 0,
+                    },
+                    Bus {
+                        processors: vec![Processor::Gain(-1.)],
+                        sends: vec![send(Some(2), 1.)],
+                        tail_frames: 0,
+                    },
+                    Bus {
+                        processors: vec![Processor::Gain(3.)],
+                        sends: vec![send(None, 1.)],
+                        tail_frames: 0,
+                    },
+                ],
+                vec![Some(0)],
+            ).unwrap();
+        let mut rt = Runtime::new(prepared, limits()).unwrap();
+        assert_eq!(rt.bus_peak(0, BusPeakTap::Input), Err(Error::InvalidInput));
+        assert_eq!(rt.enable_bus_input_peak(3, true), Err(Error::InvalidInput));
+        assert_eq!(rt.bus_peak(3, BusPeakTap::Output), Err(Error::InvalidInput));
+        let mut audio = [[0.; 2]; 12];
+        support::without_heap(|| {
+            for bus in 0..3 {
+                rt.enable_bus_input_peak(bus, true).unwrap();
+            }
+            rt.set_bus_mix(0, BusMix { gain: [0.25, 0.5], output: None }).unwrap();
+            rt.trigger(input(1), 60, 1.).unwrap();
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(audio, [[0.; 2]; 12], "opposite sends cancel before the parent tap");
+            assert_eq!(rt.bus_peak(0, BusPeakTap::Input).unwrap(), [1., 0.5]);
+            assert_eq!(rt.bus_peak(0, BusPeakTap::Output).unwrap(), [0.5, 0.5]);
+            assert_eq!(rt.bus_peak(1, BusPeakTap::Input).unwrap(), [0.5, 0.5]);
+            assert_eq!(rt.bus_peak(2, BusPeakTap::Input).unwrap(), [0.; 2]);
+            rt.take_bus_input_peaks(|bus, peak| {
+                assert_eq!(peak, [[1., 0.5], [0.5, 0.5], [0.; 2]][bus]);
+            });
+            assert_eq!(rt.bus_peak(0, BusPeakTap::Output).unwrap(), [0.5, 0.5]);
+            rt.take_bus_input_peaks(|_, peak| assert_eq!(peak, [0.; 2]));
+            rt.take_bus_peaks(|bus, peak| {
+                assert_eq!(peak, [[0.5, 0.5], [0.5, 0.5], [0.; 2]][bus]);
+            });
+            rt.enable_bus_input_peak(0, false).unwrap();
+            assert_eq!(rt.bus_peak(0, BusPeakTap::Input), Err(Error::InvalidInput));
+        });
+    }
+}
+
+#[test]
+fn input_meter_interest_and_observations_belong_to_the_active_generation() {
+    let prepared = || plan(vec![[0.25, -0.75]; 8], 1)
+        .with_buses(vec![filtered(8)], vec![Some(0)]).unwrap();
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepared(), limits(), 2, 1).unwrap();
+    let request = control.submit(Box::new(prepared())).unwrap();
+    support::without_heap(|| {
+        rt.enable_bus_input_peak(0, true).unwrap();
+        rt.trigger(input(1), 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.bus_peak(0, BusPeakTap::Input).unwrap(), [0.25, 0.75]);
+        assert_eq!(rt.poll_plan_update(), Ok(Some(request)));
+        assert_eq!(rt.bus_peak(0, BusPeakTap::Input), Err(Error::InvalidInput));
+        rt.enable_bus_input_peak(0, true).unwrap();
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.bus_peak(0, BusPeakTap::Input).unwrap(), [0.; 2], "retired generation audio cannot leak into the new tap");
+        rt.trigger(input(2), 60, 1.).unwrap();
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.bus_peak(0, BusPeakTap::Input).unwrap(), [0.25, 0.75]);
+        rt.enable_bus_input_peak(0, false).unwrap();
+        rt.enable_bus_input_peak(0, true).unwrap();
+        assert_eq!(rt.bus_peak(0, BusPeakTap::Input).unwrap(), [0.; 2]);
+    });
+}
+
+#[test]
 fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
-    let settings = ReverbSettings {
+    let settings = sampler_ir::fx::space::Config::network(sampler_ir::fx::space::Network {
         decay_seconds: 0.5,
         size: 0.75,
         damping_hz: 6_000.,
@@ -437,12 +519,14 @@ fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
         input_cutoff_hz: 20_000.,
         low_shelf_db: 0.,
         width: 1.,
-    };
-    let tail = settings.tail_frames(48000);
+        ..sampler_ir::fx::space::Network::DEFAULT
+    });
+    // Predelay plus twice the decay.
+    let tail = 48_000;
     let prepared = plan(vec![[0.5, 0.5]], 1)
         .with_buses(
             vec![Bus {
-                processors: vec![Processor::Reverb(settings)],
+                processors: vec![Processor::Space(settings)],
                 sends: vec![send(None, 1.)],
                 tail_frames: tail,
             }],
@@ -466,7 +550,7 @@ fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
     assert!(
         plan(vec![[1.; 2]], 1)
             .with_voice_chains(
-                vec![VoiceChain::new(vec![Processor::Reverb(settings)], vec![], 0).unwrap()],
+                vec![VoiceChain::new(vec![Processor::Space(settings)], vec![], 0).unwrap()],
                 vec![Some(0)]
             )
             .is_err()
@@ -501,11 +585,7 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
     };
     let dry = render(None);
     let wet = render(Some(vec![Bus {
-        processors: vec![Processor::Convolution {
-            impulse: 0,
-            dry: 0.5,
-            wet: 2.,
-        }],
+        processors: vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0.5, 2.))],
         sends: vec![send(None, 1.)],
         tail_frames: tail as u32,
     }]));
@@ -531,11 +611,7 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
             .with_voice_chains(
                 vec![
                     VoiceChain::new(
-                        vec![Processor::Convolution {
-                            impulse: 0,
-                            dry: 0.,
-                            wet: 1.
-                        }],
+                        vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0., 1.))],
                         vec![],
                         0
                     )
@@ -549,11 +625,7 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
         plan(vec![[1.; 2]], 1)
             .with_buses(
                 vec![Bus {
-                    processors: vec![Processor::Convolution {
-                        impulse: 0,
-                        dry: 0.,
-                        wet: 1.
-                    }],
+                    processors: vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0., 1.))],
                     sends: vec![send(None, 1.)],
                     tail_frames: 0,
                 }],
@@ -648,11 +720,7 @@ fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_ta
         .with_impulses(vec![first])
         .with_buses(
             vec![Bus {
-                processors: vec![Processor::Convolution {
-                    impulse: 0,
-                    dry: 0.,
-                    wet: 1.,
-                }],
+                processors: vec![Processor::Space(sampler_ir::fx::space::Config::convolution(sampler_ir::ImpulseRef(0), 0., 1.))],
                 sends: vec![send(None, 1.)],
                 tail_frames: 100,
             }],
@@ -963,6 +1031,7 @@ fn voice_modulation_gain_is_at_the_amplifier_between_send_taps() {
                     )],
                     routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.0)],
                     shapes: vec![],
+                    envelope_controls: vec![],
                 }],
                 vec![Some(0)],
                 vec![0],

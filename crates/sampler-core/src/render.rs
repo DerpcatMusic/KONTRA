@@ -1,5 +1,10 @@
 //! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
+#[cfg(test)]
+#[path = "render/traversal_experiment.rs"]
+mod traversal_experiment;
+#[cfg(test)]
+std::thread_local! { static SUM_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Runtime health counters as plain data, for load reports and meters.
 /// Counters are cumulative since construction; timings cover `render` calls.
@@ -10,12 +15,22 @@ pub struct RuntimeStats {
     /// Starts and rendered chunks using the admitted pinned whole-voice controls.
     pub v1_control_starts: u64,
     pub v1_control_blocks: u64,
-    /// Voice starts rejected because every voice was busy and audible.
+    /// Aggregate rejected voice starts: stream admission and unavailable slots.
+    /// Preserved for compatibility; use the reason counters below for diagnosis.
     pub voice_drops: u64,
+    /// Starts rejected by unavailable voice slots after no silent waiting
+    /// victim could be replaced. Separate from page-pool admission failures.
+    pub voice_pool_refusals: u64,
+    /// A full voice pool replaced a started voice already waiting silently for
+    /// source data. Includes cold onset holds and faded-out stream starvation.
+    pub waiting_voice_replacements: u64,
     /// Voice starts refused after preflight (source not resident, pool full).
     pub refused_starts: u64,
-    /// Voices started silent because their first frames were not resident
-    /// (`set_cold_starts`); they fade in when their pages arrive.
+    /// Time-stretch voices that found no free engine and played as a sampler.
+    pub stretch_fallbacks: u64,
+    /// Voices started silent because their admitted startup runway was not
+    /// resident (`set_cold_starts`; one frame unless explicitly configured);
+    /// they fade in when the runway is available.
     pub cold_starts: u64,
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
@@ -35,6 +50,19 @@ pub struct RuntimeStats {
     /// Starts rejected by page admission, separate from audible underruns.
     pub stream_capacity_refusals: u64,
     pub stream_disconnected_refusals: u64,
+}
+
+/// Dense batch identity retained from admission through dispatch. Plan identity
+/// keeps the existing slot-order grouping law; live notes pin its generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BatchKey {
+    plan: usize,
+    pub(super) batch: super::dsp::BatchIndex,
+}
+struct PendingBatch {
+    key: BatchKey,
+    voices: [usize; VOICES],
+    count: usize,
 }
 
 impl Runtime {
@@ -68,7 +96,10 @@ impl Runtime {
             v1_control_starts: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_starts).sum(),
             v1_control_blocks: self.plans.slots.iter().filter_map(|s| s.value.as_ref()).map(|g| g.modulation.native_blocks.load(std::sync::atomic::Ordering::Relaxed)).sum(),
             voice_drops: self.voice_drops,
+            voice_pool_refusals: self.voice_pool_refusals,
+            waiting_voice_replacements: self.waiting_voice_replacements,
             refused_starts: self.refused_starts,
+            stretch_fallbacks: self.stretch_fallbacks,
             cold_starts: self.cold_started,
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
@@ -99,6 +130,7 @@ impl Runtime {
             .collect();
         let mut bytes = 0;
         for (i, plan) in plans.iter().enumerate() {
+            bytes += plan.samples.resident_bytes();
             for pcm in &plan.prepared.pcm {
                 // ponytail: quadratic dedupe, only paid while plans overlap.
                 let shared = plans[..i].iter().any(|p| {
@@ -168,6 +200,16 @@ impl Runtime {
         if outs.iter().any(|o| o.len() < output.len()) {
             return Err(Error::InvalidInput);
         }
+        // Source installation is explicit. Missing real input bindings refuse
+        // before due work, output writes, cursor advance or callback dispatch.
+        for generation in self.plans.slots.iter().filter_map(|slot|slot.value.as_ref()){
+            generation.dsp.buses.validate_element_readiness(&generation.prepared.buses)?;
+            if generation.prepared.source_output_modulation_storage_bytes()!=0&&!output.is_empty(){
+                let last=self.now.checked_add(u64::try_from(output.len()).map_err(|_|Error::ClockOverflow)?).and_then(|end|end.checked_sub(1)).ok_or(Error::ClockOverflow)?;
+                last.checked_div(super::voice_mod::CELL).and_then(|cell|cell.checked_add(1)).and_then(|cell|cell.checked_mul(super::voice_mod::CELL)).ok_or(Error::ClockOverflow)?;
+            }
+        }
+        self.validate_external_render_prefix(output.len())?;
         let start = std::time::Instant::now();
         self.stream_fault = None;
         if self.signal_trace {
@@ -193,14 +235,26 @@ impl Runtime {
             .now
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
-        output.fill([0.0; 2]);
+        let external=self.has_external_programs();
+        // Preserve the old no-external output/error order exactly. An external
+        // prefix services current-frame work before touching PCM, so a newly
+        // discovered turn can return Busy at the SAME sample frame.
+        if !external {output.fill([0.0; 2]);}
+        let _ = self.poll_sample_update();
         self.start_plan_programs();
+        self.service_residency()?;
+        self.drain_behavior();
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();
+        if external {
+            self.validate_external_render_prefix(output.len())?;
+            output.fill([0.0;2]);
+        }
         let mut offset = 0;
         while self.now < end {
             self.apply_due();
+            if external && self.external_clock_blocked(){return Err(Error::Busy);}
             let boundary = self.commands.first().map_or(end, |c| c.at.min(end));
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
@@ -232,7 +286,16 @@ impl Runtime {
         outs: &mut [&mut [Frame]],
         offset: usize,
     ) {
-        let chunked = TRACE
+        // T21: due callbacks/events are handled by render_inner regardless of
+        // audio activity. No voices or tails means no sum kernels/tiles to run.
+        // Keep tracing and the one pending bus-history reset on their old path.
+        // NI engine activity contract / topology B9-B10; no control-rate change.
+        if !TRACE && self.voices.count() == 0 && self.processing_owners.count() == 0
+            && self.plans.slots.iter().filter_map(|s| s.value.as_ref()).all(|g| !g.dsp.buses.needs_render())
+        {
+            return;
+        }
+        let chunked = self.processing_owners.count() != 0 || TRACE
             || self.script_params
             || self.parallel.is_some()
             || self.plans.slots.iter().any(|s| {
@@ -252,6 +315,8 @@ impl Runtime {
         let mut at = self.now;
         let mut rest = output;
         while !rest.is_empty() {
+            #[cfg(test)]
+            SUM_CELLS.set(SUM_CELLS.get() + 1);
             let len = (super::voice_mod::CELL - at % super::voice_mod::CELL) as usize;
             let (output, tail) = rest.split_at_mut(len.min(rest.len()));
             rest = tail;
@@ -269,6 +334,9 @@ impl Runtime {
             }
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 let start = offset + (at - self.now) as usize;
+                if g.dsp.buses.prepare_element_outputs(&g.prepared.buses,at,self.tempo,g.controls.base_reals()).is_err(){
+                    self.nonfinite_frames=self.nonfinite_frames.saturating_add(1);continue;
+                }
                 let faults = g.dsp.buses.render::<TRACE>(
                     &g.prepared.buses,
                     output,
@@ -299,6 +367,14 @@ impl Runtime {
     }
 
     fn render_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
+        if !self.offline { self.prepare_onsets(at, output.len()); }
+        self.render_prepared_voices::<TRACE>(output, at);
+        // Every worker has joined. Source owners remain in live/retired plans;
+        // releasing the reader count cannot destroy PCM on this callback.
+        self.clear_onsets();
+    }
+
+    pub(super) fn render_prepared_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
         if self.offline {
             // Modulation advance is cached on the absolute control grid. Prepare
             // the exact steps before requesting pages; rendering at the same
@@ -315,6 +391,10 @@ impl Runtime {
                 self.stream_fault = Some(error);
                 return;
             }
+            // Voices admitted during realtime can still carry a pending cohort
+            // when the host switches to offline. Service has now completed; use
+            // the same pinned gate before dispatching their first source read.
+            self.prepare_onsets(at, output.len());
         }
         if TRACE {
             for word in 0..self.voice_activity.len() {
@@ -325,12 +405,13 @@ impl Runtime {
                     self.render_voice::<true>(word * 64 + bit, output, at);
                 }
             }
+            self.render_processing_owners(output, at);
             return;
         }
         if self.render_voices_parallel(output, at) {
             return;
         }
-        let mut batch: (Option<(usize, usize)>, [usize; VOICES], usize) = (None, [0; VOICES], 0);
+        let mut batch: Option<PendingBatch> = None;
         // Skip empty slots a word at a time. Ascending set bits preserve the
         // original slot-order sum even after holes and generational slot reuse.
         for word in 0..self.voice_activity.len() {
@@ -350,28 +431,38 @@ impl Runtime {
                         return;
                     }
                     let key = self.batch_key(i, output.len());
-                    if key.is_none() || key != batch.0 || batch.2 == VOICES {
-                        self.render_run(&batch.1[..batch.2], output, at);
-                        batch = (key, [0; VOICES], 0);
+                    if batch.as_ref().is_some_and(|run| Some(run.key) != key || run.count == VOICES) {
+                        if let Some(run) = batch.take() {
+                            self.render_run(run.key, &run.voices[..run.count], output, at);
+                        }
                     }
-                    if key.is_none() {
-                        self.render_voice::<false>(i, output, at);
-                    } else {
-                        batch.1[batch.2] = i;
-                        batch.2 += 1;
+                    match key {
+                        None => self.render_voice::<false>(i, output, at),
+                        Some(key) => match batch.as_mut() {
+                            Some(run) => { run.voices[run.count] = i; run.count += 1; }
+                            None => {
+                                let mut voices = [0; VOICES]; voices[0] = i;
+                                batch = Some(PendingBatch { key, voices, count: 1 });
+                            }
+                        },
                     }
                 }
             }
         }
-        self.render_run(&batch.1[..batch.2], output, at);
+        if let Some(run) = batch {
+            self.render_run(run.key, &run.voices[..run.count], output, at);
+        }
+        self.render_processing_owners(output, at);
     }
 
     /// Voices batch when consecutive in slot order, started, and running the
     /// same delay-free chain of the same plan over at most one block.
-    pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
+    pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<BatchKey> {
         let v = self.voices.slots[i].value.as_ref()?;
+        if v.processing.is_some() { return None; }
         let chain = v.chain?;
-        if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting() {
+        if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting()
+            || v.cursor.pending_start_runway() > 1 {
             return None;
         }
         let f = self.families.get(v.family.0).unwrap();
@@ -382,22 +473,21 @@ impl Runtime {
             return None;
         }
         let prepared = &generation.prepared;
-        prepared.voice_chains[chain]
-            .batches()
-            .then_some((plan.index, chain))
+        prepared.voice_chains[chain].batch_index()
+            .map(|batch| BatchKey { plan: plan.index, batch })
     }
 
-    fn render_run(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
+    fn render_run(&mut self, key: BatchKey, voices: &[usize], output: &mut [Frame], at: u64) {
         match voices {
             [] => {}
             [i] => self.render_voice::<false>(*i, output, at),
-            _ => self.render_batch(voices, output, at),
+            _ => self.render_batch(key, voices, output, at),
         }
     }
 
     /// [`Self::render_voice`] for a batch: sources and the epilogue per voice
     /// in slot order, every stage across the batch's lanes.
-    fn render_batch(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
+    fn render_batch(&mut self, key: BatchKey, voices: &[usize], output: &mut [Frame], at: u64) {
         use super::dsp::lanes;
         let mut block = [[0.; lanes::LANES]; super::dsp::BLOCK];
         let mut batch = lanes::Batch {
@@ -410,6 +500,10 @@ impl Runtime {
         let mut gains = [[0.; 2]; VOICES];
         let mut starved = [false; VOICES];
         let mut plan_id = None;
+        let reuse_mask = super::source::reuse::candidates(
+            voices.iter().map(|&i| self.voices.slots[i].value.as_ref().unwrap()),
+        );
+        let mut source_reuse = None;
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let f = self.families.get(v.family.0).unwrap();
@@ -417,23 +511,44 @@ impl Runtime {
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
             v.last_gains = gains[lane].map(|g| g * v.gain);
-            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+            v.set_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
-            plan.project_wavetable(&mut v.cursor, v.group);
+            plan.project_wavetable(&mut v.cursor, v.group, i);
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
-            let asset = &plan.prepared.pcm[v.sample];
+            let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
+            let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
+            let engine = stretch.as_mut().map(|c| &mut c[0]);
             starved[lane] = v.cursor.starved();
             batch.expressions[lane] = Some((n.expression, expression.value));
             let mut planar = [[0.; super::dsp::BLOCK]; 2];
-            begun[lane] = if let Some(frames) = asset.resident_frames() {
+            begun[lane] = if let Some(head) = &self.onsets.heads[i] {
+                let pcm = super::source::PagedFrames {
+                    cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
+                    asset: asset.asset_id(), head,
+                };
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+            } else if let Some(frames) = &self.onsets.residents[i] {
                 asset.want_levels(v.cursor.step(), at);
                 let guard = asset.try_levels();
                 let pcm = super::source::Resident {
-                    frames,
-                    levels: guard.as_deref().map_or(&[], |l| l),
+                    frames, levels: guard.as_deref().map_or(&[], |l| l),
                 };
-                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+            } else if let Some(frames) = asset.resident_frames() {
+                asset.want_levels(v.cursor.step(), at);
+                let guard = asset.try_levels();
+                if reuse_mask & (1 << lane) != 0 {
+                    source_reuse
+                        .get_or_insert_with(super::source::reuse::ResidentReuse::default)
+                        .begin(chain, v, frames, guard, output.len(), &self.kernel, &mut planar, engine)
+                } else {
+                    let pcm = super::source::Resident {
+                        frames: &frames,
+                        levels: guard.as_deref().map_or(&[], |l| l),
+                    };
+                    chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
+                }
             } else {
                 asset.touch(at + output.len() as u64);
                 let head = asset.try_head();
@@ -446,7 +561,7 @@ impl Runtime {
                     asset: asset.asset_id(),
                     head: head.as_deref().map_or(&[], |h| h),
                 };
-                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar, engine)
             };
             let len = begun[lane].map_or(0, |b: super::dsp::Begun| b.len);
             for (frame, x) in block[..len].iter_mut().enumerate() {
@@ -455,6 +570,9 @@ impl Runtime {
             batch.ends[2 * lane] = len;
             batch.ends[2 * lane + 1] = len;
         }
+        // Readers retire before any plan/voice lifecycle mutation. Their drop
+        // only releases snapshot counts; storage reclamation remains control-side.
+        drop(source_reuse);
         batch.len = batch.ends.iter().copied().max().unwrap_or(0);
         for end in &mut batch.ends[2 * voices.len()..] {
             *end = batch.len;
@@ -463,8 +581,7 @@ impl Runtime {
             .plans
             .get_mut(plan_id.expect("a batch has a voice"))
             .unwrap();
-        let first = self.voices.slots[voices[0]].value.as_ref().unwrap();
-        let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
+        let chain = plan.prepared.voice_chains.batch(key.batch);
         let dsp = &mut plan.dsp;
         let mut cells: lanes::Cells<'_> =
             std::array::from_fn(|lane| voices.get(lane).map(|&i| dsp.cells.claim(i)));
@@ -545,26 +662,48 @@ impl Runtime {
     /// script layers, and its cursor's step. None for a voice not yet started.
     /// Evaluated per voice, so the voices may be prepared ahead of rendering.
     pub(super) fn prepare_voice(&mut self, i: usize, at: u64, frames: usize) -> Option<Prelude> {
+        if !self.voices.slots[i].value.as_ref()?.started{return None;}
+        let voice_id=VoiceId(self.voices.id(i));
+        let provider_owner=self.voices.slots[i].value.as_ref().and_then(|voice|{
+            let (owner,_)=voice.processing?;
+            let state=self.processing_owners.get(owner.0)?;
+            let generation=self.plans.get(state.plan.0)?;
+            generation.modulation.provider_scope(&generation.prepared.voice_modulation,i).map(|_|owner)
+        });
+        if let Some(owner)=provider_owner&&self.prepare_processing_modulation(owner,at,crate::topology::ProcessingModulationPhase::Forecast).is_err(){
+            self.fail_processing_owner(owner);return None;
+        }
         let v = self.voices.slots[i].value.as_mut()?;
         if !v.started {
             return None;
         }
+        let processing = v.processing;
+        let chained_owner = processing.and_then(|(owner, _)| {
+            let state = self.processing_owners.get(owner.0)?;
+            let generation = self.plans.get(state.plan.0)?;
+            Some(
+                generation
+                    .prepared
+                    .processing_scopes
+                    .get(state.template)
+                    .is_some_and(|scope| scope.chain.is_some()),
+            )
+        });
         let f = self.families.get(v.family.0).unwrap();
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let plan = self.plans.get_mut(n.plan.0).unwrap();
-        plan.project_wavetable(&mut v.cursor, v.group);
         let modulated = plan.modulation.program(i).is_some();
         let mut filter = None;
-        let points = plan.modulation.program(i).map(|_| {
+        let points = if plan.modulation.program(i).is_some() {
             let performance = self.selections[f.note.0.index].performance;
             let inputs = super::voice_mod::Inputs::new(
                 n,
                 expression.value,
-                &self.performance_state.current(performance).controllers,
+                &self.performance_state.channel_current(performance, n.address).controllers,
                 self.release_times[f.note.0.index].counter(n.key_down(), at),
                 &self.note_params[f.note.0.index].mods,
-                &plan.controls.base,
+                plan.controls.base_reals(),
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
@@ -581,16 +720,21 @@ impl Runtime {
             {
                 v.cursor = v.cursor.with_loop_offsets(offsets);
             }
-            let ramp = plan
-                .modulation
-                .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
+            let ramp=if let Some(scope)=plan.modulation.provider_scope(&plan.prepared.voice_modulation,i){
+                let (id,ordinal)=v.processing?;
+                let owner=self.processing_owners.get(id.0)?;
+                if owner.plan!=n.plan||owner.template!=scope||owner.members.get(ordinal).copied().flatten()!=Some(voice_id){return None;}
+                let provider=plan.dsp.owner_modulation.provider_view(&plan.prepared.processing_modulation,id.0.index,scope).ok()?;
+                plan.modulation.advance_provided(&plan.prepared.voice_modulation,i,&inputs,clock,provider,v.envelope.releasing()).ok()?
+            }else{plan.modulation.advance(&plan.prepared.voice_modulation,i,&inputs,clock)};
             let (from, to) = (ramp.from, ramp.to);
             filter = Some([
                 (from.filter[0] + to.filter[0]) * 0.5,
                 (from.filter[1] + to.filter[1]) * 0.5,
             ]);
-            ramp
-        });
+            Some(ramp)
+        }else{None};
+        plan.project_wavetable(&mut v.cursor, v.group, i);
         // Script layers (render_segment chunks once a script writes one).
         let mut stop = false;
         let points = if self.script_params {
@@ -637,7 +781,22 @@ impl Runtime {
         } else {
             points
         };
-        v.cursor = v.cursor.with_step(match points {
+        let mut points = points;
+        if chained_owner == Some(true) {
+            // A shared processing chain owns the audible stage order; Tone is
+            // applied by the activation after that chain, not per member.
+            let tone = points.map_or(0., |r| (r.from.tone + r.to.tone) * 0.5);
+            if let Some((owner, _)) = processing
+                && let Some(state) = self.processing_owners.get_mut(owner.0)
+            {
+                state.tone = tone;
+            }
+            if let Some(ramp) = points.as_mut() {
+                ramp.from.tone = 0.0;
+                ramp.to.tone = 0.0;
+            }
+        }
+        let pitch = match points {
             None => v.base_step * expression.rendered.ratio,
             Some(ramp) => {
                 let exponent = (ramp.from.pitch + ramp.to.pitch) / 24.0;
@@ -651,7 +810,8 @@ impl Runtime {
                     step.clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
                 }
             }
-        });
+        };
+        v.set_step(pitch);
         Some(Prelude {
             points,
             modulated,
@@ -662,27 +822,35 @@ impl Runtime {
 
     #[inline]
     fn render_voice<const TRACE: bool>(&mut self, i: usize, segment: &mut [Frame], at: u64) {
-        let Some(Prelude {
-            points,
-            modulated,
-            stop,
-            filter,
-        }) = self.prepare_voice(i, at, segment.len())
-        else {
-            return;
-        };
+        if self.voices.slots[i].value.as_ref().is_some_and(|v| v.processing.is_some()) { return; }
+        let _ = self.render_source_voice::<TRACE>(i, segment, at, false);
+    }
+
+    pub(super) fn render_source_voice<const TRACE: bool>(
+        &mut self, i: usize, segment: &mut [Frame], at: u64, owner_capture: bool,
+    ) -> Option<usize> {
+        let prelude = self.prepare_voice(i, at, segment.len());
+        let Some(prelude) = prelude.as_ref() else { return None; };
+        let points = prelude.points.as_ref();
+        let modulated = prelude.modulated;
+        let stop = prelude.stop;
+        let filter = prelude.filter;
+        let trace_voice = if TRACE {
+            Some(crate::trace::onset::PhysicalVoice::from(crate::VoiceId(self.voices.id(i))))
+        } else { None };
         let v = self.voices.slots[i].value.as_mut().unwrap();
         // Retention invariant: live voice -> counted family -> counted note
         // -> expression owner. Each owner retires only after its dependents.
         let f = self.families.get(v.family.0).unwrap();
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
-        let gains = expression.rendered.gains;
+        let gains = if owner_capture { [1.; 2] } else { expression.rendered.gains };
+        let tap_gains = expression.rendered.gains;
         let cc = |controller: usize| {
             if TRACE {
                 ((u64::from(
                     self.performance_state
-                        .current(self.selections[f.note.0.index].performance)
+                        .channel_current(self.selections[f.note.0.index].performance, n.address)
                         .controllers[controller],
                 ) * 127
                     + u64::from(u32::MAX) / 2)
@@ -702,24 +870,26 @@ impl Runtime {
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         // Modulated voices render at most one BLOCK chunk per call (render_segment
         // chunks whenever a plan has programs) into scratch, then mix with ramps.
-        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        let chain = v.chain.map(|index| plan.prepared.voice_chains.view(index));
         if let Some(chain) = chain {
             for &bus in &chain.tap_buses {
                 plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
             }
         }
-        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        // Only ramped voices render through scratch; direct voices use target.
+        let mut scratch;
         let bank = &mut plan.dsp.filters.as_mut_slice()[0];
         bank.modulation = filter.unwrap_or([1.0; 2]);
         bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
-        let asset = &plan.prepared.pcm[v.sample];
-        let bus = v.bus;
+        let asset = plan.samples.asset(&plan.prepared, v.sample).expect("a live voice pins its immutable source");
+        let bus = if owner_capture { None } else { v.bus };
         let target = if let Some(bus) = bus {
             plan.dsp.buses.input(bus, segment.len())
         } else {
             segment
         };
         let (segment, mixed) = if points.is_some() {
+            scratch = [[0.0; 2]; super::dsp::BLOCK];
             (&mut scratch[..target.len()], Some(target))
         } else {
             (target, None)
@@ -742,6 +912,7 @@ impl Runtime {
                             nodes,
                             envelope_parameters: v.envelope.trace_parameters(),
                             identity: crate::trace::TraceIdentity {
+                                voice: trace_voice,
                                 zone: v.source_zone,
                                 sample: v.sample,
                                 family: v.family.0.index,
@@ -824,11 +995,13 @@ impl Runtime {
             &plan.dsp.parameters[..]
         };
         let mut native = plan.modulation.native.claim(i);
-        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, &plan.controls.base));
+        let controls = native.get_mut(0).and_then(|state| plan.modulation.native_render(&plan.prepared.voice_modulation, i, state, plan.controls.base_reals()));
+        let mut stretch = v.stretch.map(|l| plan.dsp.stretch.claim(usize::from(l.engine)));
         let context = super::dsp::RenderContext {
             controls,
             trace,
-            amplifier: chain.and(points),
+            stretch: stretch.as_mut().map(|c| &mut c[0]),
+            amplifier: chain.and_then(|_| points.copied()),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters,
@@ -836,17 +1009,29 @@ impl Runtime {
                 tempo: self.tempo,
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
-                reverbs: &mut [],
-                convolutions: &mut [],
+                spaces: &mut [],
             },
             at,
             feeds: &mut plan.dsp.feeds,
         };
-        let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+        let (produced, done, faults, underrun) = if let Some(head) = &self.onsets.heads[i] {
+            let source = super::source::PagedFrames {
+                cache: self.stream_cache.as_ref().expect("pinned streamed onset").reader(),
+                asset: asset.asset_id(), head,
+            };
+            render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
+        } else if let Some(frames) = &self.onsets.residents[i] {
             asset.want_levels(v.cursor.step(), at);
             let guard = asset.try_levels();
             let pcm = super::source::Resident {
-                frames,
+                frames, levels: guard.as_deref().map_or(&[], |l| l),
+            };
+            render_source::<TRACE>(v, &pcm, segment, chain, states, context, &self.kernel)
+        } else if let Some(frames) = asset.resident_frames() {
+            asset.want_levels(v.cursor.step(), at);
+            let guard = asset.try_levels();
+            let pcm = super::source::Resident {
+                frames: &frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source::<TRACE>(v, &pcm, segment, chain, states, context, &self.kernel)
@@ -864,12 +1049,12 @@ impl Runtime {
             };
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
-        drop((claimed, delay, parameter_scratch, native));
+        drop((claimed, delay, parameter_scratch, native, stretch));
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() {
-                ramp.without_gains()
+                (*ramp).without_gains()
             } else {
-                ramp
+                *ramp
             };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
@@ -886,7 +1071,7 @@ impl Runtime {
                     let target = plan.dsp.buses.input(bus, produced);
                     for (i, sample) in target.iter_mut().enumerate() {
                         for c in 0..2 {
-                            sample[c] += (feed[c][i] * f64::from(gains[c])) as f32;
+                            sample[c] += (feed[c][i] * f64::from(tap_gains[c])) as f32;
                         }
                     }
                     plan.dsp.buses.fed(bus, produced);
@@ -909,6 +1094,7 @@ impl Runtime {
         } else {
             self.refresh_stream_reservation(i, stream_step);
         }
+        Some(produced)
     }
 }
 
@@ -943,11 +1129,15 @@ pub(super) fn render_source<const TRACE: bool>(
     voice: &mut super::Voice,
     source: &(impl super::source::ReadFrames + ?Sized),
     output: &mut [Frame],
-    chain: Option<&super::dsp::PreparedVoiceChain>,
+    chain: Option<super::dsp::PreparedChainRef<'_>>,
     states: &mut [super::dsp::ProcessorState],
     mut context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,
 ) -> (usize, bool, u64, bool) {
+    // A cohort decision happens before any source, envelope or voice DSP work.
+    if voice.cursor.pending_start_runway() > 1 {
+        return (0, voice.envelope.done(), 0, false);
+    }
     let was_starved = voice.cursor.starved();
     let (produced, done, faults) = if let Some(chain) = chain {
         let (produced, faults) =
@@ -956,12 +1146,15 @@ pub(super) fn render_source<const TRACE: bool>(
     } else if let Some(controls) = context.controls.as_mut() {
         let waiting = voice.cursor.waiting();
         let active = voice.envelope.remaining();
-        let mut unity = crate::envelope::EnvelopeState::new(if waiting {
+        let mut unity = crate::blocks::envelope::EnvelopeState::new(if waiting {
             crate::Envelope::one_shot(0, active.min(super::dsp::BLOCK + 1) as u32, 0)
         } else { crate::Envelope::default() });
         let remaining = unity.remaining();
         let count = if waiting { output.len() } else { output.len().min(active) };
-        let produced = voice.cursor.render(source, &mut output[..count], &mut unity, 1., [1.; 2], kernel);
+        let produced = match (context.stretch.as_deref_mut(), waiting) {
+            (Some(engine), false) => super::source::stretch_mix(engine, voice, source, &mut output[..count], 1., [1.; 2], false),
+            _ => voice.cursor.render(source, &mut output[..count], &mut unity, 1., [1.; 2], kernel),
+        };
         let held = if waiting { produced - (remaining - unity.remaining()) } else { 0 };
         let levels = controls.levels(voice, produced, held);
         for (i, frame) in output[..produced].iter_mut().enumerate() {
@@ -969,14 +1162,25 @@ pub(super) fn render_source<const TRACE: bool>(
         }
         (produced, voice.cursor.done() || voice.envelope.done() || controls.done(), 0)
     } else {
-        let produced = voice.cursor.render(
-            source,
-            output,
-            &mut voice.envelope,
-            voice.gain,
-            context.expression,
-            kernel,
-        );
+        let produced = match (context.stretch.as_deref_mut(), voice.cursor.waiting()) {
+            (Some(engine), false) => super::source::stretch_mix(
+                engine,
+                voice,
+                source,
+                output,
+                voice.gain,
+                context.expression,
+                true,
+            ),
+            _ => voice.cursor.render(
+                source,
+                output,
+                &mut voice.envelope,
+                voice.gain,
+                context.expression,
+                kernel,
+            ),
+        };
         (produced, voice.cursor.done() || voice.envelope.done(), 0)
     };
     (
@@ -994,5 +1198,44 @@ impl Runtime {
             .get(self.active_plan.0)?
             .prepared
             .signal_trace_reader()
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+    use crate::*;
+    #[test]
+    fn dormant_sum_graph_skips_cells_but_keeps_events_clock_and_wake_pcm() {
+        let plan = Prepared::new(48000, vec![Pcm::new(48000, vec![[1., -0.5]].into_boxed_slice()).unwrap()],
+            vec![Region { sample:0, key_low:60, key_high:60, root_key:None, velocity_low:0., velocity_high:1.,
+                gain:1., envelope:Envelope::default(), playback:Playback::default() }], 1).unwrap()
+            .with_buses((0..100).map(|_| Bus { processors:vec![Processor::Gain(1.)],
+                sends:vec![BusSend { bus:None, gain:1. }], tail_frames:0 }).collect(), vec![Some(97)]).unwrap();
+        let mut rt = Runtime::new(plan, Limits { notes:4, channels:0, performances:1, families:4,
+            voices:4, expressions:4, decisions:4, commands:8, behaviors:0, behavior_cells:0, behavior_fuel:0, note_cells:0 }).unwrap();
+        let performance = rt.performance(0).unwrap();
+        rt.schedule_event(512, Event::Controller(performance, 1, 12345)).unwrap();
+        SUM_CELLS.set(0);
+        let mut idle = [[1.;2];2048];
+        rt.render(&mut idle).unwrap();
+        assert_eq!(idle, [[0.;2];2048]);
+        assert_eq!(rt.now(), 2048);
+        assert_eq!(rt.controller(performance, 1).unwrap(), 12345);
+        assert_eq!(SUM_CELLS.get(), 0, "dormant sums must not traverse every control tile");
+        let input = Input { protocol:Protocol::Native, port:0, group:0, channel:0, key:60, external_id:None };
+        rt.trigger(input, 60, 1.).unwrap();
+        let mut output = [[0.;2];64];
+        rt.render(&mut output).unwrap();
+        assert_eq!(output[0], [1., -0.5]);
+        assert_eq!(output[1..], [[0.;2];63]);
+        SUM_CELLS.set(0);
+        rt.render(&mut idle).unwrap();
+        assert_eq!(idle, [[0.;2];2048]);
+        assert_eq!(SUM_CELLS.get(), 0);
+        rt.trigger(input, 60, 1.).unwrap();
+        let mut woke = [[0.;2];64];
+        rt.render(&mut woke).unwrap();
+        assert_eq!(woke, output, "wake after silent clock advancement is exact");
     }
 }

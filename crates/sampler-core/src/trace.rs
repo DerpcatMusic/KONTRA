@@ -1,6 +1,8 @@
 //! Optional signal measurements. Graph construction, draining and file I/O are
 //! control-side; the single render writer uses fixed buffers and a bounded SPSC.
-use crate::dsp::{BLOCK, ControlRamp, Planar, PreparedProcessor};
+pub mod onset;
+
+use crate::dsp::{BLOCK, ControlRamp, Planar, ProcessorRef, ProcessorSlice};
 use crate::{EngineParameterAddress, EngineParameterLaw, Error, Frame, Prepared};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::Serialize;
@@ -8,6 +10,31 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+
+/// Diagnostic graph scope uses immutable prepared-region key bounds, not host
+/// input keys. Generated/transposed selection can escape it; births remain global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SignalTraceScope {
+    pub prepared_key_low: u8,
+    pub prepared_key_high: u8,
+    pub max_nodes: usize,
+}
+impl SignalTraceScope {
+    /// Bounds all contribution, bus and host nodes before graph construction.
+    pub fn new(prepared_key_low: u8, prepared_key_high: u8, max_nodes: usize) -> Result<Self, Error> {
+        let scope = Self { prepared_key_low, prepared_key_high, max_nodes };
+        scope.validate()?;
+        Ok(scope)
+    }
+    pub(crate) fn validate(self) -> Result<(), Error> {
+        if self.prepared_key_low > self.prepared_key_high || self.prepared_key_high > 127
+            || !(1..=65536).contains(&self.max_nodes) { return Err(Error::InvalidInput); }
+        Ok(())
+    }
+    pub(crate) fn includes(self, low: u8, high: u8) -> bool {
+        low <= self.prepared_key_high && high >= self.prepared_key_low
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TraceParameter {
@@ -59,6 +86,9 @@ pub(crate) struct BusNodes {
 #[derive(Debug, Serialize)]
 pub struct TraceGraph {
     pub sample_rate: u32,
+    /// None preserves the original complete prepared-region graph behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SignalTraceScope>,
     pub nodes: Vec<TraceNode>,
     pub edges: Vec<TraceEdge>,
     pub order: Vec<usize>,
@@ -73,6 +103,8 @@ pub struct TraceGraph {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceIdentity {
+    /// Physical identity is authoritative only on single-voice contribution rows.
+    pub voice: Option<onset::PhysicalVoice>,
     pub zone: u32,
     pub sample: usize,
     pub family: usize,
@@ -104,6 +136,7 @@ pub struct TraceIdentity {
 }
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct TraceMetrics {
+    pub onset: onset::SignalOnset,
     pub peak: [f64; 2],
     pub rms: [f64; 2],
     pub dc: [f64; 2],
@@ -144,18 +177,29 @@ impl Default for Scratch {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CollectionOwner {
+    #[default]
+    Environment,
+    External,
+}
+
 pub(crate) struct TracePrepared {
+    pub(crate) collection_owner: CollectionOwner,
+    onset: onset::Prepared,
     pub graph: Arc<TraceGraph>,
     writer: Mutex<Option<Producer<TraceRecord>>>,
     reader: TraceReader,
 }
 #[derive(Clone)]
 pub struct TraceReader {
+    onset: onset::Reader,
     pub graph: Arc<TraceGraph>,
     consumer: Arc<Mutex<Consumer<TraceRecord>>>,
     dropped: Arc<AtomicU64>,
 }
 impl TraceReader {
+    pub fn onset_reader(&self) -> onset::Reader { self.onset.clone() }
     pub(crate) fn abandoned(&self) -> bool {
         self.consumer
             .lock()
@@ -179,6 +223,7 @@ impl TraceReader {
     }
 }
 pub(crate) struct Recorder {
+    onset: onset::Recorder,
     writer: Mutex<Producer<TraceRecord>>,
     dropped: Arc<AtomicU64>,
     scratch: Box<[Scratch]>,
@@ -192,13 +237,17 @@ impl TracePrepared {
             return Err(Error::InvalidInput);
         }
         let graph = Arc::new(graph);
+        let onset = onset::Prepared::new(capacity.min(65536));
         let (writer, consumer) = RingBuffer::new(capacity);
         let reader = TraceReader {
+            onset: onset.reader.clone(),
             graph: graph.clone(),
             consumer: Arc::new(Mutex::new(consumer)),
             dropped: Arc::new(AtomicU64::new(0)),
         };
         Ok(Self {
+            collection_owner: CollectionOwner::default(),
+            onset,
             graph,
             writer: Mutex::new(Some(writer)),
             reader,
@@ -212,6 +261,7 @@ impl TracePrepared {
             .take()
             .ok_or(Error::InvalidInput)?;
         Ok(Recorder {
+            onset: self.onset.recorder()?,
             writer: Mutex::new(writer),
             dropped: self.reader.dropped.clone(),
             scratch: std::iter::repeat_with(Scratch::default)
@@ -323,8 +373,15 @@ pub(crate) fn metrics(block: &Planar, len: usize) -> TraceMetrics {
     }
     let mut result = TraceMetrics::default();
     for c in 0..2 {
-        for &v in &block[c][..len] {
-            result.peak[c] = result.peak[c].max(v.abs());
+        for (index, &v) in block[c][..len].iter().enumerate() {
+            let amplitude = v.abs();
+            if amplitude > 0. && result.onset.nonzero[c].is_none() {
+                result.onset.nonzero[c] = Some(index as u32);
+            }
+            if amplitude > onset::THRESHOLD && result.onset.above_threshold[c].is_none() {
+                result.onset.above_threshold[c] = Some(index as u32);
+            }
+            result.peak[c] = result.peak[c].max(amplitude);
             result.rms[c] += v * v;
             result.dc[c] += v;
         }
@@ -466,9 +523,16 @@ impl TraceParameter {
 }
 
 impl TraceGraph {
+    /// Existence of a physical contribution node, independent of note input key.
+    /// A missing node requires partial coverage for that birth even with no loss.
+    pub fn contribution_node(&self, zone: u32) -> Option<usize> {
+        self.voices.get(&zone).map(|v| v.output)
+    }
+    pub(crate) const HOST_NODE_COUNT: usize = 3 + 3 * HOST_PORTS;
     pub(crate) fn new(rate: u32) -> Self {
         let mut graph = Self {
             sample_rate: rate,
+            scope: None,
             nodes: Vec::new(),
             edges: Vec::new(),
             order: Vec::new(),
@@ -604,40 +668,41 @@ impl TraceGraph {
         }
         order
     }
-    pub(crate) fn connect(
+    pub(crate) fn connect<'a>(
         &mut self,
-        stages: &[PreparedProcessor],
+        stages: impl Into<ProcessorSlice<'a>>,
         ids: &[usize],
         mut parent: usize,
     ) -> usize {
+        let stages = stages.into();
         let mut n = 0;
         let mut fork = None;
         let mut accumulator = None;
         while n < stages.len() {
             let id = ids[n];
-            match stages[n] {
-                PreparedProcessor::Mix { count, .. } => {
-                    let end = n + 1 + usize::from(count);
-                    let wet = self.connect(&stages[n + 1..end], &ids[n + 1..end], parent);
+            match stages.get(n) {
+                ProcessorRef::Mix { count, .. } => {
+                    let end = n + 1 + usize::from(*count);
+                    let wet = self.connect(stages.slice(n + 1..end), &ids[n + 1..end], parent);
                     self.edge(parent, id, "dry_or_bypass");
                     self.edge(wet, id, "wet");
                     parent = id;
                     n = end;
                 }
-                PreparedProcessor::Branch {
+                ProcessorRef::Branch {
                     count, first, last, ..
                 } => {
-                    if first || fork.is_none() {
+                    if *first || fork.is_none() {
                         fork = Some(parent);
                     }
-                    let end = n + 1 + usize::from(count);
-                    let child = self.connect(&stages[n + 1..end], &ids[n + 1..end], fork.unwrap());
+                    let end = n + 1 + usize::from(*count);
+                    let child = self.connect(stages.slice(n + 1..end), &ids[n + 1..end], fork.unwrap());
                     self.edge(child, id, "branch_sum");
                     if let Some(previous) = accumulator {
                         self.edge(previous, id, "accumulate");
                     }
                     accumulator = Some(id);
-                    if last {
+                    if *last {
                         parent = id;
                         fork = None;
                         accumulator = None;
@@ -721,7 +786,9 @@ impl TraceGraph {
                 });
                 TraceParameter {
                     name,
-                    initial: initial[lane].value(0),
+                    initial: if self.scope.is_some() {
+                        crate::dsp::control::initial_parameter(plan, &bindings[lane]).value(0)
+                    } else { initial[lane].value(0) },
                     lane: Some(lane),
                     address,
                     law,
@@ -742,7 +809,7 @@ impl TraceGraph {
     }
     pub(crate) fn stage(
         &mut self,
-        stage: &PreparedProcessor,
+        stage: ProcessorRef<'_>,
         kind: &'static str,
         zone: Option<u32>,
         group: Option<u32>,
@@ -755,13 +822,13 @@ impl TraceGraph {
         let parameter = |name, p| self.parameter(name, p, plan, bindings, initial);
         let constant = |name, value| parameter(name, PreparedParameter::Constant(value));
         let (name, parameters, latency) = match stage {
-            PreparedProcessor::Gain(g) => ("gain", vec![constant("linear_gain", *g)], 0),
-            PreparedProcessor::ControlGain(lane) => (
+            ProcessorRef::Gain(g) => ("gain", vec![constant("linear_gain", *g)], 0),
+            ProcessorRef::ControlGain(lane) => (
                 "control_gain",
                 vec![parameter("linear_gain", PreparedParameter::Control(*lane))],
                 0,
             ),
-            PreparedProcessor::Mix { lanes, .. } => (
+            ProcessorRef::Mix { lanes, .. } => (
                 "slot_mix",
                 ["dry", "output_gain", "bypass"]
                     .into_iter()
@@ -770,12 +837,13 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::Gainer { gain, dry, .. } => (
-                "gainer",
-                vec![parameter("gain", *gain), constant("dry", *dry)],
-                0,
+            ProcessorRef::Pan { position,offset,law,expression } => (
+                "pan",vec![parameter("position",*position),constant("law",match law {
+                    sampler_ir::PanLaw::Balance=>0.,sampler_ir::PanLaw::EqualPower=>1.,
+                    sampler_ir::PanLaw::RaisedCosineCoreF64=>2.,
+                }),constant("canonical_expression_home",f64::from(*expression)),constant("offset",*offset)],0,
             ),
-            PreparedProcessor::StereoMatrix(m) => (
+            ProcessorRef::StereoMatrix(m) => (
                 "stereo_matrix",
                 vec![
                     constant("ll", m[0][0]),
@@ -785,46 +853,30 @@ impl TraceGraph {
                 ],
                 0,
             ),
-            PreparedProcessor::Compressor(c) => (
-                "compressor",
+            ProcessorRef::Dynamics(c) => (
+                "dynamics",
                 c.trace_parameters()
                     .into_iter()
                     .map(|(n, v)| parameter(n, v))
                     .collect(),
                 0,
             ),
-            PreparedProcessor::Branch { gain, .. } => ("branch", vec![constant("gain", *gain)], 0),
-            PreparedProcessor::Delay { delay, .. } => (
-                "delay",
-                delay
+            ProcessorRef::Branch { gain, .. } => ("branch", vec![constant("gain", *gain)], 0),
+            ProcessorRef::TimeMod { timemod, .. } => (
+                "timemod",
+                timemod
                     .trace_parameters()
                     .into_iter()
                     .map(|(n, v)| constant(n, v))
                     .collect(),
-                delay.trace_frames(),
+                timemod.trace_frames(),
             ),
-            PreparedProcessor::PeakingEq(eq) => (
-                "v1_peaking_eq",
-                eq.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::KontaktLegacyEq(eq) => (
-                "kontakt_legacy_eq",
+            ProcessorRef::Eq(eq) => (
+                "eq",
                 eq.trace_parameters().into_iter().map(|(n, p)| parameter(n, p)).collect(),
                 0,
             ),
-            PreparedProcessor::LiveFilter(live) => (
-                "live_filter",
-                live.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::ControlMatrix(cells) => (
+            ProcessorRef::ControlMatrix(cells) => (
                 "control_matrix",
                 ["ll", "lr", "rl", "rr"]
                     .into_iter()
@@ -833,7 +885,7 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::Biquad(b) => (
+            ProcessorRef::Biquad(b) => (
                 "biquad",
                 ["b0", "b1", "b2", "a1", "a2"]
                     .into_iter()
@@ -842,87 +894,32 @@ impl TraceGraph {
                     .collect(),
                 0,
             ),
-            PreparedProcessor::StateVariable(i) => (
+            ProcessorRef::StateVariable(i) => (
                 "state_variable_filter",
                 if bus.is_some() && zone.is_none() {
                     plan.buses.trace_filter(*i)
                 } else {
-                    plan.filters[*i].trace_parameters()
+                    plan.filters.trace_parameters(*i)
                 }
                 .into_iter()
                 .map(|(n, p)| parameter(n, p))
                 .collect(),
                 0,
             ),
-            PreparedProcessor::Daft(d) => (
-                "daft",
-                d.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::LadderLP4 { ladder, .. } => (
-                "ladder_lp4",
-                ladder
-                    .trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Ar { ar, .. } => (
-                "ar",
-                ar.trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::StereoModeller { stereo, .. } => (
-                "stereo_modeller",
-                stereo
-                    .trace_parameters()
-                    .into_iter()
-                    .map(|(n, p)| parameter(n, p))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Decimate(d) => (
-                "decimator",
-                vec![constant("period", d.period), constant("blend", d.blend)],
-                0,
-            ),
-            PreparedProcessor::LoFi(d) => (
-                "lofi",
-                d.trace_parameters()
-                    .into_iter()
-                    .map(|(n, v)| constant(n, v))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Rectify(_) => ("rectifier", vec![], 0),
-            PreparedProcessor::LiveSaturation(shape) => ("kontakt_classic_saturation", vec![parameter("shape", *shape)], 0),
-            PreparedProcessor::LiveDistortion(d) => ("kontakt_distortion", vec![parameter("drive", d.drive), parameter("damping", d.damping)], 0),
-            PreparedProcessor::Saturation(shape) => ("kontakt_classic_saturation", vec![constant("shape", f64::from(*shape))], 0),
-            PreparedProcessor::LegacyPhaser(p) => ("kontakt_legacy_phaser", vec![constant("depth", f64::from(p.depth)), constant("feedback", f64::from(p.feedback))], 0),
-            PreparedProcessor::KontaktEnhancedCompressor(c) => ("kontakt_enhanced_compressor", ["threshold", "ratio", "attack_ms", "release_ms"].into_iter().zip(c.knobs).map(|(n,v)| constant(n, f64::from(v))).collect(), 0),
-            PreparedProcessor::Phaser(p) => ("kontakt_phaser_filter", vec![constant("coefficient", f64::from(p.coefficient)), constant("feedback", f64::from(p.feedback))], 0),
-            PreparedProcessor::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
-            PreparedProcessor::Distortion(d) => ("kontakt_distortion", vec![constant("damping_pole", d.damping_pole())], 0),
-            PreparedProcessor::Reverb(i) => (
-                "reverb",
+            ProcessorRef::Filter { engine, .. } => {
+                let (name, lanes) = engine.trace();
+                (name, lanes.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
+            }
+            ProcessorRef::Color { color, .. } => {
+                let (name, parameters) = color.trace();
+                (name, parameters.into_iter().map(|(n, p)| parameter(n, p)).collect(), 0)
+            }
+            ProcessorRef::Formant(f) => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(f.knobs).map(|(n, v)| constant(n, f64::from(v))).collect(), 0),
+            ProcessorRef::LiveFormant { knobs, .. } => ("kontakt_formant_i", ["talk", "sharp", "size"].into_iter().zip(knobs).map(|(n, v)| parameter(n, *v)).collect(), 0),
+            ProcessorRef::Space(i, _) => (
+                "space",
                 plan.buses
-                    .trace_reverb(*i)
-                    .into_iter()
-                    .map(|(n, v)| constant(n, v))
-                    .collect(),
-                0,
-            ),
-            PreparedProcessor::Convolution(i) => (
-                "convolution",
-                plan.buses
-                    .trace_convolution(*i)
+                    .trace_space(*i)
                     .into_iter()
                     .map(|(n, v)| constant(n, v))
                     .collect(),
@@ -931,10 +928,10 @@ impl TraceGraph {
         };
         let id = self.node(kind, name, zone, group, bus, parameters, latency);
         self.nodes[id].gain_measurement = match stage {
-            PreparedProcessor::Gain(_)
-            | PreparedProcessor::ControlGain(_)
-            | PreparedProcessor::Branch { .. } => "scalar_multiplier",
-            PreparedProcessor::Mix { .. } => "mix_coefficients",
+            ProcessorRef::Gain(_)
+            | ProcessorRef::ControlGain(_)
+            | ProcessorRef::Branch { .. } => "scalar_multiplier",
+            ProcessorRef::Mix { .. } => "mix_coefficients",
             _ => "effective_energy_ratio",
         };
         id

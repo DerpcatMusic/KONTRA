@@ -14,8 +14,8 @@ pub struct Entry {
     pub binding: String,
 }
 
-pub(crate) fn owner(file: &str, anchor: &str) -> String {
-    let text = match file {
+fn owner_source(file: &str) -> Option<&'static str> {
+    Some(match file {
         "script.rs" => include_str!("../script.rs"),
         "script_prelude.lua" => include_str!("../script_prelude.lua"),
         "engine_parameters.rs" => include_str!("../engine_parameters.rs"),
@@ -23,12 +23,17 @@ pub(crate) fn owner(file: &str, anchor: &str) -> String {
         "modulation.rs" => include_str!("../modulation.rs"),
         "script/async_data.rs" => include_str!("../script/async_data.rs"),
         "script/modules.rs" => include_str!("../script/modules.rs"),
-        _ => unreachable!(),
-    };
+        "script/sample_loading.rs" => include_str!("../script/sample_loading.rs"),
+        _ => return None,
+    })
+}
+
+pub(crate) fn owner(file: &str, anchor: &str) -> String {
+    let text = owner_source(file).unwrap_or_else(|| panic!("unregistered ledger owner file {file:?}"));
     let line = text
         .lines()
         .position(|l| l.contains(anchor))
-        .expect("ledger owner anchor")
+        .unwrap_or_else(|| panic!("ledger owner anchor {anchor:?} is missing in {file}"))
         + 1;
     format!("crates/sampler-uvi/src/{file}:{line}")
 }
@@ -145,7 +150,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         }
         add(row("loadData", K::LuaApi, S::Approximate, "script/async_data.rs", "pub(super) fn install", "Bounded asynchronous filesystem JSON loading; other native formats unavailable.", "loadData worker -> JSON decode -> completion coroutine"));
         add(row("loadImpulse", K::LuaApi, S::Approximate, "script.rs", "\"loadImpulse\"", "Requires a supplied impulse resolver and a translated bus convolution slot; task can fail.", "impulse resolver -> convolution upload"));
-        add(row("loadSample", K::LuaApi, S::Unsupported, "script.rs", "for name in [\"loadSample\"]", "Resource task unavailable; callback receives nil.", "failed resource task"));
+        add(row("loadSample", K::LuaApi, S::Approximate, "script/sample_loading.rs", "pub(super) fn install", "Requires exact source/target authority and successful runtime revision commit; bounded task failure/cancellation remain explicit. Native resource semantics unverified.", "sample task -> prepared source -> revision commit / failure"));
         for name in ["class", "AsyncUpdater"] {
             add(row(name, K::LuaApi, S::Approximate, "script/modules.rs", if name == "class" { "fn install_class" } else { "struct AsyncUpdater" }, "Host class/module implementation; full native behavior unverified.", "host class / module"));
         }
@@ -160,7 +165,10 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
         for module in modules {
             let (file, anchor, supported) = match module {
                 "Program" | "Layer" | "Keygroup" | "SamplePlayer" | "AuxEffect" | "ScriptProcessor" => ("script.rs", "fn build_program", true),
-                "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb" => ("inserts.rs", "fn inserts", true),
+                "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "WaveShaper" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "Convolver" | "SampledReverb"
+                | "FxDelay" | "FatDelay" | "SimpleDelay" | "StereoDelay" | "PingPongDelay" | "DualDelay" | "DualDelayX" | "TapeEcho" | "DiffuseDelay" | "DiffuseDelayNested" | "Buzz"
+                | "Chorus" | "Flanger" | "AnalogChorus" | "AnalogFlanger" | "WhiteChorus" | "Ensemble" | "Phaser" | "CrossPhaser"
+                | "Phasor" | "PhasorFilter" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" => ("inserts.rs", "fn inserts", true),
                 "ConstantModulation" | "ScriptEventModulation" | "DAHDSR" | "AHD" | "LFO" | "MultiLFO" | "StepEnvelope" => ("modulation.rs", "fn signal", true),
                 _ => ("inserts.rs", "fn inserts", false),
             };
@@ -169,7 +177,7 @@ pub fn entries() -> &'static BTreeMap<String, Entry> {
                 if supported { "host element / partial IR translation" } else { "unbound module" }));
             for p in crate::script::parameters::definitions(module) {
                 let live = !crate::engine_parameters::lanes(module, p.name).is_empty()
-                    || p.name == "Bypass" && matches!(module, "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "WaveShaper" | "Convolver" | "SampledReverb" | "AuxEffect")
+                    || p.name == "Bypass" && matches!(module, "Gain" | "GainMatrix" | "DigitalEq" | "ThreeBandShelves" | "CompExp" | "OnePole" | "TrackDelay" | "EffectRack" | "WaveShaper" | "Convolver" | "SampledReverb" | "PlainReverb" | "GateReverb" | "FilteredReverb" | "DelayedReverb" | "SparkVerb" | "Bloom" | "Diffusion" | "AuxEffect")
                     || matches!((module, p.name), ("Program" | "Layer" | "Keygroup" | "SamplePlayer", "Gain" | "Pan") | ("SamplePlayer", "Pitch") | ("Program", "Polyphony") | ("ConstantModulation", "Value" | "Style"))
                     || matches!(module, "Convolver" | "SampledReverb") && crate::script::IMPULSE_FIELDS.contains(&p.name);
                 add(row(&format!("setParameter {module}.{}", p.name), K::LuaParameter, if live {S::Approximate} else {S::Stub}, "script.rs", "\"setParam\"",
@@ -329,7 +337,6 @@ pub(super) fn parameter(
             {
                 placed
             } else {
-                // Bandwidth writes through the Q lane, and GainScale through OverallGain.
                 let (effective, _) = crate::engine_parameters::effective(kind, name, 0., |_| None);
                 ir.controls
                     .iter()
@@ -392,4 +399,45 @@ pub(super) fn module_reference(span: Span, kind: &str) -> Construct {
         .unwrap_or_else(|| unknown(span, kind, false));
     c.kind = K::LuaModule;
     c
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    #[test]
+    fn every_ledger_owner_anchor_resolves_into_its_registered_source() {
+        let entries = entries();
+        assert!(!entries.is_empty());
+        for entry in entries.values() {
+            let (path, line) = entry
+                .owner
+                .rsplit_once(':')
+                .expect("owner has a source line");
+            let file = path
+                .strip_prefix("crates/sampler-uvi/src/")
+                .expect("owner stays in the UVI source registry");
+            let source =
+                owner_source(file).unwrap_or_else(|| panic!("{}: unregistered {file}", entry.name));
+            let line: usize = line.parse().unwrap();
+            assert!(
+                line > 0
+                    && source
+                        .lines()
+                        .nth(line - 1)
+                        .is_some_and(|s| !s.trim().is_empty()),
+                "{}: {}",
+                entry.name,
+                entry.owner
+            );
+        }
+        let sample = &entries["loadSample"];
+        assert!(
+            sample
+                .owner
+                .starts_with("crates/sampler-uvi/src/script/sample_loading.rs:")
+        );
+        assert_eq!(sample.status, S::Approximate);
+        assert!(sample.detail.contains("authority") && sample.detail.contains("unverified"));
+    }
 }

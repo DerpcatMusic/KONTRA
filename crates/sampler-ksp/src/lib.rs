@@ -10,12 +10,17 @@ use sampler_core::{
     ScriptInstanceId, ScriptResources,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod headless;
+pub use headless::service_ui_effects;
+
 mod array_file;
 mod ast;
 mod builtins;
 mod diag;
 mod eval;
 mod hir;
+mod zone_routing;
+pub use zone_routing::{ZoneRoutingCapability, ZoneRoutingRequirements};
 #[cfg(feature = "cache")]
 mod init_cache;
 #[cfg(feature = "cache")]
@@ -30,14 +35,15 @@ mod parser;
 #[cfg(feature = "scan")]
 pub mod scan;
 mod sema;
+pub mod setup;
 pub mod ui;
 mod waveform;
 
 pub use diag::{Error, Kind};
-pub use eval::Environment;
+pub use eval::{Environment, SavedValues, Transport};
 pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
 
-pub const PROFILE: &str = "ksp-8.12-v2";
+pub const PROFILE: &str = "ksp-8.12-v3";
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -115,9 +121,14 @@ pub struct Entry {
 }
 /// A compiled script: programs, initial state after `on init`, and its model.
 pub struct Script {
+    setup: std::sync::Arc<setup::SetupLayout>,
     midi_object: sampler_core::MidiObject,
+    initial_residency: Vec<model::InitialResidencyRequest>,
     programs: Vec<Program>,
     entries: Vec<Entry>,
+    /// Compiler-generated periodic schedulers, retained independently of the
+    /// authored listener callback entry they dispatch.
+    listener_drivers: Vec<(usize, usize)>,
     /// Programs started when the plan becomes active (listener timers).
     starts: Vec<usize>,
     /// PGS keys this script created, for the plan's shared store.
@@ -143,6 +154,10 @@ pub struct Script {
 }
 
 impl Script {
+    /// Source-bound setup layout; values and active callbacks are separate.
+    pub fn setup(&self) -> &setup::SetupLayout {
+        &self.setup
+    }
     /// What this script used of each limit it compiled under.
     pub fn usage(&self) -> Limits {
         self.usage
@@ -208,11 +223,13 @@ impl Script {
     /// the script is bound.
     pub fn view(&self) -> ScriptView {
         ScriptView {
+            setup: self.setup.clone(),
             model: self.model.clone(),
             services: self.services.clone(),
             symbols: self.symbols.clone(),
             slot: self.slot,
             entries: self.entries.clone(),
+            listener_drivers: self.listener_drivers.clone(),
             programs: self.programs.len(),
         }
     }
@@ -231,18 +248,37 @@ impl Script {
 /// A bound script's interface model: [`Script::view`].
 #[derive(Clone, Debug)]
 pub struct ScriptView {
+    setup: std::sync::Arc<setup::SetupLayout>,
     model: model::Model,
     services: Vec<&'static str>,
     symbols: Vec<String>,
     slot: u8,
     entries: Vec<Entry>,
+    listener_drivers: Vec<(usize, usize)>,
     programs: usize,
 }
 
 impl ScriptView {
+    pub fn setup(&self) -> &setup::SetupLayout {
+        &self.setup
+    }
     /// How many programs the script contributed to the plan's program table.
     pub fn program_count(&self) -> usize {
         self.programs
+    }
+
+    /// Authored callback or explicit compiler-generated listener scheduler role.
+    /// Local program indices and execution order remain unchanged.
+    pub fn program_role(&self, local: usize) -> Option<&'static str> {
+        self.callback(local).or_else(|| {
+            self.listener_callback(local).map(|_| "listener driver")
+        })
+    }
+
+    /// The exact authored listener entry dispatched by a generated local driver.
+    pub fn listener_callback(&self, local: usize) -> Option<usize> {
+        self.listener_drivers.iter().find_map(|&(driver, callback)|
+            (driver == local).then_some(callback))
     }
 
     /// The callback of this script's `local` program (`"on note"`...), if it
@@ -592,6 +628,20 @@ pub fn persistent_state_buffer(
 ) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
     use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
     let mut state = sampler_core::ScriptStateBuffer::default();
+    // Arrays reach a million cells: reserve once instead of doubling, and
+    // sort only when out of order.
+    state.values.reserve(
+        views
+            .iter()
+            .flat_map(|view| &view.model.persistent)
+            .map(|p| match p.location {
+                model::Location::Control(_) => 1,
+                model::Location::Cells { len, .. } | model::Location::Texts { len, .. } => {
+                    len as usize
+                }
+            })
+            .sum(),
+    );
     let mut base = 0;
     for (i, view) in views.iter().enumerate() {
         let instance =
@@ -620,9 +670,10 @@ pub fn persistent_state_buffer(
                             .checked_add(len)
                             .ok_or(sampler_core::Error::Capacity)?
                     {
+                        let value = state.push_text(sampler_core::Text::new(""));
                         state.values.push(sampler_core::ScriptStateEntry {
                             address: A::Text { instance, index },
-                            value: V::Text(sampler_core::Text::new("")),
+                            value,
                         });
                     }
                 }
@@ -641,8 +692,7 @@ pub fn persistent_state_buffer(
         }
         base += view.programs;
     }
-    state.values.sort_by_key(|entry| entry.address);
-    state.values.dedup_by_key(|entry| entry.address);
+    state.sort_dedup();
     Ok(state)
 }
 
@@ -650,6 +700,11 @@ pub fn persistent_state_buffer(
 /// Note, release and controller callbacks share native module positions and
 /// retain separate instance state and reached-event projections.
 pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
+    let initial_count=scripts.iter().try_fold(0usize,|n,s|n.checked_add(s.initial_residency.len()))
+        .ok_or(sampler_core::Error::Capacity)?;
+    if initial_count > sampler_core::InitialGroupResidency::MAX_REQUESTS {return Err(sampler_core::Error::Capacity);}
+    let mut initial_residency=Vec::new();
+    initial_residency.try_reserve_exact(initial_count).map_err(|_|sampler_core::Error::Capacity)?;
     let mut programs = Vec::new();
     let mut instances = Vec::new();
     let mut resources = Vec::new();
@@ -674,13 +729,23 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
         }
+        waveform::validate_prepared_sources(&plan, &script.resources.store)?;
         let instance =
             ScriptInstanceId(u16::try_from(index).map_err(|_| sampler_core::Error::Capacity)?);
+        for r in &script.initial_residency {
+            if r.source_slot != script.slot {return Err(sampler_core::Error::InvalidInput);}
+            initial_residency.push(sampler_core::InitialGroupResidency {
+                source_group:u32::try_from(r.group).map_err(|_|sampler_core::Error::InvalidInput)?,
+                reload:r.reload,async_id:r.async_id,instance,
+            });
+        }
         let base = programs.len();
         stages.push(sampler_core::Stage {
             note: script.routed(EntryKind::Note).map(|p| base + p),
             release: script.routed(EntryKind::Release).map(|p| base + p),
             controller: script.routed(EntryKind::Controller).map(|p| base + p),
+            poly_at: script.routed(EntryKind::PolyAt).map(|p| base + p),
+            program_change: None,
         });
         for w in &script.model.interface.widgets {
             use model::{Location, WidgetValue};
@@ -759,6 +824,10 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                     instance,
                     storage,
                     drop,
+                    menu: (w.kind == model::WidgetKind::Menu).then_some(sampler_core::WidgetMenuStorage {
+                        count_key: [w.ui_id, lower::MENU_COUNT, -1, lower::MENU_TAG],
+                        value_key: [w.ui_id, lower::MENU_VALUE, 0, lower::MENU_TAG],
+                    }),
                     program: script
                         .routed(EntryKind::UiControl(
                             (w.ui_id - builtins::FIRST_UI_ID) as usize,
@@ -824,8 +893,15 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     }
     let capacity = shared.len() + 4096;
     midi_object.bind_initial_instances(&midi_instances)?;
-    plan.with_initial_controllers(&initial_controllers)
-        .with_script_sustain(owns_sustain)
+    // Script init writes override only their named controllers. A loaded plan
+    // may already carry full-resolution saved-volume/dynamics seeds; replacing
+    // that complete bank here silently mutes untouched amplitude routes.
+    let plan = initial_controllers.iter()
+        .filter(|&&(controller, value)| controller < 128 && value < 128)
+        .fold(plan, |plan, &(controller, value)| {
+            plan.with_initial_level(controller, f64::from(value) / 127.0)
+        });
+    plan.with_script_sustain(owns_sustain)
         .with_script_release_triggers(owns_release_triggers)
         .with_programs(Vec::new(), None)?
         .with_script_instances(instances)?
@@ -842,7 +918,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_widgets(widgets)?
         .with_midi_object(midi_object)
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
-        .with_shared_store(shared, capacity)
+        .with_shared_store(shared, capacity)?
+        .with_initial_group_residency(initial_residency)
 }
 
 /// Compile with no instrument facts and the default script slot.
@@ -942,6 +1019,7 @@ fn compile_inner(
 /// Rate-independent frontend state after one resource-aware `on init`.
 /// Consumed by `compile_initialized`; it is never shared between instances.
 pub struct Initialized {
+    source_digest: [u8; 32],
     hir: hir::Hir,
     init: eval::Initial,
     conditions: BTreeSet<String>,
@@ -950,9 +1028,58 @@ pub struct Initialized {
     observation: scan::Checkpoint,
 }
 
+/// A captured waveform request whose physical source could not be retained.
+/// Source IDs are opaque to this operation: it never searches for a replacement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaveformSourceRejection {
+    pub ui: i32,
+    pub zone: i32,
+    pub reason: WaveformSourceReason,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaveformSourceReason {
+    Unavailable,
+    IdentityChanged,
+}
+
 impl Initialized {
+    pub fn snapshot_mode_write(&self) -> Option<model::SnapshotModeWrite> {
+        self.init.model.snapshot_mode_write
+    }
+    /// Complete source-domain requirements; not permission for saved-row reuse.
+    pub fn zone_routing_requirements(&self) -> ZoneRoutingRequirements {
+        zone_routing::requirements(&self.hir)
+    }
+    /// Successful worker-side physical metadata replacements, in source IDs.
+    pub fn zone_parameters(&self) -> &BTreeMap<u32,[i32;3]> {
+        &self.init.zone_parameters
+    }
+
+    /// Reconcile initialization metadata with this plan's final admitted source
+    /// domain before compilation/publication. Removed or changed identities
+    /// cannot leave an accepted waveform attachment or stale property mirror.
+    /// This does not rerun initialization or translate persisted native IDs.
+    pub fn admit_source_zones(
+        &mut self,
+        zones: BTreeMap<u32, [i32; 3]>,
+    ) -> Vec<WaveformSourceRejection> {
+        let rejected = waveform::admit_sources(
+            &self.hir,
+            &mut self.init.model,
+            &self.environment.zones,
+            &zones,
+        );
+        self.environment.zones = zones;
+        rejected
+    }
+
     pub fn midi_object(&self) -> &sampler_core::MidiObject {
         &self.init.midi_object
+    }
+    /// Exact finite execution metadata; absent from UI model snapshots.
+    pub fn initial_residency_requests(&self)->&[model::InitialResidencyRequest] {
+        &self.init.residency
     }
     pub fn engine_pars(&self) -> Vec<EnginePar> {
         let mut writes: Vec<_> = self
@@ -1100,6 +1227,7 @@ fn initialize_inner(
     })()
     .map_err(|f: diag::Fault| f.locate(source))?;
     Ok(Initialized {
+        source_digest: setup::source_digest(source),
         hir,
         init,
         conditions,
@@ -1149,6 +1277,9 @@ fn compile_initialized_inner(
     if controls.len() > limits.variables {
         return Err(error("control binding budget exceeded"));
     }
+    if initialized.source_digest != setup::source_digest(source) {
+        return Err(error("initialized source identity changed"));
+    }
     let mut bindings = BTreeMap::new();
     let mut identities = BTreeSet::new();
     for &(name, id) in controls {
@@ -1157,6 +1288,7 @@ fn compile_initialized_inner(
         }
     }
     let Initialized {
+        source_digest,
         hir,
         init,
         conditions,
@@ -1234,6 +1366,7 @@ fn compile_initialized_inner(
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
+    let mut listener_drivers = Vec::new();
     let mut starts = Vec::new();
     let profile_lower = std::env::var_os("KONTRA_AUDIT_LOWER").is_some();
     for callback in &hir.callbacks {
@@ -1243,7 +1376,7 @@ fn compile_initialized_inner(
             K::Note => (EntryKind::Note, lower::Context::Note),
             K::Release => (EntryKind::Release, lower::Context::Release),
             K::Controller => (EntryKind::Controller, lower::Context::Controller),
-            K::PolyAt => (EntryKind::PolyAt, lower::Context::Plan),
+            K::PolyAt => (EntryKind::PolyAt, lower::Context::PolyAt),
             K::UiControl(var) => (
                 EntryKind::UiControl(hir.vars[var.0 as usize].ui.unwrap_or(0) as usize),
                 lower::Context::Plan,
@@ -1309,11 +1442,12 @@ fn compile_initialized_inner(
                     .listener_driver(signal, body, callback.span)
                     .map_err(|f| f.locate(source))?;
                 starts.push(programs.len());
+                listener_drivers.push((programs.len(), body));
                 programs.push(driver);
             }
         }
     }
-    unit.finish(&mut programs).map_err(|f| f.locate(source))?;
+    unit.finish(&mut programs, source).map_err(|f| f.locate(source))?;
     let global_ui = entries
         .iter()
         .find(|e| e.kind == EntryKind::UiControls)
@@ -1386,21 +1520,13 @@ fn compile_initialized_inner(
         .map(|(&key, &value)| (key, value))
         .collect();
     start.sort_by_key(|(key, _)| *key);
-    let purges: Vec<_> = init
-        .model
-        .requests
-        .iter()
-        .filter(|r| r.command == "purge_group")
-        .filter_map(|r| match r.args.as_slice() {
-            [Value::Int(group), Value::Int(value)] => Some((*group, *value)),
-            _ => None,
-        })
-        .collect();
-    if !start.is_empty() || !purges.is_empty() {
+    let replay_cost=init.residency.len().checked_mul(3).ok_or_else(||error("startup residency instruction budget exceeded"))?;
+    unit.budget=unit.budget.checked_sub(replay_cost).ok_or_else(||error("startup residency instruction budget exceeded"))?;
+    if !start.is_empty() {
         // Authored init writes must precede live persistence and listener callbacks.
         starts.insert(0, programs.len());
         programs.push(
-            unit.engine_start(&start, &purges)
+            unit.engine_start(&start)
                 .map_err(|f| f.locate(source))?,
         );
     }
@@ -1569,6 +1695,18 @@ fn compile_initialized_inner(
         .map(|(&(name, c), &n)| (name, c, n))
         .collect();
     let model = model::assemble(&hir, &init, &ids, &entries);
+    let setup = std::sync::Arc::new(setup::SetupLayout::compiled(
+        source_digest,
+        rate,
+        &hir,
+        &init,
+        &environment,
+        &conditions,
+        &ids,
+        host.iter().map(|(_, c)| c),
+        &resources,
+        shared.len(),
+    ));
     if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
         eprintln!(
             "AUDIT {{\"stage\":\"ksp_model_assemble\",\"ms\":{},\"widgets\":{},\"instructions\":{}}}",
@@ -1578,7 +1716,9 @@ fn compile_initialized_inner(
         );
     }
     Ok(Script {
+        setup,
         midi_object: init.midi_object,
+        initial_residency: init.residency,
         programs: programs
             .into_iter()
             .map(|p| {
@@ -1595,6 +1735,7 @@ fn compile_initialized_inner(
             })
             .collect(),
         entries,
+        listener_drivers,
         starts,
         shared,
         rate,
@@ -1622,4 +1763,9 @@ fn compile_initialized_inner(
                 .sum(),
         },
     })
+}
+
+/// Exact source identity used to bind runtime diagnostics to their source excerpt.
+pub fn source_fingerprint(source: &str) -> [u8; 32] {
+    setup::source_digest(source)
 }

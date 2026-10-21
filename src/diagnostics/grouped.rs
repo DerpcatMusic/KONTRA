@@ -47,6 +47,10 @@ pub struct Location {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callback_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub pc: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub native_slot: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rack: Option<usize>,
@@ -302,14 +306,48 @@ impl RuntimeLog {
             summary_logged: false,
         }
     }
+    #[cfg(test)]
     pub(crate) fn fault(&mut self, callback: usize, outcome: sampler_core::Outcome) {
+        self.fault_context(callback, outcome, None, None);
+    }
+    pub(crate) fn fault_context(&mut self, callback: usize, outcome: sampler_core::Outcome,
+        context: Option<&sampler_core::BehaviorFault>, instrument: Option<&sampler_ir::Instrument>) {
         let reason = match outcome {
             sampler_core::Outcome::Fault(error) => format!("{error:?}"),
             sampler_core::Outcome::FuelExhausted => "FuelExhausted".into(),
             _ => return,
         };
-        let detail = format!("KSP callback #{callback} faulted: {reason}");
-        self.add("KspFault", &reason, "Callback", Some(callback), 1, Some(detail));
+        let subject = context.and_then(|f| f.site?.builtin).unwrap_or("Callback");
+        let key = Key::new("KspFault", &reason, subject);
+        let mut location = Location::new(&self.path, self.program, "");
+        location.callback_index = Some(callback);
+        location.pc = context.map(|f| f.pc);
+        location.script_slot = context.and_then(|f| f.source_slot).map(usize::from);
+        location.line = context.and_then(|f| f.site).map(|s| s.line as usize);
+        location.column = context.and_then(|f| f.site).map(|s| s.column as usize);
+        // Retain separate evidence for distinct sites with the same error/builtin.
+        let first = !self.collector.rows.get(&key).is_some_and(|rows| rows.contains_key(&location));
+        self.collector.add(key.clone(), location.clone(), Some(true), 1);
+        if !first { return; }
+        let detail = context.map(|f| super::ksp::fault_data(f, instrument));
+        let mut message = format!("KSP {} faulted: {reason}", context.and_then(|f| f.callback).unwrap_or("callback"));
+        if let Some(fault) = context {
+            if let Some(site) = fault.site {
+                message.push_str(&format!(" · {} at line {}:{}", site.builtin.unwrap_or("script operation"), site.line, site.column));
+            }
+        } else {
+            message.push_str(" · execution context unavailable (legacy record)");
+        }
+        let mut data = serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,
+            "diagnostic_key":key,"location":location,"script_slot":location.script_slot,"line":location.line,
+            "group":self.collector.groups().into_iter().find(|g|g.key==key),"message":message,
+            "impact":"callback stopped; inspect the failing operation and operands below",
+            "ksp_fault":detail});
+        if let Some(detail) = &detail {
+            data["source_excerpt"] = detail["source_excerpt"].clone();
+            data["source_excerpt_unavailable"] = detail["source_excerpt_unavailable"].clone();
+        }
+        super::event(super::LogLevel::Error, "runtime", "runtime_issue", data);
     }
     pub(crate) fn lost(&mut self, count: u64) {
         self.add(
@@ -364,8 +402,9 @@ impl RuntimeLog {
     pub(crate) fn counters(&mut self, p: crate::sound::report::RuntimeProblems) -> bool {
         let mut changed = false;
         for (reason, subject, count) in [
-            ("CapacityDrops", "VoicePool", p.capacity_drops),
+            ("CapacityDrops", "RuntimeAdmission", p.capacity_drops),
             ("Underruns", "Stream", p.underruns),
+            ("ColdStarts", "SampleStart", p.cold_starts),
             ("StreamCapacity", "PagePool", p.stream_capacity),
             ("StreamDisconnected", "Reader", p.stream_disconnected),
             ("StreamFailed", "Reader", p.stream_failed),
@@ -383,7 +422,15 @@ impl RuntimeLog {
             let delta = count.saturating_sub(*old);
             *old = count;
             if delta > 0 {
-                self.add("RuntimeCounter", reason, subject, None, delta, None);
+                let detail = match reason {
+                    "ColdStarts" => Some("Sample starts waited silently because their first source frames were not resident".into()),
+                    "CapacityDrops" => Some(format!(
+                        "Runtime admission capacity drops; voice-pool refusals: {}; stream page-capacity refusals: {}. Silent waiting-voice replacements: {} (separate observation).",
+                        p.voice_pool_refusals, p.stream_capacity, p.waiting_voice_replacements,
+                    )),
+                    _ => None,
+                };
+                self.add("RuntimeCounter", reason, subject, None, delta, detail);
                 changed = true;
             }
         }
@@ -409,7 +456,7 @@ impl RuntimeLog {
             .add(key.clone(), location.clone(), Some(true), count)
         {
             super::event(
-                super::LogLevel::Error,
+                if reason == "ColdStarts" { super::LogLevel::Warning } else { super::LogLevel::Error },
                 "runtime",
                 "runtime_issue",
                 serde_json::json!({"load_id":self.load_id,"path":self.path,"program":self.program,"diagnostic_key":key,"location":location,"group":self.collector.groups().into_iter().find(|g|g.key==key),
@@ -518,10 +565,17 @@ mod tests {
         assert_eq!(log.collector.sidecar().len(), 40);
         let p = crate::sound::report::RuntimeProblems {
             capacity_drops: 2,
+            cold_starts: 3,
             ..Default::default()
         };
         assert!(log.counters(p));
         assert!(!log.counters(p));
+        assert!(log.collector.groups().iter().any(|group|
+            group.key.reason == "ColdStarts" && group.counts.enabled == 3));
+        assert!(!log.collector.groups().iter().any(|group| group.key.reason == "Underruns"));
+        assert!(log.collector.groups().iter().any(|group|
+            group.key.reason == "CapacityDrops" && group.key.subject == "RuntimeAdmission"
+                && group.counts.enabled == 2));
         let mut lua = sampler_uvi::script::FaultCounts::default();
         lua.runtime
             .insert(sampler_uvi::script::FaultCategory::Lua, 3);
@@ -537,6 +591,23 @@ mod tests {
     #[test]
     #[cfg(feature = "plugin")]
     fn runtime_summary_logs_once_but_keeps_live_counts_and_sidecar() {
+        const CHILD: &str = "KONTRA_TEST_RUNTIME_SUMMARY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Plugin lifecycle tests can retire the process-wide session between
+            // summary(), flush() and snapshot(). Give this journal contract its
+            // own process instead of accepting a missing summary as eviction.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "diagnostics::grouped::tests::runtime_summary_logs_once_but_keeps_live_counts_and_sidecar",
+                ])
+                .env(CHILD, "1")
+                .env("KONTRA_DISABLE_NETWORK", "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated runtime summary journal contract");
+            return;
+        }
         let id = format!("runtime-summary-once-{}", std::process::id());
         let mut log = RuntimeLog::new(&id, "/Libraries/Kontakt/A/a.nki", 0);
         log.fault(0, sampler_core::Outcome::FuelExhausted);
@@ -549,17 +620,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sidecar["locations"].as_array().unwrap().len(), 2);
+        // Events reach the journal through a worker queue.
+        super::super::flush(std::time::Duration::from_secs(10)).unwrap();
         let snapshot = super::super::snapshot();
-        assert_eq!(
-            snapshot
-                .events
-                .iter()
-                .filter(|e| e.code.as_deref() == Some("runtime_diagnostics_summary")
-                    && e.load_id.as_deref() == Some(id.as_str()))
-                .count(),
-            1,
-            "one journal summary per load, not per refresh"
-        );
+        let logged = snapshot
+            .events
+            .iter()
+            .filter(|e| e.code.as_deref() == Some("runtime_diagnostics_summary")
+                && e.load_id.as_deref() == Some(id.as_str()))
+            .count();
+        assert_eq!(logged, 1, "one journal summary per load, not per refresh");
     }
 
     #[test]

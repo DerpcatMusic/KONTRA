@@ -1,11 +1,17 @@
 //! Frozen 608a20a1 equations, independent of the extracted sample helpers.
 use super::*;
-use control::PreparedParameter;
 use lanes::{Batch, Cells, LaneBlock, VOICES};
-use svf::{FilterBank, FilterContext, PreparedFilter};
+use svf::{FilterBank, FilterContext, FilterRegistryBuilder, PreparedFilters};
+
+fn admitted_color(color: color::Color) -> color::BatchColor {
+    match color::BatchColor::classify(color) {
+        color::ColorOwner::Batch(color) => color,
+        color::ColorOwner::Scalar(_) => panic!("this fixture authors only admitted batch color"),
+    }
+}
 
 fn reference(
-    stages: &[PreparedProcessor],
+    stages: &[BatchOp],
     states: &mut [ProcessorState],
     block: &mut Planar,
     len: usize,
@@ -19,71 +25,31 @@ fn reference(
         let state = &mut states[index];
         index += 1;
         match stage {
-            PreparedProcessor::Gain(gain) => {
+            BatchOp::Gain(gain) => {
                 for channel in block.iter_mut() {
                     for x in &mut channel[..len] {
                         *x *= gain;
                     }
                 }
             }
-            PreparedProcessor::ControlGain(lane) => {
+            BatchOp::ControlGain(lane) => {
                 for i in 0..len {
                     let g = parameters[*lane].value(at + i as u64);
                     block[0][i] *= g;
                     block[1][i] *= g;
                 }
             }
-            PreparedProcessor::StereoMatrix(m) => {
+            BatchOp::StereoMatrix(m) => {
                 for i in 0..len {
                     let (l, r) = (block[0][i], block[1][i]);
                     block[0][i] = m[0][0] * l + m[0][1] * r;
                     block[1][i] = m[1][0] * l + m[1][1] * r;
                 }
             }
-            PreparedProcessor::Gainer { dry, gain, k } => {
-                let mut current = state.z[0][0] as f32;
-                for i in 0..len {
-                    let target = gain.value(parameters, at + i as u64, None) as f32;
-                    if state.aux[0] == 0. {
-                        (current, state.aux[0]) = (target, 1.);
-                    }
-                    let m = dry + f64::from(current);
-                    block[0][i] *= m;
-                    block[1][i] *= m;
-                    current += (target - current) * *k as f32;
-                }
-                state.z[0][0] = f64::from(current);
+            BatchOp::Color { color, .. } => {
+                color.color().process(&mut state.color, parameters, block, len, at, &mut []);
             }
-            PreparedProcessor::StereoModeller { stereo, .. } => {
-                let (mut width, mut pan) = (state.aux[0] as f32, state.aux[1] as f32);
-                let mut delta = 0.;
-                for i in 0..len {
-                    let [tw, tp] = stereo.targets(parameters, at + i as u64);
-                    if state.aux[2] == 0. {
-                        (width, pan, state.aux[2]) = (tw, tp, 1.);
-                    }
-                    let (l, r) = (block[0][i] as f32, block[1][i] as f32);
-                    let (l, r) = if width >= 0.5 {
-                        let spread = 2. * width - 1.;
-                        (
-                            (1. + spread) * l - spread * r,
-                            (1. + spread) * r - spread * l,
-                        )
-                    } else {
-                        let a = 0.5 - width;
-                        (l + a * (r - l), r + a * (l - r))
-                    };
-                    block[0][i] = f64::from(l * (1. - pan.max(0.)));
-                    block[1][i] = f64::from(r * (1. + pan.min(0.)));
-                    width += (tw - width) * (1.0f32 / 180.);
-                    if i >= len / 4 * 4 || i % 4 != 3 {
-                        delta = (tp - pan) * f32::from_bits(0x3a11a2b4);
-                    }
-                    pan += delta;
-                }
-                (state.aux[0], state.aux[1]) = (f64::from(width), f64::from(pan));
-            }
-            PreparedProcessor::Mix { count, lanes } => {
+            BatchOp::Mix { count, lanes } => {
                 let inner = index..index + usize::from(*count);
                 index = inner.end;
                 let [dry, wet, bypass] = lanes.map(|lane| parameters[lane]);
@@ -114,7 +80,7 @@ fn reference(
                     }
                 }
             }
-            PreparedProcessor::StateVariable(filter) => {
+            BatchOp::StateVariable(filter) => {
                 let cache = bank.prepare(*filter, len, parameters, at, None);
                 let cache = bank.cache(cache);
                 for i in 0..len {
@@ -147,16 +113,17 @@ fn reference(
     }
 }
 
-fn bits(state: &ProcessorState) -> ([[u64; 2]; 2], [u64; 16], u32, u32) {
+fn bits(state: &ProcessorState) -> ([[u64; 2]; 2], [u64; 16], u32, u32, color::State) {
     (
         state.z.map(|r| r.map(f64::to_bits)),
         state.aux.map(f64::to_bits),
         state.delay_position,
         state.delay_filled,
+        state.color,
     )
 }
 
-fn check(stages: &[PreparedProcessor], filters: &[PreparedFilter], parameters: &[ControlRamp]) {
+fn check(stages: &[BatchOp], filters: &PreparedFilters, parameters: &[ControlRamp]) {
     for len in [0usize, 1, 3, 4, 5, 17, BLOCK] {
         for masked in [false, true] {
             for count in [1, 3, VOICES] {
@@ -241,8 +208,7 @@ fn check(stages: &[PreparedProcessor], filters: &[PreparedFilter], parameters: &
                                 tempo: 120.0,
                                 bank: &mut scalar_bank,
                                 expression: None,
-                                reverbs: &mut [],
-                                convolutions: &mut []
+                                spaces: &mut [],
                             },
                             None
                         ));
@@ -283,64 +249,78 @@ fn shared_dispatch_matches_frozen_pcm_and_state_bits() {
         ControlRamp::test_ramp(0., 1., 0, 199),
     ];
     for gain in [-1.5, 0., 0.75] {
-        check(&[PreparedProcessor::Gain(gain)], &[], &[]);
+        check(&[BatchOp::Gain(gain)], &PreparedFilters::default(), &[]);
     }
-    check(&[PreparedProcessor::ControlGain(0)], &[], &parameters);
+    check(&[BatchOp::ControlGain(0)], &PreparedFilters::default(), &parameters);
     check(
-        &[PreparedProcessor::StereoMatrix([[0.3, -0.7], [1.2, 0.9]])],
-        &[],
+        &[BatchOp::StereoMatrix([[0.3, -0.7], [1.2, 0.9]])],
+        &PreparedFilters::default(),
         &[],
     );
     for dry in [0., 0.5, 1.] {
-        check(
-            &[PreparedProcessor::Gainer {
-                dry,
-                gain: PreparedParameter::Control(0),
-                k: f64::from(f32::from_bits(0x3a11a2b4)),
-            }],
-            &[],
-            &parameters,
-        );
+        let gain = Parameter::Control(ControlRange {
+            control: crate::ControlId(0),
+            low: 0.,
+            high: 1.,
+            ramp_frames: 0,
+        });
+        let color = ColorSettings {
+            gainer: Some(GainerSettings { gain, dry }),
+            ..ColorSettings::IDENTITY
+        }
+        .compile(48000, &mut Vec::new());
+        check(&[BatchOp::Color { color: admitted_color(color), offset: 0 }], &PreparedFilters::default(), &parameters);
     }
-    let mut bindings = Vec::new();
     // Width then pan map to parameter slots 1 and 2.
-    bindings.push(ControlRange {
+    let mut bindings = vec![ControlRange {
         control: crate::ControlId(0),
         low: 0.,
         high: 1.,
         ramp_frames: 0,
-    });
-    let stereo = StereoSettings {
-        width: Parameter::Control(ControlRange {
-            control: crate::ControlId(1),
-            low: 0.,
-            high: 1.,
-            ramp_frames: 0,
+    }];
+    let color = ColorSettings {
+        stereo: Some(StereoSettings {
+            width: Parameter::Control(ControlRange {
+                control: crate::ControlId(1),
+                low: 0.,
+                high: 1.,
+                ramp_frames: 0,
+            }),
+            pan: Parameter::Control(ControlRange {
+                control: crate::ControlId(2),
+                low: -1.,
+                high: 1.,
+                ramp_frames: 0,
+            }),
+            pseudo: false,
         }),
-        pan: Parameter::Control(ControlRange {
-            control: crate::ControlId(2),
+        ..ColorSettings::IDENTITY
+    }
+    .compile(48000, &mut bindings);
+    check(&[BatchOp::Color { color: admitted_color(color), offset: 0 }], &PreparedFilters::default(), &parameters);
+    // Memoryless curves, one control-driven (lane 0) and one fixed, share a stage.
+    for curve in [
+        CurveSettings::Classic(Parameter::Control(ControlRange {
+            control: crate::ControlId(0),
             low: -1.,
             high: 1.,
             ramp_frames: 0,
-        }),
-        pseudo: false,
+        })),
+        CurveSettings::Rectifier(Rectifier::Half),
+    ] {
+        let color = ColorSettings { curve, ..ColorSettings::IDENTITY }.compile(48000, &mut Vec::new());
+        check(&[BatchOp::Color { color: admitted_color(color), offset: 0 }], &PreparedFilters::default(), &parameters);
     }
-    .compile(48000, &mut bindings);
-    check(
-        &[PreparedProcessor::StereoModeller { stereo, offset: 0 }],
-        &[],
-        &parameters,
-    );
     // A stateless inner stage avoids the existing shorter-voice bypass state limitation.
     check(
         &[
-            PreparedProcessor::Mix {
+            BatchOp::Mix {
                 count: 1,
                 lanes: [3, 0, 4],
             },
-            PreparedProcessor::Gain(-0.75),
+            BatchOp::Gain(-0.75),
         ],
-        &[],
+        &PreparedFilters::default(),
         &parameters,
     );
 }
@@ -378,9 +358,11 @@ fn shared_svf_matches_frozen_pcm_and_state_bits() {
                     }
                     .compile(rate, &mut bindings)
                     .unwrap();
+                    let mut filters = FilterRegistryBuilder::default();
+                    let handle = filters.push_svf(filter);
                     check(
-                        &[PreparedProcessor::StateVariable(0)],
-                        &[filter],
+                        &[BatchOp::StateVariable(handle)],
+                        &filters.finish(),
                         &parameters,
                     );
                 }
@@ -393,27 +375,26 @@ fn shared_svf_matches_frozen_pcm_and_state_bits() {
 fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
     use control::RAMP_READS;
     let stages = [
-        PreparedProcessor::Mix {
+        BatchOp::Mix {
             count: 1,
             lanes: [0, 1, 2],
         },
-        PreparedProcessor::Gain(0.75),
+        BatchOp::Gain(0.75),
     ];
     let parameters = [
         ControlRamp::test_ramp(0., 0.2, 0, 0),
         ControlRamp::test_ramp(0., 0.8, 0, 0),
         ControlRamp::test_ramp(0., 0.25, 0, 0),
     ];
-    check(&stages, &[], &parameters);
+    check(&stages, &PreparedFilters::default(), &parameters);
     let mut states = [ProcessorState::default(); 2];
     let mut block = [[0.125; BLOCK]; 2];
-    let mut bank = FilterBank::new(&[], 0).unwrap();
+    let mut bank = FilterBank::new(&PreparedFilters::default(), 0).unwrap();
     let mut context = FilterContext {
         tempo: 120.0,
         bank: &mut bank,
         expression: None,
-        reverbs: &mut [],
-        convolutions: &mut [],
+        spaces: &mut [],
     };
     RAMP_READS.with(|n| n.set(0));
     assert!(!super::process::<false>(
@@ -459,4 +440,25 @@ fn held_mix_reads_controls_once_per_block_in_scalar_and_lanes() {
         reads <= 8,
         "held lane mix performed {reads} target reads for 32 frames"
     );
+}
+
+/// Native stages belonging to other chains still occupy public filter addresses.
+/// This chain's scalar and lane kernels must consume its dense SVF handles with
+/// the frozen equations, including masked tails and partial SIMD batches.
+#[test]
+fn interleaved_addressed_svf_handles_match_frozen_pcm_and_state_bits() {
+    let mut filters = FilterRegistryBuilder::default();
+    filters.push_native();
+    let first = filters.push_svf(StateVariableFilter {
+        mode: SvfMode::LowPass, cutoff_hz: Parameter::Constant(700.),
+        q: Parameter::Constant(0.7),
+    }.compile(48_000, &mut Vec::new()).unwrap());
+    filters.push_native();
+    let last = filters.push_svf(StateVariableFilter {
+        mode: SvfMode::HighPass, cutoff_hz: Parameter::Constant(2600.),
+        q: Parameter::Constant(0.9),
+    }.compile(48_000, &mut Vec::new()).unwrap());
+    assert_eq!([first.addressed(), last.addressed()], [1, 3]);
+    check(&[BatchOp::StateVariable(first), BatchOp::StateVariable(last)],
+        &filters.finish(), &[]);
 }

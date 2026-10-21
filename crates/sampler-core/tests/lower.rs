@@ -4,6 +4,66 @@ use sampler_core::{Input, Limits, Pcm, Protocol, Runtime};
 use sampler_ir as ir;
 
 #[test]
+fn readonly_physical_catalog_exceeds_routing_count_but_keeps_its_own_byte_budget() {
+    let count = sampler_core::lower::ZONE_ROUTING_LIMITS.zones + 1;
+    assert!(count < sampler_core::lower::SOURCE_ZONE_CATALOG_ZONES);
+    let home = ir::SourceZoneHome {
+        group: 17,
+        low_key: 0,
+        high_key: 127,
+    };
+    let mut instrument = ir::Instrument::default();
+    instrument.source_indices.zones = vec![None; count];
+    instrument.source_indices.zone_catalog = (0..count)
+        .map(|n| ir::SourceZone {
+            id: (n != 1).then_some(n as u32 * 2),
+            home,
+        })
+        .collect();
+    let plan = lower(&instrument, 48000, vec![], no_behaviors).unwrap();
+    assert_eq!(plan.source_zone_identity_count(), count);
+    assert_eq!(plan.source_zone_identity(0), Some(0));
+    assert_eq!(plan.source_zone_identity(1), None);
+    assert_eq!(
+        plan.source_zone_identity(count - 1),
+        Some((count as u32 - 1) * 2)
+    );
+    assert_eq!(plan.source_zone_identity(count), None);
+    let limits = Limits::for_plan(&plan, 1, 1);
+    let runtime = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        assert_eq!(
+            runtime.zone_parameter_in(
+                runtime.active_plan(),
+                (count as u32 - 1) * 2,
+                sampler_core::ZoneParameter::Group
+            ),
+            Ok(17)
+        );
+        assert!(
+            runtime
+                .zone_routing_report(runtime.active_plan())
+                .unwrap()
+                .is_none()
+        );
+    });
+    let over_budget = sampler_core::lower::SOURCE_ZONE_CATALOG_ZONES + 1;
+    instrument.source_indices.zones.resize(over_budget, None);
+    instrument
+        .source_indices
+        .zone_catalog
+        .resize(over_budget, ir::SourceZone { id: None, home });
+    assert!(matches!(
+        lower(&instrument, 48000, vec![], no_behaviors),
+        Err(LowerError::Core {
+            stage: sampler_core::lower::Stage::ZoneRouting,
+            error: sampler_core::Error::Capacity,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn authored_inactive_envelope_values_remain_readable_without_a_dsp_write_owner() {
     use sampler_core::{EngineParameterAddress, Error, engine_parameter_id};
     let address = EngineParameterAddress {
@@ -114,6 +174,7 @@ fn constant(value: f32) -> Pcm {
 fn asset(name: &str) -> ir::Asset {
     ir::Asset {
         location: ir::AssetLocation::Path(name.into()),
+        residency: Default::default(),
         encoding: ir::Encoding::Wav,
         root_key: None,
         loops: Vec::new(),
@@ -221,7 +282,7 @@ fn one_shot_envelope_bounds_a_looped_release_zone() {
     ir.zones[0].selection = None;
     ir.sequences.clear();
     let mut release = ir.zones[0].clone();
-    release.asset = ir::AssetRef(3);
+    release.asset = Some(ir::AssetRef(3));
     release.trigger = ir::Trigger::KeyRelease;
     release.playback.looping = ir::Looping::Continuous(ir::LoopRange {
         start: 0,
@@ -292,7 +353,7 @@ fn unexecutable_meaning_is_rejected_with_its_owner() {
         })
     ));
     let mut ir = instrument();
-    ir.zones[0].asset = ir::AssetRef(9);
+    ir.zones[0].asset = Some(ir::AssetRef(9));
     let error = rejected(&ir, pcm());
     assert_eq!(
         error.to_string(),
@@ -505,6 +566,7 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
         voices,
         kill,
         prefer_released: true,
+        exclusive_set: None,
         fade: ir::Time::Milliseconds(0.0),
     };
     let zone = |group| ir::Zone {
@@ -552,8 +614,8 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
     assert_eq!(voices, 5);
 }
 
-/// A 4-pole filter lowers as two cascaded 2-pole sections: it attenuates a
-/// tone well above the cutoff more than one 2-pole section does.
+/// A 4-pole filter lowers as two cascaded 2-pole sections (6-pole: three): each
+/// attenuates a tone well above the cutoff more than the one before.
 #[test]
 fn four_pole_filters_lower_to_two_cascaded_sections() {
     let tone = |poles| {
@@ -585,9 +647,11 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
         rt.render(&mut out).unwrap();
         out[256..].iter().map(|f| f[0] * f[0]).sum::<f32>()
     };
-    let (two, four) = (tone(2), tone(4));
-    assert!(two.is_finite() && four.is_finite());
+    let (two, four, six) = (tone(2), tone(4), tone(6));
+    assert!(two.is_finite() && four.is_finite() && six.is_finite());
     assert!(four < two * 0.5, "two {two}, four {four}");
+    // Three sections: SV LP6 is six cascaded one-poles at zero resonance.
+    assert!(six < four * 0.5, "four {four}, six {six}");
 }
 
 #[test]
@@ -949,10 +1013,8 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     rt.set_engine_offsets(&[]).unwrap();
     rt.render(&mut out).unwrap();
     assert!((out[32][0] / before - 0.25).abs() < 0.001);
-    instrument.chains[0].pre_amplitude[0] = ir::Processor::Gainer {
-        gain: ir::Gain::UNITY,
-        dry: 0.,
-    };
+    instrument.chains[0].pre_amplitude[0] =
+        ir::Processor::Color(ir::fx::color::Config::gainer(ir::Gain::UNITY, 0.));
     let mut rt = Runtime::new(prepare(&instrument, constant(0.5)), limits()).unwrap();
     rt.trigger(input(60), 60, 1.).unwrap();
     rt.render(&mut out).unwrap();
@@ -1011,6 +1073,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         unit: ir::ControlUnit::None,
     };
     instrument.chains[0].pre_amplitude[0] = ir::Processor::Daft(ir::Daft {
+        address: None,
         gain: 0.,
         cutoff: 0.,
         resonance: 0.,
@@ -1086,11 +1149,7 @@ fn native_stereo_width_and_pan_controls_reach_the_processor() {
         }],
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::StereoModeller {
-                width: 0.5,
-                pan: 0.,
-                pseudo: false,
-            }],
+            pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::stereo(0.5, 0., false))],
             post_amplitude: vec![],
         }],
         controls: keys
@@ -1435,11 +1494,7 @@ fn lower_retains_pure_delay_and_pseudo_stereo_after_source_end() {
             feedback: 0.0,
             mix: 1.0,
         },
-        ir::Processor::StereoModeller {
-            width: 0.5,
-            pan: 0.0,
-            pseudo: true,
-        },
+        ir::Processor::Color(ir::fx::color::Config::stereo(0.5, 0.0, true)),
     ] {
         let instrument = ir::Instrument {
             assets: vec![asset("tail probe")],
@@ -1578,6 +1633,7 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
                         })
                     } else {
                         ir::Processor::Daft(ir::Daft {
+                            address: None,
                             gain: 0.,
                             cutoff,
                             resonance: 0.1,
@@ -1716,6 +1772,7 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                     })
                 } else {
                     ir::Processor::Daft(ir::Daft {
+                        address: None,
                         gain,
                         cutoff: 0.5,
                         resonance,
@@ -2101,6 +2158,8 @@ fn generic_voice_filter_parameters_never_share_another_voices_coefficients() {
 
 #[test]
 fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
+    /// Centre gain in true dB per displayed dB of the native legacy EQ.
+    const GAIN_SCALE: f64 = 2.006_866_648_250_223;
     let instrument = ir::Instrument {
         source_indices: ir::SourceIndices {
             control_aliases: vec![ir::SourceControlAlias {
@@ -2128,13 +2187,13 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
         }],
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(0.),
-                },
-                cutoff: ir::Frequency::Hertz(1000.),
-                resonance: ir::Resonance::Q(1.),
-            })],
+            pre_amplitude: vec![ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+                law: ir::fx::eq::Law::KontaktLegacy,
+                frequency: sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.),
+                q: sampler_core::KontaktLegacyEqSettings::bandwidth_knob(1.),
+                gain_db: 0.,
+                ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+            }))],
             post_amplitude: vec![],
         }],
         processor_controls: vec![ir::ProcessorControl {
@@ -2222,7 +2281,7 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     let power = |frames: &[[f32; 2]]| frames.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>();
     let gain_db = 10. * (power(&output[1024..]) / power(&frames[1024..4096])).log10();
     assert!(
-        (gain_db - 12. * sampler_core::PeakingEq::GAIN_SCALE).abs() < 0.05,
+        (gain_db - 12. * GAIN_SCALE).abs() < 0.4,
         "center-frequency gain: {gain_db} dB"
     );
     let id = sampler_core::lower::ir_control_id("eq/physical-slot-5/band-2/gain");
@@ -2237,8 +2296,9 @@ fn registered_peak_gain_keeps_a_flat_band_and_drives_real_voice_audio() {
     });
     let edited_db = 10. * (power(&edited[128..]) / power(&frames[4224..4608])).log10();
     assert!(
-        // +18 dB shown is 36 dB true; the 512-frame window has not fully settled.
-        (edited_db - 18. * sampler_core::PeakingEq::GAIN_SCALE).abs() < 0.6,
+        // The native wrapper slews 1% of the distance per 32 frames toward the +36 dB target, so
+        // 512 frames only start the climb from the 24 dB the velocity route held.
+        edited_db > 12. * GAIN_SCALE + 0.5 && edited_db < 18. * GAIN_SCALE,
         "native base plus held modulation clamps at +18 dB: {edited_db}"
     );
     let Ok(sampler_core::ControlValue::Real(base)) = rt.control_base_value(rt.active_plan(), id)
@@ -2268,15 +2328,13 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
         controls,
         chains: vec![ir::Chain {
             scope: ir::Scope::Voice,
-            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
-                kind: ir::FilterKind::Peak {
-                    gain: ir::Gain::Decibels(12.),
-                },
-                cutoff: ir::Frequency::Hertz(20. * 10f64.powf(0.9)),
-                resonance: ir::Resonance::Q(
-                    1. / (2. * (std::f64::consts::LN_2 * 0.5 * 0.84).sinh()),
-                ),
-            })],
+            pre_amplitude: vec![ir::Processor::Eq(ir::fx::eq::Config::band(ir::fx::eq::Band {
+                law: ir::fx::eq::Law::KontaktLegacy,
+                frequency: 0.3,
+                q: 0.2,
+                gain_db: 12.,
+                ..ir::fx::eq::Band::new(ir::fx::eq::Kind::Peak, 0., 0., 0.)
+            }))],
             post_amplitude: vec![],
         }],
         processor_controls: [
@@ -2336,7 +2394,7 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
         }],
         ..Default::default()
     };
-    let hz = 20f32 * 10f32.powf(3. * 0.7);
+    let hz = sampler_core::KontaktLegacyEqSettings::frequency_hz(0.7, 48000);
     let frames: Vec<_> = (0..10000)
         .map(|n| [0.01 * (std::f32::consts::TAU * hz * n as f32 / 48000.).sin(); 2])
         .collect();
@@ -2358,8 +2416,8 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
     let power = |f: &[[f32; 2]]| f.iter().map(|x| f64::from(x[0]).powi(2)).sum::<f64>();
     let boosted_db = 10. * (power(&out[1024..]) / power(&frames[1024..4096])).log10();
     assert!(
-        (boosted_db - 12.).abs() < 0.03,
-        "frequency moved in log-knob domain: {boosted_db}"
+        (boosted_db - 12. * 2.006_866_648_250_223).abs() < 0.3,
+        "frequency moved in the native knob domain: {boosted_db}"
     );
     let mut edited = [[0.; 2]; 1024];
     support::without_heap(|| {
@@ -2379,8 +2437,8 @@ fn registered_peak_frequency_and_width_use_normalized_knob_domains() {
     });
     let edited_db = 10. * (power(&edited[512..]) / power(&frames[4608..5120])).log10();
     assert!(
-        edited_db < 1.,
-        "native base edits move the same held knobs: {edited_db}"
+        edited_db < boosted_db - 5.,
+        "native base edits move the same held knobs (slewing at the native cadence): {edited_db}"
     );
 
     let mut width_outputs = [[[0.; 2]; 1024]; 2];
@@ -2460,14 +2518,12 @@ fn compressor_descriptors_have_live_typed_physical_lanes() {
     i.chains = vec![ir::Chain {
         scope: ir::Scope::Voice,
         pre_amplitude: vec![],
-        post_amplitude: vec![ir::Processor::Compressor(ir::Compressor {
-            threshold_db: -12.,
-            ratio: 4.,
-            attack: ir::Time::Seconds(0.01),
-            release: ir::Time::Seconds(0.1),
-            makeup: ir::Gain::Linear(1.),
-            link: true,
-        })],
+        post_amplitude: vec![ir::Processor::Dynamics(ir::fx::dynamics::Config::generic(
+            -12.,
+            4.,
+            ir::Time::Seconds(0.01),
+            ir::Time::Seconds(0.1),
+        ))],
     }];
     i.register_compressor_controls();
     i.register_compressor_controls(); // Re-registration preserves identities.
@@ -2570,6 +2626,10 @@ fn authored_zone_getters_keep_physical_group_holes_after_lowering() {
     instrument.source_indices.groups[7] = Some(ir::GroupRef(0));
     instrument.source_indices.zones = vec![None; 73];
     instrument.source_indices.zones[72] = Some(ir::ZoneRef(0));
+    instrument.source_indices.zone_catalog = (0..73).map(|i| ir::SourceZone {
+        id: (i == 72).then_some(73),
+        home: ir::SourceZoneHome { group: 7, low_key: 12, high_key: 94 },
+    }).collect();
     let plan = lower(&instrument, 48000, vec![constant(1.)], no_behaviors).unwrap();
     assert_eq!(
         plan.source_zone_parameter(73, ZoneParameter::Group),
@@ -2735,6 +2795,124 @@ fn saved_digital_fade_rejects_unproven_clock_state_at_ir_boundary() {
         assert!(ir.validate().is_err());
         assert!(lower(&ir, 48000, vec![], no_behaviors).is_err());
     }
+}
+
+/// A routed (non-amplitude) Kontakt envelope's stages are engine lanes at its
+/// saved slot; a voice reads them when it starts (ANALOG STRINGS ENV_Filter 88/2).
+#[test]
+fn modulation_envelope_stages_are_engine_lanes_read_at_voice_start() {
+    let mut ir = ir::Instrument {
+        assets: vec![asset("mod-env")],
+        groups: vec![ir::Group::default()],
+        zones: vec![ir::Zone {
+            group: Some(ir::GroupRef(0)),
+            routes: vec![ir::RouteRef(0)],
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                attack: ir::Time::ZERO,
+                decay: ir::Time::Milliseconds(1.),
+                sustain: 0.,
+                ..Default::default()
+            }),
+        }],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Amplitude,
+            depth: ir::Depth::Gain(ir::Gain::Decibels(-40.)),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: None,
+        }],
+        ..Default::default()
+    };
+    ir.source_indices.modulators.push(ir::SourceModulator {
+        group: 0, slot: 2, external: false, name: "ENV_Filter".into(),
+        runtime: Some(ir::ModulatorRef(0)), settings: None,
+    });
+    ir.source_indices.ahdsrs.push(ir::SourceAhdsr {
+        group: 0, slot: 2, attack_ms: 0., attack_curve: 0., hold_ms: 0., decay_ms: 1.,
+        sustain: 0., release_ms: 0., ahd_only: false, native_amplitude: false,
+    });
+    let sustain = sampler_core::EngineParameterAddress {
+        parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap(),
+        group: 0, slot: 2, generic: -1,
+    };
+    let level = |write: Option<i32>| {
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![constant(1.)], no_behaviors).unwrap(), limits()).unwrap();
+        if let Some(value) = write {
+            rt.set_engine_parameter(sustain, value).unwrap();
+        }
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 512];
+        rt.render(&mut out).unwrap();
+        out[511][0]
+    };
+    let (authored, held) = (level(None), level(Some(1_000_000)));
+    // The envelope sits at sustain after 1 ms: 0 applies none of the route's
+    // -40 dB, sustain 1 all of it.
+    assert!((authored / held).log10() * 20. > 30., "authored {authored}, sustain 1 {held}");
+}
+
+/// A native Multi LFO with a saved fade starts silent and reaches full depth
+/// on the native fade law (ANALOG STRINGS LFO_P2, 98.8 ms).
+#[test]
+fn native_multi_lfo_fade_runs_the_saved_fade_law() {
+    let wave = ir::NativeWave::Multi { weights: [1., 0., 0., 0., 0.], width: 0.5, normalize: true, digital: false };
+    let level = |shape: ir::LfoShape| {
+        let ir = ir::Instrument {
+            assets: vec![asset("multi-fade")],
+            groups: vec![ir::Group::default()],
+            zones: vec![ir::Zone {
+                group: Some(ir::GroupRef(0)),
+                routes: vec![ir::RouteRef(0)],
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            modulators: vec![ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Lfo(ir::Lfo {
+                    shape,
+                    rate: ir::Frequency::Hertz(0.01),
+                    delay: ir::Time::ZERO,
+                    fade_in: ir::Time::ZERO,
+                    phase: 0.25,
+                    retrigger: true,
+                }),
+            }],
+            routes: vec![ir::Route {
+                source: ir::ModulatorRef(0),
+                target: ir::Target::Amplitude,
+                depth: ir::Depth::Gain(ir::Gain::Decibels(-20.)),
+                invert: false,
+                shape: None,
+                smoothing: ir::Time::ZERO,
+                scale: None,
+            }],
+            ..Default::default()
+        };
+        let pcm = Pcm::new(48000, vec![[1.; 2]; 12000].into_boxed_slice()).unwrap();
+        let mut rt = Runtime::new(lower(&ir, 48000, vec![pcm], no_behaviors).unwrap(), limits()).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = vec![[0.; 2]; 9600];
+        for block in out.chunks_mut(128) {
+            rt.render(block).unwrap();
+        }
+        // Depth in dB away from the unmodulated level.
+        let db = |x: f32| (20. * x.log10()).abs();
+        (db(out[64][0]), db(out[9599][0]))
+    };
+    let (plain_start, plain_end) = level(ir::LfoShape::Native(wave));
+    let (faded_start, faded_end) = level(ir::LfoShape::NativeFaded { wave, fade_ms: 100. });
+    assert!(plain_start > 19. && (plain_start - plain_end).abs() < 0.1, "{plain_start} {plain_end}");
+    assert!(faded_start < 1., "the fade starts at no depth: {faded_start} dB");
+    assert!((faded_end - plain_end).abs() < 0.2, "full depth by 200 ms: {faded_end} vs {plain_end}");
 }
 
 fn native_primary_fixture() -> ir::Instrument {
@@ -2942,6 +3120,8 @@ fn lowered_whole_voice_flex_is_bit_exact_through_dsp_release_and_reuse() {
                     })
                     .collect(),
                 sustain: Some(1),
+                loop_range: None,
+                flex_release: false,
             }),
         });
         ir.routes.push(ir::Route::new(
@@ -3192,6 +3372,27 @@ fn controlled_native_external_fixture() -> ir::Instrument {
     ir
 }
 
+/// Lowering precomputes which route controls a zone uses (it was a per-alias
+/// routes x zones scan, ~90 s on ANALOG STRINGS); the binding rule is unchanged.
+#[test]
+fn source_alias_binds_only_controls_of_routes_a_zone_uses() {
+    let mut used = controlled_native_external_fixture();
+    used.source_indices.control_aliases.push(ir::SourceControlAlias {
+        control: ir::ControlRef(0),
+        parameter: "ENGINE_PAR_GAIN2".into(),
+        address: ir::SlotAddress { group: 0, slot: 5, generic: -1 },
+    });
+    let mut unused = used.clone();
+    unused.zones[0].routes.clear();
+    let depth = sampler_core::lower::ir_control_id("external-depth");
+    let bindings = |ir: &ir::Instrument| {
+        lower(ir, 48000, vec![constant(1.)], no_behaviors).unwrap()
+            .engine_parameter_bindings().iter().filter(|b| b.control == depth).count()
+    };
+    assert_eq!(bindings(&used), 1);
+    assert_eq!(bindings(&unused), 0);
+}
+
 #[test]
 fn native_external_reads_live_depth_and_bypass_without_resetting_held_source() {
     use sampler_core::{ControlValue,ControlWrite};
@@ -3368,7 +3569,7 @@ fn controlled_native_flex_fixture() -> ir::Instrument {
         ir::kontakt::FlexPoint{time_ms:3.,level:0.,curve:0.5},
     ];
     ir.modulators.push(ir::Modulator{scope:ir::Scope::Voice,source:ir::ModulationSource::Breakpoints(ir::Breakpoints{
-        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),
+        points:points.iter().map(|p|ir::Breakpoint{time:ir::Time::Milliseconds(f64::from(p.time_ms)),level:f64::from(p.level),shape:ir::Curve::Linear}).collect(),sustain:Some(0),loop_range:None,flex_release:false,
     })});
     ir.routes.push(ir::Route::new(ir::ModulatorRef(1),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
     ir.zones[0].routes.push(ir::RouteRef(0));
@@ -3495,5 +3696,406 @@ fn post_prepare_ahdsr_timing_curve_and_sustain_writes_use_future_controlled_owne
             assert_eq!(a,b,"{parameter} must not be overwritten by saved native coefficients");
         }
         assert_eq!(actual.stats().v1_control_starts,0);
+    }
+}
+
+fn allocation_fixture() -> ir::Instrument {
+    let limit = || ir::VoiceLimit {
+        voices: 16,
+        kill: ir::Kill::Oldest,
+        prefer_released: false,
+        fade: ir::Time::Seconds(8.0 / 48000.0),
+        exclusive_set: None,
+    };
+    ir::Instrument {
+        assets: ["a", "b", "c"].map(asset).to_vec(),
+        groups: (0..3)
+            .map(|i| ir::Group {
+                voice_limit: Some(i),
+                ..Default::default()
+            })
+            .collect(),
+        voice_limits: (0..3).map(|_| limit()).collect(),
+        zones: (0..3)
+            .map(|i| ir::Zone {
+                keys: ir::KeyRange {
+                    low: 60 + i as u8,
+                    high: 60 + i as u8,
+                },
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                group: Some(ir::GroupRef(i)),
+                ..ir::Zone::new(ir::AssetRef(i))
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn m1_exclusive_voice_domains_cut_other_domains_with_fade_and_plan_isolation() {
+    let mut ir = allocation_fixture();
+    ir.voice_limits[0].exclusive_set = Some(0);
+    ir.voice_limits[1].exclusive_set = Some(0);
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepare(), limits(), 2, 1).unwrap();
+    control.submit(Box::new(prepare())).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap(); // old instrument retains its voice
+        rt.poll_plan_update().unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.trigger(input(60), 60, 1.).unwrap(); // same domain does not exclude itself
+        rt.trigger(input(62), 62, 1.).unwrap(); // unrelated exclusive set
+        rt.trigger(input(61), 61, 1.).unwrap(); // cuts both new-plan domain-0 voices
+        assert_eq!(rt.stolen_voices(), 2);
+        let mut out = [[0.; 2]; 9];
+        rt.render(&mut out).unwrap();
+        assert_eq!(rt.voice_count(), 3);
+        assert!((out[8][0] - 0.6).abs() < 1e-6, "{:?}", out[8]);
+    });
+}
+
+#[test]
+fn m1_independent_source_budget_spans_voice_groups_without_limiting_other_sources() {
+    let mut ir = allocation_fixture();
+    ir.voice_limits.push(ir::VoiceLimit {
+        voices: 1,
+        kill: ir::Kill::Oldest,
+        prefer_released: false,
+        fade: ir::Time::Seconds(8.0 / 48000.0),
+        exclusive_set: None,
+    });
+    ir.groups[0].source_voice_limit = Some(3);
+    ir.groups[1].source_voice_limit = Some(3);
+    let plan = lower(
+        &ir,
+        48000,
+        vec![constant(0.1), constant(0.2), constant(0.3)],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.trigger(input(62), 62, 1.).unwrap();
+        rt.trigger(input(61), 61, 1.).unwrap();
+        assert_eq!(rt.stolen_voices(), 1);
+        let mut out = [[0.; 2]; 9];
+        rt.render(&mut out).unwrap();
+        assert_eq!(rt.voice_count(), 2);
+        assert!((out[8][0] - 0.5).abs() < 1e-6);
+    });
+}
+
+#[test]
+fn m1_domain_counts_track_fades_growth_retirement_and_slot_reuse() {
+    use sampler_core::{AllocationCounts, Error};
+    let mut ir = allocation_fixture();
+    ir.voice_limits[0].voices = 1;
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepare(), limits(), 2, 1).unwrap();
+    let old = rt.active_plan();
+    let instrument = rt.allocation_domain(old, None).unwrap();
+    let group = rt.allocation_domain(old, Some(0)).unwrap();
+    let a = rt.trigger(input(60), 60, 1.).unwrap();
+    let b = rt.trigger(input(60), 60, 1.).unwrap();
+    assert_eq!(
+        rt.allocation_counts(group),
+        Ok(AllocationCounts { live: 1, fading: 1 })
+    );
+    assert_eq!(
+        rt.allocation_counts(instrument),
+        Ok(AllocationCounts { live: 1, fading: 1 })
+    );
+    control.grow_voices(64).unwrap();
+    control.submit(Box::new(prepare())).unwrap();
+    support::without_heap(|| {
+        rt.render(&mut [[0.; 2]; 9]).unwrap();
+        assert_eq!(rt.voice_capacity(), 64);
+        assert_eq!(
+            rt.allocation_counts(group),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+        rt.poll_plan_update().unwrap();
+        let active = rt.active_plan();
+        let other = rt.allocation_domain(active, Some(0)).unwrap();
+        assert_ne!(group, other);
+        rt.trigger(input(60), 60, 1.).unwrap();
+        assert_eq!(
+            rt.allocation_counts(other),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+        assert_eq!(
+            rt.allocation_counts(group),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+        rt.key_up(a, None).unwrap();
+        rt.key_up(b, None).unwrap();
+        rt.render(&mut [[0.; 2]; 9]).unwrap();
+        rt.flush_ended(|_| true);
+        rt.collect_retired_plans();
+        assert_eq!(rt.allocation_counts(group), Err(Error::StaleHandle));
+        rt.trigger(input(60), 60, 1.).unwrap(); // reuse ended voice slots
+        rt.render(&mut [[0.; 2]; 9]).unwrap();
+        assert_eq!(
+            rt.allocation_counts(other),
+            Ok(AllocationCounts { live: 1, fading: 0 })
+        );
+    });
+    drop(control.retired());
+}
+
+#[test]
+fn m1_domain_membership_preserves_existing_victim_modes() {
+    // This freezes the existing law, including Any=quietest. It is not a native
+    // Any/Pref.Rel parity assertion; those modes still require the native probe.
+    for (kill, surviving_level) in [
+        (ir::Kill::Any, 0.5),
+        (ir::Kill::Oldest, 0.5),
+        (ir::Kill::Newest, 0.4),
+        (ir::Kill::Highest, 0.4),
+        (ir::Kill::Lowest, 0.5),
+    ] {
+        let mut ir = allocation_fixture();
+        for zone in &mut ir.zones {
+            zone.group = Some(ir::GroupRef(0));
+        }
+        ir.voice_limits[0].voices = 2;
+        ir.voice_limits[0].kill = kill;
+        let plan = lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        support::without_heap(|| {
+            for key in [60, 61, 62] {
+                rt.trigger(input(key), key, 1.).unwrap();
+            }
+            let mut out = [[0.; 2]; 9];
+            rt.render(&mut out).unwrap();
+            assert_eq!(rt.voice_count(), 2);
+            assert!(
+                (out[8][0] - surviving_level).abs() < 1e-6,
+                "{kill:?}: {:?}",
+                out[8]
+            );
+        });
+    }
+}
+
+#[test]
+fn m1_reconfiguring_limits_rejects_stale_domain_bindings() {
+    use sampler_core::{Error, Kill, VoiceLimit};
+    let ir = allocation_fixture();
+    let prepare = || {
+        lower(
+            &ir,
+            48000,
+            vec![constant(0.1), constant(0.2), constant(0.3)],
+            no_behaviors,
+        )
+        .unwrap()
+    };
+    let limit = VoiceLimit {
+        voices: 1,
+        kill: Kill::Oldest,
+        prefer_released: false,
+        fade: 8,
+    };
+    let source = prepare()
+        .with_source_voice_limits(vec![Some(2), None, None])
+        .unwrap();
+    assert!(matches!(
+        source.with_voice_limits(None, vec![limit], vec![Some(0); 3]),
+        Err(Error::InvalidInput)
+    ));
+    let exclusive = prepare()
+        .with_exclusive_sets(vec![Some(0), Some(0), None])
+        .unwrap();
+    assert!(matches!(
+        exclusive.with_voice_limits(None, vec![limit], vec![Some(0); 3]),
+        Err(Error::InvalidInput)
+    ));
+}
+
+/// IR lowering of the router's new forms: an LFO rate route, a lagged signed
+/// shaped intensity assignment and a chained second one all reach audio.
+#[test]
+fn rate_routes_and_chained_intensity_assignments_lower_and_render() {
+    let lfo = ir::Lfo {
+        shape: ir::LfoShape::Sine,
+        rate: ir::Frequency::Hertz(2.),
+        delay: ir::Time::ZERO,
+        fade_in: ir::Time::ZERO,
+        phase: 0.,
+        retrigger: true,
+    };
+    let voice = |source| ir::Modulator { scope: ir::Scope::Voice, source };
+    let law = |depth| ir::ScaleLaw::KontaktIntensity { depth, flags: 0x12, unit: 1. };
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("a")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            routes: vec![ir::RouteRef(0), ir::RouteRef(1)],
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![
+            voice(ir::ModulationSource::Lfo(lfo)),
+            voice(ir::ModulationSource::Constant),
+            voice(ir::ModulationSource::Key),
+        ],
+        routes: vec![
+            ir::Route::new(ir::ModulatorRef(1), ir::Target::SourceRate(ir::ModulatorRef(0)), ir::Depth::Normalized(0.1)),
+            ir::Route {
+                scale: Some(ir::RouteScale {
+                    source: ir::ModulatorRef(1),
+                    shape: None,
+                    law: law(-0.5),
+                    lag_ms: 10.,
+                }),
+                ..ir::Route::new(ir::ModulatorRef(2), ir::Target::Amplitude, ir::Depth::Normalized(0.8))
+            },
+        ],
+        ..Default::default()
+    };
+    instrument.source_indices.chained_scales.push((
+        ir::RouteRef(1),
+        ir::RouteScale { source: ir::ModulatorRef(1), shape: None, law: law(-0.25), lag_ms: 0. },
+    ));
+    instrument.validate().unwrap();
+    let plan = lower(&instrument, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut audio = [[0.; 2]; 512];
+    support::without_heap(|| {
+        rt.trigger(input(60), 60, 1.).unwrap();
+        rt.render(&mut audio).unwrap();
+    });
+    // 0.8 * (1 + 0.5*0) * (1 + 0.25*0): Constant is 1, so the lane stays 0.8.
+    let key = 60. / 127.;
+    let expected = 0.5 * (1. - 0.8 * (1. - key));
+    assert!((f64::from(audio[500][0]) - expected).abs() < 1e-3, "{}", audio[500][0]);
+}
+
+/// A route reaches a script-addressed effect module's knob: the lane moves by
+/// `depth x span x source` (additive, FUN_140873040's remaining-ID template), so
+/// the routed render equals a module saved at the moved point.
+#[test]
+fn routes_move_scripted_effect_lanes_additively() {
+    let address = ir::SlotAddress { group: 0, slot: 7, generic: -1 };
+    let build = |shape: f32, routed: bool| {
+        let mut i = ir::Instrument {
+            assets: vec![asset("a")],
+            zones: vec![ir::Zone {
+                keys: ir::KeyRange { low: 60, high: 60 },
+                pitch: ir::KeyTracking::Fixed,
+                velocity: ir::VelocityResponse::None,
+                chain: Some(ir::ChainRef(0)),
+                routes: if routed { vec![ir::RouteRef(0)] } else { vec![] },
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            chains: vec![ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![ir::Processor::Color(ir::fx::color::Config::classic(shape).at(address))],
+                post_amplitude: vec![],
+            }],
+            modulators: vec![ir::Modulator { scope: ir::Scope::Voice, source: ir::ModulationSource::Key }],
+            ..Default::default()
+        };
+        if routed {
+            i.routes.push(ir::Route::new(
+                ir::ModulatorRef(0),
+                ir::Target::Processor {
+                    chain: ir::ChainRef(0),
+                    index: 0,
+                    parameter: ir::ProcessorParameter::Shape,
+                },
+                ir::Depth::Normalized(0.25),
+            ));
+        }
+        i
+    };
+    let render = |i: &ir::Instrument| {
+        let plan = lower(i, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut audio = [[0.; 2]; 2048];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.).unwrap();
+            for chunk in audio.chunks_mut(64) {
+                rt.render(chunk).unwrap();
+            }
+        });
+        audio[2000][0]
+    };
+    // Shape spans -1..=1, so 0.25 of the range times the key (60/127).
+    let moved = -0.5 + 0.25 * 2. * (60. / 127.);
+    let routed = render(&build(-0.5, true));
+    let saved = render(&build(moved as f32, false));
+    let unmoved = render(&build(-0.5, false));
+    assert!((routed - saved).abs() < 1e-4, "{routed} vs {saved}");
+    assert!((routed - unmoved).abs() > 1e-3, "{routed} vs {unmoved}");
+}
+
+#[test]
+fn compressor_editors_use_each_laws_physical_domain_without_invalidating_loads() {
+    use ir::fx::dynamics::{Config, Law, Link, Native};
+    let native = Native { threshold_db: -12.0, ratio: 0.2 };
+    for (law, expected_controls) in [
+        (Law::KontaktClassic(native), 4),
+        (Law::KontaktEnhanced(native), 4),
+        (Law::KontaktPro(native), 4),
+        (Law::KontaktFeedback { native: Native { threshold_db: 1.7782794, ratio: 4.8 }, high_quality: true }, 4),
+        (Law::KontaktLimiter(Native { threshold_db: 0.0, ratio: 0.0 }), 2),
+        (Law::KontaktHilbert(Native { threshold_db: 0.5, ratio: 0.8 }), 0),
+    ] {
+        let mut i = instrument();
+        i.sequences.clear();
+        i.zones = vec![ir::Zone { chain: Some(ir::ChainRef(0)),
+            pitch: ir::KeyTracking::Fixed, velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0)) }];
+        i.assets.truncate(1);
+        i.chains = vec![ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: vec![], post_amplitude: vec![ir::Processor::Dynamics(Config {
+                address: None, law, attack: ir::Time::Seconds(0.01),
+                release: ir::Time::Seconds(0.1), link: Link::Max,
+                makeup: ir::Gain::UNITY, mix: 1.0,
+            })] }];
+        i.register_compressor_controls();
+        i.register_compressor_controls();
+        assert_eq!(i.controls.len(), expected_controls, "{law:?}");
+        if matches!(law, Law::KontaktFeedback { .. } | Law::KontaktLimiter(_)) {
+            assert_eq!(i.controls[0].label, "Input gain");
+            assert_eq!(i.controls[0].key, "compressor:0:0:Threshold");
+        }
+        let plan = lower(&i, 48000, vec![constant(0.8)], no_behaviors).unwrap();
+        let descriptors: Vec<_> = plan.parameter_registry().descriptors().collect();
+        assert_eq!(descriptors.len(), expected_controls, "{law:?}");
+        if matches!(law, Law::KontaktFeedback { .. }) {
+            assert_eq!(descriptors[0].unit, sampler_core::ParameterUnit::Linear);
+            assert_eq!(descriptors[0].default, 1.7782794);
+            assert_eq!(descriptors[1].default, 4.8);
+        }
+        let limits = Limits::for_plan(&plan, 4, 4);
+        Runtime::new(plan, limits).unwrap();
     }
 }

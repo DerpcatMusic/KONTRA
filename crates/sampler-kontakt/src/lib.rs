@@ -13,6 +13,8 @@ pub mod audit;
 mod cache;
 mod cache_zones;
 mod container;
+mod channel_reader;
+pub use channel_reader::{ChannelPackDestinations, EncodedChannelReader, FlacStreamAdmission, PcmStreamAdmission, PcmStreamEncoding, install_resident_source_reload, resident_storage_from_interleaved};
 mod diagnostics;
 pub use diagnostics::diagnostic_detail;
 #[cfg(feature = "scan")]
@@ -52,9 +54,9 @@ pub use library::{
 pub use load::take_script_init_runs;
 // Stage and Kind are defined below with LoadError.
 pub use load::{
-    ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish,
+    ArticulationMigration, Loaded, Options, Progress, ScriptInitFault, articulation_migration, compile_ui, finish, finish_sources,
     load, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable,
-    load_streamed, prepare, stream_instrument,
+    load_streamed, prepare, stream_instrument, stream_instrument_cancelable,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use metadata::{
@@ -67,10 +69,15 @@ pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
-pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
-pub use stream::{
-    AssetSource, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+pub use snapshot::{
+    GroupState, SnapshotState, apply_snapshot, read_snapshot, read_snapshot_for_base, resolve_snapshot_base,
+    snapshot_base_name, snapshot_identity, validate_snapshot_base,
 };
+pub use stream::{
+    LogicalStreamRecipe, logical_stream_source, AssetSource, DynamicSources, HeadBudgetExceeded, HeadReadiness, SourceRegistration, DISK_READ, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer,
+};
+mod source_identity;
+pub use source_identity::{FileIdentity, SourceChanged};
 
 /// Increment when protected catalog metadata decoding changes, for cache invalidation.
 pub const LIBRARY_ACCESS_REVISION: u32 = 1;
@@ -387,8 +394,10 @@ impl<'a> Reader<'a> {
         self.take(length)
     }
     fn optional(&mut self) -> Result<Option<Bytes<'a>>, Error> {
+        // Native optional-string helper 0x140743010: every signed-negative length
+        // is absent, zero is a present empty string.
         let length = self.u32()?;
-        if length == u32::MAX {
+        if (length as i32) < 0 {
             Ok(None)
         } else {
             self.take(length as usize).map(Some)

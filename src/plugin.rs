@@ -9,6 +9,10 @@
 
 mod automation;
 mod host_probe;
+mod held_keys;
+mod snapshot_reuse;
+#[cfg(test)]
+pub(crate) mod snapshot_reuse_tests;
 pub(crate) mod ui_activity;
 use ui_activity::Count as UiCount;
 pub(crate) use host_probe::export_multi_state;
@@ -32,6 +36,7 @@ use moose::core::{
 };
 use moose::mui::mui::scene::Image;
 use moose::prelude::*;
+mod uvi_meters;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -191,6 +196,9 @@ impl Part {
     pub(crate) fn select_snapshot(&mut self, path: String) {
         self.snapshot = path;
         self.control_values.clear();
+        // Project captures belong to host recall, not a new explicit preset.
+        self.script_state.clear();
+        self.script_state_source.clear();
         self.uvi_state.clear();
         self.uvi_state_source.clear();
     }
@@ -411,6 +419,8 @@ impl Selection {
 #[params(
     output_port_name = "port_name",
     output_port_names_revision = "port_names_revision",
+    presentation = "host_presentation",
+    presentation_revision = "host_presentation_revision",
     pre_save = "capture_ui_controls",
     post_load = "reload_ui_controls"
 )]
@@ -477,6 +487,13 @@ impl SamplerParams {
     }
 
     fn reload_ui_controls(&self) {
+        // Invalidate queued same-owner overlays before host recall can change
+        // the desired state, including a recall of the identical source tuple.
+        self.shared.with_parts(|parts| {
+            for part in parts {
+                let _ = part.snapshot_sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1));
+            }
+        });
         // Recall of the same source still needs fresh script initialization.
         let sources: Vec<_> = self
             .selection
@@ -509,6 +526,14 @@ impl SamplerParams {
 
     fn port_names_revision(&self) -> u64 {
         self.shared.port_names_revision.load(Ordering::Acquire)
+    }
+
+    fn host_presentation(&self, id: u32) -> Option<moose::params::ParameterPresentation> {
+        self.host.presentation(id)
+    }
+
+    fn host_presentation_revision(&self) -> u64 {
+        self.host.revision()
     }
 
     /// Support context: call on an export worker, never paint or process.
@@ -561,7 +586,9 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PartShared {
     ui_activity: Option<Arc<ui_activity::Activity>>,
     effect_controls: Mutex<effect_controls::EffectControls>,
-    pub(crate) generation: AtomicU64,
+    pub(crate) generation: Arc<AtomicU64>,
+    snapshot_sequence: Arc<AtomicU64>,
+    snapshot_pending: Mutex<std::collections::VecDeque<snapshot_reuse::Pending>>,
     pub(crate) scalar_revision: AtomicU64,
     pub(crate) native_revision: AtomicU64,
     ingress: Mutex<Option<crate::sound::v2::ControlIngress>>,
@@ -570,10 +597,12 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 20],
+    problems: [AtomicU64; 23],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
+    uvi_meters: Mutex<Vec<uvi_meters::Cell>>,
+    uvi_meter_interest: AtomicUsize,
     pub(crate) editor_taps: [AtomicU64; 16],
     pub(crate) engine_bindings: Mutex<Arc<[sampler_core::EngineParameterBinding]>>,
     waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
@@ -637,11 +666,15 @@ impl PartShared {
 
     /// The part's controls and their values, in id order.
     pub(crate) fn control_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
-        self.controls
-            .lock_unpoisoned()
-            .iter()
-            .map(|c| (c.id, c.value()))
-            .collect()
+        let mut values:Vec<_>=self.controls.lock_unpoisoned().iter().map(|c|(c.id,c.value())).collect();
+        // UI/save thread only. The audio-side original ControlCell allocation
+        // stays fixed; the actual Lua bridge owns dynamic scalar/cell readback.
+        if let Some(uvi)=&self.scripts.lock_unpoisoned().uvi {
+            values.retain(|(id,_)|(id.0>>64)!=0x5556490000000000);
+            values.extend(uvi.values());
+            values.sort_by_key(|(id,_)|*id);
+        }
+        values
     }
 
     /// Audio thread: copy the core's values in, unless the loader holds the lock.
@@ -768,6 +801,22 @@ impl PartShared {
         bins: usize,
         range: Option<(u64, u64)>,
     ) -> Option<crate::sound::waveform::Envelope> {
+        self.waveform_window(epoch, |provider| provider.get_window(zone, bins, range))
+    }
+    pub(crate) fn mapping_waveform_window(
+        &self,
+        region: usize,
+        epoch: u64,
+        bins: usize,
+        range: Option<(u64, u64)>,
+    ) -> Option<crate::sound::waveform::Envelope> {
+        self.waveform_window(epoch, |provider| provider.get_region_window(region, bins, range))
+    }
+    fn waveform_window(
+        &self,
+        epoch: u64,
+        read: impl FnOnce(&crate::sound::waveform::Provider) -> Option<crate::sound::waveform::Envelope>,
+    ) -> Option<crate::sound::waveform::Envelope> {
         let plan = self
             .ingress
             .lock_unpoisoned()
@@ -777,10 +826,9 @@ impl PartShared {
         if self.generation.load(Ordering::Acquire) != epoch {
             return None;
         }
-        provider
+        read(provider
             .as_ref()
-            .filter(|provider| Some(provider.plan) == plan)?
-            .get_window(zone, bins, range)
+            .filter(|provider| Some(provider.plan) == plan)?)
     }
 
     pub(crate) fn widget_waveforms(
@@ -812,8 +860,7 @@ impl PartShared {
                     return None;
                 }
                 let zone = u32::try_from(widget.waveform.as_ref()?.zone)
-                    .ok()
-                    .filter(|id| *id > 0)?;
+                    .ok()?;
                 let bins = (f64::from(face.page_rect(sampler_ui_ir::WidgetRef(n)).width)
                     * pixel_scale)
                     .ceil()
@@ -862,6 +909,9 @@ impl PartShared {
             stream_errors,
             offline_failures,
             lua_faults,
+            cold_starts,
+            voice_pool_refusals,
+            waiting_voice_replacements,
         ] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
@@ -882,6 +932,9 @@ impl PartShared {
             stream_errors,
             offline_failures,
             lua_faults,
+            cold_starts,
+            voice_pool_refusals,
+            waiting_voice_replacements,
         }
     }
 
@@ -907,6 +960,9 @@ impl PartShared {
             p.stream_errors,
             p.offline_failures,
             p.lua_faults,
+            p.cold_starts,
+            p.voice_pool_refusals,
+            p.waiting_voice_replacements,
         ];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
@@ -942,7 +998,6 @@ pub struct Shared {
     /// or from the computer keyboard, `heard` from the host's MIDI.
     pub(crate) played: [AtomicU8; 128],
     pub(crate) heard: [AtomicU8; 128],
-    pub(crate) engine_keys: AtomicBool,
     pub(crate) learn_target: AtomicU32,
     pub(crate) learned_note: AtomicU64,
     /// What the on-screen keyboard and wheels play, by rack slot.
@@ -1012,10 +1067,14 @@ pub struct Shared {
 
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
+    pub(crate) resource_path: Option<PathBuf>,
+    pub(crate) resource_revision: Option<Arc<crate::sound::resource_revision::ResourceRevision>>,
     pub(crate) effects: Arc<[crate::sound::effect_controls::EffectSnapshot]>,
     pub(crate) program: u32,
     pub(crate) generation: u64,
     pub(crate) ui_revision: u64,
+    /// The genuine UVI bridge/schema owning the interface drawn below.
+    pub(crate) uvi_snapshot: Option<sampler_uvi::scripted::UiSnapshot>,
     pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
     pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
@@ -1042,6 +1101,8 @@ pub(crate) struct PartView {
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
     /// The translated instrument: articulations, mapping, sound.
     pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    /// Host automation slots the loaded plan routes into its controls.
+    pub(crate) host_bindings: Arc<[crate::sound::HostBinding]>,
     /// Prepared with the immutable instrument on the load worker.
     pub(crate) mapping_index: Option<Arc<crate::ui::MappingIndex>>,
     /// The keys as the scripts colour and name them (128, or none).
@@ -1124,7 +1185,6 @@ impl Default for Shared {
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
             heard: std::array::from_fn(|_| AtomicU8::new(0)),
-            engine_keys: AtomicBool::new(false),
             keyboard: ArrayQueue::new(256),
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
@@ -1394,10 +1454,14 @@ fn route(params: &SamplerParams) {
         }
         routing::port_names(&current, &trees)
     };
+    let now = Instant::now();
     let mut ports = shared.port_names.lock_unpoisoned();
-    if ports.offer(names, Instant::now()) {
+    if ports.offer(names, now) {
         shared.port_names_revision.fetch_add(1, Ordering::Release);
     }
+    drop(ports);
+    let slots = automation::slots(&shared.view.lock_unpoisoned().parts);
+    params.host.offer(slots, now);
 }
 
 impl Shared {
@@ -1412,11 +1476,20 @@ impl Shared {
             return false;
         };
         let generation = atoms.generation.load(Ordering::Acquire);
+        // MAX is a permanent exhausted/cancelled sentinel. Host recall must
+        // still be able to invalidate the last admitted sequence (MAX - 1).
+        let Ok(previous) = atoms.snapshot_sequence.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1).filter(|next| *next != u64::MAX)) else {
+            return false;
+        };
+        let recall_revision = self.view.lock_unpoisoned().parts.get(slot).map_or(0, |v| v.recall_revision);
         *request = Some(SnapshotRequest {
             slot,
             source: part.source(),
             path,
             generation,
+            sequence: previous + 1,
+            recall_revision,
+            allow_reuse: true,
         });
         true
     }
@@ -1662,6 +1735,29 @@ impl Shared {
             .is_some_and(|client| client.submit(control, value))
     }
 
+    /// A drawn UVI action carries the exact bridge/schema it was drawn from.
+    /// Part/source epoch, owner identity and owner-thread current visibility are
+    /// separate checks; queuing this action is not a Core Applied receipt.
+    pub(crate) fn set_uvi_control_at(
+        &self,slot:usize,epoch:u64,snapshot:&sampler_uvi::scripted::UiSnapshot,
+        control:sampler_ui_ir::ControlId,value:f64,
+    )->bool{
+        let Some(part)=self.part(slot)else{return false;};
+        let scripts=part.scripts.lock_unpoisoned();
+        if part.generation.load(Ordering::Acquire)!=epoch||!value.is_finite(){return false;}
+        scripts.uvi.as_ref().is_some_and(|owner|owner.edit_snapshot(snapshot,control,value))
+    }
+
+    pub(crate) fn activate_uvi_control_at(
+        &self,slot:usize,epoch:u64,snapshot:&sampler_uvi::scripted::UiSnapshot,
+        control:sampler_ui_ir::ControlId,activation:sampler_ui_ir::UiActivation,
+    )->bool{
+        let Some(part)=self.part(slot)else{return false;};
+        let scripts=part.scripts.lock_unpoisoned();
+        if part.generation.load(Ordering::Acquire)!=epoch||!activation.valid(){return false;}
+        scripts.uvi.as_ref().is_some_and(|owner|owner.activate_snapshot(snapshot,control,activation))
+    }
+
     /// Main-thread host automation uses the same epoch admission and reply queue.
     pub(crate) fn set_host_parameter_at(
         &self,
@@ -1764,7 +1860,10 @@ impl Shared {
         };
         let mut changed =
             std::collections::BTreeMap::<(usize, u64), std::collections::BTreeSet<usize>>::new();
-        while let Some((slot, epoch, instance, effect)) = self.effects.pop() {
+        // Bound one service pass even when audio keeps producing. FIFO work
+        // arriving during this batch remains queued for the next pass.
+        for _ in 0..self.effects.len() {
+            let Some((slot, epoch, instance, effect)) = self.effects.pop() else { break };
             let Some(part) = self.part(slot) else {
                 continue;
             };
@@ -1860,7 +1959,9 @@ impl Shared {
             scripts.uvi_revision = revision;
             if let Some(view) = self.view.lock_unpoisoned().parts.get_mut(slot) {
                 self.ui_activity.add(UiCount::PublicationCalls, 1);
-                let changed = view.publish_interface(&uvi.interface());
+                let snapshot=uvi.snapshot();
+                let changed=view.publish_interface(snapshot.interface());
+                view.uvi_snapshot=Some(snapshot);
                 self.ui_activity.add(UiCount::PublicationChanges, u64::from(changed));
             }
         }
@@ -1994,11 +2095,15 @@ impl SavedMulti {
 }
 
 // Port from v1 0cb7a8a0:src/plugin.rs; prepared v2 part stays off audio until validation.
+#[derive(Clone)]
 pub(crate) struct SnapshotRequest {
     slot: usize,
     source: (String, u32, String),
     path: String,
     generation: u64,
+    sequence: u64,
+    recall_revision: u64,
+    allow_reuse: bool,
 }
 
 /// Validate on the loader before replacing any saved or playing state.
@@ -2012,6 +2117,13 @@ fn prepare_snapshot(
     let request = {
         let mut pending = params.shared.snapshot_request.lock_unpoisoned();
         if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize {
+            return None;
+        }
+        // At most two admitted payloads: the current receipt and one newer
+        // request. Further gestures replace the one lightweight request above;
+        // an inactive host cannot accumulate unbounded saved-state buffers.
+        if params.shared.part(pending.as_ref()?.slot)
+            .is_some_and(|part| part.snapshot_pending.lock_unpoisoned().len() >= 2) {
             return None;
         }
         pending.take()?
@@ -2029,22 +2141,7 @@ fn prepare_snapshot(
         "container parsing, explicit base matching and supported state import; audio not installed",
     );
     trace.stage("snapshot_parse_and_validation");
-    let current = || {
-        params
-            .shared
-            .part(request.slot)
-            .unwrap()
-            .generation
-            .load(Ordering::Acquire)
-            == request.generation
-            && params
-                .selection
-                .read_unpoisoned()
-                .parts
-                .get(request.slot)
-                .is_some_and(|p| p.source() == request.source)
-            && params.shared.snapshot_request.lock_unpoisoned().is_none()
-    };
+    let current = || snapshot_reuse::current(params, &request, true);
     if !current() {
         trace.detail(
             "cancellation",
@@ -2053,6 +2150,11 @@ fn prepare_snapshot(
         trace.finish("canceled");
         return None;
     }
+    let (request, mut trace) = match snapshot_reuse::try_submit(params, request, trace) {
+        Ok(()) => return None,
+        Err(ordinary) => ordinary,
+    };
+    let current = || snapshot_reuse::current(params, &request, true);
     params.shared.view.lock_unpoisoned().parts[request.slot].status = "Loading preset…".into();
     let part = params.selection.read_unpoisoned().parts[request.slot].clone();
     let rack_streaming = params.selection.read_unpoisoned().streaming;
@@ -2073,7 +2175,9 @@ fn prepare_snapshot(
             library::ThreadSetting::Fixed(n) => Some(crate::sound::ThreadChoice::Fixed(n.into())),
         },
     };
-    let result = V2Loader.prepare(&load, &mut |_| {}, &|| !current());
+    let result = V2Loader.prepare_serviced(
+        &load, &mut |_| {}, &|| !current(), &mut || service_current_ui(params),
+    );
     if !current() {
         trace.detail(
             "cancellation",
@@ -2087,6 +2191,7 @@ fn prepare_snapshot(
             let mut selection = params.selection.write_unpoisoned();
             let pending = params.shared.snapshot_request.lock_unpoisoned();
             let valid = pending.is_none()
+                && params.shared.part(request.slot).unwrap().snapshot_sequence.load(Ordering::Acquire) == request.sequence
                 && params
                     .shared
                     .part(request.slot)
@@ -2097,7 +2202,7 @@ fn prepare_snapshot(
             let Some(part) = selection
                 .parts
                 .get_mut(request.slot)
-                .filter(|p| valid && p.source() == request.source)
+                .filter(|p| valid && snapshot_reuse::source_current(params, &request, &p.source()))
             else {
                 drop(pending);
                 drop(selection);
@@ -2118,7 +2223,8 @@ fn prepare_snapshot(
         Err(error) => {
             let selection = params.selection.read_unpoisoned();
             let pending = params.shared.snapshot_request.lock_unpoisoned();
-            let valid = params
+            let valid = params.shared.part(request.slot).unwrap().snapshot_sequence.load(Ordering::Acquire) == request.sequence
+                && params
                 .shared
                 .part(request.slot)
                 .unwrap()
@@ -2128,7 +2234,7 @@ fn prepare_snapshot(
                 && selection
                     .parts
                     .get(request.slot)
-                    .is_some_and(|p| p.source() == request.source)
+                    .is_some_and(|p| snapshot_reuse::source_current(params, &request, &p.source()))
                 && pending.is_none();
             if !valid {
                 drop(pending);
@@ -2156,6 +2262,23 @@ fn prepare_snapshot(
 /// The loader: serialized, polled by the audio thread about ten times a second.
 pub struct Load;
 
+/// Services of the already committed owners; never begins another load or
+/// acquires candidate state. Also called while waiting on private preparation.
+fn service_current_ui(params: &SamplerParams) {
+    let shared = &params.shared;
+    let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
+    shared.apply_effects();
+    shared.with_parts(|parts| {
+        for part in parts {
+            if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
+                && ingress.refresh()
+            {
+                part.scalar_revision.fetch_add(1, Ordering::Release);
+            }
+        }
+    });
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -2163,20 +2286,11 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.ui_activity.add(UiCount::WorkerTicks, 1);
         shared.flush_ready();
-        {
-            let _effects = shared.ui_activity.span(ui_activity::Phase::WorkerScriptEffects);
-            shared.apply_effects();
-        }
-        shared.with_parts(|parts| {
-            for part in parts {
-                if let Some(ingress) = part.ingress.lock_unpoisoned().as_mut()
-                    && ingress.refresh()
-                {
-                    part.scalar_revision.fetch_add(1, Ordering::Release);
-                }
-            }
-        });
-        shared.refresh_uvi(&params);
+        service_current_ui(params);
+        snapshot_reuse::poll(params);
+        // UVI publication retains its existing source/lock policy. The load
+        // heartbeat only services the bounded core effect/control handoff.
+        shared.refresh_uvi(params);
         shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
@@ -2304,7 +2418,9 @@ fn load_part(
     prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
 ) -> bool {
     load_part_with(params, slot, prepared, |request, progress, canceled| {
-        V2Loader.prepare(request, progress, canceled)
+        V2Loader.prepare_serviced(
+            request, progress, canceled, &mut || service_current_ui(params),
+        )
     })
 }
 
@@ -2361,6 +2477,8 @@ fn load_part_with(
             let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
             *ingress = None;
             atoms.engine_meters.lock_unpoisoned().clear();
+            atoms.uvi_meters.lock_unpoisoned().clear();
+            atoms.uvi_meter_interest.store(0, Ordering::Release);
             *atoms.waveforms.lock_unpoisoned() = None;
             epoch
         };
@@ -2436,7 +2554,12 @@ fn load_part_with(
             }
         },
     };
-    let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
+    // Persistence and the commit follow the loader's DONE: the bar holds at
+    // 99% until the part is published.
+    let mut progress = |p: Progress| {
+        let held = u32::from(p.0).min(u32::from(Progress::DONE.0) - 10);
+        atoms.load_progress.store(held, Ordering::Relaxed)
+    };
     let result = state
         .and_then(|_| match prepared {
             Some(loaded) if !canceled() => Ok(loaded),
@@ -2444,6 +2567,7 @@ fn load_part_with(
             None => prepare(&request, &mut progress, &canceled),
         })
         .and_then(|mut loaded| {
+            let persistence = sampler_kontakt::audit::Span::new("persistence_prepare");
             if let Some(runtime) = loaded.part.as_mut() {
                 let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() {
                     part.script_state.as_str()
@@ -2457,18 +2581,28 @@ fn load_part_with(
                     }
                 }
             }
+            drop(persistence);
+            let _span = sampler_kontakt::audit::Span::new("mapping_index");
             let mapping_index = loaded.instrument.as_ref()
                 .map(|instrument| Arc::new(crate::ui::MappingIndex::new(instrument)));
+            let resource_revision = loaded.scripts.resource_path.as_deref()
+                .zip(loaded.scripts.resources.as_ref())
+                .and_then(|(owner, resources)| {
+                    crate::sound::resource_revision::ResourceRevision::capture(
+                        owner, part.program, resources,
+                    ).map(Arc::new)
+                });
             if canceled() {
                 return Err(CoreError::Canceled);
             }
-            Ok((loaded, mapping_index))
+            Ok((loaded, mapping_index, resource_revision))
         });
     let result = if canceled() {
         Err(CoreError::Canceled)
     } else {
         result
     };
+    let _commit = sampler_kontakt::audit::Span::new("commit_view_locked");
     let mut view = shared.view.lock_unpoisoned();
     // A newer committed owner must never have its model changed by this job.
     if atoms.generation.load(Ordering::Acquire) != active_generation {
@@ -2481,7 +2615,7 @@ fn load_part_with(
         return false;
     }
     match result {
-        Ok((mut loaded, mapping_index)) => {
+        Ok((mut loaded, mapping_index, resource_revision)) => {
             // Commit ownership only after preparation and persistence succeed.
             // Serialize the fence with off-audio command producers.
             let generation = {
@@ -2489,6 +2623,8 @@ fn load_part_with(
                 let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
                 *ingress = None;
                 atoms.engine_meters.lock_unpoisoned().clear();
+                atoms.uvi_meters.lock_unpoisoned().clear();
+                atoms.uvi_meter_interest.store(0, Ordering::Release);
                 *atoms.waveforms.lock_unpoisoned() = None;
                 epoch
             };
@@ -2508,6 +2644,12 @@ fn load_part_with(
             }
             for missing in &loaded.report.missing {
                 trace.missing(missing, loaded.instrument.as_deref());
+            }
+            if let Some(startup) = &loaded.report.stream_startup {
+                trace.detail("stream_startup", serde_json::to_value(startup).unwrap_or_default());
+                if let Some(warning) = startup.warning() {
+                    trace.issue("prepare", "attack_preload_budget", warning);
+                }
             }
             v.fault_inbox = loaded.part.as_ref().map(|p| p.fault_inbox.clone());
             let mut runtime_log = trace.runtime_log();
@@ -2531,11 +2673,19 @@ fn load_part_with(
             v.report = Some(Arc::new(loaded.report));
             v.generation = generation;
             v.interfaces = loaded.interfaces.into();
+            if let Some(uvi)=&loaded.scripts.uvi {
+                let snapshot=uvi.snapshot();
+                v.publish_interface(snapshot.interface());
+                v.uvi_snapshot=Some(snapshot);
+            }
+            v.resource_path = loaded.scripts.resource_path.clone();
+            v.resource_revision = resource_revision;
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
                 v.effects =
                     atoms.publish_effect_controls(generation, part, loaded.instrument.as_deref());
                 *atoms.engine_bindings.lock_unpoisoned() = part.engine_bindings.clone();
+                v.host_bindings = part.host_bindings.clone();
                 if !part.waveform_sources.is_empty()
                     && let Some(ingress) = &part.ui_controls
                 {
@@ -2637,8 +2787,8 @@ fn refresh_problems(shared: &Shared) {
         if let Some(log) = v.runtime_log.as_mut() {
             let mut changed = log.counters(problems);
             if let Some(inbox) = &v.fault_inbox {
-                while let Some((callback, outcome)) = inbox.queue.pop() {
-                    log.fault(callback, outcome);
+                while let Some((callback, outcome, context)) = inbox.queue.pop() {
+                    log.fault_context(callback, outcome, context.as_ref(), v.instrument.as_deref());
                     changed = true;
                 }
                 let dropped = inbox.take_dropped();
@@ -2687,6 +2837,12 @@ fn host_pattern(address: ExactNoteAddress, clap: bool) -> Option<HostPattern> {
     })
 }
 
+/// Host actions retain their original tuple; this hint cannot represent a
+/// wildcard and is not an admission filter for an already captured owner.
+fn host_action_port(pattern: HostPattern) -> u8 {
+    u8::try_from(pattern.port).unwrap_or(0)
+}
+
 /// A CLAP or VST3 note event as core input; `None` leaves it to its typed fallback.
 fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
     let note = |kind, address: ExactNoteAddress, velocity: f64, clap, tune: f64| {
@@ -2725,19 +2881,43 @@ fn exact_host_input(exact: ExactEventRef<'_>) -> Option<ExactInput> {
                     port,
                 )
             }
+            // Concrete ports remain useful route hints; wildcards are resolved
+            // against captured native host tuples by the core, never port zero.
             ExactNoteKind::Off if (0.0..=1.0).contains(&velocity) =>
-                ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, velocity), 0),
-            ExactNoteKind::Choke => ExactInput::Routed(CoreEvent::Choke(pattern), 0),
+                ExactInput::Routed(CoreEvent::NoteOffVelocity(pattern, velocity), host_action_port(pattern)),
+            ExactNoteKind::Choke => ExactInput::Routed(CoreEvent::Choke(pattern), host_action_port(pattern)),
             _ => ExactInput::Unsupported,
         }
     };
     let expression =
         |address, clap, x: Option<NoteExpression>| match (host_pattern(address, clap), x) {
-            (Some(pattern), Some(x)) => ExactInput::Routed(CoreEvent::Expression(pattern, x), 0),
+            (Some(pattern), Some(x)) => ExactInput::Routed(CoreEvent::Expression(pattern, x), host_action_port(pattern)),
             _ => ExactInput::Unsupported,
         };
     let unit = |v: f64| (0.0..=1.0).contains(&v).then_some(v);
     Some(match *exact.body() {
+        ExactEventBody::Ump { port, packet } => {
+            let Ok(port)=u8::try_from(port) else { return Some(ExactInput::Unsupported); };
+            if port>=<Plugin as moose::core::PluginRuntime>::info().midi_input_ports { return Some(ExactInput::Unsupported); }
+            let words=packet.storage();
+            let expected=match words[0]>>28 {1|2=>1,4=>2,_=>return Some(ExactInput::Unsupported)};
+            if packet.word_count()!=expected { return Some(ExactInput::Unsupported); }
+            ExactInput::Routed(CoreEvent::Ump([words[0],if expected==2 {words[1]} else {0}]),port)
+        }
+        ExactEventBody::Midi1 { port, message } => {
+            let Ok(port)=u8::try_from(port) else { return Some(ExactInput::Unsupported); };
+            if port>=<Plugin as moose::core::PluginRuntime>::info().midi_input_ports { return Some(ExactInput::Unsupported); }
+            let bytes=message.bytes();let status=bytes[0];
+            let count=match status {0x80..=0xbf|0xe0..=0xef|0xf2=>3,0xc0..=0xdf|0xf1|0xf3=>2,
+                0xf6|0xf8|0xfa..=0xfc|0xfe|0xff=>1,_=>return Some(ExactInput::Unsupported)};
+            // CLAP carries a fixed three-byte storage object even when this
+            // status has only one or two semantic bytes. Trailing storage is
+            // neither another message nor an additional MIDI data byte.
+            if bytes.len()<count || bytes[1..count].iter().any(|b|*b>=128) {return Some(ExactInput::Unsupported);}
+            let a=if count>1 {u32::from(bytes[1])} else {0};let b=if count>2 {u32::from(bytes[2])} else {0};
+            let kind=if status<0xf0 {2} else {1};
+            ExactInput::Routed(CoreEvent::Ump([kind<<28|u32::from(status)<<16|a<<8|b,0]),port)
+        }
         ExactEventBody::Note {
             kind,
             address,
@@ -2826,6 +3006,61 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
     }
 }
 
+/// Semantic-only UI observation; it never admits a note or invokes a script.
+/// Exact packets use it for their bounded typed companions, then route the
+/// original packet once rather than re-encoding each semantic companion.
+fn observe_typed_input(s:&mut Dsp,p:&SamplerParams,e:&Event) {
+    let shared = &p.shared;
+    s.held_keys.typed(e);
+    s.held_keys.publish(shared);
+    match e.body {
+        EventBody::NoteOn {
+            channel,
+            note,
+            ..
+        } => {
+            shared.record_learn(e.port, channel, note);
+        }
+        EventBody::NoteOn2 {
+            channel,
+            note,
+            ..
+        } => {
+            shared.record_learn(e.port, channel, note);
+        }
+        EventBody::ControlChange { cc: 1, value, .. } => {
+            shared.modulation.store(u32::from(value), Ordering::Relaxed)
+        }
+        EventBody::PitchBend { value, .. } => {
+            shared.bend.store(u32::from(value), Ordering::Relaxed)
+        }
+        _ => {}
+    }
+}
+
+/// The same host start/stop law at block start and timestamped transitions.
+/// Stop preserves ordinary release callbacks and tails; panic remains a hard cut.
+fn host_playing_transition(s: &mut Dsp, shared: &Shared, playing: bool, panic: bool) {
+    let stopped = s.playing && !playing;
+    s.playing = playing;
+    if panic {
+        shared.reset_midi();
+        s.held_keys.clear();
+        s.core.panic();
+        s.audition.fill((0, 0));
+    } else if stopped {
+        shared.reset_midi();
+        s.held_keys.clear();
+        s.core.release_all_notes();
+        s.audition.fill((0, 0));
+    }
+}
+
+fn core_transport(host: &TransportInfo) -> Transport {
+    Transport { playing: host.playing, tempo: host.tempo, beats: host.position_beats,
+        signature: (host.time_sig_num, host.time_sig_den) }
+}
+
 /// A typed host MIDI event: shown on the keyboard and wheels, played as UMP.
 fn feed_typed_input(
     s: &mut Dsp,
@@ -2833,7 +3068,14 @@ fn feed_typed_input(
     e: &Event,
     cx: &mut ProcessContext,
     thru: bool,
-) {
+ ) {
+    if let EventBody::Transport(host) = &e.body {
+        // The process loop has already rendered to e.sample_offset. A host
+        // snapshot is not a MIDI packet and must never enter channel encoding.
+        s.core.update_transport(core_transport(host));
+        host_playing_transition(s, &p.shared, host.playing, false);
+        return;
+    }
     if let EventBody::ParamChange { id, value } = e.body {
         if let Some(address) = automation::HostAutomation::address(id) {
             if !s.core.host_parameter(address, value) {
@@ -2850,39 +3092,7 @@ fn feed_typed_input(
         return;
     }
     relay_typed_input(e, cx, thru);
-    let shared = &p.shared;
-    let lit = |note: u8, velocity: u8| {
-        shared.heard[note as usize & 127].store(velocity, Ordering::Relaxed)
-    };
-    match e.body {
-        EventBody::NoteOn {
-            channel,
-            note,
-            velocity,
-            ..
-        } => {
-            shared.record_learn(e.port, channel, note);
-            lit(note, velocity.max(1));
-        }
-        EventBody::NoteOn2 {
-            channel,
-            note,
-            velocity,
-            ..
-        } => {
-            shared.record_learn(e.port, channel, note);
-            lit(note, ((velocity >> 9) as u8).max(1));
-        }
-        EventBody::NoteOff { note, .. } | EventBody::NoteOff2 { note, .. } => lit(note, 0),
-        EventBody::ControlChange { cc: 120 | 123, .. } => (0..128).for_each(|note| lit(note, 0)),
-        EventBody::ControlChange { cc: 1, value, .. } => {
-            shared.modulation.store(u32::from(value), Ordering::Relaxed)
-        }
-        EventBody::PitchBend { value, .. } => {
-            shared.bend.store(u32::from(value), Ordering::Relaxed)
-        }
-        _ => {}
-    }
+    observe_typed_input(s,p,e);
     let words = moose::core::ump::encode_ump_channel_voice_1(&e.body)
         .or_else(|| moose::core::ump::encode_ump_channel_voice_2(&e.body));
     match words {
@@ -2901,22 +3111,14 @@ fn feed_exact_input(
     offset: u32,
     cx: &mut ProcessContext,
 ) {
-    let heard = &p.shared.heard;
+    s.held_keys.exact(event);
+    s.held_keys.publish(&p.shared);
     s.core.event(port, event);
     match event {
-        CoreEvent::NoteOn { note, velocity, .. } => {
+        CoreEvent::NoteOn { note, .. } => {
             p.shared.record_learn(port, note.channel, note.key);
-            heard[usize::from(note.key)]
-                .store(((velocity * 127.).round() as u8).max(1), Ordering::Relaxed);
             if note.clap && !s.core.owns(note) && !end_host_note(cx, note, offset) {
                 s.end_rejections += 1;
-            }
-        }
-        CoreEvent::NoteOff(pattern) | CoreEvent::NoteOffVelocity(pattern, _) | CoreEvent::Choke(pattern) => {
-            for key in (0..128u8).filter(|key| pattern.key == -1 || pattern.key == i32::from(*key))
-            {
-                let held = (0..16).any(|channel| s.core.key_held(channel, key));
-                heard[usize::from(key)].store(u8::from(held), Ordering::Relaxed);
             }
         }
         _ => {}
@@ -2946,6 +3148,8 @@ fn end_host_note(cx: &mut ProcessContext, note: HostNote, offset: u32) -> bool {
 
 pub struct Dsp {
     core: V2Core,
+    /// Physical host presses, independent of scripts, sustain and voice lifetime.
+    held_keys: held_keys::HeldKeys,
     /// The mix last applied, re-applied to each installed part.
     mix: Mix,
     until_poll: usize,
@@ -2957,12 +3161,91 @@ pub struct Dsp {
     unsupported: u64,
     end_rejections: u64,
     playing: bool,
+    master_gain: MasterGain,
+    #[cfg(test)]
+    callback_audit: Option<CallbackAudit>,
+}
+
+/// Diagnostic clock groups exist only in test builds. Publishing/serialization
+/// happens in the receipt fixture after process() has returned.
+#[cfg(test)]
+#[derive(Default)]
+struct CallbackAudit {
+    wall_ns: [u64; 10],
+    caller_cpu_ns: [u64; 10],
+    calls: [u64; 10],
+}
+
+#[cfg(test)]
+struct CallbackAuditStamp {
+    wall: Instant,
+    caller_cpu_ns: u64,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn callback_thread_nanos() -> u64 {
+    let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: the test-only clock call receives a valid writable timespec.
+    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) }, 0);
+    time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+fn callback_thread_nanos() -> u64 { 0 }
+
+#[cfg(test)]
+fn callback_audit_mark(
+    audit: &mut Option<CallbackAudit>,
+    stamp: &mut Option<CallbackAuditStamp>,
+    group: usize,
+) {
+    if let (Some(audit), Some(previous)) = (audit.as_mut(), stamp.as_mut()) {
+        let now = CallbackAuditStamp { wall: Instant::now(), caller_cpu_ns: callback_thread_nanos() };
+        audit.wall_ns[group] = audit.wall_ns[group].saturating_add(
+            now.wall.duration_since(previous.wall).as_nanos().min(u128::from(u64::MAX)) as u64,
+        );
+        audit.caller_cpu_ns[group] = audit.caller_cpu_ns[group]
+            .saturating_add(now.caller_cpu_ns.saturating_sub(previous.caller_cpu_ns));
+        audit.calls[group] = audit.calls[group].saturating_add(1);
+        *previous = now;
+    }
+}
+
+/// Keep sample-accurate smoothing while reusing the transform of an identical
+/// dB value. The host event loop splits blocks at automation boundaries.
+#[derive(Default)]
+struct MasterGain {
+    previous: Option<(u32, f32)>,
+}
+
+impl MasterGain {
+    fn fill(&mut self, volume: &FloatParam, output: &mut [f32]) {
+        volume.read_into(output);
+        let Some(first) = output.first().copied() else { return };
+        let bits = first.to_bits();
+        if output.iter().all(|sample| sample.to_bits() == bits) {
+            let linear = match self.previous {
+                Some((previous, linear)) if previous == bits => linear,
+                _ => {
+                    let linear = db_to_linear(first);
+                    self.previous = Some((bits, linear));
+                    linear
+                }
+            };
+            output.fill(linear);
+        } else {
+            let last = output.last().unwrap().to_bits();
+            for sample in output.iter_mut() { *sample = db_to_linear(*sample); }
+            self.previous = Some((last, *output.last().unwrap()));
+        }
+    }
 }
 
 impl Default for Dsp {
     fn default() -> Self {
         Self {
             core: V2Core::default(),
+            held_keys: held_keys::HeldKeys::default(),
             mix: Mix::default(),
             until_poll: 0,
             audition: vec![(0, 0); RACK_SLOTS],
@@ -2971,6 +3254,9 @@ impl Default for Dsp {
             unsupported: 0,
             end_rejections: 0,
             playing: false,
+            master_gain: MasterGain::default(),
+            #[cfg(test)]
+            callback_audit: None,
         }
     }
 }
@@ -3038,9 +3324,9 @@ impl PluginLogic for Sampler {
         s.audition.fill((0, 0));
         s.playing = false;
         p.shared.reset_midi();
+        s.held_keys.clear();
         p.shared.voices.store(0, Ordering::Relaxed);
         p.shared.audible.store(0, Ordering::Relaxed);
-        p.shared.engine_keys.store(false, Ordering::Release);
     }
 
     fn process(
@@ -3051,6 +3337,11 @@ impl PluginLogic for Sampler {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let started = Instant::now();
+        #[cfg(test)]
+        let mut callback_stamp = s.callback_audit.as_ref().map(|_| CallbackAuditStamp {
+            wall: started,
+            caller_cpu_ns: callback_thread_nanos(),
+        });
         let shared = &p.shared;
         if !shared.discard.is_full()
             && let Some(mut growth) = shared.growth.pop()
@@ -3123,6 +3414,8 @@ impl PluginLogic for Sampler {
             };
             let _ = shared.discard.push(retired);
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 0);
         // Port v1 per-part engine defaults before any keyboard or host note starts.
         s.core.set_performance(
             p.attack.raw_target(),
@@ -3132,24 +3425,10 @@ impl PluginLogic for Sampler {
         s.core.begin_block(&BlockInfo {
             frames,
             offline: cx.process_mode.is_offline(),
-            transport: Transport {
-                playing: cx.transport.playing,
-                tempo: cx.transport.tempo,
-                beats: cx.transport.position_beats,
-                signature: (cx.transport.time_sig_num, cx.transport.time_sig_den),
-            },
+            transport: core_transport(cx.transport),
         });
-        let stopped = s.playing && !cx.transport.playing;
-        s.playing = cx.transport.playing;
-        if shared.panic.swap(false, Ordering::AcqRel) {
-            shared.reset_midi();
-            s.core.panic();
-            s.audition.fill((0, 0));
-        } else if stopped {
-            shared.reset_midi();
-            s.core.release_all_notes();
-            s.audition.fill((0, 0));
-        }
+        host_playing_transition(s, shared, cx.transport.playing,
+            shared.panic.swap(false, Ordering::AcqRel));
         while let Some((slot, articulation)) = shared.articulation_edits.pop() {
             s.core.select_articulation(slot, articulation);
         }
@@ -3173,6 +3452,8 @@ impl PluginLogic for Sampler {
             s.audition[selected] = ((rate * 1.5) as usize, note);
         }
 
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 1);
         let channels = b.num_output_channels();
         let thru = shared.midi_thru.load(Ordering::Relaxed);
         let mut peak = [0f32; 2];
@@ -3191,6 +3472,7 @@ impl PluginLogic for Sampler {
                         Some(ExactInput::Routed(event, port)) => {
                             for e in exact.fallback().into_iter().chain(exact.companions()) {
                                 relay_typed_input(e, cx, thru);
+                                if matches!(event,CoreEvent::Ump(_)) { observe_typed_input(s,p,e); }
                             }
                             feed_exact_input(s, p, event, port, exact.sample_offset(), cx);
                         }
@@ -3203,6 +3485,8 @@ impl PluginLogic for Sampler {
                     },
                 }
             }
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 2);
             if at >= frames {
                 break;
             }
@@ -3218,12 +3502,14 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            for gain in &mut gains[..len] {
-                *gain = db_to_linear(p.volume.read());
-            }
+            s.master_gain.fill(&p.volume, &mut gains[..len]);
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 3);
             let ports = s.core.bus_ports().map(usize::from);
             s.core.set_tap(scope.checked_sub(1));
             let Rendered { buses, live } = s.core.render(len);
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 4);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
                 for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
@@ -3292,6 +3578,8 @@ impl PluginLogic for Sampler {
                 shared.scope.push(tapped);
             }
             at += len;
+            #[cfg(test)]
+            callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 5);
         }
         for slot in 0..s.core.parts() {
             let epoch = s.core.epoch(slot);
@@ -3321,17 +3609,15 @@ impl PluginLogic for Sampler {
                     .is_ok()
             });
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 6);
         let offset = frames.saturating_sub(1) as u32;
         let refused = s
             .core
             .end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
-        let mut keys = [0; 128];
-        let loaded = s.core.pressed_keys(&mut keys);
-        for (cell, value) in shared.heard.iter().zip(keys) {
-            cell.store(value, Ordering::Relaxed);
-        }
-        shared.engine_keys.store(loaded, Ordering::Release);
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 7);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
@@ -3348,6 +3634,12 @@ impl PluginLogic for Sampler {
                 let Some(atoms) = part_atoms(&s.shared_parts, shared, slot) else {
                     continue;
                 };
+                // Raw UVI taps must be published before take_node_peaks
+                // consumes the same physical output observations below.
+                atoms.refresh_uvi_meters(s.core.epoch(slot), |request| {
+                    s.core.uvi_meter_observation(slot, request)
+                });
+                s.core.finish_uvi_meter_observation(slot);
                 let Ok(meters) = atoms.node_meters.try_lock_unpoisoned() else {
                     continue;
                 };
@@ -3366,6 +3658,8 @@ impl PluginLogic for Sampler {
             peaks.parts.fill([0.0; 2]);
             peaks.buses.fill([0.0; 2]);
         }
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 8);
         let voices = s.core.voices();
         shared.voices.store(voices.active as u64, Ordering::Relaxed);
         shared
@@ -3378,6 +3672,8 @@ impl PluginLogic for Sampler {
         shared
             .end_rejections
             .store(s.end_rejections, Ordering::Relaxed);
+        #[cfg(test)]
+        callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 9);
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
             let busy = started.elapsed();
@@ -3482,6 +3778,9 @@ pub(crate) mod tests {
             stream_failed: 3,
             stream_errors: 4,
             offline_failures: 5,
+            cold_starts: 126,
+            voice_pool_refusals: 127,
+            waiting_voice_replacements: 128,
             ..Default::default()
         };
         assert_eq!(
@@ -3502,6 +3801,55 @@ pub(crate) mod tests {
         assert_eq!(db_to_linear(p.volume.read()), 1.0, "master gain");
         let full_scale = 1.0_f32;
         assert_eq!(full_scale * db_to_linear(p.volume.read()), full_scale);
+    }
+
+    #[test]
+    fn master_gain_bulk_reads_preserve_smoothed_samples_and_automation_boundaries() {
+        let reference = SamplerParams::new();
+        let cached = SamplerParams::new();
+        reference.volume.set_sample_rate(48000.0);
+        cached.volume.set_sample_rate(48000.0);
+        let mut gain = MasterGain::default();
+        for target in [0.0, -60.0, 6.0, -3.5, 0.0, -0.0, -60.0] {
+            reference.volume.set_value(target);
+            cached.volume.set_value(target);
+            for frames in [1, 3, 64, 128, 17, 128, 128, 128, 128, 128, 128] {
+                let mut actual = [0.; MAX_BLOCK];
+                gain.fill(&cached.volume, &mut actual[..frames]);
+                for &sample in &actual[..frames] {
+                    let expected: f32 = db_to_linear(reference.volume.read());
+                    assert_eq!(sample.to_bits(), expected.to_bits(), "target {target}, {frames}-frame boundary");
+                }
+                let a: f32 = cached.volume.current();
+                let b: f32 = reference.volume.current();
+                assert_eq!(a.to_bits(), b.to_bits(), "both smoothers advance by exactly the same sample count");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "timing receipt: run optimized and without competing workloads"]
+    fn master_gain_cpu_receipt() {
+        use std::hint::black_box;
+        let parameter = SamplerParams::new();
+        parameter.volume.set_sample_rate(48000.0);
+        let blocks = 100_000;
+        for moving in [false, true] {
+            for cached in [false, true] {
+                parameter.volume.set_value(0.0);
+                parameter.volume.snap_smoother();
+                let mut gain = MasterGain::default();
+                let mut out = [0.; MAX_BLOCK];
+                let began = Instant::now();
+                for block in 0..blocks {
+                    if moving { parameter.volume.set_value(if block % 2 == 0 { -30.0 } else { -6.0 }); }
+                    if cached { gain.fill(&parameter.volume, &mut out); }
+                    else { for sample in &mut out { *sample = db_to_linear(parameter.volume.read()); } }
+                    black_box(&out);
+                }
+                eprintln!("master_gain moving={moving} cached={cached} blocks={blocks} frames={} elapsed_ns={}", MAX_BLOCK, began.elapsed().as_nanos());
+            }
+        }
     }
     use std::{
         alloc::{GlobalAlloc, Layout, System},
@@ -3843,9 +4191,14 @@ pub(crate) mod tests {
     }
 
     fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+        transaction_candidate_with_source(name,
+            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on")
+    }
+
+    pub(super) fn transaction_candidate_with_source(name: &str, source: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
         use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
         let script = sampler_ksp::compile(
-            "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on",
+            source,
             48000,
             sampler_ksp::Limits::LIBRARY,
             &[],
@@ -3917,6 +4270,60 @@ pub(crate) mod tests {
         core.play(0, CoreEvent::midi1(0x90, 60, 100));
         assert!(core.render(64).live[0]);
         (params, core)
+    }
+
+    #[test]
+    fn a_waiting_load_services_real_retained_ui_callbacks_and_keeps_audio_playing() {
+        let params = SamplerParams::new();
+        params.selection.write_unpoisoned().parts = vec![Part {
+            path: "active.nki".into(), ..Default::default()
+        }];
+        let candidate = transaction_candidate_with_source("Active", concat!(
+            "on init declare ui_knob $value(0,1000,1) $value := 250 ",
+            "declare ui_label $status(1,1) end on ",
+            "on ui_control($value) set_text($status,\"still live\") end on",
+        ));
+        let control = candidate.controls[0].0;
+        assert!(load_part(&params, 0, Some(candidate)));
+        let (slot, epoch, part) = params.shared.ready.pop().unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(slot, part);
+        core.play(0, CoreEvent::midi1(0x90, 60, 100));
+        params.selection.write_unpoisoned().parts[0].path = "private-next.nki".into();
+        assert!(params.shared.set_control_at(0, epoch, control, 750.));
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let mut services = 0;
+        let mut published = false;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                // This worker cannot report progress or finish until the old
+                // owner's real callback and publication have advanced twice.
+                release_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+                progress_tx.send(Progress::DONE).unwrap();
+            });
+            crate::sound::v2::load_wait::relay(progress_rx, &mut |_| {}, Some(&mut || {
+                services += 1;
+                core.begin_block(&crate::sound::BlockInfo { frames:64, ..Default::default() });
+                assert!(core.render(64).buses[0][0].iter().any(|v| *v != 0.));
+                core.end_block(64, &mut |_| true);
+                core.take_effects(0, &mut |instance, effect| {
+                    params.shared.effects.push((0, epoch, instance, *effect)).is_ok()
+                });
+                service_current_ui(&params);
+                let view = params.shared.view.lock_unpoisoned();
+                let part = &view.parts[0];
+                assert_eq!(part.generation, epoch);
+                assert_eq!(part.active, "Active");
+                published |= part.updates.iter().any(|patch| patch.widgets.iter()
+                    .any(|(_, widget)| widget.text == "still live"));
+                if published && services >= 2 { let _ = release_tx.try_send(()); }
+            }));
+        });
+        assert!(published);
+        assert!(services >= 2);
+        assert_eq!(core.epoch(0), epoch);
+        assert!(params.shared.ready.pop().is_none());
     }
 
     #[test]
@@ -4397,11 +4804,60 @@ pub(crate) mod tests {
             })
         );
     }
+
+    #[test]
+    fn exact_native_port_tuples_reach_the_real_core_after_part_admission_is_remapped() {
+        use sampler_core::{Envelope, Limits, Pcm, Playback, Prepared, Region, Runtime};
+        let decode = |body| {
+            let mut events = moose::core::EventList::with_capacity(1);
+            events.try_push_exact(ExactEvent::new(0, body)).unwrap();
+            let LosslessEventRef::Exact(event) = events.lossless_iter().next().unwrap() else {
+                panic!("exact native event lost its payload")
+            };
+            match exact_host_input(event).unwrap() {
+                ExactInput::Routed(event, port) => (event, port),
+                ExactInput::Unsupported => panic!("authored native event refused"),
+            }
+        };
+        for clap in [true, false] {
+            let pcm = Pcm::new(48000, vec![[0.25; 2]; 4096].into_boxed_slice()).unwrap();
+            let region = Region { sample: 0, key_low: 60, key_high: 60, root_key: None,
+                velocity_low: 0., velocity_high: 1., gain: 1.,
+                envelope: Envelope::default(), playback: Playback::default() };
+            let plan = Prepared::new(48000, vec![pcm], vec![region], 1).unwrap();
+            let limits = Limits::for_plan(&plan, 8, 16);
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, Some(Box::new(CorePart::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("exact native")).unwrap())));
+            let mut mix = Mix::default(); mix.parts[0].port = 2; mix.parts[0].channel = 3; core.set_mix(&mix);
+            let address = ExactNoteAddress::from_raw_signed(2, 3, 60, 117);
+            let note = HostNote { port: 2, channel: 3, key: 60, id: 117, clap };
+            let body = if clap { ExactEventBody::Note { kind: ExactNoteKind::On, address, velocity: 0.75 } }
+                else { ExactEventBody::DetailedNote { kind: ExactNoteKind::On, address, velocity: 0.75, tuning: 0., length: None } };
+            let (event, port) = decode(body); assert_eq!(port, 2); core.event(port, event);
+            assert!(core.owns(note)); assert!(core.render(1).buses[0][0][0] > 0.);
+            let mut changed = mix.clone(); changed.parts[0].port = 4; changed.parts[0].channel = 7; core.set_mix(&changed);
+            let body = if clap { ExactEventBody::NoteExpression { expression_id: 0, address, value: 0. } }
+                else { ExactEventBody::NormalizedNoteExpression { expression_id: 0, address, value: 0. } };
+            let (event, port) = decode(body); assert_eq!(port, 2); core.event(port, event);
+            assert!(core.render(32).buses[0][0][..32].iter().all(|v| *v == 0.));
+            assert_eq!(core.voices().active, 1, "held note expression must not retrigger or terminate its owner");
+            let body = if clap { ExactEventBody::Note { kind: ExactNoteKind::Off, address, velocity: 0.5 } }
+                else { ExactEventBody::DetailedNote { kind: ExactNoteKind::Off, address, velocity: 0.5, tuning: 0., length: None } };
+            let (event, port) = decode(body); assert_eq!(port, 2); core.event(port, event); core.render(128);
+            let mut ended = Vec::new(); core.end_block(128, &mut |note| { ended.push(note); true });
+            assert!(!core.owns(note)); assert_eq!(core.voices().active, 0);
+            assert_eq!(ended, if clap { vec![note] } else { vec![] });
+            core.end_block(1, &mut |_| panic!("duplicate native end"));
+        }
+    }
+
 }
 
 mod effect_controls;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod cpu_receipt;
 #[cfg(test)]
 mod persistence_tests;
 #[cfg(test)]
@@ -4862,5 +5318,248 @@ mod timing_loader_tests {
         drop(s);
         drop(p);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod exact_packet_tests;
+
+#[cfg(test)]
+mod transport_event_tests;
+
+#[cfg(test)]
+mod uvi_registry_part_tests {
+    use super::*;
+    #[test]
+    fn uvi_dynamic_registry_joins_part_display_save_epoch_and_drawn_owner(){
+        use sampler_uvi::scripted::ScriptThread;
+        use std::time::{Duration,Instant};
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[local create=Button('Create');create.changed=function() if made then return end;made=true;Knob('Dynamic',0.25,0,1) end]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let (_thread,loaded)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+        let params=SamplerParams::new();params.shared.ensure_parts(1);
+        params.selection.write_unpoisoned().parts=vec![Part{path:"registry.uvip".into(),..Default::default()}];
+        let actual=params.shared.part(0).unwrap();actual.generation.store(17,Ordering::Release);
+        let initial=loaded.ui.snapshot();let sampler_ui_ir::Binding::Control(create)=initial.interface().widgets[0].binding else{panic!("real Button")};
+        {
+            let mut scripts=actual.scripts.lock_unpoisoned();scripts.uvi=Some(loaded.ui.clone());scripts.uvi_source=Some(params.selection.read_unpoisoned().parts[0].source());
+            let mut view=params.shared.view.lock_unpoisoned();view.parts[0].interfaces=vec![initial.interface().as_ref().clone()].into();view.parts[0].generation=17;
+        }
+        *actual.controls.lock_unpoisoned()=vec![ControlCell::new(create,0.)].into();
+        assert!(params.shared.set_uvi_control_at(0,17,&initial,create,1.));
+        let deadline=Instant::now()+Duration::from_secs(3);
+        let dynamic=loop{
+            let face=loaded.ui.interface();if let Some(widget)=face.widgets.iter().find(|w|w.name=="Dynamic") {let sampler_ui_ir::Binding::Control(id)=widget.binding else{panic!("real dynamic Knob")};break id;}
+            assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(2));
+        };
+        params.shared.refresh_uvi(&params);
+        let drawn=params.shared.view.lock_unpoisoned().parts[0].uvi_snapshot.clone().unwrap();
+        assert!(loaded.ui.owns_snapshot(&drawn));assert!(actual.display_values().contains(&(dynamic,0.25)));
+        assert!(actual.control_values().contains(&(dynamic,0.25)),"save must include actual dynamic roster");
+        assert!(!params.shared.set_uvi_control_at(0,16,&drawn,dynamic,0.75));
+        assert!(!params.shared.set_uvi_control_at(0,17,&initial,dynamic,0.75));
+        let (_other_thread,other)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+        actual.scripts.lock_unpoisoned().uvi=Some(other.ui.clone());
+        assert!(!params.shared.set_uvi_control_at(0,17,&drawn,dynamic,0.75),"same Part epoch cannot substitute a different real VM bridge");
+        assert!(!actual.control_values().iter().any(|(id,_)|*id==dynamic),"retired original cell is not saved through the old static mirror");
+    }
+}
+
+
+#[cfg(all(test,feature="shots"))]
+mod uvi_gesture_baseline_tests {
+    use super::*;
+    use crate::ui::tests::Harness;
+    use moose::mui::mui::prelude::{Buttons,Input,Mods,Point,PointerInput};
+    use sampler_uvi::scripted::{DiagnosticPoll,UiBridge};
+    use std::{sync::Arc,time::{Duration,Instant}};
+    struct Fixture {
+        _directory:tempfile::TempDir,params:Arc<SamplerParams>,core:V2Core,
+        bridge:Arc<UiBridge>,editor:Harness,point:Point,down:bool,mods:Mods,unity:Vec<f32>,
+    }
+    impl Fixture {
+        fn new(on_down:bool)->Self {
+            let scratch=Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/ui-test-scratch");
+            std::fs::create_dir_all(&scratch).unwrap();
+            let directory=tempfile::Builder::new().prefix("uvi-gesture-").tempdir_in(&scratch).unwrap();
+            let mut writer=hound::WavWriter::create(directory.path().join("held.wav"),hound::WavSpec{channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
+            for _ in 0..32768 {writer.write_sample(16384i16).unwrap();}writer.finalize().unwrap();
+            let script=format!(r#"
+              makePerformanceView();setSize(240,120)
+              local button=Button{{'Gesture',bounds={{10,10,100,30}}}}
+              button.triggeredOnMouseDown={}
+              local status=Label{{'Status',bounds={{10,65,220,25}}}};status.text='0|idle'
+              local calls=0
+              button.changed=function(self,mods)
+                calls=calls+1
+                status.text=tostring(calls)..'|'..(mods and (tostring(mods.shiftDown)..'|'..tostring(mods.commandDown)..'|'..tostring(mods.altDown)) or 'nil')
+                Program:setParameter('Gain',mods and mods.shiftDown and 0.25 or 0.75)
+              end
+            "#,if on_down{"true"}else{"false"});
+            let xml=format!("<UVI4><Program Name='Actual gesture fixture' Gain='1'><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name='Tone' Gain='1'><Keygroups><Keygroup Name='Held' LowKey='60' HighKey='60' Gain='1'><Oscillators><SamplePlayer SamplePath='held.wav' BaseNote='60'/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>");
+            let preset=directory.path().join("gesture.uvip");std::fs::write(&preset,xml).unwrap();
+            let params=Arc::new(SamplerParams::new());
+            {let mut selection=params.selection.write_unpoisoned();selection.parts=vec![Part{path:preset.display().to_string(),streaming:Some(Streaming::RamOnly),view:3,..Default::default()}];selection.order=vec![0];}
+            // Same public normal loader/ready/install path as production, not
+            // an inspector script attachment or fabricated control registration.
+            let deadline=Instant::now()+Duration::from_secs(5);
+            loop {Load.run(&params);if params.shared.view.lock_unpoisoned().parts[0].tree.is_some(){break;}assert!(Instant::now()<deadline,"normal authored source failed to load");std::thread::sleep(Duration::from_millis(2));}
+            let actual=params.shared.part(0).unwrap();let bridge=actual.scripts.lock_unpoisoned().uvi.clone().expect("actual normal UVI owner");
+            let (slot,epoch,part)=params.shared.ready.pop().expect("normal loader produced actual Part");assert_eq!(slot,0);assert!(part.is_some());
+            let rate=f64::from_bits(params.shared.rate.load(Ordering::Acquire));let mut core=V2Core::with_parts(1,rate);core.install(slot,part);core.set_mix(&mix(&params.selection.read_unpoisoned()));
+            core.play(0,CoreEvent::midi1(0x90,60,100));
+            for _ in 0..4 {let _=core.render(64);}
+            let unity=core.render(64).buses[0][0][..64].to_vec();assert!(unity.iter().any(|sample|sample.abs()>0.01),"normal held source must sound before gesture");
+            assert_eq!(core.runtime_stats(0).unwrap().voices,1);
+            let editor=Harness::new(&params,1180.,780.);let widget=bridge.interface().widgets.iter().position(|widget|widget.name=="Gesture").expect("actual authored Gesture declaration");let id=format!("part-0-epoch-{epoch}-script-0-ir-{widget}");
+            let bounds=editor.ui.scene().unwrap().surface(&id).unwrap_or_else(||panic!("actual authored button not drawn: {id}")).frame;
+            let point=Point::new(bounds.x+bounds.size.width/2.,bounds.y+bounds.size.height/2.);
+            Self{_directory:directory,params,core,bridge,editor,point,down:false,mods:Mods{shift:true,ctrl:true,alt:true,cmd:true},unity}
+        }
+        fn tick(&mut self) {
+            self.editor.tick(Input{pointer:PointerInput{pos:Some(self.point),buttons:if self.down{Buttons::PRIMARY}else{Buttons::default()},mods:self.mods,..Default::default()},..Default::default()});
+            // Zero PCM service drains the REAL normal Driver queue without
+            // advancing the held source or manufacturing a rendered sample.
+            let _=self.core.render(0);service_current_ui(&self.params);self.params.shared.refresh_uvi(&self.params);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fn status(&self)->String {self.bridge.interface().widgets.iter().find(|widget|widget.name=="Status").unwrap().text.clone()}
+        fn first_callback(&mut self)->String {
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop {self.tick();let status=self.status();if status.starts_with("1|"){return status;}assert!(Instant::now()<deadline,"documented activation boundary reached but real changed callback did not execute; status={status}");}
+        }
+        fn drain_actual_owner(&mut self) {
+            let mut receipt=self.bridge.request_diagnostics(Duration::from_secs(3)).unwrap();let deadline=Instant::now()+Duration::from_secs(3);let mut complete=false;
+            loop {self.tick();match receipt.poll(){DiagnosticPoll::Pending=>{},DiagnosticPoll::Complete(_)=>complete=true,other=>panic!("actual owner diagnostic failed: {other:?}")};if complete&&receipt.commands_drained(){break;}assert!(Instant::now()<deadline,"real ordinary Driver did not pass the ordered command marker");}
+        }
+        fn assert_quarter_gain(&mut self){
+            self.drain_actual_owner();let rendered=self.core.render(64);let actual=&rendered.buses[0][0][..64];
+            for (sample,unity) in actual.iter().zip(&self.unity){assert!((f64::from(*sample)-f64::from(*unity)*0.25).abs()<2e-5,"gesture callback must set actual held PCM quarter gain: got{sample}, unity{unity}");}
+            let stats=self.core.runtime_stats(0).unwrap();assert_eq!(stats.voices,1);assert_eq!(stats.nonfinite_frames,0);assert_eq!(stats.voice_pool_refusals,0);
+        }
+    }
+    #[test]
+    fn normal_uvi_pointer_modifiers_reach_release_callback_and_held_pcm(){
+        let mut fixture=Fixture::new(false);fixture.down=true;for _ in 0..8 {fixture.tick();}
+        assert_eq!(fixture.status(),"0|idle","default activation must not fire on press/held");
+        fixture.down=false;let status=fixture.first_callback();
+        assert_eq!(status,"1|true|true|true","real pointer modifier booleans must reach the original callback, not nil or KSP bits");
+        fixture.assert_quarter_gain();
+    }
+    #[test]
+    fn normal_uvi_trigger_on_mouse_down_changes_held_pcm_before_release_once(){
+        let mut fixture=Fixture::new(true);fixture.down=true;for _ in 0..4 {fixture.tick();}fixture.drain_actual_owner();
+        assert_eq!(fixture.status(),"1|true|true|true","documented press activation must run before physical release after the actual owner marker");fixture.assert_quarter_gain();
+        for _ in 0..20 {fixture.tick();}assert_eq!(fixture.status(),"1|true|true|true","held frames must not retrigger");
+        fixture.down=false;for _ in 0..8 {fixture.tick();}fixture.drain_actual_owner();
+        assert_eq!(fixture.status(),"1|true|true|true","release must not duplicate a press activation");
+    }
+}
+#[cfg(all(test,feature="shots"))]
+mod uvi_gesture_policy_tests {
+    use super::*;
+    use crate::ui::tests::Harness;
+    use moose::mui::mui::prelude::{Buttons,Input,Mods,Point,PointerInput};
+    use sampler_uvi::scripted::{DiagnosticPoll,UiBridge};
+    use std::{sync::Arc,time::{Duration,Instant}};
+    struct Fixture {
+        _directory:tempfile::TempDir,params:Arc<SamplerParams>,core:V2Core,
+        bridge:Arc<UiBridge>,editor:Harness,point:Point,down:bool,mods:Mods,unity:Vec<f32>,id:String,width:f64,
+    }
+    impl Fixture {
+        fn new(on_down:bool)->Self {
+            let scratch=Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/ui-test-scratch");
+            std::fs::create_dir_all(&scratch).unwrap();
+            let directory=tempfile::Builder::new().prefix("uvi-gesture-").tempdir_in(&scratch).unwrap();
+            let mut writer=hound::WavWriter::create(directory.path().join("held.wav"),hound::WavSpec{channels:1,sample_rate:48000,bits_per_sample:16,sample_format:hound::SampleFormat::Int}).unwrap();
+            for _ in 0..32768 {writer.write_sample(16384i16).unwrap();}writer.finalize().unwrap();
+            let script=format!(r#"
+              makePerformanceView();setSize(240,120)
+              local button=Button{{'Gesture',bounds={{10,10,100,30}}}}
+              button.triggeredOnMouseDown={}
+              local status=Label{{'Status',bounds={{10,65,220,25}}}};status.text='0|idle'
+              local calls=0
+              button.changed=function(self,mods)
+                calls=calls+1
+                self.triggeredOnMouseDown=false;self.width=130
+                status.text=tostring(calls)..'|'..(mods and (tostring(mods.shiftDown)..'|'..tostring(mods.commandDown)..'|'..tostring(mods.altDown)) or 'nil')
+                Program:setParameter('Gain',mods and mods.shiftDown and 0.25 or 0.75)
+              end
+              function onController(e) if e.controller==3 then button.triggeredOnMouseDown=true;button.width=130 end end
+            "#,if on_down{"true"}else{"false"});
+            let xml=format!("<UVI4><Program Name='Actual gesture fixture' Gain='1'><EventProcessors><ScriptProcessor><script><![CDATA[{script}]]></script></ScriptProcessor></EventProcessors><Layers><Layer Name='Tone' Gain='1'><Keygroups><Keygroup Name='Held' LowKey='60' HighKey='60' Gain='1'><Oscillators><SamplePlayer SamplePath='held.wav' BaseNote='60'/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program></UVI4>");
+            let preset=directory.path().join("gesture.uvip");std::fs::write(&preset,xml).unwrap();
+            let params=Arc::new(SamplerParams::new());
+            {let mut selection=params.selection.write_unpoisoned();selection.parts=vec![Part{path:preset.display().to_string(),streaming:Some(Streaming::RamOnly),view:3,..Default::default()}];selection.order=vec![0];}
+            // Same public normal loader/ready/install path as production, not
+            // an inspector script attachment or fabricated control registration.
+            let deadline=Instant::now()+Duration::from_secs(5);
+            loop {Load.run(&params);if params.shared.view.lock_unpoisoned().parts[0].tree.is_some(){break;}assert!(Instant::now()<deadline,"normal authored source failed to load");std::thread::sleep(Duration::from_millis(2));}
+            let actual=params.shared.part(0).unwrap();let bridge=actual.scripts.lock_unpoisoned().uvi.clone().expect("actual normal UVI owner");
+            let (slot,epoch,part)=params.shared.ready.pop().expect("normal loader produced actual Part");assert_eq!(slot,0);assert!(part.is_some());
+            let rate=f64::from_bits(params.shared.rate.load(Ordering::Acquire));let mut core=V2Core::with_parts(1,rate);core.install(slot,part);core.set_mix(&mix(&params.selection.read_unpoisoned()));
+            core.play(0,CoreEvent::midi1(0x90,60,100));
+            for _ in 0..4 {let _=core.render(64);}
+            let unity=core.render(64).buses[0][0][..64].to_vec();assert!(unity.iter().any(|sample|sample.abs()>0.01),"normal held source must sound before gesture");
+            assert_eq!(core.runtime_stats(0).unwrap().voices,1);
+            let editor=Harness::new(&params,1180.,780.);let widget=bridge.interface().widgets.iter().position(|widget|widget.name=="Gesture").expect("actual authored Gesture declaration");let id=format!("part-0-epoch-{epoch}-script-0-ir-{widget}");
+            let bounds=editor.ui.scene().unwrap().surface(&id).unwrap_or_else(||panic!("actual authored button not drawn: {id}")).frame;
+            let point=Point::new(bounds.x+bounds.size.width/2.,bounds.y+bounds.size.height/2.);
+            Self{_directory:directory,params,core,bridge,editor,point,down:false,mods:Mods{shift:true,ctrl:true,alt:true,cmd:true},unity,id,width:bounds.size.width}
+        }
+        fn tick(&mut self) {
+            self.editor.tick(Input{pointer:PointerInput{pos:Some(self.point),buttons:if self.down{Buttons::PRIMARY}else{Buttons::default()},mods:self.mods,..Default::default()},..Default::default()});
+            // Zero PCM service drains the REAL normal Driver queue without
+            // advancing the held source or manufacturing a rendered sample.
+            let _=self.core.render(0);service_current_ui(&self.params);self.params.shared.refresh_uvi(&self.params);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        fn status(&self)->String {self.bridge.interface().widgets.iter().find(|widget|widget.name=="Status").unwrap().text.clone()}
+        fn first_callback(&mut self)->String {
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop {self.tick();let status=self.status();if status.starts_with("1|"){return status;}assert!(Instant::now()<deadline,"documented activation boundary reached but real changed callback did not execute; status={status}");}
+        }
+        fn drain_actual_owner(&mut self) {
+            let mut receipt=self.bridge.request_diagnostics(Duration::from_secs(3)).unwrap();let deadline=Instant::now()+Duration::from_secs(3);let mut complete=false;
+            loop {self.tick();match receipt.poll(){DiagnosticPoll::Pending=>{},DiagnosticPoll::Complete(_)=>complete=true,other=>panic!("actual owner diagnostic failed: {other:?}")};if complete&&receipt.commands_drained(){break;}assert!(Instant::now()<deadline,"real ordinary Driver did not pass the ordered command marker");}
+        }
+        fn assert_quarter_gain(&mut self){
+            self.drain_actual_owner();let rendered=self.core.render(64);let actual=&rendered.buses[0][0][..64];
+            for (sample,unity) in actual.iter().zip(&self.unity){assert!((f64::from(*sample)-f64::from(*unity)*0.25).abs()<2e-5,"gesture callback must set actual held PCM quarter gain: got{sample}, unity{unity}");}
+            let stats=self.core.runtime_stats(0).unwrap();assert_eq!(stats.voices,1);assert_eq!(stats.nonfinite_frames,0);assert_eq!(stats.voice_pool_refusals,0);
+        }
+    }
+
+    impl Fixture {
+        fn adopted_phase(&mut self,on_press:bool){
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop{
+                self.tick();
+                let owner=self.bridge.interface();let button=owner.widgets.iter().find(|widget|widget.name=="Gesture").unwrap();
+                let drawn=self.editor.ui.scene().unwrap().surface(&self.id).unwrap();
+                if button.activate_on_press==on_press&&drawn.frame.size.width>self.width*1.2{break;}
+                assert!(Instant::now()<deadline,"actual owner/new schema AND widened rendered Face were not adopted");
+            }
+            self.drain_actual_owner();
+        }
+    }
+    #[test]
+    fn normal_uvi_press_callback_phase_change_cannot_replay_its_release(){
+        let mut f=Fixture::new(true);let original=f.bridge.snapshot();f.down=true;
+        assert_eq!(f.first_callback(),"1|true|true|true","real press callback must complete through the normal owner");
+        f.adopted_phase(false);assert!(!original.same_schema(&f.bridge.snapshot()),"actual phase schema changed while physically held");
+        for _ in 0..8{f.tick();}assert_eq!(f.status(),"1|true|true|true");f.assert_quarter_gain();
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();
+        assert_eq!(f.status(),"1|true|true|true","a consumed physical press must stay consumed through current release-mode Face adoption");f.assert_quarter_gain();
+        f.down=true;for _ in 0..8{f.tick();}assert_eq!(f.status(),"1|true|true|true","fresh release-mode click waits for release");
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"2|true|true|true","the next genuine click remains usable exactly once");f.assert_quarter_gain();
+    }
+    #[test]
+    fn normal_uvi_release_to_press_change_cancels_held_gesture_without_synthetic_down(){
+        let mut f=Fixture::new(false);f.down=true;for _ in 0..8{f.tick();}assert_eq!(f.status(),"0|idle");
+        f.core.play(0,CoreEvent::midi1(0xb0,3,127));let _=f.core.render(0);f.adopted_phase(true);
+        for _ in 0..8{f.tick();}assert_eq!(f.status(),"0|idle","a policy change cannot manufacture a missing pointer-down");
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"0|idle","changed-policy held gesture is canceled");
+        f.down=true;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"1|true|true|true");
+        f.down=false;for _ in 0..8{f.tick();}f.drain_actual_owner();assert_eq!(f.status(),"1|true|true|true");f.assert_quarter_gain();
     }
 }

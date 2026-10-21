@@ -55,11 +55,21 @@ pub struct EngineMeterAddress {
     pub channel: u8,
     pub bus: Option<i32>,
 }
+/// Lowering asks per zone and processor lane; a scan of every name was a
+/// third of lowering on large instruments. The first listed index wins.
 pub fn engine_parameter_id(name: &str) -> Option<u16> {
-    crate::ENGINE_PARAMETER_NAMES
-        .iter()
-        .position(|n| n.trim_start_matches('$') == name.trim_start_matches('$'))
-        .and_then(|i| u16::try_from(i).ok())
+    static IDS: std::sync::OnceLock<std::collections::HashMap<&'static str, u16>> =
+        std::sync::OnceLock::new();
+    let ids = IDS.get_or_init(|| {
+        let mut ids = std::collections::HashMap::new();
+        for (i, n) in crate::ENGINE_PARAMETER_NAMES.iter().enumerate() {
+            if let Ok(i) = u16::try_from(i) {
+                ids.entry(n.trim_start_matches('$')).or_insert(i);
+            }
+        }
+        ids
+    });
+    ids.get(name.trim_start_matches('$')).copied()
 }
 pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
     crate::ENGINE_PARAMETER_NAMES.get(usize::from(id)).copied()
@@ -68,6 +78,9 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 /// Module owners bind the same controls the DSP reads. No private write mirror.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub enum EngineParameterLaw {
+    /// Native WT phase-form ordinal. This is a discrete enum, not a 0..1M knob.
+    /// NI Source Module reference; Kontakt phase dispatcher 0x140567aa0.
+    WavetableForm,
     /// Native signed filter Gain: -1M..1M maps to -1..1 (±12 dB in the kernel).
     SignedNormalized,
     /// A native switch: zero is off, a nonzero write is on; readback is 0/1.
@@ -76,7 +89,8 @@ pub enum EngineParameterLaw {
         low: f64,
         high: f64,
     },
-    /// Geometric native range, for frequency and time controls.
+    /// Geometric native range, for frequency and time controls. `high` below
+    /// `low` falls (Kontakt's compressor RATIO, 1 down to 0.04).
     Exponential {
         low: f64,
         high: f64,
@@ -96,9 +110,18 @@ pub enum EngineParameterLaw {
     },
     /// Kontakt signed modulation depth, ported from v1 CubicDepth::Loop.
     SignedCubic,
+    /// [`Self::SignedCubic`] in a route's depth units (12 per unit for pitch).
+    ScaledSignedCubic {
+        scale: f64,
+    },
     CubicGain {
         unity: f64,
     },
+    /// Measured stored values at evenly spaced writes over 0..=1e6, geometric
+    /// between positive points (kontakt-bindings curves_dense.tsv).
+    Table(&'static [f64]),
+    /// Legacy EQ FREQn: `20 * 1000^(v/1e6)` Hz into the band's native knob.
+    LegacyEqFrequency,
 }
 impl EngineParameterLaw {
     /// Shared authored/read/write conversion for native AHDSR stage values.
@@ -128,11 +151,14 @@ impl EngineParameterLaw {
 
     pub(crate) fn valid(self) -> bool {
         match self {
-            Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
+            Self::WavetableForm | Self::SignedNormalized | Self::Switch | Self::SignedCubic => true,
+            Self::ScaledSignedCubic { scale } => scale.is_finite() && scale > 0.,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
-                low.is_finite() && high.is_finite() && low > 0. && high >= low
+                low.is_finite() && high.is_finite() && low > 0. && high > 0.
             }
+            Self::Table(points) => points.len() >= 2 && points.iter().all(|p| p.is_finite() && *p >= 0.),
+            Self::LegacyEqFrequency => true,
             Self::ShiftedExponential { low, high, offset } => {
                 low.is_finite()
                     && high.is_finite()
@@ -158,6 +184,19 @@ impl EngineParameterLaw {
         if !self.valid() || !value.is_finite() {
             return Err(Error::InvalidInput);
         }
+        if self == Self::WavetableForm {
+            // The measured phase dispatcher takes an integer ordinal. A real
+            // host control must not round an unproved or fractional mode into
+            // another sound (NI Source Module; native switch 0x140567aa0).
+            return if value.fract() == 0.
+                && (0. ..=33.).contains(&value)
+                && sampler_ir::Wavetable::supports_form(value as u8)
+            {
+                Ok(value as i32)
+            } else {
+                Err(Error::InvalidInput)
+            };
+        }
         let (a, b) = (
             self.decode(if self == Self::SignedNormalized {
                 -1_000_000
@@ -176,14 +215,13 @@ impl EngineParameterLaw {
     /// Convert the normalized service range to a native DSP value. Use a law
     /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
     pub fn decode(self, value: i32) -> f64 {
-        if self == Self::SignedNormalized {
-            return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6;
-        }
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
-            Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm => f64::from(value.clamp(0, 33)),
+            Self::SignedNormalized => f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6,
             Self::Switch => f64::from(value != 0),
             Self::SignedCubic => f64::from((2. * (v as f32 / 1_000_000.) - 1.).powi(3)),
+            Self::ScaledSignedCubic { scale } => scale * Self::SignedCubic.decode(value),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
             Self::Exponential { low, high } => {
                 // Declared endpoints must not shrink or widen through log/exp roundoff.
@@ -211,18 +249,37 @@ impl EngineParameterLaw {
                 10f64.powf((low_db + (high_db - low_db) * v / 1e6) / 20.)
             }
             Self::CubicGain { unity } => (v / unity).powi(3),
+            Self::Table(points) => {
+                let x = v / 1e6 * (points.len() - 1) as f64;
+                let i = (x as usize).min(points.len() - 2);
+                let (a, b) = (points[i], points[i + 1]);
+                let t = x - i as f64;
+                // Measured points are exact (an authored 10 ms must stay inside the
+                // lane's domain); a segment from zero (RV_PREDELAY) is linear.
+                if t == 0. {
+                    a
+                } else if t == 1. {
+                    b
+                } else if a > 0. {
+                    (a.ln() + (b.ln() - a.ln()) * t).exp()
+                } else {
+                    a + (b - a) * t
+                }
+            }
+            Self::LegacyEqFrequency => f64::from(crate::KontaktLegacyEqSettings::frequency_knob(
+                (20. * 1000f64.powf(v / 1e6)) as f32,
+            )),
         }
     }
     /// Convert a finite native DSP value to the normalized service range.
     /// Frontends should use normalized_value to validate authored input.
     pub fn encode(self, value: f64) -> i32 {
-        if self == Self::SignedNormalized {
-            return (value * 1e6).round().clamp(-1e6, 1e6) as i32;
-        }
         (match self {
-            Self::SignedNormalized => unreachable!(),
+            Self::WavetableForm => return value.round().clamp(0., 33.) as i32,
+            Self::SignedNormalized => return (value * 1e6).round().clamp(-1e6, 1e6) as i32,
             Self::Switch => f64::from(value != 0.),
             Self::SignedCubic => 500_000. * (value.cbrt() + 1.),
+            Self::ScaledSignedCubic { scale } => 500_000. * ((value / scale).cbrt() + 1.),
             Self::Linear { low, high } => {
                 if low == high {
                     0.
@@ -235,8 +292,17 @@ impl EngineParameterLaw {
                 if low == high {
                     0.
                 } else {
-                    (value.max(low).ln() - low.ln()) / (high.ln() - low.ln()) * 1e6
+                    (value.clamp(low.min(high), low.max(high)).ln() - low.ln()) / (high.ln() - low.ln()) * 1e6
                 }
+            }
+            // Monotone measured curves: the write whose decode is nearest.
+            Self::Table(_) | Self::LegacyEqFrequency => {
+                let (mut lo, mut hi) = (0, 1_000_000);
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if self.decode(mid) < value { lo = mid + 1 } else { hi = mid }
+                }
+                f64::from(lo)
             }
             Self::ShiftedExponential { low, high, offset } => {
                 ((value + offset).max(low) / low).ln() / (high / low).ln() * 1e6
@@ -337,6 +403,13 @@ impl Prepared {
         let mut controls = self.controls.to_vec();
         let mut bindings = self.engine_parameters.to_vec();
         let mut lanes = self.envelope_controls.to_vec();
+        // Each admitted group adds exactly six definitions and bindings. Use
+        // the iterator's known minimum, bounded by the possible group count,
+        // so a normal bank batch does not repeatedly grow both schema arrays.
+        let additional = envelopes.size_hint().0.min(self.group_count as usize)
+            .checked_mul(ENVELOPE_STAGES.len()).ok_or(Error::Capacity)?;
+        controls.try_reserve(additional).map_err(|_| Error::Capacity)?;
+        bindings.try_reserve(additional).map_err(|_| Error::Capacity)?;
         lanes.resize(self.group_count as usize, [None; 6]);
         for (group, physical_group, slot, authored) in envelopes {
             if group >= self.group_count || physical_group < 0 || slot < 0 {
@@ -410,6 +483,7 @@ impl Prepared {
         }
         self.engine_parameters = bindings.into_boxed_slice();
         self.engine_lookups = lookups.into_boxed_slice();
+        self.refresh_real_controls()?;
         Ok(self)
     }
 }
@@ -447,20 +521,77 @@ fn layer_encode(target: ModTarget, value: i64) -> i32 {
     .round()
     .clamp(0., 1e6) as i32
 }
-fn slot_parameter(name: &str) -> Option<SlotKind> {
-    match name {
-        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => Some(SlotKind::Bypass),
-        "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
-            Some(SlotKind::Output)
+/// An instrument bus fader: +12 dB at 1e6, cubic like the group volume.
+pub const BUS_VOLUME_LAW: EngineParameterLaw = EngineParameterLaw::CubicGain {
+    unity: 629_960.524_947_436_1,
+};
+/// The slot control behind a slot parameter write, and its law.
+/// `$ENGINE_PAR_VOLUME` at (-1, -1, `$NI_BUS_OFFSET` + bus) is an instrument
+/// bus volume: the bus's Mix block at [`crate::BUS_VOLUME_SLOT`], on Kontakt's
+/// volume law (18000·log2(v) − 346768 mB, 2^(dB/6)) = (v/unity)^3 with +12 dB at 1e6.
+fn slot_parameter(
+    name: &str,
+    a: EngineParameterAddress,
+) -> Option<(SlotKind, ControlId, EngineParameterLaw)> {
+    let effect = EngineParameterLaw::CubicGain { unity: 396851. };
+    let (kind, slot, law) = match name {
+        "$ENGINE_PAR_EFFECT_BYPASS" | "$ENGINE_PAR_SEND_EFFECT_BYPASS" => {
+            (SlotKind::Bypass, a.slot, effect)
         }
-        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => Some(SlotKind::Dry),
-        _ => None,
-    }
+        "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+            (SlotKind::Output, a.slot, effect)
+        }
+        "$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => (SlotKind::Dry, a.slot, effect),
+        "$ENGINE_PAR_VOLUME" if a.group == -1 && a.slot == -1 && a.generic >= 1000 => (
+            SlotKind::Output,
+            crate::BUS_VOLUME_SLOT,
+            BUS_VOLUME_LAW,
+        ),
+        _ => return None,
+    };
+    Some((kind, crate::slot_control(kind, a.group, slot, a.generic), law))
 }
 
 #[cfg(test)]
 mod law_tests {
     use super::*;
+    #[test]
+    fn measured_tables_decode_and_encode() {
+        // Evenly spaced measured points (curves_dense.tsv), geometric between them.
+        let law = EngineParameterLaw::Table(&[5., 10., 40.]);
+        assert!(law.valid());
+        assert!((law.decode(0) - 5.).abs() < 1e-9 && (law.decode(1_000_000) - 40.).abs() < 1e-9);
+        assert!((law.decode(250_000) - 50f64.sqrt()).abs() < 1e-9);
+        assert!((law.encode(20.) - 750_000).abs() <= 1);
+        // Endpoints are exact: ANALOG STRINGS' authored 10 ms limiter release sat
+        // 2e-15 below the lane's decoded minimum and failed the whole load.
+        let release = EngineParameterLaw::Table(&sampler_ir::fx::tables::LIM_RELEASE);
+        assert_eq!((release.decode(0), release.decode(1_000_000)), (10., 1000.));
+        // RV_PREDELAY starts at 0 ms: that segment is linear.
+        let law = EngineParameterLaw::Table(&[0., 2., 8.]);
+        assert!(law.valid() && (law.decode(250_000) - 1.).abs() < 1e-9);
+        // COMP RATIO falls from 1 to 0.04.
+        let ratio = EngineParameterLaw::Exponential { low: 1., high: 0.04 };
+        assert!(ratio.valid() && (ratio.decode(500_000) - 0.2).abs() < 1e-9);
+        // INTMOD on a 12-semitone pitch route (v1: 1e6 is depth 1, 750000 is 0.125).
+        let pitch = EngineParameterLaw::ScaledSignedCubic { scale: 12. };
+        assert_eq!((pitch.decode(1_000_000), pitch.decode(750_000), pitch.decode(0)), (12., 1.5, -12.));
+        assert_eq!(pitch.encode(1.5), 750_000);
+    }
+
+    #[test]
+    fn bus_volume_reaches_the_bus_mix_on_the_kontakt_volume_law() {
+        let id = engine_parameter_id("ENGINE_PAR_VOLUME").unwrap();
+        let at = |generic| EngineParameterAddress { parameter: id, group: -1, slot: -1, generic };
+        assert!(slot_parameter("$ENGINE_PAR_VOLUME", at(-1)).is_none());
+        let (kind, control, law) = slot_parameter("$ENGINE_PAR_VOLUME", at(1002)).unwrap();
+        assert_eq!(kind, SlotKind::Output);
+        assert_eq!(control, crate::slot_control(kind, -1, crate::BUS_VOLUME_SLOT, 1002));
+        for v in [1000, 250_000, 629_961, 1_000_000] {
+            let db = layer_decode(ModTarget::Decibels, v) as f64 / 1000.;
+            assert!((law.decode(v) - (db / 6.).exp2()).abs() < 1e-4 * law.decode(v).max(1e-3), "{v}");
+        }
+    }
     #[test]
     fn display_is_the_bare_number_because_scripts_append_the_unit() {
         let show = |name: &str, value| engine_parameter_display(engine_parameter_id(name).unwrap(), value);
@@ -664,8 +795,7 @@ impl Runtime {
         };
         // Missing controls are ignored, like v1 offsets for a group without that parameter.
         let mut changed = false;
-        for binding in &prepared.engine_parameters {
-            let index = prepared.control_index(binding.control).unwrap();
+        for (binding, &index) in prepared.engine_parameters.iter().zip(&prepared.engine_controls) {
             let offset: f32 = offsets
                 .iter()
                 .filter(|o| matches(o.address, binding))
@@ -674,7 +804,12 @@ impl Runtime {
             if !offset.is_finite() {
                 return Err(Error::InvalidInput);
             }
-            changed |= generation.controls.offsets[index] != offset;
+            // Phase mode uses raw ordinals; no continuous normalized player
+            // offset law has been admitted for this discrete selector.
+            if binding.law == EngineParameterLaw::WavetableForm && offset != 0. {
+                return Err(Error::InvalidInput);
+            }
+            changed |= generation.controls.offset(index) != offset;
         }
         if !changed {
             return Ok(());
@@ -685,20 +820,15 @@ impl Runtime {
             .checked_add(1)
             .filter(|r| r.checked_add(generation.controls.pending as u64).is_some())
             .ok_or(Error::Capacity)?;
-        for binding in &prepared.engine_parameters {
-            let index = prepared.control_index(binding.control).unwrap();
+        for (binding, &index) in prepared.engine_parameters.iter().zip(&prepared.engine_controls) {
             let offset: f32 = offsets
                 .iter()
                 .filter(|o| matches(o.address, binding))
                 .map(|o| o.offset)
                 .sum();
-            if generation.controls.offsets[index] != offset {
-                generation.controls.offsets[index] = offset;
-                let value = generation.controls.playing(prepared, index);
-                generation.controls.values[index] = value;
-                generation
-                    .dsp
-                    .edit_control(prepared, index, value, self.now);
+            if generation.controls.offset(index) != offset {
+                let value = generation.controls.set_offset(prepared, index, offset);
+                generation.dsp.edit_control(prepared, binding.control, value, self.now);
             }
         }
         generation.controls.revision = revision;
@@ -754,6 +884,11 @@ impl Runtime {
             .find(|b| b.address == address)
             .copied();
         if let Some(b) = binding {
+            if b.law == EngineParameterLaw::WavetableForm
+                && !u8::try_from(value).is_ok_and(sampler_ir::Wavetable::supports_form)
+            {
+                return Err(Error::InvalidInput);
+            }
             return self
                 .edit_controls_now(
                     plan,
@@ -765,15 +900,12 @@ impl Runtime {
                 )
                 .map(|_| ());
         }
-        if let Some(kind) = slot_parameter(name) {
-            let id = crate::slot_control(kind, address.group, address.slot, address.generic);
+        if let Some((kind, id, law)) = slot_parameter(name, address) {
             if self.control_definition(plan, id).is_ok() {
                 let value = if kind == SlotKind::Bypass {
                     f64::from(value != 0)
                 } else {
-                    EngineParameterLaw::CubicGain { unity: 396851. }
-                        .decode(value)
-                        .min(kind.max())
+                    law.decode(value).min(kind.max())
                 };
                 return self
                     .edit_controls_now(
@@ -803,31 +935,18 @@ impl Runtime {
                 return Ok(layer_encode(target, value));
             }
         }
-        let b = self
-            .plans
-            .get(plan.0)
-            .ok_or(Error::StaleHandle)?
-            .prepared
-            .engine_parameters
-            .iter()
-            .find(|b| b.address == address)
-            .copied();
-        if let Some(b) = b {
-            let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-            let index = generation.prepared.control_index(b.control)?;
-            if let ControlValue::Real(v) = generation.controls.base[index] {
-                return Ok(b.law.encode(v));
-            }
-        }
-        if let Some(kind) = slot_parameter(name) {
-            if let Ok(ControlValue::Real(v)) = self.control_value(
-                plan,
-                crate::slot_control(kind, address.group, address.slot, address.generic),
-            ) {
+        let generation=self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let b=generation.prepared.engine_parameters.iter().zip(&generation.prepared.engine_controls)
+            .find(|(b,_)| b.address==address);
+        if let Some((b,&control))=b
+            && let Some(v)=generation.controls.engine_base(control)
+        { return Ok(b.law.encode(v)); }
+        if let Some((kind, id, law)) = slot_parameter(name, address) {
+            if let Ok(ControlValue::Real(v)) = self.control_value(plan, id) {
                 return Ok(if kind == SlotKind::Bypass {
                     i32::from(v != 0.)
                 } else {
-                    EngineParameterLaw::CubicGain { unity: 396851. }.encode(v)
+                    law.encode(v)
                 });
             }
         }
@@ -907,4 +1026,20 @@ pub fn engine_parameter_display(parameter: u16, value: i32) -> String {
     let mut text = Text::default();
     display(parameter, value, &mut text);
     text.as_str().to_owned()
+}
+
+#[cfg(test)]
+mod id_tests {
+    #[test]
+    fn indexed_ids_match_the_first_listed_name() {
+        for name in crate::ENGINE_PARAMETER_NAMES {
+            let first = crate::ENGINE_PARAMETER_NAMES
+                .iter()
+                .position(|n| n.trim_start_matches('$') == name.trim_start_matches('$'))
+                .map(|i| i as u16);
+            assert_eq!(super::engine_parameter_id(name), first);
+            assert_eq!(super::engine_parameter_id(&format!("${name}")), first);
+        }
+        assert_eq!(super::engine_parameter_id("NOT_AN_ENGINE_PARAMETER"), None);
+    }
 }

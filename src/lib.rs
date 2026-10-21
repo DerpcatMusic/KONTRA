@@ -40,6 +40,20 @@ pub fn library_roots() -> Vec<std::path::PathBuf> {
 
 #[cfg(feature = "shots")]
 pub use ui::health::survey as ui_health;
+/// In-memory authored UI witness through the editor's layout, asset worker and CPU painter.
+#[cfg(feature = "shots")]
+pub use ui::offline_preview::render as offline_ui_preview;
+/// Explicit bounded production plan-activation witness, without a plugin or audio device.
+#[cfg(feature = "shots")]
+pub use ui::offline_lifecycle::{run as offline_ui_lifecycle, Witness as OfflineUiLifecycle};
 /// Metadata-only UVI UI render check; assets and pixels remain in memory.
 #[cfg(feature = "shots")]
 pub use ui::uvi_ui_health;
+
+/// Explicit bounded Kontakt onset diagnostics through the production loader.
+#[cfg(feature = "shots")]
+pub use sound::v2::onset_diagnostics::{run as offline_kontakt_onset, config as onset_config};
+
+/// Explicit offline loader, activation and playback diagnostics for one library patch.
+#[cfg(feature = "shots")]
+pub use sound::v2::library_probe::run as offline_library_diagnostics;

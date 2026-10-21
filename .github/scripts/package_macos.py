@@ -11,13 +11,14 @@ import plistlib
 import re
 import shutil
 import subprocess
+from stage_nightly import LEGAL, BUNDLE_LEGAL
 
 TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 FORMATS = ("clap", "vst3", "standalone")
 BINARIES = {"clap": "KONTRA.clap/Contents/MacOS/KONTRA", "vst3": "KONTRA.vst3/Contents/MacOS/KONTRA", "standalone": "KONTRA.app/Contents/MacOS/KONTRA"}
 MANIFESTS = {"clap": "clap-build-info.json", "vst3": "vst3-build-info.json", "standalone": "build-info.json"}
 BUNDLES = {"clap": "Library/Audio/Plug-Ins/CLAP/KONTRA.clap", "vst3": "Library/Audio/Plug-Ins/VST3/KONTRA.vst3", "standalone": "Applications/KONTRA.app"}
-REQUIRED = ("LICENSE", "NOTICE", "THIRD_PARTY.md", "assets/OFL.txt", "docs/LEGAL.md")
+REQUIRED = (*LEGAL, *("licenses/" + name for name in BUNDLE_LEGAL))
 
 
 def app_info(version):

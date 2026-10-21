@@ -6,6 +6,95 @@ with a short user-facing known-issues list and collapsed source/checksum details
 Each published release manifest also retains its versioned changelog. Frozen entries
 below record reviewed source checkpoints; they are not claims about pending work.
 
+## 0.3.503
+
+Distributes shipping integration-test compilation across eight Linux runners after the 0.3.502 Nightly exhausted its three-hour validation budget before any test harness started. Every integration target remains required exactly once, including names shared by packages. All fourteen first-party package selections and the release ThinLTO profile remain unchanged.
+
+Shipping validation now checks actual enabled features against a reviewed Cargo artifact contract and rejects source changes beyond the deterministic Nightly version stamp. Library and binary tests, documentation tests, example builds, native format/editor checks, signing/notarization, installer rollback and legal/manifest gates remain mandatory. Local workflow and selected Cargo proofs passed; hosted cold-build completion and publication bind the new merged source and are not inferred from those local checks.
+
+This is a release-pipeline correction. The compatibility, finite-loading and performance limits below remain, as do the 69 reviewed error-level Doctor findings and its failed tool gate under contextual review. No local installation is changed by this source checkpoint.
+
+## 0.3.502
+
+Adds one reviewed loader correction to the 0.3.501 source checkpoint: changing a translated instrument's public script roster or changing a script to KSP invalidates the cached initializer shape. Valid unchanged scripts still initialize once; malformed replacements and source-identity changes retain explicit diagnostics. Six authored regressions cover these boundaries.
+
+The complete static audit, using a pinned private resolver correction, has zero producer errors and retains 69 reviewed error-level findings. Its tool gate remains failed; no rule, severity or finding was suppressed. Contextual review and executable/native checks remain required. Hosted shipping, signing/notarization, notice and publication checks bind the actual merged source. The compatibility, finite-loading and performance limits described below still apply.
+
+## 0.3.501
+
+This experimental checkpoint carries the accepted 0.3.490 changes and eleven additional reviewed fixes. Loading remains bounded; UVI/Falcon and Kontakt compatibility remain partial.
+
+- Preset menus resolve saved positions against the live script-owned roster. Explicit preset picks discard stale project captures, and scripted source/zone changes commit with bounded, owned async completions.
+- Analog Strings internal browser A→B→A restored the selected musical parameters, actual source groups and fresh-note sound in a real library witness. Async residency callback pressure now defers completion instead of freezing the script/audio clock. Array-file metadata reads have independent ownership from write snapshots.
+- UI artwork requests and painting use the same committed or authored default value. Retained assets and presentation owners survive unrelated updates; supported same-instrument recalls retain immutable resources. Presets requiring a full initialization or unsupported native-state transaction still use the full load path.
+- Streamed sampler layers belonging to one logical attack wait together for their requested initial demand. One real Areia Full Ensemble Spiccato Slow capture recorded 19 attacks with aligned contribution starts and zero underruns. Cold disk waits remain; pacing misses and round-robin comparison limits prevent a complete perceptual or native-parity verdict. Time-stretch instruments retain their prior path.
+- Mandatory resident PCM remains loaded when optional preload anchors exceed the payload quota. The unchanged public UVI exact-budget regression now passes, while insufficient mandatory budgets, read failures and cancellation still refuse safely.
+- macOS archives include the bundled assistant-font and FastLZ notices; universal composition and publication reject missing font, BUFFR or other required notices. Signing/notarization/install gates are unchanged.
+- Signed modulation mappers preserve interior zero crossings. Malformed KSP get_scale destinations are rejected before they can reach the evaluator's declared-array invariant. The portable logarithm correction is included.
+
+Source validation at the coordinated implementation checkpoint: 1,954 top-level tests passed, zero failed, 69 explicitly ignored. The real Areia trace had zero underruns, stream errors, capacity refusals and trace loss; it still recorded 162 cold admissions and 78 pacing misses. Release-candidate, native format/editor and hosted shipping gates bind their own exact revisions. See docs/diagnostics/20261016-release-checkpoint.md.
+
+Known limits: VWinds has verified KONTRA playback witnesses, including audible Contrabass Clarinet at key 48, but this does not establish every UVI program or full native parity. Native UVI LFO modes, shared bend ownership, GainMatrix and other reported features remain incomplete; private numeric kernels are not production support. There is no unlimited-loading, zero-cold-wait or 300-voice performance claim. Full UI/DSP/library parity remains unproved. Signing, notarization, notices and release verification remain mandatory.
+
+## 0.3.490
+
+Includes the accepted 0.3.489 parity checkpoint below, plus one shipping-pipeline correction: cold release-profile test compilation may use 180 minutes, while ordinary CI retains its 90-minute limit. Every test, native editor, signing, notarization, license and required-check gate remains mandatory. The observed previous job expired before any test harness started; this change does not claim a measured upper completion bound.
+
+The unchanged Rust source passed first-party Clippy, the complete core suite, 820 root/inspector tests (53 ignored) and three typed replacement tests at the preceding 0.3.489 source checkpoint. Final package identity, native format checks and hosted publication bind their own revisions. New experimental menu transactions and the production-loader Areia trace remain outside this accepted checkpoint.
+
+## 0.3.489
+
+Seven reviewed logical corrections follow 0.3.482; diagnostic features and extra reference vectors do not add fix counts.
+
+- Retained interfaces stop republishing unchanged image/font owners. Required in-flight artwork survives unrelated metadata changes, and repeated uses dispatch each exact asset request once. Obsolete requests remain fenced.
+- UVI ScriptEvent modulation uses the authored EventId independently of its display name. This fixes an observed VWinds source named with suffix 7 whose actual EventId is 12; malformed explicit IDs remain explicit errors.
+- Ladder feedback preparation preserves Kontakt's floating-point operation order. Twelve captured prepared states and 282 static native cases match exactly; production HQ ownership and moving-control parity remain separately gated.
+- Final modulation topology is validated before use, and parallel workers retain the gain history of audio actually rendered.
+- Inspector additions record bounded physical voice births, evaluated start offsets, first-window readiness and numeric signal crossings. Snapshot reuse reports actual policy/schema/admission stages without treating callback admission as completion.
+
+Focused source validation includes 92 UI/asset/snapshot tests (3 ignored), 78 affected core regressions (1 ignored), 21 UVI importer tests, and 25 bounded onset-trace controls. These are scoped source receipts; combined checkpoint, packaging and native-host checks retain their own exact revisions.
+
+Known limits: Areia's reported spiccato double attack is not yet attributed to its actual runtime trace. Generic cold sibling layers can start apart in authored tests, while Areia also intentionally layers ensembles and retains recorded lead-in. Full native/UI/library parity and 300 voices at 1% on KONTRA's meter remain unproved. Presets requiring initialization, native payload replacement or unsupported transactions still use the full load path. New menu transactions and the production-loader onset probe continue separately and are not part of this checkpoint.
+
+## 0.3.482
+
+This checkpoint brings the accumulated library, scripting, streaming, editor and native-DSP work since the last published 0.3.476 snapshot. Five newly reviewed defects advance the version from the locally installed 0.3.477; follow-up fixes and optimizations are not counted again.
+
+- Preset switching has sequential offline witnesses for actual preparation, publication, callback settlement, stale controls, menus and fresh-note audio. UVI probes now wait for the real Lua owner and ordered command drain, expose sample status and pace audio explicitly rather than treating a fast offline render as readiness.
+- Kontakt snapshots keep convolution resource ownership, so a saved impulse index resolves against its own file table while retaining base archive resources. Missing factory dependencies remain explicit.
+- UVI module reads retain typed failures and strict UTF-8; required final translation failures roll back. Menus, table fills and authored separators have additional projection coverage. Identical immutable presentation writes no longer rebuild the exported interface.
+- All 40 installed VWinds programs passed paced note witnesses; current initialized projection checks cover all 40, with WaveView limitations still reported. These checks establish KONTRA behavior, not full native parity.
+- Source-rate dependencies evaluate in order, and onset phase modulation preserves the saved LFO phase. Ladder float operation order now matches 117 complete native stereo vectors exactly within the admitted kernel scope. Skreamer live controls and saved control ownership include authored PCM and stale-generation checks.
+- Linux editor windows and callbacks remain on their worker; failed construction, close and reopen paths retain ownership and X11 parent notifications. The macOS open-state query has corrected polarity; native macOS acceptance remains subject to hosted checks.
+- Voice preparation copies are reduced, and completed growth owners are reclaimed off audio. A separate interleaved-mixing experiment was rejected after measurements failed its acceptance gates and is absent from this release.
+
+Validation at implementation checkpoint `95ac0d7d0dd6f313e0ead799ab9d8907b31a7680`: 807 root tests passed, 53 explicitly ignored, zero failed; the UI-enabled inspector built successfully. Focused native, core, UVI, KSP and editor receipts retain their narrower scopes. Release packaging and hosted platform validation report their own exact revisions.
+
+Known issues: the reported Areia doubled staccato and stream underruns remain under investigation. Large libraries can exhaust the configured attack budget and wait for disk; 300 voices at 1% on KONTRA's meter is not achieved or promised. Daft/Jump, some convolution size controls, wavetable and nested modulation paths, UVI native LFO modes and several authored UI cases remain incomplete. Full library/native/UI/DSP parity is not claimed. The Rust Doctor audit is retained with its resolver limitations, not reported as a clean result.
+
+## 0.3.476
+
+Nineteen reviewed corrections follow 0.3.457. Kontakt support now checks itself against Kontakt: a native oracle compares KONTRA's load with real Kontakt 8.13.1 (0 mismatches over ~5.3M group/zone/loop values across 11 libraries) and Kontakt objects decode with Kontakt's own reader programs.
+
+- Instruments saved by Kontakt 8.13 load again (external modulation 0x105).
+- Hall reverbs no longer play as Room; SSL G-EQ v0x11 decodes completely.
+- Script-set bus faders use Kontakt's 6 dB-per-doubling volume law (measured in Kontakt).
+- Cycle round robin plays in Kontakt's order; first-position groups are no longer dropped.
+- Releases and voice limits stay inside their own instrument; Kontakt exclusive voice groups work.
+- `purge_group` frees and reloads sample memory; purged groups cost no CPU; muted groups can be unmuted live.
+- Samples in moved or differently spelled archives are found; default voice groups get their limits.
+- Silent effect buses and idle instruments stop costing CPU.
+- Conflux: controller programs use their own skin, Vector no longer overlaps, custom fonts and press states import.
+- Modulation of LFO rate/amount and effect knobs plays (Conflux 2,207 dropped routes -> 0 excluding 550 random sources; ANALOG STRINGS 6,065 -> 1,902).
+- Kontakt LFO saw, random and pulse-width shapes use Kontakt's own waveform tables.
+- Kontakt objects decode exactly or report what is undecoded (14 -> 105 of 118 classes).
+
+New engine pieces (not counted as fixes): shared envelope/LFO/glide/follower/arp blocks, Time Machine source engine (TM1 native; TM2/Pro approximations), voice-allocation domains.
+
+Validation: ni-file 51, sampler-core 191 lib plus all integration suites, sampler-kontakt 162, native oracle 3, sampler-uvi 85, sampler-ksp 10 passed; all 11 installed Kontakt libraries complete the production load path.
+
+Known limits: 550 Conflux random-source routes, DBD/Flex/glide/follower/arp/group-dynamics Kontakt mappings, Multi-weight LFOs and several effects remain reported (unproved native laws). Time Machine 2/Pro are approximations. Two new skinned-caption/picture-state render tests are ignored pending investigation. Playing-CPU after these changes is not yet measured.
+
 ## 0.3.457
 
 Six reviewed corrections follow 0.3.451:

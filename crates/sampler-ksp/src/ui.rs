@@ -35,6 +35,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_RANGE_MAX",
     "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_TEXTPOS_Y",
+    "$CONTROL_PAR_DISABLE_TEXT_SHIFTING",
     "$CONTROL_PAR_VALUEPOS_Y",
     "$CONTROL_PAR_ALLOW_AUTOMATION",
     "$CONTROL_PAR_AUTOMATION_ID",
@@ -525,6 +526,7 @@ pub fn interface(
             }
         }
         out.text_y = int("$CONTROL_PAR_TEXTPOS_Y");
+        out.text_shift_on_press = int("$CONTROL_PAR_DISABLE_TEXT_SHIFTING") != Some(1);
         out.value_y = int("$CONTROL_PAR_VALUEPOS_Y");
         out.value_text = w.text("$CONTROL_PAR_LABEL").map(Into::into);
         out.drag = int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ir::Drag {
@@ -636,8 +638,26 @@ pub fn interface(
         if hide & 8 != 0 {
             bld.unsupported(Some(i), "$HIDE_PART_MOD_LIGHT", hide.to_string());
         }
+        // NKS properties map a control for Komplete Kontrol hardware: no view or
+        // sound of their own, so accepted without effect.
+        let nks = |name: &str| name.starts_with("$CONTROL_PAR_NKS_");
         for (name, v) in &w.properties {
-            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) {
+            // Runtime setters retain the property as well as updating w.value.
+            // Count it as consumed only when the scalar actually reaches the
+            // painter in a represented domain; malformed/other shapes stay gaps.
+            let scalar_value = name == "$CONTROL_PAR_VALUE"
+                && matches!((v, &out.value), (Value::Int(a), Some(ir::Value::Integer(b))) if a == b)
+                && match &out.kind {
+                    ir::Kind::Button { .. } | ir::Kind::Switch => matches!(v, Value::Int(0 | 1)),
+                    ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. }
+                    | ir::Kind::ValueEdit { range, .. } => match v {
+                        Value::Int(value) => (range.min..=range.max).contains(&f64::from(*value)),
+                        _ => false,
+                    },
+                    ir::Kind::Menu { items } => items.iter().any(|item| matches!(v, Value::Int(value) if *value == item.value)),
+                    _ => false,
+                };
+            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) && !nks(name) && !scalar_value {
                 bld.unsupported(Some(i), name.clone(), text(v));
             }
         }
@@ -646,7 +666,7 @@ pub fn interface(
             let mapped = match name.as_str() {
                 "$CONTROL_PAR_VALUE" => w.kind == WidgetKind::Table,
                 "$CONTROL_PAR_TEXT" | "$CONTROL_PAR_TEXTLINE" => true,
-                _ => false,
+                _ => nks(name),
             };
             if mapped {
                 continue;

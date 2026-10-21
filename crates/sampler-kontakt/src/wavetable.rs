@@ -1,4 +1,4 @@
-//! Forward decoding of the strict v1 0cb7a8a0 wavetable admission subset.
+//! Forward decoding of the measured phase-only wavetable admission subset.
 use ni_file::kontakt::objects::WavetableSource;
 use sampler_ir::Wavetable;
 pub(crate) fn admitted(source: &WavetableSource, tracking: bool) -> Option<Wavetable> {
@@ -6,10 +6,11 @@ pub(crate) fn admitted(source: &WavetableSource, tracking: bool) -> Option<Wavet
     if !tracking || source.inharmonic_enabled || source.mod_type != 0 || source.phase_random != 0. {
         return None;
     }
-    let form = |serialized| match serialized {
-        1 => Some(0),
-        17 => Some(16),
-        _ => None,
+    // Serialized forms are one-based; the native phase switch is zero-based.
+    // NI Source Module reference; Kontakt shared phase routine 0x140567aa0.
+    let form = |serialized: u32| {
+        let kind = u8::try_from(serialized.checked_sub(1)?).ok()?;
+        Wavetable::supports_form(kind).then_some(kind)
     };
     let result = Wavetable {
         position: source.position,
@@ -42,6 +43,21 @@ mod tests {
             mod_amount: 0.,
             mod_tune: 0.,
             unknown_tail: [0; 16],
+        }
+    }
+    #[test]
+    fn native_phase_ordinals_decode_from_one_based_saved_forms() {
+        for kind in [0, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 31, 32, 33] {
+            let mut saved = source();
+            saved.form_type = u32::from(kind) + 1;
+            saved.form2_type = u32::from(kind) + 1;
+            let wave = admitted(&saved, true).expect("original-byte-verified phase form");
+            assert_eq!((wave.form1_type, wave.form2_type), (kind, kind));
+        }
+        for serialized in [0, 2, 14, 19, 24, 35, u32::MAX] {
+            let mut saved = source();
+            saved.form_type = serialized;
+            assert!(admitted(&saved, true).is_none());
         }
     }
     #[test]

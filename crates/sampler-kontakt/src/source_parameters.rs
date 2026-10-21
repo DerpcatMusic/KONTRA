@@ -193,7 +193,7 @@ pub(crate) fn internal(
             }
             fields
         }
-        Modulator::Other { .. } => vec![opaque("undecoded_object", &source.data)],
+        Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) | Modulator::Other { .. } => vec![opaque("undecoded_object", &source.data)],
     };
     records.push(record(
         &format!("{location}/source"),
@@ -360,34 +360,6 @@ pub(crate) fn program(program: &Program) -> Result<Vec<Record>, ni_file::Error> 
     Ok(out)
 }
 
-pub(crate) fn muted_group(group: &Group, index: usize) -> Result<Vec<Record>, ni_file::Error> {
-    let mut out = Vec::new();
-    for chunk in &group.0.children {
-        match chunk.id {
-            0x3b => {
-                for (slot, m) in InternalModArray16::try_from(chunk)?.slots()? {
-                    out.extend(internal(
-                        &format!("group {index} internal slot {slot}"),
-                        &m,
-                        &m.params()?,
-                    )?);
-                }
-            }
-            0x3c => {
-                for (slot, m) in ExternalModArray32::try_from(chunk)?.slots()? {
-                    out.push(external(
-                        &format!("group {index} external slot {slot}"),
-                        &m,
-                        &m.params()?,
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,7 +369,8 @@ mod tests {
         let module = Chunk {
             id: 0x20,
             data: {
-                let mut b = vec![0, 0x50, 0];
+                // BParFXLoFi: Kontakt 8.13.1's reader (FUN_140d01f20) accepts only v0x70.
+                let mut b = vec![0, 0x70, 0];
                 for v in [8f32, 22050.0] {
                     b.extend(v.to_le_bytes());
                 }
@@ -413,7 +386,7 @@ mod tests {
         };
         let mut children = Vec::new();
         child.write(&mut children).unwrap();
-        let mut framed = vec![1, 0x50, 0];
+        let mut framed = vec![1, 0x70, 0];
         framed.extend(0u32.to_le_bytes());
         framed.extend(((module.data.len() - 3) as u32).to_le_bytes());
         framed.extend(&module.data[3..]);

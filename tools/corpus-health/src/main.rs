@@ -18,6 +18,9 @@
 //! cannot stall the run.
 mod heap;
 mod inspect;
+mod load_audit;
+mod preset_switch;
+mod onset;
 
 use sampler_core::{Limits, Outcome, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
@@ -322,10 +325,50 @@ impl Pick {
     }
 }
 
+/// [`auto_pick`], at `key` instead when given (a retry at another covered key).
+fn pick_key(ir: &sampler_ir::Instrument, key: Option<u8>) -> Option<Pick> {
+    auto_pick(ir).map(|p| Pick {
+        key: key.unwrap_or(p.key),
+        ..p
+    })
+}
+
+/// Other plain keys zones cover at the pick's velocity, an octave apart
+/// over that range. A script may play only part of its
+/// mapping (an articulation's playable range), so one silent key is not a
+/// silent instrument.
+fn other_keys(ir: &sampler_ir::Instrument, pick: Pick) -> Vec<u8> {
+    let switch: HashSet<u8> = ir
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.iter().copied())
+        .collect();
+    let covered: Vec<u8> = (0..=127u8)
+        .filter(|k| *k != pick.key && !switch.contains(k))
+        .filter(|k| {
+            ir.zones.iter().any(|z| {
+                (z.keys.low..=z.keys.high).contains(k)
+                    && (z.velocities.low..=z.velocities.high).contains(&pick.velocity)
+            })
+        })
+        .collect();
+    // One key per octave of the covered range, nearest the pick first, and
+    // both ends (an articulation may play only its top or bottom band).
+    let mut keys: Vec<u8> = covered.iter().copied().step_by(12).collect();
+    keys.sort_by_key(|k| k.abs_diff(pick.key));
+    keys.truncate(6);
+    for end in [covered.last(), covered.first()].into_iter().flatten() {
+        if !keys.contains(end) {
+            keys.push(*end);
+        }
+    }
+    keys
+}
+
 /// The key most zones cover at the test velocity, nearest middle C, outside
 /// the articulation switch keys. Falls back to the velocity nearest 64 that
 /// any zone covers, then to playing a switch key first.
-fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
+fn auto_pick(ir: &sampler_ir::Instrument) -> Option<Pick> {
     let switch: HashSet<u8> = ir
         .articulations
         .iter()
@@ -454,6 +497,8 @@ struct Sound {
     /// One sentence on a silent note ([`sampler_core::why_silent`]); set when
     /// selections were recorded.
     why_silent: Option<String>,
+    /// The other covered key that sounded when the picked one was silent.
+    retried_key: Option<u8>,
 }
 
 /// What a worker is doing, for failure records and the watchdog.
@@ -604,10 +649,7 @@ fn fresh_runtime(path: &Path, key: u8, ccs: &[(u8, u8)]) -> Option<Runtime> {
         ..Default::default()
     };
     let loaded = sampler_kontakt::load(path, &options, |_| {}).ok()?;
-    let limits = limits_for(
-        loaded.plan.behavior_local_count(),
-        loaded.plan.note_cell_count(),
-    );
+    let limits = limits_for(&loaded.plan);
     let mut rt = Runtime::new(loaded.plan, limits).ok()?;
     let mut ingress = new_ingress();
     for &(cc, v) in ccs {
@@ -641,20 +683,17 @@ fn mpe_probe(path: &Path, pick: Pick, ccs: &[(u8, u8)]) -> Value {
     }
 }
 
-fn limits_for(behavior_locals: usize, note_cells: usize) -> Limits {
+/// Notes held at once, as the plugin host (`INITIAL_NOTE_PARAMS` in
+/// src/sound/v2.rs). Fixed 64 notes and 16 callbacks faulted scripts the
+/// host plays: ensemble layers (play_note) and controller-write bursts.
+const NOTES: usize = 4096;
+
+/// The host's sizing: `Limits::for_plan` with families and decisions per note.
+fn limits_for(plan: &sampler_core::Prepared) -> Limits {
     Limits {
-        notes: 64,
-        channels: 16,
-        performances: 1,
-        expressions: 64,
-        families: 64,
-        decisions: 256,
-        voices: 512,
-        commands: 256,
-        behaviors: 16,
-        behavior_fuel: 1 << 20,
-        behavior_cells: behavior_locals.saturating_mul(16),
-        note_cells: note_cells.saturating_mul(64),
+        families: NOTES,
+        decisions: NOTES,
+        ..Limits::for_plan(plan, NOTES, 512)
     }
 }
 
@@ -843,24 +882,38 @@ fn take_json(t: &Take) -> Value {
     })
 }
 
+/// A subject that owns a prepared audio plan; translated-only IR is rejected
+/// before any audio preparation, exactly at the existing public error boundary.
+enum Playable {
+    Plan(Box<sampler_kontakt::Loaded>),
+    Streamed(Box<sampler_kontakt::Streamed>),
+    Scripted(Box<sampler_uvi::scripted::Program>),
+}
+impl Playable {
+    fn instrument(&self) -> &sampler_ir::Instrument {
+        match self {
+            Self::Plan(loaded) => &loaded.instrument,
+            Self::Streamed(stream) => &stream.loaded.instrument,
+            Self::Scripted(program) => &program.instrument,
+        }
+    }
+}
+
 fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Result<Sound, String> {
     stage("prepare");
-    let (rate, locals, cells) = match &subject {
-        Subject::Plan(l) => (
-            l.plan.sample_rate(),
-            l.plan.behavior_local_count(),
-            l.plan.note_cell_count(),
-        ),
-        Subject::Streamed(s) => (
-            s.loaded.plan.sample_rate(),
-            s.loaded.plan.behavior_local_count(),
-            s.loaded.plan.note_cell_count(),
-        ),
-        Subject::Scripted(p) => (p.plan.sample_rate(), 0, 0),
+    let subject = match subject {
+        Subject::Plan(plan) => Playable::Plan(plan),
+        Subject::Streamed(stream) => Playable::Streamed(stream),
+        Subject::Scripted(program) => Playable::Scripted(program),
         Subject::Ir(_) => return Err("prepare: no plan".into()),
     };
+    let (rate, limits) = match &subject {
+        Playable::Plan(l) => (l.plan.sample_rate(), limits_for(&l.plan)),
+        Playable::Streamed(s) => (s.loaded.plan.sample_rate(), limits_for(&s.loaded.plan)),
+        Playable::Scripted(p) => (p.plan.sample_rate(), limits_for(&p.plan)),
+    };
     let stream_info = match &subject {
-        Subject::Streamed(s) => json!({
+        Playable::Streamed(s) => json!({
             "full_bytes": s.report.full_bytes,
             "head_bytes": s.report.head_bytes,
             "pool_bytes": s.report.pool_bytes,
@@ -869,12 +922,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         }),
         _ => Value::Null,
     };
-    let views: Vec<sampler_ksp::ScriptView> = match &subject {
-        Subject::Plan(l) => l.scripts.clone(),
-        Subject::Streamed(s) => s.loaded.scripts.clone(),
+    let mut views: Vec<sampler_ksp::ScriptView> = match &subject {
+        Playable::Plan(l) => l.scripts.clone(),
+        Playable::Streamed(s) => s.loaded.scripts.clone(),
         _ => Vec::new(),
     };
-    let limits = limits_for(locals, cells);
     let build = |plan, cache: Option<sampler_core::StreamCache>| -> Result<Box<Runtime>, String> {
         let mut rt = Runtime::new(plan, limits).map_err(|e| format!("prepare: runtime: {e}"))?;
         if let Some(cache) = cache {
@@ -950,7 +1002,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     };
     let horizon_of = |head: usize| (head.max(sampler_core::PAGE_FRAMES) + 4096) as u32;
     let mut rig = match subject {
-        Subject::Plan(l) => {
+        Playable::Plan(l) => {
             let mut rt = build(l.plan, None)?;
             rt.record_selections(diagnose);
             Rig::Midi {
@@ -960,7 +1012,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 _keep: None,
             }
         }
-        Subject::Streamed(s) => {
+        Playable::Streamed(s) => {
             let sampler_kontakt::Streamed {
                 loaded,
                 assets,
@@ -977,7 +1029,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 _keep: Some((streamer, assets)),
             }
         }
-        Subject::Scripted(p) => {
+        Playable::Scripted(p) => {
             let sampler_uvi::scripted::Program {
                 plan,
                 host,
@@ -995,7 +1047,6 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 _keep: stream,
             }
         }
-        Subject::Ir(_) => unreachable!("checked above"),
     };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
@@ -1022,6 +1073,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     // release block, and every other block.
     let (mut allocs_on, mut allocs_off, mut allocs_steady) = (0usize, 0usize, 0usize);
     let mut peak_voices = 0usize;
+    // Host servicing stays outside audio timing/allocation counters. Record
+    // numeric outcomes so a silent note can be distinguished from a stalled
+    // callback or an unsupported physical engine destination.
+    let mut ksp_ui_effects = 0usize;
+    let mut engine_successes = 0usize;
+    let mut engine_failures = std::collections::BTreeMap::new();
     // Lua on the audio thread's clock: the host runs it on a script thread.
     let (mut script_allocs, mut script_seconds) = (0usize, 0.0f64);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
@@ -1200,10 +1257,27 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt,
         };
         peak_voices = peak_voices.max(rt.voice_count());
-        if matches!(rig, Rig::Midi { .. }) {
-            let Rig::Midi { rt, .. } = &mut rig else {
-                unreachable!()
-            };
+        if let Rig::Midi { rt, .. } = &mut rig {
+            // Off the measured audio interval, exactly like the existing native
+            // headless host. A callback can emit more than the bounded outbox.
+            // Draining lets its next render retry the suspended instruction.
+            ksp_ui_effects += sampler_ksp::service_ui_effects(rt, &mut views)
+                .map_err(|e| format!("KSP host service: {e}"))?;
+            while let Some(outcome) = rt.take_engine_parameter_outcome() {
+                match outcome.result {
+                    Ok(()) => engine_successes += 1,
+                    Err(error) => {
+                        *engine_failures
+                            .entry((
+                                outcome.program,
+                                outcome.address,
+                                outcome.write,
+                                format!("{error:?}"),
+                            ))
+                            .or_insert(0usize) += 1;
+                    }
+                }
+            }
             rt.flush_behaviors_at(|_, _, outcome, program| {
                 if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
                     let callback = sampler_ksp::callback_of(&views, program);
@@ -1249,6 +1323,28 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         Rig::Midi { rt, .. } | Rig::Scripted { rt, .. } => rt,
     };
     let st = rt.stats();
+    let mut pending_callbacks = Vec::new();
+    rt.visit_behavior_progress(|progress| {
+        if progress.outcome.is_none() {
+            pending_callbacks.push(json!({
+                "program": progress.program,
+                "callback": sampler_ksp::callback_of(&views, progress.program),
+                "pc": progress.pc,
+                "waiting": progress.waiting,
+                "note_owned": matches!(progress.owner, sampler_core::BehaviorOwner::Note(_)),
+            }));
+        }
+    });
+    let engine_failures: Vec<Value> = engine_failures
+        .into_iter()
+        .map(|((program, address, write, error), count)| {
+            json!({
+                "program": program, "address": address,
+                "parameter": address.and_then(|a| sampler_core::engine_parameter_name(a.parameter)),
+                "write": write, "error": error, "count": count,
+            })
+        })
+        .collect();
     let perf = json!({
         "block_frames": buffer.len(),
         "release_drain_seconds": (rendered_frames - release_at) as f64 / f64::from(rate),
@@ -1260,6 +1356,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "deadline_misses": block_times.iter().filter(|t| **t > deadline).count(),
         "blocks": block_times.len(),
         "peak_voices": peak_voices,
+        "ksp_ui_effects": ksp_ui_effects,
+        "ksp_pending_callbacks": pending_callbacks,
+        "ksp_engine_successes": engine_successes,
+        "ksp_engine_failures": engine_failures,
+        "ksp_engine_outcomes_dropped": rt.dropped_engine_parameter_outcomes(),
         "audio_allocs_note_on": allocs_on,
         "audio_allocs_release": allocs_off,
         "audio_allocs_steady": allocs_steady,
@@ -1295,7 +1396,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     if let Some(h) = horizon {
                         let _ = rt.service_streaming(*h);
                     }
-                    let _ = ingress.render(rt, &mut block, batch, batch.len(), |_, _| {});
+                    ingress
+                        .render(rt, &mut block, batch, batch.len(), |_, _| {})
+                        .map_err(|e| format!("selection render: {e:?}"))?;
+                    sampler_ksp::service_ui_effects(rt, &mut views)
+                        .map_err(|e| format!("selection KSP host service: {e}"))?;
                 }
             }
         }
@@ -1338,6 +1443,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         tail_peak,
         faults,
         why_silent,
+        retried_key: None,
     })
 }
 
@@ -1371,7 +1477,7 @@ fn scripts(subject: &Subject) -> Value {
     })
 }
 
-fn load_item(item: &Item, ctx: &Ctx) -> Loading {
+fn load_item(item: &Item, ctx: &Ctx, key: Option<u8>) -> Loading {
     let policy = sampler_kontakt::StreamPolicy {
         decoders: 2,
         ..Default::default()
@@ -1397,7 +1503,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => return load_failure(&e, "parse"),
             };
             let read_ms = t.elapsed().as_millis() as u64;
-            let Some(pick) = pick_key(&kontakt.instrument) else {
+            let Some(pick) = pick_key(&kontakt.instrument, key) else {
                 return no_zone();
             };
             let pick_ms = t.elapsed().as_millis() as u64 - read_ms;
@@ -1475,7 +1581,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => return load_failure(&*e, "translate-to-IR"),
             };
             let translate_ms = t.elapsed().as_millis() as u64;
-            let Some(pick) = pick_key(&ir) else {
+            let Some(pick) = pick_key(&ir, key) else {
                 return no_zone();
             };
             if ctx.tier == Tier::Parse {
@@ -1502,7 +1608,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
             stage("load");
             if ctx.tier == Tier::Parse {
                 return match sampler_uvi::translate_path(path) {
-                    Ok(t) => match pick_key(&t.instrument) {
+                    Ok(t) => match pick_key(&t.instrument, key) {
                         Some(pick) => (
                             ok(pick, &t.instrument),
                             Some((Subject::Ir(Box::new(t.instrument)), pick)),
@@ -1513,7 +1619,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 };
             }
             match sampler_uvi::load_streamed(path, 48000, &policy) {
-                Ok(s) => match pick_key(&s.loaded.instrument) {
+                Ok(s) => match pick_key(&s.loaded.instrument, key) {
                     Some(pick) => (
                         ok(pick, &s.loaded.instrument),
                         Some((Subject::Streamed(Box::new(s)), pick)),
@@ -1601,7 +1707,7 @@ fn stage_of(r: &Value) -> &'static str {
 /// every program is.
 fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
     let start = Instant::now();
-    let (load, _) = load_item(item, ctx);
+    let (load, _) = load_item(item, ctx, None);
     let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
     let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
     if record["load"]["ok"] == true {
@@ -1688,7 +1794,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
         (0, (0, 0))
     };
     let start = Instant::now();
-    let (load, loaded) = load_item(item, ctx);
+    let (load, loaded) = load_item(item, ctx, None);
     let load_ms = start.elapsed().as_millis() as u64;
     let heap_after_load = heap::live();
     let mut record = json!({
@@ -1752,11 +1858,32 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             let played = Instant::now();
             let ccs = musical_ccs(subject.instrument(), &dynamics);
             let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
-            let reload = |ccs: &[(u8, u8)], diagnose: bool| match load_item(item, ctx) {
-                (_, Some((s, p))) => play(s, p, diagnose, ccs).ok(),
-                _ => None,
-            };
+            let reload_at =
+                |key: Option<u8>, ccs: &[(u8, u8)], diagnose: bool| match load_item(item, ctx, key)
+                {
+                    (_, Some((s, p))) => play(s, p, diagnose, ccs).ok(),
+                    _ => None,
+                };
+            let reload = |ccs: &[(u8, u8)], diagnose: bool| reload_at(None, ccs, diagnose);
+            let others = other_keys(subject.instrument(), pick);
             let first = play(subject, pick, false, &[]);
+            // Silent at the picked key: try other covered keys before calling the
+            // instrument silent (the script may not play that key at all).
+            let first = match first {
+                Ok(s) if silent(&s) => Ok(others
+                    .iter()
+                    .find_map(|&k| {
+                        reload_at(Some(k), &[], false)
+                            .filter(|x| !silent(x))
+                            .map(|x| (k, x))
+                    })
+                    .map(|(k, x)| Sound {
+                        retried_key: Some(k),
+                        ..x
+                    })
+                    .unwrap_or(s)),
+                other => other,
+            };
             let first = match first {
                 Ok(mut s)
                     if silent(&s)
@@ -1840,6 +1967,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                         "tail_peak_db": db(s.tail_peak),
                         "script_faults": s.faults,
                         "why_silent": s.why_silent,
+                        "retried_key": s.retried_key,
                     });
                 }
                 Err(e) => record["sound"] = json!({"error": normalize(&e)}),
@@ -2929,6 +3057,10 @@ fn main() {
     let code = match args.as_slice() {
         [cmd, rest @ ..] if cmd == "inspect" => inspect::run(rest),
         [cmd, rest @ ..] if cmd == "inspect-list" => inspect::run_list(rest),
+        [cmd, rest @ ..] if cmd == "load-audit" => load_audit::run(rest),
+        [cmd, rest @ ..] if cmd == "preset-switch" => preset_switch::run(rest),
+        [cmd, rest @ ..] if cmd == "onset" => onset::run(rest),
+        [cmd, rest @ ..] if cmd == "onset-worker" => onset::worker(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
             let mut it = rest.iter();
@@ -2978,7 +3110,9 @@ fn main() {
                 "usage: corpus-health run OUT.jsonl [--tier parse|full|quick] [--shard I/N] [--only GLOB]\n\
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
                  \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
-                 \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--initialize] [--ephemeral-source]"
+                 \x20      | preset-switch PLAN.json (explicit full-swap runtime probe; ui-render helper)\n\
+                 \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--base ORIGINAL.nki]\n\
+                 \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render] [--profile-init]"
             );
             2
         }
@@ -2991,6 +3125,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kontakt_audition_services_ui_backpressure_before_judging_silence() {
+        let mut instrument = sampler_ir::Instrument {
+            assets: vec![sampler_ir::Asset {
+                location: sampler_ir::AssetLocation::Path("authored.wav".into()),
+                residency: Default::default(),
+                encoding: sampler_ir::Encoding::Wav,
+                root_key: None,
+                loops: vec![],
+            }],
+            zones: vec![sampler_ir::Zone {
+                keys: sampler_ir::KeyRange { low: 60, high: 60 },
+                velocity: sampler_ir::VelocityResponse::None,
+                ..sampler_ir::Zone::new(sampler_ir::AssetRef(0))
+            }],
+            ..Default::default()
+        };
+        instrument.behaviors.push(sampler_ir::Behavior {
+            name: "authored outbox regression".into(),
+            language: sampler_ir::Language::Ksp,
+            source: "on init declare ui_label $label(1,1) declare $i end on
+                on note ignore_event($EVENT_ID) $i:=0
+                while ($i < 1000) inc($i) set_text($label,\"refresh\") end while
+                play_note($EVENT_NOTE,$EVENT_VELOCITY,0,100000) end on"
+                .into(),
+            slot: None,
+            state: vec![],
+            requires: vec![],
+        });
+        let pcm = sampler_core::Pcm::new(48000, vec![[0.25; 2]; 48000].into_boxed_slice()).unwrap();
+        let loaded = sampler_kontakt::finish(
+            instrument,
+            vec![pcm],
+            vec!["authored.wav".into()],
+            &sampler_kontakt::Options {
+                mpe: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sound = play(
+            Subject::Plan(Box::new(loaded)),
+            Pick {
+                key: 60,
+                velocity: 64,
+                switch: None,
+            },
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            sound.peak > 0.01,
+            "a suspended label refresh must not be classified as library silence"
+        );
+        assert_eq!(sound.stuck_voices, 0);
+        assert_eq!(sound.stuck_notes, 0);
+        assert_eq!(sound.perf["ksp_ui_effects"], 1000);
+        assert!(
+            sound.perf["ksp_pending_callbacks"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            sound.selection["played"]
+                .as_array()
+                .is_some_and(|takes| !takes.is_empty()),
+            "the repeated selection pass must service the same callback backpressure"
+        );
+        assert!(sound.faults.is_empty());
+    }
+
+    #[test]
     fn authored_release_sample_drains_beyond_the_old_half_second_window() {
         let rate = 48000;
         let frames = (f64::from(rate) * 0.748) as usize;
@@ -3001,6 +3208,7 @@ mod tests {
         let instrument = sampler_ir::Instrument {
             assets: vec![sampler_ir::Asset {
                 location: sampler_ir::AssetLocation::Path("synthetic".into()),
+                residency: Default::default(),
                 encoding: Default::default(),
                 root_key: None,
                 loops: vec![],

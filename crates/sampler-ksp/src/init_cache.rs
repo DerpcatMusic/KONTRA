@@ -93,6 +93,11 @@ impl<'de> Deserialize<'de> for crate::model::PersistenceCompletion {
 /// Frontend/model metadata remains rate-independent; no programs or PCM are cached.
 #[derive(Serialize, Deserialize)]
 pub struct CachedInit {
+    residency_schema: u8,
+    async_base: i32,
+    async_high: i32,
+    residency: Vec<crate::model::InitialResidencyRequest>,
+    source_digest: [u8; 32],
     groups: Vec<String>,
     folders: [String; 4],
     slot: u8,
@@ -101,6 +106,12 @@ pub struct CachedInit {
     engine_lookups: Vec<sampler_core::EngineLookup>,
     #[serde(default)]
     zones: Vec<(u32, [i32; 3])>,
+    #[serde(default)]
+    zone_identity_schema: u8,
+    #[serde(default)]
+    snapshot_mode: crate::model::SnapshotMode,
+    #[serde(default)]
+    zone_catalog: Vec<(Option<u32>, u32, u8, u8)>,
     state: Box<serde_json::value::RawValue>,
     cells: u32,
     texts: u32,
@@ -130,6 +141,23 @@ fn controls(
         .collect()
 }
 
+/// The cache's entry wire shape: the script-state entry as it was before
+/// texts moved to a side table, so cached inits stay readable.
+mod wire {
+    use serde::{Deserialize, Serialize};
+    #[derive(Serialize, Deserialize)]
+    pub(super) enum ScriptStateValue {
+        Control(sampler_core::ControlValue),
+        Cell(i64),
+        Text(sampler_core::Text),
+    }
+    #[derive(Serialize, Deserialize)]
+    pub(super) struct ScriptStateEntry {
+        pub(super) address: sampler_core::ScriptStateAddress,
+        pub(super) value: ScriptStateValue,
+    }
+}
+
 struct NativeValues<'a>(&'a Initialized);
 impl NativeValues<'_> {
     fn len(&self) -> usize {
@@ -144,9 +172,8 @@ impl NativeValues<'_> {
 }
 impl Serialize for NativeValues<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use sampler_core::{
-            ScriptStateAddress as A, ScriptStateEntry as Entry, ScriptStateValue as V,
-        };
+        use sampler_core::ScriptStateAddress as A;
+        use wire::{ScriptStateEntry as Entry, ScriptStateValue as V};
         use serde::ser::SerializeSeq;
         let init = &self.0.init;
         let controls = controls(&self.0.hir, self.0.environment.slot);
@@ -198,12 +225,25 @@ impl Initialized {
     /// one fixed-capacity Text union for every integer cell.
     pub fn capture_initialized(&self) -> Option<CachedInit> {
         // ponytail: fall back to fresh init until the cache carries owned MIDI jobs/events.
-        if self.init.midi_object != Default::default()
-            || self.environment.midi_object != Default::default()
+        if !self.init.midi_object.has_only_async_id_reservations()
+            || !self.environment.midi_object.has_only_async_id_reservations()
+            || crate::eval::uses_array_file(&self.hir)
+            || crate::zone_routing::requirements(&self.hir).writes
+            || self.init.midi_object.async_id_high_water().checked_sub(self.environment.midi_object.async_id_high_water())
+                .and_then(|n|usize::try_from(n).ok()) != Some(self.init.residency.len())
         {
             return None;
         }
         Some(CachedInit {
+            residency_schema: 1,
+            zone_identity_schema: 1,
+            snapshot_mode: self.environment.snapshot_mode,
+            zone_catalog: self.environment.zone_catalog.iter().map(|z|
+                (z.id,z.home.group,z.home.low_key,z.home.high_key)).collect(),
+            async_base:self.environment.midi_object.async_id_high_water(),
+            async_high:self.init.midi_object.async_id_high_water(),
+            residency:self.init.residency.clone(),
+            source_digest: self.source_digest,
             groups: self.environment.groups.clone(),
             folders: self.environment.folders.clone(),
             slot: self.environment.slot,
@@ -276,9 +316,8 @@ impl<'de> serde::de::Visitor<'de> for RestoreValues<'_> {
         f.write_str("complete native initializer state")
     }
     fn visit_seq<A: serde::de::SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
-        use sampler_core::{
-            ScriptStateAddress as Address, ScriptStateEntry, ScriptStateValue as Value,
-        };
+        use sampler_core::ScriptStateAddress as Address;
+        use wire::{ScriptStateEntry, ScriptStateValue as Value};
         let expected = self.entries;
         let mut count = 0;
         let mut prior = None;
@@ -346,6 +385,46 @@ pub fn restore_initialized(
     if source.len() > limits.source_bytes {
         return Err(error("source byte budget exceeded"));
     }
+    if cached.residency_schema != 1 || cached.async_base < 0 || cached.async_high < cached.async_base
+        || cached.residency.len() > sampler_core::InitialGroupResidency::MAX_REQUESTS {
+        return Err(error("invalid cached startup residency identity"));
+    }
+    let mut prior=cached.async_base;
+    for request in &cached.residency {
+        if request.async_id <= prior || request.async_id > cached.async_high
+            || request.group < 0 || request.source_slot != cached.slot
+            || request.offset as usize >= source.len() {
+            return Err(error("invalid cached startup residency request"));
+        }
+        prior=request.async_id;
+    }
+    if cached.model.requests.iter().filter(|r|r.command=="purge_group").count()!=cached.residency.len() {
+        return Err(error("incomplete cached startup residency roster"));
+    }
+    match cached.model.snapshot_mode_write {
+        Some(write)
+            if write.mode != cached.model.snapshot_mode || write.offset as usize >= source.len() =>
+        {
+            return Err(error("invalid cached snapshot policy write"));
+        }
+        None if cached.model.snapshot_mode != crate::model::SnapshotMode::NativeWithInit => {
+            return Err(error("cached snapshot policy has no setter identity"));
+        }
+        _ => {}
+    }
+    let mut source_ids=std::collections::BTreeSet::new();
+    if cached.zone_catalog.iter().any(|(id,_,low,high)| *low>*high || *high>127
+        || id.is_some_and(|id|id>i32::MAX as u32 || !source_ids.insert(id))) {
+        return Err(error("invalid cached native zone catalog"));
+    }
+    let mut captured_ids=std::collections::BTreeSet::new();
+    if cached.zones.iter().any(|(id,home)| *id>i32::MAX as u32 || !captured_ids.insert(*id)
+        || home[0]<0 || !(0..=127).contains(&home[1]) || !(0..=127).contains(&home[2]) || home[1]>home[2]) {
+        return Err(error("invalid cached native zone homes"));
+    }
+    if cached.zone_identity_schema != 1 {
+        return Err(error("cached zone source identity schema is obsolete"));
+    }
     let frontend_begin = std::time::Instant::now();
     let mut syms = crate::lexer::Interner::default();
     let mut toks = crate::lexer::lex(source, &mut syms).map_err(|f| f.locate(source))?;
@@ -369,6 +448,14 @@ pub fn restore_initialized(
         );
     }
     let restore_begin = std::time::Instant::now();
+    // Preserve positioned source-admission diagnostics, then reject identity
+    // mismatch before any cached values or model state are applied.
+    if cached.source_digest != crate::setup::source_digest(source) {
+        return Err(error("cached source identity changed"));
+    }
+    if crate::zone_routing::requirements(&hir).writes {
+        return Err(error("zone-writer cache requires fresh physical-source initialization"));
+    }
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -384,6 +471,7 @@ pub fn restore_initialized(
     // addresses therefore need only describe the nonzero post-init values.
     let mut init = crate::eval::Initial {
         midi_object: Default::default(),
+        residency: cached.residency,
         cells: vec![0; hir.cells as usize],
         texts: vec![String::new(); hir.texts as usize],
         controls: vec![0; hir.uis.len()],
@@ -391,10 +479,12 @@ pub fn restore_initialized(
         model: cached.model,
         warnings: Vec::new(),
         engine: cached.engine.into_iter().collect(),
+        zone_parameters: Default::default(),
         properties: cached.properties.into_iter().collect(),
         text_properties: cached.text_properties.into_iter().collect(),
         indexed_properties: cached.indexed_properties.into_iter().collect(),
     };
+    init.midi_object.reserve_async_ids_through(cached.async_high).map_err(|_|error("invalid cached async high-water"))?;
     use serde::de::DeserializeSeed;
     let mut d = serde_json::Deserializer::from_str(cached.state.get());
     RestoreValues {
@@ -428,7 +518,11 @@ pub fn restore_initialized(
             message,
         });
     }
+    let mut initial_midi=sampler_core::MidiObject::default();
+    initial_midi.reserve_async_ids_through(cached.async_base).map_err(|_|error("invalid cached async base"))?;
     let environment = Environment {
+        midi_object:initial_midi,
+        snapshot_mode: cached.snapshot_mode,
         groups: cached.groups,
         folders: cached.folders,
         slot: cached.slot,
@@ -436,6 +530,8 @@ pub fn restore_initialized(
         engine_values: cached.engine_values.into_iter().collect(),
         engine_lookups: cached.engine_lookups,
         zones: cached.zones.into_iter().collect(),
+        zone_catalog: cached.zone_catalog.into_iter().map(|(id,group,low_key,high_key)|
+            sampler_ir::SourceZone {id,home:sampler_ir::SourceZoneHome {group,low_key,high_key}}).collect(),
         ..Default::default()
     };
     #[cfg(feature = "scan")]
@@ -444,6 +540,7 @@ pub fn restore_initialized(
         crate::scan::attempt("product-cache");
     }
     Ok(Initialized {
+        source_digest: cached.source_digest,
         hir,
         init,
         conditions,

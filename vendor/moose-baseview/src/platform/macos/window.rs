@@ -98,7 +98,7 @@ impl WindowHandle {
     }
 
     pub fn is_open(&self) -> bool {
-        self.state.closed.get()
+        !self.state.closed.get()
     }
 
     pub fn is_resizable(&self) -> bool {

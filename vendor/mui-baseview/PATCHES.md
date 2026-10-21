@@ -74,3 +74,16 @@ xvfb-run -a cargo test --locked -p kontra-native-host \
 host parent and a standalone drawable without calling editor close first. It
 asserts server deletion, spontaneous handler release, one `WillClose`, and no
 further frame/resize callbacks. It runs in the same ignored native-host suite.
+
+Linux `open_threaded` shares `open`'s parent validation, headless offer, settings,
+and handler construction, but returns baseview's typed no-host `ThreadedWindow`.
+The MUI editor can move its control handle without moving native state. Each open
+keeps a separate Requests object and worker channel; close/reopen cannot revive
+old geometry or close work. The original `open` API remains available.
+
+The MUI editor retains its X11 parent hook and installs it on each fresh Requests
+generation, including the first open. Shared FnMut delivery is serialized before
+checking that generation; an active old cancellation precedes the next creation,
+and a delayed old cancellation cannot clear a reopened parent's identifier. The
+registration mutex is released before user code. The existing serialized hook
+contract does not support synchronously opening another window from that callback.

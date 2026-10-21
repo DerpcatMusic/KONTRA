@@ -134,6 +134,10 @@ pub struct MuiEditor<P: Params> {
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
     timing: Option<window::NativeTimingHook>,
+    #[cfg(target_os = "linux")]
+    x11_hook: Option<window::X11WindowHook>,
+    #[cfg(target_os = "linux")]
+    x11_requests: Arc<Mutex<std::sync::Weak<Requests>>>,
 }
 
 /// Whole logical points, as the host's window API takes them.
@@ -149,15 +153,19 @@ fn points(s: Size) -> (u32, u32) {
     )
 }
 
-/// The one field of [`MuiEditor`] that is not auto-`Send`.
+/// Linux stores only an auto-Send X11 thread controller. The native window
+/// and renderer stay on their worker thread, including during destruction.
+#[cfg(target_os = "linux")]
+type Handle = window::baseview::ThreadedWindow;
+
+/// Windows/macOS ownership has not yet been converted to a safe control proxy.
+#[cfg(not(target_os = "linux"))]
 struct Handle(window::baseview::Window);
 
-// SAFETY: `baseview::Window` wraps a native window pointer and is not
-// auto-`Send`. moose calls `open`, `set_size`, `window_scale` and `close`
-// from one GUI thread, never concurrently, so the window never leaves the
-// thread that made it; `Send` is only what `Box<dyn Editor>` asks for.
-// moose-gui's own `GpuEditor` makes the same argument.
-#[expect(unsafe_code, reason = "vouches Send for the baseview window alone")]
+// SAFETY: This legacy assertion is limited to Windows/macOS. Their ownership
+// conversion remains separate work; Linux's controller is Send by its fields.
+#[cfg(not(target_os = "linux"))]
+#[expect(unsafe_code, reason = "legacy native window owner; not used on Linux")]
 unsafe impl Send for Handle {}
 
 impl<P: Params> MuiEditor<P> {
@@ -191,6 +199,10 @@ impl<P: Params> MuiEditor<P> {
             keys: None,
             pointer: None,
             timing: None,
+            #[cfg(target_os = "linux")]
+            x11_hook: None,
+            #[cfg(target_os = "linux")]
+            x11_requests: Arc::default(),
         }
     }
 
@@ -248,9 +260,44 @@ impl<P: Params> MuiEditor<P> {
     /// Publish a safe portal parent at creation; cancel dialogs before native close.
     #[cfg(target_os = "linux")]
     #[must_use]
-    pub fn on_x11_window(self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
-        self.requests.on_x11_window(Arc::new(Mutex::new(f)));
+    pub fn on_x11_window(mut self, f: impl FnMut(Option<u32>) + Send + 'static) -> Self {
+        self.x11_hook = Some(Arc::new(Mutex::new(f)));
+        if let Some(hook) = self.x11_window_hook() {
+            self.requests.on_x11_window(hook);
+        }
         self
+    }
+
+    #[cfg(target_os = "linux")]
+    fn x11_window_hook(&self) -> Option<window::X11WindowHook> {
+        let hook = Arc::clone(self.x11_hook.as_ref()?);
+        let requests = Arc::downgrade(&self.requests);
+        *self
+            .x11_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = requests.clone();
+        let current = Arc::clone(&self.x11_requests);
+        Some(Arc::new(Mutex::new(move |parent| {
+            // Keep the existing serialized FnMut delivery contract. Check the
+            // request generation only after acquiring its delivery lock: an
+            // active old close completes before the new creation callback.
+            // Synchronously opening another window from this callback remains
+            // unsupported, as it can wait on this same user callback lock.
+            let mut callback = hook
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let is_current = std::sync::Weak::ptr_eq(
+                &requests,
+                &current
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            // No registration/model lock is held across user code. The weak
+            // identity avoids retaining an obsolete Requests/window cycle.
+            if is_current {
+                callback(parent);
+            }
+        })))
     }
 
     /// Hide the pointer while `f` says so (a knob being dragged), and put it
@@ -293,13 +340,13 @@ impl<P: Params> MuiEditor<P> {
     }
 
     fn close_window(&mut self) {
-        if let Some(Handle(window)) = self.window.take() {
+        if let Some(window) = self.window.take() {
             #[cfg(target_os = "linux")]
             {
                 window.close_bounded(std::time::Duration::from_millis(250));
             }
             #[cfg(not(target_os = "linux"))]
-            window.close();
+            window.0.close();
         }
     }
 }
@@ -339,15 +386,30 @@ impl<P: Params> Editor for MuiEditor<P> {
         if let Some(timing) = &self.timing {
             self.requests.on_native_timing(Arc::clone(timing));
         }
-        self.window = window::open(
+        #[cfg(target_os = "linux")]
+        if let Some(hook) = self.x11_window_hook() {
+            self.requests.on_x11_window(hook);
+        }
+        #[cfg(not(target_os = "linux"))]
+        use window::open as open_window;
+        #[cfg(target_os = "linux")]
+        use window::open_threaded as open_window;
+        let window = open_window(
             &ParentWindow(parent),
             "MUI",
             self.size,
             self.scale.policy(),
             Arc::clone(&self.shared),
             Arc::clone(&self.requests),
-        )
-        .map(Handle);
+        );
+        #[cfg(target_os = "linux")]
+        {
+            self.window = window;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.window = window.map(Handle);
+        }
     }
 
     fn close(&mut self) {
@@ -387,8 +449,16 @@ impl<P: Params> Editor for MuiEditor<P> {
     }
 
     fn window_scale(&self) -> Option<f64> {
-        let open = self.window.as_ref().filter(|w| w.0.is_open())?;
-        (!cfg!(target_os = "macos")).then(|| open.0.size().scale_factor)
+        #[cfg(target_os = "linux")]
+        {
+            let open = self.window.as_ref().filter(|w| w.is_open())?;
+            Some(open.size().scale_factor)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let open = self.window.as_ref().filter(|w| w.0.is_open())?;
+            (!cfg!(target_os = "macos")).then(|| open.0.size().scale_factor)
+        }
     }
 
     fn state_changed(&mut self) {

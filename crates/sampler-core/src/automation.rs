@@ -49,6 +49,16 @@ pub(super) struct AutomationState {
     latched: bool,
 }
 impl Runtime {
+    /// The plan's saved and fixed automation routes, for host presentation.
+    pub fn automation_bindings(&self, plan: crate::PlanId) -> Result<&[AutomationBinding], Error> {
+        Ok(&self
+            .plans
+            .get(plan.0)
+            .ok_or(Error::StaleHandle)?
+            .prepared
+            .automation)
+    }
+
     /// Normalized host automation follows the same saved widget route as MIDI CC.
     pub fn dispatch_host_parameter(
         &mut self,
@@ -80,6 +90,8 @@ impl Runtime {
             AutomationSource::HostParameter(address),
             value,
             0,
+            None,
+            None,
         )?;
         self.control_revision(plan)
     }
@@ -91,6 +103,8 @@ impl Runtime {
         source: AutomationSource,
         input: f64,
         reserved_callbacks: usize,
+        controller_secondary: Option<crate::controller_event::CapturedControllerTarget>,
+        receiver:Option<crate::receiver::components::CapturedReceiver>,
     ) -> Result<(), Error> {
         let performance = self.performance_index(context.performance)?;
         if !input.is_finite()
@@ -125,8 +139,11 @@ impl Runtime {
         if let AutomationSource::Controller(number) = source
             && needed != 0
         {
-            self.performance_state.input_controllers[performance][usize::from(number)] =
-                (input * f64::from(u32::MAX)).round() as u32;
+            let scope = crate::ChannelScope { protocol: context.origin.protocol,
+                port: context.origin.port, group: context.origin.group, channels: context.channels };
+            self.performance_state.prepare_scope(performance, scope)?;
+            self.performance_state.scoped_input(performance, scope, number,
+                (input * f64::from(u32::MAX)).round() as u32);
         }
         self.behaviors.reserve(reserved);
         let mut remaining = needed;
@@ -191,7 +208,7 @@ impl Runtime {
                     remaining -= 1;
                 }
                 if state.latched {
-                    self.invoke_widget(
+                    self.invoke_widget_with_targets(
                         context,
                         plan,
                         None,
@@ -201,6 +218,8 @@ impl Runtime {
                             value,
                             interaction: Default::default(),
                         }],
+                        controller_secondary,
+                        receiver,
                     )?;
                     state.applied = Some(self.widget_value(plan, id, 0)?);
                 }

@@ -29,6 +29,13 @@ pub struct Source {
     pub(crate) key: Option<Arc<dyn LibraryKey>>,
     pub(crate) handle: Option<Arc<File>>,
     pub(crate) header: Option<(u32, usize)>,
+    pub(crate) identity: Arc<crate::FileIdentity>,
+}
+impl Source {
+    pub(crate) fn check_snapshot(&self, file: &File) -> io::Result<()> {
+        self.identity.check_range(self.offset, self.size)?;
+        self.identity.check(file)
+    }
 }
 
 /// Resolves and decodes the samples of one library, opening each archive's
@@ -41,6 +48,9 @@ pub struct Samples {
     archives: HashMap<PathBuf, Arc<Archive>>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
     handles: HashMap<PathBuf, Arc<File>>,
+    // Source workers share one admission authority per physical file. Metadata
+    // snapshots are not deep-cloned for each parallel source-resolution lane.
+    identities: Arc<std::sync::Mutex<HashMap<PathBuf, Arc<crate::FileIdentity>>>>,
     /// Virtual `<instrument>/<member>` paths to bounded FileContainer samples.
     embedded: HashMap<PathBuf, Source>,
     /// Numeric headers only; repeated zone trims need no additional disk reads.
@@ -64,6 +74,7 @@ impl Samples {
             archives: HashMap::new(),
             keys: HashMap::new(),
             handles: HashMap::new(),
+            identities: Arc::new(std::sync::Mutex::new(HashMap::new())),
             embedded: HashMap::new(),
             frame_counts: HashMap::new(),
             loose: None,
@@ -76,13 +87,18 @@ impl Samples {
         use std::io::{Read, Seek};
         let mut samples = Self::new(root);
         let mut file = File::open(path).map_err(|e| LoadError::io(path, e))?;
+        let identity = Arc::new(
+            crate::FileIdentity::capture(&file.metadata().map_err(|e| LoadError::io(path, e))?)
+                .map_err(|e| LoadError::io(path, e))?,
+        );
         let mut magic = [0; 16];
         file.read_exact(&mut magic)
             .map_err(|e| LoadError::io(path, e))?;
         if &magic == b"/\\ NI FC MTD  /\\" {
             file.rewind().map_err(|e| LoadError::io(path, e))?;
-            let container = ni_file::file_container::NIFileContainer::read(file)
+            let container = ni_file::file_container::NIFileContainer::read(&mut file)
                 .map_err(|e| LoadError::decode(path, "monolith sample directory", e))?;
+            identity.check(&file).map_err(|e| LoadError::io(path, e))?;
             for item in container.items {
                 let name = item.filename.replace(['|', '\\'], "/");
                 if Path::new(&name).is_absolute() || name.split('/').any(|p| p == "..") {
@@ -94,12 +110,23 @@ impl Samples {
                 let location = path.join(name);
                 let source = Source {
                     path: path.into(),
-                    offset: container.file_section_offset + item.file_start_offset,
+                    offset: container
+                        .file_section_offset
+                        .checked_add(item.file_start_offset)
+                        .ok_or_else(|| LoadError::Invalid {
+                            path: path.into(),
+                            reason: "monolith sample offset overflow".into(),
+                        })?,
                     size: item.file_size,
                     key: None,
                     handle: None,
                     header: None,
+                    identity: identity.clone(),
                 };
+                source
+                    .identity
+                    .check_range(source.offset, source.size)
+                    .map_err(|e| LoadError::io(path, e))?;
                 if samples.embedded.insert(location, source).is_some() {
                     return Err(LoadError::Invalid {
                         path: path.into(),
@@ -187,9 +214,12 @@ impl Samples {
                 }
                 let archive = self.canonical[archive.as_os_str()].clone();
                 if archive.starts_with(&self.root)
-                    && self.archive(&archive)?.find(&member).is_some()
+                    && let Some(entry) = self.archive(&archive)?.find(&member)
                 {
-                    return Ok(Some(archive.join(member)));
+                    // Port v1 0cb7a8a0:src/import.rs Resolver::member_path:
+                    // use the directory's actual spelling, so aliases share
+                    // one asset/source/header rather than duplicate residency.
+                    return Ok(Some(archive.join(&entry.name)));
                 }
             } else if candidate.is_file() {
                 let file = candidate
@@ -210,6 +240,25 @@ impl Samples {
             })?
         {
             return Ok(Some(file));
+        }
+        // A moved archive's stored Windows prefix is not a host path. Resolve
+        // the archive itself with the same library-bounded, longest-unique-
+        // suffix search used for moved loose files, then keep its member exact.
+        // Never search every archive by member basename: Close/Far often share
+        // sample names. This extends v1 Resolver's moved-file rule to NKX/NKR.
+        if let Some((prefix, member)) = archive_reference(&name) {
+            if member.split('/').any(|p| matches!(p, "" | "." | "..")) {
+                return Err(LoadError::Invalid {
+                    path: parent.join(&name),
+                    reason: "invalid moved archive member path".into(),
+                });
+            }
+            if let Some(archive) = self.resolve(parent, prefix)? {
+                return Ok(self
+                    .archive(&archive)?
+                    .find(member)
+                    .map(|entry| archive.join(&entry.name)));
+            }
         }
         // Moved loose samples: match by name, preferring the longest unique
         // directory suffix; never silently pick one of several duplicates.
@@ -307,10 +356,16 @@ impl Samples {
                     reason: "monolith sample exceeds 1 GiB".into(),
                 })?;
             let mut file = File::open(&source.path).map_err(|e| LoadError::io(location, e))?;
+            source
+                .check_snapshot(&file)
+                .map_err(|e| LoadError::io(location, e))?;
             file.seek(SeekFrom::Start(source.offset))
                 .map_err(|e| LoadError::io(location, e))?;
             let mut bytes = vec![0; size];
             file.read_exact(&mut bytes)
+                .map_err(|e| LoadError::io(location, e))?;
+            source
+                .check_snapshot(&file)
                 .map_err(|e| LoadError::io(location, e))?;
             return decode(&bytes).map_err(|reason| LoadError::Invalid {
                 path: location.into(),
@@ -336,15 +391,31 @@ impl Samples {
         })
     }
 
+    /// Resident logical source using the same normal immutable source recipe,
+    /// preserving every encoded channel. Legacy decode remains a stereo API.
+    pub fn decode_source(&mut self, location: &Path) -> Result<sampler_core::SourceStorage, LoadError> {
+        let source=self.source(location)?;
+        let bytes=crate::stream::read_encoded_resident(&source,1<<30).map_err(|e|LoadError::io(location,e))?;
+        let storage=decode_source(&bytes).map_err(|reason|LoadError::Invalid{path:location.into(),reason})?;
+        if matches!(&storage,sampler_core::SourceStorage::Channels(_)) {
+            crate::install_resident_source_reload(&storage,move || {
+                let bytes=crate::stream::read_encoded_resident(&source,1<<30).map_err(|_|sampler_core::Error::NotReady)?;
+                decode_source(&bytes).map_err(|_|sampler_core::Error::NotReady)
+            }).map_err(|e|LoadError::Invalid{path:location.into(),reason:e.to_string()})?;
+        }
+        Ok(storage)
+    }
+
     /// Where a resolved sample's bytes live, for random-access streaming.
     pub fn source(&mut self, location: &Path) -> Result<Source, LoadError> {
         if let Some(source) = self.embedded.get(location) {
             return Ok(source.clone());
         }
         let Some((archive, member)) = self.archive_member(location) else {
-            let size = std::fs::metadata(location)
-                .map_err(|e| LoadError::io(location, e))?
-                .len();
+            let identity = self
+                .file_identity(location, None)
+                .map_err(|e| LoadError::io(location, e))?;
+            let size = identity.len();
             return Ok(Source {
                 path: location.into(),
                 offset: 0,
@@ -352,10 +423,17 @@ impl Samples {
                 key: None,
                 handle: None,
                 header: None,
+                identity,
             });
         };
         self.archive(&archive)?;
         let handle = self.handles[&archive].clone();
+        let identity = self
+            .file_identity(&archive, Some(&handle))
+            .map_err(|e| LoadError::io(&archive, e))?;
+        identity
+            .check(&handle)
+            .map_err(|e| LoadError::io(&archive, e))?;
         let entry = self.archives[&archive]
             .member(
                 FileAt {
@@ -370,6 +448,12 @@ impl Samples {
                 path: location.into(),
                 reason: "invalid archive member".into(),
             })?;
+        identity
+            .check(&handle)
+            .map_err(|e| LoadError::io(&archive, e))?;
+        identity
+            .check_range(entry.offset, entry.size)
+            .map_err(|e| LoadError::io(&archive, e))?;
         if entry.encoded && entry.key_index != 0xff && entry.key_index != 0x100 {
             return Err(LoadError::Invalid {
                 path: location.into(),
@@ -389,6 +473,7 @@ impl Samples {
             None
         };
         Ok(Source {
+            identity,
             path: archive,
             offset: entry.offset,
             size: entry.size,
@@ -435,7 +520,10 @@ impl Samples {
         } else {
             None
         };
+        let identity = self.file_identity(file, handle.as_deref()).ok()?;
+        identity.check_range(offset, size).ok()?;
         Some(Source {
+            identity,
             path: file.into(),
             offset,
             size,
@@ -469,6 +557,7 @@ impl Samples {
                         archives: self.archives.clone(),
                         keys: self.keys.clone(),
                         handles: self.handles.clone(),
+                        identities: self.identities.clone(),
                         embedded: self.embedded.clone(),
                         frame_counts: HashMap::new(),
                         loose: None,
@@ -506,8 +595,18 @@ impl Samples {
         let mut head = Vec::new();
         let source = self.source(location)?;
         let mut file = File::open(&source.path).map_err(|e| LoadError::io(location, e))?;
+        source
+            .check_snapshot(&file)
+            .map_err(|e| LoadError::io(location, e))?;
         file.seek(SeekFrom::Start(source.offset))
-            .and_then(|_| file.take(source.size.min(1 << 16)).read_to_end(&mut head))
+            .and_then(|_| {
+                (&mut file)
+                    .take(source.size.min(1 << 16))
+                    .read_to_end(&mut head)
+            })
+            .map_err(|e| LoadError::io(location, e))?;
+        source
+            .check_snapshot(&file)
             .map_err(|e| LoadError::io(location, e))?;
         if let Some(key) = &source.key {
             key.apply(&mut head);
@@ -555,12 +654,40 @@ impl Samples {
     fn archive(&mut self, path: &Path) -> Result<&Archive, LoadError> {
         if !self.archives.contains_key(path) {
             let mut file = File::open(path).map_err(|e| LoadError::io(path, e))?;
+            let identity = self
+                .file_identity(path, Some(&file))
+                .map_err(|e| LoadError::io(path, e))?;
             let index = Archive::read_index(&mut file)
                 .map_err(|e| LoadError::decode(path, "archive directory", e))?;
+            identity.check(&file).map_err(|e| LoadError::io(path, e))?;
             self.handles.insert(path.into(), Arc::new(file));
             self.archives.insert(path.into(), Arc::new(index));
         }
         Ok(&self.archives[path])
+    }
+    fn file_identity(
+        &self,
+        path: &Path,
+        handle: Option<&File>,
+    ) -> io::Result<Arc<crate::FileIdentity>> {
+        if let Some(identity) = self
+            .identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(path)
+        {
+            return Ok(identity.clone());
+        }
+        let metadata = match handle {
+            Some(file) => file.metadata()?,
+            None => std::fs::metadata(path)?,
+        };
+        let identity = Arc::new(crate::FileIdentity::capture(&metadata)?);
+        let mut identities = self
+            .identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(identities.entry(path.into()).or_insert(identity).clone())
     }
 }
 
@@ -734,6 +861,16 @@ fn archive_member_where(
     None
 }
 
+fn archive_reference(name: &str) -> Option<(&str, &str)> {
+    name.match_indices('/').find_map(|(at, _)| {
+        let prefix = &name[..at];
+        Path::new(prefix)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"))
+            .then_some((prefix, &name[at + 1..]))
+    })
+}
+
 fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -801,6 +938,48 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     })
 }
 
+/// Same normal WAV/AIFF/NCW decoder arithmetic, retaining all original
+/// channels in a resident logical asset. The new wide path is not a speaker
+/// layout or native projection and cannot fall back to its first stereo pair.
+pub fn decode_source(bytes: &[u8]) -> Result<sampler_core::SourceStorage,String> {
+    const LIMIT:usize=512<<20;
+    if bytes.starts_with(b"RIFF") || bytes.starts_with(b"FORM") {
+        // Preserve the complete established mono/stereo conversion exactly.
+        let layout=wav_layout(bytes)?;
+        if layout.channels<=2 {let d=wav(bytes)?;return sampler_core::Pcm::new(d.rate,d.frames.into_boxed_slice()).map(Into::into).map_err(|e|e.to_string());}
+        if bytes.starts_with(b"FORM") {
+            let end=bytes.get(4..8).map(|b|8u64+u64::from(u32::from_be_bytes(b.try_into().unwrap()))).ok_or("truncated AIFF FORM")?;
+            if end>bytes.len() as u64 {return Err("truncated AIFF FORM".into());}
+        }
+        if layout.data.end>bytes.len() {return Err("truncated PCM sample data".into());}
+        let align=layout.width.checked_mul(layout.channels).ok_or("PCM channel alignment overflow")?;
+        let data=&bytes[layout.data.clone()];
+        if data.len()%align!=0 {return Err("incomplete PCM source frame".into());}
+        let samples=data.len()/layout.width;
+        let output=(data.len()/align).checked_mul(layout.channels.div_ceil(2)).and_then(|n|n.checked_mul(8)).ok_or("resident PCM output overflow")?;
+        if samples.checked_mul(4).and_then(|n|n.checked_add(output)).is_none_or(|n|n>LIMIT) {return Err("resident channel staging exceeds 512 MiB".into());}
+        let mut interleaved=Vec::new();interleaved.try_reserve_exact(samples).map_err(|e|e.to_string())?;
+        for frame in data.chunks_exact(align) {for channel in 0..layout.channels {
+            interleaved.push(layout.sample(&frame[channel*layout.width..][..layout.width]));
+        }}
+        return crate::resident_storage_from_interleaved(layout.rate,layout.channels,&interleaved,LIMIT).map_err(|e|e.to_string());
+    }
+    let mut reader=ncw::NcwReader::read(Cursor::new(bytes)).map_err(|e|format!("not WAV or NCW: {e}"))?;
+    let channels=reader.header.channels as usize;let frames=reader.header.num_samples as usize;
+    if channels==0 || frames==0 {return Err("invalid NCW source geometry".into());}
+    if channels<=2 {let d=decode(bytes)?;return sampler_core::Pcm::new(d.rate,d.frames.into_boxed_slice()).map(Into::into).map_err(|e|e.to_string());}
+    // NcwReader decodes i32 samples; charge that retained input as well as
+    // converted f32 input and packed output before decode_samples allocates.
+    let samples=frames.checked_mul(channels).ok_or("NCW source dimensions overflow")?;
+    let output=frames.checked_mul(channels.div_ceil(2)).and_then(|n|n.checked_mul(8)).ok_or("NCW resident output overflow")?;
+    if samples.checked_mul(8).and_then(|n|n.checked_add(output)).is_none_or(|n|n>LIMIT) {return Err("NCW resident staging exceeds 512 MiB".into());}
+    let convert=ncw_sample(reader.sample_format,reader.header.bits_per_sample);let rate=reader.header.sample_rate;
+    let decoded=reader.decode_samples().map_err(|e|format!("NCW: {e}"))?;
+    if decoded.len()!=samples {return Err("NCW decoded dimensions differ from header".into());}
+    let converted:Vec<_>=decoded.into_iter().map(convert).collect();
+    crate::resident_storage_from_interleaved(rate,channels,&converted,LIMIT).map_err(|e|e.to_string())
+}
+
 /// NCW integer or float-bit samples to f32.
 pub(crate) fn ncw_sample(format: ncw::SampleFormat, bits: u16) -> impl Fn(i32) -> f32 {
     let float = format == ncw::SampleFormat::Float;
@@ -832,7 +1011,11 @@ impl Wav {
     /// One interleaved frame's bytes to a stereo frame (mono duplicated).
     pub fn frame(&self, frame: &[u8]) -> [f32; 2] {
         let width = self.width;
-        let sample = |s: &[u8]| match (self.tag, width) {
+        [self.sample(&frame[..width]),self.sample(&frame[(self.channels.min(2)-1)*width..][..width])]
+    }
+    pub(crate) fn sample(&self,s:&[u8])->f32 {
+        let width=self.width;
+        match (self.tag, width) {
             (3, _) => {
                 let b = [s[0], s[1], s[2], s[3]];
                 if self.big_endian {
@@ -853,11 +1036,7 @@ impl Wav {
                 };
                 value as f32 / 2_147_483_648.0
             }
-        };
-        [
-            sample(&frame[..width]),
-            sample(&frame[(self.channels.min(2) - 1) * width..][..width]),
-        ]
+        }
     }
 }
 
@@ -949,6 +1128,17 @@ fn aiff_layout(bytes: &[u8]) -> Result<Wav, String> {
     aiff_reader(&mut Cursor::new(bytes))
 }
 
+/// Shared checked AIFF80 rate arithmetic. Keep the legacy reader's rounding
+/// decision at its own callsite; the checked Symphonia path uses its normal
+/// truncating u32 conversion only after these finite/domain checks.
+pub(crate) fn aiff_sample_rate(exponent: u16, mantissa: u64) -> Result<f64, String> {
+    let rate = mantissa as f64 * 2f64.powi(i32::from(exponent & 0x7fff) - 16383 - 63);
+    if exponent & 0x8000 != 0 || !rate.is_finite() || rate < 1.0 || rate > u32::MAX as f64 {
+        return Err("invalid AIFF sample rate".into());
+    }
+    Ok(rate)
+}
+
 pub(crate) fn aiff_reader<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<Wav, String> {
     use std::io::SeekFrom;
     let base = reader.stream_position().map_err(|e| e.to_string())?;
@@ -1022,10 +1212,7 @@ pub(crate) fn aiff_reader<R: std::io::Read + std::io::Seek>(reader: &mut R) -> R
     let bits = u16::from_be_bytes(fmt[6..8].try_into().unwrap()) as usize;
     let exponent = u16::from_be_bytes(fmt[8..10].try_into().unwrap());
     let mantissa = u64::from_be_bytes(fmt[10..18].try_into().unwrap());
-    let rate = mantissa as f64 * 2f64.powi(i32::from(exponent & 0x7fff) - 16383 - 63);
-    if exponent & 0x8000 != 0 || !rate.is_finite() || rate < 1.0 || rate > u32::MAX as f64 {
-        return Err("invalid AIFF sample rate".into());
-    }
+    let rate = aiff_sample_rate(exponent, mantissa)?;
     let codec = if aifc { &fmt[18..22] } else { b"NONE" };
     let (tag, big_endian) = match codec {
         b"NONE" | b"twos" => (1, true),
@@ -1158,11 +1345,7 @@ mod tests {
             samples
                 .resolve_impulse(&parent, "C:/old/resources/IR/AUTHORED.WAV", &containers)
                 .unwrap(),
-            Some(
-                root.canonicalize()
-                    .unwrap()
-                    .join("Samples/authored.nkr/resources/IR/AUTHORED.WAV")
-            )
+            Some(expected.clone())
         );
         let aliases = ["Samples/authored.nkr".into(), "Samples/authored.nkr".into()];
         assert_eq!(
@@ -1265,6 +1448,26 @@ mod tests {
             decoded.frames[1],
             [pcm[2] as f32 / 32768.0, pcm[3] as f32 / 32768.0]
         );
+    }
+
+    #[test]
+    fn ncw_header_sample_format_word_is_honoured_for_32_bit_0x131() {
+        let pcm: Vec<i32> = (0..64).collect();
+        let spec = ncw::PcmSpec {
+            channels: 1,
+            bits_per_sample: 16,
+            sample_rate: 48000,
+        };
+        let mut bytes = ncw::encode_pcm(&pcm, spec, ncw::StereoMode::Direct).unwrap();
+        // Declare 32-bit with the header's float bit while the block says PCM.
+        bytes[10..12].copy_from_slice(&32u16.to_le_bytes());
+        bytes[32..36].copy_from_slice(&1u32.to_le_bytes());
+        assert!(decode(&bytes).err().unwrap().contains("contradicts"));
+        // Version 0x130 ignores the word.
+        bytes[4] = 0x30;
+        let reader = ncw::NcwReader::read(Cursor::new(&bytes)).unwrap();
+        assert_eq!(reader.sample_format, ncw::SampleFormat::Pcm);
+        assert_eq!(reader.header.format_word, 1);
     }
 
     #[test]

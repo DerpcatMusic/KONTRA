@@ -16,6 +16,23 @@ pub const HOST_VALUES: usize = 32;
 /// A store key occupies this many consecutive registers.
 pub const STORE_KEY: usize = 4;
 
+/// The seed of every script random stream (the runtime's and init's).
+pub const RANDOM_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// KSP `random(a, b)`: an integer in a..=b (either order) from the xorshift64*
+/// stream `state`. Kontakt's own seed is unproved; any in-range value is one
+/// it may draw. Modulo bias is below 2^-31 for 32-bit spans.
+pub fn random(state: &mut u64, a: i32, b: i32) -> i64 {
+    let (low, high) = (i64::from(a.min(b)), i64::from(a.max(b)));
+    let mut x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    let draw = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
+    low + (draw % (high - low + 1) as u64) as i64
+}
+
 /// Reals travel in integer registers as IEEE-754 bit patterns.
 pub fn real(bits: i64) -> f64 {
     f64::from_bits(bits as u64)
@@ -328,6 +345,16 @@ pub enum Op {
         local: u16,
         write: bool,
     },
+    SourceZoneIdentity { index: u16, local: u16 },
+    SourceZoneCount { local: u16 },
+    SetZoneParameter {
+        zone: u16,
+        parameter: u16,
+        value: u16,
+        result: u16,
+        selectors: [i32; 3],
+        present: u8,
+    },
     ZoneParameter {
         zone: u16,
         parameter: u16,
@@ -386,7 +413,8 @@ impl Op {
             | Self::CompareReal { lhs, rhs, .. }
             | Self::Integer { lhs, rhs, .. }
             | Self::Random { lhs, rhs } => usize::from(*lhs.max(rhs)) + 1,
-            Self::RealUnary { local, .. }
+            Self::SourceZoneCount { local }
+            | Self::RealUnary { local, .. }
             | Self::WaitMidi { local }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
@@ -408,6 +436,9 @@ impl Op {
             Self::EngineParameter { address, local, .. } => {
                 (usize::from(*address) + 4).max(usize::from(*local) + 1)
             }
+            Self::SourceZoneIdentity { index, local } => usize::from(*index.max(local)) + 1,
+            Self::SetZoneParameter { zone, parameter, value, result, .. } =>
+                usize::from((*zone).max(*parameter).max(*value).max(*result)) + 1,
             Self::ZoneParameter {
                 zone,
                 parameter,
@@ -844,7 +875,7 @@ impl Default for OpState {
                 }
                 values
             },
-            random: 0x9e37_79b9_7f4a_7c15,
+            random: RANDOM_SEED,
         }
     }
 }
@@ -1103,6 +1134,7 @@ impl Runtime {
                     .jobs
                     .iter()
                     .any(|j| j.id == job)
+                    || self.plans.get(plan.0).and_then(|g| g.zone_routing.as_ref()).is_some_and(|s| s.has_job(job))
                     || self
                         .plans
                         .get(plan.0)
@@ -1184,16 +1216,8 @@ impl Runtime {
             }
             Op::Random { lhs, rhs } => {
                 let (a, b) = (i32_of(self.reg(id, lhs)?)?, i32_of(self.reg(id, rhs)?)?);
-                let (low, high) = (i64::from(a.min(b)), i64::from(a.max(b)));
-                // xorshift64*; modulo bias is below 2^-31 for 32-bit spans.
-                let mut x = self.ops.random;
-                x ^= x >> 12;
-                x ^= x << 25;
-                x ^= x >> 27;
-                self.ops.random = x;
-                let draw = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
-                let span = (high - low + 1) as u64;
-                self.set_reg(id, lhs, low + (draw % span) as i64)?;
+                let value = random(&mut self.ops.random, a, b);
+                self.set_reg(id, lhs, value)?;
             }
             Op::Call { target } => {
                 let c = self.continuation(id)?;
@@ -1376,6 +1400,31 @@ impl Runtime {
                     *bank.texts.get_mut(cell).ok_or(Error::InvalidInput)? = value;
                 }
             }
+            Op::SourceZoneIdentity { index, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let value = usize::try_from(self.reg(id, index)?).ok()
+                    .and_then(|index| self.plans.get(plan.0)?.prepared.source_zone_identity(index))
+                    .map_or(-1, i64::from);
+                self.set_reg(id, local, value)?;
+            }
+            Op::SourceZoneCount { local } => {
+                let plan = self.behavior_plan(owner)?;
+                let count = self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.source_zone_identity_count();
+                self.set_reg(id, local, i64::try_from(count).map_err(|_| Error::Capacity)?)?;
+            }
+            Op::SetZoneParameter { zone, parameter, value, result, selectors, present } => {
+                let selector = self.reg(id, parameter)?;
+                let parameter = selectors.iter().enumerate().position(|(i, s)|
+                    present & (1 << i) != 0 && i64::from(*s) == selector)
+                    .map(|i| [crate::ZoneParameter::Group, crate::ZoneParameter::LowKey, crate::ZoneParameter::HighKey][i]);
+                let zone = u32::try_from(self.reg(id, zone)?).map_err(|_| Error::InvalidInput);
+                let value = i32::try_from(self.reg(id, value)?).map_err(|_| Error::InvalidInput);
+                let job = match (zone, parameter, value) {
+                    (Ok(zone), Some(parameter), Ok(value)) => self.request_zone_parameter(id, zone, parameter, value).unwrap_or(-1),
+                    _ => -1,
+                };
+                self.set_reg(id, result, i64::from(job))?;
+            }
             Op::ZoneParameter {
                 zone,
                 parameter,
@@ -1401,12 +1450,9 @@ impl Runtime {
                 let value = parameter
                     .and_then(|parameter| {
                         let zone = u32::try_from(self.reg(id, zone).ok()?).ok()?;
-                        self.plans
-                            .get(plan.0)?
-                            .prepared
-                            .source_zone_parameter(zone, parameter)
+                        self.zone_parameter_in(plan, zone, parameter).ok()
                     })
-                    .unwrap_or(0);
+                    .unwrap_or(-1);
                 self.set_reg(id, local, i64::from(value))?;
             }
             Op::EngineParameter {
@@ -1531,24 +1577,36 @@ impl Runtime {
             } => {
                 let plan = self.behavior_plan(owner)?;
                 let group = self.reg(id, group)?;
-                if write {
-                    self.write_param(
-                        plan,
-                        crate::ParamScope::Group,
-                        group,
-                        crate::ModTarget::Attenuate,
-                        if self.reg(id, local)? == 0 { 0 } else { 1000 },
-                        false,
-                    )?;
+                let dense = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .prepared
+                    .group_source_ids
+                    .iter()
+                    .position(|&g| i64::from(g) == group);
+                let dense = if self.plans.get(plan.0).unwrap().prepared.group_source_ids.is_empty() {
+                    usize::try_from(group).ok()
                 } else {
-                    let value = self.read_param(
-                        plan,
-                        crate::ParamScope::Group,
-                        group,
-                        crate::ModTarget::Attenuate,
-                    )?;
-                    self.set_reg(id, local, i64::from(value != 0))?;
-                }
+                    dense
+                };
+                let value = if let Some(group) = dense.and_then(|g| u32::try_from(g).ok()) {
+                    if write {
+                        let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                        let instance = self.plans.get(plan.0).unwrap().prepared.programs
+                            [callback.program]
+                            .script_instance
+                            .unwrap_or(crate::ScriptInstanceId(0));
+                        let reload = self.reg(id, local)? != 0;
+                        self.request_group_residency(plan, group, reload, instance)
+                            .map_or(-1, i64::from)
+                    } else {
+                        i64::from(self.group_resident(plan, group).unwrap_or(false))
+                    }
+                } else {
+                    if write { -1 } else { 0 }
+                };
+                self.set_reg(id, local, value)?;
             }
             Op::Store { key, local, write } => {
                 let mut k = [0; STORE_KEY];
@@ -1766,7 +1824,16 @@ impl Runtime {
                 for (i, value) in values.iter_mut().take(count).enumerate() {
                     *value = i32_of(self.reg(id, args + i as u16)?)?;
                 }
-                let admitted = crate::waveform::admit(&self.behavior_bank(id)?.store, action, values)?;
+                // As the init evaluator: a rejected call (absent zone, unattached
+                // widget, unknown property, index) changes nothing and reads 0; it
+                // is not a fault that kills the callback and its note.
+                let admitted = match crate::waveform::admit(&self.behavior_bank(id)?.store, action, values) {
+                    Err(Error::InvalidInput) => {
+                        self.set_reg(id, local, 0)?;
+                        return Ok(false);
+                    }
+                    admitted => admitted?,
+                };
                 let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
                 let plan = self.behavior_plan(c.owner)?;
                 let instance = self.plans.get(plan.0).unwrap().prepared.programs[c.program].script_instance;

@@ -5,25 +5,32 @@ impl Prepared {
     /// Assign each authored region to an optional dense group. Ungrouped regions
     /// are always eligible. Empty groups are valid; group identity is plan-local.
     pub fn with_groups(mut self, count: u32, regions: Vec<Option<u32>>) -> Result<Self, Error> {
-        if regions.len() != self.region_count()
+        if self.zone_routing.is_some() || self.source_zone_catalog.is_some() || regions.len() != self.region_count()
             || regions.iter().flatten().any(|&group| group >= count)
         {
             return Err(Error::InvalidInput);
         }
         self.group_count = count;
+        self.group_mutes = (0..count)
+            .map(|_| std::sync::atomic::AtomicBool::new(false))
+            .collect();
         self.region_groups = regions.into_boxed_slice();
+        self.residency = Some(crate::residency::Residency::new(&self)?);
         Ok(self)
     }
 
     /// Retain physical source group indices without changing dense DSP membership.
     pub fn with_source_groups(mut self, ids: Vec<u32>) -> Result<Self, Error> {
-        if ids.len() != self.group_count as usize || ids.iter().any(|&id| id > i32::MAX as u32) {
+        if self.zone_routing.is_some() || self.source_zone_catalog.is_some() || ids.len() != self.group_count as usize || ids.iter().any(|&id| id > i32::MAX as u32) {
             return Err(Error::InvalidInput);
         }
         self.group_source_ids = ids.into_boxed_slice();
         Ok(self)
     }
 
+    /// Assign the positive source IDs reported by `EventInfo::ZoneId` to regions.
+    /// Native zone commands use an independent identity/home catalog installed
+    /// by `with_source_zone_identities`; these event IDs do not authorize commands.
     pub fn with_source_zones(mut self, ids: Vec<u32>) -> Result<Self, Error> {
         if ids.len() != self.region_count() || ids.contains(&0) {
             return Err(Error::InvalidInput);
@@ -266,5 +273,43 @@ impl Runtime {
         }
         let mask = generation.groups.view_at(note.0.index, stage);
         Ok(mask[group as usize / 64] & (1 << (group % 64)) != 0)
+    }
+}
+
+impl Prepared {
+    pub fn with_group_mutes(mut self, muted: Vec<bool>) -> Result<Self, Error> {
+        if muted.len() != self.group_count as usize {
+            return Err(Error::InvalidInput);
+        }
+        self.group_mutes = muted
+            .into_iter()
+            .map(std::sync::atomic::AtomicBool::new)
+            .collect();
+        Ok(self)
+    }
+}
+impl Runtime {
+    /// Live mute edits eligibility while retaining zones, loops, effects and source IDs.
+    pub fn set_group_muted(
+        &mut self,
+        plan: crate::PlanId,
+        group: u32,
+        muted: bool,
+    ) -> Result<(), Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let state = generation
+            .prepared
+            .group_mutes
+            .get(group as usize)
+            .ok_or(Error::InvalidInput)?;
+        state.store(muted, std::sync::atomic::Ordering::Release);
+        self.write_param(
+            plan,
+            crate::ParamScope::Group,
+            i64::from(group),
+            crate::ModTarget::Attenuate,
+            if muted { 0 } else { 1000 },
+            false,
+        )
     }
 }

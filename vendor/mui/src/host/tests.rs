@@ -605,3 +605,24 @@ fn ime_configuration_uses_utf8_boundaries_and_disables_after_blur() {
     r.d.close(&mut r.s);
     assert!(r.d.ime_area().is_none());
 }
+
+#[test]
+fn drag_coalescing_preserves_modifier_boundaries_and_release() {
+    let mut r = Rig::new(Knob::default(), (400, 400), 1.0);
+    r.step();
+    r.d.pointer_moved(at(10.0, 10.0), none());
+    r.d.button(Button::Primary, true, none());
+    for x in [12.0, 14.0] { r.d.pointer_moved(at(x, 10.0), none()); }
+    let shift = Mods { shift: true, ..none() };
+    for x in [16.0, 18.0] { r.d.pointer_moved(at(x, 10.0), shift); }
+    r.d.button(Button::Primary, false, shift);
+    r.s.view.trails.clear();
+    assert!(r.step());
+    // Hover, press, two separate drag groups, release. Each drag group
+    // retains its skipped sample; changing modifiers never merges groups.
+    assert_eq!(r.s.view.trails, [0, 0, 1, 1, 0]);
+    assert!(r.d.pending.is_empty());
+    assert_eq!(r.d.pointer.pos, Some(at(18.0, 10.0)));
+    assert_eq!(r.d.pointer.mods, shift);
+    assert!(r.d.pointer.buttons.is_empty());
+}
