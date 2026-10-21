@@ -25,7 +25,7 @@ fn svf(cutoff_hz: Parameter) -> Processor {
 fn native() -> Processor {
     Processor::Filter(FilterSettings::Ladder(LadderSettings {
         cutoff: Parameter::Constant(0.4), resonance: Parameter::Constant(0.2),
-        gain: Parameter::Constant(0.), record_version: 99, taps: 4,
+        gain: Parameter::Constant(0.), record_version: 99, taps: 4, high_quality: false,
     }))
 }
 fn voice_stages() -> Vec<Processor> {
