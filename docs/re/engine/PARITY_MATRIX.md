@@ -294,6 +294,16 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; origin per plan, octave units unverified (`k-mod-external.md`) |
 | External MIDI/performance sources | partial | none | 13 `ExternalSource` variants mapped (`modulation_objects.rs:84-96`); no per-source vectors (`k-mod-external.md`) |
 | Modulation routing (target, depth/polarity, shaping, smoothing) | partial | none | Depth sign/invert tested (`library.rs:6063`); negative lag and shape law unproven (`k-mod-external.md`) |
+| AHDSR | unknown | none | |
+| DBD | unknown | none | |
+| Flexible envelope | unknown | none | |
+| LFO | partial | decomp + vector | Native waves and Multi/Digital structure confirmed; fade cadence, fade init, synced fade, held-noise reset seed open. See `docs/re/engine/k-mod-lfo-step.md`. |
+| Multi Digital | partial | decomp + vector | Mixer terms and normalisation confirmed; data constants unverified in binary; fade > 0 with components refused. |
+| Step modulator | partial | decomp + vector | Render confirmed (`0x140a768e0`); `+0xdd` branch and stored-field setup not modelled (`UnknownLaw`). |
+| Envelope follower | unknown | none | |
+| Glide | unknown | none | |
+| External MIDI/performance sources | unknown | none | |
+| Modulation routing (target, depth/polarity, shaping, smoothing) | unknown | none | |
 
 ## Script and library (k-ksp-engine-params, k-library-load)
 
