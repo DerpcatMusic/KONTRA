@@ -4806,15 +4806,29 @@ mod modulation {
             version: 0x95,
             private_data: vec![],
             public_data: group_public(2),
-            children: vec![ni_file::kontakt::Chunk { id: 0x38, data: vec![0] }],
+            children: vec![ni_file::kontakt::Chunk {
+                id: 0x38,
+                data: vec![0],
+            }],
         });
         let mut out = translation();
         assert!(out.group(0, &group).unwrap().is_some());
-        assert!(out.ir.unsupported.iter().any(|n| n.feature == "interpolation quality" && n.value == "2"));
+        assert!(
+            out.ir
+                .unsupported
+                .iter()
+                .any(|n| n.feature == "interpolation quality" && n.value == "2")
+        );
         group.0.public_data = group_public(0);
         let mut default = translation();
         assert!(default.group(0, &group).unwrap().is_some());
-        assert!(!default.ir.unsupported.iter().any(|n| n.feature == "interpolation quality"));
+        assert!(
+            !default
+                .ir
+                .unsupported
+                .iter()
+                .any(|n| n.feature == "interpolation quality")
+        );
     }
 
     #[test]
