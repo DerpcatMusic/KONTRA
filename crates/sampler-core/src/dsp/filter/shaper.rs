@@ -11,6 +11,8 @@ pub(crate) enum Slope {
     Fused(f32),
     /// `(|c| 0.25) inv` with `inv = 1 / L`: the SV2 and SV Multi order.
     Split { inv: f32 },
+    /// `c - (|c| c) w`: the AR state order, which keeps the product before the weight.
+    Direct(f32),
 }
 
 /// Clamp to `+-limit`, then bend the top. Kontakt's SV state saturator (`limit = 2L`).
@@ -36,11 +38,11 @@ impl Knee {
     #[inline(always)]
     pub(crate) fn apply(self, v: f32) -> f32 {
         let c = v.clamp(-self.limit, self.limit);
-        let w = match self.slope {
-            Slope::Fused(w) => c.abs() * w,
-            Slope::Split { inv } => (c.abs() * 0.25) * inv,
-        };
-        (1.0 - w) * c
+        match self.slope {
+            Slope::Fused(w) => (1.0 - c.abs() * w) * c,
+            Slope::Split { inv } => (1.0 - (c.abs() * 0.25) * inv) * c,
+            Slope::Direct(w) => c - (c.abs() * c) * w,
+        }
     }
 }
 
