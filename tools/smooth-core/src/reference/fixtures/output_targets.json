@@ -1,0 +1,870 @@
+{
+ "source": "soothe3 process block 0x890a00, output targets 0x891e0e..0x891ed8, via setter 0x894370",
+ "evidence_scope": "isolated emulation, constructor stand-in at 48 kHz; solo band byte and +0x236 written directly",
+ "cases": [
+  {
+   "cfg": {
+    "wet_db": 0.0,
+    "mix": 100.0,
+    "out_db": 0.0,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1065353213,
+    "mix": 1065353216,
+    "out_gain": 1065353213,
+    "delta": false,
+    "bypass": false,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 0,
+    "wet": 1065353213,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353213
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -6.0,
+    "mix": 50.0,
+    "out_db": -3.0,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1056984526,
+    "mix": 1056964608,
+    "out_gain": 1060453361,
+    "delta": false,
+    "bypass": false,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1056964608,
+    "wet": 1048595918,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1060453361
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 0.0,
+    "mix": 30.0,
+    "out_db": 0.0,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1065353213,
+    "mix": 1050253722,
+    "out_gain": 1065353213,
+    "delta": true,
+    "bypass": false,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1050253720,
+    "wet": 3197737368,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353213
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -12.0,
+    "mix": 80.0,
+    "out_db": 6.0,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1048615886,
+    "mix": 1061997772,
+    "out_gain": 1073702084,
+    "delta": false,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -12.0,
+    "mix": 80.0,
+    "out_db": 6.0,
+    "delta": 1,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1048615886,
+    "mix": 1061997772,
+    "out_gain": 1073702084,
+    "delta": true,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 0.0,
+    "mix": 60.0,
+    "out_db": 0.0,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 3,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1065353213,
+    "mix": 1058642330,
+    "out_gain": 1065353213,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1053609164,
+    "wet": 1058642328,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353213
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 0.0,
+    "mix": 60.0,
+    "out_db": 0.0,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 3,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1065353213,
+    "mix": 1058642330,
+    "out_gain": 1065353213,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1058642328,
+    "wet": 3206125976,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353213
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 3.0,
+    "mix": 45.0,
+    "out_db": -9.0,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 8,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1068813832,
+    "mix": 1055286886,
+    "out_gain": 1052092951,
+    "delta": true,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1059240301,
+    "wet": 3206723949,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1052092951
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -26.7484584543593,
+    "mix": 70.44792425927638,
+    "out_db": -30.88583426545442,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 8,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1027364463,
+    "mix": 1060395200,
+    "out_gain": 1021964230,
+    "delta": true,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1023716881,
+    "wet": 3171200529,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1021964230
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -2.5491794306073103,
+    "mix": 41.25643575928949,
+    "out_db": 9.061483684251066,
+    "delta": 1,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1061086101,
+    "mix": 1054030754,
+    "out_gain": 1077258345,
+    "delta": true,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -17.05260622084466,
+    "mix": 9.680782360983908,
+    "out_db": -10.748599980782618,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 1,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1041220924,
+    "mix": 1036403502,
+    "out_gain": 1049922032,
+    "delta": false,
+    "bypass": true,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -8.002694430617144,
+    "mix": 25.07017283238945,
+    "out_db": 5.694948491124428,
+    "delta": 1,
+    "bypass": 1,
+    "solo_band": 1,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1053541506,
+    "mix": 1048599546,
+    "out_gain": 1073124462,
+    "delta": true,
+    "bypass": true,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -7.820886489993413,
+    "mix": 71.8845304369201,
+    "out_db": -20.42075012100766,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1053823977,
+    "mix": 1060636222,
+    "out_gain": 1036197287,
+    "delta": false,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -29.41889068464525,
+    "mix": 43.390970114707386,
+    "out_db": -38.952275858609056,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 2,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1024097586,
+    "mix": 1054746986,
+    "out_gain": 1010358306,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1013997042,
+    "wet": 3161480690,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1010358306
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -7.652851222894782,
+    "mix": 91.93335431950503,
+    "out_db": 6.945081390768664,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 5,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1054090356,
+    "mix": 1063999856,
+    "out_gain": 1074683912,
+    "delta": false,
+    "bypass": true,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -29.74472276676007,
+    "mix": 95.80749695153219,
+    "out_db": -6.659393203919677,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 2,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1023763426,
+    "mix": 1064649830,
+    "out_gain": 1055775025,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1023383670,
+    "wet": 3170867318,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1055775025
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -7.292644152683451,
+    "mix": 57.25184176969138,
+    "out_db": -21.31255218345786,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 2,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1054679037,
+    "mix": 1058181265,
+    "out_gain": 1034949552,
+    "delta": true,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1048392251,
+    "wet": 3195875899,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1034949552
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 6.0699252094847225,
+    "mix": 57.90994858985587,
+    "out_db": -35.43675581560364,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 8,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1073789595,
+    "mix": 1058291677,
+    "out_gain": 1015711835,
+    "delta": false,
+    "bypass": true,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 10.593397656553492,
+    "mix": 67.78128510038908,
+    "out_db": 10.500722547181255,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1079554573,
+    "mix": 1059947813,
+    "out_gain": 1079403855,
+    "delta": true,
+    "bypass": false,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1074979079,
+    "wet": 3222462727,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1079403855
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -6.313734420942652,
+    "mix": 5.2336662922282,
+    "out_db": -20.6516452265057,
+    "delta": 1,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1056407855,
+    "mix": 1029070584,
+    "out_gain": 1035861846,
+    "delta": true,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 7.401105056958862,
+    "mix": 88.43029604304967,
+    "out_db": -36.1827913388682,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 8,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1075186876,
+    "mix": 1063412142,
+    "out_gain": 1014907623,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1038938768,
+    "wet": 1074049151,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1014907623
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -35.473268421422446,
+    "mix": 93.21300906310873,
+    "out_db": -31.4556909388394,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1015673749,
+    "mix": 1064214548,
+    "out_gain": 1020990671,
+    "delta": false,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 5.092240233701638,
+    "mix": 76.43790595988679,
+    "out_db": -11.166816038586717,
+    "delta": 1,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1072041153,
+    "mix": 1061400153,
+    "out_gain": 1049464426,
+    "delta": true,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -16.094150113138255,
+    "mix": 44.256689112318526,
+    "out_db": -2.5753651262336845,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 8,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1042320157,
+    "mix": 1055037473,
+    "out_gain": 1061048448,
+    "delta": true,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1032722999,
+    "wet": 3180206647,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1061048448
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": 7.109714584569431,
+    "mix": 74.79592641896718,
+    "out_db": -20.28000978765411,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 2,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1074862453,
+    "mix": 1061124674,
+    "out_gain": 1036406169,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1071189652,
+    "wet": 3218673300,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1036406169
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -21.784460396162658,
+    "mix": 72.68278200047037,
+    "out_db": 4.348891496607251,
+    "delta": 1,
+    "bypass": 1,
+    "solo_band": 5,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1034339335,
+    "mix": 1060770146,
+    "out_gain": 1070804553,
+    "delta": true,
+    "bypass": true,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -3.3764590737106843,
+    "mix": 90.97602993669196,
+    "out_db": -21.506138751081686,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 0,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1059949572,
+    "mix": 1063839244,
+    "out_gain": 1034695213,
+    "delta": false,
+    "bypass": false,
+    "solo_active": false,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1035521952,
+    "wet": 1058923224,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1034695213
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -34.46856323153828,
+    "mix": 88.68952015843712,
+    "out_db": -33.225160927310476,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 0,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1016782392,
+    "mix": 1063455631,
+    "out_gain": 1018344440,
+    "delta": false,
+    "bypass": true,
+    "solo_active": false,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -37.92970909665605,
+    "mix": 85.61776992786723,
+    "out_db": -24.260984350217246,
+    "delta": 0,
+    "bypass": 1,
+    "solo_band": 8,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1011871793,
+    "mix": 1062940277,
+    "out_gain": 1031457358,
+    "delta": false,
+    "bypass": true,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1065353216,
+    "wet": 0,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1065353216
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -10.540701095119402,
+    "mix": 74.63734061326562,
+    "out_db": -36.93342436714234,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 5,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1050157844,
+    "mix": 1061098068,
+    "out_gain": 1013528053,
+    "delta": true,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1046682145,
+    "wet": 3194165793,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1013528053
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -13.357785981198326,
+    "mix": 30.50469176380737,
+    "out_db": -34.8157497069675,
+    "delta": 1,
+    "bypass": 0,
+    "solo_band": 0,
+    "flag236": 1
+   },
+   "params": {
+    "wet_gain": 1046216307,
+    "mix": 1050423068,
+    "out_gain": 1016384706,
+    "delta": true,
+    "bypass": false,
+    "solo_active": false,
+    "solo_flag_236": true
+   },
+   "targets": {
+    "dry": 1032206218,
+    "wet": 3179689866,
+    "main": 1065353216,
+    "solo": 0,
+    "out": 1016384706
+   }
+  },
+  {
+   "cfg": {
+    "wet_db": -35.04297228497757,
+    "mix": 1.5110529544585694,
+    "out_db": -18.899303384187256,
+    "delta": 0,
+    "bypass": 0,
+    "solo_band": 5,
+    "flag236": 0
+   },
+   "params": {
+    "wet_gain": 1016132908,
+    "mix": 1014469159,
+    "out_gain": 1038645250,
+    "delta": false,
+    "bypass": false,
+    "solo_active": true,
+    "solo_flag_236": false
+   },
+   "targets": {
+    "dry": 1065099703,
+    "wet": 965488463,
+    "main": 0,
+    "solo": 1065353216,
+    "out": 1038645250
+   }
+  }
+ ]
+}
