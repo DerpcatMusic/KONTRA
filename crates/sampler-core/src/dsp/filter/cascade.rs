@@ -2180,6 +2180,56 @@ mod tests {
         }
     }
 
+    /// Kontakt 8 measured through its own Filters/Effect (tools/kontakt-oracle eqrender.py, 48 kHz):
+    /// dB of the left-channel response at ten probes, per legacy type, cutoff and resonance knob.
+    /// The compiled unit's impulse response (16384 frames) is taken at the same probes.
+    #[test]
+    fn legacy_responses_match_the_kontakt_measurements() {
+        const N: usize = 16384;
+        let file: serde_json::Value = serde_json::from_str(include_str!("cascade_kontakt_oracle.json")).unwrap();
+        let probes: Vec<f64> = file["probes_hz"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let mut failures = Vec::new();
+        for case in file["cases"].as_array().unwrap() {
+            let class = match case["class"].as_str().unwrap() {
+                "Lp2" => Legacy::Lp2, "Hp2" => Legacy::Hp2, "Bp2" => Legacy::Bp2,
+                "Hp4" => Legacy::Hp4, "Bp4" => Legacy::Bp4, "Br4" => Legacy::Br4,
+                "Ladder" => Legacy::Ladder,
+                other => panic!("unknown class {other}"),
+            };
+            let cutoff = case["cutoff"].as_f64().unwrap();
+            let resonance = case["resonance"].as_f64().unwrap();
+            let setting = CascadeSettings { class, cutoff: Parameter::Constant(cutoff), resonance: Parameter::Constant(resonance) };
+            let unit = setting.compile(48_000, &mut Vec::new());
+            let mut cells = vec![[0.0; 2]; CELLS];
+            let mut h = vec![0f64; N];
+            for start in (0..N).step_by(super::super::super::BLOCK) {
+                let len = super::super::super::BLOCK.min(N - start);
+                let mut block = [[0.0; super::super::super::BLOCK]; 2];
+                if start == 0 {
+                    block[0][0] = 1.0;
+                }
+                assert!(!unit.process(&mut cells, &[], &mut block, len, start as u64, [0.0; 4]));
+                for n in 0..len {
+                    h[start + n] = block[0][n];
+                }
+            }
+            let measured = case["db"].as_array().unwrap();
+            for (i, &f) in probes.iter().enumerate() {
+                let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, &x)| {
+                    let a = -2.0 * std::f64::consts::PI * f * n as f64 / 48_000.0;
+                    (re + x * a.cos(), im + x * a.sin())
+                });
+                let ours = 20.0 * (re * re + im * im).sqrt().max(1e-12).log10();
+                let want = measured[i].as_f64().unwrap();
+                // Stop-band probes below -60 dB are noise on both sides; the measured dB are rounded to 0.01, so compare the rest to 0.1 dB.
+                if want > -60.0 && (ours - want).abs() > 0.1 {
+                    failures.push(format!("{} cutoff {cutoff} res {resonance} @{f} Hz: ours {ours:.2} dB, Kontakt {want:.2} dB", case["class"]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     fn impulse_response(class: SectionClass, cutoff: f32, resonance: f32, input: &[f32]) -> Vec<f32> {
         let d = design(class, cutoff, resonance, 48_000.0);
         let mut state = [[0f32; 4]; 3];
