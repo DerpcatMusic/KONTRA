@@ -1922,10 +1922,13 @@ programs = programs.into_boxed_slice();
                         live_gain: route.live_gain * span,
                         ..*route
                     };
-                    // An intensity unit is depth per normalized intensity: it scales with the depth.
-                    for scale in bound.scale.iter_mut().chain(bound.more_scales.iter_mut().flatten()) {
-                        if let super::ModScaleLaw::KontaktIntensity { unit, .. } = &mut scale.law {
-                            *unit *= span;
+                    // An intensity unit is depth per normalized intensity: it scales with
+                    // the depth. A zero-width lane leaves no depth, and keeps its unit.
+                    if span != 0.0 {
+                        for scale in bound.scales_mut() {
+                            if let super::ModScaleLaw::KontaktIntensity { unit, .. } = &mut scale.law {
+                                *unit *= span;
+                            }
                         }
                     }
                     routes.push(bound);
