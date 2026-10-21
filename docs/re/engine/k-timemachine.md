@@ -179,3 +179,39 @@ MPC60 Machine state, and `FUN_140d20350` (0x1fc0 block, constructor `FUN_140cd92
 The process loops of the TM2 and Pro states are not identified yet. They are reached through
 vtables, and the `CPSOLA*` and `CElastique*` methods carry no names in the export, so the cores
 below remain unimplemented.
+
+## Class vtables from RTTI (`tools/re/tm/`)
+
+The export has no names for the stretch methods, so the MSVC x64 RTTI in `Kontakt8.exe` is the
+source of class identity. `rtti_vt.py NAME` finds the `.?AV/.?AU NAME@@` type descriptor, the
+complete object locator and the vtable (`vtable[-1]` holds the COL pointer). `slots.py NAME` maps each
+vtable slot to its decompile header and size. Results:
+
+| Class | Vtable | Notes |
+| --- | --- | --- |
+| `BTimeMachine2` | `0x144fd07d0` | slot 3 is the parameter transfer (`FUN_140cdb250`, 66 bytes); slot 5 `FUN_140ce6c00` |
+| `BTimeMachine3` (Pro) | `0x144fd0530` | slot 3 transfer `FUN_140cdb2a0` (90 bytes); slot 10 `FUN_140ce6200` |
+| `BTimeMachine` (TM1) | `0x144fd06f0` | slot 3 transfer `FUN_140cdb300` (108 bytes) |
+| `CPSOLAAnalysisRT` | `0x1476a6598` | code slots 0-5 and 14 in `01419d0000.c`; `FUN_1419d0ed0` (230 B) and `FUN_1419d1600` (400 B) are the largest |
+| `CPSOLAPreAnalysis` | `0x1476a6528` | code slots 0-2 (`FUN_1419d1140`, `FUN_1419d12a0`, `FUN_1419d11f0`) |
+| `CElastiqueProCore` | `0x1476a6bb8` | slot 2 `FUN_1419d64d0` (931 B), slot 6 `FUN_1419d6890` (1076 B), slot 11 `FUN_1419d7230` (894 B) |
+| `CElastiqueProV3Direct` | `0x1476a69b8` | 16 slots of 11 bytes: a thin accessor set, not the render |
+
+The TM2 and Pro transfers name the state fields: the speed setter is reached through vtable slot 5
+(`*(param+0x28)`) with the speed in the source record's float at `+0x38`; the int at `+0xbc` (TM2) and
+`+0x1ac`/`+0x1cc` (Pro) are the stored integer controls, and the flags at `+0xb8` and `+0x1c4`
+are the transient/formant flags.
+
+The per-block processing methods (the CPSOLA and CElastique render loops) are the large slots
+listed above. Their algorithm is not yet read, so no core is implemented from them.
+
+## Measured in this pass (native, Kontakt 8)
+
+| KSP write | Stored field | Kinds | Law | Evidence |
+| --- | --- | --- | --- | --- |
+| `TRANSIENT_SIZE` (id 54) | `dfd_integer_1` | TM2 only | table, 11 points at 0.1 (100 -> 5000) | `tm_source_sweep.tsv` |
+| `TM_LEGATO` (id 53) | `common_flag_11` | TM1, TM2, Pro | switch (any non-zero is on) | `tm_source_sweep.tsv` |
+
+`TM_LEGATO` is reported, not applied, because the IR has no legato field and no engine consumer.
+`TRANSIENT_SIZE` is applied to the TM2 record, but the engine does not consume it yet, so it changes
+the carried state only.
