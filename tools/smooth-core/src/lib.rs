@@ -48,6 +48,7 @@ pub mod projection;
 pub mod projection_log2_table;
 pub mod projection_math;
 pub mod reduction;
+pub mod reference;
 pub mod reference_plan;
 pub mod spatial;
 pub mod weighting;
