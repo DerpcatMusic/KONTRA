@@ -1,8 +1,9 @@
 # Kontakt 8 spatial unit: Stereo Modeller, Stereo Tune, Surround Panner, pan laws
 
-Status: **waiting on READY.** `source/kontakt8/READY` did not exist when this was
-written, so no new decompiled function bodies were read. Everything below comes
-from existing repo evidence (`docs/architecture-v2/KONTAKT_DSP_LAWS.md`,
+Status: **partial.** Kontakt 8 decompile is complete (`source/kontakt8/READY`).
+This pass confirmed the Stereo Tune reader; the Stereo Tune and Surround Panner
+DSP laws still need their process routines. Items not re-read in the decompile
+come from existing repo evidence (`docs/architecture-v2/KONTAKT_DSP_LAWS.md`,
 `docs/re/kontakt-bus-pan.md`, `docs/re/kontakt-catalog/*`,
 `docs/re/kontakt-bindings/fx_other.tsv`) and the current engine code. Items
 marked **open** are not claimed.
@@ -44,9 +45,14 @@ Catalog: `BParFXStereoTune`, sertype 0x70, version 0x10, reader
 0x140ac6120, schema `Fx4` (four saved floats, 16 bytes). KSP names:
 `$ENGINE_PAR_STEREOTUNE_SPLIT`, `_DRIFT`, `_SPREAD`, `_MIX`.
 
-The saved field order and the mapping from the four floats to those names are
-**not verified** (the reader body was not read in this pass). The DSP law,
-including what Drift and Split do, is **not extracted**.
+Decompile confirmed (`0140ac0000.c`, `FUN_140ac6120`, 113 bytes): the reader
+accepts only a 16-byte payload (else throws) and stores four consecutive floats
+read in order into object offsets +0x8, +0xc, +0x10, +0x14. Object class
+`StereoTuneModuleInst`, 0x458 bytes, constructor `FUN_140650620` (base
+`FUN_14064b740`; vftable global not yet resolved). The four float-to-KSP-name
+mapping (Split, Drift, Spread, Mix) and the process routine are **not yet
+recovered**: the process method sits in the class vtable, and resolving that is
+the next step. No DSP law is claimed.
 
 Before this change the module had no name in the module table and showed as
 `unknown effect 0x70`. It now has a name and a `NotModeled` note saying the
@@ -120,10 +126,10 @@ not read in this pass.
   note and produce no processors.
 - Existing Stereo Modeller and bus-pan tests were not rerun in this pass.
 
-## Next once READY exists
+## Next
 
-1. Decompile the Stereo Tune reader (0x140ac6120) and its audio routine for the
-   field order and law. Write the law here and implement it in the shared
+1. Resolve the StereoTuneModuleInst vtable (ctor `FUN_140650620`) to its
+   process routine and derive the float-to-name mapping and the law. Write the law here and implement it in the shared
    `color` family, not a copy.
 2. Surround Panner: extract the speaker list reader and the 0x140ab0070 panner.
    Decide whether a generic multichannel stage belongs in `sampler-core` (see

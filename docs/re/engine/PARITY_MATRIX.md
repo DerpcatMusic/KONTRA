@@ -290,6 +290,14 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Gater | missing | none | missing: vtable and child-unit structure confirmed; gate/step/noise kernel not located; no native vector |
 | Reverse Grain | missing | none | missing: reader fields confirmed (shared with Transpose Stretch, KE065 unresolved); kernel not located |
 | Transpose Stretch | missing | none | missing: reader fields confirmed (shared with Reverse Grain); kernel not located; vtable differs from the other four mangling modules in slots 3, 16, 66 |
+| Stereo Modeller | partial | vector | Settled width/balance and pseudo delay verified (docs/re/engine/k-spatial.md). Open: channel layouts, width across .5, pseudo automation, latency, bypass/mix |
+| Stereo Tune | missing | decomp | Reader FUN_140ac6120 confirmed (4 floats at +0x8..+0x14). Float-to-name map and process law not recovered (vtable pending). Passes through today |
+| Surround Panner | missing | vector | Parameter bindings measured (fx_other.tsv). Speaker matrix, pan law, LFE routing not recovered. Diagnosed as NotModeled |
+| Beat Masher | unknown | none | |
+| Beat Slicer | unknown | none | |
+| Gater | unknown | none | |
+| Reverse Grain | unknown | none | |
+| Transpose Stretch | unknown | none | |
 | Inverter | unknown | none | |
 | Send Levels | unknown | none | |
 | Group/instrument/bus/main insert routing and send taps | unknown | none | |
