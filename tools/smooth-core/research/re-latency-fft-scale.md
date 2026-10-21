@@ -849,6 +849,11 @@ traced block orders at several inputs; (3) translate in checkpoints.
 
 ## 20. Gain body 0x8e04c0: field listing, CFG, and what is not done (pass 13, emulation, 2026-10-21)
 
+> **Superseded in part by section 21.** The function ends at `0x8e53b1` (ret at `0x8e53b0`), not
+> `0x8e4be2`: 484 blocks, not 439. The "unidentified write" at `0x8e3ce4` is the arena bump cursor.
+> The output does leave the frame: it goes to the caller's view (`rdx`) and to the state views
+> `+0xa18`, `+0xaa8`, `+0xb38`. 20.3 and 20.4 are out of date: the body is translated (section 21).
+
 Harnesses: `re-tools/emulate/gain_state_probe.py` (writes `gain_state_listing.json`) and
 `re-tools/emulate/gain_cfg.py` (writes `gain_body_cfg.json` and `gain_body_cfg.dot`). Both use one
 process block at 48 kHz on the stand-in state (identity band, no solo), the same setup as section 19.
@@ -907,3 +912,109 @@ found.
    unidentified write at `0x8e3ce4`.
 3. Translate region by region, starting with the copy loops at `0x8e05d7` and `0x8e0670` (128-byte
    chunk copies from `[rdx]` and `[r8]`), then the magnitude calls at `0x8e13a8`.
+
+## 21. Gain body translated: pipeline, output locus, verification, SMOOTH mapping (pass 14, emulation, 2026-10-21)
+
+Code: `src/reference/gain/body.rs` (body), `ipp.rs` (IPP primitives), `tables.rs` (`.rdata`
+tables), `frame.rs` (frame builders, separate pass). Harnesses in `re-tools/emulate/`:
+`gain_setup.py` (session with parameters set through the real setter `0x894370`),
+`gain_trace.py` (per-call trace of blocks, callees and IPP ops with vector heads; optional
+`lo hi` RVAs for other functions), `gain_diff_probe.py` (whole-memory diff across a body call),
+`gain_fx_body.py` (replay fixture), `gain_coverage.py` (block coverage). Evidence: isolated
+emulation of the restored binary, selector 0 (SSE IPP), 48 kHz, two channels.
+
+### 21.1 Extent, arguments, output locus
+
+- Function `0x8e04c0..0x8e53b1`, 4473 instructions, 484 blocks, frame `0x4ae8`. **verified.**
+- `rcx` analyzer (DSP object `+0x3248`: 512-point, 257 bins, hop 128; `+0x600`: 4096-point,
+  2049 bins, hop 1024, `[+0x58]` = 1), `rdx` output view (0x410), `r8` frame scratch, `r9` FFT
+  output view; stack: arg5/arg6 ring views, arg7 sidechain flag (`obj+0xa5`), arg8
+  `[cfg+0xb0] == 1` (setter id 2, see 21.5), arg9 arena (`base @0`, bump cursor i32 `@0x18`,
+  allocations rounded to 16 floats). **verified (trace).**
+- Output: `rdx` view receives `-ln(gain)` per bin (log domain, `<= 0`). State written:
+  `+0xa18` (spectral smoother), `+0xaa8` (output smoother), `+0xb38` (band state, long analyzer).
+  Nothing else outside the frame and arena changes (`gain_diff_probe.py`). **verified.**
+- IPP thunks (selector 0) identified by black-box emulation; table in `ipp.rs`. `0x1520` is
+  `ippsMul_32fc_I` (caller side). `ippsDotProd_32f` (`0x1d6a510`) is plain f32 SIMD: 16 lanes in
+  four accumulators, then `(a0+a1)+(a2+a3)`, then `(v1+v3)+(v0+v2)`; up to 15 elements two lanes;
+  modelled bit-exactly (400/400 random vectors, aligned operands). IPP `Ln`/`Exp` are
+  polynomial kernels (`0x28ddc0`, `0x23c3c0`), modelled with `f32::ln`/`exp`. **verified.**
+
+### 21.2 Pipeline (binary order)
+
+1. Zero output and frame; frame building `0x894a70`, `0x894210`, `0x8e67a0`, `0x8e6da0`
+   (sidechain: `0x61b7e0`, `0x8ebbb0`, `0x8ebc40`, `0x8ec1d0`), FFT `0x1010`, magnitude `0x6181b0` -> D.
+   The front has no inline arithmetic in the body (only view copies).
+2. More than two channels: `0x8ec2a0`, `0x8ec320` on D.
+3. Flatness gate `0x8e13dc`: per channel, `acc = (f32)(|m[k]-m[k-1]| / ((f64)m[k-1] + 1e-7) + acc)`
+   for `k < bins>>2`, `acc /= bins>>2`; if `acc < 0.001` then `D *= acc`.
+4. arg8 set: `D = max(D, 10^((clamp(cfg+4)*20-60)*0.05) * 0x89ad70(D))`. Otherwise: `D *= +0x2c8`,
+   then per channel `v = dot(D[c][..32], 0x209a800) * 10^-0.45000002` subtracted from every
+   channel in turn, `D = max(D, 0)`. (`-0.45000002` is `.rdata` `0xbee66667`, not `-0.45f32`.)
+5. Spectral smoother `0x8ec8e0` on `+0xa18`: `t = D - S; dn = min(t,0); t = max(t,0);
+   S += t*(+0xbc8); S += dn*(+0xc58)`; D = S (`0x8ed100`). `cfg+0x53`: `D *= 0`.
+6. arg8 set (`0x8e20eb`): `D *= hard_gamma(cfg+0, cfg+4)`; per channel `D -= R0(D); D = R1(D); max 0`
+   (`0x88dbc0`, records `+0x15b8`, `+0x20b8`); `D *= +0x358`; link `0x8ed1c0(cfg+0x28)`, `0x8eda30`;
+   `D *= +0x8f8`; `A = (-0.25 - 0.25*focus^4) * ln(1 + D^2)`.
+   Otherwise (`0x8e2c5d`): `E = 0x8ef8b0(D)` (16 bands); band tilt per channel with tables
+   `0x209a900/940/980/9c0`: `a = max(dot(T980,E),1e-7)`, `b = max(dot(T940,E),1e-7)`,
+   `E += T900*((b/a)*a)`, `E += T9c0*(((a/b)*b)*(1-cfg+4))`. Long analyzer: band state `0x8ef9c0`
+   with `coef = (f32)(1 - pow(0.1, 1/((rate/hop)*1e-3*500)))`, `R = max(E/max(B,1e-5),1)`,
+   `C = max(0x8f0210(R),1)`, `E *= R/C`. Then `L = ln(max(E,0.01))`, `G = exp(-0x8f03f0(L))`,
+   `G *= soft_beta(cfg+0, cfg+4)`, `G *= +0x3e8`, `P = D*G`, link `0x8ed1c0`, `0x8eda30`,
+   `P *= +0x8f8`, `A = -ln(max(P,1))`.
+7. Tail `0x8e4b9f` (both paths): more than two channels `0x8ec2a0`, `0x8ec320`, `0x8f0500`; per
+   channel `A = max(A, ln 10^-3)`, `R1(A)`, `t = A - S2` on `+0xaa8`, `S2 += max(t,0)*(+0xd78)`,
+   `S2 += min(t,0)*(+0xce8)` (each only when that view has one channel), `A = max(S2, ln 10^(-0.05*cfg+0x4c))`,
+   `R1(A)`; then `0x8f08c0(A, cfg+0x3c, cfg+0x52)`, `A *= +0x478`.
+
+### 21.3 Verification (replay)
+
+`gain_fx_body.py` records 8 body entries: base short (2 entries) and long, arg8 short and long,
+`cfg+0x53`, `cfg+0x52` with other depth/focus, sidechain flag. It stores the entry state, every
+callee's inputs (at the call) and outputs (at the return), every libm call, and the final output
+and states. The Rust test runs `body()` with callees replayed and compares each callee input and
+the end state. **Result:** all within `3.4e-7` relative (tolerance `1e-6 * max(1,|b|)`); bit-exact
+up to the first IPP `Ln`/`Exp` (spectral state, band analysis input, band state input,
+quality-1 smoother inputs); all 19 libm call sites bit-exact against the harness's libm model
+(Python, correctly rounded; the plug-in imports these from the CRT). Coverage (`gain_coverage.py`):
+420 of 484 blocks run in the fixture entries. Not run: zero-channel guards (2), more-than-two-
+channel calls (4), per-channel (non-broadcast) view branches (about 37), the sidechain front when
+main and sidechain channel counts differ (10), the top-bit branch of the unsigned hop conversion (1).
+
+### 21.4 Mapping to SMOOTH (`src/dsp.rs` `frame()`)
+
+| binary | SMOOTH |
+|---|---|
+| `depth_scale(cfg+0, cfg+4)` | `soft_beta(depth, detail)`, identical constants |
+| `quality1_scale(cfg+0, cfg+4)` | `hard_gamma(depth, detail)`, identical constants |
+| arg8 law `k*ln(1+D^2)`, `k = -0.25-0.25*x^4` | `hard_log_target` |
+| `-ln(max(P,1))` | `soft_log_target` (`ln32`) |
+| `band_coef` | `baseline_coefficient` (f64 pow) |
+| `0x8ef9c0`, ratio, `0x8f0210`, correction | `update_baseline`, `ratio`, `smooth_array01`, `correction` (adaptive) |
+| `0x8ef8b0` / `0x8f03f0` | `envelope_basis.analyze` / `reconstruct` (16 rows) |
+| `max(E,0.01)`, `exp(-x)*beta*(+0x3e8)*D` | same order in the soft branch (`first_weight` = `+0x3e8`) |
+| floor subtraction / `0x89ad70` floor | `m_preparation.condition` (`WeightedOrderedSubtraction` / `GlobalMaximumFloor`) |
+| `0x8ec8e0` on `+0xa18` | `m_precursor.update_channel` |
+| `cfg+0x53` | `zero_m_after_history` |
+| `D -= R0(D); D = R1(D)` | `hard_spatial_residual(first_spatial, second_spatial)` |
+| `+0x358` | `m_preparation.hard_weights()` |
+| `0x8ed1c0(cfg+0x28)` | `link(stereo_link)` |
+| `+0x8f8` | `weight_banks.wb` |
+| `ln 10^-3` floor | `attenuation_floor()` |
+| `R1` before/after the smoother | `second_spatial.apply` |
+| `S2 += max(t,0)*d78; S2 += min(t,0)*ce8` | `update_log_state` (`release` = `+0xd78`, `attack` = `+0xce8`) |
+| `max(S2, ln 10^(-0.05*maxcut))` on a copy | `limit_log_response` |
+| `0x8f08c0(cfg+0x3c)`, `+0x478` | focus weights, `final_weights` |
+| caller: cepstrum, fold, FFT, `exp(A)` with folded phase, IFFT, taper, `0x1520` | minimum-phase branch and `spectrum *= aux` |
+
+Differences to check (from the code, not yet measured):
+- SMOOTH multiplies `first_weight` (soft) / `hard_first_weight` (hard) again at the join
+  (`weighted_driver = driver * wb * first_weight`). The binary applies `+0x3e8` once, inside G, on
+  the soft path, and not on the hard path (which uses `+0x358` before the link).
+- The binary's arg8 is `[cfg+0xb0] == 1`, setter id 2 (`obj+0x104`, labelled `quality` in the
+  setter table). The body does not read id 3 (`obj+0x50`, labelled `mode`). Either the labels are
+  swapped or the caller derives one from the other; check before trusting the table.
+- `limit_log_response` clamps max cut to 0..60; the body does not (the setter may).
+- The band tilt (`0x209a900..9c0`, step 6) has no visible counterpart in `frame()`; check whether
+  `envelope_basis.analyze` contains it.
