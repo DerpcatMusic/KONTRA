@@ -61,3 +61,16 @@ Status: **waiting on READY.** `/data/dev/workspace/Research/KONTRA/source/kontak
 - MONO field 11 of Reverb Delight: which encoding is stable across saves.
 
 No code change in this unit. Adding any of the four unmodelled modules needs the native cores first; the existing diagnostics already report them as unproved rather than ignoring them.
+
+## Wine-oracle measurement (this unit, 2026-10-21)
+
+Harness: `tools/kontakt-oracle/stimrender.py` with specs from `tools/kontakt-oracle/ampspecs.py` (ramp stimulus, 200 Hz 0 -> 1.0, one knob at 0 / mid / max per step, Kontakt 8 under Wine, output to a PipeWire monitor). Renders live in `~/.cache/kontra-amps-b/` (not committed).
+
+- Reverb Delight: all 31 steps rendered. Default-knob peak 0.567 on a 0.766 bypass peak. The knob sweeps change the tail only (RMS 0.20-0.21 across steps), so the sweep cannot yet separate the tremolo/spring cores. Not fitted.
+- Jump: default peak 0.194 (bypass 0.757). PREAMP 0 gives peak 0.021, PREAMP mid and max change the level. Steps after `JMP_PREAMP` returned no audio above threshold, so BASS, MID, TREBLE, PRESENCE, MASTER and MONO are not measured yet.
+- Van51: default peak 0.471 (bypass 0.766). PREGAINRHYTHM 0 gives near silence (RMS 0.0018). Steps after `V5_PREGAINRHYTHM` have no audio above threshold; cause not yet known.
+- Super Fast 100: not rendered (no bindings).
+
+Open harness issue: a missing-audio step is recorded as NaN by `stimrender.py`. Jump and Van51 lose audio after their first few knob steps, but Reverb Delight does not. The cause (silence from the knob value, a threshold miss, or the MIDI/step timing) is unconfirmed, so the NaN gaps are not evidence of a law.
+
+Status: no shared-engine change in this unit yet. Measurement is partial and the universal amp chain (pre-filter, transfer, post-filter, tone stack) is not built.
