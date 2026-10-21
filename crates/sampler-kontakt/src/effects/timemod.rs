@@ -7,9 +7,9 @@
 //! ([`choral`]). Twin Delay (0x6B, kernel 0x140ab07d0) and Psyche Delay
 //! (0x63, kernel 0x140aadb50) are native. The other modern effects stay
 //! unsupported with the reasons in [`unproved`].
-use super::{Notes, Reader};
+use super::{Lowering, Notes, Reader, Site};
 use sampler_ir::{
-    Reason,
+    Processor, Reason, SlotAddress,
     fx::timemod::{
         Allpass, BANK_VOICES, BankVoice, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, PsycheDelay,
         SweepLaw, TwinDelay, VoiceBank,
@@ -380,7 +380,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
 mod tests {
     use super::super::{Scope, Slot, chain};
 
-    fn slot(module: u16, version: u16, floats: &[f32]) -> Slot {
+    fn float_slot(module: u16, version: u16, floats: &[f32]) -> Slot {
         Slot {
             slot: 0,
             module,
@@ -394,7 +394,7 @@ mod tests {
     }
 
     fn config(module: u16, floats: &[f32]) -> (sampler_ir::fx::timemod::Config, Vec<(usize, String, String, sampler_ir::Reason)>) {
-        let built = chain(&[slot(module, 0x50, floats)], Scope::Voice);
+        let built = chain(&[float_slot(module, 0x50, floats)], Scope::Voice);
         let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.processors) };
         (config, built.notes)
     }
@@ -467,7 +467,7 @@ mod tests {
         let mut public: Vec<u8> = [0.25f32, 0.5, 0.18, 1., 0.75, 0.3, 0.6].iter().flat_map(|f| f.to_le_bytes()).collect();
         public.extend([1, 0]);
         public.extend(2i32.to_le_bytes());
-        let mut s = slot(0x5d, 0x51, &[]);
+        let mut s = float_slot(0x5d, 0x51, &[]);
         s.public = public;
         let built = chain(&[s], Scope::Voice);
         let sampler_ir::Processor::TimeMod(cfg) = built.processors[0] else { panic!("{:?}", built.processors) };
@@ -573,7 +573,7 @@ mod tests {
             let mut public: Vec<u8> = fields.iter().flat_map(|f| f.to_le_bytes()).collect();
             public.extend([u8::from(invert), u8::from(scatter)]);
             public.extend(mode.to_le_bytes());
-            let mut s = slot(0x5d, 0x51, &[]);
+            let mut s = float_slot(0x5d, 0x51, &[]);
             s.public = public;
             let built = chain(&[s], Scope::Voice);
             assert!(built.notes.is_empty(), "{:?}", built.notes);
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn replika_and_friends_stay_unsupported_with_a_reason() {
         for module in [0x5a, 0x5b, 0x5c, 0x22] {
-            let built = chain(&[slot(module, 0x50, &[0.; 12])], Scope::Voice);
+            let built = chain(&[float_slot(module, 0x50, &[0.; 12])], Scope::Voice);
             assert!(built.processors.is_empty());
             assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::NotModeled), "{module:#x}");
         }
@@ -603,7 +603,7 @@ mod tests {
             public.extend(f.to_le_bytes());
         }
         public.push(0);
-        let built = chain(&[Slot { public, ..slot(0x63, 0x10, &[]) }], Scope::Voice);
+        let built = chain(&[Slot { public, ..float_slot(0x63, 0x10, &[]) }], Scope::Voice);
         let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
         let sampler_ir::fx::timemod::Native::PsycheDelay(p) = config.line.unwrap().native else { panic!() };
         assert_eq!((p.time, p.feedback, p.detune, p.pitch, p.offset, p.cross, p.unit), (20., 0.5, 0.7, 0.75, 0.6, 0.25, -1.));
@@ -624,10 +624,81 @@ mod tests {
         for f in [0.001f32, 0.0001, 0.6, 0.9, 0.0013, 0.00021, 0.5, 0.7, 0.3, 0.8] {
             public.extend(f.to_le_bytes());
         }
-        let built = chain(&[Slot { public, ..slot(0x6b, 0x10, &[]) }], Scope::Voice);
+        let built = chain(&[Slot { public, ..float_slot(0x6b, 0x10, &[]) }], Scope::Voice);
         let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
         let sampler_ir::fx::timemod::Native::TwinDelay(t) = config.line.unwrap().native else { panic!() };
         assert_eq!((t.time, t.predelay, t.feedback, t.level, t.cross, t.width), ([0.0001, 0.00021], [0.001, 0.0013], [0.6, 0.5], [0.9, 0.7], 0.3, 0.8));
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    use crate::effects::test_support::*;
+
+    #[test]
+    fn legacy_phaser_free_speed_phase_and_four_stage_vector() {
+        let payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, -1.0].into_iter().flat_map(f32::to_le_bytes).collect();
+        let built = chain(&[slot(0x14, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors.clone(), 120., &[[1., -0.5]]);
+        let expected = [[0.857850552f32, -0.476720124], [-0.106721222, -0.0511267483], [-0.290372699, 0.0421471819], [-0.274628252, 0.0595008172]];
+        for (actual, expected) in output.into_iter().zip(expected) {
+            for (a, e) in actual.into_iter().zip(expected) { assert!((a-e).abs() < 2e-7, "{a} vs {e}"); }
+        }
+        // 120 BPM, two beats per cycle gives the same native 1 Hz oscillator.
+        let synced_payload: Vec<_> = [0.5f32, 0.25, 1.0, 1.0, 2.0].into_iter().flat_map(f32::to_le_bytes).collect();
+        let synced = chain(&[slot(0x14, synced_payload, 1.0)], Scope::Voice);
+        assert!(synced.notes.is_empty(), "{:?}", synced.notes);
+        assert_eq!(fx_probe(synced.processors.clone(), 120., &[[1., -0.5]]), output);
+        // The native synced getter substitutes 120 BPM below .1 BPM.
+        assert_eq!(fx_probe(synced.processors, 0.05, &[[1., -0.5]]), output);
+    }
+
+    #[test]
+    fn phaser_filter_native_four_stage_impulse() {
+        let mut payload = 13i32.to_le_bytes().repeat(2);
+        for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
+        let built = chain(&[slot(0x18, payload, 1.0)], Scope::Voice);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
+        let output = fx_probe(built.processors, 120., &[[1., -0.5]]);
+        // Cutoff zero: a=(1-.02)/(1+.02); four allpasses, half dry/half wet.
+        for (actual, expected) in output.iter().zip([0.926062942f32, -0.136394471, -0.114671811, -0.095316768]) {
+            assert!((actual[0] - expected).abs() < 2e-7, "{actual:?} vs {expected}");
+            assert!((actual[1] + expected * 0.5).abs() < 2e-7);
+        }
+    }
+}
+
+/// Modulated delay and phaser units (`Params::TimeMod`).
+pub(super) fn slot_timemod(b: &mut Lowering, s: &Site, notes: &mut Notes, unit: &Unit) -> bool {
+    b.flush();
+    // The slot's dry level is the core's dry only outside a Mix block (as for convolution).
+    let dry = if s.mix || matches!(unit, Unit::Phaser { .. }) { 0. } else { f64::from(s.fx.dry_level) };
+    match config(unit, dry, notes) {
+        Some(config) => {
+            b.out.processors.push(Processor::TimeMod(config));
+            b.combined = s.gain;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Filter type 13: the phaser's cutoff and resonance, normalized.
+pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff: f32, resonance: f32) -> bool {
+    b.flush();
+    let knobs = [cutoff, resonance];
+    if knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
+        // Script- or modulation-addressed: cutoff and resonance become lanes.
+        if let Some((group, generic)) = s.dynamic {
+            b.out.lane_slots.push((s.fx.slot, b.out.processors.len()));
+            let address = SlotAddress { group, slot: s.fx.slot as i32, generic };
+            b.out.processors.push(Processor::TimeMod(Config::phaser_filter(knobs[0], knobs[1], Some(address))));
+        } else {
+            b.out.processors.push(Processor::Phaser(knobs));
+        }
+        b.combined = s.gain;
+        true
+    } else {
+        notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), Reason::InvalidValue));
+        false
     }
 }
