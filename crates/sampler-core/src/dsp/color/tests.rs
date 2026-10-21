@@ -87,14 +87,24 @@ fn gainer_matches_the_frozen_slew_equation() {
 }
 
 #[test]
-fn gainer_inside_the_unity_window_passes_the_input_untouched() {
-    // Native unity shortcut: both ends in [0.999, 1.001] leave the samples bit-exact.
-    let settings = ColorSettings { gainer: Some(GainerSettings { gain: knob(1.0004), dry: 0. }), ..ColorSettings::IDENTITY };
-    let got = render(settings, 1, 40);
-    let input = signal(0., 40);
-    for i in 0..40 {
-        assert_eq!(got[i], [input[0][i], input[1][i]], "frame {i}");
-    }
+fn gainer_inside_the_unity_window_passes_the_input_and_holds_the_slew() {
+    // Native unity shortcut (0x140aa2980): state and target in [0.999, 1.001] pass
+    // the input bit-exact and the smoother does not advance.
+    let mut bindings = Vec::new();
+    let settings = ColorSettings {
+        gainer: Some(GainerSettings {
+            gain: Parameter::Control(ControlRange { control: crate::ControlId(0), low: 0., high: 1., ramp_frames: 0 }),
+            dry: 0.,
+        }),
+        ..ColorSettings::IDENTITY
+    };
+    let color = settings.compile(48_000, &mut bindings);
+    let ramps = [ControlRamp::test_ramp(1.0004, 1.0001, 0, 64)];
+    let mut state = State::default();
+    let mut block = [[0.5; BLOCK]; 2];
+    color.process(&mut state, &ramps, &mut block, BLOCK, 0, &mut []);
+    assert!(block.iter().flatten().all(|v| *v == 0.5));
+    assert_eq!(state.gain, 1.0004f32);
 }
 
 #[test]
