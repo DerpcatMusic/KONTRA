@@ -37,20 +37,20 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | SV Par. LP/HP | unknown | none | |
 | SV Par. BP/BP | unknown | none | |
 | SV Ser. LP/HP | unknown | none | |
-| Ladder LP1 | unknown | none | |
-| Ladder LP2 | unknown | none | |
-| Ladder LP3 | unknown | none | |
-| Ladder LP4 | unknown | none | |
-| Ladder HP1 | unknown | none | |
-| Ladder HP2 | unknown | none | |
-| Ladder HP3 | unknown | none | |
-| Ladder HP4 | unknown | none | |
-| Ladder BP2 | unknown | none | |
-| Ladder BP4 | unknown | none | |
-| Ladder Peak | unknown | none | |
-| Ladder Notch | unknown | none | |
-| Monark | unknown | none | |
-| PRO-53 | unknown | none | |
+| Ladder LP1 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder LP2 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder LP3 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder LP4 | partial | vector | most native vectors (84 HQ-off, 249 HQ-on cells); steady knobs only; moving controls and flag 0x49 unvectored |
+| Ladder HP1 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder HP2 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder HP3 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder HP4 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder BP2 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder BP4 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder Peak | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Ladder Notch | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
+| Monark | partial | vector | kemu vectors for modes LP4/LP2/LP1/BP, variants 0-2, 48 kHz, mono (`kontaktfx_vectors.json`); stereo channel interleave and noise LCG per channel unprobed |
+| PRO-53 | partial | vector | kemu stage vectors, 2e-5 relative, 3 knob points (`cascade_stage_vectors.json`); moving controls and stereo unvectored |
 | AR LP2 | unknown | none | |
 | AR LP4 | unknown | none | |
 | AR LP2/4 | unknown | none | |
