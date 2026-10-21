@@ -106,12 +106,12 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| ACBox | unknown | none | |
-| Bass Invader | unknown | none | |
-| Bass Pro | unknown | none | |
-| Cabinet | unknown | none | |
-| EP Preamps | unknown | none | |
-| HotSolo | unknown | none | |
+| ACBox | parity | vector | Kernel matches native kemu vectors (`amp/acbox.rs`, 1e-6); knob-law coverage limited to the recorded cases |
+| Bass Invader | missing | decomp | Field bindings and core layout only; no DSP laws recovered. Docs: `k-amps-a-bassinvader.md` |
+| Bass Pro | missing | decomp | Knob-to-field map and apply path; kernel and tone stack not recovered. Docs: `k-amps-a-basspro.md` |
+| Cabinet | parity | vector | Kernel matches native kemu vectors (`amp/cabinet.rs`, 1e-6); knob-law coverage limited to the recorded cases |
+| EP Preamps | missing | decomp | Drive-core structure partial; no laws; no render on this install. Docs: `k-amps-a-epp.md` |
+| HotSolo | missing | decomp | Reader fields and entry points only; no laws. Docs: `k-amps-a-hotsolo.md` |
 | Jump | unknown | none | |
 | Reverb Delight | unknown | none | |
 | Super Fast 100 | unknown | none | |
