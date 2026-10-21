@@ -67,12 +67,6 @@ Tests: `dsp::tests::the_output_trim_ramps_on_the_thirty_millisecond_constant`,
 `bypass_crossfades_without_a_level_step`, `a_decayed_gain_is_flushed_to_zero`,
 and the ported `dsp::ramp::the_mix_ramp_matches_the_reference`.
 
-## Commands
-
-```
-build-slot cargo test -p smooth-core --lib
-```
-
 ## 1. Band solo (91): output path (mix verified, filter inferred)
 
 Evidence: `RunScratch/smooth/feat/dsp-remaining/S-solo.md`.
