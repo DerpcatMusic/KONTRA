@@ -395,8 +395,11 @@ fn long_controller_chains_use_bounded_dispatch_storage_instead_of_the_thread_sta
     );
     let budget = limits(&prepared, STAGES);
     let mut rt = Runtime::new(prepared, budget).unwrap();
+    // The claim is per-stage growth, not absolute frame size. 4096 stages fit in
+    // 256 KiB even in debug, so growth stays under 64 bytes per stage. A debug run
+    // at 128 KiB aborted with a stack overflow; release CI never hit it.
     std::thread::Builder::new()
-        .stack_size(128 * 1024)
+        .stack_size(256 * 1024)
         .spawn(move || {
             support::without_heap(|| {
                 let domain = rt.performance(0).unwrap();
