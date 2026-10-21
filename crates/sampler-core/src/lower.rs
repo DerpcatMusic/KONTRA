@@ -951,13 +951,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
-            kill: match l.kill {
-                ir::Kill::Any => crate::Kill::Any,
-                ir::Kill::Oldest => crate::Kill::Oldest,
-                ir::Kill::Newest => crate::Kill::Newest,
-                ir::Kill::Highest => crate::Kill::Highest,
-                ir::Kill::Lowest => crate::Kill::Lowest,
-            },
+            kill: l.kill,
             prefer_released: l.prefer_released,
             fade: lowering.frames(l.fade),
         };
