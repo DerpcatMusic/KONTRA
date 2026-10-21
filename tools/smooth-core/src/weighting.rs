@@ -356,7 +356,9 @@ fn ordinary_shape(f: f32, record: BandRecord, hard: bool, exponent: f32) -> f32 
             let transition = (w * 0.7071067690849304_f32).min(0.25);
             (1.0 - bandpass32(f, c, w, transition, 0.0)).max(0.0)
         }
-        Shape::Bandpass => unreachable!(),
+        // Bandpass records take the bandpass path; `WeightBanks::build` filters them out
+        // before this call. Neutral if ever reached, rather than a panic on the audio thread.
+        Shape::Bandpass => 1.0,
     };
     result.max(EPS)
 }

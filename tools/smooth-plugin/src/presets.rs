@@ -267,7 +267,7 @@ impl Library {
                 p
             })
             .collect();
-        found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        found.sort_by_key(|a| a.name.to_lowercase());
         self.presets.extend(found);
         self.default = std::fs::read_to_string(dir.join(DEFAULT))
             .ok()

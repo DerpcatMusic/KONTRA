@@ -700,6 +700,9 @@ impl Engine {
     pub fn reset(&mut self) {
         self.m_precursor.reset();
         self.solo_filter = [Svf::default(); 2];
+        // The filter's coefficients are gone with it: forget the tuning too, or
+        // the solo audition stays silent until the band changes.
+        self.solo_tuned = None;
         for ch in &mut self.channels {
             ch.reset();
         }
@@ -1583,6 +1586,35 @@ mod tests {
         let peak = |v: &[f32]| v.iter().fold(0.0_f32, |m, x| m.max(x.abs()));
         assert!(peak(&out_1k) > 0.4, "soloed band peak {}", peak(&out_1k));
         assert!(peak(&out_10k) < 0.05, "outside the band peak {}", peak(&out_10k));
+    }
+
+    /// A reset must not leave the solo audition silent: the filter is retuned on the next block.
+    #[test]
+    fn the_solo_audition_survives_a_reset() {
+        let mut engine = Engine::new(48_000.0, EngineConfig::default()).unwrap();
+        let mut settings = Settings {
+            depth: 0.0,
+            mix: 1.0,
+            solo_band: Some(0),
+            ..Settings::default()
+        };
+        settings.bands[0].frequency = crate::weighting::normalized_from_center(1000.0);
+        settings.bands[0].shape = crate::weighting::Shape::Bandpass;
+        settings.bands[0].width = crate::weighting::width_from_q(4.0);
+        let tone = |t: usize| (TAU * 1000.0 * t as f32 / 48_000.0).sin() * 0.5;
+        // Tune the audition once, then reset and listen again.
+        for t in 0..engine.latency() + 30_000 {
+            engine.process_sample([tone(t), tone(t)], &settings);
+        }
+        engine.reset();
+        let mut peak = 0.0_f32;
+        for t in 0..engine.latency() + 30_000 {
+            let out = engine.process_sample([tone(t), tone(t)], &settings);
+            if t >= engine.latency() + 20_000 {
+                peak = peak.max(out[0].abs());
+            }
+        }
+        assert!(peak > 0.4, "soloed band after reset peak {peak}");
     }
 
     /// A decayed gain is exactly zero, not a denormal.
