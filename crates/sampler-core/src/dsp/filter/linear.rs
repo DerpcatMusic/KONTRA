@@ -9,7 +9,7 @@
 //! Kontakt's SV2, SV4, SV6 and the SV Multi pair are configurations of this stage; the generic
 //! `svf` section cascade and the Chamberlin sections are other cores of the same recurrence.
 
-use super::shaper::Knee;
+use super::shaper::{Knee, Soft};
 
 /// The `k`-dependent coefficients of one zero-delay stage.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -58,5 +58,38 @@ impl Zdf {
         s[1] = knee.apply(bp);
         s[2] = knee.apply(lp);
         [hp, bp, lp]
+    }
+}
+
+/// The explicit (Chamberlin) stage: `hp = soft(b) + (y k - (b d + l))`, `b += hp g`,
+/// `l += b g + eps`; the output blends the input toward `mode = wl l + wb b + wh hp` by `wet`.
+/// The band state passes `shaper` (a transfer stage) in the loop, as the Versatile and Pro-53
+/// feedback do.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Explicit {
+    pub g: f32,
+    pub d: f32,
+    /// Input scale.
+    pub k: f32,
+    pub eps: f32,
+    /// Shaper on the band state.
+    pub shaper: Soft,
+    /// Low, band and high pass weights.
+    pub weights: [f32; 3],
+    pub wet: f32,
+}
+
+impl Explicit {
+    /// One frame on `s = [b, l]`: returns the blended output and the new low state.
+    #[inline(always)]
+    pub(crate) fn tick(&self, s: &mut [f32], y: f32) -> (f32, f32) {
+        let (b, l) = (s[0], s[1]);
+        let hp = self.shaper.apply(b) + (y * self.k - (b * self.d + l));
+        let b = hp * self.g + b;
+        let l = (b * self.g + self.eps) + l;
+        s[0] = b;
+        s[1] = l;
+        let mode = (b * self.weights[1] + hp * self.weights[2]) + l * self.weights[0];
+        (y + (mode - y) * self.wet, l)
     }
 }

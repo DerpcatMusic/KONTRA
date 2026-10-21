@@ -80,13 +80,28 @@ bit-exact agreement with the native class at 48 kHz.
 
 ## How multi-filters compose from the shared cores
 
-- Multi-filters are **configurations plus one core**, not copies of the cores. Versatile reuses the
-  Chamberlin stage shared with Pro-53; Dual SKF reuses the Kaiser oversampler shared with Monark.
-- A saved type becomes a `Config` (`Topology::Cascade` with `Variant::Versatile`/`Kontakt`), and
-  `Config::processors` returns one `FilterBank` processor. The engine runs that processor through
-  the same modulation, smoothing and voice lifetime as every other filter.
-- Dual SKF's two sections live inside one recurrence, not two filters in series. Its topology is
-  therefore a single native core with two controls, not a cascade of HP and LP.
+The shared cores come from the filt-sv lane (`dsp/filter/linear.rs`, `dsp/filter/shaper.rs`) and
+this unit (`dsp/filter/chamberlin.rs`):
+
+- `linear::Explicit`: the explicit (Chamberlin) stage. `hp = shaper(b) + (y k - (b d + l))`,
+  `b += hp g`, `l += b g + eps`, and the output blends toward a weighted low/band/high mix by `wet`.
+  Its band state takes a `Soft` transfer in the loop.
+- `shaper::Soft`: `(a - c |s|) s`, the Pro-53 feedback and the Versatile band shaper.
+- `shaper::unit_sqrt`: `v / sqrt(v^2 + 1)`, the Dual SKF resonance soft clip.
+- `linear::Zdf` and `shaper::Knee` (filt-sv): the trapezoidal SVF used by SV family and Multi.
+
+Compositions:
+
+- **3x2 Versatile = three `Explicit` stages in series** (`chamberlin.rs::Chamberlin::tick`), with a
+  `Soft` feedback of the last low state subtracted from the input. Each stage's morph weights and
+  wet are its own. This is serial, not parallel.
+- **Dual SKF = two sections in series in one recurrence** (`kontaktfx.rs`). Section 0 is the HP
+  path, section 1 the LP path, each with its own `unit_sqrt` clip. Its recurrence is ZDF-shaped but
+  its resonance term couples to the output (`k (q, r)` applied after the `y` solve), so it keeps its
+  own loop rather than `Zdf`. Rounding there is native; changing it to `Zdf` would move vectors.
+- **Parallel** multi-filters (SV Par. LP/HP, Par. BP/BP) are a filt-sv composition, not this unit.
+- Monark and Simple LP/HP stay in `kontaktfx.rs`: their feedback nonlinearities (Padé, noise,
+  per-channel history) do not fit the shared stages.
 
 ## Gap table
 
@@ -100,6 +115,7 @@ bit-exact agreement with the native class at 48 kHz.
 | 6 | Dual SKF sample rates other than 48 kHz | Core handles any rate; ×2 Kaiser below 66 kHz | Vectors only at 48 kHz | Partial | Native captures at 44.1, 96 and 192 kHz |
 | 7 | Dual SKF stereo interleave | One core per channel with shared controls | Native channel interleave unprobed; vectors are mono | Missing | Stereo native capture |
 | 8 | Dual SKF in the KSP parity ledger | Engine is implemented | `sampler-ksp` ledger still lists `$FILTER_TYPE_DUAL_SKF` as Approximate | Doc drift | Separate KSP-side change, out of this unit |
+| 10 | Explicit-stage and Soft move (this PR) | Bit-identical (stage vectors 2e-5 tolerance and the filter suite, 63/63) | Done |
 | 9 | Stale status docs | `docs/architecture-v2/DSP_COVERAGE.md` carries a stale-status banner | `docs/FEATURES.md` rows 113–115 still say ✗ for these types; the file is pinned to `d36380b` (2026-10-03) | Doc drift | Leave the pinned audit as-is; the next audit refresh should update it |
 
 ## Changes in this unit
