@@ -308,6 +308,13 @@ impl Ladder {
         self.gain = gain;
     }
 
+    /// Forget the held state (tests only: the audio path reuses the voice's state).
+    #[cfg(test)]
+    pub(crate) fn clear(&mut self) {
+        self.state = [[0.0; 5]; 2];
+        self.controls.started = false;
+    }
+
     pub(crate) fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len();
         if n == 0 {
