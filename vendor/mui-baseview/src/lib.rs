@@ -30,7 +30,7 @@ use baseview::{
 use keyboard_types::{Key as HostKey, KeyState, KeyboardEvent, Modifiers, NamedKey};
 /// What a [`KeyHook`] is handed.
 pub use mui::host::KeyEvent;
-use mui::host::{Driver, Modifier, NativeKey, Wheel};
+use mui::host::{Driver, Modifier, NativeKey, Wheel, NOTCH_LINES};
 pub use mui::host::{Shared, View, lock};
 use mui::prelude::{Button, Cursor, Key, Mods, Point};
 use mui::vello::host::{Frame, Host, target_size};
@@ -49,7 +49,6 @@ const GPU_RETRY: Duration = Duration::from_millis(500);
 /// KONTAKTO patch: MUI lines per wheel notch (see the wheel event below).
 /// baseview does not read the system's scroll-lines setting, so this is fixed:
 /// ten of the theme's 12-point lines, 120 points or five list rows.
-const LINES_PER_NOTCH: f64 = 10.;
 /// KONTAKTO patch: notches this close together are one fling, and each one
 /// in it scrolls further than the last, up to [`MAX_GAIN`] times a notch.
 const FLING: Duration = Duration::from_millis(90);
@@ -66,7 +65,7 @@ pub fn notch_lines(y: f64, gap: Option<Duration>, run: &mut i32) -> f64 {
         way
     };
     let gain = (1. + 0.25 * f64::from(run.abs() - 1)).min(MAX_GAIN);
-    y * LINES_PER_NOTCH * gain
+    y * NOTCH_LINES * gain
 }
 
 thread_local! {

@@ -19,6 +19,25 @@ pub enum ParamRange {
         min: f64,
         max: f64,
     },
+    /// Logarithmic over `[min + offset, max + offset]`, shifted back by
+    /// `offset`: `plain = exp(ln(min + offset) + n * span) - offset`.
+    /// Gives a frequency axis that is logarithmic at the top and nearly
+    /// linear at the bottom, and stays defined at and below zero. Needs
+    /// `min + offset > 0`.
+    OffsetLog {
+        min: f64,
+        max: f64,
+        offset: f64,
+    },
+    /// Logarithmic with a power bend so that plain value `mid` sits at the
+    /// knob's midpoint: `plain = min * (max / min)^(n^e)` where `e` is
+    /// chosen so `n = 0.5` lands on `mid`. Needs `0 < min < mid < max`.
+    /// Use for a Q or width whose default belongs at the centre.
+    PivotedLog {
+        min: f64,
+        max: f64,
+        mid: f64,
+    },
     /// Power-law taper over `[min, max]`: `normalize(plain) = t^factor`
     /// where `t` is the linear proportion. `factor < 1.0` gives the low
     /// end of the range more of the knob (a log-like taper); `factor >
@@ -50,6 +69,17 @@ pub enum ParamRange {
     /// range's plain `max` sits at the bottom of the knob and `min` at
     /// the top. Plain bounds and step count are the inner range's.
     Reversed(&'static ParamRange),
+}
+
+/// The exponent `e` that puts `mid` at the knob midpoint of a
+/// [`ParamRange::PivotedLog`]: `n^e = (ln mid - ln min) / (ln max - ln min)`
+/// at `n = 0.5`. `None` unless `0 < min < mid < max`.
+fn pivot_exponent(min: f64, max: f64, mid: f64) -> Option<f64> {
+    if min <= 0.0 || mid <= min || max <= mid {
+        return None;
+    }
+    let fraction = (mid.ln() - min.ln()) / (max.ln() - min.ln());
+    Some(fraction.ln() / 0.5_f64.ln())
 }
 
 impl ParamRange {
@@ -100,6 +130,33 @@ impl ParamRange {
                 let min_log = min.ln();
                 let max_log = max.ln();
                 ((plain.ln() - min_log) / (max_log - min_log)).clamp(0.0, 1.0)
+            }
+            Self::OffsetLog { min, max, offset } => {
+                let (lo, hi) = (min + offset, max + offset);
+                if lo <= 0.0 || hi <= lo {
+                    return 0.0;
+                }
+                if plain <= *min {
+                    return 0.0;
+                }
+                if plain >= *max {
+                    return 1.0;
+                }
+                let (lo_log, hi_log) = (lo.ln(), hi.ln());
+                (((plain + offset).ln() - lo_log) / (hi_log - lo_log)).clamp(0.0, 1.0)
+            }
+            Self::PivotedLog { min, max, mid } => {
+                let Some(exponent) = pivot_exponent(*min, *max, *mid) else {
+                    return 0.0;
+                };
+                if plain <= *min {
+                    return 0.0;
+                }
+                if plain >= *max {
+                    return 1.0;
+                }
+                let t = (plain.ln() - min.ln()) / (max.ln() - min.ln());
+                t.powf(exponent.recip()).clamp(0.0, 1.0)
             }
             Self::Skewed { min, max, factor } => {
                 if max == min {
@@ -192,6 +249,19 @@ impl ParamRange {
                 let max_log = max.ln();
                 (min_log + n * (max_log - min_log)).exp()
             }
+            Self::OffsetLog { min, max, offset } => {
+                let (lo, hi) = (min + offset, max + offset);
+                if lo <= 0.0 || hi <= lo {
+                    return *min;
+                }
+                (lo.ln() + n * (hi.ln() - lo.ln())).exp() - offset
+            }
+            Self::PivotedLog { min, max, mid } => {
+                let Some(exponent) = pivot_exponent(*min, *max, *mid) else {
+                    return *min;
+                };
+                (min.ln() + n.powf(exponent) * (max.ln() - min.ln())).exp()
+            }
             Self::Skewed { min, max, factor } => {
                 if max == min {
                     return *min;
@@ -243,6 +313,8 @@ impl ParamRange {
             Self::Linear { min, .. }
             | Self::Stepped { min, .. }
             | Self::Logarithmic { min, .. }
+            | Self::OffsetLog { min, .. }
+            | Self::PivotedLog { min, .. }
             | Self::Skewed { min, .. }
             | Self::SymmetricalSkewed { min, .. } => *min,
             Self::Discrete { min, .. } => *min as f64,
@@ -261,6 +333,8 @@ impl ParamRange {
             Self::Linear { max, .. }
             | Self::Stepped { max, .. }
             | Self::Logarithmic { max, .. }
+            | Self::OffsetLog { max, .. }
+            | Self::PivotedLog { max, .. }
             | Self::Skewed { max, .. }
             | Self::SymmetricalSkewed { max, .. } => *max,
             Self::Discrete { max, .. } => *max as f64,
@@ -285,6 +359,8 @@ impl ParamRange {
         let raw: u32 = match self {
             Self::Linear { .. }
             | Self::Logarithmic { .. }
+            | Self::OffsetLog { .. }
+            | Self::PivotedLog { .. }
             | Self::Skewed { .. }
             | Self::SymmetricalSkewed { .. } => 0,
             Self::Stepped { min, max, step } => {
@@ -396,6 +472,61 @@ mod tests {
             let back = range.denormalize(norm);
             assert_eq!(back as usize, idx);
         }
+    }
+
+    #[test]
+    fn offset_log_round_trip_and_ends() {
+        let range = ParamRange::OffsetLog {
+            min: 20.0,
+            max: 20000.0,
+            offset: 150.0,
+        };
+        assert_eq!(range.normalize(20.0), 0.0);
+        assert_eq!(range.normalize(20000.0), 1.0);
+        assert!((range.denormalize(0.0) - 20.0).abs() < 1e-9);
+        assert!((range.denormalize(1.0) - 20000.0).abs() < 1e-6);
+        for plain in [20.0, 100.0, 1700.8, 10000.0] {
+            let back = range.denormalize(range.normalize(plain));
+            assert!((back - plain).abs() < 1e-6, "plain={plain}, back={back}");
+        }
+        // The midpoint is the geometric mean of the shifted ends, not of
+        // the plain ends: ~1700.8 Hz here against ~632 Hz for a plain log.
+        assert!((range.denormalize(0.5) - 1700.8).abs() < 0.1);
+    }
+
+    #[test]
+    fn pivoted_log_puts_mid_at_the_midpoint() {
+        let range = ParamRange::PivotedLog {
+            min: 0.1,
+            max: 10.0,
+            mid: 0.707,
+        };
+        assert!((range.denormalize(0.5) - 0.707).abs() < 1e-9);
+        assert!((range.normalize(0.707) - 0.5).abs() < 1e-9);
+        assert!((range.denormalize(0.0) - 0.1).abs() < 1e-12);
+        assert!((range.denormalize(1.0) - 10.0).abs() < 1e-9);
+        for plain in [0.1, 0.3, 0.707, 2.0, 10.0] {
+            let back = range.denormalize(range.normalize(plain));
+            assert!((back - plain).abs() < 1e-9, "plain={plain}, back={back}");
+        }
+    }
+
+    #[test]
+    fn offset_log_and_pivoted_log_survive_bad_bounds() {
+        let offset = ParamRange::OffsetLog {
+            min: -200.0,
+            max: 10.0,
+            offset: 150.0,
+        };
+        assert_eq!(offset.normalize(5.0), 0.0);
+        assert_eq!(offset.denormalize(0.7), -200.0);
+        let pivot = ParamRange::PivotedLog {
+            min: 1.0,
+            max: 10.0,
+            mid: 20.0,
+        };
+        assert_eq!(pivot.normalize(5.0), 0.0);
+        assert_eq!(pivot.denormalize(f64::NAN), 1.0);
     }
 
     #[test]
