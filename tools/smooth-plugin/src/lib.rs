@@ -809,14 +809,13 @@ impl PluginLogic for Smooth {
     type Params = SmoothParams;
     type DspState = Dsp;
 
-    /// Plain stereo, stereo with a stereo sidechain, then mono. Mono has no
-    /// sidechain: a two-channel input would not say which bus it is.
+    /// One stereo layout with a stereo sidechain bus. VST3 fixes the bus
+    /// structure for every layout, and the host's input buffer is one flat
+    /// channel list with no bus split, so a mono main beside a mono sidechain
+    /// cannot be told from a stereo pair. Mono hosts feed the one-input lane
+    /// path of `process`. The sidechain is enabled only with four inputs.
     fn bus_layouts() -> Vec<BusLayout> {
-        vec![
-            BusLayout::stereo(),
-            BusLayout::stereo().with_sidechain_input("Sidechain", ChannelConfig::Stereo),
-            BusLayout::mono(),
-        ]
+        vec![BusLayout::stereo().with_sidechain_input("Sidechain", ChannelConfig::Stereo)]
     }
 
     fn init(params: &SmoothParams, _cx: &InitContext) -> Dsp {
@@ -1309,6 +1308,19 @@ mod param_tests {
         assert!((slope - 0.5).abs() < 1e-3);
         assert!((normalized_from_slope(params.band1_slope.value()) - 0.5).abs() < 1e-3);
     }
+
+    /// Band solo is 0 for none and 1 to 8 for a band, the reference's plain - 1.
+    #[test]
+    fn band_solo_maps_plain_one_to_eight_onto_the_bands() {
+        let params = SmoothParams::default();
+        assert_eq!(params.settings().solo_band, None);
+        params.band_solo.set_value(1);
+        assert_eq!(params.settings().solo_band, Some(0));
+        params.band_solo.set_value(8);
+        assert_eq!(params.settings().solo_band, Some(7));
+        params.band_solo.set_value(0);
+        assert_eq!(params.settings().solo_band, None);
+    }
 }
 
 /// The host's buses are not the engine's: a mono or missing input and a
@@ -1444,14 +1456,13 @@ mod reset_rt {
 mod sidechain_layout {
     use super::*;
 
-    /// The sidechain is a stereo aux bus on its own layout, and the plain
-    /// stereo layout stays available. Four input channels mean the sidechain
-    /// is there; two mean it is not.
+    /// The sidechain is a stereo aux bus, and every layout carries one (VST3
+    /// needs one bus structure). Four input channels mean the sidechain is
+    /// there; mono has a mono aux bus of its own.
     #[test]
     fn the_sidechain_layout_is_a_stereo_aux_bus() {
         let layouts = <Smooth as PluginLogic>::bus_layouts();
         assert!(layouts.iter().any(|l| l.total_input_channels() == 4));
-        assert!(layouts.iter().any(|l| l.total_input_channels() == 2
-            && l.sidechain_input_indices().next().is_none()));
+        assert!(layouts.iter().all(|l| l.sidechain_input_indices().next().is_some()));
     }
 }
