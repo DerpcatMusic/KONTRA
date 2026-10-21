@@ -1884,8 +1884,9 @@ impl Translation {
                     //    [ref]) whose unit law, and the v0x10/0x11 legacy tail, are open.
                     //  - Glide: no caller recovered for the note pitch and time to ramp
                     //    start, step and gain ([ref] setup).
-                    //  - Follower: the four stored floats have no proved route to the
-                    //    builder's controls ([ref]..[ref]).
+                    //  - Follower: the stored floats map to the builder roles
+                    //    (`AdaptiveFollower::from_stored`); the signal the follower
+                    //    samples from is not proved, so it stays unsupported.
                     Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
                         let feature = match params.modulator {
                             Modulator::Dbd(_) => "DBD envelope (0x41): saved-duration resolver and legacy tail",
