@@ -7,11 +7,10 @@
 // ponytail: the five tables, their bounds and the table-derived constants do not depend on the
 // rate or the knobs; they are the native init's output (dumped under kemu), not re-derived.
 use super::super::super::Planar;
+use super::kernel::{DECIMATE, PHASE, V, add, mul, sub};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use super::crywah::rcp;
-use super::dstortion::zip;
 
-type V = [f32; 4];
 
 const fn bits(v: [u32; 4]) -> V {
     [f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]), f32::from_bits(v[3])]
@@ -31,18 +30,6 @@ const K4090: f32 = f32::from_bits(0x3c83_1000);
 const K40A0: f32 = f32::from_bits(0xc742_2e15);
 const OUT: f32 = f32::from_bits(0x39df_1ee9);
 const SAG: f32 = 1050.0;
-const PHASE: [V; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-0.070_312_5, 0.867_187_5, 0.226_562_5, -0.023_437_5],
-    [-0.062_5, 0.562_5, 0.562_5, -0.062_5],
-    [-0.023_437_5, 0.226_562_5, 0.867_187_5, -0.070_312_5],
-];
-const DECIMATE: [V; 4] = [
-    [-0.005_859_375, -0.015_625, -0.017_578_125, 0.0],
-    [0.056_640_625, 0.140_625, 0.216_796_875, 0.25],
-    [0.216_796_875, 0.140_625, 0.056_640_625, -0.0],
-    [-0.017_578_125, -0.015_625, -0.005_859_375, 0.0],
-];
 
 fn tables() -> &'static [f32] {
     static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
@@ -63,18 +50,6 @@ fn ld(s: &[f32; 80], o: isize) -> V {
 fn st(s: &mut [f32; 80], o: isize, v: V) {
     let i = (o + 48) as usize;
     s[i..i + 4].copy_from_slice(&v);
-}
-
-fn mul(a: V, b: V) -> V {
-    zip(a, b, |a, b| a * b)
-}
-
-fn add(a: V, b: V) -> V {
-    zip(a, b, |a, b| a + b)
-}
-
-fn sub(a: V, b: V) -> V {
-    zip(a, b, |a, b| a - b)
 }
 
 /// `(x - old) * k + old`

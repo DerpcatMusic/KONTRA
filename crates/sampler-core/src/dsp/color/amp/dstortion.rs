@@ -6,25 +6,13 @@
 // ponytail: the table, its bounds and the phase matrices do not depend on the rate or the
 // knobs; they are the native init's output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
+use super::kernel::{DECIMATE, PHASE, V, lookup, zip};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 
-type V = [f32; 4];
 
 const LO: f32 = -127.0;
 const HI: f32 = 128.0;
 const BIAS: f32 = f32::from_bits(0xbd9a_0400);
-const PHASE: [V; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-0.070_312_5, 0.867_187_5, 0.226_562_5, -0.023_437_5],
-    [-0.062_5, 0.562_5, 0.562_5, -0.062_5],
-    [-0.023_437_5, 0.226_562_5, 0.867_187_5, -0.070_312_5],
-];
-const DECIMATE: [V; 4] = [
-    [-0.005_859_375, -0.015_625, -0.017_578_125, 0.0],
-    [0.056_640_625, 0.140_625, 0.216_796_875, 0.25],
-    [0.216_796_875, 0.140_625, 0.056_640_625, 0.0],
-    [-0.017_578_125, -0.015_625, -0.005_859_375, 0.0],
-];
 
 fn shaper() -> &'static [f32] {
     static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
@@ -41,9 +29,6 @@ fn st(s: &mut [f32; 32], o: isize, v: V) {
     s[i..i + 4].copy_from_slice(&v);
 }
 
-pub(super) fn zip(a: V, b: V, f: impl Fn(f32, f32) -> f32) -> V {
-    std::array::from_fn(|l| f(a[l], b[l]))
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct State {
@@ -129,12 +114,7 @@ impl Engine {
         let x0 = [m[2][2] + m[2][0], m[2][3] + m[2][1], m[3][2] + m[3][0], m[3][3] + m[3][1]];
         let x5 = zip([x2[1], x2[3], x0[1], x0[3]], [x2[0], x2[2], x0[0], x0[2]], |a, b| a + b);
         let x5 = x5.map(|v| v + BIAS);
-        let y: V = std::array::from_fn(|l| {
-            let i = (x5[l].max(LO).min(HI) - LO) as i32;
-            let fr = x5[l] - (i as f32 + LO);
-            let i = i as usize * 2;
-            fr * tab[i + 1] + tab[i]
-        });
+        let y: V = lookup(tab, x5, LO, HI);
         st(s, -20, y);
         let x3 = ld(s, -16);
         let x2 = ld(s, -12);

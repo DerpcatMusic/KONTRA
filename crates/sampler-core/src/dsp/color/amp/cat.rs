@@ -6,27 +6,14 @@
 // ponytail: the table and the phase/decimation matrices do not depend on rate or knobs; they
 // are the native init's output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
+use super::kernel::{DECIMATE, PHASE, V, add, lookup, mul, zip};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
-use super::dstortion::zip;
 
-type V = [f32; 4];
 
 const LO: f32 = -128.0;
 const HI: f32 = 127.0;
 /// The table object's level (+0xc60), the first ramp lane.
 const LEVEL: f32 = f32::from_bits(0x427d_a357);
-const PHASE: [V; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-0.070_312_5, 0.867_187_5, 0.226_562_5, -0.023_437_5],
-    [-0.062_5, 0.562_5, 0.562_5, -0.062_5],
-    [-0.023_437_5, 0.226_562_5, 0.867_187_5, -0.070_312_5],
-];
-const DECIMATE: [V; 4] = [
-    [-0.005_859_375, -0.015_625, -0.017_578_125, 0.0],
-    [0.056_640_625, 0.140_625, 0.216_796_875, 0.25],
-    [0.216_796_875, 0.140_625, 0.056_640_625, -0.0],
-    [-0.017_578_125, -0.015_625, -0.005_859_375, 0.0],
-];
 
 fn shaper() -> &'static [f32] {
     static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
@@ -41,14 +28,6 @@ fn ld(s: &[f32; 36], o: isize) -> V {
 fn st(s: &mut [f32; 36], o: isize, v: V) {
     let i = (o + 16) as usize;
     s[i..i + 4].copy_from_slice(&v);
-}
-
-fn mul(a: V, b: V) -> V {
-    zip(a, b, |a, b| a * b)
-}
-
-fn add(a: V, b: V) -> V {
-    zip(a, b, |a, b| a + b)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -142,12 +121,7 @@ impl Engine {
         let a = [r[0][2] + r[0][0], r[0][3] + r[0][1], r[1][2] + r[1][0], r[1][3] + r[1][1]];
         let b = [r[2][2] + r[2][0], r[2][3] + r[2][1], r[3][2] + r[3][0], r[3][3] + r[3][1]];
         let v = add([a[1], a[3], b[1], b[3]], [a[0], a[2], b[0], b[2]]);
-        let y: V = std::array::from_fn(|l| {
-            let i = (v[l].max(LO).min(HI) - LO) as i32;
-            let fr = v[l] - (i as f32 + LO);
-            let i = i as usize * 2;
-            fr * tab[i + 1] + tab[i]
-        });
+        let y: V = lookup(tab, v, LO, HI);
         st(s, 4, y);
         let x3 = ld(s, 8);
         let x2 = ld(s, 12);
