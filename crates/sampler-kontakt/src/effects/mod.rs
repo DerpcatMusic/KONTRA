@@ -382,8 +382,8 @@ impl Slot {
             0x10..=0x12 | 0x14 | 0x5d => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
             0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
-            // Cosmic (type 2) keeps its decoded fields: its core is not built.
-            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
+            // Grounded (0), Airy (1) and Cosmic (2) decode alike.
+            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
                 let (core, synced) = space::read_raum(&mut r)?;
                 Params::Raum { core, synced }
             }
@@ -2667,6 +2667,25 @@ mod tests {
         bytes
     }
 
+    /// Cosmic (type 2): the same fields land on the core controls, and the
+    /// chain bank is built (no 'not built' note, no error).
+    #[test]
+    fn raum_cosmic_maps_to_the_chain_bank() {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
+        bytes.extend([0, 0]);
+        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0);
+        let array = effect_fixture(0x65, 0x10, &bytes);
+        let slots = rack(&array, |_, error| panic!("{error}"));
+        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        assert_eq!(core[9], 1.0);
+        assert_eq!([core[6], core[10], core[11], core[13], core[14], core[17]], [0.1, 0.6, 0.8, 0.7, 0.15, 0.4]);
+        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
+        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum && n.raum.is_some_and(|r| r[9] == 1.0)))), "{:?}", out.notes);
+        assert!(out.notes.iter().all(|note| !format!("{note:?}").contains("not built")), "{:?}", out.notes);
+    }
+
     /// Airy (type 1): fields land on core controls (apply `0x140abb190`);
     /// a 40 ms predelay becomes `√((40·0.0125))/2`.
     #[test]
@@ -2807,9 +2826,8 @@ mod tests {
                 assert_eq!(&bytes[52..54], &[0xa5, 0x5a]);
                 assert_eq!(&bytes[54..58], &(-0.5f32).to_le_bytes());
                 assert_eq!(bytes[66], 0xff);
-                assert!(
-                    matches!(slots[0].params(), Some(Params::Fields(ref fields)) if fields.len() == 19)
-                );
+                // Type 2 (Cosmic) is admitted: the chain bank is built from its fields.
+                assert!(matches!(slots[0].params(), Some(Params::Raum { core, .. }) if core[9] == 1.0));
                 assert_eq!(saved.fields.len(), 19);
                 for (name, value) in [
                     ("param_0", SourceParameterValue::Integer(2)),
@@ -2843,6 +2861,13 @@ mod tests {
                     // The unit carries its live slot address; the knobs are the decoded tape.
                     assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Color(c)
                         if *c == sampler_ir::fx::color::Config { address: c.address, ..sampler_ir::fx::color::Config::tape(tape) })));
+                    continue;
+                }
+                // Cosmic is admitted on a bus (Raum is bus-only, as Grounded and Airy are).
+                if module == 0x65 && scope == Scope::Bus {
+                    assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
+                    // Only the feedback limiter's own UnknownLaw note (this payload has feedback > 0).
+                    assert!(out.notes.iter().all(|n| n.3 == Reason::UnknownLaw), "{:?}", out.notes);
                     continue;
                 }
                 assert!(out.processors.is_empty());
