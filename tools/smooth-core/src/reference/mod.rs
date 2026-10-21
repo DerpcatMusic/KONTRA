@@ -12,12 +12,13 @@
 //! | address    | function                     | state                                   |
 //! |------------|------------------------------|-----------------------------------------|
 //! | `0x6181b0` | complex magnitude kernel     | translated; power stage bit-exact, IPP sqrt tail modelled (`magnitude.rs`) |
-//! | `0x8e0858` | gain helper (17290 bytes)    | **not translated**; see below           |
+//! | `0x8e04c0` | gain helper body (entry; `0x8e0858` is an interior label, body ~17.5 KB) | **not translated**; entry and caller chain mapped (research notes section 19) |
 //!
-//! `0x8e0858` is the helper that maps magnitude to gain. It is entered four times per
-//! block, calls the magnitude kernel eight times, and calls `logf`, `powf` and `expf`.
-//! It is not yet translated: it has 5,200 lines of decompile with a stack frame of
-//! about 19 KB, and the state fields it reads are not yet mapped.
+//! The gain body is entered at `0x8e04c0` (not `0x8e0858`, which is an interior label
+//! of the same function). It is entered four times per block via the chain
+//! `0x8d98a0` -> `0x8e04c0`, calls the magnitude kernel eight times (`0x8e13a8`), and
+//! calls `logf`, `powf` and `expf`. It is not yet translated: about 17.5 KB of code, a
+//! stack frame of `0x4ae8` bytes, and the state fields it reads are not yet mapped.
 //!
 //! Planned public API (not defined yet, so nothing here is wired into `dsp.rs`):
 //! per-block input of magnitude frames and parameters (depth, sharpness, selectivity,

@@ -815,3 +815,34 @@ Harness: `re-tools/emulate/reference_magnitude_fixture.py` writes `src/reference
   "no sqrt routine is called" wording in section 7 is wrong; the sqrt is reached through the tail.
 
 Translation: `src/reference/magnitude.rs`. IPP sqrt is modelled as `f32::sqrt` (documented, ±1 ULP).
+
+## 19. Gain helper 0x8e0858 is an interior label; its entry is 0x8e04c0 (pass 12, emulation, 2026-10-21)
+
+Harness: `re-tools/emulate/gain_chain_probe.py`. **verified** (emulation, 48 kHz stand-in, one process block):
+
+| RVA | hits per block | first return | note |
+|---|---|---|---|
+| `0x8d9230` | 4 | `0x8c6660` | `call` |
+| `0x8d929e` | 4 | none (`jmp` in) | reached by tail jump |
+| `0x8d98a0` | 4 | `0x8d9520` | `call` from inside `0x8d929e` |
+| `0x8e04c0` | 4 | `0x8d9bf6` | `call 0x8e04c0` at `0x8d9bf1` |
+| `0x8e0858` | 4 | none | falls through from the body, not a call target |
+
+- **The body starts at `0x8e04c0`.** The corpus splits it into rows `0x8e04c0` (49 bytes), `0x8e0517`
+  (16 bytes) and `0x8e0858` (17290 bytes). Those rows are fragments of one function, the same
+  kind of split as section 17.1. The decompile named `fcn.1808e04c0` is the right name. **verified**
+  (disassembly: 6 pushes, `lea rbp,[rsp-0x49e8]`, frame size `0x4ae8` through `0x1817ba260`,
+  `cmp byte [rcx+0x2bc8],0`, `mov rbx,r8`, then the body continues to `0x8e0858` and beyond).
+- The body runs to about `0x8e4be2`, roughly 17.5 KB. Its frame is `0x4ae8` bytes (the
+  "19 KB" in the header). The magnitude calls (`0x8e13a8`, eight per block) are inside it.
+- **Caller chain (first hits):** `0x8c6660` -> `0x8d9230` -> (jmp) `0x8d929e` -> `0x8d9520` ->
+  `0x8d98a0` -> `0x8d9bf1` -> `0x8e04c0`. Each step is verified by the return address of its first hit;
+  the chain above `0x8c6660` is not traced. **verified (chain to 0x8c6660)**.
+- Register arguments at the body entry are `rcx` = this (the object with `[+0x2bc8]` gate byte),
+  `rdx` = pointer table, `r8` = second pointer, `r9` = third. The body copies `rdx` into `rdi` and `r8`
+  into `rbx`. **read**.
+
+Status: the body is not translated. The state layout (what `rcx`, `rdx`, `r8`, `r9` point to and
+which fields are read) and the basic-block CFG are not mapped yet. Next steps, in order: (1) trace
+the reads through `[rcx+...]` with `watch_reads` to list the fields; (2) reconstruct the CFG from
+traced block orders at several inputs; (3) translate in checkpoints.
