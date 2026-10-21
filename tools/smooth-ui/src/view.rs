@@ -10,7 +10,7 @@
 use crate::graph;
 use crate::presets::{self, Presets};
 use crate::skin::*;
-use crate::slots::{self, Bind, Slider, Slot};
+use crate::slots::{self, Bind, Slider, Slot, choice, flag};
 use crate::theme;
 use crate::tokens::{icon, metric, radius, space, ty};
 use mui::prelude::*;
@@ -219,9 +219,10 @@ fn panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     let t = theme::t();
     // The switch carries an index; the model carries the mode. The part runs
     // first so the choice it made is written back before the tree is built.
-    let mut mode = usize::from(!m.soft);
-    let mode_el = segmented(ui, "mode", &["soft", "hard"], &mut mode);
-    m.soft = mode == 0;
+    let mode_el = choice(ui, bind, Slot::Mode, &mut m.slots[Slot::Mode.index()], 2, &mut |ui, id, mode| {
+        segmented(ui, id, &["soft", "hard"], mode)
+    });
+    m.soft = m.slots[Slot::Mode.index()].norm < 0.5;
     col![
         brand(),
         // The first gap is the widest: the name sits on its own above the
@@ -453,8 +454,12 @@ fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     row![
         // The switches.
         row![
-            toggle_pill(ui, "bypass", "bypass", &mut m.bypass),
-            toggle_pill(ui, "delta", "delta", &mut m.delta),
+            flag(ui, bind, Slot::Bypass, &mut m.slots[Slot::Bypass.index()], &mut |ui, id, on| {
+                toggle_pill(ui, id, "bypass", on)
+            }),
+            flag(ui, bind, Slot::Delta, &mut m.slots[Slot::Delta.index()], &mut |ui, id, on| {
+                toggle_pill(ui, id, "delta", on)
+            }),
         ]
         .gap(space::S),
         // The mix and the trim: a name and the plate it names, twice.
@@ -487,11 +492,15 @@ fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
                     crate::tips::QUALITY_DISABLED,
                 )
             } else {
-                dropdown(ui, "quality", &QUALITY_NAMES, &mut m.quality)
+                choice(ui, bind, Slot::Quality, &mut m.slots[Slot::Quality.index()], QUALITY_NAMES.len(), &mut |ui, id, q| {
+                    dropdown(ui, id, &QUALITY_NAMES, q)
+                })
             },
             row![
                 padlock(m.lock_latency, "lock-latency"),
-                toggle_pill(ui, "lowlatency", "low latency", &mut m.low_latency),
+                flag(ui, bind, Slot::LowLatency, &mut m.slots[Slot::LowLatency.index()], &mut |ui, id, on| {
+                    toggle_pill(ui, id, "low latency", on)
+                }),
             ]
             .gap(space::XS),
         ]
@@ -529,9 +538,10 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     if ui.get("side-panel").double_clicked {
         m.side = false;
     }
-    let mut mode = usize::from(m.mid_side);
-    let mode_el = segmented(ui, "stereo-mode", &["l/r", "m/s"], &mut mode);
-    m.mid_side = mode == 1;
+    let mode_el = choice(ui, bind, Slot::StereoMode, &mut m.slots[Slot::StereoMode.index()], 2, &mut |ui, id, mode| {
+        segmented(ui, id, &["l/r", "m/s"], mode)
+    });
+    m.mid_side = m.slots[Slot::StereoMode.index()].norm >= 0.5;
     let mut row_of = |ui: &mut Ui, m: &mut Model, slot: Slot, name: &str| -> El {
         row![
             centred(label(name, ty::CAPTION, c(t.ink)), metric::SIDE_LABEL_W, metric::FIELD_H),
@@ -589,9 +599,10 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             el
         })
     };
-    let mut bypass = m.bands[index].bypass;
-    let bypass_el = toggle_pill(ui, "band-bypass", "bypass", &mut bypass);
-    m.bands[index].bypass = bypass;
+    let bypass_el = flag(ui, bind, Slot::BandBypass, &mut m.slots[Slot::BandBypass.index()], &mut |ui, id, on| {
+        toggle_pill(ui, id, "bypass", on)
+    });
+    m.bands[index].bypass = m.slots[Slot::BandBypass.index()].norm >= 0.5;
     if ui.get("band-delete").activated() {
         m.bands[index].active = false;
     }

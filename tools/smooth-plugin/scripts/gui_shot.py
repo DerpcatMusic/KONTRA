@@ -326,7 +326,7 @@ def main():
                     f"{min(values):.6g} .. {max(values):.6g}"
                 )
             print("gestures:\n  " + "\n  ".join(lines))
-    if "--wheel" in sys.argv or "--dblclick" in sys.argv:
+    if any(flag in sys.argv for flag in ("--wheel", "--dblclick", "--ctrl-click", "--expect", "--wheel-check")):
         # Wheel and double-click on logical points: `--wheel x,y:n` scrolls n
         # notches (negative is down; `--shift` makes them fine), `--dblclick
         # x,y` double-clicks to reset. Each one is photographed, and
@@ -345,7 +345,29 @@ def main():
                 ["xdotool", "mousemove", str(int(x * sx)), str(int(y * sy))], check=True
             )
             settle()
-            if "--dblclick" in sys.argv and not notches:
+            if "--ctrl-click" in sys.argv and not notches:
+                # Ctrl held through one press: the reset gesture that needs no
+                # second click.
+                subprocess.run(["xdotool", "keydown", "ctrl", "mousedown", "1"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+                subprocess.run(["xdotool", "mouseup", "1", "keyup", "ctrl"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+            elif not notches and "--dblclick" not in sys.argv:
+                # A plain click on the point: a switch turns over. The press and
+                # the release are frames apart, as a person's are.
+                subprocess.run(["xdotool", "mousedown", "1"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+                subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+            elif "--dblclick" in sys.argv and not notches:
                 # Two clicks a beat apart, with the editor's frames running
                 # between them: the editor's own clock reads the double click.
                 for _ in range(2):
