@@ -352,6 +352,21 @@ impl ArrayFileCompletion {
             payload: ArrayFilePayload { numbers, texts },
         })
     }
+    /// A completed read of NKA bytes the loader already holds (a resource
+    /// container's data folder); no path, no I/O.
+    pub fn from_bytes(array: ArrayFileArray, bytes: &[u8]) -> Result<Self, Error> {
+        array.validate()?;
+        Ok(Self {
+            job: 0,
+            instance: ScriptInstanceId(0),
+            success: true,
+            array,
+            path: Text::default(),
+            write: false,
+            captured: true,
+            payload: decode(array, bytes)?,
+        })
+    }
     pub fn numbers(&self) -> &[i64] {
         &self.payload.numbers
     }
@@ -451,12 +466,9 @@ fn decode(array: ArrayFileArray, mut reader: impl BufRead) -> Result<ArrayFilePa
             ArrayFileKind::Text => payload.texts.push(Text::try_new(value)?),
         }
     }
-    if !reader
-        .fill_buf()
-        .map_err(|_| Error::InvalidInput)?
-        .is_empty()
-        || !payload.valid(array)
-    {
+    // Values past the declared length are ignored, as Kontakt does: a library
+    // shares one data file between instruments that declare fewer entries.
+    if !payload.valid(array) {
         return Err(Error::InvalidInput);
     }
     Ok(payload)

@@ -220,3 +220,61 @@ fn background_contrast_sampling_uses_the_actual_picture_footprint() {
         "one-pixel art does not fill the larger label text box"
     );
 }
+
+#[test]
+fn switch_picture_keeps_fixed_edges_when_stretched() {
+    // A checkbox picture: the box in Fixed Left, then a transparent column
+    // that stretches under the label. Kontakt never smears the box across.
+    let rect = ir::Rect::new(2, 2, 30, 4);
+    let mut switch = ir::Widget::new("$check", PageRef(0), rect, Kind::Switch);
+    switch
+        .images
+        .push(ir::ImageUse::new(ir::AssetRef(0), Use::Strip));
+    let face = Interface {
+        source: ir::Source::Ksp { slot: 0 },
+        pages: vec![ir::Page {
+            size: ir::Size {
+                width: 40.,
+                height: 24.,
+            },
+            background: ir::Background {
+                color: Some(ir::Rgba::rgb(0)),
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        widgets: vec![switch],
+        assets: vec![ir::Asset {
+            path: "authored.png".into(),
+            kind: ir::AssetKind::Image(ir::ImageMeta {
+                size: Some(ir::Size {
+                    width: 4.,
+                    height: 4.,
+                }),
+                stretch: [true, false],
+                margins: ir::Margins {
+                    left: 3,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    };
+    let rgba: Vec<u8> = (0..16)
+        .flat_map(|i| if i % 4 == 3 { [0; 4] } else { RED })
+        .collect();
+    let picture = Arc::new(Picture::new(vec![Arc::new(
+        Image::rgba(4, 4, rgba).unwrap(),
+    )]));
+    let mut assets = Assets::default();
+    assets.sync(&face, Presentation::Bitmap, |_| Some(picture.clone()));
+    let face = resolved(&face);
+    let pixels = render(&face, &assets, 1.);
+    assert_eq!(pixel(&pixels, 1, 3, 3), RED, "the fixed edge keeps its art");
+    assert_ne!(
+        pixel(&pixels, 1, 20, 3),
+        RED,
+        "the stretched column is transparent"
+    );
+}

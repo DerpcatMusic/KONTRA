@@ -719,6 +719,27 @@ fn saved_values(state: &[(String, ir::Saved)]) -> sampler_ksp::SavedValues {
     (scalars, arrays)
 }
 
+/// The data-folder `.nka` files a script loads with a literal
+/// `load_array(<array>, 2)`, by lowercase array name without its sigil.
+fn data_arrays(
+    source: &str,
+    resources: &mut Resources,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    source
+        .split("load_array(")
+        .skip(1)
+        .filter_map(|call| {
+            let (array, mode) = call.split_once(')')?.0.split_once(',')?;
+            let stem = array.trim().get(1..)?.to_lowercase();
+            (mode.trim() == "2" && !stem.is_empty()).then_some(stem)
+        })
+        .filter_map(|stem| {
+            let bytes = resources.read(&format!("Resources/data/{stem}.nka"))?;
+            Some((stem, bytes))
+        })
+        .collect()
+}
+
 /// What a script may query while its `on init` runs.
 pub(crate) fn script_environment(
     behavior: &ir::Behavior,
@@ -773,6 +794,7 @@ fn script_environment_with_zones(
         persisted_arrays,
         instrument_persisted: None,
         performance_view,
+        data_arrays: Default::default(),
         midi_object: Default::default(),
         folders: Default::default(),
     }
@@ -905,6 +927,10 @@ pub(crate) fn initialize_scripts_with_zones(
                 performance_view,
                 Some(&zone_parameters),
             );
+            if let Some(resources) = resources.as_ref() {
+                environment.data_arrays =
+                    data_arrays(&behavior.source, &mut resources.borrow_mut());
+            }
             environment.snapshot_mode = snapshot_mode;
             environment.midi_object = midi_object.clone();
             environment.instrument_persisted =
@@ -1030,6 +1056,7 @@ fn compile_ui_initialized(
     admit_initialized_zone_sources(instrument, &mut initialized);
     let ScriptInit {
         mut states,
+        faults,
         resources,
         ..
     } = initialized;
@@ -1038,6 +1065,7 @@ fn compile_ui_initialized(
     let mut names = Vec::new();
     let resources = resources.map(std::cell::RefCell::new);
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
+        let mut error_line = faults.get(index).and_then(|fault| fault.as_ref()).map(|fault| fault.line);
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => states[index]
@@ -1045,7 +1073,10 @@ fn compile_ui_initialized(
                 .expect("KSP initialized")
                 .and_then(|init| {
                     sampler_ksp::compile_initialized(&behavior.source, rate, limits, &[], init)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| {
+                            error_line = Some(e.line);
+                            e.to_string()
+                        })
                 }),
             ref other => Err(format!("{other:?} has no frontend")),
         };
@@ -1082,7 +1113,8 @@ fn compile_ui_initialized(
                 compiled.push(script);
             }
             Err(error) => instrument.unsupported.push(ir::Unsupported {
-                location: behavior.name.clone(),
+                location: format!("script slot {} {}{}", behavior.slot.map_or(index, usize::from),
+                    behavior.name, error_line.map_or_else(String::new, |line| format!(" line {line}"))),
                 feature: "script".into(),
                 value: error,
                 reason: ir::Reason::NotModeled,
@@ -2152,7 +2184,7 @@ mod initialization_shape_tests {
         assert!(interfaces.is_empty());
         assert_eq!(take_script_init_runs(), 1);
         assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
-            diagnostic.location == "shape slot 3"
+            diagnostic.location == "script slot 3 shape slot 3 line 2"
                 && diagnostic.feature == "script"
                 && diagnostic.value.contains("get_scale")
         }));

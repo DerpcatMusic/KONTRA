@@ -296,6 +296,7 @@ fn translate(
         intensity_scales: Vec::new(),
         lane_slots: Vec::new(),
         dormant_modulators: Default::default(),
+        amplitude_envelopes: Vec::new(),
         send_taps: Vec::new(),
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
@@ -527,9 +528,7 @@ fn translate(
     drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
-        let runtime = ir::GroupRef(out.ir.groups.len());
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-        out.ir.source_indices.groups.push(Some(runtime));
     }
     out.flush_retained_snapshot_state();
     for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
@@ -630,6 +629,10 @@ fn translate(
         if !zone.sample_present {
             continue;
         } // Authored empty zone, no sample to resolve.
+        if let Some(range) = &zone.unreachable {
+            out.unsupported(&format!("zone {index}"), "unreachable zone", range, ir::Reason::InvalidValue);
+            continue; // No MIDI note can trigger it.
+        }
         let name = table.get(&(zone.file as u32)).ok_or_else(|| {
             invalid(&format!(
                 "zone {index} sample is absent from the file table"
@@ -865,6 +868,9 @@ struct Translation {
     lane_slots: Vec<(usize, usize)>,
     /// (group, internal slot) of saved-bypassed modulators nothing can wake.
     dormant_modulators: std::collections::HashSet<(usize, usize)>,
+    /// Each group's own amplitude envelope, once its internal modulators are
+    /// indexed. A route can address a stage time only of that envelope.
+    amplitude_envelopes: Vec<Option<ir::ModulatorRef>>,
     #[cfg(feature = "scan")]
     target_outcomes: crate::coverage::Targets,
 }
@@ -1634,6 +1640,34 @@ impl Translation {
             ),
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
+        // Publish the actual source and its physical-to-runtime identity before
+        // translating routes. Wavetable destinations inspect this owner; doing
+        // this after modulation silently rejected supported position/warp routes.
+        let runtime_group = ir::GroupRef(self.ir.groups.len());
+        if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
+            return Err(ni_file::Error::Generic(format!(
+                "{at}: invalid gain, pan or tune"
+            )));
+        }
+        self.ir.groups.push(ir::Group {
+            muted: v.muted,
+            wavetable,
+            time_stretch,
+            name: v.name.clone(),
+            gain: ir::Gain::Linear(f64::from(v.volume)),
+            pan: ir::Pan {
+                position: f64::from(v.pan.clamp(-1.0, 1.0)),
+                law: ir::PanLaw::Balance,
+            },
+            tune: ir::Pitch::Ratio(f64::from(v.tune)),
+            voice_limit,
+            monophonic_release: v.release_trigger && v.release_trigger_note_monophonic,
+            ..Default::default()
+        });
+        if self.ir.source_indices.groups.len() <= index {
+            self.ir.source_indices.groups.resize(index + 1, None);
+        }
+        self.ir.source_indices.groups[index] = Some(runtime_group);
         let mut chain = None;
         let mut filter_slots = Vec::new();
         self.lane_slots.clear();
@@ -1815,16 +1849,10 @@ impl Translation {
                         }
                         // v0x12 tail bytes +0x194 (loop jump at the sustain row) and
                         // +0x195 (release adjustment bypass), runtime +0x321/+0x322.
-                        // Their effect on the held envelope is not proved.
+                        // The loop jump is executed (the envelope returns to the
+                        // point before the sustain row); the release adjustment
+                        // bypass has no proved effect on the held envelope.
                         if let Some(word) = flex.unknown_version_word() {
-                            if word & 0xff != 0 {
-                                self.unsupported(
-                                    &at,
-                                    "flex loop jump at the sustain row (+0x194)",
-                                    word & 0xff,
-                                    ir::Reason::UnknownLaw,
-                                );
-                            }
                             if word >> 8 != 0 {
                                 self.unsupported(
                                     &at,
@@ -1834,7 +1862,16 @@ impl Translation {
                                 );
                             }
                         }
-                        ir::ModulationSource::Breakpoints(flex_breakpoints(&flex))
+                        let breakpoints = flex_breakpoints(&flex);
+                        if word_loop_jump(&flex) && breakpoints.loop_range.is_none() {
+                            self.unsupported(
+                                &at,
+                                "flex loop jump at the sustain row (+0x194)",
+                                flex.unknown_index,
+                                ir::Reason::NotModeled,
+                            );
+                        }
+                        ir::ModulationSource::Breakpoints(breakpoints)
                     }
                     // Decoded, not executable: the five DBD floats, the glide
                     // fields and the follower coefficients have no proven
@@ -1955,6 +1992,12 @@ impl Translation {
             envelope = Some(ir::ModulatorRef(self.ir.modulators.len() - 1));
         }
         let mut velocity = ir::VelocityResponse::None;
+        // The group's own amplitude envelope is known once its internal
+        // modulators are indexed; a route may address its stage times.
+        if self.amplitude_envelopes.len() <= index {
+            self.amplitude_envelopes.resize(index + 1, None);
+        }
+        self.amplitude_envelopes[index] = envelope;
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
             for (slot, modulation) in ExternalModArray32::try_from(chunk)?.slots()? {
                 let mut params = modulation.params()?;
@@ -2143,29 +2186,9 @@ impl Translation {
             }
             routes.extend(route);
         }
-        if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
-            return Err(ni_file::Error::Generic(format!(
-                "{at}: invalid gain, pan or tune"
-            )));
-        }
-        self.ir.groups.push(ir::Group {
-            muted: v.muted,
-            wavetable,
-            time_stretch,
-            name: v.name,
-            gain: ir::Gain::Linear(f64::from(v.volume)),
-            pan: ir::Pan {
-                position: f64::from(v.pan.clamp(-1.0, 1.0)),
-                law: ir::PanLaw::Balance,
-            },
-            tune: ir::Pitch::Ratio(f64::from(v.tune)),
-            voice_limit,
-            monophonic_release: v.release_trigger && v.release_trigger_note_monophonic,
-            ..Default::default()
-        });
         Ok(Some(GroupInfo {
             index,
-            group: ir::GroupRef(self.ir.groups.len() - 1),
+            group: runtime_group,
             release: v.release_trigger,
             tracking: v.key_tracking,
             reverse: v.reverse,
@@ -2373,7 +2396,8 @@ impl Translation {
     ) -> bool {
         let [group, slot, ordinal] = address;
         let unit = match self.ir.routes[route.0].target {
-            ir::Target::Amplitude | ir::Target::Pan | ir::Target::SourceRate(_) => 1.,
+            ir::Target::Amplitude | ir::Target::Pan | ir::Target::SourceRate(_)
+                | ir::Target::Wavetable(_) => 1.,
             ir::Target::Pitch => 12.,
             // Module targets: depth units per unit of intensity, as the route's own law.
             ir::Target::Processor { .. } | ir::Target::Control(_) => {
@@ -2819,6 +2843,49 @@ impl Translation {
                 ))
             })
         });
+        // An AHDSR stage time addressed as a modulation target (ids 184..187).
+        // The destination is the group's envelope modulator; the compiler
+        // multiplies the stage's normalized knob by its family H product.
+        let envelope_target = (matches!(
+            target.param.as_str(),
+            "ahdsr_attack" | "ahdsr_hold" | "ahdsr_decay" | "ahdsr_release"
+        ))
+        .then(|| {
+            let destination = self.slot_modulator(source, usize::from(target.slot?))?;
+            // Only the group's own amplitude envelope carries the stage times
+            // a route can address; another AHDSR is a modulator source.
+            let group = self
+                .ir
+                .source_indices
+                .modulators
+                .iter()
+                .find(|m| m.runtime == Some(source))?
+                .group;
+            if self.amplitude_envelope(group) != Some(destination) {
+                return None;
+            }
+            let stage = match target.param.as_str() {
+                "ahdsr_attack" => ir::EnvelopeStage::Attack,
+                "ahdsr_hold" => ir::EnvelopeStage::Hold,
+                "ahdsr_decay" => ir::EnvelopeStage::Decay,
+                "ahdsr_release" => ir::EnvelopeStage::Release,
+                _ => return None,
+            };
+            // Only an AHDSR envelope carries stage times.
+            matches!(
+                self.ir.modulators[destination.0].source,
+                ir::ModulationSource::Envelope(_)
+            )
+            .then_some((
+                ir::Target::EnvelopeStage {
+                    source: destination,
+                    stage,
+                },
+                ir::Depth::Normalized(i),
+            ))
+        })
+        .flatten();
+        let addressed = addressed.or(envelope_target);
         let addressed = addressed.or_else(|| {
             let slot = i32::from(target.slot?);
             let group = self
@@ -3305,6 +3372,9 @@ struct RawZone {
     loops: Vec<ni_file::kontakt::objects::Loop>,
     loop_slots: Vec<u8>,
     source: ir::kontakt::Zone,
+    /// Set when no MIDI note can trigger the zone: its whole stored velocity
+    /// or key range lies outside 0..=127. Describes the range for diagnostics.
+    unreachable: Option<String>,
 }
 
 /// Complete physical order, independent of source/sample/playback admission.
@@ -3365,19 +3435,24 @@ fn automation_target(tag: &str) -> Option<(u8, u32, bool)> {
 
 #[cfg(test)]
 mod empty_zone_tests {
-    fn zone_record(id:i32, group: u32, low: i16, high: i16) -> Vec<u8> {
+    fn zone_record_layout(version: u8, private_len: usize, id: i32, word56: u16, group: u32, low: i16, high: i16) -> Vec<u8> {
         let mut public = vec![0; 48];
         public[16..18].copy_from_slice(&low.to_le_bytes());
         public[18..20].copy_from_slice(&high.to_le_bytes());
         let mut record = group.to_le_bytes().to_vec();
-        record.extend([1, 0x9a, 0]);
-        record.extend(87u32.to_le_bytes());
-        let mut private=vec![0;87];private[83..87].copy_from_slice(&id.to_le_bytes());
+        record.extend([1, version, 0]);
+        record.extend(u32::try_from(private_len).unwrap().to_le_bytes());
+        let mut private=vec![0;private_len];
+        private[56..58].copy_from_slice(&word56.to_le_bytes());
+        private[private_len-4..].copy_from_slice(&id.to_le_bytes());
         record.extend(private);
         record.extend(48u32.to_le_bytes());
         record.extend(public);
         record.extend(0u32.to_le_bytes());
         record
+    }
+    fn zone_record(id: i32, group: u32, low: i16, high: i16) -> Vec<u8> {
+        zone_record_layout(0x9a, 87, id, 0, group, low, high)
     }
 
     #[test]
@@ -3415,6 +3490,18 @@ mod empty_zone_tests {
     }
 
     #[test]
+    fn every_native_private_layout_ends_with_its_identity() {
+        let mut data = 4u32.to_le_bytes().to_vec();
+        data.extend(zone_record_layout(0x9a, 87, 11, 0, 0, 60, 61));
+        data.extend(zone_record_layout(0x9a, 140, 12, 1, 0, 60, 61));
+        data.extend(zone_record_layout(0x9c, 152, 13, 1, 0, 60, 61));
+        data.extend(zone_record_layout(0x9c, 176, 14, 1, 0, 60, 61));
+        let (catalog, detail) = super::source_zone_catalog_with_layouts(&data, 1).unwrap();
+        assert_eq!(catalog.iter().map(|zone| zone.id).collect::<Vec<_>>(), [Some(11), Some(12), Some(13), Some(14)]);
+        assert!(detail.is_empty(), "{detail}");
+    }
+
+    #[test]
     fn automation_tags_name_sliders_and_switches() {
         assert_eq!(super::automation_target("pts_script_slider_3_2"), Some((3, 2, false)));
         assert_eq!(super::automation_target("pts_script_switch_2_81"), Some((2, 81, true)));
@@ -3443,6 +3530,106 @@ mod empty_zone_tests {
     }
 }
 
+#[cfg(test)]
+mod zone_range_tests {
+    use std::io::Cursor;
+
+    /// A v0x9a sampled zone record in group 3 with file 0, gain 1 and tune 1.
+    fn sampled(velocities: [i16; 2], keys: [i16; 2], root: i16) -> Vec<u8> {
+        let mut public = vec![0u8; 82];
+        public[12..14].copy_from_slice(&velocities[0].to_le_bytes());
+        public[14..16].copy_from_slice(&velocities[1].to_le_bytes());
+        public[16..18].copy_from_slice(&keys[0].to_le_bytes());
+        public[18..20].copy_from_slice(&keys[1].to_le_bytes());
+        public[28..30].copy_from_slice(&root.to_le_bytes());
+        public[30..34].copy_from_slice(&1f32.to_le_bytes());
+        public[38..42].copy_from_slice(&1f32.to_le_bytes());
+        public[43] = 1; // v0x9a prefix byte 1: a sample is present
+        let mut record = 3u32.to_le_bytes().to_vec(); // owning group
+        record.extend([1, 0x9a, 0]); // structured object, version 0x009a
+        record.extend(0u32.to_le_bytes()); // private data length
+        record.extend(u32::try_from(public.len()).unwrap().to_le_bytes());
+        record.extend(public);
+        record.extend(0u32.to_le_bytes()); // children length
+        record
+    }
+
+    fn read(record: &[u8]) -> Result<super::RawZone, String> {
+        super::raw_zone(&mut Cursor::new(record))
+    }
+
+    #[test]
+    fn in_range_zone_is_unchanged() {
+        let zone = read(&sampled([1, 127], [36, 81], 60)).unwrap();
+        assert!(zone.sample_present);
+        assert_eq!(zone.unreachable, None);
+        assert_eq!((zone.keys, zone.velocities, zone.root), ([36, 81], [1, 127], 60));
+    }
+
+    #[test]
+    fn zone_above_the_velocity_range_is_unreachable_not_an_error() {
+        let zone = read(&sampled([139, 139], [40, 40], 40)).unwrap();
+        assert_eq!(zone.unreachable.as_deref(), Some("velocity 139..=139; keys 40..=40; group 3"));
+    }
+
+    #[test]
+    fn zone_below_the_key_range_is_unreachable() {
+        let zone = read(&sampled([1, 127], [-20, -1], 60)).unwrap();
+        assert_eq!(zone.unreachable.as_deref(), Some("key -20..=-1; velocities 1..=127; group 3"));
+    }
+
+    #[test]
+    fn zone_partly_outside_still_fails_until_checked_against_kontakt() {
+        let error = read(&sampled([100, 200], [36, 81], 60)).err().unwrap();
+        assert_eq!(error, "high velocity 200 is outside 0..=127");
+    }
+
+    #[test]
+    fn range_boundaries_at_the_edge_of_midi() {
+        let unreachable = |v: [i16; 2]| read(&sampled(v, [36, 81], 60)).unwrap().unreachable.is_some();
+        assert!(!unreachable([0, 0]));
+        assert!(!unreachable([127, 127]));
+        assert!(unreachable([128, 128]));
+        assert!(unreachable([-1, -1]));
+        assert!(unreachable([i16::MIN, -1]));
+        assert!(unreachable([128, i16::MAX]));
+        // Straddling an edge is partly reachable: still an error, not a skip.
+        assert!(read(&sampled([-1, 0], [36, 81], 60)).is_err());
+        assert!(read(&sampled([127, 128], [36, 81], 60)).is_err());
+        // Inverted and outside: not reported as unreachable.
+        assert!(read(&sampled([200, 100], [36, 81], 60)).is_err());
+    }
+
+    #[test]
+    fn inverted_range_is_still_an_error() {
+        let error = read(&sampled([100, 50], [36, 81], 60)).err().unwrap();
+        assert!(error.starts_with("inverted range"), "{error}");
+    }
+
+    #[test]
+    fn out_of_range_root_is_still_an_error() {
+        let error = read(&sampled([1, 127], [36, 81], 200)).err().unwrap();
+        assert_eq!(error, "root 200 is outside 0..=127");
+    }
+
+    #[test]
+    #[ignore = "needs an installed instrument: KONTRA_TEST_UNREACHABLE_NKI=/path/to/instrument.nki"]
+    fn installed_instrument_with_unreachable_zones_loads() {
+        let path = std::env::var_os("KONTRA_TEST_UNREACHABLE_NKI").expect("set KONTRA_TEST_UNREACHABLE_NKI");
+        let source = crate::read(std::path::Path::new(&path)).unwrap();
+        let unreachable: Vec<_> = source
+            .instrument
+            .unsupported
+            .iter()
+            .filter(|u| u.feature == "unreachable zone")
+            .collect();
+        for u in &unreachable {
+            eprintln!("{}: {}", u.location, u.value);
+        }
+        assert!(!unreachable.is_empty(), "expected at least one unreachable-zone diagnostic");
+    }
+}
+
 /// Layout from the v1 importer: the owning group, then a structured zone whose
 /// public data is start, end, start-modulation range, velocity and key ranges,
 /// four crossfade widths, root, gain, pan, tune and (v0x9a+) six unknown bytes
@@ -3452,12 +3639,11 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let so = StructuredObject::read(&mut *r).map_err(|e| e.to_string())?;
     let source_zone = Zone(so);
     let params = source_zone.params().map_err(|e| e.to_string())?;
-    // Unknown private variants retain no invented command identity.
-    let private=&source_zone.0.private_data;
-    let source_id = if matches!(source_zone.0.version,0x9a..=0x9c)
-        && private.len()==87 && private.get(56..58)==Some(&[0,0]) {
-        source_zone.source_id().map_err(|e|e.to_string())?
-    } else {None};
+    // Unknown private variants retain no invented command identity. The native
+    // private reader ends every version branch with the identity read, so the
+    // gate is the decoder, not a fixed length: an undecodable private stays
+    // `None` and the catalog reports the layout instead of aliasing an ordinal.
+    let source_id = source_zone.source_id().ok().flatten();
     let (start, end, start_mod) = (
         params.sample_start,
         params.sample_end,
@@ -3491,12 +3677,32 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             .filter(|v| *v < 128)
             .ok_or(format!("{what} {value} is outside 0..=127"))
     };
-    let (lk, hk, lv, hv) = (
-        midi(lk, "low key")?,
-        midi(hk, "high key")?,
-        midi(lv, "low velocity")?,
-        midi(hv, "high velocity")?,
-    );
+    // A sampled zone whose whole stored velocity or key range lies outside
+    // 0..=127 cannot be triggered by any MIDI note, so it never sounds. It is
+    // kept for diagnostics instead of failing the instrument (spec §3.5;
+    // checked against Kontakt 8 in docs/kontra-notes/a1-kontakt-reference.md).
+    // A range only partly outside still fails below until Kontakt's
+    // behaviour for it has been observed.
+    let outside = |lo: i16, hi: i16| lo <= hi && (lo > 127 || hi < 0);
+    let unreachable = if !sample_present {
+        None
+    } else if outside(lv, hv) {
+        Some(format!("velocity {lv}..={hv}; keys {lk}..={hk}; group {group}"))
+    } else if outside(lk, hk) {
+        Some(format!("key {lk}..={hk}; velocities {lv}..={hv}; group {group}"))
+    } else {
+        None
+    };
+    let (lk, hk, lv, hv) = if unreachable.is_some() {
+        (0, 0, 0, 0)
+    } else {
+        (
+            midi(lk, "low key")?,
+            midi(hk, "high key")?,
+            midi(lv, "low velocity")?,
+            midi(hv, "high velocity")?,
+        )
+    };
     if lk > hk || lv > hv {
         return Err(format!(
             "inverted range: keys {lk}..={hk}, velocities {lv}..={hv}"
@@ -3542,6 +3748,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         source,
         loop_slots: loops.slots,
         loops: loops.items,
+        unreachable,
     })
 }
 
@@ -4475,6 +4682,7 @@ mod modulation {
             intensity_scales: Vec::new(),
             lane_slots: Vec::new(),
         dormant_modulators: Default::default(),
+            amplitude_envelopes: Vec::new(),
             send_taps: Vec::new(),
             #[cfg(feature = "scan")]
             target_outcomes: HashMap::new(),
@@ -4755,6 +4963,55 @@ mod modulation {
         assert!(out.route("sample", ir::ModulatorRef(0), true, &target("wavetablePosition", 0.25), None).is_none());
     }
 
+    /// Exercise the real source/group publication order, including a sparse
+    /// physical group index and an already translated non-wavetable sibling.
+    #[test]
+    fn group_translation_keeps_wavetable_routes_before_source_map_was_published() {
+        use ni_file::kontakt::objects::WavetableSource;
+        for admitted in [true, false] {
+            let mut out = translation();
+            out.group(0, &deferred_rate_group(false, false)).unwrap();
+            let targets = ["wavetablePosition", "warpFactor", "warpFactor2"]
+                .map(|name| target(name, 0.25)).to_vec();
+            let mut group = deferred_source_group(true, targets, false, true);
+            let mut private = Vec::new();
+            for _ in 0..136 {
+                private.extend(8u32.to_le_bytes());
+                private.extend([0; 8]);
+            }
+            private.extend([0; 24]);
+            private.extend([0, 0x13, 0]);
+            private.extend(8u32.to_le_bytes());
+            private.extend([0; 8]);
+            private.push(1);
+            let mut common = [0; 30];
+            common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
+            WavetableSource {
+                common, position: 0.25, phase: 0., phase_random: 0.,
+                form1: 0.5, form2: 0., form_type: if admitted { 17 } else { 2 },
+                form2_type: 1, quality: 1, inharmonic_enabled: false,
+                inharmonic: 0., mod_wave: 0, mod_type: 0, mod_amount: 0.,
+                mod_tune: 0., unknown_tail: [0; 16],
+            }.write(&mut private).unwrap();
+            private.extend([0xff; 22]);
+            group.0.private_data = private;
+            out.source_modulators(7, &group).unwrap();
+            let info = out.group(7, &group).unwrap().unwrap();
+            assert_eq!(info.group, ir::GroupRef(1));
+            assert_eq!(out.ir.source_indices.groups.len(), 8);
+            assert_eq!(out.ir.source_indices.groups[0], Some(ir::GroupRef(0)));
+            assert_eq!(out.ir.source_indices.groups[7], Some(info.group));
+            let routes: Vec<_> = info.routes.iter().filter(|r|
+                matches!(out.ir.routes[r.0].target, ir::Target::Wavetable(_))).collect();
+            assert_eq!(routes.len(), if admitted { 3 } else { 0 });
+            for route in routes {
+                assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(0.25));
+                assert!(out.ir.source_indices.route_controls.iter().any(|(r, _, _)| r == route));
+            }
+            assert_eq!(out.ir.groups[info.group.0].wavetable.is_some(), admitted);
+        }
+    }
+
     #[test]
     fn published_processor_controls_accept_native_modulation_by_physical_slot() {
         let mut out = translation();
@@ -4839,6 +5096,65 @@ mod modulation {
             unknown_i16: -1,
             unknown_flags: 0x10,
         }
+    }
+
+    /// An AHDSR stage time addressed as a modulation target binds to the
+    /// group's own amplitude envelope. Another envelope in the group is a
+    /// modulator source, so the route stays reported.
+    #[test]
+    fn an_envelope_stage_route_binds_to_the_groups_amplitude_envelope() {
+        let mut out = translation();
+        // The group's amplitude envelope: an internal AHDSR at slot 0.
+        out.ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope::default()),
+        });
+        let envelope = ir::ModulatorRef(out.ir.modulators.len() - 1);
+        out.ir.source_indices.modulators.push(ir::SourceModulator {
+            group: 7,
+            slot: 0,
+            external: false,
+            name: String::new(),
+            runtime: Some(envelope),
+            settings: None,
+        });
+        // An external source in the same group.
+        out.ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(1000.)),
+        });
+        let external = ir::ModulatorRef(out.ir.modulators.len() - 1);
+        out.ir.source_indices.modulators.push(ir::SourceModulator {
+            group: 7,
+            slot: 5,
+            external: true,
+            name: String::new(),
+            runtime: Some(external),
+            settings: None,
+        });
+        out.amplitude_envelopes = vec![None; 8];
+        out.amplitude_envelopes[7] = Some(envelope);
+        let attack = ModTarget {
+            slot: Some(0),
+            ..target("ahdsr_attack", 1.0)
+        };
+        let route = out.route("g", external, true, &attack, None).unwrap();
+        assert_eq!(
+            out.ir.routes[route.0].target,
+            ir::Target::EnvelopeStage {
+                source: envelope,
+                stage: ir::EnvelopeStage::Attack
+            }
+        );
+        assert_eq!(out.ir.routes[route.0].depth, ir::Depth::Normalized(1.0));
+        assert!(out.ir.unsupported.is_empty());
+        // Another envelope is not the voice's envelope: the route stays reported.
+        out.amplitude_envelopes[7] = None;
+        assert!(out.route("g", external, true, &attack, None).is_none());
+        assert_eq!(
+            out.ir.unsupported.last().unwrap().feature,
+            "modulation of a module parameter"
+        );
     }
 
     /// A saved-bypassed LFO with module targets keeps a live depth lane (unit =
@@ -5977,6 +6293,17 @@ mod modulation {
         tail.extend([0; 13]);
         let b = flex_breakpoints(&flex(vec![point(1.0, 1.0, 0.5), point(1.0, 0.0, 0.5)], tail));
         assert!(!b.flex_release);
+        // The v0x12 loop-jump byte (+0x194) returns the envelope to the point
+        // before the sustain row instead of holding there.
+        let mut tail = vec![1, 0];
+        tail.extend([0; 13]);
+        let b = flex_breakpoints(&flex(
+            vec![point(1.0, 0.0, 0.5), point(1.0, 1.0, 0.5), point(1.0, 0.0, 0.5)],
+            tail,
+        ));
+        assert_eq!(b.sustain, Some(1));
+        assert_eq!(b.loop_range, Some((0, 1)));
+        assert!(b.flex_release);
     }
 }
 
@@ -6034,8 +6361,22 @@ fn flex_breakpoints(flex: &ni_file::kontakt::objects::EnvelopeFlex) -> ir::Break
     ir::Breakpoints {
         points,
         sustain: Some(flex.sustain as usize + lead),
+        // The saved loop-jump byte (+0x194) makes the envelope jump back to
+        // the point before the sustain row instead of holding there
+        // (native advance 0x140ae57dd).
+        loop_range: flex
+            .unknown_version_word()
+            .is_some_and(|word| word & 0xff != 0)
+            .then_some((flex.unknown_index as usize + lead, flex.sustain as usize + lead))
+            .filter(|&(start, end)| start <= end),
         flex_release: !flex.unknown_version_word().is_some_and(|word| word >> 8 != 0),
     }
+}
+
+/// Whether a saved Flex record asks for the loop jump at the sustain row
+/// (the +0x194 byte of the v0x12 tail).
+fn word_loop_jump(flex: &ni_file::kontakt::objects::EnvelopeFlex) -> bool {
+    flex.unknown_version_word().is_some_and(|word| word & 0xff != 0)
 }
 
 /// Exponential bow constant for a shaper or flex-envelope segment:
@@ -6190,6 +6531,13 @@ impl Translation {
         let mods = &self.ir.source_indices.modulators;
         let group = mods.iter().find(|m| m.runtime == Some(source))?.group;
         mods.iter().find(|m| m.group == group && m.slot == slot && !m.external)?.runtime
+    }
+
+    /// The group's own amplitude envelope: the internal AHDSR whose primary
+    /// volume route drives the voice. Another AHDSR in the group is a
+    /// modulator source, not the voice's envelope.
+    fn amplitude_envelope(&self, group: usize) -> Option<ir::ModulatorRef> {
+        self.amplitude_envelopes.get(group).copied().flatten()
     }
 
     /// Attach each intensity assignment to the routes of the modulator it

@@ -48,7 +48,7 @@ fn a_failing_script_leaves_the_others_bound_in_their_slots() {
             .instrument
             .unsupported
             .iter()
-            .any(|u| u.feature == "script" && u.location == "bad")
+            .any(|u| u.feature == "script" && u.location.starts_with("script slot 0 bad"))
     );
     assert_eq!(
         loaded.interfaces.len(),
