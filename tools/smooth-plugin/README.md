@@ -19,9 +19,10 @@ A spectrally selective dynamics editor, and the plug-in that hosts it.
 
 The ranges, defaults and units are soothe3's own, read out of the binary's
 declared parameter records in the reverse engineering: `Depth`, `Detail`,
-`Attack` and `Release` run 0..10, `Mix` is 0..100 %, `Out trim` is ±18 dB,
-`Mode` is soft or hard, and the four bands carry a frequency, a depth, a Q and
-a shape.
+`Attack` and `Release` run 0..10, `Mix` is 0..100 %, `Wet trim` and `Out trim`
+are ±18 dB (the wet trim scales the processed signal before the mix, the out
+trim after it), `Mode` is soft or hard, and the four bands carry a frequency,
+a depth, a Q and a shape.
 
 ## Building and installing
 

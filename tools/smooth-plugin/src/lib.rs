@@ -113,6 +113,15 @@ pub struct SmoothParams {
     /// The linear-phase plan.
     #[param(name = "Linear phase", range = "discrete(0, 1)", default = 0)]
     pub linear_phase: IntParam,
+    /// The wet trim: the level of the processed signal, before the mix. The
+    /// output trim below is after it.
+    #[param(
+        name = "Wet trim",
+        range = "linear(-18, 18)",
+        default = 0.0,
+        unit = "dB"
+    )]
+    pub wet_trim: FloatParam,
     /// Wet against dry.
     #[param(name = "Mix", range = "linear(0, 100)", default = 100.0, unit = "%")]
     pub mix: FloatParam,
@@ -189,6 +198,12 @@ pub struct SmoothParams {
         default = 1.0
     )]
     pub release_tilt_high: FloatParam,
+    /// The detector listens to the sidechain input, not the main one.
+    #[param(name = "Sidechain", range = "discrete(0, 1)", default = 0)]
+    pub sidechain: IntParam,
+    /// Hear the detector instead of the processed signal.
+    #[param(name = "Sidechain listen", range = "discrete(0, 1)", default = 0)]
+    pub sidechain_listen: IntParam,
     /// Where the first band sits.
     #[param(
         name = "Band 1 frequency",
@@ -616,9 +631,13 @@ impl SmoothParams {
             focus: self.focus.value(),
             mid_side: self.stereo_mode.value() >= 1,
             mix: self.mix.value() / 100.0,
+            // The reference stores 10^(dB * 0.05) for both trims.
+            wet_gain: 10.0_f32.powf(self.wet_trim.value() * 0.05),
             output_db: self.output.value(),
             delta: self.delta.value() >= 1,
             bypass: self.bypass.value() >= 1,
+            sidechain: self.sidechain.value() >= 1,
+            sidechain_listen: self.sidechain_listen.value() >= 1,
             adaptive_baseline: false,
             ..Settings::default()
         };
@@ -785,6 +804,16 @@ impl PluginLogic for Smooth {
     type Params = SmoothParams;
     type DspState = Dsp;
 
+    /// Plain stereo, stereo with a stereo sidechain, then mono. Mono has no
+    /// sidechain: a two-channel input would not say which bus it is.
+    fn bus_layouts() -> Vec<BusLayout> {
+        vec![
+            BusLayout::stereo(),
+            BusLayout::stereo().with_sidechain_input("Sidechain", ChannelConfig::Stereo),
+            BusLayout::mono(),
+        ]
+    }
+
     fn init(params: &SmoothParams, _cx: &InitContext) -> Dsp {
         Dsp {
             bank: Dsp::build(48_000.0, params.selection()).ok(),
@@ -842,6 +871,8 @@ impl PluginLogic for Smooth {
         let lanes = inputs.clamp(1, 2);
         let mut settings = params.settings();
         settings.active_channels = lanes;
+        // The sidechain bus follows the main pair; four input channels mean it is there.
+        settings.sidechain &= inputs >= 4;
         // A plan switch resets the engine's history: it may interrupt.
         if bank.select(params.selection(), settings.mid_side && lanes == 2) {
             settings.mix = 1.0;
@@ -850,7 +881,14 @@ impl PluginLogic for Smooth {
         for frame in 0..frames {
             let left = if inputs > 0 { buffer.input(0)[frame] } else { 0.0 };
             let right = if lanes > 1 { buffer.input(1)[frame] } else { left };
-            let out = bank.active_mut().process_sample([left, right], &settings);
+            let detector = if settings.sidechain {
+                [buffer.input(2)[frame], buffer.input(3)[frame]]
+            } else {
+                [left, right]
+            };
+            let out = bank
+                .active_mut()
+                .process_sample_with_detector([left, right], detector, &settings);
             for channel in 0..outputs {
                 buffer.output(channel)[frame] = out[channel.min(lanes - 1)];
             }
@@ -1239,6 +1277,7 @@ mod param_tests {
         assert_eq!(params.attack.value(), 5.0);
         assert_eq!(params.release.value(), 3.0);
         assert_eq!(params.mix.value(), 100.0);
+        assert_eq!(params.wet_trim.value(), 0.0);
         assert_eq!(params.output.value(), 0.0);
         assert_eq!(params.mode.value(), 0);
         assert_eq!(params.quality.value(), 0);
@@ -1393,5 +1432,21 @@ mod reset_rt {
             Smooth::reset(&mut state, &params, &AudioConfig::new(48_000.0, 512));
         });
         assert_eq!(allocations, 0, "reset allocated {allocations} times on the audio thread");
+    }
+}
+
+#[cfg(test)]
+mod sidechain_layout {
+    use super::*;
+
+    /// The sidechain is a stereo aux bus on its own layout, and the plain
+    /// stereo layout stays available. Four input channels mean the sidechain
+    /// is there; two mean it is not.
+    #[test]
+    fn the_sidechain_layout_is_a_stereo_aux_bus() {
+        let layouts = <Smooth as PluginLogic>::bus_layouts();
+        assert!(layouts.iter().any(|l| l.total_input_channels() == 4));
+        assert!(layouts.iter().any(|l| l.total_input_channels() == 2
+            && l.sidechain_input_indices().next().is_none()));
     }
 }

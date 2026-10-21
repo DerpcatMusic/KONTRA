@@ -113,9 +113,16 @@ pub struct Settings {
     pub mix: f32,
     /// How long the mix gain takes to reach its target, in milliseconds.
     pub mix_smoothing_ms: f32,
+    /// Wet trim as a linear gain, 10^(dB/20). Scales only the processed
+    /// signal, before the mix; the output trim (`output_db`) follows the mix.
+    pub wet_gain: f32,
     pub output_db: f32,
     pub delta: bool,
     pub bypass: bool,
+    /// The detector analyses the sidechain input instead of the main one.
+    pub sidechain: bool,
+    /// Listen to the detector: the output is its signal, not the reduction.
+    pub sidechain_listen: bool,
     pub adaptive_baseline: bool,
     pub bands: [BandRecord; 8],
     /// Typed descriptor inputs. The host adapter declares tag0; source public tags are unclosed.
@@ -146,9 +153,12 @@ impl Default for Settings {
             mid_side: false,
             mix: 1.0,
             mix_smoothing_ms: 30.0,
+            wet_gain: 1.0,
             output_db: 0.0,
             delta: false,
             bypass: false,
+            sidechain: false,
+            sidechain_listen: false,
             adaptive_baseline: false,
             bands: std::array::from_fn(|i| {
                 let mut record = BandRecord::flat(DEFAULT_CENTERS[i]);
@@ -610,18 +620,34 @@ impl Engine {
         self.max_reduction_db = 0.0;
     }
     pub fn process_sample(&mut self, input: [f32; 2], settings: &Settings) -> [f32; 2] {
+        self.process_sample_with_detector(input, input, settings)
+    }
+
+    /// `detector` is what the analysis listens to when the sidechain is on;
+    /// the reduction and the dry path always take `input`.
+    pub fn process_sample_with_detector(
+        &mut self,
+        input: [f32; 2],
+        detector: [f32; 2],
+        settings: &Settings,
+    ) -> [f32; 2] {
         self.active_channels = settings.active_channels.clamp(1, 2);
         let mid_side = settings.mid_side && self.active_channels == 2;
         self.last_mix = settings.mix.clamp(0.0, 1.0);
         self.last_bypass = settings.bypass;
         let input = input.map(|v| if v.is_finite() { v } else { 0.0 });
-        let conditioned = if mid_side {
-            [
-                (input[0] + input[1]) * std::f32::consts::FRAC_1_SQRT_2,
-                (input[0] - input[1]) * std::f32::consts::FRAC_1_SQRT_2,
-            ]
+        let detector = if settings.sidechain {
+            detector.map(|v| if v.is_finite() { v } else { 0.0 })
         } else {
             input
+        };
+        let conditioned = if mid_side {
+            [
+                (detector[0] + detector[1]) * std::f32::consts::FRAC_1_SQRT_2,
+                (detector[0] - detector[1]) * std::f32::consts::FRAC_1_SQRT_2,
+            ]
+        } else {
+            detector
         };
         for (index, ch) in self
             .channels
@@ -672,15 +698,23 @@ impl Engine {
         self.mix_gain = ((target - self.mix_gain) * rate) + self.mix_gain;
         let mix = self.mix_gain;
         let gain = 10.0_f32.powf(settings.output_db.clamp(-24.0, 24.0) * 0.05);
+        // Reference coefficients: dry (1 - mix), wet (wet_gain * mix). Delta
+        // takes dry - wet at the same wet gain. Bypass ignores both trims.
+        let wet_mix = settings.wet_gain * mix;
         let mut output = std::array::from_fn(|c| {
             if settings.bypass {
                 dry[c]
             } else if settings.delta {
-                (dry[c] - wet[c]) * mix * gain
+                (dry[c] - wet[c]) * wet_mix * gain
             } else {
-                (dry[c] + mix * (wet[c] - dry[c])) * gain
+                ((1.0 - mix) * dry[c] + wet_mix * wet[c]) * gain
             }
         });
+        // Sidechain listen hears the detector's own signal, through the output
+        // trim. The reference's listen routing is not located (research/engine-io.md).
+        if settings.sidechain && settings.sidechain_listen {
+            output = detector.map(|v| v * gain);
+        }
         if self.active_channels == 1 {
             output[1] = output[0]; // Two-slot standalone/WAV adapter; mono hosts consume only lane 0.
         }
@@ -1241,6 +1275,55 @@ mod tests {
             }
         }
     }
+
+    /// The wet trim scales only the processed signal, before the mix. With no
+    /// reduction the wet is the delayed input, so each case is the delayed
+    /// input times (dry weight + wet weight). The dry weight is 1 - mix and
+    /// the wet weight is wet_gain * mix; bypass keeps the dry alone.
+    #[test]
+    fn the_wet_trim_scales_only_the_processed_signal() {
+        // mix, wet gain, bypass, delta -> dry weight, wet weight
+        let cases = [
+            (1.0_f32, 2.0_f32, false, false, 0.0_f32, 2.0_f32),
+            (0.5, 2.0, false, false, 0.5, 1.0),
+            (0.5, 2.0, true, false, 1.0, 0.0),
+            (1.0, 2.0, false, true, 0.0, 0.0),
+        ];
+        for (mix, wet_gain, bypass, delta, dry_weight, wet_weight) in cases {
+            let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+            let settings = Settings {
+                depth: 0.0,
+                mix,
+                wet_gain,
+                bypass,
+                delta,
+                mix_smoothing_ms: 0.0,
+                ..Settings::default()
+            };
+            let latency = engine.latency();
+            let mut history = vec![[0.0; 2]; latency + 1];
+            let mut error = 0.0_f32;
+            for t in 0..latency + 9000 {
+                let input = [
+                    (TAU * 997.0 * t as f32 / 44100.0).sin() * 0.4,
+                    (TAU * 311.0 * t as f32 / 44100.0).sin() * 0.2,
+                ];
+                history[t % (latency + 1)] = input;
+                let out = engine.process_sample(input, &settings);
+                if t >= latency {
+                    let reference = history[(t - latency) % (latency + 1)];
+                    for c in 0..2 {
+                        let expected = (dry_weight + wet_weight) * reference[c];
+                        error = error.max((out[c] - expected).abs());
+                    }
+                }
+            }
+            assert!(
+                error < 1.0e-4,
+                "mix={mix} wet={wet_gain} bypass={bypass} delta={delta} error={error}"
+            );
+        }
+    }
     /// The research's acceptance criterion, on the frequency the reference's
     /// final weighting lets through.
     ///
@@ -1386,6 +1469,78 @@ mod ring2 {
                 "{label}: ring energy {wet:.6} against {dry:.6} = {:.2} dB",
                 10.0 * (wet / dry).log10()
             );
+        }
+    }
+
+    /// Energy of the processed output against the delayed dry input, over the
+    /// ringing tone of `a_ringing_tone_is_pulled_down`, with the detector fed
+    /// `detector_on` (the tone) or silence.
+    fn sidechain_run(sidechain: bool, detector_on: bool) -> (f32, f32) {
+        let mut engine = Engine::new(
+            44100.0,
+            EngineConfig {
+                reduced_latency: true,
+                ..EngineConfig::default()
+            },
+        )
+        .unwrap();
+        let latency = engine.latency();
+        let settings = Settings {
+            depth: 0.8,
+            detail: 0.4,
+            attack: 0.0,
+            stereo_link: 0.0,
+            focus: 0.0,
+            sidechain,
+            ..Settings::default()
+        };
+        let (mut dry, mut wet) = (0.0f32, 0.0f32);
+        for t in 0..20000 {
+            let envelope = (-(t as f32) / (0.15 * 44100.0)).exp();
+            let tone = (TAU * 1000.0 * t as f32 / 44100.0).sin() * 0.5 * envelope;
+            let detector = if detector_on { [tone, tone] } else { [0.0, 0.0] };
+            let out = engine.process_sample_with_detector([tone, tone], detector, &settings);
+            if t > 2000 {
+                let reference = (TAU * 1000.0 * (t - latency) as f32 / 44100.0).sin()
+                    * 0.5
+                    * (-(t as f32 - latency as f32) / (0.15 * 44100.0)).exp();
+                dry += reference * reference;
+                wet += out[0] * out[0];
+            }
+        }
+        (dry, wet)
+    }
+
+    /// With the switch off the detector is ignored; with it on and fed the
+    /// same tone the reduction is the main input's exactly. A silent detector
+    /// does change the output: the engine's reduction of silence is the
+    /// reference-unverified part, so it is not pinned here.
+    #[test]
+    fn the_sidechain_detector_replaces_the_analysis_input() {
+        let (dry, off_tone) = sidechain_run(false, true);
+        let (_, off_silent) = sidechain_run(false, false);
+        let (_, on_tone) = sidechain_run(true, true);
+        let (_, on_silent) = sidechain_run(true, false);
+        assert!(off_tone < dry * 0.95, "the main input is reduced");
+        assert_eq!(off_tone, off_silent, "the detector is ignored with the switch off");
+        assert_eq!(on_tone, off_tone, "the same detector signal gives the same reduction");
+        assert_ne!(on_silent, off_tone, "the detector drives the reduction when on");
+    }
+
+    /// Listen hears the detector's own signal, not the processed one.
+    #[test]
+    fn sidechain_listen_outputs_the_detector() {
+        let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+        let settings = Settings {
+            sidechain: true,
+            sidechain_listen: true,
+            ..Settings::default()
+        };
+        for t in 0..4000 {
+            let input = [(t as f32 * 0.01).sin() * 0.3, 0.0];
+            let detector = [(t as f32 * 0.02).cos() * 0.2, (t as f32 * 0.03).sin() * 0.1];
+            let out = engine.process_sample_with_detector(input, detector, &settings);
+            assert_eq!(out, detector, "t={t}");
         }
     }
 }
