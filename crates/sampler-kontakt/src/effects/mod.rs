@@ -1226,6 +1226,9 @@ pub(crate) struct BusPlan {
     /// The bus fader (linear) and pan.
     pub volume: f32,
     pub pan: f32,
+    /// Phase invert and L/R swap (the Inverter law on the bus amplifier).
+    pub invert: bool,
+    pub swap: bool,
     pub groups: Vec<sampler_ir::GroupRef>,
 }
 
@@ -1244,6 +1247,9 @@ pub(crate) fn bus_plans(program: &Program, routes: &[(sampler_ir::GroupRef, u8)]
                 index,
                 volume: params.volume,
                 pan: params.pan,
+                // The saved flag offsets are not yet proven (docs/re/engine/k-utilities-routing.md).
+                invert: false,
+                swap: false,
                 groups: routes
                     .iter()
                     .filter(|&&(_, bus)| usize::from(bus) == index)
@@ -1363,6 +1369,13 @@ pub(crate) fn instrument_buses_with_recipes(
         );
         take(&name, &c);
         let mut processors = c.processors;
+        // Native bus amplifier order (BInsertBus audio 0x140824910): L/R swap, phase
+        // invert, then the fader and the balance. Same matrix as the Inverter slot.
+        if bus.invert || bus.swap {
+            if let Some(flip) = matrix(&Params::Inverter { invert: bus.invert, swap: bus.swap }, &mut Vec::new()) {
+                processors.push(sampler_ir::Processor::StereoMatrix(flip));
+            }
+        }
         if dynamic {
             // A script sets the bus volume and routes groups to any bus at run
             // time, so every bus exists and its volume is a Mix block's wet level.
@@ -1764,7 +1777,7 @@ mod tests {
             let mut instrument = ir::Instrument::default();
             instrument.groups.push(ir::Group::default());
             let (notes, _) = super::instrument_buses(&mut instrument, &[],
-                &[super::BusPlan { index: 0, volume: 1., pan,
+                &[super::BusPlan { index: 0, volume: 1., pan, invert: false, swap: false,
                     groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
             assert!(notes.is_empty());
             if pan == 0. { continue; }
@@ -1774,6 +1787,22 @@ mod tests {
                 120., &[[1., 1.]]);
             assert_eq!(output[0], expected);
         }
+    }
+
+    /// Native bus amplifier order: swap, then invert, then the balance. [0.25, -0.5]
+    /// swaps to [-0.5, 0.25], inverts to [0.5, -0.25], then pan +0.5 halves the left.
+    #[test]
+    fn instrument_bus_swap_and_invert_run_before_the_balance() {
+        use sampler_ir as ir;
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        let (notes, _) = super::instrument_buses(&mut instrument, &[],
+            &[super::BusPlan { index: 0, volume: 1., pan: 0.5, invert: true, swap: true,
+                groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
+        assert!(notes.is_empty());
+        let chain = instrument.buses[0].chain.unwrap();
+        let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(), 120., &[[0.25, -0.5]]);
+        assert_eq!(output[0], [0.25, -0.25]);
     }
 
     /// Output's double-buffered layer buses (ANALOG STRINGS `switch_bus`): a
@@ -1790,7 +1819,7 @@ mod tests {
         zone.velocity = ir::VelocityResponse::None;
         instrument.zones.push(zone);
         let (notes, _) = super::instrument_buses(&mut instrument, &[],
-            &[super::BusPlan { index: 0, volume: 0., pan: 0., groups: vec![ir::GroupRef(0)] }],
+            &[super::BusPlan { index: 0, volume: 0., pan: 0., invert: false, swap: false, groups: vec![ir::GroupRef(0)] }],
             true, &mut |_| Err("unused".into()));
         assert!(notes.is_empty(), "{notes:?}");
         let pcm = sampler_core::Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
@@ -3125,6 +3154,197 @@ mod tests {
             processors,
             vec![sampler_ir::Processor::Color(color::gainer(1.0, 0.0))]
         );
+    }
+
+    #[test]
+    fn galois_reverb_room_type_is_a_native_u32_enum() {
+        // Kontakt 8.13.1 FUN_140d019f0 reads a u32 room type before nine floats.
+        // Hall (1) used to decode as the f32 1.4e-45 and play as a room.
+        let mut public = 1u32.to_le_bytes().to_vec();
+        for x in [0.25f32, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
+            public.extend(x.to_le_bytes());
+        }
+        let mut hall = slot(0x59, public, 1.0);
+        hall.version = 0x10;
+        let Some(Params::Reverb(v)) = hall.params() else { panic!("hall reverb decodes") };
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[1], 0.25);
+        let mut notes = Vec::new();
+        let core = space::galois(&v, &mut notes).network.unwrap().galois.unwrap();
+        assert!(core.hall, "type 1 runs the Hall core");
+        hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(hall.params().is_none(), "Kontakt throws on room type 2");
+    }
+
+    #[test]
+    fn send_rack_reverb_becomes_a_send_bus_fed_by_send_levels() {
+        use sampler_ir as ir;
+        let mut levels = 2u32.to_le_bytes().to_vec();
+        levels.extend([0.5f32, 1.0].iter().flat_map(|x| x.to_le_bytes()));
+        levels.extend(0u32.to_le_bytes());
+        let mut reverb = Vec::new();
+        for x in [0.0f32, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
+            reverb.extend(x.to_le_bytes());
+        }
+        let mut instrument = ir::Instrument {
+            groups: vec![ir::Group {
+                muted: false,
+                wavetable: None,
+                time_stretch: None,
+                start: Vec::new(),
+                name: "g".into(),
+                gain: ir::Gain::UNITY,
+                pan: ir::Pan::default(),
+                tune: ir::Pitch::Semitones(0.0),
+                chain: None,
+                output: ir::Output::Master,
+                voice_limit: None,
+                source_voice_limit: None,
+                monophonic_release: false,
+                sends: Vec::new(),
+                tap: None,
+            }],
+            ..Default::default()
+        };
+        let racks = vec![
+            (
+                "instrument insert".to_string(),
+                vec![slot(0x17, levels, 1.0)],
+            ),
+            ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
+        ];
+        let report = instrument_buses(&mut instrument, &racks, &[], false, &mut |_| {
+            Err("none".into())
+        });
+        assert_eq!(instrument.buses.len(), 2, "{report:?}");
+        assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
+        let feed = &instrument.buses[0].sends[0];
+        assert_eq!(feed.to, ir::Output::Bus(ir::BusRef(1)));
+        assert_eq!(feed.gain, ir::Gain::Linear(0.5));
+        let chain = &instrument.chains[instrument.buses[1].chain.unwrap().0];
+        assert!(matches!(
+            chain.pre_amplitude[..],
+            [ir::Processor::Space(_)]
+        ));
+        instrument.validate().unwrap();
+        // A physical return at slot 3 remains addressable even when the
+        // instrument level is zero; a group tap can still feed that return.
+        let mut sparse = ir::Instrument::default();
+        let mut return_slot = slot(0x59, racks[1].1[0].public.clone(), 1.0);
+        return_slot.slot = 3;
+        let mut zero = 4u32.to_le_bytes().to_vec();
+        zero.extend([0.0f32; 4].iter().flat_map(|x| x.to_le_bytes()));
+        zero.extend(0u32.to_le_bytes());
+        let (_, returns) = instrument_buses(
+            &mut sparse,
+            &[
+                ("instrument insert".into(), vec![slot(0x17, zero, 1.0)]),
+                ("instrument send".into(), vec![return_slot]),
+            ],
+            &[],
+            false,
+            &mut |_| Err("none".into()),
+        );
+        assert_eq!(returns, vec![(3, ir::BusRef(1))]);
+        assert_eq!(sparse.buses[0].sends[0].gain, ir::Gain::Linear(0.0));
+        // Nothing to do: no buses.
+        let mut plain = ir::Instrument::default();
+        instrument_buses(&mut plain, &[], &[], false, &mut |_| Err("none".into()));
+        assert!(plain.buses.is_empty());
+        // A routed bus at half volume owns its groups' output; an unrouted one
+        // is not built.
+        let mut routed = instrument.clone();
+        routed.buses.clear();
+        routed.chains.clear();
+        let plans = [
+            BusPlan {
+                index: 0,
+                volume: 0.5,
+                pan: 0.0,
+                invert: false,
+                swap: false,
+                groups: vec![ir::GroupRef(0)],
+            },
+            BusPlan {
+                index: 1,
+                volume: 0.5,
+                pan: 0.0,
+                invert: false,
+                swap: false,
+                groups: Vec::new(),
+            },
+        ];
+        instrument_buses(&mut routed, &[], &plans, false, &mut |_| Err("none".into()));
+        assert_eq!(routed.buses.len(), 1);
+        assert_eq!(routed.buses[0].gain, ir::Gain::Linear(0.5));
+        assert_eq!(routed.buses[0].output, ir::Output::Master);
+        assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
+        routed.validate().unwrap();
+    }
+
+    #[test]
+    fn voice_send_levels_are_admitted_on_both_sides_of_the_amplifier() {
+        let mut levels = 1u32.to_le_bytes().to_vec();
+        levels.extend(0.5f32.to_le_bytes());
+        levels.extend(0u32.to_le_bytes());
+        let mut before = slot(0x17, levels.clone(), 1.0);
+        before.slot = 2;
+        let mut after = slot(0x17, levels, 1.0);
+        after.slot = 6;
+        let (chain, boundary) = voice_chain(&[before, after], 4, None, 0, &[]);
+        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert_eq!(boundary, 0);
+        assert_eq!(chain.send_taps.len(), 2);
+        assert_eq!(chain.send_taps[0].slot, 2);
+        assert_eq!(
+            chain.send_taps[0].position,
+            sampler_ir::VoiceSendPosition::BeforeAmplitude(0)
+        );
+        assert_eq!(chain.send_taps[1].slot, 6);
+        assert_eq!(
+            chain.send_taps[1].position,
+            sampler_ir::VoiceSendPosition::AfterAmplitude(0)
+        );
+    }
+
+    #[test]
+    fn instrument_send_tap_precedes_later_inserts_on_the_summed_bus() {
+        use sampler_ir as ir;
+        let mut before = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        before.dry_level = 0.0;
+        let mut levels = 1u32.to_le_bytes().to_vec();
+        levels.extend(0.5f32.to_le_bytes());
+        levels.extend(0u32.to_le_bytes());
+        let mut tap = slot(0x17, levels, 1.0);
+        tap.slot = 2;
+        let mut after = slot(0x13, 3.0f32.to_le_bytes().to_vec(), 1.0);
+        after.slot = 3;
+        after.dry_level = 0.0;
+        let mut ir = ir::Instrument::default();
+        instrument_buses(
+            &mut ir,
+            &[
+                ("instrument insert".into(), vec![before, tap, after]),
+                (
+                    "instrument send".into(),
+                    vec![slot(0x13, 0.5f32.to_le_bytes().to_vec(), 1.0)],
+                ),
+            ],
+            &[],
+            false,
+            &mut |_| Err("none".into()),
+        );
+        assert_eq!(ir.buses.len(), 3);
+        assert_eq!(ir.buses[0].output, ir::Output::Bus(ir::BusRef(2)));
+        assert_eq!(ir.buses[0].sends[0].to, ir::Output::Bus(ir::BusRef(1)));
+        assert_eq!(ir.buses[0].sends[0].gain, ir::Gain::Linear(0.5));
+        for (bus, gain) in [(0, 2.0), (2, 3.0)] {
+            let stages = &ir.chains[ir.buses[bus].chain.unwrap().0].pre_amplitude;
+            assert!(
+                matches!(stages[..], [ir::Processor::Color(c)] if c.gainer.is_some_and(|x| x.gain == ir::Gain::Linear(gain) && x.dry == 0.0))
+            );
+        }
+        ir.validate().unwrap();
     }
 }
 

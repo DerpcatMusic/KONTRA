@@ -314,10 +314,10 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Gater | unknown | none | |
 | Reverse Grain | unknown | none | |
 | Transpose Stretch | unknown | none | |
-| Inverter | unknown | none | |
-| Send Levels | unknown | none | |
-| Group/instrument/bus/main insert routing and send taps | unknown | none | |
-| Effect slot ordering and processing scopes | unknown | none | |
+| Inverter | partial | decomp | Reader (v0x60) and audio confirmed; native render vector missing |
+| Send Levels | partial | none | Taps, levels, bypass shared; reader not found in decompile; live tap binding open |
+| Group/instrument/bus/main insert routing and send taps | partial | decomp | Bus amp order (swap, invert, fader, pan) confirmed; bus saved flag offsets and fader/pan slew open |
+| Effect slot ordering and processing scopes | partial | none | Scopes and rack order modelled; per-slot scheduler not decompile-confirmed |
 
 ## Modulation sources (k-mod-envelopes, k-mod-lfo-step, k-mod-external)
 
