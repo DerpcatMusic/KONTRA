@@ -1343,6 +1343,12 @@ pub(crate) struct Inputs<'a> {
     /// The note's raw pitch bend, -1..=1.
     pub bend: f64,
     pub controls: RealValuesRef<'a>,
+    /// Group audio for the span being advanced, for audio-driven sources
+    /// (envelope follower). Empty when the caller has none: those sources hold.
+    pub audio: &'a [f32],
+    /// Semitones from the previous note of the group to this note (glide).
+    /// 0 when the caller has none.
+    pub interval: i32,
 }
 
 impl<'a> Inputs<'a> {
@@ -1364,6 +1370,8 @@ impl<'a> Inputs<'a> {
             script,
             controls,
             bend: expression.bend,
+            audio: &[],
+            interval: 0,
         }
     }
 }
@@ -2826,7 +2834,7 @@ mod tests {
             held: 0,
             script: &script,
             bend: 0.0,
-            controls: RealValuesRef::new(&[]),
+            controls: RealValuesRef::new(&[]), audio: &[], interval: 0,
         };
         let clock = |now| Clock {
             rate: 48000.0,
@@ -3032,7 +3040,7 @@ mod tests {
             let inputs = Inputs {
                 velocity: 1., key: 0.5, pressure: 0, timbre: 0,
                 controllers: &controllers, held: 0, script: &script,
-                bend: 0., controls: RealValuesRef::new(&[]),
+                bend: 0., controls: RealValuesRef::new(&[]), audio: &[], interval: 0,
             };
             let mut state = VoiceModState::new(&modulation, 1).unwrap();
             for now in [0, 2400, 48127] {
@@ -3071,7 +3079,7 @@ mod tests {
         let inputs = Inputs {
             velocity: 1., key: 0.5, pressure: 0, timbre: 0,
             controllers: &controllers, held: 0, script: &script,
-            bend: 0., controls: RealValuesRef::new(&old),
+            bend: 0., controls: RealValuesRef::new(&old), audio: &[], interval: 0,
         };
         let clock = |now| Clock { rate: 48000., tempo: 120., now };
         actual.start(&modulation, 0, 0, &inputs, clock(2400), 7);
@@ -3120,7 +3128,7 @@ mod tests {
                 held: 0,
                 script: &Default::default(),
                 bend: 0.0,
-                controls: RealValuesRef::new(&[]),
+                controls: RealValuesRef::new(&[]), audio: &[], interval: 0,
             };
             let clock = |now| Clock {
                 rate: 1000.0,
@@ -3155,7 +3163,7 @@ mod scoped_restart_tests {
         let modulation=VoiceModulation::new(vec![program(),program()],vec![Some(0),Some(1)],vec![0;2]).unwrap();
         let mut state=VoiceModState::new_scoped(&modulation,3).unwrap();
         let cc=[0;128];let values=Default::default();
-        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[])};
+        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[]),audio:&[],interval:0};
         let clock=|now|Clock{rate:1000.,tempo:120.,now};
         state.start(&modulation,0,0,&inputs,clock(0),1);state.commit_scoped_start(0);
         state.start(&modulation,1,0,&inputs,clock(600),2);
@@ -3172,7 +3180,7 @@ mod scoped_restart_tests {
         let program=ModProgram{sources:vec![ModSource::Constant],routes:vec![ModRoute::new(0,ModTarget::Pan,2.),ModRoute::new(0,ModTarget::Decibels,6.)],..Default::default()};
         let modulation=VoiceModulation::new(vec![program],vec![Some(0)],vec![0]).unwrap();
         let mut state=VoiceModState::new_scoped(&modulation,1).unwrap();let cc=[0;128];let values=Default::default();
-        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[])};
+        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[]),audio:&[],interval:0};
         state.start(&modulation,0,0,&inputs,Clock{rate:48000.,tempo:120.,now:97},1);
         let out=state.outputs[0];assert_eq!(out.scalar_pan,2.);assert!((out.scalar_gain-10f64.powf(6./20.)).abs()<1e-15);
         assert_eq!(out.gains[0],0.);assert_eq!(out.gains[1],out.scalar_gain as f32);
