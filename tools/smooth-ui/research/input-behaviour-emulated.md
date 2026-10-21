@@ -100,6 +100,26 @@ No value write from the wheel is visible in this function. The value step is
 therefore not here, or the Input's wheel fields are read by a function that
 calls slot 2 with the value already computed.
 
+## FFT forward scale (round 2, emulated)
+
+Source: the FFT worker's `RESULT.md` in `RunScratch/smooth/re-emulate/fft/`.
+Not yet re-checked by a second run.
+
+- Spec init `fcn.180007c40` writes magic 7, order, flags and scale. Variants at
+  `0x180007f40` and `0x180008240`. Variants at `0x180008540` and up fault in
+  Unicorn and were not used.
+- Wrapper `fcn.180001640` is a real-input forward DFT with sign `e^{-i}`. Output
+  is N/2+1 packed complex values. Residual about 1e-8 for orders 1 to 10. The
+  `e^{+i}` fit fails.
+- Scale by spec type: type 8 factor 1; type 2 forward 1 (1/N on inverse only);
+  type 1 1/N; type 4 1/sqrt(N). The type-to-scale names follow Intel IPP's flag
+  names from memory, not checked against docs.
+- **Soothe3's own forward scale is not recovered.** Its call site was not found:
+  no direct, RIP-relative or lea reference reaches the dispatch tables at
+  `0x1821ebe30` and `0x1821ec188`. Needed: the dispatcher that writes the table
+  index, or a runtime capture of `r8` at the creator entry.
+- Mid/side scale: not attempted (only UI label strings found).
+
 ## What is still open (ordered)
 
 1. Find the reader that copies `this+0x338..0x340` (and `+0x720`) into the
