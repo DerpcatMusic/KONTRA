@@ -7,8 +7,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Sampler | unknown | none | |
-| DFD | unknown | none | |
+| Sampler | partial | docs, decomp | Loops, reverse, start/end, tune and root map and are covered by engine tests; no native render or oracle dump compared yet (`docs/re/engine/k-sampler-source.md`). Interpolation kernel per group unrecovered (corpus value 0 everywhere). |
+| DFD | partial | decomp | Preload unit (bytes), default 60 KiB, global override and 6 KiB window rounding confirmed in the Kontakt 8 decompile. Window law not yet wired into stream head sizing; runtime mode-4 mapping unrecovered. |
 | Wavetable | unknown | none | |
 | Tone Machine | unknown | none | |
 | Time Machine | unknown | none | |
