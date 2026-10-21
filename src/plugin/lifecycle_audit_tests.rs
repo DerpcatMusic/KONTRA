@@ -103,3 +103,22 @@ fn a_replaced_part_fades_out_and_is_then_handed_back() {
     assert!(core.take_expired().is_some());
     assert!(core.take_expired().is_none());
 }
+
+/// F-02: a mute or fader move made while a preset prepares reaches the audio
+/// thread's mix queue on the wait tick, not after the load.
+#[test]
+fn a_mixer_edit_during_a_load_reaches_the_audio_queue_on_the_wait_tick() {
+    let (params, _core) = transaction_fixture();
+    while params.shared.controls.pop().is_some() {}
+    params.selection.write_unpoisoned().parts[0].path = "candidate.nki".into();
+    assert!(load_part_with(&params, 0, None, |_, _, _| {
+        // The loader is "blocked" here; the user drags the fader and the wait loop ticks.
+        control_tick(&params);
+        let before = params.shared.controls.pop().expect("mix pushed during the wait").parts[0].gain;
+        params.selection.write_unpoisoned().parts[0].gain = 0.25;
+        control_tick(&params);
+        let after = params.shared.controls.pop().expect("mix pushed during the wait").parts[0].gain;
+        assert_ne!(before, after);
+        Ok(transaction_candidate("Candidate"))
+    }));
+}

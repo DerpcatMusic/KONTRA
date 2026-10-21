@@ -2200,7 +2200,7 @@ fn prepare_snapshot(
         },
     };
     let result = V2Loader.prepare_serviced(
-        &load, &mut |_| {}, &|| !current(), &mut || service_current_ui(params),
+        &load, &mut |_| {}, &|| !current(), &mut || control_tick(params),
     );
     if !current() {
         trace.detail(
@@ -2303,6 +2303,55 @@ fn service_current_ui(params: &SamplerParams) {
     });
 }
 
+/// The mixer, routing, scans, discard drain and UI handoffs. None of it needs the
+/// loader, so it also runs from the load wait: a mute or fader move made while a
+/// preset prepares reaches the audio thread within one wait tick.
+fn control_tick(params: &SamplerParams) {
+    let shared = &params.shared;
+    shared.flush_ready();
+    service_current_ui(params);
+    // UVI publication retains its existing source/lock policy.
+    shared.refresh_uvi(params);
+    shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
+    // Dropping what the audio thread replaced is this thread's job.
+    while shared.discard.pop().is_some() {}
+    shared
+        .midi_thru
+        .store(params.selection.read_unpoisoned().midi_thru, Ordering::Release);
+    poll_libraries(shared);
+    route(params);
+    align(params);
+    push_mix(params);
+    refresh_problems(shared);
+}
+
+fn push_mix(params: &SamplerParams) {
+    let shared = &params.shared;
+    let selection = params.selection.read_unpoisoned();
+    let mut mix = mix(&selection);
+    if let Some(plan) = &shared.published.lock_unpoisoned().0 {
+        mix.timing = plan.clone();
+    }
+    let view = shared.view.lock_unpoisoned();
+    mix.articulation_routes = selection
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(slot, p)| {
+            let instrument = view.parts.get(slot)?.instrument.as_deref()?;
+            let (keys, switching) = p
+                .articulation_overlay
+                .routing(instrument, p.switching)
+                .ok()?;
+            Some(Arc::new(crate::sound::articulation::Routing {
+                keys,
+                switching,
+            }))
+        })
+        .collect();
+    let _ = shared.controls.force_push(mix);
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -2312,48 +2361,11 @@ impl BackgroundTask for Load {
         shared.flush_ready();
         service_current_ui(params);
         snapshot_reuse::poll(params);
-        // UVI publication retains its existing source/lock policy. The load
-        // heartbeat only services the bounded core effect/control handoff.
-        shared.refresh_uvi(params);
-        shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
-        // Dropping what the audio thread replaced is this thread's job.
-        while shared.discard.pop().is_some() {}
         load_multi(params);
         let selection = params.selection.read_unpoisoned().clone();
         shared.ensure_parts(selection.parts.len());
         shared.prepare_growth();
-        shared
-            .midi_thru
-            .store(selection.midi_thru, Ordering::Release);
-        poll_libraries(shared);
-        route(params);
-        align(params);
-        let push_mix = || {
-            let selection = params.selection.read_unpoisoned();
-            let mut mix = mix(&selection);
-            if let Some(plan) = &shared.published.lock_unpoisoned().0 {
-                mix.timing = plan.clone();
-            }
-            let view = shared.view.lock_unpoisoned();
-            mix.articulation_routes = selection
-                .parts
-                .iter()
-                .enumerate()
-                .map(|(slot, p)| {
-                    let instrument = view.parts.get(slot)?.instrument.as_deref()?;
-                    let (keys, switching) = p
-                        .articulation_overlay
-                        .routing(instrument, p.switching)
-                        .ok()?;
-                    Some(Arc::new(crate::sound::articulation::Routing {
-                        keys,
-                        switching,
-                    }))
-                })
-                .collect();
-            let _ = shared.controls.force_push(mix);
-        };
-        push_mix();
+        control_tick(params);
         let mut snapshot = prepare_snapshot(params);
         let mut loaded = false;
         for slot in 0..shared.grown.load(Ordering::Acquire) as usize {
@@ -2370,7 +2382,7 @@ impl BackgroundTask for Load {
             align(params);
             // New trees: route their nodes and size their settings.
             route(params);
-            push_mix();
+            push_mix(params);
         }
         refresh_problems(shared);
     }
@@ -2443,7 +2455,7 @@ fn load_part(
 ) -> bool {
     load_part_with(params, slot, prepared, |request, progress, canceled| {
         V2Loader.prepare_serviced(
-            request, progress, canceled, &mut || service_current_ui(params),
+            request, progress, canceled, &mut || control_tick(params),
         )
     })
 }
