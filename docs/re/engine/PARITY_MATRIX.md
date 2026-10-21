@@ -295,3 +295,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Snapshots and base-instrument identity | unknown | none | |
 | NCW / WAV / AIFF decoding | unknown | none | |
 | Saved-state round trips | unknown | none | |
+| KSP engine parameters (set/get_engine_par, enumerations, display conversions) | unknown | none | |
+| NKI / NKM / NKB loading | partial | docs | 835 files inspected statically; 40 translated fully (2026-10-13). Open: legacy/multiband EQ, FX, modulation routes, LFO waveform, convolution controls, wavetable fallback (see docs/re/engine/k-library-load.md). Not decompile-confirmed yet. |
+| Snapshots and base-instrument identity | partial | docs | Other-files table and per-occurrence resources in place (docs/re/KONTAKT_SNAPSHOT_RESOURCES.md); snapshot lifecycle modes 1/3 not in the full-read path. |
+| NCW / WAV / AIFF decoding | partial | none | Vendored NCW round-trip and WAV/AIFF unit tests exist (samples.rs tests). No native vector yet; Kontakt NCW encode/decode located at 0141080000.c:4949-4965 but not read. |
+| Saved-state round trips | unknown | none | Not audited in this pass. |
