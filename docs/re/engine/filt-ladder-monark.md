@@ -81,3 +81,15 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
    (`LadderSettings` gains an HQ selector; the Kontakt mapper sets it from the saved flag).
    Remove the HQ-on warning only once the path matches the HQ-on captures.
 3. Add one golden test per behaviour (gain law, HQ path). Keep the existing 9-case gain test.
+
+## Shared-core build (on engine/filt-sv)
+
+- Ladder stages: each of the four cells is `linear::Tpt1` (zero-delay one-pole, native order);
+  the feedback soft clip is `shaper::Knee` (clamp +-24, `1 - |v|/48`). Bit-identical: the static
+  PCM grid, HQ composition and selector tests pass unchanged (52 filter tests).
+- Pro-53 / Versatile feedback knee `(a - c|s|)s` (clamp +-4) moved from `cascade.rs` to
+  `shaper::soft`; same arithmetic, existing vectors unchanged.
+- Monark keeps its own input-side loop (`pade(clamp4(..))` per stage, `TINY` denormal offsets).
+  Its stage is not `Tpt1`; expressing it needs a cell with a state-side shaper. Left as is.
+- Removed: the unused `Ladder::clear`.
+

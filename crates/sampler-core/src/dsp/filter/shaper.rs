@@ -46,6 +46,13 @@ impl Knee {
     }
 }
 
+/// `(a - c |s|) s` with `s` the input clamped to +-4: the Pro-53 and Versatile feedback knee.
+#[inline(always)]
+pub(crate) fn soft(v: f32, (a, c): (f32, f32)) -> f32 {
+    let s = v.clamp(-4.0, 4.0);
+    (a - s.abs() * c) * s
+}
+
 /// `v (v^2 + 27) / (9 v^2 + 27)`: the Padé tanh-like curve of the ladder and Monark inputs.
 #[inline(always)]
 pub(crate) fn pade(v: f32) -> f32 {
