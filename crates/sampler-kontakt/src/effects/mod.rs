@@ -71,10 +71,13 @@ const MODULES: &[(u16, &str)] = &[
     (0x69, "Vibrato Chorus"),
     (0x6a, "Wow / Flutter"),
     (0x6b, "Twin Delay"),
+    (0x71, "Beat Masher"),
     (0x72, "Gater"),
+    (0x73, "Beat Slicer"),
     (0x74, "Reverse Grain"),
     (0x78, "Skreamer Deluxe"),
     (0x79, "Kolor"),
+    (0x75, "Transpose Stretch"),
 ];
 
 pub(crate) fn module_name(id: u16) -> String {
@@ -1191,6 +1194,10 @@ pub(crate) fn chain_with(
                 fx.slot,
                 "effect".into(),
                 match color::unproved(fx.module).or(timemod::unproved(fx.module)).or(dynamics::unproved(fx.module)) {
+                match color::unproved(fx.module)
+                    .or(timemod::unproved(fx.module))
+                    .or(mangling::unproved(fx.module))
+                {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                     None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },
@@ -1550,6 +1557,18 @@ mod tests {
         assert!(out.notes.iter().any(|(_, feature, value, reason)| {
             feature == "effect" && *reason == sampler_ir::Reason::NotModeled && value.contains("Supercharger GT")
         }));
+    fn mangling_modules_are_named_and_reported_with_their_reason() {
+        for (module, name) in [(0x71, "Beat Masher"), (0x73, "Beat Slicer"), (0x75, "Transpose Stretch")] {
+            let out = chain(&[slot(module, vec![0; 16], 1.0)], Scope::Voice);
+            assert!(out.processors.is_empty(), "{name}");
+            let (_, _, value, reason) = out
+                .notes
+                .iter()
+                .find(|(_, feature, _, _)| feature == "effect")
+                .expect("missing effect diagnostic");
+            assert_eq!(*reason, sampler_ir::Reason::NotModeled);
+            assert!(value.starts_with(name) && value.contains("reader VA"), "{value}");
+        }
     }
 
     #[test]
@@ -2007,3 +2026,38 @@ mod tests {
         );
     }
 }
+
+/// Rebuild an impulse with the same shaping path; cache metadata carries no audio.
+pub(crate) fn restore_impulse(
+    c: &Convolution,
+    decoded: Decoded,
+) -> Result<sampler_ir::Impulse, String> {
+    let mut store = Vec::new();
+    let mut decoded = Some(decoded);
+    let mut load = |_| {
+        decoded
+            .take()
+            .ok_or_else(|| "impulse already consumed".to_owned())
+    };
+    space::convolution(
+        c,
+        ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } },
+        &mut Impulses {
+            store: &mut store,
+            load: &mut load,
+            recipes: None,
+        },
+        &mut Vec::new(),
+    )?;
+    store.pop().ok_or_else(|| "missing shaped impulse".into())
+}
+
+
+// Universal effect families (wave 4): each maps native effects onto sampler_ir::fx.
+pub(crate) mod dynamics;
+pub(crate) mod filter;
+pub(crate) mod eq;
+pub(crate) mod timemod;
+pub(crate) mod space;
+pub(crate) mod color;
+pub(crate) mod mangling;
