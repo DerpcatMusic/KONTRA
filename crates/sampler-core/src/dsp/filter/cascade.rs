@@ -29,6 +29,7 @@
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
+use super::super::biquad::{self, Coefficients, Shape};
 
 /// Frames between control evaluations (the engine's native-knob clock).
 const QUANTUM: usize = 32;
@@ -1412,21 +1413,17 @@ pub(crate) fn rbj(mode: u8, fn_: f64, q: f64) -> [f64; 5] {
         return [if mode == 2 { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0, 0.0];
     }
     let (sn, cs) = (fn_ * std::f64::consts::TAU).sin_cos();
-    let al = sn * (0.5 / q);
-    let a0 = al + 1.0;
-    let (a1, a2) = ((cs * -2.0) / a0, (1.0 - al) / a0);
-    match mode {
-        0 => {
-            let t = 1.0 - cs;
-            let b0 = (t * 0.5) / a0;
-            [b0, t / a0, b0, a1, a2]
-        }
-        1 => [al / a0, 0.0 / a0, -(al / a0), a1, a2],
-        _ => {
-            let b0 = ((cs + 1.0) * 0.5) / a0;
-            [b0, (-1.0 - cs) / a0, b0, a1, a2]
-        }
+    let shape = match mode {
+        0 => Shape::LowPass,
+        1 => Shape::BandPass,
+        _ => Shape::HighPass,
+    };
+    let (mut b, d) = biquad::rbj(shape, cs, sn * (0.5 / q), 1.);
+    if shape == Shape::HighPass {
+        // Native order: +0, not the cookbook's -0, at Nyquist.
+        b[1] = -1.0 - cs;
     }
+    Coefficients::normalised(b, d).to_array()
 }
 
 /// `(re, im)` square root, C99 `csqrt` branch cuts (the sign of a zero imaginary part kept).
