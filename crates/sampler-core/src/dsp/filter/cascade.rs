@@ -30,6 +30,8 @@ use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParame
 use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 use super::super::biquad::{self, Coefficients, Shape};
+use super::linear::Zdf;
+use super::shaper::{self, Knee};
 
 /// Frames between control evaluations (the engine's native-knob clock).
 const QUANTUM: usize = 32;
@@ -824,29 +826,6 @@ impl SvRamp {
     }
 }
 
-/// `clamp(v, +-2L)` stored as `c (1 - |c| w)`.
-#[inline(always)]
-fn sv_sat(v: f32, l2: f32, w: impl Fn(f32) -> f32) -> f32 {
-    let c = v.clamp(-l2, l2);
-    (1.0 - w(c.abs())) * c
-}
-
-/// One zero-delay stage in the SV2/MultiSV order. `s = [h, b, l]`; returns (hp, bp, lp).
-#[inline(always)]
-fn sv_stage(s: &mut [f32], x: f32, g: f32, k: f32, l: f32) -> (f32, f32, f32) {
-    let (l2, inv) = (l + l, 1.0 / l);
-    let a = k + g;
-    let gk = a * g;
-    let [h, b, lo] = [s[0], s[1], s[2]];
-    let hp = (x - ((((a + g) * b) + lo) + gk * h)) / (gk + 1.0);
-    let bp = (h + hp) * g + b;
-    let lp = (bp + b) * g + lo;
-    s[0] = hp;
-    s[1] = sv_sat(bp, l2, |c| (c * 0.25) * inv);
-    s[2] = sv_sat(lp, l2, |c| (c * 0.25) * inv);
-    (hp, bp, lp)
-}
-
 impl Cascade {
     /// The SV classes: their own ramp in place of the knob clock. State: cells `0..9` per
     /// channel (`[h, b, l]` per stage), the ramp from `RAMP`.
@@ -877,7 +856,7 @@ impl Cascade {
                 ramp = start;
                 let mut s: [f32; 9] = std::array::from_fn(|i| cells[i][ch] as f32);
                 let mut last_r = -1.0;
-                let mut sections = [(0f32, 0f32, 0f32); 2];
+                let mut sections = [Zdf::default(); 2];
                 for v in &mut block[ch][frames.clone()] {
                     for i in 0..8 {
                         ramp.cur[i] += ramp.step[i];
@@ -896,40 +875,27 @@ impl Cascade {
                             let [gin, g, r, l, gain] = [c[0], c[1], c[2], c[3], c[4]];
                             let l = if l > 1e-20 { l } else { 9.999_999_7e-21 };
                             let k = (1.0 - r) + (1.0 - r);
-                            let (hp, bp, lp) = sv_stage(&mut s[..3], x * gin, g, k, l);
+                            let [hp, bp, lp] = Zdf::new(g, k).tick_divided(g, &mut s[..3], x * gin, Knee::state_split(l));
                             let y = match mode { 0 => lp, 1 => bp + bp, _ => hp };
                             y * gain
                         }
                         Sv::Four { mode } | Sv::Six { mode } => {
                             let [g, r, gain, l] = [c[0], c[1], c[2], c[3]];
-                            let (l2, w) = (l + l, 0.25 / l);
                             let four = matches!(sv, Sv::Four { .. });
-                            let coefs = |k: f32| {
-                                let a = k + g;
-                                let gk = g * a;
-                                (g + a, gk, 1.0 / (gk + 1.0))
-                            };
                             if four {
                                 // SV4 re-derives its sections only when R moves (and per block).
                                 if r != last_r {
                                     let k2 = 1.0 - r * 0.666;
-                                    sections = [coefs((1.0 - r) + (1.0 - r)), coefs(k2 + k2)];
+                                    sections = [Zdf::new(g, (1.0 - r) + (1.0 - r)), Zdf::new(g, k2 + k2)];
                                     last_r = r;
                                 }
                             } else {
-                                sections = [coefs((1.0 - r) + (1.0 - r)); 2];
+                                sections = [Zdf::new(g, (1.0 - r) + (1.0 - r)); 2];
                             }
+                            let knee = Knee::state(l);
                             let mut x = x;
                             for j in 0..if four { 2 } else { 3 } {
-                                let (a2, gk, d) = sections[j.min(1)];
-                                let st = &mut s[3 * j..3 * j + 3];
-                                let [h, b, lo] = [st[0], st[1], st[2]];
-                                let hp = (x - (((b * a2) + lo) + h * gk)) * d;
-                                let bp = (hp + h) * g + b;
-                                let lp = (bp + b) * g + lo;
-                                st[0] = hp;
-                                st[1] = sv_sat(bp, l2, |c| c * w);
-                                st[2] = sv_sat(lp, l2, |c| c * w);
+                                let [hp, bp, lp] = sections[j.min(1)].tick(g, &mut s[3 * j..3 * j + 3], x, knee);
                                 x = match mode { 0 => lp, 1 => bp + bp, 2 => hp, _ => x - (bp + bp) };
                             }
                             x * gain
@@ -937,12 +903,12 @@ impl Cascade {
                         Sv::Multi { mode, .. } => {
                             let [g1, g2, r, l1, l2, spread, gain] = [c[0], c[1], c[2], c[3], c[4], c[5], c[6]];
                             let k = (1.0 - r) + (1.0 - r);
-                            let (hp, bp, lp) = sv_stage(&mut s[..3], x, g1, k, l1);
+                            let [hp, bp, lp] = Zdf::new(g1, k).tick_divided(g1, &mut s[..3], x, Knee::state_split(l1));
                             let bb1 = bp + bp;
                             let o1 = match mode { 0 => lp, 1 => bb1, _ => hp };
                             // Serial: (o1 - x) * 1 + x, in f32 as the native mixes it.
                             let x2 = if mode == 2 { (o1 - x) + x } else { x };
-                            let (hp2, bp2, lp2) = sv_stage(&mut s[3..6], x2, g2, k, l2);
+                            let [hp2, bp2, lp2] = Zdf::new(g2, k).tick_divided(g2, &mut s[3..6], x2, Knee::state_split(l2));
                             let bb2 = bp2 + bp2;
                             let y = match mode {
                                 0 => {
@@ -1134,7 +1100,7 @@ pub(crate) struct Xpander {
 #[inline(always)]
 fn xp_sat<const D: u8>(u: f32) -> f32 {
     match D {
-        0 => (((u * u) + 27.0) * u) / (((u * u) * 9.0) + 27.0),
+        0 => shaper::pade(u),
         1 => u.clamp(-1.0, 1.0),
         _ => {
             let t = (u * u) * f32::from_bits(0x3586_37be);
