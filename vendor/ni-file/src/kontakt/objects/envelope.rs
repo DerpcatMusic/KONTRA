@@ -223,8 +223,8 @@ pub struct EnvelopeFlex {
     /// Index into `points`, `sustain - 1` in every local preset (loop start?).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_index: u32,
-    /// Trailing bytes: a `u16` (v0x12 only), one `(f32, f32, f32)` record and a
-    /// byte, all of unknown meaning.
+    /// Trailing bytes, all of unknown meaning: v0x10 has four (an `f32`); v0x11
+    /// one `(f32, f32, f32)` record and a byte; v0x12 a `u16` before those.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_tail: Vec<u8>,
 }
@@ -235,6 +235,11 @@ impl EnvelopeFlex {
             return Err(Error::Static("Invalid flex timing metadata"));
         }
         EnvelopeTimingRecord::read(&self.unknown_tail[self.unknown_tail.len() - 13..])
+    }
+
+    /// A v0x10 envelope: its tail is four opaque bytes, not a timing record.
+    pub fn legacy_tail(&self) -> bool {
+        self.unknown_tail.len() == FLEX_TAIL_V10
     }
 
     pub fn unknown_version_word(&self) -> Option<u16> {
@@ -397,7 +402,7 @@ mod timing_tests {
         let flex = EnvelopeFlex::try_from(&chunk).unwrap();
         assert_eq!((flex.points.len(), flex.sustain), (2, 1));
         assert_eq!(flex.points[1].time_ms, 200.0);
-        assert!(flex.timing_record().is_err());
+        assert!(flex.legacy_tail() && flex.timing_record().is_err());
         assert_eq!(flex.to_chunk().unwrap().data, chunk.data);
     }
 
