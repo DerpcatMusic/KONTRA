@@ -201,7 +201,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Multi Digital | unknown | none | |
 | Step modulator | unknown | none | |
 | Envelope follower | partial | decomp | Executable (`ModSource::Follower`), decompile law and binary constants, one-span audio delay; no native vector (`k-mod-external.md`) |
-| Glide | missing | decomp | Menu name only; chunk 0x0B opaque; not the script glide (`k-mod-external.md`) |
+| Glide | partial | decomp | Executable (`ModSource::Glide`), setup law from FUN_140cebba0; origin per plan, octave units unverified (`k-mod-external.md`) |
 | External MIDI/performance sources | partial | none | 13 `ExternalSource` variants mapped (`modulation_objects.rs:84-96`); no per-source vectors (`k-mod-external.md`) |
 | Modulation routing (target, depth/polarity, shaping, smoothing) | partial | none | Depth sign/invert tested (`library.rs:6063`); negative lag and shape law unproven (`k-mod-external.md`) |
 

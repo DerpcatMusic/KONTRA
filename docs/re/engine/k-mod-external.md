@@ -89,7 +89,7 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
 
 - start = -1 (+1 for a downward interval), step = 1 / (time_s * rate), gain = |interval| / 12.
 - time: stored `BParGlide` float; multiplied by |interval| only for stored mode 1; time_ms * 0.001.
-- Implemented as `GlideRamp::kontakt_glide`. The interval is a per-note runtime input (not yet wired).
+- Implemented as `GlideRamp::kontakt_glide` and executable as `ModSource::Glide` (see below).
 
 ## Follower as a source (executable)
 
@@ -98,3 +98,23 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
   Each evaluation feeds `Inputs::audio` (empty = hold) and reads the second state as a 0..=1 level.
 - Test: `voice_mod::follower_source_tests` (rises on loud audio, falls over silence, holds with no audio).
 - The Kontakt mapping now produces this source instead of an unsupported report.
+
+## Glide as a source (executable)
+
+- `ir::ModulationSource::Glide` (stored mode, time_ms from `BParGlide` `values[0]`) ->
+  `voice_mod::ModSource::Glide`. Per voice: `GlideRamp` built at voice start from
+  `kontakt_glide(mode, time_ms, interval, rate)`; each evaluation renders the ramp for the span and
+  reads its last sample. Bipolar output (starts at -interval/12 octaves for an upward glide).
+- Interval: semitones from the previous note this plan started (`VoiceModState::glide_interval`),
+  set on `Inputs::interval` at voice start (`prepare/selection.rs`). First note: 0.
+- Test: `voice_mod::glide_source_tests` (origin from the previous note, ramp to zero over 700 frames
+  for mode 1, mirror for downward, silent for zero interval).
+
+## Deviations and open TODOs (verify with the Wine oracle)
+
+- TODO(oracle): timing of the follower's audio input. Implemented as one-span delay (the voice's
+  previous rendered span, mono, first 64 frames). Native timing (current block or otherwise) is unproved.
+- TODO(oracle): glide units. The ramp is octave-normalized (`|interval|/12`). A pitch route's depth
+  scale against this output is not verified, so pitch depth through a glide is not yet native-parity.
+- TODO(oracle): glide origin is per plan (instrument), not per Kontakt group, and does not check
+  legato. Group and legato rules are unproved.
