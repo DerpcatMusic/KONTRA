@@ -22,6 +22,8 @@ pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
 pub(crate) mod daft;
 pub(crate) mod formant;
+pub(crate) mod linear;
+pub(crate) mod shaper;
 pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
 pub(crate) mod ladder_kernel;
