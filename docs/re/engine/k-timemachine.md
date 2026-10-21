@@ -87,3 +87,45 @@ Engine: **WSOLA stand-in** in place of the Elastique backend. Not native.
 4. Add one golden / recorded-vector test per recovered behaviour.
 
 Until then the stand-ins stay labelled and reported; nothing here is claimed as parity.
+
+## Decompile evidence (Kontakt 8, `source/kontakt8/`, READY)
+
+Verified in the export (function names are `FUN_<addr>`; identity comes from class names in bodies):
+
+- **Engine classes.** Time Machine 2 is `BTimeMachine2` (ctor `FUN_140cd9320`, `0140cd0000.c`).
+  Time Machine 1 is `BTimeMachine` (ctor `FUN_140cd9470`). Pro is `BTimeMachine3` (ctor
+  `FUN_140cd9380`). The stretch backends are `BTM3ElastiqueWrapper<CElastiqueDirectIf,0|1>`,
+  `BTM3ElastiqueWrapper<CElastiqueProDirectIf,1>`, `BTM3ElastiqueWrapper<CElastiqueProV3DirectIf,0|1>`,
+  plus `CPSOLAAnalysisRT` / `CPSOLAPreAnalysis` (PSOLA) and `PSOLASynthForElastiqueProV3` (`01419d0000.c`).
+- **Backend selection.** `FUN_140ce7230` picks the wrapper from a kind (2 = Elastique direct,
+  3 = Elastique Pro V3) and a second flag (0/1, which looks like HQ). It is called from `FUN_140ce7b70`
+  (voice reset), which is driven by `FUN_140ce8d20` and `0140980000.c:1139`.
+- **Constructor defaults** (field identity not yet confirmed, values as stored):
+  - TM2: 1000 at +0xbc, 0.7 (`0x3f333333`) at +0x18, speed 1.0 at +0x4c, a flag at +0x17 set to 1.
+  - Pro: 10000 at +0x19c, 1024 (`0x400`) at +0x1a4, 2 at +0xec and +0x35, 128 (`0x80`) at +0x39
+    (matches the public Formant order default of 128), a flag at +0x1c4 set to 1.
+  - TM1: speed 1.0 at +0x4c.
+- **UI labels:** "Time Machine 1", "Time Machine 2", "Time Machine Pro" (`0140610000.c:3769-3773`), and
+  Time Machine 2 toggles "Transient Copy" (param id `0x317`, `01405f0000.c:7584`), "High Quality" (`0x311`)
+  and "Internal Trigger" (`0x315`) in the same switch. Pro's record name is "TimeMachinePro".
+
+## Still unrecovered (not implemented; no law fabricated)
+
+- Which stored mode (2, 5 or 8) selects which backend: the caller chain runs through a mode switch I
+  did not finish tracing.
+- The mapping from stored fields (`dfd_flag`, `dfd_integer_1/2`, `pro_flag_*`, `pro_float_*`) to
+  BTimeMachine2/3 members, and the units of Transient Size and Formant Shift.
+- PSOLA mark analysis and transient-copy scheduling (`CPSOLAAnalysisRT`), and the Elastique Pro V3
+  formant and envelope-order laws. Elastique is a third-party library; reproducing it needs an own
+  implementation written from measured behaviour, not from its code.
+
+## Gap-table status
+
+| Row | Status after decompile |
+| --- | --- |
+| TM2 PSOLA mark analysis | evidence located (`CPSOLAAnalysisRT`), law not extracted |
+| TM2 Transient Copy / Size / Grain profile | UI label and param id found; field mapping open |
+| Pro Elastique backend | backend classes located; algorithm not reproducible from the code |
+| Pro Keep Formants / Formant Shift / Env Order | constructor defaults found (order 128, env 2); setters open |
+| Pro v0x100 legacy record | open |
+| TM1 HQ path, tempo-sync law | open (not in this pass) |
