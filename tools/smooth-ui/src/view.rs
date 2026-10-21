@@ -8,6 +8,7 @@
 //! were put.
 
 use crate::graph;
+use crate::menus::{BandAsk, BandMenu, BandState};
 use crate::presets::{self, Presets};
 use crate::skin::*;
 use crate::slots::{self, Bind, Slider, Slot, choice, flag};
@@ -47,6 +48,8 @@ pub enum Action {
     CopyAb,
     /// Something the preset menu asked for.
     Preset(presets::Ask),
+    /// A band menu edit the plug-in makes: its bypass, solo, or shape.
+    Band { index: usize, ask: BandAsk },
 }
 
 /// What the editor is showing.
@@ -88,6 +91,8 @@ pub struct Model {
     /// Which toolbar menu is open, and the interface's preferences.
     pub menu: crate::menus::Open,
     pub prefs: crate::menus::Prefs,
+    /// The band's context menu, while it is open.
+    pub band_menu: Option<BandMenu>,
 }
 
 impl Default for Model {
@@ -115,6 +120,7 @@ impl Default for Model {
             lock_latency: false,
             menu: crate::menus::Open::default(),
             prefs: crate::menus::Prefs::default(),
+            band_menu: None,
         }
     }
 }
@@ -146,15 +152,19 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     if ui.get("range").clicked {
         m.range = (m.range + 1) % graph::RANGES.len();
     }
+    // A press outside the band menu closes it; the plot below may open it again.
+    if m.band_menu.is_some() && ui.dismissed(&[crate::menus::BAND_MENU_ID]) {
+        m.band_menu = None;
+    }
+    let plot_el = graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range, m.prefs.frequency_near_cursor, &mut m.gesture);
+    if let Some((index, at)) = m.gesture.menu.take() {
+        m.band_menu = Some(BandMenu { index, at, shapes: false });
+    }
     stack![
         // The plot, under the toolbar's band.
         col![
             block(W, BAR).shrink(0),
-            row![
-                block(LEFT, space::NONE).shrink(0),
-                graph::response(ui, &mut m.bands, &mut m.selected, &m.plot, m.range, m.prefs.frequency_near_cursor, &mut m.gesture)
-            ]
-            .w(W),
+            row![block(LEFT, space::NONE).shrink(0), plot_el].w(W),
         ]
         .anchor(Align::Start, Align::Start),
         // The rail, over the plot.
@@ -198,8 +208,10 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             .w(W)
             .justify(Justify::Start)
             .anchor(Align::Start, Align::End),
+        // The band's menu, where its click landed.
+        band_menu_layer(ui, m),
         // The toolbar, over the rail.
-        row![block(TOOLBAR_X, space::NONE).shrink(0), bar(ui, m)]
+        row![block(TOOLBAR_X, space::NONE).shrink(0), bar(ui, m, bind)]
             .w(W)
             .justify(Justify::Start)
             .anchor(Align::Start, Align::Start),
@@ -385,7 +397,7 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
 ///
 /// Four groups on one row, spaced by the row's own gap: no spacer blocks, no
 /// optical fudge. Where a group starts follows from what is in it.
-fn bar(ui: &mut Ui, m: &mut Model) -> El {
+fn bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     for (id, action) in [
@@ -399,9 +411,20 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
         }
     }
     row![
-        // The view controls, a tight group.
-        // The sidechain's mark leads the group, as the reference's bar does.
-        row![edge_rail(t.thumb), text_button("sc"), icon_button(Icon::Headphones)].gap(space::XS),
+        // The sidechain: its switch, the listen that hears the detector, and the
+        // meter the detector reads. The mark leads the group, as the reference's bar does.
+        row![
+            edge_rail(t.thumb),
+            flag(ui, bind, Slot::Sidechain, &mut m.slots[Slot::Sidechain.index()], &mut |ui, id, on| {
+                switch_disc(ui, id, on, |ink| label("sc", ty::LABEL, ink))
+            }),
+            flag(ui, bind, Slot::SidechainListen, &mut m.slots[Slot::SidechainListen.index()], &mut |ui, id, on| {
+                switch_disc(ui, id, on, |ink| glyph(Icon::Headphones, icon::LARGE, ink))
+            }),
+            sidechain_meter(f64::from(m.plot.detector)),
+        ]
+        .gap(space::XS)
+        .align(Align::Center),
         preset_bar(
             m.presets.title(),
             m.presets.current_row().map_or("", |r| r.category.as_str()),
@@ -619,6 +642,17 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         el
     });
     m.bands[index].bypass = m.slots[Slot::BandBypass.index()].norm >= 0.5;
+    // Solo: this band alone. One parameter holds the soloed band, so the switch
+    // is lit for this band and for no other.
+    let solo_el = {
+        let state = &mut m.slots[Slot::BandSolo.index()];
+        bind(ui, Slot::BandSolo, &mut state.norm, &mut |ui, id, norm| {
+            let mut on = (*norm * 8.0).round() as usize == index + 1;
+            let el = toggle_pill(ui, id, "solo", &mut on);
+            *norm = if on { (index + 1) as f64 / 8.0 } else { 0.0 };
+            el
+        })
+    };
     if ui.get("band-delete").activated() {
         m.bands[index].active = false;
     }
@@ -633,6 +667,7 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         edge_rail(tint),
         index_badge(index + 1, tint),
         bypass_el,
+        solo_el,
         shape_el,
         pick(ui, Slot::BandFrequency),
         if no_depth {
@@ -652,4 +687,35 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     .radius(radius::BOX)
     .fill(ca(t.ground, 0.94))
     .shrink(0)
+}
+
+// ----------------------------------------------------------------- band menu --
+/// The band's context menu, open at the point it was asked for. Reset is a
+/// plot change, so the view makes it; the rest go to the plug-in as host edits.
+/// A pick closes the menu.
+fn band_menu_layer(ui: &mut Ui, m: &mut Model) -> El {
+    let Some(mut menu) = m.band_menu else {
+        return block(space::NONE, space::NONE).shrink(0);
+    };
+    let index = menu.index.min(graph::BANDS - 1);
+    let band = m.bands[index];
+    let state = BandState {
+        bypassed: band.bypass,
+        soloed: (m.slots[Slot::BandSolo.index()].norm * 8.0).round() as usize == index + 1,
+        shape: band.shape,
+    };
+    let (panel, ask) = crate::menus::band_menu(ui, &mut menu, state);
+    let Some(ask) = ask else {
+        m.band_menu = Some(menu);
+        let height = if menu.shapes { crate::menus::BAND_MENU_H } else { crate::menus::BAND_MENU_CLOSED_H };
+        let (x, y) = crate::menus::clamped(menu.at, (metric::MENU_W, height), (W, H));
+        return col![block(space::NONE, y).shrink(0), row![block(x, space::NONE).shrink(0), panel]]
+            .anchor(Align::Start, Align::Start);
+    };
+    m.band_menu = None;
+    match ask {
+        BandAsk::Reset => m.gesture.changes.push(graph::Change::Reset { index }),
+        other => m.actions.push(Action::Band { index, ask: other }),
+    }
+    block(space::NONE, space::NONE).shrink(0)
 }

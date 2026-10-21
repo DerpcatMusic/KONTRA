@@ -215,19 +215,17 @@ pub fn outline_chip(s: &str) -> El {
 /// The footer sits on the darker ground, so a wash over it would read as a
 /// smudge rather than a plate; the reference gives these switches the same
 /// opaque plate the value fields use.
+/// A toggle pill: a plate with a ring and a name. It lights while it is on, as
+/// the band's power switch does (a dark plate with a light mark), so the state
+/// reads at a glance. The off state keeps the plate light with an ink ring.
 pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     if ui.get(id).activated() {
         *on = !*on;
     }
-    pill(
-        vec![
-            ring_dot(metric::RING, if *on { c(t.mark) } else { c(t.ink) }),
-            label(name, ty::CAPTION, c(t.ink)),
-        ],
-        c(t.field),
-    )
+    let (fill, ink) = if *on { (c(t.selected), c(t.mark)) } else { (c(t.field), c(t.ink)) };
+    pill(vec![ring_dot(metric::RING, ink), label(name, ty::CAPTION, ink)], fill)
     .tipped(id)
     .focusable()
     .cursor(Cursor::Hand)
@@ -302,6 +300,48 @@ pub fn power_switch(ui: &mut Ui, id: &str, on: &mut bool) -> El {
         .shrink(0)
         .tipped(id)
         .a11y(A11y::Toggle { on: *on })
+}
+
+/// A round switch that carries a mark: dark while it is on, as the power
+/// switch is. `mark` draws the mark in the ink the state calls for.
+pub fn switch_disc(ui: &mut Ui, id: &str, on: &mut bool, mark: impl FnOnce(Color) -> El) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    if ui.get(id).activated() {
+        *on = !*on;
+    }
+    let d = metric::BUTTON;
+    let (fill, ink) = if *on { (c(t.selected), c(t.mark)) } else { (c(t.chip), c(t.ink)) };
+    block(d, d)
+        .radius(d / 2.0)
+        .fill(fill)
+        .push(centred(mark(ink), d, d))
+        .shrink(0)
+        .tipped(id)
+        .focusable()
+        .cursor(Cursor::Hand)
+        .a11y(A11y::Toggle { on: *on })
+}
+
+/// The sidechain meter: the detector's signed peak, read from the centre line.
+/// A positive value runs right of the line and a negative one left of it, at
+/// full scale at one.
+pub fn sidechain_meter(value: f64) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let half = metric::METER_W / 2.0;
+    let reach = value.abs().min(1.0) * half;
+    let bar = block(reach, metric::METER_H).fill(c(t.selected)).shrink(0);
+    let line = if value < 0.0 {
+        row![block(half - reach, metric::METER_H).shrink(0), bar, block(half, metric::METER_H).shrink(0)]
+    } else {
+        row![block(half, metric::METER_H).shrink(0), bar]
+    };
+    line.w(metric::METER_W)
+        .h(metric::METER_H)
+        .radius(metric::METER_H / 2.0)
+        .fill(c(t.chip))
+        .shrink(0)
 }
 
 /// A round button with a glyph on it: the toolbar's shape.
