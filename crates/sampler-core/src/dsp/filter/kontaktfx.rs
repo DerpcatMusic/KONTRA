@@ -20,7 +20,8 @@
 //! 2 ms ramps (DJ: 1 ms per slot).
 // ponytail: stereo runs the mono cores per channel with shared controls (DJ averages its
 // resonance envelope over both channels as its channel loop does); the Monark noise LCG is per
-// channel. The native channel interleave is unprobed; vectors are mono.
+// channel. The native DJ process (FUN_140afef00) reads each channel through its own buffer
+// pointer with per-channel state, so the layout is per channel, not interleaved; vectors are mono.
 #![allow(clippy::excessive_precision, clippy::unreadable_literal)]
 use super::super::kaiser::{Kaiser, State as KaiserState};
 use super::shaper;

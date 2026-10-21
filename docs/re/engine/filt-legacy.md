@@ -83,21 +83,32 @@ Parameters are the saved knobs (`CUTOFF`, `RESONANCE`), both 0..1 on the engine'
 ## Control clock (shared by the legacy cascade and stage cores)
 
 - Native control clock `0x140ae9f90` reproduced at 32-frame blocks.
-- Its alternative branch (global `0x144fd4c54`) and offset slew (`+0x1f8`, written `+0x1f4`) are
-  unwritten in the binary as far as recovered; the engine takes them as unused
-  (`cascade.rs:1880`).
+- The alternative branch (global `0x144fd4c54`) is dead: the image holds 0 there and the export
+  never writes it, so only the `else` path runs. The offset slew `+0x1f8` is not referenced in
+  `FUN_140ae9f90`. Both are closed (`cascade.rs` process comment).
 - Coefficient update cadence of LP1/HP1: not measurable with static impulse steps (OPEN).
 
-## Gap table
+## Gap table (closed against the decompile, 2026-10-21)
 
-| Item | Engine covers | Missing / unproved | Action |
+Evidence: the Kontakt 8 export at `source/kontakt8/` (`rg -n "^// ==== <addr> "` for the function),
+and the image's read-only data read with `pefile` (the static value of a global, not a decompile).
+
+| Item | Engine covers | Evidence | Status |
 | --- | --- | --- | --- |
-| LP1 / HP1 law | cascade 1-pole, cutoff law measured | update cadence (OPEN) | Needs dynamic-cutoff capture or decompiled clock; no change |
-| LP2/HP2/BP2/LP4/HP4/BP4/BR4/LP6 law | cascade design; Kontakt-measured to 0.1 dB at all probes above -60 dB (golden test) | clock alternative branch (only unused-branch evidence) | none for the response; re-check the branch when decompile lands |
-| Legacy Ladder (17) | stage core; Kontakt-matched at knobs .25-1 and res .5/.9 (golden) | knob 0 (res 0) shape; see measurements above | Investigate the stage cutoff law's knob-0 clamp against Kontakt |
-| Pro-53 (16), Vowel A/B (14/15), Versatile (19) | stage core, kemu match 2e-5 | no Kontakt measurement | Measure with the same oracle spec (add subtypes to `LEGACY_UNMEASURED`) |
-| Simple LP/HP (120) | mono core, bit-exact vs kemu | Kontakt knob names (CUTOFF/RESONANCE do nothing); stereo interleave; alternate smoother `u8` | Find the real engine-parameter names, then re-measure; mapping kept `Partial` |
-| Stereo (legacy family) | no L-to-R coupling (Kontakt-measured) | none | none |
+| Clock alternative branch (`DAT_144fd4c54`) | ignored (else path) | the global is 0 in the image's `.rdata`; no writer in the export; `FUN_140ae9f90` runs only its `else` path | **closed**: dead branch |
+| Clock offset slew `+0x1f8` | not modelled | not referenced in `FUN_140ae9f90` | **closed** for the clock; the cascade's own slew stays unmodelled and unused |
+| LP1 / HP1 update cadence | static steps only | the clock in `FUN_140ae9f90` runs the 32-frame block | **open**: needs a dynamic-cutoff capture (no oracle step yet) |
+| LP2 .. LP6, BP2, BP4, BR4 response | Kontakt-measured to 0.1 dB above -60 dB (golden) | measurement | **closed** |
+| Stereo (legacy family) | per-channel state, no L to R coupling | measured, and the process loop of `FUN_140afef00` keeps per-channel state with shared controls | **closed** |
+| Legacy Ladder setter (17) | note `100 p + 20`, index `5 * note + 1381.88`, `g = table * pi / rate`, clamp `1.57`, `0.5`, `res * 4`, `+1e-12` | `FUN_14095d630` and `FUN_140aef200` constants read from the image | **closed**: every constant equals the engine's `note_hertz`, `legacy_ladder` and `Ladder2x` |
+| Legacy Ladder stage nonlinearity | `clip`: `v (1 - 0.01 |v|)` for `|v| <= 50`, else `+-25` | `FUN_140aef200` uses `0.01`, `50`, `25`, `0.769230x` (`big_g`), `k = g - 1` | **closed**: identical |
+| Legacy Ladder knob 0 (res 0) | engine matches the Kontakt shape at knobs .25 to 1 | the setter and process agree with the engine, so the linear structure is the same; the knob-0 tail still differs (Kontakt about 6 dB/oct, -12.3 dB at 30 Hz) | **open**. Reproduced alone (no carry-over from BR4). Next: a knob sweep 0 to 0.25 to find where it leaves the engine's curve, and the runtime-generated exponential table entries near index 1481 |
+| Simple LP/HP (120) knobs | `lp = CUTOFF, hp = RESONANCE` (unconfirmed) | the module wires its parameters through its own `FilterDJExtRange` (`FUN_140b058a0`, setParam index 0 to 2) and `FilterLadderExtRange` (`FUN_140b05ce0`); the mapping from the saved record to those indices is not in the export | **open**: the measurement shows CUTOFF and RESONANCE do nothing; the parameter indices must be traced from the record reader |
+| Simple LP/HP alternate smoother (`u8`, `1/(p2 1500 + 150)`) | not implemented | `FUN_140afef00` ramps `+0x2b8`, `+0x2e0`, `+0x308` each frame by their increments (`+0x700`, `+0x2e4`, `+0x30c`); the `1500 + 150` rate is not in the function | **open** |
+| Pro-53 (16), Vowel A/B (14/15), Versatile (19) | stage core, kemu match 2e-5 | not measured | **open**: add to `LEGACY_UNMEASURED` |
+
+Notes on the decompile: 428 functions in the export are marked `decompile failed`. Those are not
+usable. None of the closures above depends on them.
 
 ## Change in this unit
 
@@ -123,9 +134,7 @@ Built on `engine/filt-sv` (`dsp/filter/linear.rs` `Zdf`, `dsp/filter/shaper.rs` 
 
 ## Pending
 
-1. Legacy Ladder knob-0 shape: find the stage cutoff clamp by measuring a finer knob sweep near 0 in
-   Kontakt (oracle), then match it in the stage core.
-2. Simple LP/HP: find the engine-parameter names for its two knobs (decompiled `FilterDJExtRange`
-   setParam at 0x140b058a0 when available, or a KSP `$ENGINE_PAR_*` probe), then re-measure.
-3. Stage types 14/15/16/19: add to the oracle spec and extend the golden test.
-4. When `source/kontakt8/READY` appears: confirm the clock alternative branch and the smoother rate.
+1. Legacy Ladder knob 0: knob sweep and table check (above).
+2. Simple LP/HP: trace the record-to-parameter mapping from the BFilter reader, then re-measure.
+3. LP1/HP1 update cadence: a dynamic-cutoff capture.
+4. Stage types 14/15/16/19: add to the oracle spec and extend the golden test.
