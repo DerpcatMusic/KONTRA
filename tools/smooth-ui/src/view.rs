@@ -330,7 +330,7 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
                 .radius(mark / 2.0)
                 .fill(if changed { c(t.selected) } else { c(t.thumb) })
                 .shrink(0),
-            stack![label(s, ty::FINE, c(t.ink)).reserve(s)]
+            stack![label(s, ty::LABEL, c(t.ink)).reserve(s)]
                 .size(word_w, label_h)
                 .center()
                 .shrink(0)
@@ -389,7 +389,8 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
     }
     row![
         // The view controls, a tight group.
-        row![text_button("sc"), icon_button(Icon::Headphones)].gap(space::XS),
+        // The sidechain's mark leads the group, as the reference's bar does.
+        row![edge_rail(t.thumb), text_button("sc"), icon_button(Icon::Headphones)].gap(space::XS),
         preset_bar(
             m.presets.title(),
             m.presets.current_row().map_or("", |r| r.category.as_str()),
@@ -512,32 +513,39 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         m.side = false;
     }
     let mut mode = usize::from(m.mid_side);
-    let mode_el = segmented(ui, "stereo-mode", &["l/r", "m/s"], &mut mode);
+    let mode_el = segmented_at(ui, "stereo-mode", &["L/R", "M/S"], &mut mode, metric::SIDE_FIELD_W);
     m.mid_side = mode == 1;
-    let mut row_of = |ui: &mut Ui, m: &mut Model, slot: Slot, name: &str| -> El {
-        row![
-            centred(label(name, ty::CAPTION, c(t.ink)), metric::SIDE_LABEL_W, metric::FIELD_H),
-            slot_slider(ui, bind, slot, &mut m.slots[slot.index()], metric::SLIDER_W),
+    // A name centred over its plate, or over a pair of plates: the reference
+    // stacks each control's name above the value it sets.
+    let mut stacked = |ui: &mut Ui, m: &mut Model, name: &str, slots: &[Slot]| -> El {
+        let each = if slots.len() > 1 {
+            (metric::SIDE_FIELD_W - space::XS) / 2.0
+        } else {
+            metric::SIDE_FIELD_W
+        };
+        let fields: Vec<El> = slots
+            .iter()
+            .map(|&slot| slot_slider(ui, bind, slot, &mut m.slots[slot.index()], each))
+            .collect();
+        col![
+            label(name, ty::BODY, c(t.ink)),
+            row(fields).gap(space::XS).w(metric::SIDE_FIELD_W),
         ]
         .gap(space::XS)
         .align(Align::Center)
         .shrink(0)
     };
-    let title = |s: &str| label(s, ty::BODY, c(t.ink_quiet));
     col![
-        title("stereo"),
+        section_title("stereo", metric::SIDE_W - space::L * 2.0),
         mode_el,
-        row_of(ui, m, Slot::Link, "link"),
-        row_of(ui, m, Slot::Focus, "focus"),
-        title("tilt"),
-        row_of(ui, m, Slot::DetailLow, "detail low"),
-        row_of(ui, m, Slot::DetailHigh, "detail high"),
-        row_of(ui, m, Slot::AttackLow, "attack low"),
-        row_of(ui, m, Slot::AttackHigh, "attack high"),
-        row_of(ui, m, Slot::ReleaseLow, "release low"),
-        row_of(ui, m, Slot::ReleaseHigh, "release high"),
-        title("scale"),
-        row_of(ui, m, Slot::MaxCut, "max cut"),
+        stacked(ui, m, "link", &[Slot::Link]),
+        stacked(ui, m, "focus", &[Slot::Focus]),
+        section_title("tilt", metric::SIDE_W - space::L * 2.0),
+        stacked(ui, m, "detail", &[Slot::DetailLow, Slot::DetailHigh]),
+        stacked(ui, m, "attack", &[Slot::AttackLow, Slot::AttackHigh]),
+        stacked(ui, m, "release", &[Slot::ReleaseLow, Slot::ReleaseHigh]),
+        section_title("scale", metric::SIDE_W - space::L * 2.0),
+        stacked(ui, m, "max cut", &[Slot::MaxCut]),
     ]
     .gap(space::S)
     .pad(space::L)
@@ -571,9 +579,10 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             el
         })
     };
-    let mut bypass = m.bands[index].bypass;
-    let bypass_el = toggle_pill(ui, "band-bypass", "bypass", &mut bypass);
-    m.bands[index].bypass = bypass;
+    // The switch is on while the band works: the reference's power symbol.
+    let mut enabled = !m.bands[index].bypass;
+    let bypass_el = power_switch(ui, "band-bypass", &mut enabled);
+    m.bands[index].bypass = !enabled;
     if ui.get("band-delete").clicked {
         m.bands[index].active = false;
     }
@@ -582,7 +591,12 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     let mut pick = |ui: &mut Ui, slot: Slot| {
         slot_slider(ui, bind, slot, &mut m.slots[slot.index()], metric::SLIDER_W)
     };
+    // The band's own colour marks both of its ends, as the reference does.
+    let tint = theme::BAND_TINTS[index % theme::BAND_TINTS.len()];
     row![
+        edge_rail(tint),
+        index_badge(index + 1, tint),
+        bypass_el,
         shape_el,
         pick(ui, Slot::BandFrequency),
         if no_depth {
@@ -593,8 +607,8 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         pick(ui, Slot::BandWidth),
         pick(ui, Slot::BandSlope),
         pick(ui, Slot::BandBalance),
-        bypass_el,
-        text_button("x").tipped("band-delete"),
+        icon_button(Icon::Trash).tipped("band-delete"),
+        edge_rail(tint),
     ]
     .gap(space::XS)
     .pad(space::XS)

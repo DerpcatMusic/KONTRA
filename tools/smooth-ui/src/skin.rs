@@ -124,6 +124,20 @@ pub fn caption(s: &str, ink: Color) -> El {
     label(s, ty::CAPTION, ink)
 }
 
+/// A section's name between two hairlines: `——stereo——`, the reference's way
+/// of naming a group of controls. The rules take the slack either side of the
+/// name, so the title stays centred at any width.
+pub fn section_title(s: &str, width: f64) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let rule = || block(space::NONE, stroke::RULE).grow(1.0).fill(c(t.thumb)).shrink(0);
+    row![rule(), label(s, ty::BODY, c(t.ink_quiet)).shrink(0), rule()]
+        .gap(space::XS)
+        .w(width)
+        .align(Align::Center)
+        .shrink(0)
+}
+
 /// A label centred in a box of a stated size, so a row of them lines up.
 pub fn centred(s: El, w: f64, h: f64) -> El {
     stack![s].size(w, h).center()
@@ -237,6 +251,54 @@ pub fn ring_dot(d: f64, ink: Color) -> El {
     })
     .size(d, d)
     .shrink(0)
+}
+
+/// A band's number, on a disc in the band's own colour: the reference names the
+/// selected band this way.
+pub fn index_badge(n: usize, hex: u32) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let d = metric::BUTTON;
+    block(d, d)
+        .radius(d / 2.0)
+        .fill(c(hex))
+        .push(centred(label(&n.to_string(), ty::CAPTION, c(t.mark)), d, d))
+        .shrink(0)
+}
+
+/// A power symbol: a broken ring with a stem, drawn as strokes so it keeps its
+/// weight at any size.
+fn power_glyph(d: f64, ink: Color) -> El {
+    canvas(move |s| {
+        let (cx, cy) = (s.width / 2.0, s.height / 2.0);
+        let r = s.width.min(s.height) * 0.3;
+        let ring: Vec<Point> = (0..=24).map(|i| pt(cx, cy, r, 45.0 + 270.0 * i as f64 / 24.0)).collect();
+        vec![
+            Draw::stroke(Path::polyline(ring, false), ink, stroke::CURVE),
+            Draw::stroke(line(Point::new(cx, cy - r * 1.2), Point::new(cx, cy - r * 0.1)), ink, stroke::CURVE),
+        ]
+    })
+    .size(d, d)
+    .shrink(0)
+}
+
+/// A band's on/off switch as the reference draws it: a round disc with a power
+/// symbol, dark while the band is working and light while it is bypassed.
+pub fn power_switch(ui: &mut Ui, id: &str, on: &mut bool) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    if ui.get(id).activated() {
+        *on = !*on;
+    }
+    let d = metric::BUTTON;
+    let (fill, ink) = if *on { (c(t.selected), c(t.mark)) } else { (c(t.chip), c(t.ink)) };
+    block(d, d)
+        .radius(d / 2.0)
+        .fill(fill)
+        .push(centred(power_glyph(metric::RING, ink), d, d))
+        .shrink(0)
+        .tipped(id)
+        .a11y(A11y::Toggle { on: *on })
 }
 
 /// A round button with a glyph on it: the toolbar's shape.
@@ -381,7 +443,13 @@ pub fn preset_bar(title: &str, tag: &str, favourite: bool) -> El {
             )
             .tipped("preset-heart"),
             glyph(Icon::Person, icon::BASE, c(t.ink)),
-            outline_chip(tag),
+            // A preset with no category has no tag to box: an empty outline
+            // would read as a control, so it is left off.
+            if tag.is_empty() {
+                block(space::NONE, space::NONE).shrink(0)
+            } else {
+                outline_chip(tag)
+            },
         ]
         .gap(space::S),
     ]
@@ -393,6 +461,14 @@ pub fn preset_bar(title: &str, tag: &str, favourite: bool) -> El {
     .shrink(0)
     .fill(c(t.chip))
     .tipped("preset-bar")
+}
+
+/// A band's edge rail: the colour that names the band it belongs to.
+pub fn edge_rail(hex: u32) -> El {
+    block(metric::EDGE_W, metric::EDGE_H)
+        .radius(metric::EDGE_W / 2.0)
+        .fill(c(hex))
+        .shrink(0)
 }
 
 /// A pill that does something: a word on a plate.
@@ -518,7 +594,7 @@ pub fn knob(
             ),
             Draw::fill(
                 sector(cx, cy, ri, ro, ARC_START, end),
-                ca(t.mark, 1.0 - 0.10 * lift),
+                ca(t.selected, 1.0 - 0.10 * lift),
             ),
             Draw::fill(disc_path(cx, cy, body / 2.0), c(t.body)),
         ];
@@ -736,6 +812,7 @@ pub enum Icon {
     Globe,
     Search,
     Speaker,
+    Trash,
 }
 
 impl Icon {
@@ -759,6 +836,7 @@ impl Icon {
             Icon::Globe => crate::icons::GLOBE,
             Icon::Search => crate::icons::SEARCH,
             Icon::Speaker => crate::icons::SPEAKER,
+            Icon::Trash => crate::icons::TRASH,
         }
     }
 }

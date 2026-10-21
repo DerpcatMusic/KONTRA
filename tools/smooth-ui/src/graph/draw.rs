@@ -67,8 +67,19 @@ pub fn plot(
         draws.push(Draw::fill(Path::polyline(band, true), ca(t.plot_ink, t.glow)));
     }
 
+    // The drawn trace: the reduction averaged over a few bins, so its edge is a
+    // line and not the engine's bin-rate teeth.
+    let trace: Vec<(f64, f64)> = (0..fill.len())
+        .map(|i| {
+            let lo = i.saturating_sub(plot::TRACE_SOFTEN);
+            let hi = (i + plot::TRACE_SOFTEN).min(fill.len() - 1);
+            let span = &fill[lo..=hi];
+            (fill[i].0, span.iter().map(|p| p.1).sum::<f64>() / span.len() as f64)
+        })
+        .collect();
+
     // The area under the reduction, closed on the plot's baseline.
-    let mut area: Vec<Point> = fill.iter().map(|&(x, y)| pt(x, y)).collect();
+    let mut area: Vec<Point> = trace.iter().map(|&(x, y)| pt(x, y)).collect();
     area.push(pt(PLOT_W, PLOT_H));
     area.push(pt(0.0, PLOT_H));
     draws.push(Draw::fill(
@@ -76,7 +87,7 @@ pub fn plot(
         Gradient::vertical(c(t.fill_top), c(t.fill_bottom)),
     ));
     draws.push(Draw::stroke(
-        Path::polyline(fill.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(), false),
+        Path::polyline(trace.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(), false),
         ca(t.plot_ink, t.veil_soft),
         stroke::RULE,
     ));
@@ -198,7 +209,7 @@ fn range_chip(range: usize) -> El {
         block(plot::RANGE_W, plot::RANGE_H)
             .radius(SKIN.corners.field)
             .fill(ca(t.range_chip, t.chip_alpha)),
-        label(RANGES[range].1, ty::MICRO, c(t.ink_quiet))
+        label(RANGES[range].1, ty::BODY, c(t.ink))
             .anchor(Align::Start, Align::Center)
             .offset(space::XS, space::NONE),
         glyph(Icon::Down, icon::SMALL, c(t.ink_quiet))
@@ -228,7 +239,7 @@ fn ticks_row() -> El {
         }
         cells.push(
             centred(
-                label(name, ty::TICK, c(t.ink_quiet)),
+                label(name, ty::BODY, c(t.ink)),
                 cell,
                 plot::TICK_ROW_H,
             )
@@ -253,7 +264,7 @@ fn ticks_col(range: usize) -> El {
         cells.push(block(0.0, y - cell / 2.0 - top).shrink(0));
         cells.push(
             centred(
-                label(name.as_str(), ty::MICRO, c(t.ink_quiet)),
+                label(name.as_str(), ty::BODY, c(t.ink)),
                 plot::LEVEL_COL_W,
                 cell,
             )

@@ -48,3 +48,7 @@ pub const SPEAKER: &str = "M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0
 /// A solid triangle, for a list that opens downward.
 pub const TRIANGLE: &str =
     "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,48,88H208a8,8,0,0,1,5.66,13.66Z";
+
+/// A waste bin: the band's delete. Drawn here in Phosphor's 256-unit space,
+/// as a solid lid over a body with its slot cut out.
+pub const TRASH: &str = "M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40V48H40V64h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8V48H96ZM192,208H64V64H192Z";
