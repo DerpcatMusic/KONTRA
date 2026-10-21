@@ -142,8 +142,9 @@ pub enum Processor {
     FormantII([f32; 3]),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
-    /// Formant I with Talk, Sharp, Size as event-rate lanes (KSP ENGINE_PAR_FORMANT_*).
-    LiveFormant([Parameter; 3]),
+    /// Formant I (or Formant II when `second`) with Talk, Sharp, Size as event-rate lanes
+    /// (KSP ENGINE_PAR_FORMANT_*).
+    LiveFormant { knobs: [Parameter; 3], second: bool },
     StateVariable(StateVariableFilter),
     /// One band of the universal EQ superset (Kontakt legacy, Solid, generic RBJ, scripted UVI).
     Eq(eq_family::EqBand),
@@ -215,7 +216,7 @@ impl Processor {
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
-            Processor::LiveFormant(knobs) => knobs.iter().all(live_knob),
+            Processor::LiveFormant { knobs, .. } => knobs.iter().all(live_knob),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -273,7 +274,7 @@ pub(super) enum PreparedProcessor {
         live: PreparedKnobs,
     },
     Dynamics(dynamics::Dynamics),
-    LiveFormant { knobs: [control::PreparedParameter; 3], rate: u32 },
+    LiveFormant { knobs: [control::PreparedParameter; 3], second: bool, rate: u32 },
     Formant(formant::Formant),
     Color {
         color: color::Color,
@@ -361,7 +362,7 @@ impl PreparedProcessor {
             Self::ControlMatrix(x) => ProcessorRef::ControlMatrix(x),
             Self::TimeMod { timemod, offset, live } => ProcessorRef::TimeMod { timemod, offset, live },
             Self::Dynamics(x) => ProcessorRef::Dynamics(x),
-            Self::LiveFormant { knobs, rate } => ProcessorRef::LiveFormant { knobs, rate },
+            Self::LiveFormant { knobs, second, rate } => ProcessorRef::LiveFormant { knobs, second, rate },
             Self::Formant(x) => ProcessorRef::Formant(x),
             Self::Color { color, offset } => ProcessorRef::Color { color, offset },
             Self::Filter { engine, offset } => ProcessorRef::Filter { engine, offset },
@@ -408,7 +409,7 @@ pub(super) enum ProcessorRef<'a> {
     ControlMatrix(&'a [control::PreparedParameter; 4]),
     TimeMod { timemod: &'a timemod::TimeMod, offset: &'a usize, live: &'a PreparedKnobs },
     Dynamics(&'a dynamics::Dynamics),
-    LiveFormant { knobs: &'a [control::PreparedParameter; 3], rate: &'a u32 },
+    LiveFormant { knobs: &'a [control::PreparedParameter; 3], second: &'a bool, rate: &'a u32 },
     Formant(&'a formant::Formant),
     Color { color: &'a color::Color, offset: &'a usize },
     Filter { engine: &'a filter::Engine, offset: &'a usize },
@@ -778,7 +779,11 @@ pub(super) fn compile_processors(
                     engine.modulation_index = filters.push_native();
                     PreparedProcessor::Filter { engine, offset }
                 }
-                Processor::LiveFormant(knobs) => PreparedProcessor::LiveFormant { knobs: knobs.map(|k| k.compile(bindings)), rate },
+                Processor::LiveFormant { knobs, second } => PreparedProcessor::LiveFormant {
+                    knobs: knobs.map(|k| k.compile(bindings)),
+                    second,
+                    rate,
+                },
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
             Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
                 Processor::Color(settings) => {
@@ -1471,9 +1476,9 @@ pub(super) fn process<'a, const TRACE: bool>(
             ProcessorRef::Formant(formant) => formant.process(state, block, len),
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
-            ProcessorRef::LiveFormant { knobs, rate } => {
+            ProcessorRef::LiveFormant { knobs, second, rate } => {
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
-                formant::Formant::compile([talk, sharp, size], false, *rate).process(state, block, len)
+                formant::Formant::compile([talk, sharp, size], *second, *rate).process(state, block, len)
             }
             ProcessorRef::Filter { engine, offset } => {
                 fault |= engine.process(
