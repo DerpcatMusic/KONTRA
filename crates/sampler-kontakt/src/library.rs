@@ -942,6 +942,23 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
     None
 }
 
+/// A group-level engine write as the corpus spells it (`set_engine_par(p, v, group, -1, -1)`),
+/// falling back to the generic-0 spelling, which Kontakt also honours for these parameters
+/// (measured with tm_sweep.py). The last matching write wins.
+fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group: i32) -> Option<i32> {
+    let find = |generic: i32| {
+        writes
+            .iter()
+            .rev()
+            .find(|w| {
+                w.parameter.trim_start_matches('$') == parameter
+                    && (w.group, w.slot, w.generic) == (group, -1, generic)
+            })
+            .map(|w| w.value)
+    };
+    find(-1).or_else(|| find(0))
+}
+
 /// Stored (serialized) group source modes, in the order of Kontakt 8.13.1's own
 /// enum-name table (strings at file offset 0x7555700 of Kontakt8.exe: Sampler, ToneMachine, TimeMachine,
 /// DirectFromDisk, BeatMachine, TimeMachine2, S1200Machine, MP60Machine,
@@ -2289,15 +2306,15 @@ impl Translation {
         // Measured writes (time_stretch_writes) change the stored source record; the
         // rest have no law yet, and writes with no field for this kind are reported.
         let unapplied = time_stretch_writes::apply(&mut stretch, |name| {
-            self.script_par(name, index as i32, -1, 0)
+            group_engine_write(&self.engine, name, index as i32)
         });
         for name in ["ENGINE_PAR_SPEED_UNIT", "ENGINE_PAR_TRANSIENT_SIZE", "ENGINE_PAR_TM_LEGATO"] {
-            if let Some(value) = self.script_par(name, index as i32, -1, 0) {
+            if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::UnknownLaw);
             }
         }
         for name in unapplied {
-            if let Some(value) = self.script_par(name, index as i32, -1, 0) {
+            if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::NotModeled);
             }
         }
@@ -6795,6 +6812,25 @@ impl Translation {
 #[cfg(test)]
 mod time_machine_tests {
     use super::*;
+
+    /// Both spellings of a group-level write reach the same stretch field; another group's write does not.
+    #[test]
+    fn group_writes_accept_generic_minus_one_and_zero() {
+        let write = |generic, group, value| sampler_ksp::EnginePar {
+            parameter: "ENGINE_PAR_SPEED".into(),
+            value,
+            group,
+            slot: -1,
+            generic,
+        };
+        let corpus = [write(-1, 0, 750_000)];
+        assert_eq!(group_engine_write(&corpus, "ENGINE_PAR_SPEED", 0), Some(750_000));
+        let measured = [write(0, 0, 250_000), write(0, 1, 900_000)];
+        assert_eq!(group_engine_write(&measured, "ENGINE_PAR_SPEED", 0), Some(250_000));
+        assert_eq!(group_engine_write(&measured, "ENGINE_PAR_SPEED", 2), None);
+        let both = [write(0, 0, 250_000), write(-1, 0, 750_000)];
+        assert_eq!(group_engine_write(&both, "ENGINE_PAR_SPEED", 0), Some(750_000));
+    }
 
     /// A v0x106 source record as Conflux stores it (common record defaults),
     /// plus the mode-specific extension.
