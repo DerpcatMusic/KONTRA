@@ -237,7 +237,7 @@ mod tests {
         for (place, slot) in Slot::ALL.iter().enumerate() {
             assert_eq!(slot.index(), place, "{slot:?} is listed out of place");
         }
-        assert!(Slot::ALL.iter().any(|s| *s == Slot::SidechainListen));
+        assert!(Slot::ALL.contains(&Slot::SidechainListen));
     }
 
     #[test]

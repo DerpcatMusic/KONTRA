@@ -60,19 +60,26 @@ impl Session {
 
     /// Step back: the values to restore.
     pub fn undo(&mut self, now: &Snapshot) -> Option<Snapshot> {
-        let target = self.undo.pop()?;
-        self.redo.push(now.clone());
-        self.base = target.clone();
-        self.open = None;
-        Some(target)
+        Self::step(&mut self.undo, &mut self.redo, &mut self.base, &mut self.open, now)
     }
 
     /// Step forward: the values to restore.
     pub fn redo(&mut self, now: &Snapshot) -> Option<Snapshot> {
-        let target = self.redo.pop()?;
-        self.undo.push(now.clone());
-        self.base = target.clone();
-        self.open = None;
+        Self::step(&mut self.redo, &mut self.undo, &mut self.base, &mut self.open, now)
+    }
+
+    /// Pops `from`, parks `now` on `to`, and makes the popped values the base.
+    fn step(
+        from: &mut Vec<Snapshot>,
+        to: &mut Vec<Snapshot>,
+        base: &mut Snapshot,
+        open: &mut Option<Snapshot>,
+        now: &Snapshot,
+    ) -> Option<Snapshot> {
+        let target = from.pop()?;
+        to.push(now.clone());
+        *base = target.clone();
+        *open = None;
         Some(target)
     }
 

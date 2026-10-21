@@ -41,6 +41,7 @@ cargo test -p smooth-ui                      # the interface's rules
 python3 tools/smooth-plugin/scripts/clap_smoke.py ~/.clap/SMOOTH.clap
 python3 tools/smooth-plugin/scripts/clap_host_matrix.py ~/.clap/SMOOTH.clap   # --quick for a subset
 xvfb-run -a ~/.local/bin/pluginval-1.0.4 --strictness-level 10 --validate ~/.vst3/SMOOTH.vst3
+xvfb-run -a python3 tools/smooth-plugin/scripts/clap_gui_soak.py ~/.clap/SMOOTH.clap soak --cycles 200 --max-live-slope 20
 xvfb-run -a python3 tools/smooth-plugin/scripts/gui_shot.py ~/.clap/SMOOTH.clap shot.png
 xvfb-run -a -s "-screen 0 1600x1000x24" python3 tools/smooth-plugin/scripts/gui_shot.py \
     ~/.clap/SMOOTH.clap shot.png --click 95,93 636,458
@@ -90,6 +91,29 @@ cargo run -p smooth-preview --release -- out.png 1.5 paper
 
 An unknown name is ignored rather than fatal, so a stale variable cannot stop
 music.
+
+## Release validation (2026-10-21)
+
+Built from `smooth/rt-audit` with `cargo moose install --clap --vst3 -p smooth-plugin`.
+
+- **pluginval 1.0.4, strictness 10, VST3:** SUCCESS (exit 0). Covers the
+  mono and stereo layouts. pluginval does not validate CLAP.
+- **CLAP host matrix** (`clap_host_matrix.py`, full): 236 configurations, 0
+  failing. Sample rates 44.1 to 192 kHz, blocks 1 to 4096 and varying,
+  mono and stereo, in-place and split buffers, state round trip, mid-block
+  events, flush, activate and reactivate cycles, and the tail.
+- **CLAP smoke** (`clap_smoke.py`): passes; the hard-mode 4 kHz tone is down 27.3 dB.
+- **Editor soak** (`clap_gui_soak.py`, 200 cycles): all checks pass. Live
+  malloc grows 0.3 kB per cycle. RSS plateaus near 280 MB (glibc arena
+  retention, bounded). No leaked windows, sockets or threads.
+- **Real-time** (48 kHz, 512-sample blocks, release, CPU %, p50 / p99 of
+  the block time): low latency 6 / 7; normal 11-12 / 12-13; ultra 21-23 /
+  24-25 (the ultra p99 is at 25% of the budget on this shared 16-CPU box).
+  Zero allocations and zero deallocations on the process path across every
+  plan, plan switch, shape and rate. Reproduce with `cargo run -p smooth-core
+  --release --example rt_timing`.
+- **Not verified here:** a native DAW, a Wayland-only host, VST3 view
+  embedding, and a mono track in a real VST3 host.
 
 ## What is finished
 

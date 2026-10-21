@@ -580,13 +580,13 @@ mod tests {
         environment().unwrap();
         #[cfg(target_arch = "x86_64")]
         {
-            #[allow(deprecated)]
+            #[allow(deprecated, reason = "reads MXCSR to check the FP control is preserved")]
             let before = unsafe { std::arch::x86_64::_mm_getcsr() } & !0x3f;
             let prepared =
                 ProjectionWidths::packed(ProjectionMappings::current_cpu_and_rust_library())
                     .unwrap();
             assert!(prepared.widths.iter().all(|x| x.is_normal() && *x < 0.0));
-            #[allow(deprecated)]
+            #[allow(deprecated, reason = "reads MXCSR to check the FP control is preserved")]
             let after = unsafe { std::arch::x86_64::_mm_getcsr() } & !0x3f;
             assert_eq!(before, after); // Value-only contract excludes sticky exception flags.
         }

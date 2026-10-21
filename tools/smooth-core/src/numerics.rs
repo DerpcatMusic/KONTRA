@@ -9,7 +9,10 @@ use crate::weighting_tables::{VECTOR_EXP_TABLE, VECTOR_LOG_TABLE};
 pub fn canonical_estimate_environment() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "MXCSR is the only readback of the FP environment; the intrinsic is deprecated in favour of inline asm"
+        )]
         let control = unsafe { std::arch::x86_64::_mm_getcsr() };
         control & 0xe040 == 0 && control & 0x1f80 == 0x1f80
     }
@@ -469,7 +472,10 @@ mod tests {
 
     #[test]
     #[cfg(target_arch = "x86_64")]
-    #[allow(deprecated)]
+    #[allow(
+        deprecated,
+        reason = "the test sets and reads MXCSR directly, the only way to drive the FP environment"
+    )]
     fn checked_fp_environment_rejects_modes_and_restores_test_thread() {
         use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
         struct Restore(u32);
