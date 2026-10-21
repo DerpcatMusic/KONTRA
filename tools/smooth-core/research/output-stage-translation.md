@@ -39,16 +39,52 @@ M/S helper `0x8a3b20`. Code: `src/reference/output.rs`. Evidence: emulated binar
 - **Focus weights** `gL = clamp(2(1-f))`, `gR = clamp(2f)` (`0x180890c92`). From the decompile, not
   re-checked here.
 
+## Output sum (verified by emulation, `process_output_block`)
+
+- **Sub-blocks of at most 512 samples.** The ramp is called once per sub-block: N = 512 for a
+  4096 block (8 calls), N = min(512, remaining) in general (chunk counts checked at 8, 100, 300,
+  512, 1024, 1500, 2048, 4096). Gate decisions are per sub-block.
+- **Sum per sub-block** (`0x891da2` .. `0x8935d1`): `out = wet` (copy `0x893de0`); `out *= g_wet`
+  (record `+0xbf34`, ramp `0x891f3e`); `scratch = dry` then `scratch *= g_dry` (record `+0xbf28`,
+  ramp `0x892250`, scratch `0x40000040/0x40000080`); `out += scratch` (IPP add `0x180001370`,
+  `dst += src`, `dst` = second argument); `out *= g_out` (record `+0xbf58`, ramp `0x8935d1`).
+- **Record and state.** Constructor state: dry `(0, 0, a)`, wet `(1, 1, a)`, out `(1, 1, a)`.
+  Mix 0 leaves dry ramping 0 -> 1 and wet 1 -> 0.058 after 4096 samples (matches `1 - (1-a)^n`).
+- **Equation.** `out = g_out * (g_wet * W + g_dry * D)`, with per-sample ramps. Fixture:
+  `fixtures/output_block.json`, 7 configurations (mix, wet and out trims, delta, bypass), 2600
+  samples, compared to 1e-6 relative to each channel's peak.
+
+### Caveat: the stand-in cannot tell wet from dry
+
+With the constructor state and no band processing the emulated wet path equals the delayed input
+(max |W - D| = 7e-7 at 48 kHz, latency 2304). So the fixture cannot distinguish the wet and dry
+roles: swapping the two ramps gives the same output. The record-to-signal assignment above comes
+from the code order (`0x891f3e` ramps the buffers that `0x893de0` copied from the processed side;
+`0x892250` ramps the scratch copy of the delayed input). A non-identity wet path (band gains,
+solo, or a changed FFT path) is needed to check it.
+
+### Helpers identified
+
+- `0x180001370`: `dst[i] += src[i]` (rcx = src, rdx = dst, r8 = n; r9 unused, xmm1 unused).
+  Checked by emulation, with the selector-0 implementation at `0x9ea0`.
+- `0x1800010a0` copy(src, dst, n); `0x180001070` mulC; `0x1800011c0` sub (`src2 - src1`);
+  `0x1800015b0` add (`a + b -> dst`); `0x1800010d0` zero-fill. Verified by probes except `0x1070`.
+- All IPP wrappers share the selector `[0x21ed508]`. Selector 0 is the one the harness pins.
+  Elementwise add, mul and sub are exact at every selector, so bit-exactness does not depend on it.
+- Host ids: `isset(9)` at `0x892dd3` (band solo channels), `isset(13)` at `0x8935e5`
+  (sidechain meter).
+- The writer analysis shows `0x899ca1` writes the output 4096 times per 4096-block, once per
+  sample. That is the per-sample delayed-input writer. Not yet mapped to its function.
+
 ## Open (not translated)
 
-- **Dry/wet summation and the write to the output table.** The region `0x891fxx..0x893bd7` is
-  stack-aliased (about 1,300 decompile lines) and calls `0x899cd0`, `0x89a1a0`, `0x5e9a0` and the
-  copy/zero wrappers. `process_output_block` is therefore not provided.
 - **Band-solo filter.** `0x89a1a0` per-sample, `0x89bf10` coefficient store (table in
   `stereo-ms-sidechain-output.md`). Coefficient smoothing toward its target (one-pole rate
-  `*(record+0x38)`) is not decoded.
-- **Sidechain meter** (`sidechain_input_level`, host id 13) written near `0x893928`: not read.
+  `*(record+0x38)`) is not decoded. `process_output_block` panics on `solo_active`.
+- **Solo records** (`main +0xbf40`, `solo +0xbf4c`): their ramps are not in the fixture (solo off).
+- **Sidechain meter** (`sidechain_input_level`, host id 13) near `0x893928`: not read.
 - **Setter case `0x5b` edge case.** The decompile gives value 0 -> index 7 (unsigned `uVar11 - 1`).
   Not checked in the asm; the fixture only uses 0 and 1..8, and the Rust side does not model it.
 - **Sidechain listen (`+0xa7`)** and **`+0x236`** setter: not decoded (the fixture writes `+0x236` directly).
-- **Clipping**: none found in the translated region; not checked in the summation.
+- **Clipping**: none found in the translated region; not checked.
+- **Wet/dry role** (see caveat above).

@@ -37,6 +37,23 @@ pub fn ramp_coefficient(sample_rate: f32) -> f32 {
     1.0 - (RAMP_TIME_CONSTANT / sample_rate).exp()
 }
 
+/// Longest sub-block the output stage runs at once. The binary calls the ramp once per
+/// sub-block of at most 512 samples (`n = min(512, remaining)`), so the gate decisions are
+/// taken per sub-block, not per block.
+pub const SUB_BLOCK: usize = 512;
+
+/// What the ramp helper `0x899ab0` does for one sub-block, decided from the record's state
+/// before the sub-block starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GainPlan {
+    /// Settled at unity: no multiply, `g` kept.
+    Skip,
+    /// Both under the gate: the channels are zeroed (`0x1800010d0`), `g` not stepped.
+    Zero,
+    /// Ramp: `g` stepped once per sample; the per-sample gains are in the caller's buffer.
+    Ramp,
+}
+
 /// One gain record: target, current gain and per-sample coefficient (`0x899ab0`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
@@ -47,35 +64,159 @@ pub struct GainRecord {
 }
 
 impl GainRecord {
-    /// Applies one block of the ramp to `channels[..][..n]`.
+    /// Decides the branch for a sub-block of `n` samples. On [`GainPlan::Ramp`] it steps `g`
+    /// once per sample and writes the gains into `gains[..n]`. Other branches leave `gains`
+    /// alone. `n` must be at most `gains.len()`.
     ///
     /// Three cases, in the binary's order:
-    /// 1. `|t - 1| < GATE` and `|t - g| < GATE`: the gain is settled at unity. Nothing
-    ///    is done, and `g` is left where it is (it is not snapped to `t`).
-    /// 2. `|t| < GATE` and `|g| < GATE`: both are near zero. The channels are zeroed.
-    ///    `g` is not updated.
-    /// 3. Otherwise: ramp. `g` steps once per sample and multiplies that sample on
-    ///    every channel.
+    /// 1. `|t - 1| < GATE` and `|t - g| < GATE`: settled at unity ([`GainPlan::Skip`]).
+    ///    `g` is left where it is (it is not snapped to `t`).
+    /// 2. `|t| < GATE` and `|g| < GATE`: both near zero ([`GainPlan::Zero`]).
+    /// 3. Otherwise: [`GainPlan::Ramp`].
     ///
-    /// The comparisons are `>=` on `|x|`. For NaN they are false, as the binary's
+    /// The comparisons are `>=` on `|x|`, so for NaN they are false, as the binary's
     /// `comiss`/`jae` pairs are.
-    pub fn apply(&mut self, channels: &mut [&mut [f32]], n: usize) {
+    pub fn plan(&mut self, n: usize, gains: &mut [f32]) -> GainPlan {
         let (t, a) = (self.target, self.coeff);
         if !((t - 1.0).abs() >= GATE || (t - self.current).abs() >= GATE) {
-            return;
+            return GainPlan::Skip;
         }
         if !(t.abs() >= GATE || self.current.abs() >= GATE) {
-            for ch in channels.iter_mut() {
-                ch[..n].fill(0.0);
-            }
-            return;
+            return GainPlan::Zero;
         }
-        for i in 0..n {
+        for g in gains[..n].iter_mut() {
             self.current = (t - self.current) * a + self.current;
-            for ch in channels.iter_mut() {
-                ch[i] *= self.current;
+            *g = self.current;
+        }
+        GainPlan::Ramp
+    }
+
+    /// Applies one block of the ramp to `channels[..][..n]` (n at most [`SUB_BLOCK`]).
+    /// Same branches as [`GainRecord::plan`]; every channel sees the same per-sample gain.
+    pub fn apply(&mut self, channels: &mut [&mut [f32]], n: usize) {
+        let mut gains = [0.0f32; SUB_BLOCK];
+        let plan = self.plan(n, &mut gains);
+        for ch in channels.iter_mut() {
+            apply_planned(plan, &gains[..n], &mut ch[..n]);
+        }
+    }
+}
+
+/// Applies a planned branch to one channel's sub-block.
+fn apply_planned(plan: GainPlan, gains: &[f32], x: &mut [f32]) {
+    match plan {
+        GainPlan::Skip => {}
+        GainPlan::Zero => x.fill(0.0),
+        GainPlan::Ramp => {
+            for (v, g) in x.iter_mut().zip(gains) {
+                *v *= g;
             }
         }
+    }
+}
+
+/// The three gain records the output sum uses: dry (`+0xbf28`), wet (`+0xbf34`) and out
+/// (`+0xbf58`). Their state persists across blocks, so the caller keeps one per instance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputStage {
+    pub dry: GainRecord,
+    pub wet: GainRecord,
+    pub out: GainRecord,
+}
+
+impl OutputStage {
+    /// The constructor's state (`0x88fa90` writes the coefficient, the record initial values are
+    /// dry `(0, 0)`, wet `(1, 1)`, out `(1, 1)`), as read from the emulated object.
+    pub fn new(sample_rate: f32) -> Self {
+        let a = ramp_coefficient(sample_rate);
+        Self {
+            dry: GainRecord {
+                target: 0.0,
+                current: 0.0,
+                coeff: a,
+            },
+            wet: GainRecord {
+                target: 1.0,
+                current: 1.0,
+                coeff: a,
+            },
+            out: GainRecord {
+                target: 1.0,
+                current: 1.0,
+                coeff: a,
+            },
+        }
+    }
+}
+
+/// The output sum of one block (`0x890a00`, output side, verified by emulation).
+///
+/// `dry` is the delayed input block and `wet` the processed block, both one slice per channel
+/// (1 or 2 channels). `out` receives the result. Per sub-block of at most [`SUB_BLOCK`]
+/// samples, as the binary does:
+///
+/// 1. the targets of [`OutputTargets::compute`] are written to the three records;
+/// 2. `out = wet`, then `out *= g_wet` (ramp of the wet record);
+/// 3. `scratch = dry`, then `scratch *= g_dry` (ramp of the dry record);
+/// 4. `out += scratch` (IPP add, `0x180001370`, `dst += src`);
+/// 5. `out *= g_out` (ramp of the out record).
+///
+/// Not translated: the band-solo path (`solo_active`, which reroutes the main signal through
+/// `0x89a1a0` and the `main`/`solo` records), the sidechain listen and the meter. A solo
+/// block panics rather than return the wrong output.
+pub fn process_output_block(
+    stage: &mut OutputStage,
+    p: &OutputParams,
+    dry: &[&[f32]],
+    wet: &[&[f32]],
+    out: &mut [&mut [f32]],
+) {
+    assert!(
+        !p.solo_active,
+        "band-solo output path (0x89a1a0) is not translated"
+    );
+    let ch = out.len();
+    assert!((1..=2).contains(&ch), "output stage handles mono or stereo");
+    assert!(
+        dry.len() == ch && wet.len() == ch,
+        "one dry and one wet slice per channel"
+    );
+    let n = out[0].len();
+
+    let t = OutputTargets::compute(p);
+    stage.dry.target = t.dry;
+    stage.wet.target = t.wet;
+    stage.out.target = t.out;
+
+    let mut gains = [0.0f32; SUB_BLOCK];
+    let mut scratch = [[0.0f32; SUB_BLOCK]; 2];
+    let mut s = 0;
+    while s < n {
+        let m = (n - s).min(SUB_BLOCK);
+        for c in 0..ch {
+            out[c][s..s + m].copy_from_slice(&wet[c][s..s + m]);
+        }
+        let plan = stage.wet.plan(m, &mut gains);
+        for c in 0..ch {
+            apply_planned(plan, &gains[..m], &mut out[c][s..s + m]);
+        }
+
+        for c in 0..ch {
+            scratch[c][..m].copy_from_slice(&dry[c][s..s + m]);
+        }
+        let plan = stage.dry.plan(m, &mut gains);
+        for c in 0..ch {
+            apply_planned(plan, &gains[..m], &mut scratch[c][..m]);
+            for (o, d) in out[c][s..s + m].iter_mut().zip(&scratch[c][..m]) {
+                *o += d;
+            }
+        }
+
+        let plan = stage.out.plan(m, &mut gains);
+        for c in 0..ch {
+            apply_planned(plan, &gains[..m], &mut out[c][s..s + m]);
+        }
+        s += m;
     }
 }
 
@@ -169,8 +310,18 @@ impl OutputTargets {
             1.0 - p.mix
         };
         let out = if p.bypass { 1.0 } else { p.out_gain };
-        let (main, solo) = if p.solo_active { (0.0, 1.0) } else { (1.0, 0.0) };
-        Self { dry, wet, main, solo, out }
+        let (main, solo) = if p.solo_active {
+            (0.0, 1.0)
+        } else {
+            (1.0, 0.0)
+        };
+        Self {
+            dry,
+            wet,
+            main,
+            solo,
+            out,
+        }
     }
 }
 
@@ -193,6 +344,8 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("fixtures/output_ramp.json");
+    /// getLatency at 48 kHz on the stand-in (`fixtures/output_block.json`).
+    const DELAY_SAMPLES: usize = 2304;
 
     fn f32s(v: &serde_json::Value) -> Vec<f32> {
         v.as_array()
@@ -206,19 +359,38 @@ mod tests {
     fn ramp_matches_emulated_helper_bit_for_bit() {
         let fixture: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
         let cases = fixture["cases"].as_array().unwrap();
-        assert!(cases.len() >= 500, "fixture should cover the gate branches and rates");
+        assert!(
+            cases.len() >= 500,
+            "fixture should cover the gate branches and rates"
+        );
         for (idx, case) in cases.iter().enumerate() {
             let n = case["n"].as_u64().unwrap() as usize;
             let rec_in = f32s(&case["rec_in"]);
             let rec_out = f32s(&case["rec_out"]);
-            let mut rec = GainRecord { target: rec_in[0], current: rec_in[1], coeff: rec_in[2] };
+            let mut rec = GainRecord {
+                target: rec_in[0],
+                current: rec_in[1],
+                coeff: rec_in[2],
+            };
             let mut bufs: Vec<Vec<f32>> = case["in"].as_array().unwrap().iter().map(f32s).collect();
             let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
             rec.apply(&mut refs, n);
 
-            assert_eq!(rec.target.to_bits(), rec_out[0].to_bits(), "case {idx} target");
-            assert_eq!(rec.current.to_bits(), rec_out[1].to_bits(), "case {idx} current");
-            assert_eq!(rec.coeff.to_bits(), rec_out[2].to_bits(), "case {idx} coeff");
+            assert_eq!(
+                rec.target.to_bits(),
+                rec_out[0].to_bits(),
+                "case {idx} target"
+            );
+            assert_eq!(
+                rec.current.to_bits(),
+                rec_out[1].to_bits(),
+                "case {idx} current"
+            );
+            assert_eq!(
+                rec.coeff.to_bits(),
+                rec_out[2].to_bits(),
+                "case {idx} coeff"
+            );
             for (c, expected) in case["out"].as_array().unwrap().iter().enumerate() {
                 for (i, (g, e)) in refs[c].iter().zip(f32s(expected)).enumerate() {
                     assert_eq!(g.to_bits(), e.to_bits(), "case {idx} ch {c} sample {i}");
@@ -232,7 +404,10 @@ mod tests {
         const TARGETS: &str = include_str!("fixtures/output_targets.json");
         let fixture: serde_json::Value = serde_json::from_str(TARGETS).unwrap();
         let cases = fixture["cases"].as_array().unwrap();
-        assert!(cases.len() >= 32, "fixture should cover identity, delta, bypass and solo");
+        assert!(
+            cases.len() >= 32,
+            "fixture should cover identity, delta, bypass and solo"
+        );
         let bits = |v: &serde_json::Value| f32::from_bits(v.as_u64().unwrap() as u32);
         for (idx, case) in cases.iter().enumerate() {
             let p = &case["params"];
@@ -256,20 +431,36 @@ mod tests {
                 ("solo", got.solo),
                 ("out", got.out),
             ] {
-                assert_eq!(value.to_bits(), bits(&want[name]).to_bits(), "case {idx} {name}");
+                assert_eq!(
+                    value.to_bits(),
+                    bits(&want[name]).to_bits(),
+                    "case {idx} {name}"
+                );
             }
         }
     }
 
     #[test]
     fn unity_and_zero_gates_leave_their_documented_state() {
-        let mut settled = GainRecord { target: 1.0, current: 1.0 - 5e-4, coeff: 0.1 };
+        let mut settled = GainRecord {
+            target: 1.0,
+            current: 1.0 - 5e-4,
+            coeff: 0.1,
+        };
         let mut buf = vec![0.25f32; 4];
         settled.apply(&mut [buf.as_mut_slice()], 4);
         assert_eq!(buf, vec![0.25; 4], "settled at unity: no multiply");
-        assert_eq!(settled.current, 1.0 - 5e-4, "settled at unity: g is kept, not snapped");
+        assert_eq!(
+            settled.current,
+            1.0 - 5e-4,
+            "settled at unity: g is kept, not snapped"
+        );
 
-        let mut mute = GainRecord { target: 0.0, current: 5e-4, coeff: 0.1 };
+        let mut mute = GainRecord {
+            target: 0.0,
+            current: 5e-4,
+            coeff: 0.1,
+        };
         mute.apply(&mut [buf.as_mut_slice()], 4);
         assert_eq!(buf, vec![0.0; 4], "both under the gate: zeroed");
         assert_eq!(mute.current, 5e-4, "zeroed path does not step g");
@@ -277,28 +468,123 @@ mod tests {
 
     #[test]
     fn bypass_and_delta_targets_match_the_block() {
-        let p = OutputParams { wet_gain: 2.0, mix: 0.25, out_gain: 0.5, ..OutputParams::default() };
+        let p = OutputParams {
+            wet_gain: 2.0,
+            mix: 0.25,
+            out_gain: 0.5,
+            ..OutputParams::default()
+        };
         let t = OutputTargets::compute(&p);
         assert_eq!((t.dry, t.wet, t.out), (0.75, 0.5, 0.5));
         assert_eq!((t.main, t.solo), (1.0, 0.0));
 
         let d = OutputParams { delta: true, ..p };
         let t = OutputTargets::compute(&d);
-        assert_eq!((t.dry, t.wet), (0.5, -0.5), "delta: output = wm * (dry - wet)");
+        assert_eq!(
+            (t.dry, t.wet),
+            (0.5, -0.5),
+            "delta: output = wm * (dry - wet)"
+        );
 
-        let b = OutputParams { bypass: true, delta: true, ..p };
+        let b = OutputParams {
+            bypass: true,
+            delta: true,
+            ..p
+        };
         let t = OutputTargets::compute(&b);
-        assert_eq!((t.dry, t.wet, t.out), (1.0, 0.0, 1.0), "bypass ignores trims and mix");
+        assert_eq!(
+            (t.dry, t.wet, t.out),
+            (1.0, 0.0, 1.0),
+            "bypass ignores trims and mix"
+        );
     }
 
     #[test]
     fn solo_engages_delta_and_routes_the_solo_stream() {
-        let p = OutputParams { solo_active: true, solo_flag_236: true, ..OutputParams::default() };
+        let p = OutputParams {
+            solo_active: true,
+            solo_flag_236: true,
+            ..OutputParams::default()
+        };
         assert!(delta_mode(&p));
         let t = OutputTargets::compute(&p);
         assert_eq!((t.main, t.solo), (0.0, 1.0));
-        let no_flag = OutputParams { solo_active: true, ..OutputParams::default() };
+        let no_flag = OutputParams {
+            solo_active: true,
+            ..OutputParams::default()
+        };
         assert!(!delta_mode(&no_flag));
+    }
+
+    #[test]
+    fn output_block_matches_the_emulated_process_block() {
+        const BLOCK: &str = include_str!("fixtures/output_block.json");
+        let fixture: serde_json::Value = serde_json::from_str(BLOCK).unwrap();
+        let n = fixture["n"].as_u64().unwrap() as usize;
+        let rate = fixture["sample_rate"].as_f64().unwrap() as f32;
+        let bits = |v: &serde_json::Value| f32::from_bits(v.as_u64().unwrap() as u32);
+        let block = |v: &serde_json::Value| -> Vec<Vec<f32>> {
+            v.as_array().unwrap().iter().map(f32s).collect()
+        };
+        let wet = block(&fixture["wet_block"]);
+        let dry = block(&fixture["dry_block"]);
+        let dry_refs: Vec<&[f32]> = dry.iter().map(|c| c.as_slice()).collect();
+        let wet_refs: Vec<&[f32]> = wet.iter().map(|c| c.as_slice()).collect();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(
+            cases.len() >= 6 && n > DELAY_SAMPLES,
+            "fixture covers the delay and every output mode"
+        );
+
+        for (idx, case) in cases.iter().enumerate() {
+            let p = &case["params"];
+            let params = OutputParams {
+                wet_gain: bits(&p["wet_gain"]),
+                mix: bits(&p["mix"]),
+                out_gain: bits(&p["out_gain"]),
+                delta: p["delta"].as_bool().unwrap(),
+                bypass: p["bypass"].as_bool().unwrap(),
+                solo_active: false,
+                solo_flag_236: false,
+                band_flags_any: false,
+                channels: 2,
+            };
+            // Records as the constructor leaves them (dry, wet, out), taken from the emulated object.
+            let rec = |name: &str| {
+                let r = f32s(&case["rec_in"][name]);
+                GainRecord {
+                    target: r[0],
+                    current: r[1],
+                    coeff: r[2],
+                }
+            };
+            let mut stage = OutputStage {
+                dry: rec("dry"),
+                wet: rec("wet"),
+                out: rec("out"),
+            };
+            assert_eq!(
+                stage.wet.coeff.to_bits(),
+                OutputStage::new(rate).wet.coeff.to_bits(),
+                "ramp coefficient"
+            );
+
+            let mut bufs: Vec<Vec<f32>> = vec![vec![0.0; n]; 2];
+            let mut outs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
+            process_output_block(&mut stage, &params, &dry_refs, &wet_refs, &mut outs);
+
+            for (c, expected) in case["out"].as_array().unwrap().iter().enumerate() {
+                let want = f32s(expected);
+                let peak = want.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-3);
+                for (i, (g, e)) in bufs[c].iter().zip(&want).enumerate() {
+                    let err = (g - e).abs() / peak;
+                    assert!(
+                        err <= 1e-6,
+                        "case {idx} ch {c} sample {i}: got {g}, emulated {e}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
