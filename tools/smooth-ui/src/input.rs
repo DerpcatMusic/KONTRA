@@ -15,6 +15,9 @@ use std::ops::RangeInclusive;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+// Placeholders: the reference's wheel step, fine factor and page step are not
+// recovered (see research/input-behaviour.md, sections 2 and 3).
+
 /// Of the range, per wheel notch or arrow key press, for a continuous control.
 pub const STEP: f64 = 0.01;
 
