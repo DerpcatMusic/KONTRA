@@ -162,7 +162,7 @@ pub(crate) fn internal(
                 "unknown_version_word",
                 e.unknown_version_word().map_or(-1, i64::from),
             ),
-            if object.version == 0x10 {
+            if e.legacy_tail() {
                 // Legacy metadata is four opaque bytes, not a v0x11 timing record.
                 opaque("unknown_tail", &e.unknown_tail)
             } else {
