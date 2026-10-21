@@ -116,3 +116,51 @@ on the complex leg. Which of these reaches the detector's `m` is not yet decided
 
 Until 1 and 2 are closed, SMOOTH keeps `norm()` and `latency = n-1 (+m/2)`. The impulse
 delay test in `dsp.rs` (per plan) stays as the PDC check.
+
+## 6. Detector data flow, pass 2 (2026-10-21)
+
+Per channel, `fcn.180619fc0` (lines 415–450 of the annotated decompile):
+
+1. Real leg: `0x180001280(pad, out, spec_N2)` — real forward, N2 = 2·(bins2−1),
+   then `0x180001220(1.0f/N2, out, N2)` — **explicit 1/N2 on the real leg**.
+2. Fold: `0x1800010a0`, `0x1800010d0` on the N2 spectrum.
+3. Complex leg: `0x180001010(out2, fold, spec_N1)` — **unscaled** complex forward,
+   N1 = 2·(bins1−1). (Argument order: first arg is src, second dst, as in step 1.)
+4. Power: `fcn.1806181b0(dst, complexN1, N1)` = `re²+im²` per bin, no scale
+   (checked in the pseudocode: `pfVar24[k] = re*re + im*im`).
+5. `0x180001190(dst, idx, per_channel_ptr, N1 as float)` — **not identified**. It may
+   take sqrt/log or just move bins. This decides whether the array is |Y| or |Y|².
+6. Resample to 1024 points (`iStack_574 = 0x400`), **Catmull–Rom cubic** at the
+   fractional bin `t = (f[k]/f[N1−1])·(N1−1)`:
+   `p = 0.5·[2b + (c−a)t + (2a−5b+4c−d)t² + (−a+3b−3c+d)t³]`, with the constants
+   `0.5` (`0x18209d1c0`), `2` (`0x18209d4a0`), `3` (`0x18209d560`), `4`
+   (`0x18209d5d0`), `5` (`0x18209d5ec`) read from `.rdata` (`re-latency-readconst.py`).
+   A pure interpolation: no scale is introduced here.
+7. Grid: the 1024 log-spaced values come from `0x18209d258 = 1/1023` (linear from
+   `func_181cbdf7b()` to another call, `fVar36`/`fVar40`).
+8. Smoothing: `fcn.18061c3f0(buf, state, α, α)` with `α = 1 − f(0x620·0x18209d984)`
+   (`0x18209d984 = −0.05`). Attack/release one-pole on the log state.
+9. Detector target: `ln` on the 1024 array (`0x1801c84d0`), weighted by
+   `pfVar26[k]²` in the soft branch (`fVar40/fVar48`); floors `1e-5`
+   (`0x18209d010`), `0.1` (`0x18209d0c8`), `0.01` (`0x18209d060`).
+
+Constants read from the binary (`.rdata`, f32): `1.0`, `0.5`, `1/38 (0x18209d088)`,
+`1e-5`, `2`, `3`, `4`, `5`, `20`, `19.8`, `−20`, `−22`, `0.05`, `−0.05`, `1/1023`,
+`9.22e18` (int-conversion sentinel).
+
+### What this changes for SMOOTH
+
+- The detector does **not** consume SMOOTH's single STFT magnitude. It consumes the
+  output of two transforms: a real N2 forward (with 1/N2) and an unscaled complex N1
+  forward over the folded spectrum, then |·|² and a 1024-point log-frequency resample.
+  The two plan sizes (N1 from table `0x770`, N2 from `0x788`) are different objects.
+- So the reference's m is **not** `norm()` of an N-point FFT, and the sample-rate
+  dependence of the reference is not determined by SMOOTH's `N = 2m` argument alone.
+  The rate dependence depends on how bins1/bins2 scale with the rate. Not yet read.
+
+### Still open (exact)
+
+- Step 5 `0x180001190`: is there a sqrt, a log, or a copy? Decides |Y| vs |Y|².
+- Steps 1–3 fold: `0x1800010a0/d0` arithmetic.
+- How `bins1`, `bins2` (tables `0x770/0x788`) depend on quality, size and rate.
+- Latency (section 5) is untouched by this pass.
