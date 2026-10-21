@@ -215,19 +215,17 @@ pub fn outline_chip(s: &str) -> El {
 /// The footer sits on the darker ground, so a wash over it would read as a
 /// smudge rather than a plate; the reference gives these switches the same
 /// opaque plate the value fields use.
+/// A toggle pill: a plate with a ring and a name. It lights while it is on, as
+/// the band's power switch does (a dark plate with a light mark), so the state
+/// reads at a glance. The off state keeps the plate light with an ink ring.
 pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     if ui.get(id).activated() {
         *on = !*on;
     }
-    pill(
-        vec![
-            ring_dot(metric::RING, if *on { c(t.mark) } else { c(t.ink) }),
-            label(name, ty::CAPTION, c(t.ink)),
-        ],
-        c(t.field),
-    )
+    let (fill, ink) = if *on { (c(t.selected), c(t.mark)) } else { (c(t.field), c(t.ink)) };
+    pill(vec![ring_dot(metric::RING, ink), label(name, ty::CAPTION, ink)], fill)
     .tipped(id)
     .focusable()
     .cursor(Cursor::Hand)

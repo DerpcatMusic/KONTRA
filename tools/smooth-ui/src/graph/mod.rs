@@ -103,12 +103,11 @@ pub fn response(
         }
     }
 
-    // A secondary click asks for a band's menu: the band under the pointer, or
-    // the selected band on bare plot. The click selects that band too, so the
-    // band bar and the menu name the same one.
+    // A secondary click on a band (its handle or its curve) asks for its menu.
+    // The click selects that band too, so the band bar and the menu name the same one.
     if plot.clicked_with(Button::Secondary)
         && let Some(pos) = ui.pointer().pos
-        && let Some(index) = hovered.or_else(|| (bands.get(*selected).is_some_and(|b| b.active)).then_some(*selected))
+        && let Some(index) = hovered
     {
         *selected = index;
         gesture.menu = Some((index, (pos.x, pos.y)));

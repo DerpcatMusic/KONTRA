@@ -17,6 +17,15 @@ which do not yet reach the editor under Xvfb.
 `--gesture-check` then runs a block of audio and asserts the host heard the
 drag: one begin, the values, one end, per parameter. A handle is not a
 widget, so that is the only way the gesture can reach a host.
+`--wiring-check` photographs and asserts the wired controls: band solo on the
+selected band (one gesture, and a second click clears it), the sidechain switch
+and its listen, the band menu from a right click (bypass, reset, shape, delete),
+each checked against what the host hears.
+`--wiring-listen` asserts listen-on-drag: a press on band 2 holds its solo for
+as long as the press lasts, and the release puts the value back. Run it with
+`XDG_CONFIG_HOME` pointing at a config with `"listen_on_drag": true`; add
+`--listen-delta` to audition the delta instead, or `--listen-off` to assert that
+a press sends nothing with the preference off.
 
 Give Xvfb a screen at least as large as the window (1200x710): the pointer
 cannot leave the screen, and `magick import` only sees what is on it.
@@ -487,6 +496,241 @@ def main():
             settle()
             after_delete = snap("delete-key")
             print(f"pixels changed by Delete: {differs(before_delete, after_delete)}")
+    SCALE_MARK = (168, 326)
+    DELTA_SWITCH = (262, 459)
+    if "--trim-check" in sys.argv:
+        # Wet trim and delta, which were in the interface already: the trim sits in
+        # the side panel the scale marker opens, and delta is the footer switch. The
+        # panel shows the value the host holds, and the switch is a host edit.
+        import re
+
+        sx, sy = scale()
+
+        def point(p):
+            return (int(p[0] * sx), int(p[1] * sy))
+
+        def heard_run():
+            play(frames=1024, events=record_out)
+
+        def values_of(name):
+            ident = infos[name].id
+            return [value for kind, seen, value in heard if seen == ident and kind == 5]
+
+        def pulse():
+            heard_run()
+
+        def click_at(p):
+            subprocess.run(["xdotool", "mousemove", *map(str, point(p))], check=True)
+            settle()
+            subprocess.run(["xdotool", "mousedown", "1"], check=True)
+            pulse()
+            subprocess.run(["xdotool", "mouseup", "1"], check=True)
+            pulse()
+            settle()
+
+        def snap(tag):
+            pulse()
+            settle()
+            path = out.with_name(f"{out.stem}-trim-{tag}{out.suffix}")
+            subprocess.run(["magick", "import", "-window", str(parent), str(path)], check=True)
+            print(f"wrote {path}")
+            return path
+
+        def differs(a, b):
+            result = subprocess.run(["magick", "compare", "-metric", "AE", str(a), str(b), "null:"], capture_output=True, text=True)
+            return int(float((result.stderr.split() or ["0"])[0]))
+
+        set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6, "Wet trim": 0.0, "Delta": 0.0})
+        settle()
+        rest = snap("rest")
+        click_at(SCALE_MARK)
+        panel = snap("panel")
+        print(f"pixels changed by opening the panel: {differs(rest, panel)}")
+        set_values({"Wet trim": 12.0})
+        twelve = snap("wet-trim-12")
+        changed = differs(panel, twelve)
+        assert changed > 0, "the panel did not show the wet trim change"
+        print(f"wet trim +12 dB: the panel changed by {changed} pixels")
+        heard.clear()
+        click_at(DELTA_SWITCH)
+        assert values_of("Delta")[-1:] == [1.0], values_of("Delta")
+        print("delta switch: one host edit, delta -> 1")
+        snap("delta-on")
+        return
+
+    if "--wiring-check" in sys.argv or "--wiring-listen" in sys.argv:
+        # The wired controls, each checked against what the host hears and
+        # photographed: band solo, the sidechain switch and its listen, the band
+        # menu on a right click, and listen-on-drag (run with `--wiring-listen`
+        # and a config that turns it on, see `XDG_CONFIG_HOME` below).
+        # Points are logical, in the editor's 800x473 space.
+        import re
+
+        sx, sy = scale()
+        SOLO = (260, 423)
+        SIDECHAIN = (186, 13)
+        LISTEN = (210, 13)
+        HANDLE = (382, 175)
+        MENU_ROWS = {"delete": (400, 196), "bypass": (400, 219), "reset": (400, 242), "solo": (400, 264), "shape": (400, 288), "shape-high-cut": (420, 450)}
+
+        def point(p):
+            return (int(p[0] * sx), int(p[1] * sy))
+
+        def frames(count):
+            for _ in range(count):
+                plugin.main(pointer)
+                time.sleep(0.02)
+
+        def pulse():
+            # The editor redraws when the engine publishes, so one block of audio
+            # between the press and the release gives it a frame for each. The
+            # block is recorded, so the host's view of the click is kept.
+            heard_run()
+
+        def click_at(p, button="1"):
+            # Press and release with a block between them: a press and a release
+            # in one batch is not a click to the editor. The recorder starts empty,
+            # so what is asserted after the click is what the click sent.
+            heard.clear()
+            subprocess.run(["xdotool", "mousemove", *map(str, point(p))], check=True)
+            settle()
+            subprocess.run(["xdotool", "mousedown", button], check=True)
+            pulse()
+            subprocess.run(["xdotool", "mouseup", button], check=True)
+            pulse()
+            settle()
+
+        def heard_run():
+            # Run a block into the recorder; what the editor queued since the last
+            # block comes out here.
+            play(frames=1024, events=record_out)
+
+        def values_of(name):
+            ident = infos[name].id
+            return [value for kind, seen, value in heard if seen == ident and kind == 5]
+
+        def kinds_of(name):
+            ident = infos[name].id
+            return [kind for kind, seen, _ in heard if seen == ident]
+
+        def snap(tag):
+            # The editor repaints on its own frames, so let it show the last edit first.
+            pulse()
+            settle()
+            path = out.with_name(f"{out.stem}-wiring-{tag}{out.suffix}")
+            subprocess.run(["magick", "import", "-window", str(parent), str(path)], check=True)
+            print(f"wrote {path}")
+            return path
+
+        def differs(a, b):
+            result = subprocess.run(["magick", "compare", "-metric", "AE", str(a), str(b), "null:"], capture_output=True, text=True)
+            return int(float((result.stderr.split() or ["0"])[0]))
+
+        def menu_row(name):
+            return MENU_ROWS[name]
+
+        if "--wiring-listen" not in sys.argv:
+            set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6, "Band solo": 0.0, "Sidechain": 0.0, "Sidechain listen": 0.0})
+            settle()
+            rest = snap("rest")
+
+            # Band solo: a click on the selected band's solo lights it and sends
+            # that band (2) to the host as one gesture; a second click clears it.
+            click_at(SOLO)
+            heard_run()
+            assert kinds_of("Band solo")[:1] == [7] and values_of("Band solo")[-1:] == [2.0], (kinds_of("Band solo"), values_of("Band solo"))
+            print("solo click: one gesture, band solo -> 2 (band 2)")
+            solo_on = snap("solo-on")
+            print(f"pixels changed by solo: {differs(rest, solo_on)}")
+            click_at(SOLO)
+            heard_run()
+            assert values_of("Band solo")[-1:] == [0.0], values_of("Band solo")
+            print("second solo click: band solo -> 0")
+
+            # Sidechain: the switch enables the detector, its listen hears it. The
+            # meter is the detector's signed peak, so it moves once audio runs.
+            click_at(SIDECHAIN)
+            heard_run()
+            assert values_of("Sidechain")[-1:] == [1.0], values_of("Sidechain")
+            click_at(LISTEN)
+            heard_run()
+            assert values_of("Sidechain listen")[-1:] == [1.0], values_of("Sidechain listen")
+            print("sidechain and listen: both on in the host")
+            sc_on = snap("sidechain-on")
+            print(f"pixels changed by sidechain: {differs(rest, sc_on)}")
+
+            # The band menu: a right click on the band opens it where it landed.
+            click_at(HANDLE, button="3")
+            menu = snap("menu")
+            print(f"pixels changed by the menu: {differs(sc_on, menu)}")
+            click_at(menu_row("bypass"))
+            heard_run()
+            assert values_of("Band 2 bypass")[-1:] == [1.0], values_of("Band 2 bypass")
+            print("band menu: bypass sent to the host as band 2 bypass = 1")
+
+            click_at(HANDLE, button="3")
+            click_at(menu_row("reset"))
+            heard_run()
+            assert values_of("Band 2 depth")[-1:] == [0.0], values_of("Band 2 depth")
+            print("band menu: reset -> band 2 depth 0.0")
+
+            set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6})
+            settle()
+            click_at(HANDLE, button="3")
+            click_at(menu_row("shape"))
+            snap("shape-open")
+            click_at(menu_row("shape-high-cut"))
+            heard_run()
+            assert values_of("Band 2 shape")[-1:] == [7.0], values_of("Band 2 shape")
+            print("band menu: shape -> high cut (7)")
+            snap("shape-picked")
+
+            click_at(HANDLE, button="3")
+            click_at(menu_row("delete"))
+            heard_run()
+            assert values_of("Band 2 active")[-1:] == [0.0], values_of("Band 2 active")
+            print("band menu: delete -> band 2 inactive")
+
+        else:
+            # Listen-on-drag: a press on band 2 auditions it (its solo, or the
+            # delta when the listen uses delta) for as long as the press holds,
+            # and the release puts back what the parameter held.
+            name = "Delta" if "--listen-delta" in sys.argv else "Band solo"
+            wanted = 1.0 if name == "Delta" else 2.0
+            set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6, "Band solo": 0.0, "Delta": 0.0})
+            settle()
+            heard.clear()
+            subprocess.run(["xdotool", "mousemove", *map(str, point(HANDLE))], check=True)
+            settle()
+            subprocess.run(["xdotool", "mousedown", "1"], check=True)
+            pulse()
+            settle()
+            pulse()
+            if "--listen-off" in sys.argv:
+                # The preference is off: a press on a handle sends no audition.
+                assert wanted not in values_of(name) and not values_of(name), (name, values_of(name))
+                subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                pulse()
+                settle()
+                print(f"press with listen off: {name} is not touched")
+                return
+            assert values_of(name)[-1:] == [wanted], (name, values_of(name))
+            print(f"press on band 2: {name} -> {wanted} while held ({len(values_of(name))} values)")
+            snap(f"listen-{name.split()[0].lower()}-held")
+            subprocess.run(["xdotool", "mousemove", *map(str, point((HANDLE[0] + 20, HANDLE[1] + 10)))], check=True)
+            pulse()
+            settle()
+            pulse()
+            assert values_of(name)[-1:] == [wanted], (name, values_of(name))
+            subprocess.run(["xdotool", "mouseup", "1"], check=True)
+            pulse()
+            settle()
+            pulse()
+            assert values_of(name)[-1:] == [0.0], (name, values_of(name))
+            assert 7 in kinds_of(name) and 8 in kinds_of(name), kinds_of(name)
+            print(f"release: {name} back to 0, one gesture around the audition")
+            snap(f"listen-{name.split()[0].lower()}-released")
+
     if any(flag in sys.argv for flag in ("--wheel", "--dblclick", "--ctrl-click", "--expect", "--wheel-check")):
         # Wheel and double-click on logical points: `--wheel x,y:n` scrolls n
         # notches (negative is down; `--shift` makes them fine), `--dblclick

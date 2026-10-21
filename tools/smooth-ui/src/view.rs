@@ -690,8 +690,8 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
 }
 
 // ----------------------------------------------------------------- band menu --
-/// The band's context menu, open at the point it was asked for. Delete and
-/// reset are the view's own edits; the rest go to the plug-in as host edits.
+/// The band's context menu, open at the point it was asked for. Reset is a
+/// plot change, so the view makes it; the rest go to the plug-in as host edits.
 /// A pick closes the menu.
 fn band_menu_layer(ui: &mut Ui, m: &mut Model) -> El {
     let Some(mut menu) = m.band_menu else {
@@ -707,13 +707,13 @@ fn band_menu_layer(ui: &mut Ui, m: &mut Model) -> El {
     let (panel, ask) = crate::menus::band_menu(ui, &mut menu, state);
     let Some(ask) = ask else {
         m.band_menu = Some(menu);
-        let (x, y) = crate::menus::clamped(menu.at, (metric::MENU_W, crate::menus::BAND_MENU_H), (W, H));
+        let height = if menu.shapes { crate::menus::BAND_MENU_H } else { crate::menus::BAND_MENU_CLOSED_H };
+        let (x, y) = crate::menus::clamped(menu.at, (metric::MENU_W, height), (W, H));
         return col![block(space::NONE, y).shrink(0), row![block(x, space::NONE).shrink(0), panel]]
             .anchor(Align::Start, Align::Start);
     };
     m.band_menu = None;
     match ask {
-        BandAsk::Delete => m.bands[index].active = false,
         BandAsk::Reset => m.gesture.changes.push(graph::Change::Reset { index }),
         other => m.actions.push(Action::Band { index, ask: other }),
     }

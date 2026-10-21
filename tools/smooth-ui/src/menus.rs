@@ -59,9 +59,10 @@ const PANEL_ID: &str = "menu-panel";
 /// The band menu's panel, for the press-outside test.
 pub const BAND_MENU_ID: &str = "band-menu-panel";
 
-/// The most a band menu can be tall, with its shape list open: the window
-/// clamps it to stay on screen.
+/// How tall a band menu is with its shape list open, and with it shut. The
+/// window keeps the menu on screen at whichever height it has.
 pub const BAND_MENU_H: f64 = 320.0;
+pub const BAND_MENU_CLOSED_H: f64 = 140.0;
 
 /// A band's context menu: which band, and the window point it opened at.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -125,7 +126,7 @@ pub fn band_menu(ui: &mut Ui, menu: &mut BandMenu, state: BandState) -> (El, Opt
         ask = Some(BandAsk::Solo);
     }
     // The shape is a list of its own: the row opens it, and a pick closes the menu.
-    if row(ui, "band-menu-shape", if menu.shapes { "Shape ▾" } else { "Shape ▸" }) {
+    if row(ui, "band-menu-shape", "Shape") {
         menu.shapes = !menu.shapes;
     }
     if menu.shapes {

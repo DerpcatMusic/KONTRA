@@ -616,17 +616,18 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
 }
 
 /// The host edit a band menu pick makes, as the parameter and its plain value.
-/// Delete and reset are the view's own edits, so they make none here.
+/// Reset is a plot change that the gesture path makes, so it is none here.
 fn band_edit(params: &SmoothParams, index: usize, ask: BandAsk) -> Option<(P, f64)> {
     let index = index.min(7);
     match ask {
+        BandAsk::Delete => Some((BAND_IDS[index][6], 0.0)),
         BandAsk::Bypass => {
             let on = params.band(index).bypass.value() >= 1;
             Some((BAND_IDS[index][7], if on { 0.0 } else { 1.0 }))
         }
         BandAsk::Solo => Some((P::BandSolo, solo_after(params.band_solo.value(), index))),
         BandAsk::Shape(shape) => Some((BAND_IDS[index][3], shape.min(7) as f64)),
-        BandAsk::Delete | BandAsk::Reset => None,
+        BandAsk::Reset => None,
     }
 }
 
@@ -1408,8 +1409,8 @@ mod param_tests {
         assert_eq!(band_edit(&params, 0, BandAsk::Solo), Some((P::BandSolo, 1.0)));
         // Bypass starts off, so the pick turns it on.
         assert_eq!(band_edit(&params, 0, BandAsk::Bypass), Some((BAND_IDS[0][7], 1.0)));
-        // Delete and reset are the view's own, so the plug-in makes no edit.
-        assert_eq!(band_edit(&params, 0, BandAsk::Delete), None);
+        // Delete is the band's active flag; reset is a plot change, so no edit here.
+        assert_eq!(band_edit(&params, 0, BandAsk::Delete), Some((BAND_IDS[0][6], 0.0)));
         assert_eq!(band_edit(&params, 0, BandAsk::Reset), None);
     }
 
