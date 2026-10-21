@@ -882,3 +882,124 @@ Evidence scope: identity band state, mode 0 (default stand-in), synthetic host, 
   `0x404c1c80` (its constructor formula is not yet read), and the FFT scale (1/N, software).
 - Zero-latency path (0x8acc30, 0x8b1630, 0x8dec70): not traced in this pass.
 - The yield of the 2304-sample delay per stage is not yet attributed to a read offset in the ring.
+
+## 21. Analysis/synthesis translated to Rust (translate-analysis pass 3, Unicorn, 2026-10-21)
+
+Code: `src/reference/hop.rs` (normal path), `src/reference/resample.rs` (88.2 kHz and up),
+`src/reference/zerolatency.rs` (zero-latency mode). Fixtures: `re-tools/emulate/stage_fixture.py`
+(call-site snapshots through `stage_lib.Snap`), `resample_fixture.py`, `zl_fixture.py`,
+`zl_path_fixture.py`; oracle files `stage_fixture_48000.json`, `resample_fixture_<rate>.json`,
+`zl_fixture_48000.json`, `zl_path_fixture_<rate>.json`. Every Rust test compares to the emulator at
+1e-5 relative or tighter; kernels and tables marked bit-exact compare with `==`.
+Evidence scope: emulation of the restored image, constructor state, synthetic host.
+
+### 21.1 Corrections to section 20
+
+- 0x8b61a0 and 0x8b7410 are not "analysis side" and "synthesis side". They are two complete STFT
+  stages in series: **short** (0x8b61a0 -> 0x8c5f30 -> 0x8d9230; frame 256, hop 128, FFT **512**) and
+  **long** (0x8b7410 -> 0x8c68a0 -> 0x8db030; frame 2048, hop 1024, FFT 4096, one hop every other
+  512-sample block). The `r8 = 0x100` of section 20.1 is the frame (256 floats). The frame is zero-padded
+  to 2·frame before the FFT.
+- The 2304 latency is attributed: 256 (short read offset, frame) + 2048 (long read offset).
+- The table at `0x404c1c80` is `f32(1 - cos(2πn/frame))` computed in f64. 0x8a6960 builds the Hann
+  `(1 - cos)·0.5` (clipped at 0). The caller divides by the mean (0x8a6b60). This is bit-exact for frames
+  256 and 2048.
+- The commit message of 3c5a9f6ac calls the resampler response a "raised-cosine edge". That is wrong.
+  The designed response is `H = 1 - exp(-138.155·(log2 r)²)` (21.3).
+
+### 21.2 Normal path hop (verified, `hop.rs`)
+
+For each hop and channel:
+1. Window multiply 0x1190 (f32 product), then zero-pad to 2·frame (0x10d0).
+2. Unscaled real FFT 0x1010, packed `[X0.re, 0, …, X_{N/2}.re, 0]`.
+3. Multiply by per-bin multipliers H with 0x1520 (`re = hr·xr - hi·xi`, `im = hr·xi + hi·xr`,
+   bit-exact; identity H = (1, 0)).
+4. Unscaled inverse 0x1280, then ×1/N (0x1220).
+5. 0x8e7000 zeroes `frame` floats at P+N.
+6. 0x8e7150 -> 0x11f0 overlap-adds `dst += c·y` with `c = f32(hop)/f32(frame) = 0.5` (0x8d9647..0x8d96a9).
+7. Output is read at t0 − frame (0x8dad80).
+
+H for the short stage comes from the gain body 0x8e04c0 (the `BinGain` trait in Rust; not translated
+here). The long stage has its own detector on the raw input. Kernel semantics: 0x13a0 `dst -= src`,
+0x1370 `dst += src`, 0x1580 `dst += a·b`, 0x15e0 packed complex `dst += a·b`, 0x1340 `dst *= src`,
+0x14c0 complex×real.
+
+Whole-path checks: `stage_fixture_48000.json` (every array before and after each stage of one hop, both
+stages) and `process_fixture_{44100,48000}_m0.json`.
+
+### 21.3 Groups ≥ 2 (88.2/96/176.4/192 kHz; verified, `resample.rs`)
+
+0x897890 runs these steps, with D = groups and T = 48·D taps:
+1. Decimate: `d[j] = Σ x[D·j − T + 1 + i]·dec[i]`, accumulated in f32.
+2. Run the chain at the decimated rate. Its delay is L = 2304 on the normal path and L = 0 at zero
+   latency (21.4).
+3. Form the residual `r[j] = p[j] − d[j − L]` (0x8992f0 -> 0x13a0).
+4. Interpolate: clear D floats 0x2000 ahead in a 0x4000 ring, then `up[D·j + i] += r·itp[i]`.
+5. Output `y = x[t − (L·D + T)] + up[t]` (0x891bca, 0x891c02 -> 0x1370).
+
+Reported latency is L·D + T. 0x8965a0 stores `dec = reverse(h)` and `itp = D·h` (bit-exact).
+
+FIR designer 0x89aed0:
+- M = max(32, nextpow2(T)). `f_k = f32(f64(f32(k))·(1/(M/2))·f64(f32(rate·0.5)))`.
+- `r = (min(f, fc) + 1.1920929e-7)·f32(1/fc)`, with fc = 21352.236547948156 (rate-independent).
+- `H = 1 − exp(−138.15511·(ln r·1.442695)²)`.
+- Real inverse FFT ×1/M, rotated by T/2.
+- 4-term Blackman-Harris window (0.35875, 0.48829, 0.14128, 0.01168) over T points, clipped at 0.
+
+### 21.4 Zero-latency mode (byte obj+0x237 = 1; verified, `zerolatency.rs`)
+
+0x8acc30 runs two workers in series: 0x8b1630 (short: IR 256, hop 128, design FFT 512) and 0x8b3be0
+(long: IR 2048, hop 1024, design FFT 4096). Per channel, each worker owns **two** convolver objects
+(lists at worker+0x2bd8 and +0x2bf0).
+
+- **Convolver 0x8dec70** (per sample, xmm1 = x):
+  - Head 0x8df220: a 32-tap direct form into a 32-float output ring (conv+0x40 taps, ring at +0x188,
+    position at +0x208).
+  - Every 32 samples, each level i ≥ 1 (list +0xf0: FFT sizes 64, 64, 128, 256, then 512) whose half
+    divides pos takes the last `half` inputs and runs FFT -> ×partition (0x1520) -> IFFT -> ×1/N, then
+    adds N samples into the output ring at pos.
+  - From half 256 on, it runs a frequency-domain delay line instead (slots +0x120, index +0x138,
+    0x15e0 MAC), and no later level runs.
+  - Layout: IR 256 = 32 + 32 + 64 + 128. IR 2048 = 256 + 7×256 uniform partitions in 7 slots.
+  - Checked by calling 0x8dec70 directly with a random IR (short and long).
+- **IR load 0x8f0a10**:
+  - `ir[0..32)` goes to the head.
+  - Then each partition p gets the unscaled FFT of its zero-padded segment, using the FFT of level
+    `min(p, levels − 1)`.
+  - Only taps and spectra change. Rings, delay line and positions keep running.
+- **Design 0x8df6b0** (called from 0x8d8090 / 0x8d8b00 once per hop per channel; input: N/2+1 log
+  magnitudes from the gain body 0x8e04c0, zeros at identity):
+  1. Cepstrum `c = IFFT(g)/N`.
+  2. Fold: `c[1..N/2) ×= 2.0`, `c[N/2+1..N) = 0`.
+  3. `S = FFT(c)`.
+  4. `H = exp(g)·(cos, sin)(Im S)`; 0x1c84a0 = exp and 0x1c8560 = sincos (sin first), both checked.
+  5. `ir = IFFT(H)/N`.
+  6. Multiply `ir[0..N/2+1)` by the half-Hann window, zero the rest.
+
+  The window comes from 0x8a6960 with start 0.5: ramp `r = f32(i/len·0.5 + 0.5)` in f64, then
+  `f32(max((1 − cos 2πr)·0.5, 0))` in f64. It is bit-exact. The convolver takes `ir[0..N/2)`
+  (`worker+0x38 >> 1`).
+- **Ping-pong**:
+  - The new IR goes into list `worker[0x2bd0]`, and the index then flips.
+  - During the next hop, the stage output is `a·w_a + b·w_b` (0x8c48f0 -> 0x1580 into the ring at
+    +0x2c08).
+  - The list holding the newest IR gets `f32(sin²(πi/2h))` and the other gets `f32(cos²(πi/2h))`,
+    both computed in f64 (bit-exact for h = 128 and 1024).
+  - The design at the end of hop k fades in over hop k+1.
+- **At groups ≥ 2** the two workers run at the decimated rate inside the resampler with L = 0, so the
+  reported latency is T (96 at 96 kHz, 192 at 192 kHz).
+- Checks:
+  - `zl_path_fixture_48000.json`: smooth random log magnitudes injected at both designer call sites;
+    the short-stage stream and the final output both match.
+  - `zl_path_fixture_{96000,192000}.json`: the same through the resampler.
+  - `process_fixture_{44100,48000}_m1.json`: identity.
+
+### 21.5 Open
+
+- The gain body 0x8e04c0 is not translated here. In Rust, its two outputs are the trait boundaries:
+  `hop::BinGain` (complex multipliers, normal path) and `zerolatency::LogGain` (log magnitudes, zero
+  latency).
+- Also with the gain work: the detector/sidechain rings (two more decimated rings at groups ≥ 2, the
+  long stage's own 4096 window on the raw input), and the M/S staging 0x8a3b20 the workers call.
+- Non-identity H on the normal path is checked only through the kernel on random H, not from a real
+  band state.
