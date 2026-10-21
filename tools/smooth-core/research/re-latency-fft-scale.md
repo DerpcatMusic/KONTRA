@@ -1016,5 +1016,7 @@ Differences to check (from the code, not yet measured):
   setter table). The body does not read id 3 (`obj+0x50`, labelled `mode`). Either the labels are
   swapped or the caller derives one from the other; check before trusting the table.
 - `limit_log_response` clamps max cut to 0..60; the body does not (the setter may).
-- The band tilt (`0x209a900..9c0`, step 6) has no visible counterpart in `frame()`; check whether
-  `envelope_basis.analyze` contains it.
+- The band tilt (`0x209a900..9c0`, step 6) is missing from SMOOTH: `envelope_basis.analyze`
+  (`src/projection.rs`) is the 16 dot products only, and `frame()` goes from it straight to the
+  adaptive step and `ln`. The binary adds `T900*((b/a)*a)` and `T9c0*(((a/b)*b)*(1-detail))` to
+  every band vector first (`0x8e2de0..0x8e2e88`, verified by replay).
