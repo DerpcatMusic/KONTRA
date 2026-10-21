@@ -23,6 +23,7 @@
 // channel. The native channel interleave is unprobed; vectors are mono.
 #![allow(clippy::excessive_precision, clippy::unreadable_literal)]
 use super::super::kaiser::{Kaiser, State as KaiserState};
+use super::shaper;
 use super::super::{Planar, ProcessorState};
 use super::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use sampler_ir::fx::filter::KontaktFx;
@@ -614,12 +615,6 @@ fn lerp(tab: &[f32], u: f32) -> f32 {
     (at(i + 1) - at(i)) * (u - i as f32) + at(i)
 }
 
-/// `x (x^2 + 27) / (9 x^2 + 27)`.
-fn sat3(v: f32) -> f32 {
-    let v2 = v * v;
-    ((v2 + MFCFE18) * v) / ((v2 * M7149FC) + MFCFE18)
-}
-
 /// Note to hertz, the SKF law's quartic summed in Monark's order.
 fn monark_hz(n: f32) -> f32 {
     let y = n * M737724;
@@ -888,10 +883,10 @@ impl Monark {
             let q = q * (1.0 - q * M7148C0);
             f34 = ((q + f34) * MF38764) - q;
         }
-        let mut prev = sat3(clamp4(a7 - f34));
+        let mut prev = shaper::pade(clamp4(a7 - f34));
         let mut ys = [0f32; 4];
         for j in 0..4 {
-            let yj = sat3(clamp4(((prev * g) + st[j]) * gi));
+            let yj = shaper::pade(clamp4(((prev * g) + st[j]) * gi));
             let dd = (prev - yj) * g;
             st[j] = (dd + dd) + (st[j] + TINY);
             ys[j] = yj;
@@ -909,7 +904,7 @@ impl Monark {
         let gain = T388[self.mode];
         let o0 = clamp4(o0 * gain);
         let q2 = clamp4(gain);
-        let z = (((((q2 * q2) * M7149FC) + MFCFE18) * T398[self.mode]) / (((q2 * q2) + MFCFE18) * q2)) * sat3(o0);
+        let z = (((((q2 * q2) * M7149FC) + MFCFE18) * T398[self.mode]) / (((q2 * q2) + MFCFE18) * q2)) * shaper::pade(o0);
         let mut az = z.abs();
         if MFCFD24 < az {
             let t = az - MFCFD24;
