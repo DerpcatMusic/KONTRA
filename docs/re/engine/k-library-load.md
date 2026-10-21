@@ -1,8 +1,9 @@
 # Kontakt library/format load parity (k-library-load)
 
-Status: **waiting on Kontakt 8 READY**. `/data/dev/workspace/Research/KONTRA/source/kontakt8/READY`
-does not exist yet, so no new decompiled evidence was used. Everything below is
-from repo evidence, the public Kontakt manual, and focused crate-scoped tests.
+Status: **in progress**. The Kontakt 8 decompile is READY
+(`/data/dev/workspace/Research/KONTRA/source/kontakt8/`), but this pass has not yet
+confirmed any load-path law against it. Everything below is still from repo
+evidence, the public Kontakt manual, and focused crate-scoped tests.
 
 ## What is already on main
 
