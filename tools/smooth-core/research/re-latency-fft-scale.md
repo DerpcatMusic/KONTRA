@@ -799,3 +799,17 @@ The block completes for 26 blocks at all four rates in both modes. Iteration cap
   gives 0. The PDC rule stays open.
 - The caller of the factory `0x88e3a0`, and of the helper `0x8e0858`.
 - Not done: no SMOOTH source change, no PDC change, no plug-in parity, no native host or pluginval run.
+
+## 18. Plan geometry in Rust (translate-process pass, 2026-10-21)
+
+- `src/reference_plan.rs` holds the verified geometry: `groups = max(1, trunc(rate/44100))`,
+  `vec_count = 48*groups`, `base = 48*groups` for groups >= 2 else 0, and
+  `latency = groups*2304 + base`, or `base` alone when the zero-latency byte is set.
+- Checked against all 20 oracle rows (`ctor_latency_mode{4,1}.json`, `process_block_<rate>.json`):
+  the constructor rows and the process-block impulse delays agree. **verified** (python cross-check and
+  the two unit tests in `reference_plan.rs`).
+- **Not wired into `Engine`.** The engine still delays by its own `n - 1` (4095 at 44.1 kHz normal),
+  so reporting 2304 now would move PDC away from the audio. Wiring waits for the engine to produce the
+  reference delay.
+- Still open, unchanged from section 17.8: the 0x890a00 analysis and output math, the 143-case setter
+  0x894370, the gain call site (0x8e0858, other branch), and the zero-latency byte's source in the default.
