@@ -12,34 +12,64 @@ the plug-in in a host.
   provides a Win64 `call()`, memory write/read watches, an optional
   instruction trace, and `abort()` for throw paths.
 - `crt.py`: real handlers for malloc/free, HeapAlloc, memcpy/memset/memcmp,
-  strcmp, and abort-on-throw stubs. Every other import returns 0 and is logged.
+  strcmp, and abort-on-throw stubs.
+- `cpu.py`: CPUID profile (reference-class Intel, SSE3 set). Assumption, not a
+  measured value.
+- `libm.py`: real `pow`/`exp`/`log`/trig/rounding imports. A float-returning
+  import must not use the default stub (it returns 0 and leaves XMM0 alone).
+- `fake_host.py`: runs the DSP constructor `0x88fa90` against a synthetic host
+  (registration slot +0x18, getter +0x20).
+- `oracle.py`: constructor-state oracle. Runs the constructor per sample rate
+  and calls `getLatency` (`0x88f610`). Writes JSON to
+  `tools/smooth-core/research/oracle/`.
 
-## Method notes
+## Oracle results (constructor state, step 1)
 
-- Import slots: a slot is only replaced when it is the target of a rip-relative
-  `call [rip+x]` / `jmp [rip+x]` in a code section and its value is an
-  import-by-name RVA. This resolved 751 slots. Rodata string pointers are not
-  touched.
-- Virtual calls on synthetic objects: `fake_vtable(owner, slots, factory)`
-  creates a vtable whose slots are named stubs (`owner::vslotN`). Handlers can
-  return values (pointers, floats) and every call is logged with its
-  register arguments.
-- Stub returns: an integer return goes to `rax`, a float to `xmm0`.
+See `../oracle/ctor_latency_mode4.json` and `../oracle/ctor_latency_mode1.json`.
+Scope: constructor state only. No process path has run, so these are not impulse
+delays and not output levels.
 
-## Scope limits found so far
+- `groups = max(1, trunc(rate / 44100))`, checked at 44.1, 48, 64, 88.2, 96,
+  110.25, 132.3, 176.4 and 192 kHz.
+- `vec_count = 48 * groups`.
+- `getLatency = groups * H + base`, with `H = 2304` (fields `+0x2c78` = 2048 and
+  `+0x30` = 256, constant across rates).
+- `base = 48 * groups` when `groups >= 2`, and `0` when `groups == 1`. Observed
+  0, 96, 144, 192 for groups 1..4. The rule is fitted on these four group
+  counts (the rate points are 88.2/96/110.25, 132.3, and 176.4/192), not derived
+  from the code, so a group count of 5+ is untested.
+- Analysis mode 1 (CPU flag bit 0 clear) gives the same latency as mode 4.
+  Mode 1 was checked at 44.1, 96 and 192 kHz only.
 
-- Knob pointer handler (vtable slot 3, `fcn.180739410`): runs to completion
-  with an embedded child vtable at `this+0xda0` and a sub-object at
-  `this+0x1020`. Filling every null pointer with fake objects is wrong: it
-  sends the code down the RTTI branch at `0x180731d87`. Object graphs have to
-  be built field by field.
-- FFT wrapper (`0x180001640`): runs and returns `ippStsNoErr`. An impulse gives
-  unscaled all-ones output for `N = 2^order`. Non-trivial inputs do not match a
-  plain DFT, because the spec's twiddle tables are never built. The IPP init
-  routine was not found near the wrapper.
+### Entry 14 anomaly: resolved
+
+The constructor writes group-0 entry 14 as a **double** (8 bytes at `+0xb7e0`),
+not a float. Reading that slot as a float gave 2.7e22 and -0.0. The double is
+about `33.3 / rate`: 7.556e-4 at 44.1 kHz, 6.942e-4 at 48 kHz, 3.472e-4 at
+96 kHz, 1.736e-4 at 192 kHz (mode 1 at 96/192 matches the same law). This is a
+rate-dependent coefficient, not garbage. Its exact form is not derived.
+
+### Caution on `getLatency`
+
+`getLatency` reads `X = [rcx]`, so its argument is a pointer to the object
+pointer. Passing the object directly reads the wrong bytes and returns
+`0x40000000`. `oracle.py` does this correctly (`get_latency`).
+
+## Not done
+
+- The detection routine `0x88c5f0` is not run. The mode is set through the
+  writer `0x30d310` with the CPU flag, which reproduces the constructor state.
+- Latency for the other config enums (quality, size, low-latency mode) is not
+  measured; the constructor was run with a zero config only.
+- The process path (`0x890a00`, `0x180619fc0`) is not run. Its FFT wrappers
+  (`0x180001640` and the real forward `0x180001280`) do not compute a DFT under
+  emulation because the twiddle tables are not built, so the impulse-delay and
+  level measurements need numpy hooks verified at small sizes first.
 
 ## Reproduce
 
-Scratch scripts live outside the repo (`RunScratch/smooth/re-emulate`). The
-venv is `uv venv` on the dev drive with `unicorn`, `capstone`, `pefile`.
-Run with `python -I`.
+The venv is `uv venv` on the dev drive with `unicorn`, `capstone`, `pefile`
+(`/data/dev/workspace/RunScratch/smooth/re-emulate/.venv`). Run with `-I`:
+
+    python -I oracle.py ../oracle/ctor_latency_mode4.json --mode 4
+    python -I oracle.py ../oracle/ctor_latency_mode1.json --mode 1 --rates 44100,96000,192000

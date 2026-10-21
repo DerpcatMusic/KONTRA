@@ -459,3 +459,33 @@ bytes +0x237 or +0xab are set (both 0 here). `f` = `fcn.180894d20`, read through
   2047 at the default (plus m/2 when linear phase is on). The reference state gives 2304 at 44.1/48
   kHz. Mismatch of 257 samples at the default. Medium confidence: the value rests on the CPU profile
   and the libm stubs, and the process path has not been run to confirm the impulse delay.
+
+## 13. Sample-rate table and entry 14 (pass 7, Unicorn, constructor state)
+
+Harness: `re-tools/emulate/oracle.py` (writes `oracle/ctor_latency_mode{4,1}.json`).
+Evidence scope: constructor state, fake host, reference-class CPU profile. No process path run.
+
+- `getLatency` takes `rcx = &holder` (it reads `X = [rcx]`). Passing the object
+  directly gives `0x40000000`; section 12's table was produced with the correct
+  convention and still stands.
+- Rates 44.1, 48, 64, 88.2, 96, 110.25, 132.3, 176.4, 192 kHz give
+  `groups = max(1, trunc(rate/44100))` and `vec_count = 48*groups`.
+- `H = 2304` at every rate. `getLatency = groups*2304 + base`, with
+  `base = 48*groups` for groups >= 2 and `0` for groups = 1 (0, 96, 144, 192).
+  The base rule is fitted on four group counts; it is not read from code.
+  Section 12's "base = rate/1000" was a coincidence of the 96 and 192 points.
+- Analysis mode 1 (CPU flag clear) gives the same latency as mode 4 (checked at 44.1, 96, 192 kHz).
+- **Entry 14 resolved:** the constructor writes a double (8 bytes at `obj+0xb7e0`),
+  not a float. `rate * double` = 33.32-33.33 at every rate, so the stored value is
+  about `33.3/rate`, a rate-dependent coefficient. The earlier 2.7e22 / -0.0 came from
+  reading that double as a float. Do not use the float view.
+
+### Still open (pass 7)
+
+- The process path (`0x890a00`, `0x180619fc0`) is not run. The FFT wrappers do not compute
+  a DFT under emulation (no twiddle tables), so impulse delay and level need numpy hooks
+  verified at small sizes first.
+- Config enums (quality, size, low-latency) are not varied in the oracle.
+- `0x88c5f0` (CPU detection) is not run; mode is set through the writer `0x30d310`.
+- No SMOOTH change in this pass: reported latency (`n - 1 = 2047`) is not replaced until the
+  real impulse delay is measured, because PDC must match the delay the plugin produces.
