@@ -55,7 +55,7 @@ use clap_sys::ext::audio_ports::{
 use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, clap_audio_ports_config, clap_plugin_audio_ports_config,
 };
-use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
+use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_plugin_latency};
 use clap_sys::ext::note_ports::{
     CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
     CLAP_NOTE_DIALECT_MIDI_MPE, CLAP_NOTE_DIALECT_MIDI2, clap_note_port_info,
@@ -256,9 +256,6 @@ struct ClapPluginData<P: PluginExport> {
     host: *const clap_host,
     /// Host params extension (for `request_flush`).
     host_params: *const clap_host_params,
-    /// Host latency extension (for `changed`). Null if the host doesn't
-    /// expose `clap.latency`.
-    host_latency: *const clap_host_latency,
     /// Host tail extension (for `changed`). Null if the host doesn't
     /// expose `clap.tail`.
     host_tail: *const clap_host_tail,
@@ -731,10 +728,6 @@ unsafe extern "C" fn clap_plugin_init<P: PluginExport>(plugin: *const clap_plugi
             if !ext.is_null() {
                 data.host_params = ext.cast::<clap_host_params>();
             }
-            let lat_ext = get_ext(data.host, CLAP_EXT_LATENCY.as_ptr());
-            if !lat_ext.is_null() {
-                data.host_latency = lat_ext.cast::<clap_host_latency>();
-            }
             let tail_ext = get_ext(data.host, CLAP_EXT_TAIL.as_ptr());
             if !tail_ext.is_null() {
                 data.host_tail = tail_ext.cast::<clap_host_tail>();
@@ -984,21 +977,16 @@ unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const 
             }
         }
 
-        // Latency changed on the audio thread: tell the host here, off
-        // the audio thread. `changed()` re-reads our reported latency;
-        // an active plugin additionally needs `request_restart` to apply
-        // the new delay compensation.
-        if data.latency_dirty.swap(false, Ordering::Relaxed) && !data.host.is_null() {
-            if !data.host_latency.is_null()
-                && let Some(changed) = (*data.host_latency).changed
-            {
-                changed(data.host);
-            }
-            if data.active.load(Ordering::Relaxed)
-                && let Some(req_restart) = (*data.host).request_restart
-            {
-                req_restart(data.host);
-            }
+        // Latency changed on the audio thread: the host must reactivate
+        // to apply the new delay compensation. CLAP allows
+        // `clap_host_latency.changed` only inside `clap_plugin.activate`,
+        // so it is not called here; the restart makes the host activate
+        // again, and `activate` refreshes the cache it reads.
+        if data.latency_dirty.swap(false, Ordering::Relaxed)
+            && !data.host.is_null()
+            && let Some(req_restart) = (*data.host).request_restart
+        {
+            req_restart(data.host);
         }
     }
 }
@@ -2648,6 +2636,21 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         let num_frames = proc.frames_count as usize;
 
         if num_frames == 0 {
+            // A zero-frame call still carries the host's parameter changes (a
+            // host may send them while stopped). Apply them as `params_flush`
+            // does, rather than dropping them with the audio.
+            if !proc.in_events.is_null() {
+                let mut audio = data.audio.enter();
+                let scr = &mut *audio;
+                convert_input_events::<P>(scr, &data.info, proc.in_events, false, false, None);
+                let params = data.params_arc.as_ref() as &dyn Params;
+                for ev in scr.event_list.iter() {
+                    if let EventBody::ParamChange { id, value } = ev.body {
+                        params.set_plain(id, value);
+                        defer_param_change(&mut scr.deferred_params, id, value);
+                    }
+                }
+            }
             return CLAP_PROCESS_CONTINUE;
         }
 
@@ -5569,7 +5572,6 @@ pub unsafe fn create_plugin_instance<P: PluginExport>(
             plugin_id_hash,
             host,
             host_params: ptr::null(),
-            host_latency: ptr::null(),
             host_tail: ptr::null(),
             host_audio_ports: ptr::null(),
             port_names_revision: AtomicU64::new(0),

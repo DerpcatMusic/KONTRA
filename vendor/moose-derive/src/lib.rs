@@ -1193,6 +1193,57 @@ fn usize_lit(v: usize) -> proc_macro2::TokenStream {
     quote! { #lit }
 }
 
+/// Parse `offset_log(min, max, offset)` and `pivoted_log(min, max, mid)`.
+/// `None` when neither prefix matches; `Some(compile_error!)` on a
+/// malformed match.
+fn parse_log_range(range: &str) -> Option<proc_macro2::TokenStream> {
+    let bad = |msg: String| quote! { compile_error!(#msg) };
+    let args = |prefix: &str| -> Option<Vec<String>> {
+        range
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_suffix(')'))
+            .map(|inner| inner.split(',').map(|p| p.trim().to_owned()).collect())
+    };
+
+    if let Some(parts) = args("offset_log(") {
+        let nums: Vec<f64> = parts.iter().filter_map(|p| p.parse().ok()).collect();
+        if parts.len() != 3 || nums.len() != 3 {
+            return Some(bad(format!(
+                "offset_log range needs three numbers `offset_log(min, max, offset)`, got `{range}`"
+            )));
+        }
+        let (min, max, offset) = (nums[0], nums[1], nums[2]);
+        if min >= max || min + offset <= 0.0 {
+            return Some(bad(format!(
+                "offset_log range needs min < max and min + offset > 0, got `{range}`"
+            )));
+        }
+        let (min, max, offset) = (f64_lit(min), f64_lit(max), f64_lit(offset));
+        return Some(quote! {
+            ::moose::params::ParamRange::OffsetLog { min: #min, max: #max, offset: #offset }
+        });
+    }
+    if let Some(parts) = args("pivoted_log(") {
+        let nums: Vec<f64> = parts.iter().filter_map(|p| p.parse().ok()).collect();
+        if parts.len() != 3 || nums.len() != 3 {
+            return Some(bad(format!(
+                "pivoted_log range needs three numbers `pivoted_log(min, max, mid)`, got `{range}`"
+            )));
+        }
+        let (min, max, mid) = (nums[0], nums[1], nums[2]);
+        if min <= 0.0 || mid <= min || max <= mid {
+            return Some(bad(format!(
+                "pivoted_log range needs 0 < min < mid < max, got `{range}`"
+            )));
+        }
+        let (min, max, mid) = (f64_lit(min), f64_lit(max), f64_lit(mid));
+        return Some(quote! {
+            ::moose::params::ParamRange::PivotedLog { min: #min, max: #max, mid: #mid }
+        });
+    }
+    None
+}
+
 /// Parse the two power-law taper shapes (`skewed(min, max, factor)` and
 /// `sym_skewed(min, max, factor, center)`). `None` when neither prefix
 /// matches; `Some(compile_error!)` on a malformed match. Split out of
@@ -1436,6 +1487,9 @@ fn parse_range_tokens(range: &str) -> proc_macro2::TokenStream {
         let count = usize_lit(count);
         return quote! { ::moose::params::ParamRange::Enum { count: #count } };
     }
+    if let Some(tokens) = parse_log_range(range) {
+        return tokens;
+    }
     if let Some(tokens) = parse_skew_range(range) {
         return tokens;
     }
@@ -1451,7 +1505,7 @@ fn parse_range_tokens(range: &str) -> proc_macro2::TokenStream {
     }
     bad(format!(
         "unknown range `{range}` - supported: linear(min, max), log(min, max), \
-         stepped(min, max, step), skewed(min, max, factor), sym_skewed(min, max, factor, center), \
+         stepped(min, max, step), offset_log(min, max, offset), pivoted_log(min, max, mid), skewed(min, max, factor), sym_skewed(min, max, factor, center), \
          discrete(min, max), enum(count), reversed(<range>)"
     ))
 }

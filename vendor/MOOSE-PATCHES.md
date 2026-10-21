@@ -116,3 +116,24 @@ The shared large-state fixture fails on the previous handoff with three audio
 frees and passes with zero; order, concurrent recalls, newest-wins and panic
 retirement have targeted tests in both wrapper crates. This is ownership
 validation, not a native DAW recall or whole-process C++ allocation claim.
+
+## Zero-frame process applies parameter events
+
+`clap_plugin_process` returned before reading the event list when
+`frames_count == 0`, so a host that sends parameter changes in a zero-frame
+call (a flush spelled as a process) had them dropped. The zero-frame path now
+applies `ParamChange` events the way `params_flush` does (the same
+`convert_input_events` and `set_plain` sweep) and returns `CONTINUE`. No audio
+is rendered. Checked by `tools/removed/scripts/clap_host_matrix.py`
+(`edge_flush`). Upstream: additive; worth offering to MOOSE as is.
+
+## Latency changes ask for a restart, not `changed()`
+
+When the engine's latency changed on the audio thread, the main-thread callback
+called `clap_host_latency.changed()` and then `request_restart` for an active
+plugin. CLAP allows `changed()` only inside `clap_plugin.activate`
+(`clap-validator`: "Must only be called within 'clap_plugin::activate'", seen by
+`param-fuzz-basic`, `param-fuzz-bounds` and `param-fuzz-sample-accurate`). The
+callback now only requests a restart; the host reactivates, and `activate`
+refreshes the latency it reads. The `clap.latency` host pointer is no longer
+captured. Upstream: worth offering to MOOSE as is.

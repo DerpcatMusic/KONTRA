@@ -32,6 +32,8 @@ pub struct Bridge<P: ?Sized = dyn Params> {
     /// The ids `bind` saw this build: an open gesture not among them lost
     /// its widget, and nothing else would ever end it.
     bound: Vec<u32>,
+    /// The gestures [`Bridge::hold`] opened: only these it may end.
+    held: Vec<u32>,
     /// Every parameter and meter as last seen, bit for bit: `changed`
     /// compares against it without hashing or allocating.
     seen: Box<[u64]>,
@@ -62,6 +64,7 @@ impl<P: Params + ?Sized> Bridge<P> {
             meters,
             open: Vec::new(),
             bound: Vec::new(),
+            held: Vec::new(),
             seen,
             metered: None,
         }
@@ -298,6 +301,69 @@ impl<P: Params + ?Sized> Bridge<P> {
             *v = f64::from(u8::from(on));
             el
         })
+    }
+
+    /// Keep the gesture on `param` open while `rolling`: a control turned
+    /// without a pointer edge, such as a roll of the wheel. Its first call
+    /// opens the edit, and the calls that follow keep it open; a call with
+    /// `rolling` false ends the edit that `hold` opened, and leaves a pointer
+    /// drag's edit alone.
+    ///
+    /// While held, [`Bridge::value`] reads the value the control last set, not
+    /// the store's. A host that has not yet taken that set would otherwise
+    /// hand the next frame the old value and lose the step, and the host
+    /// records the roll as one edit rather than one per notch.
+    ///
+    /// ```ignore
+    /// let el = bridge.bind(ui, P::Depth, |ui, id, v| knob(ui, id, v, rest));
+    /// bridge.hold(P::Depth, wheel_rolling(id));
+    /// ```
+    pub fn hold(&mut self, param: impl Into<u32>, rolling: bool) {
+        let id = param.into();
+        if rolling {
+            if !self.is_open(id) {
+                self.begin(id);
+                if self.is_open(id) && !self.held.contains(&id) {
+                    self.held.push(id);
+                }
+            }
+        } else if let Some(at) = self.held.iter().position(|h| *h == id) {
+            self.held.swap_remove(at);
+            self.end(id);
+        }
+    }
+
+    /// A gesture on a parameter no widget owns: a plot handle, a canvas, a
+    /// drag that is not a `Response`. `plain` is in the parameter's own
+    /// units.
+    ///
+    /// Call it on every frame of the drag. The first call opens the host's
+    /// edit and the value lands inside it; later calls only move the value.
+    /// A build that does not call it names the parameter to no `bind`, so
+    /// [`Bridge::end_unbound`] closes the gesture and the host is told the
+    /// edit ended -- the caller keeps no drag state of its own.
+    ///
+    /// ```ignore
+    /// if let Some(index) = graph::held(ui) {
+    ///     bridge.drag_gesture(P::Band1Frequency, model.bands[index].frequency);
+    /// }
+    /// ```
+    pub fn drag_gesture(&mut self, param: impl Into<u32>, plain: f64) {
+        let id = param.into();
+        // Naming the parameter is what keeps `end_unbound` from closing the
+        // edit while the drag is still going.
+        self.bound.push(id);
+        let Some(range) = self
+            .info(id)
+            .filter(|info| !info.flags.contains(ParamFlags::READONLY))
+            .map(|info| info.range)
+        else {
+            return;
+        };
+        if !self.is_open(id) {
+            self.begin(id);
+        }
+        self.set(id, range, range.normalize(plain));
     }
 
     /// After a build: end the gestures no `bind` in it named. `MuiEditor`
