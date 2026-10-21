@@ -147,7 +147,9 @@ pub fn plot(
 
     stack![
         block(PLOT_W, PLOT_H).fill(Gradient::vertical(c(t.graph_top), c(t.graph_bottom))),
-        canvas(move |_| draws.clone()).full().id(PLOT_ID),
+        // Focusable, so a press on the plot keeps the keyboard there until
+        // the next press elsewhere: the arrows and Delete act on the band.
+        canvas(move |_| draws.clone()).full().id(PLOT_ID).focusable(),
         // The inset shadow: the plot is a well, and the light comes from
         // above and to the left.
         band(PLOT_W, plot::WELL_TOP, Align::Start, Align::Start).fill(Gradient::vertical(

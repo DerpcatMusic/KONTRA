@@ -21,8 +21,10 @@ const CURVE_SLOP: f64 = 6.0;
 /// The pointer's travel that makes a press a drag, in plot pixels.
 pub const DRAG_SLOP: f64 = 2.0;
 
-/// One wheel notch, in the window's own scroll units (a text line).
-pub const NOTCH: f64 = 16.0;
+/// One wheel notch, in the window's scroll units. The window reports a
+/// notch as five text rows of twelve points (`mui-baseview`'s `notch_lines`),
+/// so a notch is sixty; a trackpad's pixels are the same scale.
+pub const NOTCH: f64 = 60.0;
 /// What one notch moves a band's width, as a share of the host's Q range.
 pub const WIDTH_STEP: f64 = 0.02;
 /// What one notch moves a band's depth, in the depth parameter's units.

@@ -966,9 +966,12 @@ impl PluginLogic for Smooth {
         let mut seen: u64 = 0;
         // The interface size last asked of the host, so a step is requested once.
         let mut applied: Option<usize> = None;
-        // Whether the last frame stepped a band by wheel or key: the undo
-        // history holds the gesture open until a frame steps nothing.
+        // Whether the last frame stepped a band by wheel or key, and whether
+        // a handle drag was held: each gesture ends on the first frame that
+        // carries nothing new. The band bar's knobs name the selected band's
+        // parameters every frame, so the bridge alone would never end them.
         let mut stepping = false;
+        let mut dragging = false;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
             // The plot: the engine's latest frame, or the last one settling
@@ -1123,9 +1126,12 @@ impl PluginLogic for Smooth {
             // its back. The frame the pointer lets go names no parameter, and
             // the bridge ends the edit.
             drop(bind);
-            // The plot's wheel, keys and resets: each is a gesture the host
-            // records, as a drag is, so undo and automation see every step.
+            // The plot's wheel, keys and resets: one gesture for a run of
+            // steps, which the host records, so undo and automation see it.
             let changes = std::mem::take(&mut model.gesture.changes);
+            if stepping && changes.is_empty() {
+                bridge.end_all();
+            }
             stepping = !changes.is_empty();
             for change in changes {
                 let index = change.index();
@@ -1141,7 +1147,12 @@ impl PluginLogic for Smooth {
                     applied = Some(size);
                 }
             }
-            if let Some(index) = smooth_ui::graph::held(ui)
+            let pressed = smooth_ui::graph::held(ui);
+            if dragging && pressed.is_none() {
+                bridge.end_all();
+            }
+            dragging = pressed.is_some();
+            if let Some(index) = pressed
                 && let Some((frequency, depth)) = BAND_PARAMS.get(index)
                 && let Some(band) = model.bands.get(index)
             {
@@ -1179,6 +1190,9 @@ impl PluginLogic for Smooth {
         })
         // The host may resize the window; the design scales to fit it.
         .resizable((menus::SIZE_WIDTHS[0], menus::SIZE_WIDTHS[0] * H / W))
+        // A handle being dragged hides the pointer, as the reference's knobs do, so the
+        // handle is the thing under the eye.
+        .hide_pointer(|ui| smooth_ui::graph::held(ui).is_some())
         .changed(move || {
             let sequence = changed_telemetry.sequence();
             let changed = sequence != seen || pending.swap(false, std::sync::atomic::Ordering::Relaxed);

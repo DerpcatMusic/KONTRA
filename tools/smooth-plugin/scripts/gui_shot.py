@@ -10,6 +10,10 @@ interface draws.
         ~/.clap/SMOOTH.clap out.png --drag --gesture-check
 
 `--drag` moves the first band's handle and photographs the result.
+`--wheel-check` wheels band 2 up, Alt-wheels its depth and Shift-wheels it
+fine, drags it, double-clicks it, asserting the host hears one gesture for
+each and photographing each stage. `--keys` adds the arrow and Delete checks,
+which do not yet reach the editor under Xvfb.
 `--gesture-check` then runs a block of audio and asserts the host heard the
 drag: one begin, the values, one end, per parameter. A handle is not a
 widget, so that is the only way the gesture can reach a host.
@@ -326,6 +330,163 @@ def main():
                     f"{min(values):.6g} .. {max(values):.6g}"
                 )
             print("gestures:\n  " + "\n  ".join(lines))
+    if "--wheel-check" in sys.argv:
+        # The wheel over band 2 (the 650 Hz bell, three and a half units up),
+        # in the editor's own 800x473 space: a notch up widens it (Q falls),
+        # Alt turns the wheel to its depth, and Shift makes a notch fine. Each
+        # step is a host gesture, so the recorder must hear it open, move and close.
+        sx, sy = scale()
+        band_two = (int(382 * sx), int(175 * sy))
+
+        def frames(count):
+            for _ in range(count):
+                plugin.main(pointer)
+                time.sleep(0.02)
+
+        def wheel_at(point, direction, count, modifiers=()):
+            subprocess.run(["xdotool", "mousemove", str(point[0]), str(point[1])], check=True)
+            settle()
+            for key in modifiers:
+                subprocess.run(["xdotool", "keydown", key], check=True)
+            button = "4" if direction == "up" else "5"
+            subprocess.run(["xdotool", "click", "--repeat", str(count), "--delay", "60", button], check=True)
+            for key in modifiers:
+                subprocess.run(["xdotool", "keyup", key], check=True)
+            settle()
+
+        def heard_run():
+            heard.clear()
+            play(events=record_out)
+
+        def heard_gesture(name):
+            heard_run()
+            return heard_of(name)
+
+        def heard_of(name):
+            ident = infos[name].id
+            kinds = [kind for kind, seen, _ in heard if seen == ident]
+            values = [value for kind, seen, value in heard if seen == ident and kind == 5]
+            return kinds, values
+
+        def snap(tag):
+            path = out.with_name(f"{out.stem}-wheel-{tag}{out.suffix}")
+            subprocess.run(["magick", "import", "-window", str(parent), str(path)], check=True)
+            print(f"wrote {path}")
+            return path
+
+        def differs(a, b):
+            """Pixels that differ between two shots: the visible change."""
+            result = subprocess.run(
+                ["magick", "compare", "-metric", "AE", str(a), str(b), "null:"],
+                capture_output=True,
+                text=True,
+            )
+            # `magick compare -metric AE` prints the count, then its fraction.
+            return int(float((result.stderr.split() or ["0"])[0]))
+
+        # Band 2 is put on the bell the aim is taken from: 650 Hz, 3.6 units up. The
+        # handle sits at logical (382, 175): the plot starts at y 41, the zero line at 222.
+        set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6})
+        settle()
+        rest = snap("rest")
+        wheel_at(band_two, "up", 5)
+        kinds, widened = heard_gesture("Band 2 q")
+        assert kinds[:1] == [7] and kinds[-1:] == [8] and len(widened) > 1, kinds
+        print(f"wheel up gestures: {kinds.count(7)} begin, {kinds.count(8)} end")
+        assert all(b <= a for a, b in zip(widened, widened[1:])), widened
+        assert widened[-1] < widened[0] or widened[0] < 0.707, widened
+        print(f"wheel up: Q {widened[0]:.4f} -> {widened[-1]:.4f} ({len(widened)} values)")
+        up = snap("up")
+        print(f"pixels changed by the wheel: {differs(rest, up)}")
+
+        wheel_at(band_two, "down", 3, ["alt"])
+        kinds, depth = heard_gesture("Band 2 depth")
+        assert kinds[:1] == [7] and kinds[-1:] == [8] and len(depth) > 1, kinds
+        assert depth[-1] < depth[0], depth
+        print(f"alt + wheel down: depth {depth[0]:.3f} -> {depth[-1]:.3f}")
+        alt = snap("alt-depth")
+
+        wheel_at(band_two, "up", 5, ["shift"])
+        kinds, fine = heard_gesture("Band 2 q")
+        assert kinds[:1] == [7] and kinds[-1:] == [8], kinds
+        print(f"shift + wheel up: Q {fine[0]:.4f} -> {fine[-1]:.4f} (fine)")
+        snap("shift-fine")
+        print(f"pixels changed by the fine steps: {differs(alt, out.with_name(out.stem + '-wheel-shift-fine' + out.suffix))}")
+
+        def click(point, count=1):
+            """Presses and releases with editor frames between them, as a hand does: the
+            plug-in sees each press, and the pair is inside the double-click time."""
+            subprocess.run(["xdotool", "mousemove", str(point[0]), str(point[1])], check=True)
+            settle()
+            for _ in range(count):
+                subprocess.run(["xdotool", "mousedown", "1"], check=True)
+                frames(3)
+                subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                frames(3)
+
+        # The selected band's own drag: a press and a move on band 2 is one
+        # host gesture for each of its parameters, and it ends on release. The band
+        # bar's knobs name the selected band every frame, so this is the case that
+        # used to stay open.
+        set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6, "Band 2 q": 0.707})
+        settle()
+        subprocess.run(["xdotool", "mousemove", str(band_two[0]), str(band_two[1])], check=True)
+        settle()
+        subprocess.run(["xdotool", "mousedown", "1"], check=True)
+        for step in range(1, 9):
+            subprocess.run(
+                ["xdotool", "mousemove", str(band_two[0] + 30 * step // 8 * sx), str(band_two[1] + 20 * step // 8 * sy)],
+                check=True,
+            )
+            settle()
+        subprocess.run(["xdotool", "mouseup", "1"], check=True)
+        settle()
+        kinds, moved = heard_gesture("Band 2 frequency")
+        assert kinds[:1] == [7] and kinds[-1:] == [8] and len(moved) > 1, kinds
+        print(f"selected band drag: one gesture, {len(moved)} values, {moved[0]:.1f} -> {moved[-1]:.1f} Hz")
+        snap("drag-selected")
+
+        # A double click on a band resets its depth to flat and its width to the default.
+        set_values({"Band 2 frequency": 650.0, "Band 2 depth": 3.6, "Band 2 q": 0.2})
+        settle()
+        click(band_two, count=2)
+        heard_run()
+        kinds, reset_depth = heard_of("Band 2 depth")
+        _, reset_q = heard_of("Band 2 q")
+        assert kinds[:1] == [7] and kinds[-1:] == [8] and reset_depth[-1] == 0.0, (kinds, reset_depth)
+        assert abs(reset_q[-1] - 0.707) < 1e-6, reset_q
+        print(f"double click: depth 3.6 -> {reset_depth[-1]:.1f}, width 0.20 -> {reset_q[-1]:.3f}")
+        snap("double-click-reset")
+
+        # Keys are opt-in (`--keys`): under Xvfb with no window manager the arrow
+        # keys never reached the editor (the plot is focused, but the window
+        # handler saw no key events), so this step is not a passing check yet.
+        if "--keys" in sys.argv:
+            # Keys, once the plot holds the focus from a click: Up is a boost, and
+            # Delete takes the band out of the plot.
+            set_values({"Band 2 frequency": 650.0, "Band 2 depth": 0.0, "Band 2 q": 0.707})
+            settle()
+            click(band_two)
+            # With no window manager the keys go where X focus is, not where the pointer
+            # is: give the window under the pointer (the plug-in's child) the focus, as a click would.
+            import re
+
+            # The editor draws into the child the plug-in opened, named MUI under the host's parent.
+            tree = subprocess.run(["xwininfo", "-root", "-tree"], capture_output=True, text=True).stdout
+            editor = re.search(r'(0x[0-9a-f]+) "MUI"', tree).group(1)
+            subprocess.run(["xdotool", "windowfocus", "--sync", editor], check=True)
+            settle()
+            for key in ["Up", "Up"]:
+                subprocess.run(["xdotool", "key", key], check=True)
+                settle()
+            kinds, up = heard_gesture("Band 2 depth")
+            assert len(up) >= 1 and up[-1] > 0.0, (kinds, up)
+            print(f"arrow up x2: depth 0.0 -> {up[-1]:.2f}")
+            before_delete = snap("before-delete")
+            subprocess.run(["xdotool", "key", "Delete"], check=True)
+            settle()
+            after_delete = snap("delete-key")
+            print(f"pixels changed by Delete: {differs(before_delete, after_delete)}")
     assert gui.hide(pointer)
     gui.destroy(pointer)
     plugin.destroy(pointer)
