@@ -10,7 +10,7 @@
 //! - [`Law::Rbj`]: physical Hertz/Q/dB (`generic.rs`), also the home of scripted UVI EQ inserts.
 //! - [`Law::UviDigital`]: UVI DigitalEq's order-1..16 band design (`digital.rs`), one stage per
 //!   section, realised by the kernel.
-//! - [`Law::Cookbook`]: Hertz/Q/dB through the bilinear RBJ cookbook (`kernel::cookbook`), the
+//! - [`Law::Cookbook`]: Hertz/Q/dB through the bilinear RBJ cookbook (`biquad::cookbook`), the
 //!   native law of UVI's TwoBandEq/ThreeBandEq/ParametricEQ, realised by the kernel.
 //! A [`sampler_ir::fx::eq::Config`] is a serial cascade of bands, lowered here into one stage per
 //! band (plus one per extra filter section and an output gain); per-voice state stays in the

@@ -209,14 +209,14 @@ fn every_kind_matches_its_analogue_prototype() {
             for hz in [60., 500., 3_000., 9_000.] {
                 for q in [0.5, 0.707, 2.] {
                     let f = if matches!(kind, Kind::FirstOrderLowShelf | Kind::FirstOrderHighShelf) {
-                        kernel::first_order(kind, rate, hz, boost)
+                        crate::dsp::biquad::first_order(kind, rate, hz, boost)
                     } else {
-                        kernel::design(kind, rate, hz, q, boost)
+                        crate::dsp::biquad::matched(kind, rate, hz, q, boost)
                     }
                     .expect("stable design");
                     let mut probe = 20.;
                     while probe < 20_000f64.min(0.45 * f64::from(rate)) {
-                        let want = kernel::analog_db(kind, hz, q, boost, probe);
+                        let want = crate::dsp::biquad::analog_db(kind, hz, q, boost, probe);
                         let got = 20. * kernel::magnitude(&f, rate, probe).log10();
                         // Notch and band-pass zeros: compare only where the analogue is above -30 dB
                         // (a 3-point match does not fix stop-band depth).
@@ -272,7 +272,7 @@ fn cookbook_is_the_uvi_parametric_eq_law() {
         (Kind::HighShelf, 7400., std::f64::consts::FRAC_1_SQRT_2, -8., [0.5355857724005818, -0.25310761134475296, 0.11318659779714484, -0.9348776648168456, 0.33054242366981945]),
     ];
     for (kind, hz, q, db, native) in cases {
-        let f = kernel::cookbook(kind, 48_000, hz, q, db).unwrap();
+        let f = crate::dsp::biquad::cookbook(kind, 48_000, hz, q, db).unwrap();
         let got = [f.b[0], f.b[1], f.b[2], f.a[0], f.a[1]];
         for (g, n) in got.iter().zip(native) {
             assert!((g - n).abs() < 1e-12, "{kind:?} {got:?} vs {native:?}");
@@ -317,3 +317,4 @@ fn uvi_digital_bands_match_the_native_design() {
         }
     }
 }
+
