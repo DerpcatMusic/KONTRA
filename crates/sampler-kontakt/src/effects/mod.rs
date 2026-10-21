@@ -1382,12 +1382,13 @@ pub(crate) fn instrument_buses_with_recipes(
         if bus.pan.is_finite() {
             if bus.pan != 0. {
                 // NI Bus Insert Effects amplifier: BInsertBus audio 0x140824910
-                // calls 0x140823d70 with channel flags 0/1: independent linear balance.
-                let left = 1. - bus.pan.clamp(0., 1.);
-                let right = (bus.pan + 1.).clamp(0., 1.);
-                processors.push(sampler_ir::Processor::StereoMatrix([
-                    [f64::from(left), 0.], [0., f64::from(right)],
-                ]));
+                // calls 0x140823d70 with channel flags 0/1: independent linear
+                // balance, which is the shared `PanLaw::Balance`. Clamping first
+                // reproduces the native clamps exactly.
+                processors.push(sampler_ir::Processor::Pan(sampler_ir::Pan {
+                    position: f64::from(bus.pan.clamp(-1., 1.)),
+                    law: sampler_ir::PanLaw::Balance,
+                }));
             }
         } else {
             invalid_pan.push((name, (0, "instrument bus pan".into(), bus.pan.to_string(),

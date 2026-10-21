@@ -79,7 +79,7 @@ module 0x1d is excluded from the Saturation mapping and named in
 Evidence: `docs/re/kontakt-bus-pan.md` (`FUN_140824910` audio, `FUN_140823d70`
 per channel, left `1 - clamp(p,0,1)`, right `clamp(p+1,0,1)`, unity at centre,
 no crossfeed). Engine: `crates/sampler-kontakt/src/effects/mod.rs::instrument_buses`
-writes this as a static `StereoMatrix`; the test
+routes it through the shared `Processor::Pan` stage with `PanLaw::Balance` (identical gains; position clamped to ±1 first, matching the native clamps); the test
 `instrument_bus_pan_only_uses_native_stereo_balance` checks it.
 
 **Open:** live bus pan is not wired. The native per-sample ramp (step
@@ -108,7 +108,7 @@ not read in this pass.
 | Stereo Modeller channel layouts, base reset, latency | missing | none | open |
 | Stereo Tune (0x70) | named + diagnosed; no DSP | catalog reader schema | missing (DSP law) |
 | Surround Panner (0x1d v0x70) | diagnosed; no DSP | fx_other.tsv bindings | missing (matrix, pan law, LFE) |
-| Instrument bus static pan | implemented, tested | kontakt-bus-pan.md | matched (static) |
+| Instrument bus static pan | implemented on shared Pan/Balance stage, tested | kontakt-bus-pan.md | matched (static) |
 | Bus live pan slew | not wired | native ramp noted in evidence | missing |
 | Bus phase invert / L-R swap | not represented | none extracted | missing |
 | Group pan centre law (0.7677 vs centre unity) | conflict unresolved | limiter-dynamics.tsv, ownership.rs | unverified |
