@@ -336,3 +336,46 @@ getter records every call.
 2. `0x88e3a0`: what calls it (computed-call dispatcher, or a patched-in path).
 3. The index of the `.data` RVA table at `0x241cad4` and its user.
 4. Helpers `0x6293b0`, `0x629480`, `0x56cad0` and `0x6fc030` on the S-side of `0x6210d0`.
+
+## 11. Fake-host run of the constructor (pass 5, Unicorn, 2026-10-21)
+
+Harness: `re-tools/emulate/fake_host.py` (uses `pe_emu.py`). Evidence scope: isolated emulation with a
+synthetic host. Nothing here is a plug-in default.
+
+### Verified facts
+
+- **Host layout (corrects section 10's "vtable" wording).** The constructor's calls are
+  `call qword ptr [r15+0x18]` and `call qword ptr [r15+0x20]` with `rcx = host` (asm at
+  `0x18088fb67` ... `0x18088fc80`, `r15 = rdx = host`). The host object holds the function pointers
+  directly at +0x18 (register) and +0x20 (get); there is no vtable indirection at these sites.
+- **Signatures.** Constructor `0x18088fa90(obj, host, cfg, xmm3 = samplerate)`. Builder
+  `0x18088f430(host, cfg, xmm2 = samplerate)` allocates `0xc1a8` bytes and calls the constructor
+  with the same arguments. The builder's wrapper vtable slots are `0x88f4e0, 0x88f4f0, 0x88f500,
+  0x88f530, 0x88f610, 0x88f660`.
+- **Registrations.** The emulated run makes 13 register calls: ids 0-10, 12 and 13. **Id 11 is not
+  registered.** The getter is called once, for id 0xd (`sidechain_input_level`).
+- **Sample rate.** `xmm3` is stored at `obj+0x28`, and `max(rate, *0x18209d450)` seeds the 16 group
+  records at `obj+0xb7a8` (stride `0xf` floats). Their defaults before that are `48000.0` (rate),
+  `1000.0`, `20.0`, `30.0`. The `48000` is a constructor default overwritten by the argument. So the
+  rate-dependent part is the argument, not a table.
+- **Config enums.** `cfg[0]` (qword at arg3+0) and `cfg[8]` feed `fcn.18088acb0`, a switch with cases
+  1..0x14 that returns the address of a static object. Values 0 and out-of-range fault in the jump
+  table. Values 1, 2, 5, 9 and 20 are accepted. `cfg[16]` is the `int` read by `fcn.18056cad0`.
+- **TLS.** The constructor reads `gs:[0x58]` (TLS array). The harness now installs a 256-slot TLS
+  array. Without it the run faults at address 0.
+
+### Blocker (not solved)
+
+With cfg = (1, 1, 1) the constructor reaches `fcn.18088c950` (`0x88c950`, size 297). It calls
+`func_0x1806baab0` on sub-vectors at `arg1+0x18/0x30/0x48/0x60/0x78` and then fills
+`count = *(arg1+0x50)` entries from the `+0x48` buffer. The buffer is null (`mov [rcx], 1.0` at
+`0x18088cce5` writes to address 0). So the caller of `0x88c950` sets a count without allocating the
+vector. Who sizes those vectors (the `0x896ad0`/`0x896eb0` filter-bank builders, lines `0x88ff1e`,
+`0x89666b`, `0x89f65d` in the stack walk) is the next question. The `N1/N2` and `W1/W2` vectors of
+section 9 are not yet reached, so no bin counts, weights or latency numbers came out of this run.
+
+### Not done in this pass
+
+- No oracle (sine/impulse/noise) runs, so no reported latency, impulse delay or level numbers.
+- No change to `dsp.rs`, no test, no install, no CPU or pluginval check.
+- `pe_emu.py` fix: the XMM argument path passed `bytes` to `reg_write`. It now passes an integer.
