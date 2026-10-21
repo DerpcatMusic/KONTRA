@@ -2,96 +2,107 @@
 
 Scope: Kontakt Limiter (SerType 0x1c, `BParFXLimiter`), Kontakt Transparent
 Limiter (SerType 0x5f, `BParFXHilbertLimiter`), Kontakt Transient Master
-(SerType 0x43, `BParFXTrans`, v0x10 only) and Gainer (0x13, `BEffectGainer`).
+(SerType 0x43, `BParFXTrans`, v0x10) and Gainer (0x13, `BEffectGainer`).
 
-Status: **Kontakt 8 decompile not yet exported** (`source/kontakt8/READY`
-absent; the directory is empty). Everything below is taken from evidence already
-in the repo (`docs/re/kontakt-bindings/limiter-dynamics.tsv`,
-`docs/re/DSP_SYSTEM_INVENTORY.md`, the recovered-core comments in
-`crates/sampler-core/src/dsp/dynamics/` and `crates/sampler-core/src/dsp/color/`).
-Rows marked **pending READY** must be re-checked against the Kontakt 8 export
-before they are called parity.
+Evidence: the Kontakt 8 decompile export (`source/kontakt8/`, READY) for the
+functions named below, and float constants read from the Kontakt 8.13.1 image at
+their data addresses. Laws are written here as our own spec; no decompiled text
+is copied. Repo evidence (`docs/re/kontakt-bindings/limiter-dynamics.tsv`,
+`docs/re/DSP_SYSTEM_INVENTORY.md`) is cited where it still holds.
 
-Shared engine locations:
-- Dynamics family: `crates/sampler-ir/src/fx/dynamics.rs` (config),
+Engine locations:
+- Dynamics: `crates/sampler-ir/src/fx/dynamics.rs` (config),
   `crates/sampler-core/src/dsp/dynamics/` (`laws.rs` cores, `computer.rs`,
   `detector.rs`, `ballistics.rs`, `pipeline.rs`).
-- Color family (Gainer): `crates/sampler-ir/src/fx/color.rs`,
-  `crates/sampler-core/src/dsp/color/mod.rs`.
+- Color (Gainer): `crates/sampler-ir/src/fx/color.rs`,
+  `crates/sampler-core/src/dsp/color/mod.rs`, `crates/sampler-core/src/dsp/kernels.rs`.
 - Kontakt mapping: `crates/sampler-kontakt/src/effects/dynamics.rs`,
-  `crates/sampler-kontakt/src/effects/mod.rs` (dispatch at ~390-470, Gainer ~1318).
+  `crates/sampler-kontakt/src/effects/mod.rs` (dispatch ~390-470, Gainer ~1318).
 
 ## Kontakt Limiter (0x1c)
 
-| Item | Law / value | Engine state |
+Process `0x140904890`, setter `0x140960140`, prepare `0x1408dd0a0`
+(shared with the same object layout).
+
+| Item | Law (verified) | Engine state |
 |---|---|---|
-| `LIM_IN_GAIN` (stored field 0, slot 8) | `-24 + 48u` dB; core gain `2^(x/6)` | covered: `Limiter::new`, lane `ENGINE_PAR_LIM_IN_GAIN` |
-| `LIM_RELEASE` (stored field 1, slot 12) | ms table at u = 0..1 step 0.1: 10, 16.68, 27.07, 43.26, 68.45, 107.65, 168.68, 263.68, 411.55, 641.72, 1000 | covered: `tables::LIM_RELEASE`, lane `ENGINE_PAR_LIM_RELEASE`; stored value taken as ms (`effects/dynamics.rs::limiter`) |
-| `LIM_THRESHOLD`, `LIM_CEILING` | no stored field of this class | nothing to map |
-| Static curve | `y / (1 + y^2/4)` for y <= 2, held at 1.0 above | covered: `computer.rs` (Kontakt Limiter), `SoftClip` stage |
-| Look-ahead | 32 frames at 48 kHz, output onset 32 samples after dry | covered: `KONTAKT_LATENCY` = 32 |
-| Detector | channel max, peak-hold follower with release, RBJ low-pass fixed at rate/32 | covered: `ChannelMax`, `PeakRelease`, `LowPass2` |
-| Release shape | recovery follows exponential decay, half-life ~ release time | approximate: fits within +-30 % (repo evidence). **Gap** |
-| Low-level offset | earlier note: -0.11..-0.13 dB at y < 0.12. Re-check, Wine sweep `lim-ramp` (200 Hz ramp, u=0.5, R-channel reference): median gain -0.04 dB in [-20,-12) dBFS, -0.26 dB in [-12,-6), -1.15 dB in [-6,-1); the modelled curve gives -0.03, -0.26, -0.98 at the same medians. Offset not reproduced beyond about 0.1 dB; still open pending a clean repeat |
+| Input gain | setter stores the dB value x1 and applies `2^(x1/6)` (constant 1/6 at `0x144737728`, base 2 at `0x144714994`) | covered: `Limiter::new`, lane `ENGINE_PAR_LIM_IN_GAIN` (`-24 + 48u` dB is the script-side mapping) |
+| Release | setter takes the release in ms, `N = max(release·1e-3·rate, 1)` frames; the falling level moves by `ln2/N` per frame (`0x144f38800` = ln2) toward the new peak; rises are instantaneous | exact: `PeakRelease`, `frames = max(s·rate, 1)`, coefficient `ln2/frames` |
+| Release table (script) | 10…1000 ms table at u = 0..1 step 0.1 (repo evidence) | covered: `tables::LIM_RELEASE` |
+| Detector | channel max of |x|, delayed 32 frames (`KONTRA_LATENCY`), then a biquad low-pass: RBJ, cutoff `rate/32`, Q = 1/(2·0.91) (`0x144f38830` = 0.91, `0x144f38688` = 1/32). Trig is a polynomial approximation of sin/cos; the same design as `rbj_low_pass` | covered: `LowPass2` with `rbj_low_pass(TAU/32)` |
+| Gain computer | with y the detector output and c = min(y, 2): gain = 1 / (y − (1 − c/4)·c + 1), i.e. `1/(1+y²/4)` for y ≤ 2 and `1/y` beyond (constant 0.25 at `0x1447148e4`) | covered: `SoftClip` in `computer.rs` |
+| Output | gain·input is clamped to the ±1 window (0 dBFS) | covered: `LimiterOut` / clamp |
+| Low-level offset | the earlier note of −0.12 dB at low levels is not in the law (DC gain of the detector is 1). The Wine sweep (`lim-ramp3` run, not clean) matched the curve within ~0.1 dB | closed as measurement artefact |
 
 ## Kontakt Transparent Limiter (0x5f)
 
-Core `NI::DSP::HilbertLimiter`: Hilbert allpass pair (7-stage chains, prototype
-coefficients from `0x1479ab7f0`), gain smoother, ceiling in dB.
+Core `NI::DSP::HilbertLimiter`. Process `0x141ae3400`, control setter
+`0x141aea680`, effect-level control clamp `0x1409aa9e0` (clamps to 0..1, writes
+core control via vtable slot 0x60, reads back slot 0x68 for the flag).
 
-| Item | Engine state |
-|---|---|
-| Core DSP (Hilbert pair, release, ceiling, gain smoother) | covered: `laws.rs` `Hilbert`, `detector.rs` (Hilbert), tests in `dynamics/tests.rs` (`Native NI::DSP::HilbertLimiter` section) |
-| Saved drive / release / ceiling -> controls 0..2 | **inferred, not traced**; mapping in `effects/dynamics.rs::hilbert` (drive -> threshold field, ceiling -> ratio field, release in seconds) |
-| Release unit | the saved release is documented "(s)" but the mapping treats the normalized value as seconds with no measurement. **Gap** |
-| Side-chain byte | **Gap**: `Reason::NotModeled`, rejected at load (flag meaning unassigned) |
-| Save-order to control-id | **Gap**: inferred from the four-control layout; pending READY (`BEffectHilbertLimiter`, setter `0x141aea680`) |
+| Control | Law (verified) | Saved field (inferred order) | Engine |
+|---|---|---|---|
+| 0 | `gain = 10^(((1 − x)·40) · 0.05)`: drive 0…40 dB, applied to the input | drive (x0) | covered: `Hilbert::new` drive |
+| 1 | release time `max(x, 0.001)` s, one-pole coefficient `1 − 1/(τ·rate)` | release (x1, s) | covered: `Hilbert::release` |
+| 2 | ceiling `−0.35 − (1 − x)·39.7` dB | ceiling (x2) | covered: `Hilbert::ceiling` |
+| 3 | boolean `x > 0.5`, stored at core +0x164. Selects the side-chain path: detector reads the second input pair (`param_2 + 0x10`) and the gain-mod branch uses 1.0 | side-chain byte | **not modelled**. The class `BEffectHilbertLimiterSC` exists, so side-chain is its own effect with an external key input. Diagnosed (`NotModeled`) |
+
+Core: log-domain detector (dB = 20·log10), Hilbert allpass pair
+(`0x141aa4400`, prototype coefficients and warp as in our `PROTOTYPE`/`WARP`),
+dB ballistics with rise/fall/smooth coefficients from prepare, look-ahead
+`128·max(1, rate/44100)`.
+
+Gaps still open:
+- The saved-field order (drive, release, ceiling) is inferred from the reader layout. The BParFX reader was not located in the export (vtable-dispatched).
+- Dynamics ballistics constants (rise/fall/smooth) are taken from the existing core and not re-derived sample by sample.
+- Side-chain input: needs a key source in the engine. Out of this unit's scope; the flag is diagnosed.
 
 ## Kontakt Transient Master (0x43, v0x10)
 
-Core `Transient`: high-pass 10 Hz detector, six envelope followers (`k[0..9]`),
-transient mix, DC block.
+Core `NI::DSP::Transient` (setter `0x141ac87b0`, process variants `0x141a4a9d0`
+and output-clip `0x141a59d40`, prepare `0x141aa27a0`).
 
-| Item | Engine state |
-|---|---|
-| Attack / sustain mix | covered: `computer.rs` `attack * A + sustain * (S - 0.33 A) + gain`, `laws.rs` `Transient::new` |
-| Gain: `(g - 0.5) * 12` dB above 0.5, `* 48` dB below | covered from the recovered core comments; **pending READY** for measurement |
-| Output clip switch | covered: `clip` flag in `Law::KontaktTransient` (process `0x141a59d40`) |
-| Controls 0..3 order | **inferred, not traced**; pending READY (setter `0x141ac87b0`) |
-| Controls 4..7 | no saved field; kept off. Confirm no other live binding (pending READY) |
-| Other saved versions (not 0x10) | **Gap**: only v0x10 is accepted (`effects/mod.rs` dispatch); other versions are unsupported, not guessed |
+| Control | Law (verified) | Engine |
+|---|---|---|
+| 0 attack | `2 · (x − 0.5) · 120` (constant `0x144f38cd0` = 120) | covered: `Transient::new` `a + a` |
+| 1 sustain | `2 · (x − 0.5) · 115` (`0x144fcfe3c` = 115) | covered |
+| 2 gain | `(x − 0.5) · 12` dB for x ≥ 0.5, `· 48` dB for x < 0.5 (`0x14470baf8` = 12, `0x144f38c9c` = 48) | covered |
+| 3…7 | five booleans `x > 0.5`, stored at +0x68…+0x6c | flag 3 carries the saved clip switch (inferred); 4…7 have no saved field and stay off |
+
+Output clip is the separate process variant `0x141a59d40`: a second-order
+peak tracker on the output, selected by the clip flag. The flag-to-variant
+selector was not located; the existing `clip` bool drives it.
+
+Gaps still open: flag 4…7 semantics (no saved binding seen), non-v0x10 saved
+versions (rejected, not guessed), and the reader order (as for the limiter).
 
 ## Gainer (0x13)
 
-Shared color family; `output = input * (dry + g)`, `g` slews toward target.
+Process `0x140aa2980` (per channel, over the block), mix helper `0x140ac21f0`.
 
-| Item | Engine state |
-|---|---|
-| Stored gain (linear float) | covered: `Params::Gainer`, `color::gainer`, lane `ENGINE_PAR_GN_GAIN` |
-| Per-frame smoothing `g += (target - g) * F(1/1800)` (bits `0x3a11a2b4`), state read before advance | covered: `kernels::gainer`, `color/mod.rs` (`GAIN_K`), tests `color/tests.rs` (`gainer_matches_the_frozen_slew_equation`, `gainer_slews_toward_a_moving_target_with_the_native_coefficient`) |
-| Dry mix: fresh module reads `0.5 + 0.5 g` | covered for the stored-dry-level path; test `gainer_mixes_its_stored_dry_level_with_the_gained_signal` (`effects/mod.rs`). Corpus only has dry 0 |
-| Unity shortcut when current and target both in [0.999, 1.001] | **Gap**: the output-side helper was stubbed in the earlier recovery; behaviour not modelled |
-| Gain-copy flags (source byte 0x1a2, destination byte 0x1b7) | **Gap**: lifecycle meaning unassigned; not used by the engine |
+| Item | Law (verified) | Engine |
+|---|---|---|
+| Smoother | `g ← g + (target − g) · k`, `k = 1/1800` (`0x144f385f8`, bits `0x3a11a2b4`); output uses g before the step | covered: `kernels::one_pole32`, `GAIN_K` |
+| Unity window | if both the state and the target are in `[0.999, 1.001]` (`0x144756360`/`0x144756368`, double precision), the process skips the slew and the mix helper reads the input directly, so the output is the input and the state is not advanced | implemented: `kernels::gainer` returns `(1, current)` inside the window; test `gainer_inside_the_unity_window_passes_the_input_and_holds_the_slew` |
+| Mix | helper adds `fVar(0x1a4) · source` into the output; source is the input in the window and the gained signal otherwise | covered for dry 0 (corpus) and the stored-dry path (`0.5 + 0.5g`, test in `effects/mod.rs`). The dry ≠ 0 case inside the window is unverified |
+| Gain-copy flags (bytes 0x1a2, 0x1b7) | not analysed in this pass | **gap** (inventory: lifecycle unassigned) |
 
 ## Oracle notes (2026-10-21)
 
-- `tools/kontakt-oracle/eqrender.py` sent every set value as an integer (KSP `%cval`), so any value in (0, 1) became 0. Fixed to a real array (`~cval`). Every earlier spec with fractional values should be treated as suspect until re-run.
-- Wine sweeps share one Kontakt session and one PipeWire sink. Under contention (other units running) the R reference and some steps came back inconsistent, so only the single clean run above is used. Repeat when the oracle is free.
-- Measured: Gainer unity shortcut is implemented from the inventory description only; not yet checked with the oracle.
+- `tools/kontakt-oracle/eqrender.py` sent every set value as an integer (KSP `%cval`), truncating values in (0, 1) to 0. Fixed to a real array (`~cval`). Specs with fractional values from earlier runs are suspect.
+- Shared Kontakt session: concurrent runs corrupt each other's renders. The one clean sweep was used for the limiter check above.
 
-## Gap summary
+## Gap summary (after decompile)
 
-1. Limiter: release fit tolerance (+-30 %); low-level offset to re-check on a clean oracle run. Process `0x140904890` for the exact release law.
-2. Transparent Limiter: side-chain byte, control-id order, release unit. Needs `BEffectHilbertLimiter` and setter `0x141aea680`.
-3. Transient Master: control-id order, controls 4..7, non-v0x10 versions. Needs setter `0x141ac87b0`.
-4. Gainer: unity shortcut is now implemented (pass-through when both gain ends are in [0.999, 1.001]); the dry != 0 case inside the window is unverified. Gain-copy flags still need `0x1408374b0`.
+1. Transparent Limiter side-chain (`BEffectHilbertLimiterSC`): needs an engine key input. Diagnosed, not implemented.
+2. Saved-field order for the Transparent Limiter and Transient Master readers: not located in the export.
+3. Transient flags 4…7 and the flag that selects the output-clip variant.
+4. Gainer dry ≠ 0 inside the unity window; gain-copy flags.
 
-Code changed: Gainer unity-window pass-through (`kernels::gainer`, test in `color/tests.rs`).
-The remaining items are unmeasured or need the Kontakt 8 export; none is guessed.
+Closed by the decompile: Limiter detector filter, gain computer, release law, in-gain law; Transparent Limiter controls 0–2 and their laws; Transient controls 0–2 constants; Gainer smoother constant and the unity hold.
 
 ## Evidence confidence
 
-- High: stored-field layouts and the Limiter/Gainer ballistics already measured in
-  `limiter-dynamics.tsv` and the inventory (PROVED rows).
-- Medium: Transparent Limiter and Transient Master mapping (inferred layout).
-- Pending READY: all decompiled-function claims that are not in the repo already.
+- High: Limiter (all rows), Transparent controls 0–2, Transient constants, Gainer smoother and unity hold (process and constants read from the image).
+- Medium: saved-field orders and the Transient clip-flag mapping (inferred from the reader layout).
+- Not verified: side-chain behaviour (not implemented), flags 4–7, gain-copy flags.
