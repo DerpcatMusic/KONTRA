@@ -14,6 +14,7 @@
 //!
 //! IPP calls are in [`ipp`].
 
+pub mod band_state;
 pub mod body;
 pub mod frame;
 pub mod ipp;

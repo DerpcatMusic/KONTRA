@@ -206,3 +206,9 @@ pub fn exp_i(p: &mut [f32]) {
         *x = x.exp();
     }
 }
+
+/// `0x1800013d0` ippsMax_32f(src, len, &max) (identified by black-box emulation: `max([0.5, 2, -3, 4, ...]) = 10`
+/// on the random-input fixture of `band_state`). Largest element; `src` must not be empty (IPP reports a size error).
+pub fn max(src: &[f32]) -> f32 {
+    src.iter().copied().fold(f32::NEG_INFINITY, |m, x| if x > m { x } else { m })
+}
