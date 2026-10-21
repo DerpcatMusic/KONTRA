@@ -27,6 +27,7 @@ mod buzz;
 mod psyche;
 mod velvet;
 mod twin;
+mod wowflutter;
 mod uvi_legacy;
 #[cfg(test)]
 mod tests;
@@ -333,6 +334,7 @@ impl TimeMod {
                 Native::PsycheDelay(_) => cap = psyche::capacity(rate),
                 Native::UviVelvetDelay(_) => cap = velvet::capacity(rate),
                 Native::UviBuzzDelay(_) => cap = buzz::capacity(rate),
+                Native::WowFlutter(_) => cap = wowflutter::capacity(rate),
             }
         }
         let stages = cfg.allpass.map_or(0, |a| usize::from(a.stages));
@@ -475,6 +477,9 @@ impl TimeMod {
         }
         if let Some(&Native::PsycheDelay(p)) = cfg.line.as_ref().map(|l| &l.native) {
             return self.psyche_delay(state, slab, block, len, tempo, p);
+        }
+        if let Some(&Native::WowFlutter(w)) = cfg.line.as_ref().map(|l| &l.native) {
+            return self.wow_flutter(state, slab, block, len, w);
         }
         if let Some(&Native::TwinDelay(t)) = cfg.line.as_ref().map(|l| &l.native) {
             return self.twin_delay(state, slab, block, len, tempo, t);
