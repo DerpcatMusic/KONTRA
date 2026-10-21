@@ -15,5 +15,6 @@
 //! IPP calls are in [`ipp`].
 
 pub mod body;
+pub mod frame;
 pub mod ipp;
 pub mod tables;
