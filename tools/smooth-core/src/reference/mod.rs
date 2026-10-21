@@ -4,3 +4,4 @@
 pub mod analysis;
 pub mod hop;
 pub mod resample;
+pub mod zerolatency;
