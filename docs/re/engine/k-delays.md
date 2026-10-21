@@ -134,3 +134,32 @@ Mapped, with evidence level:
 Next step for the oracle: check the `set_engine_par` path for Replika (generic flag,
 parameter index) with a known-good control such as the Legacy Delay DL_TIME, then redo
 the capture.
+
+## Replika core: setter binding (decompile, 2026-10-21, binding only)
+
+Source: `FUN_141ac5980` (`0141ac0000.c`, size 3979), the Replika core parameter
+setter. Core index `i` is not the saved stream field; index `i` writes to a
+control block at `*(core+200)` plus `+0x10 + 4*(i-2)` for the plain linear ones. Verified
+from the switch only (no core DSP read yet):
+
+| Core index | Write | Kind (from the switch) |
+|---|---|---|
+| 0, 1 | `FUN_141a90910` conversion to control block +0x0 / +0x4 | gains (A, B) |
+| 2, 3 | linear to +0x10 / +0x14 (live path calls `FUN_141acc980`/`FUN_141acc930`) | linear |
+| 4 | equal-power style crossfade: v > 0.5 → +0x8 = 2(1−v), +0xc = 1; else +0x8 = 1, +0xc = 2v | mix |
+| 5 | linear to +0x18 (`FUN_141ac9420`) | linear |
+| 6, 7 | bool at core +0x914 / +0x915 (v ≥ 0.5) | flags |
+| 8 | if mode 3: gain ×`DAT_14756bdf8`-clamped into +0x2c; else `FUN_141a9d4a0`/`9d7c0`/`9d660` | time / sync (not yet read) |
+| 9 | integer 0..3 at core +0x93c (toggles `FUN_141acbfb0`, bypasses three sub-objects at +0xac0, +0x6380, +0xbc40) | mode |
+| 10, 11, 12, 15 | toggles at core +0x14381 / +0x14382 / +0x14383 / +0x14384 (`FUN_141acc600`), 10/11 also write +0x30 / +0x34 | section enables |
+| 12 | three sub-objects (+0xac0, +0x6380, +0xbc40) set from one law `FUN_141abba60` (filter-like) | three-section split |
+| 13 | `pow(...)` law into core +0x13e28 | unknown |
+| 25 | +0x1d ... | `FUN_141accd10` |
+| 0x1c, 0x2b, 0x22 | flag combine then `FUN_141aca670` / `FUN_141acb2b0` / `FUN_141abbf60` | section updates |
+
+Not yet read: the audio functions (`FUN_141abd210`, `FUN_141acc600`,
+`FUN_141acc980`, `FUN_141a9d4a0`, `FUN_141a9d660`, `FUN_141a9d7c0`,
+`FUN_141a90910`), the three sub-object filter laws (`FUN_141abba60`), and the
+line read/write recurrence. The ducking, saturation, BBD and stereo laws are in
+those. Confidence: the switch structure is high; the meaning of each index is medium
+until the called functions are read.

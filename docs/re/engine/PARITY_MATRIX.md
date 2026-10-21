@@ -159,7 +159,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | PsycheDelay | unknown | none | |
-| Replika Delay | unknown | none | |
+| Replika Delay | partial | decomp | v0x12 reader; RDL_TIME (documented law) only; core setter binding read (docs/re/engine/k-delays.md), core DSP not yet read |
 | Twin Delay | unknown | none | |
 | Legacy Delay | unknown | none | |
 
