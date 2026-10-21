@@ -241,6 +241,7 @@ mod kernel_tests;
 mod kernels;
 pub use eq_family::{EqBand, KontaktLegacyEqSettings};
 mod live;
+mod machine;
 pub use ladder::LadderSettings;
 mod taps;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
