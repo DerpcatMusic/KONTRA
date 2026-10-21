@@ -32,7 +32,7 @@ Shared engine locations:
 | Look-ahead | 32 frames at 48 kHz, output onset 32 samples after dry | covered: `KONTAKT_LATENCY` = 32 |
 | Detector | channel max, peak-hold follower with release, RBJ low-pass fixed at rate/32 | covered: `ChannelMax`, `PeakRelease`, `LowPass2` |
 | Release shape | recovery follows exponential decay, half-life ~ release time | approximate: fits within +-30 % (repo evidence). **Gap** |
-| Low-level offset | measured -0.11..-0.13 dB at y < 0.12 | **Gap**: not produced by the modelled curve; cause unknown (pending READY, process `0x140904890`) |
+| Low-level offset | earlier note: -0.11..-0.13 dB at y < 0.12. Re-check, Wine sweep `lim-ramp` (200 Hz ramp, u=0.5, R-channel reference): median gain -0.04 dB in [-20,-12) dBFS, -0.26 dB in [-12,-6), -1.15 dB in [-6,-1); the modelled curve gives -0.03, -0.26, -0.98 at the same medians. Offset not reproduced beyond about 0.1 dB; still open pending a clean repeat |
 
 ## Kontakt Transparent Limiter (0x5f)
 
@@ -73,15 +73,21 @@ Shared color family; `output = input * (dry + g)`, `g` slews toward target.
 | Unity shortcut when current and target both in [0.999, 1.001] | **Gap**: the output-side helper was stubbed in the earlier recovery; behaviour not modelled |
 | Gain-copy flags (source byte 0x1a2, destination byte 0x1b7) | **Gap**: lifecycle meaning unassigned; not used by the engine |
 
+## Oracle notes (2026-10-21)
+
+- `tools/kontakt-oracle/eqrender.py` sent every set value as an integer (KSP `%cval`), so any value in (0, 1) became 0. Fixed to a real array (`~cval`). Every earlier spec with fractional values should be treated as suspect until re-run.
+- Wine sweeps share one Kontakt session and one PipeWire sink. Under contention (other units running) the R reference and some steps came back inconsistent, so only the single clean run above is used. Repeat when the oracle is free.
+- Measured: Gainer unity shortcut is implemented from the inventory description only; not yet checked with the oracle.
+
 ## Gap summary
 
-1. Limiter: release fit tolerance (+-30 %) and the -0.12 dB low-level offset. Needs process `0x140904890`.
+1. Limiter: release fit tolerance (+-30 %); low-level offset to re-check on a clean oracle run. Process `0x140904890` for the exact release law.
 2. Transparent Limiter: side-chain byte, control-id order, release unit. Needs `BEffectHilbertLimiter` and setter `0x141aea680`.
 3. Transient Master: control-id order, controls 4..7, non-v0x10 versions. Needs setter `0x141ac87b0`.
-4. Gainer: unity shortcut and gain-copy flags. Needs the output mix helper and `0x1408374b0`.
+4. Gainer: unity shortcut is now implemented (pass-through when both gain ends are in [0.999, 1.001]); the dry != 0 case inside the window is unverified. Gain-copy flags still need `0x1408374b0`.
 
-No code changed in this unit yet: the missing items above are either unmeasured or
-depend on the Kontakt 8 export, and the brief forbids guessing them.
+Code changed: Gainer unity-window pass-through (`kernels::gainer`, test in `color/tests.rs`).
+The remaining items are unmeasured or need the Kontakt 8 export; none is guessed.
 
 ## Evidence confidence
 
