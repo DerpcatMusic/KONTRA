@@ -56,6 +56,100 @@ impl Default for Prefs {
 /// The id the menu's panel carries, for the press-outside test.
 const PANEL_ID: &str = "menu-panel";
 
+/// The band menu's panel, for the press-outside test.
+pub const BAND_MENU_ID: &str = "band-menu-panel";
+
+/// How tall a band menu is with its shape list open, and with it shut. The
+/// window keeps the menu on screen at whichever height it has.
+pub const BAND_MENU_H: f64 = 320.0;
+pub const BAND_MENU_CLOSED_H: f64 = 140.0;
+
+/// A band's context menu: which band, and the window point it opened at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandMenu {
+    pub index: usize,
+    pub at: (f64, f64),
+    /// Whether the shape list under "shape" is showing.
+    pub shapes: bool,
+}
+
+/// What the band menu asked for. The view does delete and reset itself; the
+/// rest are host edits the plug-in makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BandAsk {
+    Delete,
+    Reset,
+    Bypass,
+    Solo,
+    Shape(usize),
+}
+
+/// The band's state the menu words its rows by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BandState {
+    pub bypassed: bool,
+    pub soloed: bool,
+    pub shape: usize,
+}
+
+/// Where a menu of `size` opens at `at` in a window of `(w, h)`, kept on screen.
+pub fn clamped(at: (f64, f64), size: (f64, f64), window: (f64, f64)) -> (f64, f64) {
+    (
+        at.0.clamp(0.0, (window.0 - size.0).max(0.0)),
+        at.1.clamp(0.0, (window.1 - size.1).max(0.0)),
+    )
+}
+
+/// The band menu's panel, and the one ask the frame made (a press lands on
+/// one row at most).
+pub fn band_menu(ui: &mut Ui, menu: &mut BandMenu, state: BandState) -> (El, Option<BandAsk>) {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let mut ask = None;
+    let mut rows = Vec::new();
+    let mut row = |ui: &mut Ui, id: &str, name: &str| -> bool {
+        rows.push(action_pill(name).tipped(id).focusable().cursor(Cursor::Hand));
+        ui.get(id).activated()
+    };
+    if row(ui, "band-menu-delete", "Delete band") {
+        ask = Some(BandAsk::Delete);
+    }
+    let bypass = if state.bypassed { "Enable band" } else { "Bypass band" };
+    if row(ui, "band-menu-bypass", bypass) {
+        ask = Some(BandAsk::Bypass);
+    }
+    if row(ui, "band-menu-reset", "Reset band") {
+        ask = Some(BandAsk::Reset);
+    }
+    let solo = if state.soloed { "Unsolo band" } else { "Solo band" };
+    if row(ui, "band-menu-solo", solo) {
+        ask = Some(BandAsk::Solo);
+    }
+    // The shape is a list of its own: the row opens it, and a pick closes the menu.
+    if row(ui, "band-menu-shape", "Shape") {
+        menu.shapes = !menu.shapes;
+    }
+    if menu.shapes {
+        for (index, name) in crate::graph::SHAPES.iter().enumerate() {
+            let id = format!("band-menu-shape-{index}");
+            let mark = if index == state.shape { "• " } else { "    " };
+            if row(ui, &id, &format!("{mark}{name}")) {
+                ask = Some(BandAsk::Shape(index));
+            }
+        }
+    }
+    let panel = col(rows)
+        .gap(space::XS)
+        .pad(space::L)
+        .w(metric::MENU_W)
+        .radius(radius::BOX)
+        .fill(ca(t.ground, 0.96))
+        .align(Align::Start)
+        .shrink(0)
+        .id(BAND_MENU_ID);
+    (panel, ask)
+}
+
 /// What the toolbar's two buttons and a press elsewhere do to the menu.
 pub fn steer(ui: &Ui, open: &mut Open) {
     if ui.get("gear").activated() {
@@ -134,6 +228,14 @@ pub fn menu(ui: &mut Ui, open: Open, prefs: &mut Prefs) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_opened_near_the_edge_stays_on_the_window() {
+        let window = (800.0, 473.0);
+        assert_eq!(clamped((100.0, 50.0), (230.0, 320.0), window), (100.0, 50.0));
+        assert_eq!(clamped((790.0, 400.0), (230.0, 320.0), window), (570.0, 153.0));
+        assert_eq!(clamped((-5.0, -5.0), (230.0, 320.0), window), (0.0, 0.0));
+    }
 
     #[test]
     fn the_size_steps_are_the_reference_widths_and_grow() {

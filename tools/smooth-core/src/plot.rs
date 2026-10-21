@@ -46,12 +46,16 @@ pub fn plot_frequency(index: usize) -> f32 {
 pub struct Frame {
     /// The gain each channel is taking, linear: one is no reduction.
     pub gain: [[f32; PLOT_BINS]; 2],
+    /// The sidechain meter: the largest signed detector sample in the window
+    /// this frame covers. Signed, not smoothed, and zero with no window.
+    pub detector: f32,
 }
 
 impl Default for Frame {
     fn default() -> Self {
         Self {
             gain: [[1.0; PLOT_BINS]; 2],
+            detector: 0.0,
         }
     }
 }
@@ -61,6 +65,7 @@ impl Default for Frame {
 #[derive(Debug)]
 pub struct Telemetry {
     gain: [[AtomicU32; PLOT_BINS]; 2],
+    detector: AtomicU32,
     sequence: AtomicU64,
 }
 
@@ -68,6 +73,7 @@ impl Default for Telemetry {
     fn default() -> Self {
         Self {
             gain: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(1.0_f32.to_bits()))),
+            detector: AtomicU32::new(0.0_f32.to_bits()),
             sequence: AtomicU64::new(0),
         }
     }
@@ -81,6 +87,7 @@ impl Telemetry {
                 slot.store(value.to_bits(), Ordering::Relaxed);
             }
         }
+        self.detector.store(frame.detector.to_bits(), Ordering::Relaxed);
         self.sequence.fetch_add(1, Ordering::Release);
     }
 
@@ -96,6 +103,7 @@ impl Telemetry {
             gain: std::array::from_fn(|c| {
                 std::array::from_fn(|i| f32::from_bits(self.gain[c][i].load(Ordering::Relaxed)))
             }),
+            detector: f32::from_bits(self.detector.load(Ordering::Relaxed)),
         }
     }
 }
@@ -117,6 +125,20 @@ mod tests {
         }
         let frame = engine.plot_frame();
         assert!(frame.gain.iter().flatten().all(|g| g.is_finite() && *g > 0.0 && *g <= 1.0001));
+    }
+
+    #[test]
+    fn the_sidechain_meter_is_the_signed_peak_of_each_window() {
+        let mut engine = Engine::new(48_000.0, EngineConfig::default()).unwrap();
+        let settings = Settings::default();
+        // A window of a negative constant reads as negative: the peak is signed.
+        for _ in 0..512 {
+            engine.process_sample([-0.25, -0.25], &settings);
+        }
+        let first = engine.plot_frame();
+        assert_eq!(first.detector, -0.25);
+        // The next window starts empty, so an idle window reads zero, not the old peak.
+        assert_eq!(engine.plot_frame().detector, 0.0);
     }
 
     #[test]

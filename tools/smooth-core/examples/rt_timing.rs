@@ -111,7 +111,7 @@ fn block(
     *since += input.len();
     if *since >= PUBLISH_EVERY {
         *since = 0;
-        plot.publish(&bank.active().plot_frame());
+        plot.publish(&bank.active_mut().plot_frame());
     }
 }
 
@@ -216,7 +216,7 @@ fn main() {
     let mut publish_nanos = Vec::with_capacity(PLOT_CALLS);
     for _ in 0..PLOT_CALLS {
         let start = Instant::now();
-        let frame = bank.active().plot_frame();
+        let frame = bank.active_mut().plot_frame();
         let built = Instant::now();
         plot.publish(&frame);
         publish_nanos.push(built.elapsed().as_nanos() as u64);

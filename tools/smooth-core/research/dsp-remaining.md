@@ -148,9 +148,14 @@ Evidence: `RunScratch/smooth/feat/dsp-remaining/MS-sc-meter.md`.
 - Meter (verified formula): published at `0x89392a` (edx=13), gated by a visitor
   query. Value is the max over channels of the max over the block of the signed
   L2 buffers, initialised to `-FLT_MAX`. No abs, square, dB or smoothing. The
-  buffers are probably the detector's, after M/S (inferred). Not implemented in
-  the plugin: the telemetry channel is UI-owned and the buffer origin is not
-  confirmed.
+  buffers are probably the detector's, after M/S (inferred).
+
+  Port (2026-10-21): the engine keeps the largest signed detector sample (after
+  M/S, as the detector sees it) since the plot last took a frame, and the plot
+  frame carries it (`plot::Frame::detector`, `Telemetry`). The editor's header
+  meter reads it. A frame is about 1/60 s of audio, so "block" here means the
+  publish window, not one host block. Inferred: the window, and that the
+  meter reads the detector with the sidechain off too (it is the main input then).
 
 ## 6. FFT forward scale: not re-attempted this round
 

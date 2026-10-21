@@ -450,6 +450,9 @@ pub struct Engine {
     /// block with the same band costs nothing.
     solo_tuned: Option<(usize, f32, f32, u8)>,
     last_bypass: bool,
+    /// The largest signed detector sample since the plot last took a frame:
+    /// the sidechain meter. Not smoothed, and not made absolute.
+    detector_peak: f32,
 }
 
 /// A gain on its way to a target: `g <- (t - g) * a + g` per sample, the
@@ -660,6 +663,7 @@ impl Engine {
             solo_filter: [Svf::default(); 2],
             solo_tuned: None,
             last_bypass: false,
+            detector_peak: f32::MIN,
         })
     }
     pub fn plan(&self) -> Plan {
@@ -677,8 +681,12 @@ impl Engine {
     /// The plot's frame: the gain each channel is taking, linear, read off the
     /// plot's sweep between the two nearest bins. No allocation, locks or
     /// formatting.
-    pub fn plot_frame(&self) -> crate::plot::Frame {
+    /// The engine's frame for the plot. It takes the detector's peak for the
+    /// window since the last frame, so each frame reports its own window.
+    pub fn plot_frame(&mut self) -> crate::plot::Frame {
         let mut frame = crate::plot::Frame::default();
+        let peak = std::mem::replace(&mut self.detector_peak, f32::MIN);
+        frame.detector = if peak.is_finite() && peak > f32::MIN { peak } else { 0.0 };
         if self.last_bypass {
             return frame;
         }
@@ -699,6 +707,7 @@ impl Engine {
     }
     pub fn reset(&mut self) {
         self.m_precursor.reset();
+        self.detector_peak = f32::MIN;
         self.solo_filter = [Svf::default(); 2];
         // The filter's coefficients are gone with it: forget the tuning too, or
         // the solo audition stays silent until the band changes.
@@ -742,6 +751,9 @@ impl Engine {
         } else {
             detector
         };
+        for &v in conditioned.iter().take(self.active_channels) {
+            self.detector_peak = self.detector_peak.max(v);
+        }
         for (index, ch) in self
             .channels
             .iter_mut()
