@@ -476,6 +476,10 @@ pub struct SmoothParams {
     /// Whether the eighth band is bypassed.
     #[param(name = "Band 8 bypass", range = "discrete(0, 1)", default = 0)]
     pub band8_bypass: IntParam,
+    /// The band to audition on its own: 0 for none, 1 to 8 for that band.
+    /// Reference parameter 91, stored there as plain - 1.
+    #[param(name = "Band solo", range = "discrete(0, 8)", default = 0)]
+    pub band_solo: IntParam,
     /// The live plot: the engine writes it from the audio thread, the
     /// editor reads it. Not a parameter.
     #[skip]
@@ -638,6 +642,7 @@ impl SmoothParams {
             bypass: self.bypass.value() >= 1,
             sidechain: self.sidechain.value() >= 1,
             sidechain_listen: self.sidechain_listen.value() >= 1,
+            solo_band: usize::try_from(self.band_solo.value() - 1).ok(),
             adaptive_baseline: false,
             ..Settings::default()
         };

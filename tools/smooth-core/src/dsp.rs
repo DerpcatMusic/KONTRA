@@ -6,7 +6,7 @@ use crate::projection::{Projection, ROWS, exp32, frequency_grid, ln32};
 use crate::spatial::{
     SpatialMode4, common_bandwidth, common_timing_profile, final_weight, first_weight,
 };
-use crate::weighting::{BandRecord, ChannelGroup, DEFAULT_CENTERS, LAB_PAIR_GROUP, WeightBanks};
+use crate::weighting::{BandRecord, ChannelGroup, DEFAULT_CENTERS, LAB_PAIR_GROUP, Shape, WeightBanks};
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 use std::f32::consts::{LN_10, PI, TAU};
 use std::sync::Arc;
@@ -123,6 +123,8 @@ pub struct Settings {
     pub sidechain: bool,
     /// Listen to the detector: the output is its signal, not the reduction.
     pub sidechain_listen: bool,
+    /// The band auditioned on its own, or none.
+    pub solo_band: Option<usize>,
     pub adaptive_baseline: bool,
     pub bands: [BandRecord; 8],
     /// Typed descriptor inputs. The host adapter declares tag0; source public tags are unclosed.
@@ -159,6 +161,7 @@ impl Default for Settings {
             bypass: false,
             sidechain: false,
             sidechain_listen: false,
+            solo_band: None,
             adaptive_baseline: false,
             bands: std::array::from_fn(|i| {
                 let mut record = BandRecord::flat(DEFAULT_CENTERS[i]);
@@ -440,6 +443,12 @@ pub struct Engine {
     /// The one-pole coefficient for the gains, and the time it was made for.
     ramp_coefficient: f32,
     ramp_ms: f32,
+    /// Non-solo and solo gains, and the solo audition's band filter.
+    solo_gains: [SmoothedGain; 2],
+    solo_filter: [Svf; 2],
+    /// The band the filter is tuned to, with its frequency and width, so a
+    /// block with the same band costs nothing.
+    solo_tuned: Option<(usize, f32, f32, u8)>,
     last_bypass: bool,
 }
 
@@ -465,6 +474,43 @@ impl SmoothedGain {
             self.gain = 0.0;
         }
         self.gain
+    }
+}
+
+/// A TPT state-variable filter (Zavalishin), the solo audition's band filter.
+/// `mode` is 0 low-pass, 1 high-pass, 2 band-pass, 3 notch.
+#[derive(Clone, Copy, Debug, Default)]
+struct Svf {
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    k: f32,
+    ic1: f32,
+    ic2: f32,
+    mode: u8,
+}
+impl Svf {
+    fn tune(&mut self, sample_rate: f32, frequency: f32, q: f32, mode: u8) {
+        let g = (PI * frequency.clamp(1.0, 0.49 * sample_rate) / sample_rate).tan();
+        let k = 1.0 / q.max(1.0e-3);
+        self.a1 = 1.0 / (1.0 + g * (g + k));
+        self.a2 = g * self.a1;
+        self.a3 = g * self.a2;
+        self.k = k;
+        self.mode = mode;
+    }
+    fn process(&mut self, x: f32) -> f32 {
+        let v3 = x - self.ic2;
+        let v1 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0 * v1 - self.ic1;
+        self.ic2 = 2.0 * v2 - self.ic2;
+        match self.mode {
+            0 => v2,
+            1 => x - self.k * v1 - v2,
+            2 => v1,
+            _ => x - self.k * v1,
+        }
     }
 }
 
@@ -610,6 +656,9 @@ impl Engine {
             gains: [SmoothedGain::at(0.0), SmoothedGain::at(1.0), SmoothedGain::at(1.0)],
             ramp_coefficient: ramp_coefficient(plan.owner_rate, 30.0),
             ramp_ms: 30.0,
+            solo_gains: [SmoothedGain::at(1.0), SmoothedGain::at(0.0)],
+            solo_filter: [Svf::default(); 2],
+            solo_tuned: None,
             last_bypass: false,
         })
     }
@@ -650,6 +699,7 @@ impl Engine {
     }
     pub fn reset(&mut self) {
         self.m_precursor.reset();
+        self.solo_filter = [Svf::default(); 2];
         for ch in &mut self.channels {
             ch.reset();
         }
@@ -749,7 +799,45 @@ impl Engine {
         let dry_gain = self.gains[0].step(coefficient);
         let wet_gain = self.gains[1].step(coefficient);
         let out_gain = self.gains[2].step(coefficient);
-        let mut output = std::array::from_fn(|c| (dry_gain * dry[c] + wet_gain * wet[c]) * out_gain);
+        let mut main: [f32; 2] = std::array::from_fn(|c| dry_gain * dry[c] + wet_gain * wet[c]);
+        // Solo: while a band is soloed (and not bypassed) the main path is muted and
+        // the band's own filtered signal is added in. The reference's stream is
+        // main_k * g_solo + filtered, with the same gain ramps (research/dsp-remaining.md).
+        let soloed = settings.solo_band.filter(|&i| settings.bands[i].used && !settings.bypass);
+        if let Some(index) = soloed {
+            let band = settings.bands[index];
+            let frequency = crate::weighting::center_from_normalized(band.frequency);
+            let width = band.width.max(1.0e-3);
+            let q = 1.0 / (2.0 * (width / 2.885_390_1).sinh());
+            // Shape-to-filter from the reference's branch structure (0x89bf10): the
+            // mode names are inferred, the grouping is read. Tilt has no filter of its own.
+            let mode = match band.shape {
+                Shape::LowCut | Shape::HighShelf => 1,
+                Shape::LowShelf | Shape::HighCut => 0,
+                Shape::BandReject => 3,
+                Shape::Bell | Shape::Bandpass | Shape::Tilt => 2,
+            };
+            let key = (index, frequency, q, mode);
+            if self.solo_tuned != Some(key) {
+                for filter in &mut self.solo_filter {
+                    filter.tune(self.plan.owner_rate, frequency, q, mode);
+                }
+                self.solo_tuned = Some(key);
+            }
+        }
+        self.solo_gains[0].target = if soloed.is_some() { 0.0 } else { 1.0 };
+        self.solo_gains[1].target = if soloed.is_some() { 1.0 } else { 0.0 };
+        let non_solo = self.solo_gains[0].step(coefficient);
+        let solo = self.solo_gains[1].step(coefficient);
+        for c in 0..2 {
+            let filtered = if self.solo_tuned.is_some() {
+                self.solo_filter[c].process(main[c])
+            } else {
+                0.0
+            };
+            main[c] = non_solo * main[c] + solo * filtered;
+        }
+        let mut output = std::array::from_fn(|c| main[c] * out_gain);
         // Sidechain listen hears the detector's own signal, through the output
         // trim. The reference's listen routing is not located (research/engine-io.md).
         if settings.sidechain && settings.sidechain_listen {
@@ -1420,6 +1508,43 @@ mod tests {
         assert!(worst < 1.0e-4, "level step {worst}");
         assert!((engine.gains[0].gain - 1.0).abs() < 1.0e-3);
         assert!(engine.gains[1].gain.abs() < 1.0e-3);
+    }
+
+    /// Soloing a band auditions it alone: the main path is muted and the
+    /// band's filter passes its own frequency, cutting the rest.
+    #[test]
+    fn soloing_a_band_auditions_it_alone() {
+        let mut engine = Engine::new(48_000.0, EngineConfig::default()).unwrap();
+        let mut settings = Settings {
+            depth: 0.0,
+            mix: 1.0,
+            solo_band: Some(0),
+            ..Settings::default()
+        };
+        settings.bands[0].frequency = crate::weighting::normalized_from_center(1000.0);
+        settings.bands[0].shape = crate::weighting::Shape::Bandpass;
+        settings.bands[0].width = crate::weighting::width_from_q(4.0);
+        let tone = |t: usize, hz: f32| (TAU * hz * t as f32 / 48_000.0).sin() * 0.5;
+        let mut out_1k = Vec::new();
+        let mut out_10k = Vec::new();
+        let latency = engine.latency();
+        for t in 0..latency + 30_000 {
+            let input = [tone(t, 1000.0), tone(t, 1000.0)];
+            let out = engine.process_sample(input, &settings);
+            if t >= latency + 20_000 {
+                out_1k.push(out[0]);
+            }
+        }
+        for t in 0..latency + 30_000 {
+            let input = [tone(t, 10_000.0), tone(t, 10_000.0)];
+            let out = engine.process_sample(input, &settings);
+            if t >= latency + 20_000 {
+                out_10k.push(out[0]);
+            }
+        }
+        let peak = |v: &[f32]| v.iter().fold(0.0_f32, |m, x| m.max(x.abs()));
+        assert!(peak(&out_1k) > 0.4, "soloed band peak {}", peak(&out_1k));
+        assert!(peak(&out_10k) < 0.05, "outside the band peak {}", peak(&out_10k));
     }
 
     /// A decayed gain is exactly zero, not a denormal.
