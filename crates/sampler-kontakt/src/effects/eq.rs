@@ -12,9 +12,9 @@
 //!   saved knobs into the native G_EQ law (`Law::Solid`, sampler-core eq_family/solid.rs),
 //!   one one-band `Config` per saved band so each band keeps its own `$ENGINE_PAR_SEQ_*`
 //!   lanes (`docs/re/kontakt-solid-geq-live-control.md`).
-use super::{Notes, Reader};
+use super::{Lowering, Notes, Params, Reader, Scope, Site, Slot, product};
 use sampler_ir::fx::eq::{Band, Config, Kind, Law, SolidSection};
-use sampler_ir::{Processor, Reason};
+use sampler_ir::{Processor, Reason, SlotAddress};
 
 /// One legacy EQ band (Hz, octaves, dB); live owners retain flat bands.
 pub(super) fn legacy_band(
@@ -266,5 +266,387 @@ mod tests {
         assert_eq!(b.law, Law::KontaktLegacy);
         assert_eq!(b.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(1000.));
         assert!(legacy_band([1000., 1., 0.], false, &mut vec![]).is_none());
+    }
+
+    use crate::effects::*;
+    use crate::effects::test_support::*;
+
+    /// A script-addressed Solid G-EQ: every band is one config with the band's own
+    /// lanes, the split renders exactly like the unaddressed module, and a `SEQ_`
+    /// write moves the band (all three LF shelf sections included).
+    #[test]
+    fn solid_geq_bands_are_live_and_the_split_is_audio_identical() {
+        let module = |address| {
+            let mut fx = slot(0x44, solid_payload(), 1.);
+            fx.version = 0x11;
+            crate::effects::chain_with(&[fx], crate::effects::Scope::Voice, None, address, (0, -1), &[])
+        };
+        let live = module(Some((0, -1)));
+        assert!(
+            live.notes.iter().all(|(_, feature, _, _)| feature != "live control"),
+            "{:?}",
+            live.notes
+        );
+        let bands: Vec<u8> = live
+            .processors
+            .iter()
+            .filter_map(|p| match p {
+                sampler_ir::Processor::Eq(c) => {
+                    assert_eq!(c.count, 1);
+                    assert_eq!(
+                        c.address,
+                        Some(sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 })
+                    );
+                    Some(c.band)
+                }
+                sampler_ir::Processor::Mix { count, address, .. } => {
+                    assert_eq!((*count, *address), (5, sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 }));
+                    None
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(bands, [0, 1, 2, 3, 5]);
+        let input = [[1.0f32, -0.5]; 4];
+        let plain = fx_probe(module(None).processors, 48_000., &input);
+        assert_eq!(fx_probe(live.processors.clone(), 48_000., &input), plain);
+        let address = |name: &str| sampler_core::EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id(name).unwrap(),
+            group: 0,
+            slot: 0,
+            generic: -1,
+        };
+        let gain = address("ENGINE_PAR_SEQ_LF_GAIN");
+        let mut rt = fx_runtime(live.processors, 48_000., &input);
+        assert_eq!(rt.engine_parameter(gain), Ok(500_000));
+        rt.set_engine_parameter(gain, 1_000_000).unwrap();
+        let mut raised = [[0.0f32; 2]; 4];
+        rt.render(&mut raised).unwrap();
+        assert_ne!(raised, plain, "the LF shelf follows its lane");
+    }
+
+    /// Recorded init writes reach the saved Solid G-EQ record: the identity knob
+    /// law for the twelve continuous knobs and the switch law for the enables.
+    #[test]
+    fn solid_geq_init_writes_reach_the_saved_record() {
+        let mut fx = slot(0x44, solid_payload(), 1.);
+        fx.version = 0x11;
+        let write = |parameter: &str, value: i32| sampler_ksp::EnginePar {
+            parameter: parameter.into(),
+            value,
+            group: 0,
+            slot: 0,
+            generic: -1,
+        };
+        crate::effects::apply_writes(
+            std::slice::from_mut(&mut fx),
+            &[
+                write("$ENGINE_PAR_SEQ_HF_GAIN", 1_000_000),
+                write("$ENGINE_PAR_SEQ_LF_BELL", 1),
+                write("$ENGINE_PAR_SEQ_HP", 1),
+                write("$ENGINE_PAR_SEQ_LP", 0),
+            ],
+            0,
+            -1,
+        );
+        let built = crate::effects::chain_with(&[fx], crate::effects::Scope::Voice, None, None, (0, -1), &[]);
+        let bands: Vec<(u8, sampler_ir::fx::eq::Kind, f32)> = built
+            .processors
+            .iter()
+            .map(|p| match p {
+                sampler_ir::Processor::Eq(c) => (c.band, c.bands()[0].kind, c.bands()[0].gain_db),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            bands,
+            [
+                (0, sampler_ir::fx::eq::Kind::Peak, 0.5),
+                (1, sampler_ir::fx::eq::Kind::Peak, 0.5),
+                (2, sampler_ir::fx::eq::Kind::Peak, 0.5),
+                (3, sampler_ir::fx::eq::Kind::HighShelf, 1.),
+                (4, sampler_ir::fx::eq::Kind::HighPass, 0.),
+            ]
+        );
+    }
+
+    /// Filter record v0x95 repeats the EQ kind five times before the bands.
+    #[test]
+    fn later_eq_records_repeat_the_kind() {
+        let mut public = [23i32.to_le_bytes(); 5].concat();
+        for value in [632f32, 0.5, 3., 2000., 1., -2.] {
+            public.extend(value.to_le_bytes());
+        }
+        let mut fx = slot(0x18, public, 1.);
+        fx.version = 0x95;
+        assert!(matches!(fx.params(), Some(Params::Eq { bands }) if bands == vec![[632., 0.5, 3.], [2000., 1., -2.]]));
+    }
+
+    #[test]
+    fn init_only_group_eq_gain_writes_reach_static_bands() {
+        let initialized = sampler_ksp::initialize(
+            "on init\nset_engine_par($ENGINE_PAR_GAIN1, 0, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN1, 250000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN2, 1000000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN3, 750000, 7, 5, -1)\nend on",
+            sampler_ksp::Limits::LIBRARY,
+            &Default::default(),
+        ).unwrap();
+        assert!(!initialized.writes_effect_slots());
+        let writes = initialized.engine_pars();
+        for kind in 22..=24 {
+            let mut fx = legacy_eq_slot(kind);
+            let saved = fx.public.clone();
+            apply_writes(std::slice::from_mut(&mut fx), &writes, 7, -1);
+            let Some(Params::Eq { bands }) = fx.params() else {
+                panic!("legacy EQ record must still decode")
+            };
+            for (band, values) in bands.iter().enumerate() {
+                assert_eq!(values[2], [-9., 18., 9.][band]);
+                let at = 8 + band * 12;
+                assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
+            }
+            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
+            let eq_bands: Vec<_> = built
+                .processors
+                .iter()
+                .filter_map(|p| match p {
+                    sampler_ir::Processor::Eq(c) => Some(c.bands()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            assert_eq!(eq_bands.len(), bands.len());
+            for (band, values) in eq_bands.iter().zip(&bands) {
+                assert_eq!(band.law, sampler_ir::fx::eq::Law::KontaktLegacy);
+                assert_eq!(band.gain_db, values[2]);
+                assert_eq!(band.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(values[0]));
+            }
+            assert!(
+                built
+                    .notes
+                    .iter()
+                    .all(|n| n.3 == sampler_ir::Reason::UnknownLaw)
+            );
+        }
+    }
+
+    #[test]
+    fn init_eq_gain_writes_reject_wrong_owners_and_clamp_own_law() {
+        let mut write = sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_GAIN1".into(),
+            value: 1_000_000,
+            group: 7,
+            slot: 5,
+            generic: -1,
+        };
+        for (group, physical_slot, generic) in [(8, 5, -1), (7, 4, -1), (7, 5, 1), (-1, 5, 1)] {
+            let mut fx = legacy_eq_slot(22);
+            let saved = fx.public.clone();
+            (write.group, write.slot, write.generic) = (group, physical_slot, generic);
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+            // Even an exact instrument rack address must remain outside this route.
+            if group == -1 {
+                apply_writes(
+                    std::slice::from_mut(&mut fx),
+                    std::slice::from_ref(&write),
+                    group,
+                    generic,
+                );
+                assert_eq!(fx.public, saved);
+            }
+        }
+        (write.group, write.slot, write.generic) = (7, 5, -1);
+        for name in [
+            "ENGINE_PAR_GAIN2",
+            "ENGINE_PAR_GAIN3",
+            "ENGINE_PAR_GAIN4",
+            "ENGINE_PAR_GAIN01",
+        ] {
+            let mut fx = legacy_eq_slot(22);
+            let saved = fx.public.clone();
+            write.parameter = name.into();
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+        }
+        write.parameter = "ENGINE_PAR_GAIN1".into();
+        for value in [i32::MIN, i32::MAX] {
+            let mut fx = legacy_eq_slot(22);
+            write.value = value;
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(
+                fx.params(),
+                Some(Params::Eq {
+                    bands: vec![[300., 1., if value < 0 { -18. } else { 18. }]],
+                })
+            );
+        }
+        for variant in 0..5 {
+            let mut fx = legacy_eq_slot(22);
+            match variant {
+                0 => fx.module = 0x44,
+                1 => {
+                    fx.public.pop();
+                }
+                2 => fx.public.push(0),
+                3 => fx.public[4..8].copy_from_slice(&23i32.to_le_bytes()),
+                _ => fx.public[8..12].copy_from_slice(&f32::NAN.to_le_bytes()),
+            }
+            let saved = fx.public.clone();
+            apply_writes(
+                std::slice::from_mut(&mut fx),
+                std::slice::from_ref(&write),
+                7,
+                -1,
+            );
+            assert_eq!(fx.public, saved);
+        }
+    }
+
+    #[test]
+    fn live_eq_retains_flat_bands_and_their_physical_indices() {
+        let mut public = Vec::new();
+        for kind in [24i32, 24] {
+            public.extend(kind.to_le_bytes());
+        }
+        for values in [[300f32, 1., 0.], [1000., 1., 12.], [6000., 1., 0.]] {
+            for value in values {
+                public.extend(value.to_le_bytes());
+            }
+        }
+        let slot = crate::effects::Slot {
+            slot: 5,
+            module: 0x18,
+            version: 0x92,
+            bypass: false,
+            output_gain: 1.,
+            dry_level: 0.,
+            output_set: false,
+            public,
+        };
+        let fixed = crate::effects::chain(std::slice::from_ref(&slot), crate::effects::Scope::Voice);
+        assert_eq!(
+            fixed
+                .processors
+                .iter()
+                .map(|p| match p { sampler_ir::Processor::Eq(c) => c.bands().len(), _ => 0 })
+                .sum::<usize>(),
+            1,
+            "the static unmodulated path keeps its existing arithmetic"
+        );
+        let live = crate::effects::chain_with(
+            std::slice::from_ref(&slot),
+            crate::effects::Scope::Voice,
+            None,
+            Some((7, -1)),
+            (7, -1),
+            &[],
+        );
+        let routed = crate::effects::chain_with(
+            std::slice::from_ref(&slot),
+            crate::effects::Scope::Voice,
+            None,
+            None,
+            (7, -1),
+            &[5],
+        );
+        assert_eq!(routed.filter_slots, vec![(5, 0), (5, 1), (5, 2)]);
+        assert_eq!(
+            live.filter_slots.len(),
+            3,
+            "live EQ must retain physical band owners, including flat bands"
+        );
+        for (band, &(physical, index)) in live.filter_slots.iter().enumerate() {
+            assert_eq!(physical, 5);
+            assert!(
+                matches!(
+                    live.processors[index],
+                    sampler_ir::Processor::Eq(c) if c.count == 1
+                ),
+                "band {band} must address its actual EQ processor"
+            );
+        }
+    }
+}
+
+/// Solid G-EQ (0x44): `params()` only yields its raw fields; this owns the mapping.
+pub(super) fn slot_solid_geq(b: &mut Lowering, s: &Site, notes: &mut Notes) -> bool {
+    b.flush();
+    // One config per saved band so each band keeps its own script lanes
+    // (`Config::lanes`); a script addresses the slot, never a band.
+    match solid_geq(s.fx.version, &s.fx.public, notes) {
+        Some(bands) => {
+            let address = s.dynamic.map(|(group, generic)| SlotAddress { group, slot: s.fx.slot as i32, generic });
+            for p in bands {
+                b.out.processors.push(match address {
+                    Some(address) => p.at(address),
+                    None => p,
+                });
+            }
+            b.combined = s.gain;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Legacy EQ (filter kinds 22..=24): bands in series, each the one-band law.
+///
+/// Group (voice) EQs bind through `filter_slots` (library `eq_controls`, which
+/// also carries their modulation); every other scope through the band's lanes.
+pub(super) fn slot_legacy(b: &mut Lowering, s: &Site, notes: &mut Notes, bands: &[[f32; 3]]) -> bool {
+    let voice = s.scope == Scope::Voice;
+    let live = s.dynamic.is_some() || (voice && s.live_eq.contains(&s.fx.slot));
+    let lanes = s.dynamic.filter(|_| !voice);
+    b.flush();
+    let mut modelled = true;
+    for (n, band) in bands.iter().enumerate() {
+        if let Some(mut p) = legacy_band(*band, live, notes) {
+            if let (Processor::Eq(c), Some((group, generic))) = (&mut p, lanes) {
+                c.band = n as u8;
+                c.address = Some(SlotAddress { group, slot: s.fx.slot as i32, generic });
+            }
+            if live && voice {
+                b.out.filter_slots.push((s.fx.slot, b.out.processors.len()));
+            }
+            b.out.processors.push(p);
+        } else if band[2] != 0. || live {
+            modelled = false;
+        }
+    }
+    b.combined = product(s.eq_gain, b.combined);
+    modelled
+}
+
+impl Slot {
+    /// Init-only writes have no live control owner. Edit the validated legacy
+    /// Hz/octaves/dB record before static translation; native gain law is unverified.
+    pub(super) fn apply_eq_gain(&mut self, band: usize, value: i32) {
+        let Some(Params::Eq { bands }) = self.params() else {
+            return;
+        };
+        if band >= bands.len() {
+            return;
+        }
+        let db = sampler_core::EngineParameterLaw::Linear {
+            low: -18.,
+            high: 18.,
+        }
+        .decode(value) as f32;
+        let at = 8 + band * 12 + 8;
+        self.public[at..at + 4].copy_from_slice(&db.to_le_bytes());
     }
 }
