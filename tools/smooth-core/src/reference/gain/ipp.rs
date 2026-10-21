@@ -143,9 +143,17 @@ pub fn add_product(s1: &[f32], s2: &[f32], p: &mut [f32]) {
 /// `lane1 + lane0`. From 16: four `mulps`/`addps` accumulators over blocks of 16 (lane `i % 16`),
 /// a pair/single tail into lanes 0/1, then `(a0 + a1) + (a2 + a3)` lane-wise, then
 /// `(v1 + v3) + (v0 + v2)`. Bit-exact against the emulated thunk on 400 random vectors
-/// (16-byte aligned operands, as the body's tables and arena buffers are). Misaligned operands
-/// take a scalar prologue in IPP and are not modelled.
+/// (16-byte aligned operands, as the body's tables and arena buffers are). For operands that
+/// start off a 16-byte boundary use [`dot_prod_phase`].
 pub fn dot_prod(s1: &[f32], s2: &[f32]) -> f32 {
+    dot_prod_phase(s1, s2, 0)
+}
+
+/// [`dot_prod`] for `s2` starting `phase` floats past a 16-byte boundary (`(addr / 4) % 4`), both
+/// operands in the same phase. From 16 elements IPP first adds `(4 - phase) % 4` scalar products
+/// into lane 0 until `s2` is aligned, then runs the aligned loop (`0x1d6a66b..0x1d6a6a5`).
+/// Bit-exact against the emulated thunk on 372 random same-phase vectors (phases 0..3).
+pub fn dot_prod_phase(s1: &[f32], s2: &[f32], phase: usize) -> f32 {
     let n = s1.len().min(s2.len());
     if n <= 15 {
         let (mut l0, mut l1) = (0.0f32, 0.0f32);
@@ -162,6 +170,10 @@ pub fn dot_prod(s1: &[f32], s2: &[f32]) -> f32 {
     }
     let mut acc = [0.0f32; 16];
     let mut i = 0;
+    while i < (4 - phase % 4) % 4 && i < n {
+        acc[0] += s1[i] * s2[i];
+        i += 1;
+    }
     while i + 16 <= n {
         for (j, a) in acc.iter_mut().enumerate() {
             *a += s1[i + j] * s2[i + j];

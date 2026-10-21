@@ -64,7 +64,8 @@ impl FilterBank {
             let band = &self.analysis[b];
             let bins = band.start..band.start + band.len;
             for (c, e) in energies.iter_mut().enumerate() {
-                e[b] = ipp::dot_prod(&spectrum[c][bins.clone()], &band.weights);
+                // both operands start `band.start` floats into 16-byte aligned buffers
+                e[b] = ipp::dot_prod_phase(&spectrum[c][bins.clone()], &band.weights, band.start % 4);
             }
         }
     }
@@ -269,6 +270,7 @@ mod tests {
             fb.analyze(&spec, &mut out);
             for (g, w) in got.iter().zip(&want) {
                 worst = worst.max(assert_close(g, w, "analysis energies"));
+                assert_bits(g, w, "analysis energies");
             }
             n += 1;
         }
