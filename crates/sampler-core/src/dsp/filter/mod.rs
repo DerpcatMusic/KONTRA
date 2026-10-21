@@ -17,6 +17,8 @@
 //!   a 2x saturating SVF). No section configuration expresses their feedback nonlinearities, so
 //!   they are cores of the engine, each checked against native vectors in its own module.
 //! - [`formant`]: the parallel band-pass bank of Formant I/II.
+//! - [`stage`]: composable nonlinear transfer functions and the 2x up/down wrapper that cores
+//!   place inside their loops; new cores reuse these before adding a copy.
 pub(crate) mod ar;
 pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
@@ -27,6 +29,7 @@ pub(crate) mod shaper;
 pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
 pub(crate) mod ladder_kernel;
+pub(crate) mod stage;
 pub(crate) mod svf;
 
 use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
