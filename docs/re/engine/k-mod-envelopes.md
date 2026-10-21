@@ -70,3 +70,9 @@ The NI modulation page returned HTTP 403 to WebFetch, so this comes from the sea
 - AHDSR stage laws: high (verified in repo, not re-run here).
 - DBD engine block: medium (tests exist, not connected to any real file).
 - Everything marked Open: none established here.
+
+## Status update: measurement and decompile access (2026-10-21, later)
+
+- **Wine oracle:** `tools/kontakt-oracle/` has no envelope or modulator probe. Its Lua usage covers instrument, group, zone, sample-loop and effect parameters (`set_engine_par` for effect ENGINE_PARs). Nothing confirms that envelope/modulator parameters (AHDSR times, DBD counts, Flex points) are reachable through `set_engine_par` or the Kontakt 8 Lua API. Building the DBD/AHDSR time-law measurement therefore needs a new probe whose access path is verified first, then a realtime render through `render.py`.
+- **Decompile:** `source/kontakt8/` still holds no files; `source/ghidra/analyze-Kontakt8.log` is being written, with no export yet. The DBD saved-duration resolver (`0x1409651b0`) and the AHDSR control rate remain unrecovered.
+- **Result:** no envelope law was added in code. Anything implemented now would be a guessed constant, which the brief forbids.
