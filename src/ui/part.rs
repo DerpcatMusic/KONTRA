@@ -845,7 +845,13 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             match (&widget.binding,edits.len(),edits.get(&0)) {
                 (ir::Binding::Control(id),1,Some(ir::Value::Integer(value)))=>cx.p.shared.set_uvi_control_at(slot,generation,snapshot,*id,f64::from(*value)),
                 (ir::Binding::Control(id),1,Some(ir::Value::Real(value)))=>cx.p.shared.set_uvi_control_at(slot,generation,snapshot,*id,*value),
-                _=>false,
+                _ => {
+                    let axes = xy_axis_edits(widget, &edits);
+                    !axes.is_empty()
+                        && axes.into_iter().fold(true, |ok, (id, value)| {
+                            cx.p.shared.set_uvi_control_at(slot, generation, snapshot, id, value) && ok
+                        })
+                }
             }
         }else{
             cx.p.shared.set_widget_batch_at(slot,generation,source_slot,widget,edits.into_iter().collect(),interaction)
@@ -1131,6 +1137,27 @@ pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize, view: inside::View) -> El {
         .w(Len::Pct(100.))
         .shrink(0)
         .id(format!("stage-{slot}"))
+}
+
+/// A UVI XY pad drags two coordinates per frame (`2c`, `2c+1`); its first
+/// cursor drives the two axis controls, later cursors have no UVI parameter.
+fn xy_axis_edits(
+    widget: &ir::Widget,
+    edits: &std::collections::BTreeMap<u32, ir::Value>,
+) -> Vec<(ir::ControlId, f64)> {
+    if !matches!(widget.kind, ir::Kind::Xy { .. }) {
+        return Vec::new();
+    }
+    edits
+        .iter()
+        .filter_map(|(index, value)| {
+            let id = *widget.components.get(usize::try_from(*index).ok()?)?;
+            match value {
+                ir::Value::Real(v) if v.is_finite() => Some((id, *v)),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1624,5 +1651,28 @@ mod tests {
                 f64::from(zoom)
             );
         }
+    }
+
+    #[test]
+    fn a_uvi_xy_drag_edits_its_two_axis_controls() {
+        let mut widget = ir::Widget::new(
+            "xy",
+            ir::PageRef(0),
+            ir::Rect::new(0, 0, 10, 10),
+            ir::Kind::Xy { cursors: 2, sensitivity: [None; 2], mouse_mode: None },
+        );
+        widget.components = vec![ir::ControlId(7), ir::ControlId(9)];
+        let edits = std::collections::BTreeMap::from([
+            (0, ir::Value::Real(0.25)),
+            (1, ir::Value::Real(0.75)),
+            (2, ir::Value::Real(0.5)),
+        ]);
+        assert_eq!(
+            xy_axis_edits(&widget, &edits),
+            [(ir::ControlId(7), 0.25), (ir::ControlId(9), 0.75)],
+            "cursor 1 has no UVI axis"
+        );
+        widget.kind = ir::Kind::Label;
+        assert!(xy_axis_edits(&widget, &edits).is_empty());
     }
 }
