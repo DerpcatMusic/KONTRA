@@ -96,3 +96,27 @@ The venv is `uv venv` on the dev drive with `unicorn`, `capstone`, `pefile`
   fields. It prints the verified values and the pcs of the stores. The MSVC
   clock stubs (`_Query_perf_frequency` 10 MHz, `_Query_perf_counter`) are the
   only synthetic inputs on the path.
+
+## Process path (section 17 of ../../re-latency-fft-scale.md)
+
+- `disasm_rva.py`: disassembles an RVA range through the emulator loader, naming IAT imports and
+  corpus functions. `python -I disasm_rva.py 0x890a00 0x31d7`.
+- `process_lib.py`: `Session(rate)` builds the constructor state, wraps it the way the host holds it
+  (wrapper slots +0x10 process thunk, +0x18 prepare, +0x28 getLatency), fills typed host values
+  (ids 10 and 12 are floats; without them the ring buffers have no channels), and provides
+  `add_probe` (per-PC hooks) and `fault_report` (fault PC, function, disassembly, registers, stack
+  return addresses).
+- `process_oracle.py`: runs the process block (entry `0x890a00`) for K blocks at 44.1, 48, 96 and
+  192 kHz in two latency modes, measures the impulse delay, the noise cross-correlation delay, the
+  sine level at -40, -20 and -6 dBFS (48 kHz), and whether `0x619fc0` executes. Writes
+  `../../oracle/process_block_<rate>.json`. Run with `python -I process_oracle.py` (several minutes).
+  Use `--rates 48000` for a quick run.
+- Pitfall: `Emulator.reg(0)` is the invalid register id (returns 0 with a warning). Use
+  `UC_X86_REG_RAX` and friends.
+- Note on `ctor_latency_mode{4,1}.json`: written by `oracle.py` with the host's zero defaults (the
+  constructor's ring buffers then had no channels). Re-checked with the typed host of `fake_host.run_ctor`
+  (layout 2.0, samplerate = rate): latency is the same at 44.1, 48, 96 and 192 kHz. Section 17.1.
+- Exact commands for the process oracle (venv at `/data/dev/workspace/RunScratch/smooth/re-emulate/.venv`):
+  `python -I process_oracle.py --rates 44100,96000,192000` (about 4 minutes each rate pair) and
+  `python -I process_oracle.py --rates 48000` (levels and noise, about 4 minutes), then
+  `python -I detector_reach.py` (about 1 minute).

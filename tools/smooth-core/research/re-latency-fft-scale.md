@@ -670,3 +670,132 @@ not emulated.
    host sets a different count at 48 kHz, or the frame path is reached some other way.
 3. Steps 2 and 3 of the plan (fold indices, oracle) wait on (1). No oracle JSON was written in this pass.
 4. No SMOOTH change: `dsp.rs` is untouched, so no build, pluginval or CLAP run was needed for this pass.
+
+## 17. Process block 0x890a00: entry, staging, gates and the emulated oracle (pass 11, Unicorn, 2026-10-21)
+
+Harness: `re-tools/emulate/process_lib.py` (session, host, probes, fault report), `process_oracle.py`
+(oracle), `detector_reach.py` (reachability), `disasm_rva.py`. Outputs: `oracle/process_block_<rate>.json`.
+Evidence scope: isolated emulation, synthetic host, stand-in state (2 channels, block N = 512, every
+band and output parameter at the constructor's zero state). Nothing here is a plug-in default or parity.
+Labels: **verified** = checked by emulation or by the bytes; **read** = from the code, one input inferred;
+**inferred** = not checked.
+
+### 17.1 Corrections to earlier sections
+
+- **The entry is 0x890a00.** The corpus splits one function at 0x890c92 (rows 0x890a00 size 658 and
+  0x890c92 size 12101). The real function is 0x890a00..0x893bd7 (12759 bytes); 0x890c8c falls through
+  into 0x890c92. **verified** (disassembly).
+- **The constructor was run with zero host values (sections 11-16).** The constructor reads host id 10
+  (`input_channel_layout`) and id 12 (`samplerate`) as floats and sizes its three ring structs from them
+  (ring setup in `0x88fa90`, decompile `0088fa90.c` ~l.403-420: channels from the layout, length =
+  groups << 12). With zeros the rings had no channels. Fixed in `fake_host.run_ctor` (defaults: layout
+  2.0, samplerate = rate). Latency is unchanged: 2304 / 2304 / 4704 / 9408 at 44.1 / 48 / 96 / 192 kHz.
+  **verified**. The detector stand-in of sections 15-16 changed shape: it is now 1.0 for silence, 0.001 and
+  0.9 (it was a 0-to-1 ramp). Input independence still holds. **verified** (`detector_run.py`).
+
+### 17.2 Entry, calling convention and host
+
+- Wrapper: 0x58 bytes built by the factory `0x88f430` (called from `0x88e3a0`, which has no recorded
+  callers, so the host that builds the wrapper is not identified). `[+0]` = DSP object. Slots: `+0x08`
+  setParam (thunk `0x88f4e0` -> `0x894370`, a 143-case switch); `+0x10` process (thunk `0x88f4f0`:
+  `mov rcx,[rcx]; jmp 0x890a00`); `+0x18` prepare (`0x88f500`: `0x894fc0(obj, dl=1)`, then `[obj+0x4a]=1`);
+  `+0x20` teardown (`0x88f530`); `+0x28` getLatency (`0x88f610`); `+0x50` flag setter (`0x88f660`:
+  which 1/2/3 -> `[obj+0x235]`, `+0x236`, `+0x237`; value = r8 > 0). **verified** (disassembly).
+- `process(this = rcx, out = rdx, in = r8, side = r9, N = [S0+0x28])`. Tables at rdx and r8 each have
+  `[this+0x10]` pointers. Staged frames have `[this+0x14]` channels and are built by `0x894b00` (a struct
+  constructor: channel pointers, `+0x80` channels, `+0x84` N, `+0x88` N*4). `side == 0` stages the frame
+  from the r8 table, otherwise from the r9 table. **verified** (branch at `0x890bee`; `0x894b00`).
+- Output is written in place into the rdx table; the input is the r8 table. **verified** (impulse on r8
+  -> output on rdx at sample 2304; impulse on rdx -> zero output).
+- `obj[0]` is the host. Host `+0x20` is get/set `(host, id, out)`; host `+0x28` is a bool query
+  `(host, id)` (`0x892dc4`, id 9). Registered ids: 0-8 reduction-curve, offset-curve, detail, attack,
+  release and max-cut; 9 `band_solo_channels`; 10 `input_channel_layout`; 12 `samplerate`;
+  13 `sidechain_input_level` (written back by the block near `0x893928`). **verified** (registration
+  strings, call sites).
+- Channel counts: `[obj+0x10]` = `0x56cad0(cfg+0)`, `[obj+0x14]` = `0x56cad0(cfg+8)`. Layout index 2 ->
+  2 channels (index 1 -> 1). **verified** (emulated `0x56cad0`).
+
+### 17.3 Per-block structure (read, partly verified)
+
+- Entry copies both pointer tables into locals (`0x890a00`..`0x890b9f`) and stages the frame at
+  `0x890bee`..`0x890c0a`. The body (`0x890c92`..) loops over hops with per-channel offsets
+  (`iStack_3370`, decompile ~l.1880-1925).
+- Working state is in the three ring structs at `obj+0xbff8`, `+0xc088`, `+0xc118`: `[+0x80]` write
+  position (advances by N per block, **verified**), `[+0x88]` length in floats, `[+0x8c]` channels.
+- Kernels: `0x8973f0` copies a frame into the ring through `0x89ba70` (which splits the ring at the write
+  position, **read**); the copy wrapper `0x10a0` returns at once for a null destination (`0x2aed`..`0x2af0`,
+  **verified**); the add kernel at `0x5e9a0` is `dst += src` (**verified**).
+
+### 17.4 Gates (verified)
+
+- Mode: `0x893de0` (the analysis helper, called from the body's `*(this+0x2c) < 2` branch, decompile
+  ~l.2286) reads the analysis-mode global `0x26d7bb8` (= 4 after the constructor). Mode 4 -> `0x8a3a90`,
+  mode 1 -> `0x8add30`. **verified** (`0x893e52` probe, eax = 4).
+- Zero-latency gate: the byte `S0+0x28` (the fifth argument slot, reused as a flag) is set when
+  `[obj+0x237]` or `[obj+0xab]` is nonzero (`0x891758..0x891775`; `r14b = [obj+0x237]` at `0x890d49`).
+  `0x8a3a90` tests it: nonzero -> convolver chain `0x8acc30 -> 0x8b1630 -> 0x8dec70`; zero -> `0x894d20`
+  and `0x8ad640`. **verified** (probes and executed-PC sets, both modes).
+- getLatency (`0x88f610`): base alone when `[obj+0x237]` or `[obj+0xab]` is nonzero; otherwise
+  `groups * f + base` with `f = 0x894d20(obj+0x5f8) = 2304`. **verified**.
+- The M/S helper `0x8a3b20` is not executed in either mode (stereo-mode byte `+0xa6` is 0 in the
+  stand-in). **verified**.
+- `[obj+0xab]` is written by the setter `0x894370` case 1, a boolean `value >= const(0x18209d1c0)`.
+  **read**. Which host value sets `+0xab` or `+0x237` in the plug-in default is **open**.
+
+### 17.5 Oracle (`oracle/process_block_<rate>.json`; 26 blocks of 512; impulse in block 0)
+
+| rate | mode | getLatency | impulse delay (ch0 / ch1) | nonzero output samples | noise cross-correlation lag |
+|---|---|---|---|---|---|
+| 44.1 kHz | 0 (default stand-in) | 2304 | 2304 / 2304 | 1 | not run |
+| 44.1 kHz | 1 (zero-latency) | 0 | 0 / 0 | 1 | not run |
+| 48 kHz | 0 | 2304 | 2304 / 2304 | 1 | 2304 |
+| 48 kHz | 1 | 0 | 0 / 0 | 1 | 0 |
+| 96 kHz | 0 | 4704 | 4704 / - | 1 | not run |
+| 96 kHz | 1 | 96 | 96 / - | 1 | not run |
+| 192 kHz | 0 | 9408 | 9408 / - | 1 | not run |
+| 192 kHz | 1 | 192 | 192 / - | 1 | not run |
+
+- Impulse delay equals getLatency at every rate and in both modes. **verified** (the JSON check in
+  `process_oracle.py` asserts it).
+- Level (48 kHz, 1 kHz sine at -40, -20, -6 dBFS, both modes): 0.000 dB at every level, residual against
+  the delayed input at most 6e-7 relative. Level-independent, but this is the identity of the stand-in
+  (all bands at zero state): the path passes the signal and exercises no gain. **verified (identity only)**.
+- Output is signal-dependent (the delayed input), as expected for a pass-through. **verified**.
+
+### 17.6 Display-only claim for 0x619fc0
+
+- `0x619fc0` is not executed in four blocks at 48 kHz, in either mode (`detector_reach.py`: zero PCs in its
+  6046-byte span). **verified, for this stand-in state.** This supports the claim; it is not final, because
+  the stand-in never leaves the identity band state.
+- The process path does execute the shared magnitude kernel `0x6181b0` (|Y|), eight calls per block, from
+  `0x8e13a8` inside the helper `0x8e0858` (17290 bytes). That helper also calls `logf`, `powf` and `expf`
+  (for example `logf(0.001)`, `logf(2.083)`, `powf(10, -3)`, `expf(-1.0996)`). It is the likely
+  magnitude-to-gain mapping and is entered four times per block from an unresolved caller (indirect or
+  tail call). **verified (calls); role inferred.** The brief's `-ln(max(m,1))` form was not seen among
+  the calls, and the formulas were not decoded.
+- `0x6181b0` also has a caller in the detector (`0x619fc0`, one site), so the magnitude kernel is shared.
+  The claim above is about the detector function only.
+
+### 17.7 Iteration log (fault-driven, 4 iterations, 3 fixes)
+
+1. Fault: null indirect call at `0x892dd3` (`call [host+0x28]`). Fix: host bool slot `+0x28` (stand-in 0).
+2. Block 0 silent and block 1 faulted with a write to 0x800 (N*4 past null) in the copy kernel `0x1d52e00`
+   via `0x8973f0`. Root: the constructor's host gets 10 and 12 returned 0, so the rings had no channels.
+   Fix: typed host values before construction (`fake_host.run_ctor`).
+3. Impulse absent from the output in both tables. Cause: the harness put the input in the rdx table.
+   Fix: input in r8, output read from rdx. The impulse then appears at 2304.
+4. Zero-latency gate: no fault, set by a flag byte; probed and used as mode 1.
+
+The block completes for 26 blocks at all four rates in both modes. Iteration cap (40) not reached.
+
+### 17.8 Open
+
+- The band and output parameters. The 143-case setter `0x894370` writes the DSP parameters, and the
+  host defaults were not decoded. The stand-in is the identity, so depth, sharpness, selectivity, output
+  gain, dry/wet and the magnitude-to-gain mapping are unmeasured. Next: map the switch cases to fields and
+  set a non-zero band state, then repeat the level test.
+- Which host value selects zero-latency mode (`+0x237` or `+0xab`) in the plug-in default. The SMOOTH
+  latency question (n - 1 = 2047, section 5) depends on it: mode 0 gives 2304 at 44.1 and 48 kHz, mode 1
+  gives 0. The PDC rule stays open.
+- The caller of the factory `0x88e3a0`, and of the helper `0x8e0858`.
+- Not done: no SMOOTH source change, no PDC change, no plug-in parity, no native host or pluginval run.

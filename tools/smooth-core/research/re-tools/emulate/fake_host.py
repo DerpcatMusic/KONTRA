@@ -40,13 +40,26 @@ def read_cstr(emu, addr, limit=128):
     return out.decode("latin-1")
 
 
-def make_host(emu, log):
+def make_host(emu, log, host_values=None):
+    """host_values: {id: float} written as float32 by get(id, out). Ids not listed get GET_DEFAULTS.
+
+    The constructor reads ids 10 (input_channel_layout) and 12 (samplerate) as floats and sizes
+    its ring buffers from them (ring setup in 0x88fa90, decompile 0088fa90.c lines ~403-420:
+    layout -> channels, samplerate -> groups, length = groups << 12). A host that returns 0 for
+    both builds zero-channel rings (section 17).
+    """
+    values = host_values or {}
+
     def on_register(emu, ev):
         name = read_cstr(emu, ev.r8)
         log.append(("register", ev.rdx, name, ev.r9 & 0xFFFFFFFF))
         return 0
 
     def on_get(emu, ev):
+        if ev.rdx in values:
+            emu.wr(ev.r8, struct.pack("<f", values[ev.rdx]) + b"\0" * 4)
+            log.append(("get", ev.rdx, values[ev.rdx], ev.r9 & 0xFFFFFFFF))
+            return 0
         value = GET_DEFAULTS.get(ev.rdx, 0)
         emu.wr(ev.r8, struct.pack("<Q", value))
         log.append(("get", ev.rdx, value, ev.r9 & 0xFFFFFFFF))
@@ -88,12 +101,15 @@ def set_cpu_mode(emu):
     emu.call(image_va(0x30D310), max_insns=1000)
 
 
-def run_ctor(rate, cfg_fields=None):
+def run_ctor(rate, cfg_fields=None, host_values=None):
+    """Run the constructor. host_values defaults to layout 2 (stereo) and samplerate = rate."""
     emu = Emulator()
     install_tls(emu)
     set_cpu_mode(emu)
     log = []
-    host = make_host(emu, log)
+    if host_values is None:
+        host_values = {10: 2.0, 12: float(rate)}
+    host = make_host(emu, log, host_values)
     cfg = make_cfg(emu, cfg_fields or {})
     obj = emu.arena(OBJ_SIZE)
     emu.call(CTOR, obj, host, cfg, floats=(0.0, 0.0, 0.0, rate), max_insns=400_000_000)
