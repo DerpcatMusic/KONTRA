@@ -215,3 +215,64 @@ listed above. Their algorithm is not yet read, so no core is implemented from th
 `TM_LEGATO` is reported, not applied, because the IR has no legato field and no engine consumer.
 `TRANSIENT_SIZE` is applied to the TM2 record, but the engine does not consume it yet, so it changes
 the carried state only.
+
+## Render loops read so far (own spec; decompile is data, no pasted code)
+
+Vtable slots come from `tools/re/tm/slots.py`. Addresses are VAs in `Kontakt8.exe`.
+
+### CPSOLAAnalysisRT (`0x1476a6598`)
+
+- **Slot 1** (`FUN_1419d0ed0`, 230 B) is a reset, not a render: it copies the window/hop
+  parameters (`+0x68`, `+0x6c`, `+0x70`, `+0x74`) into the working fields, clears the accumulators,
+  sets the hop to `buffer_length / (channels * 2)` (`+0xa4`), starts the synthesis object at zero, and
+  clears the pitch tracker state when present.
+- **Slot 2** (`FUN_1419d1600`, 400 B) is the per-hop step. It appends the `n` new input frames to the
+  sample counter (`+0x80`), runs the pitch tracker over the newest frames (`FUN_1419d1a80`, which feeds a
+  windowed frame to the estimator and writes period/confidence into `+0x3c..+0x4c`), then places pitch
+  marks. The mark advance is `ratio = clamp(+0xf8 / period, <= +0x50)` when a period is found, otherwise
+  the last period in `+0xf4` (initialised from `+0x9c`). While the next mark (double `+0x140`) is inside
+  the counter, the loop advances it by the ratio and calls the synthesis object's slot 7 with that mark.
+  The call's arguments in the export do not match the slot 7 signature, so the emit is not yet confirmed.
+  Mark time, `+0x7c`, is written back, and the buffer shift `FUN_1419cfd70` runs last.
+- **Pitch tracker** (`CPitchTrack`, vtable `0x1476a6608`): the object is allocated with analysis size
+  `0x1000` / hop `0x100` / window `0x400` for the quality mode 0 (`FUN_1419d1840`). Its ring buffer is
+  masked (`& mask`), and `FUN_1419d2d80` is the period estimator (not yet read).
+
+### CPSOLASynthesis, TM2 ratio setter (vtable `0x1476a6040`, slot 7 = `FUN_1419ce540`, 131 B)
+
+Constants read from `Kontakt8.exe` with `tools/re/tm/pe_const.py`:
+
+| VA | Value | Use in the setter |
+| --- | --- | --- |
+| `0x14470bad4` | 1.0 | `K` in `K / speed` |
+| `0x144fc4a1c` | 256.0 | clamp on the ratio `K / speed` |
+| `0x144714a34` | 128.0 | scale: window/overlap length = `int(min(K/speed, 256) * 128)` |
+| `0x14470bae8` | 0.0 | added to the scaled length |
+| `0x144737748` | 0.99 | step factor for `speed >= 1` (`K/speed <= K`) |
+
+For `speed < 1` the setter stores the rate `K/speed` and the reciprocal, and sets a flag at `+0x44`
+to `0x3f7d70a4` (0.99). The Pro variant (`0x1476a6f08`, slot 7 `FUN_1419db490`) uses the same constants at
+offsets `+0x3c..+0x54`.
+
+### CElastiqueProCore (`0x1476a6bb8`), slots 2, 6, 11
+
+- **Slot 2** (`FUN_1419d64d0`, 931 B) builds the core: it allocates a 0x670-byte block through
+  `FUN_1419dcbe0` and a 0x148-byte block through `FUN_1419dd830`, then creates the sub-objects that
+  carry the stages. It is setup, not a block render.
+- **Slot 6** (`FUN_1419d6890`, 1076 B) is a phase dispatcher: the argument `param_4` selects the stage
+  (`(param_4 + 1) % n`), each stage requires a minimum fill (257 frames for stage 1, 129 for stage 2) before
+  it runs, and it calls sub-object virtuals (`+0x10`, `+0x28`, `+0xa8`). This is the block pipeline.
+- **Slot 11** (`FUN_1419d7230`, 894 B) sets the time/pitch ratio: it rejects a request where
+  `ratio * input < min` (returns 2), stores `1/ratio` and `ratio * input`, switches the resampler
+  (`FUN_1419dd1d0`), and calls the stretch virtual `+0x60`.
+
+Elastique is a third-party core. Only the dispatch and the ratio law are documented here. The algorithm
+inside the stage virtuals is not read, so no Elastique stage is implemented.
+
+## Status of the cores
+
+- TM2 PSOLA core: the analysis loop structure, the ratio law and the setter constants are recorded above.
+  The emit call and the period estimator (`FUN_1419d2d80`) are not confirmed, so the core is not
+  implemented.
+- Pro stage: the Pro synthesis variant (`0x1476a6f08`) has the same ratio setter at other offsets. The
+  formant and envelope order laws are still unread, so no Pro stage is implemented.

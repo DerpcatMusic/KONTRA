@@ -25,7 +25,7 @@ def find_all(pat):
 def vtables_for(name):
     """Yield (td_va, col_va, vtable_va) for every class-name occurrence matching name."""
     for prefix in (b".?AV", b".?AU"):
-        for off in find_all(prefix + name.encode() + b"@@"):
+        for off in find_all(prefix + name.encode() + b"@"):
             td_off = off - 0x10
             td_rva = pe.get_rva_from_offset(td_off)
             for co in find_all(struct.pack("<I", td_rva)):
