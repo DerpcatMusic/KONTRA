@@ -109,7 +109,7 @@ Render: `/home/derpcat/.cache/kontra-amps-a/hotsolo.npz`, 30 steps. Stimulus is 
 
 - Decompile files: `source/kontakt8/0140d00000.c` (reader 0x140d01b50), `0140a90000.c` (0x140a95f40), `0140a80000.c`, `0140aa0000.c` (0x140aa2ae0), `0140ab0000.c` (0x140ab7a60, 0x140a9b360, 0x140abcb30, 0x140aab1e0), `0140ac0000.c` (0x140ac21f0), `0140960000.c` (factory 0x1409619b0).
 - Vtable: RTTI search in `re-binaries/Kontakt8.exe` (pefile, read-only). Class COL 0x98c2a38.
-- Measurements: the npz above, analysed with `numpy`. Analysis scripts are kept outside the repo.
+- Measurements: the npz above, analysed with ad hoc `numpy` scripts (not kept). Method: bypass lag and scale by least squares, per-step lag search by cross-correlation, and steady-state windows from 0.1 s on.
 
 ## Confidence
 
