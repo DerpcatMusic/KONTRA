@@ -3,39 +3,15 @@
 //! vectors cover all nine modes; calibrated host recording acceptance is pending.
 use super::linear::Zdf;
 use super::shaper::{Knee, Slope};
-use std::sync::OnceLock;
-
-const TABLE_LEN: usize = 2401;
 
 pub(crate) fn prepare() {
-    table();
+    super::table::prepare();
 }
 
-fn table() -> &'static [f32; TABLE_LEN] {
-    static TABLE: OnceLock<Box<[f32; TABLE_LEN]>> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        Box::new(std::array::from_fn(|i| {
-            (i as f64 / 60. - 20.).exp2() as f32
-        }))
-    })
-}
-
-pub(crate) fn exponential(position: f32) -> f32 {
-    // Native table guards use signed AX, including the second Hz-lane lookup.
-    let index = position as i32 as i16;
-    if index < 0 {
-        return 0.;
-    }
-    let t = table();
-    if index >= 2400 {
-        return t[2400];
-    }
-    let i = index as usize;
-    t[i] + (position - f32::from(index)) * (t[i + 1] - t[i])
-}
+use super::table::{exponential as lookup, Past};
 
 pub(crate) fn targets(cutoff: f32, resonance: f32, rate: f32) -> [f32; 3] {
-    let hz = exponential((cutoff * 145.).min(140.) * 5. + 1381.8816);
+    let hz = lookup((cutoff * 145.).min(140.) * 5. + 1381.8816, Past::LastEntry);
     let inverse = 1. / rate;
     let f = hz.max(0.);
     let g = ((f * f * f * f * inverse * inverse * inverse * 40.802628
@@ -92,10 +68,10 @@ impl ArKernel {
             1 => (f32::from_bits(0xbf1a5e35), 6., 24., 1.195894, 0.24914463),
             _ => (-0.6, 6., 20., 1.195894, 0.29897354),
         };
-        let floor = exponential(floor_db * 9.965784 + 1200.);
+        let floor = lookup(floor_db * 9.965784 + 1200., Past::LastEntry);
         let r = resonance * resonance_scale;
         let zdf = Zdf::new(g, (1. - self.feedback) + (1. - self.feedback));
-        let gain = exponential(((gain_a - r * gain_b) * weights[1] - gain_a) * r + 1200.);
+        let gain = lookup(((gain_a - r * gain_b) * weights[1] - gain_a) * r + 1200., Past::LastEntry);
         let mut detected = 0.;
         let output = std::array::from_fn(|ch| {
             let s = &mut self.channels[ch];
@@ -133,13 +109,13 @@ impl ArKernel {
         }
         self.detector = level;
         if ramping {
-            let frequency = exponential(hz_lane * 5. + 1381.8816);
+            let frequency = lookup(hz_lane * 5. + 1381.8816, Past::LastEntry);
             let a = frequency.clamp(24., 70.);
             let b = frequency.clamp(85., 130.);
             self.cap = (0.86 - (b - 130.) * 0.0031111108)
                 - ((a - 70.) * -0.005982609 - (b - 130.) * (a - 70.) * -0.00002164251);
         }
-        let amount = exponential((r - resonance_offset) * 9.965784 + 1200.);
+        let amount = lookup((r - resonance_offset) * 9.965784 + 1200., Past::LastEntry);
         let target = (1. - 1. / ((amount - 1.) * (floor / level.max(floor).min(1e8)) + 1.)).max(0.);
         // The native ramp kernel rounds this coefficient before multiplying the delta.
         let adaptation_rate = rate_inverse * 2092.3;

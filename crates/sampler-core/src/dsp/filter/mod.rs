@@ -17,19 +17,18 @@
 //!   a 2x saturating SVF). No section configuration expresses their feedback nonlinearities, so
 //!   they are cores of the engine, each checked against native vectors in its own module.
 //! - [`formant`]: the parallel band-pass bank of Formant I/II.
-//! - [`oversample`]: the 2x up/down wrapper cores place around a saturating loop.
 pub(crate) mod ar;
 pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
 pub(crate) mod daft;
 pub(crate) mod formant;
 pub(crate) mod linear;
-pub(crate) mod oversample;
 pub(crate) mod shaper;
 pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
 pub(crate) mod ladder_kernel;
 pub(crate) mod svf;
+pub(crate) mod table;
 
 use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::{Planar, ProcessorState};
