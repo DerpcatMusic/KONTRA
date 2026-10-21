@@ -173,13 +173,22 @@ pub fn prepare_source(p: &Prep, s: f32) -> f32 {
     }
 }
 
-/// Envelope conversion pair selected by the compiler (0x14087670b..0x140876736).
+/// Envelope conversion pair selected by the compiler (0x1408766e2..0x140876736).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum EnvPair {
     A,
     D,
 }
-/// A for ids 0xb8,0xb9; D for 0xba,0xbb,0xbf,0xc0; only with special flag +0x53d.
+/// A for ids 0xb8,0xb9 (`ahdsr_attack`, `ahdsr_hold`); D for 0xba,0xbb
+/// (`ahdsr_decay`, `ahdsr_release`) and 0xbf,0xc0 (the DBD decays).
+///
+/// The pair is only used when the external source descriptor carries the
+/// `simulateK2EnvTimeModulation` property set to `yes`: the loader stores
+/// that byte at +0x53d of the source descriptor (0x1409254fc, the property
+/// name at 0x144f1e780 and its `yes` value at 0x144f0f648), and the compiler
+/// reads it at 0x140873111 into the flag that gates 0x1408766dc. It is a
+/// Kontakt 2 compatibility flag: with it, an envelope time is scaled in the
+/// time domain; without it, the normalized knob is scaled instead.
 pub fn env_pair(id: u16, special_flag: bool) -> Option<EnvPair> {
     match id {
         0xb8 | 0xb9 if special_flag => Some(EnvPair::A),
@@ -194,25 +203,53 @@ pub struct CombineCtx {
     pub target: u16,
     /// Route flag byte (bit 0x04 selects ID25 H vs I+).
     pub route_flags: u8,
-    /// External special flag +0x53d.
+    /// The external source's `simulateK2EnvTimeModulation` flag (+0x53d).
     pub env_special: bool,
     /// Internal type 2, +0x600<2, byte +0x548 != 0 (ids 2, 0x71..=0x89).
     pub direct_special: bool,
-    /// External types 7..=13 (ids 2, 0x71..=0x89).
+    /// External source type 7..=13: the compiler's `fcubic` selection
+    /// (0x140873120 sets the flag, 0x140876753 applies `fcubic` to the
+    /// inner expression instead of the identity).
     pub cubic_inner: bool,
 }
 
-/// Output combination (selection 0x140876710..0x140876952): incoming target
+/// `fcubic` where the compiler selects it, the identity otherwise.
+fn cubic(cubic_inner: bool, x: f32) -> f32 {
+    if cubic_inner { fcubic(x) } else { x }
+}
+
+/// Output combination (selection 0x1408766bb..0x140876952): incoming target
 /// value `x`, prepared source `e`, intensity `i`.
+///
+/// The compiler emits one of five expression templates. Family H (the ids
+/// that set r13 at 0x140875ac8..0x140875b3b: 2, 0x44, 0x71..=0x89,
+/// 0xb8..=0xbb, 0xbd, 0xbf, 0xc0, 0xc4..=0xcb and 0x19 without flag 0x04)
+/// uses `A(B * C(inner))` (0x144f1daa0), or `A(B * C(source) * $intensity)`
+/// (0x144f1da68) for the internal special source. `A` and `B` are the
+/// envelope conversions when the K2 flag is set and the identity otherwise;
+/// `C` is `fcubic` for an external source of type 7..=13 and the identity
+/// otherwise. The other families use `1 - (1 - x)(1 - e*i)` (0x144f1daf0),
+/// `x * e * i` (0x144f1db40), `fcubic(inner)` (0x144f1db90) and
+/// `x + e * i` (0x144f1db68).
 pub fn combine(c: &CombineCtx, x: f32, e: f32, i: f32) -> f32 {
     let id = c.target;
     let inner = 1.0 - (1.0 - e) * i; // 0x144f1daa0
     let direct_id = id == 2 || (0x71..=0x89).contains(&id);
-    if let Some(pair) = env_pair(id, c.env_special) {
-        return match pair {
-            EnvPair::A => n2u_env_a(u2n_env_a(x) * fcubic(inner)),
-            EnvPair::D => n2u_env_d(u2n_env_d(x) * fcubic(inner)),
-        };
+    if is_h(id, c.route_flags) {
+        if let Some(pair) = env_pair(id, c.env_special) {
+            let scaled = match pair {
+                EnvPair::A => u2n_env_a(x),
+                EnvPair::D => u2n_env_d(x),
+            } * cubic(c.cubic_inner, inner);
+            return match pair {
+                EnvPair::A => n2u_env_a(scaled),
+                EnvPair::D => n2u_env_d(scaled),
+            };
+        }
+        if direct_id && c.direct_special {
+            return x * cubic(c.cubic_inner, e) * i;
+        }
+        return x * cubic(c.cubic_inner, inner);
     }
     if id == 0x19 && c.route_flags & 4 != 0 {
         1.0 - (1.0 - x) * (1.0 - e * i) // I+ 0x144f1daf0
@@ -220,12 +257,6 @@ pub fn combine(c: &CombineCtx, x: f32, e: f32, i: f32) -> f32 {
         x * e * i // MUL 0x144f1db40
     } else if (0xce..=0xd5).contains(&id) {
         fcubic(inner) // CUBIC 0x144f1db90
-    } else if direct_id && c.direct_special {
-        x * e * i // 0x144f1da68
-    } else if direct_id && c.cubic_inner {
-        x * fcubic(inner) // 0x144f1da0c
-    } else if is_h(id, c.route_flags) {
-        x * inner
     } else {
         x + e * i // ADD 0x144f1db68
     }
@@ -450,6 +481,30 @@ mod tests {
         near(combine(&CombineCtx { env_special: true, ..c(0xba) }, 0.5, 1.0, 1.0), 0.5, 1e-5);
         // Without the special flag 0xb8 is ordinary H.
         assert_eq!(combine(&c(0xb8), x, e, i), x * inner);
+    }
+
+    #[test]
+    fn the_compiler_cubes_the_inner_expression_for_external_source_types_7_to_13() {
+        let c = |target| CombineCtx { target, route_flags: 0, env_special: false, direct_special: false, cubic_inner: false };
+        let (x, e, i) = (0.5_f32, 0.25_f32, 0.5_f32);
+        let inner = 1.0 - (1.0 - e) * i; // 0.625
+        // Family H cubes `inner` for every id of the family, not only the
+        // direct ones: 0x140876753 selects `fcubic` from the source type.
+        assert_eq!(combine(&CombineCtx { cubic_inner: true, ..c(0xb8) }, x, e, i), x * fcubic(inner));
+        assert_eq!(combine(&CombineCtx { cubic_inner: true, ..c(0x44) }, x, e, i), x * fcubic(inner));
+        assert_eq!(combine(&CombineCtx { cubic_inner: true, ..c(0xbd) }, x, e, i), x * fcubic(inner));
+        // The internal special source cubes the source expression instead.
+        assert_eq!(
+            combine(&CombineCtx { cubic_inner: true, direct_special: true, ..c(2) }, x, e, i),
+            x * fcubic(e) * i
+        );
+        // An internal source never selects the cube.
+        assert_eq!(combine(&c(0xb8), x, e, i), x * inner);
+        // The K2 envelope pair keeps the same cube selection.
+        let k2 = CombineCtx { env_special: true, cubic_inner: true, ..c(0xb8) };
+        near(combine(&k2, x, e, i), n2u_env_a(u2n_env_a(x) * fcubic(inner)), 1e-5);
+        let plain = CombineCtx { env_special: true, ..c(0xb8) };
+        near(combine(&plain, x, e, i), n2u_env_a(u2n_env_a(x) * inner), 1e-5);
     }
 
     #[test]

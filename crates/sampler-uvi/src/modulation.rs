@@ -1563,6 +1563,20 @@ mod tests {
     }
 
     #[test]
+    fn rejected_global_script_source_reports_event_identity_and_output_owner() {
+        let xml = r#"<Program Name="P"><ControlSignalSources>
+            <ScriptEventModulation Name="crossfade" EventId="40" Bipolar="0"/>
+            </ControlSignalSources><Connections>
+            <SignalConnection Source="$Program/crossfade" Destination="Gain" Ratio="1"/>
+            </Connections></Program>"#;
+        let error = crate::translate_bank(xml).err().expect("unimplemented shared source must refuse").to_string();
+        assert!(error.contains("Program \"P\""), "{error}");
+        assert!(error.contains("ScriptEventModulation EventId=40 Bipolar=0"), "{error}");
+        assert!(error.contains("destination Amplitude"), "{error}");
+        assert!(error.contains("shared source lifecycle/input actor is not implemented"), "{error}");
+    }
+
+    #[test]
     fn velocity_and_controller_gain_are_attenuation_routes() {
         let ir = translate(
             "",

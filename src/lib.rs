@@ -53,3 +53,7 @@ pub use ui::uvi_ui_health;
 /// Explicit bounded Kontakt onset diagnostics through the production loader.
 #[cfg(feature = "shots")]
 pub use sound::v2::onset_diagnostics::{run as offline_kontakt_onset, config as onset_config};
+
+/// Explicit offline loader, activation and playback diagnostics for one library patch.
+#[cfg(feature = "shots")]
+pub use sound::v2::library_probe::run as offline_library_diagnostics;

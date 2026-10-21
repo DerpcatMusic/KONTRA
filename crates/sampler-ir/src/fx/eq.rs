@@ -116,7 +116,9 @@ pub struct Config {
     /// The script slot whose `set_engine_par` writes drive [`Config::lanes`].
     #[cfg_attr(feature = "cache", serde(default))]
     pub address: Option<crate::SlotAddress>,
-    /// Which band of the slot's module this one-band config is (FREQ1 is 0).
+    /// Which band of the slot's module this one-band config is: FREQ1 is 0 for the
+    /// legacy law, the saved band index (LF 0, LMF 1, HMF 2, HF 3, HP 4, LP 5) for
+    /// Solid G-EQ.
     #[cfg_attr(feature = "cache", serde(default))]
     pub band: u8,
 }
@@ -134,14 +136,21 @@ impl Config {
     pub fn band(band: Band) -> Self {
         Self::new(&[band]).expect("one band fits")
     }
-    /// The live knobs of a script-addressed one-band legacy EQ: FREQn, BWn,
-    /// GAINn (laws: kontakt-bindings filters_eq.tsv; the band holds the native
-    /// frequency and bandwidth knobs, `(octaves - 1/3) 0.375`).
+    /// The live knobs of a script-addressed one-band EQ: FREQn, BWn, GAINn for
+    /// the legacy law (kontakt-bindings filters_eq.tsv; the band holds the native
+    /// frequency and bandwidth knobs, `(octaves - 1/3) 0.375`), the `SEQ_*`
+    /// identity knobs for a Solid G-EQ band.
     pub fn lanes(&self) -> Vec<super::Lane> {
         use super::{Lane, Law as L};
         use crate::ProcessorParameter as P;
         let [b] = self.bands() else { return Vec::new() };
-        if self.address.is_none() || b.law != Law::KontaktLegacy {
+        if self.address.is_none() {
+            return Vec::new();
+        }
+        if let Law::Solid(section) = b.law {
+            return solid_lanes(b, section);
+        }
+        if b.law != Law::KontaktLegacy {
             return Vec::new();
         }
         const FREQ: [&str; 3] = ["ENGINE_PAR_FREQ1", "ENGINE_PAR_FREQ2", "ENGINE_PAR_FREQ3"];
@@ -157,5 +166,108 @@ impl Config {
     }
     pub fn bands(&self) -> &[Band] {
         &self.bands[..usize::from(self.count).min(MAX_BANDS)]
+    }
+}
+
+/// The live knobs of one script-addressed Solid G-EQ band. Every continuous knob
+/// is the identity law over 0..=1 (`filters_eq.tsv`), so the lane value is the
+/// stored knob itself; the bell and pass enables are switches and have no lane.
+fn solid_lanes(b: &Band, section: SolidSection) -> Vec<super::Lane> {
+    use super::{Lane, Law as L};
+    use crate::ProcessorParameter as P;
+    let (gain, frequency, q): (Option<&str>, &str, Option<&str>) = match section {
+        SolidSection::LowFrequency => {
+            (Some("ENGINE_PAR_SEQ_LF_GAIN"), "ENGINE_PAR_SEQ_LF_FREQ", None)
+        }
+        SolidSection::LowMid => (
+            Some("ENGINE_PAR_SEQ_LMF_GAIN"),
+            "ENGINE_PAR_SEQ_LMF_FREQ",
+            Some("ENGINE_PAR_SEQ_LMF_Q"),
+        ),
+        SolidSection::HighMid => (
+            Some("ENGINE_PAR_SEQ_HMF_GAIN"),
+            "ENGINE_PAR_SEQ_HMF_FREQ",
+            Some("ENGINE_PAR_SEQ_HMF_Q"),
+        ),
+        SolidSection::HighFrequency => {
+            (Some("ENGINE_PAR_SEQ_HF_GAIN"), "ENGINE_PAR_SEQ_HF_FREQ", None)
+        }
+        SolidSection::HighPass => (None, "ENGINE_PAR_SEQ_HP_FREQ", None),
+        SolidSection::LowPass => (None, "ENGINE_PAR_SEQ_LP_FREQ", None),
+    };
+    let mut lanes = Vec::with_capacity(3);
+    if let Some(name) = gain {
+        lanes.push(Lane::new(name, P::GainDecibels, f64::from(b.gain_db), L::Identity));
+    }
+    lanes.push(Lane::new(frequency, P::Frequency, f64::from(b.frequency), L::Identity));
+    if let Some(name) = q {
+        lanes.push(Lane::new(name, P::Quality, f64::from(b.q), L::Identity));
+    }
+    lanes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fx::Law as Lane;
+    use crate::ProcessorParameter as P;
+
+    fn solid(section: SolidSection, kind: Kind, gain: f32, q: f32) -> Config {
+        let band = Band {
+            law: Law::Solid(section),
+            frequency: 0.25,
+            q,
+            gain_db: gain,
+            ..Band::new(kind, 0., 0., 0.)
+        };
+        let mut config = Config::new(&[band]).expect("one band");
+        config.address = Some(crate::SlotAddress { group: 3, slot: 2, generic: -1 });
+        config
+    }
+
+    fn lanes(config: Config) -> Vec<(&'static str, P, f64, Lane)> {
+        config.lanes().into_iter().map(|l| (l.name, l.role, l.value, l.law)).collect()
+    }
+
+    /// `filters_eq.tsv`: every continuous Solid knob is the identity law over
+    /// 0..=1 and the lane value is the saved knob itself.
+    #[test]
+    fn solid_bands_have_the_identity_script_lanes_of_their_section() {
+        assert_eq!(
+            lanes(solid(SolidSection::LowFrequency, Kind::LowShelf, 0.75, 0.)),
+            [
+                ("ENGINE_PAR_SEQ_LF_GAIN", P::GainDecibels, 0.75, Lane::Identity),
+                ("ENGINE_PAR_SEQ_LF_FREQ", P::Frequency, 0.25, Lane::Identity),
+            ]
+        );
+        assert_eq!(
+            lanes(solid(SolidSection::LowMid, Kind::Peak, 0.5, 0.625)),
+            [
+                ("ENGINE_PAR_SEQ_LMF_GAIN", P::GainDecibels, 0.5, Lane::Identity),
+                ("ENGINE_PAR_SEQ_LMF_FREQ", P::Frequency, 0.25, Lane::Identity),
+                ("ENGINE_PAR_SEQ_LMF_Q", P::Quality, 0.625, Lane::Identity),
+            ]
+        );
+        assert_eq!(
+            lanes(solid(SolidSection::HighMid, Kind::Peak, 0.5, 0.5)),
+            [
+                ("ENGINE_PAR_SEQ_HMF_GAIN", P::GainDecibels, 0.5, Lane::Identity),
+                ("ENGINE_PAR_SEQ_HMF_FREQ", P::Frequency, 0.25, Lane::Identity),
+                ("ENGINE_PAR_SEQ_HMF_Q", P::Quality, 0.5, Lane::Identity),
+            ]
+        );
+        // The pass filters have one knob each.
+        assert_eq!(
+            lanes(solid(SolidSection::HighPass, Kind::HighPass, 0., 0.)),
+            [("ENGINE_PAR_SEQ_HP_FREQ", P::Frequency, 0.25, Lane::Identity)]
+        );
+        assert_eq!(
+            lanes(solid(SolidSection::LowPass, Kind::LowPass, 0., 0.)),
+            [("ENGINE_PAR_SEQ_LP_FREQ", P::Frequency, 0.25, Lane::Identity)]
+        );
+        // A module no script addresses keeps its knobs constant.
+        let mut unaddressed = solid(SolidSection::HighFrequency, Kind::HighShelf, 0.5, 0.);
+        unaddressed.address = None;
+        assert!(unaddressed.lanes().is_empty());
     }
 }

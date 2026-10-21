@@ -1056,6 +1056,7 @@ fn compile_ui_initialized(
     admit_initialized_zone_sources(instrument, &mut initialized);
     let ScriptInit {
         mut states,
+        faults,
         resources,
         ..
     } = initialized;
@@ -1064,6 +1065,7 @@ fn compile_ui_initialized(
     let mut names = Vec::new();
     let resources = resources.map(std::cell::RefCell::new);
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
+        let mut error_line = faults.get(index).and_then(|fault| fault.as_ref()).map(|fault| fault.line);
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => states[index]
@@ -1071,7 +1073,10 @@ fn compile_ui_initialized(
                 .expect("KSP initialized")
                 .and_then(|init| {
                     sampler_ksp::compile_initialized(&behavior.source, rate, limits, &[], init)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| {
+                            error_line = Some(e.line);
+                            e.to_string()
+                        })
                 }),
             ref other => Err(format!("{other:?} has no frontend")),
         };
@@ -1108,7 +1113,8 @@ fn compile_ui_initialized(
                 compiled.push(script);
             }
             Err(error) => instrument.unsupported.push(ir::Unsupported {
-                location: behavior.name.clone(),
+                location: format!("script slot {} {}{}", behavior.slot.map_or(index, usize::from),
+                    behavior.name, error_line.map_or_else(String::new, |line| format!(" line {line}"))),
                 feature: "script".into(),
                 value: error,
                 reason: ir::Reason::NotModeled,
@@ -2178,7 +2184,7 @@ mod initialization_shape_tests {
         assert!(interfaces.is_empty());
         assert_eq!(take_script_init_runs(), 1);
         assert!(kontakt.instrument.unsupported.iter().any(|diagnostic| {
-            diagnostic.location == "shape slot 3"
+            diagnostic.location == "script slot 3 shape slot 3 line 2"
                 && diagnostic.feature == "script"
                 && diagnostic.value.contains("get_scale")
         }));

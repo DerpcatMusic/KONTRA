@@ -1147,6 +1147,27 @@ input.group>=16||input.channel>=16||input.key>=128
                 if let Some(Some(state)) = g.modulation.native.as_mut_slice().get(voice.0.index) {
                     self.voices.get_mut(voice.0).unwrap().envelope.set_v1_amplitude(state.amplitude(), self.rate as f32);
                 }
+                // An envelope stage time addressed as a modulation target
+                // moves the voice's own stage before the voice starts.
+                let stages = g.modulation.envelope_stages(voice.0.index);
+                if stages.iter().any(|factor| *factor != 1.0) {
+                    let rate = self.rate;
+                    let envelope = &mut self.voices.get_mut(voice.0).unwrap().envelope;
+                    for (stage, factor) in stages.iter().enumerate() {
+                        if *factor == 1.0 {
+                            continue;
+                        }
+                        let stage = match stage {
+                            0 => crate::EnvelopeStage::Attack,
+                            1 => crate::EnvelopeStage::Hold,
+                            2 => crate::EnvelopeStage::Decay,
+                            3 => crate::EnvelopeStage::Sustain,
+                            4 => crate::EnvelopeStage::Release,
+                            _ => continue,
+                        };
+                        envelope.scale_stage(stage, *factor, rate);
+                    }
+                }
                 if self.signal_trace {
                     self.trace_selected_birth(voice, start, seed);
                 }
