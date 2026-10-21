@@ -217,3 +217,28 @@ Oracle hypothesis, not yet verified: the first echo (425 frames) equals
 (LFO that actually runs, Depth steps across the full range) before the engine
 uses it. Until then the Legacy Chorus base stays 0 and Chorus is reported as
 an open gap, not fixed.
+
+## Constants read from the Kontakt 8.13.1 image (decomp-confirmed)
+
+Read from the PE image at `/data/dev/workspace/re-binaries/Kontakt8.exe`
+(static data only, no analysis session). Values match the engine:
+
+| Symbol | Value | Used by |
+|---|---|---|
+| DAT_144f38b08 | 50.0 | Legacy Flanger excursion (depth x 50, setter case 0x3c) |
+| DAT_144f38b30 | 75.0 | Legacy Chorus excursion (depth x 75, setter case 0x3d) |
+| DAT_1447148a4 | 0.001 (f32) | base ms to frames: `base = int(time * sample_rate * 0.001)` |
+| DAT_1447149a0 | 2*pi | LFO angular step |
+| DAT_144737744 | 0.95 (f32) | Chorus smoothing; Flanger feedback factor |
+| DAT_144f385c0 | 1.52587890625e-05 | sub-threshold floor in the modulated-read fraction |
+| DAT_144f389b0 | 0.85 | Legacy Phaser feedback factor |
+| DAT_1447148e4 | 0.25 | Phase in cycles |
+| DAT_144714930 | 0.98 (f32) | Legacy Delay feedback factor |
+| DAT_144f38804 | 0.7 (f32) | Legacy Delay damping factor |
+| DAT_144737708 | 1e-9 (f32) | tempo-sync threshold on unit |
+
+Status: Legacy Flanger and Legacy Phaser constants are decomp-confirmed.
+Legacy Chorus constants are decomp-confirmed; its base-delay field (+8) is
+still zero in every decompiled reader and setter checked, so the zero base
+stays the native law. The Wine-oracle echo measurements remain unexplained
+(harness-side suspicion, not yet validated).

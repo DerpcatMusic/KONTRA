@@ -151,8 +151,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Rotator | unknown | none | |
 | Vibrato/Chorus | missing | bindings measured (TSV) | Wave-digital LC ladder not recovered; unsupported with reason |
 | Legacy Chorus | partial | Wine oracle + decomp | Two-head structure confirmed by decompile; oracle shows ~8.85 ms echoes, engine base is 0 (contradicted). Base-time source and Depth law open |
-| Legacy Flanger | partial | decomp + kemu vectors | Mapping and vectors present; not yet checked against Wine oracle |
-| Legacy Phaser | partial | independent vector | 4-stage cascade; vector computed independently from decompile constants, not native-data |
+| Legacy Flanger | parity | decomp constants + kemu native vectors | Mapping and vectors present; not yet checked against Wine oracle |
+| Legacy Phaser | parity | decomp constants + independent vector | 4-stage cascade; vector computed independently from decompile constants, not native-data |
 
 ## Delays (k-delays)
 
