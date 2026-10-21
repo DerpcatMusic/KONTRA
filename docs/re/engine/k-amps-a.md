@@ -2,7 +2,7 @@
 
 Scope: ACBox (0x53), Bass Invader (0x54, version 0x52), Bass Pro (0x61), Cabinet (0x24), EP Preamps (0x6C), HotSolo (0x54, version 0x10).
 
-Status: **shared-kernel refactor shipped; the four missing models are measured but not yet modelled.** The Kontakt 8 source export is not complete (`source/kontakt8/` is empty, no `READY`), so the laws come from black-box Wine-oracle renders (below), not decompilation. No DSP law has been fitted yet, so nothing below is a spec.
+Status: **shared-kernel refactor shipped; no model has a DSP implementation yet.** The Kontakt 8 decompile is complete (`source/kontakt8/`, 1113 buckets, READY). Workers decoded the Bass Invader, Bass Pro, HotSolo and EP Preamps cores, but none reached a verified law, so nothing below is a spec. Per-model findings: [Bass Invader](k-amps-a-bassinvader.md), [Bass Pro](k-amps-a-basspro.md), [HotSolo](k-amps-a-hotsolo.md), [EP Preamps](k-amps-a-epp.md).
 
 ## Done in this unit
 
