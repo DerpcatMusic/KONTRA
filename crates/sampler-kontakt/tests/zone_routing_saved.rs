@@ -159,7 +159,7 @@ fn full_nki_async_snapshot_a_b_a_routes_actual_source_and_matches_static_destina
     assert_eq!(rendered[0], rendered[2]);
 }
 #[test]
-fn native_identity_import_rejects_duplicate_and_keeps_missing_without_ordinal_alias() {
+fn native_identity_import_names_the_first_duplicate_and_keeps_missing_without_ordinal_alias() {
     let f = fixture::fixture();
     let duplicate = f.directory.path().join("duplicate.nki");
     std::fs::write(
@@ -167,7 +167,19 @@ fn native_identity_import_rejects_duplicate_and_keeps_missing_without_ordinal_al
         fixture::base(None, 0, [Some(0), Some(7), Some(7)]),
     )
     .unwrap();
-    assert!(sampler_kontakt::read(&duplicate).is_err());
+    // Kontakt resolves a shared identity to the first zone that carries it, so the
+    // instrument still loads: the first keeps the identity and later ones have none.
+    let shared = sampler_kontakt::read(&duplicate).unwrap();
+    assert_eq!(
+        shared
+            .instrument
+            .source_indices
+            .zone_catalog
+            .iter()
+            .map(|z| z.id)
+            .collect::<Vec<_>>(),
+        [Some(0), Some(7), None]
+    );
     let missing = f.directory.path().join("missing.nki");
     std::fs::write(
         &missing,
