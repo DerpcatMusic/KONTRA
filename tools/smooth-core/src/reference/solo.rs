@@ -98,11 +98,7 @@ const _: () = assert!(std::mem::size_of::<SoloChannel>() == 0x78);
 #[inline]
 fn clamp3(x: f64, lo: f64, hi: f64) -> f64 {
     let p = if lo <= x { x } else { lo };
-    if x <= hi {
-        p
-    } else {
-        hi
-    }
+    if x <= hi { p } else { hi }
 }
 
 /// `0x89bf10`: writes mode and targets into every channel record (`states.len()` channels).
@@ -127,11 +123,7 @@ pub fn store_coefficients(states: &mut [SoloChannel], band: &SoloBand) {
         s.target_r = if t >= freq { a } else { t };
         s.target_k = if band_pass {
             // maxsd(hb, 0.0): NaN gives 0.0
-            if hb > 0.0 {
-                hb
-            } else {
-                0.0
-            }
+            if hb > 0.0 { hb } else { 0.0 }
         } else {
             ONE
         };
@@ -170,7 +162,13 @@ pub fn svf_coefficients(s: &mut SoloChannel) {
 /// main signal (one slice per channel, or one shared mono slice). `out` receives the solo stream.
 /// With shape 5 the stream is a copy of `input` (same channel count), or of `input[0]` to every
 /// output channel when the input is mono. Mismatched counts other than that write nothing.
-pub fn process(states: &mut [SoloChannel], band: &SoloBand, input: &[&[f32]], out: &mut [&mut [f32]], n: usize) {
+pub fn process(
+    states: &mut [SoloChannel],
+    band: &SoloBand,
+    input: &[&[f32]],
+    out: &mut [&mut [f32]],
+    n: usize,
+) {
     let ch = out.len();
     if band.shape == 5 {
         if ch == 0 || n == 0 {
@@ -240,7 +238,10 @@ mod tests {
     fn solo_filter_matches_the_emulated_entry_point() {
         let fixture: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
         let cases = fixture["cases"].as_array().unwrap();
-        assert!(cases.len() >= 300, "fixture covers the shapes, copy branch and smoothing");
+        assert!(
+            cases.len() >= 300,
+            "fixture covers the shapes, copy branch and smoothing"
+        );
 
         let mut states = [SoloChannel::default(); 2];
         let mut nonzero = 0usize;
@@ -281,7 +282,10 @@ mod tests {
                 assert_state_matches(idx, c, &states[c], rec);
             }
         }
-        assert!(nonzero > 50_000, "outputs must be non-trivial, got {nonzero} nonzero samples");
+        assert!(
+            nonzero > 50_000,
+            "outputs must be non-trivial, got {nonzero} nonzero samples"
+        );
     }
 
     fn f32s(v: &serde_json::Value) -> Vec<f32> {
@@ -353,22 +357,53 @@ mod tests {
         let before = states;
         let input = [1.0f32, -2.0, 0.5];
         let mut out = [0.0f32; 3];
-        let band = SoloBand { freq: 1000.0, half_bw_oct: 1.0, shape: 5 };
+        let band = SoloBand {
+            freq: 1000.0,
+            half_bw_oct: 1.0,
+            shape: 5,
+        };
         process(&mut states, &band, &[&input], &mut [&mut out], 3);
         assert_eq!(out, input);
         assert_eq!(states, before);
 
         // Mode table: {2,3} -> 2, {1,7} -> 0, {0,6} -> 1, {4} -> 3.
         for (shape, mode) in [(2, 2), (3, 2), (1, 0), (7, 0), (0, 1), (6, 1), (4, 3)] {
-            let mut s = [SoloChannel { fs: 48000.0, ..Default::default() }];
-            store_coefficients(&mut s, &SoloBand { freq: 1000.0, half_bw_oct: 1.0, shape });
+            let mut s = [SoloChannel {
+                fs: 48000.0,
+                ..Default::default()
+            }];
+            store_coefficients(
+                &mut s,
+                &SoloBand {
+                    freq: 1000.0,
+                    half_bw_oct: 1.0,
+                    shape,
+                },
+            );
             assert_eq!(s[0].mode, mode, "shape {shape}");
         }
         // k target: 1.0 for low-pass and high-pass, max(hb, 0) for band-pass and notch.
-        let mut s = [SoloChannel { fs: 48000.0, ..Default::default() }];
-        store_coefficients(&mut s, &SoloBand { freq: 1000.0, half_bw_oct: -0.5, shape: 1 });
+        let mut s = [SoloChannel {
+            fs: 48000.0,
+            ..Default::default()
+        }];
+        store_coefficients(
+            &mut s,
+            &SoloBand {
+                freq: 1000.0,
+                half_bw_oct: -0.5,
+                shape: 1,
+            },
+        );
         assert_eq!(s[0].target_k, 1.0);
-        store_coefficients(&mut s, &SoloBand { freq: 1000.0, half_bw_oct: -0.5, shape: 2 });
+        store_coefficients(
+            &mut s,
+            &SoloBand {
+                freq: 1000.0,
+                half_bw_oct: -0.5,
+                shape: 2,
+            },
+        );
         assert_eq!(s[0].target_k, 0.0);
     }
 }

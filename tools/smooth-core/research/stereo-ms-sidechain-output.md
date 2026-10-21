@@ -84,12 +84,15 @@ shape index is `*(band+0x1c)`, in the port's `Shape` order: 0 LowCut, 1 LowShelf
   The old note calling this "inverted" came from the same argument-order mistake.
 - **k for LP/HP (fixed).** The `0x89bf10` store sets the coefficient to the double `1.0`
   (`0x3ff0000000000000`) for modes 0 and 1. The port used `1/Q` there.
-- **Open.** `0x89a1a0` does not write the filter state directly. It smooths each coefficient
-  toward its target with one-pole rate `*(record+0x38)` (`s += (target − s)·g`). The port
-  sets coefficients at once when the band changes. A solo switch can therefore click
-  where the reference fades. The rate and its source were not decoded.
-- **Open.** What `band+0xc` is. The port derives k for modes 2 and 3 from the stored width.
-  The reference uses `band+0xc`, which may already be 1/Q, but this was not confirmed.
+- **Smoothing (decoded, `output-stage-translation.md` "Solo path").** Per sample, R and k move
+  toward their targets with one-pole rate `+0x38` while the rate is below 1, else snap. The rate
+  is `1 - exp(-1/(0.03 fs))`, written by the constructor. The port's instant coefficient set
+  does not match this, so solo switches differ from the reference until the port adopts it.
+- **Resolved: `band+0xc` is the half bandwidth in octaves**, not 1/Q. The filter uses it as
+  `hb = max(k, 0)/2` in the bandwidth law (`0x88e150`), and the setter fills it with
+  `log2(e) asinh(1/(2Q))` (`params.rs`). So the reference's k is `(hi - lo)/g` from that width.
+- **Correction: the solo shape is `+0x1c`, not `+0x18`.** The setter's shape index 26 writes
+  `+0x124`. The filter reads `+0x128`, which index 27 (`selector`) writes. See the solo section.
 
 ## 4. Output stage: formulas and the 30 ms ramp — verified, unchanged
 

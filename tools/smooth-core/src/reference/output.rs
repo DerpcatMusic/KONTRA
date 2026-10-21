@@ -19,10 +19,16 @@
 //! - [`mid_side_pair`]: the stereo-pair helper `0x8a3b20` (gain 0.5 on encode, 1.0 on
 //!   decode), as established in `research/stereo-ms-sidechain-output.md`.
 //!
-//! Not here, and why: the dry/wet summation and the write to the output table, the
-//! band-solo filter and its coefficient smoothing, the sidechain mux and meter. Those
-//! sit in the stack-aliased region of `0x890c92..0x893bd7` (about 1,300 decompiled
-//! lines) and are not decoded yet. No `process_output_block` is provided until they are.
+//! - [`process_output_block`]: the output sum per 512-sample sub-block, including the band-solo
+//!   path (`solo.rs`, `0x89a1a0`) on the wet + dry sum, with the main and solo gain records
+//!   (`+0xbf40`, `+0xbf4c`).
+//!   Order and gate are from the emulated trace: `research/output-stage-translation.md`, "Solo path".
+//!
+//! Not here: the sidechain listen and the meter, and the wet path itself (the FFT processing
+//! feeding `wet`). The wet and dry roles are the record assignment from the code order; a
+//! non-identity wet path has not been emulated (see the notes).
+
+use super::solo::{self, SoloBand, SoloChannel};
 
 /// Gate below which a gain is treated as zero or unity. `[0x18209d03c]`.
 pub const GATE: f32 = 1.0e-3;
@@ -115,20 +121,39 @@ fn apply_planned(plan: GainPlan, gains: &[f32], x: &mut [f32]) {
     }
 }
 
-/// The three gain records the output sum uses: dry (`+0xbf28`), wet (`+0xbf34`) and out
-/// (`+0xbf58`). Their state persists across blocks, so the caller keeps one per instance.
+/// The five gain records of the output sum: dry (`+0xbf28`), wet (`+0xbf34`), main (`+0xbf40`),
+/// solo (`+0xbf4c`) and out (`+0xbf58`), plus the solo filter state (`obj+0xb7a8`, two channels).
+/// Their state persists across blocks, so the caller keeps one per instance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputStage {
     pub dry: GainRecord,
     pub wet: GainRecord,
+    pub main: GainRecord,
+    pub solo: GainRecord,
     pub out: GainRecord,
+    pub solo_states: [SoloChannel; 2],
 }
 
 impl OutputStage {
-    /// The constructor's state (`0x88fa90` writes the coefficient, the record initial values are
-    /// dry `(0, 0)`, wet `(1, 1)`, out `(1, 1)`), as read from the emulated object.
+    /// The constructor's state, as read from the emulated object (`fixtures/output_solo.json`):
+    /// dry `(0, 0)`, wet `(1, 1)`, main `(1, 1)`, solo `(0, 0)`, out `(1, 1)`, each with the
+    /// ramp coefficient. The solo filter record starts at 1000 Hz, k = 1, mode 0, with its
+    /// smoothing rate `1 - exp(-1/(0.03 fs))` in f64 (the gain records use the f32 constant).
     pub fn new(sample_rate: f32) -> Self {
         let a = ramp_coefficient(sample_rate);
+        let fs = sample_rate as f64;
+        let mut solo_state = SoloChannel {
+            fs,
+            mode: 0,
+            target_r: 1000.0,
+            target_k: 1.0,
+            cur_r: 1000.0,
+            cur_k: 1.0,
+            tau_ms: 30.0,
+            rate: 1.0 - (-1.0 / (0.03 * fs)).exp(),
+            ..SoloChannel::default()
+        };
+        solo::svf_coefficients(&mut solo_state);
         Self {
             dry: GainRecord {
                 target: 0.0,
@@ -140,30 +165,42 @@ impl OutputStage {
                 current: 1.0,
                 coeff: a,
             },
+            main: GainRecord {
+                target: 1.0,
+                current: 1.0,
+                coeff: a,
+            },
+            solo: GainRecord {
+                target: 0.0,
+                current: 0.0,
+                coeff: a,
+            },
             out: GainRecord {
                 target: 1.0,
                 current: 1.0,
                 coeff: a,
             },
+            solo_states: [solo_state; 2],
         }
     }
 }
 
 /// The output sum of one block (`0x890a00`, output side, verified by emulation).
 ///
-/// `dry` is the delayed input block and `wet` the processed block, both one slice per channel
+/// `dry` is the delayed input block, `wet` the processed block, both one slice per channel
 /// (1 or 2 channels). `out` receives the result. Per sub-block of at most [`SUB_BLOCK`]
-/// samples, as the binary does:
+/// samples, as the binary does (`fixtures/output_block.json`, `fixtures/output_solo.json`):
 ///
-/// 1. the targets of [`OutputTargets::compute`] are written to the three records;
+/// 1. the targets of [`OutputTargets::compute`] are written to the five records;
 /// 2. `out = wet`, then `out *= g_wet` (ramp of the wet record);
-/// 3. `scratch = dry`, then `scratch *= g_dry` (ramp of the dry record);
-/// 4. `out += scratch` (IPP add, `0x180001370`, `dst += src`);
+/// 3. `scratch = dry`, then `scratch *= g_dry` (ramp of the dry record), `out += scratch`;
+/// 4. solo path, when `!bypass && (solo_active || g_solo > GATE)`: the solo filter runs on the
+///    the sum `out` (wet + dry, before the main ramp), `S = solo(sum)`, then `S *= g_solo`,
+///    `out *= g_main`, `out += S`;
 /// 5. `out *= g_out` (ramp of the out record).
 ///
-/// Not translated: the band-solo path (`solo_active`, which reroutes the main signal through
-/// `0x89a1a0` and the `main`/`solo` records), the sidechain listen and the meter. A solo
-/// block panics rather than return the wrong output.
+/// The solo gate is evaluated per sub-block, from the solo record's current gain. Skipped
+/// sub-blocks leave the solo filter state and the solo and main records alone.
 pub fn process_output_block(
     stage: &mut OutputStage,
     p: &OutputParams,
@@ -171,10 +208,6 @@ pub fn process_output_block(
     wet: &[&[f32]],
     out: &mut [&mut [f32]],
 ) {
-    assert!(
-        !p.solo_active,
-        "band-solo output path (0x89a1a0) is not translated"
-    );
     let ch = out.len();
     assert!((1..=2).contains(&ch), "output stage handles mono or stereo");
     assert!(
@@ -186,10 +219,14 @@ pub fn process_output_block(
     let t = OutputTargets::compute(p);
     stage.dry.target = t.dry;
     stage.wet.target = t.wet;
+    stage.main.target = t.main;
+    stage.solo.target = t.solo;
     stage.out.target = t.out;
 
     let mut gains = [0.0f32; SUB_BLOCK];
     let mut scratch = [[0.0f32; SUB_BLOCK]; 2];
+    let mut solo_buf = [[0.0f32; SUB_BLOCK]; 2];
+    let mut sum = [[0.0f32; SUB_BLOCK]; 2];
     let mut s = 0;
     while s < n {
         let m = (n - s).min(SUB_BLOCK);
@@ -209,6 +246,40 @@ pub fn process_output_block(
             apply_planned(plan, &gains[..m], &mut scratch[c][..m]);
             for (o, d) in out[c][s..s + m].iter_mut().zip(&scratch[c][..m]) {
                 *o += d;
+            }
+        }
+
+        // Solo path (`0x8923a7..0x892781`): bypass skips it; otherwise it runs while the solo
+        // band is active or its gain is still above the gate (`comiss` against `0x18209d03c`).
+        // The solo filter reads the sum wet + dry before the main ramp (checked in the trace).
+        if !p.bypass && (p.solo_active || !(GATE >= stage.solo.current)) {
+            for c in 0..ch {
+                sum[c][..m].copy_from_slice(&out[c][s..s + m]);
+            }
+            let sum_in: [&[f32]; 2] = [&sum[0][..m], &sum[ch - 1][..m]];
+            {
+                let (s0, s1) = solo_buf.split_at_mut(1);
+                let mut solo_out: [&mut [f32]; 2] = [&mut s0[0][..m], &mut s1[0][..m]];
+                solo::process(
+                    &mut stage.solo_states[..ch],
+                    &p.solo_band,
+                    &sum_in[..ch],
+                    &mut solo_out[..ch],
+                    m,
+                );
+            }
+            let plan = stage.solo.plan(m, &mut gains);
+            for c in 0..ch {
+                apply_planned(plan, &gains[..m], &mut solo_buf[c][..m]);
+            }
+            let plan = stage.main.plan(m, &mut gains);
+            for c in 0..ch {
+                apply_planned(plan, &gains[..m], &mut out[c][s..s + m]);
+            }
+            for c in 0..ch {
+                for (o, v) in out[c][s..s + m].iter_mut().zip(&solo_buf[c][..m]) {
+                    *o += v;
+                }
             }
         }
 
@@ -246,6 +317,8 @@ pub struct OutputParams {
     pub solo_flag_236: bool,
     pub band_flags_any: bool,
     pub channels: usize,
+    /// The solo band's fields (`obj + 0x10c + 0x20 * idx`), read by the solo filter.
+    pub solo_band: SoloBand,
 }
 
 impl Default for OutputParams {
@@ -260,6 +333,7 @@ impl Default for OutputParams {
             solo_flag_236: false,
             band_flags_any: false,
             channels: 2,
+            solo_band: SoloBand::default(),
         }
     }
 }
@@ -421,6 +495,7 @@ mod tests {
                 solo_flag_236: p["solo_flag_236"].as_bool().unwrap(),
                 band_flags_any: false,
                 channels: 2,
+                solo_band: SoloBand::default(),
             };
             let got = OutputTargets::compute(&params);
             let want = &case["targets"];
@@ -548,6 +623,7 @@ mod tests {
                 solo_flag_236: false,
                 band_flags_any: false,
                 channels: 2,
+                solo_band: SoloBand::default(),
             };
             // Records as the constructor leaves them (dry, wet, out), taken from the emulated object.
             let rec = |name: &str| {
@@ -558,11 +634,10 @@ mod tests {
                     coeff: r[2],
                 }
             };
-            let mut stage = OutputStage {
-                dry: rec("dry"),
-                wet: rec("wet"),
-                out: rec("out"),
-            };
+            let mut stage = OutputStage::new(rate);
+            stage.dry = rec("dry");
+            stage.wet = rec("wet");
+            stage.out = rec("out");
             assert_eq!(
                 stage.wet.coeff.to_bits(),
                 OutputStage::new(rate).wet.coeff.to_bits(),
@@ -583,6 +658,201 @@ mod tests {
                         "case {idx} ch {c} sample {i}: got {g}, emulated {e}"
                     );
                 }
+            }
+        }
+    }
+
+    fn solo_state_from_bits(v: &serde_json::Value) -> SoloChannel {
+        let d: Vec<u64> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_u64().unwrap())
+            .collect();
+        let f = |k: usize| f64::from_bits(d[k]);
+        SoloChannel {
+            fs: f(0),
+            mode: d[1] as u32 as i32,
+            target_r: f(2),
+            target_k: f(3),
+            cur_r: f(4),
+            cur_k: f(5),
+            tau_ms: f(6),
+            rate: f(7),
+            g: f(8),
+            k: f(9),
+            a1: f(10),
+            a2: f(11),
+            a3: f(12),
+            ic1: f(13),
+            ic2: f(14),
+        }
+    }
+
+    fn rec_from_bits(v: &serde_json::Value) -> GainRecord {
+        let r = f32s(v);
+        GainRecord {
+            target: r[0],
+            current: r[1],
+            coeff: r[2],
+        }
+    }
+
+    /// Relative comparison of two f64 values, bit-exact or within 1e-6 of the larger magnitude.
+    fn close64(got: f64, want: f64) -> bool {
+        got.to_bits() == want.to_bits() || (got - want).abs() <= 1e-6 * want.abs().max(1e-12)
+    }
+
+    /// Replays each emulated block from the record and solo state the emulator had before it.
+    /// Checks the output channels to 1e-6 relative to each channel's peak, and the records and
+    /// solo state after the block.
+    #[test]
+    fn solo_output_block_matches_the_emulated_process_block() {
+        const SOLO: &str = include_str!("fixtures/output_solo.json");
+        let fixture: serde_json::Value = serde_json::from_str(SOLO).unwrap();
+        let n = fixture["n"].as_u64().unwrap() as usize;
+        let rate = fixture["sample_rate"].as_u64().unwrap() as f32;
+        let bits = |v: &serde_json::Value| f32::from_bits(v.as_u64().unwrap() as u32);
+        let frames = |v: &serde_json::Value| -> Vec<Vec<f32>> {
+            v.as_array().unwrap().iter().map(f32s).collect()
+        };
+
+        let mut blocks = 0;
+        let mut solo_samples = 0usize;
+        for case in fixture["cases"].as_array().unwrap() {
+            for (b, block) in case["blocks"].as_array().unwrap().iter().enumerate() {
+                let p = &block["params"];
+                let band = &block["band"];
+                let params = OutputParams {
+                    wet_gain: bits(&p["wet_gain"]),
+                    mix: bits(&p["mix"]),
+                    out_gain: bits(&p["out_gain"]),
+                    delta: p["delta"].as_u64().unwrap() != 0,
+                    bypass: p["bypass"].as_u64().unwrap() != 0,
+                    solo_active: p["solo_active"].as_u64().unwrap() != 0,
+                    solo_flag_236: p["flag_236"].as_u64().unwrap() != 0,
+                    band_flags_any: false,
+                    channels: 2,
+                    solo_band: SoloBand {
+                        freq: f32::from_bits(band["freq"].as_u64().unwrap() as u32),
+                        half_bw_oct: f32::from_bits(band["half_bw"].as_u64().unwrap() as u32),
+                        shape: band["shape"].as_u64().unwrap() as u32,
+                    },
+                    ..OutputParams::default()
+                };
+                let rec = &block["rec_in"];
+                let mut stage = OutputStage::new(rate);
+                stage.dry = rec_from_bits(&rec["dry"]);
+                stage.wet = rec_from_bits(&rec["wet"]);
+                stage.main = rec_from_bits(&rec["main"]);
+                stage.solo = rec_from_bits(&rec["solo"]);
+                stage.out = rec_from_bits(&rec["out"]);
+                let st = block["state_in"].as_array().unwrap();
+                stage.solo_states = [solo_state_from_bits(&st[0]), solo_state_from_bits(&st[1])];
+
+                let dry = frames(&block["dry"]);
+                let wet = frames(&block["wet"]);
+                let dry_refs: Vec<&[f32]> = dry.iter().map(|c| c.as_slice()).collect();
+                let wet_refs: Vec<&[f32]> = wet.iter().map(|c| c.as_slice()).collect();
+                let mut bufs: Vec<Vec<f32>> = vec![vec![0.0; n]; 2];
+                let mut outs: Vec<&mut [f32]> = bufs.iter_mut().map(|v| v.as_mut_slice()).collect();
+                process_output_block(&mut stage, &params, &dry_refs, &wet_refs, &mut outs);
+
+                for (c, want) in frames(&block["out"]).iter().enumerate() {
+                    let peak = want.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-3);
+                    for (i, (g, e)) in bufs[c].iter().zip(want).enumerate() {
+                        assert!(
+                            (g - e).abs() / peak <= 1e-6,
+                            "case {} block {b} ch {c} sample {i}: got {g}, emulated {e}",
+                            case["name"]
+                        );
+                    }
+                    solo_samples += want.iter().filter(|v| **v != 0.0).count();
+                }
+
+                let want_rec = &block["rec_out"];
+                for (name, got) in [
+                    ("dry", stage.dry),
+                    ("wet", stage.wet),
+                    ("main", stage.main),
+                    ("solo", stage.solo),
+                    ("out", stage.out),
+                ] {
+                    let w = rec_from_bits(&want_rec[name]);
+                    assert_eq!(got.target.to_bits(), w.target.to_bits(), "{name} target");
+                    assert!(
+                        (got.current - w.current).abs() <= 1e-6 * w.current.abs().max(1e-6),
+                        "{name} current: got {}, emulated {}",
+                        got.current,
+                        w.current
+                    );
+                }
+                let want_st = block["state_out"].as_array().unwrap();
+                for (c, want) in want_st.iter().enumerate() {
+                    let w = solo_state_from_bits(want);
+                    let g = stage.solo_states[c];
+                    assert_eq!(g.mode, w.mode, "solo ch {c} mode");
+                    for (name, gv, wv) in [
+                        ("cur_r", g.cur_r, w.cur_r),
+                        ("cur_k", g.cur_k, w.cur_k),
+                        ("g", g.g, w.g),
+                        ("k", g.k, w.k),
+                        ("a1", g.a1, w.a1),
+                        ("ic1", g.ic1, w.ic1),
+                        ("ic2", g.ic2, w.ic2),
+                    ] {
+                        assert!(
+                            close64(gv, wv),
+                            "solo ch {c} {name}: got {gv:e}, emulated {wv:e}"
+                        );
+                    }
+                }
+                blocks += 1;
+            }
+        }
+        assert!(
+            blocks >= 7,
+            "fixture covers solo on, fade-out, trims, delta, bypass and Tilt"
+        );
+        assert!(
+            solo_samples > 1000,
+            "the solo path must contribute non-zero output"
+        );
+    }
+
+    /// The constructor state of [`OutputStage::new`] against the emulated object (first block of a case).
+    #[test]
+    fn output_stage_new_matches_the_constructor_state() {
+        const SOLO: &str = include_str!("fixtures/output_solo.json");
+        let fixture: serde_json::Value = serde_json::from_str(SOLO).unwrap();
+        let rate = fixture["sample_rate"].as_u64().unwrap() as f32;
+        let first = &fixture["cases"][0]["blocks"][0];
+        let stage = OutputStage::new(rate);
+        assert_eq!(stage.solo.target.to_bits(), 0);
+        assert_eq!(stage.main.current.to_bits(), 1.0f32.to_bits());
+        let st = first["state_in"].as_array().unwrap();
+        for (c, want) in st.iter().enumerate() {
+            let w = solo_state_from_bits(want);
+            let g = stage.solo_states[c];
+            assert_eq!(g.mode, w.mode, "mode");
+            for (name, gv, wv) in [
+                ("fs", g.fs, w.fs),
+                ("target_r", g.target_r, w.target_r),
+                ("cur_r", g.cur_r, w.cur_r),
+                ("target_k", g.target_k, w.target_k),
+                ("cur_k", g.cur_k, w.cur_k),
+                ("tau_ms", g.tau_ms, w.tau_ms),
+                ("rate", g.rate, w.rate),
+                ("g", g.g, w.g),
+                ("k", g.k, w.k),
+                ("a1", g.a1, w.a1),
+                ("a2", g.a2, w.a2),
+                ("a3", g.a3, w.a3),
+            ] {
+                assert!(
+                    close64(gv, wv),
+                    "ch {c} {name}: got {gv:e}, emulated {wv:e}"
+                );
             }
         }
     }

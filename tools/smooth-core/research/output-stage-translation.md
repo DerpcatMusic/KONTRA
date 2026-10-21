@@ -76,15 +76,67 @@ solo, or a changed FFT path) is needed to check it.
 - The writer analysis shows `0x899ca1` writes the output 4096 times per 4096-block, once per
   sample. That is the per-sample delayed-input writer. Not yet mapped to its function.
 
+## Solo path (translated: `solo.rs`, `process_output_block`; fixtures `solo_filter.json`, `output_solo.json`)
+
+Entry points: `0x89a1a0` (filter, Tilt copy), `0x89bf10` (mode and targets), `0x88e150` (TPT
+coefficients). Records and state are per channel, 0x78 bytes at `obj+0xb7a8`.
+
+- **Solo band.** The process block reads the solo index from `obj+0x100` (i32, `-1` = off) and
+  copies it to `obj+0x4c`. `solo_active` is the band's `used` byte (`+0x10c + 0x20*idx`), and
+  `+0xaa` holds it. The band record passed to the filter is `obj+0x10c+0x20*idx`.
+- **Shape field is `+0x1c`, not `+0x18`.** The filter and `0x89bf10` read the shape at `+0x1c`,
+  which the setter fills from index 27 (`selector`). Index 26 (`shape`, `+0x18`) does not change
+  the solo filter. The constructor leaves `+0x1c` at 2 (bell) for band 1. Verified by probes
+  (`0x124` written by 26, `0x128` by 27, solo reads `0x128`). The port has to decide whether
+  `selector` is the solo shape in SMOOTH; the fixture drives index 27.
+- **Frequency `+0x04`, half bandwidth `+0x0c` (octaves).**
+- **Mode and targets (`0x89bf10`).** Shapes `{2,3}` -> mode 2 (band-pass), `{1,7}` -> 0 (low-pass),
+  `{0,6}` -> 1 (high-pass), `{4}` -> 3 (notch), `{5}` -> copy (no state). For filter modes:
+  `t = fs * 0.499`, `A = max(f, 1e-6)`, `R = (t >= f) ? A : t` (target `+0x10`); target k
+  (`+0x18`) is `max(hb, 0)` for modes 2 and 3 and `1.0` for modes 0 and 1.
+- **Coefficients (`0x88e150`, per sample).** `f = clamp(R, 1e-6, 0.499 fs)`, `g = tan(pi f / fs)`,
+  `hb = max(k, 0)/2`, `lo, hi = g * 2^{-hb}, g * 2^{+hb}` (`exp2` of `log2(g) ∓ hb`),
+  `k = 1 / max(g / (hi - lo), 1e-9)` (or `1 / 1e-9` when `hi - lo <= 1e-30`, where the binary uses
+  `1e9`), `a1 = 1/((k+g)g + 1)`, `a2 = a1 g`, `a3 = a2 g`. Stored at `+0x40` (g), `+0x48` (k),
+  `+0x50..0x60` (a1..a3).
+- **Smoothing (`0x89a1a0`, per sample, per channel).** `R += (tR - R) * rate` and
+  `k += (tk - k) * rate` with `rate = +0x38` while `rate < 1.0`; otherwise snap to the targets.
+  The constructor sets `rate = 1 - exp(-1/(0.03 fs))` in f64 (`+0x30` holds 30, the ms value). The
+  gain records use the f32 constant `-33.333336` instead, so the two rates differ at 1e-5.
+- **TPT update.** `v3 = x - ic2`, `v1 = a1 ic1 + a2 v3`, `v2 = a2 ic1 + ic2 + a3 v3`,
+  `ic1 = 2 v1 - ic1`, `ic2 = 2 v2 - ic2`, `hp = (x - k v1) - v2`. Output by mode:
+  0 `v2`, 1 `hp`, 2 `k v1`, 3 `hp + v2`. Stored as f32.
+- **Fixture.** `solo_filter.json`: 302 cases at 44.1 and 48 kHz, every shape, both channel
+  counts, the copy branch with mismatched frames, rates 1.0 / 1.5 / 0.5 / 0.01 / 1e-4, and the
+  constructor state. Outputs and state fields match bit-for-bit (max state error 1.5e-16 in
+  the replay).
+- **Solo input is the sum, not the wet block.** The filter reads `out` after the dry add, that
+  is `W g_wet + D g_dry`, before the main ramp. This is exact in the trace (max difference 0)
+  with trims. (An identical result with identity gains is why the first reading looked like
+  the wet block.)
+- **Order inside a sub-block (trace of `0x890a00`, `research/re-tools/emulate` probes):**
+  wet copy and ramp; dry copy and ramp; `out += dry`; then if the solo path runs: solo filter on
+  the sum, solo ramp (`+0xbf4c`) on the solo frame, main ramp (`+0xbf40`) on `out`, `out += solo`;
+  then the out ramp (`+0xbf58`).
+- **Solo gate (`0x8923a7`, per sub-block).** Runs when `!bypass && (solo_active || solo.g > 1e-3)`.
+  The 1e-3 is `[0x18209d03c]`. Bypass skips the path entirely, so the main and solo records
+  are not ramped in a bypassed sub-block.
+- **Constructor records.** dry `(0,0)`, wet `(1,1)`, main `(1,1)`, solo `(0,0)`, out `(1,1)`,
+  each with the ramp coefficient (`fixtures/output_solo.json`, `rec_in`).
+- **Fixture.** `output_solo.json`: 5 cases, 7 blocks of N = 2600 (solo on, fade-out, trims, delta,
+  bypass, Tilt). Output channels match to 1e-6 of each channel's peak; records and solo state
+  match after each block. A mutation that disables the solo path fails the test.
+
 ## Open (not translated)
 
-- **Band-solo filter.** `0x89a1a0` per-sample, `0x89bf10` coefficient store (table in
-  `stereo-ms-sidechain-output.md`). Coefficient smoothing toward its target (one-pole rate
-  `*(record+0x38)`) is not decoded. `process_output_block` panics on `solo_active`.
-- **Solo records** (`main +0xbf40`, `solo +0xbf4c`): their ramps are not in the fixture (solo off).
+- **Wet and dry roles, with a non-identity wet path.** Still unconfirmed. Driving the band
+  (depth set through the setter, bell at 1 kHz, Q 1, and the solo index) does not change the
+  wet path in this stand-in: `wet == delayed input` to 7e-7 for every setting tried. The band's
+  gains need the detector's host state (`0x619fc0`, bins and weights, see `re-latency-fft-scale.md`
+  section 14). Until then the roles rest on the record assignment (wet record ramps the buffer
+  copied from the processed side) and on the solo input, which is the sum above.
 - **Sidechain meter** (`sidechain_input_level`, host id 13) near `0x893928`: not read.
 - **Setter case `0x5b` edge case.** The decompile gives value 0 -> index 7 (unsigned `uVar11 - 1`).
   Not checked in the asm; the fixture only uses 0 and 1..8, and the Rust side does not model it.
 - **Sidechain listen (`+0xa7`)** and **`+0x236`** setter: not decoded (the fixture writes `+0x236` directly).
 - **Clipping**: none found in the translated region; not checked.
-- **Wet/dry role** (see caveat above).
