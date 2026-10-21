@@ -2,7 +2,26 @@
 
 Scope: ACBox (0x53), Bass Invader (0x54, version 0x52), Bass Pro (0x61), Cabinet (0x24), EP Preamps (0x6C), HotSolo (0x54, version 0x10).
 
-Status: **gap analysis only, no DSP written.** Kontakt 8 source export is not complete (`source/kontakt8/` is empty and has no `READY`), and no Wine oracle run was made in this unit. The four missing models have no recovered topology, laws or tables, so nothing here is a spec yet.
+Status: **shared-kernel refactor shipped; the four missing models are measured but not yet modelled.** The Kontakt 8 source export is not complete (`source/kontakt8/` is empty, no `READY`), so the laws come from black-box Wine-oracle renders (below), not decompilation. No DSP law has been fitted yet, so nothing below is a spec.
+
+## Done in this unit
+
+- `amp/kernel.rs`: the four-lane ops, the 4x upsampler phase matrices, the decimator taps and the shaper table lookup were copied into six amp kernels (Fuzz, Distortion, Cat, Twang, AC Box, Big Fuzz). They now come from one module. Big Fuzz keeps its own phase matrix. The decimator taps differ only in the sign of zero in two places; that changes no value. All eight amp golden-vector tests pass.
+- `tools/kontakt-oracle/ampspecs_a.py`: stimrender specs for Bass Invader, Bass Pro, HotSolo and EP Preamps.
+
+## Oracle measurements (2026-10-21, Kontakt 8 under Wine, `stimrender.py`, `ramp` stimulus)
+
+- Bass Invader: 29 steps (10 knobs), all rendered. Default-settings 200 Hz ramp: H2 -34 dB, H3 -24 dB against a bypass floor near -134 dB, so it is strongly nonlinear. Output clips at 1.0.
+- Bass Pro: 36 steps, all rendered, with DRIVE and MASTER run last. Master/gain at 0 mutes (peak 0.02 to 0.03). At DRIVE 1.0 the peak drops (0.59 against 0.83 at default), so drive is not a simple gain increase.
+- HotSolo: 30 steps, all rendered, with MASTER run last. Master at 0 mutes (0.03). Depth and bass at 0 both drop the peak to 0.48.
+- EP Preamps: **not measurable on this install.** `Presets/Effects` has no EP Preamps folder, so `render.py` cannot load a preset. Needs a library or preset that contains it.
+- Run order matters for the harness: a level-0 master knob stays in the session, and the stimrender detection marks later steps missing when they are silent. The specs therefore run such knobs last.
+
+## Next
+
+1. Fit each model's transfer curve (memoryless part) from the ramp, with filters off where possible.
+2. Identify the pre/post filters and tone stack from the knob sweeps.
+3. Express each model as a config of the general amp chain (pre-filter, transfer, post-filter, tone stack) and check it against the renders.
 
 ## Evidence used
 
