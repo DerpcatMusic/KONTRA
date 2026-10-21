@@ -95,7 +95,7 @@ values stay repo-evidence only until the oracle is run.
   registration is `mov dword [rbp+X], <value>` then `lea r8,[rbp+X]`,
   `lea rdx,[name]`, `call FUN_140775ef0`. The value is the script constant
   (`$ENGINE_PAR_VOLUME` = 422, `$ENGINE_PAR_PAN` = 423). Table:
-  `docs/re/kontakt-bindings/engine_par_native_registration.tsv`.
+  `crates/sampler-core/src/engine_par_ids.tsv` (the single source; `build.rs` generates the id table from it, and rows with `-` stay unbound).
 - 690 of the 708 native names have a repo id. The 18 without one are listed
   in that TSV with `in_repo_id_table=no`. None has an engine consumer yet,
   so no id is added (an id with no consumer would hide the diagnostic).
