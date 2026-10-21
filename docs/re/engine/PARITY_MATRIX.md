@@ -112,11 +112,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Cabinet | unknown | none | |
 | EP Preamps | unknown | none | |
 | HotSolo | unknown | none | |
-| Jump | unknown | none | |
-| Reverb Delight | unknown | none | |
-| Super Fast 100 | unknown | none | |
-| Twang | unknown | none | |
-| Van51 | unknown | none | |
+| Jump | missing | decomp (reader layout, vtable, JCM800 chain names); not vector-tested | Reader 0x140d01e10 (6 floats + 2 bytes). Core: process and laws not read (vtable 0x144fc0330). Diagnosed as unproved. |
+| Reverb Delight | missing | decomp (reader 0x140ac5e50); Wine-oracle sweep partial | Tremolo and spring-reverb cores not read. MONO field unproved. Diagnosed as unproved. |
+| Super Fast 100 | missing | decomp (reader 0x140ac61a0) | No bindings; core not read. Diagnosed as unproved. |
+| Twang | partial | vector (`matches_the_native_twang`, kemu vectors) | Core bit-matched to native vectors. Table and reset point dumped under kemu, not re-derived. Knob laws not separately vector-tested. |
+| Van51 | missing | decomp (reader 0x140d033e0); Wine-oracle sweep partial | Core not read. Diagnosed as unproved. |
 
 ## Stomps / Lo-Fi / Tape (k-stomps-a, k-stomps-b, k-lofi-tape)
 
