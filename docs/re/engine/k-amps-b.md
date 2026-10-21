@@ -1,76 +1,67 @@
 # Kontakt 8 amplifier effects: Jump, Reverb Delight, Super Fast 100, Twang, Van51
 
-Status: **waiting on READY.** `/data/dev/workspace/Research/KONTRA/source/kontakt8/` is empty and has no `READY` marker, so no decompiled function has been read. Nothing below is a recovered core law. Items are either repo evidence (cited) or open questions. Twang is the only one of the five with a native core already in the engine, and its evidence predates this unit.
+Status: **partial.** The Kontakt 8 decompile is ready (`source/kontakt8/READY`). Reader layouts, effect vtables and the Jump stage topology are confirmed below. The DSP cores of Jump, Van51, Super Fast 100 and Reverb Delight are **not yet implemented**: their process and parameter-law functions are located but not yet read through. Nothing here is fabricated.
 
-## Evidence used
+## Method
 
-- Module IDs and names: `crates/sampler-kontakt/src/effects/mod.rs:42-50` (`0x23 Twang`, `0x4d Jump`, `0x52 Van51`).
-- Object classes, reader schemas, object addresses: `docs/re/kontakt-catalog/ser_classes.tsv` (`BParFXJump` 0x4D `0x140d01e10`, `BParFXVan51` 0x52 `0x140d033e0`, `BParFXSuperFast100` 0x76 `0x140ac61a0`, `BParFXReverbDelight` 0x7A `0x140ac5e50`), `reader_schemas.tsv:172,182,222,226`.
-- Parameter bindings: `docs/re/kontakt-bindings/fx_dynamics_dist_tape.tsv:25-33` (Jump), `fx_other.tsv:177-188` (Van51), `fx_other.tsv:117-118` and `fx_raum_delight_psyche_vibrato_phasis_replika.tsv:101-120` (Reverb Delight). No binding rows exist for Super Fast 100.
-- Twang core: `crates/sampler-core/src/dsp/color/amp/twang.rs` (header lists the addresses: init `0x1408de330`, apply `0x140adf660`, kernel `0x140ade440`), config mapping `crates/sampler-kontakt/src/effects/color.rs:95-96`, `AmpModel::Twang` at `crates/sampler-ir/src/fx/color.rs:131-132`, vector test `matches_the_native_twang` against `kontakt_twang_vectors.f32le`.
-- Current diagnostics: `crates/sampler-kontakt/src/effects/color.rs:195-201` (`unproved` for `0x4d | 0x52 | 0x76`, amp/cabinet/pedal cores not extracted); `crates/sampler-kontakt/src/effects/space.rs:246` (Reverb Delight: field binding measured, MONO unproved because field 11 bytes are unstable, amp, tremolo and spring-reverb cores not extracted).
-- Inventory: `docs/re/DSP_SYSTEM_INVENTORY.md:147` lists all five under Amplifiers. `docs/diagnostics/20261019-installed-gap-inventory.md:78` names the Jump amplifier models as the open gap.
+- Vtables: MSVC RTTI in `re-binaries/Kontakt8.exe` (static parse with pefile; `tools/kontakt-oracle/rtti_vtables.py`), image base `0x140000000`.
+- Functions: `source/kontakt8/<bucket>.c`, bucket = address with the low 16 bits cleared (e.g. `0140a80000.c` for `0x140a8xxxx`).
 
-## Per module
+| Class | Vtable | Ctor | Reader |
+|---|---|---|---|
+| BEffectJump | `0x144fc0330` | `0x140a86880` | `0x140d01e10` |
+| BEffectVan51 | `0x144fc0570` | `0x140a86fb0` | `0x140d033e0` |
+| BEffectReverbDelight | `0x144fc1548` | `0x140a86cc0` | `0x140ac5e50` |
+| BEffectSuperFast100 | `0x144f16cd0` | `0x1407c8620`-area (not yet confirmed) | `0x140ac61a0` |
 
-### Twang (0x23): implemented, Kontakt 8 evidence from before this unit
+## Reader layouts (confirmed)
 
-- Params (core order): volume, treble, mid, bass, bright, mono. Knobs 0..3 are clamped to 0..1; bright and mono are booleans.
-- Engine: `AmpModel::Twang` with the four-lane tube stage, tone stack, push-pull power stage with ripple sag, and 4x oversampling. Shared shape with AC Box, own tables.
-- Gap: the four static tables (`0x144f3d900..0x144f3f900`) and the reset operating point are dumped under kemu, not re-derived. The reset runs before knobs are applied in the native code. Both are noted as `ponytail:` debt in `twang.rs`.
-- Action here: none. Keep the existing vector test.
+All four readers are `param_3 == 0x10` typed. Float fields read by `FUN_142a780f0`, byte fields by `FUN_142a780c0`. Offsets are into the effect object.
 
-### Jump (0x4d): not modelled
+- **Jump** (`0x140d01e10`): 6 floats at `0x08,0x0c,0x10,0x14,0x18,0x1c`, then 2 bytes at `0x20,0x21`. Matches the binding table: PREAMP 0, MASTER 1, PRESENCE 2, TREBLE 3, MID 4, BASS 5, HIGAIN (`0x20`, field 6, not yet bound), MONO (`0x21`, field 7).
+- **Van51** (`0x140d033e0`): 8 floats at `0x08..0x24` (PREGAINRHYTHM, PREGAINLEAD, BASS, MID, TREBLE, POSTGAIN, RESONANCE, PRESENCE), then 5 bytes at `0x28..0x2c` (LEADCHANNEL 0x28, HIGAIN 0x29; `0x2a..0x2c` unbound). Matches `fx_other.tsv`.
+- **Super Fast 100** (`0x140ac61a0`): 8 floats at `0x08..0x24`, then 4 bytes at `0x28..0x2b`. No binding rows yet, so the names are unknown.
+- **Reverb Delight** (`0x140ac5e50`): floats at `0x08,0x0c,0x10`, BRIGHT byte at `0x14`, floats at `0x18,0x1c,0x20`, TREM_ON byte at `0x24`, further floats and bytes up to VERB_ON at `0x30` and MONO at `0x31`. Matches the bindings; the `0x50`/`0x5c`/`0x60` floats are read but not yet bound.
 
-- Params: preamp (`JMP_PREAMP`, field 0), master (`JMP_MASTER`, 1), presence (2), mid (4), treble (3), bass (5), mono (7, bool). Stored types are float 0..1 identity except mono.
-- Missing: the preamp, tone stack and power/cabinet cores and their tables. Topology and ordering are unknown, so no `AmpModel` variant is added. Adding one would be fabrication.
-- Diagnostic: already reported as unproved (`effects/color.rs:197`). The gap table entry is the unit's main output.
+## Jump: the core is a JCM800-style chain (confirmed names, not yet the laws)
 
-### Van51 (0x52): not modelled
+The constructor `0x140a86880` builds these embedded objects (class names from RTTI):
+`WaveShapingTables::JCM800BoostStage`, `JCM800Stage1`, `JCM800Stage2`, `JCM800SplitterP`, `JCM800SplitterN`, `JCM800PowerTube`, plus `TableBase` tables. The ctor also writes initial state: `0x3f800000` (1.0) and `0x3cf89219`/`0x3d0186e3` float constants, and a `0x3f000000` (0.5) group at `0x44a4..0x44b4`. These are the starting values before knobs are applied.
 
-- Params: pregain rhythm (`V5_PREGAINRHYTHM`, field 0), pregain lead (1), bass (2), mid (3), treble (4), postgain (5), resonance (6), presence (7), lead channel (8, bool), high gain (9, bool). Floats are identity 0..1.
-- Missing: the two-channel (rhythm / lead) preamp, channel switch behaviour, resonance and presence stages, and the power stage. None extracted.
-- Diagnostic: already reported as unproved.
+So Jump is a preamp chain: boost stage, two gain stages, a P/N splitter feeding a push-pull power tube table, then the tone and presence stages. The table data and the knob laws are not yet read.
 
-### Super Fast 100 (0x76): not modelled, binding not measured
+## Vtable slots (Jump, not yet bound to roles)
 
-- Reader: `Fx8Bx4` (8 bytes plus 4 bytes), object at `0x140ac61a0`.
-- Missing: no `$ENGINE_PAR_*` binding rows, so parameter names, indices and units are unknown. The core is also unknown. Diagnostic lives in `effects/color.rs:197`.
-- Next step once READY exists: read the binding function and the apply/kernel functions; measure field ordering from the native reader.
-
-### Reverb Delight (0x7a): binding measured, cores missing
-
-- Measured params: volume, bass, treble, bright (bool), tremolo on/off (bool), tremolo speed (with unit table: 5:4, 6:2.6667, 7:2, 8:1.3333, 9:1, 10:0.6667, 12:0.5, 13:0.333 as recorded in `timemod-reads.tsv:4`), tremolo depth, tremolo sag, reverb on (bool), verb type (bool), verb volume, mono (unstable field 11, unproved). Output gain uses the standard `pow a=16 p=3` law.
-- Missing: the amplitude/tremolo core, the spring-reverb core, and the MONO field's stable encoding. The reverb core belongs in the shared reverb family, not a new copy.
-- Diagnostic: `effects/space.rs:246`.
+Slots 0..39 of `0x144fc0330` point at: `0x140a92f80` (copy/assign-style), `0x140a9bd30` (2902 bytes, the largest, likely the kernel), `0x140a96190` (state copy, read), `0x140ab7e10`, `0x140a98850`, `0x140aa33c0`, `0x140a93ae0`, `0x140a94970`, `0x140a934c0`. Small thunks (under 15 bytes) are also present. Next step: read `0x140a9bd30` and `0x140ab7e10` for the process and apply entry points.
 
 ## Gap table
 
-| Module | Native id | Engine core (`crates/sampler-core/src/dsp/`) | Format mapping | Bindings | Missing | Test |
+| Module | Native id | Engine core (`crates/sampler-core/src/dsp/`) | Format mapping | Reader layout | Process / laws | Tests |
 |---|---|---|---|---|---|---|
-| Twang | 0x23 | covered (`color/amp/twang.rs`) | covered (`effects/color.rs:96`) | measured | tables + reset point dumped, not re-derived | `matches_the_native_twang` |
-| Jump | 0x4d | none | unmapped (diagnosed) | measured | preamp, tone stack, power/cabinet cores | none |
-| Van51 | 0x52 | none | unmapped (diagnosed) | measured | two-channel preamp, switch, resonance/presence, power | none |
-| Super Fast 100 | 0x76 | none | unmapped (diagnosed) | not measured | bindings, core | none |
-| Reverb Delight | 0x7a | none (shared reverb family would host it) | partial, MONO unproved | measured (except MONO) | tremolo core, spring reverb, MONO | none |
+| Twang | 0x23 | covered (`color/amp/twang.rs`) | covered (`effects/color.rs:96`) | measured | tables dumped under kemu, not re-derived | `matches_the_native_twang` |
+| Jump | 0x4d | none | unmapped, diagnosed | confirmed | JCM800 chain located, tables and laws not read | none |
+| Van51 | 0x52 | none | unmapped, diagnosed | confirmed | not read | none |
+| Super Fast 100 | 0x76 | none | unmapped, diagnosed | confirmed (layout only) | not read; no bindings | none |
+| Reverb Delight | 0x7a | none | partial (MONO unproved) | confirmed | not read | none |
+
+## Measurement (Wine oracle, ramp stimulus, 2026-10-21)
+
+Harness: `tools/kontakt-oracle/stimrender.py` with specs from `tools/kontakt-oracle/ampspecs.py`. Renders are in `~/.cache/kontra-amps-b/` and are not committed.
+
+- Reverb Delight: all 31 steps rendered. Default peak 0.567 on a 0.766 bypass peak. Knob sweeps change the tail only.
+- Jump: default peak 0.194. PREAMP 0 peak 0.021. Steps after PREAMP have no audio above threshold.
+- Van51: default peak 0.471. PREGAINRHYTHM 0 near silence. Steps after that have no audio above threshold.
+
+The NaN steps are not a law. The cause is unconfirmed.
 
 ## Open questions
 
-- Confirm Jump and Van51 knob ordering against the native reader once the export is ready.
-- Confirm whether Jump and Van51 share the same preamp/power topology (expected in one shared amp family, not two copies).
-- MONO field 11 of Reverb Delight: which encoding is stable across saves.
+- Jump: read the process entry and the stage tables. Confirm the knob laws (`0x140a9bd30`, `0x140ab7e10`).
+- Van51: find its vtable process entry, then the channel switch and the resonance and presence stages.
+- Super Fast 100: find the bindings (none yet). Then its process entry.
+- Reverb Delight: the tremolo and spring cores, and the MONO field encoding.
+- Harness: NaN gaps in Jump and Van51 sweeps.
 
-No code change in this unit. Adding any of the four unmodelled modules needs the native cores first; the existing diagnostics already report them as unproved rather than ignoring them.
+## Status
 
-## Wine-oracle measurement (this unit, 2026-10-21)
-
-Harness: `tools/kontakt-oracle/stimrender.py` with specs from `tools/kontakt-oracle/ampspecs.py` (ramp stimulus, 200 Hz 0 -> 1.0, one knob at 0 / mid / max per step, Kontakt 8 under Wine, output to a PipeWire monitor). Renders live in `~/.cache/kontra-amps-b/` (not committed).
-
-- Reverb Delight: all 31 steps rendered. Default-knob peak 0.567 on a 0.766 bypass peak. The knob sweeps change the tail only (RMS 0.20-0.21 across steps), so the sweep cannot yet separate the tremolo/spring cores. Not fitted.
-- Jump: default peak 0.194 (bypass 0.757). PREAMP 0 gives peak 0.021, PREAMP mid and max change the level. Steps after `JMP_PREAMP` returned no audio above threshold, so BASS, MID, TREBLE, PRESENCE, MASTER and MONO are not measured yet.
-- Van51: default peak 0.471 (bypass 0.766). PREGAINRHYTHM 0 gives near silence (RMS 0.0018). Steps after `V5_PREGAINRHYTHM` have no audio above threshold; cause not yet known.
-- Super Fast 100: not rendered (no bindings).
-
-Open harness issue: a missing-audio step is recorded as NaN by `stimrender.py`. Jump and Van51 lose audio after their first few knob steps, but Reverb Delight does not. The cause (silence from the knob value, a threshold miss, or the MIDI/step timing) is unconfirmed, so the NaN gaps are not evidence of a law.
-
-Status: no shared-engine change in this unit yet. Measurement is partial and the universal amp chain (pre-filter, transfer, post-filter, tone stack) is not built.
+No shared-engine change in this unit yet. The four unmodelled modules stay diagnosed as unproved. The engine work needs the process entries above read first. That is more than one session of work.
