@@ -987,10 +987,9 @@ pub(crate) fn chain_with(
                 // Formant II is the same core on its second table (filter.rs).
                 let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
                 if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
-                    if *kind == 91 {
-                        if dynamic.is_some() {
-                            notes.push(("Formant II live controls".into(), "script/modulation lanes exist for Formant I only".into(), sampler_ir::Reason::NotModeled));
-                        }
+                    // Formant II with script or modulation lanes takes the live path below on the
+                    // second table; the static one keeps the filter-bank mapping and its fidelity.
+                    if *kind == 91 && dynamic.is_none() {
                         match filter(91, knobs[0], knobs[1], &knobs[2..]) {
                             Ok((processors, mapped)) => {
                                 out.processors.extend(processors);
@@ -1006,6 +1005,7 @@ pub(crate) fn chain_with(
                         out.lane_slots.push((fx.slot, out.processors.len()));
                         out.processors.push(sampler_ir::Processor::LiveFormant {
                             knobs,
+                            second: *kind == 91,
                             address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
                         });
                         combined = gain;
