@@ -18,7 +18,7 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
 |---|---|---|---|
 | Filters/EQ, 1/2/3-band legacy (`Filter` kinds 22, 23, 24) | `BParFXFilter`, `ENGINE_PAR_FREQ1..3`, `BW1..3`, `GAIN1..3` | `Law::KontaktLegacy` (peak only), one config per band, serial | Proved, see 1.1 |
 | Filters/Solid G-EQ (`BEffectSSLGEQ`, module `0x44`) | `BParFXSSLGEQ`, `ENGINE_PAR_SEQ_*` (16 lanes) | `Law::Solid(SolidSection)`, one config per saved band | Partly proved, see 1.2 |
-| Pro EQ | no verified law (`KONTAKT_DSP_LAWS.md`, "Pro EQ") | none | Not started |
+| Pro EQ | not in Kontakt 8 | none | No Pro EQ strings in the decompile, no Pro EQ preset under `Filters/` (section 6) |
 | Output gain (`ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN`, `pow a=16 p=3`) | `BParFX` field 4 | generic effect output gain, `effects/mod.rs:225` | Mapped for all effects, not EQ-specific |
 
 ### 1.1 Legacy 1/2/3-band EQ (Filter kinds 22, 23, 24)
@@ -99,7 +99,7 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
 | G6 | Solid coefficient smoothing (20 ms) | `EqBand::ramp`, one-pole glide per block (`generic.rs`) | exact native stepping (block vs sample) unconfirmed | setter from decompile, or sample-accurate oracle steps |
 | G7 | Solid live switches (LF/HF bell, LP/HP on) | saved and init writes only (`apply_writes`), live lane absent | runtime kind/section change | Kontakt step test on switch flips, and decompile of the setter |
 | G8 | Solid bank selection | bank 0 applied (matches measurement) | none for Kontakt 8 | — |
-| G9 | Pro EQ | nothing | whole module | Pro EQ law from decompile and measurement |
+| G9 | Pro EQ | n/a | not a Kontakt 8 module (section 6) | none |
 | G10 | Output gain law | generic effect output gain (`effects/mod.rs:225`) | none found for EQ | the mapping `16·x³` linear is recorded in the TSV; confirm it in a test |
 | G11 | Settle time / sub-300 ms steps | not applicable | measurement needs sample-accurate CC timing | oracle rendering with sample-accurate events |
 
