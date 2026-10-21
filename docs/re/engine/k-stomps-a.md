@@ -42,6 +42,15 @@ Bindings: `docs/re/kontakt-bindings/fx_other.tsv` covers Cat and DStortion; `fx_
 - Six modules: high for the mapping (reader layout and core order documented in code), medium-high for DSP (kemu vectors and native-address citations already in the tree; not re-verified in this unit).
 - Chainsaw: none. Its record reader is shared with Big Fuzz, but sharing a reader does not establish a shared DSP, so no Big Fuzz knobs are reused.
 
+## Public spec (Kontakt 8 manual, Effect Reference, Chainsaw)
+
+Controls: Distortion (input gain; range limited, distortion present at the lowest setting), Low and High (peak filters, max +20 dB), Level (distortion output), Output (module output). No pedal-mode or mono control is documented. This fixes the parameter surface and the topology order (gain, nonlinear stage, peak EQ, level), but not any curve, range, default, or law. Those need measurement or decompiled code.
+
+## Measurement blocker
+
+- The Wine oracle (`tools/kontakt-oracle`) instantiates effects only via `kt.load_fx_preset` / `kt.insert_fx`. No Chainsaw preset exists in the installed factory library, so Chainsaw cannot be inserted without authoring a `.nkp`. No oracle probe exists for that yet.
+- KSP has no `ENGINE_PAR_CHAINSAW_*` names, so the write surface is also unknown.
+
 ## Open items
 
 - Re-run this unit's Chainsaw RE once `source/kontakt8/READY` exists: find the ctor, apply and kernel with `rg -n "BParFXChainsaw|ChainSaw|Chainsaw" source/kontakt8`, record the parameter laws, then add an `AmpModel::Chainsaw` core and mapping.
