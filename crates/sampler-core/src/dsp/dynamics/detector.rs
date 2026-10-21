@@ -227,6 +227,8 @@ pub(super) struct Hilbert<'a> {
     cells: &'a mut [[f64; 2]; HILBERT_CELLS],
     n: usize,
     env: [f32; 2],
+    /// Keyed: the drive (gain, offset) applied to the key instead of the audio.
+    key: Option<(f32, f32)>,
 }
 
 pub(super) const HILBERT_CELLS: usize = 7 * 16;
@@ -237,17 +239,21 @@ impl<'a> Hilbert<'a> {
         window: Window<'a>,
         cells: &'a mut [[f64; 2]],
         state: &ProcessorState,
+        key: Option<(f32, f32)>,
     ) -> Self {
         let (allpass, delay, rise, fall) = coefficients;
         let env = [state.aux[1] as f32, state.aux[2] as f32];
-        Self { allpass, delay, rise, fall, window, cells: cells.try_into().expect("Hilbert cells"), n: state.aux[0] as usize, env }
+        Self { allpass, delay, rise, fall, window, cells: cells.try_into().expect("Hilbert cells"), n: state.aux[0] as usize, env, key }
     }
 }
 
 impl Stage for Hilbert<'_> {
     #[inline(always)]
     fn tick(&mut self, f: &mut Frame) {
-        let driven = each(f.audio, |v| v as f32);
+        let driven = match self.key {
+            Some((gain, offset)) => each(f.key, |v| gain * v as f32 + offset),
+            None => each(f.audio, |v| v as f32),
+        };
         f.peak = self.window.push(f64::from(driven[0].abs().max(driven[1].abs())));
         let mut lanes = [driven[0], driven[0], driven[1], driven[1]];
         let mut last_input = lanes;

@@ -4066,7 +4066,7 @@ fn compressor_editors_use_each_laws_physical_domain_without_invalidating_loads()
         (Law::KontaktPro(native), 4),
         (Law::KontaktFeedback { native: Native { threshold_db: 1.7782794, ratio: 4.8 }, high_quality: true }, 4),
         (Law::KontaktLimiter(Native { threshold_db: 0.0, ratio: 0.0 }), 2),
-        (Law::KontaktHilbert(Native { threshold_db: 0.5, ratio: 0.8 }), 0),
+        (Law::KontaktHilbert(Native { threshold_db: 0.5, ratio: 0.8 }, ir::fx::dynamics::Key::Internal), 0),
     ] {
         let mut i = instrument();
         i.sequences.clear();
