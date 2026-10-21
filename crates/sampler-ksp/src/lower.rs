@@ -2552,18 +2552,27 @@ impl Gen<'_, '_> {
                 true
             }
             SetEnginePar | GetEnginePar => {
-                // Ascending registers: the value's evaluation uses those above it.
-                if builtin == SetEnginePar {
-                    self.arg(args, 1, dst)?;
-                }
-                self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
-                self.emit(I::Op(Op::EngineParameter {
-                    address: dst + 1,
-                    local: dst,
-                    write: builtin == SetEnginePar,
-                }))?;
-                if builtin == SetEnginePar {
-                    self.set(dst, 0)?;
+                let group_arg = if builtin == SetEnginePar { 2 } else { 1 };
+                match self.engine_par_rejection(args, group_arg) {
+                    Some(why) => {
+                        self.ignore(builtin, why);
+                        self.set(dst, 0)?;
+                    }
+                    None => {
+                        // Ascending registers: the value's evaluation uses those above it.
+                        if builtin == SetEnginePar {
+                            self.arg(args, 1, dst)?;
+                        }
+                        self.engine_address(args, dst + 1, builtin == SetEnginePar)?;
+                        self.emit(I::Op(Op::EngineParameter {
+                            address: dst + 1,
+                            local: dst,
+                            write: builtin == SetEnginePar,
+                        }))?;
+                        if builtin == SetEnginePar {
+                            self.set(dst, 0)?;
+                        }
+                    }
                 }
                 true
             }
@@ -3159,6 +3168,24 @@ impl Gen<'_, '_> {
     fn engine_par_name(&self, args: &[Arg]) -> Option<String> {
         let name = crate::eval::symbol_name(self.u.hir, self.const_int(args, 0)?)?;
         Some(name.trim_start_matches('$').to_string())
+    }
+    /// Why an engine-parameter access cannot be honoured, when that is known at build time.
+    /// A catalog constant without an engine id is Kontakt's, not a typo, so it is named as
+    /// unsupported. A constant group index outside `-1..groups` is Kontakt's "Invalid group
+    /// index!"; with no groups declared the index is not checked.
+    fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<&'static str> {
+        if let Some(name) = self.engine_par_name(args) {
+            if name.starts_with("ENGINE_PAR_")
+                && sampler_core::engine_parameter_id(&name).is_none()
+                && crate::builtins::is_vendor_constant(&format!("${name}"))
+            {
+                return Some("engine parameter is not supported; ignored");
+            }
+        }
+        let group = self.const_int(args, group_arg)?;
+        let groups = self.u.groups.len() as i32;
+        (!self.u.groups.is_empty() && (group < -1 || group >= groups))
+            .then_some("invalid group index; ignored")
     }
 
     /// AHDSR times a script sets on a modulator (`generic` -1).

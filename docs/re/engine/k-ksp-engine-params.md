@@ -64,7 +64,7 @@ values stay repo-evidence only until the oracle is run.
 | `set_engine_par` / `get_engine_par` | yes, approximate | exact error reporting (fault text is not stored; `EngineParameterOutcome` is silent) | decomp error paths |
 | `get_engine_par_disp` | yes | native conversion check | repo only |
 | `set_engine_par_m`, `get_engine_par_m`, `get_engine_par_disp_m` | no | slot and output-channel addressing, argument order | decomp (names, slot range, error paths); arg order unconfirmed |
-| Unsupported-parameter diagnosis | outcome record, no message | script-visible fault with native text | decomp error strings |
+| Unsupported-parameter diagnosis | build-time warning for a catalog `ENGINE_PAR_*` with no engine id, and for a constant group index outside `-1..groups` (`engine_par_rejection`, `tests/engine_par_unsupported.rs`); write dropped, read 0 | runtime fault with native text; `on init` bodies are evaluated (no warning yet); `get_engine_par_disp` not checked | decomp error strings |
 | `get_engine_par_disp_ext` | builtin exists | confirm it is native | not in decompile |
 
 ## Next
@@ -73,7 +73,7 @@ values stay repo-evidence only until the oracle is run.
    in `0140780000.c` around the get_engine_par_m dispatch (~line 3588).
 2. Add the three `_m` builtins behind the existing slot/outcome path; keep the
    code additive.
-3. Attach native fault text to `EngineParameterOutcome` (diagnosed, not
-   ignored).
+3. Surface the same diagnostic for `get_engine_par_disp` and for `on init`
+   evaluation (eval.rs), and attach native fault text to `EngineParameterOutcome`.
 4. Confirm ids and display strings with a Wine-oracle dump, then move the row
    to `parity`.
