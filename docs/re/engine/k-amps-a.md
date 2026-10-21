@@ -56,10 +56,11 @@ Size, air, treble and bass (bass and treble stored -1..1), type clamped 0..=10. 
 - Manual: Drive, Bass (becomes passive high-pass cutoff in Passive EQ mode), Mid (Electric Grand only), Treble, Rate, Amount, Width, Mono, Output. Electric C mode added in 8.8.
 - Gap: all of it. Needs a probe run (`tools/kontakt-oracle/probe_fx.py scan`) to get bindings.
 
-### HotSolo (0x54, version 0x10) — missing
-- Fields (10 binding rows, version 0x10, reader `Fx8BB`): overdrive channel switch, bass, mid, treble, presence, norm pre, ovrd pre, master, depth, output, mono.
-- Manual: two preamp channels, Depth controls low-range response in the power amp.
-- Gap: two-channel preamp, tone stack, power-amp stage. Unsupported.
+### HotSolo (0x54, version 0x10) — located, not modelled
+- Fields (reader 0x140d01b50, `Fx8BB`): eight floats at record +0x08..+0x24 (prenormal, preoverdrive, master, presence, depth, treble, mid, bass) and two bools at +0x28 (overdrive channel) and +0x29 (mono). Eight rows are in `fx_other.tsv`; the two bools have no rows yet. The earlier "output" field is not in the reader.
+- DSP: class vtable 0x144fc0900; block process is slot 23 (0x140aa2ae0), kernel 0x140aab1e0. Details and measurements: [k-amps-a-hotsolo.md](k-amps-a-hotsolo.md).
+- Measured: overdrive and mono reroute the output, master and prenormal mute the left channel, and the right channel stays close to the bypass. The bypass render carries a 0.76766 scale and a 51-sample delay.
+- Gap: coefficient laws (0x140ad5440, 0x140ad44f0), kernel topology, knob-cache source. Unsupported.
 
 ## Gap table
 
@@ -70,7 +71,7 @@ Size, air, treble and bass (bass and treble stored -1..1), type clamped 0..=10. 
 | Bass Invader | none | yes (12) | yes | none | missing |
 | Bass Pro | none | yes (24) | yes | none | missing |
 | EP Preamps | none | no | yes | none | missing |
-| HotSolo | none | yes (10) | yes | none | missing |
+| HotSolo | none | yes (8; overdrive and mono bools unbound) | yes | vtable and block process located; laws not recovered | missing |
 
 Shared-engine pieces that might serve the missing models (not proved for them): `color::Curve` waveshapers, `eq_family` (Solid G-EQ fit), `filter` biquads, `voice_mod` tone path. Using any of them would need evidence for each model.
 
