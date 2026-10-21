@@ -2,6 +2,19 @@
 //! not dropped silently. Groups are declared so the group-index check runs.
 use sampler_ksp::{Environment, Limits};
 
+fn compile_result(source: &str) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
+    sampler_ksp::compile_with(
+        source,
+        48000,
+        Limits::LIBRARY,
+        &[],
+        &Environment {
+            groups: vec!["Group 0".into()],
+            ..Environment::default()
+        },
+    )
+}
+
 fn warnings(source: &str) -> Vec<String> {
     sampler_ksp::compile_with(
         source,
@@ -66,4 +79,15 @@ fn supported_engine_parameter_in_range_is_not_reported() {
 fn display_query_of_a_catalog_parameter_without_an_id_is_reported() {
     let w = warnings("on init declare @t end on on note @t := get_engine_par_disp($ENGINE_PAR_WT_MOD_AMOUNT, -1, -1, -1) end on");
     assert!(w.iter().any(|m| m.contains("get_engine_par_disp") && m.contains("not supported")), "{w:?}");
+}
+
+#[test]
+fn multi_script_only_engine_parameter_variants_are_compile_errors() {
+    for source in [
+        "on note set_engine_par_m($ENGINE_PAR_VOLUME, 0, 0, -1, -1) end on",
+        "on init declare @v end on on note @v := get_engine_par_m($ENGINE_PAR_VOLUME, 0, -1, -1) end on",
+    ] {
+        let err = compile_result(source).err().expect("_m is multi-script only");
+        assert!(format!("{err}").contains("can only be used in a multi script"), "{err}");
+    }
 }

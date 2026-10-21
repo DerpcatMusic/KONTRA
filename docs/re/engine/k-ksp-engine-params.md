@@ -89,6 +89,26 @@ values stay repo-evidence only until the oracle is run.
   build-time diagnostic does not reach them. Needs a context-independent HIR
   pass (none exists yet).
 
+## Native evidence from the PE (2026-10-22)
+
+- `$ENGINE_PAR_*` names are in `.rdata`; 708 are registered by code. Each
+  registration is `mov dword [rbp+X], <value>` then `lea r8,[rbp+X]`,
+  `lea rdx,[name]`, `call FUN_140775ef0`. The value is the script constant
+  (`$ENGINE_PAR_VOLUME` = 422, `$ENGINE_PAR_PAN` = 423). Table:
+  `docs/re/kontakt-bindings/engine_par_native_registration.tsv`.
+- 690 of the 708 native names have a repo id. The 18 without one are listed
+  in that TSV with `in_repo_id_table=no`. None has an engine consumer yet,
+  so no id is added (an id with no consumer would hide the diagnostic).
+- Builtin names (`set_engine_par_m` and the rest) are not stored as text in
+  the PE, so the builtin table is not recoverable from strings.
+- `set_engine_par_m` builds a 5-argument node (type 0x3b) and
+  `get_engine_par_m` a 4-argument node (type 0x3c), the same arities as
+  `set_engine_par` / `get_engine_par`. Both report
+  `can only be used in a multi script!` at compile time. This repo has no
+  multi-script concept, so both are compile errors here.
+- `get_engine_par_disp_m` is not implemented: its arity and multi-script
+  message were not confirmed.
+
 ## Next
 
 1. Confirm the `_m` argument order: follow `FUN_140747bc0` / `FUN_14098d680`
