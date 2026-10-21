@@ -403,7 +403,14 @@ struct ClapGui {
     editor: Option<Box<dyn Editor>>,
     /// Whether the GUI has been created via the gui extension.
     gui_created: bool,
+    /// Created floating: the editor's own top-level window, opened by `show`.
+    floating: bool,
 }
+
+/// The parent handle that asks an editor for a floating window. moose-core has
+/// no floating handle; `X11(0)` is never a real window, so `MuiEditor` reads it
+/// as "its own top-level". Linux only: the other platforms offer no floating GUI.
+const FLOATING_WINDOW: RawWindowHandle = RawWindowHandle::X11(0);
 
 impl<P: PluginExport> ClapPluginData<P> {
     /// The scale between the host's physical pixels and the editor's logical
@@ -4615,20 +4622,26 @@ unsafe extern "C" fn gui_is_api_supported<P: PluginExport>(
     unsafe { gui_api_supported(api, is_floating) }
 }
 
+#[cfg_attr(
+    target_os = "linux",
+    expect(unused_variables, reason = "X11 is offered embedded and floating alike")
+)]
 unsafe fn gui_api_supported(api: *const c_char, is_floating: bool) -> bool {
     unsafe {
-        if is_floating || api.is_null() {
+        if api.is_null() {
             return false;
         }
         let api = CStr::from_ptr(api);
         #[cfg(target_os = "macos")]
         if api == CLAP_WINDOW_API_COCOA {
-            return true;
+            return !is_floating;
         }
         #[cfg(target_os = "windows")]
         if api == CLAP_WINDOW_API_WIN32 {
-            return true;
+            return !is_floating;
         }
+        // X11 is embedded in a host's X window (XWayland included), or floating
+        // as the editor's own top-level for a host that cannot embed (Wayland).
         #[cfg(target_os = "linux")]
         if api == CLAP_WINDOW_API_X11 {
             return true;
@@ -4668,8 +4681,8 @@ unsafe extern "C" fn gui_get_preferred_api<P: PluginExport>(
 
 unsafe extern "C" fn gui_create<P: PluginExport>(
     plugin: *const clap_plugin,
-    _api: *const c_char,
-    _is_floating: bool,
+    api: *const c_char,
+    is_floating: bool,
 ) -> bool {
     // The editor builder is author code; firewall its construction so a
     // panic can't unwind across the C ABI (false = "no editor created").
@@ -4679,6 +4692,12 @@ unsafe extern "C" fn gui_create<P: PluginExport>(
         if gui.gui_created {
             return true;
         }
+        // Refuse a window API or mode this plug-in does not offer. Accepting
+        // it would build an editor no `set_parent` or `show` can ever open.
+        if !gui_api_supported(api, is_floating) {
+            return false;
+        }
+        gui.floating = is_floating;
         // Built through the cached lock-free editor factory, so opening
         // the GUI never stalls the audio thread (and `--shell` rebuilds
         // from the reloaded dylib).
@@ -4705,6 +4724,7 @@ unsafe extern "C" fn gui_destroy<P: PluginExport>(plugin: *const clap_plugin) {
         let editor = {
             let mut gui = data.gui.enter();
             gui.gui_created = false;
+            gui.floating = false;
             gui.editor.take()
         };
         // Both `editor.close()` and the `Box<dyn Editor>` drop run author
@@ -4835,20 +4855,11 @@ unsafe extern "C" fn gui_set_parent<P: PluginExport>(
     })
 }
 
-unsafe fn gui_set_parent_inner<P: PluginExport>(
-    plugin: *const clap_plugin,
-    window: *const clap_window,
-) -> bool {
+/// The editor's side of this plug-in: the closures it reads and writes
+/// parameters, state and transport through. Embedded and floating windows share it.
+unsafe fn gui_plugin_context<P: PluginExport>(plugin: *const clap_plugin) -> PluginContext {
     unsafe {
-        let Some(parent_ptr) = gui_parent_pointer(window) else {
-            return false;
-        };
         let data = data_from_plugin::<P>(plugin);
-        let mut gui = data.gui.enter();
-        let Some(editor) = gui.editor.as_mut() else {
-            return false;
-        };
-
         let params = Arc::clone(&data.params_arc);
         let meter_store = Arc::clone(&data.meter_store);
         let snapshot = Arc::clone(&data.snapshot);
@@ -4884,7 +4895,7 @@ unsafe fn gui_set_parent_inner<P: PluginExport>(
         let task_spawner_for_ctx = data.task_spawner.clone();
         let pending_state_for_set = data.pending_state.clone();
         let transport_slot = data.transport_slot.clone();
-        let context = PluginContext::from_closures(
+        PluginContext::from_closures(
             ClosureBridge {
                 begin_edit: Box::new(move |id| {
                     // Push can fail only if the audio thread hasn't
@@ -4971,7 +4982,28 @@ unsafe fn gui_set_parent_inner<P: PluginExport>(
             },
             params_for_ctx,
         )
-        .with_tasks(task_spawner_for_ctx);
+        .with_tasks(task_spawner_for_ctx)
+    }
+}
+
+unsafe fn gui_set_parent_inner<P: PluginExport>(
+    plugin: *const clap_plugin,
+    window: *const clap_window,
+) -> bool {
+    unsafe {
+        let Some(parent_ptr) = gui_parent_pointer(window) else {
+            return false;
+        };
+        let data = data_from_plugin::<P>(plugin);
+        let mut gui = data.gui.enter();
+        // A floating GUI is its own window: the host does not parent it.
+        if gui.floating {
+            return false;
+        }
+        let Some(editor) = gui.editor.as_mut() else {
+            return false;
+        };
+        let context = gui_plugin_context::<P>(plugin);
 
         #[cfg(target_os = "macos")]
         let handle = RawWindowHandle::AppKit(parent_ptr);
@@ -4999,6 +5031,11 @@ unsafe fn gui_set_parent_inner<P: PluginExport>(
         // override the origin we set here.
         #[cfg(target_os = "macos")]
         anchor_child_to_top(parent_ptr);
+        // `open` returns nothing. On Linux the window's own report says whether
+        // it opened: a parent that is not a window leaves none, and the host must hear it.
+        #[cfg(target_os = "linux")]
+        return editor.window_scale().is_some();
+        #[cfg(not(target_os = "linux"))]
         true
     }
 }
@@ -5092,12 +5129,50 @@ unsafe fn anchor_child_to_top(parent: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn gui_show<P: PluginExport>(_plugin: *const clap_plugin) -> bool {
-    true
+/// A floating GUI's window opens here. An embedded one is opened by `set_parent`
+/// and is already shown, so there is nothing to do.
+unsafe extern "C" fn gui_show<P: PluginExport>(plugin: *const clap_plugin) -> bool {
+    // `Editor::open` and `window_scale` are author code; firewall them (false = "not shown").
+    run_extern_callback_with::<P, bool>("CLAP", "gui_show", false, || unsafe {
+        let data = data_from_plugin::<P>(plugin);
+        let mut gui = data.gui.enter();
+        if !gui.floating {
+            return true;
+        }
+        let context = gui_plugin_context::<P>(plugin);
+        let Some(editor) = gui.editor.as_mut() else {
+            return false;
+        };
+        // The window's own state is the truth: a window the user closed with its
+        // close button is no longer open, and is reopened here.
+        if editor.window_scale().is_some() {
+            return true;
+        }
+        // `open` returns nothing, so the window's own report says whether it opened.
+        editor.open(FLOATING_WINDOW, context);
+        editor.window_scale().is_some()
+    })
 }
 
-unsafe extern "C" fn gui_hide<P: PluginExport>(_plugin: *const clap_plugin) -> bool {
-    true
+/// Closes a floating window. The editor keeps its state and reopens on `show`.
+unsafe extern "C" fn gui_hide<P: PluginExport>(plugin: *const clap_plugin) -> bool {
+    // The editor leaves the cell while it closes, as `gui_destroy` does, so its
+    // teardown cannot re-enter the cell.
+    run_extern_callback_with::<P, bool>("CLAP", "gui_hide", false, || unsafe {
+        let data = data_from_plugin::<P>(plugin);
+        let mut editor = {
+            let mut gui = data.gui.enter();
+            if !gui.floating {
+                return true;
+            }
+            gui.editor.take()
+        };
+        if let Some(editor) = editor.as_mut() {
+            editor.close();
+        }
+        data.gui.enter().editor = editor;
+        true
+    })
 }
 
 /// Reports horizontal/vertical/aspect-ratio constraints from the
@@ -5133,10 +5208,10 @@ unsafe extern "C" fn gui_get_resize_hints<P: PluginExport>(
     })
 }
 
-/// Stub: floating windows aren't supported (`is_api_supported` rejects
-/// `is_floating=true`); `set_transient` is meaningless when the GUI is
-/// always embedded. Present as `Some` for the same Bitwig probe-quirk
-/// described on `gui_get_resize_hints`.
+/// Not supported: a floating window is its own top-level and is not made
+/// transient for the host's window, so the host gets `false` and carries on.
+/// Present as `Some` for the same Bitwig probe-quirk described on
+/// `gui_get_resize_hints`.
 unsafe extern "C" fn gui_set_transient<P: PluginExport>(
     _plugin: *const clap_plugin,
     _window: *const clap_window,
@@ -5607,6 +5682,7 @@ pub unsafe fn create_plugin_instance<P: PluginExport>(
             gui: PluginCell::new(ClapGui {
                 editor: None,
                 gui_created: false,
+                floating: false,
             }),
         });
 
@@ -5783,7 +5859,10 @@ mod gui_parent_tests {
         // the current platform's declared representation.
         unsafe {
             assert!(gui_api_supported(native.as_ptr(), false));
-            assert!(!gui_api_supported(native.as_ptr(), true));
+            // Floating is offered only where a host cannot embed: X11 on Linux.
+            assert_eq!(gui_api_supported(native.as_ptr(), true), cfg!(target_os = "linux"));
+            assert!(!gui_api_supported(c"wayland".as_ptr(), true));
+            assert!(!gui_api_supported(c"wayland".as_ptr(), false));
             assert_eq!(gui_parent_pointer(&window), Some(parent));
             for api in [c"cocoa", c"win32", c"x11", c"wayland", c"unknown", c"COCOA"] {
                 window.api = api.as_ptr();

@@ -263,6 +263,28 @@ pub fn open_threaded<V: View + Send + 'static>(
         .ok()
 }
 
+/// Linux editor window with no parent: a top-level window the window manager
+/// places, for a host that asks for a floating GUI. Same lifecycle as
+/// [`open_threaded`].
+#[cfg(target_os = "linux")]
+pub fn open_floating_threaded<V: View + Send + 'static>(
+    title: &str,
+    size: (u32, u32),
+    scale: Option<f64>,
+    shared: Arc<Mutex<Shared<V>>>,
+    requests: Arc<Requests>,
+) -> Option<baseview::ThreadedWindow> {
+    if mui::host::headless::offer(&shared, size) {
+        return None;
+    }
+    let sink = Arc::clone(&shared);
+    let settings = settings(title, size).with_scale_factor_override(scale);
+    baseview::ThreadedWindow::create(settings, build(shared, requests, false))
+        .and_then(|w| w.show().map(|()| w))
+        .map_err(|e| log(&sink, &format!("mui-baseview: floating window failed ({e})")))
+        .ok()
+}
+
 fn prepare_open<V: View + Send + 'static>(
     parent: &impl HasWindowHandle,
     title: &str,
