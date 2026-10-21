@@ -480,6 +480,11 @@ impl SmoothedGain {
     }
 }
 
+/// Mid/side encode gain for the analysis input: M = (L+R)/2, S = (L-R)/2. The reference's
+/// stereo-pair helper (0x8a3b20) takes gain 0.5 at the process site 0x8928a3 and gain 1.0 at
+/// the decode site 0x89a5bc. See research/stereo-ms-sidechain-output.md.
+const MS_ENCODE_GAIN: f32 = 0.5;
+
 /// A TPT state-variable filter (Zavalishin), the solo audition's band filter.
 /// `mode` is 0 low-pass, 1 high-pass, 2 band-pass, 3 notch.
 #[derive(Clone, Copy, Debug, Default)]
@@ -745,8 +750,8 @@ impl Engine {
         };
         let conditioned = if mid_side {
             [
-                (detector[0] + detector[1]) * std::f32::consts::FRAC_1_SQRT_2,
-                (detector[0] - detector[1]) * std::f32::consts::FRAC_1_SQRT_2,
+                (detector[0] + detector[1]) * MS_ENCODE_GAIN,
+                (detector[0] - detector[1]) * MS_ENCODE_GAIN,
             ]
         } else {
             detector
@@ -784,10 +789,8 @@ impl Engine {
         }
         self.output_cursor = (self.output_cursor + 1) % (self.plan.n * 4);
         if mid_side {
-            wet = [
-                (wet[0] + wet[1]) * std::f32::consts::FRAC_1_SQRT_2,
-                (wet[0] - wet[1]) * std::f32::consts::FRAC_1_SQRT_2,
-            ];
+            // Decode is unity: L = M + S, R = M - S (MS_ENCODE_GAIN is 1/2, so this round-trips).
+            wet = [wet[0] + wet[1], wet[0] - wet[1]];
         }
         // Dry, wet and out each ramp to their targets, one sample at a time, with
         // the reference's coefficients. Bypass is a crossfade: dry to 1, wet to 0,
@@ -819,18 +822,21 @@ impl Engine {
         // the band's own filtered signal is added in. The reference's stream is
         // main_k * g_solo + filtered, with the same gain ramps (research/dsp-remaining.md).
         let soloed = settings.solo_band.filter(|&i| settings.bands[i].used && !settings.bypass);
-        if let Some(index) = soloed {
+        // Tilt has no filter: the reference copies the main signal into the solo stream (0x89a1a0).
+        let tilt_solo = soloed.is_some_and(|i| settings.bands[i].shape == Shape::Tilt);
+        if let Some(index) = soloed.filter(|_| !tilt_solo) {
             let band = settings.bands[index];
             let frequency = crate::weighting::center_from_normalized(band.frequency);
             let width = band.width.max(1.0e-3);
-            let q = 1.0 / (2.0 * (width / 2.885_390_1).sinh());
-            // Shape-to-filter from the reference's branch structure (0x89bf10): the
-            // mode names are inferred, the grouping is read. Tilt has no filter of its own.
-            let mode = match band.shape {
-                Shape::LowCut | Shape::HighShelf => 1,
-                Shape::LowShelf | Shape::HighCut => 0,
-                Shape::BandReject => 3,
-                Shape::Bell | Shape::Bandpass | Shape::Tilt => 2,
+            // Shape-to-filter from the reference's branch structure (0x89bf10, verified grouping).
+            // Modes 0 and 1 store k = 1.0 in the coefficient record; modes 2 and 3 take it from the band.
+            let (mode, q) = match band.shape {
+                Shape::LowCut | Shape::HighShelf => (1, 1.0),
+                Shape::LowShelf | Shape::HighCut => (0, 1.0),
+                Shape::BandReject => (3, 1.0 / (2.0 * (width / 2.885_390_1).sinh())),
+                Shape::Bell | Shape::Bandpass | Shape::Tilt => {
+                    (2, 1.0 / (2.0 * (width / 2.885_390_1).sinh()))
+                }
             };
             let key = (index, frequency, q, mode);
             if self.solo_tuned != Some(key) {
@@ -845,7 +851,9 @@ impl Engine {
         let non_solo = self.solo_gains[0].step(coefficient);
         let solo = self.solo_gains[1].step(coefficient);
         for c in 0..2 {
-            let filtered = if self.solo_tuned.is_some() {
+            let filtered = if tilt_solo {
+                main[c]
+            } else if self.solo_tuned.is_some() {
                 self.solo_filter[c].process(main[c])
             } else {
                 0.0
@@ -1598,6 +1606,67 @@ mod tests {
         let peak = |v: &[f32]| v.iter().fold(0.0_f32, |m, x| m.max(x.abs()));
         assert!(peak(&out_1k) > 0.4, "soloed band peak {}", peak(&out_1k));
         assert!(peak(&out_10k) < 0.05, "outside the band peak {}", peak(&out_10k));
+    }
+
+    /// Mid/side encode is 0.5 (M = (L+R)/2), and the decode is unity: the round trip is exact.
+    #[test]
+    fn mid_side_encodes_at_half_and_round_trips_at_unity() {
+        let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+        let settings = Settings {
+            depth: 0.0,
+            mid_side: true,
+            ..Settings::default()
+        };
+        // Mono content: M = (0.5 + 0.5) / 2 = 0.5 on the analysis side.
+        engine.process_sample([0.5, 0.5], &settings);
+        assert!(
+            (engine.detector_peak - 0.5).abs() < 1.0e-6,
+            "M peak {}",
+            engine.detector_peak
+        );
+        let latency = engine.latency();
+        let mut history = vec![[0.0; 2]; latency + 1];
+        let mut error = 0.0_f32;
+        for t in 0..latency + 9000 {
+            let input = [
+                (TAU * 997.0 * t as f32 / 44100.0).sin() * 0.4,
+                (TAU * 311.0 * t as f32 / 44100.0).sin() * 0.2,
+            ];
+            history[t % (latency + 1)] = input;
+            let out = engine.process_sample(input, &settings);
+            if t >= latency {
+                let reference = history[(t - latency) % (latency + 1)];
+                for c in 0..2 {
+                    error = error.max((out[c] - reference[c]).abs());
+                }
+            }
+        }
+        assert!(error < 2.0e-5, "mid/side round trip error {error}");
+    }
+
+    /// Tilt has no filter: soloing it passes the main signal through unchanged.
+    #[test]
+    fn tilt_solo_passes_the_main_signal() {
+        let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+        let mut settings = Settings {
+            depth: 0.0,
+            solo_band: Some(0),
+            ..Settings::default()
+        };
+        settings.bands[0].shape = crate::weighting::Shape::Tilt;
+        let latency = engine.latency();
+        let mut history = vec![[0.0; 2]; latency + 1];
+        let mut error = 0.0_f32;
+        for t in 0..latency + 9000 {
+            let input = [(TAU * 997.0 * t as f32 / 44100.0).sin() * 0.4; 2];
+            history[t % (latency + 1)] = input;
+            let out = engine.process_sample(input, &settings);
+            if t >= latency + 2000 {
+                let reference = history[(t - latency) % (latency + 1)];
+                error = error.max((out[0] - reference[0]).abs());
+            }
+        }
+        assert!(error < 2.0e-5, "tilt solo error {error}");
     }
 
     /// A reset must not leave the solo audition silent: the filter is retuned on the next block.

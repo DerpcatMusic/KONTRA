@@ -86,8 +86,8 @@ open.
   `gR = clamp(2f)` (`feat/dsp/C-formulas.txt`, "STEREO PAIR FOCUS"). That is
   `dsp::focus_weights`, already matching.
 - Mid/side: `Stereo mode` (16) is stored at `+0xa6` and read at `892781`
-  into a stack byte. Its use is not located, so the port's `1/sqrt(2)`
-  matrix is unverified.
+  into a stack byte. Resolved: encode 0.5, decode 1.0, no `1/sqrt(2)`
+  (`stereo-ms-sidechain-output.md` section 1).
 
 ## 5. Plan switching and reported latency (Low latency, Quality, Linear phase): open
 

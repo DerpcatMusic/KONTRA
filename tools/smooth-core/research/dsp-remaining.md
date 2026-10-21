@@ -69,7 +69,9 @@ and the ported `dsp::ramp::the_mix_ramp_matches_the_reference`.
 
 ## 1. Band solo (91): output path (mix verified, filter inferred)
 
-Evidence: `RunScratch/smooth/feat/dsp-remaining/S-solo.md`.
+Evidence: `RunScratch/smooth/feat/dsp-remaining/S-solo.md`. Shape-to-filter table and
+the Tilt pass-through: `stereo-ms-sidechain-output.md` section 3 (supersedes the
+mode notes below, and the "shape-5 copy looks inverted" remark).
 
 - Param 91 "Band solo" is discrete 0..8, stored at `+0x100` as `plain - 1`
   (`-1` = none). Port: `SmoothParams::band_solo`, `Settings::solo_band`.
@@ -126,18 +128,12 @@ host's delay compensation. The new test
 that an impulse arrives exactly `latency()` samples late in all seven plans at
 44.1 and 96 kHz.
 
-## 2. Mid/side (16, `+0xa6`): not settled
+## 2. Mid/side (16, `+0xa6`): verified (superseded)
 
-Evidence: `RunScratch/smooth/feat/dsp-remaining/MS-sc-meter.md`.
-
-- The only process read of `+0xa6` is at `0x892781`, used as a boolean. There
-  is no channel-count gate in the mode branch.
-- The helper at `0x8a3b20` computes `X0+X1` and `X0-X1`, then overwrites both
-  with `g * A`, where `g` is 0.5 (site A) or 1.0 (site B). The sum and difference
-  are dead stores as compiled, so no decode was found.
-- No `1/sqrt(2)` constant appears in the chain. The port keeps `1/sqrt(2)` for
-  encode and decode, which is not supported by this evidence. Not changed.
-- Wet, dry and delta in M/S are not established.
+Superseded by `stereo-ms-sidechain-output.md` section 1. The helper `0x8a3b20`
+writes `g(L+R)` and `g(L-R)` to the destination pair, not dead stores. Encode uses
+g = 0.5 (site `0x1808928a3`) and decode g = 1.0 (site `0x18089a5bc`), so the port's
+`1/sqrt(2)` was wrong and is replaced. Checked by emulation (`re-tools/emulate/stereo_pair_probe.py`).
 
 ## 5. Sidechain mux (`+0xa5`) and meter (visitor slot 13): partly verified
 
