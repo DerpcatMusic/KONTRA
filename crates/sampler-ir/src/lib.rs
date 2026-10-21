@@ -757,6 +757,8 @@ pub enum StretchKind {
     TimeMachine1,
     TimeMachine2,
     TimeMachinePro,
+    /// Tone Machine (stored mode 1). Shares the Time Machine 1 record fields.
+    ToneMachine,
 }
 
 /// Saved controls of a time-stretch source. Pitch is the group/zone tuning

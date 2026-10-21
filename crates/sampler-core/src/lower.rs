@@ -248,6 +248,7 @@ fn stretch_spec(t: ir::TimeStretch) -> crate::source::StretchSpec {
             ir::StretchKind::TimeMachine1 => StretchMode::TimeMachine,
             ir::StretchKind::TimeMachine2 => StretchMode::TimeMachine2,
             ir::StretchKind::TimeMachinePro => StretchMode::TimeMachinePro,
+            ir::StretchKind::ToneMachine => StretchMode::ToneMachine,
         },
         hq: t.high_quality,
         speed: t.speed,
