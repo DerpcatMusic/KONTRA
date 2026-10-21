@@ -113,3 +113,24 @@ stereo modes.
    diagnosed and unmapped, which is the correct state.
 2. Confirm Legacy and Psyche constants against decompiled C once READY appears.
 3. Twin into `Line` only with a bit-exact golden test against `twin.rs`.
+
+## Replika oracle measurement (Wine, `tools/kontakt-oracle/stimrender.py`, 2026-10-21)
+
+Two impulse captures of `Effects/RDelay` (INIT preset). Result: **not usable for
+the feedback, time, cut, saturation or ping-pong laws.**
+
+- TYPE is applied: the Tape preset adds an early tap near 27 ms, the other four types
+  are indistinguishable from each other.
+- RDL_TIME 0.25 and 0.5 and RDL_FEEDBACK 0, 0.5 and 1.0 leave the echo train identical
+  (repeats at ~500, 1005, 1500 ms, gain 0.7182 per repeat). Either these writes do not
+  reach the wrapper in this harness, or the core ignores them. Unresolved.
+- RDL_HIGHCUT, RDL_LOWCUT, RDL_SATURATION and RDL_PINGPONG show no change in the first capture.
+
+Mapped, with evidence level:
+- RDL_TIME free: ms = 2000 x stored, **documented** (binding TSV, "linear a=0 b=2000").
+  Not confirmed by the oracle (see above).
+- Everything else is reported as `NotModeled`. No constants are fabricated.
+
+Next step for the oracle: check the `set_engine_par` path for Replika (generic flag,
+parameter index) with a known-good control such as the Legacy Delay DL_TIME, then redo
+the capture.

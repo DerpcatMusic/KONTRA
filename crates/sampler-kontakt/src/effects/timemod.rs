@@ -28,6 +28,46 @@ pub(crate) enum Unit {
     Choral { fields: [f32; 7], invert: bool, scatter: bool, mode: i32 },
     Twin(TwinDelay),
     Psyche(PsycheDelay),
+    Replika(Replika),
+}
+
+/// Kontakt Replika Delay saved controls, v0x12 (reader `0x140d02250`): stream
+/// order `I` type, ten `F` (fields 1..=10), three flags, three `F` (the time
+/// unit is field 14, fields 15 and 16 unread), a flag, four `F`, a flag, nine `F`,
+/// a flag. Field names come from `fx_raum_delight_psyche_vibrato_phasis_replika.tsv`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Replika {
+    /// 0 Analogue, 1 Diffusion, 2 Modern, 3 Tape, 4 Vintage ($NI_REPLIKA_TYPE_*).
+    pub ty: i32,
+    pub time: f32,
+    pub feedback: f32,
+    pub lowcut: f32,
+    pub highcut: f32,
+    pub saturation: f32,
+    pub tape_age: f32,
+    pub flutter: f32,
+    pub quality: f32,
+    pub depth: f32,
+    pub rate: f32,
+    pub stereo: bool,
+    pub noise: bool,
+    pub pingpong: bool,
+    pub time_unit: f32,
+    pub bbd_type: f32,
+    pub amount: f32,
+    pub size: f32,
+    pub modulation: f32,
+    pub dense: bool,
+    pub shuffle: f32,
+    pub feel: f32,
+    pub accent: f32,
+    pub pan: f32,
+    pub width: f32,
+    pub lr_offset: f32,
+    pub ducking_sense: f32,
+    pub ducking_release: f32,
+    pub ducking_amount: f32,
+    pub pingpong_flip: bool,
 }
 
 /// Choral voice tables (0x14193cd70), f32 bits: G0 delay scale, G1 rate scale,
@@ -206,6 +246,63 @@ pub(super) fn read_psyche(version: u16, r: &mut Reader) -> Option<Unit> {
     Some(Unit::Psyche(PsycheDelay { time: v[0], unit, feedback: v[1], detune: v[2], pitch: v[3], offset: v[4], cross: v[5], reverse_stereo, detune_stereo, reverse }))
 }
 
+/// Replika Delay v0x12 (reader `0x140d02250`); older versions are not read.
+pub(super) fn read_replika(version: u16, r: &mut Reader) -> Option<Unit> {
+    if version != 0x12 {
+        return None;
+    }
+    let ty = r.i32()?;
+    let mut f = [0f32; 10];
+    for x in &mut f {
+        *x = r.f32()?;
+    }
+    let [stereo, noise, pingpong] = [r.flag()?, r.flag()?, r.flag()?];
+    let time_unit = r.f32()?;
+    r.f32()?;
+    r.f32()?;
+    r.flag()?;
+    let bbd_type = r.f32()?;
+    let amount = r.f32()?;
+    let [size, modulation] = [r.f32()?, r.f32()?];
+    let dense = r.flag()?;
+    let [shuffle, feel, accent, pan, width, lr_offset, ducking_sense, ducking_release, ducking_amount] = [
+        r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?,
+    ];
+    let pingpong_flip = r.flag()?;
+    Some(Unit::Replika(Replika {
+        ty,
+        time: f[0],
+        feedback: f[1],
+        lowcut: f[2],
+        highcut: f[3],
+        saturation: f[4],
+        tape_age: f[5],
+        flutter: f[6],
+        quality: f[7],
+        depth: f[8],
+        rate: f[9],
+        stereo,
+        noise,
+        pingpong,
+        time_unit,
+        bbd_type,
+        amount,
+        size,
+        modulation,
+        dense,
+        shuffle,
+        feel,
+        accent,
+        pan,
+        width,
+        lr_offset,
+        ducking_sense,
+        ducking_release,
+        ducking_amount,
+        pingpong_flip,
+    }))
+}
+
 /// v0x50 stops after `unit`; v0x51 adds two floats and a flag the engine does not read.
 pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
     if module == 0x5d {
@@ -255,6 +352,55 @@ fn rate(speed: f32, unit: f32) -> Rate {
 
 fn unit_interval(values: &[f32]) -> bool {
     values.iter().all(|v| v.is_finite() && (0. ..=1.).contains(v))
+}
+
+/// Replika Delay (v0x12). Only the laws measured or documented so far are
+/// mapped; every other control is reported as not modelled.
+fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
+    // Documented (binding TSV, RDL_TIME "linear a=0 b=2000"): free time in ms = 2000 x stored.
+    // Everything else is reported, not modelled: the oracle capture could not move the echo
+    // gain, time or tone with feedback, cut, saturation, ping-pong or type writes
+    // (docs/re/engine/k-delays.md), so no law for them is mapped.
+    if !(0. ..=1.).contains(&rep.time) || !rep.time.is_finite() {
+        notes.push(("parameters".into(), format!("time {}", rep.time), Reason::InvalidValue));
+        return None;
+    }
+    if unit_set(rep.time_unit).is_some() {
+        notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
+        return None;
+    }
+    for (name, value) in [
+        ("feedback", rep.feedback),
+        ("lowcut", rep.lowcut),
+        ("highcut", rep.highcut),
+        ("saturation", rep.saturation),
+        ("tape_age", rep.tape_age),
+        ("flutter", rep.flutter),
+        ("depth", rep.depth),
+        ("rate", rep.rate),
+        ("modulation", rep.modulation),
+        ("bbd_type", rep.bbd_type),
+        ("amount", rep.amount),
+        ("size", rep.size),
+        ("shuffle", rep.shuffle),
+        ("feel", rep.feel),
+        ("accent", rep.accent),
+        ("pan", rep.pan),
+        ("width", rep.width),
+        ("lr_offset", rep.lr_offset),
+        ("ducking_sense", rep.ducking_sense),
+        ("ducking_release", rep.ducking_release),
+        ("ducking_amount", rep.ducking_amount),
+    ] {
+        notes.push(("parameters".into(), format!("{name} {value}"), Reason::NotModeled));
+    }
+    for (name, on) in [("stereo", rep.stereo), ("noise", rep.noise), ("pingpong", rep.pingpong), ("pingpong_flip", rep.pingpong_flip), ("dense", rep.dense)] {
+        notes.push(("parameters".into(), format!("{name} {on}"), Reason::NotModeled));
+    }
+    notes.push(("type".into(), rep.ty.to_string(), Reason::NotModeled));
+    let mut line = Line::single(DelayTime::Ms(f64::from(rep.time) * 2000.), 2000.);
+    line.native = Native::None;
+    Some(Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet: 1. })
 }
 
 /// `dry` is the slot's own dry level when the effect runs outside a Mix block.
@@ -326,6 +472,7 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             line.native = Native::TwinDelay(t);
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
         }
+        Unit::Replika(ref rep) => return replika_config(rep, dry, notes),
         Unit::Psyche(p) => {
             // Kernel 0x140aadb50 (sampler_core dsp/timemod/psyche.rs): wet only.
             let mut line = Line::single(DelayTime::Ms(0.), 2000.);
@@ -580,6 +727,30 @@ mod tests {
             let y = render(built.processors, &input);
             assert_ulps(&y, &want, &format!("choral mode {mode}"));
         }
+    }
+
+    /// Reader layout v0x12 (stream order from the binding TSV): type, ten floats
+    /// (time first), three flags, three floats, flag, four floats, flag, nine floats, flag.
+    #[test]
+    fn replika_time_law_is_documented_and_the_rest_is_reported() {
+        let mut public = Vec::new();
+        public.extend(0i32.to_le_bytes());
+        let mut floats = vec![0.25f32, 0.5, 0., 0., 0., 0., 0., 0., 0., 0.];
+        floats.extend([0., 0., 0.]);
+        floats.extend([0., 0., 0., 0.]);
+        floats.extend([0., 0., 0., 0., 0., 0., 0., 0., 0.]);
+        for f in &floats {
+            public.extend(f.to_le_bytes());
+        }
+        public.extend(std::iter::repeat_n(0u8, 3 + 1 + 1 + 1 + 1));
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        assert_eq!(rep.time, 0.25);
+        let mut notes = Vec::new();
+        let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("time law maps");
+        let line = cfg.line.expect("delay line");
+        assert_eq!(line.taps[0].time, sampler_ir::fx::timemod::DelayTime::Ms(500.));
+        assert!(notes.iter().any(|n| n.1.contains("feedback")));
     }
 
     #[test]
