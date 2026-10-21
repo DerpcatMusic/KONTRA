@@ -120,6 +120,15 @@ def svmore():
     resonance .5 and .9 at cutoff .5."""
     steps = []
     for name, sub in {"SV_LP2": 52, "SV_HP2": 54, "SV_BP6": 60, "SV_HP6": 61, "SV_NOTCH6": 62}.items():
+# Legacy BFilter types with no Kontakt measurement yet (filter-laws.tsv): saved ids from filter-type-ids.tsv.
+LEGACY_UNMEASURED = {"LP2POLE": 6, "HP2POLE": 7, "BP2": 4, "HP4POLE": 9, "BP4": 10, "BR4": 11,
+                     "LADDER_LEGACY": 17, "SIMPLE_LPHP": 120}
+
+
+def filtlegacy():
+    """Filters/Effect for the legacy types in LEGACY_UNMEASURED: cutoff grid at resonance 0, resonance grid at cutoff 0.5."""
+    steps = []
+    for name, sub in LEGACY_UNMEASURED.items():
         for c in GRID:
             steps.append({"name": f"{name} cutoff={c} res=0", "set": [[0, "EFFECT_SUBTYPE", sub], [0, "CUTOFF", c], [0, "RESONANCE", 0]]})
         for r in (M // 2, 9 * M // 10):
@@ -129,4 +138,5 @@ def svmore():
 
 if __name__ == "__main__":
     spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt, "svmore": svmore}[sys.argv[1]]()
+    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt, "filtlegacy": filtlegacy}[sys.argv[1]]()
     json.dump(spec, open(sys.argv[2], "w"), indent=1)
