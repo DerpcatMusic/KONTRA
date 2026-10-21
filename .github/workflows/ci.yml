@@ -6,6 +6,7 @@ name: CI
 # PR/merge-group checks remain independent; avoid a second ordinary CI push run.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
     inputs:
@@ -68,6 +69,10 @@ jobs:
           AFTER: ${{ github.sha }}
           FORCE: ${{ inputs.release_validation || (github.event_name != 'push' && github.event_name != 'pull_request') }}
         run: python3 .github/scripts/ci_changes.py
+      # Draft PRs (agent swarms, WIP) skip the expensive jobs; marking ready runs them.
+      - name: Skip drafts
+        if: github.event.pull_request.draft == true
+        run: echo "code=false" >> "$GITHUB_OUTPUT"
       - name: Workflow syntax and expression checks
         run: bash .github/scripts/check_workflows.sh
       - name: Workflow safety tests
