@@ -2551,4 +2551,59 @@ mod tests {
     fn cabs(a: (f64, f64)) -> f64 {
         a.0.hypot(a.1)
     }
+
+/// Kontakt 8 Vowel A / Vowel B responses (Wine oracle, `tools/kontakt-oracle/eqrender.py`, 48 kHz):
+/// impulse through the L channel against the bypass reference. Rows: Cutoff, Resonance, dB at
+/// 30..15000 Hz.
+#[test]
+fn vowel_filters_match_kontakt_measurements() {
+    const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+    const VOWEL_A: [(f32, f32, [f64; 10]); 8] = [
+        (0.0, 0.0, [-1.25, -1.20, -1.06, -0.38, 8.44, 2.49, 0.39, -1.05, -1.23, -1.26]),
+        (0.25, 0.0, [-1.24, -1.16, -0.96, 0.09, 9.91, -1.96, 2.31, -0.76, -1.17, -1.24]),
+        (0.5, 0.0, [-1.23, -1.11, -0.82, 0.68, 5.26, -6.10, 3.41, -0.40, -1.10, -1.23]),
+        (0.75, 0.0, [-1.21, -1.05, -0.63, 1.61, -0.55, -9.65, 1.75, 0.05, -1.02, -1.20]),
+        (1.0, 0.0, [-1.19, -0.93, -0.30, 3.36, -5.96, -12.96, -1.55, 0.58, -0.92, -1.18]),
+        (0.5, 0.5, [-4.27, -4.15, -3.85, -2.28, 4.13, -8.62, 4.75, -3.25, -4.11, -4.26]),
+        (0.5, 0.9, [-5.52, -5.39, -5.10, -3.52, 3.28, -9.78, 5.23, -4.46, -5.35, -5.50]),
+        (0.5, 1.0, [-5.57, -5.45, -5.15, -3.57, 3.23, -9.83, 5.25, -4.51, -5.41, -5.56]),
+    ];
+    const VOWEL_B: [(f32, f32, [f64; 10]); 8] = [
+        (0.0, 0.0, [-1.19, -0.94, -0.32, 3.66, -1.75, 2.80, -0.27, -1.13, -1.24, -1.26]),
+        (0.25, 0.0, [-1.21, -1.03, -0.58, 1.94, -1.30, -0.30, 1.46, -0.88, -1.20, -1.25]),
+        (0.5, 0.0, [-1.23, -1.09, -0.76, 1.00, 2.81, -5.49, 3.30, -0.52, -1.13, -1.23]),
+        (0.75, 0.0, [-1.24, -1.13, -0.88, 0.43, 7.83, -7.37, 2.11, -0.03, -1.03, -1.21]),
+        (1.0, 0.0, [-1.24, -1.16, -0.96, 0.05, 10.20, -7.28, -1.61, 0.60, -0.92, -1.18]),
+        (0.5, 0.5, [-3.56, -3.42, -3.08, -1.23, 1.77, -7.25, 3.69, -2.72, -3.44, -3.57]),
+        (0.5, 0.9, [-4.47, -4.33, -3.99, -2.13, 1.04, -8.04, 3.69, -3.60, -4.34, -4.47]),
+        (0.5, 1.0, [-4.51, -4.37, -4.03, -2.17, 1.01, -8.08, 3.69, -3.64, -4.38, -4.51]),
+    ];
+    for (class, rows) in [(SectionClass::VowelA, VOWEL_A), (SectionClass::VowelB, VOWEL_B)] {
+        for (cutoff, resonance, db) in rows {
+            let d = design(class, cutoff, resonance, 48_000.0);
+            for (probe, want) in PROBES.iter().zip(db) {
+                let got = 20.0 * vowel_response(&d, *probe).log10();
+                assert!((got - want).abs() < 0.1, "{class:?} cutoff {cutoff} res {resonance} at {probe} Hz: {got} dB vs {want}");
+            }
+        }
+    }
+}
+
+/// Magnitude of a parallel section bank: `gain * sum of the sections' responses` (the sections
+/// all read the input).
+fn vowel_response(d: &Design, hz: f64) -> f64 {
+    let w = std::f64::consts::TAU * hz / 48_000.0;
+    let z = (w.cos(), -w.sin());
+    let sum = d.sections[..d.count].iter().fold((0.0, 0.0), |acc, s| {
+        let num = cadd(cadd(cscale(f64::from(s.b0), (1.0, 0.0)), cscale(f64::from(s.b1), z)), cscale(f64::from(s.b2), cmul(z, z)));
+        let den = csub(csub((1.0, 0.0), cscale(f64::from(s.c1), z)), cscale(f64::from(s.c2), cmul(z, z)));
+        cadd(acc, cdiv(num, den))
+    });
+    f64::from(d.gain) * cabs(sum)
+}
+
+fn cdiv(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let n = b.0 * b.0 + b.1 * b.1;
+    ((a.0 * b.0 + a.1 * b.1) / n, (a.1 * b.0 - a.0 * b.1) / n)
+}
 }

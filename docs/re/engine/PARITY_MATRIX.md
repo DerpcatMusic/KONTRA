@@ -76,11 +76,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | 3x2 Versatile | unknown | none | |
 | Dual SKF | unknown | none | |
 | Simple LP/HP | unknown | none | |
-| Formant I | unknown | none | |
-| Formant II | unknown | none | |
-| Phaser (filter) | unknown | none | |
-| Vowel A | unknown | none | |
-| Vowel B | unknown | none | |
+| Formant I | partial | vector (Kontakt 8 measured, 9 steps, `formant_responses_match_kontakt_measurements`) | static Talk/Sharp/Size parity to 0.1 dB at 30..15000 Hz; live lanes lack the native per-sample coefficient ramp (decompiled `FUN_140b00750`, 15 ms length unread) |
+| Formant II | partial | vector (Kontakt 8 measured, 8 steps, same test, table 2) | static parity; live lanes route to table 2 (decompile, control 3 selector) but are not measured on Kontakt; the static flag value for type 91 is not read as a constant |
+| Phaser (filter) | partial | vector (Kontakt 8 measured, 8 steps, `phaser_filter_matches_kontakt_measurements`) | static cutoff and resonance feedback parity to 0.1 dB; live Cutoff/Resonance lanes not wired |
+| Vowel A | partial | vector (Kontakt 8 measured, 8 steps, `vowel_filters_match_kontakt_measurements`) | static parity to 0.1 dB; live morph lanes not wired |
+| Vowel B | partial | vector (Kontakt 8 measured, 8 steps, same test) | static parity to 0.1 dB; live morph lanes not wired |
 
 ## EQ (eq-kontakt)
 
