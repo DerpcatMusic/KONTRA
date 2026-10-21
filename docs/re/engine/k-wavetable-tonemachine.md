@@ -136,3 +136,30 @@ field mapping yet.
    none of the existing tests.
 
 No code was changed in this unit. The only blocker is the decompile.
+
+## Decompile evidence (Kontakt 8 C export, READY)
+
+Searched `Research/KONTRA/source/kontakt8/` by class and string names. Function
+names are generic (`FUN_*`), so the render kernels still need tracing from the
+factories. Confirmed so far:
+
+- **Tone Machine is its own engine object, not the Time Machine 1 object.**
+  `BToneMachine::vftable` is set in `FUN_140cd94c0` (`0140cd0000.c:4553`), which
+  allocates a `0x420`-byte state (`FUN_140d20640`, `0140d20000.c:653`). Time
+  Machine 1 uses `BTimeMachine` (`FUN_140cd9470`, `0x1d0` bytes). The
+  "Tone shares TM1 scheduler" assumption in the stand-in is therefore unproven.
+- The Tone state embeds two `BFilter2Pole` and one `BFilter2PoleHP` (ctor offsets
+  `+0x1e`, `+0x2cc`, `+0x2e4`, 16 filter-state pairs). This is consistent with
+  the "DC Filter" control being a 2-pole high-pass, but the coefficient law is
+  not yet read.
+- The shared machine parameter table (`FUN_140d1ba90`, `0140d10000.c:7343`)
+  names the controls for the machine family: Speed, Smooth, Formant, Form 1,
+  Phase, Ph Rand, Position, Inharm, Form 2, Mod Amt, Mod Tune, Grain, Slice
+  Atk/Rel, Transient. "Ph Rand", "Inharm", "Mod Amt" and "Mod Tune" are the
+  wavetable controls whose laws remain unrecovered.
+- The DC Filter label and its switch (`01405f0000.c:7535`) are UI-side. The
+  `Legato` label (`01405f0000.c:7625`) is also UI-side.
+
+Not yet recovered: the Tone render kernel (grain or formant law), its grain
+size and overlap, the DC filter coefficients, and the wavetable quality,
+phase-randomness and inharmonic laws.
