@@ -177,6 +177,9 @@ pub struct Ui {
     last_press: Option<(String, f64)>,
     /// This frame's wheel, for [`Response::wheel`].
     wheel: Vec2,
+    /// The clock when the wheel last moved, for a roll's end: see
+    /// [`crate::host::WHEEL_ROLL`].
+    wheel_turned: Option<f64>,
     /// Topmost capture boundary for this wheel frame; descendants alone read it.
     wheel_capture: Option<Id>,
     /// Popup input scopes stay registered while their named surface is mounted.
@@ -312,6 +315,7 @@ impl Ui {
             double: None,
             double_click: DOUBLE_CLICK,
             wheel: Vec2::ZERO,
+            wheel_turned: None,
             wheel_capture: None,
             popup_wheel_scopes: Vec::new(),
             wheel_claims: Vec::new(),
@@ -934,6 +938,9 @@ impl Ui {
         // Even a frame crossing the last key owes the tree drawing its endpoint.
         let playing = self.time < self.play_until;
         self.time += dt;
+        if self.wheel != Vec2::ZERO {
+            self.wheel_turned = Some(self.time);
+        }
         // Consume this build's request. An unread/removed play must not keep an
         // otherwise idle UI awake until its old deadline.
         self.play_until = self.time;

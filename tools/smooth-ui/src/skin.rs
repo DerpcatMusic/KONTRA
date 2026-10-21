@@ -11,6 +11,7 @@
 //! surfaces, which no palette derivation reaches from a seed, so they are
 //! stated once, here, and nowhere else.
 
+use crate::input;
 use crate::slots::{Bind, Slider, Slot};
 use crate::theme;
 use crate::tokens::{icon, metric, radius, space, stroke, ty};
@@ -228,6 +229,8 @@ pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
         c(t.field),
     )
     .tipped(id)
+    .focusable()
+    .cursor(Cursor::Hand)
     .a11y(A11y::Toggle { on: *on })
 }
 
@@ -383,6 +386,7 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
     if ui.get(id).clicked {
         *choice = (*choice + 1) % options.len().max(1);
     }
+    input::step_choice(ui, id, choice, options.len());
     let name = options.get(*choice).copied().unwrap_or("");
     block(metric::DROPDOWN_W, metric::FIELD_H)
         .radius(SKIN.corners.field)
@@ -399,6 +403,8 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
             .full(),
         )
         .tipped(id)
+        .focusable()
+        .cursor(Cursor::Hand)
         .a11y(A11y::Toggle { on: *choice > 0 })
 }
 
@@ -559,12 +565,14 @@ pub fn knob(
     id: impl Into<Id> + Clone,
     value: &mut f64,
     range: std::ops::RangeInclusive<f64>,
+    rest: f64,
     d: f64,
 ) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     let id = id.into();
     ui.drag(id.clone(), value, range.clone(), metric::DIAL * 2.5, true);
+    input::nudge(ui, id.as_str(), value, range.clone(), rest);
     let state = ui.state(id.clone());
     let lift = (state.hover.max(state.press)) as f32;
     let v = ((*value - range.start()) / (range.end() - range.start())).clamp(0.0, 1.0);
@@ -619,7 +627,7 @@ pub fn knob(
     .id(id.clone())
     .focusable()
     .cursor(Cursor::Grab)
-    .tip(crate::tips::of(id.as_str()).map_or_else(|| format!("{id}: drag up or down, Shift for fine"), str::to_string))
+    .tipped(id.as_str())
     .a11y(A11y::Slider {
         value: *value,
         min: *range.start(),
@@ -646,8 +654,9 @@ pub fn control(
     let t = theme::t();
     // The dial runs first: it may write a value the host just moved, and the
     // readout under it has to agree with the arc above it.
+    let rest = slot.rest().0;
     let dial_el = bind(ui, slot, &mut state.norm, &mut |ui, id, norm| {
-        knob(ui, id, norm, 0.0..=1.0, d)
+        knob(ui, id, norm, 0.0..=1.0, rest, d)
     });
     let halo = d + metric::TUCK - space::HAIR;
     col![
@@ -681,9 +690,7 @@ pub fn text_slider(
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     ui.drag(id, norm, 0.0..=1.0, w * 3.0, false);
-    if ui.get(id).double_clicked {
-        *norm = rest;
-    }
+    input::nudge(ui, id, norm, 0.0..=1.0, rest);
     let state = ui.state(id);
     let lift = state.hover.max(state.press) as f32;
     let bar = w * norm.clamp(0.0, 1.0);
@@ -761,6 +768,7 @@ pub fn segmented_at(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize,
     if ui.get(id).activated() {
         *chosen = (*chosen + 1) % options.len().max(1);
     }
+    input::step_choice(ui, id, chosen, options.len());
     let h = metric::SWITCH_H;
     let inner = h - space::TIGHT - space::TIGHT;
     let n = options.len().max(1) as f64;
@@ -788,6 +796,8 @@ pub fn segmented_at(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize,
         .fill(c(t.toggle))
         .shrink(0)
         .tipped(id)
+        .focusable()
+        .cursor(Cursor::Hand)
         .a11y(A11y::Toggle { on: *chosen > 0 })
 }
 

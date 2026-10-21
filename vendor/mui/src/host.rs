@@ -146,6 +146,16 @@ pub struct KeyEvent {
     pub mods: Mods,
 }
 
+/// Lines in one mouse-wheel notch, as the window reports it. A notch is ten
+/// text rows: the lists scroll by it, and a control steps once per notch.
+/// A fast run of notches reports more (the window's fling gain).
+pub const NOTCH_LINES: f64 = 10.;
+
+/// How long after its last notch a roll of the wheel is still one roll, in
+/// seconds of the [`Ui`](crate::Ui) clock. A control holds its edit open for
+/// this long, and the host wakes at its end to close it.
+pub const WHEEL_ROLL: f64 = 0.35;
+
 /// A wheel step as the window reports it: y positive scrolls up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Wheel {

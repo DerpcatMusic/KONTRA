@@ -32,6 +32,8 @@ pub struct Bridge<P: ?Sized = dyn Params> {
     /// The ids `bind` saw this build: an open gesture not among them lost
     /// its widget, and nothing else would ever end it.
     bound: Vec<u32>,
+    /// The gestures [`Bridge::hold`] opened: only these it may end.
+    held: Vec<u32>,
     /// Every parameter and meter as last seen, bit for bit: `changed`
     /// compares against it without hashing or allocating.
     seen: Box<[u64]>,
@@ -62,6 +64,7 @@ impl<P: Params + ?Sized> Bridge<P> {
             meters,
             open: Vec::new(),
             bound: Vec::new(),
+            held: Vec::new(),
             seen,
             metered: None,
         }
@@ -298,6 +301,36 @@ impl<P: Params + ?Sized> Bridge<P> {
             *v = f64::from(u8::from(on));
             el
         })
+    }
+
+    /// Keep the gesture on `param` open while `rolling`: a control turned
+    /// without a pointer edge, such as a roll of the wheel. Its first call
+    /// opens the edit, and the calls that follow keep it open; a call with
+    /// `rolling` false ends the edit that `hold` opened, and leaves a pointer
+    /// drag's edit alone.
+    ///
+    /// While held, [`Bridge::value`] reads the value the control last set, not
+    /// the store's. A host that has not yet taken that set would otherwise
+    /// hand the next frame the old value and lose the step, and the host
+    /// records the roll as one edit rather than one per notch.
+    ///
+    /// ```ignore
+    /// let el = bridge.bind(ui, P::Depth, |ui, id, v| knob(ui, id, v, rest));
+    /// bridge.hold(P::Depth, wheel_rolling(id));
+    /// ```
+    pub fn hold(&mut self, param: impl Into<u32>, rolling: bool) {
+        let id = param.into();
+        if rolling {
+            if !self.is_open(id) {
+                self.begin(id);
+                if self.is_open(id) && !self.held.contains(&id) {
+                    self.held.push(id);
+                }
+            }
+        } else if let Some(at) = self.held.iter().position(|h| *h == id) {
+            self.held.swap_remove(at);
+            self.end(id);
+        }
     }
 
     /// A gesture on a parameter no widget owns: a plot handle, a canvas, a

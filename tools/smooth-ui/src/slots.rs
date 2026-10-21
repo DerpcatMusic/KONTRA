@@ -6,6 +6,10 @@
 //! decibels). The view draws a slot and edits its `norm`; how the edit reaches
 //! the host is the [`Bind`]'s business, so one call site works in a preview
 //! and in a plug-in.
+//!
+//! Switches are slots too: a mode, a quality or a toggle is a discrete
+//! parameter, and its normalised value steps through the same bind, so the
+//! host records a switch as a gesture just as it records a knob.
 
 use mui::prelude::*;
 
@@ -33,10 +37,18 @@ pub enum Slot {
     BandSlope,
     BandBalance,
     BandShape,
+    Mode,
+    StereoMode,
+    Quality,
+    LowLatency,
+    Bypass,
+    Delta,
+    BandBypass,
+    WetTrim,
 }
 
 impl Slot {
-    pub const COUNT: usize = 21;
+    pub const COUNT: usize = 29;
     pub const ALL: [Slot; Slot::COUNT] = [
         Slot::Depth,
         Slot::Detail,
@@ -59,6 +71,14 @@ impl Slot {
         Slot::BandSlope,
         Slot::BandBalance,
         Slot::BandShape,
+        Slot::Mode,
+        Slot::StereoMode,
+        Slot::Quality,
+        Slot::LowLatency,
+        Slot::Bypass,
+        Slot::Delta,
+        Slot::BandBypass,
+        Slot::WetTrim,
     ];
 
     pub fn index(self) -> usize {
@@ -89,6 +109,14 @@ impl Slot {
             Slot::BandSlope => "band-slope",
             Slot::BandBalance => "band-balance",
             Slot::BandShape => "band-shape",
+            Slot::Mode => "mode",
+            Slot::StereoMode => "stereo-mode",
+            Slot::Quality => "quality",
+            Slot::LowLatency => "lowlatency",
+            Slot::Bypass => "bypass",
+            Slot::Delta => "delta",
+            Slot::BandBypass => "band-bypass",
+            Slot::WetTrim => "wet-trim",
         }
     }
 
@@ -110,6 +138,11 @@ impl Slot {
             Slot::BandSlope => (0.0, "6 dB/oct"),
             Slot::BandBalance => (0.5, "linked"),
             Slot::BandShape => (2.0 / 7.0, "bell"),
+            Slot::WetTrim => (0.5, "0.0 dB"),
+            Slot::Mode => (0.0, "soft"),
+            Slot::StereoMode => (0.0, "l/r"),
+            Slot::Quality => (0.0, "normal"),
+            Slot::LowLatency | Slot::Bypass | Slot::Delta | Slot::BandBypass => (0.0, "off"),
             _ => (0.5, "1.0"),
         }
     }
@@ -143,4 +176,67 @@ pub type Bind<'a> = dyn FnMut(&mut Ui, Slot, &mut f64, &mut Part) -> El + 'a;
 /// The bind a preview uses: the part, on the model.
 pub fn model_bind() -> impl FnMut(&mut Ui, Slot, &mut f64, &mut Part) -> El {
     |ui, slot, norm, part| part(ui, slot.id(), norm)
+}
+
+/// A switch of `n` choices, bound to a discrete slot: the part edits the index,
+/// and the slot holds it as a step of the normalised range.
+pub fn choice(
+    ui: &mut Ui,
+    bind: &mut Bind,
+    slot: Slot,
+    state: &mut Slider,
+    n: usize,
+    part: &mut dyn FnMut(&mut Ui, &str, &mut usize) -> El,
+) -> El {
+    let span = n.max(2) - 1;
+    bind(ui, slot, &mut state.norm, &mut |ui, id, norm| {
+        let mut index = (*norm * span as f64).round().clamp(0.0, span as f64) as usize;
+        let el = part(ui, id, &mut index);
+        *norm = index as f64 / span as f64;
+        el
+    })
+}
+
+/// A toggle bound to a discrete slot: off at 0, on at 1.
+pub fn flag(
+    ui: &mut Ui,
+    bind: &mut Bind,
+    slot: Slot,
+    state: &mut Slider,
+    part: &mut dyn FnMut(&mut Ui, &str, &mut bool) -> El,
+) -> El {
+    bind(ui, slot, &mut state.norm, &mut |ui, id, norm| {
+        let mut on = *norm >= 0.5;
+        let el = part(ui, id, &mut on);
+        *norm = f64::from(u8::from(on));
+        el
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_choice_and_a_flag_hold_their_step_in_the_normalised_range() {
+        let mut ui = Ui::default();
+        let mut bind = model_bind();
+        let mut state = Slider { norm: 0.5, text: String::new() };
+        // A three-way choice: 0.5 is the middle option, and the part moves it
+        // to the last one, which is the top of the range.
+        let _ = choice(&mut ui, &mut bind, Slot::Quality, &mut state, 3, &mut |_, _, index| {
+            assert_eq!(*index, 1);
+            *index = 2;
+            block(0., 0.)
+        });
+        assert_eq!(state.norm, 1.0);
+
+        let mut state = Slider { norm: 0.0, text: String::new() };
+        let _ = flag(&mut ui, &mut bind, Slot::Bypass, &mut state, &mut |_, _, on| {
+            assert!(!*on);
+            *on = true;
+            block(0., 0.)
+        });
+        assert_eq!(state.norm, 1.0);
+    }
 }

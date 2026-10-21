@@ -11,6 +11,7 @@
 //! tree in a DAW window.
 
 pub mod graph;
+pub mod input;
 pub mod presets;
 pub mod icons;
 pub mod menus;

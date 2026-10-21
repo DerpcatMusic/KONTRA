@@ -565,6 +565,7 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
         Slot::Attack => (P::Attack, one),
         Slot::Release => (P::Release, one),
         Slot::Mix => (P::Mix, |v| format!("{v:.0} %")),
+        Slot::WetTrim => (P::WetTrim, |v| format!("{v:.1} dB")),
         Slot::Out => (P::Output, |v| format!("{v:.1} dB")),
         Slot::MaxCut => (P::MaxCut, |v| format!("{v:.0} dB")),
         Slot::Link => (P::Link, |v| format!("{v:.0} %")),
@@ -590,6 +591,15 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
             smooth_ui::graph::SHAPES[(v.round() as usize).min(7)].to_string()
         }),
         Slot::BandSlope => (ids[4], |v| format!("{v:.0} dB/oct")),
+        Slot::Mode => (P::Mode, |v| if v < 0.5 { "soft" } else { "hard" }.to_string()),
+        Slot::StereoMode => (P::StereoMode, |v| if v < 0.5 { "l/r" } else { "m/s" }.to_string()),
+        Slot::Quality => (P::Quality, |v| {
+            smooth_ui::view::QUALITY_NAMES[(v.round() as usize).min(2)].to_string()
+        }),
+        Slot::LowLatency => (P::LowLatency, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
+        Slot::Bypass => (P::Bypass, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
+        Slot::Delta => (P::Delta, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
+        Slot::BandBypass => (ids[7], |v| if v < 0.5 { "off" } else { "on" }.to_string()),
         Slot::BandBalance => (ids[5], |v| {
             if (v - 0.5).abs() < 0.005 {
                 "linked".to_string()
@@ -1059,7 +1069,7 @@ impl PluginLogic for Smooth {
                         mirror.restore_values(&values);
                     }
                 }
-                let held = view::pointer_down(ui) || stepping;
+                let held = view::edit_open(ui) || stepping;
                 session.observe(&snapshot(&mirror), held);
                 {
                     let library = mirror.library.lock().unwrap_or_else(|e| e.into_inner());
@@ -1117,11 +1127,16 @@ impl PluginLogic for Smooth {
 
             // The controls out: a drag on one is a gesture the host records.
             let mut bind = |ui: &mut Ui, slot: Slot, norm: &mut f64, part: &mut slots::Part| {
-                bridge.bind(ui, slot_param(slot, selected).0, |ui, widget, host| {
+                let param = slot_param(slot, selected).0;
+                let el = bridge.bind(ui, param, |ui, widget, host| {
                     let el = part(ui, widget.as_str(), host);
                     *norm = *host;
                     el
-                })
+                });
+                // A roll of the wheel is one host edit, held open until it stops.
+                let widget = moose::mui::widget_id(param);
+                bridge.hold(param, smooth_ui::input::rolling(widget.as_str()));
+                el
             };
             let tree = view::editor(ui, &mut model, &mut bind);
             // A drag on a plot handle is a gesture too, and the plot is not a
@@ -1171,16 +1186,7 @@ impl PluginLogic for Smooth {
                 write_plain(mirror.as_ref(), *frequency, band.frequency);
                 write_plain(mirror.as_ref(), *depth, band.depth);
                 write_plain(mirror.as_ref(), BAND_IDS[index][6], f64::from(u8::from(band.active)));
-                write_plain(mirror.as_ref(), BAND_IDS[index][7], f64::from(u8::from(band.bypass)));
             }
-            // The switches are the engine's own choices: soft or hard, the
-            // bypass, the compare, the short window, the quality.
-            mirror.mode.set_value(i64::from(!model.soft));
-            mirror.stereo_mode.set_value(i64::from(model.mid_side));
-            mirror.bypass.set_value(i64::from(model.bypass));
-            mirror.delta.set_value(i64::from(model.delta));
-            mirror.low_latency.set_value(i64::from(model.low_latency));
-            mirror.quality.set_value(model.quality as i64);
             if model.prefs != saved_prefs {
                 saved_prefs = model.prefs;
                 config::save(saved_prefs);

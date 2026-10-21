@@ -10,7 +10,7 @@
 use crate::graph;
 use crate::presets::{self, Presets};
 use crate::skin::*;
-use crate::slots::{self, Bind, Slider, Slot};
+use crate::slots::{self, Bind, Slider, Slot, choice, flag};
 use crate::theme;
 use crate::tokens::{icon, metric, radius, space, ty};
 use mui::prelude::*;
@@ -27,6 +27,12 @@ const NAME_SLACK: f64 = 1.4;
 /// one edit until it lets go.
 pub fn pointer_down(ui: &Ui) -> bool {
     ui.pointer().buttons.contains(mui::input::Button::Primary)
+}
+
+/// Whether an edit is still open: the pointer is down, or the wheel is still
+/// rolling. A roll of notches is one edit, so one undo step.
+pub fn edit_open(ui: &Ui) -> bool {
+    pointer_down(ui) || crate::input::wheel_rolling()
 }
 
 /// What a press on the toolbar asks of the host side: the view cannot undo
@@ -130,10 +136,10 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     m.actions.extend(asks.into_iter().map(Action::Preset));
     crate::menus::steer(ui, &mut m.menu);
     crate::tips::enable(m.prefs.tooltips);
-    if ui.get("lock-quality").clicked {
+    if ui.get("lock-quality").activated() {
         m.lock_quality = !m.lock_quality;
     }
-    if ui.get("lock-latency").clicked {
+    if ui.get("lock-latency").activated() {
         m.lock_latency = !m.lock_latency;
     }
     // The chip steps through the display ranges.
@@ -216,9 +222,10 @@ fn panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     let t = theme::t();
     // The switch carries an index; the model carries the mode. The part runs
     // first so the choice it made is written back before the tree is built.
-    let mut mode = usize::from(!m.soft);
-    let mode_el = segmented(ui, "mode", &["soft", "hard"], &mut mode);
-    m.soft = mode == 0;
+    let mode_el = choice(ui, bind, Slot::Mode, &mut m.slots[Slot::Mode.index()], 2, &mut |ui, id, mode| {
+        segmented(ui, id, &["soft", "hard"], mode)
+    });
+    m.soft = m.slots[Slot::Mode.index()].norm < 0.5;
     col![
         brand(),
         // The first gap is the widest: the name sits on its own above the
@@ -302,7 +309,7 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
     // or on the panel's own background, closes it.
     if ["rail-stereo", "rail-tilt", "rail-scale"]
         .iter()
-        .any(|id| ui.get(*id).clicked)
+        .any(|id| ui.get(*id).activated())
     {
         m.side = true;
     }
@@ -325,7 +332,7 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
             Slot::ReleaseLow,
             Slot::ReleaseHigh,
         ]),
-        differs(&[Slot::MaxCut]),
+        differs(&[Slot::MaxCut, Slot::WetTrim]),
     ];
     let group = |id: &str, s: &str, changed: bool| {
         col![
@@ -343,7 +350,8 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
         .align(Align::Center)
         .shrink(0)
         .id(id)
-        .cursor(Cursor::Grab)
+        .focusable()
+        .cursor(Cursor::Hand)
     };
 
     // What one pitch leaves for the gap between two groups.
@@ -386,7 +394,7 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
         ("ab-switch", Action::SwitchAb),
         ("ab-copy", Action::CopyAb),
     ] {
-        if ui.get(id).clicked {
+        if ui.get(id).activated() {
             m.actions.push(action);
         }
     }
@@ -400,13 +408,21 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
             m.presets.current_row().is_some_and(|r| r.favourite),
         ),
         row![
-            row![icon_button(Icon::Undo).tipped("undo"), icon_button(Icon::Redo).tipped("redo")].gap(space::XS),
-            row![pair_pill("a", "b", m.ab).tipped("ab-switch"), compare_pill("a", "b").tipped("ab-copy")].gap(space::XS),
+            row![
+                icon_button(Icon::Undo).tipped("undo").focusable(),
+                icon_button(Icon::Redo).tipped("redo").focusable(),
+            ]
+            .gap(space::XS),
+            row![
+                pair_pill("a", "b", m.ab).tipped("ab-switch").focusable(),
+                compare_pill("a", "b").tipped("ab-copy").focusable(),
+            ]
+            .gap(space::XS),
         ]
         .gap(space::L),
         row![
-            mark_button("?").tipped("help"),
-            icon_button(Icon::Gear).tipped("gear"),
+            mark_button("?").tipped("help").focusable(),
+            icon_button(Icon::Gear).tipped("gear").focusable(),
             icon_button(Icon::Expand),
         ]
         .gap(space::XS),
@@ -426,7 +442,10 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
 fn padlock(on: bool, id: &str) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    glyph(if on { Icon::Locked } else { Icon::Lock }, icon::BASE, c(t.ink)).tipped(id)
+    glyph(if on { Icon::Locked } else { Icon::Lock }, icon::BASE, c(t.ink))
+        .tipped(id)
+        .focusable()
+        .cursor(Cursor::Hand)
 }
 
 /// The mix, the output trim, and what the engine is doing.
@@ -439,8 +458,12 @@ fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     row![
         // The switches.
         row![
-            toggle_pill(ui, "bypass", "bypass", &mut m.bypass),
-            toggle_pill(ui, "delta", "delta", &mut m.delta),
+            flag(ui, bind, Slot::Bypass, &mut m.slots[Slot::Bypass.index()], &mut |ui, id, on| {
+                toggle_pill(ui, id, "bypass", on)
+            }),
+            flag(ui, bind, Slot::Delta, &mut m.slots[Slot::Delta.index()], &mut |ui, id, on| {
+                toggle_pill(ui, id, "delta", on)
+            }),
         ]
         .gap(space::S),
         // The mix and the trim: a name and the plate it names, twice.
@@ -473,11 +496,15 @@ fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
                     crate::tips::QUALITY_DISABLED,
                 )
             } else {
-                dropdown(ui, "quality", &QUALITY_NAMES, &mut m.quality)
+                choice(ui, bind, Slot::Quality, &mut m.slots[Slot::Quality.index()], QUALITY_NAMES.len(), &mut |ui, id, q| {
+                    dropdown(ui, id, &QUALITY_NAMES, q)
+                })
             },
             row![
                 padlock(m.lock_latency, "lock-latency"),
-                toggle_pill(ui, "lowlatency", "low latency", &mut m.low_latency),
+                flag(ui, bind, Slot::LowLatency, &mut m.slots[Slot::LowLatency.index()], &mut |ui, id, on| {
+                    toggle_pill(ui, id, "low latency", on)
+                }),
             ]
             .gap(space::XS),
         ]
@@ -515,9 +542,10 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     if ui.get("side-panel").double_clicked {
         m.side = false;
     }
-    let mut mode = usize::from(m.mid_side);
-    let mode_el = segmented_at(ui, "stereo-mode", &["L/R", "M/S"], &mut mode, metric::SIDE_FIELD_W);
-    m.mid_side = mode == 1;
+    let mode_el = choice(ui, bind, Slot::StereoMode, &mut m.slots[Slot::StereoMode.index()], 2, &mut |ui, id, mode| {
+        segmented_at(ui, id, &["L/R", "M/S"], mode, metric::SIDE_FIELD_W)
+    });
+    m.mid_side = m.slots[Slot::StereoMode.index()].norm >= 0.5;
     // A name centred over its plate, or over a pair of plates: the reference
     // stacks each control's name above the value it sets.
     let mut stacked = |ui: &mut Ui, m: &mut Model, name: &str, slots: &[Slot]| -> El {
@@ -548,6 +576,7 @@ fn side_panel(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         stacked(ui, m, "attack", &[Slot::AttackLow, Slot::AttackHigh]),
         stacked(ui, m, "release", &[Slot::ReleaseLow, Slot::ReleaseHigh]),
         section_title("scale", metric::SIDE_W - space::L * 2.0),
+        stacked(ui, m, "wet trim", &[Slot::WetTrim]),
         stacked(ui, m, "max cut", &[Slot::MaxCut]),
     ]
     .gap(space::S)
@@ -582,11 +611,15 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
             el
         })
     };
-    // The switch is on while the band works: the reference's power symbol.
-    let mut enabled = !m.bands[index].bypass;
-    let bypass_el = power_switch(ui, "band-bypass", &mut enabled);
-    m.bands[index].bypass = !enabled;
-    if ui.get("band-delete").clicked {
+    let bypass_el = flag(ui, bind, Slot::BandBypass, &mut m.slots[Slot::BandBypass.index()], &mut |ui, id, off| {
+        // The switch is on while the band works: the reference's power symbol.
+        let mut enabled = !*off;
+        let el = power_switch(ui, id, &mut enabled);
+        *off = !enabled;
+        el
+    });
+    m.bands[index].bypass = m.slots[Slot::BandBypass.index()].norm >= 0.5;
+    if ui.get("band-delete").activated() {
         m.bands[index].active = false;
     }
     // A cut or a reject has no gain to set: the depth slot is dimmed.
@@ -610,7 +643,7 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         pick(ui, Slot::BandWidth),
         pick(ui, Slot::BandSlope),
         pick(ui, Slot::BandBalance),
-        icon_button(Icon::Trash).tipped("band-delete"),
+        icon_button(Icon::Trash).tipped("band-delete").focusable(),
         edge_rail(tint),
     ]
     .gap(space::XS)

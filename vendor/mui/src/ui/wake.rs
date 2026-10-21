@@ -31,11 +31,17 @@ impl Ui {
                     )
             })
             .map(|_| (HALF_CARET_PERIOD - self.time.rem_euclid(HALF_CARET_PERIOD)).max(0.001));
-        match (tip, caret) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
-        .map(Duration::from_secs_f64)
+        // A roll of the wheel ends a fixed time after its last notch, and a
+        // control holds its edit open until then: wake to close it.
+        let roll = self
+            .wheel_turned
+            .map(|at| crate::host::WHEEL_ROLL - (self.time - at))
+            .filter(|left| *left > 0.);
+        [tip, caret, roll]
+            .into_iter()
+            .flatten()
+            .reduce(f64::min)
+            .map(|secs| Duration::from_secs_f64(secs.max(0.001)))
     }
 }
 #[cfg(test)]

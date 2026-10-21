@@ -10,7 +10,7 @@ interface draws.
         ~/.clap/SMOOTH.clap out.png --drag --gesture-check
 
 `--drag` moves the first band's handle and photographs the result.
-`--wheel-check` wheels band 2 up, Alt-wheels its depth and Shift-wheels it
+`--graph-wheel-check` wheels band 2 up, Alt-wheels its depth and Shift-wheels it
 fine, drags it, double-clicks it, asserting the host hears one gesture for
 each and photographing each stage. `--keys` adds the arrow and Delete checks,
 which do not yet reach the editor under Xvfb.
@@ -330,7 +330,7 @@ def main():
                     f"{min(values):.6g} .. {max(values):.6g}"
                 )
             print("gestures:\n  " + "\n  ".join(lines))
-    if "--wheel-check" in sys.argv:
+    if "--graph-wheel-check" in sys.argv:
         # The wheel over band 2 (the 650 Hz bell, three and a half units up),
         # in the editor's own 800x473 space: a notch up widens it (Q falls),
         # Alt turns the wheel to its depth, and Shift makes a notch fine. Each
@@ -487,6 +487,105 @@ def main():
             settle()
             after_delete = snap("delete-key")
             print(f"pixels changed by Delete: {differs(before_delete, after_delete)}")
+    if any(flag in sys.argv for flag in ("--wheel", "--dblclick", "--ctrl-click", "--expect", "--wheel-check")):
+        # Wheel and double-click on logical points: `--wheel x,y:n` scrolls n
+        # notches (negative is down; `--shift` makes them fine), `--dblclick
+        # x,y` double-clicks to reset. Each one is photographed, and
+        # `--wheel-check name:up|down` asserts the host heard one gesture
+        # moving that parameter the way the wheel went.
+        import re
+
+        sx, sy = scale()
+        rest = sys.argv[1:]
+        shift = "--shift" in sys.argv
+        heard.clear()
+        for index, spec in enumerate(a for a in rest if re.fullmatch(r"\d+,\d+(:-?\d+)?", a) and a != "--shift"):
+            where, _, notches = spec.partition(":")
+            x, y = (int(v) for v in where.split(","))
+            subprocess.run(
+                ["xdotool", "mousemove", str(int(x * sx)), str(int(y * sy))], check=True
+            )
+            settle()
+            if "--ctrl-click" in sys.argv and not notches:
+                # Ctrl held through one press: the reset gesture that needs no
+                # second click.
+                subprocess.run(["xdotool", "keydown", "ctrl", "mousedown", "1"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+                subprocess.run(["xdotool", "mouseup", "1", "keyup", "ctrl"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+            elif not notches and "--dblclick" not in sys.argv:
+                # A plain click on the point: a switch turns over. The press and
+                # the release are frames apart, as a person's are.
+                subprocess.run(["xdotool", "mousedown", "1"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+                subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                for _ in range(3):
+                    plugin.main(pointer)
+                    time.sleep(0.04)
+            elif "--dblclick" in sys.argv and not notches:
+                # Two clicks a beat apart, with the editor's frames running
+                # between them: the editor's own clock reads the double click.
+                for _ in range(2):
+                    subprocess.run(["xdotool", "mousedown", "1"], check=True)
+                    for _ in range(3):
+                        plugin.main(pointer)
+                        time.sleep(0.04)
+                    subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                    for _ in range(3):
+                        plugin.main(pointer)
+                        time.sleep(0.04)
+            else:
+                count = int(notches or 0)
+                # Button 4 scrolls up, 5 down.
+                button = "4" if count > 0 else "5"
+                keys = ["keydown", "shift"] if shift else []
+                for _ in range(abs(count)):
+                    cmd = ["xdotool", *keys, "click", button] if not keys else [
+                        "xdotool", "keydown", "shift", "click", button, "keyup", "shift"
+                    ]
+                    subprocess.run(cmd, check=True)
+                    # Notches come a beat apart, as a turning wheel sends
+                    # them: a roll is one edit only while they keep coming.
+                    for _ in range(2):
+                        plugin.main(pointer)
+                        time.sleep(0.03)
+                    # The host runs a block between notches: that is when
+                    # a set reaches the parameter the next notch reads.
+                    play(frames=256, events=record_out)
+                settle()
+            settle()
+            shot = out.with_name(f"{out.stem}-wheel{index + 1}{out.suffix}")
+            subprocess.run(["magick", "import", "-window", str(parent), str(shot)], check=True)
+            print(f"wrote {shot}")
+        if "--expect" in sys.argv:
+            # `--expect NAME=VALUE`: the last value the host heard for NAME is
+            # VALUE, in the parameter's own units (a double click resets it).
+            name, _, want = sys.argv[sys.argv.index("--expect") + 1].partition("=")
+            play(events=record_out)
+            ident = infos[name].id
+            values = [value for kind, seen, value in heard if seen == ident and kind == 5]
+            assert values, f"host heard no change for {name}"
+            assert abs(values[-1] - float(want)) < 1e-6, (name, values[-1], want)
+            print(f"expect {name} = {want}: verified (last {values[-1]:.6g})")
+        if "--wheel-check" in sys.argv:
+            name, _, direction = sys.argv[sys.argv.index("--wheel-check") + 1].partition(":")
+            play(events=record_out)
+            ident = infos[name].id
+            kinds = [kind for kind, seen, _ in heard if seen == ident]
+            values = [value for kind, seen, value in heard if seen == ident and kind == 5]
+            print(f"wheel {name}: kinds {kinds}, values {values[:3]}..{values[-3:]}")
+            assert values, f"host heard no change for {name}"
+            moved = values[-1] - values[0]
+            assert (moved > 0) == (direction == "up") and moved != 0, (name, direction, moved)
+            # Every gesture the wheel opened is closed again: no edit left hanging.
+            assert kinds.count(7) == kinds.count(8), (name, kinds)
+            print(f"wheel {name}: {direction} verified")
     assert gui.hide(pointer)
     gui.destroy(pointer)
     plugin.destroy(pointer)
