@@ -115,6 +115,22 @@ def filt():
     return {"chain": ["Filters/Effect"], "pre": [], "steps": steps}
 
 
+# Legacy BFilter types with no Kontakt measurement yet (filter-laws.tsv): saved ids from filter-type-ids.tsv.
+LEGACY_UNMEASURED = {"LP2POLE": 6, "HP2POLE": 7, "BP2": 4, "HP4POLE": 9, "BP4": 10, "BR4": 11,
+                     "LADDER_LEGACY": 17, "SIMPLE_LPHP": 120}
+
+
+def filtlegacy():
+    """Filters/Effect for the legacy types in LEGACY_UNMEASURED: cutoff grid at resonance 0, resonance grid at cutoff 0.5."""
+    steps = []
+    for name, sub in LEGACY_UNMEASURED.items():
+        for c in GRID:
+            steps.append({"name": f"{name} cutoff={c} res=0", "set": [[0, "EFFECT_SUBTYPE", sub], [0, "CUTOFF", c], [0, "RESONANCE", 0]]})
+        for r in (M // 2, 9 * M // 10):
+            steps.append({"name": f"{name} cutoff=500000 res={r}", "set": [[0, "EFFECT_SUBTYPE", sub], [0, "CUTOFF", M // 2], [0, "RESONANCE", r]]})
+    return {"chain": ["Filters/Effect"], "pre": [], "steps": steps}
+
+
 if __name__ == "__main__":
-    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt}[sys.argv[1]]()
+    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt, "filtlegacy": filtlegacy}[sys.argv[1]]()
     json.dump(spec, open(sys.argv[2], "w"), indent=1)
