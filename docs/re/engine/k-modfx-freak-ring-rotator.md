@@ -77,3 +77,13 @@ Method: `tools/kontakt-oracle/stimrender.py` with a 1.5 s constant 0.5 input, so
 Implemented in this PR: `sampler_ir::fx::ringmod` (carrier Hz, mix, wet gain) and `sampler_core::dsp::ringmod` (sine carrier, linear crossfade, phase kept in the stage's delay storage). Tests: `carrier_rate_and_wet_gain_follow_the_measured_laws`, `dry_mix_is_bit_exact_and_phase_persists`.
 
 Not yet implemented, diagnosed as unsupported in the mapping: EDGE shaping, FM (input-driven), LFO (amount, rate, wave). Format mapping: `crates/sampler-kontakt/src/effects/ringmod.rs` reads the saved fields 0..7 (bindings order, typed by the NI schema) into `Processor::RingMod`; non-default edge, FM, LFO wave and amount are reported as unmeasured and the module is not marked modelled. Tests: `carrier_frequency_follows_the_measured_points` (slow and fast points) and `unmeasured_parameters_are_reported_not_modelled`.
+
+## Rotator: measured so far (Wine oracle, 2026-10-22, 1 kHz sine at 0.5, 12 s)
+
+| Measurement | Result |
+| --- | --- |
+| Rotor rate, RT_SPEED = 0 (slow) | 0.806 Hz envelope modulation, about 70 dB below the carrier in sidebands |
+| Rotor rate, RT_SPEED = 1 (fast) | 6.09 Hz envelope modulation |
+| Fast-mode sidebands | Carrier 1000 Hz with symmetric sidebands at 1000 +/- 12.2 Hz (2 x rotor rate), about 0.93 of carrier level: Doppler frequency modulation dominates |
+
+Not yet measured: crossover frequency and horn/drum split, Doppler depth per rotor, acceleration (RT_ACCEL_HI/LO) time constants, distance (RT_DISTANCE), balance (RT_BALANCE), and the mix law (RT_MIX). No Rotator DSP is implemented yet; the module stays unsupported.
