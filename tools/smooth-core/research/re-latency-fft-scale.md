@@ -559,3 +559,46 @@ So the process path (`0x619fc0`, `0x890a00`) cannot give an impulse delay, outpu
   input buffer first. Not changed here.
 - Next: decode the code before line 395 (what `pad` holds) and the host-side fill of the
   detector state. Without them, step 4 has no reference to match.
+
+## 15. Detector runs to completion on a stand-in state (pass 9, Unicorn, 2026-10-21)
+
+Harness: `re-tools/emulate/detector_run.py`. Evidence scope: isolated emulation with a synthetic
+host and stand-in state. Nothing here is a plug-in default, and no parity is claimed.
+
+### Fault chain fixed, in the order it was hit
+
+1. **Bin and weight fill** through the record dispatcher `0x621d50`: type 0 -> bins1 (S+0x770),
+   1 -> bins2 (S+0x788), 2 -> W1 (S+0x7a0), 3 -> W2 (S+0x7b8). Payload = float array, size in bytes at
+   record+0x30, data pointer at record+0x28, type int at record+0. Values used: 1025 linear bin
+   frequencies (step fs/(2*1024)) and unity weights. Not the plug-in's values.
+2. **Map lookups** `0x563970(tree = *(S+t), key = *(S+k))`: when the tree's flag byte (+0x48) is 0 the
+   function is a no-op. Stand-in: empty flag-clear trees at S+0x550, S+0x4b0, S+0x570. Their real
+   contents are host state and are unknown.
+3. **Result object**: `*(S+0x540)` must be a valid object (read at +0x2c/+0x3c by `0x17bb1e0`).
+4. **Group count**: `**(S+0x4a0)` is the int 1 (cell pointed to by S+0x4a0).
+5. **Flag byte**: `**(S+0x560)` is 0.
+6. **Frame (detector arg1) is a channel list**, not a sample struct: `+0x38` = qword pointers to
+   channel sample buffers, `+0x40` = channel count, `+0x48` = samples per channel N. With count 0 the
+   copy loop at `0x619fc0+0x52..0x76` takes `[rbp+0x880] = 0` as a buffer pointer and the fold writes
+   through address 0 (the fault seen first).
+
+### Output and the blocker
+
+- The detector returns (`0x20033fb8`), and writes 2022 floats into the host block that `*arg3`
+  points to, at offsets 0x68..0x1ffe. Values are 0.0 at the lowest indices and 1.0 above them.
+- **Input independence:** silence, a 1 kHz sine at 0.9, and white noise at 0.9 give the same
+  output. So with this state the detector does not respond to its input. Until that is explained,
+  the output is not a reduction curve and no oracle can be drawn from it.
+- Likely gates (not yet read): the depth and detail settings in the host block (`*arg3` floats at
+  indices 0x398, 0x97, 0x3cb, 0x3ac, 0x0, 0xeb4 read by the entry checks), and the attack/release
+  states in S. Their defaults are the missing host state.
+
+### Consequences
+
+- No oracle JSON in this pass. Impulse delay, output level and the 1024-point reduction curve are
+  still unmeasured. Latency stays `n - 1` in SMOOTH; the PDC rule waits for a measured delay.
+- Step (3), the port, is blocked on two unverified inputs: the fold indices (the lifter; section 14 says
+  "keep one half, zero the rest", an interpretation, not decoded) and the host default block. A port
+  now would invent those constants, so it was not started.
+- Next: decode the entry checks in `0x619fc0` (lines 98-135 of the annotated file) to find which host
+  floats gate the output; then decode the fold indices from the code between lines 395 and 450.
