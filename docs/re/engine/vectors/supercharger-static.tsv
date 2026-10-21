@@ -1,0 +1,20 @@
+# Supercharger GT static transfer, native Kontakt 8 (Wine oracle, 2026-10-21)
+# stimulus: 200 Hz sine ramp 0->1 over 0.6 s; output = window peak of the effect channel
+# divided by the window peak of the same stimulus on an effect-free instrument (gain_vs_ref).
+# Each step changes one ENGINE_PAR from the INIT preset; MIX steps set MIX explicitly.
+step	gain@in0.2	gain@in0.4	gain@in0.6	gain@in0.8	gain@in1.0
+bypass	1.0000	1.0000	1.0000	1.0000	1.0000
+TRIM=0	1.0716	1.0716	1.0717	1.0717	1.0717
+TRIM=0.5	1.0716	1.0716	1.0717	1.0717	1.0717
+TRIM=1.0	1.0716	1.0716	1.0717	1.0717	1.0717
+SATURATION=0	1.0716	1.0716	1.0717	1.0717	1.0717
+SATURATION=0.5	1.0716	1.0716	1.0717	1.0717	1.0717
+SATURATION=1.0	1.0716	1.0716	1.0045	1.0214	1.0315
+COMPRESS=0	1.0716	1.0716	1.0717	1.0717	1.0717
+COMPRESS=0.5	1.0716	1.0716	1.0717	1.0717	1.0673
+COMPRESS=1.0	1.0716	1.0717	1.0717	1.0717	1.0717
+CHARACTER=0	1.0716	1.0717	1.0717	1.0717	1.0710
+CHARACTER=0.5	1.0716	1.0717	1.0717	1.0717	1.0628
+CHARACTER=1.0	1.0716	1.0717	1.0717	1.0717	1.0673
+MIX=0	1.0000	1.0000	1.0000	1.0000	0.9958
+MIX=1.0	1.0000	1.0000	1.0000	1.0000	0.9958

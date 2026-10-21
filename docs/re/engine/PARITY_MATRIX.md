@@ -96,11 +96,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Compressor | unknown | none | |
-| Feedback Compressor | unknown | none | |
+| Compressor | partial | decomp | Enhanced and Pro constants confirmed in Kontakt8.exe; Enhanced/Pro have no native vectors yet (computed/golden only); Classic unverified. `docs/re/engine/dyn-compressors.md` |
+| Feedback Compressor | partial | decomp | Core setter `0x141ac56d0` and mapping constants confirmed; saved float field 6 has no core input and link/side-chain bytes unbound; no native vectors |
 | Limiter | unknown | none | |
-| Solid Bus Comp | unknown | none | |
-| Supercharger GT | unknown | none | |
+| Solid Bus Comp | partial | decomp | Attack/release tables and coefficient law confirmed (docs); core `0x141aaa1e0` located; threshold/ratio/envelope unverified; no native vectors |
+| Supercharger GT | missing | vector, decomp | Static native vectors in `docs/re/engine/vectors/supercharger-static.tsv`; MIX result unexplained. Owns the `Rockruepel_CompXT` core (`0x141a820e0`); CompXT law, saved-field→index map and mode meanings not recovered; still diagnosed (NotModeled) |
 | Transient Master | unknown | none | |
 | Transparent Limiter | unknown | none | |
 | Gainer | unknown | none | |
