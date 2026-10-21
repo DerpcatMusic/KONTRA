@@ -87,6 +87,19 @@ impl AdaptiveFollower {
         Some(Self::new(2f32.powf(g * SIXTH), coefficient(t_first), coefficient(t_second)))
     }
 
+    /// Kontakt's stored follower object (`BParEnvF`, 0x0A, v0x60): the four floats
+    /// in file order are attack, decay, gain and adaption speed (the text parser
+    /// writes them to `+8`, `+0xc`, `+0x10`, `+0x14`, FUN_140924xxx). The builder
+    /// takes attack as `t_second`, decay as `t_first` and gain as `g`. Adaption
+    /// speed is stored as `logf(x) * 6/ln 2` (binary32 `0x410a7fac` at `0x14471cb10`,
+    /// the scale of FUN_140910000's `adaptionSpeed` branch), so the builder's base
+    /// `2^(b/6)` is `x` again. The binary-object path is not proved to take the same
+    /// log step; this constructor applies it. `None` unless `x > 0`.
+    pub fn from_stored(rate: f32, [attack, decay, gain, adaption]: [f32; 4]) -> Option<Self> {
+        const SIX_OVER_LN2: f32 = 8.656_169_9; // 0x410a7fac, binary32 at 0x14471cb10
+        Self::from_builder(rate, decay, attack, gain, adaption.ln() * SIX_OVER_LN2)
+    }
+
     /// Process one call; at most [`Self::FRAME`] samples (more is unproved and ignored).
     #[allow(clippy::manual_clamp)]
     pub fn process(&mut self, input: &[f32]) {
@@ -178,6 +191,20 @@ mod tests {
         let before = f;
         f.process(&[1.0; 2000]);
         assert_eq!(f, before);
+    }
+
+    #[test]
+    fn stored_fields_map_to_the_builder_roles() {
+        // Adaption 0.5 gives base 2^(-1) = 0.5 through the log step; gain 6 gives 2.
+        let f = AdaptiveFollower::from_stored(1000.0, [1.0, 2.0, 6.0, 0.5]).unwrap();
+        let b = AdaptiveFollower::from_builder(1000.0, 2.0, 1.0, 6.0, -6.0).unwrap();
+        assert_eq!(f.gain, 2.0);
+        assert!((f.first - b.first).abs() < 1e-6 && (f.second - b.second).abs() < 1e-6);
+        // Attack (1) counts 32 samples, decay (2) counts 64.
+        assert!((f64::from(f.second) - 0.5f64.powf(1.0 / 32.0)).abs() < 1e-6);
+        assert!((f64::from(f.first) - 0.5f64.powf(1.0 / 64.0)).abs() < 1e-6);
+        assert!(AdaptiveFollower::from_stored(1000.0, [1.0, 1.0, 0.0, 0.0]).is_none());
+        assert!(AdaptiveFollower::from_stored(1000.0, [1.0, 1.0, 0.0, f32::NAN]).is_none());
     }
 
     #[test]
