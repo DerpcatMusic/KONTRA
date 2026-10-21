@@ -2475,6 +2475,7 @@ impl Lowering<'_> {
         Ok(match source {
             ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
             ir::ModulationSource::Follower(f) => ModSource::Follower([f.attack, f.decay, f.gain, f.adaption]),
+            ir::ModulationSource::Glide(g) => ModSource::Glide { mode: g.mode, time_ms: g.time_ms },
             ir::ModulationSource::Breakpoints(b) => {
                 let mut points = Vec::with_capacity(b.points.len());
                 for p in &b.points {

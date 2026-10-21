@@ -59,6 +59,8 @@ impl Translation {
                         ir::ModulationSource::ScriptBipolar(id) => format!("ScriptEventModulation EventId={id} Bipolar=1"),
                         ir::ModulationSource::Envelope(_) => "Envelope".into(),
                         ir::ModulationSource::Breakpoints(_) => "Breakpoints".into(),
+                        ir::ModulationSource::Follower(_) => "EnvelopeFollower".into(),
+                        ir::ModulationSource::Glide(_) => "Glide".into(),
                         ir::ModulationSource::Lfo(_) => "LFO".into(),
                         ir::ModulationSource::Velocity => "VoiceParam Velocity".into(),
                         ir::ModulationSource::Key => "VoiceParam Key".into(),
