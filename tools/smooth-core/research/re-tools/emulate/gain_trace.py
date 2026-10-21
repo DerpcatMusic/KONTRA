@@ -1,11 +1,11 @@
-"""Semantic trace of one call of the gain body 0x8e04c0: blocks, calls, IPP ops with values.
+"""Semantic trace of one call of a function (default: the gain body 0x8e04c0): blocks, calls, IPP ops.
 
 IPP dispatch thunks were identified by black-box emulation (selector 0, see section 21 of the
 notes); each is decoded with its argument registers and the head of its input/output vectors.
 Plugin callees are listed with their register arguments. Block entries are printed in order,
 with repeats of a loop folded into a count.
 
-Run with: python -I gain_trace.py [entry_index] [blocks]
+Run with: python -I gain_trace.py [entry_index] [blocks] [lo_rva hi_rva]
 (GAIN_EXTRA="id=value,..." adds discrete parameter overrides, e.g. GAIN_EXTRA=2=1 for quality 1.)
 """
 
@@ -22,7 +22,7 @@ from unicorn.x86_const import (  # noqa: E402
     UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RSP,
 )
 
-from gain_setup import BODY_HI, BODY_LO, PARAMS, extra_params, make_session, run_block, xmm_f32  # noqa: E402
+from gain_setup import PARAMS, extra_params, make_session, run_block, xmm_f32  # noqa: E402
 from pe_emu import IMAGE_BASE  # noqa: E402
 
 R = {"rcx": UC_X86_REG_RCX, "rdx": UC_X86_REG_RDX, "r8": UC_X86_REG_R8, "r9": UC_X86_REG_R9}
@@ -66,6 +66,7 @@ def head(emu, ptr, n, k=4):
 
 def main():
     want = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    BODY_LO, BODY_HI = (IMAGE_BASE + int(a, 16) for a in (sys.argv[3:5] if len(sys.argv) > 4 else ('0x8e04c0', '0x8e53b1')))
     blocks = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     sess = make_session(PARAMS + extra_params())
     emu, uc = sess.emu, sess.emu.uc

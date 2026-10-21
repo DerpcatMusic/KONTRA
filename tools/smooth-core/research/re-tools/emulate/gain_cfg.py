@@ -1,4 +1,4 @@
-"""Basic-block CFG of the gain body 0x8e04c0..0x8e4be2 (section 20 of ../../re-latency-fft-scale.md).
+"""Basic-block CFG of the gain body 0x8e04c0..0x8e53b1 (section 20 of ../../re-latency-fft-scale.md).
 
 Two sources, kept apart in the output:
   static  capstone linear sweep of the body range; leaders are the entry, every direct jcc/jmp
@@ -34,7 +34,7 @@ from pe_emu import IMAGE_BASE, Emulator, image_va  # noqa: E402
 from process_lib import PROCESS_THUNK, Session, alloc_frames  # noqa: E402
 
 LO = 0x8E04C0
-HI = 0x8E4BE2  # end of the body as recorded in section 19 (about 17.5 KB)
+HI = 0x8E53B1  # function end (ret at 0x8e53b0); section 19 had 0x8e4be2
 N = 512
 JCC_JMP_RET = ("jmp", "ret")
 
