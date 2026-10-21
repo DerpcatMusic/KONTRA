@@ -850,6 +850,9 @@ fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
     part.snapshot.clear();
+    // Control ids derive from the variable name, so the old preset's values
+    // would seed the next preset's same-named controls at load.
+    part.control_values.clear();
     part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
