@@ -77,8 +77,8 @@ gaps below, and every res .9 row of the classes other than SV1/HP1 is open under
 | G5 | Self-oscillation stability | **covered** | Test `sv_classes_stay_bounded_at_full_resonance` (all five classes, u 0 and 1, res 1, +-4 square): finite and peak < 1e4. Not a level match (G4) |
 | G6 | Knee constants | **closed** | `0.25`, `2L`, the SV2 and SV4 operation orders confirmed from `0x140b02790` and the setters |
 | G7 | MultiSV bandwidth | **identified; record path partly traced** | Core ENGINE_PAR index 2 (+0x28) is read by `0x140b03b50` as `spread = 31.5 b + 0.5` (constants confirmed, centre `180 u - 20` confirmed). Mode is index 3 (`0x140b048a0`, `round(2 v)` clamped 0..2). The reader `0x140d00db0` writes the value at +0x24, but the copy to core index 2 is not traced. Vector-verified at bandwidth 0.3 only |
-| G8 | SV2 and Multi state limit `l` | **open** | Only SV4 and SV6 `l` are confirmed from the binary |
-| G9 | Multi gain constants (0.7, 0.49) and the serial mix | **open** | Multi process only partly traced (`0x140b01d00`) |
+| G8 | State limit `l`: SV4, SV6 and Multi | **closed** | Multi `l = 400 - 376 n`, `n = clamp(note, 0, 134) / 134` (PE constants 400, 376, 134; setter `0x140b03b50`). SV4 and SV6 `l` confirmed earlier. **SV2 `l` (600 - 576 n) still unconfirmed** |
+| G9 | Multi gains and mix | **closed** | Parallel gain `0.7 - 0.49 R^5` (PE 0.7, 0.49). Serial: `R'' = (0.01 min(spread, 6) / 6 + 0.99) R` and gain `(1 - 0.5 R''^5)^2` (PE 0.99, 0.01, 6, 0.5). Mix `(2 bp2 + 2 bp1) w + (hp2 + o1)` with `w = 0.5 - 0.1667 min(spread, 3)` (PE 0.5, 3, 0.1667), process `0x140b01d00`. Split knee order confirmed there too |
 | G10 | Outputs of LP2, LP4, LP6 and BP6 at u = 0 (res 0) | **open** | Captured (Wine oracle): native LP2, LP4, LP6 and BP6 roll off about 6 dB/oct above 200 Hz (LP2 -72.8 dB at 15 kHz; LP2 -43.9 dB at 500 Hz vs ours -51.4); ours roll off 12 to 24 dB/oct. The 30 Hz and 60 Hz points match for LP2 (-7.37 vs -7.36 dB). BP2, BP4, HP4, Notch 4 and SV1 at u = 0 match, and Notch 6 matches above 60 Hz (its 30 Hz null is -50.6 vs -51.6 dB, kept in the open list). Ruled out: the state knee (disabling it leaves LP4 unchanged) and the LP tap source (taking the knee-limited low state instead leaves it unchanged). Leading hypothesis: a per-stage coefficient problem at tiny `g` that affects the second integrator only; not yet traced in the binary |
 | G12 | BP2 at u = 1 (res 0) | **open** | Native low-frequency skirt is 4.2 dB lower at 30 Hz and 1.8 dB lower at 60 Hz; 2 kHz and above match to 0.05 dB. The Two process transform near the top of the cutoff range (see G2) is the likely cause |
 | G13 | Defaults of each knob | open | Needs the group/insert default table (`KONTRA_VOICE_GROUP_DEFAULTS.md`) |
@@ -123,6 +123,7 @@ Padé forms. Each differs in precision or clamp, so each needs its own vector ch
 1. G4: a kemu driver for the SV classes (the vector generator is not in this repo) to dump SV4/SV6
    res .9 vectors, then compare the measured peaks with the level recorded.
 2. G10 and G12: trace the SV2/Six process transform (`0x140b02400`, `0x140b02cf0`) at small `g`.
-3. G8 and G9: the Multi `l` law (`0x140b03b50`) and gain constants (`0x140b01d00`); capture MultiSV.
+3. G7 and MultiSV capture: find the bandwidth engine-parameter name (the probe was blocked by another oracle session holding the guard), then capture types 63..65 at bandwidths 0, .3, 1.
+   G8 (SV2 `l`): trace the SV2 process (`0x140b02400`).
 4. G4 and G10: capture the res .9 SV4/SV6 path with a documented input level, and the first-step
    behaviour after a subtype change.
