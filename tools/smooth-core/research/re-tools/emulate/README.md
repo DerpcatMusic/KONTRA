@@ -53,6 +53,7 @@ Run with `python -I`.
   `fcn.1806c30c0`. The sink's output is the normalised value. Three host
   calls are stubbed (listed in the file): they are bookkeeping, not the law.
   Run it with `python -I wheel_chain.py <dy> <modifier>`.
+||||||| 6955c4e8b
 - `input_chain.py`: runs the wheel path with the real image code. Editor slot 8
   pushes into the ring, `try_pop` pops, and the UI consumer stores the wheel
   fields. It prints the verified values and the pcs of the stores. The MSVC
