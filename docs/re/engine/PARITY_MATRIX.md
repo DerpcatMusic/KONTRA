@@ -122,6 +122,20 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Vowel A | partial | vector (Kontakt 8 measured, 8 steps, `vowel_filters_match_kontakt_measurements`) | static parity to 0.1 dB; live morph lanes not wired |
 | Vowel B | partial | vector (Kontakt 8 measured, 8 steps, same test) | static parity to 0.1 dB; live morph lanes not wired |
 | Simple LP/HP | missing | none (Wine oracle inconclusive) | CUTOFF/RESONANCE do not move the response; parameter mapping not traced in the export; smoother and stereo unprobed |
+| Legacy LP1 | unknown | none | |
+| Legacy LP2 | unknown | none | |
+| Legacy LP4 | unknown | none | |
+| Legacy LP6 | unknown | none | |
+| Legacy Ladder | unknown | none | |
+| Legacy HP1 | unknown | none | |
+| Legacy HP2 | unknown | none | |
+| Legacy HP4 | unknown | none | |
+| Legacy BP2 | unknown | none | |
+| Legacy BP4 | unknown | none | |
+| Legacy BR4 | unknown | none | |
+| 3x2 Versatile | partial | vector + decomp | Native stage vectors (kemu) at cutoff 0.5 only (`cascade_stage_vectors.json`, VERS-lp / VERS-mixed); laws confirmed in decompile (cutoff setter, resonance, normaliser, process). Missing: cutoff / shift / morph / wet / gain sweeps (Wine oracle), SSE rounding path. See `filt-multi-versatile.md`. |
+| Dual SKF | partial | vector + decomp | Native vectors at 48 kHz, mono, 3 knob sets (`kontaktfx_vectors.json`); setParam clamp and drive `2v-1` confirmed in decompile. Missing: record-to-slot mapping (reader branch for type 130 not isolated), other sample rates, stereo. |
+| Simple LP/HP | partial | vector | Native vectors (kemu) at 48 kHz, 3 knob sets (`kontaktfx_vectors.json`). Missing: the alternate smoother (u8, rate-based) is unprobed; stereo interleave unprobed. |
 | Formant I | unknown | none | |
 | Formant II | unknown | none | |
 | Phaser (filter) | unknown | none | |
