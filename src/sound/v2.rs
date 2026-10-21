@@ -760,6 +760,8 @@ pub struct V2Core {
     peaks: Peaks,
     tails: Vec<Option<Tail>>,
     controllers: Vec<Controllers>,
+    /// Last host automation value per slot (NaN: never sent), replayed into a replacement part.
+    host_values: Box<[f64]>,
 }
 
 /// Off-audio producer for the native admission/reply service; never retargeted on replacement.
@@ -1506,19 +1508,10 @@ impl V2Core {
         {
             return false;
         }
+        self.host_values[usize::from(address)] = value;
         let mut accepted = true;
         for part in self.parts.iter_mut().flatten() {
-            let rt = &mut part.runtime;
-            let Ok(performance) = rt.performance(0) else {
-                accepted = false;
-                continue;
-            };
-            let context = ControlContext {
-                performance,
-                origin: WIRE,
-                channels: 1,
-            };
-            accepted &= rt.dispatch_host_parameter(context, address, value).is_ok();
+            accepted &= dispatch_host_parameter(part, address, value);
         }
         accepted
     }
@@ -2278,6 +2271,7 @@ impl V2Core {
             peaks,
             tails: (0..parts).map(|_| None).collect(),
             controllers: vec![Controllers::default(); parts],
+            host_values: vec![f64::NAN; usize::from(super::HOST_AUTOMATION_SLOTS)].into(),
         }
     }
 
@@ -2860,6 +2854,19 @@ impl V2Core {
     }
 }
 
+fn dispatch_host_parameter(part: &mut Part, address: u16, value: f64) -> bool {
+    let rt = &mut part.runtime;
+    let Ok(performance) = rt.performance(0) else {
+        return false;
+    };
+    let context = ControlContext {
+        performance,
+        origin: WIRE,
+        channels: 1,
+    };
+    rt.dispatch_host_parameter(context, address, value).is_ok()
+}
+
 fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
     use sampler_core::StreamError;
     match error {
@@ -2934,6 +2941,17 @@ impl Core for V2Core {
             && let Some(c) = self.controllers.get(part)
         {
             c.replay(p);
+        }
+        if let Some(p) = prepared.as_mut() {
+            // The host's lanes keep their last value across a switch; the new
+            // part starts from it rather than from its own defaults.
+            for index in 0..p.host_bindings.len() {
+                let address = p.host_bindings[index].address;
+                let value = self.host_values.get(usize::from(address)).copied().unwrap_or(f64::NAN);
+                if value.is_finite() {
+                    dispatch_host_parameter(p, address, value);
+                }
+            }
         }
         let old = std::mem::replace(slot, prepared);
         let total = (self.rate * 0.03) as u32;
