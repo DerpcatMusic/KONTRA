@@ -26,6 +26,7 @@
 //! sections' three frames of pipeline run at the input. Parameter ramps
 //! (`int(sr·0.02/bs + 0.5)` blocks) are not reproduced.
 
+use super::shelf::{Warp, first_order};
 use super::super::network::{Allpass, Feed, LineSpec, Matrix, Ring, Spec, TapFrom};
 use std::f64::consts::PI;
 
@@ -42,24 +43,8 @@ fn frames(sr: f32, n: u16) -> usize {
     (sr * (f64::from(n) / 48_000.0) as f32) as usize
 }
 
-/// Shelf design `0x141a92480`: `[b0, b1, a1]` of `(b0 + b1·z⁻¹)/(1 + a1·z⁻¹)`,
-/// DC gain `g0`, Nyquist gain `gp`; `k` from `sin`.
-pub(super) fn shelf(f: f64, g0: f64, gp: f64, rate: f64, sin: fn(f64) -> f64) -> [f64; 3] {
-    if g0 == gp {
-        return [g0, 0.0, 0.0];
-    }
-    let q = (gp * gp - g0 * g0) / (g0 * g0 + gp * gp - 2.0 * gp * g0);
-    let p = q - q.signum() * (q * q - 1.0).sqrt();
-    let b0 = 0.5 * ((g0 - gp) * p + g0 + gp);
-    let b1 = 0.5 * ((g0 + gp) * p + g0 - gp);
-    let th = PI * (f / rate).min(1.0) / 2.0;
-    let k = sin(th - PI / 4.0) / sin(th + PI / 4.0);
-    let n = 1.0 / (k * p + 1.0);
-    [(k * b1 + b0) * n, (k * b0 + b1) * n, (k + p) * n]
-}
-
 /// Polynomial sine `0x149e745e0`, no range reduction.
-fn psin(t: f64) -> f64 {
+pub(super) fn psin(t: f64) -> f64 {
     let t = t as f32;
     let c = [0xb2cd4ca8u32, 0x3638b94f, 0xb9500c03, 0x3c088885, 0xbe2aaac1, 0x3f800000].map(f32::from_bits);
     let t2 = t * t;
@@ -91,8 +76,8 @@ pub(super) fn line_biquad(d: f32, hd: f32, len: f32, rate: f64) -> [f64; 5] {
     // The line shelves take the corner over the Nyquist frequency.
     let f1 = 2.0 * f64::from(757.0 * (1.0 - d) + 968.0);
     let f2 = 2.0 * f64::from(4851.0 * (1.0 - hd) + 6000.0);
-    let [a0, a1, p1] = shelf(f1, lo, mid, rate, f64::sin);
-    let [c0, c1, p2] = shelf(f2, 1.0, hi / mid, rate, psin);
+    let [a0, a1, p1] = first_order(Warp::Sin { f: f1, rate, sin: f64::sin }, lo, mid);
+    let [c0, c1, p2] = first_order(Warp::Sin { f: f2, rate, sin: psin }, 1.0, hi / mid);
     [a0 * c0, a0 * c1 + a1 * c0, a1 * c1, p1 + p2, p1 * p2]
 }
 
@@ -124,7 +109,8 @@ fn build(c: &[f32; 5], rate: f64, init_lp: bool) -> Spec {
     for ch in &mut s.diffuser {
         *ch = (0..20).map(|_| Allpass::new(1, -0.9)).collect();
     }
-    let sections = [shelf(1000.0, 1.659_586_9, 10f64.powf(0.15 * f64::from(1.0 - d)), rate, f64::sin), shelf(160.0, 10f64.powf(f64::from(1.0 - ls) * 1.71875 - 1.4375), 1.0, rate, f64::sin), shelf(5600.0, 1.0, 10f64.powf(0.2 * f64::from(1.0 - hd) - 0.2), rate, f64::sin)];
+    let line = |f: f64, g0: f64, gp: f64| first_order(Warp::Sin { f, rate, sin: f64::sin }, g0, gp);
+    let sections = [line(1000.0, 1.659_586_9, 10f64.powf(0.15 * f64::from(1.0 - d))), line(160.0, 10f64.powf(f64::from(1.0 - ls) * 1.71875 - 1.4375), 1.0), line(5600.0, 1.0, 10f64.powf(0.2 * f64::from(1.0 - hd) - 0.2))];
     s.input_bq = sections.iter().map(|&[b0, b1, a1]| [b0 as f32, b1 as f32, 0.0, a1 as f32, 0.0]).collect();
     if init_lp {
         let k = (PI * 7500.0 / rate).tan();
