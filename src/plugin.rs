@@ -1096,6 +1096,8 @@ pub(crate) struct PartView {
     pub(crate) recalled_source: Option<(String, u32, String)>,
     /// Distinguishes successive recalls of the same source during preparation.
     pub(crate) recall_revision: u64,
+    /// Numbers each load attempt of the slot; only the latest ticket may commit.
+    pub(crate) ticket: u64,
     pub(crate) status: String,
     pub(crate) timing_status: String,
     /// The loaded instrument's name.
@@ -2460,6 +2462,24 @@ fn load_part(
     })
 }
 
+/// Leaves a slot retryable and honestly labelled when a load unwinds.
+struct LoadGuard<'a> {
+    shared: &'a Shared,
+    slot: usize,
+}
+
+impl Drop for LoadGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(v) = self.shared.view.lock_unpoisoned().parts.get_mut(self.slot)
+        {
+            v.loading = false;
+            v.attempted = None;
+            v.status = "Load failed: internal error".into();
+        }
+    }
+}
+
 fn load_part_with(
     params: &SamplerParams,
     slot: usize,
@@ -2491,7 +2511,7 @@ fn load_part_with(
         part.dynamics,
         streaming,
     );
-    let (previous_status, recall_revision) = {
+    let (previous_status, recall_revision, ticket) = {
         let mut view = shared.view.lock_unpoisoned();
         let v = &mut view.parts[slot];
         if v.attempted.as_ref() == Some(&target) {
@@ -2509,8 +2529,11 @@ fn load_part_with(
         v.attempted = Some(target);
         v.loading = !part.path.is_empty();
         v.status = "Loading…".into();
-        (status, v.recall_revision)
+        v.ticket += 1;
+        (status, v.recall_revision, v.ticket)
     };
+    // A panic below must not leave the slot at "Loading…" with a dedup key that blocks a retry.
+    let _contain = LoadGuard { shared, slot };
     atoms.load_progress.store(0, Ordering::Relaxed);
     let active_generation = atoms.generation.load(Ordering::Acquire);
     if part.path.is_empty() {
@@ -2524,7 +2547,18 @@ fn load_part_with(
             *atoms.waveforms.lock_unpoisoned() = None;
             epoch
         };
-        *atoms.stream.lock_unpoisoned() = None;
+        // Everything the replaced instrument left in the cells goes; its threads
+        // are joined here, before `view` is taken.
+        let retired = (
+            std::mem::take(&mut *atoms.stream.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.scripts.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.controls.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.engine_bindings.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.node_meters.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.effect_controls.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.snapshot_pending.lock_unpoisoned()),
+        );
+        drop(retired);
         atoms.resident_bytes.store(0, Ordering::Relaxed);
         atoms.full_bytes.store(0, Ordering::Relaxed);
         let mut view = shared.view.lock_unpoisoned();
@@ -2663,7 +2697,7 @@ fn load_part_with(
     }
     let v = &mut view.parts[slot];
     v.loading = false;
-    if v.recall_revision != recall_revision {
+    if v.recall_revision != recall_revision || v.ticket != ticket {
         v.status = previous_status;
         return false;
     }
