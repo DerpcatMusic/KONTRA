@@ -383,6 +383,9 @@ pub struct Selection {
 }
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
+/// Largest saved UVI/script state blob a project may carry; save and load agree.
+const MAX_SAVED_STATE: usize = 8 << 20;
+
 pub const IDLE_SECONDS: f64 = 30.0;
 
 impl Selection {
@@ -511,6 +514,7 @@ impl SamplerParams {
             .enumerate()
         {
             part.attempted = None;
+            part.active_target = None;
             // Fence recalled state immediately, before the background loader
             // begins; cancellation/failure cannot give the old owner its identity.
             part.recalled_source = sources.get(slot).cloned();
@@ -1065,6 +1069,9 @@ pub struct Shared {
     _crash_session: Mutex<Option<crate::support::CrashSessionGuard>>,
 }
 
+/// Source, program, snapshot, rate bits, mpe, mpe upper, dynamics, streaming.
+pub(crate) type LoadTarget = (String, u32, String, u64, bool, bool, i16, Streaming);
+
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) resource_path: Option<PathBuf>,
@@ -1077,7 +1084,10 @@ pub(crate) struct PartView {
     pub(crate) uvi_snapshot: Option<sampler_uvi::scripted::UiSnapshot>,
     pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
+    pub(crate) attempted: Option<LoadTarget>,
+    /// What the committed instrument was built from. A request equal to it is a
+    /// no-op even after a canceled or failed switch; host recall clears it to force a reload.
+    pub(crate) active_target: Option<LoadTarget>,
     /// The committed source owning the visible model and live controls. A
     /// failed or pending replacement must never acquire its persistence state.
     pub(crate) active_source: Option<(String, u32, String)>,
@@ -1086,6 +1096,8 @@ pub(crate) struct PartView {
     pub(crate) recalled_source: Option<(String, u32, String)>,
     /// Distinguishes successive recalls of the same source during preparation.
     pub(crate) recall_revision: u64,
+    /// Numbers each load attempt of the slot; only the latest ticket may commit.
+    pub(crate) ticket: u64,
     pub(crate) status: String,
     pub(crate) timing_status: String,
     /// The loaded instrument's name.
@@ -1672,6 +1684,7 @@ impl Shared {
                     && let Some(uvi) = &scripts.uvi
                     && let Ok(state) = uvi.state()
                     && let Ok(state) = serde_json::to_string(&state)
+                    && state.len() <= MAX_SAVED_STATE
                 {
                     part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.uvi_state = state;
@@ -1681,6 +1694,7 @@ impl Shared {
                     .lock_unpoisoned()
                     .as_ref()
                     .and_then(|client| client.save_script_state())
+                    .filter(|state| state.len() <= MAX_SAVED_STATE)
                 {
                     part.script_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.script_state = state;
@@ -1938,26 +1952,38 @@ impl Shared {
     fn refresh_uvi(&self, params: &SamplerParams) {
         let parts = self.parts.lock_unpoisoned().clone();
         for (slot, part) in parts.iter().enumerate() {
-            let mut scripts = part.scripts.lock_unpoisoned();
-            let Some(uvi) = scripts.uvi.clone() else {
-                continue;
+            // Commit holds `view` and then takes `scripts`; take them in that
+            // order only. `scripts` is released before `view` is requested, and the
+            // generation read under it fences a commit that lands in between.
+            let (uvi, generation) = {
+                let mut scripts = part.scripts.lock_unpoisoned();
+                let Some(uvi) = scripts.uvi.clone() else {
+                    continue;
+                };
+                if scripts.uvi_source
+                    != params
+                        .selection
+                        .read_unpoisoned()
+                        .parts
+                        .get(slot)
+                        .map(Part::source)
+                {
+                    continue;
+                }
+                let revision = uvi.revision();
+                if revision == scripts.uvi_revision {
+                    continue;
+                }
+                scripts.uvi_revision = revision;
+                (uvi, part.generation.load(Ordering::Acquire))
             };
-            if scripts.uvi_source
-                != params
-                    .selection
-                    .read_unpoisoned()
-                    .parts
-                    .get(slot)
-                    .map(Part::source)
+            if let Some(view) = self
+                .view
+                .lock_unpoisoned()
+                .parts
+                .get_mut(slot)
+                .filter(|view| view.generation == generation)
             {
-                continue;
-            }
-            let revision = uvi.revision();
-            if revision == scripts.uvi_revision {
-                continue;
-            }
-            scripts.uvi_revision = revision;
-            if let Some(view) = self.view.lock_unpoisoned().parts.get_mut(slot) {
                 self.ui_activity.add(UiCount::PublicationCalls, 1);
                 let snapshot=uvi.snapshot();
                 let changed=view.publish_interface(snapshot.interface());
@@ -2176,7 +2202,7 @@ fn prepare_snapshot(
         },
     };
     let result = V2Loader.prepare_serviced(
-        &load, &mut |_| {}, &|| !current(), &mut || service_current_ui(params),
+        &load, &mut |_| {}, &|| !current(), &mut || control_tick(params),
     );
     if !current() {
         trace.detail(
@@ -2279,6 +2305,55 @@ fn service_current_ui(params: &SamplerParams) {
     });
 }
 
+/// The mixer, routing, scans, discard drain and UI handoffs. None of it needs the
+/// loader, so it also runs from the load wait: a mute or fader move made while a
+/// preset prepares reaches the audio thread within one wait tick.
+fn control_tick(params: &SamplerParams) {
+    let shared = &params.shared;
+    shared.flush_ready();
+    service_current_ui(params);
+    // UVI publication retains its existing source/lock policy.
+    shared.refresh_uvi(params);
+    shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
+    // Dropping what the audio thread replaced is this thread's job.
+    while shared.discard.pop().is_some() {}
+    shared
+        .midi_thru
+        .store(params.selection.read_unpoisoned().midi_thru, Ordering::Release);
+    poll_libraries(shared);
+    route(params);
+    align(params);
+    push_mix(params);
+    refresh_problems(shared);
+}
+
+fn push_mix(params: &SamplerParams) {
+    let shared = &params.shared;
+    let selection = params.selection.read_unpoisoned();
+    let mut mix = mix(&selection);
+    if let Some(plan) = &shared.published.lock_unpoisoned().0 {
+        mix.timing = plan.clone();
+    }
+    let view = shared.view.lock_unpoisoned();
+    mix.articulation_routes = selection
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(slot, p)| {
+            let instrument = view.parts.get(slot)?.instrument.as_deref()?;
+            let (keys, switching) = p
+                .articulation_overlay
+                .routing(instrument, p.switching)
+                .ok()?;
+            Some(Arc::new(crate::sound::articulation::Routing {
+                keys,
+                switching,
+            }))
+        })
+        .collect();
+    let _ = shared.controls.force_push(mix);
+}
+
 impl BackgroundTask for Load {
     type Params = SamplerParams;
     const SERIALIZED: bool = true;
@@ -2288,48 +2363,11 @@ impl BackgroundTask for Load {
         shared.flush_ready();
         service_current_ui(params);
         snapshot_reuse::poll(params);
-        // UVI publication retains its existing source/lock policy. The load
-        // heartbeat only services the bounded core effect/control handoff.
-        shared.refresh_uvi(params);
-        shared.trim_streams(params.selection.read_unpoisoned().memory_budget_mb);
-        // Dropping what the audio thread replaced is this thread's job.
-        while shared.discard.pop().is_some() {}
         load_multi(params);
         let selection = params.selection.read_unpoisoned().clone();
         shared.ensure_parts(selection.parts.len());
         shared.prepare_growth();
-        shared
-            .midi_thru
-            .store(selection.midi_thru, Ordering::Release);
-        poll_libraries(shared);
-        route(params);
-        align(params);
-        let push_mix = || {
-            let selection = params.selection.read_unpoisoned();
-            let mut mix = mix(&selection);
-            if let Some(plan) = &shared.published.lock_unpoisoned().0 {
-                mix.timing = plan.clone();
-            }
-            let view = shared.view.lock_unpoisoned();
-            mix.articulation_routes = selection
-                .parts
-                .iter()
-                .enumerate()
-                .map(|(slot, p)| {
-                    let instrument = view.parts.get(slot)?.instrument.as_deref()?;
-                    let (keys, switching) = p
-                        .articulation_overlay
-                        .routing(instrument, p.switching)
-                        .ok()?;
-                    Some(Arc::new(crate::sound::articulation::Routing {
-                        keys,
-                        switching,
-                    }))
-                })
-                .collect();
-            let _ = shared.controls.force_push(mix);
-        };
-        push_mix();
+        control_tick(params);
         let mut snapshot = prepare_snapshot(params);
         let mut loaded = false;
         for slot in 0..shared.grown.load(Ordering::Acquire) as usize {
@@ -2346,7 +2384,7 @@ impl BackgroundTask for Load {
             align(params);
             // New trees: route their nodes and size their settings.
             route(params);
-            push_mix();
+            push_mix(params);
         }
         refresh_problems(shared);
     }
@@ -2419,16 +2457,34 @@ fn load_part(
 ) -> bool {
     load_part_with(params, slot, prepared, |request, progress, canceled| {
         V2Loader.prepare_serviced(
-            request, progress, canceled, &mut || service_current_ui(params),
+            request, progress, canceled, &mut || control_tick(params),
         )
     })
+}
+
+/// Leaves a slot retryable and honestly labelled when a load unwinds.
+struct LoadGuard<'a> {
+    shared: &'a Shared,
+    slot: usize,
+}
+
+impl Drop for LoadGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(v) = self.shared.view.lock_unpoisoned().parts.get_mut(self.slot)
+        {
+            v.loading = false;
+            v.attempted = None;
+            v.status = "Load failed: internal error".into();
+        }
+    }
 }
 
 fn load_part_with(
     params: &SamplerParams,
     slot: usize,
     prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>,
-    prepare: impl FnOnce(
+    mut prepare: impl FnMut(
         &LoadRequest,
         &mut dyn FnMut(Progress),
         &(dyn Fn() -> bool + Sync),
@@ -2455,10 +2511,16 @@ fn load_part_with(
         part.dynamics,
         streaming,
     );
-    let (previous_status, recall_revision) = {
+    let (previous_status, recall_revision, ticket) = {
         let mut view = shared.view.lock_unpoisoned();
         let v = &mut view.parts[slot];
         if v.attempted.as_ref() == Some(&target) {
+            return false;
+        }
+        if v.active_target.as_ref() == Some(&target) {
+            // Back to what is still playing: nothing to rebuild, and a failed
+            // candidate may be picked again.
+            v.attempted = Some(target);
             return false;
         }
         let status = v.status.clone();
@@ -2467,8 +2529,11 @@ fn load_part_with(
         v.attempted = Some(target);
         v.loading = !part.path.is_empty();
         v.status = "Loading…".into();
-        (status, v.recall_revision)
+        v.ticket += 1;
+        (status, v.recall_revision, v.ticket)
     };
+    // A panic below must not leave the slot at "Loading…" with a dedup key that blocks a retry.
+    let _contain = LoadGuard { shared, slot };
     atoms.load_progress.store(0, Ordering::Relaxed);
     let active_generation = atoms.generation.load(Ordering::Acquire);
     if part.path.is_empty() {
@@ -2482,7 +2547,18 @@ fn load_part_with(
             *atoms.waveforms.lock_unpoisoned() = None;
             epoch
         };
-        *atoms.stream.lock_unpoisoned() = None;
+        // Everything the replaced instrument left in the cells goes; its threads
+        // are joined here, before `view` is taken.
+        let retired = (
+            std::mem::take(&mut *atoms.stream.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.scripts.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.controls.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.engine_bindings.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.node_meters.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.effect_controls.lock_unpoisoned()),
+            std::mem::take(&mut *atoms.snapshot_pending.lock_unpoisoned()),
+        );
+        drop(retired);
         atoms.resident_bytes.store(0, Ordering::Relaxed);
         atoms.full_bytes.store(0, Ordering::Relaxed);
         let mut view = shared.view.lock_unpoisoned();
@@ -2518,21 +2594,21 @@ fn load_part_with(
     trace.detail("instance_id", shared.instance_id);
     trace.detail("sample_rate", rate);
     trace.stage("prepare");
-    let state = if part.uvi_state.is_empty()
+    // A bad saved blob must not make the preset unloadable: load defaults and say so.
+    let uvi_state = if part.uvi_state.is_empty()
         || part.uvi_state_source != serde_json::to_string(&source).unwrap()
     {
-        Ok(None)
-    } else if part.uvi_state.len() > 8 << 20 {
-        Err(CoreError::Invalid(
-            "Saved UVI UI state exceeds 8 MiB".into(),
-        ))
+        None
+    } else if part.uvi_state.len() > MAX_SAVED_STATE {
+        trace.detail("state_recovery", "Saved UVI UI state exceeds 8 MiB, using defaults");
+        None
     } else {
         serde_json::from_str(&part.uvi_state)
-            .map(Some)
-            .map_err(|_| CoreError::Invalid("Saved UVI UI state is malformed".into()))
+            .map_err(|_| trace.detail("state_recovery", "Saved UVI UI state is malformed, using defaults"))
+            .ok()
     };
     let request = LoadRequest {
-        uvi_state: state.as_ref().ok().cloned().flatten(),
+        uvi_state,
         path: part.path.clone().into(),
         program: part.program,
         sample_rate: rate,
@@ -2560,20 +2636,21 @@ fn load_part_with(
         let held = u32::from(p.0).min(u32::from(Progress::DONE.0) - 10);
         atoms.load_progress.store(held, Ordering::Relaxed)
     };
-    let result = state
-        .and_then(|_| match prepared {
-            Some(loaded) if !canceled() => Ok(loaded),
-            Some(_) => Err(CoreError::Canceled),
-            None => prepare(&request, &mut progress, &canceled),
-        })
-        .and_then(|mut loaded| {
+    let mut prepared = prepared;
+    let mut load = |progress: &mut dyn FnMut(Progress)| match prepared.take() {
+        Some(loaded) if !canceled() => Ok(loaded),
+        Some(_) => Err(CoreError::Canceled),
+        None => prepare(&request, progress, &canceled),
+    };
+    let saved_script = if part.script_state_source == serde_json::to_string(&source).unwrap() {
+        part.script_state.as_str()
+    } else {
+        ""
+    };
+    let finish = |mut loaded: crate::sound::Loaded<Option<Box<CorePart>>>, saved: &str| {
+        {
             let persistence = sampler_kontakt::audit::Span::new("persistence_prepare");
             if let Some(runtime) = loaded.part.as_mut() {
-                let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() {
-                    part.script_state.as_str()
-                } else {
-                    ""
-                };
                 runtime.prepare_persistence(&loaded.scripts.views, saved)?;
                 for (id, value) in &mut loaded.controls {
                     if let Some(current) = runtime.persistent_control_value(*id) {
@@ -2595,8 +2672,18 @@ fn load_part_with(
             if canceled() {
                 return Err(CoreError::Canceled);
             }
-            Ok((loaded, mapping_index, resource_revision))
-        });
+            Ok::<_, CoreError>((loaded, mapping_index, resource_revision))
+        }
+    };
+    let mut result = load(&mut progress).and_then(|loaded| finish(loaded, saved_script));
+    if !saved_script.is_empty()
+        && let Err(e) = &result
+        && !matches!(e, CoreError::Canceled)
+    {
+        // The restore may have half-applied; rebuild a pristine part with defaults.
+        trace.detail("state_recovery", format!("Saved script state rejected ({e}), using defaults"));
+        result = load(&mut progress).and_then(|loaded| finish(loaded, ""));
+    }
     let result = if canceled() {
         Err(CoreError::Canceled)
     } else {
@@ -2610,7 +2697,7 @@ fn load_part_with(
     }
     let v = &mut view.parts[slot];
     v.loading = false;
-    if v.recall_revision != recall_revision {
+    if v.recall_revision != recall_revision || v.ticket != ticket {
         v.status = previous_status;
         return false;
     }
@@ -2634,6 +2721,7 @@ fn load_part_with(
             let attempted = v.attempted.take();
             *v = PartView {
                 program: part.program,
+                active_target: attempted.clone(),
                 attempted,
                 active_source: Some(source.clone()),
                 recall_revision,
@@ -2718,18 +2806,20 @@ fn load_part_with(
             v.instrument = loaded.instrument;
             v.mapping_index = mapping_index;
             v.keys = loaded.scripts.keys();
-            *atoms.scripts.lock_unpoisoned() = loaded.scripts;
+            // Dropping the old script thread / streamer joins threads: do it after `view` is released.
+            let old_scripts = std::mem::replace(&mut *atoms.scripts.lock_unpoisoned(), loaded.scripts);
             let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
             atoms
                 .resident_bytes
                 .store(held.unwrap_or(full), Ordering::Relaxed);
             atoms.full_bytes.store(full, Ordering::Relaxed);
-            *atoms.stream.lock_unpoisoned() = loaded.stream;
+            let old_stream = std::mem::replace(&mut *atoms.stream.lock_unpoisoned(), loaded.stream);
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms
                 .load_progress
                 .store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
+            drop((old_scripts, old_stream));
             shared.publish_part((slot, generation, loaded.part));
             true
         }
@@ -3413,6 +3503,14 @@ impl PluginLogic for Sampler {
                 }
             };
             let _ = shared.discard.push(retired);
+        }
+        while !shared.discard.is_full()
+            && let Some(old) = s.core.take_expired()
+        {
+            let _ = shared.discard.push(Retired {
+                part: Some(old),
+                ..Default::default()
+            });
         }
         #[cfg(test)]
         callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 0);
@@ -4190,7 +4288,7 @@ pub(crate) mod tests {
         assert!(view.parts[0].trace.is_some());
     }
 
-    fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+    pub(super) fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
         transaction_candidate_with_source(name,
             "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on")
     }
@@ -4257,7 +4355,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn transaction_fixture() -> (SamplerParams, V2Core) {
+    pub(super) fn transaction_fixture() -> (SamplerParams, V2Core) {
         let params = SamplerParams::new();
         params.selection.write_unpoisoned().parts = vec![Part {
             path: "active.nki".into(),
@@ -4388,28 +4486,6 @@ pub(crate) mod tests {
         assert_eq!(saved.script_state_source, "pending source identity");
         assert_eq!(saved.control_values.len(), 1);
         assert_eq!(saved.control_values[0].id(), sampler_ui_ir::ControlId(999));
-
-        // Invalid recalled state fails before the candidate can acquire any
-        // of the old instrument's live ownership or persistence data.
-        {
-            let mut selection = params.selection.write_unpoisoned();
-            let pending = &mut selection.parts[0];
-            pending.path = "malformed-state.uvip".into();
-            pending.uvi_state = "{bad JSON".into();
-            pending.uvi_state_source = serde_json::to_string(&pending.source()).unwrap();
-        }
-        assert!(load_part(
-            &params,
-            0,
-            Some(transaction_candidate("Invalid state"))
-        ));
-        assert!(params.shared.ready.pop().is_none());
-        assert_eq!(atoms.generation.load(Ordering::Acquire), epoch);
-        assert!(core.render(64).live[0]);
-        assert_eq!(
-            params.shared.view.lock_unpoisoned().parts[0].active_source,
-            previous.active_source
-        );
     }
 
     #[test]
@@ -4864,6 +4940,8 @@ mod persistence_tests;
 mod pressed_tests;
 #[cfg(test)]
 mod uvi_save_tests;
+#[cfg(test)]
+mod lifecycle_audit_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {
@@ -5330,6 +5408,36 @@ mod transport_event_tests;
 #[cfg(test)]
 mod uvi_registry_part_tests {
     use super::*;
+    /// F-01: a commit holds `view` while it writes `scripts`; the UVI refresh (host save,
+    /// loader tick) must never wait for `view` while holding `scripts`.
+    #[test]
+    fn uvi_refresh_does_not_hold_scripts_while_waiting_for_view() {
+        use sampler_uvi::scripted::ScriptThread;
+        use std::time::Duration;
+        let xml="<UVI4><Program><EventProcessors><ScriptProcessor><script><![CDATA[Knob('K',0.25,0,1)]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let (_thread,loaded)=ScriptThread::spawn(xml.into(),(),Default::default()).unwrap();
+        let params=SamplerParams::new();params.shared.ensure_parts(1);
+        params.selection.write_unpoisoned().parts=vec![Part{path:"order.uvip".into(),..Default::default()}];
+        let atoms=params.shared.part(0).unwrap();atoms.generation.store(3,Ordering::Release);
+        {
+            let mut scripts=atoms.scripts.lock_unpoisoned();
+            scripts.uvi=Some(loaded.ui.clone());
+            scripts.uvi_source=Some(params.selection.read_unpoisoned().parts[0].source());
+            scripts.uvi_revision=loaded.ui.revision().wrapping_add(1);
+        }
+        params.shared.view.lock_unpoisoned().parts[0].generation=3;
+        std::thread::scope(|scope|{
+            let commit=params.shared.view.lock_unpoisoned();
+            let refresh=scope.spawn(||params.shared.refresh_uvi(&params));
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(!refresh.is_finished(),"refresh waits for the view");
+            assert!(atoms.scripts.try_lock().is_ok(),"commit's next step (scripts) must not be blocked by refresh");
+            drop(commit);
+            refresh.join().unwrap();
+        });
+        assert!(params.shared.view.lock_unpoisoned().parts[0].uvi_snapshot.is_some());
+    }
+
     #[test]
     fn uvi_dynamic_registry_joins_part_display_save_epoch_and_drawn_owner(){
         use sampler_uvi::scripted::ScriptThread;

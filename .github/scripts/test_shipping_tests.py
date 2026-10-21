@@ -518,7 +518,7 @@ class NonIntegration(unittest.TestCase):
             ["cargo", "test", "--locked", "--profile", "release"] + packages +
             ["--lib", "--bins", "--message-format=json-render-diagnostics"],
             ["cargo", "test", "--locked", "--profile", "release"] + packages + ["--doc"],
-            ["cargo", "build", "--locked", "--profile", "release"] + packages + ["--examples"]])
+            ["cargo", "build", "--locked", "--profile", "ci"] + packages + ["--examples"]])
 
     def test_missing_bin_root_and_inactive_standalone_target(self):
         metadata = fixture()

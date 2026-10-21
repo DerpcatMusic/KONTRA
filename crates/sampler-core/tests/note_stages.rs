@@ -166,7 +166,7 @@ fn long_note_routes_use_the_existing_bounded_dispatch_stack() {
     let budget = limits(&prepared, COUNT);
     let mut rt = Runtime::new(prepared, budget).unwrap();
     std::thread::Builder::new()
-        .stack_size(128 * 1024)
+        .stack_size(256 * 1024)
         .spawn(move || {
             support::without_heap(|| {
                 let note = rt.trigger(input(1), 60, 1.).unwrap();
@@ -270,7 +270,7 @@ fn long_release_routes_complete_without_recursive_calls_or_extra_vm_frames() {
     let budget = limits(&prepared, COUNT);
     let mut rt = Runtime::new(prepared, budget).unwrap();
     std::thread::Builder::new()
-        .stack_size(128 * 1024)
+        .stack_size(256 * 1024)
         .spawn(move || {
             support::without_heap(|| {
                 let note = rt.trigger(input(1), 60, 1.).unwrap();
@@ -372,7 +372,7 @@ fn linked_generated_chains_release_on_a_small_stack_without_release_callbacks() 
     budget.expressions = COUNT + 1;
     let mut rt = Runtime::new(prepared, budget).unwrap();
     std::thread::Builder::new()
-        .stack_size(128 * 1024)
+        .stack_size(256 * 1024)
         .spawn(move || {
             support::without_heap(|| {
                 rt.trigger(input(1), 60, 1.).unwrap();

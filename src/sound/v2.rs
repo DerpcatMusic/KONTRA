@@ -643,6 +643,86 @@ impl Part {
 #[derive(Default)]
 pub struct Retired(pub Option<Box<Part>>);
 
+/// A replaced part still sounding: faded out over a few milliseconds instead of cut.
+struct Tail {
+    part: Box<Part>,
+    total: u32,
+    left: u32,
+}
+
+/// Last host controller state seen by one part, replayed into its replacement
+/// so sustain, bend and RPN data do not wait for the host to resend them.
+#[derive(Clone)]
+struct Controllers {
+    cc: [[u8; 128]; 16],
+    seen: [u128; 16],
+    bend: [Option<[u8; 2]>; 16],
+    pressure: [Option<u8>; 16],
+}
+
+impl Default for Controllers {
+    fn default() -> Self {
+        Self { cc: [[0; 128]; 16], seen: [0; 16], bend: [None; 16], pressure: [None; 16] }
+    }
+}
+
+impl Controllers {
+    fn note(&mut self, words: [u32; 2]) {
+        let [word, data] = words;
+        let (kind, status, a, b) = (word >> 28, (word >> 16) as u8 & 0xf0, (word >> 8) as u8 & 127, word as u8 & 127);
+        let ch = usize::from((word >> 16) as u8 & 15);
+        match (kind, status) {
+            (2, 0xb0) => self.set(ch, a, b),
+            (4, 0xb0) if !sampler_midi::is_midi2_legacy_control(a) => self.set(ch, a, (data >> 25) as u8),
+            (2, 0xe0) => self.bend[ch] = Some([a, b]),
+            (4, 0xe0) => self.bend[ch] = Some([(data >> 18) as u8 & 127, (data >> 25) as u8]),
+            (2, 0xd0) => self.pressure[ch] = Some(a),
+            (4, 0xd0) => self.pressure[ch] = Some((data >> 25) as u8),
+            _ => {}
+        }
+    }
+
+    fn set(&mut self, ch: usize, cc: u8, value: u8) {
+        self.cc[ch][usize::from(cc)] = value;
+        self.seen[ch] |= 1 << cc;
+    }
+
+    /// Sustain-style pedals up, as `Core::panic` sends them.
+    fn pedals_up(&mut self) {
+        for ch in 0..16 {
+            for cc in [64, 66] {
+                if self.seen[ch] >> cc & 1 != 0 {
+                    self.cc[ch][cc] = 0;
+                }
+            }
+        }
+    }
+
+    fn replay(&self, part: &mut Part) {
+        for ch in 0..16u8 {
+            let c = usize::from(ch);
+            let send = |part: &mut Part, cc: u8| {
+                if self.seen[c] >> cc & 1 != 0 {
+                    wire_event(part, 0xb0 | ch, cc, self.cc[c][usize::from(cc)]);
+                }
+            };
+            // Not bank/program selects, channel-mode messages or the RPN group.
+            for cc in (1..120).filter(|cc| !matches!(cc, 6 | 32 | 38 | 96..=101)) {
+                send(part, cc);
+            }
+            for cc in [101, 100, 6, 38] {
+                send(part, cc);
+            }
+            if let Some([a, b]) = self.bend[c] {
+                wire_event(part, 0xe0 | ch, a, b);
+            }
+            if let Some(a) = self.pressure[c] {
+                wire_event(part, 0xd0 | ch, a, 0);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Held {
     part: usize,
@@ -678,6 +758,10 @@ pub struct V2Core {
     tap: Option<usize>,
     tapped: Box<[f32; MAX_BLOCK]>,
     peaks: Peaks,
+    tails: Vec<Option<Tail>>,
+    controllers: Vec<Controllers>,
+    /// Last host automation value per slot (NaN: never sent), replayed into a replacement part.
+    host_values: Box<[f64]>,
 }
 
 /// Off-audio producer for the native admission/reply service; never retargeted on replacement.
@@ -1399,6 +1483,9 @@ impl V2Core {
                 }
             }
             drain_terminal_releases(part);
+            if let Some(c) = self.controllers.get_mut(index) {
+                c.pedals_up();
+            }
             packet(part, index, &self.held, [0x20b0_4000, 0]); // MIDI 1 CC64 up
             packet(part, index, &self.held, [0x20b0_4200, 0]); // MIDI 1 CC66 up
             part.runtime.release_all_notes();
@@ -1421,19 +1508,10 @@ impl V2Core {
         {
             return false;
         }
+        self.host_values[usize::from(address)] = value;
         let mut accepted = true;
         for part in self.parts.iter_mut().flatten() {
-            let rt = &mut part.runtime;
-            let Ok(performance) = rt.performance(0) else {
-                accepted = false;
-                continue;
-            };
-            let context = ControlContext {
-                performance,
-                origin: WIRE,
-                channels: 1,
-            };
-            accepted &= rt.dispatch_host_parameter(context, address, value).is_ok();
+            accepted &= dispatch_host_parameter(part, address, value);
         }
         accepted
     }
@@ -2191,6 +2269,9 @@ impl V2Core {
             tap: None,
             tapped: Box::new([0.0; MAX_BLOCK]),
             peaks,
+            tails: (0..parts).map(|_| None).collect(),
+            controllers: vec![Controllers::default(); parts],
+            host_values: vec![f64::NAN; usize::from(super::HOST_AUTOMATION_SLOTS)].into(),
         }
     }
 
@@ -2232,6 +2313,14 @@ impl V2Core {
             *new = *old;
         }
         std::mem::swap(&mut self.peaks.parts, &mut grown.peaks.parts);
+        for (old, new) in self.tails.iter_mut().zip(&mut grown.tails) {
+            std::mem::swap(old, new);
+        }
+        std::mem::swap(&mut self.tails, &mut grown.tails);
+        for (old, new) in self.controllers.iter().zip(&mut grown.controllers) {
+            new.clone_from(old);
+        }
+        std::mem::swap(&mut self.controllers, &mut grown.controllers);
     }
 
     #[cfg(test)]
@@ -2306,6 +2395,10 @@ impl V2Core {
             #[cfg(test)]
             if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
                 a[0] += t.elapsed().as_nanos() as u64;
+            }
+            // Prepared for another rate (host reset): silent until the shell reloads it.
+            if part.runtime.sample_rate() != self.rate as u32 {
+                continue;
             }
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
@@ -2479,6 +2572,7 @@ impl V2Core {
                 }
             }
         }
+        self.render_tails(n);
         let solo = self.mix.buses.iter().any(|c| c.solo);
         for (bus, c) in self
             .mix
@@ -2535,6 +2629,59 @@ impl V2Core {
         Rendered {
             buses: &self.buses,
             live: self.written,
+        }
+    }
+
+    /// Outgoing parts fade over their remaining frames into the fader/bus they left.
+    fn render_tails(&mut self, n: usize) {
+        let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
+        for (index, cell) in self.tails.iter_mut().enumerate() {
+            let Some(tail) = cell else { continue };
+            if tail.left == 0 {
+                continue;
+            }
+            let part = &mut tail.part;
+            let direct = part.direct;
+            if let Some(horizon) = part.horizon {
+                let _ = part.runtime.service_streaming(horizon);
+            }
+            let out = &mut self.scratch[..n];
+            for pair in (0..BUSES).filter(|pair| direct & 1 << pair != 0) {
+                self.direct[pair][..n].fill([0.0; 2]);
+            }
+            let mut outs: [&mut [Frame]; BUSES] = self.direct.each_mut().map(|d| &mut d[..n]);
+            let rendered = part.runtime.render_split(out, &mut outs).is_ok();
+            let start = tail.left;
+            tail.left = tail.left.saturating_sub(n as u32);
+            let c = self.mix.parts[index];
+            if !rendered || c.mute || solo && !c.solo {
+                continue;
+            }
+            let fade = |i: usize| {
+                (start.saturating_sub(i as u32) as f32 / tail.total as f32).clamp(0., 1.)
+            };
+            let [gl, gr] = balance(c.gain, c.pan);
+            for pair in (0..BUSES).filter(|pair| direct & 1 << pair != 0) {
+                self.written[pair] = true;
+                let [bl, br] = &mut self.buses[pair];
+                for (i, ((ol, or), [l, r])) in bl[..n].iter_mut().zip(&mut br[..n]).zip(self.direct[pair][..n].iter()).enumerate() {
+                    *ol += l * fade(i);
+                    *or += r * fade(i);
+                }
+            }
+            let aux = usize::from(c.aux) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
+            for (bus, gain) in [(usize::from(c.output), 1.0), (usize::from(c.aux), c.aux_gain)]
+                .into_iter()
+                .take(1 + usize::from(aux))
+            {
+                let bus = bus.min(BUSES - 1);
+                self.written[bus] = true;
+                let [bl, br] = &mut self.buses[bus];
+                for (i, ((ol, or), [l, r])) in bl[..n].iter_mut().zip(&mut br[..n]).zip(self.scratch[..n].iter()).enumerate() {
+                    *ol += l * gl * gain * fade(i);
+                    *or += r * gr * gain * fade(i);
+                }
+            }
         }
     }
 
@@ -2700,8 +2847,24 @@ impl V2Core {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        if let (Event::Ump(words), Some(c)) = (&event, self.controllers.get_mut(part)) {
+            c.note(*words);
+        }
         deliver(p, part, &mut self.held, &mut self.overflow, event);
     }
+}
+
+fn dispatch_host_parameter(part: &mut Part, address: u16, value: f64) -> bool {
+    let rt = &mut part.runtime;
+    let Ok(performance) = rt.performance(0) else {
+        return false;
+    };
+    let context = ControlContext {
+        performance,
+        origin: WIRE,
+        channels: 1,
+    };
+    rt.dispatch_host_parameter(context, address, value).is_ok()
 }
 
 fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
@@ -2730,6 +2893,7 @@ impl Core for V2Core {
     fn reset(&mut self, sample_rate: f64) {
         // ponytail: parts keep their prepared rate; the shell reloads them on a rate change.
         self.rate = sample_rate;
+        self.controllers.iter_mut().for_each(|c| *c = Controllers::default());
         self.panic();
     }
 
@@ -2740,6 +2904,9 @@ impl Core for V2Core {
         for p in self.parts.iter_mut().flatten() {
             p.runtime.panic();
             p.tone_history.fill([[0.; 2]; 2]);
+        }
+        for t in self.tails.iter_mut().flatten() {
+            t.left = 0;
         }
     }
 
@@ -2770,7 +2937,37 @@ impl Core for V2Core {
                     .and_then(Option::as_ref),
             );
         }
-        Retired(std::mem::replace(slot, prepared))
+        if let Some(p) = prepared.as_mut()
+            && let Some(c) = self.controllers.get(part)
+        {
+            c.replay(p);
+        }
+        if let Some(p) = prepared.as_mut() {
+            // The host's lanes keep their last value across a switch; the new
+            // part starts from it rather than from its own defaults.
+            for index in 0..p.host_bindings.len() {
+                let address = p.host_bindings[index].address;
+                let value = self.host_values.get(usize::from(address)).copied().unwrap_or(f64::NAN);
+                if value.is_finite() {
+                    dispatch_host_parameter(p, address, value);
+                }
+            }
+        }
+        let old = std::mem::replace(slot, prepared);
+        let total = (self.rate * 0.03) as u32;
+        let tail = old.filter(|o| total > 0 && o.runtime.sample_rate() == self.rate as u32);
+        match (tail, self.tails.get_mut(part)) {
+            (Some(part), Some(cell)) => {
+                let previous = cell.replace(Tail { part, total, left: total });
+                Retired(previous.map(|t| t.part))
+            }
+            (old, _) => Retired(old),
+        }
+    }
+
+    fn take_expired(&mut self) -> Option<Retired> {
+        let cell = self.tails.iter_mut().find(|t| t.as_ref().is_some_and(|t| t.left == 0))?;
+        cell.take().map(|t| Retired(Some(t.part)))
     }
 
     fn begin_block(&mut self, block: &BlockInfo) {
@@ -2784,7 +2981,8 @@ impl Core for V2Core {
         };
         let time = (!block.offline).then(|| std::time::Duration::try_from_secs_f64(
             block.frames as f64 / self.rate * 0.4 / parts as f64).unwrap_or_default());
-        for part in self.parts.iter_mut().flatten() {
+        let tails = self.tails.iter_mut().flatten().map(|t| &mut t.part);
+        for part in self.parts.iter_mut().flatten().chain(tails) {
             part.runtime.set_offline(block.offline);
             part.runtime.begin_behavior_block(fuel, time);
         }
@@ -5299,7 +5497,7 @@ mod tests {
             clap: true,
         };
         core.event(0, on(note));
-        assert!(core.install(0, load(&path)).0.is_some());
+        assert!(core.install(0, load(&path)).0.is_none(), "the replaced part fades as a tail");
         assert!(!core.owns(note));
         assert_eq!(core.end_block(64, &mut |_| false), 1);
         let mut ended = Vec::new();
@@ -5311,6 +5509,42 @@ mod tests {
             0
         );
         assert_eq!(ended, [note]);
+    }
+
+    #[test]
+    fn host_pedal_and_bend_are_replayed_into_a_replacement_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let note = HostNote { port: 0, channel: 3, key: 60, id: 5, clap: true };
+        let pattern = HostPattern { port: -1, channel: -1, key: -1, id: 5, clap: true };
+        let held_after_release = |pedal: bool| {
+            let mut core = V2Core::with_parts(1, 48000.0);
+            core.install(0, load(&path));
+            if pedal {
+                core.event(0, Event::midi1(0xb3, 64, 127));
+            }
+            core.event(0, Event::midi1(0xe3, 127, 127));
+            core.install(0, load(&path));
+            core.event(0, Event::NoteOn { note, velocity: 1.0, tune: 0.0 });
+            let part = core.parts[0].as_ref().unwrap();
+            let h = core.held[0];
+            let bend = part.runtime.expression(part.runtime.expression_id(h.id).unwrap()).unwrap().pitch_semitones;
+            core.event(0, Event::NoteOff(pattern));
+            for _ in 0..20 {
+                core.render(128);
+            }
+            let mut ended = 0;
+            core.end_block(128, &mut |_| {
+                ended += 1;
+                true
+            });
+            (ended == 0, bend)
+        };
+        let (held, bend) = held_after_release(true);
+        assert!(held, "sustain survives the switch");
+        assert!((bend - 2.0).abs() < 1e-3, "bend survives the switch");
+        assert!(!held_after_release(false).0);
     }
 
     #[test]
