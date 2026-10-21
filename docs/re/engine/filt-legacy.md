@@ -28,6 +28,18 @@ compares the compiled cascade unit's 16384-frame impulse response at the same pr
   Its knobs need another engine-parameter name, which is not in the repo.
 - Stage 16 (Pro-53), 14/15 (Vowel) and 19 (Versatile) were not measured in Kontakt yet.
 
+## Knob 0 across the order-4/6 family (2026-10-21, parity matrix)
+
+Kontakt's knob-0 response differs from the engine for LP4 and LP6 (and the Legacy Ladder, LP4-like),
+at resonance 0. Kontakt shows about 8 dB/oct above 100 Hz (LP4: -9.5 dB at 60 Hz, -20 at 100, -36 at
+500); the engine's 4-pole curve falls 24 dB/oct. The knob-0 cases are excluded from the golden.
+Ruled out: a prior-knob state carry-over (warming to knob .5 first gives the same shape), the
+knob-to-warp mapping (`FUN_14095c9c0`: `(e-1) 0.00257`, `+0.002`, `* 44011.976/rate`, `pi/2 * 0.99`,
+`t = 0.99878 w`, the two `sin(0.5 -+ t)` poles: all equal the engine's `knob_position`, `angle` and
+`lp_pole`). LP2, HP2, HP4, BP2, BP4 and BR4 match at knob 0. Open: the order-4 second section, whose
+HP pole sits at -1 when `t -> 0` (`FUN_14095c9c0` second `FUN_1408e4970` call), and the native
+normalisation `dVar4` at that point.
+
 ## Saved type ids (measured)
 
 | Kontakt name | Saved id | Core | Config fidelity |

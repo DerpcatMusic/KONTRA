@@ -2189,6 +2189,7 @@ mod tests {
             let class = match case["class"].as_str().unwrap() {
                 "Lp2" => Legacy::Lp2, "Hp2" => Legacy::Hp2, "Bp2" => Legacy::Bp2,
                 "Hp4" => Legacy::Hp4, "Bp4" => Legacy::Bp4, "Br4" => Legacy::Br4,
+                "Lp1" => Legacy::Lp1, "Hp1" => Legacy::Hp1, "Lp4" => Legacy::Lp4, "Lp6" => Legacy::Lp6,
                 "Ladder" => Legacy::Ladder,
                 other => panic!("unknown class {other}"),
             };
