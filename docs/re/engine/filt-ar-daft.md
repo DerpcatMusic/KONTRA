@@ -1,6 +1,29 @@
 # Engine unit: AR LP/HP/BP (2, 4, 2/4) and Daft / Daft HP (Kontakt 8)
 
-Status: **gap table and design written; implementation waiting on Kontakt 8 decompilation.**
+Status: **design and refactor landed; Kontakt-measured laws still open.** The user decided not to wait
+for the decompile (2026-10-21). Kontakt 8 READY is still absent, so the decompiled constants are unconfirmed.
+
+## Design (universal filter, shared with filt-sv)
+
+- Linear sections: `cascade` (biquad / SV sections) and `svf`. Owned by filt-sv.
+- Nonlinear transfer functions: `stage.rs` (`soft`, `upsample2`, `decimate2`). A core picks its
+  stage and where it sits in the loop; a product's saturator is a setting, not a new core.
+- Daft is a 2x saturating SVF: its loop uses `stage::soft` on the band state, and its 2x wrapper uses
+  `stage::upsample2` / `stage::decimate2`. Output is bit-identical to before (golden test
+  `daft::tests::output_is_bit_stable`, FNV over output bits, two response modes).
+- Not moved: `cascade::soft` (polynomial, clamp ±4) and `cascade::sv_sat` (clamp ±2L, slope 0.25/L).
+  They belong to filt-sv; the shared shape is `(a - c|s|)s` with a clamp, so filt-sv can move them onto
+  `stage.rs` with tolerance tests. Ladder's per-stage curve and AR's detector stay in their cores.
+
+## Measurement status (Wine oracle)
+
+- Not run in this pass. Blockers: no Daft gain ENGINE_PAR id is recorded (`docs/re/kontakt-bindings/
+  filters_eq.tsv` has none), and `audit-probes.tsv` rows CORE-FILTERS-029/030/031 are BLOCKED-AUDIO.
+  The oracle scripts (`tools/kontakt-oracle/stimrender.py`, `eqrender.py`) write to `/tmp/w3`; that
+  must move to `/data/dev` scratch before a run.
+- Next step: find the Daft gain id with `probe_fx.py` (state-only sweep), then render a level sweep
+  through `stimrender.py` at several gain/resonance settings and fit the saturator curve.
+
 `/data/dev/workspace/Research/KONTRA/source/kontakt8/READY` does not exist yet, and the
 `kontakt8/` export directory is empty (Ghidra project `Kontakt8.lock` is present in `source/ghidra/`).
 Nothing below was taken from new decompilation. Every address cited is from existing repo evidence.

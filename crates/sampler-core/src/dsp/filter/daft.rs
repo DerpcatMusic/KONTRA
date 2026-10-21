@@ -8,6 +8,7 @@
 // cadence follows the absolute sample clock, not a per-instance countdown.
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::super::{Planar, ProcessorState};
+use super::stage;
 use std::sync::OnceLock;
 
 const TABLE: usize = 2401;
@@ -130,7 +131,7 @@ impl Daft {
         let high = (x - (c.damping + c.g) * s[0] - s[1]) * c.inverse;
         let band = c.g * high + s[0];
         let low = c.g * band + s[1];
-        s[0] = soft(c.g * high + band);
+        s[0] = stage::soft(c.g * high + band);
         s[1] = c.g * band + low;
         c.amplitude * ((1. - c.high) * low + c.high * high)
     }
@@ -198,10 +199,10 @@ impl Daft {
             let mut coefficients = self.coefficients(&state.aux[CURRENT..CURRENT + 4]);
             for n in i..i + run {
                 let x = [block[0][n], block[1][n]];
-                let inputs = [0, 1].map(|c| [0.5 * (state.aux[PREVIOUS + c] + x[c]), x[c]]);
+                let inputs = [0, 1].map(|c| stage::upsample2(state.aux[PREVIOUS + c], x[c]));
                 state.aux[PREVIOUS..PREVIOUS + 2].copy_from_slice(&x);
-                let mut out = [0.; 2];
-                for half in 0..2 {
+                let mut half_rate = [[0.; 2]; 2];
+                for (half, out) in half_rate.iter_mut().enumerate() {
                     if ramping {
                         for k in 0..4 {
                             state.aux[CURRENT + k] += state.aux[DELTA + k];
@@ -209,11 +210,11 @@ impl Daft {
                         coefficients = self.coefficients(&state.aux[CURRENT..CURRENT + 4]);
                     }
                     for c in 0..2 {
-                        out[c] += Self::tick(&coefficients, &mut state.z[c], inputs[c][half]);
+                        out[c] = Self::tick(&coefficients, &mut state.z[c], inputs[c][half]);
                     }
                 }
-                block[0][n] = 0.5 * out[0];
-                block[1][n] = 0.5 * out[1];
+                block[0][n] = stage::decimate2(half_rate[0][0], half_rate[1][0]);
+                block[1][n] = stage::decimate2(half_rate[0][1], half_rate[1][1]);
             }
             i += run;
         }
@@ -223,19 +224,41 @@ impl Daft {
     }
 }
 
-/// Unity-slope soft limit to +-1 (a rational tanh). A stand-in: the native saturation transfer
-/// is not recovered (CORE-FILTERS-029), and the interpolation around it is likewise a proxy.
-fn soft(x: f64) -> f64 {
-    if x.abs() >= 3. {
-        x.signum()
-    } else {
-        x * (27. + x * x) / (27. + 9. * x * x)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FNV-1a over the output bits: any change to the kernel's arithmetic or order shows here.
+    /// Golden values were recorded from the kernel before the stage refactor (see `stage.rs`).
+    #[test]
+    fn output_is_bit_stable() {
+        let golden = [0x3d13_bf13_343d_c1beu64, 0xb9d4_2b5b_2af2_74f3u64];
+        for (response, expected) in [0., 1.].into_iter().zip(golden) {
+            let daft = DaftSettings {
+                gain: Parameter::Constant(0.3),
+                cutoff: Parameter::Constant(0.6),
+                resonance: Parameter::Constant(0.7),
+                response: Parameter::Constant(response),
+            }
+            .compile(48_000, &mut Vec::new());
+            let mut state = ProcessorState::default();
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            for n in 0..24 {
+                let mut block = [[0.; crate::dsp::BLOCK]; 2];
+                for (i, v) in block[0].iter_mut().enumerate() {
+                    let t = (n * crate::dsp::BLOCK + i) as f64 / 48_000.;
+                    *v = 0.9 * (std::f64::consts::TAU * 1_000. * t).sin() + 0.2 * (std::f64::consts::TAU * 61. * t).sin();
+                }
+                block[1] = block[0];
+                daft.process(&mut state, &[], &mut block, crate::dsp::BLOCK, (n * crate::dsp::BLOCK) as u64, [0.; 4]);
+                for v in block[0] {
+                    hash = (hash ^ v.to_bits()).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            println!("response {response}: {hash:#018x}");
+            assert_eq!(hash, expected);
+        }
+    }
 
     #[test]
     fn parameter_laws_match_the_specified_table_points() {
