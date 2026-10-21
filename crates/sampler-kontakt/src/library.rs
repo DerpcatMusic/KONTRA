@@ -301,6 +301,16 @@ fn translate(
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
     };
+    // Authored DFD preload is retained (`kontakt_objects`) but the stream policy sizes heads
+    // from measured latency; the override is reported until its unit is verified.
+    if params.dfd_channel_preload_size != 0 {
+        out.unsupported(
+            "instrument",
+            "DFD preload override",
+            params.dfd_channel_preload_size,
+            ir::Reason::NotModeled,
+        );
+    }
     match crate::program_automation(
         &program.0.private_data,
         program.version(),
@@ -1572,6 +1582,10 @@ impl Translation {
         });
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
+        }
+        // Stored and retained, but no shared resampler selects a quality per group yet.
+        if v.interp_quality != 0 {
+            self.unsupported(&at, "interpolation quality", v.interp_quality, not_modeled);
         }
         // Start options become articulations or reports in `keyswitch::translate`.
         self.start_criteria.push((
@@ -4773,8 +4787,7 @@ mod modulation {
         assert_eq!(out.script_intensity(7, "controller"), Some(0.5));
     }
 
-    #[test]
-    fn fx_decode_group_insert_errors_reach_the_ir_report() {
+    fn group_public(interp_quality: i32) -> Vec<u8> {
         let mut public = 0u32.to_le_bytes().to_vec();
         for value in [1f32, 0.0, 1.0] {
             public.extend(value.to_le_bytes());
@@ -4783,11 +4796,33 @@ mod modulation {
         public.extend(0i32.to_le_bytes());
         public.extend((-1i16).to_le_bytes());
         public.extend([0; 10]); // Voice group, amplifier split, mute/solo.
-        public.extend(0i32.to_le_bytes());
+        public.extend(interp_quality.to_le_bytes());
+        public
+    }
+
+    #[test]
+    fn unmodeled_group_interpolation_is_reported_not_dropped() {
         let mut group = Group(ni_file::kontakt::StructuredObject {
             version: 0x95,
             private_data: vec![],
-            public_data: public,
+            public_data: group_public(2),
+            children: vec![ni_file::kontakt::Chunk { id: 0x38, data: vec![0] }],
+        });
+        let mut out = translation();
+        assert!(out.group(0, &group).unwrap().is_some());
+        assert!(out.ir.unsupported.iter().any(|n| n.feature == "interpolation quality" && n.value == "2"));
+        group.0.public_data = group_public(0);
+        let mut default = translation();
+        assert!(default.group(0, &group).unwrap().is_some());
+        assert!(!default.ir.unsupported.iter().any(|n| n.feature == "interpolation quality"));
+    }
+
+    #[test]
+    fn fx_decode_group_insert_errors_reach_the_ir_report() {
+        let mut group = Group(ni_file::kontakt::StructuredObject {
+            version: 0x95,
+            private_data: vec![],
+            public_data: group_public(0),
             children: vec![ni_file::kontakt::Chunk {
                 id: 0x38,
                 data: vec![0],
