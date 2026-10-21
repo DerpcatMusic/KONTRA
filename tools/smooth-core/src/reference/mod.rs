@@ -5,3 +5,4 @@
 
 pub mod output;
 pub mod params;
+pub mod solo;
