@@ -135,6 +135,15 @@ construction. `set_engine_par` validates the Supercharger modes: saturation
 (internal id 0x3a9), character (0x3aa) and channel link (0x3ab), each 0..=2
 (`0140780000.c:6079`–`6096`, validator `0x140789c30`).
 
+Native static vectors (Wine oracle, `docs/re/engine/vectors/supercharger-static.tsv`,
+200 Hz ramp, 14 steps from INIT): the default state applies a constant
+×1.0716 gain (+0.6 dB) at every input level 0.2–1.0. SATURATION=1.0 gives
+level-dependent reduction above ~0.6 (×1.0045 at 0.6, ×1.0315 at 1.0), and
+COMPRESS=0.5 and CHARACTER=0.5/1.0 reduce only the top level (×1.067–1.063).
+TRIM 0/0.5/1 had no measurable effect. MIX=0 and MIX=1 both give ×1.0 (dry
+level) at all levels, which does not fit a plain wet/dry blend of the default
+state; the MIX result is unexplained.
+
 The per-field transfer, the CompXT detector/ballistics and the mapping from
 saved fields to CompXT indices are **not** yet recovered. `KONTRAKT_DSP_LAWS.md`
 lists Supercharger as "no verified law"; this still holds.
