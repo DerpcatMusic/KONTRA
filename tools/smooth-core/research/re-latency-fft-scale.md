@@ -437,3 +437,25 @@ default-stub log (`emu.events`) should be checked for any import that returns a 
   no install, no pluginval, no CPU measurement.
 - The mode and CPU features are an assumption (reference-class CPU). The other mode (1) has not been
   emulated at all.
+
+### Latency from the emulated getter (pass 6, constructor state only)
+
+`0x18088f610` (getLatency) is `groups(+0x2c) * f(this+0x5f8) + base(+0x278)`, or `base` alone when
+bytes +0x237 or +0xab are set (both 0 here). `f` = `fcn.180894d20`, read through the emulated call.
+
+| rate | getLatency | groups | base (+0x278) | f |
+|---|---|---|---|---|
+| 44100 | 2304 | 1 | 0 | 2304 |
+| 48000 | 2304 | 1 | 0 | 2304 |
+| 96000 | 4704 | 2 | 96 | 2304 |
+| 192000 | 9408 | 4 | 192 | 2304 |
+
+- `f` = 2304 at every rate, and the config enums (cfg[0] in {1,2,5,9,20}, cfg[8] in {1,2,5,9,20})
+  do not change latency at 48 kHz. Latency is therefore a function of the sample rate only, through
+  groups and base, in this state.
+- `base` is 0 at 44.1 and 48 kHz and `rate/1000` at 96 and 192 kHz (96 and 192). One pair of points
+  each. Not a rule yet: needs 88.2 kHz and a second size.
+- Current SMOOTH (`src/dsp.rs:62-83`) reports `n - 1 (+ m/2 linear phase)` with n = 2048, which is
+  2047 at the default (plus m/2 when linear phase is on). The reference state gives 2304 at 44.1/48
+  kHz. Mismatch of 257 samples at the default. Medium confidence: the value rests on the CPU profile
+  and the libm stubs, and the process path has not been run to confirm the impulse delay.
