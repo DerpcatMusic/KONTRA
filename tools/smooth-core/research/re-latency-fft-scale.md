@@ -489,3 +489,73 @@ Evidence scope: constructor state, fake host, reference-class CPU profile. No pr
 - `0x88c5f0` (CPU detection) is not run; mode is set through the writer `0x30d310`.
 - No SMOOTH change in this pass: reported latency (`n - 1 = 2047`) is not replaced until the
   real impulse delay is measured, because PDC must match the delay the plugin produces.
+
+## 14. FFT primitives verified under emulation; three labels corrected (pass 8, 2026-10-21)
+
+Harness: `re-tools/emulate/fft_verify.py` writes `oracle/fft_verify.json`. Evidence scope: the
+image's own kernels run under isolated emulation (reference-class CPU profile, libm stubs) and
+compared with numpy on random input. No plug-in data, no process path.
+
+**No numpy replacement is needed for the wrappers.** The emulated kernels match numpy to about
+1e-7 relative at every order 1..12 (worst 1.9e-7). The earlier "no DFT under emulation" was a
+harness bug: the init thunk `0x12b0` (→ `0x7c40`) takes six Win64 arguments, `(out**, order,
+flag, hint, scratch, twiddle scratch)`. A null scratch returns `0xfffffff8`, and the twiddle
+scratch is needed from order 11.
+
+| thunk (slot 0 target) | verified semantics | argument order |
+|---|---|---|
+| `0x1010` → `0x1640` | **real forward, unscaled** (spec flag 8). N reals → packed `N+2` floats `[X0.re, 0, X1.re, X1.im, ..., X_{N/2}.re, 0]` | `(src, dst, spec, tmp)` |
+| `0x1280` → `0x7000` | **real inverse, unscaled**. Packed `N+2` → `N·x` (no 1/N) | `(src, dst, spec, tmp)` |
+| `0x1220` → `0x5e80` | in-place scale, `xmm0` = factor | `(_, buf, N)` |
+| `0x10a0` → `0x2ae0` | copy `len` floats | `(src, dst, len)` |
+| `0x10d0` → `0x2e40` | zero-fill `len` floats | `(dst, len)` |
+| `0x1190` → `0x49e0` | `dst[i] = a[i] * b[i]` | `(a, b, dst, len)` |
+| `0x6181b0` (not a thunk) | **complex magnitude** `|Y_k| = sqrt(re² + im²)` over `bins` interleaved pairs | `(dst, src, bins)` |
+
+Corrections to earlier sections (the code, not the labels, is authoritative):
+1. **`0x1280` is an inverse, not a real forward.** Sections 3, 6 and the README said "real
+   forward". Line 415 of `fn619fc0.c` calls it on `(x, 0)` pairs built from the frame, so it
+   computes a cosine transform of the frame.
+2. **`0x1010` is the real forward (N reals in), and it is not "complex" in the notes' sense.**
+   Line 447 calls it on the folded buffer, then `0x6181b0`.
+3. **`0x6181b0` returns the magnitude, not the power.** Section 7 said "no sqrt, P = re²+im²".
+   The emulated kernel returns `|Y|` (basis test: input 2.0 gives 2.0; `3+4i` gives 5). The
+   detector's operand is `|Y_k| · W1_k` (line 450), not `|Y|²`. This changes the magnitude
+   scale and the floors in `magnitude-scale.md`.
+
+### Detector chain, now read with verified semantics (fn619fc0.c lines 395–450)
+
+```
+frame -> (x,0) pairs -> 0x1280 inverse, N2 (unscaled) -> 1/N2 (0x1220)
+      -> copy/zero fold (0x10a0/0x10d0)  [the lifter: keep one half, zero the rest]
+      -> 0x1010 forward real, N1 (unscaled) -> 0x6181b0 |Y| over bins1
+      -> 0x1190 multiply by W1 row g -> Catmull-Rom to 1024 log bins -> attack/release -> ln
+```
+
+The inverse-then-forward pair with a fold between them is a cepstral (liftered log-spectrum)
+envelope. That is the shape of the reference's analysis, not a plain STFT magnitude. The input
+buffer `pad` (the source of `iVar28`) and the values written before line 395 are not decoded yet,
+so the input to this chain is still unknown.
+
+### Blocker (not solved): detector state
+
+Running `0x619fc0` with a synthetic state (constructor object at `obj`, bins at `+0x770/+0x788`
+as ascending Hz, weights at `+0x7a0/+0x7b8` set to 1) faults at each host-built structure it
+reads:
+- `func_0x180563970` is a `std::map` lookup on `S+0x538/0x550` (MSVC layout). Sentinel node
+  pointers move the fault deeper (to `0x18056d1a1`).
+- Further unpopulated fields follow. The host fills these in `MainComponent::update`
+  (section 10), which is not run here.
+
+So the process path (`0x619fc0`, `0x890a00`) cannot give an impulse delay, output level or the
+1024-point curve yet. The fix is to run the host-side fill, not more guessing of fields.
+
+### Consequences for this pass
+
+- Latency: unchanged (section 13's constructor-state table). Real delay is still unmeasured, so
+  PDC cannot change (plan rule).
+- Magnitude scale: the reference uses `|Y|·W`, and `N2`/`N1` scaling is `1/N2` on the inverse
+  leg only. SMOOTH's `norm(X_k)` is not this, but a port needs the fold indices and the
+  input buffer first. Not changed here.
+- Next: decode the code before line 395 (what `pad` holds) and the host-side fill of the
+  detector state. Without them, step 4 has no reference to match.

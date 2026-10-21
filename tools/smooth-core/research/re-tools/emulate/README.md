@@ -61,10 +61,20 @@ pointer. Passing the object directly reads the wrong bytes and returns
   writer `0x30d310` with the CPU flag, which reproduces the constructor state.
 - Latency for the other config enums (quality, size, low-latency mode) is not
   measured; the constructor was run with a zero config only.
-- The process path (`0x890a00`, `0x180619fc0`) is not run. Its FFT wrappers
-  (`0x180001640` and the real forward `0x180001280`) do not compute a DFT under
-  emulation because the twiddle tables are not built, so the impulse-delay and
-  level measurements need numpy hooks verified at small sizes first.
+- The process path (`0x890a00`, `0x180619fc0`) is not run. The detector needs host-built
+  state (std::map lookups at `S+0x538/0x550` and the bin/weight vectors). See
+  `../re-latency-fft-scale.md` section 14 for the fault chain.
+
+## FFT primitives (verified, `fft_verify.py`)
+
+The FFT wrappers DO run under emulation, once the init thunk gets its six arguments (see
+`fft_verify.py` docstring). `oracle/fft_verify.json` records the check against numpy at orders
+1..12 (worst relative error 1.9e-7) and each primitive. No numpy hook is needed.
+
+Corrections to the earlier notes: `0x1280` is the unscaled real INVERSE (not a forward), `0x1010`
+is the real forward, and `0x6181b0` returns the magnitude `|Y|`, not the power. Run with:
+
+    python -I fft_verify.py ../../oracle/fft_verify.json
 
 ## Reproduce
 
