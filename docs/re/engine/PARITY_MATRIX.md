@@ -104,6 +104,14 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Transient Master | unknown | none | |
 | Transparent Limiter | unknown | none | |
 | Gainer | unknown | none | |
+| Compressor | unknown | none | |
+| Feedback Compressor | unknown | none | |
+| Limiter | partial | decomp | Detector biquad, gain computer, release law (ln2/N) and input gain confirmed from 0x140904890 / 0x140960140 / 0x1408dd0a0. Open: output clamp bounds (lower -1 confirmed, upper bound source not traced); no native vector (Wine capture unreliable this session) |
+| Solid Bus Comp | unknown | none | |
+| Supercharger GT | unknown | none | |
+| Transient Master | partial | decomp | Controls 0-2 constants confirmed (x120, x115, x12/x48 dB) from 0x141ac87b0. Open: flags 3-7 semantics, clip-variant selector (0x141a59d40), non-v0x10 versions; no native vector |
+| Transparent Limiter | partial | decomp | Controls 0-2 (drive 0..40 dB, release s, ceiling -0.35..-40 dB) confirmed. Side-chain (control 3) selects BEffectHilbertLimiterSC: not modelled, diagnosed. Saved-field order inferred; no native vector |
+| Gainer | partial | decomp | Smoother 1/1800 and unity-window hold (0x140aa2980) confirmed and implemented. Open: dry != 0 inside the window, gain-copy flags 0x1a2/0x1b7; no native vector |
 
 ## Amplifiers (k-amps-a, k-amps-b)
 
