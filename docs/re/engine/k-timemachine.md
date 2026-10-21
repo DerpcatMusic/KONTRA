@@ -145,8 +145,12 @@ from the fresh-instrument baseline are reported.
 | `FORMANT_SHIFT` | `pro_float_1` | Pro | linear -1..1 | `docs/re/kontakt-bindings/tm_source_sweep.tsv` (0, 0.25, 0.75, 1) |
 | `TMPRO_KEEP_FORMANTS` | `pro_flag_2` | Pro | switch, 0 = off | `docs/re/kontakt-bindings/tm_source_sweep.tsv` |
 
-Not measured, and reported as unapplied: `SMOOTH` and `GRAIN_LENGTH` on TM2 and Pro (no stored
-field in the sweep), `SPEED_UNIT`, `TRANSIENT_SIZE`, `TM_LEGATO`.
+Generic index: the corpus writes group-level parameters with generic -1 (`set_engine_par(p, v, group, -1, -1)`),
+and generic 0 also reaches the record. Both are read (`group_engine_write`), and the sweep shows the same result for each.
+
+`SMOOTH` and `GRAIN_LENGTH` on TM2 and Pro: measured with generic -1 at raw 0 and 1e6; no stored field
+changes for either kind, so those writes are reported as unapplied. `SPEED_UNIT`, `TRANSIENT_SIZE` and
+`TM_LEGATO` have no measured law.
 
 Applied in `crates/sampler-kontakt/src/time_stretch_writes.rs` and tested against the measured points.
 The engine's speed, smooth and grain change with these writes, while `FORMANT_SHIFT` and

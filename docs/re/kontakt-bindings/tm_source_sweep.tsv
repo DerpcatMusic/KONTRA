@@ -66,3 +66,12 @@ time_machine_1	GRAIN_LENGTH	650000	0	machine_float_2	mode2 v106 @34	6	25.051718
 time_machine_1	GRAIN_LENGTH	750000	0	machine_float_2	mode2 v106 @34	6	37.52593
 time_machine_1	GRAIN_LENGTH	850000	0	machine_float_2	mode2 v106 @34	6	55.752308
 time_machine_1	GRAIN_LENGTH	950000	0	machine_float_2	mode2 v106 @34	6	82.3833
+time_machine_1	SPEED	0	0	common_float_7	mode2 v106 @7	1	0
+time_machine_1	SPEED	1000000	0	common_float_7	mode2 v106 @7	1	8
+time_machine_1	SMOOTH	0	0	machine_float_1	mode2 v106 @30	1	0
+time_machine_1	GRAIN_LENGTH	0	0	machine_float_2	mode2 v106 @34	6	0.29999995
+time_machine_1	GRAIN_LENGTH	1000000	0	machine_float_2	mode2 v106 @34	6	100
+time_machine_2	SPEED	0	0	common_float_7	mode5 v106 @7	1	0
+time_machine_2	SPEED	1000000	0	common_float_7	mode5 v106 @7	1	8
+time_machine_pro	SPEED	0	0	common_float_7	mode8 v106 @7	1	0
+time_machine_pro	SPEED	1000000	0	common_float_7	mode8 v106 @7	1	8
