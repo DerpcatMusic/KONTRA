@@ -50,6 +50,7 @@ const SIMPLE: KontaktFx = KontaktFx::SimpleLpHp { lp: 0.0, hp: 0.0 };
 const fn monark(mode: u8) -> KontaktFx {
     KontaktFx::Monark { mode, variant: 0, knobs: [0.0; 5] }
 }
+const VERSATILE: &str = "3x2 Versatile core (cascade.rs versatile, Chamberlin stages with the band-state shaper, morph and wet law, clock 0x140aea690) is run against extracted native models only at cutoff 0.5, resonance 0 / 0.3 / 0.5 and one mixed shift/morph/wet set; shift, morph, wet and gain sweeps and the 2x SSE rounding path are unmeasured";
 const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; type 91 is measured ($FILTER_TYPE_FORMANT_2)";
 
 fn build(id: i32) -> Option<(&'static str, Build)> {
@@ -70,7 +71,7 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         15 => ("Vowel B", C(variant(Bp, 4, Variant::VowelB), Exact, STAGES)),
         16 => ("Pro-53", C(variant(Lp, 4, Variant::Pro52), Exact, STAGES)),
         17 => ("Legacy Ladder", C(variant(Lp, 4, Variant::Ladder), Exact, STAGES)),
-        19 => ("3x2 Versatile", C(variant(Lp, 4, Variant::Versatile(VERSATILE_UNSET)), Exact, STAGES)),
+        19 => ("3x2 Versatile", C(variant(Lp, 4, Variant::Versatile(VERSATILE_UNSET)), Partial, VERSATILE)),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
@@ -146,13 +147,13 @@ pub(crate) fn template(id: i32) -> Option<Mapped> {
     }
 }
 
-/// A saved type with its stored cutoff, resonance and optional third knob (Formant Size).
 /// Placeholder knobs that [`map`] replaces with the record's.
 const VERSATILE_UNSET: sampler_ir::fx::filter::Versatile =
     sampler_ir::fx::filter::Versatile { shift: [0.0; 2], resonance: [0.0; 2], types: [0.0; 3], wet: [0.0; 3], gain: 0.0 };
 
-/// `extra` is the SV bandwidth (63..=65), Formant II's size, or Versatile's 11 knobs in object order (reader 0x140d00db0, offsets
-/// 0x38..0x60): SHIFTB, SHIFTC, RESB, RESC, TYPEA..C, BYPA..C, FILTER_GAIN.
+/// A saved type with its stored cutoff, resonance and optional third knob. `extra` is the SV
+/// bandwidth (63..=65), Formant II's size, or Versatile's 11 knobs in object order (reader
+/// 0x140d00db0, offsets 0x38..0x60): SHIFTB, SHIFTC, RESB, RESC, TYPEA..C, BYPA..C, FILTER_GAIN.
 pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result<Mapped, Gap> {
     match build(id) {
         None => Err(Gap { name: "filter type", reason: "type id not in the Kontakt 8 filter table" }),
