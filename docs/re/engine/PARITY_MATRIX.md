@@ -177,9 +177,9 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Stereo Modeller | unknown | none | |
-| Stereo Tune | unknown | none | |
-| Surround Panner | unknown | none | |
+| Stereo Modeller | partial | vector | Settled width/balance and pseudo delay verified (docs/re/engine/k-spatial.md). Open: channel layouts, width across .5, pseudo automation, latency, bypass/mix |
+| Stereo Tune | missing | decomp | Reader FUN_140ac6120 confirmed (4 floats at +0x8..+0x14). Float-to-name map and process law not recovered (vtable pending). Passes through today |
+| Surround Panner | missing | vector | Parameter bindings measured (fx_other.tsv). Speaker matrix, pan law, LFE routing not recovered. Diagnosed as NotModeled |
 | Beat Masher | unknown | none | |
 | Beat Slicer | unknown | none | |
 | Gater | unknown | none | |
