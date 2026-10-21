@@ -8,6 +8,10 @@ Drives the emulated callees and writes the observable results as f32/u32 bit pat
   segments  0x89ba70  ring split: [pos, cap) then [0, rest) when pos + n > cap
   window    0x8e67a0  dst[k] = ring-segment[k] * window[k], per segment, with the window
                       broadcast from one channel and no-op for other channel mismatches
+  xform     0x8e6da0  for each record of the vector at analyzer+0x10 (0x18-byte records, channel
+                      index at +8, flag at +0x10): flag == 1 leaves the frame alone (the binary's
+                      copy is a self-copy); otherwise the pair (ch, ch+1) becomes
+                      (0.5*(a+b), 0.5*(a-b)) in place, a = frame[ch], b = frame[ch+1]
 
 Synthetic cases use random rings and random pos/len. In-situ cases are captured from the gain
 body's own calls (base configuration and the sidechain configuration: setter ids 3, 14 and 16
@@ -42,6 +46,7 @@ from pe_emu import image_va  # noqa: E402
 CURSOR = image_va(0x894A70)
 SEGMENTS = image_va(0x89BA70)
 WINDOW = image_va(0x8E67A0)
+XFORM = image_va(0x8E6DA0)
 SC_EXTRA = [(3, 1.0, 0.0, 1.0, 1.0, 0.0), (14, 1.0, 0.0, 1.0, 1.0, 0.0), (16, 1.0, 0.0, 1.0, 1.0, 0.0)]
 
 
@@ -251,6 +256,87 @@ def capture_insitu(sess, label, blocks, rng, cases, limit):
     return len(seen)
 
 
+def record_vector(emu, records):
+    """Vector object (begin, end) over 0x18-byte records: ch at +8, flag at +0x10."""
+    recs = emu.arena(0x18 * max(len(records), 1))
+    for i, (ch, flag) in enumerate(records):
+        emu.w64(recs + 0x18 * i + 8, ch)
+        emu.w64(recs + 0x18 * i + 0x10, flag)
+    vec = emu.arena(0x18)
+    emu.w64(vec, recs)
+    emu.w64(vec + 8, recs + 0x18 * len(records))
+    return vec
+
+
+def scratch_arena(emu, n):
+    """Arena (base @0, cursor dword @0x18) with room for the transform's scratch."""
+    Z = emu.arena(0x40)
+    base = emu.arena(4 * (4 * max(n, 1) + 128))
+    emu.w64(Z, base)
+    emu.w32(Z + 0x18, 0)
+    return Z
+
+
+def synth_xform(emu, rng, cases):
+    for _ in range(40):
+        nch = rng.choice([2, 3, 4])
+        n = rng.randrange(1, 65)
+        frame = [[rng.uniform(-2, 2) for _ in range(n)] for _ in range(nch)]
+        # a pair (ch, ch + 1) must lie inside the frame
+        recs = [(rng.randrange(0, nch - 1), rng.choice([0, 1, 2])) for _ in range(rng.randrange(0, 4))]
+        cases["xform"].append(run_xform(emu, n, frame, recs, src="synthetic"))
+
+
+def run_xform(emu, n, frame, recs, src):
+    chans = []
+    for row in frame:
+        buf = emu.arena(4 * max(n, 1) + 64)
+        emu.wr(buf, f32s(row))
+        chans.append(buf)
+    X = frame_view_s(emu, chans, n)
+    Y = record_vector(emu, recs)
+    Z = scratch_arena(emu, n)
+    emu.call(XFORM, X, Y, Z, max_insns=50_000_000)
+    out = [list(struct.unpack(f"<{n}f", emu.rd(c, 4 * n))) for c in chans]
+    return {"src": src, "n": n, "records": [list(r) for r in recs],
+            "frame_in": [bits(r) for r in frame], "frame_out": [bits(r) for r in out]}
+
+
+def capture_xform(sess, label, blocks, cases, limit=10**6):
+    """Record every call of 0x8e6da0 during `blocks` blocks: frame, records, outputs."""
+    emu = sess.emu
+    uc = emu.uc
+
+    def on_call(uc_, addr, size, user):
+        rcx = emu.reg(UC_X86_REG_RCX)
+        rdx = emu.reg(UC_X86_REG_RDX)
+        r8 = emu.reg(UC_X86_REG_R8)
+        ret = emu.r64(emu.reg(UC_X86_REG_RSP))
+        n = emu.r32(rcx + 0x404)
+        nch = emu.r32(rcx + 0x400)
+        chans = [emu.r64(rcx + 8 * k) for k in range(nch)]
+        frame_in = [list(struct.unpack(f"<{n}f", emu.rd(c, 4 * n))) for c in chans]
+        begin, end = emu.r64(rdx), emu.r64(rdx + 8)
+        recs = [[emu.r64(p + 8), emu.r64(p + 0x10)] for p in range(begin, end, 0x18)]
+        if len(cases_seen) >= limit:
+            return
+
+        def on_ret(uc2, addr2, size2, user2):
+            out = [list(struct.unpack(f"<{n}f", emu.rd(c, 4 * n))) for c in chans]
+            cases.append({"src": label, "n": n, "records": recs,
+                          "frame_in": [bits(r) for r in frame_in], "frame_out": [bits(r) for r in out]})
+            uc.hook_del(hk[0])
+
+        hk = [uc.hook_add(UC_HOOK_CODE, on_ret, begin=ret, end=ret)]
+        cases_seen.append(ret)
+
+    cases_seen = []
+    uc.hook_add(UC_HOOK_CODE, on_call, begin=XFORM, end=XFORM)
+    for b in range(blocks):
+        run_block(sess, block=b)
+    return len(cases_seen)
+
+
 def select_insitu(rows, per_group=4):
     """At most `per_group` in-situ calls per (source, n), keeping both wrapped and unwrapped ones."""
     groups = {}
@@ -266,16 +352,21 @@ def select_insitu(rows, per_group=4):
 def main():
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     rng = random.Random(20261021)
-    cases = {"cursor": [], "segments": [], "window": []}
+    cases = {"cursor": [], "segments": [], "window": [], "xform": []}
     base = make_session()
     synth_cursor(base.emu, rng, cases)
     synth_segments(base.emu, rng, cases)
     synth_window(base.emu, rng, cases)
+    synth_xform(base.emu, rng, cases)
     insitu = []
     n_base = capture_insitu(base, "insitu-base", 2, rng, insitu, limit=10**6)
     sc = make_session(gain_setup.PARAMS + SC_EXTRA)
     n_sc = capture_insitu(sc, "insitu-sidechain", 2, rng, insitu, limit=10**6)
     print(f"in-situ window calls: base={n_base} sidechain={n_sc}", file=sys.stderr)
+    x_insitu = []
+    x_sc = capture_xform(sc, "insitu-sidechain", 2, x_insitu)
+    print(f"in-situ xform calls (sidechain): {x_sc}", file=sys.stderr)
+    cases["xform"].extend(x_insitu[:6])
     cases["window"].extend(select_insitu([c for c in insitu if c["n"] <= 2048]))
     print("cases: " + ", ".join(f"{k}={len(v)}" for k, v in cases.items()), file=sys.stderr)
     doc = {"note": "gain frame builders 0x894a70, 0x89ba70, 0x8e67a0; f32 as u32 bit patterns",

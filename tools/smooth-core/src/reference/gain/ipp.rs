@@ -116,6 +116,13 @@ pub fn sub(s1: &[f32], s2: &[f32], dst: &mut [f32]) {
     }
 }
 
+/// `0x1800015b0` ippsAdd_32f(s1, s2, dst, len): `dst = s1 + s2` (identified by emulation).
+pub fn add(s1: &[f32], s2: &[f32], dst: &mut [f32]) {
+    for ((d, &a), &b) in dst.iter_mut().zip(s1).zip(s2) {
+        *d = a + b;
+    }
+}
+
 /// `0x1800011f0` ippsAddProductC_32f(src, val, srcdst, len): `p += src * val`.
 pub fn add_product_c(src: &[f32], val: f32, p: &mut [f32]) {
     for (x, &s) in p.iter_mut().zip(src) {

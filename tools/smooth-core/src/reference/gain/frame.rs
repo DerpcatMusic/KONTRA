@@ -21,6 +21,9 @@
 //! move pointers and integers, so they are exact. `0x8e67a0` multiplies, through the IPP
 //! thunks `0x180001190` (`ippsMul_32f`, exact f32 product), so the frame is bit-exact.
 //!
+//! `0x8e6da0` (called only when the delta flag, setter id 16 / `cfg+0x52`, is set) runs the
+//! per-record kernel `0x8dfb90` on the windowed frame. See [`pair_records`].
+//!
 //! Evidence: `fixtures/gain_frame.json` (synthetic rings, plus in-situ calls captured from the
 //! gain body in the base and the sidechain configurations).
 
@@ -90,6 +93,64 @@ pub fn window_frame(dst: &mut [&mut [f32]], ring: &[&[f32]], pos: usize, window:
         ipp::mul(&buf[first], &w[..l1], &mut out[..l1]);
         let l2 = second.len();
         ipp::mul(&buf[second], &w[l1..l1 + l2], &mut out[l1..l1 + l2]);
+    }
+}
+
+/// One record of the vector at `analyzer + 0x10` (0x18 bytes). `0x8dfb90` reads the channel
+/// index at `+8` and the flag at `+0x10`; `+0` is not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairRecord {
+    pub ch: usize,
+    pub flag: u64,
+}
+
+/// `0x8e6da0` on the windowed frame, with `0x8dfb90` as the per-record kernel.
+///
+/// The binary passes two copies of the frame view (`rsp+0x30` and `rsp+0x440`, both with the
+/// same channel pointers) as the input and the output of `0x8dfb90`, with flag 1 (the scale
+/// flag at `[rsp+0x20]`). For each record, in order:
+///
+/// - `flag == 1`: the output channel `ch` is copied from the input channel `ch`. Both are the
+///   same buffer, so nothing changes (the binary's `ippsCopy` is a self-copy).
+/// - any other flag: with `a = frame[ch]`, `b = frame[ch + 1]`, the sum `a + b` and the
+///   difference `a - b` are computed into scratch first (`0x15b0` ippsAdd, `0x11c0`
+///   ippsSub with `dst = s2 - s1`), then `frame[ch] = 0.5 * sum` and
+///   `frame[ch + 1] = 0.5 * diff` (`0x180001070` ippsMulC with 0.5 from `0x18209d1c0`).
+///
+/// `sum` and `diff` are scratch of at least `frame[0].len()` samples (the binary's arena
+/// slots). The per-record order matters: a later record sees the earlier writes.
+///
+/// Evidence: `fixtures/gain_frame.json` (`xform`). The in-situ records vector is empty in the
+/// harness (see the notes in `gain_fx_frame.py`), so the pair path is checked on synthetic
+/// records only.
+pub fn pair_records(
+    frame: &mut [&mut [f32]],
+    records: &[PairRecord],
+    sum: &mut [f32],
+    diff: &mut [f32],
+) {
+    for rec in records {
+        if rec.flag == 1 {
+            continue;
+        }
+        let (lo, hi) = frame.split_at_mut(rec.ch + 1);
+        let a: &mut [f32] = &mut *lo[rec.ch];
+        let b: &mut [f32] = &mut *hi[0];
+        let n = a.len();
+        assert!(b.len() == n, "pair channels differ in length");
+        let sum = &mut sum[..n];
+        let diff = &mut diff[..n];
+        ipp::add(a, b, sum);
+        ipp::sub(b, a, diff);
+        scale_half(sum, a);
+        scale_half(diff, b);
+    }
+}
+
+/// `0x180001070` ippsMulC_32f with the constant 0.5 (`0x18209d1c0`): `dst = src * 0.5`.
+fn scale_half(src: &[f32], dst: &mut [f32]) {
+    for (d, &s) in dst.iter_mut().zip(src) {
+        *d = s * 0.5;
     }
 }
 
@@ -183,5 +244,38 @@ mod tests {
         }
         assert!(wraps >= 20, "fixture should include wrapped windows ({wraps})");
         assert!(insitu >= 8, "fixture should include in-situ calls ({insitu})");
+    }
+
+    #[test]
+    fn pair_records_is_bit_exact_against_emulated_transform() {
+        let f = fixture();
+        let cases = f["cases"]["xform"].as_array().unwrap();
+        assert!(cases.len() >= 40, "fixture should cover the transform");
+        let mut pair_path = 0;
+        for c in cases {
+            let records: Vec<PairRecord> = c["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| PairRecord {
+                    ch: r[0].as_u64().unwrap() as usize,
+                    flag: r[1].as_u64().unwrap(),
+                })
+                .collect();
+            pair_path += records.iter().filter(|r| r.flag != 1).count();
+            let mut frame = rows(&c["frame_in"]);
+            let want = rows(&c["frame_out"]);
+            let n = frame.first().map_or(0, Vec::len);
+            let mut sum = vec![0.0f32; n];
+            let mut diff = vec![0.0f32; n];
+            let mut refs: Vec<&mut [f32]> = frame.iter_mut().map(Vec::as_mut_slice).collect();
+            pair_records(&mut refs, &records, &mut sum, &mut diff);
+            for (k, (g, e)) in frame.iter().zip(&want).enumerate() {
+                for (i, (a, b)) in g.iter().zip(e).enumerate() {
+                    assert_eq!(a.to_bits(), b.to_bits(), "{} ch {k} sample {i}", c["src"]);
+                }
+            }
+        }
+        assert!(pair_path >= 20, "fixture should exercise the pair path ({pair_path})");
     }
 }
