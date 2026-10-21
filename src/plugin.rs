@@ -4190,7 +4190,7 @@ pub(crate) mod tests {
         assert!(view.parts[0].trace.is_some());
     }
 
-    fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
+    pub(super) fn transaction_candidate(name: &str) -> crate::sound::Loaded<Option<Box<CorePart>>> {
         transaction_candidate_with_source(name,
             "on init\n declare ui_knob $value(0,1000,1)\n $value := 250\n end on")
     }
@@ -4257,7 +4257,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn transaction_fixture() -> (SamplerParams, V2Core) {
+    pub(super) fn transaction_fixture() -> (SamplerParams, V2Core) {
         let params = SamplerParams::new();
         params.selection.write_unpoisoned().parts = vec![Part {
             path: "active.nki".into(),
@@ -4864,6 +4864,8 @@ mod persistence_tests;
 mod pressed_tests;
 #[cfg(test)]
 mod uvi_save_tests;
+#[cfg(test)]
+mod lifecycle_audit_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {
