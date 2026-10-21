@@ -76,3 +76,26 @@ pub(crate) fn pade(v: f32) -> f32 {
     let v2 = v * v;
     ((v2 + 27.0) * v) / ((v2 * 9.0) + 27.0)
 }
+
+/// `(a - c |s|) s` with `s` the input clamped to +-4: Pro-53's feedback `NL` and the Versatile
+/// band shaper. A transfer stage: it owns no state and is placed where a core saturates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Soft {
+    pub a: f32,
+    pub c: f32,
+}
+
+impl Soft {
+    #[inline(always)]
+    pub(crate) fn apply(self, v: f32) -> f32 {
+        let s = v.clamp(-4.0, 4.0);
+        (self.a - s.abs() * self.c) * s
+    }
+}
+
+/// `v / sqrt(v^2 + 1)`: the bounded soft clip of the Dual SKF resonance loop (a transfer stage).
+#[inline(always)]
+pub(crate) fn unit_sqrt(v: f32) -> f32 {
+    let n = 1.0 / ((v * v) + 1.0).sqrt();
+    n * v
+}

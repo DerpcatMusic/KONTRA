@@ -30,6 +30,7 @@ use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParame
 use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 use super::super::biquad::{self, Coefficients, Shape};
+use super::chamberlin::{pro52, versatile, Chamberlin};
 use super::linear::Zdf;
 use super::shaper::{self, Knee};
 
@@ -193,7 +194,7 @@ fn bits(p: [u32; 5]) -> [f32; 5] {
     p.map(f32::from_bits)
 }
 
-fn clamp01(v: f32) -> f32 {
+pub(super) fn clamp01(v: f32) -> f32 {
     if v >= 0.0 {
         if v >= 1.0 { 1.0 } else { v }
     } else {
@@ -520,7 +521,7 @@ pub(crate) struct Chamberlin {
 
 /// The 2401-entry table `2^(i/60 - 20)` at the MIDI-note index `((x 100 + 20) 5) + 1381.88`
 /// (`FUN_14095d940` / `FUN_14095d630`): 25.96 Hz at 0, 8372 Hz at 1.
-fn note_hertz(cutoff: f32) -> f32 {
+pub(super) fn note_hertz(cutoff: f32) -> f32 {
     super::ladder_kernel::exponential((clamp01(cutoff) * 100.0 + 20.0) * 5.0 + 1381.881_6)
 }
 
