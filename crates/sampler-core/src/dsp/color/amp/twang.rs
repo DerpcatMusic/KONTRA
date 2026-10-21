@@ -6,11 +6,10 @@
 // ponytail: the four tables (static, 0x144f3d900..0x144f3f900) and the reset's settled operating
 // point are dumped under kemu, not re-derived; the reset runs before the knobs are applied.
 use super::super::super::Planar;
+use super::kernel::{DECIMATE, PHASE, V, add, mul, sub};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use super::crywah::rcp;
-use super::dstortion::zip;
 
-type V = [f32; 4];
 
 const fn bits(v: [u32; 4]) -> V {
     [f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]), f32::from_bits(v[3])]
@@ -25,18 +24,6 @@ const K380: f32 = f32::from_bits(0x45dc_56a1);
 const K390: f32 = f32::from_bits(0x427c_ed91);
 const K3A0: f32 = f32::from_bits(0xc8c6_b352);
 const SAG: f32 = 485.0;
-const PHASE: [V; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-0.070_312_5, 0.867_187_5, 0.226_562_5, -0.023_437_5],
-    [-0.062_5, 0.562_5, 0.562_5, -0.062_5],
-    [-0.023_437_5, 0.226_562_5, 0.867_187_5, -0.070_312_5],
-];
-const DECIMATE: [V; 4] = [
-    [-0.005_859_375, -0.015_625, -0.017_578_125, 0.0],
-    [0.056_640_625, 0.140_625, 0.216_796_875, 0.25],
-    [0.216_796_875, 0.140_625, 0.056_640_625, -0.0],
-    [-0.017_578_125, -0.015_625, -0.005_859_375, 0.0],
-];
 /// Table per tube lane in twang.f32le (0 is the power stage's).
 const LANE_TABLE: [usize; 4] = [1, 1, 2, 3];
 
@@ -60,18 +47,6 @@ fn ld(s: &[f32; 80], o: isize) -> V {
 fn st(s: &mut [f32; 80], o: isize, v: V) {
     let i = (o + 36) as usize;
     s[i..i + 4].copy_from_slice(&v);
-}
-
-fn mul(a: V, b: V) -> V {
-    zip(a, b, |a, b| a * b)
-}
-
-fn add(a: V, b: V) -> V {
-    zip(a, b, |a, b| a + b)
-}
-
-fn sub(a: V, b: V) -> V {
-    zip(a, b, |a, b| a - b)
 }
 
 /// `(x - old) * k + old`
