@@ -43,3 +43,11 @@ the plug-in in a host.
 Scratch scripts live outside the repo (`RunScratch/smooth/re-emulate`). The
 venv is `uv venv` on the dev drive with `unicorn`, `capstone`, `pefile`.
 Run with `python -I`.
+
+## Real-pipeline scripts
+
+- `input_chain.py`: runs the wheel path with the real image code. Editor slot 8
+  pushes into the ring, `try_pop` pops, and the UI consumer stores the wheel
+  fields. It prints the verified values and the pcs of the stores. The MSVC
+  clock stubs (`_Query_perf_frequency` 10 MHz, `_Query_perf_counter`) are the
+  only synthetic inputs on the path.
