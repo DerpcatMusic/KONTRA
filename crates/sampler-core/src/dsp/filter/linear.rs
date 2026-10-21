@@ -11,6 +11,24 @@
 
 use super::shaper::Knee;
 
+/// A zero-delay one-pole cell (the ladder's stage): `g` the prewarped cutoff, `r = 1 / (1 + g)`.
+/// One sample updates its state `s` and returns the stage output, in the native loop's order.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Tpt1 {
+    pub g: f32,
+    pub r: f32,
+}
+
+impl Tpt1 {
+    #[inline(always)]
+    pub(crate) fn tick(self, s: &mut f32, x: f32) -> f32 {
+        let previous = *s;
+        let predicted = (2.0 * previous + self.g * x) * self.r;
+        *s = previous + self.g * (x - predicted);
+        previous + *s
+    }
+}
+
 /// The `k`-dependent coefficients of one zero-delay stage.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Zdf {
