@@ -198,7 +198,7 @@ fn range_chip(range: usize) -> El {
         block(plot::RANGE_W, plot::RANGE_H)
             .radius(SKIN.corners.field)
             .fill(ca(t.range_chip, t.chip_alpha)),
-        label(RANGES[range].1, ty::MICRO, c(t.ink_quiet))
+        label(RANGES[range].1, ty::BODY, c(t.ink))
             .anchor(Align::Start, Align::Center)
             .offset(space::XS, space::NONE),
         glyph(Icon::Down, icon::SMALL, c(t.ink_quiet))
@@ -228,7 +228,7 @@ fn ticks_row() -> El {
         }
         cells.push(
             centred(
-                label(name, ty::TICK, c(t.ink_quiet)),
+                label(name, ty::BODY, c(t.ink)),
                 cell,
                 plot::TICK_ROW_H,
             )
@@ -253,7 +253,7 @@ fn ticks_col(range: usize) -> El {
         cells.push(block(0.0, y - cell / 2.0 - top).shrink(0));
         cells.push(
             centred(
-                label(name.as_str(), ty::MICRO, c(t.ink_quiet)),
+                label(name.as_str(), ty::BODY, c(t.ink)),
                 plot::LEVEL_COL_W,
                 cell,
             )

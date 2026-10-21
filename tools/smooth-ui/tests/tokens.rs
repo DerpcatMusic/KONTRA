@@ -88,9 +88,13 @@ fn marks_come_from_the_icon_pack() {
     let mut offenders = Vec::new();
     for name in COMPOSED {
         for (line, text) in source(name).lines().enumerate() {
-            // An SVG path starts with a move; the pack holds every one of
-            // them, and a view may not type its own.
-            if text.contains("\"M") && !text.trim_start().starts_with("//") {
+            // An SVG path starts with a move to a coordinate; the pack holds
+            // every one of them, and a view may not type its own. A label
+            // that happens to begin with a capital M ("M/S") is not a path.
+            let path_start = text
+                .match_indices("\"M")
+                .any(|(at, _)| text[at + 2..].starts_with(|ch: char| ch.is_ascii_digit() || ch == '-'));
+            if path_start && !text.trim_start().starts_with("//") {
                 offenders.push(format!("{name}:{} {}", line + 1, text.trim()));
             }
         }

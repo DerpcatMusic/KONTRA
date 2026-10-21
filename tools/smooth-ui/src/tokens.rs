@@ -155,7 +155,14 @@ pub mod metric {
     pub const RAIL_LABEL_H: f64 = 30.0;
     pub const RAIL_WORD_W: f64 = 36.0;
     /// The side panel the rail opens, and a row of it.
+    /// The band bar's edge rail, in its band's colour: a thin bar, as tall
+    /// as the controls it bounds.
+    pub const EDGE_W: f64 = 3.0;
+    pub const EDGE_H: f64 = 22.0;
     pub const SIDE_W: f64 = 176.0;
+    /// A side-panel value: one plate, as wide as the panel's contents. A
+    /// pair of them (the low and high tilt) shares the same width.
+    pub const SIDE_FIELD_W: f64 = 104.0;
     pub const SIDE_LABEL_W: f64 = 60.0;
     pub const SLIDER_W: f64 = 54.0;
     pub const SLIDER_BAR: f64 = 2.0;
