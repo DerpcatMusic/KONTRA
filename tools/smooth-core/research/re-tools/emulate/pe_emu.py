@@ -116,6 +116,10 @@ class Emulator:
         self._resolve_imports()
         from crt import install as install_crt
         install_crt(self)
+        from cpu import install as install_cpu
+        install_cpu(self)
+        from libm import install as install_libm
+        install_libm(self)
 
     # ---- address space -------------------------------------------------
     def _map_image(self):
@@ -378,7 +382,7 @@ class Emulator:
         for i, a in enumerate(args[:4]):
             self.uc.reg_write(_GPR_ARGS[i], a & (2**64 - 1))
         for i, f in enumerate(floats):
-            self.uc.reg_write(_XMM_ARGS[i], _xmm_bytes(f))
+            self.uc.reg_write(_XMM_ARGS[i], int.from_bytes(_xmm_bytes(f), "little"))
         self.uc.reg_write(UC_X86_REG_RSP, sp)
         self.uc.reg_write(UC_X86_REG_RAX, 0)
         self.unmapped.clear()
