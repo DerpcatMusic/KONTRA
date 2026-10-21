@@ -376,6 +376,10 @@ pub trait Core: Send {
     /// Swap a prepared part in; the replaced one comes back for a worker to drop.
     /// The part's tree nodes play at unity until the next [`set_mix`](Self::set_mix).
     fn install(&mut self, part: usize, prepared: Self::Prepared) -> Self::Retired;
+    /// A replaced part whose fade-out finished; drop it on a worker. Call until `None`.
+    fn take_expired(&mut self) -> Option<Self::Retired> {
+        None
+    }
 
     /// Start a block; called once, before events and rendering.
     fn begin_block(&mut self, block: &BlockInfo);
