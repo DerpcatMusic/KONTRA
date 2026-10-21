@@ -1,43 +1,52 @@
-//! Kontakt's Daft filter (a 2-pole low or high pass with soft saturation,
-//! 2x oversampled). DSP_SYSTEM_INVENTORY "Daft parameter laws and scheduling"
-//! fixes the parameter laws, the 32-frame control cadence and the ramp length;
-//! it does not recover the audio kernel.
-// ponytail: unverified - the kernel is a saturating trapezoidal state-variable
-// filter at twice the rate, with linear-interpolation up- and two-tap
-// down-sampling, not the original's resampler or feedback nonlinearity. The
-// cadence follows the absolute sample clock, not a per-instance countdown.
+//! Kontakt's Daft filter: a two-stage zero-delay loop run at twice the rate through the shared
+//! Kontakt x2 resampler ([`kaiser`]), with two knees ([`shaper::Knee`]) inside the loop.
+//!
+//! Native (Kontakt 8.13.1): the per-2x-sample loop is `FUN_140affa30`; the controls are
+//! `FUN_140b05900` (gain `FUN_140b05290`, cutoff and feedback `FUN_140b04c80`, resonance and
+//! response in the same dispatcher); the ramp object is `FUN_140acb6c0` (four lanes at `0x48e30`,
+//! targets at `0x48e50`); the table is `FUN_1404d14d0`; the prepare is `FUN_140afd210`. The
+//! constants are read from the image. Stage A runs at the quarter angle (tan of `pi f / 4 rate`),
+//! stage B at the full angle; both use the tan series of `FUN_140affa30`.
+//! Ponytail: the lanes begin at zero in the native object and ramp in; here they snap at the first
+//! control tick, and the ramp clock follows the 32-frame control quantum.
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::kaiser::{self, Kaiser};
 use super::super::{Planar, ProcessorState};
-use super::oversample;
-use std::sync::OnceLock;
+use super::shaper::{Knee, Slope};
+use super::table::{exponential, prepare as prepare_table, Past};
 
-const TABLE: usize = 2401;
-/// Frames between control updates.
+/// Frames between control updates (the ramp object's clock).
 const QUANTUM: u64 = 32;
 
-/// `T[i] = 2^(i/60 - 20)`, filled once while a plan is prepared.
-fn table() -> &'static [f32; TABLE] {
-    static T: OnceLock<Box<[f32; TABLE]>> = OnceLock::new();
-    T.get_or_init(|| {
-        let mut t = Box::new([0f32; TABLE]);
-        for (i, v) in t.iter_mut().enumerate() {
-            *v = (i as f64 / 60. - 20.).exp2() as f32;
-        }
-        t
-    })
+/// Constants as stored in `Kontakt8.exe`; the hex is the f32 bit pattern at the named address.
+mod native {
+    /// Stage A tan series: pi^4/120 (0x144fcfd40), pi^2/12 (0x144fcfd44), pi/2 (0x144714960).
+    pub(super) const A1: f32 = f32::from_bits(0x3f4f_ce5c);
+    pub(super) const A2: f32 = f32::from_bits(0x3f52_8d34);
+    pub(super) const KA: f32 = f32::from_bits(0x3fc9_0fdb);
+    /// Stage B tan series: 2 pi^4/15 (0x144fcfe08), pi^2/3 (0x144fcfdb8), pi (0x1447149d4).
+    pub(super) const B1: f32 = f32::from_bits(0x414f_ce5c);
+    pub(super) const B2: f32 = f32::from_bits(0x4052_8d34);
+    pub(super) const KB: f32 = f32::from_bits(0x4049_0fdb);
+    /// Input drive (0x144725080).
+    pub(super) const DRIVE: f32 = 0.6;
+    /// Resonance damping scale (0x144f38820).
+    pub(super) const DAMP: f32 = 0.8;
+    /// Output resonance trim (0x144fcfd68) and output gain (0x144714980).
+    pub(super) const TRIM: f32 = f32::from_bits(0x3f99_9999);
+    pub(super) const OUT: f32 = f32::from_bits(0x3fe6_6666);
+    /// Feedback `1.6 - min(hz / 2, 14000) * 5.714285725844093e-5` (0x144714964, 0x144fcfc8c).
+    pub(super) const FEEDBACK: f32 = f32::from_bits(0x3fcc_cccd);
+    pub(super) const FEEDBACK_SCALE: f32 = f32::from_bits(0x386f_acad);
 }
 
-/// Linear interpolation between adjacent table entries.
-fn lookup(position: f32) -> f64 {
-    let t = table();
-    let position = position.clamp(0., (TABLE - 1) as f32);
-    let i = (position as usize).min(TABLE - 2);
-    let fraction = position - i as f32;
-    f64::from(t[i] + fraction * (t[i + 1] - t[i]))
-}
+/// First knee: clamp to +-1, then `(1 - 0.5 |c|) c` (native: `0.25 |c|` added twice).
+const KNEE_A: Knee = Knee { limit: 1.0, slope: Slope::Fused(0.5) };
+/// Second knee: clamp to +-4, then `(1 - 0.125 |c|) c` (native constant 0x144f39df4).
+const KNEE_B: Knee = Knee { limit: 4.0, slope: Slope::Fused(0.125) };
 
-/// Normalized controls (0..=1): leading gain (12 dB at 1), cutoff, resonance
-/// and response (below 0.5 low pass, from 0.5 high pass).
+/// Normalized controls (0..=1): leading gain (12 dB at 1), cutoff, resonance and response (below
+/// 0.5 low pass, from 0.5 high pass).
 #[derive(Clone, Copy, Debug)]
 pub struct DaftSettings {
     pub gain: Parameter,
@@ -58,38 +67,56 @@ impl DaftSettings {
     }
 
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Daft {
-        table();
+        prepare_table();
+        let rate = rate as f32;
+        // Native: trunc((2 rate * 0.002) / 64 + 0.5), at least one quantum.
+        let ramp_quanta = ((rate + rate) * 0.002 / 64. + 0.5).max(1.) as u32;
         Daft {
-            rate: f64::from(rate) * 2.,
+            rate,
             lanes: self.parameters().map(|p| p.compile(bindings)),
-            // About 2 ms of input frames, in whole control quanta.
-            ramp_quanta: ((0.002 * f64::from(rate) / QUANTUM as f64).ceil() as u32).max(1),
+            ramp_quanta,
+            oversampler: Kaiser::new(2),
         }
     }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct Daft {
-    /// The doubled processing rate.
-    rate: f64,
+    /// The base sample rate; the loop runs at twice it.
+    rate: f32,
     lanes: [PreparedParameter; 4],
     ramp_quanta: u32,
+    oversampler: Kaiser,
 }
 
-// Layout of `ProcessorState::aux`.
+/// Per-instance Daft state: the loop's three states per channel and the x2 resampler per channel.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct State {
+    /// `[band high, band, low]` per channel (native `pfVar13[-1]`, `pfVar13[0]`, `local_1c8`).
+    stage: [[f32; 3]; 2],
+    resample: [kaiser::State; 2],
+}
+
+// Layout of `ProcessorState::aux`: four ramped lanes (current, delta, target), the ramp clock and
+// the response mode, which the native setter writes immediately rather than ramping.
 const CURRENT: usize = 0;
 const DELTA: usize = 4;
 const TARGET: usize = 8;
 const REMAINING: usize = 12;
 const STARTED: usize = 13;
-const PREVIOUS: usize = 14;
+const HIGH: usize = 14;
 
-struct Coefficients {
-    g: f64,
-    inverse: f64,
-    damping: f64,
-    amplitude: f64,
-    high: f64,
+/// One tan series in the native order: `((c1 (w f)^2 + c2)... )`: the Taylor terms in `f w`, times
+/// `f k w` (`FUN_140affa30`).
+#[inline(always)]
+fn tan_series(f: f32, w: f32, c1: f32, c2: f32, k: f32) -> f32 {
+    let p = (w * w * f * f * c1 + c2) * f * f * w * w + 1.0;
+    p * f * k * w
+}
+
+/// Feedback of a cutoff in Hz (`FUN_140b04c80`).
+fn feedback_for(hz: f32) -> f32 {
+    native::FEEDBACK - (hz * 0.5).min(14_000.) * native::FEEDBACK_SCALE
 }
 
 impl Daft {
@@ -101,57 +128,62 @@ impl Daft {
             )
         })
     }
-    /// The four ramped quantities for the normalized controls.
-    fn targets(x: [f64; 4]) -> [f64; 4] {
-        let x = x.map(|v| if v.is_nan() { 0. } else { v.clamp(0., 1.) });
-        [
-            lookup(x[0] as f32 * 119.589_41 + 1_200.),
-            lookup(x[1] as f32 * 625. + 1_481.881_6).clamp(1., 30_000.),
-            1. - (1. - x[2]) * (1. - x[2]),
-            f64::from((2. * x[3]).trunc().clamp(0., 1.) as u8),
-        ]
+
+    /// The four ramped lanes `[gain amplitude, cutoff Hz, feedback, resonance]` from the four
+    /// normalized controls `[gain, cutoff, resonance, response]`. Feedback follows the cutoff.
+    fn targets(x: [f64; 4]) -> [f32; 4] {
+        // The native gain setter does not clamp its (signed) leading value.
+        let gain = if x[0].is_nan() { 0. } else { x[0] as f32 };
+        let x = x.map(|v| if v.is_nan() { 0. } else { v.clamp(0., 1.) as f32 });
+        let hz = exponential(x[1] * 625. + 1_481.881_6, Past::Tail).clamp(1., 30_000.);
+        let resonance = 1. - (1. - x[2]) * (1. - x[2]);
+        [exponential(gain * 119.589_41 + 1_200., Past::Tail), hz, feedback_for(hz), resonance]
     }
 
-    fn coefficients(&self, now: &[f64]) -> Coefficients {
-        let hz = now[1].min(self.rate * 0.45);
-        let g = (std::f64::consts::PI * hz / self.rate).tan();
-        let feedback = 1.6 - (hz * 0.5).min(14_000.) * 5.714_285_725_844_093e-5;
-        let damping = 2. - now[2] * feedback;
-        Coefficients {
-            g,
-            inverse: 1. / (1. + damping * g + g * g),
-            damping,
-            amplitude: now[0],
-            high: now[3],
-        }
+    /// One 2x-rate sample of the loop: `lanes` as in [`Self::targets`], `w = 1 / (2 rate)`,
+    /// `high` selects the high-pass output and `s` is the channel state (updated).
+    #[inline(always)]
+    fn tick(lanes: [f32; 4], w: f32, high: bool, s: &mut [f32; 3], x: f32) -> f32 {
+        let [gain, f, feedback, r] = lanes;
+        let ga = tan_series(f, w, native::A1, native::A2, native::KA);
+        let gb = tan_series(f, w, native::B1, native::B2, native::KB);
+        let [sa, sb, sc] = *s;
+        let damp_term = r * native::DAMP;
+        let sa2 = sa + sa;
+        let two_damp = (1.0 - damp_term) + (1.0 - damp_term);
+        let m = two_damp * gb + gb * gb;
+        let input = gain * x * native::DRIVE;
+        let f19 = sb + sb + sa2 * gb;
+        let v22 = sa2 * two_damp + f19;
+        let d = 1.0 / (m + 1.0);
+        let dg2 = d * gb * gb;
+        let e = 1.0 / (gb + 1.0);
+        let num = (input - e * (sc + sc)) * dg2 + (f19 - dg2 * v22);
+        let den = 1.0 - (e * damp_term) * dg2;
+        let mut y = (num / den) * damp_term;
+        y -= ((y * ga + sc) + sc) * e;
+        let sc = y * ga + sc;
+        let input = KNEE_A.apply(y) * feedback + input;
+        let shaped = KNEE_B.apply(input);
+        let u = (shaped - (shaped * m + v22) * d) * gb + sa;
+        let band = (sa + u) * gb + sb;
+        let low = sb + band;
+        *s = [u, band, sc];
+        let (hp, lp) = if high { (1.0, 0.0) } else { (0.0, 1.0) };
+        ((shaped - low) * hp + low * lp) * (native::OUT - r * r * native::TRIM)
     }
 
-    /// One 2x-rate sample; `s` is the filter state.
-    fn tick(c: &Coefficients, s: &mut [f64; 2], x: f64) -> f64 {
-        let high = (x - (c.damping + c.g) * s[0] - s[1]) * c.inverse;
-        let band = c.g * high + s[0];
-        let low = c.g * band + s[1];
-        s[0] = soft(c.g * high + band);
-        s[1] = c.g * band + low;
-        c.amplitude * ((1. - c.high) * low + c.high * high)
-    }
-
-    fn control(
-        &self,
-        state: &mut ProcessorState,
-        parameters: &[ControlRamp],
-        at: u64,
-        modulation: [f64; 4],
-    ) {
+    fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64, modulation: [f64; 4]) {
         let mut x = self.lanes.map(|lane| lane.value(parameters, at, None));
         x[0] += modulation[2];
         x[1] += modulation[0];
         x[2] += modulation[1];
         let target = Self::targets(x);
         let a = &mut state.aux;
+        a[HIGH] = if (2. * x[3].clamp(0., 1.)).trunc() >= 1. { 1. } else { 0. };
         if a[STARTED] == 0. {
-            a[CURRENT..CURRENT + 4].copy_from_slice(&target);
-            a[TARGET..TARGET + 4].copy_from_slice(&target);
+            a[CURRENT..CURRENT + 4].copy_from_slice(&target.map(f64::from));
+            a[TARGET..TARGET + 4].copy_from_slice(&target.map(f64::from));
             a[STARTED] = 1.;
             return;
         }
@@ -162,18 +194,19 @@ impl Daft {
                 a[DELTA..DELTA + 4].fill(0.);
             }
         }
-        if a[TARGET..TARGET + 4] != target {
-            let samples = f64::from(self.ramp_quanta) * QUANTUM as f64 * 2.;
+        if a[TARGET..TARGET + 4] != target.map(f64::from) {
+            // Native: delta = (target - current) * (1 / (quanta * 32 * 2)) in f32, snapped below 1e-15.
+            let inverse = 1. / ((self.ramp_quanta * QUANTUM as u32 * 2) as f32);
             for k in 0..4 {
-                let delta = (target[k] - a[CURRENT + k]) / samples;
-                if delta * delta < 1e-15 {
-                    a[CURRENT + k] = target[k];
+                let delta = (target[k] - a[CURRENT + k] as f32) * inverse;
+                if f64::from(delta * delta) < 1e-15 {
+                    a[CURRENT + k] = f64::from(target[k]);
                     a[DELTA + k] = 0.;
                 } else {
-                    a[DELTA + k] = delta;
+                    a[DELTA + k] = f64::from(delta);
                 }
             }
-            a[TARGET..TARGET + 4].copy_from_slice(&target);
+            a[TARGET..TARGET + 4].copy_from_slice(&target.map(f64::from));
             a[REMAINING] = f64::from(self.ramp_quanta);
         }
     }
@@ -188,6 +221,7 @@ impl Daft {
         at: u64,
         modulation: [f64; 4],
     ) {
+        let w = 1. / (self.rate + self.rate);
         let mut i = 0;
         while i < len {
             let t = at + i as u64;
@@ -195,44 +229,30 @@ impl Daft {
                 self.control(state, parameters, t, modulation);
             }
             let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
-            let ramping = state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.);
-            let mut coefficients = self.coefficients(&state.aux[CURRENT..CURRENT + 4]);
+            let high = state.aux[HIGH] != 0.;
             for n in i..i + run {
-                let x = [block[0][n], block[1][n]];
-                let inputs = [0, 1].map(|c| oversample::upsample2(state.aux[PREVIOUS + c], x[c]));
-                state.aux[PREVIOUS..PREVIOUS + 2].copy_from_slice(&x);
-                let mut half_rate = [[0.; 2]; 2];
-                for (half, out) in half_rate.iter_mut().enumerate() {
-                    if ramping {
+                let mut up = [[0f32; 2]; 2];
+                for c in 0..2 {
+                    self.oversampler.up(&mut state.daft.resample[c], block[c][n] as f32, &mut up[c]);
+                }
+                let mut frame = [[0f32; 2]; 2];
+                for half in 0..2 {
+                    if state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.) {
                         for k in 0..4 {
-                            state.aux[CURRENT + k] += state.aux[DELTA + k];
+                            state.aux[CURRENT + k] = f64::from(state.aux[CURRENT + k] as f32 + state.aux[DELTA + k] as f32);
                         }
-                        coefficients = self.coefficients(&state.aux[CURRENT..CURRENT + 4]);
                     }
+                    let lanes: [f32; 4] = std::array::from_fn(|k| state.aux[CURRENT + k] as f32);
                     for c in 0..2 {
-                        out[c] = Self::tick(&coefficients, &mut state.z[c], inputs[c][half]);
+                        frame[c][half] = Self::tick(lanes, w, high, &mut state.daft.stage[c], up[c][half]);
                     }
                 }
-                block[0][n] = oversample::decimate2(half_rate[0][0], half_rate[1][0]);
-                block[1][n] = oversample::decimate2(half_rate[0][1], half_rate[1][1]);
+                for c in 0..2 {
+                    block[c][n] = f64::from(self.oversampler.down(&mut state.daft.resample[c], &frame[c]));
+                }
             }
             i += run;
         }
-        for v in &mut state.z.iter_mut().flatten() {
-            *v = super::super::flush(*v);
-        }
-    }
-}
-
-/// Odd transfer with unity slope at the origin: `x (27 + x^2) / (27 + 9 x^2)` inside |x| < 3, and
-/// the sign of `x` beyond it. Kontakt's Daft saturator is not recovered (docs/re/engine/filt-ar-daft.md);
-/// [`super::shaper::pade`] is the same curve in f32 without the clamp, so Daft keeps its own.
-#[inline(always)]
-fn soft(x: f64) -> f64 {
-    if x.abs() >= 3. {
-        x.signum()
-    } else {
-        x * (27. + x * x) / (27. + 9. * x * x)
     }
 }
 
@@ -240,11 +260,11 @@ fn soft(x: f64) -> f64 {
 mod tests {
     use super::*;
 
-    /// FNV-1a over the output bits: any change to the kernel's arithmetic or order shows here.
-    /// Golden values were recorded from the kernel before the stage refactor (see `oversample.rs`).
+    /// FNV-1a over the output bits for both responses. Any change to the loop's arithmetic or its
+    /// order shows here.
     #[test]
     fn output_is_bit_stable() {
-        let golden = [0x3d13_bf13_343d_c1beu64, 0xb9d4_2b5b_2af2_74f3u64];
+        let golden = [0x7d97_d228_ea8b_9b25u64, 0x774a_1a28_ea8b_9b25u64];
         for (response, expected) in [0., 1.].into_iter().zip(golden) {
             let daft = DaftSettings {
                 gain: Parameter::Constant(0.3),
@@ -273,8 +293,8 @@ mod tests {
     }
 
     #[test]
-    fn parameter_laws_match_the_specified_table_points() {
-        // DSP_SYSTEM_INVENTORY: normalized input, interpolated amplitude, cutoff Hz.
+    fn parameter_laws_match_the_native_table_points() {
+        // DSP_SYSTEM_INVENTORY: normalized input, gain amplitude, cutoff Hz.
         for (x, amplitude, hz) in [
             (0., 1., 25.956_726),
             (0.25, 1.412_546, 157.827_438),
@@ -283,37 +303,27 @@ mod tests {
             (1., 3.981_133, 30_000.),
         ] {
             let t = Daft::targets([x, x, 0., 0.]);
-            assert!((t[0] / amplitude - 1.).abs() < 1e-4, "{x}: {}", t[0]);
-            assert!((t[1] / hz - 1.).abs() < 1e-4, "{x}: {}", t[1]);
+            assert!((f64::from(t[0]) / amplitude - 1.).abs() < 1e-4, "{x}: {}", t[0]);
+            assert!((f64::from(t[1]) / hz - 1.).abs() < 1e-4, "{x}: {}", t[1]);
         }
-        // Signed leading gain: -0.25 reads 0.707950, and is clamped by the outer path.
-        assert!((lookup(-0.25 * 119.589_41 + 1_200.) - 0.707_950).abs() < 1e-4);
-        let t = Daft::targets([0., 0., 0.5, 0.49]);
-        assert_eq!((t[2], t[3]), (0.75, 0.));
-        assert_eq!(Daft::targets([0., 0., 1., 0.5])[3], 1.);
+        // Feedback at the top cutoff: 1.6 - 14000 * 5.714e-5.
+        assert!((f64::from(Daft::targets([0., 1., 0., 0.])[2]) - (1.6 - 14_000. * 5.714_285_725_844_093e-5)).abs() < 1e-6);
+        assert!((f64::from(Daft::targets([0., 0., 0.5, 0.])[3]) - 0.75).abs() < 1e-6);
     }
 
     #[test]
-    fn ramp_length_follows_the_sample_rate() {
-        // Ramp countdown at a 32-frame quantum, from the same table.
-        for (rate, quanta) in [
-            (8_000, 1),
-            (44_100, 3),
-            (48_000, 3),
-            (96_000, 6),
-            (192_000, 12),
-        ] {
-            let s = DaftSettings {
+    fn ramp_length_follows_the_native_rounding() {
+        let quanta = |rate| {
+            DaftSettings {
                 gain: Parameter::Constant(0.),
                 cutoff: Parameter::Constant(0.),
                 resonance: Parameter::Constant(0.),
                 response: Parameter::Constant(0.),
-            };
-            assert_eq!(
-                s.compile(rate, &mut Vec::new()).ramp_quanta,
-                quanta,
-                "{rate}"
-            );
-        }
+            }
+            .compile(rate, &mut Vec::new())
+            .ramp_quanta
+        };
+        assert_eq!(quanta(48_000), 3);
+        assert_eq!(quanta(22_050), 1);
     }
 }

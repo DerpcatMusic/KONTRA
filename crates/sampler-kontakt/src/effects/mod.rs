@@ -1200,7 +1200,8 @@ pub(crate) fn chain_with(
                     .push((fx.slot, out.processors.len() + filters.len()));
                 let mapped = filter::template(*kind).expect("Daft rows are in the table");
                 let mut config = mapped.config;
-                config.drive = f64::from(extra[0]).clamp(0.0, 1.0);
+                // Native gain setter (FUN_140b05290) takes the signed leading value unclamped.
+                config.drive = f64::from(extra[0]);
                 config.cutoff = f64::from(*cutoff).clamp(0.0, 1.0);
                 config.resonance = f64::from(*resonance).clamp(0.0, 1.0);
                 filters.extend(config.processors(None).expect("Daft rows configure"));
