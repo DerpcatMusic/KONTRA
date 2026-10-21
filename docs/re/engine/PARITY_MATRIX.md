@@ -146,10 +146,10 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | --- | --- | --- | --- |
 | Choral | unknown | none | |
 | Flair | unknown | none | |
-| Freak | unknown | none | |
+| Freak | partial | vector | Native fxemu vectors at 48 kHz pass (`dsp::color::freak::tests::matches_the_native_core`). Missing: Hilbert coefficient designer (other sample rates use nearest dumped table); saved field 17 binding unverified. See `docs/re/engine/k-modfx-freak-ring-rotator.md`. |
 | Phasis | unknown | none | |
-| Ring Modulator | unknown | none | |
-| Rotator | unknown | none | |
+| Ring Modulator | missing | decomp | Class/module names and LFO waveform count (2) confirmed in decompile. No core, no mapping, no DSP law yet; process method not locatable without vtable slot dump. |
+| Rotator | missing | decomp | Class/module names confirmed in decompile (`BEffectRotator`, `RotModuleBase`). No core, no mapping, no law yet; process method not locatable without vtable slot dump. |
 | Vibrato/Chorus | unknown | none | |
 | Legacy Chorus | unknown | none | |
 | Legacy Flanger | unknown | none | |
