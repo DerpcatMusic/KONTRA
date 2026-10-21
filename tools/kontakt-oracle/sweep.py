@@ -3,6 +3,9 @@
 
     sweep.py SPEC.json OUT.npz [BATCH=6]
 
+Use BATCH=1 for modulated effects (LFO, chorus, delay): the modulator keeps running between
+steps, so a shared session makes later steps depend on earlier ones.
+
 Long sweeps in one Kontakt session lost audio after a few steps, so the steps run in batches,
 each batch in its own session (waits for the single Kontakt oracle slot). Within a batch the
 note of each step is found by stimrender.py. Then every step's effect channel (y) is shifted by
@@ -39,10 +42,15 @@ def run_batch(spec, steps, work):
     sub = dict(spec, steps=steps)
     path = work / f"batch{steps[0]['name']}.json".replace(" ", "_").replace("=", "_")
     path.write_text(json.dumps(sub))
-    wait_for_slot()
     prefix = work / path.stem
-    subprocess.run([sys.executable, str(HERE / "stimrender.py"), str(path), str(prefix)], check=True)
-    return np.load(prefix.with_suffix(".npz"))
+    # render.py sometimes fails to start Kontakt ("probe never became ready"); retry in a fresh slot.
+    for attempt in range(3):
+        wait_for_slot()
+        ran = subprocess.run([sys.executable, str(HERE / "stimrender.py"), str(path), str(prefix)])
+        if ran.returncode == 0:
+            return np.load(prefix.with_suffix(".npz"))
+        time.sleep(30)
+    raise RuntimeError(f"batch {path.name} failed after 3 attempts")
 
 
 def main():
