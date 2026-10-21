@@ -3412,6 +3412,7 @@ impl Core for V2Core {
             script_overruns: p.problems.script_overruns.saturating_add(lua_budgets),
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
+            loop_limits: stats.loop_limits,
             cold_starts: stats.cold_starts,
             capacity_drops: p.problems.capacity_drops,
             voice_drops: stats.voice_drops,

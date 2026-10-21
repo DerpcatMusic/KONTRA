@@ -185,6 +185,9 @@ pub struct RuntimeProblems {
     pub nonfinite: u64,
     /// Script callbacks that ran past their budget.
     pub script_overruns: u64,
+    /// `while` loops left at Kontakt's iteration limit; the callback continued.
+    #[serde(default)]
+    pub loop_limits: u64,
     #[serde(default)]
     pub lua_faults: u64,
     /// Input played at lower precision than sent (MIDI 2.0 values narrowed

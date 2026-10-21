@@ -69,7 +69,7 @@ mod behavior;
 use behavior::Continuation;
 pub use behavior::{
     BehaviorId, BehaviorOwner, BehaviorProgress, Comparison, Duration, DurationValue, FadeCurve,
-    Instruction, Outcome, Program, Velocity, WaitLifetime,
+    Instruction, LOOP_LIMIT, LoopWatch, Outcome, Program, Velocity, WaitLifetime,
 };
 mod behavior_fault;
 pub use behavior_fault::{BehaviorFault, SourceSite, FAULT_CALLERS, FAULT_REGISTERS};
@@ -1140,6 +1140,7 @@ pub struct Runtime {
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
+    loop_limits: u64,
     offline: bool,
     stream_fault: Option<StreamError>,
     stream_horizon: u32,
@@ -1414,6 +1415,7 @@ impl Runtime {
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
+            loop_limits: 0,
             offline: false,
             stream_fault: None,
             stream_horizon: 1,

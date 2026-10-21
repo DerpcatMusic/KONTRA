@@ -601,7 +601,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 24],
+    problems: [AtomicU64; 25],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
@@ -917,6 +917,7 @@ impl PartShared {
             voice_pool_refusals,
             waiting_voice_replacements,
             voice_drops,
+            loop_limits,
         ] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
@@ -941,6 +942,7 @@ impl PartShared {
             voice_pool_refusals,
             waiting_voice_replacements,
             voice_drops,
+            loop_limits,
         }
     }
 
@@ -970,6 +972,7 @@ impl PartShared {
             p.voice_pool_refusals,
             p.waiting_voice_replacements,
             p.voice_drops,
+            p.loop_limits,
         ];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
