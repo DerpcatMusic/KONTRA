@@ -263,7 +263,10 @@ fn intensity_assignment_lag_smooths_its_source() {
 /// A Kontakt external volume route with a proved source type runs through the
 /// native `prepare_source`/`combine` laws (voice_mod/laws.rs) and, on the
 /// modeled H target, agrees with the generic path; a 128-sample table is read
-/// at 127 steps. Unproved source types (keyPos, 7) keep the generic path.
+/// at 127 steps. The compiler cubes the inner expression for an external
+/// source of type 7..=13 (0x140876753), so type 8 (velocity) follows the
+/// cubic law while types 2..=4 keep the plain product. Unproved source types
+/// (keyPos, 7) keep the generic path.
 #[test]
 fn native_routes_agree_with_the_generic_path_on_modeled_targets() {
     let table: Vec<(f64, f64)> =
@@ -283,9 +286,75 @@ fn native_routes_agree_with_the_generic_path_on_modeled_targets() {
     let id = |source_type| Some(ModNative { target: 2, flags: 0, source_type });
     for (shape, invert) in [(None, false), (None, true), (Some(0), false)] {
         let generic = run(None, shape, invert);
-        assert!((run(id(8), shape, invert) - generic).abs() < 1e-6, "{shape:?} {invert}");
+        for source_type in [2, 3, 4] {
+            assert!(
+                (run(id(source_type), shape, invert) - generic).abs() < 1e-6,
+                "{shape:?} {invert} {source_type}"
+            );
+        }
+        // The cubic selection of the compiler (types 7..=13).
+        let cubic = run(id(8), shape, invert);
+        assert!((cubic - generic.powi(3)).abs() < 1e-6, "{shape:?} {invert}");
         assert_eq!(run(id(7), shape, invert), generic);
     }
+}
+
+/// An envelope stage time addressed as a modulation target moves the voice's
+/// own amplitude envelope: the family H law multiplies the stage's normalized
+/// knob, so a controller at 0 with half depth moves a 100 ms attack to the
+/// knob's half (about 13 ms).
+#[test]
+fn an_envelope_stage_route_scales_the_voice_amplitude_envelope() {
+    let attacked = |route: Option<ModRoute>| {
+        let pcm = (0..8192).map(|k| [k as f32 / 1000., 0.5]).collect();
+        let plan = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, pcm).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::new(4800, 0, 0, 1.0, 0).unwrap(),
+                playback: Playback::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap();
+        plan.with_voice_modulation(
+            vec![ModProgram {
+                controls: vec![],
+                breakpoints: vec![],
+                sources: vec![ModSource::Controller(1)],
+                routes: route.into_iter().collect(),
+                shapes: vec![],
+                envelope_controls: vec![],
+            }],
+            vec![Some(0)],
+            vec![0],
+        )
+        .unwrap()
+    };
+    // The helper's `start` holds controller 1 at 0, so the route's source is
+    // at its lowest value and the inner expression is 1 - 1 * 0.5.
+    let plain = gains(&mut start(attacked(None), 0), 6000, 0);
+    let routed = gains(
+        &mut start(
+            attacked(Some(ModRoute::new(0, ModTarget::VoiceEnvelopeStage(0), 0.5))),
+            0,
+        ),
+        6000,
+        0,
+    );
+    // The attack is shorter, so the envelope has reached further by frame 100.
+    assert!(routed[100] > plain[100] * 2.0, "{} {}", plain[100], routed[100]);
+    // Past the longer attack both are at the sustain: only the attack moved.
+    assert!((routed[5000] - plain[5000]).abs() < 1e-6);
 }
 
 /// The semantic source identities stay fixed while their dense indices move.

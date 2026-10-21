@@ -54,7 +54,24 @@ impl Translation {
             for source in std::iter::once(route.source).chain(route.scale.map(|scale|scale.source)) {
                 if !matches!(self.ir.modulators[source.0].source,ir::ModulationSource::Controller(number)if number<128)
                     &&!matches!(self.ir.modulators[source.0].source,ir::ModulationSource::ConstantProperty{..}|ir::ModulationSource::Constant) {
-                    return Err(format!("{at}: live global Gain/Pan requires the actual shared owner modulator; no per-source fallback"));
+                    let source = match &self.ir.modulators[source.0].source {
+                        ir::ModulationSource::Script(id) => format!("ScriptEventModulation EventId={id} Bipolar=0"),
+                        ir::ModulationSource::ScriptBipolar(id) => format!("ScriptEventModulation EventId={id} Bipolar=1"),
+                        ir::ModulationSource::Envelope(_) => "Envelope".into(),
+                        ir::ModulationSource::Breakpoints(_) => "Breakpoints".into(),
+                        ir::ModulationSource::Lfo(_) => "LFO".into(),
+                        ir::ModulationSource::Velocity => "VoiceParam Velocity".into(),
+                        ir::ModulationSource::Key => "VoiceParam Key".into(),
+                        ir::ModulationSource::PitchBend => "PitchBend".into(),
+                        ir::ModulationSource::ChannelPressure => "ChannelPressure".into(),
+                        ir::ModulationSource::PolyPressure => "PolyPressure".into(),
+                        ir::ModulationSource::Timbre => "Timbre".into(),
+                        ir::ModulationSource::Random => "Random".into(),
+                        ir::ModulationSource::ReleaseCounter(_) => "ReleaseCounter".into(),
+                        ir::ModulationSource::Controller(cc) => format!("Controller {cc}"),
+                        ir::ModulationSource::Constant | ir::ModulationSource::ConstantProperty { .. } => "Constant".into(),
+                    };
+                    return Err(format!("{at}: live global Gain/Pan requires the actual shared owner modulator; source {source}, destination {:?}, scope {:?}; shared source lifecycle/input actor is not implemented", route.target, self.ir.modulators[route.source.0].scope));
                 }
                 if !sources.contains(&source){sources.push(source);}
             }
