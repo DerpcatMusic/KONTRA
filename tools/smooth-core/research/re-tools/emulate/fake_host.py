@@ -76,9 +76,22 @@ def install_tls(emu):
     emu.w64(TEB_BASE + 0x58, arr)
 
 
+def set_cpu_mode(emu):
+    """Run the mode writer 0x30d310 with its input flag set, as CPU detection would.
+
+    0x30d310 sets the analysis mode (0x26d7bb8) to 4 when bit 0 of the cpuid leaf-1
+    feature word (0x26e00ec) is set, else 1. The detection routine 0x88c5f0 is not
+    run: its record loop does not reproduce under emulation (open). The flag is
+    set to what a reference CPU reports (SSE3 present).
+    """
+    emu.w32(image_va(0x26E00EC), 1)
+    emu.call(image_va(0x30D310), max_insns=1000)
+
+
 def run_ctor(rate, cfg_fields=None):
     emu = Emulator()
     install_tls(emu)
+    set_cpu_mode(emu)
     log = []
     host = make_host(emu, log)
     cfg = make_cfg(emu, cfg_fields or {})

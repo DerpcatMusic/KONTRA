@@ -379,3 +379,61 @@ section 9 are not yet reached, so no bin counts, weights or latency numbers came
 - No oracle (sine/impulse/noise) runs, so no reported latency, impulse delay or level numbers.
 - No change to `dsp.rs`, no test, no install, no CPU or pluginval check.
 - `pe_emu.py` fix: the XMM argument path passed `bytes` to `reg_write`. It now passes an integer.
+
+## 12. Constructor runs to completion under emulation (pass 6, Unicorn, 2026-10-21)
+
+Harness: `re-tools/emulate/fake_host.py` plus two new modules, `cpu.py` (CPUID profile) and
+`libm.py` (math imports). Evidence scope: isolated emulation with a synthetic host and an assumed
+CPU. Nothing here is a plug-in default or a measured value.
+
+### Blockers found and fixed (each traced by reading the code, not by guessing)
+
+1. **Analysis mode never set.** Builder `0x89c480` allocates its bin/filter vectors only when the
+   global mode `0x26d7bb8` is 4 (path `0x8ce260`) or 1 (path `0x8debf0`). The writer is `0x30d310`:
+   mode = `flag ? 4 : 1` where `flag` is bit 0 of the cpuid leaf-1 ECX word (`0x26e00ec`, written
+   by the detection routine `0x88c5f0`). Under emulation the mode stayed 0, the allocation was
+   skipped, and `0x88cb10` wrote `1.0` through a null buffer (`0x18088cce5`, the reported fault).
+   Fix: `cpu.py` answers cpuid with a modern-Intel profile (SSE3 set, AVX2), and `set_cpu_mode`
+   runs the real writer `0x30d310` with the flag set. **Not done:** the detection routine
+   `0x88c5f0` itself. Its record loop (cpuid leaves 0x80000000..) writes through a std::vector
+   whose storage is never set up and keeps overwriting the loop bound at `0x26e00a4` (open; not
+   needed for the constructor).
+2. **`pow` returned garbage.** The block-size function `0x181cbdb35` is a jump through slot
+   `0x181db0888`, which is `IAT!pow`. The default import stub returns 0 in RAX and leaves XMM0 as
+   it was, so every block size was wrong (2048 bins gave 32 blocks, and the consumer `0x8ac980`
+   then read index 32 and faulted). Fix: `libm.py` implements the math imports the path uses
+   (pow, exp, exp2, log, log2, log10, sin, cos, tan, acos, asinh, ceil, floor, round, fmod, hypot,
+   ldexp, lround, the f variants, fmaf, _dclass, _dsign, _fdclass). Other value-returning imports
+   still use the default stub (string, time, and window APIs); the constructor path does not reach
+   them.
+
+Lesson for the harness: an import with a float result must never use the default stub. The
+default-stub log (`emu.events`) should be checked for any import that returns a value.
+
+### Result (constructor, per sample rate, `python3 -I fake_host.py`)
+
+| rate | `obj+0x2c` (groups) | `obj+0x248` (vec count) | `obj+0x28` (rate) |
+|---|---|---|---|
+| 44100 | 1 | 48 | 44100.0 |
+| 48000 | 1 | 48 | 48000.0 |
+| 96000 | 2 | 96 | 96000.0 |
+| 192000 | 4 | 192 | 192000.0 |
+
+- Groups scale with the rate: 1, 1, 2, 4. This is the first emulated sample-rate dependence (the
+  depth question in section 5). It is the count of groups, not a level.
+- Group-0 record at `obj+0xb7a8` (16 floats, stride 0xf): entries 0..13 agree across rates
+  (for example entry 5 = 4.477, entry 7 = 1.875, entry 13 = 2.969). Entries 1 and 14/15 change with
+  the rate (1: 7.173 / 7.232 / 7.732 / 8.465; 15: 0.784 / 0.776 / 0.714 / 0.651).
+- **Open anomaly:** entry 14 is 2.7e22 at 48 kHz and -0.0 at 192 kHz (0 at 44.1 and 96 kHz).
+  Not explained. Suspect an uninitialized read in the constructor or a `pow` result on a sentinel
+  input. Do not use entry 14 until it is traced.
+- `obj+0xbf28` coefficients change with the rate (0.000756 at 44.1k, 0.000174 at 192k in entry 2),
+  consistent with a 1/rate-scaled coefficient.
+
+### Not done in this pass
+
+- No process path run (0x890a00 / 0x180619fc0), so no latency, impulse delay or level numbers.
+- No oracle, no `oracle.py` or JSON output, no Rust change to `dsp.rs`, no plugin change, no test,
+  no install, no pluginval, no CPU measurement.
+- The mode and CPU features are an assumption (reference-class CPU). The other mode (1) has not been
+  emulated at all.

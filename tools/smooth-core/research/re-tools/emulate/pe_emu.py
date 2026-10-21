@@ -116,6 +116,10 @@ class Emulator:
         self._resolve_imports()
         from crt import install as install_crt
         install_crt(self)
+        from cpu import install as install_cpu
+        install_cpu(self)
+        from libm import install as install_libm
+        install_libm(self)
 
     # ---- address space -------------------------------------------------
     def _map_image(self):
