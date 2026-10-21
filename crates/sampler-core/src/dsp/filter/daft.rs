@@ -8,7 +8,7 @@
 // cadence follows the absolute sample clock, not a per-instance countdown.
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::super::{Planar, ProcessorState};
-use super::stage;
+use super::oversample;
 use std::sync::OnceLock;
 
 const TABLE: usize = 2401;
@@ -131,7 +131,7 @@ impl Daft {
         let high = (x - (c.damping + c.g) * s[0] - s[1]) * c.inverse;
         let band = c.g * high + s[0];
         let low = c.g * band + s[1];
-        s[0] = stage::soft(c.g * high + band);
+        s[0] = soft(c.g * high + band);
         s[1] = c.g * band + low;
         c.amplitude * ((1. - c.high) * low + c.high * high)
     }
@@ -199,7 +199,7 @@ impl Daft {
             let mut coefficients = self.coefficients(&state.aux[CURRENT..CURRENT + 4]);
             for n in i..i + run {
                 let x = [block[0][n], block[1][n]];
-                let inputs = [0, 1].map(|c| stage::upsample2(state.aux[PREVIOUS + c], x[c]));
+                let inputs = [0, 1].map(|c| oversample::upsample2(state.aux[PREVIOUS + c], x[c]));
                 state.aux[PREVIOUS..PREVIOUS + 2].copy_from_slice(&x);
                 let mut half_rate = [[0.; 2]; 2];
                 for (half, out) in half_rate.iter_mut().enumerate() {
@@ -213,8 +213,8 @@ impl Daft {
                         out[c] = Self::tick(&coefficients, &mut state.z[c], inputs[c][half]);
                     }
                 }
-                block[0][n] = stage::decimate2(half_rate[0][0], half_rate[1][0]);
-                block[1][n] = stage::decimate2(half_rate[0][1], half_rate[1][1]);
+                block[0][n] = oversample::decimate2(half_rate[0][0], half_rate[1][0]);
+                block[1][n] = oversample::decimate2(half_rate[0][1], half_rate[1][1]);
             }
             i += run;
         }
@@ -224,12 +224,24 @@ impl Daft {
     }
 }
 
+/// Odd transfer with unity slope at the origin: `x (27 + x^2) / (27 + 9 x^2)` inside |x| < 3, and
+/// the sign of `x` beyond it. Kontakt's Daft saturator is not recovered (docs/re/engine/filt-ar-daft.md);
+/// [`super::shaper::pade`] is the same curve in f32 without the clamp, so Daft keeps its own.
+#[inline(always)]
+fn soft(x: f64) -> f64 {
+    if x.abs() >= 3. {
+        x.signum()
+    } else {
+        x * (27. + x * x) / (27. + 9. * x * x)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// FNV-1a over the output bits: any change to the kernel's arithmetic or order shows here.
-    /// Golden values were recorded from the kernel before the stage refactor (see `stage.rs`).
+    /// Golden values were recorded from the kernel before the stage refactor (see `oversample.rs`).
     #[test]
     fn output_is_bit_stable() {
         let golden = [0x3d13_bf13_343d_c1beu64, 0xb9d4_2b5b_2af2_74f3u64];

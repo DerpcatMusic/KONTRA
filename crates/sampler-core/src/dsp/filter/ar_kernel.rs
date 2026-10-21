@@ -1,6 +1,8 @@
 //! FilterDJ equations derived from the approved native AR trace.
 //! Admission notes: docs/audit-2026-10-10/w15-ar-native.md. Original-instruction
 //! vectors cover all nine modes; calibrated host recording acceptance is pending.
+use super::linear::Zdf;
+use super::shaper::{Knee, Slope};
 use std::sync::OnceLock;
 
 const TABLE_LEN: usize = 2401;
@@ -45,10 +47,8 @@ pub(crate) fn targets(cutoff: f32, resonance: f32, rate: f32) -> [f32; 3] {
     [g, hz, resonance]
 }
 
-fn saturate(x: f32) -> f32 {
-    let x = x.clamp(-1000., 1000.);
-    x - x.abs() * x * 0.0005
-}
+/// The AR state knee: clamp to +-1000, then `x - |x| x 0.0005`.
+const STATE_KNEE: Knee = Knee { limit: 1000., slope: Slope::Direct(0.0005) };
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ArKernel {
@@ -59,24 +59,14 @@ pub(crate) struct ArKernel {
     pub cap: f32,
 }
 
-struct Coefficients {
-    g: f32,
-    product: f32,
-    damping: f32,
-    inverse: f32,
-}
-
-fn section(s: &mut [f32; 9], index: usize, x: f32, c: &Coefficients) -> [f32; 3] {
-    let h0 = s[2 * index];
-    let b0 = s[2 * index + 1];
-    let l0 = s[6 + index];
-    let high = (x - ((b0 * c.damping + l0) + h0 * c.product)) * c.inverse;
-    let band = (h0 + high) * c.g + b0;
-    let low = (band + b0) * c.g + l0;
-    s[2 * index] = high;
-    s[2 * index + 1] = saturate(band);
-    s[6 + index] = saturate(low);
-    [high, band, low]
+/// One zero-delay section of the kernel's `[f32; 9]` state (`h` at 2i, `b` at 2i+1, `l` at 6+i).
+fn section(s: &mut [f32; 9], index: usize, x: f32, g: f32, zdf: Zdf) -> [f32; 3] {
+    let mut state = [s[2 * index], s[2 * index + 1], s[6 + index]];
+    let raw = zdf.tick(g, &mut state, x, STATE_KNEE);
+    s[2 * index] = state[0];
+    s[2 * index + 1] = state[1];
+    s[6 + index] = state[2];
+    raw
 }
 
 fn mix([high, band, low]: [f32; 3], weights: [f32; 3]) -> f32 {
@@ -104,33 +94,25 @@ impl ArKernel {
         };
         let floor = exponential(floor_db * 9.965784 + 1200.);
         let r = resonance * resonance_scale;
-        let damping = 1. - self.feedback;
-        let damping = (damping + damping) + g;
-        let product = g * damping;
-        let c = Coefficients {
-            g,
-            product,
-            damping: g + damping,
-            inverse: 1. / (product + 1.),
-        };
+        let zdf = Zdf::new(g, (1. - self.feedback) + (1. - self.feedback));
         let gain = exponential(((gain_a - r * gain_b) * weights[1] - gain_a) * r + 1200.);
         let mut detected = 0.;
         let output = std::array::from_fn(|ch| {
             let s = &mut self.channels[ch];
-            let first = section(s, 0, input[ch], &c);
+            let first = section(s, 0, input[ch], g, zdf);
             let (value, band) = match family {
                 0 => (mix(first, weights), first[1]),
                 1 => {
-                    let second = section(s, 1, mix(first, weights), &c);
+                    let second = section(s, 1, mix(first, weights), g, zdf);
                     if mode == 4 {
                         (mix(second, weights), second[1])
                     } else {
-                        let third = section(s, 2, first[1] + first[1], &c);
+                        let third = section(s, 2, first[1] + first[1], g, zdf);
                         (mix([second[0], third[1], second[2]], weights), third[1])
                     }
                 }
                 _ => {
-                    let second = section(s, 1, first[1] + first[1], &c);
+                    let second = section(s, 1, first[1] + first[1], g, zdf);
                     let band = second[1] + second[1];
                     let cross = (resonance * 0.5) * band;
                     let value = ((first[2] + cross) * weights[0] + band * weights[1])
@@ -245,5 +227,23 @@ mod tests {
             }
         }
         println!("FilterDJ original-instruction checkpoint null: {:.2} dB", 10. * (error / signal).log10());
+    }
+
+    /// FNV-1a over the output bits of one mode. Recorded before the AR section moved onto
+    /// `Zdf` and the state knee moved onto `shaper::Knee`; both were bit-identical to the old
+    /// arithmetic over 2e6 knee and 2e5 section probes.
+    #[test]
+    fn output_is_bit_stable() {
+        let mut kernel = ArKernel::default();
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for n in 0..4096usize {
+            let t = n as f32 / 48_000.;
+            let x = 0.3 * (std::f32::consts::TAU * 220. * t).sin();
+            let out = kernel.tick([x, x * 0.5], 1, [0.4, 0.6, 0.7], 1. / 48_000., n == 0);
+            for v in out {
+                hash = (hash ^ u64::from(v.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(hash, 0x9167_fd7b_74bd_03ae);
     }
 }
