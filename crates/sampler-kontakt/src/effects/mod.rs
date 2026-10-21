@@ -1042,6 +1042,9 @@ pub(crate) fn chain_with(
                     Some(config) => {
                         out.processors.push(sampler_ir::Processor::Color(config));
                         combined = gain;
+                        if fx.module == 0x4d {
+                            notes.push(("Jump knobs".into(), "fixed fitted preset; knob laws not measured".into(), sampler_ir::Reason::NotModeled));
+                        }
                         if dynamic.is_some() {
                             notes.push(("Creative FX live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
                         }

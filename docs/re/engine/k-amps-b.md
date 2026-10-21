@@ -65,3 +65,11 @@ The NaN steps are not a law. The cause is unconfirmed.
 ## Status
 
 No shared-engine change in this unit yet. The four unmodelled modules stay diagnosed as unproved. The engine work needs the process entries above read first. That is more than one session of work.
+
+## Implementation (Jump, shared amp chain)
+
+- Shared core: `crates/sampler-core/src/dsp/color/amp/chain.rs`. Input gain, one-pole pre high-pass, a 17-knot piecewise-linear shaper table over -1..1, one-pole post low-pass, and a fixed latency ring (max 256 samples). A product preamp is a `Spec` preset. The shared engine is `dsp/color/amp/`, which dispatches on `AmpModel`.
+- Jump preset: `crates/sampler-core/src/dsp/color/amp/jump.rs`. Fitted by `tools/kontakt-oracle/fit_chain.py` to the Wine oracle's default-step left channel (`jump_default.f32le`, 28800 samples). Fit: pre HP 160 Hz, post LP 3 kHz, gain 2, latency 48, relative RMS 0.242. The fitted table is close to a linear inverting slope, so the nonlinearity is not captured.
+- Mapping: `crates/sampler-kontakt/src/effects/color.rs` (module 0x4d, 8 fields) to `AmpModel::Jump`. Jump's knobs are stored but not used, and a note is emitted that says so (`effects/mod.rs`, Typed core branch).
+- Tests: `chain::tests::identity_chain_is_a_null_path` (bit-tight null path), `chain::tests::delay_is_exact`, and `jump::tests::default_trace_within_fit_tolerance` (relative RMS below 0.25 against the native default trace).
+- Not done: knob laws, the per-stage tables and the kernel's stage order (`0x140aac6f0` is 3380 bytes of vectorised code; only its input-sum loop has been read). Van51, Super Fast 100 and Reverb Delight remain unmodelled.
