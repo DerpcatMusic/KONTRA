@@ -12,7 +12,7 @@
 //! | address    | function                     | state                                   |
 //! |------------|------------------------------|-----------------------------------------|
 //! | `0x6181b0` | complex magnitude kernel     | translated; power stage bit-exact, IPP sqrt tail modelled (`magnitude.rs`) |
-//! | `0x8e04c0` | gain helper body (entry; `0x8e0858` is an interior label, body ~17.5 KB) | **not translated**; entry and caller chain mapped (research notes section 19) |
+//! | `0x8e04c0` | gain helper body (entry; `0x8e0858` is an interior label, body ~17.5 KB) | **not translated**; entry, caller chain (section 19), field layout (`gain_layout.rs`, section 20) and CFG (`gain_body_cfg.json`) mapped |
 //!
 //! The gain body is entered at `0x8e04c0` (not `0x8e0858`, which is an interior label
 //! of the same function). It is entered four times per block via the chain
@@ -25,4 +25,5 @@
 //! band records, attack/release, focus, soft/hard mode), output of a per-bin gain
 //! curve, with all state in a struct allocated at reset.
 
+pub mod gain_layout;
 pub mod magnitude;

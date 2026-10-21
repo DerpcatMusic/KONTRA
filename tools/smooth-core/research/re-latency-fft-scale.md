@@ -846,3 +846,64 @@ Status: the body is not translated. The state layout (what `rcx`, `rdx`, `r8`, `
 which fields are read) and the basic-block CFG are not mapped yet. Next steps, in order: (1) trace
 the reads through `[rcx+...]` with `watch_reads` to list the fields; (2) reconstruct the CFG from
 traced block orders at several inputs; (3) translate in checkpoints.
+
+## 20. Gain body 0x8e04c0: field listing, CFG, and what is not done (pass 13, emulation, 2026-10-21)
+
+Harnesses: `re-tools/emulate/gain_state_probe.py` (writes `gain_state_listing.json`) and
+`re-tools/emulate/gain_cfg.py` (writes `gain_body_cfg.json` and `gain_body_cfg.dot`). Both use one
+process block at 48 kHz on the stand-in state (identity band, no solo), the same setup as section 19.
+
+### 20.1 Field listing (partial; stand-in, default parameters)
+
+The probe records every memory access made while the PC is in `0x8e04c0..0x8e4be2`, attributed to
+the register bases at each of the four body entries. Listing: 3078 access rows, four entries.
+Layout constants are in `src/reference/gain_layout.rs`.
+
+- **Object (`rcx`).** Read only, no writes. The gate byte `[+0x2bc8]` is 1. `[+0x2c38]` is a
+  pointer to a config record at `0x200208d4` (values in `gain_layout.rs::cfg`: u32 0, f32 0.5, f32
+  1.0, f32 0.5, f32 60.0, u8 0). Other reads: u64 counts at `+0x48`/`+0x50` (both 2, compared with
+  each other and with 2), pointers into heap arrays (`0x404b....`..`0x404c....`) at eleven offsets,
+  and paired u32 records at seven offsets with second words 0x100 or 0x101. **read; roles open.**
+- **Channel table (`rdx`, copied to `rdi`).** Reads of 32 consecutive u64 slots at offsets
+  `0x00..0xf8`. **read.** No writes through it.
+- **Second table (`r8`, copied to `rbx`).** The same shape, 32 slots at `0x00..0xf8`. **read.**
+- **Third pointer (`r9`).** Non-null in the stand-in. Reads of its table at `0x00..0xf8` and of
+  `[+0x8]` of pointees. **read.**
+- **Frame.** 2501 accesses (1469 writes). Scratch; not state.
+- **Outside the frame and the bases.** 310 reads, mostly image constants (`0x18209d...`) and heap
+  pages `0x7eff6000`..`0x7eff8000`, and one write (`0x8e3ce4`, value 0x5930). **The write is not
+  identified.**
+
+**Not established:** no write reaches the object, the tables or the channel buffers in this run.
+The body's per-bin results therefore stay in its frame (or in one unidentified write), so the
+output route to the caller is still open. The stand-in is the identity band state, so fields only
+read under non-identity parameters are missing. The setter `0x894370` (143 cases) was not
+configured in this pass; that is the next step before a field list can be called complete.
+
+### 20.2 Basic-block CFG (static sweep plus one traced block)
+
+`gain_body_cfg.json` (nodes, edges, `static`/`observed` flags) and `gain_body_cfg.dot`.
+
+- 4027 instructions, 439 basic blocks (184 fall-through, 239 conditional, 16 unconditional jumps,
+  0 indirect). **verified (sweep).**
+- One traced block executes 34543 body instructions in 216 blocks. Every traced PC is a
+  linear-sweep instruction start (checked). **verified (trace).**
+- The 223 blocks not reached in this run are static only; they depend on the parameters not
+  configured here.
+
+### 20.3 Translation
+
+**0 of the body is translated.** What is committed: the CFG, the field map (`gain_layout.rs`, offsets
+only, roles open, no `GainState` struct because roles are not known), and the two harnesses. The
+block-by-block translation and the 20-input fixture are not done. The fixture needs a
+translated body to compare against; it is not possible before §20.1 is complete and the output locus is
+found.
+
+### 20.4 Next, in order
+
+1. Configure the setter `0x894370` to non-identity band state (decode the cases it writes first) and
+   rerun `gain_state_probe.py`; add the fields that appear.
+2. Find where the body's per-bin gain goes: a write watch over the caller frame of `0x8d9bf1`, and the
+   unidentified write at `0x8e3ce4`.
+3. Translate region by region, starting with the copy loops at `0x8e05d7` and `0x8e0670` (128-byte
+   chunk copies from `[rdx]` and `[r8]`), then the magnitude calls at `0x8e13a8`.
