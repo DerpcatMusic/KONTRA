@@ -158,14 +158,19 @@ pub(crate) fn internal(
                         .collect(),
                 ),
             ),
-            field(
-                "timing_record",
-                Value::Records(vec![timing(e.timing_record()?)]),
-            ),
             integer(
                 "unknown_version_word",
                 e.unknown_version_word().map_or(-1, i64::from),
             ),
+            if object.version == 0x10 {
+                // Legacy metadata is four opaque bytes, not a v0x11 timing record.
+                opaque("unknown_tail", &e.unknown_tail)
+            } else {
+                field(
+                    "timing_record",
+                    Value::Records(vec![timing(e.timing_record()?)]),
+                )
+            },
         ],
         Modulator::Lfo(l) => {
             let mut fields = vec![
