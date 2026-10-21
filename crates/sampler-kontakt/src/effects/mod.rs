@@ -936,6 +936,9 @@ pub(crate) fn chain_with(
             Some(Params::Fields(fields)) if fx.module == 0x21 => {
                 modelled = color::slot_skreamer(&mut b, &site, fields)
             }
+            Some(Params::Fields(fields)) if fx.module == 0x64 => {
+                modelled = ringmod::slot_ring_modulator(&mut b, &site, &mut notes, fields)
+            }
             Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
                 modelled = color::slot_typed(&mut b, &site, &mut notes, fields)
                 flush(&mut combined, &mut filters, &mut out);
@@ -2061,3 +2064,4 @@ pub(crate) mod timemod;
 pub(crate) mod space;
 pub(crate) mod color;
 pub(crate) mod mangling;
+pub(crate) mod ringmod;
