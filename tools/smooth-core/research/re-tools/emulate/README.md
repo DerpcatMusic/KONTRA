@@ -83,3 +83,11 @@ The venv is `uv venv` on the dev drive with `unicorn`, `capstone`, `pefile`
 
     python -I oracle.py ../oracle/ctor_latency_mode4.json --mode 4
     python -I oracle.py ../oracle/ctor_latency_mode1.json --mode 1 --rates 44100,96000,192000
+
+## Real-pipeline scripts
+
+- `input_chain.py`: runs the wheel path with the real image code. Editor slot 8
+  pushes into the ring, `try_pop` pops, and the UI consumer stores the wheel
+  fields. It prints the verified values and the pcs of the stores. The MSVC
+  clock stubs (`_Query_perf_frequency` 10 MHz, `_Query_perf_counter`) are the
+  only synthetic inputs on the path.

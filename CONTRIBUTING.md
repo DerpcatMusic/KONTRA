@@ -185,3 +185,7 @@ existing native products and include the notarized DMG and hash-bound receipt.
 Open the DMG in Finder so Gatekeeper can ingest its ticket before copying the
 products; direct ZIP extraction is not an offline-ticket installation path.
 See [Apple's distribution guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution).
+
+## One engine
+
+DSP is shared, not per product. New emulation work extends the engine in `sampler-core` and maps parameters in the format crate. Read [docs/ENGINE.md](docs/ENGINE.md) first.
