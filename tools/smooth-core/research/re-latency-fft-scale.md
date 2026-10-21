@@ -224,3 +224,20 @@ func_0x000180001190(iVar32 /*a = P*/,
 - Builders of the object vectors at `+0x770/+0x788` (bin frequencies) and `+0x7a0/+0x7b8`
   (weights). The corpus hit at `00670bb0.c` writes `+0x778` on a different object; ignore it.
 - Latency (section 5) and the rate factor `*(arg2+0x630)`.
+
+## 8. Latency correction (pass 3, Unicorn, low fidelity): no numbers recovered
+
+Corrections to section 5 (the earlier attribution was wrong):
+- `getLatency` `0x18088f610` and `H` `0x180894d20` formulas are verified by disassembly, as in section 5.
+  `H` is about 0x103 bytes, not 40.
+- The writes to `+0x278` and `+0x30` come from `fcn.18066fda0` (`0x18066fda0`), not from
+  `fcn.18063ceb0`. `ceb0` writes only `arg2+0x2c = 1`.
+- `fda0` is called inside `Footer::slot3` (`0x18066e500`) at `0x18066f32f` and `0x18066fc00`.
+  `ceb0` is called at `0x18063b9cf`, inside `fcn.18063ab31`, which is not on the `+0x278` path.
+- Emulating `Footer::slot3` with zeroed state and with the four `r8` floats varied gave
+  `+0x278 = 0` and `+0x30 = 0` in every case. The outputs are artifacts of stubbed null-vtable
+  objects (`this+0x160/0xc10/0x16c0/0x1cc0/0x22c0/0x2a40`), so no quality, size, low-latency or
+  rate table exists yet. Latency numbers remain **not recovered**.
+- The `fda0` destination is a frame local, not `X`. Whether it aliases `X+0x5f8` is unverified.
+- Open: the writers of `X+0x278` (258 store sites in `.text`), the inputs of `H`, and the
+  constants at `0x18209d600`, `0x18209da10`, `0x18209d6c4`.
