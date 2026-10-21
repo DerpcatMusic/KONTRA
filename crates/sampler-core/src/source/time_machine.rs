@@ -48,6 +48,9 @@ pub enum Mode {
     TimeMachine,
     TimeMachine2,
     TimeMachinePro,
+    /// Tone Machine (stored mode 1): same shared engine, its own config.
+    /// Stand-in until its backend is measured; see `config`.
+    ToneMachine,
 }
 
 /// Which algorithm drives a mode.
@@ -107,6 +110,15 @@ impl Mode {
                 search: 0.5,
                 search_stride: if hq { 2 } else { 4 },
             },
+            // UNMEASURED: no Tone Machine constants are recovered. These are a
+            // granular stand-in (pitch/speed independent) with the Grains shape.
+            Mode::ToneMachine => ModeConfig {
+                scheduler: Scheduler::Grains,
+                grain_ms: 30.,
+                overlap: 4,
+                search: 0.5,
+                search_stride: 4,
+            },
         }
     }
 }
@@ -138,7 +150,7 @@ pub struct Region {
     pub looped: Option<Range<usize>>,
 }
 
-const MODES: [Mode; 3] = [Mode::TimeMachine, Mode::TimeMachine2, Mode::TimeMachinePro];
+const MODES: [Mode; 4] = [Mode::TimeMachine, Mode::TimeMachine2, Mode::TimeMachinePro, Mode::ToneMachine];
 
 /// Output frames the two-reader scheduler renders per read run.
 const RUN: usize = 128;
@@ -843,6 +855,7 @@ mod tests {
     fn only_time_machine_one_is_a_native_backend() {
         assert!(Mode::TimeMachine.is_native_backend());
         assert!(!Mode::TimeMachine2.is_native_backend() && !Mode::TimeMachinePro.is_native_backend());
+        assert!(!Mode::ToneMachine.is_native_backend());
     }
 
     use super::*;
@@ -882,6 +895,7 @@ mod tests {
     fn unity_speed_and_pitch_reproduce_the_source() {
         let src = sine(20000, 441.);
         for mode in [Mode::TimeMachine, Mode::TimeMachinePro] {
+        for mode in MODES {
             let out = play(mode, &src, 1., 1., 16000);
             assert!(out.len() >= 16000, "{mode:?} ended early");
             let worst = out[..16000]
