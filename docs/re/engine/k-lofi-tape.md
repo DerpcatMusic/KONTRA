@@ -54,6 +54,14 @@ deviation 0.5 % at 0.5–2 Hz (set by Speed); flutter peak 0.2 % at 6–12 Hz; e
 `peak / (2π f)` seconds; right channel phase `Stereo / 2` cycles. The constants are not
 Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 
+## Decompile check (Kontakt 8, `source/kontakt8`, READY)
+
+- **Wow / Flutter reader** `FUN_140ac65f0` (version 0x10 only): reads seven f32 into object offsets 0x08..0x20 (wow, flutter, scrape, speed, stereo, age, saturation), then one byte to 0x28 (gate), then one f32 to 0x24 (mix). **Confirmed** field order and types; the mapping in `effects/timemod.rs` (seven floats, flag, mix) matches.
+- **Parameter ids** `FUN_140a821c0`: `wowflutter_wow` 0x126, `_flutter` 0x127, `_scrape` 0x128, `_speed` 0x129, `_stereo` 0x12a, `_age` 299, `_saturation` 300, `_mix` 0x12d. **Confirmed.**
+- **Core constructor** `FUN_140a842b0` (`ModulatableDSPCoreWrapper<BEffectWowFlutterTraits,0>`): six two-channel state objects (buffers at +0xa0..+0xaf) and ten control targets (`vtbl+0x60` over `this+0x1e4`). Generic base `BEffectBase` buffers `FUN_140a856c0` size by sample rate. **Confirmed structure, not yet the per-sample laws.**
+- **Per-sample wow/flutter kernel: NOT located.** The laws in `wowflutter.rs` (8 ms base, 0.5 % wow, 0.2 % flutter, 0.5-2 Hz / 6-12 Hz, Stereo/2 phase) remain **unconfirmed**. They are not taken from this decompile.
+- Scrape, age, saturation and gate laws: **unconfirmed** (no kernel located).
+
 ## Gap table
 
 | Item | Shared engine | Kontakt 8 | Gap |
