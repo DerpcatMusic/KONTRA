@@ -387,6 +387,13 @@ impl Check<'_> {
                 Processor::Phaser(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
                 }
+                Processor::RingMod(config) => {
+                    config.check().map_err(|field| ValidationError::OutOfRange {
+                        owner: self.owner.clone(),
+                        field,
+                        value: f64::NAN,
+                    })?;
+                }
                 Processor::Ar(d) => {
                     self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
                     self.within(d.cutoff, 0.0..=1.0, "ar cutoff")?;

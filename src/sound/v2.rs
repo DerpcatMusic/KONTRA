@@ -3689,6 +3689,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Ar(_) => "AR filter",
             ir::Processor::TimeMod(_) => "Delay / modulation",
             ir::Processor::Phaser(_) => "Phaser filter",
+            ir::Processor::RingMod(_) => "Ring modulator",
             ir::Processor::Formant(_) => "Formant I",
             ir::Processor::FilterBank(c) => match c.topology {
                 ir::fx::filter::Topology::FormantII => "Formant II",
