@@ -189,6 +189,8 @@ const FLEX_CHUNK_ID: u16 = 0x40;
 const MAX_FLEX_POINTS: u32 = 32;
 /// Unknown bytes after the points in version 0x11.
 const FLEX_TAIL: usize = 13;
+/// Version 0x10 ends in four opaque bytes instead (an f32, -1.0 in local presets).
+const FLEX_TAIL_V10: usize = 4;
 const FLEX_TAIL_V12: usize = FLEX_TAIL + 2;
 
 /// One flex envelope breakpoint, reached from the previous one.
@@ -210,7 +212,7 @@ pub struct FlexPoint {
 ///
 /// Type:           Chunk (unstructured)
 /// SerType:        0x40
-/// Versions:       0x11, 0x12 (two more trailing bytes)
+/// Versions:       0x10 (four trailing bytes), 0x11, 0x12 (two more trailing bytes)
 /// Kontakt 7:      BParEnv_Flex
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -248,7 +250,7 @@ impl EnvelopeFlex {
         {
             return Err(Error::Static("Flex envelope indices out of range"));
         }
-        if !matches!(self.unknown_tail.len(), FLEX_TAIL | FLEX_TAIL_V12)
+        if !matches!(self.unknown_tail.len(), FLEX_TAIL_V10 | FLEX_TAIL | FLEX_TAIL_V12)
             // Raw finite values are retained: the native setter 0x140ae5a10 applies
             // its own piecewise curve law, 1 ms duration floor and level
             // neighbourhood clamp rather than rejecting out-of-range input.
@@ -261,14 +263,14 @@ impl EnvelopeFlex {
         Ok(())
     }
 
-    /// Preserve v0x11/v0x12 using their distinct 13/15-byte opaque tails.
+    /// Preserve v0x10/v0x11/v0x12 using their distinct 4/13/15-byte opaque tails.
     /// Missing opaque metadata is rejected instead of synthesizing defaults.
     pub fn to_chunk(&self) -> Result<Chunk, Error> {
         self.validate()?;
-        let version = if self.unknown_tail.len() == FLEX_TAIL {
-            0x11u16
-        } else {
-            0x12
+        let version = match self.unknown_tail.len() {
+            FLEX_TAIL_V10 => 0x10u16,
+            FLEX_TAIL => 0x11,
+            _ => 0x12,
         };
         let mut data = Vec::new();
         data.try_reserve_exact(15 + self.points.len() * 12 + self.unknown_tail.len())
@@ -313,6 +315,7 @@ impl TryFrom<&Chunk> for EnvelopeFlex {
         }
         let version = reader.read_u16_le()?;
         let tail = match version {
+            0x10 => FLEX_TAIL_V10,
             0x11 => FLEX_TAIL,
             0x12 => FLEX_TAIL_V12,
             _ => {
@@ -376,6 +379,26 @@ mod timing_tests {
         );
         flex.points[0].curve = f32::NAN;
         assert!(flex.to_chunk().is_err());
+    }
+
+    #[test]
+    fn flex_v10_reads_and_writes_back_with_its_short_tail() {
+        let mut data = vec![0, 0x10, 0];
+        for word in [1u32, 0, 1] {
+            data.extend(word.to_le_bytes());
+        }
+        for value in [10.0f32, 1.0, 0.5, 200.0, 0.0, 0.5, -1.0] {
+            data.extend(value.to_le_bytes());
+        }
+        let chunk = Chunk {
+            id: FLEX_CHUNK_ID,
+            data,
+        };
+        let flex = EnvelopeFlex::try_from(&chunk).unwrap();
+        assert_eq!((flex.points.len(), flex.sustain), (2, 1));
+        assert_eq!(flex.points[1].time_ms, 200.0);
+        assert!(flex.timing_record().is_err());
+        assert_eq!(flex.to_chunk().unwrap().data, chunk.data);
     }
 
     #[test]
