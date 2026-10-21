@@ -116,7 +116,7 @@ impl Engine {
     pub(crate) fn cells(&self) -> usize {
         match &self.core {
             Core::Cascade(c) => c.cells(),
-            Core::Ladder(_) => ladder::CELLS,
+            Core::Ladder(c) => c.cells(),
             Core::Ar(_) => ar::CELLS,
             Core::Daft(_) | Core::Kontakt(_) => 0,
         }

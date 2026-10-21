@@ -189,6 +189,8 @@ pub struct Config {
     pub extra: f64,
     pub variant: Variant,
     pub binding: Option<Binding>,
+    /// Ladder HQ: the native 2x oversampled mode (saved flag, see `LadderLP4::high_quality`).
+    pub high_quality: bool,
 }
 
 /// A native filter that cannot be configured, and exactly why.
@@ -214,6 +216,7 @@ impl Config {
             extra: 0.0,
             variant: Variant::Default,
             binding: None,
+            high_quality: false,
         }
     }
 
@@ -268,6 +271,7 @@ impl Config {
                     resonance: self.resonance,
                     record_version: binding.map_or(0, |b| b.record_version),
                     taps,
+                    high_quality: self.high_quality,
                 })])
             }
             Topology::Ar => {

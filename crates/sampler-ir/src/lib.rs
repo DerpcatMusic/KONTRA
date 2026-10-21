@@ -2758,6 +2758,8 @@ pub struct LadderLP4 {
     pub record_version: u16,
     /// Output selector: saved Morphology type minus 29 (1..=12); feedback closes around stage 4.
     pub taps: u8,
+    /// Native HQ flag: run the core at twice the rate inside a shared 2x Kaiser oversampler.
+    pub high_quality: bool,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

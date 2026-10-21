@@ -2,6 +2,7 @@
 //! magnitude preview is this Rust kernel's small-signal response, not a native transfer
 //! measurement (CORE-FILTERS-053).
 use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::super::kaiser::{self, Kaiser};
 use super::super::{BLOCK, Planar, ProcessorState};
 use super::ladder_kernel;
 
@@ -13,6 +14,8 @@ pub struct LadderSettings {
     pub record_version: u16,
     /// Output selector: saved Morphology type minus 29 (1..=12).
     pub taps: u8,
+    /// Native HQ: the core runs at twice the rate inside the shared 2x Kaiser oversampler.
+    pub high_quality: bool,
 }
 
 impl LadderSettings {
@@ -42,15 +45,18 @@ impl LadderSettings {
 
     pub(crate) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Ladder {
         ladder_kernel::prepare();
+        let internal = if self.high_quality { 2 * rate } else { rate };
         Ladder {
-            rate: rate as f32,
+            rate: internal as f32,
             parameters: [self.cutoff, self.resonance, self.gain].map(|p| p.compile(bindings)),
             record_version: self.record_version,
             taps: self.taps,
+            os: self.high_quality.then(|| Kaiser::new(2)),
         }
     }
 }
 
+/// Kernel state cells; the HQ oversampler's registers follow them.
 pub(crate) const CELLS: usize = 19;
 
 pub(crate) struct Ladder {
@@ -58,9 +64,25 @@ pub(crate) struct Ladder {
     parameters: [PreparedParameter; 3],
     record_version: u16,
     taps: u8,
+    os: Option<Kaiser>,
+}
+
+/// Retune the kernel when a control changed (or was never set).
+fn tune(kernel: &mut ladder_kernel::Ladder, cells: &mut [[f64; 2]], value: [f32; 3], rate: f32) {
+    let previous = [cells[17][0] as f32, cells[17][1] as f32, cells[18][0] as f32];
+    if cells[18][1] == 0.0 || value != previous {
+        kernel.tune(value, rate);
+        cells[17] = [f64::from(value[0]), f64::from(value[1])];
+        cells[18] = [f64::from(value[2]), 1.0];
+    }
 }
 
 impl Ladder {
+    /// Cells to reserve: the kernel's, plus both channels' oversampler registers in HQ.
+    pub(crate) fn cells(&self) -> usize {
+        CELLS + if self.os.is_some() { kaiser::WORDS } else { 0 }
+    }
+
     pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 3] {
         [
             ("cutoff", self.parameters[0]),
@@ -102,26 +124,40 @@ impl Ladder {
         let first = values(at);
         let last = values(at + len.saturating_sub(1) as u64);
         let mut scratch: [[f32; BLOCK]; 2] = std::array::from_fn(|c| block[c].map(|v| v as f32));
-        let mut update = |kernel: &mut ladder_kernel::Ladder, value: [f32; 3]| {
-            let previous = [
-                cells[17][0] as f32,
-                cells[17][1] as f32,
-                cells[18][0] as f32,
-            ];
-            if cells[18][1] == 0.0 || value != previous {
-                kernel.tune(value, self.rate);
-                cells[17] = [f64::from(value[0]), f64::from(value[1])];
-                cells[18] = [f64::from(value[2]), 1.0];
-            }
-        };
+        let constant = first == last;
+        if constant {
+            tune(&mut kernel, cells, first, self.rate);
+        }
         let [left, right] = &mut scratch;
-        if first == last {
-            update(&mut kernel, first);
-            kernel.process(&mut left[..len], &mut right[..len]);
-        } else {
-            for i in 0..len {
-                update(&mut kernel, values(at + i as u64));
-                kernel.process(&mut left[i..i + 1], &mut right[i..i + 1]);
+        match &self.os {
+            Some(os) => {
+                // Per host frame: 2x up, the kernel at twice the rate, 2x down (the native order).
+                let mut states: [kaiser::State; 2] = Default::default();
+                for (c, s) in states.iter_mut().enumerate() {
+                    s.load(&cells[CELLS..].as_flattened()[c * kaiser::WORDS..(c + 1) * kaiser::WORDS]);
+                }
+                for i in 0..len {
+                    if !constant {
+                        tune(&mut kernel, cells, values(at + i as u64), self.rate);
+                    }
+                    let (mut l, mut r) = ([0f32; 2], [0f32; 2]);
+                    os.up(&mut states[0], left[i], &mut l);
+                    os.up(&mut states[1], right[i], &mut r);
+                    kernel.process(&mut l, &mut r);
+                    left[i] = os.down(&mut states[0], &l);
+                    right[i] = os.down(&mut states[1], &r);
+                }
+                let flat = cells[CELLS..].as_flattened_mut();
+                for (c, s) in states.iter().enumerate() {
+                    s.save(&mut flat[c * kaiser::WORDS..(c + 1) * kaiser::WORDS]);
+                }
+            }
+            None if constant => kernel.process(&mut left[..len], &mut right[..len]),
+            None => {
+                for i in 0..len {
+                    tune(&mut kernel, cells, values(at + i as u64), self.rate);
+                    kernel.process(&mut left[i..i + 1], &mut right[i..i + 1]);
+                }
             }
         }
         kernel.retain(cells);
@@ -147,6 +183,7 @@ mod tests {
                 gain: Parameter::Constant(0.2),
                 record_version: 0x92,
                 taps: 4,
+                high_quality: false,
             };
             let prepared = settings.compile(rate, &mut Vec::new());
             let source: [[f64; BLOCK]; 2] = std::array::from_fn(|c| {
@@ -184,6 +221,61 @@ mod tests {
                 }
             }
             assert_eq!(split, whole);
+        }
+    }
+
+    #[test]
+    fn high_quality_is_the_shared_2x_oversampler_around_the_kernel() {
+        for rate in [44_100, 48_000] {
+            let knobs = [0.64, 0.7, 0.2];
+            let settings = LadderSettings {
+                cutoff: Parameter::Constant(knobs[0]),
+                resonance: Parameter::Constant(knobs[1]),
+                gain: Parameter::Constant(knobs[2]),
+                record_version: 0x95,
+                taps: 4,
+                high_quality: true,
+            };
+            let prepared = settings.compile(rate, &mut Vec::new());
+            let source: [[f64; BLOCK]; 2] = std::array::from_fn(|c| {
+                std::array::from_fn(|i| ((i + 7 * c) as f64 * 0.23).sin() * 0.05)
+            });
+            // Reference composition: up, kernel at twice the rate, down, one host frame at a time.
+            let os = Kaiser::new(2);
+            let mut kernel = ladder_kernel::Ladder::default();
+            kernel.record_version(0x95);
+            kernel.set_taps(4);
+            kernel.tune(knobs.map(|v| v as f32), 2.0 * rate as f32);
+            let mut states: [kaiser::State; 2] = Default::default();
+            let mut expected = source;
+            for i in 0..BLOCK {
+                let (mut l, mut r) = ([0f32; 2], [0f32; 2]);
+                os.up(&mut states[0], source[0][i] as f32, &mut l);
+                os.up(&mut states[1], source[1][i] as f32, &mut r);
+                kernel.process(&mut l, &mut r);
+                expected[0][i] = f64::from(os.down(&mut states[0], &l));
+                expected[1][i] = f64::from(os.down(&mut states[1], &r));
+            }
+            let mut cells = [[0.0; 2]; CELLS + kaiser::WORDS];
+            assert_eq!(prepared.cells(), cells.len());
+            let mut whole = source;
+            assert!(!prepared.process(&mut ProcessorState::default(), &mut cells, &[], &mut whole, BLOCK, 0, [0.; 4]));
+            assert_eq!(whole, expected);
+            // Fragments carry the oversampler's registers across calls.
+            let mut state = ProcessorState::default();
+            cells = [[0.0; 2]; CELLS + kaiser::WORDS];
+            let mut split = source;
+            for (start, end) in [(0, 5), (5, 32), (32, BLOCK)] {
+                let mut fragment = [[0.0; BLOCK]; 2];
+                for c in 0..2 {
+                    fragment[c][..end - start].copy_from_slice(&source[c][start..end]);
+                }
+                assert!(!prepared.process(&mut state, &mut cells, &[], &mut fragment, end - start, start as u64, [0.; 4]));
+                for c in 0..2 {
+                    split[c][start..end].copy_from_slice(&fragment[c][..end - start]);
+                }
+            }
+            assert_eq!(split, expected);
         }
     }
 }
