@@ -125,10 +125,13 @@ LEGACY_UNMEASURED = {"LP2POLE": 6, "HP2POLE": 7, "BP2": 4, "HP4POLE": 9, "BP4": 
                      "LADDER_LEGACY": 17, "SIMPLE_LPHP": 120}
 
 
-def filtlegacy():
-    """Filters/Effect for the legacy types in LEGACY_UNMEASURED: cutoff grid at resonance 0, resonance grid at cutoff 0.5."""
+def filtlegacy(only=None):
+    """Filters/Effect for the legacy types in LEGACY_UNMEASURED: cutoff grid at resonance 0, resonance grid at cutoff 0.5.
+    only: restrict to these names (a type after a resonant one can inherit its state in one run)."""
     steps = []
     for name, sub in LEGACY_UNMEASURED.items():
+        if only and name not in only:
+            continue
         for c in GRID:
             steps.append({"name": f"{name} cutoff={c} res=0", "set": [[0, "EFFECT_SUBTYPE", sub], [0, "CUTOFF", c], [0, "RESONANCE", 0]]})
         for r in (M // 2, 9 * M // 10):
@@ -139,4 +142,5 @@ def filtlegacy():
 if __name__ == "__main__":
     spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt, "svmore": svmore}[sys.argv[1]]()
     spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt, "filtlegacy": filtlegacy}[sys.argv[1]]()
+    spec = {"geq": geq, "dlf": lambda: dense(["LF", "LMF"]), "dhf": lambda: dense(["HMF", "HF"]), "k22": lambda: legacy(22), "k23": lambda: legacy(23), "k24": lambda: legacy(24), "filt": filt, "filtlegacy": filtlegacy, "filtladder": lambda: filtlegacy(only={"LADDER_LEGACY"})}[sys.argv[1]]()
     json.dump(spec, open(sys.argv[2], "w"), indent=1)
