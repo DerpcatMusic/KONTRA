@@ -93,9 +93,63 @@ impl GlideRamp {
     }
 }
 
+impl GlideRamp {
+    /// Kontakt's `BGlide` setup (FUN_140cebba0) from the stored `BParGlide`:
+    /// `mode` 1 multiplies the time by the interval (per-semitone), 2 keeps
+    /// it constant; `time_ms` is the stored float at `+0xc`. The interval is
+    /// clamped to ±12 semitones. Output is in octaves: `start = -1` rising to
+    /// zero for an upward interval (`+1` falling for a downward one), with
+    /// `gain = |interval| / 12` (binary32 `0x3daaaaab`, checked in the binary)
+    /// and `step = 1 / (time_s * rate)`. `rate` is the object rate (`+0x14`).
+    pub fn kontakt_glide(mode: u32, time_ms: f32, interval: i32, rate: f32) -> Self {
+        const TWELFTH: f32 = 0.083_333_336; // 0x3daaaaab at 0x144737724
+        const MILLISECOND: f32 = 0.001; // 0x3a83126f at 0x1447148a4
+        let interval = interval.clamp(-12, 12);
+        let semitones = interval.unsigned_abs() as f32;
+        let mut time = time_ms;
+        if mode == 1 {
+            time *= semitones;
+        }
+        let step = 1.0 / (time * MILLISECOND * rate);
+        let gain = semitones * TWELFTH;
+        if interval < 0 {
+            Self { start: 1.0, step: -step, gain }
+        } else {
+            Self { start: -1.0, step, gain }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kontakt_glide_maps_the_stored_mode_and_time() {
+        // Mode 1, 100 ms per semitone, seven semitones up: 700 ms = 700 frames at 1 kHz.
+        let mut up = GlideRamp::kontakt_glide(1, 100.0, 7, 1000.0);
+        let mut out = [0.0; 701];
+        up.render(&mut out);
+        assert!((out[0] + 7.0 / 12.0).abs() < 1e-6, "starts at -interval/12 octaves");
+        assert!((out[350] + 7.0 / 24.0).abs() < 1e-5, "linear halfway");
+        assert!(out[700].abs() < 1e-5, "lands on zero within f32 accumulation");
+        // A downward interval mirrors the ramp in sign.
+        let mut down = GlideRamp::kontakt_glide(1, 100.0, -7, 1000.0);
+        let mut mirror = [0.0; 2];
+        down.render(&mut mirror);
+        assert!((mirror[0] - 7.0 / 12.0).abs() < 1e-6);
+        // Mode 2 keeps 100 ms whatever the interval: 100 frames.
+        let mut fixed = GlideRamp::kontakt_glide(2, 100.0, 12, 1000.0);
+        assert!((fixed.step - 0.01).abs() < 1e-7);
+        let mut tail = [9.0; 101];
+        fixed.render(&mut tail);
+        assert!(tail[100].abs() < 1e-5);
+        // Zero interval: no output.
+        let mut none = GlideRamp::kontakt_glide(1, 100.0, 0, 1000.0);
+        let mut silent = [9.0; 3];
+        none.render(&mut silent);
+        assert_eq!(silent, [0.0; 3]);
+    }
 
     #[test]
     fn ramp_writes_the_pre_update_value_then_stays_exactly_zero() {
