@@ -257,6 +257,9 @@ pub enum StmtKind {
     Select(Expr, Vec<Case>),
     Call(FnId),
     Builtin(Builtin, Vec<Arg>),
+    /// A UI declaration's non-constant parameters (by position), evaluated
+    /// where `on init` reaches the declaration, as Kontakt does.
+    UiParams(u32, Vec<(u8, Expr)>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -308,6 +311,8 @@ pub struct Hir {
     pub warnings: Vec<crate::diag::Fault>,
     /// Longest static `call` chain, for the VM's bounded frame stack.
     pub call_depth: usize,
+    /// Some UI declaration parameters are only known once `on init` has run.
+    pub ui_params_at_init: bool,
 }
 
 /// Values of opaque vendor symbols not in `builtins::CONTROL_PARS`.

@@ -229,6 +229,8 @@ impl Initialized {
             || !self.environment.midi_object.has_only_async_id_reservations()
             || crate::eval::uses_array_file(&self.hir)
             || crate::zone_routing::requirements(&self.hir).writes
+            // ponytail: init-time declaration ranges are not cached; cache them if those loads get slow.
+            || self.hir.ui_params_at_init
             || self.init.midi_object.async_id_high_water().checked_sub(self.environment.midi_object.async_id_high_water())
                 .and_then(|n|usize::try_from(n).ok()) != Some(self.init.residency.len())
         {
@@ -483,6 +485,7 @@ pub fn restore_initialized(
         properties: cached.properties.into_iter().collect(),
         text_properties: cached.text_properties.into_iter().collect(),
         indexed_properties: cached.indexed_properties.into_iter().collect(),
+        ui_params: Vec::new(),
     };
     init.midi_object.reserve_async_ids_through(cached.async_high).map_err(|_|error("invalid cached async high-water"))?;
     use serde::de::DeserializeSeed;
