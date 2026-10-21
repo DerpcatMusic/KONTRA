@@ -6,7 +6,10 @@ Companion families that share the same cores: Monark 140..=143 and Simple LP/HP 
 
 ## Status of the evidence
 
-- **Kontakt 8 decompile is not ready.** `/data/dev/workspace/Research/KONTRA/source/kontakt8/READY`
+- **Kontakt 8 decompile is ready** (`source/kontakt8/READY`). The checks in the section
+  "Decompile confirmation" below read the export directly. Constants that are global data
+  (`DAT_*`) were not resolved to values in this pass; the vector tests pin them numerically.
+- Earlier text below: **Kontakt 8 decompile was not ready when this was first written.** `/data/dev/workspace/Research/KONTRA/source/kontakt8/READY`
   did not exist when this was written. Everything below comes from the existing repo evidence
   (the code comments that cite native addresses and the recorded vectors), not from a fresh read of
   the exported C. Native addresses are quoted as the repo already records them.
@@ -23,6 +26,26 @@ Companion families that share the same cores: Monark 140..=143 and Simple LP/HP 
 | Versatile core | `crates/sampler-core/src/dsp/filter/cascade.rs` (`versatile`, ~L554; `ClockedClass::clock`, ~L1967) | Chamberlin stages, shared with Pro-53. |
 | Dual SKF core | `crates/sampler-core/src/dsp/filter/kontaktfx.rs` (`Skf`, ~L526) | Mono core; stereo runs one core per channel. |
 | Oversampling | `crates/sampler-core/src/dsp/kaiser.rs` (shared `Kaiser` stage) | Dual SKF and Monark use it below 66 kHz. |
+
+## Decompile confirmation (Kontakt 8 export)
+
+Functions read in `source/kontakt8/` (headers `// ==== <addr> <name>`):
+
+| Native function | Checked against | Result |
+| --- | --- | --- |
+| `FUN_14095db50` Versatile cutoff setter | `Versatile::note` (clamp, x111, +20), shifts (`+ SHIFTB x80`, `+ SHIFTC x80`), stage g = `2^((note-69)/12) x 440 x 2pi/rate` clamped by limit | matches; stage 1 and 2 limits read from ramp fields (see row 2) |
+| `FUN_140966230` resonance setter | `q` two-segment law around 0.5 (slopes 0.66 / 1.3), limit `(q+1.3075) q 0.293 + 0.7352`, `d = 2 - 2q`, comp `wet/((1-r)1.4+0.05)+(1-wet)` | matches (stage 0) |
+| `FUN_14096f840` normaliser | `norm = 3 / (t1+t2+t3+comp1+comp2+comp0)` with the three `(g_i / g_j) 6 - 5` denominators | matches |
+| `FUN_140aef6e0` process | per stage: `hp = shaper(b) + (y - (b d + l))` (k = 1), `b += hp g`, `l += b g`, mode = `wl l + wb b + wh hp`, `y += (mode - y) wet`; shaper constants shared by the three stages; output `gain x norm` smoothed | matches Chamberlin with feedback 0 and eps 0 |
+| `FUN_140b059c0` Dual SKF setParam | knob index 0..3 clamped to [0,1]; index 4 stored as `2v - 1` | matches `kontaktfx.rs` `set` |
+| `FUN_140aea690` control clock | cutoff moves by `(goal - cur) x c` per control tick | constant `c` is a global; Rust uses 0.015 (not resolved here) |
+| `FUN_140ab0xxx` generic ramp setter | writes (target, current) pairs at `+0x430..+0x46c` | stage 1 and 2 limits (`+0x44c`, `+0x450`) are ramp currents, so their targets are not Versatile-specific code yet |
+
+Not resolved in this pass:
+- The record-to-slot mapping for Dual SKF (row 5). The reader `FUN_140d00db0` is a tag-based chunk
+  reader for all BFilter records; the type 130 field order is not isolated.
+- The Versatile stage 1/2 limit targets (row 2).
+- The SSE path for 32+ frame calls (row 3): not located as a separate function in this pass.
 
 ## Module 1: 3x2 Versatile (type 19)
 
