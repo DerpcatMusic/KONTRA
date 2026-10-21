@@ -209,7 +209,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| KSP engine parameters (set/get_engine_par, enumerations, display conversions) | unknown | none | |
+| KSP engine parameters (set/get_engine_par, enumerations, display conversions) | partial | decomp | `_m` builtins (set/get_engine_par_m, get_engine_par_disp_m) missing; native fault text not surfaced; ids unconfirmed. See `docs/re/engine/k-ksp-engine-params.md`. |
 | NKI / NKM / NKB loading | unknown | none | |
 | Snapshots and base-instrument identity | unknown | none | |
 | NCW / WAV / AIFF decoding | unknown | none | |
