@@ -26,6 +26,18 @@ Status: **no DSP law recovered.** The Kontakt 8 decompile is not complete (`/dat
 
 Units, ranges, defaults and display conversions are unknown for all five. The KSP names are evidence the parameters exist, not their laws.
 
+## Decompile findings (Kontakt 8 export, READY)
+
+Confirmed from `source/kontakt8` and a read-only copy of the Ghidra project. No law below is final.
+
+- Module classes exist as `BeatMasherModule`, `BeatSlicerModule`, `GaterModule`, `ReverseGrainModule`, `TransposeStretchModule`. Their factories register under those names (`FUN_141ef6a70`, bucket `0140650000.c` lines ~1335-2195). Constructors: Beat Masher `FUN_14064d520`, Beat Slicer `FUN_14064d670`, Gater `FUN_14064ed20`, Reverse Grain `FUN_14064fe60`, Transpose Stretch `FUN_140650a90`.
+- The five vtables share one skeleton. Against Hilbert Limiter's vtable they differ in four slots only: 0, 3, 16 and 66. Slot 0 is the same in the four stretch/slice/grain modules, and Gater differs there from the others.
+- Slot 16 (initialiser) builds child objects by id. It uses a lookup `FUN_141ef9200(module, id)` that walks a child list and matches each object's id at +0x58. Gater's init fetches ids 0x14, 0x15, 0x19, 0x1a and creates parameter objects with ids 0x17, 0x18 and 0x5, 0xa, 0xd, 0x7, 0xc (`FUN_1405079e0` / `FUN_140507a40`). The ids are not yet mapped to KSP names.
+- Slot 66 (parameter binding) runs only when the module reports type 0x31 in its descriptor (`FUN_140655b30`). It binds five parameter groups and one id 0x1f2.
+- The Gater's pre-processing, gate envelope, step rate and noise are not located yet. The per-sample audio routine is not identified: it is not among the vtable slots decompiled so far.
+
+What this changes in the gap table: rows still `Missing`, but the next step is now concrete: identify the audio routine (base-class process, probably a slot above 66 or a call from slot 16's children) and the id-to-name map for each module.
+
 ## Gap table
 
 | Module | Shared engine already covers | Missing or unverified |
