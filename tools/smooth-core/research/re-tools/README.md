@@ -81,3 +81,5 @@ as `0x2c78` tokenize as-is. `fn_fts` is keyed by function RVA.
 - RTTI names come from `.?AV…` type descriptors. They identify classes, not
   every method. Parameter identifiers are strings in `.rdata` (see
   `by-string`).
+
+- `refs.py`: every reference to an address: rel32, rip-relative, abs64 and rva32, with vtable slot and RTTI class name. `python3 -I refs.py 0x621d50 [--image PATH]`.
