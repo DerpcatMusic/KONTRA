@@ -142,7 +142,7 @@ from code and constants), INFERRED, UNKNOWN.
 - Repo stand-in (one-pole, 20 Hz·1000^x) replaced. Possible stereo/colour field
   swap in the Legacy loader remains UNKNOWN (not changed).
 
-### Raum Cosmic: in progress
+### Raum Cosmic: chain bank implemented (decompile structure, no native vector)
 - Chain bank (flag 0, eight serial two-line stages) structure, oscillators, sign
   flips, Catmull-Rom reads, matrices and ring lengths: CONFIRMED from decompile and
   setter emulation. Predelay feedback, post filters and wet/dry law: UNKNOWN.
