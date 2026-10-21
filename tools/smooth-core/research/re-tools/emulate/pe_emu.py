@@ -172,7 +172,10 @@ class Emulator:
 
     def _on_insn(self, uc, addr, size, user):
         if self.insn_trace is not None and IMAGE_BASE <= addr < IMAGE_BASE + self.image_size:
-            self.insn_trace.append(addr)
+            if isinstance(self.insn_trace, set):
+                self.insn_trace.add(addr)
+            else:
+                self.insn_trace.append(addr)
 
     def _on_write(self, uc, access, addr, size, value, user):
         for lo, hi, label in self.write_watch:
@@ -386,6 +389,10 @@ class Emulator:
             pc = self.reg(UC_X86_REG_RIP)
             where = self.unmapped[-1] if self.unmapped else None
             raise RuntimeError(f"emulation fault {exc} at pc={pc:#x} access={where}") from exc
+        pc = self.reg(UC_X86_REG_RIP)
+        if self.aborted is None and pc != RET_SENTINEL:
+            # emu_start returns normally when it hits max_insns or the timeout
+            raise RuntimeError(f"execution limit reached at pc={pc:#x} before return")
         return self.reg(UC_X86_REG_RAX)
 
     def call_float(self, addr, *args, floats=()):

@@ -5,7 +5,7 @@ the negative result below. No wheel step, drag scale, fine factor, reset target
 or hit radius was recovered, so `input.rs` and `graph/gesture.rs` keep their
 placeholder constants. Nothing in this file is a value to copy into SMOOTH.
 
-Builds on `input-behaviour.md` (static RE). Harness:
+Builds on `input-behaviour.md` (static RE). That file is on branch `smooth/re-ui-input` (PR #93), not on `main`, so it is not in this tree. Harness:
 `tools/smooth-core/research/re-tools/emulate/` (`pe_emu.py`, `crt.py`, README).
 
 ## Method
@@ -71,7 +71,7 @@ parameter update.
 
 - **Knob hit test (slot 7, `fcn.18073dba0`)** runs with a packed `(x, y)` float
   pair in `rdx` and a child vtable at `this+0x2f0`. This is verified: it
-  returns the child's answer and logs the virtual call. It shows no radius
+  returns the child answer and logs the virtual call. The static notes (PR #93) report no radius
   beyond the bounds, which matches `input-behaviour.md`.
 - **FFT wrapper (`fcn.180001640`, the `.text 0x180001640` entry)** runs, returns
   `0` (`ippStsNoErr`) and expects the spec at `r8`, with magic `7` at `+0`,

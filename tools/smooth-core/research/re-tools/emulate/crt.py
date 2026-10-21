@@ -83,7 +83,7 @@ def install(emu):
         "IAT!realloc": _realloc,
         "IAT!free": lambda emu, ev: 0,
         "IAT!_aligned_free": lambda emu, ev: 0,
-        "KERNEL32.dll!HeapAlloc": lambda emu, ev: emu.alloc(max(1, ev.r9)),
+        "KERNEL32.dll!HeapAlloc": lambda emu, ev: emu.alloc(max(1, ev.r8)),  # dwBytes is arg 3
         "KERNEL32.dll!HeapFree": lambda emu, ev: 1,
         "IAT!??2@YAPEAX_K@Z": _malloc,
         "IAT!??3@YAXPEAX@Z": lambda emu, ev: 0,  # operator delete(void*)
