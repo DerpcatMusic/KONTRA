@@ -2307,6 +2307,10 @@ impl V2Core {
             if let (Some(t), Some(a)) = (audit_start, self.onset_audit.as_mut()) {
                 a[0] += t.elapsed().as_nanos() as u64;
             }
+            // Prepared for another rate (host reset): silent until the shell reloads it.
+            if part.runtime.sample_rate() != self.rate as u32 {
+                continue;
+            }
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
