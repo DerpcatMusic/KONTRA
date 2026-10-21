@@ -18,7 +18,9 @@
 //!   applied; IR size (an STFT time-stretch engine) and S.Rate (IR
 //!   preparation at the inner rate untraced) are reported unmodeled.
 //! - 0x65 Raum: Grounded and Airy drive the native core ([`Topology::Raum`],
-//!   `sampler_core` `dsp/space/design/raum.rs`); Cosmic is reported unmodeled.
+//!   `sampler_core` `dsp/space/design/raum.rs`); Cosmic (type 2) runs the
+//!   chain bank of `design/cosmic.rs` on the same outer, with the spec's
+//!   INFERRED and UNKNOWN parts kept as the outer's behaviour.
 //! - 0x7a Reverb Delight: field binding measured, cores not extracted;
 //!   reported unmodeled with the reason in the slot's `effect` note.
 
@@ -214,8 +216,9 @@ pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
     Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), unit > f32::from_bits(0x3089_705f)))
 }
 
-/// Raum (0x65) Grounded or Airy on the native core; its own mix law carries
-/// the dry path. Input gain (core 19) has no saved field and stays 1.
+/// Raum (0x65) Grounded, Airy or Cosmic on the native core (core 9 selects);
+/// its own mix law carries the dry path. Input gain (core 19) has no saved
+/// field and stays 1.
 pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config {
     if synced {
         notes.push(("predelay sync".into(), "Raum's tempo-synced predelay (core 2..5, `240·n/(f·m·bpm)`) is not bound; the saved time is read as milliseconds".into(), UnknownLaw));
@@ -237,7 +240,6 @@ pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config 
 /// translated; empty for every other module.
 pub(super) fn why_unbound(module: u16) -> &'static str {
     match module {
-        0x65 => ": Raum Cosmic: its eight-stage allpass core is not built (Grounded and Airy are)",
         0x7a => ": Reverb Delight field binding measured (MONO unproved: field 11 bytes unstable); its amp, tremolo and spring-reverb cores are not extracted",
         _ => "",
     }
