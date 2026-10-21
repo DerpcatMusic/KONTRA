@@ -458,6 +458,9 @@ pub fn restore_initialized(
     if crate::zone_routing::requirements(&hir).writes {
         return Err(error("zone-writer cache requires fresh physical-source initialization"));
     }
+    if hir.ui_params_at_init {
+        return Err(error("init-time declaration ranges require fresh initialization"));
+    }
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -485,7 +488,7 @@ pub fn restore_initialized(
         properties: cached.properties.into_iter().collect(),
         text_properties: cached.text_properties.into_iter().collect(),
         indexed_properties: cached.indexed_properties.into_iter().collect(),
-        ui_params: Vec::new(),
+        ui_params: vec![None; hir.uis.len()],
     };
     init.midi_object.reserve_async_ids_through(cached.async_high).map_err(|_|error("invalid cached async high-water"))?;
     use serde::de::DeserializeSeed;

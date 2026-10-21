@@ -308,7 +308,7 @@ pub struct Initial {
     /// `set_control_par*_arr` writes keyed `(ui id, parameter, index)`.
     pub indexed_properties: BTreeMap<(i32, i32, i32), Value>,
     /// Declaration parameters evaluated in `on init`, by UI index (see `StmtKind::UiParams`).
-    pub ui_params: Vec<(u32, Vec<i32>)>,
+    pub ui_params: Vec<Option<Vec<i32>>>,
 }
 
 enum Flow {
@@ -387,7 +387,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
             properties: HashMap::new(),
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),
-            ui_params: Vec::new(),
+            ui_params: vec![None; hir.uis.len()],
         },
         fuel: env.evaluation_budget.unwrap_or(INIT_FUEL),
         depth: 0,
@@ -411,10 +411,9 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
             .iter()
             .any(|c| c.kind == CallbackKind::PersistenceChanged),
     );
-    // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
-        if let Some((lo, hi)) = declared_range(ui) {
-            e.st.controls[index] = 0.clamp(lo.min(hi), hi.max(lo));
+        if let Some(range) = declared_range(ui) {
+            e.st.controls[index] = default_in(range);
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
@@ -520,6 +519,12 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
     Ok(e.st)
 }
 
+/// Kontakt's default for a knob/slider: 0, or its minimum when 0 is outside.
+fn default_in((a, b): (i32, i32)) -> i32 {
+    let (lo, hi) = (a.min(b), a.max(b));
+    if (lo..=hi).contains(&0) { 0 } else { lo }
+}
+
 /// Declared value range of a host-owned control.
 pub fn declared_range(ui: &Ui) -> Option<(i32, i32)> {
     range_of(ui.kind, &ui.params)
@@ -539,9 +544,8 @@ fn range_of(kind: WidgetKind, params: &[i32]) -> Option<(i32, i32)> {
 impl<const TRACK: bool> Eval<'_, TRACK> {
     /// `declared_range`, with the parameters `on init` has evaluated so far.
     fn declared_range(&self, ui: usize) -> Option<(i32, i32)> {
-        let kind = self.hir.uis[ui].kind;
-        match self.st.ui_params.iter().find(|(u, _)| *u as usize == ui) {
-            Some((_, params)) => range_of(kind, params),
+        match &self.st.ui_params[ui] {
+            Some(params) => range_of(self.hir.uis[ui].kind, params),
             None => declared_range(&self.hir.uis[ui]),
         }
     }
@@ -631,12 +635,10 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 for (i, e) in values {
                     params[usize::from(*i)] = self.expr(e)?.int();
                 }
-                // Kontakt's default, as for constant ranges: 0, or the minimum when 0 is outside.
-                if let Some((lo, hi)) = range_of(self.hir.uis[ui].kind, &params) {
-                    self.st.controls[ui] = 0.clamp(lo.min(hi), hi.max(lo));
+                if let Some(range) = range_of(self.hir.uis[ui].kind, &params) {
+                    self.st.controls[ui] = default_in(range);
                 }
-                self.st.ui_params.retain(|(u, _)| *u as usize != ui);
-                self.st.ui_params.push((ui as u32, params));
+                self.st.ui_params[ui] = Some(params);
             }
             StmtKind::Fill(var, values) => {
                 let mut last = V::I(0);
