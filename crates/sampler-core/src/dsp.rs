@@ -140,6 +140,9 @@ pub enum Processor {
     Formant([f32; 3]),
     /// Formant core table 2 (rows 5..=9): Kontakt Formant II.
     FormantII([f32; 3]),
+    /// Kontakt S1200 Machine source stage (`dsp/machine.rs`): anti-alias IIR,
+    /// filter-mode biquads, 26 kHz sample-and-hold. Placed by lowering.
+    S1200(machine::S1200Stage),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
     /// Formant I (or Formant II when `second`) with Talk, Sharp, Size as event-rate lanes
@@ -217,6 +220,7 @@ impl Processor {
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::LiveFormant { knobs, .. } => knobs.iter().all(live_knob),
+            Processor::S1200(stage) => stage.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -241,7 +245,7 @@ mod kernel_tests;
 mod kernels;
 pub use eq_family::{EqBand, KontaktLegacyEqSettings};
 mod live;
-mod machine;
+pub(crate) mod machine;
 mod machine_tables;
 pub use ladder::LadderSettings;
 mod taps;
@@ -286,6 +290,11 @@ pub(super) enum PreparedProcessor {
     /// The filter engine with its cells at `offset` of the delay storage.
     Filter {
         engine: filter::Engine,
+        offset: usize,
+    },
+    /// The S1200 machine with its history words at `offset` of the delay storage.
+    S1200 {
+        stage: machine::S1200Stage,
         offset: usize,
     },
     Branch {
@@ -349,7 +358,7 @@ impl PreparedProcessor {
                 color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
-                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. }
+                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. }
                 | Self::Branch { .. } | Self::Space(..)) => OperationOwner::Scalar(scalar),
         }
     }
@@ -368,6 +377,7 @@ impl PreparedProcessor {
             Self::Formant(x) => ProcessorRef::Formant(x),
             Self::Color { color, offset } => ProcessorRef::Color { color, offset },
             Self::Filter { engine, offset } => ProcessorRef::Filter { engine, offset },
+            Self::S1200 { stage, offset } => ProcessorRef::S1200 { stage, offset },
             Self::Branch { count, gain, first, last } => ProcessorRef::Branch { count, gain, first, last },
             Self::StateVariable(x) => ProcessorRef::StateVariable(x),
             Self::Space(index, live) => ProcessorRef::Space(index, live),
@@ -419,6 +429,7 @@ pub(super) enum ProcessorRef<'a> {
     StateVariable(&'a svf::SvfHandle), Space(&'a usize, &'a PreparedKnobs),
     Mix { count: &'a u16, lanes: &'a [usize; 3] },
     Pan { position: &'a control::PreparedParameter, offset:&'a f64, law: &'a sampler_ir::PanLaw, expression: &'a bool },
+    S1200 { stage: &'a machine::S1200Stage, offset: &'a usize },
 }
 impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
     fn from(stage: &'a PreparedProcessor) -> Self { stage.view() }
@@ -788,6 +799,11 @@ pub(super) fn compile_processors(
                 },
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
             Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
+            Processor::S1200(stage) => {
+                let offset = *delay_frames;
+                *delay_frames = offset.checked_add(machine::S1200_WORDS).ok_or(Error::Capacity)?;
+                PreparedProcessor::S1200 { stage, offset }
+            }
                 Processor::Color(settings) => {
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(settings.ring_frames(rate)).ok_or(Error::Capacity)?;
@@ -1251,6 +1267,7 @@ impl ProcessorState {
             | ProcessorRef::Branch { .. }
             | ProcessorRef::StateVariable(_)
             | ProcessorRef::Space(..)
+            | ProcessorRef::S1200 { .. }
             | ProcessorRef::Mix { .. } => true,
         }
     }
@@ -1476,6 +1493,14 @@ pub(super) fn process<'a, const TRACE: bool>(
                 at,
             ),
             ProcessorRef::Formant(formant) => formant.process(state, block, len),
+            ProcessorRef::S1200 { stage, offset } => {
+                let words = &mut delay_samples[*offset..*offset + machine::S1200_WORDS];
+                let [frames, next, ..] = &mut state.aux;
+                let mut schedule = [*frames, *next];
+                let [left, right] = block;
+                stage.process(words, &mut schedule, [&mut left[..], &mut right[..]], len);
+                [*frames, *next] = schedule;
+            }
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
             ProcessorRef::LiveFormant { knobs, second, rate } => {

@@ -2279,12 +2279,16 @@ impl Translation {
             ir::Machine::Mp60 => (Some(ir::Machine::Mp60), "MP60 Machine"),
             ir::Machine::BeatMachine => (Some(ir::Machine::BeatMachine), "Beat Machine"),
         };
-        self.unsupported(
-            at,
-            &format!("{name} source (played as a sampler; its DSP is not modelled)"),
-            mode,
-            ir::Reason::NotModeled,
-        );
+        // Filter modes 1..=5 of the S1200 are modelled; the rest play as a sampler.
+        let modelled = matches!(value, Some(ir::Machine::S1200 { filter_mode: Some(1..=ir::S1200_FILTER_MODE_MAX) }));
+        if !modelled {
+            self.unsupported(
+                at,
+                &format!("{name} source (played as a sampler; its DSP is not modelled)"),
+                mode,
+                ir::Reason::NotModeled,
+            );
+        }
         value
     }
 

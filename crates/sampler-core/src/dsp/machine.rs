@@ -3,9 +3,12 @@
 //! `0x144fd0600`) and the object constructor `FUN_140cd9220`. Constants are the
 //! binary32 bit patterns read there, not tuned values.
 //!
-//! Implemented: the 7-tap feed-forward / 6-pole feedback anti-alias IIR and the
-//! output quantiser. Not implemented yet (reported by the loader): the filter-mode
-//! biquad stage (modes 2..=5), the 26 kHz decimation, and the MP60 machine.
+//! Chain per channel: the 7-tap / 6-pole anti-alias IIR, the filter-mode
+//! biquads (modes 2..=5; mode 1 is a bypass), the mode gain, then the 26 kHz
+//! sample-and-hold and output quantiser. Not recovered: filter modes 0, 6 and 7.
+//! MP60 is not implemented.
+
+use super::machine_tables::{S1200_MODE_BITS, S1200_NUMERATOR_BITS};
 
 /// Feed-forward taps `b0..b6`, stored at object `+0x1f74..+0x1f8c`.
 pub const S1200_AA_B: [f32; 7] = [
@@ -28,8 +31,6 @@ pub const S1200_AA_C: [f32; 6] = [
     f32::from_bits(0xbf31_7924), // c5 (+0x1fa0)
     f32::from_bits(0x3e06_cb2b), // c6 (+0x1fa4)
 ];
-
-use super::machine_tables::{S1200_MODE_BITS, S1200_NUMERATOR_BITS};
 
 /// Quantiser step of the S1200 output: `DAT_144fd0dc4` = 2^9.5 (binary32
 /// `0x443504f3`), and its reciprocal `DAT_144fd0d50` (`0x3ab504f3`).
@@ -80,6 +81,8 @@ pub struct S1200Mode {
     pub gain: f32,
 }
 
+/// The tabled filter mode, or `None` for a bypass (mode 1) and for the modes
+/// not recovered (0, 6, 7). Callers tell those apart by the stored id.
 pub fn s1200_mode(filter_mode: u8) -> Option<S1200Mode> {
     S1200_MODE_BITS.iter().find(|(mode, _, _)| *mode == filter_mode).map(|&(_, a, gain)| S1200Mode {
         a: a.map(f32::from_bits),
@@ -118,30 +121,122 @@ impl S1200ModeFilter {
 /// S1200 output rate in Hz (object `+0x78`, written by the render as 26000.0).
 pub const S1200_OUTPUT_RATE: f64 = 26000.0;
 
-/// The S1200 output stage: sample-and-hold at [`S1200_OUTPUT_RATE`], then the
-/// quantiser on each captured sample. The render's copy path is taken always
-/// (`+0x74` is zeroed before every block), so no interpolation is applied.
-/// A capture happens at frame `n` when `n >= next`, and `next` advances by
-/// `host_rate / 26000` (the same schedule as the shared `hold_rate`).
+/// The 26 kHz capture schedule of the output hold: frame `n` is a capture when
+/// `n >= next`, and each capture advances `next` by `host_rate / 26000`. The
+/// render's copy path is always taken (`+0x74` is zeroed before every block).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct S1200Output {
+pub struct S1200Clock {
     interval: f64,
     next: f64,
+}
+
+impl S1200Clock {
+    pub fn new(host_rate: u32) -> Self {
+        Self { interval: f64::from(host_rate) / S1200_OUTPUT_RATE, next: 0.0 }
+    }
+
+    /// Whether frame `index` (counted from the voice start) captures.
+    pub fn capture(&mut self, index: u64) -> bool {
+        if index as f64 >= self.next {
+            self.next += self.interval;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Delay-storage words per stage: one `[f64; 2]` slot per word, holding the
+/// left and right channel. Layout: anti-alias `x[0..6]`, `y[0..6]`, mode
+/// `x[0..2]`, `v1[0..2]`, `v2[0..2]`, `v3`, then the held output sample.
+pub const S1200_WORDS: usize = 20;
+
+/// One S1200 channel's filter history, loaded from and stored to its slots.
+#[derive(Clone, Copy, Debug, Default)]
+struct S1200Channel {
+    aa: S1200AntiAlias,
+    mode: S1200ModeFilter,
     held: f32,
 }
 
-impl S1200Output {
-    pub fn new(host_rate: u32) -> Self {
-        Self { interval: f64::from(host_rate) / S1200_OUTPUT_RATE, next: 0.0, held: 0.0 }
+impl S1200Channel {
+    fn load(slots: &[[f64; 2]], c: usize) -> Self {
+        let w = |k: usize| slots[k][c] as f32;
+        let mut aa = S1200AntiAlias::default();
+        for k in 0..6 {
+            aa.x[k] = w(k);
+            aa.y[k] = w(6 + k);
+        }
+        Self {
+            aa,
+            mode: S1200ModeFilter { x: [w(12), w(13)], v1: [w(14), w(15)], v2: [w(16), w(17)], v3: w(18) },
+            held: w(19),
+        }
     }
 
-    /// Process frame `index` (frames are counted from 0 by the caller).
-    pub fn process(&mut self, index: u64, input: f32) -> f32 {
-        if index as f64 >= self.next {
-            self.held = s1200_quantize(input);
-            self.next += self.interval;
+    fn store(&self, slots: &mut [[f64; 2]], c: usize) {
+        let mut put = |k: usize, v: f32| slots[k][c] = f64::from(v);
+        for k in 0..6 {
+            put(k, self.aa.x[k]);
+            put(6 + k, self.aa.y[k]);
         }
-        self.held
+        let mode = [
+            self.mode.x[0], self.mode.x[1], self.mode.v1[0], self.mode.v1[1],
+            self.mode.v2[0], self.mode.v2[1], self.mode.v3, self.held,
+        ];
+        for (k, v) in mode.into_iter().enumerate() {
+            put(12 + k, v);
+        }
+    }
+}
+
+/// One S1200 machine source stage: anti-alias IIR, filter mode, 26 kHz hold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct S1200Stage {
+    /// `None` is the mode-1 bypass of the filter-mode biquads.
+    pub mode: Option<S1200Mode>,
+    /// Host frames per 26 kHz capture, used by [`S1200Clock`].
+    interval: f64,
+}
+
+impl S1200Stage {
+    pub fn new(mode: Option<S1200Mode>, host_rate: u32) -> Self {
+        Self { mode, interval: S1200Clock::new(host_rate).interval }
+    }
+
+    pub fn valid(&self) -> bool {
+        self.interval.is_finite() && self.interval > 0.0
+    }
+
+    /// Run `len` frames of both channels through the chain. `slots` holds the
+    /// history words ([`S1200_WORDS`] long); `schedule` is `[frames run, next
+    /// capture]`, zeroed for a fresh voice. Both channels share one schedule.
+    pub fn process(&self, slots: &mut [[f64; 2]], schedule: &mut [f64; 2], block: [&mut [f64]; 2], len: usize) {
+        let start = schedule[0] as u64;
+        if start == 0 {
+            slots.fill([0.; 2]);
+        }
+        let mut next = schedule[1];
+        for (c, channel) in block.into_iter().enumerate() {
+            let mut state = S1200Channel::load(slots, c);
+            let mut clock = S1200Clock { interval: self.interval, next: schedule[1] };
+            for (i, v) in channel[..len].iter_mut().enumerate() {
+                let mut y = state.aa.process(*v as f32);
+                if let Some(mode) = &self.mode {
+                    y = state.mode.process(mode, y);
+                }
+                if clock.capture(start + i as u64) {
+                    state.held = s1200_quantize(y);
+                }
+                *v = f64::from(state.held);
+            }
+            state.store(slots, c);
+            if c == 0 {
+                next = clock.next;
+            }
+        }
+        schedule[0] = (start + len as u64) as f64;
+        schedule[1] = next;
     }
 }
 
@@ -207,25 +302,30 @@ mod tests {
     }
 
     #[test]
-    fn output_stage_holds_at_26k_with_the_quantiser() {
-        // Captures land on ceil(k * 44100 / 26000), the 26 kHz schedule of the
-        // render's copy path; 44100 frames give 26000 captures.
-        let mut out = S1200Output::new(44100);
-        let mut captures = Vec::new();
-        let mut last = f32::NAN;
-        for n in 0..44100u64 {
-            let y = out.process(n, n as f32);
-            if y != last {
-                captures.push(n);
-                last = y;
-            }
-        }
+    fn clock_captures_at_26k_and_the_stage_is_block_size_invariant() {
+        // Captures land on ceil(k * 44100 / 26000); 44100 frames give 26000 captures.
+        let mut clock = S1200Clock::new(44100);
+        let captures: Vec<u64> = (0..44100u64).filter(|&n| clock.capture(n)).collect();
         assert_eq!(captures.len(), 26000);
         for (k, &n) in captures.iter().enumerate().take(12) {
-            let want = (k as f64 * 44100.0 / 26000.0).ceil() as u64;
-            assert_eq!(n, want, "capture {k}");
+            assert_eq!(n, (k as f64 * 44100.0 / 26000.0).ceil() as u64, "capture {k}");
         }
-        // The held value is the quantised input at the capture frame.
-        assert_eq!(S1200Output::new(44100).process(0, 0.25), s1200_quantize(0.25));
+        // Splitting the same signal into blocks must not change the output.
+        let stage = S1200Stage::new(s1200_mode(3), 44100);
+        let signal: Vec<f64> = (0..1000).map(|n| (n as f64 * 0.05).sin()).collect();
+        let run = |chunk: usize| {
+            let mut slots = vec![[0.; 2]; S1200_WORDS];
+            let mut schedule = [0.; 2];
+            let mut out = Vec::new();
+            for part in signal.chunks(chunk) {
+                let mut l = part.to_vec();
+                let mut r = part.to_vec();
+                stage.process(&mut slots, &mut schedule, [&mut l, &mut r], part.len());
+                assert_eq!(l, r);
+                out.extend(l);
+            }
+            out
+        };
+        assert_eq!(run(1000), run(7));
     }
 }
