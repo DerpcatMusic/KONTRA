@@ -46,6 +46,14 @@ Run with `python -I`.
 
 ## Real-pipeline scripts
 
+- `wheel_chain.py`: the whole wheel law. Editor slot 34 (modifier byte, kind 0x12)
+  and slot 8 (wheel, kind 0xf) push through the ring; the UI consumer stores the
+  state; the real Knob (constructor `fcn.180737410`) runs its update
+  `fcn.18073dc10`, which calls the gesture consumer and the value sink
+  `fcn.1806c30c0`. The sink's output is the normalised value. Three host
+  calls are stubbed (listed in the file): they are bookkeeping, not the law.
+  Run it with `python -I wheel_chain.py <dy> <modifier>`.
+||||||| 6955c4e8b
 - `input_chain.py`: runs the wheel path with the real image code. Editor slot 8
   pushes into the ring, `try_pop` pops, and the UI consumer stores the wheel
   fields. It prints the verified values and the pcs of the stores. The MSVC

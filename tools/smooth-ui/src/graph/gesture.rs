@@ -31,8 +31,9 @@ pub const WIDTH_STEP: f64 = 0.02;
 pub const DEPTH_STEP: f64 = 0.5;
 /// What one arrow press moves a band's centre, in octaves.
 pub const FREQUENCY_STEP: f64 = 1.0 / 12.0;
-/// What a fine gesture keeps of a full one.
-pub const FINE: f64 = 0.2;
+/// What a fine gesture keeps of a full one: the reference's 300/1000 ratio
+/// (see `input::FINE`). The band's own steps above are not recovered.
+pub const FINE: f64 = crate::input::FINE;
 
 /// The depth parameter's range, in its own units.
 pub const DEPTH_RANGE: (f64, f64) = (-10.0, 10.0);
@@ -122,9 +123,9 @@ pub struct Gesture {
     pub menu: Option<(usize, (f64, f64))>,
 }
 
-/// The factor a wheel notch keeps: Shift or Ctrl is fine.
+/// The factor a wheel notch keeps: Shift is fine, as in the reference's wheel law.
 pub fn wheel_scale(mods: Mods) -> f64 {
-    if mods.shift || mods.ctrl { FINE } else { 1.0 }
+    if mods.shift { FINE } else { 1.0 }
 }
 
 /// The factor a drag keeps: Shift is fine.
@@ -222,13 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn alt_turns_the_wheel_to_depth_and_shift_or_ctrl_make_it_fine() {
+    fn alt_turns_the_wheel_to_depth_and_shift_alone_makes_it_fine() {
         let alt = Mods { alt: true, ..none() };
         assert!(matches!(wheel_change(0, -NOTCH, alt), Change::Step { axis: Axis::Depth, notches, .. } if notches == 1.0));
-        for fine in [Mods { shift: true, ..none() }, Mods { ctrl: true, ..none() }] {
-            let Change::Step { notches, .. } = wheel_change(0, -NOTCH, fine) else { panic!() };
-            assert!((notches - FINE).abs() < 1e-12);
-        }
+        let Change::Step { notches, .. } = wheel_change(0, -NOTCH, Mods { shift: true, ..none() }) else { panic!() };
+        assert!((notches - FINE).abs() < 1e-12);
+        // Ctrl is not in the reference's wheel law.
+        let Change::Step { notches, .. } = wheel_change(0, -NOTCH, Mods { ctrl: true, ..none() }) else { panic!() };
+        assert!((notches - 1.0).abs() < 1e-12);
     }
 
     #[test]
