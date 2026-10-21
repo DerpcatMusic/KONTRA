@@ -245,6 +245,10 @@ pub mod plot {
     /// How many samples either side the halo's own edge is averaged over, so
     /// a step in the trace cannot stack its bands into a bright column.
     pub const GLOW_SOFTEN: usize = 24;
+    /// How many samples either side the drawn trace is averaged over. The
+    /// engine's per-bin reduction is jagged at the bin rate; the reference's
+    /// trace is a smooth line, so the drawn edge takes a short average.
+    pub const TRACE_SOFTEN: usize = 3;
 
     /// The well the plot sits in: its shadow's reach.
     pub const WELL_TOP: f64 = 9.0;

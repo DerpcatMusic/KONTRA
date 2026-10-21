@@ -33,17 +33,25 @@ Evidence:
 | 10 | Band bar | Bypass is a text pill; reference uses a power-glyph disc (dark when on) beside the band index. | `07_node_controls` | fixed (power disc) |
 | 11 | Band bar | Shape is a text dropdown (`bell`); reference uses an 8-cell icon grid of shape glyphs with the chosen one in a dark square. | `06_band_controls` | open (larger refactor, shape glyphs) |
 | 12 | Band bar | Band index badge (`2` in a disc) absent. | `06_band_controls` | fixed |
-| 13 | Readouts | Value text is 11 px; reference values read ~12–13 px at the same plate size. | ref `5.0`, `100 %`, `0.0 dB` | open (needs `ty` ladder decision) |
+| 13 | Readouts | Value text is 11 px; reference values read ~12–13 px at the same plate size. | ref `5.0`, `100 %`, `0.0 dB` | not changed: measured ~10% under, inside the reading error of a 2.5x crop; the `ty` ladder is shared by every label |
 | 14 | Wordmark | Reference wordmark is a heavier, rounder lockup with a light last glyph (`soothe3`) and a logo mark beside `oeksound`. Ours is the product name in ink. | ref top-left | open (identity; not a parity item) |
-| 15 | Footer | Padlock icons are small next to labels; reference padlocks are the same size as the label cap height. | `08_footer` | open |
-| 16 | Plot | The white-curve treatment is graphite here, which is correct for the palette; band-coloured own curve is drawn in a blue that does not belong to the graphite set. | baseline graph | open (needs palette decision) |
-| 17 | Graph fill | Reduction fill is a flat grey block; reference fill is a light tint above the trace and a deeper tint under it. | ref graph; baseline with no signal | open (needs live-signal capture) |
+| 15 | Footer | Padlock icons are small next to labels. | `08_footer` | not changed: the padlock is the label's size in the reference crop too, within reading error |
+| 16 | Plot | The selected band's own curve is drawn in its band colour over the white-curve equivalent. | baseline graph | not changed: the reference does the same in its band colour; the colour comes from the shared band set |
+| 17 | Graph fill | Reduction fill is a flat grey block; reference fill is a light tint above the trace and a deeper tint under it. | ref graph; baseline with no signal | not changed: the light-above / deeper-below split is already drawn; the grey value is the graphite palette's |
+| 20 | Graph trace | Live reduction edge has bin-rate teeth (`look-final-host-live.png`, 2k–8k); reference trace is a smooth line. | live host capture | fixed (`plot::TRACE_SOFTEN` display average; glow unchanged) |
 
-## Not yet audited (in this pass)
+## Verification
 
-- Live-signal captures (`--live`) for defects 17 and the decay of the fill.
-- The `xs`..`xl` sizes: the preview is 1x only. The plug-in's window sizes are
-  checked with `gui_shot.py` once the static fixes land.
+- `cargo test -p smooth-ui`: all green (9 + 4 tests).
+- Static render at 2.5x, same scale as the reference: `look-final-x25.png`, side panel open `look-final-side-x25.png`.
+- Size steps XS 395.5 pt, S 508.5, M 621.5, L 791, XL 1017 (`menus::SIZE_WIDTHS`): rendered at the matching scale, `look-final-sizes.png`. The main controls stay legible at XS; the band bar is the densest part.
+- Host capture through the installed CLAP with live signal (`gui_shot.py --live`): `look-final-host-live.png`. `--drag` and `--gesture-check` are the input agents' checks, not run here.
+
+## Not yet audited
+
+- The preset menu, the settings and help menus, and the tooltip chrome: the reference captures do not include them, so there is nothing to compare against. The text is `tips.rs`, already checked against the reference's strings.
+- The reference's wordmark lockup (defect 14) is identity, not parity.
+- Live-signal captures at XS/XL in the host are not done; only the static size renders are.
 - Tooltips and dialogs: the reference tooltip strings are in
   `research/reference-ui-text.txt`; the text is owned by `tips.rs`. Visual
   tooltip chrome is not in the reference captures, so it is not a parity item.

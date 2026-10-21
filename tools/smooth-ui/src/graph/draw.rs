@@ -67,8 +67,19 @@ pub fn plot(
         draws.push(Draw::fill(Path::polyline(band, true), ca(t.plot_ink, t.glow)));
     }
 
+    // The drawn trace: the reduction averaged over a few bins, so its edge is a
+    // line and not the engine's bin-rate teeth.
+    let trace: Vec<(f64, f64)> = (0..fill.len())
+        .map(|i| {
+            let lo = i.saturating_sub(plot::TRACE_SOFTEN);
+            let hi = (i + plot::TRACE_SOFTEN).min(fill.len() - 1);
+            let span = &fill[lo..=hi];
+            (fill[i].0, span.iter().map(|p| p.1).sum::<f64>() / span.len() as f64)
+        })
+        .collect();
+
     // The area under the reduction, closed on the plot's baseline.
-    let mut area: Vec<Point> = fill.iter().map(|&(x, y)| pt(x, y)).collect();
+    let mut area: Vec<Point> = trace.iter().map(|&(x, y)| pt(x, y)).collect();
     area.push(pt(PLOT_W, PLOT_H));
     area.push(pt(0.0, PLOT_H));
     draws.push(Draw::fill(
@@ -76,7 +87,7 @@ pub fn plot(
         Gradient::vertical(c(t.fill_top), c(t.fill_bottom)),
     ));
     draws.push(Draw::stroke(
-        Path::polyline(fill.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(), false),
+        Path::polyline(trace.iter().map(|&(x, y)| pt(x, y)).collect::<Vec<_>>(), false),
         ca(t.plot_ink, t.veil_soft),
         stroke::RULE,
     ));
