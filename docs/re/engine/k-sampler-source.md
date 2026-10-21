@@ -1,6 +1,6 @@
 # Kontakt Sampler and DFD source modules
 
-Status: **partial, waiting on Kontakt 8 decompilation.** The export at
+Status: **partial; implementing without waiting for the decompilation (user decision, 2026-10-21).** Earlier notes: the export at
 `/data/dev/workspace/Research/KONTRA/source/kontakt8/` had no `READY` marker and an
 empty `kontakt8/` directory when this was written (2026-10-21). Laws below are limited
 to what the repo already records (format fields, engine code, tests, docs). Items
@@ -80,8 +80,8 @@ representation is `crates/sampler-ir/src/lib.rs` (`Playback`, `Looping`, `LoopRa
 
 | # | Item | Kontakt side | Engine side | Status | Next step |
 | --- | --- | --- | --- | --- | --- |
-| G1 | Group interpolation quality | `interpolation` / `interp_quality` i32 on the group record (`vendor/ni-file/src/kontakt/objects/group.rs:131`). Enum values and resulting kernel: **unrecovered** | Parsed into `mapping.rs:24`; no IR field; `library.rs` never reads it. The resampler is chosen once per engine instance (`sampler-core/src/lib.rs:1210, 1387`), not per group or voice | **Missing** and silently ignored (violates the "diagnose, don't ignore" rule) | Recover the enum and the per-value kernel from Kontakt 8 (group sampler routine). Then add a per-group `interpolation` selector in `sampler-ir` that picks a kernel per voice. Kernel tables are already cached per quality (`OnceLock`), so selection is cheap. Until then, report non-default values as not modeled |
-| G2 | DFD preload size | `dfd_channel_preload_size` i32 on the instrument (`kontakt.rs:29`). Unit (frames, bytes, per channel) and effect on prefetch: **unrecovered** | Parsed and copied to IR; nothing reads it. `stream.rs` uses its own headroom policy (`policy.headroom`) | **Missing**, silently ignored | Recover the consumer in Kontakt's streaming code. Map it to the existing stream policy's per-channel head. Do not change prefetch numbers without a measured underrun/latency comparison |
+| G1 | Group interpolation quality | `interpolation` / `interp_quality` i32 on the group record (`vendor/ni-file/src/kontakt/objects/group.rs:131`). Enum values and resulting kernel: **unrecovered** | Parsed into `mapping.rs:24`; no IR field; `library.rs` never reads it. The resampler is chosen once per engine instance (`sampler-core/src/lib.rs:1210, 1387`), not per group or voice | **Missing.** Now diagnosed: non-zero values are reported as `interpolation quality` (`library.rs`, test `unmodeled_group_interpolation_is_reported_not_dropped`). Corpus census: 0 non-default files in 226,278 (0x95) and 5,675 (0x96) group records, so the default is 0 and no corpus instrument hits this path | Recover the enum and the per-value kernel from Kontakt 8 (group sampler routine). Then add a per-group `interpolation` selector in `sampler-ir` that picks a kernel per voice. Kernel tables are already cached per quality (`OnceLock`), so selection is cheap. Until then, report non-default values as not modeled |
+| G2 | DFD preload size | `dfd_channel_preload_size` i32 on the instrument (`kontakt.rs:29`). Unit (frames, bytes, per channel) and effect on prefetch: **unrecovered** | Parsed and copied to IR; nothing reads it. `stream.rs` uses its own headroom policy (`policy.headroom`) | **Missing.** Now diagnosed as `DFD preload override` (`library.rs`, program translation). Public docs (NI DFD tab, third-party guides) describe the preload as kilobytes per sample, default 60 KB; the census values (3, 8, 21, 31, 42, 729, nonzero in 1,000+ programs) are consistent with KB but **unverified**. Applying it would change head sizing (`stream.rs` `head_frames`) for real libraries, so it is not applied yet | Recover the consumer in Kontakt's streaming code. Map it to the existing stream policy's per-channel head. Do not change prefetch numbers without a measured underrun/latency comparison |
 | G3 | Sampler interpolation accuracy | Unmeasured against Kontakt | Cubic and sinc as above | Unverified | Compare against a Kontakt render of a pitch-shifted sine (needs native rig; not available here) |
 | G4 | Loop count semantics | `loop_count` 0 = indefinite, positive = passes | Matches the IR comment | Consistent with format docs; not verified against a Kontakt render | Confirm with a counted-loop render |
 | G5 | DFD vs Sampler signal | Both documented as the same signal | Single engine path; DFD accepted without report (`library.rs:1623`) | Matches the documented claim; DFD streaming cost is measured elsewhere (`DSP_COVERAGE.md`) | None for signal. Streaming buffer parity is G2 |
@@ -104,6 +104,12 @@ representation is `crates/sampler-ir/src/lib.rs` (`Playback`, `Looping`, `LoopRa
 
 No code change is made in this unit yet, because G1 and G2 need values only the
 decompilation can provide.
+
+## Corpus evidence (kontakt-census, `docs/architecture-v2/kontakt-census/fields.tsv`)
+
+- `interp_quality`: 782 files / 226,278 records (0x95) and 52 files / 5,675 records (0x96); nonbaseline files 0. Every record is the default.
+- `dfd_channel_preload_size`: nonzero in every program version surveyed (0xa8 ... 0xb5), e.g. 729 in 729 files (0xae), 42 in 42 files (0xb1, 48 records). Values are authored per program, so the override is real in the corpus.
+- Topology gap T14 (`KONTAKT_TOPOLOGY.md`) already records that the preload is retained but not consumed; this doc confirms it.
 
 ## Evidence confidence
 
