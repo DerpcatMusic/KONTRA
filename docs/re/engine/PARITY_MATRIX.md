@@ -9,8 +9,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | --- | --- | --- | --- |
 | Sampler | unknown | none | |
 | DFD | unknown | none | |
-| Wavetable | unknown | none | |
-| Tone Machine | unknown | none | |
+| Wavetable | partial | vector | Phase forms 0, 7–12, 14–17, 31–33: original-byte vectors of `0x140567aa0` (`sampler-core/src/wavetable_native_vectors.json`, 490 cases). Missing: amplitude forms, unmeasured forms (Blinds, Fold, Exp, Log, sync), quality/anti-alias kernel, phase randomness, inharmonic/mod, live `wavetableMod*`/`wavetableInharmonic` routes. Unit doc: `docs/re/engine/k-wavetable-tonemachine.md` |
+| Tone Machine | missing | decomp | Stored mode 1 maps to `StretchKind::ToneMachine` on the shared engine with UNMEASURED stand-in constants, reported `NotModeled`. Decompile confirms a separate `BToneMachine` object (0x420 bytes, `0140cd0000.c:4553`); render kernel, grain/formant law and DC filter coefficients not recovered. |
 | Time Machine | unknown | none | |
 | Time Machine 2 | unknown | none | |
 | Time Machine Pro | unknown | none | |
