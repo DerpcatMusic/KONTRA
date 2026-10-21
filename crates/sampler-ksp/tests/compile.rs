@@ -1431,3 +1431,57 @@ fn real_exp2_log2_log10_note_match_manual_semantics() {
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn a_declaration_range_can_use_the_instruments_group_count() {
+    let environment = sampler_ksp::Environment {
+        groups: vec!["a".into(), "b".into(), "c".into()],
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(
+        "on init declare ui_value_edit $shift (-($NUM_GROUPS-1),$NUM_GROUPS-1,1) end on",
+        48000,
+        limits(),
+        &[],
+        &environment,
+    )
+    .unwrap();
+    let view = script.view();
+    let setup = view.setup();
+    let field = setup.fields.iter().find(|f| f.name == "$shift").unwrap();
+    let sampler_ksp::model::Location::Control(id) = field.storage else {
+        panic!("{:?}", field.storage)
+    };
+    let domain = setup.control_domains.iter().find(|(c, _)| *c == id).unwrap().1;
+    assert_eq!(domain, sampler_core::ControlDomain::Integer { min: -2, max: 2 });
+}
+
+#[test]
+fn declaration_ranges_read_variables_where_on_init_reaches_them() {
+    let script = compile(
+        "on init
+            declare $lo
+            declare $hi
+            $lo := 0
+            $hi := 1000000
+            declare ui_slider $s ($lo, $hi)
+            $lo := 5
+            declare $low_note := 36
+            declare ui_value_edit $v ($low_note, $low_note + 12, 1)
+        end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let setup = view.setup();
+    let domain = |name: &str| {
+        let field = setup.fields.iter().find(|f| f.name == name).unwrap();
+        let sampler_ksp::model::Location::Control(id) = field.storage else {
+            panic!("{:?}", field.storage)
+        };
+        setup.control_domains.iter().find(|(c, _)| *c == id).unwrap().1
+    };
+    assert_eq!(domain("$s"), sampler_core::ControlDomain::Integer { min: 0, max: 1000000 });
+    assert_eq!(domain("$v"), sampler_core::ControlDomain::Integer { min: 36, max: 48 });
+}

@@ -653,6 +653,7 @@ fn init_statements(body: &[hir::Stmt], span: &impl Fn(diag::Span) -> Span, out: 
         let label = match &s.kind {
             Assign(..) => "init: write typed state/control",
             Fill(..) => "init: fill typed array",
+            UiParams(..) => "init: evaluate declaration parameters",
             If(_, a, b) => {
                 init_statements(a, span, out);
                 init_statements(b, span, out);

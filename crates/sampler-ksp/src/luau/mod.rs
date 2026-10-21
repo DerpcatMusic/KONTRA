@@ -542,6 +542,10 @@ impl Compiler<'_> {
                 self.line("end");
             }
             StmtKind::Select(value, cases) => self.select(value, cases),
+            // The host has no range setter; the interpreter runs such scripts.
+            StmtKind::UiParams(..) => {
+                self.unsupported("init-time UI declaration range");
+            }
             StmtKind::Call(f) => self.line(&format!("F{}()", f.0)),
             // `exit` leaves the enclosing callback or function, even from inside a
             // loop (interpreter: `Flow::Exit` propagates through `While`).
