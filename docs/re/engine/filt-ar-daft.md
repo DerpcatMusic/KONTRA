@@ -5,15 +5,21 @@ for the decompile (2026-10-21). Kontakt 8 READY is still absent, so the decompil
 
 ## Design (universal filter, shared with filt-sv)
 
-- Linear sections: `cascade` (biquad / SV sections) and `svf`. Owned by filt-sv.
-- Nonlinear transfer functions: `stage.rs` (`soft`, `upsample2`, `decimate2`). A core picks its
-  stage and where it sits in the loop; a product's saturator is a setting, not a new core.
-- Daft is a 2x saturating SVF: its loop uses `stage::soft` on the band state, and its 2x wrapper uses
-  `stage::upsample2` / `stage::decimate2`. Output is bit-identical to before (golden test
-  `daft::tests::output_is_bit_stable`, FNV over output bits, two response modes).
-- Not moved: `cascade::soft` (polynomial, clamp ±4) and `cascade::sv_sat` (clamp ±2L, slope 0.25/L).
-  They belong to filt-sv; the shared shape is `(a - c|s|)s` with a clamp, so filt-sv can move them onto
-  `stage.rs` with tolerance tests. Ladder's per-stage curve and AR's detector stay in their cores.
+Built on filt-sv's shared core (`linear::Zdf`, `shaper::Knee`, `shaper::pade`).
+
+- **AR (done, bit-identical).** Each AR section is `Zdf::new(g, 2(1-feedback))` run through
+  `Zdf::tick` with `STATE_KNEE`, i.e. `Slope::Direct(0.0005)` clamped to +-1000 (`shaper.rs`
+  gained the `Direct` slope, the AR order `c - (|c| c) w`). `ar_kernel::saturate` is deleted.
+  Evidence: the old and new section and knee arithmetic agree bit for bit over 2e5 section and
+  2e6 knee probes, and the end-to-end golden hash `ar_kernel::tests::output_is_bit_stable`
+  (0x9167fd7b74bd03ae) is the same for the old and new kernels.
+- **Daft (kept, not bit-identical).** Its loop is a different discretisation: it stores the band and
+  low states, not the high-pass state `Zdf` keeps, and damps the band state with `2 - res*feedback`.
+  So it cannot run on `Zdf` without changing its output. Its saturator `soft` (f64, clamp at 3) is
+  the Padé curve of `shaper::pade` (f32, no clamp), not bit-equal, so `daft::soft` stays. Daft's
+  2x wrapper is `oversample.rs`. Golden hash `daft::tests::output_is_bit_stable` is unchanged.
+- Not moved: `cascade::soft` and `cascade::sv_sat` (filt-sv's). Ladder's per-stage curve and the
+  AR detector stay in their cores.
 
 ## Measurement status (Wine oracle)
 
