@@ -28,6 +28,11 @@ Shared by all five Multi and sine kernels (called at the tail of each kernel).
 - Output is scaled by `(f0 - 0.3)`. The legacy ceiling therefore reaches 0.7, not 1. This is
   what `KontaktLfoFade` in `digital_fade.rs` reproduces, and what its v73 mode reflects.
 - The sample count is clamped to the remaining count at `+0xfc`.
+- Implemented: the v73 alternate clamp (`KontaktLfoFade::from_saved_alternate`, `with_mode`).
+  The legacy ramp stops at gain 0.7 and steps to 1 after its scaled points; the alternate ramp
+  reaches gain 1 at the end of the fade. Tested in `digital_fade.rs`. The stored switch that
+  selects it (`e5`) is not mapped from the file yet; the translator still refuses
+  `additional_flag = true`.
 - Confirmed: the stage is a multiplicative ramp, not a hold. This supports the fade reading of
   `initial_values[0]`.
 - **Not confirmed:** whether the ramp advances once per sample or once per 32 samples. The loop
