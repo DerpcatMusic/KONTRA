@@ -128,8 +128,8 @@ Per channel, `fcn.180619fc0` (lines 415–450 of the annotated decompile):
    N1 = 2·(bins1−1). (Argument order: first arg is src, second dst, as in step 1.)
 4. Power: `fcn.1806181b0(dst, complexN1, N1)` = `re²+im²` per bin, no scale
    (checked in the pseudocode: `pfVar24[k] = re*re + im*im`).
-5. `0x180001190(dst, idx, per_channel_ptr, N1 as float)` — **not identified**. It may
-   take sqrt/log or just move bins. This decides whether the array is |Y| or |Y|².
+5. `0x180001190(dst, idx, per_channel_ptr, N1 as float)` — **identified in pass 3 as an
+   elementwise multiply** (see section 7). The array is `|Y|²` times a weight, not `|Y|`.
 6. Resample to 1024 points (`iStack_574 = 0x400`), **Catmull–Rom cubic** at the
    fractional bin `t = (f[k]/f[N1−1])·(N1−1)`:
    `p = 0.5·[2b + (c−a)t + (2a−5b+4c−d)t² + (−a+3b−3c+d)t³]`, with the constants
@@ -164,3 +164,63 @@ Constants read from the binary (`.rdata`, f32): `1.0`, `0.5`, `1/38 (0x18209d088
 - Steps 1–3 fold: `0x1800010a0/d0` arithmetic.
 - How `bins1`, `bins2` (tables `0x770/0x788`) depend on quality, size and rate.
 - Latency (section 5) is untouched by this pass.
+
+## 7. Pass 3 (2026-10-21): thunks decoded, magnitude is power times weight
+
+Method: thunk jump tables read from the PE (`r2 pxq 8`, slot 0 = runtime selector 0; the
+selector is written as 0 or 0x14 by `fcn.1802fb880`, and every IPP variant of one op computes the
+same arithmetic). Each thunk is an argument-check wrapper that tail-calls the op.
+
+| thunk | slot 0 target | op (VERIFIED from disassembly) |
+|---|---|---|
+| `0x180001010` | `0x180001640` | complex FFT wrapper (spec ID 7 check, section 1) |
+| `0x180001190` | `0x1800049e0` -> `0x1800278c0` | `dst[i] = a[i] * b[i]`, `len` in r9d (`ippsMul_32f` shape) |
+| `0x1800010a0` | `0x180002ae0` -> `0x181d52e00` | copy, `count = len*4` bytes (rcx = dst, rdx = src) |
+| `0x1800010d0` | `0x180002e40` -> `0x181d53d90` | zero-fill, `count = len*4` bytes (rcx = dst) |
+
+`0x1806181b0` (fcn, between the complex FFT and the multiply): `P[k] = re^2 + im^2`, no sqrt, no scale
+(VERIFIED from the pass-2 pseudocode; no sqrt routine is called).
+
+### The detector's operand at the multiply (fn619fc0.c line 450)
+
+```c
+fcn.1806181b0(iVar32 /*P*/, iVar30 /*complex Y, N1*/, uStack_a40 /*= bins1*/);
+func_0x000180001190(iVar32 /*a = P*/,
+                    auStack_a28 /*b = iStack_998 + uVar10*bins1*4*/,
+                    *(auStack_560 + uVar10*8 - 8) /*dst, per group*/,
+                    fStack_aa0 /*= fStack_164 = uStack_a40 = bins1*/);
+```
+
+- `iStack_998 = *(obj+0x7a0)`, the weight table W1 of `bins1 × groups` floats (checked at line 245:
+  `(obj+0x7a8 − obj+0x7a0)>>2 == bins1 * groups`). VERIFIED.
+- `*(auStack_560 + 8g − 8)` is the g-th output row (buffer slices of `bins1` floats, line 333).
+- So per group g and bin k: **`D_g[k] = P[k] · W1_g[k]`**, then Catmull-Rom onto 1024 log bins.
+  The detector therefore consumes a **weighted power**, never a plain `|X|` or `|Y|`.
+
+### Scale consequence (INFERRED until the fold indices are pinned)
+
+- Real leg: `X = DFT_N2(pad)` unnormalised, then `X / N2` (line 416, explicit `1.0f / N2`).
+- Fold: copy + zero-fill of length-`N2` spectrum rows into a length-`N1` buffer (lines 428, 438).
+  The exact index ranges depend on `uVar35>>1` and `uStack_a10`; not yet read.
+- Complex leg: `Y = DFT_N1(fold)`, unscaled.
+- Therefore `P ∝ (N1/N2)² · (fold energy)`. If `N1` and `N2` are fixed per quality (not per rate),
+  the reference's absolute level has **no 1/N or 1/√N normalisation at all** and is set by `W1`.
+  Whether `N1/N2` depends on the sample rate is the open point (see the table in `magnitude-scale.md`).
+
+### What this changes for SMOOTH (no SMOOTH code changed in this pass)
+
+1. `frame()` takes `norm(X_k)` of one N-point STFT. The reference takes `P_k` of a
+   two-resolution chain, then a per-group weight. These are different quantities: `norm` is the
+   square root of the power, so SMOOTH's soft target `-ln(max(m,1))` and hard target
+   `-(0.25 + d^4/4) ln(m^2+1)` are evaluated on a different variable than the reference's.
+2. The 1024-point resample and `W1`/`W2` are the structural pieces missing from the port.
+3. The rate-dependence test (depth 10 at 44.1 kHz vs 192 kHz) cannot be matched until the
+   reference's `N1/N2` and `W1` are read as functions of rate. Multiplier `*(arg2+0x630)` on the
+   detector bounds (caller `fcn.1806b96f0`, corpus `006b96f0.c`) is the likely rate factor. Not read yet.
+
+### Still open
+
+- Fold index ranges (`uVar35`, `uStack_a10`, `iVar16`) and therefore the N1/N2 relation.
+- Builders of the object vectors at `+0x770/+0x788` (bin frequencies) and `+0x7a0/+0x7b8`
+  (weights). The corpus hit at `00670bb0.c` writes `+0x778` on a different object; ignore it.
+- Latency (section 5) and the rate factor `*(arg2+0x630)`.
