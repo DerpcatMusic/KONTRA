@@ -1944,6 +1944,21 @@ mod tests {
         }
     }
 
+    /// Stereo Tune and Surround Panner have no proved law: each must surface a
+    /// named diagnostic and pass audio through, never a silent or invented DSP.
+    #[test]
+    fn unproved_spatial_modules_are_named_and_pass_through() {
+        let mut bytes = Vec::new();
+        for v in [0.1f32, 0.2, 0.3, 0.4] { bytes.extend(v.to_le_bytes()); }
+        for (module, name) in [(0x70u16, "Stereo Tune"), (0x1d, "Surround Panner")] {
+            let mut fx = slot(module, bytes.clone(), 1.0);
+            fx.version = if module == 0x1d { 0x70 } else { 0x10 };
+            let built = chain(&[fx], Scope::Voice);
+            assert!(built.processors.is_empty(), "{name} must not invent DSP: {:?}", built.processors);
+            assert!(built.notes.iter().any(|(_, _, text, reason)| text.contains(name) && *reason == sampler_ir::Reason::NotModeled), "{name}: {:?}", built.notes);
+        }
+    }
+
     #[test]
     fn instrument_bus_pan_only_uses_native_stereo_balance() {
         use sampler_ir as ir;

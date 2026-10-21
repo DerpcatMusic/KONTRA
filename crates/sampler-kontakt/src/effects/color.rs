@@ -193,6 +193,7 @@ pub(super) fn stereo_modeller(spread: f32, pan: f32, pseudo: bool) -> Config {
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
+        0x70 => "Stereo Tune: reader 0x140ac6120 identified (4 saved floats: Drift, Spread, Split, Mix); fields not decoded and DSP law not extracted, so the slot passes audio through unprocessed",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
         0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
