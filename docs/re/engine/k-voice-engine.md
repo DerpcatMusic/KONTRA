@@ -135,3 +135,16 @@ Gap: no Kontakt glide law. Do not map the modulator until the setup routine is d
   deliver MIDI. Measuring O1–O3 (victim order, exclusion and monophonic fades) needs a
   labelled multi-note render through this path. It was not run in this revision: the
   harness drives Kontakt by mouse clicks and writes scratch under `/tmp`.
+
+## Revision: decompile READY (2026-10-21, evening)
+
+- Confirmed in `source/kontakt8/0140d00000.c` (`FUN_140d049b0`, 0x140d049b0): version 0x60
+  reader stores the 16-bit kill mode at +0x2c, the preference byte at +0x30, and three
+  32-bit values at +0x28, +0x34, +0x38, as recorded above. Writer `FUN_140d13370` mirrors
+  the same order.
+- Not yet located: the victim routine (O1), the exclusion cut and the monophonic fade
+  (O2, O3). Decompiled functions carry no recovered names (`FUN_*`); the field offsets are
+  too generic to find the allocator by text search. The next step is a read-only
+  cross-reference from these reader/writer addresses to the voice manager's allocation
+  code, not more string search.
+- Rows O1–O3 therefore stay open. Nothing in this revision changes engine behaviour.
