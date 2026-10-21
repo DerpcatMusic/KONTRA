@@ -472,8 +472,7 @@ fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_
     );
 }
 
-#[test]
-fn host_parameter_callback_changes_audio_at_the_exact_host_sample_offset() {
+fn host_bound_part() -> (CorePart, sampler_ui_ir::ControlId) {
     use sampler_core::*;
     let script = sampler_ksp::compile("on init declare ui_knob $k(0,100,1) declare ui_knob $echo(0,1000,1) end on on ui_control($k) $echo := $k + 1 end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
     let ui_id = script.model().interface.widgets[0].ui_id;
@@ -527,6 +526,12 @@ fn host_parameter_callback_changes_audio_at_the_exact_host_sample_offset() {
         MixTree::instrument("sample-exact host"),
     )
     .unwrap();
+    (part, echo)
+}
+
+#[test]
+fn host_parameter_callback_changes_audio_at_the_exact_host_sample_offset() {
+    let (part, echo) = host_bound_part();
     let p = SamplerParams::new();
     p.shared.ensure_parts(1);
     let mut dsp = Dsp::default();
@@ -698,4 +703,16 @@ fn library_ui_owner_borrow_fences_epoch_and_returns_actual_replacement_arc() {
     let current = atoms.widget_gate_uvi_owner(4).unwrap();
     assert!(Arc::ptr_eq(&current, &b.ui));
     assert!(!Arc::ptr_eq(&current, &a.ui));
+}
+
+#[test]
+fn a_replacement_part_starts_from_the_hosts_last_automation_value() {
+    let (first, echo) = host_bound_part();
+    let mut core = V2Core::with_parts(1, 48000.);
+    core.install(0, Some(Box::new(first)));
+    assert!(core.host_parameter(2048, 0.25));
+    assert_eq!(core.control_value(0, echo), Some(26.));
+    let (second, _) = host_bound_part();
+    core.install(0, Some(Box::new(second)));
+    assert_eq!(core.control_value(0, echo), Some(26.), "the new part keeps the host lane's value");
 }
