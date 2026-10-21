@@ -49,3 +49,13 @@ Gap table (Rotator): every row is missing. Remains in `unproved` with the existi
 1. Read the Ring Modulator core (carrier, FM, edge, LFO, fast mode) and the Rotator core (speed threshold, balance, acceleration, distance, mix) from `source/kontakt8/` with `rg`.
 2. Add a `Curve` variant per module in `sampler-ir/src/fx/`, the DSP core under `sampler-core/src/dsp/`, and the field mapping in `sampler-kontakt/src/effects/`.
 3. Tests: one recorded-vector or null test per module.
+
+## Decompile evidence (Kontakt 8 export, READY)
+
+Confirmed from `source/kontakt8/` by name only. No DSP law is taken from it yet.
+
+- Ring Modulator: effect class `BEffectRingModulator` (`0140a80000.c:3752`), UI name "Ring Modulator" (`0140a70000.c:3106`), preset folder `RingModulator`. Module classes `RingModulatorModuleBase` / `Inst` / `Group` (`0140640000.c:6519`, `0140650000.c:11`, `0140650000.c:1925`). Setter for the LFO waveform (par id 0x34d) rejects values >= 2 (`0140780000.c:6103`), so the LFO has two waveforms.
+- Rotator: effect class `BEffectRotator` (`01407c0000.c:4673`), parameter class `BParFXRotator` (`0140700000.c:1283`), modules `RotModuleBase` / `RotModuleInst` / `RotModuleGroup` (`0140640000.c:6552`, `0140650000.c:47`, `0140650050`).
+- Freak: DSP core `ni::effektrig::dsp::freak::Freak` (`0141960000.c:2872`), already ported in `dsp/color/freak.rs`.
+
+Gap: the vtable slot tables are not in the export, so the process method behind each class cannot be named from the `.c` text. The Ring and Rotator DSP bodies are therefore not yet located. Next step: a vtable dump for these classes (or a read-only xref query on a copy of the Ghidra project), then the laws can be written here.
