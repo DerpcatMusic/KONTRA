@@ -1,5 +1,128 @@
 # SMOOTH input behaviour: emulation results (soothe3 restored image)
 
+Status: **partly recovered (round 2)**. The wheel message path is now run end
+to end by the real image code: the Editor push, the ring, the pop, the kind
+dispatch, and the consumer's stores into the UI object. Still **not recovered**:
+how the stored wheel fields reach the `Input` the components read, the value law
+(wheel step, fine factor, drag scale, reset target, hit radius). So
+`input.rs` and `graph/gesture.rs` keep their placeholder constants. Nothing below
+the round-2 section is a value to copy into SMOOTH, except the layouts and
+addresses, which are verified.
+
+Repro: `tools/smooth-core/research/re-tools/emulate/input_chain.py` (run with
+`python -I` from that directory, venv with unicorn, capstone and pefile).
+
+## Round 2: real wheel pipeline (verified by emulation)
+
+Method: the image is run as-is (Unicorn, base 0x180000000). Only imports are
+stubbed. The MSVC clock (`_Query_perf_frequency` = 10 MHz, `_Query_perf_counter`
+= fixed value) is a stub because the consumer checks the frequency against
+`0x989680` and divides by it (`fcn.1803312c0`). Nothing is faked on the path.
+
+### 1. Editor wheel push (`kali::Editor` slot 8 = `fcn.180367590`)
+
+- Reads `*(editor+0x1d0)` = host. Payload read from the event `r8`:
+  `float dx @+0`, `float dy @+4`, `uint8 flags @+8`.
+- Pushes kind `0xf` to `host+0x300` via `fcn.180331100`.
+- Verified: push with `(1.5, -2.0, 0x05)` lands as kind `0xf`, `dx=1.5`,
+  `dy=-2.0`, `flags=0x05`.
+
+### 2. Ring (`fcn.180331100` push, `fcn.1806f8a60` try_pop)
+
+Vyukov-style bounded MPMC ring. Queue object `q`:
+
+| offset | field |
+|---|---|
+| `+0x00` | capacity (divisor for `pos / cap`) |
+| `+0x08` | cell buffer |
+| `+0x40` | enqueue position (`lock cmpxchg` in push) |
+| `+0x80` | dequeue position (`lock cmpxchg` in try_pop) |
+
+Cell (`0x80` bytes): `seq @+0` (free = `2*lap`, published = `2*lap+1`,
+consumed = `2*lap+2`), `kind @+8` (dword), payload `@+0x10` (copied with
+`fcn.1806f06d0`/`fcn.180330fd0`).
+
+`try_pop(q, out)`: `out+0` = kind (dword), `out+8` = payload. Returns `al`.
+
+### 3. Who pops the wheel ring
+
+The UI pump `fcn.1806f5ae0` (no direct callers; reached through a
+`std::function`) runs with `this = r14 = host+0x200`, so the wheel ring is
+`this+0x100`:
+
+1. `fcn.1806f4280` pops `[this+0x6b0]+0x140` (second ring).
+2. `fcn.1806f4640` pops `this+0x100` (the wheel ring). Its kind switch is
+   a jump table of 7 entries at VA `0x1806f4d04` (kind `0xc..0x12`, base-relative
+   dwords): `0xc -> 0x1806f46cf`, `0xd -> 0x1806f473e`, `0xe -> 0x1806f496a`,
+   `0xf -> 0x1806f4bf8`, `0x10 -> default`, `0x11 -> 0x1806f499d`,
+   `0x12 -> 0x1806f4b35`.
+3. `fcn.1806f4d20` pops a queue at `+0x1c0` of another object (not traced).
+
+The `0xf` case (`0x1806f4bf8`) stores, with pcs confirmed by the write trace:
+
+| pc | store | value (verified) |
+|---|---|---|
+| `0x1806f4c2f` | `this+0x338` (float) | `dx` |
+| `0x1806f4c43` | `this+0x33c` (float) | `dy` |
+| `0x1806f4c4b` | `this+0x340` (byte) | `flags` |
+
+Then it calls `fcn.1803312c0` (QueryPerformanceFrequency and counter, scaled
+to 100 ns units) and stores the 64-bit value read through its returned pointer
+at `this+0x720`. This is consistent with an event timestamp; the reader is not
+checked.
+
+Kind `0xf` is **not** handled by the other pop loop `fcn.180849620`
+(it pops `r13+0x200` and its jump table sends `0xc..0xf` to the default case).
+
+### 4. Where the Input comes from (partly)
+
+After the pops, the pump calls the root component through its vtable:
+`call [vt+8]` on `[this+0x6b8]` with `rdx = [this+0xb8]` (the Context object),
+`r8 = this+0x280` (the **Input** object), `r9 = this+0x4c8` (the Output).
+So the UI-side Input is at `this+0x280` = `host+0x480`, and the Context is a
+separate object (the Knob reads its float at `+0x620`).
+
+The wheel fields at `this+0x338..0x340` are not copied into `this+0x280` in
+the pump's straight-line code after the consumer (I read that block). The copy
+happens elsewhere; not found. The static
+search (scalar and block-copy accesses to `+0x330..0x340`) gives many
+candidates; none is confirmed.
+
+### 5. Knob update (slot 2 = `fcn.18073dc10`, `update(ctx, input, output)`)
+
+Registers: `rdi = this` (Knob), `rsi = Context`, `rbx = Input`, `r14 = Output`.
+It calls the child update at `this+0xda0` (vtable slot 2), reads `Context +0x620`
+(float), and reads Input pointer fields at `+0x150/+0x158/+0x160/+0x168`
+(compared with component pointers; their roles are not confirmed). Knob fields
+`+0x2e8` (int) and `+0x2ec` (bool) are read and written here; meaning not
+confirmed.
+No value write from the wheel is visible in this function. The value step is
+therefore not here, or the Input's wheel fields are read by a function that
+calls slot 2 with the value already computed.
+
+## What is still open (ordered)
+
+1. Find the reader that copies `this+0x338..0x340` (and `+0x720`) into the
+   Input at `this+0x280`. Next step: run the pump `fcn.1806f5ae0` in the
+   emulator with read watches on `this+0x330..0x348`, with a UI object built
+   field by field (`+0x6b0` ring, `+0x6b8` root vtable, `+0xb8` Context, `+0x1c0`
+   queue). Each fault names the missing field.
+2. The Knob pointer handler (slot 3, `fcn.180739410`): its body is split into
+   several `.pdata` fragments (the 34-byte entry at the start is only the
+   prologue). Trace it by executed blocks, not by linear disassembly.
+3. Value law: the wheel step, drag scale and fine factor come from the Knob
+   range/skew fields (set by its constructor) and the parameter table. Not
+   recovered.
+
+Nothing from round 2 changes a SMOOTH constant yet: the wheel step is still the
+placeholder. The verified layouts and addresses above are what the next round
+builds on.
+
+---
+
+# Round 1 (superseded): fake-struct fuzzing
+
+
 Status: **not recovered**. The harness runs the functions and the evidence is
 the negative result below. No wheel step, drag scale, fine factor, reset target
 or hit radius was recovered, so `input.rs` and `graph/gesture.rs` keep their
