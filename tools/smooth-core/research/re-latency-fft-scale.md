@@ -241,3 +241,42 @@ Corrections to section 5 (the earlier attribution was wrong):
 - The `fda0` destination is a frame local, not `X`. Whether it aliases `X+0x5f8` is unverified.
 - Open: the writers of `X+0x278` (258 store sites in `.text`), the inputs of `H`, and the
   constants at `0x18209d600`, `0x18209da10`, `0x18209d6c4`.
+
+## 9. Bin counts, weights and the "rate factor" (pass 3, static): corrections
+
+Agent-reported static reads (line refs into the annotated decompile and corpus; not re-verified line by line):
+- N1 = 2(bins1-1), N2 = 2(bins2-1). bins1 and bins2 are the float counts of two vectors on the
+  detector state S = `*(arg2+0x648)`: S+0x770 and S+0x788 (`fn619fc0.c:183-188`). Both are filled by
+  a record dispatcher `fcn.180621d50` (`corpus .../00621d50.c`): record 0 -> S+0x770, 1 -> S+0x788,
+  2 -> S+0x7a0 (W1), 3 -> S+0x7b8 (W2). Names from `index/annotated/0088fa90.c:119-122`
+  (reduction_curve_freq_points_lo/hi). So bins are **host-supplied data, not a function of quality,
+  size or sample rate** at this level.
+- No caller of `fcn.180621d50` was found (no direct call, rip-relative ref or absolute pointer), so
+  the per-preset values are unknown. Settling it needs a breakpoint or a dump of default state.
+- Groups = `fcn.18056cad0(**(S+0x4a0))` (`:155`), body unread.
+- **The "rate factor" `*(arg2+0x630)` is NOT a DSP rate factor.** It is `M` from the caller
+  `fcn.1806b96f0` (`006b96f0.c:5-8`), default 1.0 (`006f3260.c:254`), updated per UI tick from
+  `PluginUI::slot12` (RVA 0x569f60, not decoded). It scales the widget rect (left, top, right,
+  bottom) passed as the detector's frequency bounds. INFERRED: a display-coordinate scale.
+  Section 6's "likely rate factor" should be discarded.
+- Sample rate enters a different object. `fcn.18089c480` (`0089c480.c:134-146`) clamps R >= 44100 and
+  sets m = trunc(R/44100 * size), N = 2m, with size 0x800 from `00896ad0.c:28`. For size 0x800 that gives
+  4096 (44.1k), 4456 (48k), 8192 (88.2k), 8916 (96k), 16384 (176.4k), 17832 (192k). The 17840 in
+  section 4 is off by 8 (the agent's arithmetic check, not re-run here).
+- Caller correction: `fcn.180617f70` (the FFT-object ctor) is called from `0x619fc0`
+  (`0x61a5b1`, `0x61a5c4`) and `0x61b870` (`0x61b894`). The 0x89xxxx/0x8axxxx sites in section 2 call
+  `0x61b870`, not `0x617f70` directly.
+
+### Consequence for the port
+
+The reference's absolute level is not a function of SMOOTH's sample-rate-scaled N. Its detector uses
+N1/N2 from host-filled bin vectors and a per-group weight W1 from the same host records. The
+44.1 vs 192 kHz depth difference (rt-audit) therefore has to come from the bin/weight data or from the
+analysis sub-object, not from `M`. Not resolved; the next step is the dispatcher caller.
+
+### Open
+
+1. Caller of `fcn.180621d50`: breakpoint at RVA 0x621d50 during preset or default-state load.
+2. Default bin counts: dump the default record payloads (bytes/4 = bins).
+3. Decode `PluginUI::slot12` (0x569f60) only if the display scale matters for the detector.
+4. Writer of PluginUI+0xd0 (divisor for M).
