@@ -1,9 +1,0 @@
-[package]
-name = "smooth-core"
-version = "0.1.0"
-edition = "2024"
-publish = false
-description = "SMOOTH's engine: a clean-room reimplementation of soothe3's spectral suppressor"
-
-[dependencies]
-rustfft = "6.4"
