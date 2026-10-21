@@ -19,6 +19,9 @@ the plug-in in a host.
   import must not use the default stub (it returns 0 and leaves XMM0 alone).
 - `fake_host.py`: runs the DSP constructor `0x88fa90` against a synthetic host
   (registration slot +0x18, getter +0x20).
+- `detector_run.py`: runs the reduction detector `0x619fc0` on a stand-in host state. It fills the
+  bins and weights through `0x621d50`, then reports the first fault with its function and the
+  registers. Stand-in state only; see `../../re-latency-fft-scale.md` section 15.
 - `oracle.py`: constructor-state oracle. Runs the constructor per sample rate
   and calls `getLatency` (`0x88f610`). Writes JSON to
   `tools/smooth-core/research/oracle/`.
