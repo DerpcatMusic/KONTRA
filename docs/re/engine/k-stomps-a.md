@@ -53,6 +53,8 @@ Controls: Distortion (input gain; range limited, distortion present at the lowes
 
 ## Open items
 
-- Locate the Chainsaw apply and kernel. `ModulatableDSPCoreWrapper<BEffectChainsawTraits,1>` and `BEffectChainsaw` are named in `01407c0000.c`/`01407f0000.c`; the apply is not among the candidates checked so far (`140ab9ad0`, `140ab9d00`, `140ab9f40` read other records).
+- Chainsaw apply candidate `140aba230` (decompile `0140ab0000.c`): reads f32 +0x8/+0xc/+0x10/+0x14 clamped to [0,1] into two cores (+0x1340 and +0x200, setter `1409a9ec0` indexes 0..3) and the u8 +0x18 into the mono flag +0x1c0 (reset on change). Not yet confirmed as the BEffectChainsaw vtable entry; the kernel behind the cores is not located.
+- Confirmed by decompile: Big Fuzz apply `140ab9f40` (sustain +0x8, tone +0xc, bass +0x10, treble +0x14, mono +0x18); Cat apply `140ab9100` calls distortion/filter/bass/balls/treble/tone laws in repo order.
+- Locate the Chainsaw kernel. `ModulatableDSPCoreWrapper<BEffectChainsawTraits,1>` and `BEffectChainsaw` are named in `01407c0000.c`/`01407f0000.c`; the apply is not among the candidates checked so far (`140ab9ad0`, `140ab9d00`, `140ab9f40` read other records).
 - Then record the laws, add an `AmpModel::Chainsaw` core and mapping.
 - `docs/architecture-v2/DSP_COVERAGE.md` still lists these modules as "missing"; that table predates the amp cores.

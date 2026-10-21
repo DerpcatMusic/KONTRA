@@ -122,13 +122,13 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Big Fuzz | unknown | none | |
-| Cat | unknown | none | |
-| Chainsaw | unknown | none | |
-| Cry Wah | unknown | none | |
-| Dirt | unknown | none | |
-| Distortion | unknown | none | |
-| DStortion | unknown | none | |
+| Big Fuzz | parity | vector | kernel: `kontakt_bigfuzz_vectors` (matches_the_native_big_fuzz); knob order confirmed by decompile apply `140ab9f40` |
+| Cat | parity | vector | kernel: `kontakt_cat_vectors` (matches_the_native_cat); knob order confirmed by decompile apply `140ab9100` |
+| Chainsaw | missing | decomp | params `chainsaw_distortion/low/high/level` (ids 0xd7..0xda), reader `140ac51f0` (4 f32 + u8), apply candidate `140aba230` (clamps 4 knobs, u8 = mono, sets two cores); kernel not located |
+| Cry Wah | partial | vector | kernel: `kontakt_crywah_vectors` (matches_the_native_cry_wah); apply/pedal-law order not yet confirmed in decompile (`140ad07f0`) |
+| Dirt | parity | vector | `kontakt_dirt_vectors.json` (matches_the_native_core); mapping order from repo comment, apply `140aba420` not re-checked |
+| Distortion | partial | decomp | Tube/Transistor curves and damping LP from decompile (`1408373c0`, `140837e40`); no native vector for the full chain |
+| DStortion | partial | vector | kernel: `kontakt_dstortion_vectors` (matches_the_native_dstortion); knob order from apply `140ab96f0` not fully confirmed |
 | Fuzz | unknown | none | |
 | Kolor | unknown | none | |
 | Saturator | unknown | none | |
