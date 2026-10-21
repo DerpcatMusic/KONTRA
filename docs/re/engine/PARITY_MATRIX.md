@@ -200,10 +200,10 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | LFO | unknown | none | |
 | Multi Digital | unknown | none | |
 | Step modulator | unknown | none | |
-| Envelope follower | unknown | none | |
-| Glide | unknown | none | |
-| External MIDI/performance sources | unknown | none | |
-| Modulation routing (target, depth/polarity, shaping, smoothing) | unknown | none | |
+| Envelope follower | missing | decomp | Type id 0x10400 in menu; chunk 0x0A opaque; laws unknown (`k-mod-external.md`) |
+| Glide | missing | decomp | Menu name only; chunk 0x0B opaque; not the script glide (`k-mod-external.md`) |
+| External MIDI/performance sources | partial | none | 13 `ExternalSource` variants mapped (`modulation_objects.rs:84-96`); no per-source vectors (`k-mod-external.md`) |
+| Modulation routing (target, depth/polarity, shaping, smoothing) | partial | none | Depth sign/invert tested (`library.rs:6063`); negative lag and shape law unproven (`k-mod-external.md`) |
 
 ## Script and library (k-ksp-engine-params, k-library-load)
 
