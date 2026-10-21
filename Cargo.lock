@@ -4506,6 +4506,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
+name = "smooth-core"
+version = "0.1.0"
+dependencies = [
+ "rustfft",
+]
+
+[[package]]
+name = "smooth-plugin"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "dirs",
+ "moose",
+ "moose-clap",
+ "moose-vst3",
+ "mui",
+ "serde",
+ "serde_json",
+ "smooth-core",
+ "smooth-ui",
+]
+
+[[package]]
+name = "smooth-preview"
+version = "0.1.0"
+dependencies = [
+ "mui",
+ "mui-vello",
+ "png 0.18.1",
+ "smooth-ui",
+]
+
+[[package]]
+name = "smooth-ui"
+version = "0.1.0"
+dependencies = [
+ "mui",
+ "smooth-core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

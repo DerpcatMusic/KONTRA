@@ -1,0 +1,1173 @@
+{
+  "format": "Numeric-only129-entry binary64 table; word strings are authoritative.",
+  "table": [
+    {
+      "index": 0,
+      "high_word": "0000000000000000",
+      "low_word": "0000000000000000",
+      "reciprocal_word": "3ff0000000000000",
+      "high": 0.0,
+      "low": 0.0,
+      "reciprocal": 1.0
+    },
+    {
+      "index": 1,
+      "high_word": "3f86fe50b6f00000",
+      "low_word": "bd3ef5d00e390a00",
+      "reciprocal_word": "3fefc07f01fc07f0",
+      "high": 0.011227255423364113,
+      "low": -1.0999274709132034e-13,
+      "reciprocal": 0.9922480620155039
+    },
+    {
+      "index": 2,
+      "high_word": "3f96e79685c00000",
+      "low_word": "3d66914c53713f11",
+      "reciprocal_word": "3fef81f81f81f820",
+      "high": 0.0223678130278131,
+      "low": 6.414089424288672e-13,
+      "reciprocal": 0.9846153846153847
+    },
+    {
+      "index": 3,
+      "high_word": "3fa11cd1d5140000",
+      "low_word": "bd597da24fd75f61",
+      "reciprocal_word": "3fef44659e4a4271",
+      "high": 0.033423001537812524,
+      "low": -3.6224545756255676e-13,
+      "reciprocal": 0.9770992366412213
+    },
+    {
+      "index": 4,
+      "high_word": "3fa6bad375900000",
+      "low_word": "bd60278cec9f90f7",
+      "reciprocal_word": "3fef07c1f07c1f08",
+      "high": 0.044394119358912576,
+      "low": -4.591383368596335e-13,
+      "reciprocal": 0.9696969696969697
+    },
+    {
+      "index": 5,
+      "high_word": "3fac4dfab90c0000",
+      "low_word": "bd654a10b0707962",
+      "reciprocal_word": "3feecc07b301ecc0",
+      "high": 0.05528243550179468,
+      "low": -6.050787862145032e-13,
+      "reciprocal": 0.9624060150375939
+    },
+    {
+      "index": 6,
+      "high_word": "3fb0eb389fa20000",
+      "low_word": "3d63f35679ee9757",
+      "reciprocal_word": "3fee9131abf0b767",
+      "high": 0.0660891904572054,
+      "low": 5.670284017916381e-13,
+      "reciprocal": 0.9552238805970149
+    },
+    {
+      "index": 7,
+      "high_word": "3fb3aa2fdd280000",
+      "low_word": "bd2c7a4ff65ddbc9",
+      "reciprocal_word": "3fee573ac901e574",
+      "high": 0.07681559705088148,
+      "low": -5.058670394385646e-14,
+      "reciprocal": 0.9481481481481482
+    },
+    {
+      "index": 8,
+      "high_word": "3fb663f6faca0000",
+      "low_word": "bd6d9d3066758fb4",
+      "reciprocal_word": "3fee1e1e1e1e1e1e",
+      "high": 0.08746284125118109,
+      "low": -8.416810652227198e-13,
+      "reciprocal": 0.9411764705882353
+    },
+    {
+      "index": 9,
+      "high_word": "3fb918a16e460000",
+      "low_word": "3d49ad57391924a7",
+      "reciprocal_word": "3fede5d6e3f8868a",
+      "high": 0.09803208296034427,
+      "low": 1.8244685526246436e-13,
+      "reciprocal": 0.9343065693430657
+    },
+    {
+      "index": 10,
+      "high_word": "3fbbc84240ae0000",
+      "low_word": "bd551167134e9647",
+      "reciprocal_word": "3fedae6076b981db",
+      "high": 0.10852445677846845,
+      "low": -2.993939895085753e-13,
+      "reciprocal": 0.927536231884058
+    },
+    {
+      "index": 11,
+      "high_word": "3fbe72ec11800000",
+      "low_word": "bd569378d0928989",
+      "reciprocal_word": "3fed77b654b82c34",
+      "high": 0.11894107272382826,
+      "low": -3.2082514048528274e-13,
+      "reciprocal": 0.920863309352518
+    },
+    {
+      "index": 12,
+      "high_word": "3fc08c588cda0000",
+      "low_word": "3d6e78e589ef1bf4",
+      "reciprocal_word": "3fed41d41d41d41d",
+      "high": 0.12928301694410038,
+      "low": 8.660735057959412e-13,
+      "reciprocal": 0.9142857142857143
+    },
+    {
+      "index": 13,
+      "high_word": "3fc1dcd197550000",
+      "low_word": "3d55bdaf522a183c",
+      "reciprocal_word": "3fed0cb58f6ec074",
+      "high": 0.1395513523984846,
+      "low": 3.0895757327396804e-13,
+      "reciprocal": 0.9078014184397163
+    },
+    {
+      "index": 14,
+      "high_word": "3fc32ae9e2790000",
+      "low_word": "bd6479782b834fe3",
+      "reciprocal_word": "3fecd85689039b0b",
+      "high": 0.14974711950526398,
+      "low": -5.819200026241076e-13,
+      "reciprocal": 0.9014084507042254
+    },
+    {
+      "index": 15,
+      "high_word": "3fc476a9f9840000",
+      "low_word": "bd31659d8e2d7d38",
+      "reciprocal_word": "3feca4b3055ee191",
+      "high": 0.15987133677845122,
+      "low": -6.180633020254915e-14,
+      "reciprocal": 0.8951048951048951
+    },
+    {
+      "index": 16,
+      "high_word": "3fc5c01a39fc0000",
+      "low_word": "bd54bc302ffa76fb",
+      "reciprocal_word": "3fec71c71c71c71c",
+      "high": 0.16992500144260703,
+      "low": -2.9466363971563933e-13,
+      "reciprocal": 0.8888888888888888
+    },
+    {
+      "index": 17,
+      "high_word": "3fc70742d4ef0000",
+      "low_word": "3d13f94e00e7d6bc",
+      "reciprocal_word": "3fec3f8f01c3f8f0",
+      "high": 0.17990909001491673,
+      "low": 1.7740339410400144e-14,
+      "reciprocal": 0.8827586206896552
+    },
+    {
+      "index": 18,
+      "high_word": "3fc84c2bd02f0000",
+      "low_word": "3d1d97ee9124773b",
+      "reciprocal_word": "3fec0e070381c0e0",
+      "high": 0.18982455887999095,
+      "low": 2.6284293846288795e-14,
+      "reciprocal": 0.8767123287671232
+    },
+    {
+      "index": 19,
+      "high_word": "3fc98edd077e0000",
+      "low_word": "3d6c37c0beb3a32a",
+      "reciprocal_word": "3febdd2b899406f7",
+      "high": 0.1996723448355624,
+      "low": 8.019976804748577e-13,
+      "reciprocal": 0.8707482993197279
+    },
+    {
+      "index": 20,
+      "high_word": "3fcacf5e2db50000",
+      "low_word": "bd436c101ee13440",
+      "reciprocal_word": "3febacf914c1bad0",
+      "high": 0.20945336562908778,
+      "low": -1.3800246976244608e-13,
+      "reciprocal": 0.8648648648648649
+    },
+    {
+      "index": 21,
+      "high_word": "3fcc0db6cdd90000",
+      "low_word": "3d637b90389b6626",
+      "reciprocal_word": "3feb7d6c3dda338b",
+      "high": 0.21916852046160784,
+      "low": 5.537307683217353e-13,
+      "reciprocal": 0.8590604026845637
+    },
+    {
+      "index": 22,
+      "high_word": "3fcd49ee4c320000",
+      "low_word": "3d665bf23d2d5941",
+      "reciprocal_word": "3feb4e81b4e81b4f",
+      "high": 0.2288186904952454,
+      "low": 6.354856914013854e-13,
+      "reciprocal": 0.8533333333333334
+    },
+    {
+      "index": 23,
+      "high_word": "3fce840be74e0000",
+      "low_word": "3d6a9331f27cf547",
+      "reciprocal_word": "3feb2036406c80d9",
+      "high": 0.2384047393243236,
+      "low": 7.553063848059246e-13,
+      "reciprocal": 0.847682119205298
+    },
+    {
+      "index": 24,
+      "high_word": "3fcfbc16b9020000",
+      "low_word": "3d6a0288ea36662a",
+      "reciprocal_word": "3feaf286bca1af28",
+      "high": 0.24792751344284625,
+      "low": 7.392458671650147e-13,
+      "reciprocal": 0.8421052631578947
+    },
+    {
+      "index": 25,
+      "high_word": "3fd0790adbb00000",
+      "low_word": "3d6804b7818d34cf",
+      "reciprocal_word": "3feac5701ac5701b",
+      "high": 0.2573878426919691,
+      "low": 6.826446986074974e-13,
+      "reciprocal": 0.8366013071895425
+    },
+    {
+      "index": 26,
+      "high_word": "3fd11307dad30000",
+      "low_word": "3d46eb9612e0b4f3",
+      "reciprocal_word": "3fea98ef606a63be",
+      "high": 0.2667865406947385,
+      "low": 1.6285823316452491e-13,
+      "reciprocal": 0.8311688311688312
+    },
+    {
+      "index": 27,
+      "high_word": "3fd1ac05b2920000",
+      "low_word": "bd4f1f5ae718f241",
+      "reciprocal_word": "3fea6d01a6d01a6d",
+      "high": 0.2761244052744587,
+      "low": -2.2113852662284353e-13,
+      "reciprocal": 0.8258064516129032
+    },
+    {
+      "index": 28,
+      "high_word": "3fd24407ab0e0000",
+      "low_word": "3d3ce60916e52e91",
+      "reciprocal_word": "3fea41a41a41a41a",
+      "high": 0.2854022188621457,
+      "low": 1.02668366941445e-13,
+      "reciprocal": 0.8205128205128205
+    },
+    {
+      "index": 29,
+      "high_word": "3fd2db10fc4d8000",
+      "low_word": "3d5aaf6f137a3d8c",
+      "reciprocal_word": "3fea16d3f97a4b02",
+      "high": 0.2946207488912478,
+      "low": 3.79220759847037e-13,
+      "reciprocal": 0.8152866242038217
+    },
+    {
+      "index": 30,
+      "high_word": "3fd37124cea50000",
+      "low_word": "bd690993376649b5",
+      "reciprocal_word": "3fe9ec8e951033d9",
+      "high": 0.30378074817781453,
+      "low": -7.116057814205138e-13,
+      "reciprocal": 0.810126582278481
+    },
+    {
+      "index": 31,
+      "high_word": "3fd406463b1b0000",
+      "low_word": "3d3125d6cbcd1095",
+      "reciprocal_word": "3fe9c2d14ee4a102",
+      "high": 0.31288295528429444,
+      "low": 6.092125480829092e-14,
+      "reciprocal": 0.8050314465408805
+    },
+    {
+      "index": 32,
+      "high_word": "3fd49a784bcd0000",
+      "low_word": "3d5b8afe492bf6ff",
+      "reciprocal_word": "3fe999999999999a",
+      "high": 0.32192809488697094,
+      "low": 3.914087556296025e-13,
+      "reciprocal": 0.8
+    },
+    {
+      "index": 33,
+      "high_word": "3fd52dbdfc4c8000",
+      "low_word": "3d56b37dcf60e620",
+      "reciprocal_word": "3fe970e4f80cb872",
+      "high": 0.3309168781142944,
+      "low": 3.226025805155831e-13,
+      "reciprocal": 0.7950310559006211
+    },
+    {
+      "index": 34,
+      "high_word": "3fd5c01a39fc0000",
+      "low_word": "bd64bc302ffa76fb",
+      "reciprocal_word": "3fe948b0fcd6e9e0",
+      "high": 0.33985000288521405,
+      "low": -5.893272794312787e-13,
+      "reciprocal": 0.7901234567901234
+    },
+    {
+      "index": 35,
+      "high_word": "3fd6518fe4678000",
+      "low_word": "bd31646b761c48de",
+      "reciprocal_word": "3fe920fb49d0e229",
+      "high": 0.34872815423113934,
+      "low": -6.178973681288121e-14,
+      "reciprocal": 0.7852760736196319
+    },
+    {
+      "index": 36,
+      "high_word": "3fd6e221cd9d0000",
+      "low_word": "3d49bcaf1aa4168a",
+      "reciprocal_word": "3fe8f9c18f9c18fa",
+      "high": 0.3575520046179008,
+      "low": 1.82872716976671e-13,
+      "reciprocal": 0.7804878048780488
+    },
+    {
+      "index": 37,
+      "high_word": "3fd771d2ba7f0000",
+      "low_word": "bd33106e404cabb7",
+      "reciprocal_word": "3fe8d3018d3018d3",
+      "high": 0.3663222142458835,
+      "low": -6.772958123003094e-14,
+      "reciprocal": 0.7757575757575758
+    },
+    {
+      "index": 38,
+      "high_word": "3fd800a563160000",
+      "low_word": "3d5c5432aeb609f5",
+      "reciprocal_word": "3fe8acb90f6bf3aa",
+      "high": 0.3750394313465222,
+      "low": 4.025778587368556e-13,
+      "reciprocal": 0.7710843373493976
+    },
+    {
+      "index": 39,
+      "high_word": "3fd88e9c72e08000",
+      "low_word": "3d6912d25b325264",
+      "reciprocal_word": "3fe886e5f0abb04a",
+      "high": 0.3837042924733396,
+      "low": 7.126323646799126e-13,
+      "reciprocal": 0.7664670658682635
+    },
+    {
+      "index": 40,
+      "high_word": "3fd91bba891f0000",
+      "low_word": "3d5708b4b2b5056c",
+      "reciprocal_word": "3fe8618618618618",
+      "high": 0.39231742277843296,
+      "low": 3.273329303085191e-13,
+      "reciprocal": 0.7619047619047619
+    },
+    {
+      "index": 41,
+      "high_word": "3fd9a802391e0000",
+      "low_word": "3d61979a5db68722",
+      "reciprocal_word": "3fe83c977ab2bedd",
+      "high": 0.4008794362816843,
+      "low": 5.000003735985294e-13,
+      "reciprocal": 0.757396449704142
+    },
+    {
+      "index": 42,
+      "high_word": "3fda33760a7f8000",
+      "low_word": "bd5faf6283bf2868",
+      "reciprocal_word": "3fe8181818181818",
+      "high": 0.40939093613815203,
+      "low": -4.5027230959311727e-13,
+      "reciprocal": 0.7529411764705882
+    },
+    {
+      "index": 43,
+      "high_word": "3fdabe18797f0000",
+      "low_word": "3d5f48e1a4725559",
+      "reciprocal_word": "3fe7f405fd017f40",
+      "high": 0.4178525148854533,
+      "low": 4.4458222744937533e-13,
+      "reciprocal": 0.7485380116959064
+    },
+    {
+      "index": 44,
+      "high_word": "3fdb47ebf7388000",
+      "low_word": "3d250520a377c7ec",
+      "reciprocal_word": "3fe7d05f417d05f4",
+      "high": 0.4262647547020606,
+      "low": 3.733907276649932e-14,
+      "reciprocal": 0.7441860465116279
+    },
+    {
+      "index": 45,
+      "high_word": "3fdbd0f2e9e78000",
+      "low_word": "3d5030ab442ce320",
+      "reciprocal_word": "3fe7ad2208e0ecc3",
+      "high": 0.43462822763649456,
+      "low": 2.3007534816339116e-13,
+      "reciprocal": 0.7398843930635838
+    },
+    {
+      "index": 46,
+      "high_word": "3fdc592fad298000",
+      "low_word": "bd6254c0c08d5a89",
+      "reciprocal_word": "3fe78a4c8178a4c8",
+      "high": 0.4429434958492493,
+      "low": -5.210002360770221e-13,
+      "reciprocal": 0.735632183908046
+    },
+    {
+      "index": 47,
+      "high_word": "3fdce0a4923a8000",
+      "low_word": "bd63c19b517ae88c",
+      "reciprocal_word": "3fe767dce434a9b1",
+      "high": 0.4512111118328903,
+      "low": -5.615071421203127e-13,
+      "reciprocal": 0.7314285714285714
+    },
+    {
+      "index": 48,
+      "high_word": "3fdd6753e0330000",
+      "low_word": "bd55f101c141e670",
+      "reciprocal_word": "3fe745d1745d1746",
+      "high": 0.45943161863760906,
+      "low": -3.1180651700181383e-13,
+      "reciprocal": 0.7272727272727273
+    },
+    {
+      "index": 49,
+      "high_word": "3fdded3fd4420000",
+      "low_word": "3d6b26275d8cb08b",
+      "reciprocal_word": "3fe724287f46debc",
+      "high": 0.4676055500822258,
+      "low": 7.716220741475086e-13,
+      "reciprocal": 0.7231638418079096
+    },
+    {
+      "index": 50,
+      "high_word": "3fde726aa1e78000",
+      "low_word": "bd6596f9d730f686",
+      "reciprocal_word": "3fe702e05c0b8170",
+      "high": 0.4757334309670114,
+      "low": -6.136175944924182e-13,
+      "reciprocal": 0.7191011235955056
+    },
+    {
+      "index": 51,
+      "high_word": "3fdef6d673290000",
+      "low_word": "bd5ddf82e1fe57c7",
+      "reciprocal_word": "3fe6e1f76b4337c7",
+      "high": 0.48381577726468095,
+      "low": -4.2452215414587636e-13,
+      "reciprocal": 0.7150837988826816
+    },
+    {
+      "index": 52,
+      "high_word": "3fdf7a8568cb0000",
+      "low_word": "3d3b3b3864c60011",
+      "reciprocal_word": "3fe6c16c16c16c17",
+      "high": 0.49185309632957797,
+      "low": 9.67451159139632e-14,
+      "reciprocal": 0.7111111111111111
+    },
+    {
+      "index": 53,
+      "high_word": "3fdffd799a840000",
+      "low_word": "bcf9518ce032f41d",
+      "reciprocal_word": "3fe6a13cd1537290",
+      "high": 0.499845887083211,
+      "low": -5.621848729602859e-15,
+      "reciprocal": 0.7071823204419889
+    },
+    {
+      "index": 54,
+      "high_word": "3fe03fda8b978000",
+      "low_word": "3d697f3394346405",
+      "reciprocal_word": "3fe6816816816817",
+      "high": 0.5077946401979716,
+      "low": 7.246649369656033e-13,
+      "reciprocal": 0.7032967032967034
+    },
+    {
+      "index": 55,
+      "high_word": "3fe0809cf27f8000",
+      "low_word": "bd5f855b4987c5d5",
+      "reciprocal_word": "3fe661ec6a5122f9",
+      "high": 0.5156998382844904,
+      "low": -4.4793927404719824e-13,
+      "reciprocal": 0.6994535519125683
+    },
+    {
+      "index": 56,
+      "high_word": "3fe0c10500d64000",
+      "low_word": "bd45669df6a2b592",
+      "reciprocal_word": "3fe642c8590b2164",
+      "high": 0.5235619560571649,
+      "low": -1.520621696507556e-13,
+      "reciprocal": 0.6956521739130435
+    },
+    {
+      "index": 57,
+      "high_word": "3fe10113b153c000",
+      "low_word": "3d51d4f639bb5cdf",
+      "reciprocal_word": "3fe623fa77016240",
+      "high": 0.5313814605160587,
+      "low": 2.5340628586715643e-13,
+      "reciprocal": 0.6918918918918919
+    },
+    {
+      "index": 58,
+      "high_word": "3fe140c9faa20000",
+      "low_word": "bd6abc61ea5ad5cf",
+      "reciprocal_word": "3fe6058160581606",
+      "high": 0.5391588111087913,
+      "low": -7.598791021102658e-13,
+      "reciprocal": 0.6881720430107527
+    },
+    {
+      "index": 59,
+      "high_word": "3fe18028cf728000",
+      "low_word": "3d676a4eb8e97d14",
+      "reciprocal_word": "3fe5e75bb8d015e7",
+      "high": 0.5468944598869712,
+      "low": 6.655018213213228e-13,
+      "reciprocal": 0.6844919786096256
+    },
+    {
+      "index": 60,
+      "high_word": "3fe1bf311e95c000",
+      "low_word": "3d600de3b513a9dd",
+      "reciprocal_word": "3fe5c9882b931057",
+      "high": 0.5545888516771811,
+      "low": 4.562893931317877e-13,
+      "reciprocal": 0.6808510638297872
+    },
+    {
+      "index": 61,
+      "high_word": "3fe1fde3d30e8000",
+      "low_word": "3d22642415d47384",
+      "reciprocal_word": "3fe5ac056b015ac0",
+      "high": 0.56224242422104,
+      "low": 3.2669290592879725e-14,
+      "reciprocal": 0.6772486772486772
+    },
+    {
+      "index": 62,
+      "high_word": "3fe23c41d4274000",
+      "low_word": "bd6837f7f1339e56",
+      "reciprocal_word": "3fe58ed2308158ed",
+      "high": 0.5698556083316362,
+      "low": -6.883347807512393e-13,
+      "reciprocal": 0.6736842105263158
+    },
+    {
+      "index": 63,
+      "high_word": "3fe27a4c0585c000",
+      "low_word": "3d57f00af09dc1c7",
+      "reciprocal_word": "3fe571ed3c506b3a",
+      "high": 0.5774288280354085,
+      "low": 3.401747069593742e-13,
+      "reciprocal": 0.6701570680628273
+    },
+    {
+      "index": 64,
+      "high_word": "3fe2b803473f8000",
+      "low_word": "bd44bc302ffa76fb",
+      "reciprocal_word": "3fe5555555555555",
+      "high": 0.5849625007213035,
+      "low": -1.4733181985781966e-13,
+      "reciprocal": 0.6666666666666666
+    },
+    {
+      "index": 65,
+      "high_word": "3fe2f56875eb4000",
+      "low_word": "bd1b3d7b0e65d2ce",
+      "reciprocal_word": "3fe5390948f40feb",
+      "high": 0.5924570372681046,
+      "low": -2.4194121319023174e-14,
+      "reciprocal": 0.6632124352331606
+    },
+    {
+      "index": 66,
+      "high_word": "3fe3327c6ab48000",
+      "low_word": "3d6ca6c86b9205fa",
+      "reciprocal_word": "3fe51d07eae2f815",
+      "high": 0.5999128421863134,
+      "low": 8.143244846652408e-13,
+      "reciprocal": 0.6597938144329897
+    },
+    {
+      "index": 67,
+      "high_word": "3fe36f3ffb6d8000",
+      "low_word": "3d6162404772a152",
+      "reciprocal_word": "3fe5015015015015",
+      "high": 0.6073303137491166,
+      "low": 4.940771225710476e-13,
+      "reciprocal": 0.6564102564102564
+    },
+    {
+      "index": 68,
+      "high_word": "3fe3abb3faa04000",
+      "low_word": "bd6e9933354dbf17",
+      "reciprocal_word": "3fe4e5e0a72f0539",
+      "high": 0.6147098441160779,
+      "low": -8.69659903213179e-13,
+      "reciprocal": 0.6530612244897959
+    },
+    {
+      "index": 69,
+      "high_word": "3fe3e7d9379f8000",
+      "low_word": "bd5fd32a3ab0a4b5",
+      "reciprocal_word": "3fe4cab88725af6e",
+      "high": 0.6220518194568285,
+      "low": -4.522585060916813e-13,
+      "reciprocal": 0.649746192893401
+    },
+    {
+      "index": 70,
+      "high_word": "3fe423b07e988000",
+      "low_word": "bd655698f89e2eb5",
+      "reciprocal_word": "3fe4afd6a052bf5b",
+      "high": 0.6293566200802161,
+      "low": -6.064701567174531e-13,
+      "reciprocal": 0.6464646464646465
+    },
+    {
+      "index": 71,
+      "high_word": "3fe45f3a98a20000",
+      "low_word": "3d4ce2935fff809a",
+      "reciprocal_word": "3fe49539e3b2d067",
+      "high": 0.6366246205434436,
+      "low": 2.052407045306539e-13,
+      "reciprocal": 0.6432160804020101
+    },
+    {
+      "index": 72,
+      "high_word": "3fe49a784bcd0000",
+      "low_word": "3d6b8afe492bf6ff",
+      "reciprocal_word": "3fe47ae147ae147b",
+      "high": 0.6438561897739419,
+      "low": 7.82817511259205e-13,
+      "reciprocal": 0.64
+    },
+    {
+      "index": 73,
+      "high_word": "3fe4d56a5b33c000",
+      "low_word": "3d5d8894dbdff331",
+      "reciprocal_word": "3fe460cbc7f5cf9a",
+      "high": 0.6510516911785089,
+      "low": 4.1969658193381847e-13,
+      "reciprocal": 0.6368159203980099
+    },
+    {
+      "index": 74,
+      "high_word": "3fe510118708c000",
+      "low_word": "bd67072216b6c875",
+      "reciprocal_word": "3fe446f86562d9fb",
+      "high": 0.6582114827524492,
+      "low": -6.544912566450819e-13,
+      "reciprocal": 0.6336633663366337
+    },
+    {
+      "index": 75,
+      "high_word": "3fe54a6e8ca54000",
+      "low_word": "3d3c6d8d86531d56",
+      "reciprocal_word": "3fe42d6625d51f87",
+      "high": 0.6653359171850752,
+      "low": 1.0099633394713634e-13,
+      "reciprocal": 0.6305418719211823
+    },
+    {
+      "index": 76,
+      "high_word": "3fe5848226988000",
+      "low_word": "3d6d33c38d8bd28d",
+      "reciprocal_word": "3fe4141414141414",
+      "high": 0.6724253419706656,
+      "low": 8.29976518465317e-13,
+      "reciprocal": 0.6274509803921569
+    },
+    {
+      "index": 77,
+      "high_word": "3fe5be4d0cb50000",
+      "low_word": "3d6434aaeb3f0122",
+      "reciprocal_word": "3fe3fb013fb013fb",
+      "high": 0.6794800995048718,
+      "low": 5.742814726062735e-13,
+      "reciprocal": 0.624390243902439
+    },
+    {
+      "index": 78,
+      "high_word": "3fe5f7cff41e0000",
+      "low_word": "3d535d71963580ba",
+      "reciprocal_word": "3fe3e22cbce4a902",
+      "high": 0.6865005271829432,
+      "low": 2.7519340685441135e-13,
+      "reciprocal": 0.6213592233009708
+    },
+    {
+      "index": 79,
+      "high_word": "3fe6310b8f554000",
+      "low_word": "bd5f6f7f2b4bd1c4",
+      "reciprocal_word": "3fe3c995a47babe7",
+      "high": 0.693486957499772,
+      "low": -4.4672580936639494e-13,
+      "reciprocal": 0.6183574879227053
+    },
+    {
+      "index": 80,
+      "high_word": "3fe66a008e478000",
+      "low_word": "3d51979a5db68722",
+      "reciprocal_word": "3fe3b13b13b13b14",
+      "high": 0.7004397181408422,
+      "low": 2.500001867992647e-13,
+      "reciprocal": 0.6153846153846154
+    },
+    {
+      "index": 81,
+      "high_word": "3fe6a2af9e5a0000",
+      "low_word": "3d5e1410132ae5e4",
+      "reciprocal_word": "3fe3991c2c187f63",
+      "high": 0.7073591320804553,
+      "low": 4.2743935016320083e-13,
+      "reciprocal": 0.6124401913875598
+    },
+    {
+      "index": 82,
+      "high_word": "3fe6db196a760000",
+      "low_word": "3d6949d97df07e35",
+      "reciprocal_word": "3fe3813813813814",
+      "high": 0.7142455176654039,
+      "low": 7.187416859381215e-13,
+      "reciprocal": 0.6095238095238096
+    },
+    {
+      "index": 83,
+      "high_word": "3fe7133e9b158000",
+      "low_word": "bd63841ae9804238",
+      "reciprocal_word": "3fe3698df3de0748",
+      "high": 0.7210991887077398,
+      "low": -5.546790943714201e-13,
+      "reciprocal": 0.6066350710900474
+    },
+    {
+      "index": 84,
+      "high_word": "3fe74b1fd64e0000",
+      "low_word": "3d4d4f1b95e0ff45",
+      "reciprocal_word": "3fe3521cfb2b78c1",
+      "high": 0.7279204545629909,
+      "low": 2.0825307466611057e-13,
+      "reciprocal": 0.6037735849056604
+    },
+    {
+      "index": 85,
+      "high_word": "3fe782bdbfddc000",
+      "low_word": "bd69a8843781eda1",
+      "reciprocal_word": "3fe33ae45b57bcb2",
+      "high": 0.7347096202265675,
+      "low": -7.292518224819272e-13,
+      "reciprocal": 0.6009389671361502
+    },
+    {
+      "index": 86,
+      "high_word": "3fe7ba18f9350000",
+      "low_word": "3d37204f55bbf90d",
+      "reciprocal_word": "3fe323e34a2b10bf",
+      "high": 0.7414669864010648,
+      "low": 8.216080457578053e-14,
+      "reciprocal": 0.5981308411214953
+    },
+    {
+      "index": 87,
+      "high_word": "3fe7f1322182c000",
+      "low_word": "3d5e2ba25d9aeffd",
+      "reciprocal_word": "3fe30d190130d190",
+      "high": 0.7481928495890315,
+      "low": 4.2874782839610186e-13,
+      "reciprocal": 0.5953488372093023
+    },
+    {
+      "index": 88,
+      "high_word": "3fe82809d5be8000",
+      "low_word": "bd5f1a4847f7b278",
+      "reciprocal_word": "3fe2f684bda12f68",
+      "high": 0.7548875021639105,
+      "low": -4.4199545957345896e-13,
+      "reciprocal": 0.5925925925925926
+    },
+    {
+      "index": 89,
+      "high_word": "3fe85ea0b0b28000",
+      "low_word": "bd4367bde40c5e6d",
+      "reciprocal_word": "3fe2e025c04b8097",
+      "high": 0.7615512324446172,
+      "low": -1.3788253208610732e-13,
+      "reciprocal": 0.5898617511520737
+    },
+    {
+      "index": 90,
+      "high_word": "3fe894f74b070000",
+      "low_word": "bd6074bf915d3827",
+      "reciprocal_word": "3fe2c9fb4d812ca0",
+      "high": 0.7681843247773941,
+      "low": -4.677090172745224e-13,
+      "reciprocal": 0.5871559633027523
+    },
+    {
+      "index": 91,
+      "high_word": "3fe8cb0e3b4b4000",
+      "low_word": "bd4109325dd5e814",
+      "reciprocal_word": "3fe2b404ad012b40",
+      "high": 0.7747870596012945,
+      "low": -1.2104752601153088e-13,
+      "reciprocal": 0.5844748858447488
+    },
+    {
+      "index": 92,
+      "high_word": "3fe900e616000000",
+      "low_word": "3d3667f21fa8423f",
+      "reciprocal_word": "3fe29e4129e4129e",
+      "high": 0.78135971352458,
+      "low": 7.960223862778872e-14,
+      "reciprocal": 0.5818181818181818
+    },
+    {
+      "index": 93,
+      "high_word": "3fe9367f6da0c000",
+      "low_word": "bd64d163379a4c23",
+      "reciprocal_word": "3fe288b01288b013",
+      "high": 0.7879025593920232,
+      "low": -5.916808784234551e-13,
+      "reciprocal": 0.579185520361991
+    },
+    {
+      "index": 94,
+      "high_word": "3fe96bdad2acc000",
+      "low_word": "bd541420276dd59d",
+      "reciprocal_word": "3fe27350b8812735",
+      "high": 0.7944158663503913,
+      "low": -2.853342896202657e-13,
+      "reciprocal": 0.5765765765765766
+    },
+    {
+      "index": 95,
+      "high_word": "3fe9a0f8d3b10000",
+      "low_word": "bd6fb0216a8cb543",
+      "reciprocal_word": "3fe25e22708092f1",
+      "high": 0.8008998999212054,
+      "low": -9.006274095467164e-13,
+      "reciprocal": 0.5739910313901345
+    },
+    {
+      "index": 96,
+      "high_word": "3fe9d5d9fd500000",
+      "low_word": "3d60b36665592075",
+      "reciprocal_word": "3fe2492492492492",
+      "high": 0.8073549220571294,
+      "low": 4.746647501663388e-13,
+      "reciprocal": 0.5714285714285714
+    },
+    {
+      "index": 97,
+      "high_word": "3fea0a7eda4c0000",
+      "low_word": "3d612ce6312ebb82",
+      "reciprocal_word": "3fe23456789abcdf",
+      "high": 0.8137811912165489,
+      "low": 4.881538715435657e-13,
+      "reciprocal": 0.5688888888888889
+    },
+    {
+      "index": 98,
+      "high_word": "3fea3ee7f38e0000",
+      "low_word": "3d681ed0798d1aa2",
+      "reciprocal_word": "3fe21fb78121fb78",
+      "high": 0.8201789624145022,
+      "low": 6.855421069400439e-13,
+      "reciprocal": 0.5663716814159292
+    },
+    {
+      "index": 99,
+      "high_word": "3fea7315d02f4000",
+      "low_word": "bd6f3842a9f5c012",
+      "reciprocal_word": "3fe20b470c67c0d9",
+      "high": 0.8265484872918023,
+      "low": -8.873191521411538e-13,
+      "reciprocal": 0.5638766519823789
+    },
+    {
+      "index": 100,
+      "high_word": "3feaa708f5800000",
+      "low_word": "3d64d37cde37c86b",
+      "reciprocal_word": "3fe1f7047dc11f70",
+      "high": 0.8328900141641498,
+      "low": 5.91914047307195e-13,
+      "reciprocal": 0.5614035087719298
+    },
+    {
+      "index": 101,
+      "high_word": "3feadac1e711c000",
+      "low_word": "3d5065a2ac5ac35f",
+      "reciprocal_word": "3fe1e2ef3b3fb874",
+      "high": 0.8392037880967109,
+      "low": 2.330155758579547e-13,
+      "reciprocal": 0.5589519650655022
+    },
+    {
+      "index": 102,
+      "high_word": "3feb0e4126bcc000",
+      "low_word": "3d50d7af4dda9c36",
+      "reciprocal_word": "3fe1cf06ada2811d",
+      "high": 0.8454900509441359,
+      "low": 2.393465859788469e-13,
+      "reciprocal": 0.5565217391304348
+    },
+    {
+      "index": 103,
+      "high_word": "3feb418734a90000",
+      "low_word": "3d117b2f1731efbe",
+      "reciprocal_word": "3fe1bb4a4046ed29",
+      "high": 0.851749041416042,
+      "low": 1.5526413306705245e-14,
+      "reciprocal": 0.5541125541125541
+    },
+    {
+      "index": 104,
+      "high_word": "3feb74948f554000",
+      "low_word": "bd5a4b69691d7994",
+      "reciprocal_word": "3fe1a7b9611a7b96",
+      "high": 0.8579809951279458,
+      "low": -3.736684162192024e-13,
+      "reciprocal": 0.5517241379310345
+    },
+    {
+      "index": 105,
+      "high_word": "3feba769b39e4000",
+      "low_word": "3d52c81df0fdbc29",
+      "reciprocal_word": "3fe19453808ca29c",
+      "high": 0.8641861446540133,
+      "low": 2.669041076199341e-13,
+      "reciprocal": 0.5493562231759657
+    },
+    {
+      "index": 106,
+      "high_word": "3febda071cc68000",
+      "low_word": "bd2924ae921f7eca",
+      "reciprocal_word": "3fe1811811811812",
+      "high": 0.8703647195834492,
+      "low": -4.466345291637466e-14,
+      "reciprocal": 0.5470085470085471
+    },
+    {
+      "index": 107,
+      "high_word": "3fec0c6d447c4000",
+      "low_word": "3d6dd362d9a9a55c",
+      "reciprocal_word": "3fe16e0689427379",
+      "high": 0.876516946564152,
+      "low": 8.476981487613902e-13,
+      "reciprocal": 0.5446808510638298
+    },
+    {
+      "index": 108,
+      "high_word": "3fec3e9ca2e1c000",
+      "low_word": "bd6faacc9674b1b6",
+      "reciprocal_word": "3fe15b1e5f75270d",
+      "high": 0.8826430493627413,
+      "low": -9.000355095405282e-13,
+      "reciprocal": 0.5423728813559322
+    },
+    {
+      "index": 109,
+      "high_word": "3fec7095ae920000",
+      "low_word": "bd6e389f4364e774",
+      "reciprocal_word": "3fe1485f0e0acd3b",
+      "high": 0.888743248899118,
+      "low": -8.589376012783335e-13,
+      "reciprocal": 0.540084388185654
+    },
+    {
+      "index": 110,
+      "high_word": "3feca258dca94000",
+      "low_word": "bd59d3940238de7f",
+      "reciprocal_word": "3fe135c81135c811",
+      "high": 0.8948177633083105,
+      "low": -3.670163150563811e-13,
+      "reciprocal": 0.5378151260504201
+    },
+    {
+      "index": 111,
+      "high_word": "3fecd3e6a0ca8000",
+      "low_word": "3d520d8486e9222a",
+      "reciprocal_word": "3fe12358e75d3033",
+      "high": 0.900866807980492,
+      "low": 2.5654576705078486e-13,
+      "reciprocal": 0.5355648535564853
+    },
+    {
+      "index": 112,
+      "high_word": "3fed053f6d260000",
+      "low_word": "3d512ce6312ebb82",
+      "reciprocal_word": "3fe1111111111111",
+      "high": 0.9068905956082745,
+      "low": 2.4407693577178287e-13,
+      "reciprocal": 0.5333333333333333
+    },
+    {
+      "index": 113,
+      "high_word": "3fed3663b27f4000",
+      "low_word": "bd5c55ad0f90a497",
+      "reciprocal_word": "3fe0fef010fef011",
+      "high": 0.9128893362303643,
+      "low": -4.0265990645955853e-13,
+      "reciprocal": 0.5311203319502075
+    },
+    {
+      "index": 114,
+      "high_word": "3fed6753e0330000",
+      "low_word": "bd65f101c141e670",
+      "reciprocal_word": "3fe0ecf56be69c90",
+      "high": 0.9188632372752181,
+      "low": -6.236130340036277e-13,
+      "reciprocal": 0.5289256198347108
+    },
+    {
+      "index": 115,
+      "high_word": "3fed9810643d8000",
+      "low_word": "bd69eb3c3bf914ba",
+      "reciprocal_word": "3fe0db20a88f4696",
+      "high": 0.9248125036065176,
+      "low": -7.366590992890983e-13,
+      "reciprocal": 0.5267489711934157
+    },
+    {
+      "index": 116,
+      "high_word": "3fedc899ab400000",
+      "low_word": "bd552743318a8a57",
+      "reciprocal_word": "3fe0c9714fbcda3b",
+      "high": 0.9307373375631869,
+      "low": -3.0060745418937855e-13,
+      "reciprocal": 0.5245901639344263
+    },
+    {
+      "index": 117,
+      "high_word": "3fedf8f02086c000",
+      "low_word": "bd60d3b410b7c397",
+      "reciprocal_word": "3fe0b7e6ec259dc8",
+      "high": 0.9366379390030488,
+      "low": -4.782511475835765e-13,
+      "reciprocal": 0.5224489795918368
+    },
+    {
+      "index": 118,
+      "high_word": "3fee29142e0e0000",
+      "low_word": "3d2401fbaaa67e3c",
+      "reciprocal_word": "3fe0a6810a6810a7",
+      "high": 0.9425145053392043,
+      "low": 3.5540897118851326e-14,
+      "reciprocal": 0.5203252032520326
+    },
+    {
+      "index": 119,
+      "high_word": "3fee59063c884000",
+      "low_word": "bd6d31a9e6ee5645",
+      "reciprocal_word": "3fe0953f39010954",
+      "high": 0.9483672315855074,
+      "low": -8.297433495815771e-13,
+      "reciprocal": 0.5182186234817814
+    },
+    {
+      "index": 120,
+      "high_word": "3fee88c6b3628000",
+      "low_word": "bd658d55de5c3810",
+      "reciprocal_word": "3fe0842108421084",
+      "high": 0.9541963103874878,
+      "low": -6.125472822524461e-13,
+      "reciprocal": 0.5161290322580645
+    },
+    {
+      "index": 121,
+      "high_word": "3feeb855f8ca8000",
+      "low_word": "3d51f61a96b8ce77",
+      "reciprocal_word": "3fe073260a47f7c6",
+      "high": 0.9600019320678257,
+      "low": 2.5524603887903593e-13,
+      "reciprocal": 0.5140562248995983
+    },
+    {
+      "index": 122,
+      "high_word": "3feee7b471b3c000",
+      "low_word": "bd66af82923e0d81",
+      "reciprocal_word": "3fe0624dd2f1a9fc",
+      "high": 0.9657842846627318,
+      "low": -6.447631366570489e-13,
+      "reciprocal": 0.512
+    },
+    {
+      "index": 123,
+      "high_word": "3fef16e281db8000",
+      "low_word": "bd539f89bcdae7bd",
+      "reciprocal_word": "3fe05197f7d73404",
+      "high": 0.9715435539510509,
+      "low": -2.788623797406249e-13,
+      "reciprocal": 0.5099601593625498
+    },
+    {
+      "index": 124,
+      "high_word": "3fef45e08bcf0000",
+      "low_word": "3d495539356f93dc",
+      "reciprocal_word": "3fe0410410410410",
+      "high": 0.9772799234997365,
+      "low": 1.800011104506994e-13,
+      "reciprocal": 0.5079365079365079
+    },
+    {
+      "index": 125,
+      "high_word": "3fef74aef0efc000",
+      "low_word": "bd6052285e49a09c",
+      "reciprocal_word": "3fe03091b51f5e1a",
+      "high": 0.982993574694774,
+      "low": -4.638686866525694e-13,
+      "reciprocal": 0.5059288537549407
+    },
+    {
+      "index": 126,
+      "high_word": "3fefa34e1177c000",
+      "low_word": "3d319b14945cf6ba",
+      "reciprocal_word": "3fe0204081020408",
+      "high": 0.9886846867721033,
+      "low": 6.254830526910912e-14,
+      "reciprocal": 0.5039370078740157
+    },
+    {
+      "index": 127,
+      "high_word": "3fefd1be4c7f4000",
+      "low_word": "bd6506bd4dde31f3",
+      "reciprocal_word": "3fe0101010101010",
+      "high": 0.9943534368594555,
+      "low": -5.97604129450937e-13,
+      "reciprocal": 0.5019607843137255
+    },
+    {
+      "index": 128,
+      "high_word": "3ff0000000000000",
+      "low_word": "0000000000000000",
+      "reciprocal_word": "3fe0000000000000",
+      "high": 1.0,
+      "low": 0.0,
+      "reciprocal": 0.5
+    }
+  ],
+  "recipe": {
+    "grid": "1+j/128, j=0..128",
+    "exact_logarithm": "v=log2(1+j/128)",
+    "high": "nearest-even(v*2^39)*2^-39",
+    "low": "nearest-even-binary64(v-high)",
+    "reciprocal": "nearest-even-binary64(128/(128+j))"
+  }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "smooth-preview"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+smooth-ui = { path = "../smooth-ui" }
+mui = { path = "../../vendor/mui", features = ["cpu"] }
+mui-vello = { path = "../../vendor/mui-vello", features = ["cpu"] }
+png = "0.18"
