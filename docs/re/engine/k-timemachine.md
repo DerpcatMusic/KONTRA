@@ -66,6 +66,17 @@ Engine: **WSOLA stand-in** in place of the Elastique backend. Not native.
 | Pro Keep Formants / Formant Shift / Env Order | carried, unused | yes | needs formant-preserving path |
 | Pro v0x100 legacy record | not mapped | yes | field order unrecovered |
 
+## Wiring finding (checked in code)
+
+- The engine is live: `dsp.rs` allocates `StretchEngine`s and `source.rs` renders them through
+  `StretchParams` (around `source.rs:2804-2850`).
+- `lower.rs::stretch_spec` (`crates/sampler-core/src/lower.rs:244`) copies only kind, HQ, speed,
+  smooth and grain. The TM2 controls (Transient Copy/Size, Grain profile) and the Pro controls
+  (Keep Formants, Formant Shift, Env Order) are dropped at that boundary. The Kontakt reader does
+  report them as NotModeled, so nothing is silently ignored at load, but the core cannot see them.
+- Changing the core `Spec` to carry them is a prerequisite for any TM2/Pro law. It is not done in
+  this PR because the fields would be unread until the laws exist.
+
 ## Plan once READY exists
 
 1. Recover TM2 mark detector and transient scheduling from `source/kontakt8/` (`rg` on
