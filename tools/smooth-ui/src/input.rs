@@ -15,17 +15,28 @@ use std::ops::RangeInclusive;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-// Placeholders: the reference's wheel step, fine factor and page step are not
-// recovered (see research/input-behaviour.md, sections 2 and 3).
+// Recovered from the soothe3 reference by emulation (see
+// tools/smooth-ui/research/input-behaviour-corpus.md, sections 2, 3 and 8).
+//
+// The reference's wheel and drag share one value law: a gesture's delta over a
+// divisor, in normalised units. The divisor is 300 normally and 1000 while
+// Shift is held (`Input+0xea`, bit 0 of the JUCE modifier byte).
 
-/// Of the range, per wheel notch or arrow key press, for a continuous control.
-pub const STEP: f64 = 0.01;
+/// The reference's JUCE wheel delta for one OS notch on Windows: 0.5 x 120 / 256.
+const JUCE_NOTCH: f64 = 60.0 / 256.0;
 
-/// Of a step, under Shift or Ctrl: the fine adjustment.
-pub const FINE: f64 = 0.1;
+/// Of the range, per wheel notch: the notch's delta scaled by 100 and divided
+/// by the 300 divisor.
+pub const STEP: f64 = JUCE_NOTCH * 100.0 / 300.0;
 
-/// Of the range, per Page Up or Page Down.
-const PAGE: f64 = 0.1;
+/// The fine factor under Shift: the 300 divisor over the 1000 one.
+pub const FINE: f64 = 300.0 / 1000.0;
+
+/// Pointer travel that covers the whole range, in physical pixels: 300, or
+/// 1000 under Shift.
+pub const DRAG_PX: f64 = 300.0;
+/// See [`DRAG_PX`].
+pub const DRAG_PX_FINE: f64 = 1000.0;
 
 /// How long a roll of the wheel stays one edit: see [`WHEEL_ROLL`].
 fn roll() -> Duration {
@@ -74,16 +85,17 @@ fn notches(ui: &Ui, wheel: Vec2) -> f64 {
     -wheel.y / (ui.theme().text * NOTCH_LINES)
 }
 
-/// Whether Shift or Ctrl asks for the fine step.
+/// Whether Shift asks for the fine step. The reference's wheel reads only
+/// the Shift bit of the modifier byte (`Input+0xea`); Ctrl and Alt are not in
+/// the wheel law.
 fn fine(mods: Mods) -> f64 {
-    if mods.shift || mods.ctrl { FINE } else { 1.0 }
+    if mods.shift { FINE } else { 1.0 }
 }
 
 /// Wheel, reset and keyboard for a continuous control whose value runs over
-/// `range`. The wheel moves it `STEP` of the range per notch, a tenth as far
-/// under Shift or Ctrl. A double click, or Ctrl+click, returns it to `rest`.
-/// The focused control also takes the arrows, Page Up and Page Down, Home and
-/// End. Returns whether the value changed.
+/// `range`. The wheel moves it [`STEP`] of the range per notch, [`FINE`] of that
+/// under Shift. A double click returns it to `rest`. The focused control also
+/// takes the arrows, Home and End. Returns whether the value changed.
 pub fn nudge(ui: &Ui, id: &str, value: &mut f64, range: RangeInclusive<f64>, rest: f64) -> bool {
     let (lo, hi) = (range.start().min(*range.end()), range.start().max(*range.end()));
     let span = hi - lo;
@@ -92,7 +104,7 @@ pub fn nudge(ui: &Ui, id: &str, value: &mut f64, range: RangeInclusive<f64>, res
     if r.wheel.y != 0.0 {
         mark_notch(id);
     }
-    if r.double_clicked || (r.pressed && r.press_mods.ctrl) {
+    if r.double_clicked {
         *value = rest;
     } else {
         let mut turn = notches(ui, r.wheel) * STEP * span * fine(r.mods);
@@ -102,8 +114,6 @@ pub fn nudge(ui: &Ui, id: &str, value: &mut f64, range: RangeInclusive<f64>, res
                 match key.key {
                     Key::Up | Key::Right => turn += step,
                     Key::Down | Key::Left => turn -= step,
-                    Key::PageUp => turn += PAGE * span,
-                    Key::PageDown => turn -= PAGE * span,
                     Key::Home => *value = lo,
                     Key::End => *value = hi,
                     _ => {}
@@ -113,6 +123,17 @@ pub fn nudge(ui: &Ui, id: &str, value: &mut f64, range: RangeInclusive<f64>, res
         *value = (*value + turn).clamp(lo, hi);
     }
     *value != before
+}
+
+/// Drag a continuous control: the reference's law puts the whole range under
+/// 300 physical pixels of vertical travel, or 1000 under Shift. `ui.scale()`
+/// converts physical to logical pixels for mui's drag, which measures logical
+/// travel. Returns whether the value changed.
+pub fn drag(ui: &Ui, id: &str, value: &mut f64, range: RangeInclusive<f64>) -> bool {
+    let physical = if ui.get(id).mods.shift { DRAG_PX_FINE } else { DRAG_PX };
+    let logical = physical / ui.scale().filter(|s| *s > 0.0).unwrap_or(1.0);
+    // Shift is already in `logical`, so the engine's own fine factor stays off.
+    ui.drag_with_fine(id, value, range, logical, true, false)
 }
 
 /// Wheel and arrow keys for a discrete control of `len` choices: one choice
@@ -187,10 +208,41 @@ mod tests {
     }
 
     #[test]
-    fn a_fine_step_is_a_tenth_of_a_coarse_one() {
+    fn one_windows_notch_is_the_reference_step_of_the_range() {
+        // 60/256 of a JUCE wheel unit, times 100, over the 300 divisor.
+        assert!((STEP - 0.078125).abs() < 1e-12, "{STEP}");
+    }
+
+    #[test]
+    fn a_fine_step_is_the_1000_divisor_over_the_300_one_under_shift_only() {
+        assert!((FINE - 0.3).abs() < 1e-12);
         assert!((fine(Mods { shift: true, ..Mods::default() }) - FINE).abs() < f64::EPSILON);
-        assert!((fine(Mods { ctrl: true, ..Mods::default() }) - FINE).abs() < f64::EPSILON);
         assert!((fine(Mods::default()) - 1.0).abs() < f64::EPSILON);
+        // Ctrl and Alt are not in the reference's wheel law.
+        assert!((fine(Mods { ctrl: true, ..Mods::default() }) - 1.0).abs() < f64::EPSILON);
+        assert!((fine(Mods { alt: true, ..Mods::default() }) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_drag_covers_the_range_in_300_physical_pixels_and_1000_under_shift() {
+        let mut ui = Ui::default();
+        frame(&mut ui, Some(Point::new(50., 90.)), false, Vec2::ZERO, vec![], Mods::default());
+        frame(&mut ui, Some(Point::new(50., 90.)), true, Vec2::ZERO, vec![], Mods::default());
+        frame(&mut ui, Some(Point::new(50., 30.)), true, Vec2::ZERO, vec![], Mods::default());
+        let mut v = 0.5;
+        // 60 px up on a 300 px range is a fifth of the range.
+        assert!(drag(&ui, "k", &mut v, 0.0..=1.0));
+        assert!((v - 0.7).abs() < 1e-9, "300 px: {v}");
+
+        let mut ui = Ui::default();
+        let shift = Mods { shift: true, ..Mods::default() };
+        frame(&mut ui, Some(Point::new(50., 90.)), false, Vec2::ZERO, vec![], shift);
+        frame(&mut ui, Some(Point::new(50., 90.)), true, Vec2::ZERO, vec![], shift);
+        frame(&mut ui, Some(Point::new(50., 30.)), true, Vec2::ZERO, vec![], shift);
+        let mut v = 0.5;
+        // The same 60 px under Shift is a fifteenth of the range.
+        assert!(drag(&ui, "k", &mut v, 0.0..=1.0));
+        assert!((v - (0.5 + 60.0 / 1000.0)).abs() < 1e-9, "1000 px: {v}");
     }
 
     #[test]
@@ -210,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_or_ctrl_makes_the_wheel_fine_and_the_value_stays_in_range() {
+    fn shift_makes_the_wheel_fine_and_the_value_stays_in_range() {
         let mut ui = Ui::default();
         let notch = ui.theme().text * NOTCH_LINES;
         let shift = Mods { shift: true, ..Mods::default() };

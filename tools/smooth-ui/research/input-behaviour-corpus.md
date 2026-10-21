@@ -1,13 +1,13 @@
 # SMOOTH input behaviour: corpus pass (soothe3 restored image)
 
-Status: **partly recovered (round 3)**. Verified in this round: where the wheel
-fields live (no copy exists), the wheel consumer and its scale constants, the
-sign rule, the gating, and the accumulate-then-clamp structure. **Not
-recovered:** the value law that turns the accumulated delta into a parameter
-value (a candidate exists but its call link is broken, see section 4), the
-OS-notch to JUCE `deltaY` unit, the modifier that selects the fine divisor,
-drag/fine factors, reset target, click-to-type, hit radius, tooltip timing,
-animation timings, menus, cursors.
+Status: **round 4: wheel law and drag law recovered by emulation** (section 8).
+Verified by running the image's own code: the value law (sink
+`fcn.1806c30c0`, divisor 300 or 1000), the modifier byte that selects the
+divisor (Shift only), the notch size under JUCE's Windows convention, and the
+per-frame wheel handling (last delta wins). The drag law is recovered by code
+reading of the same sink. **Not recovered:** reset target and Ctrl/Alt roles
+beyond the wheel, click-to-type, hit radius, tooltip timing, animation
+timings, menus, cursors, keyboard steps, and the graph band's own steps.
 
 Image: `/tmp/opencode/rea/soothe3-restored.bin`, base `0x180000000`. Pseudocode
 from the corpus (`RunScratch/smooth/re-corpus/index/annotated/<rva>.c`). Float
@@ -108,9 +108,9 @@ with `D` the px-per-range divisor in section 4.
   modifier).
 - The value law (section 4) selects its divisor from `Input+0xea` as well.
 
-## 4. Value law: candidate, not confirmed
+## 4. Value law: confirmed in round 4 (section 8)
 
-Candidate: `fcn.1806c30c0` (RVA `0x6c30c0`) is the `slot2` of the vtable at
+Sink: `fcn.1806c30c0` (RVA `0x6c30c0`) is the `slot2` of the vtable at
 `0x182085ea0`. That vtable is the one stored by the Knob constructor
 (`fcn.180737410`, `lea rax,[rip+0x194ea09]` at `0x180737490`) for the
 std::function passed to the gesture constructor. The function reads its state
@@ -129,12 +129,12 @@ With `S` from section 2 (`S+0x30 = -100*accX`, `S+0x34 = -100*accY`,
 300 px per range normally and 1000 when `Input+0xea != 0`. For a vertical wheel
 notch of `dy = 1`, the step would be 100/300 = 1/3 of the range.
 
-**Why this is not confirmed:** `fcn.1807b3640` calls the std::function as
-`vtbl[2](impl, out)` with two arguments and never sets `r8`. The candidate reads
-`S` from `r8`. Either this vtable is not the sink, or the call passes `S` in a
-way the decompiler did not show. This must be settled by emulating
-`fcn.1807b29b0` with a synthetic Input and gesture, and recording which function
-the indirect call reaches and what `r8` holds there.
+**Settled (round 4, emulated):** `fcn.1807b3640` calls the std::function as
+`vtbl[2](impl, out)`. It does not write `r8`, so the register still holds its own
+third argument `S`, the context the consumer built. The emulated call reaches
+`0x1806c30c0` with `rcx = impl`, `rdx = out`, `r8 = S`. The sink reads the
+divisor from `Input+0xea` (`cmp byte ptr [rax+0xea], 0` on `rax = [S]`, the
+Input), and the emulated sink returns `{v, valid = 1}` as the code above says.
 
 Verified constants (read from the PE): `0.25` (`0x18209d130`), `1000.0`
 (`0x18209d8a8`), `300.0` (`0x18209d844`), `1.0` (`0x18209d2b4`), `-100.0`
@@ -155,33 +155,95 @@ Verified constants (read from the PE): `0.25` (`0x18209d130`), `1000.0`
   not supported by this round's constants, and `100/300` per unit would be 33x
   larger. Neither value should be copied without the unit.
 
-## 6. Consequences for SMOOTH
+## 6. Consequences for SMOOTH (round 4)
 
-- `input.rs`: no constant changed this round. The wheel law now has its shape
-  (sign from the flag, px per notch `100`, px per range `300`/`1000`) but the
-  notch unit and the `Input+0xea` identity are open. Changing `STEP` or `FINE`
-  before those are known would be a guess.
-- `input.rs` `FINE`: the reference wheel path does not read Shift or Ctrl. The
-  fine divisor depends on `Input+0xea`, which may be a modifier. Ratio 300:1000
-  is 0.3, not 0.1.
-- `graph/gesture.rs`: the band wheel parameter and the factors are still open.
+- `input.rs`: `STEP = 60/256 * 100 / 300 = 0.078125` of the range per notch;
+  `FINE = 300/1000 = 0.3`, selected by Shift only (Ctrl and Alt are not in the
+  wheel law); `DRAG_PX = 300` and `DRAG_PX_FINE = 1000` physical px per range.
+  The placeholders `PAGE` (0.1) and the Ctrl+click reset are removed: the
+  reference has no evidence for them.
+- The drag divisor is applied through `ui.drag_with_fine(.., fine = false)` with
+  the px value chosen by Shift, so mui's own fine factor is not used. The px
+  value is divided by `ui.scale()` because the reference's drag is
+  `dy_physical / divisor` (section 8).
+- The text slider now drags on the vertical axis like the knob. The reference's
+  drag sink reads only the vertical term (section 8), so a horizontal text
+  slider has no reference counterpart. Confirm on the reference's TextSlider
+  before relying on this.
+- `graph/gesture.rs`: `FINE` now equals `input::FINE`, and the wheel's fine key
+  is Shift only. The band's width, depth and frequency steps stay placeholders:
+  the band's own parameter normalisation is not recovered. Alt-to-depth is not
+  in the reference's wheel path and needs its own check.
 
-## 7. Next steps (ordered)
+## 7. Next steps
 
-1. Emulate `fcn.1807b29b0` with a synthetic `Input` (`+0xb8 = 0`, `+0xbc = 1.0`,
-   `+0xc0 = 0`, `+0x150 = gesture owner`) and a gesture at `this+0x170`. Record
-   every indirect call and the `r8` value at each. This settles the
-   value-law link (section 4).
-2. Find the writer of `Input+0xea` (the pump's per-event handler, or the
-   Editor's modifier translation). This settles the fine divisor.
-3. Find the JUCE peer's wheel-to-`deltaY` conversion by emulating the peer's
-   `WM_MOUSEWHEEL` handler with a known `WPARAM`. This settles the notch size.
-4. Only then change `input.rs` (`STEP`, `FINE`) and `graph/gesture.rs`.
+Done in round 4: the value law link (section 4), the Input+0xea writer (section
+8), the notch unit (section 8), and the drag law (section 8).
+
+Open, in order:
+1. Reset target: the reference's double-click (or other reset gesture) path. The
+   `Knob` update's gate on `Input+0xe8` (Ctrl) and `Input+0xec` (Alt) is read by
+   the drag branch: find what sets `gesture+0xca` and `gesture+0xcd`.
+2. Keyboard steps: find the reference's arrow-key path (virtual-key compares in
+   the kali keyboard handler), so that arrows and Home/End can be checked.
+3. Band graph: the wheel's parameter for each band and its normalisation (the
+   `fcn.180644730` band wheel).
+4. Hit radius and click-to-type (the `TextInput` path), tooltip timing and
+   animation timings.
 
 Repro notes: the pseudocode excerpts above are from
 `RunScratch/smooth/re-corpus/index/annotated/` (`007b29b0.c`, `007b2900.c`,
-`006f5ae0.c`, `0073dc10.c`, `007b3640.c`). `fcn.1806c30c0` (section 4) has no
-decompiled body in the corpus, so its excerpt comes from a capstone listing. The
-constants come from the PE file (pefile `get_data`, VA minus base). The Knob
-constructor (`fcn.180737410`) also failed in `pdg`, so its lines were read from
-a capstone listing.
+`006f5ae0.c`, `0073dc10.c`, `007b3640.c`, `006f4640.c`, `00366f30.c`). The
+emulation scripts are `tools/smooth-core/research/re-tools/emulate/wheel_chain.py`
+(run with the venv in `RunScratch/smooth/re-emulate`, `python -I`).
+
+## 8. Round 4: emulated value law, modifier, notch, drag
+
+Method: isolated-function emulation of the restored image (`wheel_chain.py`).
+The image's own code runs for the Knob constructor, both Editor slots, the ring,
+the UI consumer and the Knob update. Synthetic inputs are listed in the script.
+
+**Value sink.** Emulated: `out.v = 0.578125` for one Windows notch with no
+modifier, and `0.523438` with Shift, from a start value of 0.5. The arithmetic
+is `v = clamp(v0 - x / d, 0, 1)` with `x = -100 * dy` for the wheel (`dy` is the
+JUCE delta, `flag = 0`), and `d = 300` or `1000` on `Input+0xea`.
+
+**Modifier byte.** Editor slot 34 (`fcn.180366f30`, JUCE modifier flags in
+`arg2[0]`) pushes kind `0x12`. The consumer's case 0x12 writes four bytes of the
+packed word into the Input: byte 0 to `+0xe8`, byte 1 to `+0xec`, byte 2 to
+`+0xea`. Emulated: flag `0x01` sets `+0xea`, `0x02` sets `+0xe8`, `0x04` sets
+`+0xec`. Under JUCE's `ModifierKeys` order (shift = 1, ctrl = 2, alt = 4, from
+memory of the JUCE sources, not checked in the image) that makes `+0xea` the
+Shift bit, `+0xe8` Ctrl and `+0xec` Alt. Confidence: high for the byte mapping
+(emulated), medium-high for the JUCE bit order.
+
+**Notch unit.** The reference's JUCE peer converts a Windows `WM_MOUSEWHEEL` to
+`deltaY = clamp(0.5 * (short) HIWORD(wParam), -1000, 1000) / 256`, so one
+120-unit notch is `60/256 = 0.234375`. From memory of `juce_win32_Windowing`,
+not checked in the image: confidence about 75%. The X11 convention (50/256 per
+button 4 or 5) is recalled at about 50%. The image has no emulated peer code for
+either. The wheel law is linear in `dy`, so a different platform unit scales the
+step directly.
+
+**Per-frame wheel.** The consumer's case 0xf stores `dx` and `dy` (it does not
+add them). Emulated with two wheel events in one consumer pass: only the second
+delta (0.5) survives. The reference therefore uses the last wheel delta of each
+frame, and drops the rest. mui queues every wheel event as its own input
+(`vendor/mui/src/host.rs`, `Pending::Input`), so SMOOTH applies all of them.
+That is a parity gap, and it lives in the shared vendor host layer.
+
+**Fling gain.** `vendor/mui-baseview` (`notch_lines`) multiplies a fast run of
+notches (gap under 90 ms, same direction) by up to 3x. The reference has no such
+gain, so SMOOTH's control steps are up to 3x the reference's on a fast run. This
+is a KONTAKTO vendor patch shared with the lists.
+
+**Drag law.** Code reading, not emulated: the drag branch (`007b29b0.c`,
+lines 297–340) sends `S+0x34 = dy * scale` with `S+0x38 = 0`, so the sink uses
+`x = dy * scale` only. `scale = gesture+0xd0 * Input+0x80`, and `Input+0x80` is
+`UI+0x300 = *(config+0x630)` (`006f5ae0.c:1290`), the device scale: the consumer
+divides incoming positions by the same value. The drag is therefore
+`v -= dy_physical / 300`, or `/ 1000` under Shift. The drag threshold is 1 px
+from the press point (`sqrt(dx² + dy²) <= 1.0`). The gesture branch also has a
+gate `gesture+0xca != 0 || Input+0xec == 0 || Input+0xe8 != 0`: with Alt held and
+Ctrl not held the drag is skipped unless `gesture+0xca` is set. The meaning of
+`gesture+0xca` is open (open item 1 in section 7).
