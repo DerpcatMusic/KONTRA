@@ -659,11 +659,25 @@ impl<'a> Sema<'a, '_> {
                 if (ty, array) != expected {
                     return fault(span, format!("{word} requires a different variable type"));
                 }
+                let ranged = matches!(kind, WidgetKind::Knob | WidgetKind::Slider | WidgetKind::ValueEdit);
                 let mut params = Vec::with_capacity(d.params.len());
-                for p in &d.params {
-                    params.push(self.const_int(p)?);
+                let mut at_init = Vec::new();
+                for (i, p) in d.params.iter().enumerate() {
+                    if !ranged {
+                        params.push(self.const_int(p)?);
+                        continue;
+                    }
+                    let value = self.expr(p)?;
+                    let value = self.coerce(value, Ty::Int)?;
+                    match fold(&self.hir, &value) {
+                        Some(Const::Int(n)) => params.push(n),
+                        _ => {
+                            at_init.push((i as u8, value));
+                            params.push(0);
+                        }
+                    }
                 }
-                Some((kind, params))
+                Some((kind, params, at_init))
             }
             None if !d.params.is_empty() => {
                 return fault(d.params[0].span, "only UI declarations take parameters");
@@ -671,7 +685,7 @@ impl<'a> Sema<'a, '_> {
             None => None,
         };
         let home = match (&ui, d.storage, len) {
-            (Some((kind, _)), _, None) if kind.has_control() => {
+            (Some((kind, _, _)), _, None) if kind.has_control() => {
                 Home::Control(self.hir.uis.len() as u32)
             }
             (_, Storage::Polyphonic, None) => {
@@ -714,7 +728,7 @@ impl<'a> Sema<'a, '_> {
                 span,
             },
         )?;
-        if let Some((kind, params)) = ui {
+        if let Some((kind, params, at_init)) = ui {
             self.hir.uis.push(Ui {
                 unresolved: false,
                 kind,
@@ -722,6 +736,13 @@ impl<'a> Sema<'a, '_> {
                 params,
                 callback: None,
             });
+            if !at_init.is_empty() {
+                if !d.init.is_empty() {
+                    return fault(d.init[0].span, "UI declarations take no initializer");
+                }
+                self.hir.ui_params_at_init = true;
+                return Ok(Some(StmtKind::UiParams(ui_index.unwrap(), at_init)));
+            }
         }
         if d.init.is_empty() {
             return Ok(None);

@@ -136,7 +136,7 @@ pub(crate) fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspend
                         pending.push(&hir.functions[index].body);
                     }
                 }
-                StmtKind::Assign(_, _) | StmtKind::Fill(_, _) => {}
+                StmtKind::Assign(_, _) | StmtKind::Fill(_, _) | StmtKind::UiParams(..) => {}
             }
         }
     }
@@ -173,6 +173,7 @@ fn statement_has_array_file(stmt: &StmtKind) -> bool {
     match stmt {
         StmtKind::Assign(p, e) => expr(e) || matches!(p, Place::Elem(_, index) if expr(index)),
         StmtKind::Fill(_, values) => values.iter().any(expr),
+        StmtKind::UiParams(_, values) => values.iter().any(|(_, e)| expr(e)),
         StmtKind::If(e, _, _) | StmtKind::While(e, _) | StmtKind::Select(e, _) => expr(e),
         StmtKind::Builtin(b, args) => {
             matches!(b, Builtin::LoadArrayStr | Builtin::SaveArrayStr) || args.iter().any(arg)
@@ -306,6 +307,8 @@ pub struct Initial {
     pub text_properties: HashMap<(i32, i32), String>,
     /// `set_control_par*_arr` writes keyed `(ui id, parameter, index)`.
     pub indexed_properties: BTreeMap<(i32, i32, i32), Value>,
+    /// Declaration parameters evaluated in `on init`, by UI index (see `StmtKind::UiParams`).
+    pub ui_params: Vec<(u32, Vec<i32>)>,
 }
 
 enum Flow {
@@ -384,6 +387,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
             properties: HashMap::new(),
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),
+            ui_params: Vec::new(),
         },
         fuel: env.evaluation_budget.unwrap_or(INIT_FUEL),
         depth: 0,
@@ -518,10 +522,14 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment, ui_change: Opti
 
 /// Declared value range of a host-owned control.
 pub fn declared_range(ui: &Ui) -> Option<(i32, i32)> {
-    match ui.kind {
+    range_of(ui.kind, &ui.params)
+}
+
+fn range_of(kind: WidgetKind, params: &[i32]) -> Option<(i32, i32)> {
+    match kind {
         WidgetKind::Button | WidgetKind::Switch => Some((0, 1)),
         WidgetKind::Knob | WidgetKind::Slider | WidgetKind::ValueEdit => {
-            Some((*ui.params.first()?, *ui.params.get(1)?))
+            Some((*params.first()?, *params.get(1)?))
         }
         WidgetKind::Menu => Some((i32::MIN, i32::MAX)),
         _ => None,
@@ -529,6 +537,15 @@ pub fn declared_range(ui: &Ui) -> Option<(i32, i32)> {
 }
 
 impl<const TRACK: bool> Eval<'_, TRACK> {
+    /// `declared_range`, with the parameters `on init` has evaluated so far.
+    fn declared_range(&self, ui: usize) -> Option<(i32, i32)> {
+        let kind = self.hir.uis[ui].kind;
+        match self.st.ui_params.iter().find(|(u, _)| *u as usize == ui) {
+            Some((_, params)) => range_of(kind, params),
+            None => declared_range(&self.hir.uis[ui]),
+        }
+    }
+
     fn finish_zone_batch(&mut self, span: Span, commit: bool) -> Result<()> {
         if self.zone_batch.is_empty() { return Ok(()); }
         // A worker can finish finite metadata work. Clock/file waits require a
@@ -607,6 +624,19 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             StmtKind::Assign(place, value) => {
                 let value = self.expr(value)?;
                 self.store(place, value, s.span)?;
+            }
+            StmtKind::UiParams(ui, values) => {
+                let ui = *ui as usize;
+                let mut params = self.hir.uis[ui].params.clone();
+                for (i, e) in values {
+                    params[usize::from(*i)] = self.expr(e)?.int();
+                }
+                // Kontakt's default, as for constant ranges: 0, or the minimum when 0 is outside.
+                if let Some((lo, hi)) = range_of(self.hir.uis[ui].kind, &params) {
+                    self.st.controls[ui] = 0.clamp(lo.min(hi), hi.max(lo));
+                }
+                self.st.ui_params.retain(|(u, _)| *u as usize != ui);
+                self.st.ui_params.push((ui as u32, params));
             }
             StmtKind::Fill(var, values) => {
                 let mut last = V::I(0);
@@ -795,7 +825,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             Home::Text(t) => self.st.texts[t as usize] = value.text(),
             Home::Control(ui) => {
                 let mut n = value.int();
-                if let Some((lo, hi)) = declared_range(&self.hir.uis[ui as usize]) {
+                if let Some((lo, hi)) = self.declared_range(ui as usize) {
                     let clamped = n.clamp(lo.min(hi), hi.max(lo));
                     if clamped != n {
                         let span = v.span;
@@ -1097,7 +1127,7 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             return V::S(s.clone());
         }
         if let Some(ui) = self.ui_index(id) {
-            let range = declared_range(&self.hir.uis[ui]);
+            let range = self.declared_range(ui);
             match par {
                 b::CONTROL_PAR_MIN_VALUE => return V::I(range.map_or(0, |r| r.0)),
                 b::CONTROL_PAR_MAX_VALUE => return V::I(range.map_or(0, |r| r.1)),
