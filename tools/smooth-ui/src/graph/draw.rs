@@ -27,6 +27,7 @@ pub fn plot(
     cursor: Option<(f64, f64, f64)>,
     white: &[f32; PLOT_BINS],
     own: Option<(&[f32; PLOT_BINS], u32)>,
+    shape: Cursor,
 ) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
@@ -147,13 +148,19 @@ pub fn plot(
             // The band the panel is showing wears a ring.
             draws.push(Draw::stroke(outer.clone(), c(t.plot_ink), stroke::RULE).at(centre));
         }
+        // The hovered handle wears a ring, so the pointer's band is plain.
+        if h.hovered {
+            draws.push(Draw::stroke(outer.clone(), ca(t.plot_ink, t.veil_strong), stroke::RULE).at(centre));
+        }
         // The tag is how a drag knows which band it took.
         draws.push(Draw::hit(outer, format!("band-{index}")).at(centre));
     }
 
     stack![
         block(PLOT_W, PLOT_H).fill(Gradient::vertical(c(t.graph_top), c(t.graph_bottom))),
-        canvas(move |_| draws.clone()).full().id(PLOT_ID),
+        // Focusable, so a press on the plot keeps the keyboard there until
+        // the next press elsewhere: the arrows and Delete act on the band.
+        canvas(move |_| draws.clone()).full().id(PLOT_ID).focusable(),
         // The inset shadow: the plot is a well, and the light comes from
         // above and to the left.
         band(PLOT_W, plot::WELL_TOP, Align::Start, Align::Start).fill(Gradient::vertical(
@@ -180,6 +187,7 @@ pub fn plot(
     ]
     .size(PLOT_W, PLOT_H)
     .shrink(0)
+    .cursor(shape)
 }
 
 /// The frequency under the pointer, in the reference's own formats, beside it.
@@ -313,7 +321,7 @@ fn below_zero(range: usize) -> [f64; 2] {
 
 /// Where a magnitude of the white curve sits: its own scale, 54.1 dB across
 /// the plot with zero a little above the middle.
-fn white_y(magnitude: f32) -> f64 {
+pub(super) fn white_y(magnitude: f32) -> f64 {
     let db = 20.0 * magnitude.max(2.0e-7).log10();
     (ZERO - f64::from(db) * PIXELS_PER_DECIBEL).clamp(0.0, PLOT_H)
 }

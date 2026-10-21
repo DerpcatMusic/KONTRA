@@ -3,53 +3,81 @@
 //!
 //! Four parts: `axis` (where a frequency and a depth sit), `band` (what the
 //! editor holds for each band), `data` (the engine's frame, as it came)
-//! and `draw` (the canvas). This file is the interaction: a press on a
-//! handle takes a band, a drag moves it, a double click on bare plot adds one.
+//! and `draw` (the canvas). `gesture` decides what a press, drag, wheel
+//! notch, reset or key does; this file reads the pointer and the keys and
+//! hands those decisions to the plug-in, which applies them through the host.
 
 mod axis;
 mod band;
 mod data;
 mod draw;
+mod gesture;
 mod model;
 
 pub use axis::*;
 pub use band::*;
 pub use data::PlotView;
+pub use gesture::{
+    Axis, Change, Drag, Gesture, WIDTH_STEP, band_under, depth_after, frequency_after,
+};
 pub use model::{band_curve, curve};
 
 use draw::PLOT_ID;
+use gesture::{drag_scale, handle_under, key_change, wheel_change};
+use mui::input::Key;
 use mui::prelude::*;
 
 pub fn response(
-    ui: &Ui,
+    ui: &mut Ui,
     bands: &mut [Band],
     selected: &mut usize,
     view: &PlotView,
     range: usize,
     show_frequency: bool,
+    gesture: &mut Gesture,
 ) -> El {
-    // A drag on a handle moves it. The tag is latched at the press, so it
-    // names the band the gesture took even when the pointer has left it.
-    if let Some(index) = held(ui)
-        && let Some(point) = ui.local(PLOT_ID)
-        && let Some(band) = bands.get_mut(index)
-    {
-        band.frequency = frequency_for_x(point.x);
-        band.depth = depth_for_y(point.y);
-        *selected = index;
+    let mods = ui.pointer().mods;
+    let plot = ui.get(PLOT_ID);
+    let local = ui.local(PLOT_ID).map(|p| (p.x, p.y));
+    let inside = local.filter(|&(x, y)| (0.0..PLOT_W).contains(&x) && (0.0..PLOT_H).contains(&y));
+
+    // A press on a handle takes its band. The press selects it; a double
+    // click or a Ctrl press resets it; and a drag moves it once the pointer
+    // has gone. The tag is latched at the press, so it names the band the
+    // gesture took even when the pointer has left it.
+    match (held(ui), local) {
+        (Some(index), Some(p)) if index < bands.len() => {
+            *selected = index;
+            if gesture.drag.is_none_or(|d| d.index != index) {
+                let band = bands[index];
+                let at = (x_for_frequency(band.frequency), y_for_depth(band.depth));
+                gesture.drag = Some(Drag::press(index, p, at));
+                if plot.double_clicked || mods.ctrl {
+                    gesture.changes.push(Change::Reset { index });
+                }
+                ui.focus(PLOT_ID);
+            }
+            if let Some(mut drag) = gesture.drag {
+                if let Some((x, y)) = drag.follow(p, drag_scale(mods)) {
+                    let band = &mut bands[index];
+                    band.frequency = frequency_for_x(x);
+                    band.depth = depth_for_y(y);
+                }
+                gesture.drag = Some(drag);
+            }
+        }
+        _ => gesture.drag = None,
     }
+
     // A double click on bare plot adds the next free band where it landed.
-    if ui.get(PLOT_ID).double_clicked
-        && let Some(point) = ui.local(PLOT_ID)
-        && !bands.iter().any(|band| {
-            band.active
-                && (x_for_frequency(band.frequency) - point.x).hypot(y_for_depth(band.depth) - point.y)
-                    < crate::tokens::plot::DOT_R * 2.0
-        })
+    if plot.double_clicked
+        && held(ui).is_none()
+        && let Some(point) = local
+        && handle_under(bands, point).is_none()
         && let Some(index) = bands.iter().position(|band| !band.active)
     {
-        let frequency = frequency_for_x(point.x);
-        let depth = depth_for_y(point.y);
+        let frequency = frequency_for_x(point.0);
+        let depth = depth_for_y(point.1);
         bands[index] = Band {
             frequency,
             depth,
@@ -58,6 +86,35 @@ pub fn response(
         };
         *selected = index;
     }
+
+    // What the pointer is on: the dragged band, else the band under it.
+    let hovered = gesture
+        .drag
+        .map(|d| d.index)
+        .or_else(|| inside.and_then(|p| band_under(bands, *selected, p)));
+
+    // The wheel over a band moves it; over bare plot it moves the selected one.
+    // Nothing moves when no band is selected.
+    let wheel = plot.wheel.y;
+    if wheel != 0.0 {
+        let target = hovered.unwrap_or(*selected);
+        if bands.get(target).is_some_and(|band| band.active) {
+            gesture.changes.push(wheel_change(target, wheel, mods));
+        }
+    }
+
+    // The keys, while the plot holds the focus: arrows step the selected band,
+    // Delete takes it out of the plot.
+    if ui.focused(PLOT_ID) && *selected < bands.len() && bands[*selected].active {
+        for press in ui.keys(PLOT_ID).to_vec() {
+            if matches!(press.key, Key::Delete | Key::Backspace) {
+                bands[*selected].active = false;
+            } else if let Some(change) = key_change(*selected, press) {
+                gesture.changes.push(change);
+            }
+        }
+    }
+
     let tints = band_tints();
     let handles: Vec<Handle> = bands
         .iter()
@@ -70,19 +127,27 @@ pub fn response(
             y: y_for_depth(band.depth),
             tint: tints[index % tints.len()],
             pill: band.is_edge(),
+            hovered: hovered == Some(index),
         })
         .collect();
     // The frequency under the pointer, when the preference asks for it.
-    let cursor = ui
-        .local(PLOT_ID)
-        .filter(|p| show_frequency && (0.0..PLOT_W).contains(&p.x) && (0.0..PLOT_H).contains(&p.y))
-        .map(|p| (p.x, p.y, frequency_for_x(p.x)));
+    let cursor = inside
+        .filter(|_| show_frequency)
+        .map(|p| (p.0, p.1, frequency_for_x(p.0)));
     let white = model::curve(bands);
     let own = bands
         .get(*selected)
         .filter(|band| band.active)
         .map(|band| (model::band_curve(band), tints[*selected % tints.len()]));
-    draw::plot(&handles, view, range, cursor, &white, own.as_ref().map(|(c, tint)| (c, *tint)))
+    // The cursor says what a press here will do: a handle grabs, a held one is grabbed.
+    let shape = if gesture.drag.is_some() {
+        Cursor::Grabbing
+    } else if hovered.is_some() {
+        Cursor::Grab
+    } else {
+        Cursor::Arrow
+    };
+    draw::plot(&handles, view, range, cursor, &white, own.as_ref().map(|(c, tint)| (c, *tint)), shape)
 }
 
 /// The band the plot's handle gesture is holding, if any.

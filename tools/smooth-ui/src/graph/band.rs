@@ -15,6 +15,8 @@ pub struct Handle {
     pub tint: u32,
     /// The low bands are tall pills; the narrow ones are dots.
     pub pill: bool,
+    /// Whether the pointer is on it: drawn with a ring.
+    pub hovered: bool,
 }
 
 /// One band, as the editor holds it: where it sits, how deep it cuts, and
@@ -45,7 +47,7 @@ impl Band {
         Self {
             frequency,
             depth,
-            q: 0.707,
+            q: DEFAULT_Q,
             shape,
             slope: 27.71,
             balance: 0.5,
@@ -60,6 +62,9 @@ impl Band {
         matches!(self.shape, 0 | 1 | 6 | 7)
     }
 }
+
+/// A band's width at rest, the host's default Q.
+pub const DEFAULT_Q: f64 = 0.707;
 
 /// How many bands the editor draws.
 pub const BANDS: usize = 8;

@@ -70,6 +70,7 @@ use smooth_core::weighting::{
 };
 use smooth_core::{EngineBank, Settings};
 use smooth_core::plot::Telemetry;
+use smooth_ui::graph::{Axis, Change, DEFAULT_Q, WIDTH_STEP, depth_after, frequency_after};
 use smooth_ui::menus;
 use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
@@ -599,6 +600,35 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
     }
 }
 
+/// The host parameters a plot change moves, with the plain value each takes.
+/// The band's own copy moves with them, so the editor and the parameters agree
+/// before this frame's writes.
+fn change_values(params: &SmoothParams, band: &mut smooth_ui::graph::Band, change: Change) -> Vec<(P, f64)> {
+    let index = change.index();
+    let [frequency, depth, q, ..] = BAND_IDS[index.min(7)];
+    match change {
+        Change::Step { axis: Axis::Width, notches, .. } => {
+            // Width moves through the host's own law, so a notch is the same share of the range at any Q.
+            let range = params.band(index).q.range();
+            band.q = range.denormalize((range.normalize(band.q) - notches * WIDTH_STEP).clamp(0.0, 1.0));
+            vec![(q, band.q)]
+        }
+        Change::Step { axis: Axis::Depth, notches, .. } => {
+            band.depth = depth_after(band.depth, notches);
+            vec![(depth, band.depth)]
+        }
+        Change::Step { axis: Axis::Frequency, notches, .. } => {
+            band.frequency = frequency_after(band.frequency, notches);
+            vec![(frequency, band.frequency)]
+        }
+        Change::Reset { .. } => {
+            band.depth = 0.0;
+            band.q = DEFAULT_Q;
+            vec![(depth, band.depth), (q, band.q)]
+        }
+    }
+}
+
 /// The engine's settings, built from the host's values.
 ///
 /// Every conversion here is the one the reverse engineering established: the
@@ -940,6 +970,12 @@ impl PluginLogic for Smooth {
         let mut seen: u64 = 0;
         // The interface size last asked of the host, so a step is requested once.
         let mut applied: Option<usize> = None;
+        // Whether the last frame stepped a band by wheel or key, and whether
+        // a handle drag was held: each gesture ends on the first frame that
+        // carries nothing new. The band bar's knobs name the selected band's
+        // parameters every frame, so the bridge alone would never end them.
+        let mut stepping = false;
+        let mut dragging = false;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
             // The plot: the engine's latest frame, or the last one settling
@@ -1023,7 +1059,7 @@ impl PluginLogic for Smooth {
                         mirror.restore_values(&values);
                     }
                 }
-                let held = view::pointer_down(ui);
+                let held = view::pointer_down(ui) || stepping;
                 session.observe(&snapshot(&mirror), held);
                 {
                     let library = mirror.library.lock().unwrap_or_else(|e| e.into_inner());
@@ -1094,6 +1130,19 @@ impl PluginLogic for Smooth {
             // its back. The frame the pointer lets go names no parameter, and
             // the bridge ends the edit.
             drop(bind);
+            // The plot's wheel, keys and resets: one gesture for a run of
+            // steps, which the host records, so undo and automation see it.
+            let changes = std::mem::take(&mut model.gesture.changes);
+            if stepping && changes.is_empty() {
+                bridge.end_all();
+            }
+            stepping = !changes.is_empty();
+            for change in changes {
+                let index = change.index();
+                for (param, plain) in change_values(&mirror, &mut model.bands[index], change) {
+                    bridge.drag_gesture(param, plain);
+                }
+            }
             let size = model.prefs.size.min(menus::SIZE_WIDTHS.len() - 1);
             if applied != Some(size) {
                 let width = menus::SIZE_WIDTHS[size];
@@ -1102,7 +1151,12 @@ impl PluginLogic for Smooth {
                     applied = Some(size);
                 }
             }
-            if let Some(index) = smooth_ui::graph::held(ui)
+            let pressed = smooth_ui::graph::held(ui);
+            if dragging && pressed.is_none() {
+                bridge.end_all();
+            }
+            dragging = pressed.is_some();
+            if let Some(index) = pressed
                 && let Some((frequency, depth)) = BAND_PARAMS.get(index)
                 && let Some(band) = model.bands.get(index)
             {
@@ -1140,6 +1194,9 @@ impl PluginLogic for Smooth {
         })
         // The host may resize the window; the design scales to fit it.
         .resizable((menus::SIZE_WIDTHS[0], menus::SIZE_WIDTHS[0] * H / W))
+        // A handle being dragged hides the pointer, as the reference's knobs do, so the
+        // handle is the thing under the eye.
+        .hide_pointer(|ui| smooth_ui::graph::held(ui).is_some())
         .changed(move || {
             let sequence = changed_telemetry.sequence();
             let changed = sequence != seen || pending.swap(false, std::sync::atomic::Ordering::Relaxed);
@@ -1464,5 +1521,61 @@ mod sidechain_layout {
         let layouts = <Smooth as PluginLogic>::bus_layouts();
         assert!(layouts.iter().any(|l| l.total_input_channels() == 4));
         assert!(layouts.iter().all(|l| l.sidechain_input_indices().next().is_some()));
+    }
+}
+
+#[cfg(test)]
+mod plot_gesture_tests {
+    use super::*;
+    use smooth_ui::graph::Band as PlotBand;
+
+    #[test]
+    fn a_wheel_up_widens_a_band_by_a_small_share_of_the_range() {
+        let params = SmoothParams::default();
+        let mut band = PlotBand::at(1000.0, 0.0, 2, true);
+        let before = params.band1_q.range().normalize(band.q);
+        let values = change_values(&params, &mut band, Change::Step { index: 0, axis: Axis::Width, notches: 1.0 });
+        assert!(band.q < 0.707, "up is wider, so Q falls: {}", band.q);
+        assert_eq!(values, vec![(P::Band1Q, band.q)]);
+        let moved = before - params.band1_q.range().normalize(band.q);
+        assert!((moved - WIDTH_STEP).abs() < 1e-6, "one notch is one step of the normalized Q: {moved}");
+    }
+
+    #[test]
+    fn width_is_held_to_the_pivoted_log_range() {
+        let params = SmoothParams::default();
+        let mut band = PlotBand::at(1000.0, 0.0, 2, true);
+        for _ in 0..200 {
+            change_values(&params, &mut band, Change::Step { index: 0, axis: Axis::Width, notches: 1.0 });
+        }
+        assert!((band.q - 0.1).abs() < 1e-9, "the narrowest Q is the range's floor: {}", band.q);
+        for _ in 0..400 {
+            change_values(&params, &mut band, Change::Step { index: 0, axis: Axis::Width, notches: -1.0 });
+        }
+        assert!((band.q - 10.0).abs() < 1e-6, "the widest Q is the range's ceiling: {}", band.q);
+        // The default sits at the middle of the law, as the parameter declares.
+        assert!((params.band1_q.range().normalize(0.707) - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn depth_and_frequency_steps_write_their_own_parameters() {
+        let params = SmoothParams::default();
+        let mut band = PlotBand::at(1000.0, 0.0, 2, true);
+        let depth = change_values(&params, &mut band, Change::Step { index: 3, axis: Axis::Depth, notches: 2.0 });
+        assert_eq!(depth, vec![(P::Band4Depth, depth_after(0.0, 2.0))]);
+        assert!(band.depth > 0.0, "up is a boost");
+        let frequency = change_values(&params, &mut band, Change::Step { index: 3, axis: Axis::Frequency, notches: 12.0 });
+        assert_eq!(frequency, vec![(P::Band4Frequency, 2000.0)]);
+    }
+
+    #[test]
+    fn a_reset_makes_a_band_flat_at_its_default_width() {
+        let params = SmoothParams::default();
+        let mut band = PlotBand::at(1000.0, 6.0, 2, true);
+        band.q = 3.0;
+        let values = change_values(&params, &mut band, Change::Reset { index: 1 });
+        assert_eq!(band.depth, 0.0);
+        assert_eq!(band.q, DEFAULT_Q);
+        assert_eq!(values, vec![(P::Band2Depth, 0.0), (P::Band2Q, DEFAULT_Q)]);
     }
 }
