@@ -171,6 +171,12 @@ impl ParameterAddress {
     pub const fn SourcePhase(node: u32) -> Self {
         Self::legacy(node, 14)
     }
+    /// A stage time of the voice's own amplitude envelope, addressed as a
+    /// modulation target (Kontakt ids 184..187). The stage index is the
+    /// core's `EnvelopeStage` ordinal.
+    pub const fn VoiceEnvelopeStage(stage: u8) -> Self {
+        Self::legacy(0, 21 + stage as u32)
+    }
     /// Rate of a program-local LFO on Kontakt's normalized frequency lane (ID26).
     pub const fn SourceRate(node: u32) -> Self {
         Self::legacy(node, 17)

@@ -2128,6 +2128,17 @@ impl Lowering<'_> {
             let route = &self.ir.routes[route_ref.0];
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
+            // An envelope stage route addresses the zone's own amplitude
+            // envelope; another envelope is a modulator source, so the route
+            // has no destination here and is dropped.
+            if let ir::Target::EnvelopeStage { source, .. } = route.target
+                && zone_index
+                    .and_then(|index| self.ir.zones.get(index))
+                    .and_then(|zone| zone.amplitude)
+                    != Some(source)
+            {
+                continue;
+            }
             let mut processor_targets = Vec::new();
             let mut source_of=|modulator:ir::ModulatorRef,program:&mut ModProgram|self.register_program_source(&owner,modulator,program,&mut sources,implicit_mpe,element_inputs);
             let target = match (route.target, route.depth) {
@@ -2152,6 +2163,23 @@ impl Lowering<'_> {
                     ModTarget::SourceRate(source_of(target, &mut program)? as u32),
                     d,
                 ),
+                (ir::Target::EnvelopeStage { source, stage }, ir::Depth::Normalized(d)) => {
+                    // Only the voice's own amplitude envelope carries the stage
+                    // times a route can address; another envelope is a
+                    // modulator source, not the voice's envelope.
+                    let zone = zone_index
+                        .and_then(|index| self.ir.zones.get(index))
+                        .ok_or_else(|| unsupported(owner.clone(), Feature::ModulationRoute(route.target)))?;
+                    if zone.amplitude != Some(source) {
+                        return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+                    }                    let stage = match stage {
+                        ir::EnvelopeStage::Attack => crate::EnvelopeStage::Attack,
+                        ir::EnvelopeStage::Hold => crate::EnvelopeStage::Hold,
+                        ir::EnvelopeStage::Decay => crate::EnvelopeStage::Decay,
+                        ir::EnvelopeStage::Release => crate::EnvelopeStage::Release,
+                    };
+                    (ModTarget::VoiceEnvelopeStage(stage as u8), d)
+                }
                 (ir::Target::Wavetable(parameter), ir::Depth::Normalized(d)) => {
                     if !group.and_then(|group| self.ir.groups.get(group.0)).is_some_and(|group| group.wavetable.is_some()) {
                         return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
@@ -2463,7 +2491,7 @@ impl Lowering<'_> {
                 program.breakpoints.push(Breakpoints {
                     points,
                     sustain: b.sustain,
-                    loop_range: None,
+                    loop_range: b.loop_range,
                     flex_release: b.flex_release,
                 });
                 ModSource::Breakpoints(program.breakpoints.len() - 1)
@@ -2695,8 +2723,13 @@ impl Lowering<'_> {
         use ir::fx::eq::Kind as S;
         match *p {
             ir::Processor::Gain(g) => Some(seed(S::Level, 1000., 0.707, db(g))),
-            // A UviDigital band is several sections: `processors` lowers it and binds each.
-            ir::Processor::Eq(c) if c.count == 1 && c.bands[0].law != ir::fx::eq::Law::UviDigital => {
+            // A UviDigital or Solid band is several sections: `processors` lowers it
+            // and binds each, so one seeded stage here would drop the extra sections.
+            ir::Processor::Eq(c)
+                if c.count == 1
+                    && c.bands[0].law != ir::fx::eq::Law::UviDigital
+                    && !matches!(c.bands[0].law, ir::fx::eq::Law::Solid(_)) =>
+            {
                 Some(Processor::Eq(crate::dsp::eq_family::live_band(&c.bands[0])))
             }
             ir::Processor::StereoMatrix(m) => Some(Processor::ControlMatrix([

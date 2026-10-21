@@ -13,6 +13,10 @@ default = ["library-access"]
 library-access = ["sampler-kontakt/library-access", "dep:anyhow", "dep:base64", "dep:crc32fast", "dep:flate2", "dep:sha2", "dep:libc"]
 
 [[example]]
+name = "inspect_global_connections"
+required-features = ["library-access"]
+
+[[example]]
 name = "slot_inventory"
 required-features = ["library-access"]
 

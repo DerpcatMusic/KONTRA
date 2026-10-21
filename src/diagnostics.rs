@@ -492,7 +492,7 @@ fn prepare_event(session_id: &str, started: Instant, value: Value) -> (LogEvent,
         } else if event_name == "issue" {
             if matches!(
                 data["code"].as_str(),
-                Some("failed" | "initialization_failed")
+                Some("failed" | "initialization_failed" | "script_compile_failed")
             ) {
                 LogLevel::Error
             } else {
@@ -1892,8 +1892,14 @@ impl LoadTrace {
         if missing.feature.starts_with("script Warning: ") {
             impact = "compiled with this warning; inspect the reported script slot and line";
         }
+        let script_failure = missing.feature == "script";
+        if script_failure {
+            impact = "script did not compile; its callbacks are unavailable";
+        }
         let script_warning = missing.feature.starts_with("script Warning: ");
-        let mut message = if script_warning {
+        let mut message = if script_failure {
+            "KSP compilation failed".into()
+        } else if script_warning {
             let detail = sampler_kontakt::diagnostic_detail(&missing.feature, &missing.value)
                 .unwrap_or_else(|| missing.feature.strip_prefix("script Warning: ").unwrap_or("script warning"));
             format!("KSP warning: {}", clip(detail, 400))
@@ -1937,7 +1943,7 @@ impl LoadTrace {
                 .filter(|g| g.muted)
                 .map(|_| false)
         });
-        let mut issue = json!({"stage":"translate","code":if script_warning {"script_warning"} else {"unsupported"},
+        let mut issue = json!({"stage":"translate","code":if script_failure {"script_compile_failed"} else if script_warning {"script_warning"} else {"unsupported"},
             "message":message,"where":clip(&missing.location, 160),"impact":impact});
         if let (Some(slot), Some(line)) = (location.script_slot, location.line) {
             issue["script_slot"] = json!(slot);
@@ -2706,6 +2712,36 @@ mod tests {
         assert!(reasons.iter().any(|r| r.starts_with("Not translated: lua setParameter GainMatrix.Gain_1_1")), "{reasons:?}");
         assert!(reasons.iter().any(|r| r.ends_with("index 9, valid 1..8")), "{reasons:?}");
         assert!(!text.contains("\"0.5\""), "authored values stay out");
+    }
+
+    #[test]
+    fn compile_failure_reports_cause_source_site_and_unavailable_callbacks() {
+        use crate::sound::report::{Missing, MissingReason};
+        let directory = tempfile::tempdir().unwrap();
+        let mut trace = LoadTrace::new(Path::new("Bass.nki"), 0, None);
+        trace.test_session = Some(Session::start(directory.path().join("logs")));
+        let instrument = sampler_ir::Instrument {
+            behaviors: vec![sampler_ir::Behavior {
+                name: "Console".into(), language: sampler_ir::Language::Ksp,
+                source: "on init\n get_scale(0, %CC)\nend on".into(),
+                slot: Some(3), state: vec![], requires: vec![],
+            }],
+            ..Default::default()
+        };
+        trace.missing(&Missing {
+            location: "script slot 3 Console line 2".into(), feature: "script".into(),
+            value: "2:2: get_scale: unsupported argument".into(), reason: MissingReason::NotModeled,
+        }, Some(&instrument));
+        let report = trace.finish("loaded");
+        let issue = &report["issues"][0];
+        assert_eq!(issue["code"], "script_compile_failed");
+        assert!(issue["message"].as_str().unwrap().contains("get_scale: unsupported argument"));
+        assert_eq!(issue["script_slot"], 3);
+        assert_eq!(issue["line"], 2);
+        assert!(issue["source_excerpt"].is_object());
+        assert_eq!(issue["impact"], "script did not compile; its callbacks are unavailable");
+        let (event, _, _) = prepare_event("test", Instant::now(), json!({"event":"issue","data":issue}));
+        assert_eq!(event.level, LogLevel::Error);
     }
 
     #[test]
