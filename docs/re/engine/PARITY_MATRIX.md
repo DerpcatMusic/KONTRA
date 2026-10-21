@@ -15,8 +15,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Time Machine 2 | unknown | none | |
 | Time Machine Pro | unknown | none | |
 | Beat Machine | missing | decomp (partial) | Stored mode 4; no BBeatMachine class found; `BSlice` (0x90-byte object, `0140d20000.c:700`) and `disallow_group` beatmachine message (`0140870000.c`) are the only leads. Slice/pattern law unlocated. See docs/re/engine/k-beat-s1200-mp60.md |
-| S1200 Machine | missing | decomp (partial) | Stored mode 6; filter mode = engine par 0x318, range 0..5 (`0140780000.c`, `FUN_140789c30`). Bit/rate and filter laws unlocated. See docs/re/engine/k-beat-s1200-mp60.md |
-| MP60 Machine | missing | decomp (partial) | Stored mode 7; common fields only. Controls and DSP unlocated. See docs/re/engine/k-beat-s1200-mp60.md |
+| S1200 Machine | partial | decomp + focused golden tests | Stored mode 6; filter modes 1..=5 run (AA IIR, mode biquads, 26 kHz hold, quantiser) on voices with `Group.machine`. Filter modes 0, 6, 7 not recovered; no render comparison against Kontakt yet. See docs/re/engine/k-beat-s1200-mp60.md |
+| MP60 Machine | missing | decomp (partial) | Stored mode 7; render `FUN_140cddf50` and stage-1 coefficients decoded; resampler not recovered; not wired. See docs/re/engine/k-beat-s1200-mp60.md |
 | Voice/group/zone engine (RR, release triggers, stealing, legato, choke) | unknown | none | |
 
 ## Filters (filt-sv, filt-ladder-monark, filt-ar-daft, filt-legacy, filt-multi-versatile, filt-formant-effect)
