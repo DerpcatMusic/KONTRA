@@ -243,6 +243,16 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Legacy Chorus | partial | Wine oracle + decomp | Two-head structure confirmed by decompile; oracle shows ~8.85 ms echoes, engine base is 0 (contradicted). Base-time source and Depth law open |
 | Legacy Flanger | parity | decomp constants + kemu native vectors | Mapping and vectors present; not yet checked against Wine oracle |
 | Legacy Phaser | parity | decomp constants + independent vector | 4-stage cascade; vector computed independently from decompile constants, not native-data |
+| Choral | unknown | none | |
+| Flair | unknown | none | |
+| Freak | partial | vector | Native fxemu vectors at 48 kHz pass (`dsp::color::freak::tests::matches_the_native_core`). Missing: Hilbert coefficient designer (other sample rates use nearest dumped table); saved field 17 binding unverified. See `docs/re/engine/k-modfx-freak-ring-rotator.md`. |
+| Phasis | unknown | none | |
+| Ring Modulator | missing | decomp | Class/module names and LFO waveform count (2) confirmed in decompile. No core, no mapping, no DSP law yet; process method not locatable without vtable slot dump. |
+| Rotator | missing | decomp | Class/module names confirmed in decompile (`BEffectRotator`, `RotModuleBase`). No core, no mapping, no law yet; process method not locatable without vtable slot dump. |
+| Vibrato/Chorus | unknown | none | |
+| Legacy Chorus | unknown | none | |
+| Legacy Flanger | unknown | none | |
+| Legacy Phaser | unknown | none | |
 
 ## Delays (k-delays)
 
