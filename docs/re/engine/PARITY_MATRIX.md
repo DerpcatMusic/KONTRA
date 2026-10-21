@@ -197,9 +197,9 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | AHDSR | unknown | none | |
 | DBD | unknown | none | |
 | Flexible envelope | unknown | none | |
-| LFO | unknown | none | |
-| Multi Digital | unknown | none | |
-| Step modulator | unknown | none | |
+| LFO | partial | decomp + vector | Native waves and Multi/Digital structure confirmed; fade cadence, fade init, synced fade, held-noise reset seed open. See `docs/re/engine/k-mod-lfo-step.md`. |
+| Multi Digital | partial | decomp + vector | Mixer terms and normalisation confirmed; data constants unverified in binary; fade > 0 with components refused. |
+| Step modulator | partial | decomp + vector | Render confirmed (`0x140a768e0`); `+0xdd` branch and stored-field setup not modelled (`UnknownLaw`). |
 | Envelope follower | unknown | none | |
 | Glide | unknown | none | |
 | External MIDI/performance sources | unknown | none | |
