@@ -392,8 +392,28 @@ impl<P: Params> Editor for MuiEditor<P> {
         }
         #[cfg(not(target_os = "linux"))]
         use window::open as open_window;
+        // `X11(0)` is the floating request (moose-core has no floating handle):
+        // the window is its own top-level, which the window manager places.
         #[cfg(target_os = "linux")]
-        use window::open_threaded as open_window;
+        let window = if matches!(parent, RawWindowHandle::X11(0)) {
+            window::open_floating_threaded(
+                "MUI",
+                self.size,
+                self.scale.policy(),
+                Arc::clone(&self.shared),
+                Arc::clone(&self.requests),
+            )
+        } else {
+            window::open_threaded(
+                &ParentWindow(parent),
+                "MUI",
+                self.size,
+                self.scale.policy(),
+                Arc::clone(&self.shared),
+                Arc::clone(&self.requests),
+            )
+        };
+        #[cfg(not(target_os = "linux"))]
         let window = open_window(
             &ParentWindow(parent),
             "MUI",

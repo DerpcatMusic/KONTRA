@@ -17,48 +17,56 @@
 //! the host records. The view does not know that: it names a control and a
 //! range, and the dial decides where the value lives.
 
+/// The real-time audit: a counting global allocator, armed per thread around
+/// the closure under test. Test builds only, so the shipped plug-in keeps the
+/// system allocator as it is.
+#[cfg(test)]
 mod allocation_audit {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
+    use std::thread::LocalKey;
     thread_local! {
         static ACTIVE: Cell<bool> = const { Cell::new(false) };
-        static COUNT: Cell<usize> = const { Cell::new(0) };
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+        static DEALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+    /// Counts one event on the armed thread. Only `try_with`, so it never allocates.
+    fn tally(counter: &'static LocalKey<Cell<usize>>) {
+        let _ = ACTIVE.try_with(|a| {
+            if a.get() {
+                let _ = counter.try_with(|c| c.set(c.get() + 1));
+            }
+        });
     }
     struct Audit;
-    // SAFETY: delegates every allocation/deallocation unchanged to System. TLS counters only
-    // observe allocations on a specifically marked test thread and do not allocate themselves.
+    // SAFETY: delegates every allocation and deallocation unchanged to System. The TLS
+    // counters only observe calls on the armed test thread and do not allocate themselves.
     unsafe impl GlobalAlloc for Audit {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-            let _ = ACTIVE.try_with(|a| {
-                if a.get() {
-                    let _ = COUNT.try_with(|c| c.set(c.get() + 1));
-                }
-            });
+            tally(&ALLOCATIONS);
             unsafe { System.alloc(l) }
         }
         unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            tally(&DEALLOCATIONS);
             unsafe { System.dealloc(p, l) }
         }
         unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-            let _ = ACTIVE.try_with(|a| {
-                if a.get() {
-                    let _ = COUNT.try_with(|c| c.set(c.get() + 1));
-                }
-            });
+            tally(&ALLOCATIONS);
             unsafe { System.realloc(p, l, n) }
         }
     }
     #[global_allocator]
     static ALLOCATOR: Audit = Audit;
 
-    /// The number of allocations the closure made.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn count(f: impl FnOnce()) -> usize {
-        COUNT.with(|c| c.set(0));
+    /// What the closure did on this thread: `(allocations, deallocations)`. A
+    /// realloc counts once, as an allocation.
+    pub fn count(f: impl FnOnce()) -> (usize, usize) {
+        ALLOCATIONS.with(|c| c.set(0));
+        DEALLOCATIONS.with(|c| c.set(0));
         ACTIVE.with(|a| a.set(true));
         f();
         ACTIVE.with(|a| a.set(false));
-        COUNT.with(Cell::get)
+        (ALLOCATIONS.with(Cell::get), DEALLOCATIONS.with(Cell::get))
     }
 }
 
@@ -726,8 +734,11 @@ impl SmoothParams {
         settings
     }
 
-    /// One band's parameters, by index.
+    /// One band's parameters, by index. The index is always below eight (the
+    /// bank has eight bands); the last arm is the eighth band, so no index
+    /// can panic on the audio thread.
     fn band(&self, index: usize) -> Band<'_> {
+        debug_assert!(index < 8, "eight bands");
         match index {
             0 => Band {
                 frequency: &self.band1_frequency,
@@ -799,7 +810,7 @@ impl SmoothParams {
                 active: &self.band7_active,
                 bypass: &self.band7_bypass,
             },
-            7 => Band {
+            _ => Band {
                 frequency: &self.band8_frequency,
                 depth: &self.band8_depth,
                 q: &self.band8_q,
@@ -809,7 +820,6 @@ impl SmoothParams {
                 active: &self.band8_active,
                 bypass: &self.band8_bypass,
             },
-            _ => unreachable!("eight bands"),
         }
     }
 
@@ -827,11 +837,17 @@ impl SmoothParams {
                 depth: (band.depth.value() + 10.0) / 20.0,
                 q: normalized_from_q(band.q.value()),
                 slope: normalized_from_slope(band.slope.value()),
-                focus: band.balance.value() as f32,
+                focus: band.balance.value(),
                 selector: 0.0,
                 shape: band.shape.value().clamp(0, 7) as f32 / 7.0,
             })
-            .expect("bounded host band parameters")
+            // Host values are finite (`set_value` drops the rest), so this is unreachable;
+            // an unused band is the answer if it ever is, not a panic on the audio thread.
+            .unwrap_or(BandRecord {
+                used: false,
+                enabled: false,
+                ..BandRecord::flat(1_000.0)
+            })
         })
     }
 
@@ -882,13 +898,16 @@ impl PluginLogic for Smooth {
     type Params = SmoothParams;
     type DspState = Dsp;
 
-    /// One stereo layout with a stereo sidechain bus. VST3 fixes the bus
-    /// structure for every layout, and the host's input buffer is one flat
-    /// channel list with no bus split, so a mono main beside a mono sidechain
-    /// cannot be told from a stereo pair. Mono hosts feed the one-input lane
-    /// path of `process`. The sidechain is enabled only with four inputs.
+    /// Stereo first, so it is the default width, then mono. VST3 fixes one bus
+    /// structure for every layout, so the mono layout keeps the stereo sidechain
+    /// as a disabled bus: CLAP leaves it out of the mono ports, and VST3 keeps
+    /// its two channels in the buffer as silence (see `process`). The sidechain
+    /// is enabled only with a stereo main and four inputs.
     fn bus_layouts() -> Vec<BusLayout> {
-        vec![BusLayout::stereo().with_sidechain_input("Sidechain", ChannelConfig::Stereo)]
+        vec![
+            BusLayout::stereo().with_optional_sidechain_input("Sidechain", ChannelConfig::Stereo, true),
+            BusLayout::mono().with_optional_sidechain_input("Sidechain", ChannelConfig::Stereo, false),
+        ]
     }
 
     fn init(params: &SmoothParams, _cx: &InitContext) -> Dsp {
@@ -919,7 +938,7 @@ impl PluginLogic for Smooth {
         params: &SmoothParams,
         buffer: &mut AudioBuffer,
         _events: &EventList,
-        _context: &mut ProcessContext,
+        context: &mut ProcessContext,
     ) -> ProcessStatus {
         // The host's buses need not match the engine's two lanes: a mono or
         // absent input feeds the lanes it has (silence for an absent one), and
@@ -928,14 +947,20 @@ impl PluginLogic for Smooth {
         // the host did not connect, is what a host hears as a dead plug-in.
         let inputs = buffer.num_input_channels();
         let outputs = buffer.num_output_channels();
+        // The main input bus is the engine's lanes. VST3 lays every declared
+        // bus into the buffer, a disabled sidechain's silent channels included,
+        // so a mono main beside one arrives as three channels: the bus routing
+        // says the main is one. A direct call with no routing takes the buffer
+        // as the bus.
+        let main_inputs = context.bus_routing.input(0).map_or(inputs, |bus| bus.channel_count().min(inputs));
         let Some(bank) = state.bank.as_mut() else {
             // No engine at this rate: pass the signal through, rather than
             // leave the outputs holding whatever the host had in them.
             for channel in 0..outputs {
-                if inputs > 0 {
+                if main_inputs > 0 {
                     // A sample copy, not `copy_from_slice`: a CLAP in-place host
                     // hands in the same memory for input and output.
-                    let (input, output) = buffer.io_pair(channel.min(inputs - 1), channel);
+                    let (input, output) = buffer.io_pair(channel.min(main_inputs - 1), channel);
                     for (out, &sample) in output.iter_mut().zip(input) {
                         *out = sample;
                     }
@@ -945,7 +970,7 @@ impl PluginLogic for Smooth {
             }
             return ProcessStatus::Normal;
         };
-        let lanes = inputs.clamp(1, 2);
+        let lanes = main_inputs.clamp(1, 2);
         let mut settings = params.settings();
         settings.active_channels = lanes;
         // The sidechain bus follows the main pair; four input channels mean it is there.
@@ -956,7 +981,7 @@ impl PluginLogic for Smooth {
         }
         let frames = buffer.num_samples();
         for frame in 0..frames {
-            let left = if inputs > 0 { buffer.input(0)[frame] } else { 0.0 };
+            let left = if main_inputs > 0 { buffer.input(0)[frame] } else { 0.0 };
             let right = if lanes > 1 { buffer.input(1)[frame] } else { left };
             let detector = if settings.sidechain {
                 [buffer.input(2)[frame], buffer.input(3)[frame]]
@@ -1323,7 +1348,7 @@ mod tests {
             mid_side: true,
             ..Settings::default()
         };
-        let allocations = allocation_audit::count(|| {
+        let (allocations, deallocations) = allocation_audit::count(|| {
             for t in 0..14000 {
                 let out = engine.process_sample([(t as f32 * 0.23).sin() * 0.2, 0.0], &settings);
                 assert!(out.iter().all(|v| v.is_finite()));
@@ -1333,7 +1358,7 @@ mod tests {
                 assert!(out.iter().all(|v| v.is_finite()));
             }
         });
-        assert_eq!(allocations, 0, "process path allocated");
+        assert_eq!((allocations, deallocations), (0, 0), "process path allocated or freed");
     }
 }
 
@@ -1483,13 +1508,24 @@ mod host_io {
     /// One block, as a host gives it: outputs prefilled with a sentinel, so a
     /// sample the plug-in did not write is visible.
     fn block(state: &mut Dsp, params: &SmoothParams, inputs: &[&[f32]], outputs: usize) -> Vec<Vec<f32>> {
+        block_routed(state, params, inputs, outputs, BusRouting::new())
+    }
+
+    /// One block with the host's bus routing, as the VST3 and CLAP adapters stamp it.
+    fn block_routed(
+        state: &mut Dsp,
+        params: &SmoothParams,
+        inputs: &[&[f32]],
+        outputs: usize,
+        routing: BusRouting,
+    ) -> Vec<Vec<f32>> {
         let frames = inputs.first().map_or(512, |channel| channel.len());
         let mut storage: Vec<Vec<f32>> = (0..outputs).map(|_| vec![SENTINEL; frames]).collect();
         {
             let mut views: Vec<&mut [f32]> = storage.iter_mut().map(Vec::as_mut_slice).collect();
             let transport = TransportInfo::default();
             let mut out_events = EventList::default();
-            let mut context = ProcessContext::new(&transport, 48_000.0, frames, &mut out_events);
+            let mut context = ProcessContext::new(&transport, 48_000.0, frames, &mut out_events).with_bus_routing(routing);
             let mut buffer = AudioBuffer::from_slices_checked(inputs, &mut views, frames);
             Smooth::process(state, params, &mut buffer, &EventList::default(), &mut context);
         }
@@ -1548,6 +1584,26 @@ mod host_io {
         assert_eq!(mono[1], left);
     }
 
+    /// VST3 lays out every declared bus in the flat buffer, so a disabled
+    /// sidechain's silent channels sit beside a mono main: three channels for
+    /// one lane. The bus routing says the main is one channel, and the output
+    /// must match a plain mono block sample for sample. The block is longer
+    /// than the engine's 4095-sample latency, so the output carries signal.
+    #[test]
+    fn a_mono_main_beside_a_disabled_sidechain_is_one_lane() {
+        let params = SmoothParams::default();
+        let (left, _) = signal(16384);
+        let silence = vec![0.0; 16384];
+        let mut routing = BusRouting::new();
+        routing.push_input(1, BusActivation::Active);
+        routing.push_input(2, BusActivation::Inactive);
+        routing.push_output(1, BusActivation::Active);
+        let alone = block(&mut prepared(&params), &params, &[&left], 1);
+        assert!(alone[0].iter().any(|v| v.abs() > 1e-4), "the mono reference is silent");
+        let flat = block_routed(&mut prepared(&params), &params, &[&left, &silence, &silence], 1, routing);
+        assert_eq!(flat[0], alone[0], "the disabled sidechain's silence was taken as a second lane");
+    }
+
     /// The tail the host reads from `clap.tail` must be the one the status
     /// promises: a host that reads 0 stops calling process mid-ring-out.
     #[test]
@@ -1580,6 +1636,287 @@ mod host_io {
         // 8 blocks of 512 at 48 kHz is well over one 60 Hz frame, so the engine
         // must have published at least once.
         assert!(params.plot.sequence() > before, "the plot never published");
+    }
+}
+
+/// The real-time audit: the process path makes no allocation and no
+/// deallocation on any plan, switch, shape, response and rate the plug-in can
+/// reach. The matrix is the plug-in's own parameter space, written into the
+/// parameters as automation would and driven through `Smooth::process` one
+/// host block at a time. Each configuration runs for longer than its engine's
+/// hop, so the frame path (FFTs, weights, spatial operators, plot) is inside
+/// the count. The first block after a plan or mid/side change is the switch:
+/// `bank.select` resets that engine's history, so it is tallied on its own.
+#[cfg(test)]
+mod rt_audit {
+    use super::*;
+    use smooth_core::dsp::{EngineConfig, Plan, Quality};
+    use std::f64::consts::TAU;
+
+    const BLOCK: usize = 512;
+    const RATES: [f64; 4] = [44_100.0, 48_000.0, 96_000.0, 192_000.0];
+    /// The seven plans the selection names, as (low latency, quality, linear phase).
+    const PLANS: [(i64, i64, i64); 7] = [
+        (1, 0, 0),
+        (0, 0, 0),
+        (0, 1, 0),
+        (0, 2, 0),
+        (0, 0, 1),
+        (0, 1, 1),
+        (0, 2, 1),
+    ];
+    /// Attack and release, at both ends of their ranges.
+    const RESPONSES: [(f64, f64); 4] = [(0.0, 0.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0)];
+    /// Plan, mid/side, sidechain, solo, delta, bypass and mode.
+    const SWITCHES: usize = 7 * 2 * 2 * 2 * 2 * 2 * 2;
+    /// Every configuration: the switches, times eight band shapes, times four responses.
+    const CONFIGURATIONS: usize = SWITCHES * 8 * 4;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Setup {
+        plan: usize,
+        mid_side: bool,
+        sidechain: bool,
+        solo: bool,
+        delta: bool,
+        bypass: bool,
+        hard: bool,
+        shape: usize,
+        response: usize,
+    }
+
+    /// Configuration `code` in mixed radix: the response changes fastest, the plan slowest.
+    fn setup(mut code: usize) -> Setup {
+        let mut digit = |radix: usize| {
+            let d = code % radix;
+            code /= radix;
+            d
+        };
+        Setup {
+            response: digit(4),
+            shape: digit(8),
+            hard: digit(2) == 1,
+            bypass: digit(2) == 1,
+            delta: digit(2) == 1,
+            solo: digit(2) == 1,
+            sidechain: digit(2) == 1,
+            mid_side: digit(2) == 1,
+            plan: digit(7),
+        }
+    }
+
+    /// Every configuration, in order.
+    fn exhaustive() -> impl Iterator<Item = Setup> {
+        (0..CONFIGURATIONS).map(setup)
+    }
+
+    /// Every switch combination once, with the shape and the response cycled
+    /// through it, so each switch meets each shape and each response.
+    fn covering() -> impl Iterator<Item = Setup> {
+        (0..SWITCHES).map(|s| setup((s / 8) % 4 + 4 * (s % 8 + 8 * s)))
+    }
+
+    /// Writes a configuration into the parameters, as host automation would.
+    fn apply(params: &SmoothParams, setup: Setup) {
+        let (low_latency, quality, linear_phase) = PLANS[setup.plan];
+        params.low_latency.set_value(low_latency);
+        params.quality.set_value(quality);
+        params.linear_phase.set_value(linear_phase);
+        params.stereo_mode.set_value(i64::from(setup.mid_side));
+        params.sidechain.set_value(i64::from(setup.sidechain));
+        params.band_solo.set_value(i64::from(setup.solo));
+        params.delta.set_value(i64::from(setup.delta));
+        params.bypass.set_value(i64::from(setup.bypass));
+        params.mode.set_value(i64::from(setup.hard));
+        params.band1_active.set_value(1);
+        params.band1_shape.set_value(setup.shape as i64);
+        let (attack, release) = RESPONSES[setup.response];
+        params.attack.set_value(attack);
+        params.release.set_value(release);
+    }
+
+    /// Blocks per configuration: enough to cross the plan's hop, so a frame runs.
+    fn blocks(rate: f64, plan: usize) -> usize {
+        let (low_latency, quality, linear_phase) = PLANS[plan];
+        let config = EngineConfig {
+            quality: match quality {
+                0 => Quality::Normal,
+                1 => Quality::High,
+                _ => Quality::Ultra,
+            },
+            linear_phase: linear_phase == 1,
+            reduced_latency: low_latency == 1,
+        };
+        let hop = Plan::new(rate as f32, config).map_or(BLOCK, |built| built.hop);
+        hop / BLOCK + 2
+    }
+
+    /// Four channels of a fixed signal: two tones and a noise floor, the same on every run.
+    fn fill(input: &mut [Vec<f32>], at: &mut usize, rate: f64) {
+        let mut seed = 0x2545_f491_u32;
+        for i in 0..BLOCK {
+            let t = (*at + i) as f64 / rate;
+            for (channel, samples) in input.iter_mut().enumerate() {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                let tone = (TAU * 1_000.0 * t).sin()
+                    + 0.5 * (TAU * (2_300.0 + 40.0 * channel as f64) * t).sin();
+                samples[i] = 0.2 * tone as f32 + 0.05 * noise;
+            }
+        }
+        *at += BLOCK;
+    }
+
+    /// One block through `Smooth::process`. The host's side (the buffer views and the
+    /// context) is built first; only the call itself is counted.
+    fn block_through(
+        state: &mut Dsp,
+        params: &SmoothParams,
+        rate: f64,
+        input: &[Vec<f32>],
+        output: &mut [Vec<f32>],
+    ) -> (usize, usize) {
+        let inputs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+        let mut views: Vec<&mut [f32]> = output.iter_mut().map(Vec::as_mut_slice).collect();
+        let transport = TransportInfo::default();
+        let mut out_events = EventList::default();
+        let events = EventList::default();
+        let mut context = ProcessContext::new(&transport, rate, BLOCK, &mut out_events);
+        let mut buffer = AudioBuffer::from_slices_checked(&inputs, &mut views, BLOCK);
+        allocation_audit::count(|| {
+            Smooth::process(state, params, &mut buffer, &events, &mut context);
+        })
+    }
+
+    /// Allocations and deallocations over a number of blocks.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct Counts {
+        blocks: usize,
+        allocations: usize,
+        deallocations: usize,
+    }
+
+    impl Counts {
+        fn add(&mut self, (allocations, deallocations): (usize, usize)) {
+            self.blocks += 1;
+            self.allocations += allocations;
+            self.deallocations += deallocations;
+        }
+    }
+
+    /// What one run found: the steady blocks, the switch blocks, and the reset
+    /// that follows the run at the same rate.
+    #[derive(Debug, Default)]
+    struct Tally {
+        steady: Counts,
+        switch: Counts,
+        reset: (usize, usize),
+    }
+
+    /// Drives `setups` through one engine at `rate`, in order. `inputs` overrides the
+    /// number of input channels; by default a configuration has a sidechain or not.
+    fn run(rate: f64, setups: impl Iterator<Item = Setup>, inputs: Option<usize>) -> Tally {
+        let params = SmoothParams::default();
+        let mut state = Dsp::default();
+        Smooth::reset(&mut state, &params, &AudioConfig::new(rate, BLOCK));
+        let mut tally = Tally::default();
+        let mut input = vec![vec![0.0_f32; BLOCK]; 4];
+        let mut output = vec![vec![0.0_f32; BLOCK]; 2];
+        let mut at = 0;
+        let mut previous = None;
+        for setup in setups {
+            apply(&params, setup);
+            let key = (setup.plan, setup.mid_side);
+            let switch = previous != Some(key);
+            previous = Some(key);
+            let channels = inputs.unwrap_or(if setup.sidechain { 4 } else { 2 });
+            for block in 0..blocks(rate, setup.plan) {
+                fill(&mut input, &mut at, rate);
+                let counted = block_through(&mut state, &params, rate, &input[..channels], &mut output);
+                assert!(
+                    output.iter().flatten().all(|v| v.is_finite()),
+                    "non-finite output at plan {} ({setup:?})",
+                    setup.plan
+                );
+                if switch && block == 0 {
+                    tally.switch.add(counted);
+                } else {
+                    tally.steady.add(counted);
+                }
+            }
+        }
+        tally.reset = allocation_audit::count(|| {
+            Smooth::reset(&mut state, &params, &AudioConfig::new(rate, BLOCK));
+        });
+        tally
+    }
+
+    fn assert_clean(rate: f64, tally: &Tally) {
+        eprintln!("{rate} Hz: steady {:?}, switch {:?}, reset {:?}", tally.steady, tally.switch, tally.reset);
+        assert!(tally.steady.blocks > 0 && tally.switch.blocks > 0);
+        assert_eq!(
+            (tally.steady.allocations, tally.steady.deallocations),
+            (0, 0),
+            "{rate} Hz: steady blocks allocated or freed"
+        );
+        assert_eq!(
+            (tally.switch.allocations, tally.switch.deallocations),
+            (0, 0),
+            "{rate} Hz: a plan switch allocated or freed"
+        );
+        assert_eq!(tally.reset, (0, 0), "{rate} Hz: reset at an unchanged rate allocated or freed");
+    }
+
+    /// Every switch meets every shape and response, at 48 kHz (448 configurations).
+    #[test]
+    fn every_switch_shape_and_response_is_allocation_free_at_48khz() {
+        assert_clean(48_000.0, &run(48_000.0, covering(), None));
+    }
+
+    /// Plan and mid/side cycle through all fourteen layouts, so nearly every block
+    /// is a switch: `bank.select` resets the engine each time, and that reset must not allocate.
+    #[test]
+    fn plan_switches_are_allocation_free() {
+        let switches = (0..140).map(|i| Setup {
+            plan: i % 7,
+            mid_side: i % 2 == 1,
+            sidechain: false,
+            solo: false,
+            delta: false,
+            bypass: false,
+            hard: false,
+            shape: 0,
+            response: 0,
+        });
+        assert_clean(48_000.0, &run(48_000.0, switches, None));
+    }
+
+    /// The mono and the absent input buses take their own lanes of `process`. Every
+    /// seventh configuration of the covering set still reaches all seven plans.
+    #[test]
+    fn mono_and_absent_inputs_are_allocation_free() {
+        for inputs in [1, 0] {
+            assert_clean(48_000.0, &run(48_000.0, covering().step_by(7), Some(inputs)));
+        }
+    }
+
+    /// The covering set at all four rates. Release only:
+    /// `cargo test --release -p smooth-plugin --lib rt_audit -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "slow in a debug build; run with --release --ignored"]
+    fn every_switch_shape_and_response_is_allocation_free_at_every_rate() {
+        for rate in RATES {
+            assert_clean(rate, &run(rate, covering(), None));
+        }
+    }
+
+    /// The whole parameter space: 14,336 configurations at each rate. Release only.
+    #[test]
+    #[ignore = "the full matrix is slow in a debug build; run with --release --ignored"]
+    fn the_full_parameter_matrix_is_allocation_free_at_every_rate() {
+        for rate in RATES {
+            assert_clean(rate, &run(rate, exhaustive(), None));
+        }
     }
 }
 
@@ -1656,10 +1993,14 @@ mod reset_rt {
         let params = SmoothParams::default();
         let mut state = Dsp::default();
         Smooth::reset(&mut state, &params, &AudioConfig::new(48_000.0, 512));
-        let allocations = allocation_audit::count(|| {
+        let (allocations, deallocations) = allocation_audit::count(|| {
             Smooth::reset(&mut state, &params, &AudioConfig::new(48_000.0, 512));
         });
-        assert_eq!(allocations, 0, "reset allocated {allocations} times on the audio thread");
+        assert_eq!(
+            (allocations, deallocations),
+            (0, 0),
+            "reset allocated {allocations} and freed {deallocations} times on the audio thread"
+        );
     }
 }
 
@@ -1667,14 +2008,42 @@ mod reset_rt {
 mod sidechain_layout {
     use super::*;
 
-    /// The sidechain is a stereo aux bus, and every layout carries one (VST3
-    /// needs one bus structure). Four input channels mean the sidechain is
-    /// there; mono has a mono aux bus of its own.
+    /// VST3 fixes one bus structure for every layout: the same bus count and
+    /// the same main or sidechain kind per direction. Only channel widths may
+    /// differ, which is why the mono layout keeps the stereo sidechain bus.
     #[test]
-    fn the_sidechain_layout_is_a_stereo_aux_bus() {
+    fn every_layout_shares_one_bus_structure() {
         let layouts = <Smooth as PluginLogic>::bus_layouts();
-        assert!(layouts.iter().any(|l| l.total_input_channels() == 4));
-        assert!(layouts.iter().all(|l| l.sidechain_input_indices().next().is_some()));
+        let kinds = |buses: &[BusConfig]| buses.iter().map(|b| b.kind).collect::<Vec<_>>();
+        let (first_in, first_out) = (kinds(&layouts[0].inputs), kinds(&layouts[0].outputs));
+        assert_eq!(first_in, [BusKind::Main, BusKind::Sidechain]);
+        assert_eq!(first_out, [BusKind::Main]);
+        assert!(layouts.iter().all(|l| kinds(&l.inputs) == first_in && kinds(&l.outputs) == first_out));
+    }
+
+    /// Hosts offer a mono and a stereo main, and every layout has a main bus
+    /// on each side.
+    #[test]
+    fn the_layouts_offer_a_mono_and_a_stereo_main() {
+        let layouts = <Smooth as PluginLogic>::bus_layouts();
+        let main = |buses: &[BusConfig]| buses.first().filter(|b| b.kind == BusKind::Main).map(|b| b.channels);
+        let mains: Vec<_> = layouts.iter().map(|l| (main(&l.inputs), main(&l.outputs))).collect();
+        assert!(mains.iter().all(|(input, output)| input.is_some() && output.is_some()), "{mains:?}");
+        assert!(mains.contains(&(Some(ChannelConfig::Mono), Some(ChannelConfig::Mono))), "{mains:?}");
+        assert!(mains.contains(&(Some(ChannelConfig::Stereo), Some(ChannelConfig::Stereo))), "{mains:?}");
+    }
+
+    /// CLAP counts only enabled buses: the mono layout exposes one channel in
+    /// and out, and only the stereo layout exposes its sidechain pair.
+    #[test]
+    fn only_the_stereo_layout_enables_the_sidechain() {
+        let layouts = <Smooth as PluginLogic>::bus_layouts();
+        let [stereo, mono] = layouts.as_slice() else { panic!("expected a stereo then a mono layout") };
+        assert_eq!(stereo.total_input_channels(), 4);
+        assert_eq!(stereo.sidechain_input_indices().count(), 1);
+        assert_eq!(mono.total_input_channels(), 1);
+        assert_eq!(mono.total_output_channels(), 1);
+        assert_eq!(mono.sidechain_input_indices().count(), 0);
     }
 }
 

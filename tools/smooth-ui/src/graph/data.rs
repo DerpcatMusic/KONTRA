@@ -52,11 +52,10 @@ mod tests {
     #[test]
     fn the_meter_reads_the_frames_peak_and_drops_a_bad_one() {
         let mut view = PlotView::default();
-        let mut frame = Frame::default();
-        frame.detector = -0.4;
+        let frame = Frame { detector: -0.4, ..Frame::default() };
         view.advance(&frame);
         assert_eq!(view.detector, -0.4);
-        frame.detector = f32::NAN;
+        let frame = Frame { detector: f32::NAN, ..Frame::default() };
         view.advance(&frame);
         assert_eq!(view.detector, 0.0);
     }

@@ -22,7 +22,6 @@ impl XkbcommonState {
         let state = unsafe {
             let device_id = (xkb_x11.xkb_x11_get_core_keyboard_device_id)(conn);
             assert!(device_id >= 0);
-            // keymap should be unref when XkbcommonState drop
             let keymap = (xkb_x11.xkb_x11_keymap_new_from_device)(
                 context,
                 conn,
@@ -30,7 +29,13 @@ impl XkbcommonState {
                 xkbc::xkb_keymap_compile_flags::XKB_KEYMAP_COMPILE_NO_FLAGS,
             );
             // state will be unref on drop
-            (xkb_x11.xkb_x11_state_new_from_device)(keymap, conn, device_id)
+            let state = (xkb_x11.xkb_x11_state_new_from_device)(keymap, conn, device_id);
+            // The state holds its own reference to the keymap (and the keymap to the
+            // context). Release ours now, or the keymap and its context leak per window.
+            if !keymap.is_null() {
+                (xkb_common.xkb_keymap_unref)(keymap);
+            }
+            state
         };
 
         // free the context, it's no longer needed

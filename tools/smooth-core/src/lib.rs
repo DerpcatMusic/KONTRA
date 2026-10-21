@@ -34,7 +34,8 @@
     clippy::field_reassign_with_default,
     clippy::too_many_arguments,
     clippy::manual_is_multiple_of,
-    clippy::manual_saturating_arithmetic
+    clippy::manual_saturating_arithmetic,
+    reason = "the research arithmetic is kept whole and read against the decompiled original; see the module docs"
 )]
 
 pub mod conditioning;
