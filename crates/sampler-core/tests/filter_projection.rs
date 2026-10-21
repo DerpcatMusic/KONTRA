@@ -57,6 +57,7 @@ fn native() -> Processor {
         gain: Parameter::Constant(0.),
         record_version: 99,
         taps: 4,
+        high_quality: false,
     }))
 }
 

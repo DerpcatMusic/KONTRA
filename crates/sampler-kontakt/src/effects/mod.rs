@@ -306,6 +306,8 @@ pub(crate) enum Params {
         cutoff: f32,
         resonance: f32,
         extra: Vec<f32>,
+        /// Ladder HQ flag (the first flag byte of the Ladder record).
+        hq: bool,
     },
     /// 1-3 band EQ (filter types 22..=24): Hz, octaves, dB.
     Eq {
@@ -483,6 +485,7 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
+                let mut hq = false;
                 if (30..=41).contains(&kind) {
                     // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
                     // Exact version framing comes from the shared verified reader.
@@ -497,9 +500,10 @@ impl Slot {
                             cutoff: record.cutoff,
                             resonance: record.resonance,
                             extra: vec![record.leading_value],
+                            hq: record.unknown_flag.is_some_and(|flag| flag != 0),
                         });
                     }
-                    r.skip_repeats(kind);
+                    hq = r.skip_repeats(kind);
                 } else if matches!(kind, 120 | 130 | 140..=143) {
                     // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
                     // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
@@ -523,7 +527,7 @@ impl Slot {
                     let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
                     let mut extra = values[2..].to_vec();
                     extra.extend(variant);
-                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra, hq: false });
                 } else if (22..=24).contains(&kind) && self.version >= 0x93 {
                     // Later records repeat the EQ kind (v0x95: five times) before the bands.
                     r.skip_repeats(kind);
@@ -553,6 +557,7 @@ impl Slot {
                         cutoff,
                         resonance,
                         extra,
+                        hq,
                     }
                 }
             }
@@ -588,15 +593,19 @@ impl Reader<'_> {
         self.take().map(i32::from_le_bytes)
     }
     /// Consume the subtype repeats and their flag bytes after the first.
-    fn skip_repeats(&mut self, kind: i32) {
+    /// Skip repeated subtype ids and the one flag byte in front of each repeat; true when the
+    /// first flag is set.
+    fn skip_repeats(&mut self, kind: i32) -> bool {
         let k = kind.to_le_bytes();
+        let mut first = None;
         loop {
             if let Some(rest) = self.0.strip_prefix(&k) {
                 self.0 = rest;
-            } else if let Some(rest) = self.0.strip_prefix(&[0]).and_then(|r| r.strip_prefix(&k)) {
-                self.0 = rest;
+            } else if let Some((&flag, rest)) = self.0.split_first().filter(|(_, r)| r.starts_with(&k)) {
+                first.get_or_insert(flag != 0);
+                self.0 = &rest[k.len()..];
             } else {
-                return;
+                return first.unwrap_or(false);
             }
         }
     }
@@ -980,6 +989,7 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 extra,
+                ..
             }) => {
                 flush(&mut combined, &mut filters, &mut out);
                 // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
@@ -1125,6 +1135,7 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 extra,
+                hq,
             }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) => {
                 // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
                 // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
@@ -1142,6 +1153,7 @@ pub(crate) fn chain_with(
                     config.drive = f64::from(values[0]);
                     config.cutoff = f64::from(values[1]);
                     config.resonance = f64::from(values[2]);
+                    config.high_quality = *hq;
                     config.binding = Some(sampler_ir::fx::filter::Binding {
                         address: sampler_ir::SlotAddress {
                             group: physical.0,
@@ -1191,6 +1203,7 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 extra,
+                ..
             }) if matches!(kind, 70 | 71) && !extra.is_empty() => {
                 // The Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY
                 // "Daft parameter laws and scheduling". The leading value is the
@@ -1212,6 +1225,7 @@ pub(crate) fn chain_with(
                 cutoff,
                 resonance,
                 extra,
+                ..
             }) => match filter(*kind, *cutoff, *resonance, match kind {
                 63..=65 => &extra[..extra.len().min(1)],
                 19 | 120 | 130 | 140..=143 => extra,
@@ -3570,6 +3584,25 @@ mod tests {
             let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
             let note = &built.notes[1].2;
             assert_eq!(*note, "33 cutoff 0.4 resonance 0.25", "{:?}", built.notes);
+        }
+    }
+
+    #[test]
+    fn ladder_first_flag_byte_selects_high_quality() {
+        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind floats. The first flag is HQ.
+        let k = 33i32.to_le_bytes();
+        let floats: Vec<u8> = [0.0f32, 0.4, 0.25].iter().flat_map(|x| x.to_le_bytes()).collect();
+        for (flag, expect) in [(0u8, false), (1, true)] {
+            let mut bytes = [&k[..], &[flag], &k, &k, &k, &[0], &k].concat();
+            bytes.extend(&floats);
+            let mut slot_ = slot(0x18, bytes, 1.0);
+            slot_.version = 0x95;
+            let built = chain(&[slot_], Scope::Voice);
+            assert!(
+                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::LadderLP4(d) if d.high_quality == expect)),
+                "flag {flag}: {:?}",
+                built.notes
+            );
         }
     }
 
