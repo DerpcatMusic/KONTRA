@@ -148,3 +148,44 @@ Gap: no Kontakt glide law. Do not map the modulator until the setup routine is d
   cross-reference from these reader/writer addresses to the voice manager's allocation
   code, not more string search.
 - Rows O1–O3 therefore stay open. Nothing in this revision changes engine behaviour.
+
+## Revision: victim routine located (decompile, 2026-10-21)
+
+Source: `source/kontakt8/0140860000.c`, `FUN_14086fea0` (size 657). Read as data; the
+spec below is our own wording.
+
+- **Candidates.** Walk the engine's voice list (head at engine +0x11ed0, next at voice
+  +0x920). A voice is a candidate when its state byte (+0x184) has no bits outside 0x02,
+  i.e. state 0 or 2; the new voice itself is skipped.
+- **Scope.** Three generation/domain matches gate the walk: +0x8d4 (plan generation),
+  +0x8bc (voice-group domain), +0x8dc (source domain). Which flag selects which match
+  follows from the call sites; the engine's `enforce_voice_limits` already keys its
+  domains the same way.
+- **Kill selectors** (`limit +0x2c`, 16-bit):
+  | Mode | Key field | Rule |
+  |---|---|---|
+  | 0 Any | +0x51c | maximum, initial 0 |
+  | 1 Oldest | +0x534 | maximum, initial -1 |
+  | 2 Newest | +0x534 | minimum, initial INT_MAX |
+  | 3 Highest | +0x518 (note key) | maximum, initial -1 |
+  | 4 Lowest | +0x518 (note key) | minimum, initial 128 |
+  Oldest/Newest/Highest/Lowest agree with the engine's ordering (larger +0x534 = older).
+  Tie-breaking in the native walk is first-in-list at strict comparison; the engine breaks
+  ties by birth order. **Unverified** for ties.
+- **Any is different from the engine.** The engine ranks Any by gain (quietest). Native
+  ranks by +0x51c, an integer that `FUN_14099c140` computes when a voice starts from two
+  engine counters and a float ratio, clamped to at least 1. Its musical meaning is not
+  yet established; it is not a level. Parity needs a native probe.
+- **Prefer-released.** If the limit's prefer byte (+0x30) is set, the same key rule is
+  first applied to candidates whose +0x504 byte is 0; if any exist, the victim comes from
+  that set. Inferred polarity: +0x504 is set to 1 at voice start (`FUN_14096a380`) and
+  cleared on the release path (`0140af0000.c:7356`), so 0 = releasing. Matches the engine.
+- **Cut.** The victim goes to `FUN_14086d320`: state 1 (fading), fade length float
+  stored at +0x53c, and an immediate state 3 when the owner lacks flag 0x1000. The float
+  argument at the call site is decompiled as a pointer; the native fade value is not
+  recovered yet, so the engine's ms fade stays unverified.
+- **Per-key record.** After a cut, a u16 0x100 is written into a per-key table at engine
+  +0x27d05 (and +0x27e05) indexed by the victim's note key. Purpose not recovered.
+
+Matrix impact: the voice row is `partial` (ordering matches for four kill modes; Any key,
+tie-breaks, fade law and per-key record are open).
