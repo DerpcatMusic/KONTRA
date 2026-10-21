@@ -147,9 +147,9 @@ pub(crate) struct Design {
     pub parallel: bool,
     /// Output gain.
     pub gain: f32,
-    /// Knee clip `clamp(v, -1, 1) + slope (v - clamp)`: (where, slope). `where` 0 is the input
+    /// Knee clip [`Knee::excess`]: (where, knee). `where` 0 is the input
     /// (HP4), `s + 1` the stored output of section `s`.
-    pub clip: Option<(usize, f32)>,
+    pub clip: Option<(usize, Knee)>,
 }
 
 // ----------------------------------------------------------------- the native law
@@ -390,7 +390,7 @@ fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design
             d.count = 2;
             d.gain = gain;
             // LP4 (FUN_140909bf0) knees the first section's output, HP4 (FUN_14090b4e0) the input.
-            d.clip = Some((if high { 0 } else { 1 }, 0.6));
+            d.clip = Some((if high { 0 } else { 1 }, Knee::excess(0.6)));
         }
         SectionClass::Bp4 => {
             let w = angle(v, 0.82);
@@ -402,7 +402,7 @@ fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design
             *s = [x.scale(dx), y.scale(dy), Section::default()];
             d.count = 2;
             d.gain = gain;
-            d.clip = Some((1, 0.6));
+            d.clip = Some((1, Knee::excess(0.6)));
         }
         SectionClass::Br4 => {
             // f64 coefficients (FUN_1408e4af0); the section math is the same.
@@ -469,7 +469,7 @@ fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design
             *s = [x.scale(dv), y.scale(dv), z.scale(dv)];
             d.count = 3;
             d.gain = gain;
-            d.clip = Some((2, 0.7));
+            d.clip = Some((2, Knee::excess(0.7)));
         }
     }
     d
@@ -2004,7 +2004,7 @@ fn pack(d: &Design, cells: &mut [[f64; 2]]) {
     }
     flat[15] = f64::from(d.gain);
     flat[16] = d.count as f64 + if d.parallel { 8.0 } else { 0.0 };
-    flat[17] = d.clip.map_or(-1.0, |(s, slope)| s as f64 * 4.0 + f64::from(slope));
+    flat[17] = d.clip.map_or(-1.0, |(s, knee)| s as f64 * 4.0 + f64::from(knee.excess_slope()));
     for (i, v) in flat.iter().enumerate() {
         cells[i / 2][i % 2] = *v;
     }
@@ -2024,7 +2024,7 @@ fn unpack(cells: &[[f64; 2]]) -> Design {
         gain: flat[15] as f32,
         clip: (flat[17] >= 0.0).then(|| {
             let s = (flat[17] / 4.0).floor();
-            (s as usize, (flat[17] - s * 4.0) as f32)
+            (s as usize, Knee::excess((flat[17] - s * 4.0) as f32))
         }),
     }
 }
@@ -2032,12 +2032,8 @@ fn unpack(cells: &[[f64; 2]]) -> Design {
 /// One frame through the design. `state[s] = [x1, x2, y1, y2]`.
 #[inline(always)]
 fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
-    let knee = |v: f32, slope: f32| {
-        let k = v.clamp(-1.0, 1.0);
-        (v - k) * slope + k
-    };
     let input = match d.clip {
-        Some((0, slope)) => knee(input, slope),
+        Some((0, knee)) => knee.apply(input),
         _ => input,
     };
     let mut x = input;
@@ -2047,10 +2043,10 @@ fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
         let [x1, x2, y1, y2] = state[s];
         let section_in = if d.parallel { input } else { x };
         let mut y = c.c1 * y1 + c.c2 * y2 + c.b2 * x2 + c.b1 * x1 + c.b0 * section_in;
-        if let Some((at, slope)) = d.clip
+        if let Some((at, knee)) = d.clip
             && at == s + 1
         {
-            y = knee(y, slope);
+            y = knee.apply(y);
         }
         state[s] = [section_in, x1, y, y1];
         sum += y;

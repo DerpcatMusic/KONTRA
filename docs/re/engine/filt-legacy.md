@@ -104,6 +104,23 @@ Parameters are the saved knobs (`CUTOFF`, `RESONANCE`), both 0..1 on the engine'
 - `crates/sampler-kontakt/src/effects/filter.rs`: Simple LP/HP (120) fidelity `Exact` -> `Partial`, with
   a dedicated caveat, so the import reports it instead of silently claiming full parity. No DSP change.
 
+## Shared core (filt-sv API)
+
+Built on `engine/filt-sv` (`dsp/filter/linear.rs` `Zdf`, `dsp/filter/shaper.rs` `Knee`, `pade`).
+
+- **Knee.** The legacy BFilter clip (LP4/BP4 on section 1, HP4 on its input, LP6 on section 2) was an
+  inline closure `(v - c) s + c` with `c = clamp(v, -1, 1)`. It is now `Knee::excess(s)`, a third
+  `Slope` shape in `shaper.rs`, and the cascade `Design` stores `clip: Option<(usize, Knee)>`. The
+  operation order is the same, so the native vectors (`legacy_classes_match_the_native_vectors`, 2e-5)
+  and the Kontakt golden are unchanged. The packed cell layout is unchanged.
+- **Not moved onto `Zdf`.** The legacy 2/4/6-pole sections are direct-form-I biquads with
+  coefficients from the Butterworth warp, not zero-delay SVF stages. A `Zdf` realisation has the same
+  transfer function but different rounding, and no vector proves it bit-identical, so the DF1 kernel
+  stays. The one-pole LP1/HP1 and BR4 use the same DF1 tick.
+- **Duplicates still open** (other lanes): the DF1 section tick also appears in `eq_family/legacy.rs`,
+  `space/shape.rs`, `space/network.rs`, `timemod/dual_x.rs`, `color/tonestack.rs`. Sharing one runner
+  there needs a bit-identity vector per caller and is not done here.
+
 ## Pending
 
 1. Legacy Ladder knob-0 shape: find the stage cutoff clamp by measuring a finer knob sweep near 0 in

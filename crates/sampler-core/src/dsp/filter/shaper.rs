@@ -13,6 +13,8 @@ pub(crate) enum Slope {
     Split { inv: f32 },
     /// `c - (|c| c) w`: the AR state order, which keeps the product before the weight.
     Direct(f32),
+    /// The clamp plus a fraction of the excess: `c + s (v - c)` (the legacy BFilter knee).
+    Excess(f32),
 }
 
 /// Clamp to `+-limit`, then bend the top. Kontakt's SV state saturator (`limit = 2L`).
@@ -35,6 +37,20 @@ impl Knee {
         Self { limit: l + l, slope: Slope::Split { inv: 1.0 / l } }
     }
 
+    /// The legacy BFilter knee: clamp to `+-1`, then pass `slope` of the excess.
+    #[inline(always)]
+    pub(crate) fn excess(slope: f32) -> Self {
+        Self { limit: 1.0, slope: Slope::Excess(slope) }
+    }
+
+    /// The excess slope of an [`Slope::Excess`] knee (0 for the other shapes).
+    pub(crate) fn excess_slope(self) -> f32 {
+        match self.slope {
+            Slope::Excess(slope) => slope,
+            _ => 0.0,
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn apply(self, v: f32) -> f32 {
         let c = v.clamp(-self.limit, self.limit);
@@ -42,6 +58,7 @@ impl Knee {
             Slope::Fused(w) => (1.0 - c.abs() * w) * c,
             Slope::Split { inv } => (1.0 - (c.abs() * 0.25) * inv) * c,
             Slope::Direct(w) => c - (c.abs() * c) * w,
+            Slope::Excess(slope) => (v - c) * slope + c,
         }
     }
 }
