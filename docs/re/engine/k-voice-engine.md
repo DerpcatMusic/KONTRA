@@ -122,3 +122,16 @@ Gap: no Kontakt glide law. Do not map the modulator until the setup routine is d
 3. Trace the random draw and join evaluation only as far as needed for the PRNG and
    precedence questions. Do not claim parity without a native vector.
 4. Re-check the public voice-group and group-start manual pages once the 403 clears.
+
+## Revision 2026-10-21 (no decompile): what changed and what is measurable
+
+- **Refactor.** `sampler_core::Kill` was a second copy of `sampler_ir::Kill`, mapped arm by
+  arm in `lower.rs`. It is now a re-export of the IR enum, so the victim law has one
+  configuration type. Behaviour is unchanged; the M1 victim, exclusion, monophonic and
+  choke tests pass (`lower m1_`, `steal`, `choke`, `release_selection`).
+- **Wine oracle.** `tools/kontakt-oracle/render.py` can record Kontakt's audio output
+  (PipeWire null sink) for a probe that plays notes from a KSP timer. `audit_probes.py`
+  still labels runtime voice/steal/trigger rows BLOCKED because the state oracle cannot
+  deliver MIDI. Measuring O1–O3 (victim order, exclusion and monophonic fades) needs a
+  labelled multi-note render through this path. It was not run in this revision: the
+  harness drives Kontakt by mouse clicks and writes scratch under `/tmp`.

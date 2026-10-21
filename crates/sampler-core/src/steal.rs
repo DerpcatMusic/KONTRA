@@ -14,16 +14,8 @@ pub struct VoiceLimit {
     pub fade: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kill {
-    /// The quietest.
-    Any,
-    Oldest,
-    Newest,
-    /// The highest note.
-    Highest,
-    Lowest,
-}
+/// The victim law is configuration (`sampler_ir::Kill`), shared by every format.
+pub use sampler_ir::Kill;
 
 impl Prepared {
     /// `instrument` limits every voice of the plan; `groups[g]` indexes
