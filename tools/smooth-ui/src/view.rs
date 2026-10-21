@@ -133,10 +133,10 @@ pub fn editor(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     m.actions.extend(asks.into_iter().map(Action::Preset));
     crate::menus::steer(ui, &mut m.menu);
     crate::tips::enable(m.prefs.tooltips);
-    if ui.get("lock-quality").clicked {
+    if ui.get("lock-quality").activated() {
         m.lock_quality = !m.lock_quality;
     }
-    if ui.get("lock-latency").clicked {
+    if ui.get("lock-latency").activated() {
         m.lock_latency = !m.lock_latency;
     }
     // The chip steps through the display ranges.
@@ -305,7 +305,7 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
     // or on the panel's own background, closes it.
     if ["rail-stereo", "rail-tilt", "rail-scale"]
         .iter()
-        .any(|id| ui.get(*id).clicked)
+        .any(|id| ui.get(*id).activated())
     {
         m.side = true;
     }
@@ -346,7 +346,8 @@ fn rail(ui: &mut Ui, m: &mut Model) -> El {
         .align(Align::Center)
         .shrink(0)
         .id(id)
-        .cursor(Cursor::Grab)
+        .focusable()
+        .cursor(Cursor::Hand)
     };
 
     // What one pitch leaves for the gap between two groups.
@@ -389,7 +390,7 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
         ("ab-switch", Action::SwitchAb),
         ("ab-copy", Action::CopyAb),
     ] {
-        if ui.get(id).clicked {
+        if ui.get(id).activated() {
             m.actions.push(action);
         }
     }
@@ -402,13 +403,21 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
             m.presets.current_row().is_some_and(|r| r.favourite),
         ),
         row![
-            row![icon_button(Icon::Undo).tipped("undo"), icon_button(Icon::Redo).tipped("redo")].gap(space::XS),
-            row![pair_pill("a", "b", m.ab).tipped("ab-switch"), compare_pill("a", "b").tipped("ab-copy")].gap(space::XS),
+            row![
+                icon_button(Icon::Undo).tipped("undo").focusable(),
+                icon_button(Icon::Redo).tipped("redo").focusable(),
+            ]
+            .gap(space::XS),
+            row![
+                pair_pill("a", "b", m.ab).tipped("ab-switch").focusable(),
+                compare_pill("a", "b").tipped("ab-copy").focusable(),
+            ]
+            .gap(space::XS),
         ]
         .gap(space::L),
         row![
-            mark_button("?").tipped("help"),
-            icon_button(Icon::Gear).tipped("gear"),
+            mark_button("?").tipped("help").focusable(),
+            icon_button(Icon::Gear).tipped("gear").focusable(),
             icon_button(Icon::Expand),
         ]
         .gap(space::XS),
@@ -428,7 +437,10 @@ fn bar(ui: &mut Ui, m: &mut Model) -> El {
 fn padlock(on: bool, id: &str) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
-    glyph(if on { Icon::Locked } else { Icon::Lock }, icon::BASE, c(t.ink)).tipped(id)
+    glyph(if on { Icon::Locked } else { Icon::Lock }, icon::BASE, c(t.ink))
+        .tipped(id)
+        .focusable()
+        .cursor(Cursor::Hand)
 }
 
 /// The mix, the output trim, and what the engine is doing.
@@ -580,7 +592,7 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
     let mut bypass = m.bands[index].bypass;
     let bypass_el = toggle_pill(ui, "band-bypass", "bypass", &mut bypass);
     m.bands[index].bypass = bypass;
-    if ui.get("band-delete").clicked {
+    if ui.get("band-delete").activated() {
         m.bands[index].active = false;
     }
     // A cut or a reject has no gain to set: the depth slot is dimmed.
@@ -600,7 +612,7 @@ fn band_bar(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
         pick(ui, Slot::BandSlope),
         pick(ui, Slot::BandBalance),
         bypass_el,
-        text_button("x").tipped("band-delete"),
+        text_button("x").tipped("band-delete").focusable(),
     ]
     .gap(space::XS)
     .pad(space::XS)

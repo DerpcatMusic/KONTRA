@@ -216,7 +216,7 @@ pub fn toggle_pill(ui: &mut Ui, id: &str, name: &str, on: &mut bool) -> El {
     )
     .tipped(id)
     .focusable()
-    .cursor(Cursor::Arrow)
+    .cursor(Cursor::Hand)
     .a11y(A11y::Toggle { on: *on })
 }
 
@@ -342,7 +342,7 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
         )
         .tipped(id)
         .focusable()
-        .cursor(Cursor::Arrow)
+        .cursor(Cursor::Hand)
         .a11y(A11y::Toggle { on: *choice > 0 })
 }
 
@@ -721,7 +721,7 @@ pub fn segmented_at(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize,
         .shrink(0)
         .tipped(id)
         .focusable()
-        .cursor(Cursor::Arrow)
+        .cursor(Cursor::Hand)
         .a11y(A11y::Toggle { on: *chosen > 0 })
 }
 

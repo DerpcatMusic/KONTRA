@@ -58,9 +58,9 @@ const PANEL_ID: &str = "menu-panel";
 
 /// What the toolbar's two buttons and a press elsewhere do to the menu.
 pub fn steer(ui: &Ui, open: &mut Open) {
-    if ui.get("gear").clicked {
+    if ui.get("gear").activated() {
         *open = if *open == Open::Settings { Open::Closed } else { Open::Settings };
-    } else if ui.get("help").clicked {
+    } else if ui.get("help").activated() {
         *open = if *open == Open::Help { Open::Closed } else { Open::Help };
     } else if *open != Open::Closed && ui.dismissed(&[PANEL_ID, "gear", "help"]) {
         *open = Open::Closed;
