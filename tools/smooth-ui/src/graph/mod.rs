@@ -24,7 +24,7 @@ pub use model::{band_curve, curve};
 
 use draw::PLOT_ID;
 use gesture::{drag_scale, handle_under, key_change, wheel_change};
-use mui::input::Key;
+use mui::input::{Button, Key};
 use mui::prelude::*;
 
 pub fn response(
@@ -101,6 +101,16 @@ pub fn response(
         if bands.get(target).is_some_and(|band| band.active) {
             gesture.changes.push(wheel_change(target, wheel, mods));
         }
+    }
+
+    // A secondary click on a band (its handle or its curve) asks for its menu.
+    // The click selects that band too, so the band bar and the menu name the same one.
+    if plot.clicked_with(Button::Secondary)
+        && let Some(pos) = ui.pointer().pos
+        && let Some(index) = hovered
+    {
+        *selected = index;
+        gesture.menu = Some((index, (pos.x, pos.y)));
     }
 
     // The keys, while the plot holds the focus: arrows step the selected band,

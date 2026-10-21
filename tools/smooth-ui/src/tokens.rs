@@ -159,6 +159,9 @@ pub mod metric {
     /// as the controls it bounds.
     pub const EDGE_W: f64 = 3.0;
     pub const EDGE_H: f64 = 22.0;
+    /// The sidechain meter: a bar as wide as two plates, and as tall as a line of ink.
+    pub const METER_W: f64 = 40.0;
+    pub const METER_H: f64 = 5.0;
     pub const SIDE_W: f64 = 176.0;
     /// A side-panel value: one plate, as wide as the panel's contents. A
     /// pair of them (the low and high tilt) shares the same width.
