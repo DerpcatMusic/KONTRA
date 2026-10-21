@@ -1430,6 +1430,9 @@ pub(crate) struct BusPlan {
     /// The bus fader (linear) and pan.
     pub volume: f32,
     pub pan: f32,
+    /// Phase invert and L/R swap (the Inverter law on the bus amplifier).
+    pub invert: bool,
+    pub swap: bool,
     pub groups: Vec<sampler_ir::GroupRef>,
 }
 
@@ -1448,6 +1451,9 @@ pub(crate) fn bus_plans(program: &Program, routes: &[(sampler_ir::GroupRef, u8)]
                 index,
                 volume: params.volume,
                 pan: params.pan,
+                // The saved flag offsets are not yet proven (docs/re/engine/k-utilities-routing.md).
+                invert: false,
+                swap: false,
                 groups: routes
                     .iter()
                     .filter(|&&(_, bus)| usize::from(bus) == index)
@@ -1567,6 +1573,13 @@ pub(crate) fn instrument_buses_with_recipes(
         );
         take(&name, &c);
         let mut processors = c.processors;
+        // Native bus amplifier order (BInsertBus audio 0x140824910): L/R swap, phase
+        // invert, then the fader and the balance. Same matrix as the Inverter slot.
+        if bus.invert || bus.swap {
+            if let Some(flip) = matrix(&Params::Inverter { invert: bus.invert, swap: bus.swap }, &mut Vec::new()) {
+                processors.push(sampler_ir::Processor::StereoMatrix(flip));
+            }
+        }
         if dynamic {
             // A script sets the bus volume and routes groups to any bus at run
             // time, so every bus exists and its volume is a Mix block's wet level.
@@ -1952,7 +1965,7 @@ mod tests {
             let mut instrument = ir::Instrument::default();
             instrument.groups.push(ir::Group::default());
             let (notes, _) = super::instrument_buses(&mut instrument, &[],
-                &[super::BusPlan { index: 0, volume: 1., pan,
+                &[super::BusPlan { index: 0, volume: 1., pan, invert: false, swap: false,
                     groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
             assert!(notes.is_empty());
             if pan == 0. { continue; }
@@ -1962,6 +1975,22 @@ mod tests {
                 120., &[[1., 1.]]);
             assert_eq!(output[0], expected);
         }
+    }
+
+    /// Native bus amplifier order: swap, then invert, then the balance. [0.25, -0.5]
+    /// swaps to [-0.5, 0.25], inverts to [0.5, -0.25], then pan +0.5 halves the left.
+    #[test]
+    fn instrument_bus_swap_and_invert_run_before_the_balance() {
+        use sampler_ir as ir;
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        let (notes, _) = super::instrument_buses(&mut instrument, &[],
+            &[super::BusPlan { index: 0, volume: 1., pan: 0.5, invert: true, swap: true,
+                groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
+        assert!(notes.is_empty());
+        let chain = instrument.buses[0].chain.unwrap();
+        let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(), 120., &[[0.25, -0.5]]);
+        assert_eq!(output[0], [0.25, -0.25]);
     }
 
     /// Output's double-buffered layer buses (ANALOG STRINGS `switch_bus`): a
@@ -1978,7 +2007,7 @@ mod tests {
         zone.velocity = ir::VelocityResponse::None;
         instrument.zones.push(zone);
         let (notes, _) = super::instrument_buses(&mut instrument, &[],
-            &[super::BusPlan { index: 0, volume: 0., pan: 0., groups: vec![ir::GroupRef(0)] }],
+            &[super::BusPlan { index: 0, volume: 0., pan: 0., invert: false, swap: false, groups: vec![ir::GroupRef(0)] }],
             true, &mut |_| Err("unused".into()));
         assert!(notes.is_empty(), "{notes:?}");
         let pcm = sampler_core::Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
@@ -3766,12 +3795,16 @@ mod tests {
                 index: 0,
                 volume: 0.5,
                 pan: 0.0,
+                invert: false,
+                swap: false,
                 groups: vec![ir::GroupRef(0)],
             },
             BusPlan {
                 index: 1,
                 volume: 0.5,
                 pan: 0.0,
+                invert: false,
+                swap: false,
                 groups: Vec::new(),
             },
         ];
