@@ -2362,6 +2362,73 @@ mod tests {
         }
     }
 
+    /// Kontakt's SV magnitude responses (Wine-oracle capture, `sv_response_vectors.tsv`: an
+    /// impulse through the effect, 48 kHz, 16384 bins, left channel, dB at ten probes). Every
+    /// row must reproduce within 1 dB, except the rows listed in `KNOWN_OPEN`, which are the
+    /// measured gaps of `docs/re/engine/filt-sv.md` (G4: res .9; G10: LP4/LP6 at u = 0; G12:
+    /// BP2 skirt at u = 1).
+    #[test]
+    fn sv_responses_match_the_kontakt_capture() {
+        super::super::ladder_kernel::prepare();
+        const N: usize = 16384;
+        const BLOCK: usize = super::super::super::BLOCK;
+        const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+        const KNOWN_OPEN: [&str; 3] = ["SV_LP4 cutoff=0 res=0", "SV_LP6 cutoff=0 res=0", "SV_BP2 cutoff=1000000 res=0"];
+        let mut failures = Vec::new();
+        for line in include_str!("sv_response_vectors.tsv").lines().skip(1) {
+            let mut cols = line.split('\t');
+            let name = cols.next().unwrap();
+            let words: Vec<&str> = name.split_whitespace().collect();
+            let knob = |w: &str| w.split('=').nth(1).unwrap().parse::<f64>().unwrap() / 1e6;
+            let sv = match words[0] {
+                "SV_LP1" => Sv::One { high: false },
+                "SV_HP1" => Sv::One { high: true },
+                "SV_BP2" => Sv::Two { mode: 1 },
+                "SV_LP4" => Sv::Four { mode: 0 },
+                "SV_BP4" => Sv::Four { mode: 1 },
+                "SV_HP4" => Sv::Four { mode: 2 },
+                "SV_NOTCH4" => Sv::Four { mode: 3 },
+                "SV_LP6" => Sv::Six { mode: 0 },
+                other => panic!("no class for {other}"),
+            };
+            let (cutoff, res) = (knob(words[1]), knob(words[2]));
+            let unit = CascadeSettings {
+                class: Legacy::Sv(sv),
+                cutoff: Parameter::Constant(cutoff),
+                resonance: Parameter::Constant(res),
+            }
+            .compile(48_000, &mut Vec::new());
+            let mut cells = vec![[0f64; 2]; CELLS];
+            let mut h = Vec::with_capacity(N);
+            for at in (0..N).step_by(BLOCK) {
+                let mut block = [[0f64; BLOCK]; 2];
+                if at == 0 {
+                    block[0][0] = 1.0;
+                }
+                unit.process(&mut cells, &[], &mut block, BLOCK, at as u64, [0.0; 4]);
+                h.extend_from_slice(&block[0]);
+            }
+            let mut err = 0f64;
+            for (probe, native) in PROBES.iter().zip(cols) {
+                let native: f64 = native.parse().unwrap();
+                let w = std::f64::consts::TAU * probe / 48_000.0;
+                let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, v)| {
+                    let a = w * n as f64;
+                    (re + v * a.cos(), im - v * a.sin())
+                });
+                let ours = 20.0 * re.hypot(im).log10();
+                if native > -60.0 {
+                    err = err.max((ours - native).abs());
+                }
+            }
+            let open = KNOWN_OPEN.contains(&name) || (res > 0.5 && words[0] != "SV_LP1" && words[0] != "SV_HP1");
+            if !open && err > 1.0 {
+                failures.push(format!("{name}: {err:.2} dB"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// UVI Workstation 4.0.9 BiquadFilter, MoogFilter and Rez run under kemu (uvifilt): a
     /// 64-frame impulse response at 48 kHz per setting.
     #[test]

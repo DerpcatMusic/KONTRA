@@ -23,20 +23,20 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| SV LP1 | unknown | none | |
-| SV LP2 | unknown | none | |
-| SV LP4 | unknown | none | |
-| SV LP6 | unknown | none | |
-| SV HP1 | unknown | none | |
-| SV HP2 | unknown | none | |
-| SV HP4 | unknown | none | |
-| SV HP6 | unknown | none | |
-| SV BP2 | unknown | none | |
-| SV BP4 | unknown | none | |
-| SV Notch | unknown | none | |
-| SV Par. LP/HP | unknown | none | |
-| SV Par. BP/BP | unknown | none | |
-| SV Ser. LP/HP | unknown | none | |
+| SV LP1 | parity | vector | Wine capture rows (res 0, .5, .9, u 0..1) within 1 dB (most rows 0.01 dB); guard test `sv_responses_match_the_kontakt_capture` |
+| SV LP2 | partial | decomp | Shares the Two core with BP2 (capture-verified at u 0...75); LP2 itself not captured. filt-sv G2 |
+| SV LP4 | partial | vector | Capture res 0 u .25..1 within 1 dB; u=0 open (G10), res .9 open (G4). filt-sv |
+| SV LP6 | partial | vector | Capture res 0 u .25..1 within 1 dB; u=0 open (G10), res .9 open (G4). filt-sv |
+| SV HP1 | parity | vector | Wine capture rows (res 0, .5, .9, u 0..1) within 1 dB (most rows 0.01 dB); guard test |
+| SV HP2 | partial | decomp | Shares the Two core (see SV LP2); not captured. filt-sv G2 |
+| SV HP4 | partial | vector | Capture res 0 within 1 dB at all u; res .9 open (G4). filt-sv |
+| SV HP6 | partial | decomp | Mode 2 of the Six core (shares SV6 constants); not captured |
+| SV BP2 | partial | vector | Capture res 0 u 0...75 within 1 dB; u=1 (G12) and res .9 (G4) open. filt-sv |
+| SV BP4 | partial | vector | Capture res 0 within 1 dB; res .9 open (G4). filt-sv |
+| SV Notch | partial | vector | Notch 4 captured (res 0 within 1 dB, res .9 open G4); Notch 6 not captured. filt-sv |
+| SV Par. LP/HP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); bandwidth record path (G7) and gains (G9) open. filt-sv |
+| SV Par. BP/BP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); G7, G8, G9 open. filt-sv |
+| SV Ser. LP/HP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); G7, G8, G9 open. filt-sv |
 | Ladder LP1 | unknown | none | |
 | Ladder LP2 | unknown | none | |
 | Ladder LP3 | unknown | none | |

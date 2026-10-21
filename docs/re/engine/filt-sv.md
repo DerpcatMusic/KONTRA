@@ -62,19 +62,31 @@ Stereo: channels are independent (measured: no L to R coupling).
 
 ## Gap table
 
+Native evidence used here: the Wine-oracle capture in `docs/re/kontakt-bindings/filter-responses-raw.tsv`
+(copied to `crates/sampler-core/src/dsp/filter/sv_response_vectors.tsv`: impulse responses of Kontakt's
+SV effects, dB at ten probes, 48 kHz, 16384 bins), the PE constants and the decompile.
+Guard test: `sv_responses_match_the_kontakt_capture` (1 dB; rows listed in `KNOWN_OPEN` are the open
+gaps below, and every res .9 row of the classes other than SV1/HP1 is open under G4).
+
 | # | Item | Status | Evidence / reason |
 |---|------|--------|-------------------|
-| G1 | Cutoff law, u >= .5 | **closed** | Native law reproduces the measured corners to 0.2 % and the vectors at u = .5 and .9 to 1e-6 |
-| G2 | Cutoff law, u <= .25 | **closed for SV1, SV4, SV6, Multi; open for SV2** | The PE constants give exactly 25.96 Hz at u = 0. The earlier 26.4 Hz and 46.9 Hz values were fit artefacts of `filter-laws.tsv` / `filter-responses.tsv`. SV2 stores a different index (`1200 + 119.589 u` into `2^(i/60 - 20)` at `0x140b05460`) and its process transform (`0x140b02400`, 892 bytes) is not traced. The vectors at u = .5 and .9 agree with our law, but u <= .25 is unverified for SV2 |
-| G3 | Resonance law res <= .5 | **closed** | Native vectors (1e-6) and the decompiled constants above |
-| G4 | Resonance law res .9 | **open** (kernel confirmed, level not matched) | The SV2 res .9 vectors (u .9) match the native kernel to 1e-6. SV4 and SV6 at res .9 use the same confirmed constants but have no native vectors. The measured peaks (LP4 +53.7 dB, LP6 +48.2 dB, BP4 +41.8 dB, BP2 +49.9 dB) depend on the test signal level, which `filter-responses.tsv` does not record. Next step: a kemu SV driver (none in the repo) to dump res .9 SV4/SV6 vectors |
-| G5 | Self-oscillation stability | **covered** | Test `sv_classes_stay_bounded_at_full_resonance`: all five classes, cutoff 0 and 1, res 1, +-4 square, 48000 frames stay finite with peak < 1e4 |
-| G6 | Saturation (knee) constants | **closed** | `0.25`, `2L` and the SV2 / SV4 operation orders confirmed from `0x140b02790`, `0x1447148e4` and the setter stores |
-| G7 | MultiSV bandwidth | **identified; record path partly traced** | Core ENGINE_PAR index 2 (at +0x28) is read by the shared helper `0x140b03b50` as `spread = 31.5 b + 0.5` (constants 31.5, 0.5, and the centre 180, 20 confirmed). Mode is index 3, set by `0x140b048a0` from `round(2 v)` clamped 0..2. The record reader `0x140d00db0` writes the value at reader offset +0x24 for these types, but the copy from that record field to core index 2 is not traced. Our mapping (record lead value, clamped 0..1) is vector-verified at bandwidth 0.3 only |
-| G8 | SV2 and Multi state limit `l` | **open** | Not confirmed from the binary (only SV4 and SV6 `l` are) |
-| G9 | Multi serial/parallel gain constants (0.7, 0.49) and the Multi `w = 0.5 - 0.1667 min(spread, 3)` mix | **open** | The Multi process was only partly traced (`0x140b01d00`) |
-| G10 | Defaults of each knob | open | Needs the group/insert default table (`KONTAKT_VOICE_GROUP_DEFAULTS.md`) |
-| G11 | Config type `response` for Multi | cosmetic | Par BP/BP and Ser LP/HP carry `Bp`; lowering ignores it for `MultiSv`. Left as is |
+| G1 | Cutoff law, u .25 to .75 | **closed** | Capture rows at res 0 and res .5 match within 1 dB (u = 1 for BP2 is G12) |
+| G2 | Cutoff law, u <= .25 (SV2 class) | **closed for BP2**; LP2 and HP2 not captured | BP2 capture rows at u = 0, .25, .5, .75 (res 0) match within 1 dB. The PE constants give exactly 25.96 Hz at u = 0 (the 26.4 Hz and 46.9 Hz figures were fit artefacts). SV2 stores `1200 + 119.589 u` at `0x140b05460`; the process transform at `0x140b02400` is not traced, so the law is confirmed by measurement, not by the binary |
+| G3 | Resonance law res <= .5 | **closed** | Native vectors (1e-6) and the capture rows at res .5 (within 1 dB) |
+| G4 | Resonance law res .9 | **open** | The capture disagrees with ours for SV_LP4, SV_BP4, SV_HP4, SV_NOTCH4, SV_LP6 and SV_BP2 at res .9 (up to 42 dB at u = .5). Example, SV_LP6 u .5 res .9: native passband +13.7 dB at 30 Hz with a +48 dB peak; ours -25 dB. The res .5 DC gain matches the formula (LP6 native -16.00 dB, formula -16.05 dB), and the res .9 formula gives -29 dB, so the native res .9 behaviour is a different regime (sustained or saturated response, which an impulse capture reports as a level-dependent gain). Our kernel has no branch that reproduces it: k = 2(1 - R) stays positive for every res <= 1 |
+| G5 | Self-oscillation stability | **covered** | Test `sv_classes_stay_bounded_at_full_resonance` (all five classes, u 0 and 1, res 1, +-4 square): finite and peak < 1e4. Not a level match (G4) |
+| G6 | Knee constants | **closed** | `0.25`, `2L`, the SV2 and SV4 operation orders confirmed from `0x140b02790` and the setters |
+| G7 | MultiSV bandwidth | **identified; record path partly traced** | Core ENGINE_PAR index 2 (+0x28) is read by `0x140b03b50` as `spread = 31.5 b + 0.5` (constants confirmed, centre `180 u - 20` confirmed). Mode is index 3 (`0x140b048a0`, `round(2 v)` clamped 0..2). The reader `0x140d00db0` writes the value at +0x24, but the copy to core index 2 is not traced. Vector-verified at bandwidth 0.3 only |
+| G8 | SV2 and Multi state limit `l` | **open** | Only SV4 and SV6 `l` are confirmed from the binary |
+| G9 | Multi gain constants (0.7, 0.49) and the serial mix | **open** | Multi process only partly traced (`0x140b01d00`) |
+| G10 | LP4 and LP6 at u = 0 (res 0) | **open** | Native LP4 is 1-pole-like above 200 Hz (-68 dB at 15 kHz, slope about 6 dB/oct); ours is 4-pole (-190 dB). BP4, HP4, NOTCH4 and BP2 at u = 0 match, and SV1 at u = 0 matches to 0.01 dB, so the cutoff law is not the cause. The knee is not the cause (disabling it leaves the response unchanged). The LP tap alone is affected (BP, HP and notch match), but the tap at the knee-limited low state does not change it either. Open: a first-step effect after a subtype change in the capture is the leading hypothesis, not yet tested |
+| G12 | BP2 at u = 1 (res 0) | **open** | Native low-frequency skirt is 4.2 dB lower at 30 Hz and 1.8 dB lower at 60 Hz; 2 kHz and above match to 0.05 dB. The Two process transform near the top of the cutoff range (see G2) is the likely cause |
+| G13 | Defaults of each knob | open | Needs the group/insert default table (`KONTRA_VOICE_GROUP_DEFAULTS.md`) |
+| G14 | Config type `response` for Multi | cosmetic | Par BP/BP and Ser LP/HP carry `Bp`; lowering ignores it for `MultiSv`. Left as is |
+
+Not captured yet: SV_LP2 (52), SV_HP2 (54), SV_HP6 (61), SV_BP6 (60), SV_NOTCH6 (62), and the three
+MultiSV types (63..65). Their capture needs `eqrender.py` with a new spec; the existing `filt`
+spec lacks them.
 
 ## Tests
 
@@ -111,5 +123,7 @@ Padé forms. Each differs in precision or clamp, so each needs its own vector ch
 
 1. G4: a kemu driver for the SV classes (the vector generator is not in this repo) to dump SV4/SV6
    res .9 vectors, then compare the measured peaks with the level recorded.
-2. G2 (SV2) and G8: trace the SV2 process transform (`0x140b02400`) and the Multi `l` law (`0x140b03b50`).
-3. G9: read the Multi gain constants (0.7, 0.49) and the serial mix in `0x140b01d00`.
+2. G12 and G2 (LP2/HP2): trace the SV2 process transform (`0x140b02400`) and capture LP2, HP2.
+3. G8 and G9: the Multi `l` law (`0x140b03b50`) and gain constants (`0x140b01d00`); capture MultiSV.
+4. G4 and G10: capture the res .9 SV4/SV6 path with a documented input level, and the first-step
+   behaviour after a subtype change.
