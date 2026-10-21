@@ -1,4 +1,4 @@
-"""Fixture for the whole zero-latency path at 48 kHz (translate-analysis pass 3).
+"""Fixture for the whole zero-latency path (translate-analysis pass 3).
 
 Runs the emulated plugin in zero-latency mode (byte obj+0x237 = 1) for K blocks of
 random stereo input. At every call of the minimum-phase designer 0x8df6b0 (short worker
@@ -8,7 +8,9 @@ Records the injected curves in call order, the short-stage output (the input str
 the long worker's convolvers, call site 0x8b5919) and the plugin output. Also calls
 0x8df6b0 directly once per size with a random curve and the plugin's window table and
 records the IR it writes and the window.
-Writes oracle/zl_path_fixture_48000.json.
+At 88.2 kHz and up the workers run at the decimated rate inside the resampler;
+the record also holds the reported latency. Usage: zl_path_fixture.py [rate]
+(default 48000); writes oracle/zl_path_fixture_<rate>.json.
 
 Evidence scope: isolated emulation, constructor state, synthetic host (process_lib).
 """
@@ -35,7 +37,7 @@ SEED = 20261021
 SITES = {0x8D85D7: "short", 0x8D9047: "long"}
 DESIGN = 0x8DF6B0
 LONG_IN = 0x8B5919  # long worker, first convolver list
-OUT = Path(__file__).resolve().parents[2] / "oracle" / "zl_path_fixture_48000.json"
+ORACLE = Path(__file__).resolve().parents[2] / "oracle"
 
 
 def curve(rng, n):
@@ -50,10 +52,12 @@ def xmm(emu, i):
 
 
 def main():
-    s = Session(48000.0)
+    rate = float(sys.argv[1]) if len(sys.argv) > 1 else 48000.0
+    s = Session(rate)
     s.prepare()
     emu = s.emu
     emu.wr(s.obj + po.ZL_OFFSET, b"\x01")
+    latency = s.latency()
     rng = random.Random(SEED)
     designs = {"short": [], "long": []}
     args = {}
@@ -91,6 +95,8 @@ def main():
     short_out = [long_in[c] for c in sorted(long_in)]
     direct = {}
     for site, name in SITES.items():
+        if site not in args:  # no hop of this worker completed (high rates, short runs)
+            continue
         # fresh argument structs: the captured ones were stack locals of 0x8d8090
         fft, window, ir_len = args[site]
         size = emu.r32(fft + 0x18)
@@ -112,8 +118,8 @@ def main():
         ir = list(struct.unpack(f"<{size}f", emu.rd(out, 4 * size)))
         win = list(struct.unpack(f"<{ir_len}f", emu.rd(window, 4 * ir_len)))
         direct[name] = {"fft": size, "ir_len": ir_len, "log_gain": v, "ir": ir, "window": win}
-    data = {"input": x, "output": y, "short_out": short_out, "designs": designs, "direct": direct}
-    OUT.write_text(json.dumps(data))
+    data = {"rate": rate, "latency_getter": latency, "input": x, "output": y, "short_out": short_out, "designs": designs, "direct": direct}
+    (ORACLE / f"zl_path_fixture_{int(rate)}.json").write_text(json.dumps(data))
     print({k: len(v) for k, v in designs.items()}, {k: (v["fft"], v["ir_len"]) for k, v in direct.items()},
           "max |y-x|", float(np.abs(np.array(y) - np.array(x)).max()))
 

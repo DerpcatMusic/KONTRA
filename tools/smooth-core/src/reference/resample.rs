@@ -6,16 +6,17 @@
 //! 1. **Decimate** (inline loop in 0x897890): one output per `D` inputs,
 //!    `d[j] = sum_i x[D*j - T + 1 + i] * dec[i]`, accumulated in f32 in tap
 //!    order (`acc = x * c + acc`).
-//! 2. **Process** `d` with the normal-path chain at the decimated rate
+//! 2. **Process** `d` with the chain at the decimated rate: the normal path
 //!    (0x898a10 -> 0x8acba0 -> 0x8b1120 workers; same hop stages as
-//!    [`super::hop`], so its delay is 2304 decimated samples).
+//!    [`super::hop`], delay `L` = 2304 decimated samples) or, in zero-latency
+//!    mode, the workers of [`super::zerolatency`] (`L` = 0).
 //! 3. **Residual** (0x8992f0 -> 0x13a0, `dst -= src`):
-//!    `r[j] = p[j] - d[j - 2304]`.
+//!    `r[j] = p[j] - d[j - L]`.
 //! 4. **Interpolate** (inline loop in 0x897890): each `r[j]` adds
 //!    `r[j] * itp[i]` at full-rate time `D*j + i`; the ring is cleared `D`
 //!    floats at a time, 0x2000 ahead of the write position.
 //! 5. **Output** (0x891bca, 0x891c02 -> 0x1370): the input delayed by
-//!    `2304 * D + T` plus the interpolated residual.
+//!    `L * D + T` plus the interpolated residual.
 //!
 //! So only the band the processor changes passes through the resamplers;
 //! with the identity band state `r` is zero up to rounding and the output is
@@ -32,6 +33,7 @@
 //! feed the gain path only and are not modelled here.
 
 use super::hop::{BinGain, NormalPath};
+use super::zerolatency::{LogGain, ZeroLatencyPath};
 
 /// Decimated-rate delay of the processing chain (short 256 + long 2048).
 pub const CHAIN_DELAY: usize = 2304;
@@ -88,14 +90,42 @@ pub fn design_fir(rate: f32, taps: usize) -> Vec<f32> {
         .collect()
 }
 
-/// The groups >= 2 path around the normal chain.
-pub struct GroupPath {
+/// The processing chain the resampler wraps at the decimated rate.
+pub trait Chain<G> {
+    /// Delay in decimated samples.
+    fn latency(&self) -> usize;
+    fn run(&mut self, input: &[Vec<f32>], output: &mut [Vec<f32>], gain: &mut G);
+}
+
+impl<G: BinGain> Chain<G> for NormalPath {
+    fn latency(&self) -> usize {
+        NormalPath::latency(self)
+    }
+
+    fn run(&mut self, input: &[Vec<f32>], output: &mut [Vec<f32>], gain: &mut G) {
+        self.process(input, output, gain);
+    }
+}
+
+impl<G: LogGain> Chain<G> for ZeroLatencyPath {
+    fn latency(&self) -> usize {
+        ZeroLatencyPath::latency(self)
+    }
+
+    fn run(&mut self, input: &[Vec<f32>], output: &mut [Vec<f32>], gain: &mut G) {
+        self.process(input, output, gain);
+    }
+}
+
+/// The groups >= 2 path around a chain (normal by default).
+pub struct GroupPath<C = NormalPath> {
     d: usize,
     taps: usize,
     dec: Vec<f32>,
     itp: Vec<f32>,
     dry_delay: usize,
-    chain: NormalPath,
+    chain_delay: usize,
+    chain: C,
     /// Per channel: full-rate input ring, decimated input ring, interpolation ring.
     input: Vec<Vec<f32>>,
     decimated: Vec<Vec<f32>>,
@@ -111,10 +141,25 @@ impl GroupPath {
     /// `groups` is `trunc(rate / 44100)` (at least 2); `max_block` must be a
     /// multiple of `128 * groups`.
     pub fn new(rate: f32, groups: usize, channels: usize, max_block: usize) -> Self {
+        let chain = NormalPath::new(channels, max_block / groups);
+        Self::with_chain(rate, groups, channels, max_block, chain, CHAIN_DELAY)
+    }
+}
+
+impl GroupPath<ZeroLatencyPath> {
+    /// Zero-latency mode: the reported latency is `T = 48 * groups`.
+    pub fn zero_latency(rate: f32, groups: usize, channels: usize, max_block: usize) -> Self {
+        let chain = ZeroLatencyPath::new(channels, max_block / groups);
+        Self::with_chain(rate, groups, channels, max_block, chain, 0)
+    }
+}
+
+impl<C> GroupPath<C> {
+    fn with_chain(rate: f32, groups: usize, channels: usize, max_block: usize, chain: C, chain_delay: usize) -> Self {
         assert!(groups >= 2, "the resampler only runs at two or more groups");
         let taps = 48 * groups;
         let h = design_fir(rate, taps);
-        let dry_delay = CHAIN_DELAY * groups + taps;
+        let dry_delay = chain_delay * groups + taps;
         let in_len = (dry_delay + taps + max_block).next_power_of_two().max(RING);
         let dmax = max_block / groups;
         Self {
@@ -123,7 +168,8 @@ impl GroupPath {
             dec: h.iter().rev().copied().collect(),
             itp: h.iter().map(|&v| v * groups as f32).collect(),
             dry_delay,
-            chain: NormalPath::new(channels, dmax),
+            chain_delay,
+            chain,
             input: vec![vec![0.0; in_len]; channels],
             decimated: vec![vec![0.0; RING]; channels],
             up: vec![vec![0.0; RING]; channels],
@@ -133,12 +179,15 @@ impl GroupPath {
         }
     }
 
-    /// `2304 * groups + 48 * groups`, the reported latency of the normal path.
+    /// `L * groups + 48 * groups`: 2304 * groups + T on the normal path, T at zero latency.
     pub fn latency(&self) -> usize {
         self.dry_delay
     }
 
-    pub fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], gain: &mut impl BinGain) {
+    pub fn process<G>(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], gain: &mut G)
+    where
+        C: Chain<G>,
+    {
         let n = input.first().map_or(0, |s| s.len());
         let (d, taps) = (self.d, self.taps);
         assert_eq!(n % d, 0, "block {n} is not a multiple of {d}");
@@ -170,14 +219,15 @@ impl GroupPath {
         for b in self.pblock.iter_mut() {
             b.resize(nd, 0.0); // within capacity: no allocation
         }
-        self.chain.process(&self.dblock, &mut self.pblock, gain);
+        debug_assert_eq!(self.chain.latency(), self.chain_delay);
+        self.chain.run(&self.dblock, &mut self.pblock, gain);
         for c in 0..input.len() {
             let (dring, up) = (&mut self.decimated[c], &mut self.up[c]);
             for k in 0..nd {
                 let j = j0 + k;
                 dring[j & (RING - 1)] = self.dblock[c][k];
-                // 3. residual against the dry decimated signal 2304 back
-                let r = self.pblock[c][k] - dring[j.wrapping_sub(CHAIN_DELAY) & (RING - 1)];
+                // 3. residual against the dry decimated signal L back
+                let r = self.pblock[c][k] - dring[j.wrapping_sub(self.chain_delay) & (RING - 1)];
                 // 4. interpolate: clear D floats 0x2000 ahead, then accumulate
                 let w = j * d;
                 for z in 0..d {
@@ -188,7 +238,7 @@ impl GroupPath {
                     *slot = r * cf + *slot;
                 }
             }
-            // 5. dry input delayed by 2304*D + T, plus the interpolated residual
+            // 5. dry input delayed by L*D + T, plus the interpolated residual
             let ring = &self.input[c];
             for (i, o) in output[c][..n].iter_mut().enumerate() {
                 let t = t0 + i;
@@ -298,6 +348,44 @@ mod tests {
             got[groups * j..groups * j + itp.len()].copy_from_slice(&itp);
             let (err, scale) = max_err(&got, &want);
             assert!(err <= 1e-6 * scale, "{rate}: {err} of {scale}");
+        }
+    }
+
+    /// Zero-latency mode at 96 and 192 kHz: the workers at the decimated rate inside
+    /// the resampler, with the log magnitudes injected at 0x8df6b0 in the emulator.
+    #[test]
+    fn zero_latency_group_path_matches_the_emulated_block() {
+        use crate::reference::hop::StageId;
+        for rate in [96_000u32, 192_000] {
+            let path = format!("{}/research/oracle/zl_path_fixture_{rate}.json", env!("CARGO_MANIFEST_DIR"));
+            let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let input: Vec<Vec<f32>> = doc["input"].as_array().unwrap().iter().map(floats).collect();
+            let want: Vec<Vec<f32>> = doc["output"].as_array().unwrap().iter().map(floats).collect();
+            let curves = |name: &str| -> Vec<Vec<f32>> { doc["designs"][name].as_array().unwrap().iter().map(floats).collect() };
+            let (short, long) = (curves("short"), curves("long"));
+            let (mut si, mut li) = (0, 0);
+            let mut gain = |stage: StageId, _: usize, g: &mut [f32]| {
+                let src = match stage {
+                    StageId::Short => (&short[si], si += 1).0,
+                    StageId::Long => (&long[li], li += 1).0,
+                };
+                g.copy_from_slice(src);
+            };
+            let plan = ReferencePlan::new(f64::from(rate), true);
+            let mut gp = GroupPath::zero_latency(rate as f32, plan.groups, input.len(), 512);
+            assert_eq!(gp.latency(), doc["latency_getter"].as_u64().unwrap() as usize, "{rate} latency");
+            assert_eq!(gp.latency(), plan.latency(), "{rate} plan latency");
+            let mut got = vec![vec![0.0f32; input[0].len()]; input.len()];
+            for start in (0..input[0].len()).step_by(512) {
+                let ins: Vec<&[f32]> = input.iter().map(|c| &c[start..start + 512]).collect();
+                let mut outs: Vec<&mut [f32]> = got.iter_mut().map(|c| &mut c[start..start + 512]).collect();
+                gp.process(&ins, &mut outs, &mut gain);
+            }
+            assert_eq!((si, li), (short.len(), long.len()), "{rate} designs consumed");
+            for c in 0..2 {
+                let (err, scale) = max_err(&got[c], &want[c]);
+                assert!(err <= 1e-5 * scale, "{rate} ch{c}: {err} of {scale}");
+            }
         }
     }
 }
