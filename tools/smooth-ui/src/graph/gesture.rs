@@ -117,6 +117,9 @@ impl Drag {
 pub struct Gesture {
     pub drag: Option<Drag>,
     pub changes: Vec<Change>,
+    /// A secondary click asked for a band's menu: the band, and the window
+    /// point the click landed on, where the menu opens.
+    pub menu: Option<(usize, (f64, f64))>,
 }
 
 /// The factor a wheel notch keeps: Shift or Ctrl is fine.

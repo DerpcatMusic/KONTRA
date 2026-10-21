@@ -45,10 +45,13 @@ pub enum Slot {
     Delta,
     BandBypass,
     WetTrim,
+    BandSolo,
+    Sidechain,
+    SidechainListen,
 }
 
 impl Slot {
-    pub const COUNT: usize = 29;
+    pub const COUNT: usize = 32;
     pub const ALL: [Slot; Slot::COUNT] = [
         Slot::Depth,
         Slot::Detail,
@@ -79,6 +82,9 @@ impl Slot {
         Slot::Delta,
         Slot::BandBypass,
         Slot::WetTrim,
+        Slot::BandSolo,
+        Slot::Sidechain,
+        Slot::SidechainListen,
     ];
 
     pub fn index(self) -> usize {
@@ -117,6 +123,9 @@ impl Slot {
             Slot::Delta => "delta",
             Slot::BandBypass => "band-bypass",
             Slot::WetTrim => "wet-trim",
+            Slot::BandSolo => "band-solo",
+            Slot::Sidechain => "sidechain",
+            Slot::SidechainListen => "sidechain-listen",
         }
     }
 
@@ -142,7 +151,13 @@ impl Slot {
             Slot::Mode => (0.0, "soft"),
             Slot::StereoMode => (0.0, "l/r"),
             Slot::Quality => (0.0, "normal"),
-            Slot::LowLatency | Slot::Bypass | Slot::Delta | Slot::BandBypass => (0.0, "off"),
+            Slot::LowLatency
+            | Slot::Bypass
+            | Slot::Delta
+            | Slot::BandBypass
+            | Slot::BandSolo
+            | Slot::Sidechain
+            | Slot::SidechainListen => (0.0, "off"),
             _ => (0.5, "1.0"),
         }
     }
@@ -216,6 +231,14 @@ pub fn flag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_slot_is_listed_once_at_its_own_index() {
+        for (place, slot) in Slot::ALL.iter().enumerate() {
+            assert_eq!(slot.index(), place, "{slot:?} is listed out of place");
+        }
+        assert!(Slot::ALL.iter().any(|s| *s == Slot::SidechainListen));
+    }
 
     #[test]
     fn a_choice_and_a_flag_hold_their_step_in_the_normalised_range() {

@@ -304,6 +304,48 @@ pub fn power_switch(ui: &mut Ui, id: &str, on: &mut bool) -> El {
         .a11y(A11y::Toggle { on: *on })
 }
 
+/// A round switch that carries a mark: dark while it is on, as the power
+/// switch is. `mark` draws the mark in the ink the state calls for.
+pub fn switch_disc(ui: &mut Ui, id: &str, on: &mut bool, mark: impl FnOnce(Color) -> El) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    if ui.get(id).activated() {
+        *on = !*on;
+    }
+    let d = metric::BUTTON;
+    let (fill, ink) = if *on { (c(t.selected), c(t.mark)) } else { (c(t.chip), c(t.ink)) };
+    block(d, d)
+        .radius(d / 2.0)
+        .fill(fill)
+        .push(centred(mark(ink), d, d))
+        .shrink(0)
+        .tipped(id)
+        .focusable()
+        .cursor(Cursor::Hand)
+        .a11y(A11y::Toggle { on: *on })
+}
+
+/// The sidechain meter: the detector's signed peak, read from the centre line.
+/// A positive value runs right of the line and a negative one left of it, at
+/// full scale at one.
+pub fn sidechain_meter(value: f64) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    let half = metric::METER_W / 2.0;
+    let reach = value.abs().min(1.0) * half;
+    let bar = block(reach, metric::METER_H).fill(c(t.selected)).shrink(0);
+    let line = if value < 0.0 {
+        row![block(half - reach, metric::METER_H).shrink(0), bar, block(half, metric::METER_H).shrink(0)]
+    } else {
+        row![block(half, metric::METER_H).shrink(0), bar]
+    };
+    line.w(metric::METER_W)
+        .h(metric::METER_H)
+        .radius(metric::METER_H / 2.0)
+        .fill(c(t.chip))
+        .shrink(0)
+}
+
 /// A round button with a glyph on it: the toolbar's shape.
 pub fn icon_button(icon: Icon) -> El {
     // The active palette: the parts read tokens, never literals.

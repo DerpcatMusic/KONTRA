@@ -71,7 +71,7 @@ use smooth_core::weighting::{
 use smooth_core::{EngineBank, Settings};
 use smooth_core::plot::Telemetry;
 use smooth_ui::graph::{Axis, Change, DEFAULT_Q, WIDTH_STEP, depth_after, frequency_after};
-use smooth_ui::menus;
+use smooth_ui::menus::{self, BandAsk};
 use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
 use std::sync::Arc;
@@ -600,6 +600,11 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
         Slot::Bypass => (P::Bypass, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
         Slot::Delta => (P::Delta, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
         Slot::BandBypass => (ids[7], |v| if v < 0.5 { "off" } else { "on" }.to_string()),
+        Slot::BandSolo => (P::BandSolo, |v| {
+            if v < 0.5 { "off".to_string() } else { format!("band {}", v.round() as usize) }
+        }),
+        Slot::Sidechain => (P::Sidechain, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
+        Slot::SidechainListen => (P::SidechainListen, |v| if v < 0.5 { "off" } else { "on" }.to_string()),
         Slot::BandBalance => (ids[5], |v| {
             if (v - 0.5).abs() < 0.005 {
                 "linked".to_string()
@@ -608,6 +613,33 @@ fn slot_param(slot: Slot, band: usize) -> (P, fn(f64) -> String) {
             }
         }),
     }
+}
+
+/// The host edit a band menu pick makes, as the parameter and its plain value.
+/// Delete and reset are the view's own edits, so they make none here.
+fn band_edit(params: &SmoothParams, index: usize, ask: BandAsk) -> Option<(P, f64)> {
+    let index = index.min(7);
+    match ask {
+        BandAsk::Bypass => {
+            let on = params.band(index).bypass.value() >= 1;
+            Some((BAND_IDS[index][7], if on { 0.0 } else { 1.0 }))
+        }
+        BandAsk::Solo => Some((P::BandSolo, solo_after(params.band_solo.value(), index))),
+        BandAsk::Shape(shape) => Some((BAND_IDS[index][3], shape.min(7) as f64)),
+        BandAsk::Delete | BandAsk::Reset => None,
+    }
+}
+
+/// The solo plain value after a press on a band's solo: the band is soloed
+/// unless it already is, and then none is.
+fn solo_after(current: i64, index: usize) -> f64 {
+    if current == index as i64 + 1 { 0.0 } else { (index + 1) as f64 }
+}
+
+/// What a drag of a band auditions while listen-on-drag is on: its solo, or
+/// the delta monitor when the listen uses delta.
+fn audition_for(index: usize, listen_delta: bool) -> (P, f64) {
+    if listen_delta { (P::Delta, 1.0) } else { (P::BandSolo, (index + 1) as f64) }
 }
 
 /// The host parameters a plot change moves, with the plain value each takes.
@@ -941,7 +973,7 @@ impl PluginLogic for Smooth {
         state.since_publish += frames;
         if state.since_publish >= state.publish_every {
             state.since_publish = 0;
-            params.plot.publish(&bank.active().plot_frame());
+            params.plot.publish(&bank.active_mut().plot_frame());
         }
         ProcessStatus::Tail(Dsp::tail_samples(bank))
     }
@@ -986,6 +1018,8 @@ impl PluginLogic for Smooth {
         // parameters every frame, so the bridge alone would never end them.
         let mut stepping = false;
         let mut dragging = false;
+        // The parameter a listen-on-drag holds, with what it held before the drag.
+        let mut audition: Option<(P, f64)> = None;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
             // The plot: the engine's latest frame, or the last one settling
@@ -1062,6 +1096,14 @@ impl PluginLogic for Smooth {
                         view::Action::SwitchAb => Some(session.switch(&now)),
                         view::Action::CopyAb => {
                             session.copy_to_other(&now);
+                            None
+                        }
+                        view::Action::Band { index, ask } => {
+                            // A band menu pick is one host edit.
+                            if let Some((param, plain)) = band_edit(&mirror, index, ask) {
+                                bridge.drag_gesture(param, plain);
+                                bridge.end_all();
+                            }
                             None
                         }
                     };
@@ -1168,6 +1210,10 @@ impl PluginLogic for Smooth {
             }
             let pressed = smooth_ui::graph::held(ui);
             if dragging && pressed.is_none() {
+                // Let go: the audition ends, and the parameter it held goes back.
+                if let Some((param, plain)) = audition.take() {
+                    bridge.drag_gesture(param, plain);
+                }
                 bridge.end_all();
             }
             dragging = pressed.is_some();
@@ -1177,6 +1223,12 @@ impl PluginLogic for Smooth {
             {
                 bridge.drag_gesture(*frequency, band.frequency);
                 bridge.drag_gesture(*depth, band.depth);
+                if model.prefs.listen_on_drag {
+                    let (param, plain) = audition_for(index, model.prefs.listen_delta);
+                    // The first frame remembers what the parameter held; a release puts it back.
+                    audition.get_or_insert_with(|| (param, mirror.get_plain(u32::from(param)).unwrap_or_default()));
+                    bridge.drag_gesture(param, plain);
+                }
             }
             // The bands at rest follow the host. A value the parameter already
             // holds is not written back, so host automation is not fought
@@ -1323,7 +1375,7 @@ mod probe {
             let out = bank.active_mut().process_sample([x, x], &settings);
             if t > 48000 { ein += f64::from(x * x); eout += f64::from(out[0] * out[0]); }
             if t % 800 == 0 {
-                let f = bank.active().plot_frame();
+                let f = bank.active_mut().plot_frame();
                 for g in f.gain[0] { deepest = deepest.min(20.0 * g.max(1e-6).log10()); }
             }
         }
@@ -1335,6 +1387,39 @@ mod probe {
 #[cfg(test)]
 mod param_tests {
     use super::*;
+
+    #[test]
+    fn a_solo_press_toggles_its_band_and_another_band_moves_the_solo() {
+        assert_eq!(solo_after(0, 2), 3.0);
+        assert_eq!(solo_after(3, 2), 0.0);
+        assert_eq!(solo_after(1, 2), 3.0);
+    }
+
+    #[test]
+    fn listen_on_drag_auditions_the_band_solo_or_the_delta() {
+        assert_eq!(audition_for(4, false), (P::BandSolo, 5.0));
+        assert_eq!(audition_for(4, true), (P::Delta, 1.0));
+    }
+
+    #[test]
+    fn a_band_menu_pick_is_the_host_edit_it_names() {
+        let params = SmoothParams::default();
+        assert_eq!(band_edit(&params, 1, BandAsk::Shape(4)), Some((BAND_IDS[1][3], 4.0)));
+        assert_eq!(band_edit(&params, 0, BandAsk::Solo), Some((P::BandSolo, 1.0)));
+        // Bypass starts off, so the pick turns it on.
+        assert_eq!(band_edit(&params, 0, BandAsk::Bypass), Some((BAND_IDS[0][7], 1.0)));
+        // Delete and reset are the view's own, so the plug-in makes no edit.
+        assert_eq!(band_edit(&params, 0, BandAsk::Delete), None);
+        assert_eq!(band_edit(&params, 0, BandAsk::Reset), None);
+    }
+
+    #[test]
+    fn the_band_solo_slot_is_the_plain_value_over_eight() {
+        let params = SmoothParams::default();
+        params.band_solo.set_value(3);
+        let id = u32::from(P::BandSolo);
+        assert!((params.get_normalized(id).unwrap() - 3.0 / 8.0).abs() < 1.0e-9);
+    }
 
     #[test]
     fn the_params_carry_soothe3s_declared_defaults() {
@@ -1494,6 +1579,68 @@ mod host_io {
         // 8 blocks of 512 at 48 kHz is well over one 60 Hz frame, so the engine
         // must have published at least once.
         assert!(params.plot.sequence() > before, "the plot never published");
+    }
+}
+
+/// The level of a channel, as an RMS.
+#[cfg(test)]
+fn level(channel: &[f32]) -> f32 {
+    (channel.iter().map(|v| v * v).sum::<f32>() / channel.len() as f32).sqrt()
+}
+
+#[cfg(test)]
+mod trim_and_delta {
+    use super::*;
+
+    /// One set of parameters' output, after the engine's delay and the gain
+    /// ramps have cleared. A 30 ms ramp is 0.3 % of its step after 170 ms, so
+    /// 64 blocks (0.7 s) leave it at 1e-10.
+    fn settled(params: &SmoothParams) -> Vec<f32> {
+        let mut state = Dsp::default();
+        Smooth::reset(&mut state, params, &AudioConfig::new(48_000.0, 512));
+        let (left, right) = (0..512).map(|i| ((i as f32 * 0.37).sin() * 0.2, (i as f32 * 0.21).cos() * 0.2)).unzip::<f32, f32, Vec<f32>, Vec<f32>>();
+        let mut out = Vec::new();
+        for _ in 0..64 {
+            let mut storage = vec![vec![0.0_f32; 512]; 2];
+            let mut views: Vec<&mut [f32]> = storage.iter_mut().map(Vec::as_mut_slice).collect();
+            let inputs: [&[f32]; 2] = [&left, &right];
+            let transport = TransportInfo::default();
+            let mut out_events = EventList::default();
+            let mut context = ProcessContext::new(&transport, 48_000.0, 512, &mut out_events);
+            let mut buffer = AudioBuffer::from_slices_checked(&inputs, &mut views, 512);
+            Smooth::process(&mut state, params, &mut buffer, &EventList::default(), &mut context);
+            out = storage.remove(0);
+        }
+        out
+    }
+
+    #[test]
+    fn the_wet_trim_scales_the_processed_level_through_the_host() {
+        let base = settled(&SmoothParams::default());
+        let trimmed = SmoothParams::default();
+        trimmed.wet_trim.set_value(12.0);
+        let ratio = level(&settled(&trimmed)) / level(&base);
+        let want = 10.0_f32.powf(12.0 / 20.0);
+        assert!((ratio - want).abs() < want * 0.01, "wet trim +12 dB gave a level ratio of {ratio}, want {want}");
+    }
+
+    #[test]
+    fn delta_hears_dry_minus_wet_through_the_host() {
+        // Mix 100 is the wet signal alone; mix 0 is the dry signal alone.
+        let wet = settled(&SmoothParams::default());
+        let dry_params = SmoothParams::default();
+        dry_params.mix.set_value(0.0);
+        let dry = settled(&dry_params);
+        let delta_params = SmoothParams::default();
+        delta_params.delta.set_value(1);
+        let delta = settled(&delta_params);
+        let worst = delta
+            .iter()
+            .zip(dry.iter().zip(&wet))
+            .map(|(d, (dy, w))| (d - (dy - w)).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(worst < 1.0e-4, "delta is off dry - wet by {worst}");
+        assert!(level(&delta) > 1.0e-3, "delta is silent");
     }
 }
 
