@@ -61,7 +61,39 @@ def main():
     factory_ptr = entry.factory(b"clap.plugin-factory")
     factory = C.cast(factory_ptr, C.POINTER(Factory)).contents
     descriptor = factory.descriptor(factory_ptr, 0).contents
-    callbacks = [C.CFUNCTYPE(PTR, PTR, C.c_char_p)(lambda *_: None)]
+    # The host's GUI extension (CLAP names the host side `clap.gui` too): a plug-in that changes its size asks the
+    # host to resize the window it gave it, as a DAW does. The request is
+    # answered by resizing the X parent, which the screenshot then shows.
+    hosted = {"parent": None, "display": None, "resizes": []}
+
+    def request_resize(_, width, height):
+        if not hosted["parent"]:
+            return False
+        hosted["resizes"].append((width, height))
+        hosted["x11"].XResizeWindow(hosted["display"], hosted["parent"], width, height)
+        hosted["x11"].XFlush(hosted["display"])
+        return True
+
+    class HostGui(C.Structure):
+        _fields_ = [
+            ("resize_hints_changed", C.CFUNCTYPE(None, PTR)),
+            ("request_resize", C.CFUNCTYPE(C.c_bool, PTR, U32, U32)),
+            ("request_show", C.CFUNCTYPE(C.c_bool, PTR)),
+            ("request_hide", C.CFUNCTYPE(C.c_bool, PTR)),
+            ("closed", C.CFUNCTYPE(None, PTR, C.c_bool)),
+        ]
+
+    host_gui = HostGui(
+        C.CFUNCTYPE(None, PTR)(lambda _: None),
+        C.CFUNCTYPE(C.c_bool, PTR, U32, U32)(request_resize),
+        C.CFUNCTYPE(C.c_bool, PTR)(lambda _: False),
+        C.CFUNCTYPE(C.c_bool, PTR)(lambda _: False),
+        C.CFUNCTYPE(None, PTR, C.c_bool)(lambda *_: None),
+    )
+    extension = C.CFUNCTYPE(PTR, PTR, C.c_char_p)(
+        lambda _, name: C.addressof(host_gui) if name == b"clap.gui" else None
+    )
+    callbacks = [extension]
     callbacks += [C.CFUNCTYPE(None, PTR)(lambda *_: None) for _ in range(3)]
     host = Host(
         Version(1, 2, 0), None, b"SMOOTH screenshot host", b"Derpcat", b"", b"0.1", *callbacks
@@ -137,6 +169,7 @@ def main():
     parent = x11.XCreateSimpleWindow(display, x11.XDefaultRootWindow(display), 0, 0, 1200, 710, 0, 0, 0xFFFFFF)
     x11.XMapWindow(display, parent)
     x11.XFlush(display)
+    hosted.update(parent=parent, display=display, x11=x11)
     set_parent = C.CFUNCTYPE(C.c_bool, PTR, C.POINTER(Window))(gui.parent)
     assert gui.create(pointer, b"x11", False)
     assert set_parent(pointer, C.byref(Window(b"x11", parent)))
@@ -199,6 +232,7 @@ def main():
     settle()
     subprocess.run(["magick", "import", "-window", str(parent), str(out)], check=True)
     print(f"wrote {out}")
+    print(f"host resizes: {hosted['resizes']}")
 
     def scale():
         """The display's scale for the editor's own 800x473 space.

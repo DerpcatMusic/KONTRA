@@ -17,6 +17,9 @@ pub fn enable(on: bool) {
 }
 
 /// The tooltip for a control, if it has one and tooltips are on.
+/// Why the quality choice cannot be changed while low latency holds.
+pub const QUALITY_DISABLED: &str = "Quality settings are disabled in low latency mode.";
+
 pub fn of(id: &str) -> Option<&'static str> {
     if !ENABLED.load(Ordering::Relaxed) {
         return None;
@@ -25,6 +28,7 @@ pub fn of(id: &str) -> Option<&'static str> {
         "gear" => "Adjust plug-in settings.",
         "help" => "Help and other helpful resources.",
         "help-copy" => "Copy the version and system details to the clipboard, for a support request.",
+        "pref-size" => "Adjust the display size of the plug-in interface.",
         "pref-ultra" => "\"Always render on ultra\" disables \"Low latency for all instances\".",
         "pref-latency" => "\"Low latency for all instances\" disables \"Always render on ultra\".",
         "mode" => "Select the processing mode.\nsoft: adaptive threshold, reacts to relative levels of resonances.\nhard: fixed threshold, reacts to absolute levels of resonances.",
@@ -37,7 +41,7 @@ pub fn of(id: &str) -> Option<&'static str> {
         "max-cut" => "Set the maximum reduction SMOOTH is allowed to make in dB.",
         "bypass" => "Bypass the processing.",
         "delta" => "Monitor the difference between wet and dry signals.",
-        "quality" => "Set the quality of processing. Higher quality settings increase CPU load.",
+        "quality" => "Set the quality of processing and choose between minimum phase (default) and linear phase processing. Higher quality settings increase CPU load while linear phase processing increases latency.",
         "lowlatency" => "Toggle the low latency mode on/off. The latency drops to 0-1 ms depending on sample rate.",
         "undo" => "Undo last action.",
         "redo" => "Redo last undone action.",
@@ -47,6 +51,8 @@ pub fn of(id: &str) -> Option<&'static str> {
         "preset-prev" => "Load the previous preset.",
         "preset-next" => "Load the next preset.",
         "preset-heart" => "Mark or unmark this preset as a Favorite.",
+        "preset-default" => "Set this preset as the default for new SMOOTH instances.",
+        "preset-filter" => "Filter the preset list: all, factory, user, or favourite presets.",
         "preset-save" => "Save current parameters as a new preset.",
         "preset-delete" => "Delete the current preset. This cannot be undone.",
         "preset-search" => "Search for presets. The search terms are matched against names and categories.",

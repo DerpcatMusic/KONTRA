@@ -340,6 +340,23 @@ pub fn dropdown(ui: &mut Ui, id: &str, options: &[&str], choice: &mut usize) -> 
         .a11y(A11y::Toggle { on: *choice > 0 })
 }
 
+/// A dropdown that cannot be changed: the chosen name, dimmed, with the reason
+/// for it in its tooltip (the quality choice while low latency holds).
+pub fn dropdown_unavailable(id: &str, name: &str, why: &str) -> El {
+    // The active palette: the parts read tokens, never literals.
+    let t = theme::t();
+    block(metric::DROPDOWN_W, metric::FIELD_H)
+        .radius(SKIN.corners.field)
+        .fill(c(t.field))
+        .push(
+            label(name, ty::BODY, ca(t.ink, t.veil_soft))
+                .anchor(Align::Start, Align::Center)
+                .offset(space::L, space::NONE),
+        )
+        .tipped(id)
+        .tip(why)
+}
+
 /// The current preset, its pager, and what it is for.
 ///
 /// One part, because it is one thing: the reference draws the title, the
@@ -657,6 +674,12 @@ pub fn unavailable_slider(id: &str, text: &str, w: f64, why: &str) -> El {
 /// carries is the caller's, so the same switch works in a preview and in a
 /// host. It takes any number of names, not just two.
 pub fn segmented(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize) -> El {
+    segmented_at(ui, id, options, chosen, metric::SWITCH_W)
+}
+
+/// A segmented switch of a given width: the same control, sized to the room
+/// its options need (five steps need more than the two-way switch's width).
+pub fn segmented_at(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize, width: f64) -> El {
     // The active palette: the parts read tokens, never literals.
     let t = theme::t();
     if ui.get(id).activated() {
@@ -665,7 +688,7 @@ pub fn segmented(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize) ->
     let h = metric::SWITCH_H;
     let inner = h - space::TIGHT - space::TIGHT;
     let n = options.len().max(1) as f64;
-    let half = (metric::SWITCH_W - space::TIGHT * (n + 1.0)) / n;
+    let half = (width - space::TIGHT * (n + 1.0)) / n;
     let segments: Vec<El> = options
         .iter()
         .enumerate()
@@ -684,7 +707,7 @@ pub fn segmented(ui: &mut Ui, id: &str, options: &[&str], chosen: &mut usize) ->
     row(segments)
         .gap(space::TIGHT)
         .pad(space::TIGHT)
-        .size(metric::SWITCH_W, h)
+        .size(width, h)
         .radius(h / 2.0)
         .fill(c(t.toggle))
         .shrink(0)

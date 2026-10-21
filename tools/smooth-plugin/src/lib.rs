@@ -70,6 +70,7 @@ use smooth_core::weighting::{
 };
 use smooth_core::{EngineBank, Settings};
 use smooth_core::plot::Telemetry;
+use smooth_ui::menus;
 use smooth_ui::slots::{self, Slot};
 use smooth_ui::{H, W, skin, view};
 use std::sync::Arc;
@@ -895,6 +896,8 @@ impl PluginLogic for Smooth {
         let pending_in = Arc::clone(&pending);
         let mut published: u64 = 0;
         let mut seen: u64 = 0;
+        // The interface size last asked of the host, so a step is requested once.
+        let mut applied: Option<usize> = None;
         MuiEditor::new(params, ui(), (W, H), move |ui, bridge| {
             // The host's values in.
             // The plot: the engine's latest frame, or the last one settling
@@ -938,20 +941,21 @@ impl PluginLogic for Smooth {
                                 Ask::Favourite(name, on) => {
                                     let _ = library.set_favourite(&name, on);
                                 }
+                                Ask::Default(name, on) => {
+                                    let _ = library.set_default(&name, on);
+                                }
                                 Ask::Save(name) => {
                                     let category = library
                                         .presets
                                         .iter()
                                         .find(|p| Some(&p.name) == library.current.as_ref())
-                                        .map_or_else(|| "user".to_string(), |p| p.category.clone());
-                                    let preset = presets::Preset {
-                                        name: name.clone(),
-                                        category,
-                                        creator: "you".to_string(),
-                                        favourite: false,
-                                        values: presets::capture(mirror.as_ref()),
-                                        factory: false,
-                                    };
+                                        .map_or_else(|| "Misc".to_string(), |p| p.category.clone());
+                                    let preset = presets::Preset::new(
+                                        &name,
+                                        &category,
+                                        "you",
+                                        presets::capture(mirror.as_ref()),
+                                    );
                                     if library.save(preset).is_ok() {
                                         library.current = Some(name);
                                     }
@@ -989,6 +993,7 @@ impl PluginLogic for Smooth {
                             category: p.category.clone(),
                             favourite: p.favourite,
                             factory: p.factory,
+                            default: library.default.as_ref() == Some(&p.name),
                         })
                         .collect();
                     model.presets.current = library
@@ -1047,6 +1052,14 @@ impl PluginLogic for Smooth {
             // its back. The frame the pointer lets go names no parameter, and
             // the bridge ends the edit.
             drop(bind);
+            let size = model.prefs.size.min(menus::SIZE_WIDTHS.len() - 1);
+            if applied != Some(size) {
+                let width = menus::SIZE_WIDTHS[size];
+                let height = width * H / W;
+                if bridge.context().is_some_and(|c| c.request_resize(width.round() as u32, height.round() as u32)) {
+                    applied = Some(size);
+                }
+            }
             if let Some(index) = smooth_ui::graph::held(ui)
                 && let Some((frequency, depth)) = BAND_PARAMS.get(index)
                 && let Some(band) = model.bands.get(index)
@@ -1084,7 +1097,7 @@ impl PluginLogic for Smooth {
             tree
         })
         // The host may resize the window; the design scales to fit it.
-        .resizable((W * 0.75, H * 0.75))
+        .resizable((menus::SIZE_WIDTHS[0], menus::SIZE_WIDTHS[0] * H / W))
         .changed(move || {
             let sequence = changed_telemetry.sequence();
             let changed = sequence != seen || pending.swap(false, std::sync::atomic::Ordering::Relaxed);

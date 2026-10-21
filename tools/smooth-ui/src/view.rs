@@ -461,7 +461,16 @@ fn footer(ui: &mut Ui, m: &mut Model, bind: &mut Bind) -> El {
                 label("quality", ty::CAPTION, c(t.ink)),
             ]
             .gap(space::XS),
-            dropdown(ui, "quality", &QUALITY_NAMES, &mut m.quality),
+            // The reference's rule: quality has no say while low latency holds.
+            if m.low_latency {
+                dropdown_unavailable(
+                    "quality",
+                    QUALITY_NAMES[m.quality.min(QUALITY_NAMES.len() - 1)],
+                    crate::tips::QUALITY_DISABLED,
+                )
+            } else {
+                dropdown(ui, "quality", &QUALITY_NAMES, &mut m.quality)
+            },
             row![
                 padlock(m.lock_latency, "lock-latency"),
                 toggle_pill(ui, "lowlatency", "low latency", &mut m.low_latency),
