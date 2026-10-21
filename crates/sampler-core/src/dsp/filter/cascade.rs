@@ -1854,8 +1854,8 @@ impl Cascade {
     /// moves snap while modulated) and the resonance by `0.015` of the distance when that is
     /// over `1e-4`. Versatile's clock (`0x140aea690`) moves both by `0.015`.
     // ponytail: "modulated" is a nonzero cutoff delta, not the native's modulation-buffer
-    // pointer; the clock's alternative branch (global 0x144fd4c54 = 1) and its offset slew
-    // (+0x1f4 -> +0x1f8) are taken as unused, both unwritten in the binary.
+    // pointer. The clock's alternative branch is dead: `DAT_144fd4c54` is 0 in the image's
+    // .rdata and never written in the decompile, so FUN_140ae9f90 runs its `else` path only.
     pub(crate) fn process(
         &self,
         cells: &mut [[f64; 2]],
