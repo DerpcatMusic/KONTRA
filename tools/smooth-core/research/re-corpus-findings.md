@@ -29,7 +29,11 @@ may build the spec on the stack and copy it, or write the ID inside a larger sto
 Next step: follow the callers of the `table_scaled`/`table_unscaled` entries
 (`0x181e16ab0`, `0x181e16ae0`) and the spec allocator, not store patterns.
 
-## 2. Mid/side encode/decode and constants — partial
+## 2. Mid/side encode/decode and constants — resolved
+
+Resolved in `stereo-ms-sidechain-output.md` section 1: encode gain 0.5 at `0x1808928a3`,
+decode gain 1.0 at `0x18089a5bc`, through helper `0x1808a3b20` (emulated). The text below is the
+earlier state and is kept for the trail.
 
 - The stereo-mode flag is `*(arg1 + 0xa6)`, written by the setter at `0x89467e`
   (`0x89445b`, `0x894370` are the same family) and read in the process function
