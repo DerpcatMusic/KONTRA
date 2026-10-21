@@ -1150,7 +1150,9 @@ impl Instrument {
     /// number): the instrument's dynamics or volume sources, so a host can
     /// show "dynamics: CC1" and an expression layer can target it. Counts zones
     /// carrying a route from `Controller(cc)` to [`Target::Amplitude`] with a
-    /// nonzero depth.
+    /// nonzero depth that raises the gain as the controller rises (sign,
+    /// `invert` and the shape's ends): a controller that turns a zone down is
+    /// not its dynamics.
     pub fn amplitude_controllers(&self) -> Vec<u8> {
         let mut zones = [0usize; 128];
         for zone in &self.zones {
@@ -1160,8 +1162,11 @@ impl Instrument {
                 else {
                     continue;
                 };
+                let falls = route.shape.and_then(|s| self.shapes.get(s.0)).is_some_and(|s| {
+                    matches!((s.points.first(), s.points.last()), (Some(a), Some(b)) if b.1 < a.1)
+                });
                 let live = match route.depth {
-                    Depth::Normalized(d) => d != 0.0,
+                    Depth::Normalized(d) => d != 0.0 && (d > 0.0) != (route.invert != falls),
                     Depth::Gain(_) | Depth::Pitch(_) => true,
                 };
                 if route.target == Target::Amplitude && live && cc < 128 {
