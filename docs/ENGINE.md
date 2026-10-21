@@ -83,7 +83,7 @@ Each family has one config superset in `sampler-ir::fx` and one set of cores.
 | Filter cores are separate per topology | Ladder, SVF, AR, Daft as topologies of the same SOS / state-space primitives | Five distinct cores (`ladder`, `ar`, `daft`, `svf`, `cascade`) | Express the SVF and cascade as SOS; check ladder/AR as feedback designs of the same primitive; keep the native recurrences only where vectors prove the difference |
 | Nonlinearities are not generic stages | Composable transfer-function stages with explicit loop placement | Shaping lives in `color/` per module (distortion, saturator, tube, diode, ...) | One transfer-function stage type (curve or table, pre/post placement) that those modules configure |
 | Mapping is per family, not a registry | A new product module is a mapping table | Each format crate has per-family `translate`/`slot_*` functions; kontakt `effects/mod.rs` routes by `Params` variant | See section 4: a family descriptor table plus a routing table |
-| Kontakt `effects/mod.rs` is 3,900 lines | Family-split | Split in progress on `engine/engine-robustness` (not yet merged) | Finish the split; keep behaviour identical against the golden tests |
+| Kontakt `effects/mod.rs` was 3,900 lines | Family split | Done: routing and rack reading stay in `mod.rs`; each family owns its `slot_*` translators; bus assembly in `bus.rs`; shared fixtures in `test_support.rs`. Behaviour-neutral: the 304 sampler-kontakt lib tests are unchanged | Remaining: remove per-family mapping boilerplate (section 4) |
 
 ### Extension surface: adding a module
 
@@ -105,10 +105,13 @@ To add a product module (no new DSP when a family covers it):
 6. **Prove it.** One golden vector or null test per behaviour (recorded vector, closed-form
    law, or bit-identity against the previous core). Keep it lean: no per-parameter snapshots.
 
-The kontakt effects layer follows this shape: `effects/mod.rs` holds rack reading, the
-`Params` parse, and the routing; each family file (`filter.rs`, `eq.rs`, `timemod.rs`,
-`dynamics.rs`, `space.rs`, `color.rs`) holds its preset functions and slot translators, and
-`bus.rs` holds bus assembly and send levels.
+The kontakt effects layer follows this shape. `effects/mod.rs` holds rack reading, the
+`Params` parse and the routing table (`chain_with`, one match arm per stored module). Each
+family file (`filter.rs`, `eq.rs`, `timemod.rs`, `dynamics.rs`, `space.rs`, `color.rs`) holds
+its preset functions and `slot_*` translators. A translator takes `&mut Lowering` (the rack's
+pending chain, stereo matrix and filters), `&Site` (the slot's address, gain and scope) and
+`&mut Notes` (diagnostics), and returns whether the slot was modelled. `bus.rs` holds bus
+assembly and send levels; `test_support.rs` holds the test fixtures.
 
 ### Rules for every module
 
