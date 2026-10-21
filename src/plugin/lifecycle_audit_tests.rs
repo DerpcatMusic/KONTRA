@@ -79,3 +79,27 @@ fn a_bad_saved_state_blob_loads_with_defaults() {
         assert!(!view.parts[0].status.starts_with("Load failed"), "{}", view.parts[0].status);
     }
 }
+
+fn next_part(params: &SamplerParams, name: &str) -> Box<CorePart> {
+    params.selection.write_unpoisoned().parts[0].path = format!("{name}.nki");
+    assert!(load_part(params, 0, Some(transaction_candidate(name))));
+    params.shared.ready.pop().unwrap().2.unwrap()
+}
+
+/// F-08: the replaced part fades out instead of being cut, then goes back to be dropped.
+#[test]
+fn a_replaced_part_fades_out_and_is_then_handed_back() {
+    let (params, mut core) = transaction_fixture();
+    let next = next_part(&params, "next");
+    assert!(core.install(0, Some(next)).0.is_none(), "kept as a tail, not dropped on the audio thread");
+    let first = core.render(64);
+    assert!(first.live[0]);
+    let head = first.buses[0][0][..64].iter().fold(0f32, |m, x| m.max(x.abs()));
+    assert!(head > 0., "the old note is still heard");
+    assert!(core.take_expired().is_none());
+    for _ in 0..(48000 / 30 / 64 + 2) {
+        core.render(64);
+    }
+    assert!(core.take_expired().is_some());
+    assert!(core.take_expired().is_none());
+}

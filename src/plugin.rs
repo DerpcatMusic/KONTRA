@@ -3444,6 +3444,14 @@ impl PluginLogic for Sampler {
             };
             let _ = shared.discard.push(retired);
         }
+        while !shared.discard.is_full()
+            && let Some(old) = s.core.take_expired()
+        {
+            let _ = shared.discard.push(Retired {
+                part: Some(old),
+                ..Default::default()
+            });
+        }
         #[cfg(test)]
         callback_audit_mark(&mut s.callback_audit, &mut callback_stamp, 0);
         // Port v1 per-part engine defaults before any keyboard or host note starts.
