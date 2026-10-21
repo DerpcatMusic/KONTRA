@@ -97,6 +97,16 @@ pub struct Native {
     pub ratio: f64,
 }
 
+/// Where a detector takes its level from: the processed audio, or a key input
+/// (the Kontakt side-chain; the Transparent Limiter's second input pair).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Key {
+    #[default]
+    Internal,
+    External,
+}
+
 /// The gain computer plus its ballistics.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,7 +134,7 @@ pub enum Law {
     /// seconds (at least 1 ms); `attack` is unused. Look-ahead of
     /// `128 * int(rate / 44100)` frames, Hilbert-envelope detector, Hann-FIR
     /// gain smoothing, brick-wall at the ceiling.
-    KontaktHilbert(Native),
+    KontaktHilbert(Native, Key),
     /// Kontakt Feedback Compressor (SerType 0x4c), core `NI::DSP::FBComp`
     /// (process `0x141aa80d0`): `threshold_db` is the linear input drive
     /// (`10^(2.5x - 0.5)`), `ratio` the ratio `1 + 19x`; attack and release
@@ -214,7 +224,7 @@ impl Config {
             | Law::KontaktEnhanced(n)
             | Law::KontaktPro(n)
             | Law::KontaktLimiter(n)
-            | Law::KontaktHilbert(n)
+            | Law::KontaktHilbert(n, _)
             | Law::KontaktFeedback { native: n, .. } => n.threshold_db,
         }
     }
@@ -228,7 +238,7 @@ impl Config {
             | Law::KontaktEnhanced(n)
             | Law::KontaktPro(n)
             | Law::KontaktLimiter(n)
-            | Law::KontaktHilbert(n)
+            | Law::KontaktHilbert(n, _)
             | Law::KontaktFeedback { native: n, .. } => n.ratio,
         }
     }

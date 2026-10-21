@@ -4,7 +4,7 @@
 //! one `Config` superset, saved knobs passed through (dispatcher
 //! `0x1409047a0`; cores `0x140ab2250`, `0x140ab2c80`, `0x140ab35d0`).
 
-use sampler_ir::fx::dynamics::{Config, Law, Link, Native};
+use sampler_ir::fx::dynamics::{Config, Key, Law, Link, Native};
 use sampler_ir::{Gain, Processor, Reason, Time};
 
 /// One note for the diagnostics: feature, detail, reason.
@@ -79,12 +79,13 @@ pub(super) fn limiter(input_gain: f32, release_ms: f32) -> Result<Processor, Not
     }))
 }
 
-/// `BParFXHilbertLimiter` (0x5f, "Transparent Limiter"): normalized drive,
-/// release (s) and ceiling, then the side-chain byte; they feed controls 0..3
-/// of `BEffectHilbertLimiter` (`0x1409aa9e0` clamps each to 0..=1 before the
-/// core setter `0x141aea680`). The saved-order to control-id map follows the
-/// four-control layout (three floats, then the side-chain bool as id 3); it
-/// is inferred, not traced.
+/// `BParFXHilbertLimiter` (0x5f, "Transparent Limiter", version 0x51): floats
+/// at saved +8, +0xc, +0x10 (normalized drive, release s, ceiling), then the
+/// side-chain byte at +0x14. Decompile: reader `0x140d01ae0`; controls 0..2
+/// are those floats in order (setter `0x141aea680`), control 3 is the
+/// side-chain flag (`0x1409aa9e0` clamps 0..=1 and stores it). The side-chain
+/// selects `BEffectHilbertLimiterSC`, whose key input the core now supports
+/// (`Key::External`); no slot routes one yet, so the flag stays diagnosed.
 pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -> Result<Processor, Note> {
     if ![drive, release, ceiling].iter().all(|v| v.is_finite()) {
         return Err((
@@ -99,7 +100,7 @@ pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -
     let unit = |v: f32| f64::from(v.clamp(0.0, 1.0));
     Ok(Processor::Dynamics(Config {
         address: None,
-        law: Law::KontaktHilbert(Native { threshold_db: unit(drive), ratio: unit(ceiling) }),
+        law: Law::KontaktHilbert(Native { threshold_db: unit(drive), ratio: unit(ceiling) }, Key::Internal),
         attack: Time::Milliseconds(0.0),
         release: Time::Seconds(unit(release)),
         link: Link::Max,
@@ -205,7 +206,7 @@ mod limiter_tests {
         assert!(limiter(f32::NAN, 100.0).is_err());
         assert!(limiter(0.0, -1.0).is_err());
         let Ok(Processor::Dynamics(h)) = hilbert(2.0, 0.5, 0.9, false) else { panic!() };
-        assert!(matches!(h.law, Law::KontaktHilbert(Native { threshold_db: 1.0, .. })));
+        assert!(matches!(h.law, Law::KontaktHilbert(Native { threshold_db: 1.0, .. }, Key::Internal)));
         assert!(hilbert(0.5, 0.5, 0.5, true).is_err());
         let Ok(Processor::Dynamics(f)) = feedback([0.2, 0.8, 0.0, 0.0, 1.0, 1.0, 0.0], [true, true, false]) else {
             panic!()

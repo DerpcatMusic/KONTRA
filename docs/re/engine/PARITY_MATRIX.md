@@ -95,12 +95,12 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | --- | --- | --- | --- |
 | Compressor | unknown | none | |
 | Feedback Compressor | unknown | none | |
-| Limiter | partial | decomp | Detector biquad, gain computer, release law (ln2/N) and input gain confirmed from 0x140904890 / 0x140960140 / 0x1408dd0a0. Open: output clamp bounds (lower -1 confirmed, upper bound source not traced); no native vector (Wine capture unreliable this session) |
+| Limiter | partial | decomp | Detector biquad, gain computer, release law (ln2/N), input gain and output clamp [-1, 1] confirmed from 0x140904890 / 0x140960140. Open: no native vector (Wine capture unreliable) |
 | Solid Bus Comp | unknown | none | |
 | Supercharger GT | unknown | none | |
-| Transient Master | partial | decomp | Controls 0-2 constants confirmed (x120, x115, x12/x48 dB) from 0x141ac87b0. Open: flags 3-7 semantics, clip-variant selector (0x141a59d40), non-v0x10 versions; no native vector |
-| Transparent Limiter | partial | decomp | Controls 0-2 (drive 0..40 dB, release s, ceiling -0.35..-40 dB) confirmed. Side-chain (control 3) selects BEffectHilbertLimiterSC: not modelled, diagnosed. Saved-field order inferred; no native vector |
-| Gainer | partial | decomp | Smoother 1/1800 and unity-window hold (0x140aa2980) confirmed and implemented. Open: dry != 0 inside the window, gain-copy flags 0x1a2/0x1b7; no native vector |
+| Transient Master | partial | decomp | Saved order and constants confirmed (reader slot 8 of BParFXTrans). Clip = control 3 (variant 0x141a59d40). Open: controls 4-7 and bit0 select 64-variant process paths, not implemented (live-only); no native vector |
+| Transparent Limiter | partial | decomp | Saved order traced (reader 0x140d01ae0, version 0x51). Core has a key input (Key::External, keyed Hilbert detector, tests). Slot routing of the key bus is not wired, so the Kontakt flag stays diagnosed. No native vector |
+| Gainer | partial | decomp | Smoother 1/1800 and unity-window hold (0x140aa2980) implemented. Gain-copy snap (0x1408374b0) documented, not modelled (no object copy in engine). Open: dry != 0 inside the window; no native vector |
 
 ## Amplifiers (k-amps-a, k-amps-b)
 
