@@ -241,7 +241,8 @@ fn spark_lengths_match_native_vectors() {
 /// laws at 48 kHz, RoomSize 20, Decay 1, N 8.
 #[test]
 fn spark_coefficients_match_native_vectors() {
-    use spark_law::shelf;
+    use super::shelf::{Warp, first_order};
+    let shelf = |fc, g0, gp| first_order(Warp::Tan(fc), g0, gp);
     let close = |a: f64, b: f64, tol: f64| assert!((a - b).abs() < tol, "{a} vs {b}");
     let s = shelf(250.0 / 48_000.0, 0.5, 1.0);
     [0.988_691, -0.966_072, -0.954_763].iter().zip(s).for_each(|(&b, a)| close(a, b, 2e-6));

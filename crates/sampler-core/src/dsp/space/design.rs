@@ -16,6 +16,7 @@ use crate::Error;
 use sampler_ir::fx::space::{Freeverb, Galois, Network, SparkVerb, Topology, UviReverb};
 use std::f64::consts::PI;
 use plate::kontakt_plate;
+mod shelf;
 
 /// The spec of `n` at `rate`.
 pub(super) fn spec(n: &Network, rate: u32) -> Result<Spec, Error> {
@@ -399,15 +400,6 @@ pub(super) mod spark_law {
         out
     }
 
-    /// First-order section `(b0, b1, a1)` with DC gain `g0` and Nyquist gain
-    /// `gpi` (`0x141649120`).
-    pub(crate) fn shelf(fc: f64, g0: f64, gpi: f64) -> [f64; 3] {
-        let r = g0 / gpi;
-        let t = (PI * fc).tan();
-        let (lo, hi) = (t / r.sqrt(), t * r.sqrt());
-        [gpi * (hi + 1.0) / (lo + 1.0), gpi * (hi - 1.0) / (lo + 1.0), (lo - 1.0) / (lo + 1.0)]
-    }
-
     /// Low cut (`0x141649410`) and high cut (`0x141649220`) sections.
     pub(crate) fn cut(fc: f64, high: bool) -> [f64; 3] {
         let t = (PI * fc).tan();
@@ -452,8 +444,8 @@ fn spark(s: &SparkVerb, rate: f64) -> Spec {
             let band = |d: f32| 10f64.powf(0.05 * x / f64::from(d));
             let (gm, gl, gh) = (band(1.0), band(s.decay_low), band(s.decay_high));
             mean += gm * gm;
-            let lo = if s.low_cut { cut(fl, false) } else { shelf(fl, gl / gm, 1.0) };
-            let hi = if s.high_cut { cut(fh, true) } else { shelf(fh, 1.0, gh / gm) };
+            let lo = if s.low_cut { cut(fl, false) } else { shelf::first_order(shelf::Warp::Tan(fl), gl / gm, 1.0) };
+            let hi = if s.high_cut { cut(fh, true) } else { shelf::first_order(shelf::Warp::Tan(fh), 1.0, gh / gm) };
             let f = f64::from(s.mod_hz) * rate / (16.0 * l);
             let amp = f64::from(s.mod_cents) * std::f64::consts::LN_2 * rate / (7_539.822_368_615_503 * f);
             let mut line = LineSpec::new(len as usize + amp.ceil() as usize + super::network::GLIDE_BLOCK + 4, l);
@@ -646,8 +638,8 @@ fn generic_fdn(n: &Network, rate: f64) -> Spec {
             match n.bands {
                 Some(b) => {
                     let (lo, hi) = ((b.low_hz / rate).min(0.499), (b.high_hz / rate).min(0.499));
-                    let lo = spark_law::shelf(lo, loss(d, rt60 * b.low) / g, 1.0);
-                    let hi = spark_law::shelf(hi, 1.0, loss(d, rt60 * b.high) / g);
+                    let lo = shelf::first_order(shelf::Warp::Tan(lo), loss(d, rt60 * b.low) / g, 1.0);
+                    let hi = shelf::first_order(shelf::Warp::Tan(hi), 1.0, loss(d, rt60 * b.high) / g);
                     let bq = spark_law::cascade(lo, hi);
                     line.a = (g / 8f64.sqrt()) as f32;
                     line.bq = bq.map(|v| v as f32);
