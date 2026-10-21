@@ -4510,6 +4510,7 @@ name = "smooth-core"
 version = "0.1.0"
 dependencies = [
  "rustfft",
+ "serde_json",
 ]
 
 [[package]]

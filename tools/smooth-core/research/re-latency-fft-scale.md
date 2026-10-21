@@ -813,3 +813,20 @@ The block completes for 26 blocks at all four rates in both modes. Iteration cap
   reference delay.
 - Still open, unchanged from section 17.8: the 0x890a00 analysis and output math, the 143-case setter
   0x894370, the gain call site (0x8e0858, other branch), and the zero-latency byte's source in the default.
+
+## 19. Staging, ring and identity output in Rust (translate-analysis pass, 2026-10-21)
+
+- `src/reference/analysis.rs`: `align16` (the 0x8ad640 workspace round-up, verified arithmetic), `Ring`
+  (fields `+0x80` write, `+0x88` length, `+0x8c` channels; stage with wrap, masked advance from 0x893de0),
+  the `BinGain` boundary for 0x8e0858 (trait, closures accepted), and `IdentityDelay` (the output path with
+  the reported latency as its delay).
+- Differential fixtures: `re-tools/emulate/process_fixture.py` writes `oracle/process_fixture_<rate>_m<mode>.json`
+  (seeded uniform noise in, emulated output out, 26 blocks of 512, identity band state). Checked in Python:
+  `max |y[n] - x[n-L]|` is at most 3.3e-7 at every rate and both modes. **verified (emulation, identity state only).**
+  The Rust test `emulated_identity_fixtures` reproduces these to 1e-6.
+- **Not translated:** the window, the hop loop body (0x890c92..), the FFT calls and the overlap-add. The
+  per-hop math sits in 0x8acc30 / 0x8b1630 / 0x8dec70 (latency > 0 path, from 0x8a3a90) and in
+  0x8b61a0 / 0x8b7410 (called from 0x8ad640, the default path). These were not decoded in this pass.
+  `IdentityDelay` is a stand-in for that output path, not a translation of it: its ring read rule
+  (`start - latency`) is inferred from the delay, not from the code.
+- Ring length `groups << 12` is from section 17.1 (read), not re-checked here.
