@@ -518,13 +518,6 @@ pub(crate) struct Chamberlin {
     pub smooth: f32,
 }
 
-/// `(a - c |s|) s` with `s` the input clamped to +-4 (Pro-53 feedback `NL`, Versatile shaper).
-#[inline(always)]
-fn soft(v: f32, (a, c): (f32, f32)) -> f32 {
-    let s = v.clamp(-4.0, 4.0);
-    (a - s.abs() * c) * s
-}
-
 /// The 2401-entry table `2^(i/60 - 20)` at the MIDI-note index `((x 100 + 20) 5) + 1381.88`
 /// (`FUN_14095d940` / `FUN_14095d630`): 25.96 Hz at 0, 8372 Hz at 1.
 fn note_hertz(cutoff: f32) -> f32 {
@@ -599,7 +592,7 @@ impl Chamberlin {
         let mut low = 0.0;
         for (i, st) in self.stages[..self.count].iter().enumerate() {
             let (b, l) = (state[2 * i], state[2 * i + 1]);
-            let hp = soft(b, st.shaper) + (y * st.k - (b * st.d + l));
+            let hp = shaper::soft(b, st.shaper) + (y * st.k - (b * st.d + l));
             let b = hp * st.g + b;
             let l = (b * st.g + st.eps) + l;
             state[2 * i] = b;
@@ -608,7 +601,7 @@ impl Chamberlin {
             y += (mode - y) * st.wet;
             low = l;
         }
-        state[6] = soft(low, self.feedback);
+        state[6] = shaper::soft(low, self.feedback);
         state[7] += (self.gain - state[7]) * self.smooth;
         state[7] * y
     }
