@@ -1996,6 +1996,82 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
 }
 
 #[test]
+fn an_intensity_scaled_route_keeps_its_normalized_intensity_on_a_wide_processor_lane() {
+    // The lane spans 0..=2, so the bound depth doubles; the intensity unit must too.
+    let instrument = ir::Instrument {
+        assets: vec![asset("scaled generic target")],
+        controls: vec![ir::Control {
+            key: "custom/gain/scaled".into(),
+            label: "level".into(),
+            value: ir::ControlValue::Continuous {
+                min: 0.,
+                max: 2.,
+                default: 0.,
+                unit: ir::ControlUnit::None,
+            },
+            automation: ir::Automation::None,
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::UNITY)],
+            post_amplitude: vec![],
+        }],
+        processor_controls: vec![ir::ProcessorControl {
+            control: ir::ControlRef(0),
+            chain: ir::ChainRef(0),
+            index: 0,
+            parameter: ir::ProcessorParameter::Gain,
+            ramp: ir::Time::ZERO,
+        }],
+        modulators: vec![
+            ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Velocity,
+            },
+            ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Velocity,
+            },
+        ],
+        routes: vec![ir::Route {
+            source: ir::ModulatorRef(0),
+            target: ir::Target::Control(ir::ControlRef(0)),
+            depth: ir::Depth::Normalized(0.75),
+            invert: false,
+            shape: None,
+            smoothing: ir::Time::ZERO,
+            scale: Some(ir::RouteScale {
+                source: ir::ModulatorRef(1),
+                shape: None,
+                law: ir::ScaleLaw::KontaktIntensity {
+                    depth: 1.,
+                    flags: 0x10,
+                    unit: 1.,
+                },
+                lag_ms: 0.,
+            }),
+        }],
+        zones: vec![ir::Zone {
+            chain: Some(ir::ChainRef(0)),
+            routes: vec![ir::RouteRef(0)],
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let prepared = lower(&instrument, 48000, vec![constant(0.1)], no_behaviors)
+        .expect("a normalized intensity of 0.75 is admissible on any lane span");
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let mut out = [[0.; 2]; 256];
+    rt.render(&mut out).unwrap();
+    // A full scaling source leaves the route at its saved depth: 0.1 * (0 + 0.75 * 2).
+    assert_eq!(out[128], [0.15; 2]);
+}
+
+#[test]
 fn arbitrary_registered_control_target_drives_its_real_processor_per_voice_without_heap() {
     let mut instrument = ir::Instrument {
         assets: vec![asset("generic target")],
