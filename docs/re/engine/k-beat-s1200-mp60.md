@@ -40,3 +40,21 @@ Confidence: high that the three modes are currently played as a plain sampler an
 4. Add a golden or null test for each verified law. Unsupported parts stay reported.
 
 No engine code or tests changed in this PR yet, because no law has been verified.
+
+## Decompile evidence (READY, 2026-10-21)
+
+Confirmed in `source/kontakt8/` (addresses are Kontakt 8.exe VAs; the exports are data, not pasted here):
+
+- **S1200 filter mode is engine parameter 0x318 (792).** The `set_engine_par` validator (`0140780000.c`, function `FUN_140789c30`, around line 6145) accepts `0 <= value < 6`, else reports "S1200 Machine filter mode is out of range!". Six values: the ledger's Low / Low-mid / High-mid / High / None plus one more. The filter's law and the stored field are still unlocated.
+- **Source-mode names and stored order** match `KONTRA_OBJECTS.md`: the enum name table is built in `FUN_141315310` (`0141310000.c`, names DirectFromDisk, TimeMachine2, TimeMachinePro, BeatMachine, S1200Machine, MP60Machine).
+- **Beat Machine has its own internal-trigger group path.** `0140870000.c` disallows "internal-trigger beatmachine group" in a group-disallow routine; `FUN_141310df0` (`0140490000.c:767-774`) loads the beat-machine and S1200 name strings.
+- **Engine names `bitdepth` = 0x65 (101) and `downsample` = 0x66 (102)** are registered in `0140a60000.c:118-119`. These are the Lo-Fi insert parameters (already mapped in `library.rs:2764-2765`), not S1200 source controls.
+- **A `SrcModePreset` class exists** (constructed in `FUN_140d1d860`, `0140d10000.c:8497`, type 4 preset). Its member layout and what it computes are not yet decoded.
+
+Not found in the export (still open):
+
+- Parameter IDs and names for the S1200 bit-depth / rate controls, and for MP60's controls (no "S1200"/"MP60" control names in any string table I could find; the only S1200 engine name is the filter-mode error text).
+- The per-voice DSP path for modes 4, 6 and 7. The sample-rate / bit-depth law, the filter coefficients, and the slice/pattern generator are unlocated.
+- The stored control fields for S1200 / MP60 (common fields only, per `KONTAKT_OBJECTS.md`).
+
+Gap table status: unchanged. No row is closed. The next searches are `SrcModePreset` method bodies and the group voice-render dispatch on source mode.
