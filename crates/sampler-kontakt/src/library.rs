@@ -951,6 +951,16 @@ const SOURCE_MODE_TM_PRO: u32 = 8;
 /// libraries, and mode 5 (which DFD's streaming fields would occupy) never occurs.
 const SOURCE_MODE_DFD: u32 = 3;
 
+/// The machine kind of a stored source mode (4 Beat Machine, 6 S1200, 7 MP60).
+fn machine_kind(mode: u32) -> Option<ir::Machine> {
+    match mode {
+        4 => Some(ir::Machine::BeatMachine),
+        6 => Some(ir::Machine::S1200 { filter_mode: None }),
+        7 => Some(ir::Machine::Mp60),
+        _ => None,
+    }
+}
+
 fn source_mode_name(mode: u32) -> &'static str {
     match mode {
         1 => "Tone Machine",
@@ -1581,6 +1591,7 @@ impl Translation {
         ));
         let mut wavetable = None;
         let mut time_stretch = None;
+        let mut machine = None;
         match group.source_identity() {
             Ok(source) if source.mode == 9 => {
                 wavetable = group
@@ -1631,6 +1642,9 @@ impl Translation {
             {
                 time_stretch = self.time_stretch(group, source.mode, &at, index);
             }
+            Ok(source) if machine_kind(source.mode).is_some() => {
+                machine = self.machine(source.mode, &at, index);
+            }
             // The remaining engines are played as a sampler, named in the report.
             Ok(source) => self.unsupported(
                 &at,
@@ -1653,6 +1667,7 @@ impl Translation {
             muted: v.muted,
             wavetable,
             time_stretch,
+            machine,
             name: v.name.clone(),
             gain: ir::Gain::Linear(f64::from(v.volume)),
             pan: ir::Pan {
@@ -2241,6 +2256,36 @@ impl Translation {
         }
         let _ = mode;
         Some(stretch)
+    }
+
+    /// A machine source group (stored modes 4, 6, 7). Its own controls are
+    /// recorded in the IR; the DSP that would consume them is not modelled, so
+    /// the zones play as a sampler and the report says so.
+    fn machine(&mut self, mode: u32, at: &str, index: usize) -> Option<ir::Machine> {
+        let kind = machine_kind(mode)?;
+        let (value, name) = match kind {
+            ir::Machine::S1200 { .. } => {
+                let raw = self.script_par("ENGINE_PAR_S1200_FILTER_MODE", index as i32, -1, -1);
+                let filter_mode = match raw {
+                    Some(v) if (0..=i32::from(ir::S1200_FILTER_MODE_MAX)).contains(&v) => Some(v as u8),
+                    Some(v) => {
+                        self.unsupported(at, "S1200 filter mode out of range", v, ir::Reason::InvalidValue);
+                        None
+                    }
+                    None => None,
+                };
+                (Some(ir::Machine::S1200 { filter_mode }), "S1200 Machine")
+            }
+            ir::Machine::Mp60 => (Some(ir::Machine::Mp60), "MP60 Machine"),
+            ir::Machine::BeatMachine => (Some(ir::Machine::BeatMachine), "Beat Machine"),
+        };
+        self.unsupported(
+            at,
+            &format!("{name} source (played as a sampler; its DSP is not modelled)"),
+            mode,
+            ir::Reason::NotModeled,
+        );
+        value
     }
 
     fn script_par(&self, parameter: &str, group: i32, slot: i32, generic: i32) -> Option<i32> {
@@ -6700,6 +6745,10 @@ mod time_machine_tests {
 
     #[test]
     fn the_stored_mode_ids_name_the_machines_and_dfd_stays_a_sampler() {
+        assert_eq!(machine_kind(4), Some(ir::Machine::BeatMachine));
+        assert_eq!(machine_kind(6), Some(ir::Machine::S1200 { filter_mode: None }));
+        assert_eq!(machine_kind(7), Some(ir::Machine::Mp60));
+        assert_eq!(machine_kind(SOURCE_MODE_TM1), None);
         assert_eq!(source_mode_name(SOURCE_MODE_TM1), "Time Machine");
         assert_eq!(source_mode_name(SOURCE_MODE_TM2), "Time Machine 2");
         assert_eq!(source_mode_name(SOURCE_MODE_TM_PRO), "Time Machine Pro");
