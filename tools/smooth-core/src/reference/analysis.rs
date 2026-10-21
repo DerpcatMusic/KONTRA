@@ -11,19 +11,14 @@
 //!   write position at `+0x80`. [`Ring::stage`] is the copy through 0x89ba70,
 //!   which splits at the write position. [`Ring::advance`] is the masked
 //!   update at the tail of 0x893de0.
-//! - [`BinGain`]: the boundary to the per-bin gain path (0x8e0858, called four
-//!   times per block, see `research/re-latency-fft-scale.md` 17.6). It is a
-//!   trait so the translated gain module, or a closure, plugs in directly.
 //! - [`IdentityDelay`]: the output path for the identity band state. Its delay
 //!   is the reported latency (`ReferencePlan::latency`), and it reproduces the
 //!   emulated process block to float tolerance (test below).
 //!
-//! What is not here: the window, the hop loop body (0x890c92..), the FFT
-//! calls and the overlap-add. Those need the decoded per-hop math of
-//! 0x8acc30/0x8b1630 (default path, latency > 0) or 0x8b61a0/0x8b7410
-//! (called from 0x8ad640), which is still open. Until then the identity
-//! model above is the only verified output path. Nothing here changes
-//! `dsp.rs`.
+//! The hop stages themselves (window, FFTs, multiply, overlap-add) and the
+//! per-bin multiplier boundary `BinGain` are in `super::hop`. `IdentityDelay`
+//! stays as the model of the zero-latency path until that path is translated.
+//! Nothing here changes `dsp.rs`.
 
 use crate::reference_plan::ReferencePlan;
 
@@ -112,25 +107,6 @@ impl Ring {
     }
 }
 
-/// Boundary to the per-bin gain path (0x8e0858).
-///
-/// `magnitudes` are |Y_k| for one channel and one hop, as the shared magnitude
-/// kernel 0x6181b0 returns them; `gains` receives the per-bin multipliers of
-/// the same length. The trait is implemented for closures, so a caller can
-/// pass `|ch, mags, gains| ...` until the translated gain module exists.
-pub trait BinGain {
-    fn bin_gains(&mut self, channel: usize, magnitudes: &[f32], gains: &mut [f32]);
-}
-
-impl<F> BinGain for F
-where
-    F: FnMut(usize, &[f32], &mut [f32]),
-{
-    fn bin_gains(&mut self, channel: usize, magnitudes: &[f32], gains: &mut [f32]) {
-        self(channel, magnitudes, gains)
-    }
-}
-
 /// The identity-state output path: the input delayed by the reported latency.
 ///
 /// Built from the same ring structure as the reference. The ring is
@@ -212,18 +188,6 @@ mod tests {
             assert_eq!(got[n], input[n - lat], "sample {n}");
         }
         assert!(got[..lat].iter().all(|&v| v == 0.0));
-    }
-
-    #[test]
-    fn bin_gain_accepts_a_closure() {
-        let mut gain = |c: usize, mags: &[f32], g: &mut [f32]| {
-            for (gi, m) in g.iter_mut().zip(mags) {
-                *gi = if c == 0 { *m } else { 1.0 };
-            }
-        };
-        let mut g = [0.0f32; 2];
-        gain.bin_gains(0, &[0.5, 2.0], &mut g);
-        assert_eq!(g, [0.5, 2.0]);
     }
 
     /// Differential check against the emulated process block. Each fixture

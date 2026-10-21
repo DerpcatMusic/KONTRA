@@ -2,3 +2,4 @@
 //! stage. Each module cites the addresses it covers.
 
 pub mod analysis;
+pub mod hop;
