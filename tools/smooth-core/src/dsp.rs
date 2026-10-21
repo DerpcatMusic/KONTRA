@@ -449,6 +449,8 @@ pub struct Engine {
     /// The band the filter is tuned to, with its frequency and width, so a
     /// block with the same band costs nothing.
     solo_tuned: Option<(usize, f32, f32, u8)>,
+    /// A Tilt solo was the last one: its pass-through source stays until the solo gain has faded.
+    tilt_hold: bool,
     last_bypass: bool,
     /// The largest signed detector sample since the plot last took a frame:
     /// the sidechain meter. Not smoothed, and not made absolute.
@@ -667,6 +669,7 @@ impl Engine {
             solo_gains: [SmoothedGain::at(1.0), SmoothedGain::at(0.0)],
             solo_filter: [Svf::default(); 2],
             solo_tuned: None,
+            tilt_hold: false,
             last_bypass: false,
             detector_peak: f32::MIN,
         })
@@ -850,8 +853,11 @@ impl Engine {
         self.solo_gains[1].target = if soloed.is_some() { 1.0 } else { 0.0 };
         let non_solo = self.solo_gains[0].step(coefficient);
         let solo = self.solo_gains[1].step(coefficient);
+        // Un-soloing a Tilt band fades the pass-through out, so the level never dips.
+        self.tilt_hold = tilt_solo || (self.tilt_hold && soloed.is_none() && solo > 1.0e-4);
+        let pass = tilt_solo || (soloed.is_none() && self.tilt_hold);
         for c in 0..2 {
-            let filtered = if tilt_solo {
+            let filtered = if pass {
                 main[c]
             } else if self.solo_tuned.is_some() {
                 self.solo_filter[c].process(main[c])
@@ -1667,6 +1673,34 @@ mod tests {
             }
         }
         assert!(error < 2.0e-5, "tilt solo error {error}");
+    }
+
+    /// Un-soloing a Tilt band is level-neutral: the pass-through fades out as the main path fades in.
+    #[test]
+    fn unsoloing_a_tilt_band_does_not_dip() {
+        let mut engine = Engine::new(44100.0, EngineConfig::default()).unwrap();
+        let mut settings = Settings {
+            depth: 0.0,
+            solo_band: Some(0),
+            ..Settings::default()
+        };
+        settings.bands[0].shape = crate::weighting::Shape::Tilt;
+        let latency = engine.latency();
+        let mut history = vec![[0.0; 2]; latency + 1];
+        let mut error = 0.0_f32;
+        for t in 0..latency + 12000 {
+            if t == latency + 6000 {
+                settings.solo_band = None;
+            }
+            let input = [(TAU * 997.0 * t as f32 / 44100.0).sin() * 0.4; 2];
+            history[t % (latency + 1)] = input;
+            let out = engine.process_sample(input, &settings);
+            if t >= latency + 2000 {
+                let reference = history[(t - latency) % (latency + 1)];
+                error = error.max((out[0] - reference[0]).abs());
+            }
+        }
+        assert!(error < 2.0e-5, "unsolo dip {error}");
     }
 
     /// A reset must not leave the solo audition silent: the filter is retuned on the next block.
