@@ -25,5 +25,6 @@
 //! band records, attack/release, focus, soft/hard mode), output of a per-bin gain
 //! curve, with all state in a struct allocated at reset.
 
+pub mod gain;
 pub mod gain_layout;
 pub mod magnitude;

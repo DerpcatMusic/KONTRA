@@ -23,7 +23,7 @@ from process_lib import PROCESS_THUNK, Session, alloc_frames  # noqa: E402
 from reference_output_fixture import ParamSetter  # noqa: E402
 
 BODY_LO = image_va(0x8E04C0)
-BODY_HI = image_va(0x8E4BE2)
+BODY_HI = image_va(0x8E53B1)  # function end (ret at 0x8e53b0); notes s.20 had 0x8e4be2
 N = 512
 RATE = 48000
 
