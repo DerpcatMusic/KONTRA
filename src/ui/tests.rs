@@ -3559,3 +3559,19 @@ fn full_editor_native_frames_fit_a_plain_two_mib_thread() {
         std::fs::remove_dir_all(dir).unwrap();
     }).unwrap().join().unwrap();
 }
+
+/// Control ids are `ksp/<slot>/<variable>`, so two presets declaring `$volume`
+/// share one id. Values saved for the old preset must not follow the part.
+#[test]
+fn replacing_a_part_drops_the_old_presets_saved_controls() {
+    let mut part = crate::plugin::Part {
+        path: "a.nki".into(),
+        control_values: vec![crate::plugin::SavedControl {
+            value: 42.,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    replace_part(&mut part, "b.nki".into());
+    assert!(part.control_values.is_empty());
+}
