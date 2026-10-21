@@ -73,6 +73,8 @@ const MODULES: &[(u16, &str)] = &[
     (0x6b, "Twin Delay"),
     (0x72, "Gater"),
     (0x74, "Reverse Grain"),
+    (0x78, "Skreamer Deluxe"),
+    (0x79, "Kolor"),
 ];
 
 pub(crate) fn module_name(id: u16) -> String {
@@ -230,8 +232,10 @@ pub(crate) fn apply_writes(
             parameter @ ("ENGINE_PAR_SHAPE" | "ENGINE_PAR_DRIVE" | "ENGINE_PAR_DAMPING") => {
                 fx.apply_drive_parameter(parameter, w.value)
             }
-            parameter if color::skreamer_parameter(parameter).is_some() => {
-                fx.apply_skreamer_parameter(parameter, w.value)
+            parameter if color::live_field(parameter).is_some() => {
+                if let Some((module, count, float_fields, index)) = color::live_field(parameter) {
+                    fx.apply_live_field(module, count, float_fields, index, w.value);
+                }
             }
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),

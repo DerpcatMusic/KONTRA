@@ -2093,6 +2093,10 @@ pub enum ProcessorParameter {
     LoFiFrequency,
     LoFiNoise,
     LoFiColor,
+    /// Kontakt Fuzz amount, bass and treble (live lanes of a script-addressed Fuzz).
+    FuzzAmount,
+    FuzzBass,
+    FuzzTreble,
     /// Stored knobs of script-addressed Kontakt delay, modulation and reverb
     /// units (the family's `set` applies the native setter).
     Time,
