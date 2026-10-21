@@ -180,11 +180,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Stereo Modeller | unknown | none | |
 | Stereo Tune | unknown | none | |
 | Surround Panner | unknown | none | |
-| Beat Masher | unknown | none | |
-| Beat Slicer | unknown | none | |
-| Gater | unknown | none | |
-| Reverse Grain | unknown | none | |
-| Transpose Stretch | unknown | none | |
+| Beat Masher | missing | none | missing: reader fields and factory/vtable structure confirmed (k-mangling.md); audio kernel and laws not located; no native vector |
+| Beat Slicer | missing | none | missing: reader fields and factory/vtable structure confirmed; audio kernel and laws not located; no native vector |
+| Gater | missing | none | missing: vtable and child-unit structure confirmed; gate/step/noise kernel not located; no native vector |
+| Reverse Grain | missing | none | missing: reader fields confirmed (shared with Transpose Stretch, KE065 unresolved); kernel not located |
+| Transpose Stretch | missing | none | missing: reader fields confirmed (shared with Reverse Grain); kernel not located; own vtable differs in 3 slots |
 | Inverter | unknown | none | |
 | Send Levels | unknown | none | |
 | Group/instrument/bus/main insert routing and send taps | unknown | none | |
