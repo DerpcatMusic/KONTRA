@@ -18,10 +18,10 @@ use super::ballistics::*;
 use super::computer::*;
 use super::detector::*;
 use super::output::*;
-use super::pipeline::{Delay, Drive, Quantize, Scale, Shared, Window, high_pass_1, rbj_low_pass, run};
+use super::pipeline::{Delay, Drive, Quantize, Scale, Shared, Window, high_pass_1, rbj_low_pass, run, run_keyed};
 use super::{Planar, ProcessorState};
 use crate::dsp::eq_family::solid::Spline;
-use sampler_ir::fx::dynamics::{Detector, Direction, Generic, Law, Maximizer as MaxSaved, Topology};
+use sampler_ir::fx::dynamics::{Detector, Direction, Generic, Key, Law, Maximizer as MaxSaved, Topology};
 use std::sync::LazyLock;
 
 /// Process `len` frames of `block` with `law`: the chain is built once per
@@ -35,6 +35,7 @@ pub(super) fn process(
     state: &mut ProcessorState,
     cells: &mut [[f64; 2]],
     block: &mut Planar,
+    key: Option<&Planar>,
     len: usize,
 ) {
     let linked = shared.linked();
@@ -108,7 +109,7 @@ pub(super) fn process(
                 len,
             );
         }
-        Law::KontaktHilbert(_) => {
+        Law::KontaktHilbert(_, mode) => {
             let c = Hilbert::new(knobs, rate);
             let taps = hilbert_window(rate);
             let (ring, rest) = cells.split_at_mut(taps - 1);
@@ -116,12 +117,14 @@ pub(super) fn process(
             let (allpass, hann) = rest.split_at_mut(HILBERT_CELLS);
             let delay = Delay::new(ring, state);
             let window = Window::new(window, state, 5);
-            let detector = super::detector::Hilbert::new((c.allpass, c.delay, c.rise, c.fall), window, allpass, state);
+            // Keyed: the key goes through the same drive as the audio.
+            let keyed = (mode == Key::External).then_some((c.drive, HILBERT_EPS));
+            let detector = super::detector::Hilbert::new((c.allpass, c.delay, c.rise, c.fall), window, allpass, state, keyed);
             let ballistics = HilbertRelease::new(c.release, c.smooth, state);
             let hann = Hann::new(hann, c.cos, c.period, state);
             let out = CeilingOut { ceiling: c.ceiling, shared: *shared };
             let input = Drive { gain: c.drive, offset: HILBERT_EPS };
-            run((input, delay, detector, Decibel, ballistics, Ceiling, hann, out), state, block, len);
+            run_keyed((input, delay, detector, Decibel, ballistics, Ceiling, hann, out), state, block, key, len);
         }
         Law::KontaktFeedback { high_quality, .. } => {
             let c = Feedback::new(knobs, high_quality, rate);
@@ -195,7 +198,7 @@ pub(super) fn latency(law: &Law, rate: u32) -> usize {
         // unification); report 0 if a format ever pairs the two.
         Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate),
         Law::KontaktPro(_) | Law::KontaktLimiter(_) => KONTAKT_LATENCY,
-        Law::KontaktHilbert(_) => hilbert_window(rate) - 1,
+        Law::KontaktHilbert(..) => hilbert_window(rate) - 1,
         Law::UviMaximizer(m) => maximizer_latency(&Maximizer::from(m), rate),
         _ => 0,
     }
@@ -206,7 +209,7 @@ pub(super) fn cells(law: &Law, rate: u32) -> Option<usize> {
     Some(match law {
         Law::Generic(g) => lookahead_frames(g.lookahead.seconds(), rate) + generic_extra_cells(g),
         Law::KontaktPro(_) | Law::KontaktLimiter(_) => KONTAKT_LATENCY + KONTAKT_LATENCY + 1,
-        Law::KontaktHilbert(_) => 3 * hilbert_window(rate) - 1 + HILBERT_CELLS + 2,
+        Law::KontaktHilbert(..) => 3 * hilbert_window(rate) - 1 + HILBERT_CELLS + 2,
         Law::KontaktFeedback { .. } => FEEDBACK_CELLS,
         Law::UviMaximizer(m) => {
             let m = Maximizer::from(m);

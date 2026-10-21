@@ -436,6 +436,15 @@ impl Slot {
                 }
             }
             0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
+            0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
+                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
+                if self.version == 0x12 { Some(r.f32()?) } else { None },
+            )),
+            // The reader throws on any other version (0x51 only).
+            0x5f if self.version == 0x51 => {
+                Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?))
+            }
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
