@@ -100,3 +100,65 @@ Open:
 ```
 build-slot cargo test -p smooth-core --lib
 ```
+
+## 3. Latency and plan switching: partly verified, not matched
+
+Evidence: `RunScratch/smooth/feat/dsp-remaining/L-latency.md`.
+
+- Reported latency (verified): `L = [obj+0x2c] * H + [obj+0x278]`, with
+  `H = 0` when `[obj+0x237]` or `[obj+0xab]` (low latency) is set. Otherwise
+  `H = (S2c8 + S2f10)/2 + S30 + S2c78` (or `S30 + S2c78` when `P+0x58 == 0`),
+  where `S = obj+0x5f8`, `P = [S]`. The earlier note's `- S2c0` term is wrong.
+- `[obj+0x2c] = max(1, trunc((SR + 1.0) / 44100))` (verified, `0x18088fb42`).
+- Low-latency value `[obj+0x278]`: no writer found. The plan sizes come from
+  `0x18089c480` (called with 2048 and 256; inferred).
+- Plan selection: setParam cases 2 and 4 set dirty bytes at `obj+0x3240/0x3241`;
+  the rebuild that consumes them was not located.
+
+Port: `EngineBank::latency()` is `n - 1 (+ m/2)` for the active plan and does
+not match the reference's numbers. This is not changed: the reference values
+are not recovered.
+
+Verified in the port: moose's VST3 and CLAP glue watch `latency()` on each
+block and request a host restart on a change, so a plan switch updates the
+host's delay compensation. The new test
+`dsp::tests::the_impulse_delay_is_the_reported_latency_in_every_plan` checks
+that an impulse arrives exactly `latency()` samples late in all seven plans at
+44.1 and 96 kHz.
+
+## 2. Mid/side (16, `+0xa6`): not settled
+
+Evidence: `RunScratch/smooth/feat/dsp-remaining/MS-sc-meter.md`.
+
+- The only process read of `+0xa6` is at `0x892781`, used as a boolean. There
+  is no channel-count gate in the mode branch.
+- The helper at `0x8a3b20` computes `X0+X1` and `X0-X1`, then overwrites both
+  with `g * A`, where `g` is 0.5 (site A) or 1.0 (site B). The sum and difference
+  are dead stores as compiled, so no decode was found.
+- No `1/sqrt(2)` constant appears in the chain. The port keeps `1/sqrt(2)` for
+  encode and decode, which is not supported by this evidence. Not changed.
+- Wet, dry and delta in M/S are not established.
+
+## 5. Sidechain mux (`+0xa5`) and meter (visitor slot 13): partly verified
+
+- No process-path reads of `+0xa5`. The detector source is chosen by whether a
+  4th argument is null (`0x890bee`). The caller is vtable-dispatched and not
+  resolved. The earlier note claiming a silent sidechain mutes the output is
+  unsupported; no mute branch was found. Not implemented.
+- Meter (verified formula): published at `0x89392a` (edx=13), gated by a visitor
+  query. Value is the max over channels of the max over the block of the signed
+  L2 buffers, initialised to `-FLT_MAX`. No abs, square, dB or smoothing. The
+  buffers are probably the detector's, after M/S (inferred). Not implemented in
+  the plugin: the telemetry channel is UI-owned and the buffer origin is not
+  confirmed.
+
+## 6. FFT forward scale: not re-attempted this round
+
+The earlier note in `magnitude-scale.md` stands. The constructor is still not
+located. Unchanged.
+
+## Commands
+
+```
+build-slot cargo test -p smooth-core -p smooth-plugin
+```

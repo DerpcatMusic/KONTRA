@@ -1404,6 +1404,44 @@ mod tests {
         }
     }
 
+    /// The reported latency is the delay the audio actually has, in every plan
+    /// the bank can select: an impulse comes out exactly `latency()` samples late.
+    #[test]
+    fn the_impulse_delay_is_the_reported_latency_in_every_plan() {
+        let mut plans = vec![EngineConfig {
+            reduced_latency: true,
+            ..EngineConfig::default()
+        }];
+        for linear_phase in [false, true] {
+            for quality in [Quality::Normal, Quality::High, Quality::Ultra] {
+                plans.push(EngineConfig {
+                    quality,
+                    linear_phase,
+                    reduced_latency: false,
+                });
+            }
+        }
+        for rate in [44_100.0_f32, 96_000.0] {
+            for config in &plans {
+                let mut engine = Engine::new(rate, *config).unwrap();
+                let settings = Settings {
+                    depth: 0.0,
+                    ..Settings::default()
+                };
+                let latency = engine.latency();
+                let mut peak = (0, 0.0_f32);
+                for t in 0..latency + 2048 {
+                    let impulse = if t == 0 { 1.0 } else { 0.0 };
+                    let out = engine.process_sample([impulse, impulse], &settings)[0];
+                    if out.abs() > peak.1 {
+                        peak = (t, out.abs());
+                    }
+                }
+                assert_eq!(peak.0, latency, "rate {rate} {config:?}");
+            }
+        }
+    }
+
     /// The wet trim scales only the processed signal, before the mix. With no
     /// reduction the wet is the delayed input, so each case is the delayed
     /// input times (dry weight + wet weight). The dry weight is 1 - mix and
