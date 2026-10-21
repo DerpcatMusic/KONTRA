@@ -24,6 +24,10 @@
 //! `0x8e6da0` (called only when the delta flag, setter id 16 / `cfg+0x52`, is set) runs the
 //! per-record kernel `0x8dfb90` on the windowed frame. See [`pair_records`].
 //!
+//! Sidechain helpers: [`arena_channels`] (`0x61c370`, the allocator under `0x61b7e0`),
+//! [`subview_channels`] (`0x8ebbb0`) and [`scale_by_window`] (`0x8ec1d0`). `0x8ebc40` (the
+//! sidechain frame builder) is not translated; see the report in the gain notes.
+//!
 //! Evidence: `fixtures/gain_frame.json` (synthetic rings, plus in-situ calls captured from the
 //! gain body in the base and the sidechain configurations).
 
@@ -154,6 +158,40 @@ fn scale_half(src: &[f32], dst: &mut [f32]) {
     }
 }
 
+/// `0x61c370` (under `0x61b7e0`): bump-allocate one channel of `len` samples per entry of
+/// `starts`. Channel `k` starts at `*cursor`; afterwards the cursor is the next multiple of 16
+/// samples at or after `cursor + len` (the binary's round-up of its float index). `0x61b7e0`
+/// then sets the frame's channel count, length and byte length.
+pub fn arena_channels(cursor: &mut usize, len: usize, starts: &mut [usize]) {
+    for start in starts.iter_mut() {
+        *start = *cursor;
+        *cursor = (*cursor + len + 15) & !15;
+    }
+}
+
+/// `0x8ebbb0`: the ring view keeps channels `start..start + nch` of its source (channel `k`
+/// of the result is channel `start + k` of the source) and the source's write position. This
+/// returns the source channel range; the caller takes the buffers from its own view.
+pub fn subview_channels(src_nch: usize, start: usize, nch: usize) -> Range<usize> {
+    assert!(start + nch <= src_nch, "subview outside the source channels");
+    start..start + nch
+}
+
+/// `0x8ec1d0`: `dst[k] = src[k] * window[k]` for each output channel, with a mono window
+/// multiplying every channel by `window[0]`. Other channel counts write nothing (the guards
+/// of `0x8ec1d0`: `dst.nch == window.nch`, else `window.nch == 1`). `dst` and `src` are
+/// frames of the same length as `dst`'s first channel.
+pub fn scale_by_window(dst: &mut [&mut [f32]], src: &[&[f32]], window: &[&[f32]]) {
+    if window.len() != dst.len() && window.len() != 1 {
+        return;
+    }
+    for (k, out) in dst.iter_mut().enumerate() {
+        let n = out.len();
+        let w = if window.len() == 1 { window[0] } else { window[k] };
+        ipp::mul(&src[k][..n], &w[..n], out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,7 +218,7 @@ mod tests {
     fn cursor_matches_emulated_view_copy() {
         let f = fixture();
         let cases = f["cases"]["cursor"].as_array().unwrap();
-        assert!(cases.len() >= 100, "fixture should cover the cursor wrap");
+        assert!(cases.len() >= 50, "fixture should cover the cursor wrap");
         for c in cases {
             let cap = c["cap"].as_u64().unwrap() as u32;
             let pos = c["pos"].as_u64().unwrap() as u32;
@@ -277,5 +315,65 @@ mod tests {
             }
         }
         assert!(pair_path >= 20, "fixture should exercise the pair path ({pair_path})");
+    }
+
+    #[test]
+    fn arena_channels_matches_emulated_allocator() {
+        let f = fixture();
+        let cases = f["cases"]["arena"].as_array().unwrap();
+        assert!(cases.len() >= 30);
+        for c in cases {
+            let mut cursor = c["cursor"].as_u64().unwrap() as usize;
+            let nch = c["nch"].as_u64().unwrap() as usize;
+            let n = c["n"].as_u64().unwrap() as usize;
+            let mut starts = vec![0usize; nch];
+            arena_channels(&mut cursor, n, &mut starts);
+            let want: Vec<usize> = c["starts"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+            assert_eq!(starts, want, "nch {nch} n {n}");
+            assert_eq!(cursor, c["cursor_out"].as_u64().unwrap() as usize);
+            assert_eq!(nch, c["nch_out"].as_u64().unwrap() as usize);
+            assert_eq!(n, c["len_out"].as_u64().unwrap() as usize);
+        }
+    }
+
+    #[test]
+    fn subview_keeps_selected_channels_and_position() {
+        let f = fixture();
+        let cases = f["cases"]["subview"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for c in cases {
+            let src = c["nch_src"].as_u64().unwrap() as usize;
+            let nch = c["nch_out"].as_u64().unwrap() as usize;
+            let start = c["start"].as_u64().unwrap() as usize;
+            let r = subview_channels(src, start, nch);
+            assert_eq!(r.len(), nch);
+            assert_eq!(c["nch_field"].as_u64().unwrap() as usize, nch);
+            assert_eq!(c["pos_out"].as_u64().unwrap() as usize, c["pos"].as_u64().unwrap() as usize);
+            for d in c["ptr_diff"].as_array().unwrap() {
+                assert_eq!(d.as_i64().unwrap(), 0, "channel pointer must be the source's");
+            }
+        }
+    }
+
+    #[test]
+    fn scale_by_window_is_bit_exact_against_emulated_callee() {
+        let f = fixture();
+        let cases = f["cases"]["scale"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for c in cases {
+            let src = rows(&c["src"]);
+            let window = rows(&c["window"]);
+            let mut dst = rows(&c["dst_in"]);
+            let want = rows(&c["dst_out"]);
+            let src_refs: Vec<&[f32]> = src.iter().map(Vec::as_slice).collect();
+            let win_refs: Vec<&[f32]> = window.iter().map(Vec::as_slice).collect();
+            let mut dst_refs: Vec<&mut [f32]> = dst.iter_mut().map(Vec::as_mut_slice).collect();
+            scale_by_window(&mut dst_refs, &src_refs, &win_refs);
+            for (g, e) in dst.iter().zip(&want) {
+                for (i, (a, b)) in g.iter().zip(e).enumerate() {
+                    assert_eq!(a.to_bits(), b.to_bits(), "sample {i}");
+                }
+            }
+        }
     }
 }

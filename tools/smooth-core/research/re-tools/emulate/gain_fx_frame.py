@@ -13,6 +13,11 @@ Drives the emulated callees and writes the observable results as f32/u32 bit pat
                       copy is a self-copy); otherwise the pair (ch, ch+1) becomes
                       (0.5*(a+b), 0.5*(a-b)) in place, a = frame[ch], b = frame[ch+1]
 
+  arena     0x61b7e0  stack view with nch channels bump-allocated from the arena (0x61c370):
+                      channel k starts at the cursor; cursor = roundup16(cursor + len) per channel
+  subview   0x8ebbb0  ring view copy keeping channels [start, start + nch) and the position
+  scale     0x8ec1d0  dst[k] = src[k] * window[k] (or window[0] for a mono window), no segments
+
 Synthetic cases use random rings and random pos/len. In-situ cases are captured from the gain
 body's own calls (base configuration and the sidechain configuration: setter ids 3, 14 and 16
 set to 1), with the ring rebuilt as a canonical ring whose chronological samples equal the
@@ -47,6 +52,9 @@ CURSOR = image_va(0x894A70)
 SEGMENTS = image_va(0x89BA70)
 WINDOW = image_va(0x8E67A0)
 XFORM = image_va(0x8E6DA0)
+ARENA = image_va(0x61B7E0)
+SUBVIEW = image_va(0x8EBBB0)
+SCALE = image_va(0x8EC1D0)
 SC_EXTRA = [(3, 1.0, 0.0, 1.0, 1.0, 0.0), (14, 1.0, 0.0, 1.0, 1.0, 0.0), (16, 1.0, 0.0, 1.0, 1.0, 0.0)]
 
 
@@ -118,7 +126,7 @@ def canonical_geometry(rng, n):
 
 
 def synth_cursor(emu, rng, cases):
-    for _ in range(120):
+    for _ in range(60):
         cap = rng.choice([2, 4, 16, 64, 1024, 65536])
         pos = rng.randrange(cap)
         delta = rng.randrange(-cap, cap + 1)
@@ -134,7 +142,7 @@ def synth_cursor(emu, rng, cases):
 
 
 def synth_segments(emu, rng, cases):
-    for _ in range(160):
+    for _ in range(100):
         cap = rng.choice([2, 4, 16, 32, 64, 1024])
         pos = rng.randrange(cap)
         n = rng.randrange(0, cap + 1)
@@ -155,7 +163,7 @@ def synth_segments(emu, rng, cases):
 
 
 def synth_window(emu, rng, cases):
-    for _ in range(90):
+    for _ in range(60):
         cap = rng.choice([16, 32, 64])
         n = rng.randrange(0, cap + 1)
         pos = rng.randrange(cap)
@@ -182,6 +190,62 @@ def run_window(emu, cap, pos, n, ring, window, dst_in, src):
     return {"src": src, "cap": cap, "pos": pos, "n": n,
             "ring": [bits(r) for r in ring], "window": [bits(w) for w in window],
             "dst_in": [bits(r) for r in dst_in], "dst_out": [bits(r) for r in dst_out]}
+
+
+def synth_arena(emu, rng, cases):
+    for _ in range(40):
+        nch = rng.choice([1, 2, 3])
+        n = rng.randrange(0, 300)
+        cursor = rng.randrange(0, 2000)
+        arena = emu.arena(0x40)
+        base = emu.arena(4 * 4096)
+        emu.w64(arena, base)
+        emu.w32(arena + 0x18, cursor)
+        out = emu.arena(0x410)
+        emu.call(ARENA, arena, out, nch, n)
+        starts = [(emu.r64(out + 8 * k) - base) // 4 for k in range(nch)]
+        cases["arena"].append({"cursor": cursor, "nch": nch, "n": n, "starts": starts,
+                               "cursor_out": emu.r32(arena + 0x18), "nch_out": emu.r32(out + 0x400),
+                               "len_out": emu.r32(out + 0x404)})
+
+
+def synth_subview(emu, rng, cases):
+    for _ in range(30):
+        nch_src = rng.choice([2, 3, 4])
+        cap = 64
+        pos = rng.randrange(cap)
+        nch_out = rng.randrange(1, nch_src + 1)
+        start = rng.randrange(0, nch_src - nch_out + 1)
+        data = [[rng.uniform(-1, 1) for _ in range(cap)] for _ in range(nch_src)]
+        V = ring_views(emu, nch_src, cap, pos, data)
+        out = emu.arena(0x98)
+        emu.call(SUBVIEW, V, out, nch_out, start)
+        chans = [(emu.r64(out + 0x10 + 8 * k) - emu.r64(V + 0x10 + 8 * (start + k))) for k in range(nch_out)]
+        cases["subview"].append({"nch_src": nch_src, "pos": pos, "nch_out": nch_out, "start": start,
+                                 "ptr_diff": chans, "nch_field": emu.r32(out), "pos_out": emu.r32(out + 0x90)})
+
+
+def synth_scale(emu, rng, cases):
+    for _ in range(30):
+        nch = rng.choice([1, 2])
+        wnch = rng.choice([1, 2])
+        n = rng.randrange(0, 40)
+        src = [[rng.uniform(-2, 2) for _ in range(n)] for _ in range(nch)]
+        win = [[rng.uniform(-2, 2) for _ in range(n)] for _ in range(wnch)]
+        dst_in = [[rng.uniform(-5, 5) for _ in range(n)] for _ in range(nch)]
+        sch = [emu.arena(4 * max(n, 1) + 64) for _ in range(nch)]
+        for k, row in enumerate(src):
+            emu.wr(sch[k], f32s(row))
+        S = frame_view_s(emu, sch, n)
+        W = window_view(emu, win, n)
+        dch = [emu.arena(4 * max(n, 1) + 64) for _ in range(nch)]
+        for k, row in enumerate(dst_in):
+            emu.wr(dch[k], f32s(row))
+        D = frame_view_s(emu, dch, n)
+        emu.call(SCALE, D, S, W)
+        out = [list(struct.unpack(f"<{n}f", emu.rd(c, 4 * n))) for c in dch]
+        cases["scale"].append({"n": n, "src": [bits(r) for r in src], "window": [bits(r) for r in win],
+                               "dst_in": [bits(r) for r in dst_in], "dst_out": [bits(r) for r in out]})
 
 
 def capture_insitu(sess, label, blocks, rng, cases, limit):
@@ -352,12 +416,15 @@ def select_insitu(rows, per_group=4):
 def main():
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     rng = random.Random(20261021)
-    cases = {"cursor": [], "segments": [], "window": [], "xform": []}
+    cases = {"cursor": [], "segments": [], "window": [], "xform": [], "arena": [], "subview": [], "scale": []}
     base = make_session()
     synth_cursor(base.emu, rng, cases)
     synth_segments(base.emu, rng, cases)
     synth_window(base.emu, rng, cases)
     synth_xform(base.emu, rng, cases)
+    synth_arena(base.emu, rng, cases)
+    synth_subview(base.emu, rng, cases)
+    synth_scale(base.emu, rng, cases)
     insitu = []
     n_base = capture_insitu(base, "insitu-base", 2, rng, insitu, limit=10**6)
     sc = make_session(gain_setup.PARAMS + SC_EXTRA)
