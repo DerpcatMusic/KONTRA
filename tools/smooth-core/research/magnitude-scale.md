@@ -3,6 +3,12 @@
 Status: **not pinned.** The port's `frame()` still uses the raw `norm()` of the
 windowed FFT bin. Nothing below proves that the reference uses this scale.
 
+Update (re-latency pass): the FFT spec constructor is located and decoded; see
+`re-latency-fft-scale.md`. The complex forward is unscaled (IPP flag 8), but the
+real leg is scaled by `1/N2` in software, and which leg feeds the detector is still
+open. Section "Resolved (partial, 2026-10-21)" below is superseded where it says the
+constructor was not found.
+
 ## What the reference binary shows
 
 Restored image: `/tmp/opencode/rea/soothe3-restored.bin`, sha256
