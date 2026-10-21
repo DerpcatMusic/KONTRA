@@ -48,6 +48,22 @@ PARAMS = [
 ]
 
 
+# Discrete overrides for configs: id -> (lo, hi, scale, offset) of the plain range.
+DISCRETE = {2: (0.0, 2.0, 2.0, 0.0), 3: (0.0, 1.0, 1.0, 0.0), 4: (0.0, 1.0, 1.0, 0.0),
+            14: (0.0, 1.0, 1.0, 0.0), 15: (0.0, 1.0, 1.0, 0.0), 16: (0.0, 1.0, 1.0, 0.0)}
+
+
+def extra_params(spec=None):
+    """Parse `id=value,...` (default: env GAIN_EXTRA) into PARAMS entries for DISCRETE ids."""
+    import os
+    spec = os.environ.get("GAIN_EXTRA", "") if spec is None else spec
+    out = []
+    for item in filter(None, spec.split(",")):
+        pid, value = item.split("=")
+        out.append((int(pid), float(value), *DISCRETE[int(pid)]))
+    return out
+
+
 def xmm_f32(emu, i):
     raw = emu.uc.reg_read(UC_X86_REG_XMM0 + i)
     raw = raw if isinstance(raw, bytes) else int(raw).to_bytes(16, "little")

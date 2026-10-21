@@ -6,6 +6,7 @@ Plugin callees are listed with their register arguments. Block entries are print
 with repeats of a loop folded into a count.
 
 Run with: python -I gain_trace.py [entry_index] [blocks]
+(GAIN_EXTRA="id=value,..." adds discrete parameter overrides, e.g. GAIN_EXTRA=2=1 for quality 1.)
 """
 
 import struct
@@ -21,7 +22,7 @@ from unicorn.x86_const import (  # noqa: E402
     UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_RSP,
 )
 
-from gain_setup import BODY_HI, BODY_LO, make_session, run_block, xmm_f32  # noqa: E402
+from gain_setup import BODY_HI, BODY_LO, PARAMS, extra_params, make_session, run_block, xmm_f32  # noqa: E402
 from pe_emu import IMAGE_BASE  # noqa: E402
 
 R = {"rcx": UC_X86_REG_RCX, "rdx": UC_X86_REG_RDX, "r8": UC_X86_REG_R8, "r9": UC_X86_REG_R9}
@@ -66,7 +67,7 @@ def head(emu, ptr, n, k=4):
 def main():
     want = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     blocks = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    sess = make_session()
+    sess = make_session(PARAMS + extra_params())
     emu, uc = sess.emu, sess.emu.uc
     md = Cs(CS_ARCH_X86, CS_MODE_64)
     calls = {}
