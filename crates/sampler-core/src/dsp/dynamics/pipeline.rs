@@ -18,6 +18,8 @@ use sampler_ir::fx::dynamics::Link;
 pub(super) struct Frame {
     /// The input as read.
     pub x: [f64; 2],
+    /// What a keyed detector reads: the external key, or `x` when none is routed.
+    pub key: [f64; 2],
     /// The audio the gain applies to (the input after drive or rounding).
     pub audio: [f64; 2],
     /// Detector level, then whatever the next stage makes of it, per channel.
@@ -78,6 +80,11 @@ chain!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
 
 /// Run `len` frames of `block` through the chain, in place.
 pub(super) fn run<S: Stage>(s: S, state: &mut ProcessorState, block: &mut Planar, len: usize) {
+    run_keyed(s, state, block, None, len);
+}
+
+/// [`run`] with an optional key buffer for keyed detectors (side-chain).
+pub(super) fn run_keyed<S: Stage>(s: S, state: &mut ProcessorState, block: &mut Planar, key: Option<&Planar>, len: usize) {
     // A local copy (not the by-reference argument) lets LLVM keep stage
     // fields in registers across frames.
     let mut s = s;
@@ -86,6 +93,7 @@ pub(super) fn run<S: Stage>(s: S, state: &mut ProcessorState, block: &mut Planar
     for i in 0..len {
         f.x = [block[0][i], block[1][i]];
         f.audio = f.x;
+        f.key = key.map_or(f.x, |k| [k[0][i], k[1][i]]);
         s.tick(&mut f);
         s.after(&mut f);
         [block[0][i], block[1][i]] = f.out;

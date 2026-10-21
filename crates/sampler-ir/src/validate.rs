@@ -35,6 +35,11 @@ pub enum ValidationError {
         owner: String,
         field: &'static str,
     },
+    /// A feature the core supports but no slot can feed yet (a key bus).
+    Unrouted {
+        owner: String,
+        what: &'static str,
+    },
     /// Non-finite, negative where forbidden, or beyond the field's range.
     OutOfRange {
         owner: String,
@@ -72,6 +77,7 @@ impl fmt::Display for ValidationError {
             Self::InvertedRange { owner, field } => {
                 write!(f, "{owner}: {field} low is above high")
             }
+            Self::Unrouted { owner, what } => write!(f, "{owner}: {what} is not routed"),
             Self::OutOfRange {
                 owner,
                 field,
@@ -455,9 +461,13 @@ impl Check<'_> {
                             self.within(m.slew_ms, 0.0..=200.0, "maximizer slew")?;
                             self.within(f64::from(m.mode), 0.0..=2.0, "maximizer mode")?;
                         }
-                        Law::KontaktHilbert(n) => {
+                        Law::KontaktHilbert(n, key) => {
                             self.within(n.threshold_db, 0.0..=1.0, "dynamics drive")?;
                             self.within(n.ratio, 0.0..=1.0, "dynamics ceiling")?;
+                            // The core runs a key buffer; no slot routes one yet.
+                            if key == crate::fx::dynamics::Key::External {
+                                return Err(ValidationError::Unrouted { owner: self.owner.clone(), what: "dynamics side-chain key" });
+                            }
                         }
                     }
                 }
