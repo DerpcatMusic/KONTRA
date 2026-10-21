@@ -168,10 +168,10 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | Convolution | unknown | none | |
-| Plate Reverb | unknown | none | |
-| Raum | unknown | none | |
-| Reverb | unknown | none | |
-| Legacy Reverb | unknown | none | |
+| Plate Reverb | partial | decomp | Core (20 allpass, shelves, ring, 16 lines, Hadamard, panning) from 0x57 constants and native-vector test. Missing: Init low-pass after clear(), parameter ramps, display decay/predelay laws without addresses. See k-reverbs.md |
+| Raum | partial | decomp | Grounded/Airy kernel from setter/process constants. Cosmic chain bank in progress (k-reverbs-cosmic). Missing: tempo-sync division table, predelay feedback/post/wet laws for Cosmic. Limiter placement differs from decompile (clamp is on output; kept in feedback for golden vectors). |
+| Reverb | partial | decomp | Galois core verified against emulated kernel. Missing: dry/wet lane (no saved field; lane 8 source unknown, repo sets 1.0). |
+| Legacy Reverb | partial | decomp | Freeverb network and setter laws from decompile. Input low-pass now two-pole Butterworth (decomp closed form, INFERRED, not native-captured). Saved stereo/colour order unverified. |
 
 ## Spatial / Mangling / Utilities (k-spatial, k-mangling, k-utilities-routing)
 
