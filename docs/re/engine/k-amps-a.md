@@ -55,6 +55,7 @@ Size, air, treble and bass (bass and treble stored -1..1), type clamped 0..=10. 
 - Reader schemas only (`Fx11BBIx4`, `Fx11BBIx4Bx4` for 0x11). No binding rows, so field indices and laws are unknown.
 - Manual: Drive, Bass (becomes passive high-pass cutoff in Passive EQ mode), Mid (Electric Grand only), Treble, Rate, Amount, Width, Mono, Output. Electric C mode added in 8.8.
 - Gap: all of it. Needs a probe run (`tools/kontakt-oracle/probe_fx.py scan`) to get bindings.
+- Decompile (see `k-amps-a-epp.md`): stored layout, enum ranges, class and vtable map, enum-to-id scales and the core's per-frame structure are recovered. Laws, float-to-name routing and tables are not, so no model.
 
 ### HotSolo (0x54, version 0x10) — missing
 - Fields (10 binding rows, version 0x10, reader `Fx8BB`): overdrive channel switch, bass, mid, treble, presence, norm pre, ovrd pre, master, depth, output, mono.
