@@ -29,7 +29,7 @@ pub(crate) fn internal(version: u16, p: &ni::InternalModParams) -> ir::Modulatio
             attack_ms: e.attack_ms,
             hold_ms: e.hold_ms,
             decay_ms: e.decay_ms,
-            sustain: e.sustain,
+            sustain: e.sustain.clamp(0.0, 1.0),
             release_ms: e.release_ms,
             ahd_only: e.unknown_flag,
             unknown_tail: e.unknown_tail.clone(),

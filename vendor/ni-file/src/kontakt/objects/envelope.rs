@@ -60,7 +60,7 @@ pub struct EnvelopeAhdsr {
     pub hold_ms: f32,
     /// Release time in milliseconds.
     pub release_ms: f32,
-    /// Sustain level as a linear gain, 0..=1.
+    /// Sustain level as a linear gain, 0..=1 (raw: may sit just below 0).
     pub sustain: f32,
     /// Native AHD-only flag; nonzero ignores key release and ends after decay.
     /// Consumers still validate the mode and independent source/target flags.
@@ -90,8 +90,10 @@ impl EnvelopeAhdsr {
         if self.unknown_tail.len() != AHDSR_TAIL_V10 && self.unknown_tail.len() < AHDSR_TAIL {
             return Err(Error::Static("Incomplete AHDSR opaque metadata"));
         }
+        // Sustain is kept raw: Kontakt saves -inf dB as a tiny negative gain
+        // (-1e-18); consumers clamp it to 0..=1.
         if !(-1.0..=1.0).contains(&self.attack_curve)
-            || !(0.0..=1.0).contains(&self.sustain)
+            || !self.sustain.is_finite()
             || !times.iter().all(|t| t.is_finite() && *t >= 0.0)
         {
             return Err(Error::Static("AHDSR envelope values out of range"));
@@ -376,6 +378,23 @@ mod timing_tests {
         );
         flex.points[0].curve = f32::NAN;
         assert!(flex.to_chunk().is_err());
+    }
+
+    #[test]
+    fn ahdsr_keeps_a_sustain_just_below_zero() {
+        // Kontakt saves a sustain of -inf dB as a tiny negative linear gain.
+        let envelope = EnvelopeAhdsr {
+            attack_curve: -0.332,
+            attack_ms: 0.0,
+            decay_ms: 0.0,
+            hold_ms: 0.0,
+            release_ms: 0.0,
+            sustain: -1e-18,
+            unknown_flag: 0,
+            unknown_tail: vec![0; AHDSR_TAIL],
+        };
+        let back = EnvelopeAhdsr::try_from(&envelope.to_chunk().unwrap()).unwrap();
+        assert_eq!(back.sustain, -1e-18);
     }
 
     #[test]
