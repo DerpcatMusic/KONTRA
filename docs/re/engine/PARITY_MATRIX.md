@@ -62,20 +62,20 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | AR BP2/4 | unknown | none | |
 | Daft | unknown | none | |
 | Daft HP | unknown | none | |
-| Legacy LP1 | unknown | none | |
-| Legacy LP2 | unknown | none | |
-| Legacy LP4 | unknown | none | |
-| Legacy LP6 | unknown | none | |
-| Legacy Ladder | unknown | none | |
-| Legacy HP1 | unknown | none | |
-| Legacy HP2 | unknown | none | |
-| Legacy HP4 | unknown | none | |
-| Legacy BP2 | unknown | none | |
-| Legacy BP4 | unknown | none | |
-| Legacy BR4 | unknown | none | |
+| Legacy LP1 | partial | vector (Wine oracle, golden 0.1 dB), decomp | static response matches; dynamic cutoff cadence not measured |
+| Legacy LP2 | parity | vector (Wine oracle, golden 0.1 dB), decomp | static response; cadence shares the clock (decomp) |
+| Legacy LP4 | partial | vector (Wine oracle) | knob 0 (res 0) shape differs: Kontakt ~8 dB/oct tail, ours steeper; mechanism open (filt-legacy doc) |
+| Legacy LP6 | partial | vector (Wine oracle) | knob 0 shape differs as LP4 |
+| Legacy Ladder | partial | vector (Wine oracle), decomp | knob 0 shape differs; setter and stage clip constants match the decompile |
+| Legacy HP1 | partial | vector (Wine oracle, golden 0.1 dB), decomp | static response matches; dynamic cadence not measured |
+| Legacy HP2 | parity | vector (Wine oracle, golden 0.1 dB) | static response |
+| Legacy HP4 | parity | vector (Wine oracle, golden 0.1 dB) | static response, knob 0 included |
+| Legacy BP2 | parity | vector (Wine oracle, golden 0.1 dB) | static response |
+| Legacy BP4 | parity | vector (Wine oracle, golden 0.1 dB) | static response |
+| Legacy BR4 | parity | vector (Wine oracle, golden 0.1 dB) | static response |
 | 3x2 Versatile | unknown | none | |
 | Dual SKF | unknown | none | |
-| Simple LP/HP | unknown | none | |
+| Simple LP/HP | missing | none (Wine oracle inconclusive) | CUTOFF/RESONANCE do not move the response; parameter mapping not traced in the export; smoother and stereo unprobed |
 | Formant I | unknown | none | |
 | Formant II | unknown | none | |
 | Phaser (filter) | unknown | none | |
