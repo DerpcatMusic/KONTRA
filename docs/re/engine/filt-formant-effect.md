@@ -103,3 +103,19 @@ when it lands.
 - No Wine oracle measurement (`tools/kontakt-oracle/`) was run for Formant II, Phaser, Vowel A/B or AET.
 - AET Filter core not written.
 - Phaser live lanes and Vowel morph lanes not wired.
+
+## Shared filter core check (filt-sv, PR #116)
+
+Checked against `dsp/filter/linear.rs` (`Zdf`) and `dsp/filter/shaper.rs` (`Knee`, `pade`):
+
+- **Formant I / II**: three parallel second-order bandpasses in radius/frequency form, with the native
+  sine/cosine polynomials and a 4-sample coefficient clock. Not a zero-delay SVF, and the output is bit-checked
+  against the recorded impulse. Expressing it as `Zdf` would change the numbers, so it stays in `formant.rs`.
+- **Vowel A / B**: two parallel warped biquad sections (`cascade.rs` `SectionClass::VowelA/VowelB`), no state
+  nonlinearity, so `Knee` has no place in it. Stays in the cascade core.
+- **Phaser**: a cascade of first-order allpass stages, no state saturation. Stays in `timemod.rs`.
+- **AET Filter**: spectral morph, outside the linear/shaper family.
+
+Result: none of the six modules is a `Zdf` or `Knee` configuration, so this unit adds no shared-stage code.
+Mapping them would break the bit-exact vectors for no gain. Revisit if the Kontakt decompile shows a
+state knee in Formant or Phaser.
