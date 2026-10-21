@@ -676,13 +676,24 @@ pub enum Sv {
     Multi { mode: u8, bandwidth: f32 },
 }
 
-/// `tan(pi f T)` by the truncated series of 0x140b04f60, in its order.
+/// `tan(pi f T)` by the truncated series of 0x140b04f60, in the binary's operation order
+/// (SV1 setter 0x140b05d80, SV4 0x140b05030, SV Multi helper 0x140b03b50). Constants are the
+/// PE image values: 12.987881, 3.2898684, 1, pi.
 fn sv_g(f: f32, t: f32) -> f32 {
-    let a = ((t * t) * 12.987_881) * (f * f) + 3.289_868_4;
-    let a = (a * f) * ((f * t) * t) + 1.0;
-    a * ((f * std::f32::consts::PI) * t)
+    let x = (((t * t) * 12.987_881) * f) * f + 3.289_868_4;
+    let y = (((x * f) * t) * f) * t + 1.0;
+    ((y * f) * std::f32::consts::PI) * t
 }
 
+/// The SV6 setters (0x140b05160) order the same series `x f f t t`.
+fn sv_g_six(f: f32, t: f32) -> f32 {
+    let x = (((t * t) * 12.987_881) * f) * f + 3.289_868_4;
+    let y = (((x * f) * f) * t) * t + 1.0;
+    ((y * f) * std::f32::consts::PI) * t
+}
+
+/// Hertz of a note on the native exponential table `2^(i/60 - 20)` (index `note 5 + 1381.88`,
+/// PE constants 5.0 and 1381.8816; the table is `ladder_kernel::exponential`).
 fn sv_hertz(note: f32) -> f32 {
     super::ladder_kernel::exponential(note * 5.0 + 1381.881_6).max(0.0)
 }
@@ -738,7 +749,7 @@ impl Sv {
                     _ => (1.482 - r.abs() * 0.494) * r,
                 };
                 out[..4].copy_from_slice(&[
-                    sv_g(sv_hertz(note), t),
+                    sv_g_six(sv_hertz(note), t),
                     r,
                     1.0 - s,
                     1600.0 - ((2.0 - n) * n) * 1576.0,
