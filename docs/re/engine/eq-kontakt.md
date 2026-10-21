@@ -73,11 +73,14 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
   k = 0.97/0.84/0.63/0.56/0.54 at |G| = 20/17/10/5.6/1.9 dB (LMF); HMF k is
   0.90/0.79/0.65/0.59/0.58. Boost and cut mirror each other.
 - **Stereo.** No L→R coupling.
-- **Coefficient smoothing (OPEN).** Kontakt builds the core with smoothing on
-  (20 ms in whole blocks, per the RE notes in `solid.rs`). Every step was measured
-  300 ms after its write and was history-independent, so settle time is ≤300 ms.
-  The setter law is still not located. The current engine switches coefficients
-  at the band's control rate. Nothing here is fabricated to close this row.
+- **Coefficient smoothing (IMPLEMENTED, unconfirmed law).** Kontakt builds the
+  core with smoothing on (20 ms, per the RE notes in `solid.rs`). The engine now
+  glides each redesigned section's TPT coefficients toward the new design with a
+  one-pole step per block, time constant 20 ms (`EqBand::ramp`, set by
+  `eq_family::live_band` for `Law::Solid`). Every step was measured 300 ms after
+  its write and was history-independent, so settle time is ≤300 ms. This is
+  consistent with the measurement but does not confirm the native stepping. The
+  setter law is still not located; confirm it when the decompile is ready.
 - **Live switches (OPEN in the engine).** A bell or pass switch changes the
   band's `Kind` (shelf↔peak) or adds a section. `Kind` is compile-time in the
   stage, so a live switch write has no binding and reports
@@ -93,7 +96,7 @@ Kontakt 8 exposes three EQ modules that matter here, plus one that has no law ye
 | G3 | Solid HP, LP | `solid.rs` HP/LP sections | none found | `eq-topology.tsv` |
 | G4 | Solid LF shelf | RBJ S 0.5 shelf + two Q 0.5 peaks (`solid.rs`) | residual 0.2–1.0 dB; native shelf formula not recovered | native shelf coefficient code (decompile READY) |
 | G5 | Solid HF shelf | RBJ S 0.55 shelf + Q 0.7 peak (`solid.rs`) | residual up to 1.1 dB | same as G4 |
-| G6 | Solid coefficient smoothing (20 ms) | none, coefficients switch at control rate | the native ramp law | setter from decompile (READY) |
+| G6 | Solid coefficient smoothing (20 ms) | `EqBand::ramp`, one-pole glide per block (`generic.rs`) | exact native stepping (block vs sample) unconfirmed | setter from decompile, or sample-accurate oracle steps |
 | G7 | Solid live switches (LF/HF bell, LP/HP on) | saved and init writes only (`apply_writes`), live lane absent | runtime kind/section change | Kontakt step test on switch flips, and decompile of the setter |
 | G8 | Solid bank selection | bank 0 applied (matches measurement) | none for Kontakt 8 | — |
 | G9 | Pro EQ | nothing | whole module | Pro EQ law from decompile and measurement |
