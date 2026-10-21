@@ -122,3 +122,36 @@ fn a_mixer_edit_during_a_load_reaches_the_audio_queue_on_the_wait_tick() {
         Ok(transaction_candidate("Candidate"))
     }));
 }
+
+/// F-15: unloading a slot leaves no value, script or binding of the old instrument behind.
+#[test]
+fn unloading_a_slot_clears_every_per_part_cell() {
+    let (params, _core) = transaction_fixture();
+    let atoms = params.shared.part(0).unwrap();
+    assert!(!atoms.controls.lock_unpoisoned().is_empty());
+    params.selection.write_unpoisoned().parts[0].path.clear();
+    assert!(load_part(&params, 0, None));
+    assert!(atoms.controls.lock_unpoisoned().is_empty());
+    assert!(atoms.control_values().is_empty());
+    assert!(atoms.engine_bindings.lock_unpoisoned().is_empty());
+    assert!(atoms.node_meters.lock_unpoisoned().is_empty());
+    assert!(atoms.scripts.lock_unpoisoned().views.is_empty());
+}
+
+/// F-16: a panic during a load leaves the slot retryable, not stuck at "Loading…".
+#[test]
+fn a_panicking_load_leaves_the_slot_retryable() {
+    let (params, _core) = transaction_fixture();
+    params.selection.write_unpoisoned().parts[0].path = "candidate.nki".into();
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        load_part_with(&params, 0, None, |_, _, _| panic!("loader bug"))
+    }));
+    assert!(panicked.is_err());
+    {
+        let view = params.shared.view.lock_unpoisoned();
+        assert!(!view.parts[0].loading);
+        assert!(view.parts[0].attempted.is_none());
+        assert!(view.parts[0].status.starts_with("Load failed"));
+    }
+    assert!(load_part(&params, 0, Some(transaction_candidate("Retry"))), "the same request can run again");
+}
