@@ -20,6 +20,7 @@ fn installed_filter_record_numeric_audit() {
                 cutoff,
                 resonance,
                 extra,
+                ..
             }) = slot.params()
             {
                 if !(0.0..=1.0).contains(&cutoff) || !(0.0..=1.0).contains(&resonance) {

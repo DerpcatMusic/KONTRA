@@ -2986,6 +2986,7 @@ impl Lowering<'_> {
                     gain: parameter(2, d.gain),
                     record_version: d.record_version,
                     taps: d.taps,
+                    high_quality: d.high_quality,
                 }))
             }
             ir::Processor::LiveFormant { second, .. } => {

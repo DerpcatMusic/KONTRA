@@ -6061,6 +6061,7 @@ mod modulation {
                 resonance: 0.,
                 record_version: 0x92,
                 taps: 4,
+                high_quality: false,
             }),
             ir::Processor::Daft(ir::Daft {
                 address: None,
@@ -6115,6 +6116,7 @@ mod modulation {
                 resonance: 0.,
                 record_version: 0x92,
                 taps: 4,
+                high_quality: false,
             }),
             ir::Processor::Daft(ir::Daft {
                 address: None,

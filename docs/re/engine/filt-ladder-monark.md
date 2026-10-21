@@ -1,10 +1,8 @@
 # Engine unit: Ladder, Monark, PRO-53 (Kontakt 8)
 
-Status: **waiting on READY.** The Kontakt 8 decompile export
-(`/data/dev/workspace/Research/KONTRA/source/kontakt8/READY`) does not exist yet and the
-export directory is empty. Everything below comes from existing repo evidence. The two open
-laws (Ladder stored gain, Ladder HQ 2x mode) need the decompiled functions and are not
-implemented.
+Status: implementing without waiting for the decompile (READY not yet present). Laws come from
+repo evidence: the native Ladder captures, `kemu` vectors and the recorded HQ grid. When the
+decompiled C appears, confirm the open gain law there.
 
 ## Modules and mapping
 
@@ -38,9 +36,12 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
 - Control clock: 32 host frames, four internal frames; 2 ms ramp in 32-frame ticks on prepare.
 - Gain: stored in the IR as -1..=1, applied linearly by the kernel. The native stored-gain law
   is **unproved**: only nine literal gain-target values are bit-exact.
-- HQ: saved flag (record offset 0x28, setter parameter 3) selects a 2x resampled path. The
-  core does not implement it. The IR has no HQ field, so HQ-on files run single-rate with a
-  warning (`docs/FEATURES.md`).
+- HQ: the saved flag (first flag byte of the record: v0x92 `unknown_flag`, v0x95 first flag)
+  selects the native 2x path. Implemented as the shared Kaiser 2x oversampler (`dsp/kaiser.rs`,
+  the same stage Monark and Simple/Dual SKF use) around the kernel run at twice the internal
+  rate, one host frame at a time. Its registers live in the chain's cells. The static
+  composition matches all 282 native HQ cells bit-exact (`ladder_original_hq_static_composition`).
+  Moving controls in HQ retune once per host frame (native cadence unproved).
 - Alternative cutoff path, flag `0x49` (record offset 0x29): not implemented.
 
 ### Monark (saved 140..143)
@@ -66,7 +67,7 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
 | Item | Shared engine has | Missing | Needed to close |
 | --- | --- | --- | --- |
 | Ladder LP/HP/BP/Peak/Notch (12 selectors) | Full cores, all tap weights and compensation | Stored-gain law beyond nine points | Decompile of the gain binding (FUN_140b00be2 caller path, typed 22..33 apply) |
-| Ladder HQ (2x) | Nothing (saved flag ignored with warning) | 2x resampler, coefficient setup (`sin`/`exp` in native), per-entry state | Decompile of FUN_140b06180 HQ branch + resampler; HQ-on captures as oracle |
+| Ladder HQ (2x) | Shared Kaiser 2x wrapper around the kernel; saved flag decoded (v0x92, v0x95) | HQ-on moving-control cadence; full HQ-on PCM over the 564-capture grid (only the static cells are wired) | Recorded HQ-on moving-control renders |
 | Ladder cutoff flag 0x49 | Default path only | Alternative cutoff branch | Decompile of the 0x49 branch |
 | Ladder moving controls | Ramped 32-frame clock | Native behaviour when a control moves mid-note is only partially compared | Recorded moving-control vectors |
 | Monark LP4/LP2/LP1/BP | Full core, Exact | Stereo interleave; noisy-drive variant untested beyond vectors | Stereo capture |
