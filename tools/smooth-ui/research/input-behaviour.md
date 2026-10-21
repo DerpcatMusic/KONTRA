@@ -164,6 +164,13 @@ Not recovered:
    `_Ref_count_obj2@optional@UTooltipData`); the reader is the tooltip owner,
    which has not been located.
 
+## Round 3 (corpus pass)
+
+See `input-behaviour-corpus.md`. The wheel fields are the Input struct itself
+(`Input+0xb8..0xc0` = `UI+0x338..0x340`), so no copy exists. The wheel consumer is
+`fcn.1807b29b0`. Its sign, scale and accumulate-then-clamp are verified. The value law
+is still open.
+
 ## Implementation status in SMOOTH
 
 - `tips.rs`: three strings aligned to the reference; a unit test pins them.
