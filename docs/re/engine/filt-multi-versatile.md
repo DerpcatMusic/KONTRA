@@ -130,10 +130,10 @@ Compositions:
 
 | # | Item | Engine covers it now | Missing or unproved | Status | Needed to close |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Versatile law at other cutoffs | Stage note law, morph and wet law, norm, gain law implemented | Vectors use cutoff 0.5 only | Partial | Kontakt 8 decompile (READY) of `FUN_14095db50`, the resonance functions and `FUN_14096f840`; more vectors at other cutoffs |
+| 1 | Versatile law at other cutoffs | Cutoff setter, resonance law, normaliser and process confirmed against the decompile | Vectors use cutoff 0.5 only; no sweep | Partial | Wine-oracle sweep over cutoff |
 | 2 | Versatile shift, morph, wet and gain sweeps | Full law in code | No sweep vectors; the mixed case uses one shift and one morph set | Partial | Recorded or native vectors across the knob ranges |
 | 3 | Versatile SSE rounding path (≥32-frame calls) | Scalar order matches the scalar native path | The SSE path differs in rounding, as for Pro-53 | Missing | A native vector captured with 32+ frame calls |
-| 4 | Versatile clock constant (0.015) | Implemented from `0x140aea690` | Not checked beyond the vectors | Partial | Same decompile as row 1 |
+| 4 | Versatile clock constant (0.015) | Clock `0x140aea690` read; ramp move per tick | Constant is a global in the export, not resolved | Partial | Resolve `DAT_144f38664` from the binary's data section |
 | 5 | Dual SKF field-to-slot mapping | Mapping in `effects/filter.rs` | Top-level `cutoff`/`resonance` → LP/HP slots is from the reader only | Unconfirmed | Decompile of the BFilter reader for type 130, or a Kontakt saved-state round trip |
 | 6 | Dual SKF sample rates other than 48 kHz | Core handles any rate; ×2 Kaiser below 66 kHz | Vectors only at 48 kHz | Partial | Native captures at 44.1, 96 and 192 kHz |
 | 7 | Dual SKF stereo interleave | One core per channel with shared controls | Native channel interleave unprobed; vectors are mono | Missing | Stereo native capture |
@@ -160,4 +160,4 @@ Compositions:
 
 ## Waiting on
 
-- READY on the Kontakt 8 decompile (rows 1, 2, 4, 5). Until it exists, the PR stays a draft.
+- Rows 2, 4 and 5 need a native reading of the stage 1/2 limit targets, the clock constant, and the Dual SKF reader branch for type 130. The Wine-oracle sweep (row 1) is still needed for cutoffs other than 0.5.
