@@ -11,9 +11,9 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | DFD | unknown | none | |
 | Wavetable | unknown | none | |
 | Tone Machine | unknown | none | |
-| Time Machine | unknown | none | |
-| Time Machine 2 | unknown | none | |
-| Time Machine Pro | unknown | none | |
+| Time Machine | partial | decomp | Native two-reader scheduler (`time_machine.rs`); speed/smooth/grain from .nki records only. KSP `$ENGINE_PAR_SPEED`, `SMOOTH`, `GRAIN_LENGTH` have no engine consumer. Tempo-sync law and HQ path open. Spec `docs/re/engine/k-timemachine.md`. |
+| Time Machine 2 | partial | decomp | WSOLA stand-in, not PSOLA. Engine classes, ctor defaults and UI located in decompile (`BTimeMachine2`, `CPSOLAAnalysisRT`); Transient Copy/Size/Grain profile carried in IR but dropped at `lower.rs::stretch_spec`. No native vector yet. |
+| Time Machine Pro | partial | decomp | WSOLA stand-in in place of Elastique Pro V3 (`BTM3ElastiqueWrapper`). Keep Formants / Formant Shift / Env Order carried, unused; `$ENGINE_PAR_TMPRO_KEEP_FORMANTS` and `FORMANT_SHIFT` have no engine consumer. Ctor defaults: order 128. No native vector yet. |
 | Beat Machine | unknown | none | |
 | S1200 Machine | unknown | none | |
 | MP60 Machine | unknown | none | |
