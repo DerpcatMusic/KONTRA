@@ -67,6 +67,28 @@ values stay repo-evidence only until the oracle is run.
 | Unsupported-parameter diagnosis | build-time warning for a catalog `ENGINE_PAR_*` with no engine id, and for a constant group index outside `-1..groups` (`engine_par_rejection`, `tests/engine_par_unsupported.rs`); write dropped, read 0 | runtime fault with native text; `on init` bodies are evaluated (no warning yet); `get_engine_par_disp` not checked | decomp error strings |
 | `get_engine_par_disp_ext` | builtin exists | confirm it is native | not in decompile |
 
+## Blockers found in the READY decompile (2026-10-22)
+
+- KSP builtin names (`set_engine_par_m`, even `set_key_color`) and ENGINE_PAR
+  name strings are not literals in `source/kontakt8`. The `_m` argument order
+  and the name-to-id table cannot be read from the decompile text. They are
+  in the binary's string/builtin tables; they need the Ghidra project
+  (`ghidra/Kontakt8.gpr`, xrefs) or the Wine oracle.
+- The builder at `0140780000.c:1` (`FUN_140780c80`) fills
+  `DAT_14a5ec800`, a 1024-entry int table (memcpy of a 0x1000-byte local). It
+  is indexed by the numeric engine-parameter value, not by repo id. Its
+  contents are compiled-in values, not names.
+- Catalog gap: 48 names in `vendor_constants.txt` have no engine id. Two are
+  single names (`ENGINE_PAR_WT_MOD_AMOUNT`, `ENGINE_PAR_BASSPRO_GEQ_#K`); the
+  rest are numbered families (`RV#_*`, `SF#_*`, `V#_*`, `GAIN#`, `FREQ#`,
+  `BW#`, `WT_FORM#`). Instance counts are not in the decompile; repo usage
+  shows instances such as `GAIN1..3`, `RV2_*`, `V5_*`. Adding ids without a
+  DSP consumer would turn the diagnostic into a silent no-op, so the ids
+  wait for their DSP.
+- `on init` bodies are interpreted (`eval.rs`), not lowered, so the
+  build-time diagnostic does not reach them. Needs a context-independent HIR
+  pass (none exists yet).
+
 ## Next
 
 1. Confirm the `_m` argument order: follow `FUN_140747bc0` / `FUN_14098d680`
