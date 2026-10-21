@@ -242,3 +242,21 @@ Legacy Chorus constants are decomp-confirmed; its base-delay field (+8) is
 still zero in every decompiled reader and setter checked, so the zero base
 stays the native law. The Wine-oracle echo measurements remain unexplained
 (harness-side suspicion, not yet validated).
+
+## Audio dispatch records (Kontakt 8.13.1 image, pefile dump)
+
+- MSVC RTTI vtables: BParFXFlair 0x144e74f80, BParFXPhasis 0x144e74f28,
+  BParFXVibratoChorus 0x144e747e0 (Chorus 0x144e74dc8 calibrates).
+- Reader and writer are vtable slots 8 and 9 (Chorus: 0x140d00760 /
+  0x140d104e0; Flair 0x140d01540 / 0x140d10d50; Phasis 0x140d020a0 /
+  0x140d11690; Vibrato/Chorus 0x140ac6490 / 0x140ac7a60).
+- Audio is not in the vtable. It is dispatched through 33-qword records at
+  0x144f13e50 with stride 0x108. Slot 0 of records 0..2 is the audio
+  function: Chorus 0x140aa0510, Flanger 0x140aa2350, Phaser 0x140aa3830.
+- Records 3..32 slot 0 are 0x140aa2980, 0x1409008a0, 0x14099cc50,
+  0x14095fe30, 0x140abca80, ... Of these, only 0x140aa2980 and 0x1409008a0
+  call the shared mix prepare/finalize (0x140ac28f0/0x140ac21f0) at the
+  start of a modulated-delay body, so they are the candidates for the
+  Flair/Phasis/Vibrato audio. Neither is matched to a block field yet.
+- Status: Flair, Phasis and Vibrato/Chorus laws are not implemented. Matching
+  the candidate audio functions to their reader fields is the next step.
