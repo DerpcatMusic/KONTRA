@@ -434,11 +434,49 @@ pub struct Engine {
     until_frame: usize,
     max_reduction_db: f32,
     last_mix: f32,
-    /// The mix gain, moving toward its target one sample at a time.
-    mix_gain: f32,
-    /// How far the mix gain moves per sample.
-    mix_rate: f32,
+    /// Dry, wet and output gains. Each moves toward its target one sample at
+    /// a time, so no control steps the audio (see `SmoothedGain`).
+    gains: [SmoothedGain; 3],
+    /// The one-pole coefficient for the gains, and the time it was made for.
+    ramp_coefficient: f32,
+    ramp_ms: f32,
     last_bypass: bool,
+}
+
+/// A gain on its way to a target: `g <- (t - g) * a + g` per sample, the
+/// reference's gain helper (`0x899ab0`). The reference keeps dry, wet, solo
+/// and out gains this way, each with a target and a rate.
+#[derive(Clone, Copy, Debug)]
+struct SmoothedGain {
+    target: f32,
+    gain: f32,
+}
+impl SmoothedGain {
+    fn at(value: f32) -> Self {
+        Self {
+            target: value,
+            gain: value,
+        }
+    }
+    fn step(&mut self, coefficient: f32) -> f32 {
+        self.gain = ((self.target - self.gain) * coefficient) + self.gain;
+        // A gain that has decayed to nothing is zero: denormal arithmetic is slow on the audio thread.
+        if self.gain.abs() < 1.0e-20 {
+            self.gain = 0.0;
+        }
+        self.gain
+    }
+}
+
+/// The per-sample coefficient of a one-pole ramp with time constant `ms`:
+/// `1 - exp(-1 / (tau * fs))`. The reference builds it from `-1/0.03` (30 ms);
+/// zero time jumps. See research/dsp-remaining.md, item 4.
+pub fn ramp_coefficient(sample_rate: f32, ms: f32) -> f32 {
+    if ms > 0.0 {
+        1.0 - exp32(-1.0 / (ms * 0.001 * sample_rate))
+    } else {
+        1.0
+    }
 }
 impl Engine {
     pub fn new(sample_rate: f32, config: EngineConfig) -> Result<Self, &'static str> {
@@ -568,8 +606,10 @@ impl Engine {
             until_frame: plan.hop,
             max_reduction_db: 0.0,
             last_mix: 1.0,
-            mix_gain: 1.0,
-            mix_rate: 0.0,
+            // The defaults' targets (mix 1, wet 1, out 0 dB), so the first block does not fade in.
+            gains: [SmoothedGain::at(0.0), SmoothedGain::at(1.0), SmoothedGain::at(1.0)],
+            ramp_coefficient: ramp_coefficient(plan.owner_rate, 30.0),
+            ramp_ms: 30.0,
             last_bypass: false,
         })
     }
@@ -684,36 +724,36 @@ impl Engine {
                 (wet[0] - wet[1]) * std::f32::consts::FRAC_1_SQRT_2,
             ];
         }
-        // The mix gain ramps toward its target one sample at a time, the way
-        // the reference's gain helper does: `g <- ((t - g) * a) + g`, with
-        // the multiply per sample per channel.
-        let target = settings.mix.clamp(0.0, 1.0);
-        let rate = if settings.mix_smoothing_ms > 0.0 {
-            let samples = settings.mix_smoothing_ms * 0.001 * self.plan.owner_rate;
-            (1.0 / samples.max(1.0)).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        self.mix_rate = rate;
-        self.mix_gain = ((target - self.mix_gain) * rate) + self.mix_gain;
-        let mix = self.mix_gain;
-        let gain = 10.0_f32.powf(settings.output_db.clamp(-24.0, 24.0) * 0.05);
-        // Reference coefficients: dry (1 - mix), wet (wet_gain * mix). Delta
-        // takes dry - wet at the same wet gain. Bypass ignores both trims.
+        // Dry, wet and out each ramp to their targets, one sample at a time, with
+        // the reference's coefficients. Bypass is a crossfade: dry to 1, wet to 0,
+        // out to 1. Delta takes dry - wet at the wet weight: dry's target is the
+        // wet weight and wet's is its negative, so the sum is wet weight x (dry - wet).
+        if settings.mix_smoothing_ms != self.ramp_ms {
+            self.ramp_ms = settings.mix_smoothing_ms;
+            self.ramp_coefficient = ramp_coefficient(self.plan.owner_rate, self.ramp_ms);
+        }
+        let mix = settings.mix.clamp(0.0, 1.0);
         let wet_mix = settings.wet_gain * mix;
-        let mut output = std::array::from_fn(|c| {
-            if settings.bypass {
-                dry[c]
-            } else if settings.delta {
-                (dry[c] - wet[c]) * wet_mix * gain
-            } else {
-                ((1.0 - mix) * dry[c] + wet_mix * wet[c]) * gain
-            }
-        });
+        let gain = 10.0_f32.powf(settings.output_db.clamp(-24.0, 24.0) * 0.05);
+        let (dry_target, wet_target, out_target) = if settings.bypass {
+            (1.0, 0.0, 1.0)
+        } else if settings.delta {
+            (wet_mix, -wet_mix, gain)
+        } else {
+            (1.0 - mix, wet_mix, gain)
+        };
+        self.gains[0].target = dry_target;
+        self.gains[1].target = wet_target;
+        self.gains[2].target = out_target;
+        let coefficient = self.ramp_coefficient;
+        let dry_gain = self.gains[0].step(coefficient);
+        let wet_gain = self.gains[1].step(coefficient);
+        let out_gain = self.gains[2].step(coefficient);
+        let mut output = std::array::from_fn(|c| (dry_gain * dry[c] + wet_gain * wet[c]) * out_gain);
         // Sidechain listen hears the detector's own signal, through the output
         // trim. The reference's listen routing is not located (research/engine-io.md).
         if settings.sidechain && settings.sidechain_listen {
-            output = detector.map(|v| v * gain);
+            output = detector.map(|v| v * out_gain);
         }
         if self.active_channels == 1 {
             output[1] = output[0]; // Two-slot standalone/WAV adapter; mono hosts consume only lane 0.
@@ -1324,6 +1364,75 @@ mod tests {
             );
         }
     }
+    /// The output trim is a 30 ms one-pole ramp: after one time constant the
+    /// gain has covered 1 - 1/e of the step, the reference's `-1/0.03` (item 4).
+    #[test]
+    fn the_output_trim_ramps_on_the_thirty_millisecond_constant() {
+        let a = ramp_coefficient(48_000.0, 30.0);
+        assert!((a - (1.0 - (-1.0_f32 / 1440.0).exp())).abs() < 1.0e-7);
+        assert_eq!(ramp_coefficient(48_000.0, 0.0), 1.0);
+        let mut engine = Engine::new(48_000.0, EngineConfig::default()).unwrap();
+        let steady = Settings {
+            depth: 0.0,
+            mix: 1.0,
+            ..Settings::default()
+        };
+        let input = [0.5, 0.5];
+        for _ in 0..engine.latency() + 20_000 {
+            engine.process_sample(input, &steady);
+        }
+        let cut = Settings {
+            output_db: -6.0,
+            ..steady
+        };
+        let mut gain = 0.0;
+        for _ in 0..1440 {
+            gain = engine.process_sample(input, &cut)[0] / 0.5;
+        }
+        let target = 10.0_f32.powf(-6.0 / 20.0);
+        let expected = target + (1.0 - target) * (-1.0_f32).exp();
+        assert!((gain - expected).abs() < 2.0e-3, "gain {gain} expected {expected}");
+    }
+
+    /// Bypass is a crossfade: dry rises as wet falls, and their weights sum to
+    /// one, so a steady signal keeps its level through the switch.
+    #[test]
+    fn bypass_crossfades_without_a_level_step() {
+        let mut engine = Engine::new(48_000.0, EngineConfig::default()).unwrap();
+        let steady = Settings {
+            depth: 0.0,
+            mix: 1.0,
+            ..Settings::default()
+        };
+        let input = [0.5, 0.5];
+        for _ in 0..engine.latency() + 20_000 {
+            engine.process_sample(input, &steady);
+        }
+        let bypassed = Settings {
+            bypass: true,
+            ..steady
+        };
+        let mut worst = 0.0_f32;
+        for _ in 0..10 * 1440 {
+            let out = engine.process_sample(input, &bypassed);
+            worst = worst.max((out[0] - 0.5).abs());
+        }
+        assert!(worst < 1.0e-4, "level step {worst}");
+        assert!((engine.gains[0].gain - 1.0).abs() < 1.0e-3);
+        assert!(engine.gains[1].gain.abs() < 1.0e-3);
+    }
+
+    /// A decayed gain is exactly zero, not a denormal.
+    #[test]
+    fn a_decayed_gain_is_flushed_to_zero() {
+        let mut gain = SmoothedGain::at(1.0);
+        gain.target = 0.0;
+        for _ in 0..100_000 {
+            gain.step(0.01);
+        }
+        assert_eq!(gain.gain, 0.0);
+    }
+
     /// The research's acceptance criterion, on the frequency the reference's
     /// final weighting lets through.
     ///
@@ -1598,22 +1707,12 @@ mod ramp {
     /// its own final gain, to the last bit.
     #[test]
     fn the_mix_ramp_matches_the_reference() {
-        let mut engine = Engine::new(
-            44100.0,
-            EngineConfig {
-                reduced_latency: true,
-                ..EngineConfig::default()
-            },
-        )
-        .unwrap();
-        // The case ran at 44100 Hz with a 10 ms linear ramp: the per-sample
-        // coefficient the reference used was 0.05.
-        engine.mix_gain = 1.0;
-        engine.mix_rate = 0.05;
+        // The reference's gain helper, on a 0.05 coefficient (the research case).
+        let mut ramp = SmoothedGain::at(1.0);
+        ramp.target = 0.5;
         let mut gains = Vec::new();
         for _ in 0..8 {
-            engine.mix_gain = ((0.5 - engine.mix_gain) * engine.mix_rate) + engine.mix_gain;
-            gains.push(engine.mix_gain);
+            gains.push(ramp.step(0.05));
         }
         assert_eq!(
             gains,
