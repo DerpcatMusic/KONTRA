@@ -1,9 +1,10 @@
 //! Kontakt 8 Filter Reference: Formant I and II (Talk, Sharp, Size).
 //! Same-SHA Ghidra [ref], radare2 tables
 //! [ref] and polynomials [ref].
-//! The tables hold ten rows. The core setter [ref] adds 5.0 to the Talk position
-//! while its fourth control (index 3) is above 0.5, which selects rows 5..=9; the module
-//! that drives that control is Formant II (the type 91 binding is inferred, not measured).
+//! The tables hold ten rows. The setter [ref] stores `0.5 < control[3]` in a flag, and
+//! [ref] adds 5.0 to the Talk position when that flag is set, selecting rows 5..=9
+//! (Formant II, saved type 91, case 0x5b of [ref]). The static flag value for type 91
+//! is not yet read as a constant (see docs/re/engine/filt-formant-effect.md).
 use super::super::{Planar, ProcessorState};
 
 #[rustfmt::skip]
