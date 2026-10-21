@@ -2579,6 +2579,10 @@ impl Gen<'_, '_> {
                 }
                 true
             }
+            SetEngineParM | GetEngineParM => {
+                // Kontakt's multi-script-only variants: a single instrument script cannot use them.
+                return fault(span, format!("{}() can only be used in a multi script!", builtin.name()));
+            }
             SetListener => {
                 // Functions are lowered in their caller's callback context.
                 return fault(span, "set_listener can only be used in on init");
