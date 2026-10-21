@@ -79,6 +79,9 @@ impl Shape {
 #[derive(Clone, Copy, Debug)]
 pub enum ModSource {
     Lfo(Lfo),
+    /// Stored envelope-follower fields (attack, decay, gain, adaption), held
+    /// per voice; follows the note's group audio, 0..=1.
+    Follower([f32; 4]),
     /// Gated by the voice's family: releases with it.
     Envelope(Envelope),
     /// Index into [`ModProgram::breakpoints`]; gated like `Envelope`.
@@ -347,6 +350,8 @@ enum Prepared {
     Envelope(usize),
     /// Index into the program's breakpoint envelopes and the voice's segments.
     Breakpoints(usize),
+    /// Slot among the program's followers, and its stored fields.
+    Follower{slot:usize,spec:[f32;4]},
     Input(InputSource),
 }
 
@@ -424,6 +429,7 @@ pub(crate) struct VoiceModulation {
     sources: usize,
     envelopes: usize,
     breakpoints: usize,
+    followers: usize,
     routes: usize,
 }
 
@@ -435,6 +441,7 @@ pub(crate) struct ModShape {
     sources: usize,
     envelopes: usize,
     breakpoints: usize,
+    followers: usize,
     routes: usize,
 }
 
@@ -638,6 +645,7 @@ impl VoiceModulation {
             sources: self.sources,
             envelopes: self.envelopes,
             breakpoints: self.breakpoints,
+            followers: self.followers,
             routes: self.routes,
         }
     }
@@ -739,6 +747,16 @@ impl VoiceModulation {
                         ModSource::Envelope(envelope) => {
                             envelopes.push(envelope);
                             Prepared::Envelope(envelopes.len() - 1)
+                        }
+                        ModSource::Follower(spec) => {
+                            if crate::blocks::follower::AdaptiveFollower::from_stored(1.0, spec).is_none() {
+                                return Err(Error::InvalidInput);
+                            }
+                            let slot = program.sources[..source_index]
+                                .iter()
+                                .filter(|s| matches!(s, ModSource::Follower(_)))
+                                .count();
+                            Prepared::Follower { slot, spec }
                         }
                         ModSource::Breakpoints(index) => {
                             let b = program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
@@ -1060,6 +1078,11 @@ impl VoiceModulation {
                 .map(|p| p.envelopes.len())
                 .max()
                 .unwrap_or(0),
+            followers: compiled
+                .iter()
+                .map(|p| p.sources.iter().filter(|s| matches!(s, Prepared::Follower { .. })).count())
+                .max()
+                .unwrap_or(0),
             breakpoints: compiled
                 .iter()
                 .map(|p| p.breakpoints.len())
@@ -1101,7 +1124,7 @@ impl VoiceModulation {
                 let signal=wave(lfo.shape,lfo.phase,seed^index as u64);
                 program.fades[index].as_ref().map_or(signal,|gains|f64::from(signal as f32*gains[0]))
             }
-            Prepared::Lfo(_)|Prepared::Envelope(_)|Prepared::Breakpoints(_)=>0.,
+            Prepared::Lfo(_)|Prepared::Envelope(_)|Prepared::Breakpoints(_)|Prepared::Follower{..}=>0.,
             Prepared::Input(input)=>input.input(inputs,seed,index),
             Prepared::Provider(source)=>provider.at(source.source,frame),
         }))
@@ -1445,6 +1468,8 @@ pub(crate) struct VoiceModState {
     previous_processor_values: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
     segments: Box<[Segment]>,
+    followers: usize,
+    follower: Box<[crate::blocks::follower::AdaptiveFollower]>,
     /// Runtime frame and seed of the latest voice start: the restart of every
     /// shared retriggered LFO.
     restart: (u64, u64),
@@ -1500,6 +1525,7 @@ impl VoiceModState {
         add::<f64>(&mut n,slots(shape.sources.checked_mul(2).ok_or(Error::Capacity)?)?)?;
         add::<f64>(&mut n,slots(shape.routes.checked_mul(3+SCALE_LAGS).ok_or(Error::Capacity)?)?)?;
         add::<EnvelopeState>(&mut n,slots(shape.envelopes)?)?;add::<Segment>(&mut n,slots(shape.breakpoints)?)?;
+        add::<crate::blocks::follower::AdaptiveFollower>(&mut n,slots(shape.followers)?)?;
         add::<(u64,u64)>(&mut n,domains)?;
         add::<Option<(u64,u64)>>(&mut n,if domains==0{0}else{rows})?;Ok(n)
     }
@@ -1516,6 +1542,7 @@ impl VoiceModState {
             sources: modulation.sources,
             envelopes: modulation.envelopes,
             breakpoints: modulation.breakpoints,
+            followers: modulation.followers,
             routes: modulation.routes,
             program: crate::dsp::allocate(voices)?,
             seed: crate::dsp::allocate(voices)?,
@@ -1537,6 +1564,7 @@ impl VoiceModState {
             )
             .collect(),
             segments: crate::dsp::allocate(slots(modulation.breakpoints)?)?,
+            follower: std::iter::repeat_n(crate::blocks::follower::AdaptiveFollower::new(0., 0., 0.), slots(modulation.followers)?).collect(),
             restart: (0, 0),restart_domains:Box::new([]),pending_restart:Box::new([]),
         })
     }
@@ -1574,6 +1602,7 @@ impl VoiceModState {
             &mut larger.previous_processor_values,
         );
         take(&mut self.envelope, &mut larger.envelope);
+        take(&mut self.follower, &mut larger.follower);
     }
 
     fn empty() -> Self {
@@ -1584,6 +1613,7 @@ impl VoiceModState {
             sources: 0,
             envelopes: 0,
             breakpoints: 0,
+            followers: 0,
             routes: 0,
             program: Box::new([]),
             seed: Box::new([]),
@@ -1600,6 +1630,7 @@ impl VoiceModState {
             previous_processor_values: Box::new([]),
             envelope: Box::new([]),
             segments: Box::new([]),
+            follower: Box::new([]),
             restart: (0, 0),restart_domains:Box::new([]),pending_restart:Box::new([]),
         }
     }
@@ -1821,6 +1852,15 @@ impl VoiceModState {
         }
         for segment in &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()] {
             *segment = Segment::default();
+        }
+        let mut slot = 0;
+        for source in p.sources.iter() {
+            if let Prepared::Follower { spec, .. } = *source {
+                if let Some(follower) = crate::blocks::follower::AdaptiveFollower::from_stored(clock.rate as f32, spec) {
+                    self.follower[voice * self.followers + slot] = follower;
+                }
+                slot += 1;
+            }
         }
         if initially_released{self.release(modulation,voice);}
         let restart=self.restart_point(voice,index as usize);
@@ -2129,6 +2169,13 @@ impl VoiceModState {
                 Prepared::Breakpoints(b) => f64::from(
                     self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
                 ),
+                Prepared::Follower { slot, .. } => {
+                    let follower = &mut self.follower[voice * self.followers + slot];
+                    if let Some(audio) = note_inputs.map(|inputs| inputs.audio).filter(|a| !a.is_empty()) {
+                        follower.process(audio);
+                    }
+                    f64::from(follower.level())
+                }
                 Prepared::Input(input) => input_point(input,i),
                 Prepared::Provider(source)=>provider.at(source.source,clock.now),
             };
@@ -3381,5 +3428,62 @@ mod provider_legacy_validation164 {
             assert_eq!(physical.validate_provider_bindings(&owner, &[Some((0, 0))]), Err(Error::InvalidInput), "malformed provider case {malformed}");
             assert_eq!(physical.validate_provider_bindings(&owner, &[]), Err(Error::InvalidInput), "missing metadata must not hide malformed provider case {malformed}");
         }
+    }
+}
+
+#[cfg(test)]
+mod follower_source_tests {
+    use super::*;
+
+    fn modulation() -> VoiceModulation {
+        let program = ModProgram {
+            sources: vec![ModSource::Follower([1.0, 1.0, 6.0, 0.5])],
+            routes: vec![ModRoute::new(0, ModTarget::Pan, 1.)],
+            ..Default::default()
+        };
+        VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap()
+    }
+
+    fn inputs<'a>(cc: &'a [u32; 128], values: &'a crate::script_params::ModValues, audio: &'a [f32]) -> Inputs<'a> {
+        Inputs {
+            velocity: 1.,
+            key: 0.5,
+            pressure: 0,
+            timbre: 0,
+            controllers: cc,
+            held: 0,
+            script: values,
+            bend: 0.,
+            controls: RealValuesRef::new(&[]),
+            audio,
+            interval: 0,
+        }
+    }
+
+    #[test]
+    fn follower_source_follows_the_span_audio_and_holds_without_it() {
+        let modulation = modulation();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        let cc = [0; 128];
+        let values = crate::script_params::ModValues::default();
+        let clock = |now| Clock { rate: 48_000.0, tempo: 120.0, now };
+        let silent: Vec<f32> = vec![0.0; 64];
+        let loud: Vec<f32> = vec![1.0; 64];
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, &[]), clock(0), 1);
+        let p = &modulation.programs[0];
+        let mut run = |state: &mut VoiceModState, audio: &[f32], now: u64| {
+            let restart = state.restart_point(0, 0);
+            state.evaluate(p, 0, &inputs(&cc, &values, audio), clock(now), 64, false, restart, ProviderView::empty());
+            state.values[0]
+        };
+        let first = run(&mut state, &loud, 64);
+        let second = run(&mut state, &loud, 128);
+        assert!(first > 0.0 && second > first, "rises towards the loud input: {first} {second}");
+        // The second state recovers towards its first-state ceiling, which itself
+        // decays, so the level falls over a long silence rather than at once.
+        let decayed = (0..40).map(|k| run(&mut state, &silent, 192 + 64 * k)).last().unwrap();
+        assert!(decayed > 0.0 && decayed < 0.5, "falls over silence, tracking the decayed ceiling: {decayed}");
+        let held = run(&mut state, &[], 192 + 64 * 40);
+        assert_eq!(held, decayed, "no audio supplied: the follower holds");
     }
 }

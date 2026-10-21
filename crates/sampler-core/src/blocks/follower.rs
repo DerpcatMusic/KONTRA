@@ -133,6 +133,11 @@ impl AdaptiveFollower {
         }
     }
 
+    /// The current second state: the follower's output level.
+    pub fn level(&self) -> f32 {
+        self.r
+    }
+
     /// Slot 6 (0x140ae3d80): the first `out.len()` ring cells.
     pub fn read(&self, out: &mut [f32]) {
         let n = out.len().min(Self::CELLS);

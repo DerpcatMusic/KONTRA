@@ -803,6 +803,10 @@ struct Voice {
     source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
+    /// Mono of the voice's previous span (first `follow_len` frames): the audio
+    /// an envelope follower samples at the next modulation step.
+    follow_audio: [f32; dsp::BLOCK],
+    follow_len: usize,
 }
 
 impl Voice {
@@ -2347,6 +2351,8 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
             start_at: at,
             born: self.voice_order,
             stolen: false,
+            follow_audio: [0.0; dsp::BLOCK],
+            follow_len: 0,
             group: None,
             source_zone: 0,
             quiet: 0,

@@ -1884,14 +1884,19 @@ impl Translation {
                     //    0x1409651b0) whose unit law, and the v0x10/0x11 legacy tail, are open.
                     //  - Glide: no caller recovered for the note pitch and time to ramp
                     //    start, step and gain (0x140ceb090 setup).
-                    //  - Follower: the stored floats map to the builder roles
-                    //    (`AdaptiveFollower::from_stored`); the signal the follower
-                    //    samples from is not proved, so it stays unsupported.
-                    Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
+                    //  - Follower: executable (`ModSource::Follower`), stored floats map to
+                    //    the builder roles; it samples the group audio of the
+                    //    previous span (working timing choice, see k-mod-external.md).
+                    Modulator::Follower(f) => ir::ModulationSource::Follower(ir::Follower {
+                        attack: f.values[0],
+                        decay: f.values[1],
+                        gain: f.values[2],
+                        adaption: f.values[3],
+                    }),
+                    Modulator::Dbd(_) | Modulator::Glide(_) => {
                         let feature = match params.modulator {
                             Modulator::Dbd(_) => "DBD envelope (0x41): saved-duration resolver and legacy tail",
-                            Modulator::Glide(_) => "glide (0x0B): pitch and time to ramp start, step and gain",
-                            _ => "envelope follower (0x0A): saved floats to builder controls",
+                            _ => "glide (0x0B): pitch and time to ramp start, step and gain",
                         };
                         self.unsupported(
                             &at,

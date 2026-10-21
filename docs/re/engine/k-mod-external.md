@@ -75,7 +75,11 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
 - The follower is processed per block inside the voice render (`FUN_140916350`), for each follower
   modulator whose object flags bit 5 is set. It reads the per-group buffer `param_1[idx*16+6]`
   and runs before `FUN_14088b480`.
-- Working hypothesis: the follower samples the group's audio at current-block timing.
+- Working hypothesis (decompile): the follower samples the group's audio at current-block timing.
+- Implemented timing (deviation, one-span delay): the voice keeps the mono of its previous rendered span
+  (first 64 frames, `Voice::follow_audio`) and feeds it to `Inputs::audio` at the next modulation step.
+  Current-block timing is not realizable without reordering render, because a voice's audio depends on
+  its modulation. Native timing stays open until a Wine-oracle probe.
 - Engine finding: `voice_mod::advance` runs before a voice renders its span, and the voice's own
   audio depends on its modulation. Current-block audio is therefore not available to the modulation
   step without changing render order. This needs a decision (one-block delay, or reordering render).
@@ -86,3 +90,11 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
 - start = -1 (+1 for a downward interval), step = 1 / (time_s * rate), gain = |interval| / 12.
 - time: stored `BParGlide` float; multiplied by |interval| only for stored mode 1; time_ms * 0.001.
 - Implemented as `GlideRamp::kontakt_glide`. The interval is a per-note runtime input (not yet wired).
+
+## Follower as a source (executable)
+
+- `ir::ModulationSource::Follower` -> `voice_mod::ModSource::Follower([attack, decay, gain, adaption])`.
+- Per voice: `AdaptiveFollower` built at voice start from the stored fields at the voice's sample rate.
+  Each evaluation feeds `Inputs::audio` (empty = hold) and reads the second state as a 0..=1 level.
+- Test: `voice_mod::follower_source_tests` (rises on loud audio, falls over silence, holds with no audio).
+- The Kontakt mapping now produces this source instead of an unsupported report.
