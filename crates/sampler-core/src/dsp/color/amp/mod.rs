@@ -8,6 +8,8 @@ mod cat;
 mod crywah;
 mod dstortion;
 pub(super) mod fuzz;
+mod fuzz;
+mod kernel;
 mod twang;
 
 use super::super::Planar;
