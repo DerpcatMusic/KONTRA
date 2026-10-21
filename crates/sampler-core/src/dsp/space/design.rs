@@ -13,7 +13,7 @@
 
 use super::network::{Allpass, Chain, Interp, LineSpec, MAX_LINES, Matrix, Modulation, Shelf, Spec, TapFrom, Unit};
 use crate::Error;
-use sampler_ir::fx::space::{Freeverb, Galois, Network, SparkVerb, Topology, UviReverb};
+use sampler_ir::fx::space::{Freeverb, Galois, InputFilter, Network, SparkVerb, Topology, UviReverb};
 use std::f64::consts::PI;
 use plate::kontakt_plate;
 mod shelf;
@@ -312,6 +312,39 @@ pub(super) mod freeverb_law {
     pub(crate) fn length(offset: f32, tuning: f64, rate: f32) -> usize {
         (((f64::from(offset) + tuning) * (f64::from(rate) * 0.001)) as i32).max(1) as usize
     }
+
+    /// Kontakt Legacy input low-pass (`0x14095b2d0`, `0x14082a0b0`): the
+    /// normalized cutoff `x` goes through a truncated `exp(6.15x)` and a sine
+    /// warp to a two-pole Butterworth biquad, DC gain 1. Returns `[b0, b1, b2,
+    /// a1, a2]` in the network's `y = Σb·x − a1·y₋₁ − a2·y₋₂` convention.
+    /// Modeled, not native-captured: the -3 dB points match the decompile's
+    /// closed form (248.0, 1194.2, 5369.3 Hz at x = .25, .5, .75, 44.1 kHz).
+    pub(crate) fn butterworth2(x: f64, rate: f64) -> [f64; 5] {
+        const K: f64 = 44_011.976_047_904_19;
+        const C_U: f64 = 0.002_572_831_697_762_012_5;
+        const WARP: f64 = 0.99 * 0.998_780_904_966_9;
+        let z = 6.15 * x;
+        let e = if z.abs() < 1e-4 { 1.0 } else { (0..=8).map(|k| z.powi(k) / (1..=k).map(f64::from).product::<f64>()).sum::<f64>() };
+        let u = ((e - 1.0) * C_U).clamp(0.0, 1.0);
+        let nu = ((u + 0.002) * K / rate).min(1.0);
+        let theta = nu * std::f64::consts::FRAC_PI_2 * WARP;
+        // Taylor sine, zero below 1e-4 as the native.
+        let sine = |v: f64| if v.abs() < 1e-4 { 0.0 } else { v - v.powi(3) / 6.0 + v.powi(5) / 120.0 - v.powi(7) / 5040.0 };
+        let w = sine(0.5 - theta) / sine(0.5 + theta);
+        // Prototype at pi/4: sin = cos = 1/√2, sin² + cos² = 1.
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        let d1 = 1.0 / (4.0 + 4.370_419_918_750_324 * c + 1.193_785_641_638_099_4);
+        let p2 = 1.193_785_641_638_099_4 * d1;
+        let (p3, p4) = (2.0 * p2, p2);
+        let p5 = (8.0 - 2.387_571_283_276_199) * d1;
+        let p6 = (-4.0 + 4.370_419_918_750_324 * c - 1.193_785_641_638_099_4) * d1;
+        let den = 1.0 / ((1.0 + p5 * w) - p6 * w * w);
+        let (b0, b1, b2) = (den * (p2 - p3 * w + p4 * w * w), den * (p3 * (1.0 + w * w) - 2.0 * w * (p2 + p4)), den * (p2 * w * w - p3 * w + p4));
+        let (a1, a2) = (den * ((1.0 + w * w) * p5 + 2.0 * w - 2.0 * w * p6), den * (p6 - p5 * w - w * w));
+        let g = (1.0 - a1 - a2) / (b0 + b1 + b2);
+        // The native denominator is 1 − a1 z⁻¹ − a2 z⁻²: the network subtracts.
+        [b0 * g, b1 * g, b2 * g, -a1, -a2]
+    }
 }
 
 fn freeverb(n: &Network, f: &Freeverb, rate: f32) -> Spec {
@@ -332,7 +365,10 @@ fn freeverb(n: &Network, f: &Freeverb, rate: f32) -> Spec {
     let beta = (2.0 * (1.0 - f.width)) as f32;
     s.mix = if beta > 1e-12 { beta } else { 0.0 };
     s.gain = f.input_gain as f32;
-    s.input_lp = (n.input_cutoff_hz < 0.49 * f64::from(rate)).then(|| one_pole(n.input_cutoff_hz, f64::from(rate)));
+    match f.input_filter {
+        InputFilter::OnePole => s.input_lp = (n.input_cutoff_hz < 0.49 * f64::from(rate)).then(|| one_pole(n.input_cutoff_hz, f64::from(rate))),
+        InputFilter::Butterworth2 { x } => s.input_bq.push(butterworth2(x, f64::from(rate)).map(|v| v as f32)),
+    }
     // iVar12 = (int)(ms * rate * 0.001f).
     let pre = ((n.predelay_seconds * 1000.0) as f32 * rate * 0.001) as usize;
     s.predelay = [if pre >= PRE { 0.0 } else { pre as f32 }; 2];
