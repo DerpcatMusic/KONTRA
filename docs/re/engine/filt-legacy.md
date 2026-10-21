@@ -4,11 +4,29 @@ Scope: Kontakt 8 filter types LP1/2/4/6, HP1/2/4, BP2/4, BR4, Legacy Ladder (Pro
 share its stage core), and Simple LP/HP. Engine core: `crates/sampler-core/src/dsp/filter/`
 (`cascade.rs`, `ladder_kernel.rs`, `kontaktfx.rs`). Mapping: `crates/sampler-kontakt/src/effects/filter.rs`.
 
-Status: **provisional**. The decompiled Kontakt 8 export
-(`/data/dev/workspace/Research/KONTRA/source/kontakt8/READY`) was absent when this was written, so
-every law below comes from the existing repo evidence (`docs/re/kontakt-bindings/filter-laws.tsv`,
-recorded native vectors, kemu runs). Each row must be re-confirmed against the decompiled functions
-once READY exists.
+Status: laws come from repo evidence (`docs/re/kontakt-bindings/filter-laws.tsv`, recorded native
+vectors, kemu runs) and from **Kontakt 8 measured through Wine** (`tools/kontakt-oracle/eqrender.py`,
+`eqspecs.py filtlegacy`; raw output in `Research/KONTRA/oracle-filt-legacy/`, not in the repo). The
+decompiled export was not used (user decision: do not wait for READY); refine with it if it lands.
+
+## Kontakt measurements (Wine oracle, 2026-10-21)
+
+Left-channel impulse responses, 48 kHz, reference = bypass, probes 30 Hz to 15 kHz. Test
+`legacy_responses_match_the_kontakt_measurements` (`cascade.rs`, data `cascade_kontakt_oracle.json`)
+compares the compiled cascade unit's 16384-frame impulse response at the same probes:
+
+- Types: LP2, HP2, BP2, HP4, BP4, BR4 (new measurements) and Legacy Ladder (type 17); LP1/LP4/LP6 were
+  measured earlier (`filter-laws.tsv`).
+- 48 cases x 10 probes, every probe above -60 dB, match within **0.1 dB** (largest error ~0.06 dB,
+  at the 30 Hz end of HP2/HP4/BP4/BR4; Kontakt values are rounded to 0.01 dB).
+- Legacy Ladder: knob 0 with resonance 0 does **not** match (Kontakt ~6 dB/oct shallow tail,
+  -12.3 dB at 30 Hz, -46.1 dB at 1 kHz; ours -14.7 dB at 30 Hz, -126.9 dB at 1 kHz). Excluded from
+  the golden. Knobs .25 to 1 and resonance .5/.9 match. Cause not found; the knob-0 clamp of the stage
+  cutoff law is the suspect.
+- Simple LP/HP (120): inconclusive. CUTOFF and RESONANCE do not change the measured response (flat
+  -0.25 dB, identical at every setting), so the mapping `lp = CUTOFF, hp = RESONANCE` is not confirmed.
+  Its knobs need another engine-parameter name, which is not in the repo.
+- Stage 16 (Pro-53), 14/15 (Vowel) and 19 (Versatile) were not measured in Kontakt yet.
 
 ## Saved type ids (measured)
 
@@ -75,10 +93,11 @@ Parameters are the saved knobs (`CUTOFF`, `RESONANCE`), both 0..1 on the engine'
 | Item | Engine covers | Missing / unproved | Action |
 | --- | --- | --- | --- |
 | LP1 / HP1 law | cascade 1-pole, cutoff law measured | update cadence (OPEN) | Needs dynamic-cutoff capture or decompiled clock; no change |
-| LP2/HP2/BP2/LP4/HP4/BP4/BR4/LP6 law | cascade design, measured LP4/LP6 | BP2/BP4/BR4/HP2 Kontakt measurements absent from `filter-laws.tsv`; clock alternative branch | Re-check against decompiled `14095*`/`14090*` setters once READY |
-| Legacy Ladder / Pro-53 / Vowel / Versatile | stage core, kemu match 2e-5 | no Kontakt host measurement recorded | Same as above |
-| Simple LP/HP | mono core, bit-exact vs kemu | stereo interleave; alternate smoother `u8` | Mapping downgraded to `Partial` with caveat; implement when the smoother is recovered |
-| Stereo (legacy family) | no L-to-R coupling | none recorded | none |
+| LP2/HP2/BP2/LP4/HP4/BP4/BR4/LP6 law | cascade design; Kontakt-measured to 0.1 dB at all probes above -60 dB (golden test) | clock alternative branch (only unused-branch evidence) | none for the response; re-check the branch when decompile lands |
+| Legacy Ladder (17) | stage core; Kontakt-matched at knobs .25-1 and res .5/.9 (golden) | knob 0 (res 0) shape; see measurements above | Investigate the stage cutoff law's knob-0 clamp against Kontakt |
+| Pro-53 (16), Vowel A/B (14/15), Versatile (19) | stage core, kemu match 2e-5 | no Kontakt measurement | Measure with the same oracle spec (add subtypes to `LEGACY_UNMEASURED`) |
+| Simple LP/HP (120) | mono core, bit-exact vs kemu | Kontakt knob names (CUTOFF/RESONANCE do nothing); stereo interleave; alternate smoother `u8` | Find the real engine-parameter names, then re-measure; mapping kept `Partial` |
+| Stereo (legacy family) | no L-to-R coupling (Kontakt-measured) | none | none |
 
 ## Change in this unit
 
@@ -87,7 +106,9 @@ Parameters are the saved knobs (`CUTOFF`, `RESONANCE`), both 0..1 on the engine'
 
 ## Pending
 
-Waiting on `/data/dev/workspace/Research/KONTRA/source/kontakt8/READY`. Then: grep the decompiled
-export for the setter, prepare and process addresses listed above; confirm the smoother `u8` rate and
-the stereo interleave for Simple LP/HP; confirm the clock alternative branch; and remove any caveat the
-decompile disproves.
+1. Legacy Ladder knob-0 shape: find the stage cutoff clamp by measuring a finer knob sweep near 0 in
+   Kontakt (oracle), then match it in the stage core.
+2. Simple LP/HP: find the engine-parameter names for its two knobs (decompiled `FilterDJExtRange`
+   setParam at 0x140b058a0 when available, or a KSP `$ENGINE_PAR_*` probe), then re-measure.
+3. Stage types 14/15/16/19: add to the oracle spec and extend the golden test.
+4. When `source/kontakt8/READY` appears: confirm the clock alternative branch and the smoother rate.
