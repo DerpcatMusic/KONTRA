@@ -167,7 +167,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Convolution | unknown | none | |
+| Convolution | partial | decomp | Reverse, early/late filters and composition, envelope, Auto Gain, predelay: decompile-confirmed structure. Size range and identity at 1.0 confirmed; resize engine `0x1419b3450`, S.Rate, crossover default, latency, true-stereo still missing. See docs/re/engine/k-convolution.md |
 | Plate Reverb | unknown | none | |
 | Raum | unknown | none | |
 | Reverb | unknown | none | |

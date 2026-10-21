@@ -1,6 +1,16 @@
 # Kontakt Convolution (0x16) and Cabinet IR handling
 
-Status: **partial; waiting on READY for the missing laws.** `/data/dev/workspace/Research/KONTRA/source/kontakt8/` has no `READY` marker, so no decompiled function was read for this unit. Everything below is either repo evidence (cited), a law already implemented, or an open item. Public NI manual pages return HTTP 403 to the fetch tool, so parameter ranges come from repo evidence only.
+Status: **partial.** The Kontakt 8 decompile is ready (`source/kontakt8/READY`); the rows below marked *decomp* were confirmed there (`source/kontakt8/01419b0000.c`, `0140ab0000.c`). The IR resize engine is not yet reconstructed, so the unit is not ready for integration. Public NI manual pages return HTTP 403, so parameter ranges come from repo evidence and the decompile only.
+
+## Decompile confirmation (decomp)
+
+- **Size setter `FUN_1419b6750`** (`01419b0000.c`): accepts early and late sizes only when both lie in `[DAT_14470bad0, DAT_14470bad8]` (lower bound 0.5); otherwise returns error `0x4c4b43` and nothing is stored. `param4 == 1` stores the late pair at `+0x74`/`+0x7c` and marks dirty bits `0x168`; otherwise the early pair goes to `+0x78`/`+0x80`, dirty bits `0x154`. The upper bound constant `DAT_14470bad8` must still be read from a dump; the repo's `1.5` is not yet confirmed by the decompile.
+- **Preparation `FUN_1419b2bc0`**: a dirty-bit word at `+0x48` selects work. `0x4` runs the early resize `FUN_1419b3450(early_size / rate_ratio)`, `0x8` the late one, `0x10`/`0x20` the early/late filters `FUN_1419b27a0`, bit `0x1` rebuilds the head and crossover `FUN_1419b2870`. When the resize ratio equals `DAT_14470bad4` (1.0) the resize is an identity copy with zero padding to the block size, which matches the Rust path (`size == 1` skips the note).
+- **Reverse**: swaps each channel's first `len/2` pairs over the IR length (`param_1[3]`), so it is a full frame reversal.
+- **Early/late composition `FUN_1419b1e30` and envelope `FUN_1419b2320`** are the functions already reproduced in `shape.rs` (cos² crossfade, eight-knot envelope); their decompile matches the constants recorded there.
+- **Resize `FUN_1419b3450`** (1535 bytes, SSE, STFT-style frame loop): not reconstructed. It is the only step still needed for IR size and for the Preserve Length gate. Its window, hop and phase handling must be read before any stretch is implemented.
+
+Remaining gaps after this confirmation: resize engine, S.Rate inner-rate preparation (`+0x354`), unset crossover default (wrapper `FUN_140ab5e00`), latency reporting, true-stereo routing. Parity is not claimed for any of them.
 
 ## Evidence used
 
