@@ -13,6 +13,8 @@ const AHDSR_TAIL_V10: usize = 16;
 // Corpus-inferred v0x11 minimum: four packed 13-byte records.
 // Preserve additional opaque bytes rather than imposing an exact-size cap.
 const AHDSR_TAIL: usize = 52;
+/// Lowest raw sustain accepted: rounding below 0, not a negative gain.
+const SUSTAIN_FLOOR: f32 = -1e-6;
 
 /// Packed envelope timing metadata. Binary field boundaries are known; the
 /// numeric words and flag are not yet assigned verified timing/loop semantics.
@@ -73,6 +75,11 @@ pub struct EnvelopeAhdsr {
 }
 
 impl EnvelopeAhdsr {
+    /// Sustain as a gain in 0..=1; the raw value may sit just below 0.
+    pub fn sustain_level(&self) -> f32 {
+        self.sustain.clamp(0.0, 1.0)
+    }
+
     pub fn timing_records(&self) -> Result<[EnvelopeTimingRecord; 4], Error> {
         let data = self
             .unknown_tail
@@ -91,9 +98,9 @@ impl EnvelopeAhdsr {
             return Err(Error::Static("Incomplete AHDSR opaque metadata"));
         }
         // Sustain is kept raw: Kontakt saves -inf dB as a tiny negative gain
-        // (-1e-18); consumers clamp it to 0..=1.
+        // (-1e-18 observed); `sustain_level` clamps it for consumers.
         if !(-1.0..=1.0).contains(&self.attack_curve)
-            || !self.sustain.is_finite()
+            || !(SUSTAIN_FLOOR..=1.0).contains(&self.sustain)
             || !times.iter().all(|t| t.is_finite() && *t >= 0.0)
         {
             return Err(Error::Static("AHDSR envelope values out of range"));
@@ -394,7 +401,11 @@ mod timing_tests {
             unknown_tail: vec![0; AHDSR_TAIL],
         };
         let back = EnvelopeAhdsr::try_from(&envelope.to_chunk().unwrap()).unwrap();
-        assert_eq!(back.sustain, -1e-18);
+        assert_eq!((back.sustain, back.sustain_level()), (-1e-18, 0.0));
+        // A sustain outside 0..=1 by more than rounding is still a misread record.
+        for sustain in [-0.5, 3.7] {
+            assert!(EnvelopeAhdsr { sustain, ..envelope.clone() }.to_chunk().is_err());
+        }
     }
 
     #[test]
