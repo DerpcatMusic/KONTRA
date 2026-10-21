@@ -14,9 +14,15 @@ pub(super) fn one_pole32(state: f32, input: f32, coefficient: f32) -> f32 {
     state + (input - state) * coefficient
 }
 
+/// Gainer multiplier and next smoothed gain. Both ends inside the native unity
+/// window `[0.999, 1.001]` (double-precision comparison) the output is the input
+/// untouched: the native mix helper's unity shortcut (DSP_SYSTEM_INVENTORY,
+/// Gainer). Outside it, `dry + g`.
 #[inline(always)]
 pub(super) fn gainer(current: f32, target: f32, dry: f64, k: f32) -> (f64, f32) {
-    (dry + f64::from(current), one_pole32(current, target, k))
+    let unity = |v: f64| (0.999..=1.001).contains(&v);
+    let m = if unity(f64::from(current)) && unity(f64::from(target)) { 1. } else { dry + f64::from(current) };
+    (m, one_pole32(current, target, k))
 }
 
 #[inline(always)]
