@@ -2348,6 +2348,43 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Full resonance is the self-oscillating corner (measured +40..+54 dB peaks in
+    /// filter-laws.tsv): every SV class must stay finite and bounded there, at both cutoff
+    /// ends, under a +-4 square. The state clamp at +-2L is what keeps it so.
+    #[test]
+    fn sv_classes_stay_bounded_at_full_resonance() {
+        super::super::ladder_kernel::prepare();
+        const BLOCK: usize = super::super::super::BLOCK;
+        let classes = [
+            Sv::One { high: false },
+            Sv::Two { mode: 1 },
+            Sv::Four { mode: 3 },
+            Sv::Six { mode: 1 },
+            Sv::Multi { mode: 2, bandwidth: 1.0 },
+        ];
+        for sv in classes {
+            for cutoff in [0.0, 1.0] {
+                let unit = CascadeSettings {
+                    class: Legacy::Sv(sv),
+                    cutoff: Parameter::Constant(cutoff),
+                    resonance: Parameter::Constant(1.0),
+                }
+                .compile(48_000, &mut Vec::new());
+                let mut cells = vec![[0f64; 2]; CELLS];
+                let mut peak = 0f64;
+                for at in (0..48_000usize).step_by(BLOCK) {
+                    let mut block = [[0f64; BLOCK]; 2];
+                    for (i, v) in block[0].iter_mut().enumerate() {
+                        *v = if ((at + i) / 20) % 2 == 0 { 4.0 } else { -4.0 };
+                    }
+                    unit.process(&mut cells, &[], &mut block, BLOCK, at as u64, [0.0; 4]);
+                    peak = block[0].iter().fold(peak, |m, v| m.max(v.abs()));
+                }
+                assert!(peak.is_finite() && peak < 1e4, "{sv:?} cutoff {cutoff}: peak {peak}");
+            }
+        }
+    }
+
     /// UVI Workstation 4.0.9 BiquadFilter, MoogFilter and Rez run under kemu (uvifilt): a
     /// 64-frame impulse response at 48 kHz per setting.
     #[test]
