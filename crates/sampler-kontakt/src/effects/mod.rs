@@ -346,6 +346,7 @@ impl Slot {
             0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
             0x5a => Params::TimeMod(timemod::read_replika(self.version, &mut r)?),
+            0x6a => Params::TimeMod(timemod::read_wow_flutter(self.version, &mut r)?),
             // Cosmic (type 2) keeps its decoded fields: its core is not built.
             0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
                 let (core, synced) = space::read_raum(&mut r)?;
