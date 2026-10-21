@@ -934,6 +934,20 @@ pub(crate) fn chain_with(
             }
             Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
                 modelled = color::slot_typed(&mut b, &site, &mut notes, fields)
+                flush(&mut combined, &mut filters, &mut out);
+                match color::typed_core(fx.module, fields) {
+                    Some(config) => {
+                        out.processors.push(sampler_ir::Processor::Color(config));
+                        combined = gain;
+                        if fx.module == 0x4d {
+                            notes.push(("Jump knobs".into(), "fixed fitted preset; knob laws not measured".into(), sampler_ir::Reason::NotModeled));
+                        }
+                        if dynamic.is_some() {
+                            notes.push(("Creative FX live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
+                        }
+                    }
+                    None => modelled = false,
+                }
             }
             Some(Params::LoFi { values, flag }) => {
                 modelled = color::slot_lofi(&mut b, &site, &mut notes, values, *flag)

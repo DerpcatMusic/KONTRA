@@ -136,6 +136,9 @@ pub enum AmpModel {
     Cat,
     /// 0x56 (reader [ref], Fx6B): volume, tone, drive, bass, mid, treble, mono.
     DStortion,
+    /// 0x4d Jump (reader [ref], Fx6BB): preamp, master, presence, treble, mid, bass, higain, mono.
+    /// The engine applies a fixed fitted chain; the knobs are carried but not yet read.
+    Jump,
 }
 
 /// A Kontakt amp, cabinet or pedal model and its core values in the model's order.
@@ -568,6 +571,7 @@ impl Config {
             Self { curve: Curve::Amp(Amp { model: AmpModel::AcBox, .. }), .. } => "AC Box",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cat, .. }), .. } => "Cat",
             Self { curve: Curve::Amp(Amp { model: AmpModel::DStortion, .. }), .. } => "DStortion",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Jump, .. }), .. } => "Jump",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
