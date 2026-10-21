@@ -154,3 +154,17 @@ RE note) and its shape (linear per sample vs my one-pole per block) are still
 unconfirmed. The current code's one-pole glide should be treated as a
 placeholder until that writer is found. Shelf law (G4/G5), live switches (G7),
 and Pro EQ (G9) are not closed in this pass.
+
+## 6. Scope check: Pro EQ and the Kontakt 8 EQ modules (2026-10-21)
+
+- The Kontakt 8 preset library's `Filters/` folder holds `EQ` (1/2/3-band
+  legacy, presets `EQ1 - - INIT -`, `EQ1 - Notch`, ...) and `Solid G-EQ`
+  (`- INIT Solid G-EQ -`). No Pro EQ preset exists.
+- The Kontakt 8 decompile has no `Pro EQ` / `ProEQ` string. The only EQ module
+  names are `Solid G-EQ` (`0140a70000.c:3154`) and the `Solid Bus Comp`.
+- Conclusion: Pro EQ is not a Kontakt 8 module, so G9 is out of scope for this
+  product. The matrix marks it `n/a`.
+- Remaining work in this family: G4/G5 (shelf law), G6 (glide writer), G7
+  (live switches), plus the multi-slot legacy case. For G6, a sample-accurate
+  measurement is needed: MIDI timing jitter (tens of ms) is too coarse for a
+  20 ms glide, so the plan is a KSP-timed step against a continuous sine.
