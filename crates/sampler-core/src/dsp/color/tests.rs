@@ -87,6 +87,17 @@ fn gainer_matches_the_frozen_slew_equation() {
 }
 
 #[test]
+fn gainer_inside_the_unity_window_passes_the_input_untouched() {
+    // Native unity shortcut: both ends in [0.999, 1.001] leave the samples bit-exact.
+    let settings = ColorSettings { gainer: Some(GainerSettings { gain: knob(1.0004), dry: 0. }), ..ColorSettings::IDENTITY };
+    let got = render(settings, 1, 40);
+    let input = signal(0., 40);
+    for i in 0..40 {
+        assert_eq!(got[i], [input[0][i], input[1][i]], "frame {i}");
+    }
+}
+
+#[test]
 fn gainer_slews_toward_a_moving_target_with_the_native_coefficient() {
     // A control ramp from 1.0 down to 0.0: g[n+1] = g[n] + (t - g[n]) * 0.00055555...
     let mut bindings = Vec::new();
