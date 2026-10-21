@@ -16,8 +16,10 @@
 //!   emulated process block to float tolerance (test below).
 //!
 //! The hop stages themselves (window, FFTs, multiply, overlap-add) and the
-//! per-bin multiplier boundary `BinGain` are in `super::hop`. `IdentityDelay`
-//! stays as the model of the zero-latency path until that path is translated.
+//! per-bin multiplier boundary `BinGain` are in `super::hop`; the zero-latency
+//! workers are in `super::zerolatency`. `IdentityDelay` remains the identity-state
+//! model for every rate and mode (including zero latency at 88.2 kHz and up, whose
+//! resampler around the zero-latency workers is not translated yet).
 //! Nothing here changes `dsp.rs`.
 
 use crate::reference_plan::ReferencePlan;
