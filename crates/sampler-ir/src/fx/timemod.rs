@@ -142,6 +142,22 @@ pub enum Native {
     /// UVI analog tape delay (`Buzz`, process `0x14166ab40`); the unit's
     /// dry/wet is `Dry`/`Wet`.
     UviBuzzDelay(UviBuzzDelay),
+    /// Kontakt Wow / Flutter (0x6A): a generic tape-transport pitch wobble
+    /// (`sampler_core::dsp::timemod::wowflutter`). Its laws are not verified
+    /// against Kontakt; the mapping reports them as unknown.
+    WowFlutter(WowFlutter),
+}
+
+/// Wow / Flutter controls, normalized `0..=1`. The mix is the line's wet gain.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WowFlutter {
+    pub wow: f32,
+    pub flutter: f32,
+    /// Sets both modulation rates (wow 0.5..2 Hz, flutter 6..12 Hz).
+    pub speed: f32,
+    /// Right channel's modulation phase offset, up to half a cycle.
+    pub stereo: f32,
 }
 
 /// UVI Velvet Delay controls in native units.
@@ -825,6 +841,12 @@ impl Config {
                 let unit = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
                 if !([p.feedback, p.detune, p.pitch, p.offset, p.cross].into_iter().all(unit) && p.unit.is_finite() && p.time.is_finite() && (0. ..=2000.).contains(&p.time)) {
                     return Err("psyche delay");
+                }
+            }
+            if let Native::WowFlutter(w) = l.native {
+                let unit = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
+                if !([w.wow, w.flutter, w.speed, w.stereo].into_iter().all(unit)) {
+                    return Err("wow flutter");
                 }
             }
             if let Native::TwinDelay(t) = l.native {

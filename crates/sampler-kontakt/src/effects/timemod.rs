@@ -12,7 +12,7 @@ use sampler_ir::{
     Reason,
     fx::timemod::{
         Allpass, BANK_VOICES, BankVoice, Config, DelayTime, Lfo, LfoShape, Line, Native, Order, Rate, PsycheDelay,
-        SweepLaw, TwinDelay, VoiceBank,
+        SweepLaw, TwinDelay, VoiceBank, WowFlutter,
     },
 };
 
@@ -28,6 +28,9 @@ pub(crate) enum Unit {
     Choral { fields: [f32; 7], invert: bool, scatter: bool, mode: i32 },
     Twin(TwinDelay),
     Psyche(PsycheDelay),
+    /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
+    /// gate (flag), mix (f32).
+    WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
 }
 
 /// Choral voice tables (0x14193cd70), f32 bits: G0 delay scale, G1 rate scale,
@@ -187,6 +190,15 @@ pub(super) fn read_twin(version: u16, r: &mut Reader) -> Option<Unit> {
     }))
 }
 
+/// Wow / Flutter v0x10 (reader `0x140ac65f0`); field order from fx_bite_dirt_freak_wowflutter_twindelay.tsv.
+pub(super) fn read_wow_flutter(version: u16, r: &mut Reader) -> Option<Unit> {
+    if version != 0x10 {
+        return None;
+    }
+    let fields = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+    Some(Unit::WowFlutter { fields, gate: r.flag()?, mix: r.f32()? })
+}
+
 /// Psyche Delay v0x10 (reader `0x140ac5bc0`): time, feedback, detune, pitch,
 /// offset, cross; reverse-stereo, detune-stereo and reverse bytes; the time
 /// sub-object's unit factor and two unused floats, then a flag.
@@ -325,6 +337,26 @@ pub(super) fn config(unit: &Unit, dry: f64, notes: &mut Notes) -> Option<Config>
             let mut line = Line::single(DelayTime::Ms(0.), 2000.);
             line.native = Native::TwinDelay(t);
             Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: 1. }
+        }
+        Unit::WowFlutter { fields: [wow, flutter, scrape, speed, stereo, age, saturation], gate, mix } => {
+            if ![wow, flutter, scrape, speed, stereo, age, saturation, mix].iter().all(|v| unit_interval(&[*v])) {
+                notes.push(("parameters".into(), format!("{wow}/{flutter}/{speed}/{stereo}/{mix}"), Reason::InvalidValue));
+                return None;
+            }
+            // Wow, flutter, speed, stereo and mix run the generic tape-transport law
+            // (dsp/timemod/wowflutter.rs); its Kontakt laws are not extracted.
+            notes.push(("Wow / Flutter pitch law".into(), "generic, not Kontakt-verified".into(), Reason::UnknownLaw));
+            for (name, value) in [("Scrape", scrape), ("Age", age), ("Saturation", saturation)] {
+                if value > 0. {
+                    notes.push((format!("Wow / Flutter {name}"), format!("{value}"), Reason::UnknownLawOmitted));
+                }
+            }
+            if gate {
+                notes.push(("Wow / Flutter Gate".into(), "on".into(), Reason::UnknownLawOmitted));
+            }
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::WowFlutter(WowFlutter { wow, flutter, speed, stereo });
+            Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: lfo(0., 0., 0.), dry, wet: f64::from(mix) }
         }
         Unit::Psyche(p) => {
             // Kernel 0x140aadb50 (sampler_core dsp/timemod/psyche.rs): wet only.
@@ -629,5 +661,23 @@ mod tests {
         let sampler_ir::fx::timemod::Native::TwinDelay(t) = config.line.unwrap().native else { panic!() };
         assert_eq!((t.time, t.predelay, t.feedback, t.level, t.cross, t.width), ([0.0001, 0.00021], [0.001, 0.0013], [0.6, 0.5], [0.9, 0.7], 0.3, 0.8));
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    /// Reader 0x140ac65f0: seven floats, the gate flag, then the mix.
+    #[test]
+    fn wow_flutter_reads_its_stream_and_maps_generic_law() {
+        let mut public = Vec::new();
+        for f in [0.3f32, 0.2, 0.1, 0.5, 0.4, 0., 0.] {
+            public.extend(f.to_le_bytes());
+        }
+        public.push(0);
+        public.extend(0.8f32.to_le_bytes());
+        let built = chain(&[Slot { public, ..slot(0x6a, 0x10, &[]) }], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
+        assert_eq!((w.wow, w.flutter, w.speed, w.stereo), (0.3, 0.2, 0.5, 0.4));
+        assert!((config.wet - 0.8).abs() < 1e-6);
+        // Scrape is set, so it is reported as omitted; the generic pitch law is always reported.
+        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLawOmitted && n.1.contains("Scrape")), "{:?}", built.notes);
     }
 }
