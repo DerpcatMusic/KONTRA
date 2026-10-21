@@ -115,6 +115,36 @@ impl S1200ModeFilter {
     }
 }
 
+/// S1200 output rate in Hz (object `+0x78`, written by the render as 26000.0).
+pub const S1200_OUTPUT_RATE: f64 = 26000.0;
+
+/// The S1200 output stage: sample-and-hold at [`S1200_OUTPUT_RATE`], then the
+/// quantiser on each captured sample. The render's copy path is taken always
+/// (`+0x74` is zeroed before every block), so no interpolation is applied.
+/// A capture happens at frame `n` when `n >= next`, and `next` advances by
+/// `host_rate / 26000` (the same schedule as the shared `hold_rate`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct S1200Output {
+    interval: f64,
+    next: f64,
+    held: f32,
+}
+
+impl S1200Output {
+    pub fn new(host_rate: u32) -> Self {
+        Self { interval: f64::from(host_rate) / S1200_OUTPUT_RATE, next: 0.0, held: 0.0 }
+    }
+
+    /// Process frame `index` (frames are counted from 0 by the caller).
+    pub fn process(&mut self, index: u64, input: f32) -> f32 {
+        if index as f64 >= self.next {
+            self.held = s1200_quantize(input);
+            self.next += self.interval;
+        }
+        self.held
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +204,28 @@ mod tests {
             assert!((dc - 1.0).abs() < 1e-4, "mode {m} dc {dc}");
         }
         assert!(s1200_mode(1).is_none() && s1200_mode(6).is_none());
+    }
+
+    #[test]
+    fn output_stage_holds_at_26k_with_the_quantiser() {
+        // Captures land on ceil(k * 44100 / 26000), the 26 kHz schedule of the
+        // render's copy path; 44100 frames give 26000 captures.
+        let mut out = S1200Output::new(44100);
+        let mut captures = Vec::new();
+        let mut last = f32::NAN;
+        for n in 0..44100u64 {
+            let y = out.process(n, n as f32);
+            if y != last {
+                captures.push(n);
+                last = y;
+            }
+        }
+        assert_eq!(captures.len(), 26000);
+        for (k, &n) in captures.iter().enumerate().take(12) {
+            let want = (k as f64 * 44100.0 / 26000.0).ceil() as u64;
+            assert_eq!(n, want, "capture {k}");
+        }
+        // The held value is the quantised input at the capture frame.
+        assert_eq!(S1200Output::new(44100).process(0, 0.25), s1200_quantize(0.25));
     }
 }
