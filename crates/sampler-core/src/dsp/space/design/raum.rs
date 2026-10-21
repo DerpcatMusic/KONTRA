@@ -18,9 +18,13 @@
 //! - out: signed taps of the damped reads (Airy blends `T3`/`T4` by
 //!   diffusion) into 4 (Grounded) or 2 (Airy) coupled units, angle
 //!   `±0.35x`/`±0.2625x`, cross rotation 0.01; `√(1-mix)·in + √mix·G·wet`.
+//! - Cosmic (type 2) replaces the kernel with the chain bank in `cosmic.rs`
+//!   (eight allpass stages on two lines each); the same outer applies.
 
-use super::super::network::{Coupled, Interp, LineSpec, Matrix, Modulation, Ring, Spec, TapFrom};
+use super::super::network::{Chain, Coupled, Interp, LineSpec, Matrix, Modulation, Ring, Spec, TapFrom};
+use super::cosmic::Cosmic;
 use super::galois_law::{hadamard_maps_of, matrix_ab, primes};
+use super::identity;
 
 const LINES: usize = 31;
 const GROUNDED_B: [u32; LINES] = [0, 1, 10, 17, 28, 23, 6, 7, 8, 9, 2, 11, 12, 13, 14, 15, 16, 3, 18, 19, 20, 21, 22, 5, 24, 25, 26, 27, 4, 29, 30];
@@ -177,15 +181,28 @@ pub(in super::super) fn kernel(k: &Kernel, rate: f64) -> Spec {
     s
 }
 
-/// The Raum `Spec` for core controls `p` (`Topology::Raum`); Cosmic (type 2)
-/// is not built.
+/// The Raum `Spec` for core controls `p` (`Topology::Raum`): Grounded and Airy
+/// run the 31-line kernel; Cosmic (type 2) the chain bank.
 pub(in super::super) fn spec(p: &[f32; 20], rate: u32) -> Result<Spec, crate::Error> {
     let kind = ((3.0 * p[9]) as u32).min(2);
     if kind == 2 {
-        return Err(crate::Error::InvalidInput);
+        return Ok(cosmic(p, rate));
     }
     let k = Kernel { airy: kind == 1, decay: p[10], size: p[11], damping: p[12], modulation: p[13], diffusion: p[15], freeze: p[16] >= 0.5, reverb: p[17], sparse: p[18] >= 0.5 };
     Ok(kernel(&k, f64::from(rate)))
+}
+
+/// Cosmic (type 2, `cosmic.rs`) as a `Spec`: no lines, so `direct = 1` feeds
+/// the predelayed pair straight into the chain. The chain output is the wet
+/// signal unscaled: the kernel's Galois gain and wet/dry law do not apply
+/// (CONFIRMED, findings §10.3 with `g = 1` steady; §10.4 skips the kernel).
+/// Outer's dry/wet and post filters apply as for Grounded and Airy (INFERRED:
+/// findings §10.1 and §10.6 are UNKNOWN, so their feedback is Outer's).
+fn cosmic(p: &[f32; 20], rate: u32) -> Spec {
+    let mut s = Spec::new(Vec::new(), identity());
+    s.direct = 1.0;
+    s.chain = Chain::Cosmic(Box::new(Cosmic::new(p[10], p[11], p[13], p[14], rate)));
+    s
 }
 
 /// `fexp2` of the Raum low shelf (`0x141982300`): nearest-even split,
@@ -371,5 +388,25 @@ mod tests {
         assert_eq!(l[0], 1.0);
         let want = [-8.41861e-5, -1.988_768e-4, -1.369_708e-4];
         assert!(l[239..242].iter().zip(want).all(|(g, w)| (g - w).abs() < 2e-9), "{:?}", &l[236..242]);
+    }
+
+    /// Cosmic (type 2) through the outer, 3 s at 48 kHz, unit impulse: finite,
+    /// not silent, and the last quarter carries less energy than the first.
+    #[test]
+    fn cosmic_impulse_is_finite_and_decays() {
+        let p = [0.5, 0.1, 0.0, 0.25, 0.0625, 0.0, 0.0, 0.6, 0.7, 1.0, 0.8, 1.0, 0.25, 0.5, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0];
+        let frames = 3 * 48_000;
+        let mut o = Outer::new(&p, 48_000);
+        let mut net = super::super::super::network::Network::new(spec(&p, 48_000).unwrap());
+        let (mut l, mut r) = (vec![0f32; frames], vec![0f32; frames]);
+        l[0] = 1.0;
+        for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+            o.process(l, r, |a, b| net.process(a, b));
+        }
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        let energy = |a: &[f32], b: &[f32]| a.iter().chain(b).map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let q = frames / 4;
+        let (head, tail) = (energy(&l[..q], &r[..q]), energy(&l[frames - q..], &r[frames - q..]));
+        assert!(head > 0.0 && tail < head, "head {head} tail {tail}");
     }
 }

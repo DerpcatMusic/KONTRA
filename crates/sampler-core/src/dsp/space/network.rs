@@ -33,6 +33,15 @@ pub(super) const GLIDE_BLOCK: usize = 64;
 /// Frames per pass of the parallel-lines path.
 const BLOCK: usize = 64;
 
+/// The Kontakt LCG `x·0x19fb4787 + 0x16d1b86b` (two steps per draw, seed in
+/// `lcg`): a uniform in `[0, 1)` from `(x₂·2³² + x₁)·2⁻⁶⁴`.
+pub(super) fn lcg_uniform(lcg: &mut u32) -> f64 {
+    let x1 = lcg.wrapping_mul(0x19fb_4787).wrapping_add(0x16d1_b86b);
+    let x2 = x1.wrapping_mul(0x19fb_4787).wrapping_add(0x16d1_b86b);
+    *lcg = x2;
+    (f64::from(x2) * 4_294_967_296.0 + f64::from(x1)) * 5.421_010_862_427_522e-20
+}
+
 /// A power-of-two delay ring. Each ring stores frame `w` at a different
 /// offset (`skew`), so rings of one size written at the same `w` do not
 /// all land in one cache set.
@@ -73,6 +82,15 @@ impl Ring {
         let i = d as usize;
         let f = d - i as f32;
         (1.0 - f) * self.at(w, i) + f * self.at(w, i + 1)
+    }
+    /// Four-point Catmull-Rom (tension 0.5) at `d ≥ 1` frames behind `w`:
+    /// taps `⌊d⌋-1 ..= ⌊d⌋+2` frames back, `t = frac(d)`.
+    #[inline(always)]
+    pub(super) fn catmull_rom(&self, w: usize, d: f32) -> f32 {
+        let u = d as usize;
+        let t = d - u as f32;
+        let (p0, p1, p2, p3) = (self.at(w, u - 1), self.at(w, u), self.at(w, u + 1), self.at(w, u + 2));
+        p1 + t * (0.5 * (p2 - p0) + t * ((p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3) + t * (-0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3)))
     }
 }
 
@@ -242,6 +260,8 @@ pub(super) enum Chain {
     Jezar([Vec<Allpass>; 2]),
     Units([Vec<Unit>; 2]),
     Coupled(Vec<Coupled>),
+    /// Kontakt Raum Cosmic's eight-stage chain bank (`design/cosmic.rs`).
+    Cosmic(Box<super::design::cosmic::Cosmic>),
 }
 
 /// A trapezoidal state-variable low shelf (Kontakt `0x140d947a0`).
@@ -538,6 +558,7 @@ impl Network {
                     u.rings.iter_mut().flatten().for_each(|r| r.buf.fill(0.0));
                 }
             }
+            Chain::Cosmic(c) => c.clear(),
         }
         for (i, l) in s.lines.iter().enumerate() {
             self.cur[i] = l.base;
@@ -658,10 +679,7 @@ impl Network {
             if self.count == 0 {
                 self.count = period;
                 for rot in [&mut self.rot, &mut self.rot2] {
-                    let x1 = self.lcg.wrapping_mul(0x19fb_4787).wrapping_add(0x16d1_b86b);
-                    let x2 = x1.wrapping_mul(0x19fb_4787).wrapping_add(0x16d1_b86b);
-                    self.lcg = x2;
-                    if (f64::from(x2) * 4_294_967_296.0 + f64::from(x1)) * 5.421_010_862_427_522e-20 < 0.25 {
+                    if lcg_uniform(&mut self.lcg) < 0.25 {
                         rot.1 = -rot.1;
                     }
                 }
@@ -945,6 +963,11 @@ impl Network {
                     for j in 0..len {
                         [o[0][j], o[1][j]] = u.tick(w0.wrapping_add(j), [o[0][j], o[1][j]]);
                     }
+                }
+            }
+            Chain::Cosmic(c) => {
+                for j in 0..len {
+                    [o[0][j], o[1][j]] = c.tick(w0.wrapping_add(j), [o[0][j], o[1][j]]);
                 }
             }
         }

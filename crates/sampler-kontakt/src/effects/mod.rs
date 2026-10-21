@@ -352,6 +352,8 @@ impl Slot {
             0x6a => Params::TimeMod(timemod::read_wow_flutter(self.version, &mut r)?),
             // Cosmic (type 2) keeps its decoded fields: its core is not built.
             0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
+            // Grounded (0), Airy (1) and Cosmic (2) decode alike.
+            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
                 let (core, synced) = space::read_raum(&mut r)?;
                 Params::Raum { core, synced }
             }
@@ -1383,6 +1385,159 @@ mod tests {
     }
 
     #[test]
+    fn legacy_filters_keep_the_authored_slot_and_their_stored_knobs() {
+        // Saved types 2 (LP1) and 3 (HP1): the cascade core takes the stored knobs.
+        for (kind, cutoff, poles, response) in [
+            (2i32, 0.5996094f32, 1, sampler_ir::fx::filter::Response::LowPass),
+            (3, 0., 1, sampler_ir::fx::filter::Response::HighPass),
+        ] {
+            let mut payload = kind.to_le_bytes().repeat(2);
+            for value in [cutoff, 0.] {
+                payload.extend(value.to_le_bytes());
+            }
+            for scope in [Scope::Voice, Scope::Bus] {
+                let mut saved = slot(0x18, payload.clone(), 1.);
+                saved.slot = 5;
+                let out = chain(&[saved], scope);
+                assert!(
+                    !out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
+                    "{kind}: {:?}",
+                    out.notes
+                );
+                assert_eq!(out.filter_slots, [(5, 0)]);
+                let sampler_ir::Processor::FilterBank(c) = out.processors[0] else {
+                    panic!("missing filter")
+                };
+                assert_eq!(c.topology, sampler_ir::fx::filter::Topology::Cascade);
+                assert_eq!((c.response, c.poles), (response, poles));
+                assert_eq!(c.cutoff, f64::from(cutoff));
+            }
+        }
+        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, &[]).unwrap().0[0] else {
+            panic!("missing filter")
+        };
+        assert_eq!((c.cutoff, c.resonance), (f64::from(0.4f32), f64::from(0.7f32)));
+    }
+
+    #[test]
+    fn sv_filters_are_native_cascade_classes() {
+        use sampler_ir::fx::filter::{Topology, Variant};
+        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, &[]).unwrap().0[0] else {
+            panic!()
+        };
+        assert_eq!((c.topology, c.variant, c.cutoff as f32), (Topology::Cascade, Variant::Sv, 0.293));
+        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, &[0.3]).unwrap().0[0] else {
+            panic!()
+        };
+        assert_eq!(c.variant, Variant::MultiSv { mode: 2, bandwidth: 0.3 });
+        // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
+        assert!(filter(8, 0.5, 0.5, &[]).is_ok());
+        assert!(filter(1, 0.5, 0.5, &[]).is_err());
+    }
+
+    use super::*;
+
+    fn slot(module: u16, public: Vec<u8>, gain: f32) -> Slot {
+        Slot {
+            slot: 0,
+            module,
+            version: 0x50,
+            bypass: false,
+            output_gain: gain,
+            dry_level: 1.0,
+            output_set: true,
+            public,
+        }
+    }
+
+    // Owned wire fixture: the wrapper's internal enum deliberately differs from the child ID.
+    fn effect_fixture(module: u16, version: u16, public: &[u8]) -> BParamArrayBParFX8 {
+        mod wire {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/chunks.rs"
+            ));
+        }
+        let mut state = 20u32.to_le_bytes().to_vec();
+        state.extend([0; 6]);
+        state.extend(1f32.to_le_bytes());
+        state.extend(0f32.to_le_bytes());
+        state.extend((-1i32).to_le_bytes());
+        let child = wire::chunk(module, &wire::object(version, &[], public, &[]));
+        let wrapper = wire::object(0x50, &state, &[], &child);
+        let mut array = vec![0];
+        array.extend(0x13u16.to_le_bytes());
+        array.extend(8u32.to_le_bytes());
+        for index in 0..8 {
+            array.push(u8::from(index == 5));
+            if index == 5 {
+                array.extend(wire::chunk(0x25, &wrapper));
+            }
+        }
+        BParamArrayBParFX8::try_from(&Chunk {
+            id: RACK,
+            data: array,
+        })
+        .unwrap()
+    }
+
+    // Authored independently of the decoder schema: native Raum reader
+    // 0x140ac5cc0, v0x10, serializes I + 12F + 2B + 3F + B (67 bytes).
+    fn raum_payload() -> Vec<u8> {
+        // Kontakt 8.13.1 FUN_140ac5cc0 validates the leading u32 as an enum 0..=2.
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        bytes.extend(
+            [
+                0.125f32, 0.25, 0.5, 1., 2., 4., 8., 16., 32., 64., 128., 256.,
+            ]
+            .into_iter()
+            .flat_map(f32::to_le_bytes),
+        );
+        bytes.extend([0xa5, 0x5a]);
+        bytes.extend([-0.5f32, -1., -2.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0xff);
+        bytes
+    }
+
+    /// Cosmic (type 2): the same fields land on the core controls, and the
+    /// chain bank is built (no 'not built' note, no error).
+    #[test]
+    fn raum_cosmic_maps_to_the_chain_bank() {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
+        bytes.extend([0, 0]);
+        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0);
+        let array = effect_fixture(0x65, 0x10, &bytes);
+        let slots = rack(&array, |_, error| panic!("{error}"));
+        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        assert_eq!(core[9], 1.0);
+        assert_eq!([core[6], core[10], core[11], core[13], core[14], core[17]], [0.1, 0.6, 0.8, 0.7, 0.15, 0.4]);
+        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
+        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum && n.raum.is_some_and(|r| r[9] == 1.0)))), "{:?}", out.notes);
+        assert!(out.notes.iter().all(|note| !format!("{note:?}").contains("not built")), "{:?}", out.notes);
+    }
+
+    /// Airy (type 1): fields land on core controls (apply `0x140abb190`);
+    /// a 40 ms predelay becomes `√((40·0.0125))/2`.
+    #[test]
+    fn raum_airy_maps_fields_to_core_controls() {
+        let mut bytes = 1i32.to_le_bytes().to_vec();
+        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
+        bytes.extend([1, 0]);
+        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0);
+        let array = effect_fixture(0x65, 0x10, &bytes);
+        let slots = rack(&array, |_, error| panic!("{error}"));
+        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        assert_eq!(core[9], 0.5);
+        assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
+        assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
+        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
+        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
+    }
+
+    #[test]
     fn malformed_effect_payloads_keep_raw_bytes_and_report_physical_framing_errors() {
         use sampler_ir::{Reason, SourceParameterValue};
         let cases = [
@@ -1503,9 +1658,8 @@ mod tests {
                 assert_eq!(&bytes[52..54], &[0xa5, 0x5a]);
                 assert_eq!(&bytes[54..58], &(-0.5f32).to_le_bytes());
                 assert_eq!(bytes[66], 0xff);
-                assert!(
-                    matches!(slots[0].params(), Some(Params::Fields(ref fields)) if fields.len() == 19)
-                );
+                // Type 2 (Cosmic) is admitted: the chain bank is built from its fields.
+                assert!(matches!(slots[0].params(), Some(Params::Raum { core, .. }) if core[9] == 1.0));
                 assert_eq!(saved.fields.len(), 19);
                 for (name, value) in [
                     ("param_0", SourceParameterValue::Integer(2)),
@@ -1539,6 +1693,13 @@ mod tests {
                     // The unit carries its live slot address; the knobs are the decoded tape.
                     assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Color(c)
                         if *c == sampler_ir::fx::color::Config { address: c.address, ..sampler_ir::fx::color::Config::tape(tape) })));
+                    continue;
+                }
+                // Cosmic is admitted on a bus (Raum is bus-only, as Grounded and Airy are).
+                if module == 0x65 && scope == Scope::Bus {
+                    assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
+                    // Only the feedback limiter's own UnknownLaw note (this payload has feedback > 0).
+                    assert!(out.notes.iter().all(|n| n.3 == Reason::UnknownLaw), "{:?}", out.notes);
                     continue;
                 }
                 assert!(out.processors.is_empty());

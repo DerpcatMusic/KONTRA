@@ -802,6 +802,7 @@ fn generic_plate(n: &Network, rate: f64) -> Spec {
 }
 
 mod plate;
+pub(super) mod cosmic;
 pub(super) mod raum;
 
 #[cfg(test)]
