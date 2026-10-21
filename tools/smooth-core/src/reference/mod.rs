@@ -4,3 +4,4 @@
 //! code for differential checks against the emulated binary, not wired into `dsp.rs`.
 
 pub mod output;
+pub mod params;
