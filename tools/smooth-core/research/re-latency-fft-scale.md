@@ -280,3 +280,59 @@ analysis sub-object, not from `M`. Not resolved; the next step is the dispatcher
 2. Default bin counts: dump the default record payloads (bytes/4 = bins).
 3. Decode `PluginUI::slot12` (0x569f60) only if the display scale matters for the detector.
 4. Writer of PluginUI+0xd0 (divisor for M).
+
+## 10. Route to the detector's bin vectors (pass 4, static, 2026-10-21)
+
+Section 9 said no caller of `fcn.180621d50` (0x621d50) exists. That is wrong: the call is
+an indirect one, through a this-adjusting thunk and a vtable. Verified with
+`re-tools/refs.py` (rel32, rip-relative, abs64 and rva32 forms, plus vtable and RTTI decode):
+
+| step | address | fact (checked) |
+|---|---|---|
+| 1 | `0x62a710` | thunk `add rcx, 8; jmp 0x180621d50` (rel32 hit at 0x62a714) |
+| 2 | vtable `0x2073998`, slot 2 | `0x20739a8` holds `0x18062a710`. RTTI: `_Func_impl_no_alloc<lambda_1 in MainComponent::update(Context, Input, Output)>` |
+| 3 | `0x6210d0` = `MainComponent::slot2` | size 3191. Sets `uStack_108 = 0x182073998` (the lambda vptr), then `func_0x18033cd50(*(arg3+0x100), &visitor)` |
+| 4 | `0x621d50` | record handler reached from the lambda's invoke. Writes S+0x770/0x788/0x7a0/0x7b8 (section 9) |
+
+- `MainComponent` is the root class: vtable `0x2073b90` (slot 2 = `0x6210d0`, RTTI `.?AUMainComponent@@`).
+  Its vptr is stored at `0x61d94f` and `0x620f0b` (refs tool, rip-relative).
+  `MainComponent::update` is the function whose lambda is the visitor.
+- `0x6210d0` runs on `*(arg2+0x648) = S` (`iVar1`). It writes `S+0x800/0x804/0x76c` (time or block
+  counters) and calls the weight/bin helpers `0x6293b0`, `0x563970`, `0x56cad0`, `0x629480` and `0x6fc030`.
+  Those helpers have not been read.
+- A second table reference: `.data` RVA `0x241cb04` holds 32-bit `0x621d50`. The table at
+  `0x241cad4..0x241cb34` alternates MainComponent RVAs (`0x620e70`, `0x6210d0`, `0x621d47`, `0x621f18`,
+  `0x622890`, ...) with data pointers (`0x20fc7a0`, `0x21355d0`). Shape: visitor or dispatch table.
+  NOT decoded: the table's index and its user are open.
+
+### Where the defaults come from (what this pass could not reach)
+
+- `0x88fa90` (size 3022) registers the DSP's key names through a host vtable:
+  `(**(host+0x18))(host, id, name, flag)` for ids 0..0xd (`reduction_curve_freq_points_lo/hi`,
+  `reduction_curve_magnitudes_lo/hi`, `offset_curve_freq_points`, `detail/attack/release_offset_curve`,
+  `max_cut_per_channel`, `band_solo_channels`, `input_channel_layout`, `samplerate`, `sidechain_input_level`).
+  Values come back through `(**(host+0x20))(host, id, out, flag)`.
+  The bin counts are therefore host state, read with these getters.
+- `0x88fa90` has one caller, `0x88f430` (size 171). That function builds the DSP object: its vtable is
+  filled with `0x88f4e0, 0x88f4f0 (process, section 6), 0x88f500, 0x88f530, 0x88f610 (getLatency), 0x88f660`.
+- `0x88f430`'s caller is `0x88e3a0`. Its decompile is nonsense (a `do { } while` on the return address
+  and a computed call `(*(r15+0x70e))()`). It has **zero** static callers. The construction path is
+  obfuscated or reached only through a computed dispatch. Static reading stops here.
+- The host object that implements `+0x18/+0x20` is not identified. Its default values (the
+  reduction and offset curve points, the sample-rate table, and the layout) are the missing ground truth.
+
+### Consequence for the oracle (task's "wall")
+
+The emulated oracle can reach the bin fill and the per-block analysis (sections 6-7) by calling
+`0x6210d0` (or `0x621d50`) directly with a synthetic visitor and a synthetic `S`. It cannot yet produce
+per-preset bin counts or weights. The next static step is to identify the host class whose
+vtable slots `+0x18/+0x20` implement the getter (its RTTI name, then its default-value table). If that
+fails, the fallback is a breakpoint-style trace in the emulator on `0x88f430` with a fake host whose
+getter records every call.
+
+### Still open (pass 4)
+
+1. Host class of `+0x18/+0x20` and its default data.
+2. `0x88e3a0`: what calls it (computed-call dispatcher, or a patched-in path).
+3. The index of the `.data` RVA table at `0x241cad4` and its user.
+4. Helpers `0x6293b0`, `0x629480`, `0x56cad0` and `0x6fc030` on the S-side of `0x6210d0`.
