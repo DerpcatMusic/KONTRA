@@ -126,3 +126,31 @@ scope asked for crate-scoped tests and the PR runs CI).
    with the native formula if it differs (G4, G5).
 3. Add one golden-coefficient test for the shelf and one step-ramp test for
    smoothing (G6), then update the gap table.
+
+## 5. Decompile evidence (Kontakt 8 export, READY, 2026-10-21)
+
+Confirmed in the decompile (addresses are function starts in `kontakt8/*.c`):
+
+- **Knob storage.** The setter `0x141ac70f0` stores the twelve Solid knobs at
+  `module+0x13e30 .. +0x13e5c` (core ids 0..10, 12, 13). Id `0x20` is the bank
+  select, and it writes 16 bank values through the setter. Those stored values
+  are the knob targets.
+- **Recompute.** `0x141a89350` is the Solid coefficient update, one call per
+  knob id: it writes the knob as a double into the band object (stride `0x240`)
+  and rebuilds that section (spline evaluators `0x141a98340`/`0x141a95be0`, peak
+  design `0x141ac4cf0`). `0x141a89140` re-runs it for all knobs.
+- **Process.** `0x141a595d0` is the per-block Solid processor. It keeps a
+  current value per knob at `+0x13db0 + 4i`, with a per-sample increment at
+  `+0x13df0 + 4i`, and calls the recompute for any knob whose increment is
+  non-zero. Its per-sample loop is `param_4` long. Its pending-update path
+  calls `0x141a89140` and clears the flag at `+0x13da1`.
+- **Copy/snap.** The state-copy function `0x141a90...` (near `0x141a917b0`)
+  snaps current to target when the module is active, and otherwise marks a
+  pending update.
+
+**Not yet found:** the code that writes the increment at `+0x13df0`. Nothing
+writes it except zeroing in the reset path, so the glide length (20 ms in the
+RE note) and its shape (linear per sample vs my one-pole per block) are still
+unconfirmed. The current code's one-pole glide should be treated as a
+placeholder until that writer is found. Shelf law (G4/G5), live switches (G7),
+and Pro EQ (G9) are not closed in this pass.
