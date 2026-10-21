@@ -71,7 +71,7 @@ fn native_lanes(p: ir::Processor) -> Vec<(NativeControl, crate::EngineParameterB
                 ],
             )
         }
-        ir::Processor::LiveFormant { knobs: [talk, sharp, size], address } => (
+        ir::Processor::LiveFormant { knobs: [talk, sharp, size], address, .. } => (
             address,
             vec![
                 ("ENGINE_PAR_FORMANT_TALK", f64::from(talk), unit),
@@ -2976,9 +2976,12 @@ impl Lowering<'_> {
                     taps: d.taps,
                 }))
             }
-            ir::Processor::LiveFormant { .. } => {
+            ir::Processor::LiveFormant { second, .. } => {
                 let lanes = native_lanes(processor);
-                Processor::LiveFormant(std::array::from_fn(|i| native_parameter(&lanes, i)))
+                Processor::LiveFormant {
+                    knobs: std::array::from_fn(|i| native_parameter(&lanes, i)),
+                    second,
+                }
             }
             ir::Processor::TimeMod(config) => match live_knobs(processor) {
                 Some(knobs) => Processor::LiveTimeMod(config, knobs),
