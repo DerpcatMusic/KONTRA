@@ -71,8 +71,11 @@ const MODULES: &[(u16, &str)] = &[
     (0x69, "Vibrato Chorus"),
     (0x6a, "Wow / Flutter"),
     (0x6b, "Twin Delay"),
+    (0x71, "Beat Masher"),
     (0x72, "Gater"),
+    (0x73, "Beat Slicer"),
     (0x74, "Reverse Grain"),
+    (0x75, "Transpose Stretch"),
 ];
 
 pub(crate) fn module_name(id: u16) -> String {
@@ -1407,7 +1410,10 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                match color::unproved(fx.module).or(timemod::unproved(fx.module)) {
+                match color::unproved(fx.module)
+                    .or(timemod::unproved(fx.module))
+                    .or(mangling::unproved(fx.module))
+                {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                     None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },
@@ -2857,6 +2863,21 @@ mod tests {
     }
 
     #[test]
+    fn mangling_modules_are_named_and_reported_with_their_reason() {
+        for (module, name) in [(0x71, "Beat Masher"), (0x73, "Beat Slicer"), (0x75, "Transpose Stretch")] {
+            let out = chain(&[slot(module, vec![0; 16], 1.0)], Scope::Voice);
+            assert!(out.processors.is_empty(), "{name}");
+            let (_, _, value, reason) = out
+                .notes
+                .iter()
+                .find(|(_, feature, _, _)| feature == "effect")
+                .expect("missing effect diagnostic");
+            assert_eq!(*reason, sampler_ir::Reason::NotModeled);
+            assert!(value.starts_with(name) && value.contains("reader VA"), "{value}");
+        }
+    }
+
+    #[test]
     fn unsupported_effect_diagnostics_group_without_public_payload_bytes() {
         let mut values = Vec::new();
         for byte in [0xa1, 0xb2] {
@@ -3882,3 +3903,4 @@ pub(crate) mod eq;
 pub(crate) mod timemod;
 pub(crate) mod space;
 pub(crate) mod color;
+pub(crate) mod mangling;
