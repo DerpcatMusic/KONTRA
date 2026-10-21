@@ -6,6 +6,7 @@
 //! skewed) without the control knowing which one it is. A change lands in the
 //! caller's `value`, and the bind turns it into a host gesture.
 
+use mui::host::{NOTCH_LINES, WHEEL_ROLL};
 use mui::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,17 +20,26 @@ pub const STEP: f64 = 0.01;
 /// Of a step, under Shift or Ctrl: the fine adjustment.
 pub const FINE: f64 = 0.1;
 
-/// How long a roll of the wheel counts as one edit: the host records a run of
-/// notches as one undo step, not one per notch.
-const ROLL: Duration = Duration::from_millis(350);
+/// How long a roll of the wheel stays one edit: see [`WHEEL_ROLL`].
+fn roll() -> Duration {
+    Duration::from_secs_f64(WHEEL_ROLL)
+}
 
 /// When the wheel last moved a control; `None` before it ever has.
 static LAST_NOTCH: Mutex<Option<Instant>> = Mutex::new(None);
 
-fn mark_notch() {
+fn mark_notch(id: &str) {
+    let now = Instant::now();
     if let Ok(mut at) = LAST_NOTCH.lock() {
-        *at = Some(Instant::now());
+        *at = Some(now);
     }
+    ROLLS.with(|r| r.borrow_mut().insert(id.to_string(), now));
+}
+
+/// Whether the wheel is still turning control `id`: its edit stays open
+/// until the roll stops (see `Bridge::hold`).
+pub fn rolling(id: &str) -> bool {
+    ROLLS.with(|r| r.borrow().get(id).is_some_and(|at| at.elapsed() < roll()))
 }
 
 /// Whether the wheel is still rolling: an edit the host should keep open, as
@@ -39,23 +49,25 @@ pub fn wheel_rolling() -> bool {
         .lock()
         .ok()
         .and_then(|at| *at)
-        .is_some_and(|at| at.elapsed() < ROLL)
+        .is_some_and(|at| at.elapsed() < roll())
 }
 
 /// Of the range, per Page Up or Page Down.
 const PAGE: f64 = 0.1;
 
 thread_local! {
+    /// When each control's wheel last turned it: a roll is one edit per control.
+    static ROLLS: RefCell<HashMap<String, Instant>> = RefCell::new(HashMap::new());
     /// Wheel notches a discrete control has not yet spent. A trackpad sends
     /// many small deltas; a choice moves when a whole notch has built up.
     static NOTCHES: RefCell<HashMap<String, f64>> = RefCell::new(HashMap::new());
 }
 
 /// The wheel's notches this frame, positive up. The host reports a notch as
-/// one text line in scene units, and a trackpad as pixels, so a line's size
-/// turns both into notches.
-fn notches(ui: &Ui, id: &str) -> f64 {
-    -ui.get(id).wheel.y / ui.theme().text
+/// `NOTCH_LINES` text rows in scene units, and a trackpad as pixels, so the
+/// notch's size in scene units turns both into notches.
+fn notches(ui: &Ui, wheel: Vec2) -> f64 {
+    -wheel.y / (ui.theme().text * NOTCH_LINES)
 }
 
 /// Whether Shift or Ctrl asks for the fine step.
@@ -74,12 +86,12 @@ pub fn nudge(ui: &Ui, id: &str, value: &mut f64, range: RangeInclusive<f64>, res
     let before = *value;
     let r = ui.get(id);
     if r.wheel.y != 0.0 {
-        mark_notch();
+        mark_notch(id);
     }
     if r.double_clicked || (r.pressed && r.press_mods.ctrl) {
         *value = rest;
     } else {
-        let mut turn = -r.wheel.y / ui.theme().text * STEP * span * fine(r.mods);
+        let mut turn = notches(ui, r.wheel) * STEP * span * fine(r.mods);
         if ui.focus_visible(id) {
             for key in ui.keys(id) {
                 let step = STEP * span * fine(key.mods);
@@ -108,12 +120,12 @@ pub fn step_choice(ui: &Ui, id: &str, choice: &mut usize, len: usize) -> bool {
     }
     let before = *choice;
     if ui.get(id).wheel.y != 0.0 {
-        mark_notch();
+        mark_notch(id);
     }
     let mut turn = NOTCHES.with(|n| {
         let mut n = n.borrow_mut();
         let spent = n.entry(id.to_string()).or_insert(0.0);
-        *spent += notches(ui, id);
+        *spent += notches(ui, ui.get(id).wheel);
         let whole = spent.trunc();
         *spent -= whole;
         whole
@@ -163,8 +175,8 @@ mod tests {
     #[test]
     fn a_roll_of_the_wheel_is_held_open_until_it_stops() {
         let mut ui = Ui::default();
-        let line = ui.theme().text;
-        frame(&mut ui, inside(), false, Vec2::new(0., -line), vec![], Mods::default());
+        let notch = ui.theme().text * NOTCH_LINES;
+        frame(&mut ui, inside(), false, Vec2::new(0., -notch), vec![], Mods::default());
         let mut v = 0.5;
         nudge(&ui, "k", &mut v, 0.0..=1.0, 0.5);
         assert!(wheel_rolling());
@@ -180,14 +192,14 @@ mod tests {
     #[test]
     fn a_notch_up_raises_the_value_by_one_step_and_down_lowers_it() {
         let mut ui = Ui::default();
-        let line = ui.theme().text;
-        frame(&mut ui, inside(), false, Vec2::new(0., -line), vec![], Mods::default());
+        let notch = ui.theme().text * NOTCH_LINES;
+        frame(&mut ui, inside(), false, Vec2::new(0., -notch), vec![], Mods::default());
         let mut v = 0.5;
         assert!(nudge(&ui, "k", &mut v, 0.0..=1.0, 0.5));
         assert!((v - (0.5 + STEP)).abs() < 1e-12, "up: {v}");
 
         let mut ui = Ui::default();
-        frame(&mut ui, inside(), false, Vec2::new(0., line), vec![], Mods::default());
+        frame(&mut ui, inside(), false, Vec2::new(0., notch), vec![], Mods::default());
         let mut v = 0.5;
         assert!(nudge(&ui, "k", &mut v, 0.0..=1.0, 0.5));
         assert!((v - (0.5 - STEP)).abs() < 1e-12, "down: {v}");
@@ -196,15 +208,15 @@ mod tests {
     #[test]
     fn shift_or_ctrl_makes_the_wheel_fine_and_the_value_stays_in_range() {
         let mut ui = Ui::default();
-        let line = ui.theme().text;
+        let notch = ui.theme().text * NOTCH_LINES;
         let shift = Mods { shift: true, ..Mods::default() };
-        frame(&mut ui, inside(), false, Vec2::new(0., -line), vec![], shift);
+        frame(&mut ui, inside(), false, Vec2::new(0., -notch), vec![], shift);
         let mut v = 0.5;
         nudge(&ui, "k", &mut v, 0.0..=1.0, 0.5);
         assert!((v - (0.5 + STEP * FINE)).abs() < 1e-12, "fine: {v}");
 
         let mut ui = Ui::default();
-        frame(&mut ui, inside(), false, Vec2::new(0., -line * 500.), vec![], Mods::default());
+        frame(&mut ui, inside(), false, Vec2::new(0., -notch * 500.), vec![], Mods::default());
         let mut v = 0.99;
         nudge(&ui, "k", &mut v, 0.0..=1.0, 0.5);
         assert_eq!(v, 1.0, "clamped at the top of the range");
@@ -243,12 +255,12 @@ mod tests {
     #[test]
     fn a_discrete_control_moves_one_choice_per_whole_notch() {
         let mut ui = Ui::default();
-        let line = ui.theme().text;
+        let notch = ui.theme().text * NOTCH_LINES;
         // Three trackpad-sized deltas of 0.4 notch each: the third makes a notch.
         let mut choice = 0usize;
         let mut moved = Vec::new();
         for _ in 0..3 {
-            frame(&mut ui, inside(), false, Vec2::new(0., -0.4 * line), vec![], Mods::default());
+            frame(&mut ui, inside(), false, Vec2::new(0., -0.4 * notch), vec![], Mods::default());
             moved.push(step_choice(&ui, "k", &mut choice, 4));
         }
         assert_eq!(moved, [false, false, true]);

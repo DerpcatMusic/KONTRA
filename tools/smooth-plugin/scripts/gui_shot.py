@@ -346,7 +346,17 @@ def main():
             )
             settle()
             if "--dblclick" in sys.argv and not notches:
-                subprocess.run(["xdotool", "click", "--repeat", "2", "--delay", "120", "1"], check=True)
+                # Two clicks a beat apart, with the editor's frames running
+                # between them: the editor's own clock reads the double click.
+                for _ in range(2):
+                    subprocess.run(["xdotool", "mousedown", "1"], check=True)
+                    for _ in range(3):
+                        plugin.main(pointer)
+                        time.sleep(0.04)
+                    subprocess.run(["xdotool", "mouseup", "1"], check=True)
+                    for _ in range(3):
+                        plugin.main(pointer)
+                        time.sleep(0.04)
             else:
                 count = int(notches or 0)
                 # Button 4 scrolls up, 5 down.
@@ -357,11 +367,29 @@ def main():
                         "xdotool", "keydown", "shift", "click", button, "keyup", "shift"
                     ]
                     subprocess.run(cmd, check=True)
-                    settle()
+                    # Notches come a beat apart, as a turning wheel sends
+                    # them: a roll is one edit only while they keep coming.
+                    for _ in range(2):
+                        plugin.main(pointer)
+                        time.sleep(0.03)
+                    # The host runs a block between notches: that is when
+                    # a set reaches the parameter the next notch reads.
+                    play(frames=256, events=record_out)
+                settle()
             settle()
             shot = out.with_name(f"{out.stem}-wheel{index + 1}{out.suffix}")
             subprocess.run(["magick", "import", "-window", str(parent), str(shot)], check=True)
             print(f"wrote {shot}")
+        if "--expect" in sys.argv:
+            # `--expect NAME=VALUE`: the last value the host heard for NAME is
+            # VALUE, in the parameter's own units (a double click resets it).
+            name, _, want = sys.argv[sys.argv.index("--expect") + 1].partition("=")
+            play(events=record_out)
+            ident = infos[name].id
+            values = [value for kind, seen, value in heard if seen == ident and kind == 5]
+            assert values, f"host heard no change for {name}"
+            assert abs(values[-1] - float(want)) < 1e-6, (name, values[-1], want)
+            print(f"expect {name} = {want}: verified (last {values[-1]:.6g})")
         if "--wheel-check" in sys.argv:
             name, _, direction = sys.argv[sys.argv.index("--wheel-check") + 1].partition(":")
             play(events=record_out)

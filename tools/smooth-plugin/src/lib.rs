@@ -1077,11 +1077,16 @@ impl PluginLogic for Smooth {
 
             // The controls out: a drag on one is a gesture the host records.
             let mut bind = |ui: &mut Ui, slot: Slot, norm: &mut f64, part: &mut slots::Part| {
-                bridge.bind(ui, slot_param(slot, selected).0, |ui, widget, host| {
+                let param = slot_param(slot, selected).0;
+                let el = bridge.bind(ui, param, |ui, widget, host| {
                     let el = part(ui, widget.as_str(), host);
                     *norm = *host;
                     el
-                })
+                });
+                // A roll of the wheel is one host edit, held open until it stops.
+                let widget = moose::mui::widget_id(param);
+                bridge.hold(param, smooth_ui::input::rolling(widget.as_str()));
+                el
             };
             let tree = view::editor(ui, &mut model, &mut bind);
             // A drag on a plot handle is a gesture too, and the plot is not a
