@@ -301,9 +301,10 @@ fn translate(
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
     };
-    // Authored DFD preload is retained (`kontakt_objects`) but the stream policy sizes heads
-    // from measured latency; the override is reported until its unit is verified.
-    if params.dfd_channel_preload_size != 0 {
+    // Kontakt stores the preload in bytes. 0 selects the global policy and 0xf000 (60 KiB) is
+    // the instrument default set at init (Kontakt 8 `FUN_140940000`, `0x21b70`). Any other
+    // value is an authored override that the stream policy does not yet apply.
+    if !matches!(params.dfd_channel_preload_size, 0 | 0xf000) {
         out.unsupported(
             "instrument",
             "DFD preload override",

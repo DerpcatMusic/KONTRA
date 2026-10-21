@@ -81,7 +81,7 @@ representation is `crates/sampler-ir/src/lib.rs` (`Playback`, `Looping`, `LoopRa
 | # | Item | Kontakt side | Engine side | Status | Next step |
 | --- | --- | --- | --- | --- | --- |
 | G1 | Group interpolation quality | `interpolation` / `interp_quality` i32 on the group record (`vendor/ni-file/src/kontakt/objects/group.rs:131`). Enum values and resulting kernel: **unrecovered** | Parsed into `mapping.rs:24`; no IR field; `library.rs` never reads it. The resampler is chosen once per engine instance (`sampler-core/src/lib.rs:1210, 1387`), not per group or voice | **Missing.** Now diagnosed: non-zero values are reported as `interpolation quality` (`library.rs`, test `unmodeled_group_interpolation_is_reported_not_dropped`). Corpus census: 0 non-default files in 226,278 (0x95) and 5,675 (0x96) group records, so the default is 0 and no corpus instrument hits this path | Recover the enum and the per-value kernel from Kontakt 8 (group sampler routine). Then add a per-group `interpolation` selector in `sampler-ir` that picks a kernel per voice. Kernel tables are already cached per quality (`OnceLock`), so selection is cheap. Until then, report non-default values as not modeled |
-| G2 | DFD preload size | `dfd_channel_preload_size` i32 on the instrument (`kontakt.rs:29`). Unit (frames, bytes, per channel) and effect on prefetch: **unrecovered** | Parsed and copied to IR; nothing reads it. `stream.rs` uses its own headroom policy (`policy.headroom`) | **Missing.** Now diagnosed as `DFD preload override` (`library.rs`, program translation). Public docs (NI DFD tab, third-party guides) describe the preload as kilobytes per sample, default 60 KB; the census values (3, 8, 21, 31, 42, 729, nonzero in 1,000+ programs) are consistent with KB but **unverified**. Applying it would change head sizing (`stream.rs` `head_frames`) for real libraries, so it is not applied yet | Recover the consumer in Kontakt's streaming code. Map it to the existing stream policy's per-channel head. Do not change prefetch numbers without a measured underrun/latency comparison |
+| G2 | DFD preload size (confirmed unit, default, global override, 6 KiB window granularity; consumer `FUN_14082a530` gated on mode 4) | `dfd_channel_preload_size` i32 on the instrument (`kontakt.rs:29`). Unit (frames, bytes, per channel) and effect on prefetch: **unrecovered** | Parsed and copied to IR; nothing reads it. `stream.rs` uses its own headroom policy (`policy.headroom`) | **Missing.** Now diagnosed as `DFD preload override` (`library.rs`, program translation). Public docs (NI DFD tab, third-party guides) describe the preload as kilobytes per sample, default 60 KB; the census values (3, 8, 21, 31, 42, 729, nonzero in 1,000+ programs) are consistent with KB but **unverified**. Applying it would change head sizing (`stream.rs` `head_frames`) for real libraries, so it is not applied yet | Recover the consumer in Kontakt's streaming code. Map it to the existing stream policy's per-channel head. Do not change prefetch numbers without a measured underrun/latency comparison |
 | G3 | Sampler interpolation accuracy | Unmeasured against Kontakt | Cubic and sinc as above | Unverified | Compare against a Kontakt render of a pitch-shifted sine (needs native rig; not available here) |
 | G4 | Loop count semantics | `loop_count` 0 = indefinite, positive = passes | Matches the IR comment | Consistent with format docs; not verified against a Kontakt render | Confirm with a counted-loop render |
 | G5 | DFD vs Sampler signal | Both documented as the same signal | Single engine path; DFD accepted without report (`library.rs:1623`) | Matches the documented claim; DFD streaming cost is measured elsewhere (`DSP_COVERAGE.md`) | None for signal. Streaming buffer parity is G2 |
@@ -105,16 +105,30 @@ representation is `crates/sampler-ir/src/lib.rs` (`Playback`, `Looping`, `LoopRa
 No code change is made in this unit yet, because G1 and G2 need values only the
 decompilation can provide.
 
-## Corpus evidence (kontakt-census, `docs/architecture-v2/kontakt-census/fields.tsv`)
+## Kontakt 8 evidence (decompile, `source/kontakt8/`, confirmed 2026-10-21)
 
-- `interp_quality`: 782 files / 226,278 records (0x95) and 52 files / 5,675 records (0x96); nonbaseline files 0. Every record is the default.
-- `dfd_channel_preload_size`: nonzero in every program version surveyed (0xa8 ... 0xb5), e.g. 729 in 729 files (0xae), 42 in 42 files (0xb1, 48 records). Values are authored per program, so the override is real in the corpus.
-- Topology gap T14 (`KONTAKT_TOPOLOGY.md`) already records that the preload is retained but not consumed; this doc confirms it.
+**DFD preload (G2), confirmed unit and default**
+- Stored in bytes in the instrument object at `+0x21b70` (i32). The text-preset key `dfdChannelPreloadSize` is parsed with `atoi` into that offset (`0140920000.c`, `FUN_14091ff80` region, around line 8258).
+- Instrument default is `0xf000` = 61440 bytes = 60 KiB, set at init (`0140940000.c`, around line 10579).
+- Global override: flag `DAT_14a5b96cc` switches the head size to a global value `DAT_149e55070`. Its UI/setting names are `overrideInstPreloadSize` and `overrideInstDFD` (`0140730000.c`).
+- Window law (`FUN_14082a530`, `0140820000.c:7321`): applies only when the runtime source mode at `+0xba8` is 4, otherwise the window is 0. For mode 4 the preload is scaled by a channel-count argument and rounded up to multiples of `0x1800` = 6144 bytes. `FUN_14057fe40` (`0140570000.c:10923`) turns the same preload into a UI value `(preload/0x1800 - 1) * k`.
+- The Time Machine path quantizes the same preload to a `dfd_buffersize` of `floor(preload/0x1800)*6` (`01410a0000.c`, `FUN_1410a6450`). Its validation message is `invalid dfd_buffersize, expected [6..240] and multiple of 6` (`01410a0000.c`, string). The 6..240 KiB range is therefore a Kontakt constraint for that buffer, not verified for plain DFD.
+- DFD eligibility: a sample whose source record has flag `+0x177c` set is rejected with `%s cannot be loaded in DFD mode!` (`01408d0000.c`, `FUN_1408d5c80`). Adding samples to a group in mode 4 is rejected with `These samples cannot be added to a group which is in DFD mode!` (`0140890000.c`, `FUN_140890100`) when the group has children at `+0x118` and the sample is not already streamed.
+
+**Corpus values (corrects an earlier misreading)**
+- The census `fields.tsv` columns are *file counts*, not values. The earlier "729" was a count.
+- Scratch survey over 2,113 NKI paths, first program chunk only, read via `read_chunks` and `Program::params`: `dfd_channel_preload_size` = 61440 in 723 programs and 0 in 11. Unreadable or bank-only files: 1,379 (not surveyed further).
+- So the corpus uses the default almost everywhere and the override is rare. The old "diagnose every nonzero value" rule would have fired on every default program. The diagnostic now fires only for values that are neither 0 nor 0xf000.
+
+**Group interpolation (G1)**
+- Binary group `interp_quality` (i32): 0 in every census record (226,278 with 0x95; 5,675 with 0x96; 0 nonbaseline files).
+- The text-preset key `interpQuality` is parsed in `0140910000.c` (around line 11901). Its only decoded token is `normal`, which stores 0 at `+0xd8` (program/global scope, not the group). `interpQualityOffline` is a separate key (line 11374). The remaining enum tokens are not recovered in this function, so the binary group enum is still unrecovered.
+- Runtime resampler selection is not recovered from the decompile yet.
 
 ## Evidence confidence
 
-- Format fields, loop and reverse behaviour, offsets, voice generations: **high**
-  (repo code and tests; not compared with Kontakt output).
-- Interpolation and DFD streaming parity with Kontakt: **none** (no recovered law, no
-  native render).
-- Gap G1 and G2 existence: **high** (grep of the crates shows no consumer).
+- Format fields, loop and reverse behaviour, offsets, voice generations: **high** (repo code and tests; not compared with Kontakt output).
+- DFD preload unit (bytes), default (61440), global override and 6 KiB window granularity: **high** for the decompiled constants; **medium** for the window formula until the channel argument of `FUN_14082a530` is traced.
+- Runtime mode 4 mapping (stored DFD mode 3 to runtime 4): **unrecovered**; `FUN_14074688d` only shows mode 0 becoming 4 when a flag at `+0x2a96a` is clear.
+- Binary group interpolation enum and kernels: **unrecovered**. Corpus value is 0 everywhere, so no measured consumer.
+- Interpolation and DFD streaming parity with Kontakt output: **none** (no native render compared).
