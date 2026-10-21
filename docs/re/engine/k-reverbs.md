@@ -114,3 +114,16 @@ Reverb and Convolution); KSP engine parameters. Repo evidence:
   depends on the limiter table and sync predelay).
 - Legacy: medium (setter laws cited; input filter approximated).
 - Cosmic, Delight, sync and limiter: no evidence in the engine yet.
+
+## Implementation status (2026-10-21)
+
+- Decompile export still incomplete (`source/kontakt8/` empty, no READY).
+  Kontakt 8 is installed under Wine (`tools/kontakt-oracle/`), so black-box
+  measurement is available but not yet run for any gap below.
+- Engine kit is already general: `network.rs` (lines, allpass, shelves,
+  matrices, modulation) and `design.rs` build every reverb as a `Spec`.
+- Duplicate first-order shelf designs, to merge behind one warp selector once
+  the laws are confirmed: `design.rs` `shelf` (tan warp, `0x141649120`),
+  `design/plate.rs` `shelf` (sin warp `k`, `0x141a92480`), `spark_law::shelf`,
+  and Raum's `Svf::low_shelf`. Guard: `design/tests.rs` shelf vectors.
+- No code changed in this step; the gaps above remain open.
