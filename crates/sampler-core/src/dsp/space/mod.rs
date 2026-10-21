@@ -343,7 +343,7 @@ mod tests {
 
     /// Presets for the CPU measurement and cross-preset checks.
     pub(super) fn presets() -> Vec<(&'static str, Network)> {
-        use sampler_ir::fx::space::{Freeverb as Fv, Galois, SparkVerb};
+        use sampler_ir::fx::space::{Freeverb as Fv, Galois, InputFilter, SparkVerb};
         let spark = |quality| SparkVerb {
             quality,
             room_m: 20.0,
@@ -378,7 +378,7 @@ mod tests {
                     topology: Topology::Freeverb,
                     predelay_seconds: 0.02,
                     input_cutoff_hz: 8_000.0,
-                    freeverb: Some(Fv { feedback: 0.84, damp: 0.2, allpass: 0.5, input_gain: 0.015, width: 0.75 }),
+                    freeverb: Some(Fv { feedback: 0.84, damp: 0.2, allpass: 0.5, input_gain: 0.015, width: 0.75, input_filter: InputFilter::OnePole }),
                     ..Network::DEFAULT
                 },
             ),
