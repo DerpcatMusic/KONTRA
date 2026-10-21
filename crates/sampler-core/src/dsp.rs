@@ -1223,6 +1223,8 @@ pub(super) struct ProcessorState {
     delay_filled: u32,
     /// The color unit's stage histories.
     color: color::State,
+    /// Daft's loop states and x2 resamplers.
+    daft: filter::daft::State,
 }
 impl ProcessorState {
     fn finite_for(&self, stage: ProcessorRef<'_>) -> bool {

@@ -279,7 +279,7 @@ impl Stage for TransientMix {
     fn tick(&mut self, f: &mut Frame) {
         let [a, sustain] = each(f.level, |v| v as f32);
         let db = (sustain * self.sustain - self.sustain * f32::from_bits(0x3ea8_f5c3) * a) + a * self.attack + self.gain;
-        let gain = super::super::filter::ar_kernel::exponential(db * f32::from_bits(0x411f_73da) + 1200.);
+        let gain = super::super::filter::table::exponential(db * f32::from_bits(0x411f_73da) + 1200., super::super::filter::table::Past::LastEntry);
         f.gain = [f64::from(gain); 2];
     }
 }
@@ -301,7 +301,7 @@ pub(super) struct FeedbackCurve {
 pub(super) const TABLE_PER_NEPER: f32 = f32::from_bits(0x42ad_1f97);
 
 pub(super) fn table_exp(nepers_times_k: f32) -> f32 {
-    super::super::filter::ar_kernel::exponential(nepers_times_k + 1200.)
+    super::super::filter::table::exponential(nepers_times_k + 1200., super::super::filter::table::Past::LastEntry)
 }
 
 impl FeedbackCurve {
