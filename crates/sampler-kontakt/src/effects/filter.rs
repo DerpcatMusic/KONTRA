@@ -49,6 +49,7 @@ const DAFT: &str = "saved controls and ramp scheduling extracted; native audio c
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
 const SIMPLE: KontaktFx = KontaktFx::SimpleLpHp { lp: 0.0, hp: 0.0 };
+const SIMPLE_CAVEAT: &str = "Simple LP/HP core bit-exact in mono against the native class under kemu; the native stereo channel interleave and the alternate smoother (u8, rate 1/(p2 1500 + 150)) are unprobed, so stereo runs per-channel mono cores with shared controls";
 const fn monark(mode: u8) -> KontaktFx {
     KontaktFx::Monark { mode, variant: 0, knobs: [0.0; 5] }
 }
@@ -117,7 +118,7 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         106 => ("AR LP2/4", C(native(Topology::Ar, Lp, 0), Exact, AR)),
         107 => ("AR BP2/4", C(native(Topology::Ar, Bp, 0), Exact, AR)),
         108 => ("AR HP2/4", C(native(Topology::Ar, Hp, 0), Exact, AR)),
-        120 => ("Simple LP/HP", C(variant(Lp, 2, Variant::Kontakt(SIMPLE)), Exact, KFX)),
+        120 => ("Simple LP/HP", C(variant(Lp, 2, Variant::Kontakt(SIMPLE)), Partial, SIMPLE_CAVEAT)),
         130 => ("Dual SKF", C(variant(Bp, 4, Variant::Kontakt(KontaktFx::DualSkf([0.0; 5]))), Exact, KFX)),
         140 => ("Monark LP1", C(variant(Lp, 1, Variant::Kontakt(monark(2))), Exact, KFX)),
         141 => ("Monark LP2", C(variant(Lp, 2, Variant::Kontakt(monark(1))), Exact, KFX)),
