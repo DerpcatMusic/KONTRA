@@ -63,6 +63,23 @@ joins the exposed index list: a change while active requests a restart and
 is published in `deactivate`. VST3 keeps the static `stepCount`: changing it
 needs `kReloadComponent`, which hosts handle as a full reload.
 
+## Floating CLAP GUI on Linux
+
+`gui_create` used to ignore its `api` and `is_floating` arguments, so a host
+that asked for an unsupported window (`wayland`, or a floating window the
+plug-in never offered) got `true` and an editor no `set_parent` or `show` could
+ever open: no display at all. It now refuses anything `is_api_supported` would
+refuse.
+
+Linux also offers X11 floating, for a host that cannot embed (native Wayland
+has no client-side embedding). `is_api_supported("x11", true)` is `true`; the
+editor's window is its own top-level, opened by `show` and closed by `hide`
+(the editor keeps its state and reopens). `set_parent` is refused for a
+floating GUI. Moose-core has no floating `RawWindowHandle`, so `X11(0)` is the
+request for one: `moose-mui` reads it in `MuiEditor::open` and opens through
+`mui-baseview::open_floating_threaded`, a baseview window with no parent.
+Upstream: a `RawWindowHandle::Floating` variant would replace the sentinel.
+
 ## Native editor parent contracts
 
 VST3 attachment now rejects null parents, unsupported or null platform types,
@@ -77,7 +94,10 @@ These checks enforce the [VST3 platform pointer contract](https://steinbergmedia
 and prevent malformed native arguments from reaching AppKit or other window
 APIs. They do not identify the cause of any reported Mac DAW crash. The existing
 `Editor::open` and VST3 `gui_open` return no success value, so these argument
-checks do not turn native renderer failure into a verified successful opening.
+checks do not turn native renderer failure into a verified successful opening. On Linux,
+CLAP `set_parent` answers with the window's own report (`window_scale().is_some()`): a
+parent that is not a window (an X `BadWindow` inside baseview) used to return `true` with no
+editor, a display that silently never appears. VST3 `gui_open` is unchanged.
 
 ## Explicit CLAP MPE input capability
 
@@ -137,3 +157,16 @@ plugin. CLAP allows `changed()` only inside `clap_plugin.activate`
 callback now only requests a restart; the host reactivates, and `activate`
 refreshes the latency it reads. The `clap.latency` host pointer is no longer
 captured. Upstream: worth offering to MOOSE as is.
+
+## X11 keyboard keymap is released with the window
+
+`XkbcommonState::new` (`moose-baseview`, `src/wrappers/xkbcommon.rs`) builds a
+keymap with `xkb_x11_keymap_new_from_device` for every X11 window, and the
+state takes its own reference to it. Nothing released the keymap, and the
+keymap holds a reference to the context, so each editor open leaked one
+keymap and one context: 54 kB of malloc memory per open in a live-allocation
+trace (71 kB/cycle by mallinfo2 in the soak). The keymap is now unref'd once
+the state holds it; dropping the state frees both. Checked by
+`tools/removed/scripts/clap_gui_soak.py soak --max-live-slope 20`, which
+measured 71.4 kB/cycle before and 0.3 to 0.5 kB/cycle after (200 cycles). Upstream:
+worth offering to MOOSE as is.
