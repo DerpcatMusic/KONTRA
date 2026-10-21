@@ -2580,8 +2580,9 @@ pub enum Processor {
     Space(fx::space::Config),
     /// Every compressor, limiter, gate and expander: one configurable superset.
     Dynamics(fx::dynamics::Config),
-    /// Script- and modulation-addressed Formant I: saved Talk, Sharp, Size.
-    LiveFormant { knobs: [f32; 3], address: SlotAddress },
+    /// Script- and modulation-addressed Formant I (or Formant II when `second`): saved Talk,
+    /// Sharp, Size.
+    LiveFormant { knobs: [f32; 3], second: bool, address: SlotAddress },
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
     /// Native Ladder LP4. Values are normalized; the engine owns the laws.
