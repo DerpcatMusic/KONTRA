@@ -73,9 +73,9 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Legacy BP2 | unknown | none | |
 | Legacy BP4 | unknown | none | |
 | Legacy BR4 | unknown | none | |
-| 3x2 Versatile | unknown | none | |
-| Dual SKF | unknown | none | |
-| Simple LP/HP | unknown | none | |
+| 3x2 Versatile | partial | vector + decomp | Native stage vectors (kemu) at cutoff 0.5 only (`cascade_stage_vectors.json`, VERS-lp / VERS-mixed); laws confirmed in decompile (cutoff setter, resonance, normaliser, process). Missing: cutoff / shift / morph / wet / gain sweeps (Wine oracle), SSE rounding path. See `filt-multi-versatile.md`. |
+| Dual SKF | partial | vector + decomp | Native vectors at 48 kHz, mono, 3 knob sets (`kontaktfx_vectors.json`); setParam clamp and drive `2v-1` confirmed in decompile. Missing: record-to-slot mapping (reader branch for type 130 not isolated), other sample rates, stereo. |
+| Simple LP/HP | partial | vector | Native vectors (kemu) at 48 kHz, 3 knob sets (`kontaktfx_vectors.json`). Missing: the alternate smoother (u8, rate-based) is unprobed; stereo interleave unprobed. |
 | Formant I | unknown | none | |
 | Formant II | unknown | none | |
 | Phaser (filter) | unknown | none | |
