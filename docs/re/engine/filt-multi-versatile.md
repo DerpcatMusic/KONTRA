@@ -98,7 +98,7 @@ Compositions:
 - **Dual SKF = two sections in series in one recurrence** (`kontaktfx.rs`). Section 0 is the HP
   path, section 1 the LP path, each with its own `unit_sqrt` clip. Its recurrence is ZDF-shaped but
   its resonance term couples to the output (`k (q, r)` applied after the `y` solve), so it keeps its
-  own loop rather than `Zdf`. Rounding there is native; changing it to `Zdf` would move vectors.
+  own loop rather than `Zdf`. Moving it onto `Zdf` was not attempted: it would change the recurrence, so it needs its own vector check.
 - **Parallel** multi-filters (SV Par. LP/HP, Par. BP/BP) are a filt-sv composition, not this unit.
 - Monark and Simple LP/HP stay in `kontaktfx.rs`: their feedback nonlinearities (Padé, noise,
   per-channel history) do not fit the shared stages.
