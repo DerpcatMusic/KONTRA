@@ -3,6 +3,7 @@ pub mod dynamics;
 pub mod filter;
 pub mod eq;
 pub mod timemod;
+pub mod ringmod;
 pub mod space;
 pub mod color;
 pub mod tables;
