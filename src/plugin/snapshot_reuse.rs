@@ -80,7 +80,7 @@ pub(super) fn try_submit(
             Path::new(&request.path),
             params.shared.rate() as u32,
             views,
-            &mut || service_current_ui(params),
+            &mut || crate::plugin::control_tick(params),
         );
         admission = report;
         let ready = ready?;
