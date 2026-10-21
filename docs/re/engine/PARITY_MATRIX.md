@@ -134,10 +134,10 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Saturator | unknown | none | |
 | Skreamer | unknown | none | |
 | Skreamer Deluxe | unknown | none | |
-| Bite | unknown | none | |
-| Lo-Fi | unknown | none | |
-| Tape Saturator | unknown | none | |
-| Wow/Flutter | unknown | none | |
+| Bite | partial | decomp | Mapped (0x66); core model-checked, not Kontakt output; 20 ms ramps unmodelled. docs/re/engine/k-lofi-tape.md |
+| Lo-Fi | partial | none | Mapped (0x20); hold/quantizer/noise tests are spec-derived; flag (P truncation) and reset seed unproved. docs/re/engine/k-lofi-tape.md |
+| Tape Saturator | partial | none | Mapped (0x42); table recovered; no Kontakt output vector. docs/re/engine/k-lofi-tape.md |
+| Wow/Flutter | partial | decomp | Reader and ids confirmed (FUN_140ac65f0, FUN_140a821c0); params mapped to a generic timemod law; per-sample kernel not located; scrape/age/saturation/gate omitted and diagnosed. docs/re/engine/k-lofi-tape.md |
 
 ## Modulation FX (k-modfx-classic, k-modfx-freak)
 
