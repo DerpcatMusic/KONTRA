@@ -1485,3 +1485,41 @@ fn declaration_ranges_read_variables_where_on_init_reaches_them() {
     assert_eq!(domain("$s"), sampler_core::ControlDomain::Integer { min: 0, max: 1000000 });
     assert_eq!(domain("$v"), sampler_core::ControlDomain::Integer { min: 36, max: 48 });
 }
+
+#[test]
+fn a_variable_declaration_range_keeps_its_initializer_and_needs_to_run_once() {
+    let script = compile(
+        "on init declare $hi := 10 declare ui_knob $k (0, $hi, 1) := 5 end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    let widget = view.model().interface.widgets.iter().find(|w| w.name == "$k").unwrap();
+    assert_eq!(widget.range, Some((0, 10)));
+    assert_eq!(widget.value, sampler_ksp::model::WidgetValue::Int(5));
+    // A skipped branch would leave the range unknown: still a compile error.
+    let error = compile(
+        "on init declare $hi := 10 if ($hi = 0) declare ui_knob $k (0, $hi, 1) end if end on",
+        48000,
+        limits(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.message, "constant integer expression required");
+}
+
+#[test]
+fn a_negative_range_starts_at_its_minimum() {
+    let script = compile(
+        "on init declare $lo := -10 declare ui_slider $v ($lo, -5) declare ui_slider $c (-10, -5) end on",
+        48000,
+        limits(),
+    )
+    .unwrap();
+    let view = script.view();
+    for name in ["$v", "$c"] {
+        let widget = view.model().interface.widgets.iter().find(|w| w.name == name).unwrap();
+        assert_eq!(widget.value, sampler_ksp::model::WidgetValue::Int(-10), "{name}");
+    }
+}

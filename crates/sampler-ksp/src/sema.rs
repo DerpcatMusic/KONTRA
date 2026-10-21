@@ -39,6 +39,8 @@ struct Sema<'a, 's> {
     in_init: bool,
     /// Function bodies are checked for their callers' context at lowering time.
     in_function: bool,
+    /// Nesting of the block being analysed; `on init`'s own body is 1.
+    depth: u32,
     loops: usize,
     /// Controls from the performance view file, once `load_performance_view` ran.
     performance_view: &'s [PerformanceControl],
@@ -62,6 +64,7 @@ pub fn analyze<'a, 's>(
         array_cells: 0,
         in_init: false,
         in_function: false,
+        depth: 0,
         loops: 0,
         performance_view,
         performance_loaded: false,
@@ -278,9 +281,21 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn block(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>> {
+        self.depth += 1;
+        let out = self.statements(body);
+        self.depth -= 1;
+        out
+    }
+
+    fn statements(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>> {
         let mut out = Vec::with_capacity(body.len());
         for s in body {
-            if let Some(kind) = self.stmt(s)? {
+            if let ast::StmtKind::Declare(d) = &s.kind {
+                if !self.in_init {
+                    return fault(s.span, "declarations are only allowed in on init");
+                }
+                out.extend(self.declare(d)?.into_iter().map(|kind| Stmt { span: s.span, kind }));
+            } else if let Some(kind) = self.stmt(s)? {
                 out.push(Stmt { span: s.span, kind });
             }
         }
@@ -289,12 +304,7 @@ impl<'a> Sema<'a, '_> {
 
     fn stmt(&mut self, s: &ast::Stmt) -> Result<Option<StmtKind>> {
         Ok(Some(match &s.kind {
-            ast::StmtKind::Declare(d) => {
-                if !self.in_init {
-                    return fault(s.span, "declarations are only allowed in on init");
-                }
-                return self.declare(d);
-            }
+            ast::StmtKind::Declare(_) => unreachable!("statements() analyses declarations"),
             ast::StmtKind::Assign(target, value) => {
                 if let A::Var(sym, Some(index)) = &target.kind
                     && self.resolve(*sym).is_none()
@@ -584,7 +594,9 @@ impl<'a> Sema<'a, '_> {
         Ok(offset)
     }
 
-    fn declare(&mut self, d: &ast::Declare) -> Result<Option<StmtKind>> {
+    /// The statements a declaration runs in `on init`: its deferred UI
+    /// parameters, then its initializer.
+    fn declare(&mut self, d: &ast::Declare) -> Result<Vec<StmtKind>> {
         let text = self.name(d.name);
         let span = d.name_span;
         let valid = text.len() > 1
@@ -642,7 +654,7 @@ impl<'a> Sema<'a, '_> {
                     span,
                 },
             )?;
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let ui = match d.ui {
             Some(word) => {
@@ -659,22 +671,20 @@ impl<'a> Sema<'a, '_> {
                 if (ty, array) != expected {
                     return fault(span, format!("{word} requires a different variable type"));
                 }
-                let ranged = matches!(kind, WidgetKind::Knob | WidgetKind::Slider | WidgetKind::ValueEdit);
+                // A range read from variables runs where on init reaches it, so
+                // only a declaration that on init always reaches once may defer.
+                let ranged = matches!(kind, WidgetKind::Knob | WidgetKind::Slider | WidgetKind::ValueEdit)
+                    && self.depth == 1;
                 let mut params = Vec::with_capacity(d.params.len());
                 let mut at_init = Vec::new();
                 for (i, p) in d.params.iter().enumerate() {
-                    if !ranged {
-                        params.push(self.const_int(p)?);
-                        continue;
-                    }
-                    let value = self.expr(p)?;
-                    let value = self.coerce(value, Ty::Int)?;
-                    match fold(&self.hir, &value) {
-                        Some(Const::Int(n)) => params.push(n),
-                        _ => {
+                    match self.int_expr(p)? {
+                        (_, Some(n)) => params.push(n),
+                        (value, None) if ranged => {
                             at_init.push((i as u8, value));
                             params.push(0);
                         }
+                        _ => return fault(p.span, "constant integer expression required"),
                     }
                 }
                 Some((kind, params, at_init))
@@ -728,6 +738,7 @@ impl<'a> Sema<'a, '_> {
                 span,
             },
         )?;
+        let mut out = Vec::new();
         if let Some((kind, params, at_init)) = ui {
             self.hir.uis.push(Ui {
                 unresolved: false,
@@ -737,28 +748,25 @@ impl<'a> Sema<'a, '_> {
                 callback: None,
             });
             if !at_init.is_empty() {
-                if !d.init.is_empty() {
-                    return fault(d.init[0].span, "UI declarations take no initializer");
-                }
                 self.hir.ui_params_at_init = true;
-                return Ok(Some(StmtKind::UiParams(ui_index.unwrap(), at_init)));
+                out.push(StmtKind::UiParams(ui_index.unwrap(), at_init));
             }
         }
         if d.init.is_empty() {
-            return Ok(None);
+            return Ok(out);
         }
         if d.storage == Storage::Polyphonic {
             // Kontakt keeps no value for a note-owned initializer (cells start at 0
             // per note; a write outside a note is dropped, measured on Kontakt 8.13.1).
             // Kontakt emits no diagnostic for it, so neither do we.
-            return Ok(None);
+            return Ok(out);
         }
         let mut values = Vec::with_capacity(d.init.len());
         for e in &d.init {
             let value = self.expr(e)?;
             values.push(self.coerce(value, ty)?);
         }
-        Ok(Some(if let Some(len) = len {
+        out.push(if let Some(len) = len {
             if values.len() > len as usize {
                 return fault(d.init[0].span, "too many array initializers");
             }
@@ -768,7 +776,8 @@ impl<'a> Sema<'a, '_> {
                 return fault(d.init[0].span, "scalar takes one initializer");
             }
             StmtKind::Assign(Place::Var(var), values.pop().unwrap())
-        }))
+        });
+        Ok(out)
     }
 
     fn function(&self, sym: Sym) -> Option<FnId> {
@@ -824,12 +833,21 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn const_int(&mut self, e: &ast::Expr) -> Result<i32> {
-        let value = self.expr(e)?;
-        let value = self.coerce(value, Ty::Int)?;
-        match fold(&self.hir, &value) {
-            Some(Const::Int(n)) => Ok(n),
+        match self.int_expr(e)? {
+            (_, Some(n)) => Ok(n),
             _ => fault(e.span, "constant integer expression required"),
         }
+    }
+
+    /// An integer expression and its folded value, when it is constant.
+    fn int_expr(&mut self, e: &ast::Expr) -> Result<(Expr, Option<i32>)> {
+        let value = self.expr(e)?;
+        let value = self.coerce(value, Ty::Int)?;
+        let folded = match fold(&self.hir, &value) {
+            Some(Const::Int(n)) => Some(n),
+            _ => None,
+        };
+        Ok((value, folded))
     }
 
     fn condition(&mut self, e: &ast::Expr) -> Result<Expr> {
