@@ -1,8 +1,9 @@
 # Engine unit: Ladder, Monark, PRO-53 (Kontakt 8)
 
-Status: implementing without waiting for the decompile (READY not yet present). Laws come from
-repo evidence: the native Ladder captures, `kemu` vectors and the recorded HQ grid. When the
-decompiled C appears, confirm the open gain law there.
+Status: the Kontakt 8 decompile is in (`source/kontakt8/`, READY). The constants and laws below
+were checked against it and against the binary's own data (`Kontakt8.exe` .rdata read with
+pefile; the exponential table is filled at load by FUN_1404d14d0). One row stays open: which
+record byte drives the Ladder alternative cutoff path (0x49).
 
 ## Modules and mapping
 
@@ -34,15 +35,30 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   +-24 clamp and 1/48 soft clip.
 - Four trapezoidal stages with tap weights and compensation curves for all twelve selectors.
 - Control clock: 32 host frames, four internal frames; 2 ms ramp in 32-frame ticks on prepare.
-- Gain: stored in the IR as -1..=1, applied linearly by the kernel. The native stored-gain law
-  is **unproved**: only nine literal gain-target values are bit-exact.
+- Gain (confirmed, decompile): the typed apply calls the control setter FUN_140b05c70 index 0,
+  which FUN_140b05320 turns into the table index `1200 + 119.58940887 g` (constant pair
+  0x144fc4b50 / 0x144fc5450); the stored gain is the linear factor `2^(index/60 - 20)`. This is
+  12 dB per unit, and the kernel's `exponential(1200 + 119.589_41 gain)` is the same law. The
+  target lands in lane 0 (0x4fe0, input gain). The modulated path clamps it to 0..1 (FUN_140b05c70
+  call sites in FUN_1408f0000). Table: native loop FUN_1404d14d0, `pow(2, i/60 - 20)` in f64,
+  stored f32, i = 1..2400; entry 0 is 0x35800000 (= our `exponential(0)`).
+- Cutoff (confirmed): index `575 v + 1481.8816` (0x144fcfe64, 0x144fcfe80), 0 .. 2399 clamp,
+  linear interpolation between table entries; pole polynomial `((40.80263 w^2 + 10.335426) w^2
+  + pi) w`, clamped at 8 (0x1447149f8). Clip: clamp +-24 (0x144f38e18/0x144f38c70), then
+  `v (1 - |v| / 48)` (0x144f38674 = 0x3caaaaab). Feedback scale 4.16 (0x144fcfdd0).
 - HQ: the saved flag (first flag byte of the record: v0x92 `unknown_flag`, v0x95 first flag)
   selects the native 2x path. Implemented as the shared Kaiser 2x oversampler (`dsp/kaiser.rs`,
   the same stage Monark and Simple/Dual SKF use) around the kernel run at twice the internal
   rate, one host frame at a time. Its registers live in the chain's cells. The static
   composition matches all 282 native HQ cells bit-exact (`ladder_original_hq_static_composition`).
   Moving controls in HQ retune once per host frame (native cadence unproved).
-- Alternative cutoff path, flag `0x49` (record offset 0x29): not implemented.
+- Alternative cutoff path, flag `0x49`: the decompile shows the flag byte at `+0x49` written by
+  FUN_140b04a20 and read in FUN_140b00b80 (selects the second cutoff lane block 0x5010 instead of
+  0x4fc4). That block is advanced by FUN_140b036a0, a state machine with a snap and a
+  coefficient `1 / (x 1500 + 150)` set in FUN_140b04d60. Our kernel implements this path behind
+  `instant_cutoff(version)` (versions 0x90..0x92), a proxy. The native source of the byte
+  (record offset 0x29, the v0x95 second flag) is recorded in NATIVE_LADDER_EVIDENCE but not yet
+  decoded for v0x95; the proxy is unverified for v0x92 (which has no second flag).
 
 ### Monark (saved 140..143)
 - Oversampling: x3 below 66 kHz, x2 below 100 kHz through the shared Kaiser stage.
@@ -50,7 +66,12 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
 - Noise LCG per channel; stereo channel interleave unprobed (vectors are mono).
 
 ### Pro-53 (saved 16)
-- Two Chamberlin stages, second fed the feedback NL `(a - c|s|)s` with input clamped to +-4.
+- Setter FUN_14095d940 (confirmed): note `100 v + 20`, index `5 note + 1381.88`, table value;
+  stage frequency `f = hz * (6.283 / rate)` (native constant 0x144f38bdc, applied as
+  `hz * (K/rate)` in FUN_1408de8e0's scale 0x364). Resonance: `k = 0.48 r + 0.46` (r >= .5) else
+  `1.16 r + 0.12`; second stage `k2 = 0.8 k`; damping `2 - 2k`; limit `(0.293 r)(r + 1.3075) +
+  0.7352` (all three constants checked). Process FUN_1409099a0: two Chamberlin stages, second fed
+  the feedback NL `(a - c|s|)s`, input clamped to +-4.
 - Output selector Lp 4 pole, `Variant::Pro52`.
 
 ## Evidence
@@ -62,34 +83,23 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   `sampler-kontakt/src/effects/filter.rs` KFX note).
 - Pro-53 and Legacy Ladder: `FUN_14095d940` / `FUN_1409099a0` checked under `kemu` to 2e-5.
 
-## Gap table
+## Gap table (after the decompile)
 
-| Item | Shared engine has | Missing | Needed to close |
-| --- | --- | --- | --- |
-| Ladder LP/HP/BP/Peak/Notch (12 selectors) | Full cores, all tap weights and compensation | Stored-gain law beyond nine points | Decompile of the gain binding (FUN_140b00be2 caller path, typed 22..33 apply) |
-| Ladder HQ (2x) | Shared Kaiser 2x wrapper around the kernel; saved flag decoded (v0x92, v0x95) | HQ-on moving-control cadence; full HQ-on PCM over the 564-capture grid (only the static cells are wired) | Recorded HQ-on moving-control renders |
-| Ladder cutoff flag 0x49 | Default path only | Alternative cutoff branch | Decompile of the 0x49 branch |
-| Ladder moving controls | Ramped 32-frame clock | Native behaviour when a control moves mid-note is only partially compared | Recorded moving-control vectors |
-| Monark LP4/LP2/LP1/BP | Full core, Exact | Stereo interleave; noisy-drive variant untested beyond vectors | Stereo capture |
-| Pro-53 | Full core, Exact | None found in repo evidence | — |
+Rows marked confirmed were checked against the decompile and the binary's constants.
 
-## Next steps (when READY exists)
+| Item | Shared engine has | Status |
+| --- | --- | --- |
+| Ladder gain law | `exponential(1200 + 119.589 g)` | confirmed (FUN_140b05320, FUN_1404d14d0) |
+| Ladder cutoff, resonance, clip, feedback constants | kernel | confirmed (binary constants) |
+| Ladder HQ (2x) | shared Kaiser 2x, flag > 0.5 | confirmed (FUN_140b06180 factor, FUN_140ae22e0 16-tap); HQ-on moving-control cadence still unproved |
+| Ladder flag 0x49 (alt cutoff) | version proxy `0x90..=0x92` | **open**: mechanism confirmed, source byte not decoded for v0x95; needs a native capture with the byte set |
+| Ladder moving controls | 32-frame ramp, 2 ms | partly confirmed (FUN_140b036a0, FUN_140b06180 ramp count); HQ cadence open |
+| Monark | Exact (kemu runs native code) | not re-read in the decompile this pass; stereo interleave unprobed |
+| Pro-53 | Exact (constants confirmed) | confirmed; per-stage feedback constants (0.13335, 0.0166875) verified by vectors, not re-read |
 
-1. Locate the Ladder gain binding and HQ branch in `source/kontakt8/` with `rg` (addresses above);
-   record laws here as our own spec. Do not paste pseudocode.
-2. Implement the stored-gain law and the HQ 2x path in the shared Ladder core, config-driven
-   (`LadderSettings` gains an HQ selector; the Kontakt mapper sets it from the saved flag).
-   Remove the HQ-on warning only once the path matches the HQ-on captures.
-3. Add one golden test per behaviour (gain law, HQ path). Keep the existing 9-case gain test.
 
-## Shared-core build (on engine/filt-sv)
+## Next steps
 
-- Ladder stages: each of the four cells is `linear::Tpt1` (zero-delay one-pole, native order);
-  the feedback soft clip is `shaper::Knee` (clamp +-24, `1 - |v|/48`). Bit-identical: the static
-  PCM grid, HQ composition and selector tests pass unchanged (52 filter tests).
-- Pro-53 / Versatile feedback knee `(a - c|s|)s` (clamp +-4) moved from `cascade.rs` to
-  `shaper::soft`; same arithmetic, existing vectors unchanged.
-- Monark keeps its own input-side loop (`pade(clamp4(..))` per stage, `TINY` denormal offsets).
-  Its stage is not `Tpt1`; expressing it needs a cell with a state-side shaper. Left as is.
-- `Ladder::clear` is test-only now (the audio path never calls it).
-
+1. Decode the v0x95 second flag (record offset 0x29) into the Ladder config and make the cutoff
+   path explicit (replace `instant_cutoff`), then confirm with a native capture that sets it.
+2. Re-read Monark's setter and process (FUN_140b05740 / FUN_140afd9c0) against the decompile.
