@@ -127,3 +127,50 @@ Reverb and Convolution); KSP engine parameters. Repo evidence:
   `design/plate.rs` `shelf` (sin warp `k`, `0x141a92480`), `spark_law::shelf`,
   and Raum's `Svf::low_shelf`. Guard: `design/tests.rs` shelf vectors.
 - No code changed in this step; the gaps above remain open.
+
+## Decompile recovery (Kontakt 8 source READY)
+
+Sources: `source/kontakt8/` buckets and PE constants. Labels: CONFIRMED (read
+from code and constants), INFERRED, UNKNOWN.
+
+### Legacy Reverb input low-pass: implemented
+- Two-pole Butterworth-like biquad, embedded per reverb object (`0x14095b2d0`,
+  `0x14082a0b0`), not a one-pole. Cutoff `x = 0.75(1-damping)+0.25` CONFIRMED.
+- Frequency law: truncated exp(6.15x) to order 8, normalized, sine-warped
+  biquad. -3 dB at 44.1 kHz: 248.0, 1194.2, 5369.3 Hz at x = .25, .5, .75
+  (INFERRED: re-implementation of the closed form, not native-captured).
+- Repo stand-in (one-pole, 20 Hz·1000^x) replaced. Possible stereo/colour field
+  swap in the Legacy loader remains UNKNOWN (not changed).
+
+### Raum Cosmic: in progress
+- Chain bank (flag 0, eight serial two-line stages) structure, oscillators, sign
+  flips, Catmull-Rom reads, matrices and ring lengths: CONFIRMED from decompile and
+  setter emulation. Predelay feedback, post filters and wet/dry law: UNKNOWN.
+- Sticky bank flag: a Cosmic instance after Grounded/Airy may use the FDN bank
+  (flag 1). Host sequence behaviour UNKNOWN.
+
+### Raum tempo-synced predelay: partial
+- Predelay ms when synced = clamp(60000·x·v/bpm, 0, 2000), v floored at 1 by a
+  byte flag, bpm default 120 when < 0.1 (`0x140a74bf0`). CONFIRMED.
+- Core lane 1 gets the converted time (the repo's "core 2..5" note is wrong).
+- Enum-to-division table NOT FOUND. The repo's 240·n/(f·m·bpm) is equivalent
+  only if x·v = 4n/(fm) (INFERRED). Engine has no host bpm path here yet.
+
+### Raum limiter: partly recovered, placement corrected
+- NI::DSP::Limiter (`0x141ae3ba0`) runs once per block on the outputs, not
+  inside the feedback loop. CONFIRMED. Its output clamp is ±2.5 (CONFIRMED).
+- The repo's ±2.5 clamp sits inside the feedback path (`raum.rs` Outer), which
+  the decompile does not show. Left unchanged to keep Grounded/Airy vectors
+  bit-identical; deviation recorded here.
+- Gain table: G = 2^(u/60 − 20), u = index, 0 dB at 1200, built at runtime
+  (`0x1404d14d0`). CONFIRMED.
+- Detector and smoothers: arithmetic CONFIRMED. Time constants 1/15 and 1/3 at
+  44.1 kHz are implausibly long for a limiter; meaning UNKNOWN.
+
+### Galois lane 8: premise corrected
+- Dispatcher `0x14198aa20` belongs to the Raum core (GaloisReverbExtended), not
+  the Galois reverb. CONFIRMED.
+- No saved field maps to Galois lane 8; the saved layout has 10 values. CONFIRMED.
+  The repo's 1.0 has no binary source; its runtime source is UNKNOWN. The
+  Galois saved-to-lane mapping is INFERRED (enum type, then time, size, damping,
+  modulation, diffusion, predelay, high cut, low shelf, stereo).
