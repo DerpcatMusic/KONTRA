@@ -130,18 +130,30 @@ Verified in the export (function names are `FUN_<addr>`; identity comes from cla
 | Pro v0x100 legacy record | open |
 | TM1 HQ path, tempo-sync law | open (not in this pass) |
 
-## KSP parameter wiring (parity-matrix finding)
+## KSP parameter writes: measured laws (native vectors)
 
-`docs/architecture-v2/KSP_AUDIT_ENGINE_PAR.tsv` marks these engine parameters as
-"mirror/outbox; no engine consumer": `$ENGINE_PAR_SPEED`, `$ENGINE_PAR_SMOOTH`,
-`$ENGINE_PAR_GRAIN_LENGTH`, `$ENGINE_PAR_FORMANT_SHIFT`, `$ENGINE_PAR_TM_LEGATO` and
-`$ENGINE_PAR_TMPRO_KEEP_FORMANTS`. A KSP script that sets them changes nothing in the engine, while
-the same controls loaded from a .nki record do take effect. This gap belongs to the
-k-ksp-engine-params lane (engine-parameter ids); the Time Machine side is the consumer that must
-read them once that lane applies the values.
+Measured with `tools/kontakt-oracle/tm_sweep.py` on Kontakt 8 under Wine. Each sweep step is a
+fresh instrument whose init script runs `set_engine_par(PAR, raw, 0, -1, 0)`; the saved
+`.nki` is read back with `tm_source_dump` (ni_file's group source reader). Only fields that differ
+from the fresh-instrument baseline are reported.
+
+| KSP write | Stored field | Kinds | Law (raw 0..1e6) | Evidence |
+| --- | --- | --- | --- | --- |
+| `SPEED` | `common_float_7` | TM1, TM2, Pro | table, 21 points at 0.05 (0 -> 0, 0.5 -> 1, 1 -> 8) | `docs/re/kontakt-bindings/tm_source_sweep.tsv` |
+| `SMOOTH` | `machine_float_1` | TM1 | identity 0..1 | `docs/re/kontakt-bindings/tm_source_sweep.tsv` |
+| `GRAIN_LENGTH` | `machine_float_2` (ms) | TM1 | table, 0.3 -> 100 ms (21 points) | `docs/re/kontakt-bindings/tm_source_sweep.tsv` |
+| `FORMANT_SHIFT` | `pro_float_1` | Pro | linear -1..1 | `docs/re/kontakt-bindings/tm_source_sweep.tsv` (0, 0.25, 0.75, 1) |
+| `TMPRO_KEEP_FORMANTS` | `pro_flag_2` | Pro | switch, 0 = off | `docs/re/kontakt-bindings/tm_source_sweep.tsv` |
+
+Not measured, and reported as unapplied: `SMOOTH` and `GRAIN_LENGTH` on TM2 and Pro (no stored
+field in the sweep), `SPEED_UNIT`, `TRANSIENT_SIZE`, `TM_LEGATO`.
+
+Applied in `crates/sampler-kontakt/src/time_stretch_writes.rs` and tested against the measured points.
+The engine's speed, smooth and grain change with these writes, while `FORMANT_SHIFT` and
+`KEEP_FORMANTS` only update the carried Pro record, because the Pro formant stage does not exist yet.
 
 ## Oracle status
 
 The Wine oracle (`tools/kontakt-oracle/render.py` with a Lua probe; PipeWire `kontra_ref` sink) can
-render Kontakt audio, and `probes/audit_levels.lua` already creates Time Machine 1/2/Pro groups. No
-native Time Machine render has been captured or committed, so no row is at `parity`.
+render Kontakt audio. No native Time Machine audio render has been captured, so no row is at
+`parity` in the audio sense: the laws above are parameter-level measurements.

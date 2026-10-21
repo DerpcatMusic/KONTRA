@@ -3,7 +3,7 @@
 //! translator states only what it decodes; everything else it finds is listed
 //! in [`ir::Instrument::unsupported`] with its source location.
 
-use crate::{LoadError, Samples};
+use crate::{LoadError, Samples, time_stretch_writes};
 use ni_file::kontakt::{
     StructuredObject,
     objects::{
@@ -2221,22 +2221,23 @@ impl Translation {
             }
         };
         let mut notes = Vec::new();
-        let stretch = stretch_from_record(&params, &mut notes)?;
+        let mut stretch = stretch_from_record(&params, &mut notes)?;
         for (feature, value, reason) in notes {
             self.unsupported(at, feature, value, reason);
         }
-        for name in [
-            "ENGINE_PAR_SPEED",
-            "ENGINE_PAR_SPEED_UNIT",
-            "ENGINE_PAR_SMOOTH",
-            "ENGINE_PAR_GRAIN_LENGTH",
-            "ENGINE_PAR_TRANSIENT_SIZE",
-            "ENGINE_PAR_TM_LEGATO",
-            "ENGINE_PAR_TMPRO_KEEP_FORMANTS",
-            "ENGINE_PAR_FORMANT_SHIFT",
-        ] {
-            if let Some(value) = self.script_par(name, index as i32, -1, -1) {
+        // Measured writes (time_stretch_writes) change the stored source record; the
+        // rest have no law yet, and writes with no field for this kind are reported.
+        let unapplied = time_stretch_writes::apply(&mut stretch, |name| {
+            self.script_par(name, index as i32, -1, 0)
+        });
+        for name in ["ENGINE_PAR_SPEED_UNIT", "ENGINE_PAR_TRANSIENT_SIZE", "ENGINE_PAR_TM_LEGATO"] {
+            if let Some(value) = self.script_par(name, index as i32, -1, 0) {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::UnknownLaw);
+            }
+        }
+        for name in unapplied {
+            if let Some(value) = self.script_par(name, index as i32, -1, 0) {
+                self.unsupported(at, &format!("{name} write"), value, ir::Reason::NotModeled);
             }
         }
         let _ = mode;
