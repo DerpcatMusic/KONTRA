@@ -31,7 +31,7 @@ def lua_s(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def gen_lua(modes: list[str], steps: list[tuple[str, str, int]]) -> str:
+def gen_lua(modes: list[str], steps: list[tuple[str, str, int]], generic: int = 0) -> str:
     """steps: (mode, par, value); par "" is the baseline for the mode."""
     rows = ",".join(f"{{{lua_s(m)},{lua_s(p)},{v}}}" for m, p, v in steps)
     return f"""
@@ -58,7 +58,7 @@ for n, s in ipairs(STEPS) do
   kt.set_group_playback_mode(inst, 0, mode)
   local src = "on init\\n"
   if par ~= "" then
-    src = src .. " set_engine_par($ENGINE_PAR_" .. par .. ", " .. value .. ", 0, -1, 0)\\n"
+    src = src .. " set_engine_par($ENGINE_PAR_" .. par .. ", " .. value .. ", 0, -1, {generic})\\n"
   end
   src = src .. "end on\\n"
   pcall(kt.set_instrument_script_source, inst, 0, src)
@@ -89,6 +89,7 @@ def main() -> int:
     ap.add_argument("--modes", default="time_machine_1,time_machine_2,time_machine_pro")
     ap.add_argument("--pars", default="SPEED,SMOOTH,GRAIN_LENGTH,FORMANT_SHIFT,TMPRO_KEEP_FORMANTS")
     ap.add_argument("--values", default="0,250000,500000,750000,1000000")
+    ap.add_argument("--generic", type=int, default=0, help="KSP generic argument of the write (corpus group writes use -1)")
     a = ap.parse_args()
     modes = a.modes.split(",")
     pars = a.pars.split(",")
@@ -102,7 +103,7 @@ def main() -> int:
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True)
     script = WORK.parent / "tm_sweep_gen.lua"
-    script.write_text(gen_lua(modes, steps))
+    script.write_text(gen_lua(modes, steps, a.generic))
     env = dict(os.environ, ORACLE_LUA=str(script), ORACLE_TIMEOUT=str(600))
     subprocess.run([sys.executable, str(HERE / "dump.py"), str(WORK / "probe.jsonl")], env=env, check=True)
     rows = []
