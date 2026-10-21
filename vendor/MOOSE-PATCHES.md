@@ -157,3 +157,16 @@ plugin. CLAP allows `changed()` only inside `clap_plugin.activate`
 callback now only requests a restart; the host reactivates, and `activate`
 refreshes the latency it reads. The `clap.latency` host pointer is no longer
 captured. Upstream: worth offering to MOOSE as is.
+
+## X11 keyboard keymap is released with the window
+
+`XkbcommonState::new` (`moose-baseview`, `src/wrappers/xkbcommon.rs`) builds a
+keymap with `xkb_x11_keymap_new_from_device` for every X11 window, and the
+state takes its own reference to it. Nothing released the keymap, and the
+keymap holds a reference to the context, so each editor open leaked one
+keymap and one context: 54 kB of malloc memory per open in a live-allocation
+trace (71 kB/cycle by mallinfo2 in the soak). The keymap is now unref'd once
+the state holds it; dropping the state frees both. Checked by
+`tools/smooth-plugin/scripts/clap_gui_soak.py soak --max-live-slope 20`, which
+measured 71.4 kB/cycle before and 0.3 to 0.5 kB/cycle after (200 cycles). Upstream:
+worth offering to MOOSE as is.

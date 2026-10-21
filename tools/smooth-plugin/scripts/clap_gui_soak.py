@@ -12,9 +12,11 @@ order   call orders a DAW uses: embedded and floating, destroy without hide,
 float   a floating window: shown, resized, hidden, shown again, photographed.
 resize  embedded host-driven sizes, each checked against the child window and
         photographed with `magick import` into --out.
-soak    open/close the editor N times on a real X11 window; RSS, socket fds,
-        threads and leaked windows. --audio runs a 512-frame process loop on
-        its own thread for the whole run; --floating uses the top-level mode.
+soak    open/close the editor N times on a real X11 window; RSS, live malloc bytes
+        (mallinfo2), socket fds, threads and leaked windows. --audio runs a
+        512-frame process loop on its own thread for the whole run; --floating
+        uses the top-level mode. --max-live-slope KB (run with 200 cycles) fails
+        the run when live malloc bytes grow faster than KB per cycle after cycle 20.
 
 The ABI comes from clap_smoke.py (CLAP 1.x headers). Nothing is installed.
 Exit status is non-zero when any check fails.
@@ -139,6 +141,31 @@ class X:
     def close(self):
         self.x.XDestroyWindow(self.display, self.parent)
         self.x.XSync(self.display, 0)
+
+
+class MallInfo2(C.Structure):
+    # glibc mallinfo2(): byte counts summed over every malloc arena.
+    _fields_ = [(name, C.c_size_t) for name in (
+        "arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
+
+
+def live_malloc_kb(libc):
+    """Bytes malloc has handed out and not got back, over all arenas (kB)."""
+    return libc.mallinfo2().uordblks // 1024
+
+
+def arena_free_kb(libc):
+    """Bytes held by malloc arenas but free: retained for reuse, not returned to the OS (kB)."""
+    return libc.mallinfo2().fordblks // 1024
+
+
+def slope_of(xs, ys):
+    """Least-squares slope of ys against xs; 0 without spread."""
+    if len(xs) < 2:
+        return 0.0
+    mean_x, mean_y = sum(xs) / len(xs), sum(ys) / len(ys)
+    var = sum((a - mean_x) ** 2 for a in xs) or 1.0
+    return sum((a - mean_x) * (b - mean_y) for a, b in zip(xs, ys)) / var
 
 
 def rss_kb():
@@ -490,21 +517,24 @@ def resize(path, x, out, checks):
     inst.close()
 
 
-def soak(path, x, cycles, audio, floating_mode, checks, phase="full", trim=False):
+def soak(path, x, cycles, audio, floating_mode, checks, phase="full", trim=False, max_live_slope=None):
     libc = C.CDLL("libc.so.6")
+    libc.mallinfo2.restype = MallInfo2
     inst = Instance(path, x)
     inst.gui.scale(inst.pointer, 1.0)
     if audio:
         inst.plugin.activate(inst.pointer, 48000.0, 1, 512)
         inst.plugin.start(inst.pointer)
     per_cycle_ms = []
-    rss, fds, threads_seen, marks = [], [], [], []
+    rss, fds, threads_seen, marks, live, free_arena = [], [], [], [], [], []
 
     def sample(done):
         marks.append(done)
         rss.append(rss_kb())
         fds.append(socket_fds())
         threads_seen.append(threads())
+        live.append(live_malloc_kb(libc))
+        free_arena.append(arena_free_kb(libc))
 
     def cycle():
         t0 = time.perf_counter()
@@ -545,20 +575,23 @@ def soak(path, x, cycles, audio, floating_mode, checks, phase="full", trim=False
         inst.plugin.stop(inst.pointer)
         inst.plugin.deactivate(inst.pointer)
     inst.close()
-    slope = 0.0
-    if done > 1:
-        mean_x = sum(marks) / len(marks)
-        mean_y = sum(rss) / len(rss)
-        var = sum((a - mean_x) ** 2 for a in marks) or 1.0
-        slope = sum((a - mean_x) * (b - mean_y) for a, b in zip(marks, rss)) / var
+    slope = slope_of(marks, rss)
+    # Live malloc bytes after cycle 20: what a per-open leak grows. RSS also holds allocator slack.
+    steady = [(m, v) for m, v in zip(marks, live) if m >= 20]
+    live_slope = slope_of([m for m, _ in steady], [v for _, v in steady])
     after20 = rss[marks.index(20)] if 20 in marks else "n/a"
     mode = "floating" if floating_mode else "embedded"
     if phase == "build":
         mode = "build-only"
     print(f"soak: {mode} cycles={done} audio={audio} clean={clean}")
-    print("  series cycle:rss_kB:fds:threads " + " ".join(f"{m}:{r}:{f}:{t}" for m, r, f, t in zip(marks, rss, fds, threads_seen)))
+    print("  series cycle:rss_kB:fds:threads:live_kB " + " ".join(
+        f"{m}:{r}:{f}:{t}:{v}" for m, r, f, t, v in zip(marks, rss, fds, threads_seen, live)))
     print(f"  cycle ms: first={per_cycle_ms[0]:.0f} last={per_cycle_ms[-1]:.0f} mean={sum(per_cycle_ms)/done:.0f}")
     print(f"  RSS kB: start={rss[0]} after20={after20} end={rss[-1]} slope={slope:.1f} kB/cycle")
+    print(f"  live malloc kB (mallinfo2): start={live[0]} after20={live[marks.index(20)] if 20 in marks else 'n/a'}"
+          f" end={live[-1]} slope_after20={live_slope:.1f} kB/cycle")
+    print(f"  arena free kB (retained, not in use): start={free_arena[0]} after20="
+          f"{free_arena[marks.index(20)] if 20 in marks else 'n/a'} end={free_arena[-1]}")
     print(f"  socket fds: baseline={baseline_fds} end={fds[-1]}  threads: baseline={baseline_threads} end={threads_seen[-1]}")
     if context:
         print(f"  audio process calls={context.calls} refused={context.refused}")
@@ -569,6 +602,9 @@ def soak(path, x, cycles, audio, floating_mode, checks, phase="full", trim=False
     checks.check("socket fds constant after the first open", fds[-1] <= after_first,
                  f"baseline {baseline_fds}, after first open {after_first}, end {fds[-1]}")
     checks.check("threads back to baseline", threads_seen[-1] <= baseline_threads, f"{baseline_threads}->{threads_seen[-1]}")
+    if max_live_slope is not None:
+        checks.check(f"live malloc bytes grow under {max_live_slope:g} kB/cycle after cycle 20",
+                     done >= 40 and live_slope <= max_live_slope, f"{live_slope:.1f} kB/cycle over {done} cycles")
 
 
 class AudioThread:
@@ -617,6 +653,8 @@ def main():
     parser.add_argument("--floating", action="store_true")
     parser.add_argument("--phase", choices=["full", "build"], default="full")
     parser.add_argument("--trim", action="store_true", help="malloc_trim(0) after each cycle (experiment)")
+    parser.add_argument("--max-live-slope", type=float, default=None,
+                        help="soak: fail when live malloc kB grow faster than this per cycle after cycle 20")
     parser.add_argument("--out", type=pathlib.Path, default=None)
     args = parser.parse_args()
     path = pathlib.Path(args.bundle).resolve()
@@ -634,7 +672,8 @@ def main():
             assert args.out, "resize needs --out"
             resize(path, x, args.out, checks)
         else:
-            soak(path, x, args.cycles, args.audio, args.floating, checks, args.phase, args.trim)
+            soak(path, x, args.cycles, args.audio, args.floating, checks, args.phase, args.trim,
+                 args.max_live_slope)
     finally:
         x.close()
     print("FAILED: " + ", ".join(checks.failed) if checks.failed else "all checks passed")
