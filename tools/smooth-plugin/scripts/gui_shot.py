@@ -326,6 +326,55 @@ def main():
                     f"{min(values):.6g} .. {max(values):.6g}"
                 )
             print("gestures:\n  " + "\n  ".join(lines))
+    if "--wheel" in sys.argv or "--dblclick" in sys.argv:
+        # Wheel and double-click on logical points: `--wheel x,y:n` scrolls n
+        # notches (negative is down; `--shift` makes them fine), `--dblclick
+        # x,y` double-clicks to reset. Each one is photographed, and
+        # `--wheel-check name:up|down` asserts the host heard one gesture
+        # moving that parameter the way the wheel went.
+        import re
+
+        sx, sy = scale()
+        rest = sys.argv[1:]
+        shift = "--shift" in sys.argv
+        heard.clear()
+        for index, spec in enumerate(a for a in rest if re.fullmatch(r"\d+,\d+(:-?\d+)?", a) and a != "--shift"):
+            where, _, notches = spec.partition(":")
+            x, y = (int(v) for v in where.split(","))
+            subprocess.run(
+                ["xdotool", "mousemove", str(int(x * sx)), str(int(y * sy))], check=True
+            )
+            settle()
+            if "--dblclick" in sys.argv and not notches:
+                subprocess.run(["xdotool", "click", "--repeat", "2", "--delay", "120", "1"], check=True)
+            else:
+                count = int(notches or 0)
+                # Button 4 scrolls up, 5 down.
+                button = "4" if count > 0 else "5"
+                keys = ["keydown", "shift"] if shift else []
+                for _ in range(abs(count)):
+                    cmd = ["xdotool", *keys, "click", button] if not keys else [
+                        "xdotool", "keydown", "shift", "click", button, "keyup", "shift"
+                    ]
+                    subprocess.run(cmd, check=True)
+                    settle()
+            settle()
+            shot = out.with_name(f"{out.stem}-wheel{index + 1}{out.suffix}")
+            subprocess.run(["magick", "import", "-window", str(parent), str(shot)], check=True)
+            print(f"wrote {shot}")
+        if "--wheel-check" in sys.argv:
+            name, _, direction = sys.argv[sys.argv.index("--wheel-check") + 1].partition(":")
+            play(events=record_out)
+            ident = infos[name].id
+            kinds = [kind for kind, seen, _ in heard if seen == ident]
+            values = [value for kind, seen, value in heard if seen == ident and kind == 5]
+            print(f"wheel {name}: kinds {kinds}, values {values[:3]}..{values[-3:]}")
+            assert values, f"host heard no change for {name}"
+            moved = values[-1] - values[0]
+            assert (moved > 0) == (direction == "up") and moved != 0, (name, direction, moved)
+            # Every gesture the wheel opened is closed again: no edit left hanging.
+            assert kinds.count(7) == kinds.count(8), (name, kinds)
+            print(f"wheel {name}: {direction} verified")
     assert gui.hide(pointer)
     gui.destroy(pointer)
     plugin.destroy(pointer)
