@@ -156,6 +156,10 @@ fn failed_gestures_and_binding_pressure_do_not_publish_partial_state() {
     let mut rt = runtime();
     let mut foreign = runtime();
     let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 2).unwrap();
+    // Manager range 49: a full zone bend (48 on member 2 + 49) exceeds the 96-semitone limit.
+    for (cc, value) in [(101, 0), (100, 0), (6, 49)] {
+        apply(&mut mpe, &mut rt, packet(0xb0, 0, cc, value)).unwrap();
+    }
     support::without_heap(|| {
         let a = start(&mut mpe, &mut rt, 1, 60);
         apply(&mut mpe, &mut rt, bend(2, 16383)).unwrap();
@@ -1574,7 +1578,7 @@ fn rejected_mcm_pitch_reset_preserves_configuration_held_siblings_controllers_an
         apply(&mut mpe, &mut rt, packet(0xb0, 0, 1, 127)).unwrap();
         let held = mpe.trigger_with_tuning(&mut rt, 1, sampler_core::Input {
             protocol: Protocol::Midi1, port: 7, group: 3, channel: 1, key: 60, external_id: Some(91),
-        }, 1., 47.).unwrap();
+        }, 1., 49.).unwrap();
         let sibling = start(&mut mpe, &mut rt, 3, 61);
         // PreselectRPN6 before the tested Data Entry message: selector input
         // itself is a separate accepted input, not part of refused membership.
@@ -1589,8 +1593,8 @@ fn rejected_mcm_pitch_reset_preserves_configuration_held_siblings_controllers_an
     let before = (rt.now(), rt.note_count(), rt.voice_count(), rt.expression_count(),
         rt.pending_commands(), expression(&rt, held), expression(&rt, sibling), mpe.pitch_sensitivities());
     support::without_heap(|| {
-        // Oldrange0 admits tuning47. Resetting to48 with retained positive
-        // bend would require95semitones, beyond the normal source step16.
+        // Old range0 admits tuning49. Resetting to48 with retained positive
+        // bend would require 97 semitones, beyond the 96-semitone step 256 limit.
         assert_eq!(apply(&mut mpe, &mut rt, packet(0xb0, 0, 6, 2)), Err(ApplyError::Core(Error::InvalidInput)));
         assert_eq!(mpe.configuration(), None);
         assert_eq!((rt.now(), rt.note_count(), rt.voice_count(), rt.expression_count(),

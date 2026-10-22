@@ -145,7 +145,7 @@ fn rejected_per_note_sensitivity_keeps_current_and_future_owners_and_exact_pcm_u
         let note = seed(&mut receiver,&mut actual); seed(&mut reference_receiver,&mut reference);
         support::without_heap(|| {
             let before = expression(&actual,note); let owner = actual.expression_id(note).unwrap();
-            assert_eq!(receiver.apply(&mut actual,1,0x20,0,7,96u32<<25),Err(ApplyError::Core(Error::InvalidInput)));
+            assert_eq!(receiver.apply(&mut actual,1,0x20,0,7,97u32<<25),Err(ApplyError::Core(Error::InvalidInput)));
             assert_eq!(expression(&actual,note),before); assert_eq!(actual.expression_id(note),Ok(owner));
             assert_eq!((actual.now(),actual.voice_count(),actual.pending_commands()),(0,1,0));
             let mut got = [[0.;2];128]; let mut expected = got; actual.render(&mut got).unwrap(); reference.render(&mut expected).unwrap(); assert_eq!(got,expected);
@@ -313,7 +313,7 @@ fn rejected_cc121_keeps_pedals_current_future_controls_and_exact_reference_pcm()
             r.apply(rt,1,0xe0,0,0,0).unwrap();
             for (cc,value) in [(1,0x1234_5678),(11,0x4567_89ab),(7,0x7654_3210),(64,u32::MAX),(66,u32::MAX)] {r.apply(rt,1,0xb0,cc,0,value).unwrap();}
             let note=r.on(rt,1,69,65535,0,0);
-            match r {Receiver::Mpe(owner)=>{owner.set_note_tuning(rt,note,49.).unwrap();},Receiver::Ingress(_)=>{let id=rt.expression_id(note).unwrap();let mut value=rt.expression(id).unwrap();value.pitch_semitones=47.;rt.set_expression(id,value).unwrap();}}
+            match r {Receiver::Mpe(owner)=>{owner.set_note_tuning(rt,note,97.).unwrap();},Receiver::Ingress(_)=>{let id=rt.expression_id(note).unwrap();let mut value=rt.expression(id).unwrap();value.pitch_semitones=95.;rt.set_expression(id,value).unwrap();}}
             let sustained=r.on(rt,1,70,65535,0,0);r.apply(rt,1,0x80,70,0,0).unwrap();
             (note,sustained)
         };
