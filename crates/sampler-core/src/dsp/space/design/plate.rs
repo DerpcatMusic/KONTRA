@@ -23,8 +23,9 @@
 //!   frames; level `0.04216965` (`0x3d2cba15`).
 //!
 //! Everything is linear and time-invariant, so the wet predelay and the
-//! sections' three frames of pipeline run at the input. Parameter ramps
-//! (`int(sr·0.02/bs + 0.5)` blocks) are not reproduced.
+//! sections' three frames of pipeline run at the input. Parameter ramps are
+//! not wired: [`LaneRamp`] is the native 8-lane smoother (N = `int(sr·0.02/32
+//! + 0.5)` blocks of 32 frames) with no live path into a running core yet.
 
 use super::shelf::{Warp, first_order};
 use super::super::network::{Allpass, Feed, LineSpec, Matrix, Ring, Spec, TapFrom};
@@ -146,6 +147,94 @@ fn build(c: &[f32; 5], rate: f64, init_lp: bool) -> Spec {
     s
 }
 
+/// Native 8-lane parameter smoother (`FUN_140acb7d0`, ticked once per 32-frame
+/// block by `FUN_141ab4dc0`; `L += inc` per frame in `FUN_141a7a1a0`). Lanes:
+/// 0 predelay, 1 decay, 2 core 7 (role not traced), 3 low, 4 high damp,
+/// 5 stereo. Lanes 6 and 7 have no setter case and stay unused at 0.
+///
+/// The ramp is linear. The armed-flag writer (wrapper `+0x163680`) is not
+/// found, so no evidence yet says the native retriggers every block.
+///
+/// ponytail: no live path reaches this yet (`Config::lanes()` is empty for
+/// KontaktPlate, so the core is a constant `Processor::Space`). When it is
+/// wired, the coefficients (line biquads, shelves, damp) are rebuilt once per
+/// 32-frame block from the lane values at that boundary, and the predelay
+/// read is interpolated per frame from `frame()`. Native rebuilds per frame
+/// while lanes move. Upgrade: per-frame coefficient update.
+#[allow(dead_code)] // not wired: no live Plate path, see the ponytail note
+struct LaneRamp {
+    live: [f32; 8],
+    target: [f32; 8],
+    inc: [f32; 8],
+    /// A target was written since the last tick (native dirty byte `+0x163490`).
+    dirty: bool,
+    /// Blocks left until the snap; 0 when idle (native countdown `+0x163494`).
+    countdown: u32,
+    /// Ramp length N in 32-frame blocks (native `+0x163498`).
+    blocks: u32,
+    /// `1 / (32 N)`, the per-frame fraction of the distance (native `+0x16349c`).
+    rate: f32,
+}
+
+#[allow(dead_code)]
+impl LaneRamp {
+    /// `N = max(1, int(sr·0.02/32 + 0.5))`; the 0.02 is the f32 constant
+    /// `0x3ca3d70b` of `prepare` (`141aa2300`). All lanes start at 0, idle.
+    fn new(sr: f32) -> Self {
+        let blocks = ((sr * f32::from_bits(0x3ca3_d70b) / 32.0 + 0.5) as u32).max(1);
+        let rate = 1.0 / (32.0 * blocks as f32);
+        Self {
+            live: [0.0; 8],
+            target: [0.0; 8],
+            inc: [0.0; 8],
+            dirty: false,
+            countdown: 0,
+            blocks,
+            rate,
+        }
+    }
+
+    fn set_target(&mut self, lane: usize, value: f32) {
+        self.target[lane] = value;
+        self.dirty = true;
+    }
+
+    /// The block tick, before the block's 32 frames.
+    fn tick_block(&mut self) {
+        if !self.dirty {
+            if self.countdown > 0 {
+                self.countdown -= 1;
+                if self.countdown == 0 {
+                    self.live = self.target;
+                    self.inc = [0.0; 8];
+                }
+            }
+            return;
+        }
+        self.dirty = false;
+        let mut moving = false;
+        for i in 0..8 {
+            let inc = (self.target[i] - self.live[i]) * self.rate;
+            if inc * inc < 1e-15 {
+                self.live[i] = self.target[i];
+                self.inc[i] = 0.0;
+            } else {
+                self.inc[i] = inc;
+                moving = true;
+            }
+        }
+        self.countdown = if moving { self.blocks } else { 0 };
+    }
+
+    /// One frame: advance every lane by its increment, return the lane values.
+    fn frame(&mut self) -> [f32; 8] {
+        for (l, inc) in self.live.iter_mut().zip(self.inc) {
+            *l += inc;
+        }
+        self.live
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +266,63 @@ mod tests {
     fn line_nine_truncates() {
         assert_eq!(frames(48_000.0, LINE48[9]), 1816);
         assert_eq!(frames(48_000.0, TAP48[3]), 1705);
+    }
+
+    /// Ramp length: `int(sr·0.02/32 + 0.5)` blocks (`prepare` `141aa2300`).
+    #[test]
+    fn ramp_blocks_follow_the_native_formula() {
+        assert_eq!(LaneRamp::new(48_000.0).blocks, 30);
+        assert_eq!(LaneRamp::new(44_100.0).blocks, 28);
+    }
+
+    /// Decay (lane 1) from 0 to 0.8 at 48 kHz: short of the target after
+    /// N-1 blocks, on it after N blocks.
+    #[test]
+    fn lane_reaches_target_after_n_blocks_not_before() {
+        let mut r = LaneRamp::new(48_000.0);
+        let n = r.blocks;
+        r.set_target(1, 0.8);
+        for block in 1..=n {
+            r.tick_block();
+            for _ in 0..32 {
+                r.frame();
+            }
+            if block < n {
+                assert!((r.live[1] - 0.8).abs() > 1e-3, "block {block}");
+            }
+        }
+        assert!((r.live[1] - 0.8).abs() < 1e-6, "{}", r.live[1]);
+    }
+
+    /// Per frame, lane 3 (low) moves by (target - start) / (32 N).
+    #[test]
+    fn per_frame_increment_is_delta_over_32n() {
+        let mut r = LaneRamp::new(48_000.0);
+        r.live[3] = 0.125;
+        r.set_target(3, 0.25);
+        r.tick_block();
+        let want = (0.25 - 0.125) / (32.0 * 30.0);
+        let one = r.frame()[3];
+        let two = r.frame()[3];
+        assert!((one - (0.125 + want)).abs() < 1e-7, "{one}");
+        assert!((two - (0.125 + 2.0 * want)).abs() < 1e-7, "{two}");
+    }
+
+    /// `inc² < 1e-15` snaps the lane on the tick (no ramp); above it, the lane ramps.
+    #[test]
+    fn increment_squared_below_1e15_snaps_to_target() {
+        let mut r = LaneRamp::new(48_000.0);
+        // inc = 1e-5 / 960 ≈ 1.0e-8, inc² ≈ 1.1e-16.
+        r.set_target(4, 1e-5);
+        r.tick_block();
+        assert_eq!(r.live[4], 1e-5);
+        assert_eq!(r.inc[4], 0.0);
+        assert_eq!(r.countdown, 0);
+        // inc = 1e-4 / 960 ≈ 1.0e-7, inc² ≈ 1.1e-14.
+        r.live[4] = 0.0;
+        r.set_target(4, 1e-4);
+        r.tick_block();
+        assert_eq!(r.live[4], 0.0);
+        assert!(r.inc[4] > 0.0);
     }
 }
