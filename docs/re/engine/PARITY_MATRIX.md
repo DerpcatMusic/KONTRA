@@ -24,17 +24,17 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | SV LP1 | parity | vector | Wine capture rows (res 0, .5, .9, u 0..1) within 1 dB (most rows 0.01 dB); guard test `sv_responses_match_the_kontakt_capture` |
-| SV LP2 | partial | vector | Capture res 0 within 1 dB at u .25..1; u = 0 open (G10), res .9 open (G4). filt-sv
-| SV LP4 | partial | vector | Capture res 0 u .25..1 within 1 dB; u=0 open (G10), res .9 open (G4). filt-sv |
-| SV LP6 | partial | vector | Capture res 0 u .25..1 within 1 dB; u=0 open (G10), res .9 open (G4). filt-sv |
+| SV LP2 | partial | vector | Native-exact at res .9 (kemu vectors, `sv_res9_match_the_native_vectors`); u = 0 closed (G10 was the capture window). Capture: res 0 and .5 within 1 dB at all u; res .9 rows 2 dB off (G4 capture chain). filt-sv |
+| SV LP4 | partial | vector | Native-exact at res .9 (kemu vectors); u = 0 closed (G10). Capture res 0 and .5 within 1 dB; res .9 rows 1.8 dB off (G4 capture chain). filt-sv |
+| SV LP6 | partial | vector | Capture res 0 and .5 within 1 dB at all u (u = 0 closed, G10). res .9 rows 5 dB off (G4). SV6 native vectors at res .9 not yet made. filt-sv |
 | SV HP1 | parity | vector | Wine capture rows (res 0, .5, .9, u 0..1) within 1 dB (most rows 0.01 dB); guard test |
-| SV HP2 | partial | vector | Capture res 0 within 1 dB at all u; res .9 open (G4). filt-sv
-| SV HP4 | partial | vector | Capture res 0 within 1 dB at all u; res .9 open (G4). filt-sv |
-| SV BP6 | partial | vector | Capture res 0 within 1 dB except u = 0 (G10); res .9 open (G4). filt-sv |
-| SV HP6 | partial | vector | Capture res 0 within 1 dB at all u; res .9 open (G4). filt-sv |
-| SV BP2 | partial | vector | Capture res 0 u 0...75 within 1 dB; u=1 (G12) and res .9 (G4) open. filt-sv |
-| SV BP4 | partial | vector | Capture res 0 within 1 dB at all u; res .9 open (G4). filt-sv |
-| SV Notch | partial | vector | Notch 4 and Notch 6 captured: res 0 within 1 dB (Notch 6 30 Hz null open with G10); res .9 open (G4). filt-sv
+| SV HP2 | partial | vector | Native-exact at res .9 (kemu vectors); capture res 0 and .5 within 1 dB at all u; res .9 rows 2.7 dB off (G4 capture chain). filt-sv |
+| SV HP4 | partial | vector | Native-exact at res .9 (kemu vectors); capture res 0 within 1 dB; res .9 rows 7 dB off (G4 capture chain). filt-sv |
+| SV BP6 | partial | vector | Capture res 0 and .5 within 1 dB at all u (u = 0 closed, G10); res .9 rows 6 dB off (G4). filt-sv |
+| SV HP6 | partial | vector | Capture res 0 within 1 dB at all u; res .9 rows 5 dB off (G4). filt-sv |
+| SV BP2 | partial | vector | Native-exact at res .9 (kemu vectors). Capture res 0 u 0..75 and res .5 within 1 dB; u = 1 low end 4 dB off (G12); res .9 rows 11 dB off, low end (G4). filt-sv |
+| SV BP4 | partial | vector | Native-exact at res .9 (kemu vectors). Capture res 0 within 1 dB at all u; res .9 rows 11 dB off (G4). filt-sv |
+| SV Notch | partial | vector | Notch 4 and Notch 6: res 0 within 1 dB; Notch 4 native-exact at res .9 (kemu vectors); Notch 4 and 6 capture res .9 rows 4 to 7 dB off (G4). filt-sv |
 | SV Par. LP/HP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed from the binary (G8, G9 closed); bandwidth record path (G7) and a capture open. filt-sv |
 | SV Par. BP/BP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed); G7 and a capture open. filt-sv |
 | SV Ser. LP/HP | partial | vector | Native vector at bandwidth .3, u .5, res .5 (1e-6); gains and `l` confirmed (G8, G9 closed); G7 and a capture open. filt-sv |
