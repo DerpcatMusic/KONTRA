@@ -36,8 +36,13 @@ separate qualification from ordinary native playback.
 
 Envelope qualification is intrinsic to each actual cached definition and travels
 through Ratio/Depth dependencies. Diagnostic deduplication cannot make a later
-reference acceptable. Unproved AHD note-off and non-plain envelope activation
-remain refused at shared Gain/Pan boundaries. Three existing functional AHD
+reference acceptable. Unproved AHD note-off, partial velocity and retrigger laws
+remain refused at shared Gain/Pan boundaries. Non-plain envelope and Program/Layer
+LFO/StepEnvelope sources whose activation ownership is unproved are no longer
+refused: UVI publishes no activation law, so each is approximated per voice and
+owned by the keygroup that routes it, with an `UnknownLaw` warning reading
+"activation ownership is unproved". Program-level retriggered LFOs keep their
+master-restart warning. Three existing functional AHD
 fixtures still fail and remain positive expectations rather than expected-error
 tests. Their failure is unresolved compatibility debt.
 
