@@ -6,9 +6,12 @@ pub(super) use cubic_block::cubic_four;
 mod coefficient_reuse;
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
-pub(super) const MAX_STEP: f64 = 16.0;
+/// Eight octaves up: Kontakt zones keyed to 127 from a root near 42 pitch
+/// 85 semitones (the Areia legato zones), beyond seven octaves. The extra
+/// decimation levels cost about 1/32 of the resident frames.
+pub(super) const MAX_STEP: f64 = 256.0;
 /// Octave levels that cover steps up to MAX_STEP.
-pub(super) const OCTAVES: usize = 4;
+pub(super) const OCTAVES: usize = 8;
 const RADIUS: usize = 48;
 const SHORT_RADIUS: usize = 12;
 
