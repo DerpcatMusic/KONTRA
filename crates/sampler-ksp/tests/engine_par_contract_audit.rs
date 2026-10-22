@@ -396,7 +396,6 @@ fn dynamic_menu_properties_observe_callback_edits_and_other_properties() {
             $id := get_ui_id($menu)
         end on
         on note
-            add_menu_item($menu,\"third\",120)
             $par := $CONTROL_PAR_NUM_ITEMS
             $count := get_control_par($id,$par)
             set_menu_item_value($id,1,81)
@@ -410,7 +409,7 @@ fn dynamic_menu_properties_observe_callback_edits_and_other_properties() {
         end on",
     );
     note(&mut rt);
-    assert_eq!(cell(&rt, 0, 0), 3);
+    assert_eq!(cell(&rt, 0, 0), 2); // add_menu_item is on-init only; two entries
     assert_eq!(cell(&rt, 0, 1), 1);
     assert_eq!(cell(&rt, 0, 2), 16); // $HIDE_WHOLE_CONTROL
 }

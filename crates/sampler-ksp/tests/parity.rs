@@ -46,7 +46,7 @@ fn long_comment_runs_preserve_call_highlighting() {
 
 #[test]
 fn lowering_reports_statements_and_context_stubs_without_values() {
-    let source = "on init declare $x end on\non note\n $x := abs(-7)\n set_script_title(\"private title\")\nend on";
+    let source = "on init declare $x end on\non note\n $x := abs(-7)\n call title\nend on\nfunction title\n set_script_title(\"private title\")\nend function";
     let r = parity_report(source, "ksp:slot0", "test");
     assert_eq!(
         r.constructs
