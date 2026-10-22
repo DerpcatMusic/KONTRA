@@ -50,7 +50,7 @@ impl PreparedHq {
             let rate = host_rate * factor as f32;
             let mut seed = Ladder::default();
             seed.set_taps(4);
-            seed.record_version(0); // captured ordinary cutoff, never inferred saved-version law
+            seed.set_cutoff_path(false); // captured ordinary cutoff
             seed.tune(knobs, rate);
             seed.controls.started = true;
             let ticks = (rate * 0.002 / (factor * 32) as f32 + 0.5) as u32;

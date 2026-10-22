@@ -2796,7 +2796,8 @@ pub struct LadderLP4 {
     pub gain: f64,
     pub cutoff: f64,
     pub resonance: f64,
-    pub record_version: u16,
+    /// Native alternative cutoff path (flag 0x49): the cutoff lane snaps to each new target.
+    pub cutoff_path: bool,
     /// Output selector: saved Morphology type minus 29 (1..=12); feedback closes around stage 4.
     pub taps: u8,
     /// Native HQ flag: run the core at twice the rate inside a shared 2x Kaiser oversampler.

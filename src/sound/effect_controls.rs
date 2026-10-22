@@ -96,7 +96,7 @@ pub(crate) mod tests {
             gain: 0.,
             cutoff: 0.5,
             resonance: 0.2,
-            record_version: 1,
+            cutoff_path: false,
             taps: 4,
             high_quality: false,
         });

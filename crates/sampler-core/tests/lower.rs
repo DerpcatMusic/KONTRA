@@ -1101,7 +1101,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         gain: 0.,
         cutoff: 0.,
         resonance: 0.,
-        record_version: 0x92,
+        cutoff_path: true,
         taps: 4,
         high_quality: false,
     });
@@ -1569,7 +1569,7 @@ fn physical_ladder_lanes_keep_signed_gain_and_drive_audio_without_heap() {
                 gain: -0.25,
                 cutoff: 1.,
                 resonance: 0.,
-                record_version: 0x92,
+                cutoff_path: true,
                 taps: 4,
                 high_quality: false,
             })],
@@ -1630,7 +1630,7 @@ fn normalized_cutoff_routes_address_ladder_and_daft_without_audio_heap() {
                             gain: 0.,
                             cutoff,
                             resonance: 0.1,
-                            record_version: 0x92,
+                            cutoff_path: true,
                             taps: 4,
                             high_quality: false,
                         })
@@ -1770,7 +1770,7 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                         gain,
                         cutoff: 0.5,
                         resonance,
-                        record_version: 0x92,
+                        cutoff_path: true,
                         taps: 4,
                         high_quality: false,
                     })

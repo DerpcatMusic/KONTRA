@@ -11,7 +11,8 @@ pub struct LadderSettings {
     pub gain: Parameter,
     pub cutoff: Parameter,
     pub resonance: Parameter,
-    pub record_version: u16,
+    /// Alternative cutoff path (saved flag 0x49).
+    pub cutoff_path: bool,
     /// Output selector: saved Morphology type minus 29 (1..=12).
     pub taps: u8,
     /// Native HQ: the core runs at twice the rate inside the shared 2x Kaiser oversampler.
@@ -49,7 +50,7 @@ impl LadderSettings {
         Ladder {
             rate: internal as f32,
             parameters: [self.cutoff, self.resonance, self.gain].map(|p| p.compile(bindings)),
-            record_version: self.record_version,
+            cutoff_path: self.cutoff_path,
             taps: self.taps,
             os: self.high_quality.then(|| Kaiser::new(2)),
         }
@@ -62,7 +63,7 @@ pub(crate) const CELLS: usize = 19;
 pub(crate) struct Ladder {
     rate: f32,
     parameters: [PreparedParameter; 3],
-    record_version: u16,
+    cutoff_path: bool,
     taps: u8,
     os: Option<Kaiser>,
 }
@@ -105,7 +106,7 @@ impl Ladder {
             state.aux[0] = 1.0;
         }
         let mut kernel = ladder_kernel::Ladder::restore(cells);
-        kernel.record_version(self.record_version);
+        kernel.set_cutoff_path(self.cutoff_path);
         kernel.set_taps(self.taps);
         kernel.enabled_modulation(modulation[3] != 0.);
         let values = |frame| {
@@ -181,7 +182,7 @@ mod tests {
                 cutoff: Parameter::Constant(0.64),
                 resonance: Parameter::Constant(0.7),
                 gain: Parameter::Constant(0.2),
-                record_version: 0x92,
+                cutoff_path: true,
                 taps: 4,
                 high_quality: false,
             };
@@ -190,7 +191,7 @@ mod tests {
                 std::array::from_fn(|i| ((i + 11 * c) as f64 * 0.31).sin() * 0.01)
             });
             let mut native = ladder_kernel::Ladder::default();
-            native.record_version(0x92);
+            native.set_cutoff_path(true);
             native.tune([0.64, 0.7, 0.2], rate as f32);
             let mut expected = source.map(|ch| ch.map(|v| v as f32));
             let [l, r] = &mut expected;
@@ -232,7 +233,7 @@ mod tests {
                 cutoff: Parameter::Constant(knobs[0]),
                 resonance: Parameter::Constant(knobs[1]),
                 gain: Parameter::Constant(knobs[2]),
-                record_version: 0x95,
+                cutoff_path: false,
                 taps: 4,
                 high_quality: true,
             };
@@ -243,7 +244,7 @@ mod tests {
             // Reference composition: up, kernel at twice the rate, down, one host frame at a time.
             let os = Kaiser::new(2);
             let mut kernel = ladder_kernel::Ladder::default();
-            kernel.record_version(0x95);
+            kernel.set_cutoff_path(false);
             kernel.set_taps(4);
             kernel.tune(knobs.map(|v| v as f32), 2.0 * rate as f32);
             let mut states: [kaiser::State; 2] = Default::default();
