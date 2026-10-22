@@ -6581,6 +6581,88 @@ mod tests {
     }
 
     #[test]
+    fn dense_chords_keep_every_note_under_production_limits() {
+        // Two 40-key chords, each sounded then released while its note and
+        // release callbacks wait: 160 live callbacks for 80 notes. Base sized
+        // script callbacks for 32 keys (129 slots here) and selected 64 of 80.
+        let script = sampler_ksp::compile(
+            "on note wait(1000000) end on on release wait(1000000) end on",
+            48000,
+            sampler_ksp::Limits::LIBRARY,
+            &[],
+        )
+        .unwrap();
+        let regions = (20u8..=100)
+            .map(|key| Region {
+                sample: 0,
+                key_low: key,
+                key_high: key,
+                root_key: Some(key),
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 1.0,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect();
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap()],
+            regions,
+            1024,
+        )
+        .unwrap();
+        let plan = sampler_ksp::bind_modules(vec![script], prepared).unwrap();
+        let runtime_limits = limits(&plan).0;
+        let part = Part::new(
+            Runtime::new(plan, runtime_limits).unwrap(),
+            MixTree::instrument("nka"),
+        )
+        .unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        core.parts[0].as_mut().unwrap().runtime.record_selections(true);
+        let mut block = |core: &mut V2Core| {
+            core.begin_block(&BlockInfo {
+                frames: 128,
+                offline: true,
+                ..Default::default()
+            });
+            core.render(128);
+            core.end_block(128, &mut |_| true);
+        };
+        // Two 40-key chords, each sounded and released: each note holds a note
+        // callback and a release callback, both waiting, so 160 callbacks are live.
+        for key in 20u8..60 {
+            core.event(0, Event::midi1(0x90, key, 100));
+        }
+        for _ in 0..8 {
+            block(&mut core);
+        }
+        for key in 20u8..60 {
+            core.event(0, Event::midi1(0x80, key, 0));
+        }
+        for key in 60u8..100 {
+            core.event(0, Event::midi1(0x90, key, 100));
+        }
+        for key in 60u8..100 {
+            core.event(0, Event::midi1(0x80, key, 0));
+        }
+        // Two seconds of offline blocks: every wait resolves and each note reaches selection.
+        for _ in 0..750 {
+            block(&mut core);
+        }
+        let selections = core.parts[0].as_mut().unwrap().runtime.take_selection_records();
+        let suppressed: Vec<u8> = selections
+            .iter()
+            .filter(|record| record.suppressed)
+            .map(|record| record.key)
+            .collect();
+        assert_eq!(selections.len(), 80, "every note reached selection");
+        assert_eq!(suppressed, Vec::<u8>::new(), "scripts refused notes with Capacity");
+    }
+
+    #[test]
     fn nka_service_uses_actual_worker_control_capture_and_exact_async_completion() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("own-array.nka");

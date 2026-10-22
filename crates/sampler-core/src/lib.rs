@@ -575,6 +575,10 @@ impl Limits {
 
     /// Keys a part's scripts are sized to run at once (chords, pedalled runs).
     pub const SCRIPT_KEYS: usize = 32;
+    /// Most held keys [`Self::for_plan`] sizes script callbacks for. Each callback
+    /// slot costs about 2 KB per part, so the cap bounds script memory; past it
+    /// the plan refuses notes with Capacity (about 128 live notes at any stage count).
+    pub const SCRIPT_KEYS_MAX: usize = 64;
     /// Cap on script callback state per part: 4M cells, 32 MB.
     pub const SCRIPT_CELLS: usize = 1 << 22;
 
@@ -592,10 +596,15 @@ impl Limits {
     /// callback adds its retained-job budget within the cell and byte ceilings.
     /// Smaller custom arenas or exhausted ceilings explicitly refuse new jobs.
     pub fn script_capacity(plan: &Prepared) -> usize {
+        Self::script_capacity_for(plan, Self::SCRIPT_KEYS)
+    }
+
+    /// [`Self::script_capacity`] for `keys` notes held at once.
+    pub fn script_capacity_for(plan: &Prepared, keys: usize) -> usize {
         let stages = plan.stage_count();
         let locals = plan.behavior_local_count().max(1);
         let ordinary = if stages == 0 { 16 } else {
-            (4 * stages * Self::SCRIPT_KEYS + stages).clamp(16, 4096)
+            (4 * stages * keys + stages).clamp(16, 4096)
                 .min(Self::SCRIPT_CELLS / locals).max(16)
         };
         let completions = plan.zone_completion_capacity();
@@ -661,7 +670,13 @@ impl Limits {
     /// `voices` is the initial polyphony; each script note also gets the
     /// release voices of every stage on top, which its release phase reserves.
     pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
-        let behaviors = Self::script_capacity(plan);
+        // Scripts hold a callback or two per held note, so size them by the note
+        // capacity, clamped to [SCRIPT_KEYS, SCRIPT_KEYS_MAX] (the floor keeps small
+        // harness plans unchanged).
+        let behaviors = Self::script_capacity_for(
+            plan,
+            notes.clamp(Self::SCRIPT_KEYS, Self::SCRIPT_KEYS_MAX),
+        );
         let voices =
             voices + plan.stage_count() * plan.release_voices() * Self::SCRIPT_KEYS.min(notes);
         Self {
