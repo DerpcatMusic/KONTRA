@@ -153,6 +153,13 @@ mod tests {
     }
 
     #[test]
+    fn zero_authored_preload_is_no_window() {
+        // The routine only builds a window when the preload times channels is positive.
+        assert_eq!(window(Input { preload: 0, ..base() }), Window { start: 0, bytes: 0 });
+        assert_eq!(window(Input { preload: 0, position: 9, ..base() }).start, 9);
+    }
+
+    #[test]
     fn override_selects_the_global_preload() {
         assert_eq!(effective_preload(1000, Some(PRELOAD_DEFAULT)), PRELOAD_DEFAULT);
         assert_eq!(effective_preload(1000, None), 1000);
