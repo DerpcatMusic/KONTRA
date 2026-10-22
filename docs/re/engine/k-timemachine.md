@@ -300,3 +300,24 @@ measured KSP sweep above, not from the export.
 
 What this does not give: the consumers of these members. TM2's transient scheduling and Pro's Elastique formant
 and envelope-order laws are still unread, so nothing above changes the rendered audio.
+
+## Consumer search on the cached rdata (docs/re/kontakt-rdata, no binary opened)
+
+Vtable slots come from `vtables.tsv.gz`; bodies from the decompile export. What was narrowed, and what was not:
+
+- **TM2 constructor** `FUN_140cd9320` (93 B, vtable `BTimeMachine2`): transient size `int +0xbc = 1000`,
+  transient copy `byte +0x17 = 1`, `float +0xc0 = 0.7`, speed `+0x4c = 1.0`. The measured KSP range for
+  `TRANSIENT_SIZE` is 100..5000, so 1000 sits inside it; this supports `+0xbc` = Transient Size. The constructor
+  does not build an analysis object.
+- **Second write path** for `+0xbc` and `+0x17`: `FUN_140cdac40` (135 B, TM2 vtable slot 18) takes the speed from a
+  sub-object (`param+0x20`, vtable slot 5, via `FUN_1408a8390`), then writes `+0xbc` from block `+0x9c` and `+0x17`
+  from block `+0x9a`. The record transfer `FUN_140cdb250` (slot 3) reads record `+0xbc` and `+0xb8`. The two source
+  blocks are different, so the stored-field mapping still needs the KSP sweep to pick the right one.
+- **TM2 render slots** `FUN_140ce2d20` (23, 2208 B), `FUN_140ce0dd0` (24, 2198 B) and `FUN_140cdc4d0` (25, 2056 B) do
+  not read `+0xbc`, `+0x17` or `+0xb8` in their bodies. The transient-size consumer is not in these methods, so
+  it is reached through another object. Not located.
+- **Pro** `FUN_140ce6080` (slot 21, 14 B) copies block `+0x2d9d8` into Pro `+0x1a4` (constructor value 1024). The
+  consumer of `+0x1a4` is not located in the Pro render slots checked so far.
+
+Still open: the TM2 transient consumer, the Elastique Pro formant and envelope-order laws, and the grain-profile
+field (`+0xc0`, constructor 0.7, unread).
