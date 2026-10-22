@@ -41,16 +41,17 @@ KONTRA-internal and do not change script results.
 | --- | --- | --- | --- |
 | Integer width | 32-bit signed (manual, Variables) | `i32` | kept |
 | Array size per declaration | max 1,000,000 indices (manual) | 1..1000000 (`sema.rs`) | kept |
-| `ui_table` columns | max 128 (manual; binary message) | 128 | kept |
-| `ui_xy` elements | max 32 (manual; binary message) | 32 | kept |
+| `ui_table` columns | max 128 (manual; binary message) | no enforced cap found; `model.rs` assumes 128 for undescribed tables | to implement (kept) |
+| `ui_xy` elements | max 32 (manual; binary message) | no enforced cap found | to implement (kept) |
 | Total array cells | not documented | unlimited in `Limits::LIBRARY` | lifted |
 | Declared variables | not documented | 65,536 (`Limits::LIBRARY`) | internal, to verify |
 | Source size | not documented | 80 MiB (`Limits::LIBRARY`) | internal |
 | Lowered instructions | not documented | 40,000,000 (`Limits::LIBRARY`) | internal |
 | `on init` evaluation | not documented | fuel 200,000,000 (`INIT_FUEL`) | internal safety bound |
 
-Nothing in the table is established as a Kontakt cap beyond the rows marked
-manual or binary. Real-number precision and callback time budgets are not measured
+Rows marked manual or binary are Kontakt facts; the KONTRA column says whether the
+code enforces them. Only the array-size row is verified as enforced in KONTRA today
+(`sema.rs`). Real-number precision and callback time budgets are not measured
 against Kontakt and are not stated here.
 
 ## 3. MPE and per-note expression (modern extension)
