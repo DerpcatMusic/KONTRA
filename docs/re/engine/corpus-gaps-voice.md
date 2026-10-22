@@ -179,3 +179,20 @@ temporary eprintln probes (not committed; diff kept in scratch). Findings:
   bucket for the stream/preload path is the next thing to read. No engine fix is made: a residency
   policy change needs Kontakt evidence beyond this one oracle, and no vector test can be written
   until that policy is known.
+
+## Dolce Staccato: preload-start residency hypothesis refuted (2026-10-22, seventh pass)
+
+Tested the claim that a start offset past the DFD preload head makes the voice cold. It does not
+hold for this instrument. No engine change.
+
+- Program `dfd_channel_preload_size` = 61440 (`ni-file` Program params; decompile default 0xf000,
+  readers around `0140570000.c:10935`, `0140580000.c:59`, `0140820000.c:7337`).
+- All 384 key-60 zones: `sample_start` = 0, `num_frames` = 112800 or 113760 (stereo).
+- `sample_start_mod_range` = 3841 frames (unit per `crates/sampler-kontakt/src/library.rs:3807`).
+  The script's sample-start controller (251020, about 25%) gives an offset of about 960 frames,
+  which is inside the 61440-byte head. Playback would be warm in a head-bounded model too.
+- The script never sets a play position. Its sample-start controller feeds `ATTACK` (on note,
+  line 65610), not the start.
+- So a bounded head (head-policy PR #294, aaf2210) does not make this voice cold. The silence and
+  the note_off burst still need another explanation. Open: the attack envelope and its
+  ATK_CURVE/ATTACK law under `note_off`, and what the decompile says about attack-stage release.
