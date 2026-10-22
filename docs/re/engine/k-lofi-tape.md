@@ -61,6 +61,8 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 - **Core constructor** `FUN_140a842b0` (`ModulatableDSPCoreWrapper<BEffectWowFlutterTraits,0>`): six two-channel state objects (buffers at +0xa0..+0xaf) and ten control targets (`vtbl+0x60` over `this+0x1e4`). Generic base `BEffectBase` buffers `FUN_140a856c0` size by sample rate. **Confirmed structure, not yet the per-sample laws.**
 - **Per-sample wow/flutter kernel: NOT located.** The laws in `wowflutter.rs` (8 ms base, 0.5 % wow, 0.2 % flutter, 0.5-2 Hz / 6-12 Hz, Stereo/2 phase) remain **unconfirmed**. They are not taken from this decompile.
 - Scrape, age, saturation and gate laws: **unconfirmed** (no kernel located).
+- **Wrapper vtables.** `ModulatableDSPCoreWrapper<BEffectWowFlutterTraits>` = `0x144fc2d38` (written by `FUN_140a842b0` and `FUN_140a87d20`). `BEffectWowFlutter` = `0x144fc2e48` (written by ctor `FUN_140a87420`, which calls the core ctor at offset 0). Its first 16 slots match the wrapper's. Slot targets are all small except `FUN_140a9f850` (1647 bytes), which is a per-block peak tracker (`[+0x3500]`, `[+0x3510]`), not the wow kernel. `FUN_140ac21f0` (1777 bytes) is a block loop with a slewed gain (`+0x1ac`, target `+0x1a4`) over 4096-byte-stride buffers; **not identified** as the wow kernel. Next step: the wow kernel is reached through `FUN_140ac21f0`'s callees or a per-sample trait method outside the 16 shared slots.
+- **Level bound (no gain in the law).** The shipped law is `out = wet * y + dry * x` with `dry = 1 - mix` and `y` a linear interpolation of earlier inputs. Its peak cannot exceed the input peak at any mix or depth (test `wowflutter::tests::wow_flutter_adds_no_gain_at_any_mix`). A +23 dB insert gain therefore comes from downstream stages, not the Wow law. For Conflux `Ray Line`, that stage is the Gainer (0x13) after it. It takes its gain from the saved footer knob (`make_persistent($Footer__Volume)`, then `set_engine_par($ENGINE_PAR_GN_GAIN, $Footer__Volume, …)`) and its output from script writes (`INSERT_EFFECT_OUTPUT_GAIN`). The gain law (output-gain cubic, unity 396851) is assumed, and the Gainer gain is unprobed (`KE070` in `audit-probes.tsv`).
 
 ## Gap table
 
@@ -75,4 +77,5 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 
 ## Tests
 - `wowflutter::tests::zero_depth_is_the_base_delay` (sampler-core): zero depth is a pure 384-frame delay at 48 kHz.
+- `wowflutter::tests::wow_flutter_adds_no_gain_at_any_mix` (sampler-core): peak stays at or below the input peak for mix 0, 0.5 and 1; wet-only RMS stays within 2 % of the input.
 - `effects::timemod::tests::wow_flutter_reads_its_stream_and_maps_generic_law` (sampler-kontakt): reader order, mix, and the omitted-law diagnostic.
