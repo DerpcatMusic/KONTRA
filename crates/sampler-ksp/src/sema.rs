@@ -1263,6 +1263,19 @@ impl<'a> Sema<'a, '_> {
                 return fault(span, format!("{} parameter must be {lo}..={hi}", b.name()));
             }
         }
+        // $CONTROL_PAR_TYPE is derived from the widget kind: readable, never settable.
+        if matches!(
+            b,
+            Builtin::SetControlPar | Builtin::SetControlParStr | Builtin::SetControlParReal
+        ) && let Arg::Expr(par) = &out[1]
+            && let Some(Const::Int(par)) = fold(&self.hir, par)
+            && par == builtins::CONTROL_PAR_TYPE
+        {
+            return fault(
+                span,
+                "The value of $CONTROL_PAR_TYPE cannot be changed! This control parameter only works with get_control_par().",
+            );
+        }
         // Runtime-owned system arrays are readable operands, not destinations.
         // The initializer and callback lowerer both need a declared array home.
         if b == Builtin::GetScale && !matches!(out[1], Arg::Var(..)) {
