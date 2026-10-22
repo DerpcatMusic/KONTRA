@@ -162,7 +162,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | PsycheDelay | unknown | none | |
-| Replika Delay | partial | decomp | v0x12 reader; RDL_TIME (documented law) only; core setter binding read (docs/re/engine/k-delays.md), core DSP not yet read |
+| Replika Delay | partial | decomp | v0x12 reader and 53-index setter structure read from decompile (docs/re/engine/k-replika.md). Only time is mapped (2000 ms x stored, documented law). Other controls reported with reasons (UnknownLawOmitted or NotModeled). Open: wrapper-index to control-name binding, core DSP (line, filters, saturation, BBD, ducking, stereo); its constants are not in the decompile text. No native vector. Not parity. |
 | Twin Delay | unknown | none | |
 | Legacy Delay | partial | decomp | Kernel, setter and sync getter verified against decompile; constants read from the PE image. No native parameter vector: the oracle harness does not apply float delay parameters (docs/re/engine/k-delays.md) |
 
