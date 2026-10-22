@@ -91,7 +91,6 @@ pub(crate) struct EnvelopeDefinition {
 #[derive(Clone, Copy)]
 enum SourceLimitation {
     Envelope(roxmltree::NodeId, EnvelopeLimitation),
-    Activation(roxmltree::NodeId),
 }
 
 #[derive(Default)]
@@ -106,17 +105,10 @@ impl SourceQualification {
         }
     }
 
-    fn activation(&mut self, shared: &Shared) {
-        if self.limitation.is_none() {
-            self.limitation = Some(SourceLimitation::Activation(shared.node));
-        }
-    }
-
     fn require_output(self, connection: Node) -> Result<(), String> {
         let Some(limitation) = self.limitation else { return Ok(()); };
         let (node, law) = match limitation {
             SourceLimitation::Envelope(node, law) => (node, law.description()),
-            SourceLimitation::Activation(node) => (node, "source activation ownership is unproved"),
         };
         Err(format!("{}: shared output source node {} has no supported exact law: {law}", path(connection), node.get_usize()))
     }
@@ -414,7 +406,6 @@ impl Translation {
                     shared,
                 }) if scale.is_none() => {
                     if let Some(shared) = shared {
-                        qualification.activation(&shared);
                         self.share(shared);
                     }
                     let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
@@ -588,7 +579,6 @@ impl Translation {
                     out.routes.push(route);
                 }
                 if let Some(shared) = shared {
-                    qualification.activation(&shared);
                     self.share(shared);
                 }
             }
@@ -893,7 +883,6 @@ impl Translation {
                     shared,
                 }) if scale.is_none() => {
                     if let Some(shared) = shared {
-                        qualification.activation(&shared);
                         self.share(shared);
                     }
                     let f = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
@@ -1069,7 +1058,7 @@ impl Translation {
             }
             "one instance restarted by every note-on (overlapping notes: inferred, not measured)"
         } else {
-            "one shared instance in UVI, approximated per voice"
+            "one shared instance in UVI, approximated per voice; activation ownership is unproved, so the routing keygroup owns the output"
         };
         self.ir.unsupported.push(ir::Unsupported {
             location: shared.location,
