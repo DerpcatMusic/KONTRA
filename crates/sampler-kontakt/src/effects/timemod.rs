@@ -239,6 +239,43 @@ pub(super) fn read_wow_flutter(version: u16, r: &mut Reader) -> Option<Unit> {
     Some(Unit::WowFlutter { fields, gate: r.flag()?, mix: r.f32()? })
 }
 
+/// Stores a script's `set_engine_par` write into a Wow / Flutter record, at the
+/// offsets `read_wow_flutter` takes them from (Kontakt 8 reader 0x140ac65f0 reads
+/// the seven floats, then the gate byte, then the mix float). Identity laws.
+pub(super) fn wowflutter_store(version: u16, public: &mut [u8], parameter: &str, value: i32) -> bool {
+    if version != 0x10 {
+        return false;
+    }
+    let level = (f64::from(value) / 1_000_000.).clamp(0., 1.) as f32;
+    let at = match parameter {
+        "ENGINE_PAR_WOWFLUTTER_GATE" => {
+            return match public.get_mut(28) {
+                Some(gate) => {
+                    *gate = u8::from(value >= 1);
+                    true
+                }
+                None => false,
+            };
+        }
+        "ENGINE_PAR_WOWFLUTTER_WOW" => 0,
+        "ENGINE_PAR_WOWFLUTTER_FLUTTER" => 4,
+        "ENGINE_PAR_WOWFLUTTER_SCRAPE" => 8,
+        "ENGINE_PAR_WOWFLUTTER_SPEED" => 12,
+        "ENGINE_PAR_WOWFLUTTER_STEREO" => 16,
+        "ENGINE_PAR_WOWFLUTTER_AGE" => 20,
+        "ENGINE_PAR_WOWFLUTTER_SATURATION" => 24,
+        "ENGINE_PAR_WOWFLUTTER_MIX" => 29,
+        _ => return false,
+    };
+    match public.get_mut(at..at + 4) {
+        Some(field) => {
+            field.copy_from_slice(&level.to_le_bytes());
+            true
+        }
+        None => false,
+    }
+}
+
 /// Psyche Delay v0x10 (reader `0x140ac5bc0`): time, feedback, detune, pitch,
 /// offset, cross; reverse-stereo, detune-stereo and reverse bytes; the time
 /// sub-object's unit factor and two unused floats, then a flag.
@@ -957,6 +994,37 @@ mod tests {
         assert_eq!(fx_probe(synced.processors.clone(), 120., &[[1., -0.5]]), output);
         // The native synced getter substitutes 120 BPM below .1 BPM.
         assert_eq!(fx_probe(synced.processors, 0.05, &[[1., -0.5]]), output);
+    }
+
+    #[test]
+    fn wow_flutter_script_writes_reach_the_chain() {
+        // Native record: seven floats, the gate byte, then the mix float, stored at 0.
+        let mut public = Vec::new();
+        for f in [0.3f32, 0.2, 0.1, 0.5, 0.4, 0., 0.] {
+            public.extend(f.to_le_bytes());
+        }
+        public.push(0);
+        public.extend(0f32.to_le_bytes());
+        let mut fx = slot(0x6a, public, 1.0);
+        fx.version = 0x10;
+        let write = |parameter: &str, value: i32| sampler_ksp::EnginePar {
+            parameter: parameter.into(),
+            value,
+            group: -1,
+            slot: 0,
+            generic: 1,
+        };
+        let writes = [
+            write("ENGINE_PAR_WOWFLUTTER_MIX", 500_000),
+            write("$ENGINE_PAR_WOWFLUTTER_GATE", 1),
+            write("ENGINE_PAR_WOWFLUTTER_WOW", 250_000),
+        ];
+        super::super::apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        let built = chain(&[fx], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
+        assert_eq!(w.wow, 0.25);
+        assert!((config.wet - 0.5).abs() < 1e-6, "mix {}", config.wet);
     }
 
     #[test]
