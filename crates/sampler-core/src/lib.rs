@@ -114,7 +114,7 @@ mod gate;
 mod modulation;
 mod plan_programs;
 mod script_params;
-pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
+pub use engine_parameter_names::{ENGINE_PARAMETER_NAMES, ENGINE_PARAMETER_NATIVE_CONSTANTS};
 pub use engine_parameters::{
     BUS_VOLUME_LAW, EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
     EngineParameterLaw, EngineParameterOffset, EngineParameterOutcome, engine_parameter_control,

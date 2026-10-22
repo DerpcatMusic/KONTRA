@@ -1030,6 +1030,15 @@ pub fn engine_parameter_display(parameter: u16, value: i32) -> String {
 
 #[cfg(test)]
 mod id_tests {
+    /// The TSV is the source: recovered native constants are kept, and a native name only gets an
+    /// id once a consumer binds it (the unbound ones stay on the diagnostic path).
+    #[test]
+    fn native_constants_come_from_the_table_and_unbound_names_have_no_id() {
+        let native = |name| crate::ENGINE_PARAMETER_NATIVE_CONSTANTS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
+        assert_eq!(native("ENGINE_PAR_VOLUME"), Some(422));
+        assert_eq!(native("ENGINE_PAR_RAUM_TIME_UNIT"), Some(981));
+        assert_eq!(super::engine_parameter_id("ENGINE_PAR_RAUM_TIME_UNIT"), None);
+    }
     #[test]
     fn indexed_ids_match_the_first_listed_name() {
         for name in crate::ENGINE_PARAMETER_NAMES {
