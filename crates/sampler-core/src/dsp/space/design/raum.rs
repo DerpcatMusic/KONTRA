@@ -181,10 +181,16 @@ pub(in super::super) fn kernel(k: &Kernel, rate: f64) -> Spec {
     s
 }
 
+/// Algorithm from core index 9: `0` Grounded, `1` Airy, `2` Cosmic
+/// (`141980f40`: `9f4 = clamp(trunc(3 · Raum+0x5f4), 0, 2)`).
+fn kind(p: &[f32; 20]) -> u32 {
+    ((3.0 * p[9]) as u32).min(2)
+}
+
 /// The Raum `Spec` for core controls `p` (`Topology::Raum`): Grounded and Airy
 /// run the 31-line kernel; Cosmic (type 2) the chain bank.
 pub(in super::super) fn spec(p: &[f32; 20], rate: u32) -> Result<Spec, crate::Error> {
-    let kind = ((3.0 * p[9]) as u32).min(2);
+    let kind = kind(p);
     if kind == 2 {
         return Ok(cosmic(p, rate));
     }
@@ -193,11 +199,12 @@ pub(in super::super) fn spec(p: &[f32; 20], rate: u32) -> Result<Spec, crate::Er
 }
 
 /// Cosmic (type 2, `cosmic.rs`) as a `Spec`: no lines, so `direct = 1` feeds
-/// the predelayed pair straight into the chain. The chain output is the wet
-/// signal unscaled: the kernel's Galois gain and wet/dry law do not apply
-/// (CONFIRMED, findings §10.3 with `g = 1` steady; §10.4 skips the kernel).
-/// Outer's dry/wet and post filters apply as for Grounded and Airy (INFERRED:
-/// findings §10.1 and §10.6 are UNKNOWN, so their feedback is Outer's).
+/// the predelayed pair straight into the chain. The kernel's Galois gain and
+/// wet/dry law do not apply (CONFIRMED, findings §10.3 with `g = 1` steady;
+/// §10.4 skips the kernel). The transition gain `g` around the chain is applied
+/// by `Outer` (`Outer::process`), not here. Outer's dry/wet and post filters
+/// apply as for Grounded and Airy (INFERRED: findings §10.1 and §10.6 are
+/// UNKNOWN, so their feedback is Outer's).
 fn cosmic(p: &[f32; 20], rate: u32) -> Spec {
     let mut s = Spec::new(Vec::new(), identity());
     s.direct = 1.0;
@@ -256,10 +263,57 @@ impl Svf {
     }
 }
 
+/// Raum transition gain `g` (`Raum+0x9b0..0x9c1`; prepare `141980ac0`, per
+/// sample `141981200` 638-665, block tick `141981db0` 1081-1104). A fade is a
+/// per-sample one-pole `g = (1-a)·target + a·g`, `a = exp(-ln 20 / (0.05·sr))`
+/// (20-fold per 50 ms, about 115 ms from 1 to the snap at 0.001 at 48 kHz). Inside
+/// `|target - g| <= 0.001` it stops moving; a pending fade lands on the target and
+/// raises `snapped` (`+0x9c1`) for the block tick.
+///
+/// Open trigger: the `target = 0` writers are `141983140` (algorithm `5f4`),
+/// `1419830e0` and `141980700` (`618`). They take the fade path only while
+/// `Raum+0x5c8 == 0`. `0x5c8` is cleared by `141980a70` (callers `14095f930`,
+/// `140836930`) and `141980a60` (vtable only, not traced), and set by
+/// `141980e80`/`141980f40`. The host path that leaves it at 0 during playback is
+/// not read, so nothing here calls `set_transition_target(0)` yet.
+#[derive(Clone, Copy)]
+struct Transition {
+    g: f32,
+    target: f32,
+    coef: f32,
+    /// `+0x9c0`: snap to `target` once the gap is within the threshold.
+    pending: bool,
+    /// `+0x9c1`: set by the snap, read by the block tick.
+    snapped: bool,
+}
+
+impl Transition {
+    /// `exp(-ln 20 / (0.05·sr))`, with the f32 product `0.05·sr` as the decompile forms it
+    /// (constants `147698b10` = -2.995732273553992 f64, `1447148c0` = 0.05 f32).
+    fn new(sr: f32) -> Self {
+        let coef = (f64::from_bits(0xc007_f742_7b73_e394) / f64::from(sr * 0.05)).exp() as f32;
+        Self { g: 1.0, target: 1.0, coef, pending: false, snapped: false }
+    }
+
+    /// The gain for one sample (`141981200` 638-649). `0.001` is `1447148a4`.
+    fn step(&mut self) -> f32 {
+        if (self.target - self.g).abs() > 0.001 {
+            self.g = (1.0 - self.coef) * self.target + self.coef * self.g;
+        } else if self.pending {
+            self.g = self.target;
+            self.pending = false;
+            self.snapped = true;
+        }
+        self.g
+    }
+}
+
 /// Raum's outer core (`0x141981200`) around the kernel: per channel
 /// `x·p19² + fb` into the predelay, read `D - 1` behind; `fb = √p6·gate·0.707
 /// ·clamp(1.4144272·LP(shelf(pd)), ±2.5)` for the next frame; kernel; then
-/// `dry·x + wet·LP(shelf(v))`. The type gain is taken settled at 1.
+/// `dry·x + wet·LP(shelf(v))`. The transition gain `g` multiplies the kernel
+/// input (store) and the post loop input, and for Cosmic its core output twice
+/// (`g^4` in all, `g^2` for Grounded and Airy).
 pub(in super::super) struct Outer {
     ring: [Vec<f32>; 2],
     /// Samples read behind the write, `1..ring.len()`.
@@ -275,6 +329,9 @@ pub(in super::super) struct Outer {
     /// `[ch][feedback shelf, feedback LP, post shelf, post LP]`.
     st: [[[f32; 2]; 4]; 2],
     mix: [f32; 2],
+    transition: Transition,
+    /// Cosmic (kind 2): the core output also carries `g` twice (`141981200` 720-760).
+    cosmic: bool,
 }
 
 impl Outer {
@@ -298,6 +355,27 @@ impl Outer {
             lp: Svf::high_cut(p[7], sr),
             st: [[[0.0; 2]; 4]; 2],
             mix: if m < 0.5 { [1.0, (2.0 * m).powi(3).sqrt()] } else { [2.0 - 2.0 * m, 1.0] },
+            transition: Transition::new(sr),
+            cosmic: kind(p) == 2,
+        }
+    }
+
+    /// Trigger input for `Raum+0x9b8`: `0` starts a fade-out, `1` a fade-in. Nothing
+    /// calls it with `0` yet (open trigger, see `Transition`).
+    pub(in super::super) fn set_transition_target(&mut self, target: f32) {
+        let t = &mut self.transition;
+        t.target = target;
+        if t.g != target {
+            t.pending = true;
+        }
+    }
+
+    /// Block tick (`141981db0` 1081-1104): a landed fade-out returns the target to 1.
+    /// The kind switch the decompile applies here (`9fc`/`9fd`) is not ported; the
+    /// kind is fixed at construction.
+    fn transition_tick(&mut self) {
+        if std::mem::take(&mut self.transition.snapped) && self.transition.target == 0.0 {
+            self.set_transition_target(1.0);
         }
     }
 
@@ -313,6 +391,8 @@ impl Outer {
         let mut dry = [[0f32; crate::dsp::BLOCK]; 2];
         dry[0][..n].copy_from_slice(&l[..n]);
         dry[1][..n].copy_from_slice(&r[..n]);
+        // ponytail: the decompile ticks every 32 frames (`+0x1bc`); here once per call.
+        self.transition_tick();
         let len = self.ring[0].len();
         if let Some((beats, rate, amount)) = self.sync {
             // Host tempo, or 120 below 0.1 (`0x140a74bf0`); 2 s ceiling.
@@ -320,7 +400,10 @@ impl Outer {
             let secs = (beats * 60.0 / bpm * f64::from(amount)).clamp(0.0, 2.0);
             self.delay = ((secs * rate).round() as usize).clamp(1, len - 1);
         }
+        let mut gain = [0f32; crate::dsp::BLOCK];
         for i in 0..n {
+            let g = self.transition.step();
+            gain[i] = g;
             let read = (self.pos + len - self.delay) % len;
             for (ch, io) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
                 self.ring[ch][self.pos] = *io * self.input + self.fb[ch];
@@ -330,7 +413,8 @@ impl Outer {
                 let f = self.lp.tick(&mut st[1], sh);
                 // ponytail: the NI limiter is reduced to its ±2.5 clamp (its gain table is not extracted).
                 self.fb[ch] = self.feedback * (f32::from_bits(0x3fb5_0bf3) * f).clamp(-2.5, 2.5);
-                *io = pd;
+                // Store (`141981200`, `0x9c8`): kernel input is `g·pred`; Cosmic's chain input too.
+                *io = pd * g;
             }
             self.pos = (self.pos + 1) % len;
         }
@@ -338,7 +422,11 @@ impl Outer {
         for (ch, io) in [&mut l[..n], &mut r[..n]].into_iter().enumerate() {
             let st = &mut self.st[ch];
             for (i, v) in io.iter_mut().enumerate() {
-                let sh = self.shelf.tick(&mut st[2], *v);
+                let g = gain[i];
+                // Cosmic: chain output times `g`, then the store times `g` again.
+                let core = if self.cosmic { *v * g * g } else { *v };
+                // Post loop: times `g` once more.
+                let sh = self.shelf.tick(&mut st[2], core * g);
                 let w = self.lp.tick(&mut st[3], sh);
                 *v = self.mix[0] * dry[ch][i] + self.mix[1] * w;
             }
@@ -435,5 +523,84 @@ mod tests {
         let q = frames / 4;
         let (head, tail) = (energy(&l[..q], &r[..q]), energy(&l[frames - q..], &r[frames - q..]));
         assert!(head > 0.0 && tail < head, "head {head} tail {tail}");
+    }
+
+    /// Wet-only core (`mix` 1, no feedback, unit input) of kind `p[9]`
+    /// (0 Grounded, 0.5 Airy, 1 Cosmic).
+    fn wet_only(kind: f32) -> [f32; 20] {
+        let mut p = [0f32; 20];
+        p[0] = 1.0;
+        p[9] = kind;
+        p[19] = 1.0;
+        p
+    }
+
+    /// Left impulse through the outer with an identity core and the gain held
+    /// at `g` (target equal to `g`, so the one-pole does not move).
+    fn held_impulse(kind: f32, g: f32) -> Vec<f32> {
+        let mut o = Outer::new(&wet_only(kind), 48_000, None);
+        o.transition.g = g;
+        o.set_transition_target(g);
+        let (mut l, mut r) = (vec![0f32; 64], vec![0f32; 64]);
+        l[0] = 1.0;
+        o.process(&mut l, &mut r, 120.0, |_, _| {});
+        l
+    }
+
+    /// Snap rule (`141981200` 638-649): a pending fade snaps when the gap is at
+    /// most 0.001 (`<=`); above it the one-pole moves; inside it without a
+    /// pending fade the gain is left alone.
+    #[test]
+    fn transition_snap_rule_at_0_001() {
+        let run = |g: f32, pending: bool| {
+            let mut t = Transition { g, target: 0.0, coef: 0.5, pending, snapped: false };
+            let out = t.step();
+            (out, t.pending, t.snapped)
+        };
+        assert_eq!(run(0.001, true), (0.0, false, true));
+        assert_eq!(run(0.0011, true), (0.5 * 0.0011, true, false));
+        assert_eq!(run(0.0005, false), (0.0005, false, false));
+    }
+
+    /// Fade law (`141980ac0`): `a = exp(-ln 20 / (0.05·sr))`, so the gap shrinks
+    /// 20-fold in 50 ms, which is 2400 frames at 48 kHz.
+    #[test]
+    fn transition_fade_is_20_fold_per_50_ms() {
+        let mut o = Outer::new(&wet_only(0.0), 48_000, None);
+        o.set_transition_target(0.0);
+        let mut g = 1.0;
+        for _ in 0..2_400 {
+            g = o.transition.step();
+        }
+        assert!((g - 0.05).abs() < 1e-4, "{g}");
+    }
+
+    /// `141981200`: Cosmic reaches the mix as `g^4 C` (chain input, chain output,
+    /// store and post loop each carry `g`). With an identity core, `g = 0.5` gives
+    /// 0.0625 times the `g = 1` sample. Powers of two keep the filters exact.
+    #[test]
+    fn cosmic_reaches_the_mix_as_g_to_the_fourth() {
+        let full = held_impulse(1.0, 1.0);
+        let half = held_impulse(1.0, 0.5);
+        let peak = full.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 1e-3);
+        for (h, f) in half.iter().zip(&full) {
+            assert!((h - 0.0625 * f).abs() <= 1e-6 * peak, "{h} vs {}", 0.0625 * f);
+        }
+    }
+
+    /// `141981200`: Grounded and Airy have no core factor after the kernel; `g`
+    /// enters at the store (before the kernel) and in the post loop, so `g^2`.
+    #[test]
+    fn grounded_and_airy_reach_the_mix_as_g_squared() {
+        for kind in [0.0, 0.5] {
+            let full = held_impulse(kind, 1.0);
+            let half = held_impulse(kind, 0.5);
+            let peak = full.iter().fold(0f32, |m, v| m.max(v.abs()));
+            assert!(peak > 1e-3, "kind {kind}");
+            for (h, f) in half.iter().zip(&full) {
+                assert!((h - 0.25 * f).abs() <= 1e-6 * peak, "kind {kind}: {h} vs {}", 0.25 * f);
+            }
+        }
     }
 }
