@@ -396,8 +396,8 @@ pub enum Feature {
     TempoSync,
     VendorResonance,
     Delay,
-    /// A reverb in a voice or group chain; it is a bus processor.
-    VoiceReverb,
+    /// A reverb or stereo tune in a voice or group chain; it is a bus processor.
+    VoiceBusStage,
     PreChainSend,
     Controls,
 }
@@ -1503,10 +1503,10 @@ impl Lowering<'_> {
                 .iter()
                 .chain(&chain.post_amplitude)
                 .any(|p| {
-                    matches!(p, ir::Processor::Space(_))
+                    matches!(p, ir::Processor::Space(_) | ir::Processor::StereoTune(_))
                 })
             {
-                return Err(unsupported(owner, Feature::VoiceReverb));
+                return Err(unsupported(owner, Feature::VoiceBusStage));
             }
             let (stages,starts)=self.lower_list_with_map(&owner,source_chain,0,&chain.pre_amplitude.iter().collect::<Vec<_>>())?;
             sites.extend(starts.into_iter().take(chain.pre_amplitude.len()).map(|n|crate::ScopeControlSite::ChainPre(pre.len()+n)));
@@ -3042,6 +3042,7 @@ impl Lowering<'_> {
             },
             ir::Processor::Phaser(knobs) => Processor::Phaser(knobs),
             ir::Processor::RingMod(config) => Processor::RingMod(config),
+            ir::Processor::StereoTune(config) => Processor::StereoTune(config),
             ir::Processor::Formant(knobs) => Processor::Formant(knobs),
             ir::Processor::FilterBank(c) => match c.topology {
                 ir::fx::filter::Topology::FormantII => {

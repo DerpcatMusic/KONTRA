@@ -12,8 +12,9 @@
 //! Lanes of `ramp` (native `+0x1e0`): 0 = weight of the stored lane (1.0), 1 = one-pole coefficient,
 //! 2 = cross spread, 3 = wet mix. Verified against Kontakt 8 kemu vectors
 //! (`stereo_tune_native_vectors.json`, `tools/re/stereotune_kemu_vectors.py`) at 1e-5 of peak.
-//! Not modelled here: the `+0x1c0` rate scale in apply (set to 1.0 by the harness; writer not found),
-//! and channel counts above two (the native pair loop runs once for stereo).
+//! The `+0x1c0` rate scale is the ctor constant 2*pi (`0x40c90fdb`, `FUN_140a86e50`); nothing later
+//! writes it, so lowering passes `TAU`. Channel counts above two are not modelled (the native pair loop
+//! runs once for stereo).
 use super::ring_ramp::Ramp4;
 
 /// Native denormal guard (0x144f385a8) added to each channel's one-pole input.
@@ -71,7 +72,6 @@ impl StereoTune {
     pub(crate) fn new(rate: f32) -> Self {
         let n = (rate * 0.011_609_977_1_f32) as usize;
         let r = (rate * 0.039_999_999_1_f32) as usize;
-        let reload = ((rate * 0.000_625_000_04_f32 + 0.5) as i32).max(1);
         let mut window = Vec::with_capacity(n);
         let step = std::f64::consts::TAU / n as f64;
         let mut x = 0.0_f64;
@@ -96,8 +96,31 @@ impl StereoTune {
         }
     }
 
-    /// Native apply (`0x140abbce0`): `a` is the tone (one-pole) knob, `b` the pitch knob, `c` the
-    /// spread knob and `mix` the wet amount; `scale` is the `+0x1c0` rate scale (see the module note).
+    /// Prepared state for stored knobs `[split, drift, spread, mix]` at `rate` (ctor, prepare, apply).
+    pub(crate) fn with_knobs(rate: u32, knobs: [f32; 4]) -> Self {
+        let mut tune = Self::new(rate as f32);
+        let [a, b, c, mix] = knobs;
+        tune.apply(a, b, c, mix, std::f32::consts::TAU);
+        tune
+    }
+
+    /// Clears the audio history and keeps the knobs and ramp (the owner's reset).
+    pub(crate) fn clear(&mut self) {
+        self.line.fill(0.);
+        for ring in &mut self.out {
+            ring.fill(0.);
+        }
+        self.head = 0;
+        self.tap = [0.; 2];
+        self.st = [0.; 8];
+        self.rd = [0; 4];
+        self.wr = 0;
+        self.countdown = 0;
+    }
+
+    /// Native apply (`0x140abbce0`): `a` is the split (one-pole) knob, `b` the drift (tap pitch) knob,
+    /// `c` the spread knob and `mix` the wet amount, stored at record `+0x8`, `+0xc`, `+0x10`, `+0x14`.
+    /// `scale` is the `+0x1c0` rate scale (`TAU`, see the module note).
     pub(crate) fn apply(&mut self, a: f32, b: f32, c: f32, mix: f32, scale: f32) {
         let coeff = ((a * 900.0 + 100.0) * scale) / self.rate;
         let f7 = b * 0.85;
@@ -250,7 +273,7 @@ mod tests {
         for case in cases {
             let mut st = StereoTune::new(case.rate);
             let [a, b, c, mix] = case.knobs;
-            st.apply(a, b, c, mix, 1.0);
+            st.apply(a, b, c, mix, std::f32::consts::TAU);
             let n = case.stim[0].len();
             let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
             st.process(&case.stim[0], &case.stim[1], &mut l, &mut r);
