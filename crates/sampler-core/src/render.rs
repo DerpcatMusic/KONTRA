@@ -1015,7 +1015,7 @@ impl Runtime {
                 tempo: self.tempo,
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
-                spaces: &mut [],
+                spaces: &mut [], stereo_tunes: &mut [],
             },
             at,
             feeds: &mut plan.dsp.feeds,

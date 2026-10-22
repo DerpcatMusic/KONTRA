@@ -760,6 +760,9 @@ fn scripted_render(
         cost.seconds += t.elapsed().as_secs_f64();
         done += step;
     }
+    // The host's `Driver::render` flushes ended notes after every block; without it,
+    // retire-when-silent notes that finished still count as stuck.
+    rt.flush_ended(|_| true);
     Ok(())
 }
 
@@ -3323,5 +3326,54 @@ mod tests {
             suspect("Violins - Sustain", "", &[sus.clone(), sus, other]).len(),
             1
         );
+    }
+
+    /// A UVI script that plays a generated child note on key-down (retire-when-silent).
+    /// Scripted hosts retire ended notes in `flush_ended`; the harness must flush the
+    /// same way, or notes that are already silent still count as stuck after the tail.
+    #[test]
+    fn scripted_render_flushes_generated_notes_after_release() {
+        use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region};
+        use sampler_uvi::{OscGroup, script::{Config, ScriptHost}, scripted::{Driver, MidiFeed}};
+        let samples = [[1., 0.], [0., 1.]]
+            .map(|f| Pcm::new(48000, vec![f; 4096].into_boxed_slice()).unwrap());
+        let regions = (0..2)
+            .map(|sample| Region {
+                sample,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect();
+        let plan = Prepared::new(48000, samples.into(), regions, 2)
+            .unwrap()
+            .with_groups(2, vec![Some(1), Some(0)])
+            .unwrap();
+        let limits = Limits::for_plan(&plan, 4, 4);
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        let xml = "<UVI4><Program><Layers><Layer/><Layer/></Layers><EventProcessors><ScriptProcessor><script>function onNote(e) playNote(e.note,e.velocity) end</script></ScriptProcessor></EventProcessors></Program></UVI4>";
+        let host = ScriptHost::new(xml, (), Config::default()).unwrap();
+        let groups = (0..2)
+            .map(|n| OscGroup { layer: n + 1, osc: 1, group: 1 - n, keygroup: n as usize, oscillator: n as usize })
+            .collect();
+        let mut driver = Driver::new(host, groups, 48000);
+        let mut feed = MidiFeed::default();
+        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+        let note = rt.note_on(input, 60, 1.).unwrap();
+        driver.note_on(&mut rt, note, 60, 1.).unwrap();
+        let mut cost = AudioCost::default();
+        let mut block = vec![[0.; 2]; 512];
+        scripted_render(&mut rt, &mut driver, None, &mut feed, &mut block, &mut cost).unwrap();
+        driver.note_off(&mut rt, 60).unwrap();
+        for _ in 0..16 {
+            scripted_render(&mut rt, &mut driver, None, &mut feed, &mut block, &mut cost).unwrap();
+        }
+        assert_eq!(rt.voice_count(), 0);
+        assert_eq!(rt.note_count(), 0);
     }
 }
