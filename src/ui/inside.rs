@@ -132,13 +132,7 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
                 View::Interface => "UI", View::Articulations => "Arts", View::Mapping => "Map",
                 _ => v.label(),
             }} else { v.label() };
-            let (hit, el) = latch(
-                ui,
-                format!("view-{slot}-{}", v.label()),
-                label,
-                v.label(),
-                v == view,
-            );
+            let (hit, el) = tab(ui, format!("view-{slot}-{}", v.label()), label, v == view);
             if hit {
                 picked = v;
                 if v == View::Sound {
@@ -155,7 +149,7 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
     if picked == View::Sound && picked != view {
         cx.state.select(slot);
     }
-    (picked, Some(segmented(tabs)))
+    (picked, Some(tab_row(tabs)))
 }
 
 /// The picked view's body; the interface is [`super::part`]'s.

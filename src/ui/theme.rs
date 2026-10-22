@@ -561,7 +561,7 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     .h(CONTROL + SPACE)
     .cursor(Cursor::Hand)
     .focusable()
-    .a11y(A11y::Button)
+    .a11y(A11y::Toggle { on: current })
     .named(label.to_owned())
     .on(State::FocusVisible, |s| s.fill(lift(1)))
     .id(id)
@@ -569,13 +569,19 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> (bool,
     (hit, el)
 }
 
-/// A field that opens a list: the current choice and a caret.
+/// [`tab`]s side by side with no box behind them: names only, the artwork shows through.
+pub fn tab_row(items: Vec<El>) -> El {
+    row(items).gap(SPACE).align(Align::Center).shrink(0)
+}
+
+/// The current choice and a caret, with no box: it lifts under the pointer.
 pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool, El) {
     let id: Id = id.into();
     let hit = ui.get(id.clone()).activated();
     let el = row![
         body(text.to_owned())
             .text_size(SMALL)
+            .text_weight(Weight::SEMIBOLD)
             .lines(1)
             .flex(1)
             .min_w(0),
@@ -586,7 +592,6 @@ pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool
     .pad((SPACE, 0))
     .h(CONTROL)
     .min_w(CONTROL * 3.)
-    .fill(Role::Field)
     .focusable()
     .a11y(A11y::Button)
     .named(format!("{name}: {text}"))

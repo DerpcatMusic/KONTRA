@@ -1,3 +1,9 @@
+/// The library view the rack shows: the picture button's popup and the rack agree on it.
+fn shown_mode(p: &crate::plugin::SamplerParams) -> crate::library::ViewMode {
+    let selection = p.selection.read().unwrap();
+    super::part::resolve_mode(&selection.parts[0], &p.shared.libraries.settings())
+}
+
 #[test]
 fn w1_performance_intent_selects_authored_source_and_retains_explicit_choices() {
     let emit = |source| sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
@@ -16,13 +22,13 @@ fn w1_performance_intent_selects_authored_source_and_retains_explicit_choices() 
         A11y::Toggle { on: true }
     );
     assert!(selected(&h, "face-0-1"), "make_perfview must beat auxiliary widget count");
-    assert!(selected(&h, "face-vector-0"), "saved mode takes precedence");
+    assert_eq!(shown_mode(&p), crate::library::ViewMode::Vectorized, "saved mode takes precedence");
     h.press("face-0-0");
     performance.widgets[0].name = "Changed".into();
     p.shared.view.lock().unwrap().parts[0].publish_interface(&performance);
     h.idle(3);
     assert!(selected(&h, "face-0-0"), "publication retains the selected source tab");
-    assert!(selected(&h, "face-vector-0"));
+    assert_eq!(shown_mode(&p), crate::library::ViewMode::Vectorized);
     h.press("face-0-1");
     let promoted = sampler_ui_ir::Interface { performance: true, ..auxiliary };
     performance.performance = false;
@@ -35,7 +41,7 @@ fn w1_performance_intent_selects_authored_source_and_retains_explicit_choices() 
     assert!(selected(&h, "face-0-1"), "changed default intent retains an explicit source tab");
     let reopened = Harness::new(&p, 1180., 900.);
     assert!(selected(&reopened, "face-0-0"), "reopen uses the current published intent");
-    assert!(selected(&reopened, "face-vector-0"));
+    assert_eq!(shown_mode(&p), crate::library::ViewMode::Vectorized);
 }
 
 #[test]
@@ -60,7 +66,7 @@ fn w1_background_performance_intent_retains_the_selected_tab() {
     assert!(p.shared.view.lock().unwrap().parts[0].publish_interface(&performance));
     h.idle(3);
     assert!(selected(&h, "face-0-1"), "intent alone must not discard an empty selected tab");
-    assert!(selected(&h, "face-original-0"));
+    assert_eq!(shown_mode(&p), crate::library::ViewMode::Original);
     let reopened = Harness::new(&p, 1180., 900.);
     assert!(reopened.ui.scene().unwrap().surface("part-0-epoch-0-script-0-ir-view").is_some(),
         "a sole eligible source renders without a source tab bar");
@@ -325,20 +331,7 @@ fn w1_original_default_survives_identical_publication() {
         });
     p.shared.view.lock().unwrap().parts[0].interfaces = vec![f].into();
     let mut h = Harness::new(&p, 1180., 900.);
-    let original = |h: &Harness| match h
-        .ui
-        .scene()
-        .unwrap()
-        .surface("face-original-0")
-        .unwrap()
-        .semantics
-        .as_ref()
-        .unwrap()
-        .role
-    {
-        A11y::Toggle { on } => on,
-        _ => panic!("toggle"),
-    };
+    let original = |_: &Harness| shown_mode(&p) == crate::library::ViewMode::Original;
     assert!(original(&h), "diagnostics must not choose Vector");
     let copy = p.shared.view.lock().unwrap().parts[0].interfaces.to_vec();
     p.shared.view.lock().unwrap().parts[0].interfaces = copy.into();
@@ -398,25 +391,23 @@ fn w1_picture_menu_has_three_persisted_modes_and_defaults_ignore_diagnostics() {
             .collect();
         p.shared.view.lock().unwrap().parts[0].publish_interface(&current);
         h.idle(3);
-        assert!(selected(&h, "face-original-0"));
+        assert_eq!(shown_mode(&p), crate::library::ViewMode::Original);
     }
-    for (item, code, id) in [
-        (1, 3, "face-vector-0"),
-        (2, 2, "face-kontra-0"),
-        (0, 1, "face-original-0"),
+    use crate::library::ViewMode;
+    for (item, code, mode) in [
+        (1, 3, ViewMode::Vectorized),
+        (2, 2, ViewMode::Kontra),
+        (0, 1, ViewMode::Original),
     ] {
         h.press("view-0");
         assert!(h.ui.scene().unwrap().surface("menu-item-2").is_some());
         h.press(&format!("menu-item-{item}"));
         h.idle(3);
         assert_eq!(p.selection.read().unwrap().parts[0].view, code);
-        assert!(selected(&h, id));
+        assert_eq!(shown_mode(&p), mode);
         let mut reopened = Harness::new(&p, 1180., 900.);
         reopened.idle(3);
-        assert!(
-            selected(&reopened, id),
-            "editor reopen retains the selected mode"
-        );
+        assert_eq!(shown_mode(&p), mode, "editor reopen retains the selected mode");
     }
     let settings = p.shared.libraries.settings();
     assert_eq!(

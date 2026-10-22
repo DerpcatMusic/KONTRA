@@ -279,6 +279,17 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                     ),
                 ]);
             }
+            // Where the decoded artwork this view keeps in memory goes; the
+            // picture button is the only place that shows it.
+            let pictures = cx
+                .state
+                .faces
+                .get(slot)
+                .map_or(0., |face| face.bytes() as f64 / (1024. * 1024.));
+            items.extend([
+                Item::Rule,
+                Item::Info(format!("{pictures:.1} MB of pictures in memory")),
+            ]);
             items
         }
         Target::ArtDriver(slot) => {
