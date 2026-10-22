@@ -723,6 +723,11 @@ pub struct Group {
     /// plain sampler playback, where transposition also changes tempo.
     #[cfg_attr(feature = "cache", serde(default))]
     pub time_stretch: Option<TimeStretch>,
+    /// Kontakt machine source identified but not yet voiced (Beat Machine,
+    /// S1200, MP60). Such zones play as a sampler; the stored controls are kept
+    /// here so the engine can voice them without another load.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub machine: Option<Machine>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -747,6 +752,20 @@ pub struct Group {
     /// fader and sends.
     pub tap: Option<GroupTap>,
 }
+
+/// Kontakt machine source modules whose DSP the engine does not yet model.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Machine {
+    BeatMachine,
+    /// `filter_mode` is the stored S1200 filter selector (engine parameter
+    /// 0x318); valid values are `0..=S1200_FILTER_MODES`.
+    S1200 { filter_mode: Option<u8> },
+    Mp60,
+}
+
+/// Largest stored S1200 filter selector; `set_engine_par` rejects larger values.
+pub const S1200_FILTER_MODE_MAX: u8 = 5;
 
 /// Which time-stretch engine configuration a group's source uses. The engine
 /// is shared (`sampler-core` `StretchEngine`); the kind only picks its
