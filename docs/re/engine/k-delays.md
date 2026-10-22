@@ -185,3 +185,21 @@ preset when DL_TIME was set to 140 ms. The harness does not change float delay
 parameters, so no parameter vector can be taken with it yet.
 
 Matrix status: partial / decomp.
+
+## Replika core: audio path located (2026-10-22)
+
+- Line read/write: `FUN_141ab7fe0` (`0141ab0000.c`, size 754): a 15-frame block loop
+  with a state of two first-order sections (`+0x54`, `+0x5c`, `+0x6c`) and a fractional
+  read from the ring at `+0x0` (`*(ring)`, mask `+0xc`). Each frame updates the state
+  as `y = 2·(t·a + b) − y`-style recurrences. Not yet ported.
+- Block scheduler and read index: `FUN_141ab7e00` (size 468) computes the fractional
+  delay position and the two candidate read taps.
+- Setter dependencies (sizes): `141abd210` 125, `141acc600` 404, `141acc980` 66,
+  `141a9d4a0` 437, `141a9d660` 342, `141a9d7c0` 170, `141a90910` 143, `141abba60` 82,
+  `141acbfb0` 898, `141abde30` 94, `141aca670` 1200, `141a9dbc0` 313, `141a95830` 541,
+  `141abd290` 569.
+- Saturation: `FUN_141aa44a0` (size 157); feedback block `FUN_141acd110` (597).
+
+Status: not ported. A native-data vector needs the oracle to apply float delay
+parameters; the two captures so far (`legacy1`, `legacy2`) did not change the echo, so
+no vector exists yet. Replika remains partial/decomp.
