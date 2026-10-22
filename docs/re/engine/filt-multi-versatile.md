@@ -157,10 +157,10 @@ Compositions:
 
 | # | Item | Engine covers it now | Missing or unproved | Status | Needed to close |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Versatile law at other cutoffs | Cutoff setter, resonance law, normaliser and process confirmed against the decompile | Vectors use cutoff 0.5 only; no sweep | Partial | Wine-oracle sweep over cutoff |
-| 2 | Versatile shift, morph, wet and gain sweeps | Full law in code | No sweep vectors; the mixed case uses one shift and one morph set | Partial | Recorded or native vectors across the knob ranges |
-| 3 | Versatile SSE rounding path (≥32-frame calls) | Scalar order matches the scalar native path | The SSE path differs in rounding, as for Pro-53 | Missing | A native vector captured with 32+ frame calls |
-| 4 | Versatile clock constant (0.015) | Clock `0x140aea690` read; ramp move per tick | Constant is a global in the export, not resolved | Partial | Resolve `DAT_144f38664` from the binary's data section |
+| 1 | Versatile law at other cutoffs | Cutoff setter `FUN_14095db50`, stage 1/2 resonance setters and the scalar process run natively under kemu | Native sweep cutoff 0.1 to 0.9 at resonance 0.5, LP type, wet 1, shift 0, gain 0.5 (`versatile_kemu_vectors.json`); VERS-lp keys reproduce exactly | Closed for these settings | None for these settings; other types and resonances stay covered by the code |
+| 2 | Versatile shift, morph, wet and gain sweeps | Full law in code | Native setters for shift, morph, wet and gain not located; the harness writes LP weights, wet 1, gain 0.5 and shift 0 itself | Open | Locate the setters that write the stage weights (+0x3e0..+0x3f4), wet (+0x404, +0x408, +0x40c), gain (+0x420) and shift (+0x428, +0x42c), then drive them natively |
+| 3 | Versatile SSE rounding path (≥32-frame calls) | Dispatcher `FUN_140aec840` uses SSE branch `FUN_140aee4b0` when `DAT_14a5ed92c` is set and the call has 32+ frames (flag is 0 in the image, set at run time) | Under kemu, one channel at 64 frames equals the scalar path; stereo and hardware rounding unchecked | Partial | Stereo native vector; a hardware capture if one exists |
+| 4 | Versatile clock constant (0.015) | Constant read from the image: `DAT_144f38664` = 0.015; clock is virtual slot 0xb8 (`FUN_140aea690`) | Moving-control vectors for the clock not run; the Rust clock order (process then clock) is unverified for Versatile | Constant closed; moving open | Run `FUN_140aea690` natively with moving goals and compare with `ClockedClass::clock` for Versatile |
 | 5 | Dual SKF field-to-slot mapping | Mapping in `effects/filter.rs`; native knob order fixed | Which record value feeds which knob: the generic reader gives no 130 knobs and the typed reader was not located | Unconfirmed | Decompile of the typed 130 knob reader (stream order and store offsets into setParam), or a Kontakt saved-state round trip. The `[2, 0]` modulation pair depends on it |
 | 6 | Dual SKF sample rates other than 48 kHz | Core handles any rate; ×2 Kaiser below 66 kHz (prepare `FUN_140afd350`) | 44.1 and 96 kHz kemu vectors, mono and stereo, pass; 192 kHz not vectored (same path as 96 kHz) | Closed at 44.1, 48, 96 kHz | 192 kHz kemu vector if a 192 kHz path is ever used |
 | 7 | Dual SKF stereo interleave | One core: per-channel filter and Kaiser state, shared controls | Native layout confirmed in `FUN_140b000c0` (planar, per channel); kemu stereo vectors bit-match with moving knobs | Closed (kemu oracle) | Stereo capture from the real host is not needed for the core |
@@ -192,14 +192,15 @@ Compositions:
 
 ## Confidence
 
-- Versatile: **medium**. Laws and topology match the recorded vectors at one cutoff. Other settings
-  are the code's own statement.
+- Versatile: **medium**. Laws and topology match the recorded vectors and the native cutoff and
+  resonance sweeps (LP type, wet 1, shift 0, gain 0.5). Morph, wet, gain and shift settings are the
+  code's own statement until their native setters are driven.
 - Dual SKF core: **high** at 44.1, 48 and 96 kHz, mono and stereo, kemu oracle. The field-to-slot
   mapping is **low** until row 5 is confirmed.
 
 ## Waiting on
 
-- Rows 2, 4 and 5 need a native reading of the stage 1/2 limit targets, the clock constant, and the Dual SKF reader branch for type 130. The Wine-oracle sweep (row 1) is still needed for cutoffs other than 0.5.
+- Row 2: native setters for the morph, wet, gain and shift knobs. Row 3: stereo native vector and hardware check of the SSE branch. Row 4: moving-control vectors for `FUN_140aea690`. Row 5 (Dual SKF reader for type 130) is outside this unit.
 
 ## Constant resolution (static PE read, this pass)
 
@@ -208,5 +209,19 @@ Global constants were read from the Kontakt 8 image (`re-binaries/Kontakt8.exe`,
 0.06 / 0.0075, sample constants 440, 1/12, 69, 20, 80, 2pi, 2.0, 1.3075, 0.293, 0.7352, 1.4, 0.05,
 3.0, 6, 5, 0.66, 0.65, 1.3. Each matches `chamberlin.rs`, `shaper.rs` and `cascade.rs`.
 
-Still open: stage 1/2 limit targets (the parameter-store object from `FUN_140649e30`), the Dual SKF
-record-to-slot map (Wine probe blocked, see PARITY_MATRIX), and all sweeps.
+Stage 1/2 limit targets are not from the parameter store on this path: the native resonance setters
+(`FUN_1409663f0`, `FUN_1409665c0`) write them with the same law as stage 0 (checked at resonance
+0.2, 0.6 and 0.9). Still open: the Dual SKF record-to-slot map (Wine probe blocked, see
+PARITY_MATRIX), and the Versatile morph, wet, gain and shift setters.
+
+## Native sweeps (filt-pro53-versatile)
+
+- `tools/re/versatile_kemu_vectors.py` drives `FUN_14095db50` (which calls `FUN_140966230` and the
+  normaliser), the stage 1 and 2 resonance setters and the scalar process `FUN_140aef6e0` under kemu.
+  It reproduces the existing VERS-lp keys (`cascade_stage_vectors.json`) exactly and writes
+  `versatile_kemu_vectors.json` (24 cases).
+- Test `versatile_native_sweeps_match` (`cascade.rs`) checks the sweeps at 2e-5 of each vector's peak.
+- Stage fields read from the process code: stage 0 g +0x3c8, damping +0x3d4, weights +0x3e0/+0x3e4/+0x3e8,
+  wet +0x404; stage 1 g +0x3cc, damping +0x3d8, weights +0x3ec/+0x3f0/+0x3f4, wet +0x408; stage 2 g +0x3d0,
+  damping +0x3dc, weights +0x3f8/+0x3fc/+0x400, wet +0x40c. Output gain target +0x420 times normaliser
+  +0x41c, smoothed with the rate constant +0x470. Notes +0x424; shift raw +0x428 and +0x42c.
