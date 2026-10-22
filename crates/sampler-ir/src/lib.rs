@@ -249,6 +249,14 @@ pub enum DspSlotReason {
     ScopeNotInstantiated,
 }
 
+/// `members[k]` is member `k`'s `[left, right]` gain. Length equals the bundle width.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BundlePlacement {
+    pub location: String,
+    pub members: Vec<[f64; 2]>,
+}
+
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceIndices {
@@ -276,6 +284,11 @@ pub struct SourceIndices {
     /// Absent is not permission to drop wide channels or infer native enums.
     #[cfg_attr(feature = "cache", serde(default))]
     pub processing_ports: Vec<SourceProcessingPort>,
+    /// Stereo placement of each member of a channel bundle wider than two,
+    /// keyed by asset location. Read by the source reader in place of an
+    /// implicit first-two-members fold. Absent means no authored placement.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub bundle_placements: Vec<BundlePlacement>,
     /// Current UVI native source/header and primitive profile. Pending geometry
     /// is resolved by the ordinary reader, never from physical Stereo packing.
     #[cfg_attr(feature = "cache", serde(default))]

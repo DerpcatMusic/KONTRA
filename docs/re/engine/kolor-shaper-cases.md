@@ -67,3 +67,40 @@ Fixtures: `tools/re/fixtures/kolor_shaper_6_9_cc70.json`, `..._cfb0.json`, plus 
   `radare2 -c 'pdf @ ...'` on `/data/dev/workspace/re-binaries/Kontakt8.exe` before writing any Rust.
 - Kemu vectors for these cases need a warmed multi-block run via `kolor_kemu_probe.py`. The probe currently
   only drives the wrapper driver (`14197a2c0`), so the shaper state must be seeded through it.
+
+## Case 4 chain, read from raw disassembly (2026-10-23)
+
+Raw disassembly cache: `docs/re/disasm/kolor-shaper-<addr>.txt` (`r2 -e scr.color=0 -c "s 0x<addr>; af; pdf"` on
+`re-binaries/Kontakt8.exe`). Scope of this pass: call graph, wrapper I/O, and the tanh core. No Rust yet.
+
+Corrections to the table above:
+
+- Case 4 wrapper `14197a150` writes **7 floats** back, not 4. Stores `[rbx+0..0xf]` (xmm, 4 floats),
+  `[rbx+0x10..0x17]` (2 floats), `[rbx+0x18]` (1 float), i.e. shaper state `s[0..7]`. Input `x = *arg3`.
+  Before the call it builds a 1-element temp `B = {x}` and a 7-float copy of `shaper[0..7]` at `var_35h`.
+- Call order: `14197a150` → `141979f60(this=shaper+0x20, out=rdi, in=&B)` → `141979bf0(this=shaper+0x290, out, in=..., state=shaper)`.
+- `141979f60` (489 B): calls `141977650(this+0x100 ...)` (8-lane copy-add, 1-element input expanded through
+  `141932e70`), `14192d1b0` (wrapper over `141932e70`), then `141946410` (dot-product helper, 8-lane
+  `a·b` horizontal-add), with `addps`/`rsqrtps` normalisation. Returns through `rdi`.
+- `141979bf0` (879 B) calls `141978300` (153 B, not read), `141974f10` (x2, 81 B, not read), `141943490` (4-lane tanh, below),
+  and `14192d0e0` (scalar tanh, below) three times.
+
+### Tanh core: `14192d0e0` (scalar) and `141943490` (4-lane)
+
+This is **Eigen `ptanh_float`**, confirmed by its constants (float bit patterns decoded from the binary):
+
+| symbol | value | role |
+|---|---|---|
+| clamp hi/lo | ±7.905311107635498 (`0x40fcf84f`) | input clamp |
+| abs mask | `0x7fffffff` | |
+| small-x threshold | 0.0004 (`0x39d1b717`) | if `\|x\| < 0.0004` return x |
+| num a13..a7 | -2.7607683663038313e-16, 2.0001879384549948e-13, -8.604671836165423e-11, 5.122297253024044e-08, 1.4857223504805006e-05, 6.372619536705315e-04, 4.893524572253227e-03 | `p = x*(((((a13*x2+a12)*x2+a11)*x2+a10)*x2+a9)*x2+a8)*x2+a7)` |
+| den b3..b0 | 1.1982583600911312e-06, 1.1853470641653985e-04, 2.2684347350150347e-03, 4.8935250379145145e-03 | `q = ((b3*x2+b2)*x2+b1)*x2+b0` |
+
+`tanh(x) = clamp(x) * P(x2) / Q(x2)` with `x2 = clamp(x)^2`, and `x` itself when `|x| < 0.0004`.
+The scalar version (`14192d0e0`) does the same with one `divss`. Note: the `a11` constant is stored negated
+and applied with `subss`.
+
+Still open: `141932e70` (generic 8-lane helper used by `141977650`, `14192d1b0`, `141946590`), `141978300`,
+`141974f10`, the state layout behind `shaper+0x20/0x100/0x120/0x240/0x290`, and the warmed-up kemu fixtures.
+Nothing in this section has been run under unicorn or compared to native output yet.

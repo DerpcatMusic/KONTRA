@@ -1,0 +1,57 @@
+┌ 266: fcn.141946590 (int64_t arg1, int64_t arg2, int64_t arg3);
+│ `- args(rcx, rdx, r8) vars(13:sp[0x20..0xd0])
+│           0x141946590      4c8bdc         mov r11, rsp
+│           0x141946593      49895b08       mov qword [r11 + 8], rbx
+│           0x141946597      57             push rdi
+│           0x141946598      4881ecc000..   sub rsp, 0xc0
+│           0x14194659f      488b051af3..   mov rax, qword [0x14a2a58c0] ; [0x14a2a58c0:8]=0x2b992ddfa232
+│           0x1419465a6      4833c4         xor rax, rsp
+│           0x1419465a9      48898424b0..   mov qword [var_b0h], rax
+│           0x1419465b1      498d43b8       lea rax, [r11 - 0x48]
+│           0x1419465b5      0f57c0         xorps xmm0, xmm0
+│           0x1419465b8      498943a8       mov qword [r11 - 0x58], rax
+│           0x1419465bc      488db92001..   lea rdi, [rcx + 0x120]     ; arg1
+│           0x1419465c3      660f7ec0       movd eax, xmm0
+│           0x1419465c7      488bda         mov rbx, rdx               ; arg2
+│           0x1419465ca      66410f7ec1     movd r9d, xmm0
+│           0x1419465cf      443bc8         cmp r9d, eax
+│       ┌─< 0x1419465d2      750c           jne 0x1419465e0
+│       │   0x1419465d4      410f1143b8     movups xmmword [r11 - 0x48], xmm0
+│       │   0x1419465d9      410f1143c8     movups xmmword [r11 - 0x38], xmm0
+│      ┌──< 0x1419465de      eb13           jmp 0x1419465f3
+│      │└─> 0x1419465e0      0f57c9         xorps xmm1, xmm1
+│      │    0x1419465e3      0f29842480..   movaps xmmword [var_80h], xmm0
+│      │    0x1419465eb      0f298c2490..   movaps xmmword [var_90h], xmm1
+│      │    ; CODE XREF from fcn.141946590 @ 0x1419465de(x)
+│      └──> 0x1419465f3      498b00         mov rax, qword [r8]        ; arg3
+│           0x1419465f6      4c8d4c2440     lea r9, [var_40h]
+│           0x1419465fb      f30f1005d1..   movss xmm0, dword [0x14470bad4] ; [0x14470bad4:4]=0x3f800000
+│           0x141946603      4c8d442450     lea r8, [var_50h]
+│           0x141946608      f30f11442430   movss dword [var_30h], xmm0
+│           0x14194660e      ba09000000     mov edx, 9
+│           0x141946613      4889442440     mov qword [var_40h], rax
+│           0x141946618      488d842480..   lea rax, [var_80h]
+│           0x141946620      48894c2450     mov qword [var_50h], rcx   ; arg1
+│           0x141946625      b908000000     mov ecx, 8
+│           0x14194662a      48c7442428..   mov qword [var_28h], 1
+│           0x141946633      4889442420     mov qword [var_20h], rax
+│           0x141946638      48c7442448..   mov qword [var_48h], 1
+│           0x141946641      48c7442458..   mov qword [var_58h], 8
+│           0x14194664a      e821c8feff     call 0x141932e70
+│           0x14194664f      488b442470     mov rax, qword [var_70h]
+│           0x141946654      4889bc24a0..   mov qword [var_a0h], rdi
+│           0x14194665c      0f1000         movups xmm0, xmmword [rax]
+│           0x14194665f      0f5807         addps xmm0, xmmword [rdi]
+│           0x141946662      0f1103         movups xmmword [rbx], xmm0
+│           0x141946665      488b442470     mov rax, qword [var_70h]
+│           0x14194666a      0f104f10       movups xmm1, xmmword [rdi + 0x10]
+│           0x14194666e      0f584810       addps xmm1, xmmword [rax + 0x10]
+│           0x141946672      488bc3         mov rax, rbx
+│           0x141946675      0f114b10       movups xmmword [rbx + 0x10], xmm1
+│           0x141946679      488b8c24b0..   mov rcx, qword [var_b0h]
+│           0x141946681      4833cc         xor rcx, rsp
+│           0x141946684      e8072fa802     call 0x1443c9590
+│           0x141946689      488b9c24d0..   mov rbx, qword [var_d0h]
+│           0x141946691      4881c4c000..   add rsp, 0xc0
+│           0x141946698      5f             pop rdi
+└           0x141946699      c3             ret

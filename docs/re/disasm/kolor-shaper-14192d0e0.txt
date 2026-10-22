@@ -1,0 +1,43 @@
+┌ 204: fcn.14192d0e0 (int64_t arg1);
+│ `- args(rcx)
+│           0x14192d0e0      f30f1001       movss xmm0, dword [rcx]    ; arg1
+│           0x14192d0e4      0f57ed         xorps xmm5, xmm5
+│           0x14192d0e7      0f28d8         movaps xmm3, xmm0
+│           0x14192d0ea      0f54059f7a..   andps xmm0, xmmword [0x144714b90]
+│           0x14192d0f1      0f2f05905f..   comiss xmm0, dword [0x144fc3088]
+│           0x14192d0f8      f30f5d1db8..   minss xmm3, dword [0x147696cb8]
+│           0x14192d100      f30f5f1dc4..   maxss xmm3, dword [0x147696ccc]
+│       ┌─< 0x14192d108      730d           jae 0x14192d117
+│       │   0x14192d10a      48c7c0ffff..   mov rax, 0xffffffffffffffff
+│       │   0x14192d111      660f6ee0       movd xmm4, eax
+│      ┌──< 0x14192d115      eb03           jmp 0x14192d11a
+│      │└─> 0x14192d117      0f57e4         xorps xmm4, xmm4
+│      │    ; CODE XREF from fcn.14192d0e0 @ 0x14192d115(x)
+│      └──> 0x14192d11a      0f2ee5         ucomiss xmm4, xmm5
+│           0x14192d11d      0f28d3         movaps xmm2, xmm3
+│           0x14192d120      f30f59d3       mulss xmm2, xmm3
+│           0x14192d124      0f28c2         movaps xmm0, xmm2
+│           0x14192d127      0f28ca         movaps xmm1, xmm2
+│           0x14192d12a      f30f590596..   mulss xmm0, dword [0x147696cc8]
+│           0x14192d132      f30f590d42..   mulss xmm1, dword [0x147696c7c]
+│           0x14192d13a      f30f58052e..   addss xmm0, dword [0x147696c70]
+│           0x14192d142      f30f580d3a..   addss xmm1, dword [0x147696c84]
+│           0x14192d14a      f30f59c2       mulss xmm0, xmm2
+│           0x14192d14e      f30f59ca       mulss xmm1, xmm2
+│           0x14192d152      f30f5c051a..   subss xmm0, dword [0x147696c74]
+│           0x14192d15a      f30f580d2a..   addss xmm1, dword [0x147696c8c]
+│           0x14192d162      f30f59c2       mulss xmm0, xmm2
+│           0x14192d166      f30f59ca       mulss xmm1, xmm2
+│           0x14192d16a      f30f580506..   addss xmm0, dword [0x147696c78]
+│           0x14192d172      f30f580d1a..   addss xmm1, dword [0x147696c94]
+│           0x14192d17a      f30f59c2       mulss xmm0, xmm2
+│           0x14192d17e      f30f5805fa..   addss xmm0, dword [0x147696c80]
+│           0x14192d186      f30f59c2       mulss xmm0, xmm2
+│           0x14192d18a      f30f5805f6..   addss xmm0, dword [0x147696c88]
+│           0x14192d192      f30f59c2       mulss xmm0, xmm2
+│           0x14192d196      f30f5805f2..   addss xmm0, dword [0x147696c90]
+│           0x14192d19e      f30f59c3       mulss xmm0, xmm3
+│           0x14192d1a2      f30f5ec1       divss xmm0, xmm1
+│       ┌─< 0x14192d1a6      7403           je 0x14192d1ab
+│       │   0x14192d1a8      0f28c3         movaps xmm0, xmm3
+└       └─> 0x14192d1ab      c3             ret
