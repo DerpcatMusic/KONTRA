@@ -4,7 +4,6 @@
 //! one `Config` superset, saved knobs passed through (dispatcher
 //! [ref]; cores [ref]).
 
-use sampler_ir::fx::dynamics::{Config, Law, Link, Native};
 use super::{Lowering, Notes, Site};
 use sampler_ir::fx::dynamics::{Config, Key, Law, Link, Native};
 use sampler_ir::{Gain, Processor, Reason, Time};

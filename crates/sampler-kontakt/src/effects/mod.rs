@@ -348,8 +348,11 @@ impl Slot {
             0x10..=0x12 | 0x14 | 0x5d => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
             0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
+            0x5a => Params::TimeMod(timemod::read_replika(self.version, &mut r)?),
+            0x6a => Params::TimeMod(timemod::read_wow_flutter(self.version, &mut r)?),
             // Cosmic (type 2) keeps its decoded fields: its core is not built.
-            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
+            // Grounded (0), Airy (1) and Cosmic (2) decode alike.
+            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
                 let (core, synced) = space::read_raum(&mut r)?;
                 Params::Raum { core, synced }
             }
@@ -428,12 +431,21 @@ impl Slot {
                 [r.flag()?, r.flag()?, r.flag()?],
             )),
             0x43 if self.version == 0x10 => Params::Dynamics(dynamics::transient(r.f32()?, r.f32()?, r.f32()?, r.i32()?)),
-            0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
-                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
-                [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
-                if self.version == 0x12 { Some(r.f32()?) } else { None },
-            )),
-            0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
+            0x46 if (0x10..=0x12).contains(&self.version) => {
+                let bus = dynamics::bus_comp(
+                    [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                    [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
+                    if self.version == 0x12 { Some(r.f32()?) } else { None },
+                );
+                match bus {
+                    Ok((processor, Some(note))) => Params::DynamicsNoted(processor, note),
+                    other => Params::Dynamics(other.map(|(processor, _)| processor)),
+                }
+            }
+            // The reader throws on any other version (0x51 only).
+            0x5f if self.version == 0x51 => {
+                Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?))
+            }
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -449,6 +461,7 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
+                let mut hq = false;
                 if (30..=41).contains(&kind) {
                     // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
                     // Exact version framing comes from the shared verified reader.
@@ -463,9 +476,10 @@ impl Slot {
                             cutoff: record.cutoff,
                             resonance: record.resonance,
                             extra: vec![record.leading_value],
+                            hq: record.unknown_flag.is_some_and(|flag| flag != 0),
                         });
                     }
-                    r.skip_repeats(kind);
+                    hq = r.skip_repeats(kind);
                 } else if matches!(kind, 120 | 130 | 140..=143) {
                     // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
                     // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
@@ -489,7 +503,7 @@ impl Slot {
                     let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
                     let mut extra = values[2..].to_vec();
                     extra.extend(variant);
-                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra, hq: false });
                 } else if (22..=24).contains(&kind) && self.version >= 0x93 {
                     // Later records repeat the EQ kind (v0x95: five times) before the bands.
                     r.skip_repeats(kind);
@@ -519,6 +533,7 @@ impl Slot {
                         cutoff,
                         resonance,
                         extra,
+                        hq,
                     }
                 }
             }
@@ -553,16 +568,19 @@ impl Reader<'_> {
     fn i32(&mut self) -> Option<i32> {
         self.take().map(i32::from_le_bytes)
     }
-    /// Consume the subtype repeats and their flag bytes after the first.
-    fn skip_repeats(&mut self, kind: i32) {
+    /// Skip repeated subtype ids and the one flag byte in front of each repeat; true when the
+    /// first flag is set.
+    fn skip_repeats(&mut self, kind: i32) -> bool {
         let k = kind.to_le_bytes();
+        let mut first = None;
         loop {
             if let Some(rest) = self.0.strip_prefix(&k) {
                 self.0 = rest;
-            } else if let Some(rest) = self.0.strip_prefix(&[0]).and_then(|r| r.strip_prefix(&k)) {
-                self.0 = rest;
+            } else if let Some((&flag, rest)) = self.0.split_first().filter(|(_, r)| r.starts_with(&k)) {
+                first.get_or_insert(flag != 0);
+                self.0 = &rest[k.len()..];
             } else {
-                return;
+                return first.unwrap_or(false);
             }
         }
     }
@@ -863,11 +881,14 @@ pub(crate) fn chain_with(
             Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
                 modelled = timemod::slot_phaser(&mut b, &site, &mut notes, *cutoff, *resonance)
             }
-            Some(Params::Filter { kind: kind @ (90 | 91), cutoff, resonance, extra }) => {
+            Some(Params::Filter { kind: kind @ (90 | 91), cutoff, resonance, extra, .. }) => {
                 modelled = filter::slot_formant(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
             Some(Params::Fields(fields)) if fx.module == 0x21 => {
                 modelled = color::slot_skreamer(&mut b, &site, fields)
+            }
+            Some(Params::Fields(fields)) if fx.module == 0x64 => {
+                modelled = ringmod::slot_ring_modulator(&mut b, &site, &mut notes, fields)
             }
             Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
                 modelled = color::slot_typed(&mut b, &site, &mut notes, fields)
@@ -879,10 +900,10 @@ pub(crate) fn chain_with(
             Some(Params::SendLevels { sends, .. }) => {
                 modelled = bus::slot_send_levels(&mut b, &site, &mut notes, sends)
             }
-            Some(Params::Filter { kind: kind @ 30..=41, cutoff, resonance, extra })
+            Some(Params::Filter { kind: kind @ 30..=41, cutoff, resonance, extra, hq })
                 if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) =>
             {
-                modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
+                modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra, *hq)
             }
             // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the native FilterDJ.
             Some(Params::Filter { kind: kind @ 100..=108, cutoff, resonance, .. })
@@ -891,15 +912,19 @@ pub(crate) fn chain_with(
             {
                 modelled = filter::slot_ar(&mut b, &site, &mut notes, *kind, *cutoff, *resonance)
             }
-            Some(Params::Filter { kind, cutoff, resonance, extra })
+            Some(Params::Filter { kind, cutoff, resonance, extra, .. })
                 if matches!(kind, 70 | 71) && !extra.is_empty() =>
             {
                 modelled = filter::slot_daft(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
-            Some(Params::Filter { kind, cutoff, resonance, extra }) => {
+            Some(Params::Filter { kind, cutoff, resonance, extra, .. }) => {
                 modelled = filter::slot_filter(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
             Some(Params::Dynamics(result)) => modelled = dynamics::slot_dynamics(&mut b, &site, &mut notes, result),
+            Some(Params::DynamicsNoted(processor, note)) => {
+                modelled = dynamics::slot_dynamics(&mut b, &site, &mut notes, &Ok(processor.clone()));
+                notes.push(note.clone());
+            }
             Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 modelled = dynamics::slot_compressor(
                     &mut b,
@@ -1013,7 +1038,11 @@ pub(crate) fn chain_with(
             b.out.notes.push((
                 fx.slot,
                 "effect".into(),
-                match color::unproved(fx.module).or(timemod::unproved(fx.module)) {
+                match color::unproved(fx.module)
+                    .or(timemod::unproved(fx.module))
+                    .or(dynamics::unproved(fx.module))
+                    .or(mangling::unproved(fx.module))
+                {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                     None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },

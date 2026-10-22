@@ -878,7 +878,9 @@ mod tests {
         }
         public.push(0);
         public.extend(0.8f32.to_le_bytes());
-        let built = chain(&[Slot { public, ..slot(0x6a, 0x10, &[]) }], Scope::Voice);
+        let mut fx = slot(0x6a, public, 1.0);
+        fx.version = 0x10;
+        let built = chain(&[fx], Scope::Voice);
         let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
         let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
         assert_eq!((w.wow, w.flutter, w.speed, w.stereo), (0.3, 0.2, 0.5, 0.4));

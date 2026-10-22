@@ -606,6 +606,9 @@ pub(super) fn slot_typed(
         Some(config) => {
             b.out.processors.push(Processor::Color(config));
             b.combined = s.gain;
+            if s.fx.module == 0x4d {
+                notes.push(("Jump knobs".into(), "fixed fitted preset; knob laws not measured".into(), Reason::NotModeled));
+            }
             if s.dynamic.is_some() {
                 notes.push(("Creative FX live controls".into(), "knobs are constants".into(), Reason::NotModeled));
             }
