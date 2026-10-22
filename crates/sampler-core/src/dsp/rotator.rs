@@ -11,9 +11,12 @@
 //!
 //! The state image is [`Rotator::m`]. Parameter binding (the setters that fill 0x210..0x220,
 //! 0x1dc..0x1e8, 0x1380..0x138c and 0x1300..0x131c) is a separate step and stays at zero here.
-//! The post stage of 0x140aa4900 (0x140ac21f0) and the zeroing of the extra channels are not
-//! ported yet.
+//! [`Rotator::post`] is the output stage (0x140ac21f0, primary branch, which the driver always
+//! calls). The ring-buffer branch behind flag 0x1b4 and the zeroing of the extra channels are not
+//! ported.
 #![allow(clippy::too_many_lines)]
+
+use crate::bus_amp::{FADER_RAMP, gain_ramps};
 
 /// Native object image covering every offset the core and control use (0x0..0x1400).
 const MEM: usize = 0x1400;
@@ -179,6 +182,32 @@ impl Rotator {
             }
             at += count;
             left -= count;
+        }
+    }
+
+    /// Output stage (native 0x140ac21f0, primary branch). `src` is the engine channel and `dst` the
+    /// host output, both at least `n` frames. The gain target is at 0x1a4 and the current gain at
+    /// 0x1ac. A changed gain ramps by the fader step per sample. Every channel restarts the ramp
+    /// from the stored gain, and the last channel leaves its final gain stored. `replace`
+    /// overwrites `dst` instead of accumulating (the driver's flag).
+    pub(crate) fn post(&mut self, src: &[&[f32]], dst: &mut [&mut [f32]], n: usize, replace: bool) {
+        let target = self.f(0x1a4);
+        let start = self.f(0x1ac);
+        let ramp = gain_ramps(start, target);
+        let mut last = start;
+        for (s, d) in src.iter().zip(dst.iter_mut()) {
+            let mut g = start;
+            for (x, y) in s[..n].iter().zip(d[..n].iter_mut()) {
+                let v = if ramp { x * g } else { x * target };
+                *y = if replace { v } else { v + *y };
+                if ramp {
+                    g += (target - g) * FADER_RAMP;
+                }
+            }
+            last = g;
+        }
+        if ramp {
+            self.wf(0x1ac, last);
         }
     }
 
@@ -451,5 +480,51 @@ mod tests {
         assert_eq!(r.u(0x1bc), PERIOD);
         assert_eq!(sine_at(3.0), SINE[3]);
         assert!((sine_at(127.5) - (SINE[127] + SINE[0]) * 0.5).abs() < 1e-6);
+    }
+
+    /// Output stage with a settled gain: the channel is added at the target and the stored gain
+    /// is unchanged (native non-ramp branch of 0x140ac21f0).
+    #[test]
+    fn post_adds_at_the_settled_gain() {
+        let mut r = Rotator::default();
+        r.wf(0x1a4, 0.5);
+        r.wf(0x1ac, 0.5);
+        let src = [1.0f32, 2.0, 3.0];
+        let mut dst = [1.0f32; 3];
+        r.post(&[&src[..]], &mut [&mut dst[..]], 3, false);
+        assert_eq!(dst, [1.5, 2.0, 2.5]);
+        assert_eq!(r.f(0x1ac), 0.5);
+        r.post(&[&src[..]], &mut [&mut dst[..]], 3, true);
+        assert_eq!(dst, [0.5, 1.0, 1.5]);
+    }
+
+    /// Output stage with a changing gain. Sample `i` uses `g_i`, with `g_0` the stored gain and
+    /// `g_{i+1} = g_i + (target - g_i) / 180` (native one-pole ramp). Each channel restarts from
+    /// the stored value, and the last channel's final gain stays stored. Decompile-confirmed law;
+    /// no native vector.
+    #[test]
+    fn post_ramps_the_gain_and_stores_the_last_value() {
+        let mut r = Rotator::default();
+        r.wf(0x1a4, 1.0);
+        r.wf(0x1ac, 0.0);
+        let src = [1.0f32; 4];
+        let (mut a, mut b) = ([0.0f32; 4], [0.0f32; 4]);
+        r.post(
+            &[&src[..], &src[..]],
+            &mut [&mut a[..], &mut b[..]],
+            4,
+            true,
+        );
+        let mut g = 0.0f64;
+        let mut want = [0.0f64; 4];
+        for w in &mut want {
+            *w = g;
+            g += (1.0 - g) / 180.0;
+        }
+        for (got, w) in a.iter().zip(want) {
+            assert!((f64::from(*got) - w).abs() < 1e-6);
+        }
+        assert_eq!(a, b);
+        assert!((f64::from(r.f(0x1ac)) - g).abs() < 1e-6);
     }
 }

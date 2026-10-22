@@ -38,11 +38,37 @@ Gap table (Ring Modulator): every row is missing. The module is unsupported and 
 
 | Item | Detail |
 |---|---|
-| Core | None. Notes: summed-input core 0x140aae920 with four-state recurrences and ring buffers; horn/drum law located at control 0x140a97d30, setter case 0xe at 0x140962630; lane vectors at 0x149e6c400..0x149e6c45c not verified (`timemod.rs:241`, `color.rs:196`). |
+| Core | None. Notes: summed-input core 0x140aae920 with four-state recurrences and ring buffers; horn/drum law located at control 0x140a97d30, Rotator case 0x22 at `0140960000.c:2082` (not the case 0xe construction switch); lane vectors at 0x149e6c400..0x149e6c45c not verified (`timemod.rs:241`, `color.rs:196`). |
 | Bindings (version 0x50) | RT_SPEED field 0 (bool, threshold 0.6), RT_BALANCE field 1, RT_ACCEL_HI field 2, RT_ACCEL_LO field 3, RT_DISTANCE field 4, RT_MIX field 5 (pow a=1 p=3). Shared: EFFECT_BYPASS field 3, INSERT_EFFECT_OUTPUT_GAIN field 4. |
 | Core laws | Rotation, acceleration and distance laws not extracted. |
 
-Gap table (Rotator): every row is missing. Remains in `unproved` with the existing notes. Blocked on READY.
+### Rotator: output stage and parameter path (decompile, 2026-10-22)
+
+Driver 0x140aa4900 (`0140aa0000.c:2654`): splits the block on the 32-frame countdown (0x1bc), runs control 0x140a97d30 when it ends, runs core 0x140aae920 per chunk, zeroes engine channels 2.. up to 0x124, then calls the output stage `FUN_140ac21f0(this, bufs, 0x120, flag, 0)`. The fifth argument 0 selects the engine channel buffer (`bufs + ch*0x1000 + 0x9c010`) as the source; the fourth is a replace flag (0 accumulates).
+
+Output stage 0x140ac21f0 (`0140ac0000.c:1108`), primary branch, ported as `Rotator::post`:
+- Gain target at 0x1a4, current gain at 0x1ac. The gain ramp step is `DAT_144f38638` = 1/180, the same constant as the instrument bus fader (`bus_amp::FADER_RAMP`). The ramp test is the 0.1% ratio window of `FUN_14097cc50` (`bus_amp::gain_ramps`).
+- Sample `i` uses `g_i`; `g_{i+1} = g_i + (target - g_i)/180` is stored to 0x1ac after each sample. Every channel restarts from the stored value. The last channel's final value stays stored.
+- Open point: `FUN_14097cc50` takes `(uint)(x + 1e-12) & 0x7fffffff` of a float. Read as a bit reinterpretation (what `bus_amp` does), the operand is |x| and the window is 0.1% on the gain value. Read as Ghidra's numeric `(uint)` cast, the operand is 0 for normal gains. The port uses the bit reading, unverified. A native vector would settle it.
+
+Secondary branch (flag 0x1b4 != 0, `0140ac0000.c:1379`): adds a ring-buffer block per channel without gain (ring list at +0x138, block size `max(0x164, 0x20)`). Not ported. Its source flag is not located, so Rotator never sets it in the port.
+
+Reset 0x140a936d0 (`0140a90000.c:1963`): clears the state; sets 0x1300/0x1308 = 2800.0, 0x1304/0x130c = 2350.0, 0x1310/0x1318 = 840.0, 0x1314/0x131c = 705.0 (the bit patterns 0x452f0000, 0x4512e000, 0x44520001, 0x44304000); 0x1ec/0x1f0 = 0.5; 0x13a0..0x13bc = 0x1ff/0x200.
+
+Sample-rate prepare 0x140ac0af0 (`0140ac0000.c:100`): writes 0x1300..0x131c, 0x1380..0x139c, 0x204, 0x208 from the sample rate; uses constants not yet read (`DAT_144fc3e3c`, `DAT_1447148a4`, `DAT_144f38bdc`, `DAT_144fc44b0`, ...). Not ported.
+
+Parameter path. Case 0x22 of the effect-type switch (`0140960000.c:2082`) copies the saved block fields at offsets 0x8..0x3e into the runtime effect object (+0x14104..+0x14138 and +0x2820..+0x2827) and calls the generic engine setter (ids 0xc..0xf, `0141ac0000.c:4138`) on +0x38. The core fields 0x210..0x220, 0x1dc..0x1e8, 0x1380..0x138c and 0x1300..0x131c are not written there. Correction: `setter case 0xe at 0x140962630` in the earlier notes is effect-type construction (case 0xe, `0140960000.c:1946`), not the Rotator setter. The RT_* to core write is a virtual method of BParFXRotator. Its vtable is not in the export, so the slot cannot be named. Next step: a vtable slot dump for BParFXRotator (or a read-only xref query), not a guess.
+
+| Item | Shared engine | Status |
+|---|---|---|
+| Rotor core (horn/drum, Doppler taps, integrators) | `dsp/rotator.rs` `Rotator::core`, `control` | ported at native offsets; smoke test only, no native vector |
+| Output stage primary branch | `Rotator::post` | ported; decompile-confirmed law tests, no native vector |
+| Output stage ring branch (flag 0x1b4) | none | missing; flag source not located |
+| RT_* setters to core fields | none | missing; BParFXRotator vtable not in export |
+| Sample-rate prepare (0x140ac0af0) | none | missing; constants not read |
+| Config (sampler-ir) and Kontakt mapping | none | missing; Rotator stays unsupported |
+
+Blocked on: the BParFXRotator vtable (setters), and a native Rotator vector for the output stage and the core (the Wine oracle sweep, not run in this PR).
 
 ## Next steps (after READY)
 
