@@ -7,7 +7,7 @@ mod cabinet;
 mod cat;
 mod crywah;
 mod dstortion;
-mod fuzz;
+pub(super) mod fuzz;
 mod twang;
 
 use super::super::Planar;
@@ -17,7 +17,6 @@ pub(super) enum Engine {
     Cabinet(cabinet::Engine),
     CryWah(crywah::Engine),
     BigFuzz(bigfuzz::Engine),
-    Fuzz(fuzz::Engine),
     Twang(twang::Engine),
     AcBox(acbox::Engine),
     Cat(cat::Engine),
@@ -31,7 +30,6 @@ pub(super) enum State {
     Cabinet(cabinet::State),
     CryWah(crywah::State),
     BigFuzz(bigfuzz::State),
-    Fuzz(fuzz::State),
     Twang(twang::State),
     AcBox(acbox::State),
     Cat(cat::State),
@@ -45,7 +43,6 @@ impl State {
             Self::Cabinet(s) => s.finite(),
             Self::CryWah(s) => s.finite(),
             Self::BigFuzz(s) => s.finite(),
-            Self::Fuzz(s) => s.finite(),
             Self::Twang(s) => s.finite(),
             Self::AcBox(s) => s.finite(),
             Self::Cat(s) => s.finite(),
@@ -72,7 +69,8 @@ impl Engine {
             AmpModel::Cabinet => Self::Cabinet(cabinet::Engine::new(k[4], k[0], k[1], k[2], k[3], rate)),
             AmpModel::CryWah => Self::CryWah(crywah::Engine::new(k[0], k[1] != 0.0, rate)),
             AmpModel::BigFuzz => Self::BigFuzz(bigfuzz::Engine::new([k[0], k[1], k[2], k[3], k[4]], rate)),
-            AmpModel::Fuzz => Self::Fuzz(fuzz::Engine::new([k[0], k[1], k[2], k[3]], rate)),
+            // Routed to `CurveSettings::Fuzz` by the lowering, which owns its live knobs.
+            AmpModel::Fuzz => unreachable!("Fuzz is lowered to its own live curve"),
             AmpModel::Twang => Self::Twang(twang::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5]], rate)),
             AmpModel::AcBox => Self::AcBox(acbox::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]], rate)),
             AmpModel::Cat => Self::Cat(cat::Engine::new([k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7]], rate)),
@@ -85,7 +83,6 @@ impl Engine {
             Self::Cabinet(e) => e.process(slot!(s, Cabinet), block, len, ring),
             Self::CryWah(e) => e.process(slot!(s, CryWah), block, len),
             Self::BigFuzz(e) => e.process(slot!(s, BigFuzz), block, len),
-            Self::Fuzz(e) => e.process(slot!(s, Fuzz), block, len),
             Self::Twang(e) => e.process(slot!(s, Twang), block, len),
             Self::AcBox(e) => e.process(slot!(s, AcBox), block, len),
             Self::Cat(e) => e.process(slot!(s, Cat), block, len),

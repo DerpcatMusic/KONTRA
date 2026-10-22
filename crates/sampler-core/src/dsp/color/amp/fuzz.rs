@@ -7,6 +7,7 @@
 use super::super::super::Planar;
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use super::dstortion::zip;
+use super::super::super::control::{ControlRamp, PreparedParameter};
 
 type V = [f32; 4];
 
@@ -134,11 +135,42 @@ impl Engine {
     }
 }
 
+/// Live knobs: the unit is rebuilt from the current values at each call. Building it
+/// is a few table reads and no allocation, and its history is kept in `state`, so a
+/// constant knob equals the static unit exactly.
+pub(crate) fn process_live(
+    knobs: [PreparedParameter; 3],
+    mono: bool,
+    rate: u32,
+    state: &mut State,
+    parameters: &[ControlRamp],
+    block: &mut Planar,
+    len: usize,
+    at: u64,
+) {
+    let [amount, bass, treble] = knobs.map(|p| p.value(parameters, at, None) as f32);
+    Engine::new([amount, bass, treble, f32::from(u8::from(mono))], rate).process(state, block, len);
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::super::super::BLOCK;
     use super::*;
 
     /// kemu vectors (kontra-w5/fuzz_native.py): ctor, init, apply, settled ramp, kernel.
+    /// A constant live knob is the static unit: same history, same samples.
+    #[test]
+    fn live_constant_knobs_equal_the_static_unit() {
+        let knobs = [0.9, 0.2, 0.8];
+        let (mut live, mut stat) = (State::default(), State::default());
+        let (mut a, mut b): (Planar, Planar) = ([[0.3; BLOCK]; 2], [[0.3; BLOCK]; 2]);
+        let parameters = knobs.map(|v| PreparedParameter::Constant(f64::from(v)));
+        process_live(parameters, false, 48_000, &mut live, &[], &mut a, BLOCK, 0);
+        Engine::new([0.9, 0.2, 0.8, 0.0], 48_000).process(&mut stat, &mut b, BLOCK);
+        assert_eq!(a, b);
+        assert_eq!(live, stat);
+    }
+
     #[test]
     fn matches_the_native_fuzz() {
         let cases: [(u32, [f32; 4]); 5] = [

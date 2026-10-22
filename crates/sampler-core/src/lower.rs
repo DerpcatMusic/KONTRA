@@ -217,6 +217,11 @@ pub(crate) fn color_settings(c: ir::fx::color::Config) -> crate::ColorSettings {
             fx::Curve::Tubescreamer(d) => Curve::Tubescreamer(d),
             fx::Curve::Dirt(d) => Curve::Dirt(d),
             fx::Curve::Freak(d) => Curve::Freak(d),
+            // Fuzz's three knobs are live lanes; its mono flag is stored only.
+            fx::Curve::Amp(d) if matches!(d.model, fx::AmpModel::Fuzz) => Curve::Fuzz {
+                knobs: [knob(P::FuzzAmount, d.knobs[0]), knob(P::FuzzBass, d.knobs[1]), knob(P::FuzzTreble, d.knobs[2])],
+                mono: d.knobs[3] != 0.0,
+            },
             fx::Curve::Amp(d) => Curve::Amp(d),
             fx::Curve::Bite(d) => Curve::Bite(d),
             fx::Curve::Tape(d) => Curve::Tape(d),
