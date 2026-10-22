@@ -137,10 +137,10 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Dirt | parity | vector | `kontakt_dirt_vectors.json` (matches_the_native_core); mapping order from repo comment, apply `140aba420` not re-checked |
 | Distortion | partial | decomp | Tube/Transistor curves and damping LP from decompile (`1408373c0`, `140837e40`); no native vector for the full chain |
 | DStortion | partial | vector | kernel: `kontakt_dstortion_vectors` (matches_the_native_dstortion); knob order from apply `140ab96f0` not fully confirmed |
-| Bite | partial | decomp | Mapped (0x66); core model-checked, not Kontakt output; 20 ms ramps unmodelled. docs/re/engine/k-lofi-tape.md |
-| Lo-Fi | partial | none | Mapped (0x20); hold/quantizer/noise tests are spec-derived; flag (P truncation) and reset seed unproved. docs/re/engine/k-lofi-tape.md |
-| Tape Saturator | partial | none | Mapped (0x42); table recovered; no Kontakt output vector. docs/re/engine/k-lofi-tape.md |
-| Wow/Flutter | partial | decomp | Reader and ids confirmed (FUN_140ac65f0, FUN_140a821c0); params mapped to a generic timemod law; per-sample kernel not located; scrape/age/saturation/gate omitted and diagnosed. docs/re/engine/k-lofi-tape.md |
+| Bite | partial | none | Mapped (0x66); core checked against the kcolor model only. The 20 ms control ramps are unmodelled. Not yet compared with the decompiled Bite process. Blocked on the Kontakt exe for `DAT_*` constants and on Kontakt output vectors. docs/re/engine/k-lofi-tape.md |
+| Lo-Fi | partial | decomp | Mapped (0x20). Hold logic confirmed in decompile `FUN_140aad440` (phase accumulator tested against threshold, capture then subtract period; quantizer `(int)(x*Q)*invQ`; enable bytes +0x1e8 quantizer, +0x1e9 hold). Blocked: constants are `DAT_*` data not in the export and the Kontakt exe is not on this machine, so the threshold/noise constants and the reset seed (GetTickCount) remain unproved. docs/re/engine/k-lofi-tape.md |
+| Tape Saturator | partial | none | Mapped (0x42); table recovered; process `FUN_140ae1190` not yet compared line-by-line with tape.rs. Blocked on the Kontakt exe for `DAT_*` constants and on Kontakt output vectors. docs/re/engine/k-lofi-tape.md |
+| Wow/Flutter | partial | decomp | Reader and ids confirmed (FUN_140ac65f0, FUN_140a821c0). Params mapped to a generic timemod law. Blocked: the per-sample kernel is not located. It is reached through the `ModulatableDSPCoreWrapper<BEffectWowFlutterTraits>` vtable, which needs the Kontakt exe, not on this machine. Scrape/age/saturation/gate are omitted and diagnosed. docs/re/engine/k-lofi-tape.md |
 
 ## Modulation FX (k-modfx-classic, k-modfx-freak)
 
