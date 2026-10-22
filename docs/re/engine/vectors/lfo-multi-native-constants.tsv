@@ -1,0 +1,22 @@
+# Kontakt 8 Multi / Digital Multi LFO constants, read from the PE .rdata section of
+# re-binaries/Kontakt8.exe (image base 0x140000000) with pefile, not from decompiled text.
+# Used by: 0x140b07290 (Multi), 0x140b078d0 (Digital Multi), 0x140b08c40 (rectangle), 0x1405f4510 (held reset).
+# type	va	value	consumer
+f64	0x144fcff50	4096.0	table index scale (p * 4096)
+f64	0x144714988	1.0	digital saw wrap threshold; 1 - w
+f64	0x14470bb18	-1.0	digital saw wrap offset
+f64	0x14470bae8	0.5	digital triangle breakpoint
+f64	0x144fcff48	0.75	digital triangle upper breakpoint
+f64	0x144e79a60	0.25	digital triangle lower breakpoint
+f64	0x1447149a8	4.0	digital triangle gain
+f64	0x144f38a10	1.5	held-noise half-cycle threshold flip (next = 1.5 - current)
+f64	0x144f3a000	0.03125	control-rate quantum (1/32), step correction
+f32	0x144737728	0.16666667	cubic interpolation weight (table helpers)
+f32	0x14470bad0	0.5	cubic interpolation weight; analog width offset
+f32	0x14470bad4	1.0	clamp ceiling
+f32	0x144714a54	-1.0	bipolar clamp floor; digital pulse outside width
+f32	0x1447148b4	0.0099999998	rectangle near-half threshold
+f32	0x1447149d0	3.0	held noise offset (native bits to [-1, 1))
+f32	0x1447148c0	0.05	width clamp floor
+f32	0x144737744	0.95	width clamp ceiling
+f32	0x144714ba0	-0.0	sign-bit flip mask (negation)
