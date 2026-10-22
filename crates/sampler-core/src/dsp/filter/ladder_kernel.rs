@@ -1211,9 +1211,10 @@ impl Ladder {
     }
 }
 
-/// Native Ladder vectors: the original process and setters run under the kemu emulator
-/// (`FUN_140b00b80`, `FUN_140b05c70`, `FUN_140b06180`, `FUN_140b036a0`), stereo, one 32-frame
-/// block per setter-schedule entry. Gain is unity-based, knobs are normalised, HQ off.
+/// Native Ladder vectors: the original process, setters, prepare and 32-frame tick run under the
+/// kemu emulator (`FUN_140b00b80`, `FUN_140b05c70`, `FUN_140b06180`, `FUN_140b036a0`), stereo,
+/// one 32-frame block per setter-schedule entry. Gain is unity-based, knobs are normalised, HQ off.
+/// `flag49` is the native cutoff-path byte (+0x49) and `mode` the taps selector (+0x44).
 #[cfg(test)]
 mod kemu_vectors {
     use super::*;
@@ -1227,8 +1228,13 @@ mod kemu_vectors {
         let mut failures = Vec::new();
         for case in &cases {
             let rate = num(&case["rate"]);
+            if case["hq"].as_u64().unwrap_or(0) != 0 {
+                // HQ runs the 2x oversampler, covered by native_kemu_vectors_through_the_production_path.
+                continue;
+            }
             let mut filter = Ladder::default();
             filter.set_taps(case["mode"].as_u64().unwrap() as u8 + 1);
+            filter.set_cutoff_path(case["flag49"].as_u64().unwrap() != 0);
             let schedule: Vec<[f32; 3]> = case["schedule"]
                 .as_array()
                 .unwrap()
@@ -1262,8 +1268,8 @@ mod kemu_vectors {
                 case["outR"].as_array().unwrap().iter().map(num).collect(),
             ];
             let name = case["name"].as_str().unwrap();
-            // Steady cases are bit-exact. The moving-cutoff case differs by 1-2 ulp in the last
-            // four frames of the final block (ramp rounding); the bound documents that residual.
+            // Vectors come from tools/re/ladder_kemu_vectors.py (native code under kemu, 32-frame
+            // tick per block). The bound is a relative tolerance on the stored f32 outputs.
             let close = |a: f32, b: f32| (a - b).abs() <= 1e-6 * b.abs().max(1e-4);
             let bad: Vec<String> = (0..2)
                 .flat_map(|c| (0..expect[c].len()).map(move |i| (c, i)))
