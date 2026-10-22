@@ -208,6 +208,25 @@ pub struct Bite {
     pub knobs: [f32; 12],
 }
 
+/// Kontakt Bite core index, `ENGINE_PAR_BITE_*` name and role of each continuous live knob
+/// (binding rows `F`, identity law). Core indices as `Bite::knobs`. DC quant (bool) and HPF
+/// (enum) keep their stored values.
+pub const BITE_LIVE: [(u8, &str, crate::ProcessorParameter); 10] = {
+    use crate::ProcessorParameter as P;
+    [
+        (0, "ENGINE_PAR_BITE_SATURATE", P::BiteSaturate),
+        (1, "ENGINE_PAR_BITE_PREFILTER", P::BitePrefilter),
+        (2, "ENGINE_PAR_BITE_FREQUENCY", P::BiteFrequency),
+        (3, "ENGINE_PAR_BITE_JITTER", P::BiteJitter),
+        (4, "ENGINE_PAR_BITE_CRUNCH", P::BiteCrunch),
+        (5, "ENGINE_PAR_BITE_BITS", P::BiteBits),
+        (6, "ENGINE_PAR_BITE_DITHER", P::BiteDither),
+        (8, "ENGINE_PAR_BITE_EXPAND", P::BiteExpand),
+        (9, "ENGINE_PAR_BITE_POSTFILTER", P::BitePostfilter),
+        (11, "ENGINE_PAR_BITE_MIX", P::BiteMix),
+    ]
+};
+
 /// Kontakt Freak core values (0..1, the mode enum as i/2) by core index p0..p18.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -563,6 +582,11 @@ impl Config {
                 lane(name, role, f64::from(value), Law::Identity);
             }
         }
+        if let Curve::Bite(Bite { knobs }) = self.curve {
+            for (index, name, role) in BITE_LIVE {
+                lane(name, role, f64::from(knobs[usize::from(index)]), Law::Identity);
+            }
+        }
         if let Curve::Freak(Freak { knobs }) = self.curve {
             // The continuous knobs (identity binding laws). The bool switches, the
             // MODE enum and the unnamed field 17 stay stored values.
@@ -627,5 +651,18 @@ mod tests {
         let names: Vec<&str> = Config::amp(fuzz).at(address).lanes().iter().map(|l| l.name).collect();
         assert_eq!(names, ["ENGINE_PAR_FUZZ_AMOUNT", "ENGINE_PAR_FUZZ_BASS", "ENGINE_PAR_FUZZ_TREBLE"]);
         assert!(Config::amp(fuzz).lanes().is_empty(), "an unaddressed unit has no lanes");
+    }
+
+    #[test]
+    fn addressed_bite_exposes_its_ten_continuous_lanes_at_their_core_values() {
+        let knobs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.25, 0.75, 1.0];
+        let address = crate::SlotAddress { group: 0, slot: 1, generic: 0 };
+        let lanes = Config::bite(Bite { knobs }).at(address).lanes();
+        let got: Vec<(&str, f64)> = lanes.iter().map(|l| (l.name, l.value)).collect();
+        assert_eq!(got.len(), 10);
+        assert_eq!(got[2], ("ENGINE_PAR_BITE_FREQUENCY", f64::from(0.3f32)));
+        assert_eq!(got[9], ("ENGINE_PAR_BITE_MIX", f64::from(1.0f32)));
+        assert!(!got.iter().any(|(n, _)| n.contains("DC") || n.contains("HPF")), "switch and enum knobs stay stored");
+        assert!(Config::bite(Bite { knobs }).lanes().is_empty(), "an unaddressed unit has no lanes");
     }
 }

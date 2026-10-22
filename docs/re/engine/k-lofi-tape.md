@@ -35,6 +35,29 @@ is not one config. Merging the two families is the next migration step, not done
 - Core and constants from the earlier kcolor model; code claims max error 1e-6 vs the emulated core. **measured** against that model, not against Kontakt output.
 - Knobs are fixed constants; the native 20 ms control ramps are not modelled. **unconfirmed** (documented in `bite.rs`).
 - Saved-field binding (`scatter` in `effects/mod.rs`): **measured** by `bite_record_fields_land_on_their_core_indices`.
+- Live lanes (2026-10-23): the ten continuous `ENGINE_PAR_BITE_*` rows (identity law, `BITE_LIVE` in `sampler-ir/src/fx/color.rs`) are script-addressable. Each block rebuilds the engine from the block-start values (`Curve::LiveBite`). DC quant (bool) and HPF (enum) stay stored, as Freak's switches do.
+
+#### Native control callbacks (decompile, `0141930000.c`, Kontakt 8)
+
+The Bite constructor `FUN_141935890` registers twelve `std::function` control callbacks. Their vtable slot 2 bodies (`FUN_141936200`..`FUN_141936730`, vtables `0x1476973c0`..`0x1476975f0`) map each control to a core field (`lVar1` = core object):
+
+| Field | Control (from callback) | Native write |
+|---|---|---|
+| `+0x3a4` | Bits | `FUN_141936610`: `exp2(1 - nb)`, `nb = 2 - int(x·-15)` clamped 2..16, same as `Engine::new` |
+| `+0x3ac` | DC quant | `FUN_141936710`: bool `x >= 0.5` |
+| `+0x3b8` | HPF | `FUN_1419363d0`: 5 / 100 / 200 Hz by `int(3x)` clamped 0..2; writes the HP smoother at `+0x980` |
+| `+0x54` | Saturate | `FUN_1419364e0`: soft `0.2x + 0.05`, trim table at `1200 − 79.73x` |
+| `+0x64` | Crunch | `FUN_141936600` → `FUN_1419390d0`: drive in/out (`+0x740/+0x744`, `24·saturate` term) |
+| (pitch) | Frequency | `FUN_1419365d0` → `FUN_141936c40` (not read; presumed to set pitch `+0x728`, which the pre/post curve uses) |
+| `+0x60` | Dither | `FUN_1419365e0`: `+0x734 = x²` |
+| `+0x6c` | Jitter | `FUN_1419366f0`: `+0x730 = x²` |
+| `+0x74` | Expand | `FUN_141936730`: `c = 2^(8 − 7.9x) − 1` (`+0x758..0x760`) |
+| `+0x80` | Mix | `FUN_141936490`: wet/dry at `+0x74c/+0x750` |
+| `+0x58`, `+0x78` | Pre / post filter | `FUN_141936870` (pitch-dependent log curve, pitch at `+0x728`) → `FUN_141938dc0` |
+
+`FUN_141938dc0` is the TPT coefficient setter for one SVF pair: `g = tan3(π·f·(1/sr))` (the `tan3` of `bite.rs`, constant `π` at `0x1447149d4`), `a1 = 1/((g + k)·g + 1)` with damping `k` at `+0x58`/`+0x5c` (0.7654, 1.8478), `a2 = a1·g`. It writes the coefficients **immediately**. It also sets the target (`+0x48`, `+0x50`) and the current value (`+0x4c`, `+0x54`) to the same number, so no ramp is started here.
+
+Open: the **20 ms ramp** is not in these callbacks. It must be in the process `0x141937fb0` or a helper that moves `+0x4c` toward `+0x48`. Not traced, so the Rust live path rebuilds the engine per block with no ramp. Kontakt output vectors are still missing.
 
 ### Tape Saturator (0x42)
 - Gain, warmth, roll-off, quality (×4 oversampling at Quality ≥ 0.5). Table of 4098 f32 entries recovered earlier. **measured** (`matches_the_native_core` in `tape.rs`), **unconfirmed** against Kontakt output.
@@ -80,7 +103,7 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 | Item | Shared engine | Kontakt 8 | Gap |
 | --- | --- | --- | --- |
 | Lo-Fi hold, quantizer, noise | covered, measured | mapped | flag (P truncation), reset seed |
-| Bite | covered, model-checked | mapped | 20 ms control ramps, Kontakt output vectors |
+| Bite | covered, model-checked; live lanes wired (10 continuous) | mapped | 20 ms ramp (not in the control callbacks; process `0x141937fb0` untraced), DC/HPF live switches, Kontakt output vectors |
 | Tape Saturator | covered, table recovered | mapped | Kontakt output vectors |
 | Wow / Flutter parameters | bindings measured | mapped | scrape, age, saturation, gate laws |
 | Wow / Flutter DSP | generic only | unrecovered | exact pitch law, Scrape/Age/Saturation/Gate |

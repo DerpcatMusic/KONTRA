@@ -566,3 +566,19 @@ fn uvi_redux2_matches_the_native() {
 fn color_state_holds_one_shaper_at_a_time() {
     assert!(std::mem::size_of::<State>() <= 3584, "{}", std::mem::size_of::<State>());
 }
+
+/// A script-driven Bite whose live lanes hold the saved values is the static Bite, bit for bit
+/// (both paths rebuild the same engine from the same knobs).
+#[test]
+fn live_bite_with_constant_lanes_equals_the_static_bite() {
+    let knobs = [0.4, 0.3, 0.5, 0.2, 0.6, 0.5, 0.1, 0.0, 0.5, 0.7, 0.5, 0.8];
+    let bite = sampler_ir::fx::color::Bite { knobs };
+    let mut live = [None; 12];
+    for (index, _, _) in sampler_ir::fx::color::BITE_LIVE {
+        live[usize::from(index)] = Some(knob(f64::from(knobs[usize::from(index)])));
+    }
+    let static_out = render(ColorSettings { curve: CurveSettings::Bite(bite, [None; 12]), ..ColorSettings::IDENTITY }, 3, 64);
+    let live_out = render(ColorSettings { curve: CurveSettings::Bite(bite, live), ..ColorSettings::IDENTITY }, 3, 64);
+    assert_eq!(static_out, live_out);
+    assert!(static_out.iter().zip(render(ColorSettings::IDENTITY, 3, 64)).any(|(a, b)| a != &b), "Bite must change the signal");
+}
