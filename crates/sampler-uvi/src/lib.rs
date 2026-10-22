@@ -347,6 +347,24 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         out.ir.dsp_slots = Some(coverage::slots(&out, program));
         out.ir.native_family = Some(coverage::native_family(program));
     }
+    // Constant property reads run on the Core law by default. Their native
+    // smoothing/cadence is unmeasured, so each approximated row is reported
+    // as a warning-level UnknownLaw entry (executed, not omitted).
+    let mut approximated = 0usize;
+    for definition in &mut out.ir.source_indices.constant_properties {
+        if definition.law == ir::SourceConstantPropertyLaw::UnqualifiedNative {
+            definition.law = ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead;
+            approximated += 1;
+        }
+    }
+    if approximated > 0 {
+        out.ir.unsupported.push(ir::Unsupported {
+            location: "Constant property".into(),
+            feature: "Constant cadence (approximated)".into(),
+            value: format!("{approximated} read(s) on the Core law; native smoothing/cadence not measured"),
+            reason: ir::Reason::UnknownLaw,
+        });
+    }
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
