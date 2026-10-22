@@ -174,3 +174,31 @@ from code and constants), INFERRED, UNKNOWN.
   The repo's 1.0 has no binary source; its runtime source is UNKNOWN. The
   Galois saved-to-lane mapping is INFERRED (enum type, then time, size, damping,
   modulation, diffusion, predelay, high cut, low shelf, stereo).
+
+## Binding-table cross-check (origin/engine/k-ksp-engine-params, fx_legacy_delay_reverb_mod.tsv)
+
+- **0x140aa3d10 is the Legacy Reverb process** (module 0x15, `Effects/Reverb`,
+  `BParFXReverb`), not a new module. Its structure (8 comb lines with one-pole
+  damping, four allpasses, gain/ramp, shared prepare/finalize) is the Freeverb
+  network already in `design.rs freeverb()`. Not verified this pass: the lead's
+  "equal-length rings" claim (the repo encodes the classic Freeverb lengths, set up
+  by the sample-rate-dependent setter `0x14094c760`), and the allpass offsets
+  `+0xb88..+0xc60` against `ALLPASS_MS`. Treat both as open.
+- Legacy saved predelay: `ENGINE_PAR_RV_PREDELAY` table law (101 points) equals the
+  repo's `tables::RV_PREDELAY` (e.g. 0.1 → 1.140032 ms, 0.5 → 17.0788 ms,
+  1.0 → 180 ms). CONFIRMED by binding table.
+- Legacy RV_SIZE, RV_STEREO, RV_COLOUR, RV_DAMPING: identity laws, fields 1, 2, 3,
+  4 at slots 12, 20, 16, 24. Matches the repo lanes.
+- **Galois (`Effects/GaloisReverb`, `BParFXGaloisReverb`)**: RV2_TIME field 1,
+  SIZE 2, DAMPING 3, MOD 4, DIFF 5, PREDELAY 6, HIGHCUT 7, LOWSHELF 8, STEREO 9,
+  all identity. The saved layout matches the decompile's offsets (+0x08..+0x28).
+  This confirms the field mapping that was INFERRED above. Lane 8 is still not in
+  the table.
+- **Raum unit tables** (`Effects/Raum`): the unit parameter writes field 1 as a
+  sync flag (stored 1 for keys ≥ 5), field 15 as the beat count x, and field 16 as
+  a floor flag (0.125 for keys 0–4, 0 otherwise). Known x values at keys 5, 6, 7,
+  8, 10, 16, 20: 4, 2.666667, 2, 1.333333, 0.6666667, 0.1666667, 0.04166667.
+  Keys 9, 11–15, 17–19 are not sampled. Check: x = 4 at 120 BPM gives 2000 ms,
+  the clamp maximum, consistent with `predelay_ms = 60000·x·v/bpm`.
+  Partial: the full key set is still needed, and the engine has no host-tempo path
+  into the space build yet.
