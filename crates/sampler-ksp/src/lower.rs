@@ -3181,11 +3181,7 @@ impl Gen<'_, '_> {
     /// unsupported. A constant group index outside `-1..groups` is Kontakt's "Invalid group
     /// index!"; with no groups declared the index is not checked.
     fn engine_par_unsupported(&self, args: &[Arg]) -> bool {
-        self.engine_par_name(args).is_some_and(|name| {
-            name.starts_with("ENGINE_PAR_")
-                && sampler_core::engine_parameter_id(&name).is_none()
-                && crate::builtins::is_vendor_constant(&format!("${name}"))
-        })
+        self.engine_par_name(args).is_some_and(|name| crate::builtins::unsupported_engine_parameter(&name))
     }
     fn engine_par_rejection(&self, args: &[Arg], group_arg: usize) -> Option<&'static str> {
         if self.engine_par_unsupported(args) {

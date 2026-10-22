@@ -91,3 +91,9 @@ fn multi_script_only_engine_parameter_variants_are_compile_errors() {
         assert!(format!("{err}").contains("can only be used in a multi script"), "{err}");
     }
 }
+
+#[test]
+fn on_init_engine_parameter_access_to_an_unaddressable_name_is_reported() {
+    let w = warnings("on init declare @t @t := get_engine_par_disp($ENGINE_PAR_WT_MOD_AMOUNT, -1, -1, -1) end on");
+    assert!(w.iter().any(|m| m.contains("get_engine_par_disp") && m.contains("not supported")), "{w:?}");
+}
