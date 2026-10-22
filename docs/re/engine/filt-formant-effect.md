@@ -67,8 +67,8 @@ when it lands.
   cutoff-to-coefficient law above cutoff 0 are not recorded as vectors. Kontakt's internal feedback path is
   not verified. Note: `docs/FEATURES.md` describes an older notch-only model; that is stale.
 - Native (2026-10-22): the object, vtable `0x144f0fa38`, driver (slot 23), kernel (slot 33) and coefficient
-  (slot 36) are located. The live clock is ported (`dsp/filter/phaser.rs`) and checked by kemu vectors (6.6e-7 of
-  peak); runtime routing and the host lane writer are open. See `docs/re/engine/filt-phaser.md`.
+  (slot 36) are located. The live clock is ported (`dsp/filter/phaser.rs`), checked by kemu vectors (6.6e-7 of
+  peak), and routed in the runtime (`Processor::LivePhaser`); the host lane writer is open. See `docs/re/engine/filt-phaser.md`.
 
 ### Vowel A / Vowel B (types 14 and 15)
 

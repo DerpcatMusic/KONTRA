@@ -3,11 +3,10 @@
 Scope: Kontakt 8 Phaser filter only (saved filter type 13, `filter-type-ids.tsv`). Not the Legacy Phaser
 effect (`k-timemachine` / legacy mod-fx notes). Status date 2026-10-22.
 
-Outcome (second pass, 2026-10-22): the live Cutoff/Resonance clock is ported and verified against the native
-object under kemu. The host-side writer that supplies the lane goals is still not located: the vectors model it
-the way the Vowel family does (goals written per host call, dirty flag once). The static path is unchanged. The
-runtime still lowers live Phaser lanes through the static TimeMod lane path (`slot_phaser` in
-`crates/sampler-kontakt/src/effects/timemod.rs`), so the live clock is not routed yet.
+Outcome (second pass, 2026-10-22): the live Cutoff/Resonance clock is ported, verified against the native
+object under kemu, and wired into the runtime as `Processor::LivePhaser`. The host-side writer that supplies the lane goals is still not located: the vectors model it
+the way the Vowel family does (goals written per host call, dirty flag once). The static type-13 path
+(`Processor::Phaser`) is unchanged when no lane is bound.
 
 ## Live clock (verified under kemu)
 
@@ -109,6 +108,22 @@ BFilter6PoleLP / BFilterPro52 slots (generic BFilterBase).
 - Ramp step and deadband: now read through the Vowel port of the same wrapper (see "Live clock"); the
   vectors check them. Lane buffer walk (`lVar15`) and the predicates in slots 45 and 46 are still not read.
 
+## Runtime wiring
+
+- Lowering: `slot_phaser` (`crates/sampler-kontakt/src/effects/timemod.rs`) emits `ir::Processor::LivePhaser { knobs,
+  address }` when the type-13 slot is script- or modulation-addressed, instead of `Processor::TimeMod` with
+  `Config::phaser_filter`. Without a lane it still emits `Processor::Phaser`.
+- Lanes: `ENGINE_PAR_CUTOFF` and `ENGINE_PAR_RESONANCE` with the linear normalized law, roles `Cutoff` and
+  `Resonance` (`crates/sampler-core/src/lower.rs`); library targets `filterCutoff` / `filterQ` map to them
+  (`crates/sampler-kontakt/src/library.rs`).
+- Processing: `dsp.rs` `PreparedProcessor::LivePhaser` reserves `CELLS` (12 cells of `[f64; 2]`) in the delay slab.
+  Each block loads `PhaserClock`, samples the lanes at every clock segment start (`ControlRamp` at the absolute
+  frame), runs both channels in place, and stores the clock back. Zeroed cells mean "not started", so the first
+  call snaps.
+- Test: `dsp::live_phaser_processor_tests::live_phaser_lanes_match_native_vectors_through_the_processor_path` runs
+  `compile_processors` and `process` (the voice-chain entry) over the ten kemu schedules, lanes written per call.
+  Worst case 6.6e-7 of peak, the same as the clock-level test.
+
 ## Pinned in the second pass
 
 - Slot 49 (`0x14087cc40`, 169 B) is a text-value converter: atof of the string, multiplied by 1000 for a `k`
@@ -127,8 +142,8 @@ BFilter6PoleLP / BFilterPro52 slots (generic BFilterBase).
 5. Out-of-range resonance goals. The Rust clock uses the raw goal for the ramp and clamps only in the coefficient law;
    no vector covers a resonance goal outside [0, 1].
 6. Stereo. The vectors are mono; the kernel loops over `+0x124` channels.
-7. Runtime routing: the Rust `process` takes one goal per call; the Vowel port samples the lane per segment. The
-   Phaser runtime path (`slot_phaser`) does not use the clock yet.
+7. Runtime routing: done (`Processor::LivePhaser`, see Runtime wiring). Lanes are sampled per clock segment, as the
+   Vowel port does; the vectors hold a goal per call, so a lane that changes inside a call is not vector-checked.
 
 ## Verified against the PE image (`pefile`, no execution)
 

@@ -6,6 +6,8 @@
 //! resonance (coefficient slot 36, `0x14095d770`). The clock rules are those of
 //! `tools/re/phaser_kemu_vectors.py`, which drives the native object under kemu; the vectors are
 //! `phaser_kemu_vectors.json`. The static saved-value path is `timemod::Config::phaser_filter`.
+//! Lanes are written per host call and sampled at each clock segment; modulation buffers
+//! (`obj+0x1c8`/`0x1d0`), the accumulate kernel branch and out-of-range resonance are not modelled.
 
 /// Frames per clock segment (the wrapper's countdown reload, `0x1bc` = `0x20`).
 const QUANTUM: usize = 32;
@@ -22,7 +24,10 @@ const C24: f32 = f32::from_bits(0x3d2a_aaab);
 const C120: f32 = f32::from_bits(0x3c08_8889);
 const C720: f32 = f32::from_bits(0x3ab6_0b61);
 
-/// Clock and allpass state of one mono Phaser object.
+/// Cells of `[f64; 2]` that [`PhaserClock::store`] writes: 24 words.
+pub(crate) const CELLS: usize = 12;
+
+/// Clock and allpass state of one Phaser object (two channels share the clock and coefficient).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PhaserClock {
     /// Cutoff and resonance the clock has reached (`obj+0x1f0`, `obj+0x1ec`).
@@ -33,9 +38,9 @@ pub(crate) struct PhaserClock {
     feedback: f32,
     started: bool,
     countdown: usize,
-    /// Stage inputs and outputs of the previous sample (`obj+0x208`).
-    x: [f32; 4],
-    y: [f32; 4],
+    /// Stage inputs and outputs of the previous sample per channel (`obj+0x208`).
+    x: [[f32; 4]; 2],
+    y: [[f32; 4]; 2],
 }
 
 impl Default for PhaserClock {
@@ -53,8 +58,8 @@ impl PhaserClock {
             feedback: 0.,
             started: false,
             countdown: 0,
-            x: [0.; 4],
-            y: [0.; 4],
+            x: [[0.; 4]; 2],
+            y: [[0.; 4]; 2],
         }
     }
 
@@ -98,20 +103,25 @@ impl PhaserClock {
         }
     }
 
-    /// One host call: the goals `[cutoff, resonance]` and the frames of `input` into `output`.
-    /// The countdown carries across calls; the first call snaps to its goals.
-    pub(crate) fn process(&mut self, goal: [f32; 2], input: &[f64], output: &mut [f64]) {
-        let len = input.len();
-        assert_eq!(output.len(), len);
+    /// One host call over `block` (in place, both channels). `goal(position)` gives the lanes
+    /// `[cutoff, resonance]` at each clock segment start; the countdown carries across calls and
+    /// the first call snaps to its goals.
+    pub(crate) fn process(&mut self, goal: impl Fn(usize) -> [f32; 2], block: [&mut [f64]; 2]) {
+        let len = block[0].len();
+        debug_assert!(block[1].len() == len);
+        let [left, right] = block;
+        let mut channels = [left, right];
         if !self.started {
-            self.current = goal;
+            self.current = goal(0);
             self.started = true;
             self.countdown = 0;
+            self.designed = [-1.; 2];
         }
         // The step is set by the resonance at the call's start.
         let step = (1. / (31. * self.current[1] + 4.)).clamp(1. / 35., 0.25);
         let mut position = 0;
         while position < len {
+            let goal = goal(position);
             self.design(self.current);
             let moving = (goal[0] - self.current[0]).abs() > MOVING
                 || (goal[1] - self.current[1]).abs() > MOVING;
@@ -120,16 +130,18 @@ impl PhaserClock {
             } else {
                 len - position
             };
-            for (k, out) in output[position..position + n].iter_mut().enumerate() {
-                let x = input[position + k] as f32;
-                let mut stage = self.feedback * self.y[3] + x;
-                for s in 0..4 {
-                    let y = (stage + self.y[s]) * self.coefficient - self.x[s];
-                    self.x[s] = stage;
-                    self.y[s] = y;
-                    stage = y;
+            for i in position..position + n {
+                for (c, channel) in channels.iter_mut().enumerate() {
+                    let x = channel[i] as f32;
+                    let mut stage = self.feedback * self.y[c][3] + x;
+                    for s in 0..4 {
+                        let y = (stage + self.y[c][s]) * self.coefficient - self.x[c][s];
+                        self.x[c][s] = stage;
+                        self.y[c][s] = y;
+                        stage = y;
+                    }
+                    channel[i] = f64::from((stage + x) * 0.5);
                 }
-                *out = f64::from((stage + x) * 0.5);
             }
             position += n;
             if moving {
@@ -140,6 +152,61 @@ impl PhaserClock {
                 }
                 self.clock(goal, step);
             }
+        }
+    }
+
+    /// Reads the state written by [`PhaserClock::store`]; zeroed cells mean "not started".
+    pub(crate) fn load(cells: &[[f64; 2]]) -> Self {
+        let mut words = cells.iter().flatten().map(|v| *v as f32);
+        let mut next = || words.next().unwrap_or(0.);
+        let current = [next(), next()];
+        let designed = [next(), next()];
+        let coefficient = next();
+        let feedback = next();
+        let started = next() != 0.;
+        let countdown = next() as usize;
+        let x = [
+            [next(), next(), next(), next()],
+            [next(), next(), next(), next()],
+        ];
+        let y = [
+            [next(), next(), next(), next()],
+            [next(), next(), next(), next()],
+        ];
+        Self {
+            current,
+            designed,
+            coefficient,
+            feedback,
+            started,
+            countdown,
+            x,
+            y,
+        }
+    }
+
+    /// Writes the state as `CELLS` cells (`load` reads it back exactly: all values are `f32`).
+    pub(crate) fn store(&self, cells: &mut [[f64; 2]]) {
+        let mut words = [0f64; 2 * CELLS];
+        let head = [
+            f64::from(self.current[0]),
+            f64::from(self.current[1]),
+            f64::from(self.designed[0]),
+            f64::from(self.designed[1]),
+            f64::from(self.coefficient),
+            f64::from(self.feedback),
+            if self.started { 1. } else { 0. },
+            self.countdown as f64,
+        ];
+        words[..8].copy_from_slice(&head);
+        for c in 0..2 {
+            for s in 0..4 {
+                words[8 + 4 * c + s] = f64::from(self.x[c][s]);
+                words[16 + 4 * c + s] = f64::from(self.y[c][s]);
+            }
+        }
+        for (cell, pair) in cells.iter_mut().zip(words.chunks_exact(2)) {
+            *cell = [pair[0], pair[1]];
         }
     }
 }
@@ -181,13 +248,15 @@ mod tests {
                 })
                 .collect();
             let mut clock = PhaserClock::new();
-            let mut out = vec![0f64; stim.len()];
+            // Mono vectors: both channels carry the stimulus, channel 0 is compared.
+            let mut left = stim.clone();
+            let mut right = stim.clone();
             let mut at = 0;
             for (cut, res, frames) in calls {
+                let goal = [cut, res];
                 clock.process(
-                    [cut, res],
-                    &stim[at..at + frames],
-                    &mut out[at..at + frames],
+                    |_| goal,
+                    [&mut left[at..at + frames], &mut right[at..at + frames]],
                 );
                 at += frames;
             }
@@ -197,7 +266,7 @@ mod tests {
                 "{name}: call sizes do not cover the stimulus"
             );
             let peak = native.iter().fold(1e-6f64, |m, v| m.max(v.abs()));
-            let worst = out
+            let worst = left
                 .iter()
                 .zip(&native)
                 .fold(0f64, |m, (a, b)| m.max((a - b).abs()))
@@ -210,5 +279,29 @@ mod tests {
         }
         println!("phaser live lanes: worst case {worst_overall:e} of peak over all vectors");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Storing the state in cells between host calls changes nothing: the same call sequence run
+    /// on a kept struct and on a struct reloaded from cells gives identical output.
+    #[test]
+    fn phaser_clock_state_round_trips_through_cells() {
+        let stim: Vec<f64> = (0..96)
+            .map(|i| ((i * 37 % 19) as f64 - 9.) * 0.02)
+            .collect();
+        let calls = [(0usize, 33usize, [0.3f32, 0.6]), (33, 96, [0.8, 0.2])];
+        let mut kept = PhaserClock::new();
+        let mut a = [stim.clone(), stim.clone()];
+        let mut cells = [[0.; 2]; super::CELLS];
+        let mut b = [stim.clone(), stim.clone()];
+        for (lo, hi, goal) in calls {
+            let [l, r] = &mut a;
+            kept.process(|_| goal, [&mut l[lo..hi], &mut r[lo..hi]]);
+            // Zeroed cells load as "not started": the first call snaps as the kept struct does.
+            let mut state = PhaserClock::load(&cells);
+            let [l, r] = &mut b;
+            state.process(|_| goal, [&mut l[lo..hi], &mut r[lo..hi]]);
+            state.store(&mut cells);
+        }
+        assert_eq!(a[0], b[0]);
     }
 }
