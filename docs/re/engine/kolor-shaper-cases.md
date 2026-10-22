@@ -1,6 +1,6 @@
 # Kolor shaper cases 0, 1, 3, 4: dispatch findings
 
-Status: **cc70 stage recovered and verified; cfb0 state update (c830) and cases 6-9 parity still open.**
+Status: **cc70 stage recovered and verified; case 4 ported (output 0.0 natively, see below); cfb0 state update (c830) and cases 6-9 parity still open.**
 Scope: decompiled source in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (`0141970000.c`,
 `0141940000.c`), the dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, and the raw
 disassembly of the shaper functions in `docs/re/disasm/kolor-*.txt` (radare2 `pdf`, read by hand, no decompile).
@@ -104,3 +104,28 @@ and applied with `subss`.
 Still open: `141932e70` (generic 8-lane helper used by `141977650`, `14192d1b0`, `141946590`), `141978300`,
 `141974f10`, the state layout behind `shaper+0x20/0x100/0x120/0x240/0x290`, and the warmed-up kemu fixtures.
 Nothing in this section has been run under unicorn or compared to native output yet.
+
+## Case 4: resolved (2026-10-23)
+
+Output is **0.0 for every input** in the shipped binary. Measured, not inferred:
+
+- The output is `w . v + b` (`141946410`, a dot product of the 8-lane state `v` with 8 weights at
+  shaper+0x260 plus a bias at shaper+0x280). Those 9 floats are zero after every static init we run, and no
+  decompiled code writes them. `w` and `b` are loaded from `DAT_14a64ba20`, `ba30`, `ba40`, which sit past the raw
+  `.data` bytes (`0xa64ba20` vs raw end `0xa588000`), so the loader zero-fills them.
+- No knob change writes those bytes (knobs 0-3 and 5-12 stepped; knob 4 is the mode and reseeds the state only,
+  knob 13 untested). No per-block write touches them. Output over 1709 calls
+  (inputs to 3e38, random, long run) is exactly 0. State stays finite (|s| <= 0.51).
+- The recurrent 7-float state (`14197a150` write-back) is real and evolves, but nothing reads it into the output,
+  so it is not ported. The Rust case returns `0.0` and its tests check it against the native vectors.
+
+**Caveat:** the claim depends on no init we did not run writing `ba20..ba40`. Nothing in the decompile does, and
+the PE has no `.CRT` init table to check. If the output ever goes non-zero natively, the native-vector test fails.
+
+Static init needed to populate the shaper template (for the state path, if ever ported): `1404AC840`,
+`1404ADFA0`, `1404AE740`, `1404AEBA0` (`1404AEED0` ran too, no change to the output weights). `141976810` builds
+the template and `141974510` copies it into the shaper. Without these the 8x8 matrix at shaper+0x20 and the bias
+at +0x120 are zero.
+Measured: `u = bias + c*x` with `c` at shaper+0x20 (8 floats) and bias at shaper+0x120 matches native to 4 decimals.
+Recurrent part (`141979bf0`, `141978300`, `141974f10`, `14192d1b0`) still unread for the state.
+
