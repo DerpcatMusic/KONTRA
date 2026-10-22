@@ -552,7 +552,15 @@ impl<S: Script> Driver<S> {
                     glide_ms,
                     voice,
                     at_ms,
-                } => self.modulate(rt, id, start, value, glide_ms, voice, at_ms)?,
+                } => {
+                    self.modulate(rt, id, start, value, glide_ms, voice, at_ms)?;
+                    // A broadcast (no voice) also sets the owner-level value that
+                    // global Program/Layer outputs read. Its glide is not modeled yet.
+                    if voice.is_none() {
+                        let plan = rt.active_plan();
+                        rt.set_script_event_value(plan, id, value)?;
+                    }
+                }
                 Command::Change {
                     id,
                     what,
