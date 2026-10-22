@@ -1468,12 +1468,35 @@ fn scripts(subject: &Subject) -> Value {
         Subject::Scripted(p) => usize::from(p.host.handles_notes()),
         Subject::Ir(_) => 0,
     };
+    // Verbatim script diagnostics (variable names, engine-parameter names, line numbers),
+    // deduplicated with counts. The summary keys above are digit/path-normalised.
+    let mut raw = BTreeMap::<(String, String), (usize, String)>::new();
+    for u in &ir.unsupported {
+        if u.feature.contains("script") || u.feature.contains("engine_par") {
+            raw.entry((u.feature.clone(), u.value.clone()))
+                .or_insert_with(|| (0, u.location.clone()))
+                .0 += 1;
+        }
+    }
+    let diagnostics: Vec<Value> = raw
+        .into_iter()
+        .take(200)
+        .map(|((feature, value), (count, location))| {
+            json!({
+                "count": count,
+                "feature": feature,
+                "value": value.chars().take(400).collect::<String>(),
+                "location": location,
+            })
+        })
+        .collect();
     json!({
         "declared": ir.behaviors.len(),
         "bound": bound,
         "compile_failed": failed.len(),
         "compile_errors": failed.into_iter().take(3).collect::<Vec<_>>(),
         "warnings": warnings,
+        "diagnostics": diagnostics,
     })
 }
 
@@ -1852,6 +1875,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                 "switches_found": m.switches_found,
                 "migrated": m.migrated,
                 "unrecognised": m.unrecognised.iter().take(5).map(|u| normalize(u)).collect::<Vec<_>>(),
+                "unrecognised_raw": m.unrecognised.iter().take(5).map(|u| u.chars().take(400).collect::<String>()).collect::<Vec<_>>(),
             });
         }
         if ctx.tier != Tier::Parse && !matches!(subject, Subject::Ir(_)) {
