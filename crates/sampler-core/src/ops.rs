@@ -347,6 +347,8 @@ pub enum Op {
     },
     SourceZoneIdentity { index: u16, local: u16 },
     SourceZoneCount { local: u16 },
+    /// Length in microseconds of the sample a zone ID plays; -1 if none.
+    SampleLength { zone: u16, local: u16 },
     SetZoneParameter {
         zone: u16,
         parameter: u16,
@@ -436,7 +438,8 @@ impl Op {
             Self::EngineParameter { address, local, .. } => {
                 (usize::from(*address) + 4).max(usize::from(*local) + 1)
             }
-            Self::SourceZoneIdentity { index, local } => usize::from(*index.max(local)) + 1,
+            Self::SourceZoneIdentity { index, local }
+            | Self::SampleLength { zone: index, local } => usize::from(*index.max(local)) + 1,
             Self::SetZoneParameter { zone, parameter, value, result, .. } =>
                 usize::from((*zone).max(*parameter).max(*value).max(*result)) + 1,
             Self::ZoneParameter {
@@ -1406,6 +1409,17 @@ impl Runtime {
                 let value = usize::try_from(self.reg(id, index)?).ok()
                     .and_then(|index| self.plans.get(plan.0)?.prepared.source_zone_identity(index))
                     .map_or(-1, i64::from);
+                self.set_reg(id, local, value)?;
+            }
+            Op::SampleLength { zone, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let zone = self.reg(id, zone)?;
+                let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+                let value = u32::try_from(zone).ok()
+                    .and_then(|zone| generation.prepared.source_zone_sample(zone))
+                    .and_then(|sample| generation.samples.asset(&generation.prepared, sample))
+                    .and_then(|pcm| (pcm.frame_count() as u64 * 1_000_000).checked_div(u64::from(pcm.sample_rate())))
+                    .map_or(-1, |micros| micros as i64);
                 self.set_reg(id, local, value)?;
             }
             Op::SourceZoneCount { local } => {
