@@ -130,11 +130,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Dirt | unknown | none | |
 | Distortion | unknown | none | |
 | DStortion | unknown | none | |
-| Fuzz | unknown | none | |
-| Kolor | unknown | none | |
-| Saturator | unknown | none | |
-| Skreamer | unknown | none | |
-| Skreamer Deluxe | unknown | none | |
+| Fuzz | partial | vector | Static kernel matches kemu native vectors (`amp/fuzz.rs`). Live amount/bass/treble lanes are wired. Unconfirmed: live identity law and saved-record offsets beyond the reader layout; mono is stored only. |
+| Kolor | missing | decomp | Reader, 10-mode table and 11 knob registrations decompiled (`docs/re/engine/k-stomps-b.md`). No DSP: processing function not located, float-to-knob tie unconfirmed. |
+| Saturator | partial | vector | Classic shape law and Enhanced/Drums curve points from Wine-oracle probes; live Shape on the physical slot. Enhanced/Drums PCM is not vector-tested; internal-modulator 32-frame clock missing. |
+| Skreamer | partial | vector | Static core matches the kemu model of the native core (`skreamer.rs` tests); five live knobs wired. Missing: moving-control PCM against native data. |
+| Skreamer Deluxe | missing | decomp | Reader (mode int + 5 floats + byte) and knob names drive/tone/bass/mid/treble decompiled. Not mapped: the earlier Tubescreamer mapping was wrong. Reported as not modeled. |
 | Bite | unknown | none | |
 | Lo-Fi | unknown | none | |
 | Tape Saturator | unknown | none | |

@@ -43,20 +43,25 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
     knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
 }
 
-/// Native Skreamer field/setter order (fx_dynamics_dist_tape.tsv).
-pub(super) fn skreamer_parameter(parameter: &str) -> Option<usize> {
+/// The live knobs of a stored record: (module, field count, normalized float fields,
+/// field index). Skreamer: TONE, DRIVE, BASS, BRIGHT, MIX (fx_dynamics_dist_tape.tsv).
+/// Fuzz: amount, bass, treble are floats; the mono flag is a byte and is not live.
+pub(super) fn live_field(parameter: &str) -> Option<(u16, usize, usize, usize)> {
     Some(match parameter {
-        "ENGINE_PAR_SK_TONE" => 0,
-        "ENGINE_PAR_SK_DRIVE" => 1,
-        "ENGINE_PAR_SK_BASS" => 2,
-        "ENGINE_PAR_SK_BRIGHT" => 3,
-        "ENGINE_PAR_SK_MIX" => 4,
+        "ENGINE_PAR_SK_TONE" => (0x21, 5, 5, 0),
+        "ENGINE_PAR_SK_DRIVE" => (0x21, 5, 5, 1),
+        "ENGINE_PAR_SK_BASS" => (0x21, 5, 5, 2),
+        "ENGINE_PAR_SK_BRIGHT" => (0x21, 5, 5, 3),
+        "ENGINE_PAR_SK_MIX" => (0x21, 5, 5, 4),
+        "ENGINE_PAR_FUZZ_AMOUNT" => (0x6e, 4, 3, 0),
+        "ENGINE_PAR_FUZZ_BASS" => (0x6e, 4, 3, 1),
+        "ENGINE_PAR_FUZZ_TREBLE" => (0x6e, 4, 3, 2),
         _ => return None,
     })
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 13] = [0x23, 0x24, 0x42, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x6f, 0x78];
+pub(super) const TYPED_CORES: [u16; 12] = [0x23, 0x24, 0x42, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x6f];
 
 /// The amp, cabinet and pedal modules `amp` maps.
 const AMPS: [u16; 8] = [0x23, 0x24, 0x53, 0x55, 0x56, 0x58, 0x6e, 0x6f];
@@ -165,13 +170,6 @@ pub(super) fn typed_core(module: u16, fields: &[ni_file::kontakt::objects::Effec
             let knobs = scatter(&values, &to, DEFAULTS)?;
             Some(Config::freak(sampler_ir::fx::color::Freak { knobs }))
         }
-        // Tubescreamer (BParFXSkreamerDlx, apply 0x140abb9f0): mode, drive, tone, pot a, pot b,
-        // filter, then a u8 that only resets the cores (no param). Level is fixed at 0.5.
-        0x78 => {
-            let (_reset, values) = values.split_last()?;
-            let knobs = scatter(values, &[6, 0, 4, 1, 2, 3], [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0])?;
-            Some(Config::tubescreamer(sampler_ir::fx::color::Tubescreamer { knobs }))
-        }
         _ => None,
     }
 }
@@ -196,6 +194,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
+        0x78 => "Skreamer Deluxe (BParFXSkreamerDlx, IFx5B): its knobs are drive, tone, bass, mid and treble (KSP names, binary registrations), not the Tubescreamer core pot and filter fields; the mapping is not established",
         0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x77 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
@@ -242,17 +241,6 @@ mod tests {
             panic!("Cabinet not mapped");
         };
         assert_eq!(a.knobs[..5], [0.3, 0.6, -0.5, 1.0, 10.0]);
-    }
-
-    #[test]
-    fn tubescreamer_record_fields_land_on_their_core_indices() {
-        use EffectValue::{Byte, Float, Integer};
-        let saved = fields(vec![Integer(2), Float(0.1), Float(0.2), Float(0.3), Float(0.4), Float(0.6), Byte(1)]);
-        let Some(Config { curve: sampler_ir::fx::color::Curve::Tubescreamer(t), .. }) = typed_core(0x78, &saved) else {
-            panic!("Tubescreamer not mapped");
-        };
-        // drive .1, pot a .3, pot b .4, filter .6, tone .2, level fixed .5, circuit 2 (1.0).
-        assert_eq!(t.knobs, [0.1, 0.3, 0.4, 0.6, 0.2, 0.5, 1.0]);
     }
 
     #[test]
@@ -590,6 +578,15 @@ pub(super) fn slot_typed(
 ) -> bool {
     b.flush();
     match typed_core(s.fx.module, fields) {
+        Some(config) if s.fx.module == 0x6e => {
+            // Fuzz amount, bass and treble are script-addressed lanes; its mono flag is not.
+            push_color(b, s, config);
+            b.combined = s.gain;
+            if s.dynamic.is_some() {
+                notes.push(("Fuzz mono flag".into(), "live mono switch is not modeled; stored value only".into(), Reason::NotModeled));
+            }
+            true
+        }
         Some(config) => {
             b.out.processors.push(Processor::Color(config));
             b.combined = s.gain;
@@ -650,13 +647,15 @@ pub(super) fn slot_stereo(b: &mut Lowering, s: &Site, spread: f32, pan: f32, pse
 }
 
 impl Slot {
-    pub(super) fn apply_skreamer_parameter(&mut self, parameter: &str, value: i32) {
-        if self.module != 0x21 {
+    /// Stores a live knob's init-time write in the saved record. The module's first
+    /// `float_fields` fields are normalized floats; `index` is the field. The layout is
+    /// Skreamer's (4-byte fields); the Fuzz record's offsets are not measured.
+    pub(super) fn apply_live_field(&mut self, module: u16, count: usize, float_fields: usize, index: usize, value: i32) {
+        if self.module != module {
             return;
         }
-        let Some(index) = skreamer_parameter(parameter) else { return };
         let Some(Params::Fields(fields)) = self.params() else { return };
-        if fields.len() != 5 || !fields.iter().all(|f| {
+        if fields.len() != count || !fields[..float_fields].iter().all(|f| {
             matches!(f.value, ni_file::kontakt::objects::EffectValue::Float(v) if (0.0..=1.0).contains(&v))
         }) {
             return;
