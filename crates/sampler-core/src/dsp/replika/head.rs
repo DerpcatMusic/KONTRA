@@ -37,6 +37,10 @@ const MOD_SCALE: f64 = f64::from_bits(0x3fb9_9999_9999_999a);
 /// `1479ab3b8`: the section speed scale (0.8), and `1479ab3f0`: its clamp (0.9999999).
 const SECTION_SCALE: f64 = f64::from_bits(0x3fe9_9999_9999_999a);
 const SECTION_MAX: f64 = f64::from_bits(0x3fef_ffff_ca50_1acb);
+/// `144e79a60`: the quarter of mode 1's base source (0.25).
+const QUARTER: f64 = f64::from_bits(0x3fd0_0000_0000_0000);
+/// `1447149f0`: the path index scale (5.0).
+const PATH_SCALE: f32 = f32::from_bits(0x40a0_0000);
 
 /// `if c <= x { c } else { x }`: the native clamp (`comisd`, then a move), which keeps `x` on NaN.
 fn min_native(c: f64, x: f64) -> f64 {
@@ -107,6 +111,16 @@ pub struct Head {
     /// `+0x350` and `+0x384`: the sections the driver retunes; `rate` is their rate factor (preset).
     pub sec: [Section; 2],
     pub rate: f32,
+    /// `+0xa0..+0xac`: the time of each head mode (f32); `141ac4510` takes the one of `mode` as `s`.
+    pub time: [f32; 4],
+    /// `+0x00`, `+0x38`, `+0x40`: the anchors of the base change (`141abd190`; writers not traced).
+    pub anchor: [f64; 3],
+}
+
+/// `141aca670`: the Replika path (k) from the raw index-28 value: `min(4, floor(5 v))`. Path k sets the head
+/// mode `k` for k = 1, 2, 3 (`141aca4a0`).
+pub fn path_for_index(v: f32) -> i32 {
+    ((v * PATH_SCALE).floor() as i32).min(4)
 }
 
 impl Head {
@@ -185,7 +199,38 @@ impl Head {
         y
     }
 
-    /// The glide of the LFO mix (`+0x57e8`): settle when the gap is inside the threshold or the count runs out,
+    /// `141ac4510`: `s` (`+0x98`) = the time of the head mode (`+0xa0 + 4 mode`, modes 0..3). Other modes keep `s`.
+    pub fn sample_time(&mut self) {
+        if let Some(&t) = usize::try_from(self.mode)
+            .ok()
+            .and_then(|m| self.time.get(m))
+        {
+            self.s = f64::from(t);
+        }
+    }
+
+    /// `141abd190`: the base change request. The source `+0x50` is anchor-dependent (mode 1: `a0 * 0.25 * a38`,
+    /// mode 2: `a0`, mode 3: `a40 * a0`), clamped at 1. The target goes to 0 (the level fades out). When the level
+    /// is nonzero a settle is pending and the trigger is cleared, so the next rebase runs from `drive`.
+    pub fn rebase_request(&mut self) {
+        let [a0, a38, a40] = self.anchor;
+        match self.mode {
+            1 => self.base_src = a0 * QUARTER * a38,
+            2 => self.base_src = a0,
+            3 => self.base_src = a40 * a0,
+            _ => {}
+        }
+        if self.base_src <= 1.0 {
+            self.base_src = 1.0;
+        }
+        self.fade.target = 0.0;
+        if self.fade.level != 0.0 {
+            self.fade.pending = true;
+            self.fade.trigger = false;
+        }
+    }
+
+    /// The per-head glide of the LFO mix (`+0x57e8`): settle when the gap is inside the threshold or the count runs out,
     /// else step by `+0x57f0`.
     fn glide_step(&mut self) {
         let g = &mut self.glide;
@@ -293,6 +338,8 @@ mod tests {
                 Section::new(0., f(init, "sr_k") as f32),
             ],
             rate,
+            time: [0.; 4],
+            anchor: [0.; 3],
         }
     }
 
@@ -481,6 +528,81 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    fn units_vector() -> Value {
+        let path = format!(
+            "{}/../../docs/re/engine/vectors/replika-native-head-units.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
+            .expect("vector json")
+    }
+
+    #[test]
+    fn sample_time_and_rebase_match_native_vectors() {
+        let doc = units_vector();
+        let rate = 1.0 / 48_000.0;
+        let driver = vector();
+        let init = &driver["cases"][0]["init"];
+        for case in doc["sample_time"].as_array().expect("sample_time") {
+            let mut head = head_from_init(init, rate);
+            head.mode = f(case, "mode") as i32;
+            head.s = f(case, "before");
+            let times = case["times"].as_array().expect("times");
+            for (k, t) in times.iter().enumerate() {
+                head.time[k] = t.as_f64().unwrap() as f32;
+            }
+            head.sample_time();
+            assert_eq!(head.s, f(case, "s"), "sample_time mode {}", head.mode);
+        }
+        for case in doc["rebase"].as_array().expect("rebase") {
+            let mut head = head_from_init(init, rate);
+            head.mode = f(case, "mode") as i32;
+            let anchor = case["anchor"].as_array().expect("anchor");
+            for (k, a) in anchor.iter().enumerate() {
+                head.anchor[k] = a.as_f64().unwrap();
+            }
+            head.base_src = f(case, "base_src_in");
+            head.fade.level = f(case, "level");
+            head.fade.target = f(case, "target_in");
+            head.fade.pending = f(case, "pend_in") != 0.0;
+            head.fade.trigger = f(case, "trig_in") != 0.0;
+            head.rebase_request();
+            let tag = format!("rebase mode {}", head.mode);
+            close(
+                &format!("{tag} src"),
+                head.base_src,
+                f(case, "base_src"),
+                1e-12,
+            );
+            close(
+                &format!("{tag} target"),
+                head.fade.target,
+                f(case, "target"),
+                1e-12,
+            );
+            assert_eq!(head.fade.pending, f(case, "pend") != 0.0, "{tag} pending");
+            assert_eq!(head.fade.trigger, f(case, "trig") != 0.0, "{tag} trigger");
+        }
+    }
+
+    #[test]
+    fn path_is_the_index_times_five_clamped_at_four() {
+        let cases = [
+            (0.0, 0),
+            (0.19, 0),
+            (0.2, 1),
+            (0.39, 1),
+            (0.4, 2),
+            (0.6, 3),
+            (0.79, 3),
+            (0.8, 4),
+            (1.0, 4),
+        ];
+        for (v, want) in cases {
+            assert_eq!(path_for_index(v as f32), want, "index {v}");
         }
     }
 }
