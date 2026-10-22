@@ -184,6 +184,11 @@ in code; steady state g = 1 is CONFIRMED for the normal path.
   = g * K(pred), and the post loop gives g^2 K(pred). Linearity INFERRED.
 - Chain linearity: the stage equations in the findings (Z y_prev + g0 x) are linear.
   INFERRED from the findings, not re-read here.
+- Repo port: `design/raum.rs` ports g (`Transition`: one-pole `a = exp(-ln 20/(0.05 sr))`,
+  snap at 0.001, g^4 Cosmic, g^2 Grounded/Airy; steady g = 1 is bit-identical).
+- Open trigger: the `9b8 = 0` writes (141983140, 1419830e0, 141980700) take the fade path
+  only while `0x5c8 == 0`; 141980f40 (520/539) is dead because it sets `0x5c8 = 1` first.
+  Who leaves `0x5c8` at 0 during playback is unread (`set_transition_target(0)` is the input).
 
 **Port consequence:** at g = 1 the factors vanish. For fade-in and fade-out
 transitions, the Rust port must apply g at the same four points (chain input,
