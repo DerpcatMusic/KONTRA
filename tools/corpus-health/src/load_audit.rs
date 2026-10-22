@@ -191,9 +191,11 @@ pub(super) fn run(args: &[String]) -> i32 {
 /// then the streamed bind. The second preset is timed after the first, as a
 /// swap inside one host process.
 fn swap(base: &Path, first: &Path, second: &Path) -> i32 {
+    // The host's streaming policy (src/sound/v2.rs stream_policy, default streaming).
     let policy = sampler_kontakt::StreamPolicy {
-        lazy: true,
-        head_budget: 8 << 20,
+        lazy: false,
+        head_budget: 256 << 20,
+        allow_cold_fallback: true,
         decoders: 2,
         ..Default::default()
     };
@@ -202,10 +204,10 @@ fn swap(base: &Path, first: &Path, second: &Path) -> i32 {
     for (label, snapshot) in [("first", first), ("second", second)] {
         let start = Instant::now();
         let result = sampler_kontakt::read_snapshot_for_base(snapshot, base)
-            .map_err(|e| format!("snapshot {:?}", e.stage()))
+            .map_err(|e| format!("snapshot: {e}"))
             .and_then(|state| {
                 sampler_kontakt::read_with_snapshot_and_controls(base, &state, &[])
-                    .map_err(|e| format!("read {:?}", e.stage()))
+                    .map_err(|e| format!("read: {e}"))
             });
         let read_ms = start.elapsed().as_secs_f64() * 1000.;
         let options = sampler_kontakt::Options {
@@ -215,7 +217,7 @@ fn swap(base: &Path, first: &Path, second: &Path) -> i32 {
         let ready = result.and_then(|kontakt| {
             sampler_kontakt::load_read_streamed(kontakt, &options, &policy, |_| {})
                 .map(|_| ())
-                .map_err(|e| format!("stream {:?}", e.stage()))
+                .map_err(|e| format!("stream: {e}"))
         });
         let ready_ms = start.elapsed().as_secs_f64() * 1000.;
         failed |= ready.is_err();
