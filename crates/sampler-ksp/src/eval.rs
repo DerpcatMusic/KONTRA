@@ -49,6 +49,9 @@ pub struct Environment {
     /// lowercase file name without extension, for `load_array(<array>, 2)` in
     /// `on init`.
     pub data_arrays: BTreeMap<String, Vec<u8>>,
+    /// Why a `data_arrays` file could not be read when the host knows it (for example a
+    /// resource container that failed to index), by the same file name.
+    pub data_array_reasons: BTreeMap<String, String>,
     /// The instrument's MIDI object, including earlier slots' init selection.
     pub midi_object: sampler_core::MidiObject,
     /// `get_folder` results by `$GET_FOLDER_*_DIR` (library, install, patch, factory); an
@@ -2137,7 +2140,13 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                         Some(())
                     });
                     if loaded.is_none() {
-                        self.warn(span, format!("load_array: data/{file}.nka not loaded"));
+                        let reason = self
+                            .env
+                            .data_array_reasons
+                            .get(&file)
+                            .map(|reason| format!(": {reason}"))
+                            .unwrap_or_default();
+                        self.warn(span, format!("load_array: data/{file}.nka not loaded{reason}"));
                     }
                     return Ok(V::I(0));
                 }

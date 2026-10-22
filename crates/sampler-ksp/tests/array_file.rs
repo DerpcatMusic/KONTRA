@@ -1296,3 +1296,26 @@ fn nka_cancel_releases_write_leases_and_late_completion_cannot_release_the_reuse
 fn stale_plan(effects: &[Effect]) -> PlanId {
     effects[0].plan
 }
+
+#[test]
+fn nka_missing_data_warning_says_why_the_host_could_not_read_it() {
+    // A resource container that failed to index is a different fault from an absent file.
+    let source = r#"on init
+        declare %pos[2]
+        load_array(%pos, 2)
+    end on"#;
+    let mut env = sampler_ksp::Environment::default();
+    env.data_array_reasons
+        .insert("pos".into(), "resource container could not be indexed".into());
+    let init = sampler_ksp::initialize(source, sampler_ksp::Limits::LIBRARY, &env).unwrap();
+    let script =
+        sampler_ksp::compile_initialized(source, 48000, sampler_ksp::Limits::LIBRARY, &[], init)
+            .unwrap();
+    assert!(
+        script.warnings().iter().any(|w| w.message.contains(
+            "data/pos.nka not loaded: resource container could not be indexed"
+        )),
+        "{:?}",
+        script.warnings()
+    );
+}
