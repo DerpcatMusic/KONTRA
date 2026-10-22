@@ -10,19 +10,24 @@ use super::hilbert;
 use super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use sampler_ir::fx::color::Freak;
 
-/// A byte image of the core object from offset `B`.
+/// A byte image of the core object from offset `B`, plus the 19 knob slots at 0x70 (`knobs`),
+/// which sit below the core and are kept apart so the core stays its own size. The shadow at
+/// 0x588 always equals its slot (every write sets both), so one copy serves both.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Mem<const N: usize, const B: usize>([u8; N]);
+struct Mem<const N: usize, const B: usize> {
+    knobs: [f32; 19],
+    bytes: [u8; N],
+}
 
 impl<const N: usize, const B: usize> Default for Mem<N, B> {
     fn default() -> Self {
-        Self([0; N])
+        Self { knobs: [0.; 19], bytes: [0; N] }
     }
 }
 
 impl<const N: usize, const B: usize> Mem<N, B> {
     fn bytes<const K: usize>(&self, o: usize) -> [u8; K] {
-        self.0[o - B..o - B + K].try_into().unwrap()
+        self.bytes[o - B..o - B + K].try_into().unwrap()
     }
     fn f(&self, o: usize) -> f32 {
         f32::from_le_bytes(self.bytes(o))
@@ -40,13 +45,13 @@ impl<const N: usize, const B: usize> Mem<N, B> {
         [self.d(o), self.d(o + 8)]
     }
     fn wf(&mut self, o: usize, v: f32) {
-        self.0[o - B..o - B + 4].copy_from_slice(&v.to_le_bytes());
+        self.bytes[o - B..o - B + 4].copy_from_slice(&v.to_le_bytes());
     }
     fn wd(&mut self, o: usize, v: f64) {
-        self.0[o - B..o - B + 8].copy_from_slice(&v.to_le_bytes());
+        self.bytes[o - B..o - B + 8].copy_from_slice(&v.to_le_bytes());
     }
     fn wi(&mut self, o: usize, v: u32) {
-        self.0[o - B..o - B + 4].copy_from_slice(&v.to_le_bytes());
+        self.bytes[o - B..o - B + 4].copy_from_slice(&v.to_le_bytes());
     }
     fn wf4(&mut self, o: usize, v: [f32; 4]) {
         for (k, x) in v.into_iter().enumerate() {
@@ -62,7 +67,10 @@ impl<const N: usize, const B: usize> Mem<N, B> {
     }
 }
 
-type Image = Mem<0x1400, 0>;
+/// The core object from 0x940 to 0x11e8 (its live fields end at 0x11e4).
+const BASE: usize = 0x940;
+const SIZE: usize = 0x11e8 - BASE;
+type Image = Mem<SIZE, BASE>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct State {
@@ -72,7 +80,7 @@ pub(super) struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self { m: Mem::default(), ready: false }
+        Self { m: Image::default(), ready: false }
     }
 }
 
@@ -88,12 +96,11 @@ impl State {
 /// unchanged lane is free per block. Only continuous knobs go live; MODE (16) would need the
 /// engine's `d00`, so it stays a stored value.
 pub(super) fn set_live(state: &mut State, i: usize, v: f32) {
-    if state.m.f(0x70 + 4 * i).to_bits() == v.to_bits() {
+    if state.m.knobs[i].to_bits() == v.to_bits() {
         return;
     }
     let mut d00 = 0.0;
-    state.m.wf(0x70 + 4 * i, v);
-    state.m.wf(0x588 + 4 * i, v);
+    state.m.knobs[i] = v;
     set(&mut state.m, i, &mut d00);
 }
 
@@ -183,7 +190,7 @@ fn sine(t: f32) -> f32 {
 }
 
 fn fuzz_hz(m: &Image) -> f32 {
-    let (p12, p13) = (m.f(0xa0), m.f(0xa4));
+    let (p12, p13) = (m.knobs[12], m.knobs[13]);
     let a = p12 * 40.0 + 100.0;
     let b = 24.0 - p12 * 12.0;
     let dd = a - b;
@@ -223,7 +230,7 @@ fn svf2(m: &mut Image) {
 
 fn cutoff(m: &mut Image) {
     let lg = (m.f(0xd30).abs() + 200.0).ln();
-    let cf = table(((lg * u(0x418a7fac) - u(0x4211815a)) * m.f(0x70)) * 5.0 + K_FC);
+    let cf = table(((lg * u(0x418a7fac) - u(0x4211815a)) * m.knobs[0]) * 5.0 + K_FC);
     m.wf(0xcf0, cf);
     m.pair(0xcc0, tanpoly(f64(m.f(0x940) * PI_F * cf)));
 }
@@ -234,10 +241,10 @@ fn f64(v: f32) -> f64 {
 
 fn rate(m: &mut Image) {
     if m.i(0x11e0) == 1 {
-        let t = (m.f(0x74) + m.f(0x74)) - 1.0;
+        let t = (m.knobs[1] + m.knobs[1]) - 1.0;
         m.wf(0xd30, (t * m.f(0xd34)) * (t * t));
     } else {
-        m.wf(0xd30, table(m.f(0xa0) * 200.0 + K_D30));
+        m.wf(0xd30, table(m.knobs[12] * 200.0 + K_D30));
         let hz = fuzz_hz(m);
         fuzz_filters(m, hz);
     }
@@ -277,12 +284,12 @@ fn svf_d70(m: &mut Image) {
 
 /// Setter `i` (0x141964260..); returns the new `d00` when the mode changes.
 fn set(m: &mut Image, i: usize, d00: &mut f32) {
-    let p = m.f(0x70 + 4 * i);
+    let p = m.knobs[i];
     match i {
         0 => cutoff(m),
         1 | 12 => rate(m),
         2 => {
-            m.wf(0xd34, if m.f(0x590) < 0.5 { 200.0 } else { 5000.0 });
+            m.wf(0xd34, if m.knobs[2] < 0.5 { 200.0 } else { 5000.0 });
             rate(m);
         }
         3 => {
@@ -344,7 +351,7 @@ fn set(m: &mut Image, i: usize, d00: &mut f32) {
             if m.i(0x11e0) < 2 {
                 rate(m);
             } else {
-                m.wf(0xd40, m.f(0x84));
+                m.wf(0xd40, m.knobs[5]);
             }
         }
         17 => m.wf(0x958, p),
@@ -424,10 +431,7 @@ impl Engine {
         m.wi(0x104c, 12345);
         m.wi(0x1050, 12345);
         let mut d00 = 0.0;
-        let write = |m: &mut Image, i: usize, v: f32| {
-            m.wf(0x70 + 4 * i, v);
-            m.wf(0x588 + 4 * i, v);
-        };
+        let write = |m: &mut Image, i: usize, v: f32| m.knobs[i] = v;
         for (i, v) in DEFAULTS.into_iter().enumerate() {
             write(&mut m, i, v);
         }

@@ -270,15 +270,16 @@ pub struct Engine {
     starved: bool,
 }
 
-/// Scheduler::Pitch state. `pred` is the source position the advance chain is at
-/// (it moves on whether or not a peak is found); `last_centre` and `last_mark` are
-/// the output centre and the fractional source mark of the newest grain.
-/// `emitted` is the next absolute output frame.
+/// Scheduler::Pitch state. `last_centre` and `last_mark` are the output centre and the
+/// fractional source mark of the newest grain. `spacing` is the running sum of the output
+/// spacings and `clocked` the whole frames already sent to the caller's clock, so the
+/// fractional spacing is kept. `emitted` is the next absolute output frame.
 #[derive(Clone, Copy, Debug, Default)]
 struct PitchState {
     started: bool,
     emitted: usize,
-    pred: f64,
+    spacing: f64,
+    clocked: usize,
     last_centre: f64,
     last_mark: f64,
     /// Centre-to-mark offset the stretch should produce: it rises by
@@ -477,7 +478,7 @@ impl Engine {
             return self.render_two_readers(src, out, clock);
         }
         if self.cfg.scheduler == Scheduler::Pitch {
-            return self.render_pitch(src, out);
+            return self.render_pitch(src, out, clock);
         }
         for (n, frame) in out.iter_mut().enumerate() {
             if self.until_grain == 0 && self.drain.is_none() {
@@ -697,10 +698,15 @@ impl Engine {
     /// summed with their Hann weights; each output sample is the weighted sum
     /// divided by the weight sum, so a grain set that reproduces the source gives
     /// the source back exactly.
-    fn render_pitch(&mut self, src: &(impl ReadFrames + ?Sized), out: &mut [Frame]) -> usize {
+    fn render_pitch(
+        &mut self,
+        src: &(impl ReadFrames + ?Sized),
+        out: &mut [Frame],
+        mut clock: impl FnMut(usize) -> Option<f64>,
+    ) -> usize {
         let mut written = 0;
         for frame in out.iter_mut() {
-            self.pitch_grains(src);
+            self.pitch_grains(src, &mut clock);
             if self.pitch.end.is_some_and(|end| self.pitch.emitted as f64 >= end) {
                 break;
             }
@@ -717,19 +723,20 @@ impl Engine {
 
     /// Creates grains until the newest centre is one lead ahead of the emission
     /// point (two maximum periods, so every window lies ahead of it).
-    fn pitch_grains(&mut self, src: &(impl ReadFrames + ?Sized)) {
+    fn pitch_grains(&mut self, src: &(impl ReadFrames + ?Sized), clock: &mut impl FnMut(usize) -> Option<f64>) {
         let lead = 2. * pitch_range(self.rate).1 as f64;
         while self.pitch.end.is_none() && self.pitch.last_centre <= self.pitch.emitted as f64 + lead {
-            self.pitch_grain(src);
+            self.pitch_grain(src, clock);
         }
     }
 
-    /// One TD-PSOLA grain. The advance chain `pred` moves by the nominal output
-    /// spacing times `advance` each grain. The source mark is the peak nearest that
-    /// prediction. The output centre moves by the nominal spacing, pulled back by
-    /// a small share of its offset from the mark, so the centre stays on the mark
-    /// at unity without tracking the snapped marks (which would stall).
-    fn pitch_grain(&mut self, src: &(impl ReadFrames + ?Sized)) {
+    /// One TD-PSOLA grain. The caller's clock gives the analysis position (loops, end
+    /// and release resolved there), moved by the whole output frames this grain's
+    /// spacing covers. The source mark is the peak nearest that position. The output
+    /// centre moves by the nominal spacing, pulled back by a small share of its offset
+    /// from the mark, so the centre stays on the mark at unity without tracking the
+    /// snapped marks (which would stall).
+    fn pitch_grain(&mut self, src: &(impl ReadFrames + ?Sized), clock: &mut impl FnMut(usize) -> Option<f64>) {
         if self.pitch.grains % 4 == 0 {
             let at = self.pitch.last_mark;
             self.pitch_estimate(src, at);
@@ -737,20 +744,21 @@ impl Engine {
         let step = self.params.step;
         let period = self.period_or_default();
         let nominal = period / step;
-        let mut pred = if self.pitch.started {
-            self.pitch.pred + nominal * self.params.advance
+        let elapsed = if self.pitch.started {
+            self.pitch.spacing += nominal;
+            let due = self.pitch.spacing.round() as usize;
+            let elapsed = due.saturating_sub(self.pitch.clocked);
+            self.pitch.clocked = due;
+            elapsed
         } else {
-            self.pitch.last_mark + period / 2.
+            0
         };
-        if let Some(l) = &self.clock.looped {
-            let span = (l.end - l.start).max(1) as f64;
-            if pred >= l.end as f64 {
-                pred = l.start as f64 + (pred - l.start as f64) % span;
-            }
-        } else if pred >= self.len as f64 {
+        let Some(at) = clock(elapsed) else {
             self.pitch.end = Some(self.pitch.last_centre + nominal);
             return;
-        }
+        };
+        // The first mark sits half a period past the start, so its window is centred on it.
+        let pred = if self.pitch.started { at } else { at + period / 2. };
         let mark = self.snap_peak(src, pred, period);
         let centre = if self.pitch.started {
             self.pitch.reference += nominal * (1. - self.params.advance);
@@ -763,7 +771,6 @@ impl Engine {
         #[cfg(test)]
         self.marks.push(mark);
         self.pitch.started = true;
-        self.pitch.pred = pred;
         self.pitch.last_centre = centre;
         self.pitch.last_mark = mark;
         self.pitch.grains += 1;

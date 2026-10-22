@@ -70,7 +70,7 @@ mod tests {
         for field in 0..7 {
             let mut bad = original.clone();
             match field {
-                0 => bad.form_type = 2,
+                0 => bad.form_type = 20, // kind 19: outside admission (kind 1 is admitted now)
                 1 => bad.mod_type = 1,
                 2 => bad.inharmonic_enabled = true,
                 3 => bad.phase_random = 0.01,
