@@ -128,6 +128,11 @@ pub struct ReplikaControls {
     pub saturation: f32,
     /// Index 52 (tap gain; implicit 1.0 at reset).
     pub tap_gain: f32,
+    /// Index 17 (ducking sense: threshold 1 - v on |mid|), 18 (ducking amount: target -60 v dB), 19 (ducking
+    /// release: 200 + 7300 v ms). Reset 0 for all three (no duck). The saved-field tie is INFERRED.
+    pub ducking_sense: f32,
+    pub ducking_amount: f32,
+    pub ducking_release: f32,
 }
 
 impl Default for ReplikaControls {
@@ -148,6 +153,9 @@ impl Default for ReplikaControls {
             width: 0.5,
             saturation: 0.,
             tap_gain: 1.,
+            ducking_sense: 0.,
+            ducking_amount: 0.,
+            ducking_release: 0.,
         }
     }
 }
@@ -873,7 +881,7 @@ impl Config {
             }
             if let Native::Replika(r) = l.native {
                 let unit_interval = |v: f32| v.is_finite() && (0. ..=1.).contains(&v);
-                let all = [r.input_a, r.input_b, r.lowcut, r.highcut, r.dry_wet, r.feedback, r.time, r.delay_offset, r.pan_dry, r.pan_wet, r.width, r.saturation, r.tap_gain];
+                let all = [r.input_a, r.input_b, r.lowcut, r.highcut, r.dry_wet, r.feedback, r.time, r.delay_offset, r.pan_dry, r.pan_wet, r.width, r.saturation, r.tap_gain, r.ducking_sense, r.ducking_amount, r.ducking_release];
                 if !all.iter().all(|&v| unit_interval(v)) {
                     return Err("replika");
                 }

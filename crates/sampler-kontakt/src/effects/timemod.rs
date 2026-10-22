@@ -405,10 +405,20 @@ fn unit_interval(values: &[f32]) -> bool {
 
 /// Replika Delay (v0x12). Wired to the sampler-core Replika core (`Native::Replika`, `dsp::replika`):
 /// TIME (setter 8, mode 3: 2000 ms x value), FEEDBACK (5, head 2 and 3 gain 1.2 x value), LOWCUT (2) and
-/// HIGHCUT (3) as the loop filters, SATURATION (29, the tap saturator amount). Every other control keeps
-/// its reset value and is reported with the reason it is not wired (docs/re/engine/k-replika-gaps.md).
+/// HIGHCUT (3) as the loop filters, SATURATION (29, the tap saturator amount), and the ducker: DUCKING_SENSE
+/// (17), DUCKING_AMOUNT (18), DUCKING_RELEASE (19; tie INFERRED, k-replika-binding.md). Every other control
+/// keeps its reset value and is reported with the reason it is not wired (docs/re/engine/k-replika-gaps.md).
 fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
-    for (name, v) in [("time", rep.time), ("feedback", rep.feedback), ("lowcut", rep.lowcut), ("highcut", rep.highcut), ("saturation", rep.saturation)] {
+    for (name, v) in [
+        ("time", rep.time),
+        ("feedback", rep.feedback),
+        ("lowcut", rep.lowcut),
+        ("highcut", rep.highcut),
+        ("saturation", rep.saturation),
+        ("ducking_sense", rep.ducking_sense),
+        ("ducking_release", rep.ducking_release),
+        ("ducking_amount", rep.ducking_amount),
+    ] {
         if !(v.is_finite() && (0. ..=1.).contains(&v)) {
             notes.push(("parameters".into(), format!("{name} {v}"), Reason::InvalidValue));
             return None;
@@ -425,7 +435,6 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     // The open address is appended where the law is known to be blocked (k-replika-gaps.md).
     let open = |name: &str| match name {
         "depth" | "rate" | "modulation" => " (open: GAP-I, LFO consumers in 141ab7480)",
-        "ducking_sense" | "ducking_release" | "ducking_amount" => " (open: 141abd290, GAP-M and GAP-B)",
         _ => "",
     };
     for (name, value, reason) in [
@@ -444,9 +453,6 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         ("pan", rep.pan, Reason::UnknownLawOmitted),
         ("width", rep.width, Reason::UnknownLawOmitted),
         ("lr_offset", rep.lr_offset, Reason::UnknownLawOmitted),
-        ("ducking_sense", rep.ducking_sense, Reason::NotModeled),
-        ("ducking_release", rep.ducking_release, Reason::NotModeled),
-        ("ducking_amount", rep.ducking_amount, Reason::NotModeled),
     ] {
         notes.push(("parameters".into(), format!("{name} {value}{}", open(name)), reason));
     }
@@ -466,6 +472,9 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         lowcut: rep.lowcut,
         highcut: rep.highcut,
         saturation: rep.saturation,
+        ducking_sense: rep.ducking_sense,
+        ducking_amount: rep.ducking_amount,
+        ducking_release: rep.ducking_release,
         ..ReplikaControls::default()
     };
     let mut line = Line::single(DelayTime::Frames(1), 2000.);
@@ -841,7 +850,7 @@ mod tests {
         let sampler_ir::fx::timemod::Native::Replika(controls) = cfg.line.expect("delay line").native else { panic!("native") };
         assert_eq!((controls.time, controls.feedback), (0.25, 0.5));
         // Every control that is not wired is reported (none silently dropped), with a precise reason.
-        assert_eq!(notes.len(), 24, "18 float controls, 5 flags and the type (TIME, FEEDBACK, LOWCUT, HIGHCUT, SATURATION are wired)");
+        assert_eq!(notes.len(), 21, "15 float controls, 5 flags and the type (TIME, FEEDBACK, LOWCUT, HIGHCUT, SATURATION and the three DUCKING fields are wired)");
         assert!(notes.iter().all(|n| n.2 != sampler_ir::Reason::Unknown));
     }
 
@@ -868,6 +877,12 @@ mod tests {
 
     /// v0x12 stream with the ten float fields 1..=10 set and everything else zero.
     fn replika_fields(fields: [f32; 10]) -> Vec<u8> {
+        replika_stream(fields, [0.; 9])
+    }
+
+    /// v0x12 stream: fields 1..=10, then shuffle, feel, accent, pan, width, lr_offset, DUCKING_SENSE (field 29),
+    /// DUCKING_RELEASE (30), DUCKING_AMOUNT (31) as `tail`.
+    fn replika_stream(fields: [f32; 10], tail: [f32; 9]) -> Vec<u8> {
         let f32s = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
         let mut public = 0i32.to_le_bytes().to_vec();
         public.extend(f32s(&fields));
@@ -876,9 +891,29 @@ mod tests {
         public.push(0);
         public.extend(f32s(&[0.; 4])); // bbd type, amount, size, modulation
         public.push(0); // dense
-        public.extend(f32s(&[0.; 9]));
+        public.extend(f32s(&tail));
         public.push(0); // pingpong flip
         public
+    }
+
+    /// DUCKING_SENSE (field 29), DUCKING_RELEASE (30) and DUCKING_AMOUNT (31) reach the gate as setters 17, 19
+    /// and 18 (the tie is INFERRED, docs/re/engine/k-replika-binding.md). Outside 0..1 is rejected.
+    #[test]
+    fn replika_ducking_maps_into_the_core() {
+        let fields = [0.25, 0., 0., 0., 0., 0., 0., 0., 0., 0.];
+        let public = replika_stream(fields, [0., 0., 0., 0., 0., 0., 0.8, 0.1, 0.5]);
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        let mut notes = Vec::new();
+        let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("maps");
+        let sampler_ir::fx::timemod::Native::Replika(c) = cfg.line.expect("delay line").native else { panic!("native") };
+        assert_eq!((c.ducking_sense, c.ducking_release, c.ducking_amount), (0.8, 0.1, 0.5));
+        assert!(notes.iter().all(|n| !n.1.starts_with("ducking")), "{notes:?}");
+
+        let public = replika_stream(fields, [0., 0., 0., 0., 0., 0., 0.8, 0.1, 1.5]);
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        assert!(super::replika_config(&rep, 0.5, &mut Vec::new()).is_none());
     }
 
     /// SATURATION (setter index 29) is the Replika core's tap saturator amount, a = v. Outside 0..1 is

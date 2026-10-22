@@ -424,10 +424,7 @@ measured against Kontakt. No native vector.
    - Test (c), the echo scale, is not written: the law it would check is not confirmed.
    - Open address: `141aa9480` step 12, `141abba60`, GAP-C.
 
-4. **Ducking (DUCKING_SENSE, DUCKING_RELEASE, DUCKING_AMOUNT). NotModeled.**
-   - `141abd290` (569 B) read path: constants decoded (L15), head roles INFERRED. The body `141abd0b0`
-     (section position and gain) is not read (GAP-M), and the writers of `C+0xad0`, `C+0xad8`, `+0x918`,
-     `+0x91c`, `+0x938` are not traced (GAP-B).
+4. **Ducking (DUCKING_SENSE, DUCKING_RELEASE, DUCKING_AMOUNT).** Closed in piece 2 (see "Piece 2: ducking" at the end).
 
 ### Unchanged opens (addresses)
 
@@ -444,7 +441,7 @@ measured against Kontakt. No native vector.
 - SATURATION: mapped (no note). Outside 0..1 (or non-finite): InvalidValue, mapping returns None.
 - LOWCUT, HIGHCUT: still UnknownLawOmitted (law confirmed, binding not, GAP-D). The open address is in the note.
 - FEEDBACK: still UnknownLawOmitted, open at `141aa9480` step 12 (note text).
-- DUCKING_*: still NotModeled, open at `141abd290` (note text).
+- DUCKING_*: wired in piece 2 (the gate; the saved-field tie is INFERRED).
 - depth, rate, modulation: UnknownLawOmitted, open at GAP-I (note text).
 
 ### Tests
@@ -616,7 +613,7 @@ Laws added in this piece:
   The offsets are verified by the vectors at TIME 0.01, 0.02 and 0.03 only.
 
 Open after piece 1:
-- Ducking (GAP-B, GAP-M): piece 2, needs a new vector.
+- Ducking (GAP-B, GAP-M): closed in piece 2 (the gate is ported; GAP-M is the head update, not the ducker; see below).
 - Mode-1 head kernels (GAP-C): piece 3.
 - Gate closed branch (|mid| >= threshold, GAP-G): the threshold is 1.0 at reset and no vector reaches it.
 - Head gain index 12 (floor `f9` unbacked): not wired.
@@ -630,3 +627,44 @@ Open after piece 1:
 - Feedback tail not reported to the engine (`tail_ms` is 0 for natives in sampler-ir).
 - Ring is 2.5 s per head (2^17 frames at 48 kHz); the native rings are 2^19. Output is equal while the longest read
   (2000 ms + 542 frames) fits.
+
+---
+
+## Piece 2: ducking (`engine/replika-ducking`)
+
+Method: decompile text (`0141aa0000.c`, `0141ab0000.c`, `0141ac0000.c`, `0141a90000.c`), `constants.tsv`, and the
+kemu emulation of the core (`tools/re/replika_ducking_kemu.py`). Numbers and the native vectors are in
+`k-replika-binding.md` ("Ducking (piece 2)").
+
+### Ducker (the gate of `141aa9480`), CONFIRMED arithmetic and emulated
+
+- Detector: instantaneous |mid|, mid = 0.5 (tapA + tapB) after saturation (`0141aa0000.c` 5551-5552). No follower.
+- Threshold `+0x13e18` = max(1 - v17, 0.001) (setter case 0x11, `0141ac0000.c` 3614-3618).
+- Target `+0x13e10` = -60 v18 dB (case 0x12, 3621).
+- Closed branch (|mid| < threshold): env = env x `+0x13e28`, the release factor of case 0x13 (3624-3631):
+  0.05^(1 / ((200 + 7300 v19) ms x 0.001 x rate)). Open branch: env = (env - target) x `+0x13e20` + target, where
+  `+0x13e20` = 0.05^(333.33331750085034 / rate) (setup 1103), an attack of about 3 ms to 95 %, not controlled.
+- Gain: W x 10^(env/20) through the T4 index env x 9.96578407 + 1200 (5598-5625), on both wet taps, before the matrix.
+- Labels: arithmetic and emulation CONFIRMED; names (sense, amount, release) INFERRED.
+- Port: `crates/sampler-core/src/dsp/replika/mod.rs` (`Gate`, env packed in the slab as word 30), wired from
+  `sampler-kontakt` `replika_config` and `sampler-ir` `ReplikaControls`.
+
+### Status
+
+| Item | Status | Address |
+| --- | --- | --- |
+| GAP-M, ducking body `141abd0b0` / `141abd290` | Closed as not the ducker: `141abd290` is the head delay-position update (TIME from smoother 0, idx 11, 10, 15 as spread and offset) that calls `141abd0b0` for heads 1-3 (`+0xc8`/`+0xd0` read offsets, `+0x58`/`+0x60` speed ratios). It also sets limiter C+0x13f80 parameter 1 to max(max(d5, d8), 1/12) (`0141ab0000.c` 7750). That limiter link is OPEN. | `0141ab0000.c` 7561-7765 |
+| GAP-B `+0xad0`, `+0xad8` (bounds read in `141abd290`) | OPEN. No writer of a double there: the offsets hold an int table (`141a80000.c` 31-32 writes int 0xb at `+0xad8`; `0141ab0000.c` 9482 writes uints at `+0xad8 + 4k`). The double reads alias that table. | `0141ab0000.c` 7710-7711 |
+| GAP-B `+0x938` (byte, smoothed copies flag) | Closed: `141aca670` sets it to 1 when path (`+0x604`) is not 0 or 4 and `+0x939` is clear (`0141ac0000.c` 6452); 0 on path 0; `141abb2c0` writes 0 (`0141ab0000.c` 6348, 6368). Read in the loop (5534) and `141a9dbc0` (`0141a90000.c` 9033). | |
+| GAP-B `+0x918`, `+0x91c` (mid scales, paths 1 and 2) | Closed as writers: `141ac9420` (`0141ac0000.c` 5684-5735). Not used on path 0. | |
+| Tap followers `+0x142c8` (L), `+0x142f8` (R) | Open, no reader. Updated each frame: attack coefficient exp(-10000 / rate) (0.1 ms, `DAT_1479ab738` = -10000), release exp(-6.6667 / rate) (150 ms, `1479ab6e8`), state read only by its own update (`0141aa0000.c` 5433-5448; coefficients set in setup 990-1022). Not ported. | `0141aa0000.c` 5433-5448 |
+| Release factor written before prepare | Open (order). The setter 19 computes its factor from the block rate and base `+0x13e30` (0 until setup). A write before prepare gives factor 0 (instant release). The harness routes 19 after prepare every quantum; the port uses the prepared rate. | `0141aa1580` 1100-1105; `0141ac0000.c` 3624-3631 |
+| Saved DUCKING_* to index tie | INFERRED (SENSE 29 -> 17, RELEASE 30 -> 19, AMOUNT 31 -> 18). No decompile text binds the wrapper slots. | field table in `docs/re/kontakt-bindings/fx_raum_delight_psyche_vibrato_phasis_replika.tsv` |
+
+### Tests
+
+- `dsp::replika::tests::ducking_matches_native_vectors_at_amount_zero_and_half`: `ducking-amount0` (1.19e-7),
+  `ducking-amount0p5` (7.45e-8), `ducking-amount0p5-release1` (1.12e-8). Max abs error over both channels.
+- `effects::timemod::tests::replika_ducking_maps_into_the_core`: fields 29, 30, 31 reach indices 17, 19, 18; 1.5 is rejected.
+- Existing vectors (default, time, feedback, saturation, lowcut, highcut) unchanged: at amount 0 the gain is exactly 1.
+

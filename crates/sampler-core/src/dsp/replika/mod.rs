@@ -8,11 +8,14 @@
 //! Checked against the emulated native vectors `docs/re/engine/vectors/replika-native-*.json` (native
 //! output of the original code under the kemu emulator; not a Kontakt render).
 //!
-//! Not ported (see the gaps doc): the gate closed branch (|mid| >= threshold, GAP-G; the threshold is
-//! 1.0 at the reset value and no vector reaches it), the lane banks (the lane products `m` are 1 in every
+//! Ducking (piece 2): the gate of `141aa9480` steps 10 and 14 (setters 17, 18, 19), see [`Gate`]. Its
+//! detector is the instantaneous |mid| of the two taps. The head position update `141abd290` (named
+//! "ducking" in the earlier notes) is head delay positions, not the ducker; it stays unported (GAP-M).
+//!
+//! Not ported (see the gaps doc): the lane banks (the lane products `m` are 1 in every
 //! vector, taken as 1), the LFO and rotator (head read depth `s` is 0, so the rotator output does not
-//! reach the read), head gain index 12 away from its reset value 0.5 (floor `f9` unbacked), ducking
-//! (GAP-B, GAP-M), the mode 1 reader (GAP-C), the glide 3 object `F+0x100` (its enable is clear).
+//! reach the read), head gain index 12 away from its reset value 0.5 (floor `f9` unbacked), the head
+//! position update `141abd290` (GAP-M), the mode 1 reader (GAP-C), the glide 3 object `F+0x100` (its enable is clear).
 use sampler_ir::fx::timemod::{Cut as CutSpec, ReplikaControls, linear_sweep_hz, log_sweep_hz};
 
 use super::db_limiter::DbLimiter;
@@ -34,6 +37,10 @@ pub mod index {
     pub const PAN_WET: usize = 14;
     pub const DELAY_OFFSET: usize = 15;
     pub const WIDTH: usize = 16;
+    /// Ducking gate (`141ac5980` cases 0x11, 0x12, 0x13). The tie to the saved DUCKING_* fields is INFERRED.
+    pub const DUCKING_SENSE: usize = 17;
+    pub const DUCKING_AMOUNT: usize = 18;
+    pub const DUCKING_RELEASE: usize = 19;
     pub const SATURATION: usize = 29;
     pub const TAP_GAIN: usize = 52;
     pub const COUNT: usize = 53;
@@ -95,6 +102,52 @@ const HEAD_BIAS: f64 = 2.;
 /// Feedback gain (`141ac9420`): head 2 and head 3 output gain = 1.2 x index 5 (`1479ab410` = 1.2).
 const FEEDBACK_SCALE: f32 = 1.2;
 
+/// Ducking constants (`144714948` = 0.05 as f64, `1479ab510` = 333.33331750085034, `14769abe8` = 0.001 as
+/// f64, `144fc44fc` = 9.96578407 f32, `144fc4b50` = 1200 f32; `constants.tsv`). Release times in ms: 200 at
+/// index 19 = 0 and 7500 at 1 (`0141ac0000.c` 3616-3630, setup `0141aa0000.c` 1101-1104).
+const GATE_BASE: f64 = f64::from_bits(0x3fa9_9999_a000_0000);
+const GATE_RETENTION_NUM: f64 = f64::from_bits(0x4074_d555_44bb_5563);
+const GATE_THRESHOLD_FLOOR: f32 = 0.001;
+const GATE_MS_SCALE: f64 = f64::from_bits(0x3f50_624d_e000_0000);
+const GATE_DB_PER_INDEX: f32 = 9.965_784_f32;
+const GATE_MIN_RELEASE_MS: f32 = 200.;
+const GATE_RELEASE_SPAN_MS: f32 = 7_300.;
+
+/// Ducker (the gate of `141aa9480`, steps 10 and 14). Detector: the instantaneous |mid| of the two taps,
+/// mid = 0.5 (tapA + tapB). Closed branch (|mid| < threshold): env = env x release. Open branch: env moves
+/// toward the target with the retention. The wet taps are scaled by 10^(env/20). All four are CONFIRMED by
+/// the decompile arithmetic; the names (sense, amount, release) are INFERRED from the setter cases.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Gate {
+    /// `+0x13e18`: max(1 - v17, 0.001). Sense: higher values trigger on quieter input.
+    threshold: f64,
+    /// `+0x13e10`: -60 x v18 dB (amount). 0 dB means no duck.
+    target: f64,
+    /// `+0x13e28`: 0.05^(1 / ((200 + 7300 v19) x 0.001 x rate)) per frame, the closed-branch decay.
+    release: f64,
+    /// `+0x13e20`: 0.05^(333.33331750085034 / rate) per frame, the open-branch retention (setup `141aa1580`).
+    retention: f64,
+}
+
+impl Gate {
+    fn new(rate: f32, sense: f32, amount: f32, release: f32) -> Self {
+        // `141ac5980` case 0x11: 1 - v, floored at 0.001 (f32).
+        let threshold = (1. - sense).max(GATE_THRESHOLD_FLOOR);
+        // Case 0x12: v x -60 (f32).
+        let target = amount * -60.;
+        // Case 0x13: the exponent is 1 / (lerp(200, 7500, v) ms x 0.001 x rate), in f64.
+        let ms = GATE_RELEASE_SPAN_MS * release + GATE_MIN_RELEASE_MS;
+        let release = GATE_BASE.powf(1. / (f64::from(ms) * GATE_MS_SCALE * f64::from(rate)));
+        let retention = GATE_BASE.powf(GATE_RETENTION_NUM / f64::from(rate));
+        Self {
+            threshold: f64::from(threshold),
+            target: f64::from(target),
+            release,
+            retention,
+        }
+    }
+}
+
 /// Ring capacity in frames: a power of two of 2.5 s. The native rings are 2^19 frames (`H+0x15c`); the
 /// largest read is TIME 2000 ms + 540 + 2 frames, so 2.5 s covers it at 48 kHz. Equal output while the
 /// longest read fits; the ring is per-head stereo, 3 heads.
@@ -107,11 +160,15 @@ pub fn storage_len(rate: f32) -> usize {
     3 * ring_len(rate)
 }
 
-/// Slab entries after the rings for the packed [`ReplikaState`] (29 words in 15 `[f64; 2]` slots).
+/// Slab entries after the rings for the packed [`ReplikaState`] (30 words in 15 `[f64; 2]` slots: the frame
+/// counter, 28 f32 filter, saturator and limiter words, and the ducker dB envelope).
 pub const STATE_SLOTS: usize = 15;
 
 /// T4 dB table with linear interpolation (`1404d14d0`, entries `2^(k/60 - 20)`, deltas to the next entry).
 fn t4(x: f32) -> f32 {
+    if x < 0. {
+        return 0.;
+    }
     if x >= 2400. {
         return 1_048_576.;
     }
@@ -157,6 +214,7 @@ pub struct ReplikaCore {
     ctl: Ctl,
     saturation: f32,
     feedback_gain: f32,
+    gate: Gate,
     delay: [[usize; 2]; 3],
     cut: Cut,
     saturator: Saturator,
@@ -172,6 +230,8 @@ pub struct ReplikaState {
     saturator: [SaturatorState; 2],
     matrix_limiter: DbLimiter,
     head3_limiter: DbLimiter,
+    /// Ducker envelope in dB (`+0x13e38`, starts at 0 dB).
+    env: f64,
 }
 
 impl ReplikaState {
@@ -182,6 +242,7 @@ impl ReplikaState {
             saturator: [[Default::default(); 2]; 2],
             matrix_limiter: DbLimiter::new(rate),
             head3_limiter: DbLimiter::new(rate),
+            env: 0.,
         }
     }
 
@@ -211,6 +272,7 @@ impl ReplikaState {
         let mut words = slots.iter().flatten().copied();
         st.frame = words.next().unwrap_or(0.) as usize;
         st.each(|x| *x = words.next().unwrap_or(0.) as f32);
+        st.env = words.next().unwrap_or(0.);
         st
     }
 
@@ -225,6 +287,7 @@ impl ReplikaState {
         put(self.frame as f64);
         let mut st = *self;
         st.each(|x| put(f64::from(*x)));
+        put(self.env);
     }
 }
 
@@ -247,6 +310,9 @@ impl ReplikaCore {
             (index::WIDTH, c.width),
             (index::SATURATION, c.saturation),
             (index::TAP_GAIN, c.tap_gain),
+            (index::DUCKING_SENSE, c.ducking_sense),
+            (index::DUCKING_AMOUNT, c.ducking_amount),
+            (index::DUCKING_RELEASE, c.ducking_release),
         ];
         for (i, v) in values {
             core.set_param(i, v);
@@ -280,6 +346,7 @@ impl ReplikaCore {
             },
             saturation: 0.,
             feedback_gain: 0.,
+            gate: Gate::new(rate, 0., 0., 0.),
             delay: [[1; 2]; 3],
             cut: Cut::new(
                 CutSpec {
@@ -331,6 +398,12 @@ impl ReplikaCore {
         };
         self.saturation = v[index::SATURATION];
         self.feedback_gain = FEEDBACK_SCALE * v[index::FEEDBACK];
+        self.gate = Gate::new(
+            self.rate,
+            v[index::DUCKING_SENSE],
+            v[index::DUCKING_AMOUNT],
+            v[index::DUCKING_RELEASE],
+        );
         // TIME (mode 3): 2000 ms x v, 48 frames per ms at 48 kHz; the delay offset index 15 is 600 frames at 48 kHz.
         let scale = f64::from(self.rate) / 48_000.;
         let time = 2. * f64::from(self.rate) * f64::from(v[index::TIME])
@@ -397,6 +470,16 @@ impl ReplikaCore {
             dry[1] * c.tap * (1. - a) + a * tap[1],
         ];
 
+        // Ducker (step 10): the instantaneous |mid| of the taps against the threshold moves the dB envelope.
+        let detect = 0.5 * (tap[0] + tap[1]);
+        let gate = self.gate;
+        st.env = if f64::from(detect.abs()) < gate.threshold {
+            st.env * gate.release
+        } else {
+            (st.env - gate.target) * gate.retention + gate.target
+        };
+        let duck = t4(st.env as f32 * GATE_DB_PER_INDEX + 1200.);
+
         // Head 1: write the taps, read at its delays. Head 3: feedback read x gain, path-0 limiter at half scale.
         write(storage, ring, 0, t, tap);
         let head1 = [
@@ -427,9 +510,12 @@ impl ReplikaCore {
         ];
         write(storage, ring, 2, t, f2);
 
-        // OUT = F1 Ctl(0x60) + F2 (Ctl(0x60) = 1), wet taps (Ctl(0xc), pan pair), then the matrix.
+        // OUT = F1 Ctl(0x60) + F2 (Ctl(0x60) = 1), wet taps (Ctl(0xc), pan pair, ducker gain), then the matrix.
         let out = [f1[0] + f2[0], f1[1] + f2[1]];
-        let wet = [out[0] * c.wet * c.wet_l, out[1] * c.wet * c.wet_r];
+        let wet = [
+            out[0] * c.wet * c.wet_l * duck,
+            out[1] * c.wet * c.wet_r * duck,
+        ];
         let mid = 0.5 * (wet[0] + wet[1]);
         let side2 = (wet[0] - wet[1]) * c.side;
         let a_new = dry[0] * c.dry * c.dry_l + side2 + mid;
