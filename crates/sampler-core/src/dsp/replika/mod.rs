@@ -30,6 +30,8 @@ pub mod index {
     pub const DRY_WET: usize = 4;
     pub const FEEDBACK: usize = 5;
     pub const TIME: usize = 8;
+    /// Path selector (`141aca670`): k = min(4, trunc(5 v)), see `head::path_for_index`.
+    pub const SELECT: usize = 28;
     /// Head gain (index 12): not wired, its floor is unbacked (GAP-H); listed for the setter table.
     #[allow(dead_code)]
     pub const HEAD_GAIN: usize = 12;
@@ -221,11 +223,14 @@ pub struct ReplikaCore {
     cut: Cut,
     saturator: Saturator,
     ring: usize,
+    /// Setter writes so far. The native setter (`141ac5980`) runs its tail on every write, and the mode-1 spread snap
+    /// is driven by this count (see `chain::Mode1::seen`).
+    writes: u32,
 }
 
 /// Mutable state: write index, the TPT pair of each filter and channel, the saturator states and the
 /// two limiters (matrix output and head 3 path).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ReplikaState {
     frame: usize,
     filters: [[CutState; 2]; 2],
@@ -234,6 +239,8 @@ pub struct ReplikaState {
     head3_limiter: DbLimiter,
     /// Ducker envelope in dB (`+0x13e38`, starts at 0 dB).
     env: f64,
+    /// The mode-1 chain (heads, rings, spread table), present once the caller has placed it (`chain.rs`).
+    mode1: Option<Box<chain::Mode1>>,
 }
 
 impl ReplikaState {
@@ -245,6 +252,20 @@ impl ReplikaState {
             matrix_limiter: DbLimiter::new(rate),
             head3_limiter: DbLimiter::new(rate),
             env: 0.,
+            mode1: None,
+        }
+    }
+
+    /// The plain state (everything but the mode-1 chain), for [`ReplikaState::store`].
+    fn plain(&self) -> Self {
+        Self {
+            frame: self.frame,
+            filters: self.filters,
+            saturator: self.saturator,
+            matrix_limiter: self.matrix_limiter,
+            head3_limiter: self.head3_limiter,
+            env: self.env,
+            mode1: None,
         }
     }
 
@@ -287,7 +308,7 @@ impl ReplikaState {
             }
         };
         put(self.frame as f64);
-        let mut st = *self;
+        let mut st = self.plain();
         st.each(|x| put(f64::from(*x)));
         put(self.env);
     }
@@ -334,6 +355,7 @@ impl ReplikaCore {
         let mut core = Self {
             rate,
             raw,
+            writes: 0,
             ctl: Ctl {
                 input: 1.,
                 output: 1.,
@@ -370,6 +392,7 @@ impl ReplikaCore {
         if index >= index::COUNT {
             return;
         }
+        self.writes = self.writes.wrapping_add(1);
         self.raw[index] = if value.is_nan() {
             0.
         } else {
@@ -446,8 +469,15 @@ impl ReplikaCore {
             .min(input_r.len())
             .min(output_l.len())
             .min(output_r.len());
+        self.sync_selector(state);
+        let mode1 = state.mode1.as_ref().is_some_and(|m| m.heads.path == 1);
         for i in 0..n {
-            let [l, r] = self.frame(state, storage, [input_l[i] as f32, input_r[i] as f32]);
+            let x = [input_l[i] as f32, input_r[i] as f32];
+            let [l, r] = if mode1 {
+                self.frame_mode1(state, x)
+            } else {
+                self.frame(state, storage, x)
+            };
             output_l[i] = f64::from(l);
             output_r[i] = f64::from(r);
         }
@@ -472,15 +502,7 @@ impl ReplikaCore {
             dry[1] * c.tap * (1. - a) + a * tap[1],
         ];
 
-        // Ducker (step 10): the instantaneous |mid| of the taps against the threshold moves the dB envelope.
-        let detect = 0.5 * (tap[0] + tap[1]);
-        let gate = self.gate;
-        st.env = if f64::from(detect.abs()) < gate.threshold {
-            st.env * gate.release
-        } else {
-            (st.env - gate.target) * gate.retention + gate.target
-        };
-        let duck = t4(st.env as f32 * GATE_DB_PER_INDEX + 1200.);
+        let duck = self.duck(&mut st.env, tap);
 
         // Head 1: write the taps, read at its delays. Head 3: feedback read x gain, path-0 limiter at half scale.
         write(storage, ring, 0, t, tap);
@@ -514,6 +536,32 @@ impl ReplikaCore {
 
         // OUT = F1 Ctl(0x60) + F2 (Ctl(0x60) = 1), wet taps (Ctl(0xc), pan pair, ducker gain), then the matrix.
         let out = [f1[0] + f2[0], f1[1] + f2[1]];
+        self.tail(&mut st.matrix_limiter, dry, out, duck)
+    }
+
+    /// The ducker (steps 10 and 14 of `141aa9480`): the instantaneous |mid| of the taps against the threshold moves the
+    /// dB envelope `env`; returns the wet gain of the frame.
+    pub(super) fn duck(&self, env: &mut f64, tap: [f32; 2]) -> f32 {
+        let detect = 0.5 * (tap[0] + tap[1]);
+        let gate = self.gate;
+        *env = if f64::from(detect.abs()) < gate.threshold {
+            *env * gate.release
+        } else {
+            (*env - gate.target) * gate.retention + gate.target
+        };
+        t4(*env as f32 * GATE_DB_PER_INDEX + 1200.)
+    }
+
+    /// The wet taps, the matrix and the output limiter (the end of `141aa9480`), shared by both paths. `out` is the
+    /// head sum of the frame, `dry` the input taps.
+    pub(super) fn tail(
+        &self,
+        matrix_limiter: &mut DbLimiter,
+        dry: [f32; 2],
+        out: [f32; 2],
+        duck: f32,
+    ) -> [f32; 2] {
+        let c = self.ctl;
         let wet = [
             out[0] * c.wet * c.wet_l * duck,
             out[1] * c.wet * c.wet_r * duck,
@@ -522,9 +570,7 @@ impl ReplikaCore {
         let side2 = (wet[0] - wet[1]) * c.side;
         let a_new = dry[0] * c.dry * c.dry_l + side2 + mid;
         let b_new = mid - side2 + dry[1] * c.dry * c.dry_r;
-        let y = st
-            .matrix_limiter
-            .process([a_new * c.output * 0.5, b_new * c.output * 0.5], [0., 0.]);
+        let y = matrix_limiter.process([a_new * c.output * 0.5, b_new * c.output * 0.5], [0., 0.]);
         [y[0] * 2., y[1] * 2.]
     }
 }
@@ -545,6 +591,7 @@ fn half_scale(lim: &mut DbLimiter, x: [f32; 2]) -> [f32; 2] {
     [y[0] * 2., y[1] * 2.]
 }
 
+mod chain;
 mod delay;
 mod deposit;
 mod design;
