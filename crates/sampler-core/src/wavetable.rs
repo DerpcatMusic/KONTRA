@@ -51,6 +51,46 @@ fn warp(phase: f32, amount: f32, kind: u8) -> f32 {
                 (amount - (phase - (1. - amount))) / amount
             };
         }
+        // Sync (1..=3, 24..=26 share one body): fmod((15a^3 + 1) * phase, 1).
+        1..=3 | 24..=26 => {
+            let ratio = amount * amount * amount * 15. + 1.;
+            return (ratio * phase) % 1.;
+        }
+        // Bend P/M/MP (4..=6): cosine and arcsine half-cycle laws; the arcsine
+        // is scaled by native constant 1/pi (0x3ea2f983).
+        4 => {
+            let cosine = (1. - (phase * std::f32::consts::PI).cos()) * 0.5;
+            return (cosine - phase) * amount + phase;
+        }
+        5 => {
+            let arc = (phase - 0.5 + phase - 0.5).asin() * f32::from_bits(0x3ea2f983) + 0.5;
+            return (arc - phase) * amount + phase;
+        }
+        6 => {
+            let target = if amount >= 0.5 {
+                (phase - 0.5 + phase - 0.5).asin() * f32::from_bits(0x3ea2f983) + 0.5
+            } else {
+                (1. - (phase * std::f32::consts::PI).cos()) * 0.5
+            };
+            let weight = (amount - 0.5 + amount - 0.5).abs();
+            return weight * (target - phase) + phase;
+        }
+        // Quantize (13): N = trunc(2^((1-a)*15 + 1)) steps; round, then subtract 1e-5.
+        13 => {
+            let steps = 2f64.powf(f64::from((1. - amount) * 15. + 1.)) as i64 as f32;
+            let stepped = (steps * phase).round() / steps - 1e-5;
+            return stepped.max(0.);
+        }
+        // Exp (28): phase^(9a + 1). Log (29): 1 - (1 - phase)^(9a + 1).
+        28 => return phase.powf(amount * 9. + 1.),
+        29 => return 1. - (1. - phase).powf(amount * 9. + 1.),
+        // Log/Exp (30): exponent 18*(0.5 - a) + 1 on the log side, 18*(a - 0.5) + 1 on the exp side.
+        30 => {
+            if amount < 0.5 {
+                return 1. - (1. - phase).powf((0.5 - amount) * 18. + 1.);
+            }
+            return phase.powf((amount - 0.5) * 18. + 1.);
+        }
         31..=33 => {
             let bend = match kind {
                 31 => amount * -0.9,
@@ -179,6 +219,26 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
+    /// Native branch structure for the libm-helper forms (sync, bend P/M/MP,
+    /// quantize, exp/log). Helpers are substituted in the recorder, so tolerance
+    /// covers libm differences only.
+    #[test]
+    fn libm_phase_forms_match_helper_substituted_native_vectors() {
+        let receipt: serde_json::Value =
+            serde_json::from_str(include_str!("wavetable_native_libm_vectors.json")).unwrap();
+        assert_eq!(receipt["entry"], "0x140567aa0");
+        for case in receipt["cases"].as_array().unwrap() {
+            let mode = case[0].as_u64().unwrap() as u8;
+            let phase = case[1].as_f64().unwrap() as f32;
+            let amount = case[2].as_f64().unwrap() as f32;
+            let native = case[3].as_f64().unwrap() as f32;
+            let actual = super::warp(phase, amount, mode);
+            assert!(
+                (actual - native).abs() <= 2e-6,
+                "mode{mode} phase{phase} amount{amount}: actual{actual}, native{native}"
+            );
+        }
+    }
     #[test]
     fn phase_forms_match_original_kontakt_instructions() {
         let receipt: serde_json::Value =
