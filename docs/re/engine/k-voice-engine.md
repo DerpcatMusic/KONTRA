@@ -209,3 +209,17 @@ tie-breaks, fade law and per-key record are open).
   start path that was read, so its source remains open.
 
 Matrix: unchanged, still partial. Any and the steal fade law stay open.
+
+## Revision: steal fade and the cut call (decompile, 2026-10-22)
+
+- The victim walk ends in `FUN_14086d320(victim, 0, <float>, flag, 0)` (`0140860000.c:9622`).
+  The third argument is the limit object in the walk's own signature, but the callee takes a
+  float there. The decompiler shows no conversion, so the native fade is not recoverable from
+  this site. It is not the limit's +0x34 field as written.
+- The other call sites pass a per-voice float (`FUN_14084f380`, `0140840000.c:9586`, from
+  voice field +0x264) and a constant (`0140a70000.c:5312`). Neither is the victim-limit fade.
+- Conclusion: the steal fade law (O2/O3 and the fade part of O1) needs a native measurement.
+  The Wine oracle is the path: a probe that plays overlapping notes under a one-voice limit and
+  records which note is cut and over how many milliseconds. A Kontakt Wine session was already
+  running on this machine during this pass (`start.exe`, `explorer.exe`), and the oracle has a
+  one-session guard, so no oracle run was started.
