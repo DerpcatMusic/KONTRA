@@ -167,12 +167,23 @@ copied into the wrapper byte `+0x1c0` (see the driver below).
   the `+0x2500` level is at or below `+0x2510 * DAT_1447148a0`, it moves to 2. The
   branch that zeroes outputs (`memset`) is not yet read.
 
-**Still not decoded (so no port):** the exact stereo combine (how `+0x25d8`
-selects between core outputs), the `FUN_141ee2160` ramp, and the gate's constant
-`DAT_1447148a0`. There is no native capture and no kemu harness for the wrapper
-(`140902480` calls shared stages, so a kemu run needs them stubbed or emulated).
-Next: decode the combine and the gate, then run the driver under kemu with the
-core's seeding slot after prepare, and compare to a native capture.
+**Stereo combine (decoded 2026-10-23, `0140900000.c` lines 1790-1860).** Stereo branch
+(wrapper byte `+0x1c0 == 0`): `memmove(in1 <- in0)` after saving R to `+0x1280`/`+0x1300`.
+Core `+0x1480` runs on `[L, L]` into the host outputs; core `+0x200` runs on `[R, R]` into
+`+0x1380`; `memmove(out1 <- +0x1380)`. Each core keeps its own state, and the two cores
+share the knobs. Ported as `Stereorizer<Tubescreamer>` (`dsp/color/stereorizer.rs`).
+
+**Gate (decoded).** `DAT_1447148a0` = 9.99999975e-06 (1e-5). The gate test only moves the
+status word `+0x2514` from 1 to 2 when the peak `+0x2500` falls below `+0x2510 * 1e-5`. Nothing
+reads that state for audio; `+0x2514` is queried by the host, and the silence path (`memset`
+of outputs) runs only while the transition flag `+0x2518` is set (set and cleared around the
+core reset in `140971540`). Steady-state audio is unaffected, so the port omits it.
+
+**Still not decoded:** the control ramp `FUN_141ee2160` (kernels types 1, 3, 4, 5, 6;
+type 2 is a copy). It runs only when the ramp flags `+0x19fc` / `+0x77c` are set, which
+the steady-state path does not need. The mono branch (flag `+0x1c0 != 0`, core `+0x1480`
+in place) is not modeled. No native stereo capture exists; the port's vectors are the
+native mono Tubescreamer vectors applied per channel.
 
 ## Chainsaw (`BEffectChainsaw` 0x144f15e68, wrapper 0x144f15d58)
 
