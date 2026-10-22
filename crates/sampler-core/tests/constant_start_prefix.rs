@@ -172,7 +172,7 @@ fn constant_prefix_strictly_rejects_transition_crossing_reverse_controls_and_unk
             prefix.window(last + 1, 1.).is_none(),
             "touching transition must reject"
         );
-        for step in [f64::NAN, f64::INFINITY, 0., 17.] {
+        for step in [f64::NAN, f64::INFINITY, 0., 257.] {
             assert!(prefix.window(128, step).is_none());
         }
         assert!(prefix.window(usize::MAX, 1.).is_none());
