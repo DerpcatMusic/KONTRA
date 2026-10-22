@@ -435,6 +435,56 @@ rings). Tests (tolerance 1e-5, integers and flags exact): `write_mode1_matches_n
 `write_hold_stores_inputs_and_writes_nothing`, `write_fade_scales_inputs_by_one_minus_amount`,
 `write_mode0_slots_match_native_vectors`, `modes_two_and_three_are_blocked_and_write_nothing`.
 
+### Piece 3c part 4: mode-1 chain end to end (PORTED, MATCHES NATIVE VECTORS)
+
+Result: `ReplikaCore` at 48 kHz with index 28 = 0.3 (path k = 1, head mode 1) reproduces the kemu impulse
+(`replika-native-mode1-index28-v0p3.json`) with max abs error 5.97e-10, and the noise vector
+(`replika-native-mode1-index28-noise-v0p3.json`) with 2.01e-7 (tolerance 1e-5). The vectors write index 28 = 0.3 at every
+quantum (32 frames), as `replika_kemu_vectors.render` does; the Rust check replays those writes. Index 28 is not lowered
+into sampler-kontakt or sampler-ir; it stays unwired (GAP-C a and b).
+
+Start state: `tools/re/replika_mode1_start_kemu.py` dumps the native state after the selector (`docs/re/engine/vectors/
+replika-native-mode1-index28-start.json`: the three head objects, the spread table, the bounds, the path, the P0 block).
+`Mode1::from_native` loads it (`replika/chain.rs`).
+
+Ported (`replika/chain.rs`, `replika/mod.rs`):
+- The path-1 frame of `141aa9480` (decompile `0141aa0000.c` 5277-5700): H1 write (tap) and read, H3 read, F1 cut on the
+  mix, H2 write (F1) and read, F2 cut, H3 write (F2), out = F1 Ctl(0x60) + F2, then the shared tail (wet, duck, matrix
+  limiter `0x13e80`, `*2`). Ctl(0x60) = 1; F1 and F2 are identity (levels zero, branch skipped).
+- The spread table glide (per-frame loop 5512-5527) and the caller `141abd290` (`delay::positions`).
+- The setter tail: `141ac5980` case 0x1c (index 28) sets `+0x829` and `+0x82c`, calls the selector `141aca670`, and then,
+  for every write while the core is active (`C+0x8`), calls `141a95830` (the spread snap: an entry whose flag byte
+  `+0x18` is set takes its target and clears the flag) and `141abd290`. `ReplikaCore::writes` counts the writes and
+  `Mode1::snap` runs once per new write.
+- The head read wrapper `141ab7a90`: the level glide `+0x5828` (stored as `H+0x70`) and gain glide `+0x5848` (`H+0x74`)
+  step once per call, the driver output is multiplied by `H74 * H70`, and the channels are mixed with `H+0x78` and
+  `H+0x7c` (`Wrap::apply`). The fade glide `+0x5808` and the hold and fade branches are not ported (their flags are zero).
+
+How the remaining mismatch was closed (each step checked against kemu, same per-quantum writes):
+1. The onset was 119 (L) and 120 (R) instead of 1304 and 1924. A repeated write of index 28 changes the state: the
+   per-write tail snaps the spread width from 0.93 to its target 40 (`+0x14210`, flag `+0x14228`), and `a`, `b`, `r58`,
+   `r60` jump to 1740, 2100, 3.448, 2.857 in the same frame. Schedules with the write at quantum 0 only give 119, at
+   quantum 0 and 1 give 1304. Bisecting the memory changed by the second write (`who_write`: the writer is `141a95830`,
+   called from `141ac5980` at line 3883) pins the effect on the spread table.
+2. With the snap, the onset was 1173 (both channels). The delay state (`base`, `a`, `b`, `r58`, `r60`, the width) and the
+   tap state (`pos`, `wr`, `frac`, `delta`, `prev_wr`, `prev_frac`, `phase`, `idx`, `x_prev`) of H1, H2 and H3 then match
+   native at every quantum boundary (127 quanta). H1's read matches native on every frame (4096 frames, 1e-7).
+3. The rest was H3 (Rust nonzero from 1173, native zero). The post-filter inputs match (H3 L from 1173), but native
+   `141ab7a90` multiplies H2 and H3 by level 0 (`+0x5828` is 0 for H2 and H3, 1 for H1). Porting the wrapper closed it.
+   The zero-input write shaper `141aa3c60` matches native (0.00012212845, 0.00087798, 0.00279852, 0.00510215 on each head).
+
+Tests (`build-slot cargo test -p sampler-core --lib replika -j 4`): 44 passed, including
+`impulse_index28_matches_native_vector` and `noise_index28_matches_native_vector` (tolerance 1e-5, first frame over
+tolerance: none). The mode-0 vectors and the packed-state test pass unchanged; the mode-0 path changes only by the write
+counter (`ReplikaCore::writes`) and the split of `frame()` into `duck` and `tail` (shared with path 1), which keeps the arithmetic.
+Full `sampler-core --lib`: 804 passed, 1 failed (`dsp::color::tests::color_state_holds_one_shaper_at_a_time`: `color::State`
+is 3672 bytes against the 3584 bound; no file in this branch's diff touches `dsp/color` or the struct).
+
+Still open (not on the impulse or noise path): the fade (`+0x5808` glide, `+0x5824`) and hold (`+0x6c`) branches of the
+write and the wrapper (`141acc600` bypass fade writes them); the LFO `141ab7480` (depth `s` is zero in the vectors); the
+design chain `141abbc90` for a selector that is not already applied; paths 2 to 4; the P0 block as the spread targets (its
+setter mapping, the values are the dumped ones).
+
 ### Name binding (task 1)
 
 Not confirmed as a table. Findings:

@@ -55,6 +55,11 @@ impl Section {
         Self { c2, c3, c4, r: 0. }
     }
 
+    /// A section from the coefficients and the damping `r` (the object's `+0x2c`) of a native object.
+    pub fn from_native(c2: f32, c3: f32, c4: f32, r: f32) -> Self {
+        Self { c2, c3, c4, r }
+    }
+
     /// `(c2, c3, c4, r)` as the native object holds them, for checks against native state.
     pub fn parts(&self) -> (f32, f32, f32, f32) {
         (self.c2, self.c3, self.c4, self.r)
