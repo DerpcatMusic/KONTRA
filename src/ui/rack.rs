@@ -395,7 +395,7 @@ fn part(
         };
         (
             height(format!("part-{slot}")),
-            height(format!("body-{slot}")),
+            natural_body(ui, slot),
         )
     };
     if let Some(h) = body_h {
@@ -477,32 +477,39 @@ fn part(
             // Header row 2 (views and performance) on row 1's surface.
             let (view, row2) = instrument::header_row(ui, cx, slot);
             banded = row2.is_some();
-            let mut body: Vec<El> = row2
+            let mut head: Vec<El> = row2
                 .map(|r| band(cx, slot, r))
                 .into_iter()
                 .chain(instrument::notices(cx, slot))
                 .collect();
-            let stage = instrument::stage(ui, cx, slot, view);
-            body.push(behind(cx, slot, stage));
-            col(body)
-                .gap(0)
-                .align(Align::Stretch)
-                .shrink(0)
-                .id(format!("body-{slot}"))
+            let stage = behind(cx, slot, instrument::stage(ui, cx, slot, view));
+            match room {
+                // A sized part keeps its header and notices and scrolls its
+                // stage in what the height leaves; the rest is clipped.
+                Some(room) => {
+                    head.push(scrolled(ui, cx, slot, stage));
+                    col(head)
+                        .gap(0)
+                        .align(Align::Stretch)
+                        .w(Len::Pct(100.))
+                        .h(room)
+                        .shrink(0)
+                        .clip()
+                        .id(format!("body-{slot}"))
+                }
+                None => {
+                    head.push(stage);
+                    col(head)
+                        .gap(0)
+                        .align(Align::Stretch)
+                        .shrink(0)
+                        .id(format!("body-{slot}"))
+                }
+            }
         } else {
             block(Len::Pct(100.), room.unwrap_or(0.)).shrink(0)
         };
-        lines.push(match room {
-            // What the height shows of it: the rest is clipped.
-            Some(room) => col![body]
-                .gap(0)
-                .align(Align::Stretch)
-                .w(Len::Pct(100.))
-                .h(room)
-                .shrink(0)
-                .clip(),
-            None => body,
-        });
+        lines.push(body);
     }
     lines.push(rule());
     let lift = edge_lift(ui, &edge_id);
@@ -533,6 +540,61 @@ fn part(
     .w(Len::Pct(100.))
     .shrink(0)
     .id(format!("part-{slot}"))
+}
+
+/// A part's body at full height, as last laid out. A sized body clips what
+/// its viewport hides, so the viewport's content height stands in for it.
+fn natural_body(ui: &Ui, slot: usize) -> Option<f64> {
+    let scene = ui.scene()?;
+    let body = scene.surface(&format!("body-{slot}"))?.frame.size.height;
+    Some(match scene.surface(&format!("patch-view-{slot}")) {
+        Some(view) => body - view.frame.size.height + view.content.height,
+        None => body,
+    })
+}
+
+/// A sized part's stage, scrolled inside the part when it outgrows the room,
+/// with its own bar at the right edge. The wheel is taken only while it scrolls,
+/// so the rack keeps the wheel everywhere else.
+fn scrolled(ui: &mut Ui, cx: &mut Cx, slot: usize, stage: El) -> El {
+    let id = format!("patch-view-{slot}");
+    let bar = format!("patch-bar-{slot}");
+    let (view_h, total) = ui
+        .scene()
+        .and_then(|s| s.surface(&id))
+        .map_or((0., 0.), |s| (s.frame.size.height, s.content.height));
+    let overflow = view_h > 0. && total > view_h + 0.5;
+    let mut y = cx.state.patch_y.get(&slot).copied().unwrap_or(0.);
+    if overflow {
+        if let Some(wheel) = ui.wheel(id.as_str()) {
+            y += wheel.y;
+        }
+        bar_drag(ui, &bar, &mut y, view_h, total);
+    }
+    y = y.clamp(0., (total - view_h).max(0.));
+    cx.state.patch_y.insert(slot, y);
+    let at = glide(ui, &id, y, ui.get(bar.as_str()).held);
+    let viewport = col![stage]
+        .gap(0)
+        .align(Align::Stretch)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.))
+        .scroll()
+        .no_scrollbar()
+        .scrolled(0., at)
+        .when(overflow, |e| e.captures_wheel())
+        .id(id.as_str());
+    // The bar's width is reserved even when nothing scrolls, so it cannot shift the stage.
+    let edge = if overflow {
+        scrollbar(ui, &bar, "Scroll the patch", at, view_h, total)
+    } else {
+        block(8, Len::Pct(100.)).shrink(0)
+    };
+    row![viewport.flex(1).min_w(0).min_h(0), edge]
+        .gap(0)
+        .align(Align::Stretch)
+        .flex(1)
+        .min_h(0)
 }
 
 /// A part's controls over what the appearance puts behind them.

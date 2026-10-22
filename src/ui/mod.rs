@@ -532,6 +532,8 @@ struct EditorState {
     resizing: Option<(usize, f64)>,
     /// Each part's notices and controls at their full height, as last laid out.
     bodies: HashMap<usize, f64>,
+    /// Where each sized part's stage is scrolled to (where it glides to).
+    patch_y: HashMap<usize, f64>,
     /// Each preset's neighbors in its library folder, of which scan and shelf.
     neighbors: (
         std::sync::Weak<Vec<PathBuf>>,
@@ -1212,6 +1214,7 @@ fn build(
         reveal: None,
         resizing: None,
         bodies: HashMap::new(),
+        patch_y: HashMap::new(),
         neighbors: Default::default(),
         started: Instant::now(),
         computer,

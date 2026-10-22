@@ -397,6 +397,10 @@ pub(super) fn scale_to_fit(room: Size, authored: Size, setting: f32) -> f64 {
 
 pub(super) fn room_height(ui: &Ui, slot: usize) -> f64 {
     let Some(scene) = ui.scene() else { return 0. };
+    // A sized part's stage has the scroll viewport's height, as last laid out.
+    if let Some(view) = scene.surface(&format!("patch-view-{slot}")) {
+        return view.frame.size.height;
+    }
     let (Some(rack), Some(part), Some(stage)) = (
         scene.surface("rack-view"),
         scene.surface(&format!("part-{slot}")),
