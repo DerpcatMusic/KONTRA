@@ -416,6 +416,7 @@ pub(super) fn view(
     slot: usize,
     instrument: &Arc<sampler_ir::Instrument>,
 ) -> El {
+    let sized = super::part::sized(cx, slot);
     let state = &mut cx.state.inside.entry(slot).or_default().scripts;
     if !Weak::ptr_eq(&state.instrument, &Arc::downgrade(instrument)) {
         state.stop_coverage();
@@ -428,7 +429,7 @@ pub(super) fn view(
     }
     // The rest of the part, less the tab's own inset; never so short that the
     // source and the In → Out pane collide.
-    let room = super::part::room_height(ui, slot) - 2. * INSET;
+    let room = super::part::room_height(ui, slot, sized) - 2. * INSET;
     let height = if room > 0. { room.max(420.) } else { 460. };
     draw(ui, state, &format!("scripts-{slot}")).h(height)
 }
