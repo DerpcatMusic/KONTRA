@@ -126,13 +126,14 @@ pub(super) struct Table {
 }
 
 impl Table {
-    /// Whole cycles from a cycle-aligned start. Frames past the last whole
-    /// cycle are never read: a trailing partial cycle is ignored, as v1 did
-    /// (`tests/wavetable.rs` oracle uses `len / CYCLE`). Kontakt's own rule for
-    /// partial cycles is not recovered; this floors and is not yet parity.
+    /// Whole cycles from `first`; cycle k starts at `first + k * CYCLE`, so the start
+    /// need not be aligned. Frames past the last whole cycle are never read: a trailing
+    /// partial cycle is ignored, as v1 did (`tests/wavetable.rs` oracle uses
+    /// `len / CYCLE`). Kontakt's own rules for misaligned starts and partial cycles are
+    /// not recovered; this floors and is not yet parity.
     pub fn new(first: usize, end: usize) -> Option<Self> {
         let frames = end.checked_sub(first)?;
-        (first % CYCLE == 0 && frames >= CYCLE).then_some(Self {
+        (frames >= CYCLE).then_some(Self {
             first,
             cycles: frames / CYCLE,
         })
@@ -248,7 +249,7 @@ mod tests {
         assert_eq!(super::Table::new(0, 3 * super::CYCLE + 100).unwrap().cycles, 3);
         assert_eq!(super::Table::new(0, super::CYCLE).unwrap().cycles, 1);
         assert!(super::Table::new(0, 100).is_none());
-        assert!(super::Table::new(64, 64 + 2 * super::CYCLE).is_none());
+        assert_eq!(super::Table::new(64, 64 + 2 * super::CYCLE).unwrap().cycles, 2);
     }
 
     #[test]
