@@ -243,3 +243,38 @@ coefficient and reset rules, how the effect's saved fields and the
 engine-parameter ids (`0x3a8`…`0x3ab` saturation/character/link modes) reach
 the setter indices, and the saturation and character transfer curves.
 No Rust port has been written for CompXT yet.
+
+## CompXT per-frame core and shared detector family (2026-10-22, export re-read)
+
+Read from the export only (no binary session, no build). Status: structure
+recovered, constants and the gain computer still open.
+
+- Per-frame core `0x141a95f00` (`0141a90000.c:3161`, 1,431 bytes). Input is the
+  two channels converted to mid and side (sum and difference, each scaled by
+  the constant at `DAT_14470bae8`). Each path runs a squared-level follower
+  whose attack/release pair is picked by comparing the new square with the
+  state (states `+0x340/+0x358/+0x360`, `+0x378/+0x390/+0x398`,
+  `+0x3b0/+0x3c8/+0x3d0`, `+0x3e8/+0x400/+0x408`). The mid and side signals
+  then pass two look-ahead windows, `FUN_141a964a0` on `+0x500` and on
+  `+0x15c0` (coefficients `+0x2d0` and `+0x2d8`). The outputs recombine as
+  `left = wetMid + wetSide`, `right = wetMid − wetSide`. A second pair of
+  followers (`+0x420/+0x438/+0x440`, `+0x458/+0x470/+0x478`) and the output
+  one-pole on `+0x490/+0x4a8/+0x4b0` read the recombined levels.
+- The `+0x2680 != 0` or `+0x2f0 != 0` branch of the same function instead runs
+  the squared-level followers on the pre-gain `+0x6d8` input and calls the
+  objects at `+0x2f8` and `+0x318` (vtable slot `0x18`). Those objects are not
+  traced. Mode meaning: open.
+- Shared detector `0x141a95cb0` (`0141a90000.c:3049`, 578 bytes) is called from
+  the Solid Bus Comp core `0x141aaa1e0` (`0141aa0000.c:5701`, two call sites
+  in that file). The export shows no other caller. So Solid Bus Comp's detector
+  is this CompXT-family routine, not a separate law. Its state init writes
+  `100.0` at `+0x18d8`. The CompXT block process `0x141aaa9e0` (`0141aa0000.c:5955`)
+  does not call it.
+- Solid Bus Comp block loop (`0x141aaa1e0`): when the link byte at `+0x19e1`
+  is clear, the detector gets the per-channel samples. When set, it gets the
+  scaled sum of the last two channels (scale `DAT_14470bad0`, which is 0.5).
+  The gain-computer and envelope formulas called after the detector were not
+  read in this pass.
+- Still unrecovered: gain computer, `FUN_141a964a0` coefficients and reset,
+  the `+0x2f8`/`+0x318` objects, saturation and character curves, and the
+  setter-to-core-index map for saved Supercharger fields.
