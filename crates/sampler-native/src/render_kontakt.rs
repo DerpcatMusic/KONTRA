@@ -320,6 +320,9 @@ pub fn render(
     };
     let mut rt =
         Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    // KONTRA_SELECTION_TRACE=1: per note, how many regions each reason rejected and what sounded.
+    let trace = std::env::var_os("KONTRA_SELECTION_TRACE").is_some();
+    rt.record_selections(trace);
     rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
         rt.sample_rate(),
         limits.voices,
@@ -387,6 +390,20 @@ pub fn render(
             )
             .map_err(|e| io::Error::other(format!("MIDI block: {e:?}")))?;
         service_ui_effects(&mut rt, &mut scripts)?;
+        for record in rt.take_selection_records() {
+            let mut reasons = std::collections::BTreeMap::new();
+            for candidate in &record.candidates {
+                let reason = candidate.rejected.map_or("accepted".to_string(), |r| format!("{r:?}"));
+                *reasons.entry(reason).or_insert(0usize) += 1;
+            }
+            eprintln!(
+                "note key {} vel {:.3} suppressed {}: {:?}",
+                record.key, record.velocity, record.suppressed, reasons
+            );
+            for candidate in record.candidates.iter().filter(|c| c.rejected.is_none()).take(2) {
+                eprintln!("  started {:?}", candidate.started);
+            }
+        }
         if let Some((index, result)) = failure {
             eprintln!(
                 "MIDI event at frame {}: {result:?}",
