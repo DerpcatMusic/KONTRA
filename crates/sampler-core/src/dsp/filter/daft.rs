@@ -176,6 +176,11 @@ impl Daft {
     fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64, modulation: [f64; 4]) {
         let mut x = self.lanes.map(|lane| lane.value(parameters, at, None));
         x[0] += modulation[2];
+        // Native FUN_1408fa270 clamps every enabled route to [0, 1] before setParam, even at zero
+        // delta; bit 4 of modulation[3] marks a Gain route (as the Ladder does).
+        if (modulation[3] as u8) & 4 != 0 {
+            x[0] = x[0].clamp(0., 1.);
+        }
         x[1] += modulation[0];
         x[2] += modulation[1];
         let target = Self::targets(x);
@@ -338,10 +343,10 @@ mod kemu_vectors {
     /// Native Daft through kemu (`tools/re/daft_kemu_vectors.py`): constructor, prepare, setters, the
     /// 32-frame tick and the loop, stereo. A modulation route is written on every block; a disabled
     /// control is fixed at its first value.
-    #[test]
-    fn native_kemu_vectors_through_the_production_path() {
-        let cases: Vec<serde_json::Value> =
-            serde_json::from_str(include_str!("daft_kemu_vectors.json")).unwrap();
+    /// Replays each case through the production kernel; returns the cases that miss the native audio
+    /// (worst error above 2e-6 of peak).
+    fn replay(json: &str) -> Vec<String> {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(json).unwrap();
         let num = |v: &serde_json::Value| v.as_f64().unwrap();
         let mut failures = Vec::new();
         for case in &cases {
@@ -405,6 +410,21 @@ mod kemu_vectors {
                 }
             }
         }
+        failures
+    }
+
+    #[test]
+    fn native_kemu_vectors_through_the_production_path() {
+        let failures = replay(include_str!("daft_kemu_vectors.json"));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Native routed knobs (`tools/re/daft_route_clamp_kemu.py`): the BFilterDaft driver clamps each
+    /// enabled route to [0, 1] before setParam, so the raw sources here (-0.5, 1.7) must match the
+    /// native audio.
+    #[test]
+    fn native_route_clamp_vectors() {
+        let failures = replay(include_str!("daft_route_clamp_kemu.json"));
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

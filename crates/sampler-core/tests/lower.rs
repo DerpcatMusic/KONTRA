@@ -1977,21 +1977,13 @@ fn normalized_q_gain_routes_address_native_knobs_without_audio_heap() {
                 "depth must add to the native knob before conversion"
             );
             assert_ne!(wet, dry, "Q/Gain must change audio");
-            if parameter == ir::ProcessorParameter::Gain && !ladder {
-                // Daft's native gain setter takes the signed leading value unclamped
-                // (FUN_140b05290), so 0.9 + 0.4 is not 1.0 there.
-                assert_ne!(
-                    render(0.9, 0.4),
-                    render(1., 0.),
-                    "Daft gain is unclamped"
-                );
-            } else {
-                assert_eq!(
-                    render(0.9, 0.4),
-                    render(1., 0.),
-                    "normalized knobs saturate"
-                );
-            }
+            // Every enabled route saturates, Daft gain included: the native driver clamps routed
+            // sources to [0, 1] (FUN_1408fa270, daft_route_clamp_kemu.json).
+            assert_eq!(
+                render(0.9, 0.4),
+                render(1., 0.),
+                "normalized knobs saturate"
+            );
             if ladder && parameter == ir::ProcessorParameter::Gain {
                 assert_eq!(
                     render(-0.25, 0.),
