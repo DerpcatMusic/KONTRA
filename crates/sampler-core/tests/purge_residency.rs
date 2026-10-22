@@ -181,7 +181,8 @@ fn purge_frees_full_pcm_and_mipmaps_then_reload_publishes_exact_async_id_and_sta
     pcm.set_residency_loader(|| Ok(vec![(0, vec![[0.25; 2]; 128].into())]))
         .unwrap();
     let before = pcm.resident_bytes();
-    assert_eq!(before, 1984);
+    // 128 base frames plus the mip pyramid down to one frame (127 frames); eight octave levels.
+    assert_eq!(before, 2040);
     let mut rt = runtime(pcm.clone(), false);
     let plan = rt.active_plan();
     let id = rt.start_plan_behavior(plan, 0).unwrap();
