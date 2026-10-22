@@ -499,7 +499,9 @@ def coverage_md(rows):
         o.append("")
         o.append(", ".join(f"`{r['name']}` ({r['status']}, {r['corpus']})" for r in items[:12]))
         o.append("")
-    o += ["## Kontakt 8 additions (New Features in the manual version history)", "", "| symbol | status | corpus |", "|---|---|---|"]
+    o += ["## Kontakt 8 additions (New Features in the manual version history)", "",
+          "`since` is exact only where the changelog names the symbol. Kontakt 8 engine parameters for new effects (Beat Masher, Beat Slicer, Gater, Reverse Grain, Transpose Stretch, Replika, Wavetable) are named by effect in the changelog, so they are not attributed here.",
+          "", "| symbol | status | corpus |", "|---|---|---|"]
     for r in compat:
         if r["since"] == "8":
             o.append(f"| `{r['name']}` | {r['status']} | {r['corpus']} |")

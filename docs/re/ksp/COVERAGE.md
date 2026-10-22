@@ -257,6 +257,8 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 ## Kontakt 8 additions (New Features in the manual version history)
 
+`since` is exact only where the changelog names the symbol. Kontakt 8 engine parameters for new effects (Beat Masher, Beat Slicer, Gater, Reverse Grain, Transpose Stretch, Replika, Wavetable) are named by effect in the changelog, so they are not attributed here.
+
 | symbol | status | corpus |
 |---|---|---|
 | `on note_controller` | unsupported | 0 |
