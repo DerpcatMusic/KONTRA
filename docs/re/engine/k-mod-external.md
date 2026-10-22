@@ -153,13 +153,16 @@ Survey impact: `external modulation from RandomBipolar` is the largest modulatio
 
 - Source type 13 name and class: `0140a70000.c:3388` ("Random Bipolar"), type 12 is "Random Unipolar"
   (`:3382`). Classification path: `FUN_140973970` (`0140970000.c:2395`), already in the code.
-- Object factory: the source-type switch in `0141a00000.c:10785-11097` allocates a 0x650-byte object for
-  type 0xc (`FUN_141a00880`, `0141a00000.c:331`) and a 0x668-byte object for type 0xd (`FUN_141a00a70`
-  call with flag `1`).
-- Caution: `0141a00000.c` mixes zmq vtables into these bodies. `FUN_141a00a70` (1012 bytes) is a generic
-  large object, not obviously a random source. Treat the type-0xd body as unattributed.
-- Type 0xc constructor stores a 32-bit seed built from two `rand()` calls (`iVar2 << 0x1f | uVar1`) at
-  object `+0x648` and sets the type byte `+0x14c = 0xc`. The MSVC `rand()` stream is the only RNG seen in
-  this path. Generator (per-voice draw or per-block), interval and cadence are not yet read.
-- Next: find the per-block consumer of the type-0xc/0xd object (the reader of `+0x648`, `+0x14c`), and check
-  whether the 0xd object differs only by a bipolar mapping. Use radare2 on one function at a time, not a re-decompile.
+- **Retracted (2026-10-22): the "type 0xc object" lead is ZeroMQ, not a random source.** The 0x650-byte
+  object at `FUN_141a00880` (`0141a00000.c:331`) is built by the zmq socket factory `FUN_141a0e2d0`
+  (`0141a00000.c:10872`, switch on socket type; case 0xc = ZMQ_SERVER, case 0 = PAIR; vtables resolve to
+  `zmq::server_t`). Its callers (`FUN_141a2f9b0`, `FUN_141a0f9f0`) and the strings in `0141a20000.c`
+  (`D:\NIBuild\3rdparty\zeromq-v4.3.5-R2\src\socket_base.cpp`) confirm it. The `rand()` seed at `+0x648`
+  is the zmq identity seed, and `+0x14c = 0xc` is the socket type. Radare2 on `0x141a00880` (`pd 90`) and the
+  vtable blocks at `0x1478f5678` and `0x1478f57a8` show zmq methods only. Do not use this object as a lead.
+- Real source names: `FUN_140a73e30` (`0140a70000.c:3370-3392`) names type 0xc "Random Unipolar" and 0xd
+  "Random Bipolar". The `rand()` sites in the decompile cache (`0140780000`, `01405d0000`, `01425e0000`,
+  `0141a20000`) are not a modulator producer: `FUN_14078bc80` is an event dispatcher. The start-criteria RNG
+  is MT19937 (BASIC_BEHAVIORS row 3); whether RandomBipolar uses that stream is open.
+- Next: find the voice-modulation evaluator that switches on source type 0xd and its per-block producer.
+  Use radare2 one function at a time (`pd N @ addr`), not a re-decompile.
