@@ -358,7 +358,8 @@ pub fn mode(cx: &Cx, slot: usize) -> crate::library::ViewMode {
     resolve_mode(&cx.selection.parts[slot], &cx.settings)
 }
 
-fn resolve_mode(
+/// The mode a part shows: its own pick, else the saved choice for its library file.
+pub(super) fn resolve_mode(
     part: &crate::plugin::Part,
     settings: &crate::library::Settings,
 ) -> crate::library::ViewMode {
@@ -523,20 +524,14 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                         ir::Source::Ksp { slot } => format!("Script {}", slot + 1),
                         _ => format!("View {}", n + 1),
                     });
-                let (hit, el) = latch(
-                    ui,
-                    format!("face-{slot}-{n}"),
-                    &label,
-                    "Show this script's view",
-                    face.shown == n,
-                );
+                let (hit, el) = tab(ui, format!("face-{slot}-{n}"), &label, face.shown == n);
                 if hit {
                     pick = Some(n);
                 }
                 el
             })
             .collect();
-        bar.push(segmented(tabs));
+        bar.push(tab_row(tabs));
     }
     if face.face.pages.len() > 1 {
         let pages = face
@@ -550,93 +545,20 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
                 } else {
                     p.name.clone()
                 };
-                let (hit, el) = latch(
-                    ui,
-                    format!("face-page-{slot}-{n}"),
-                    &label,
-                    "Show this page",
-                    face.page.0 == n,
-                );
+                let (hit, el) = tab(ui, format!("face-page-{slot}-{n}"), &label, face.page.0 == n);
                 if hit {
                     face.page = ir::PageRef(n);
                 }
                 el
             })
             .collect();
-        bar.push(segmented(pages));
+        bar.push(tab_row(pages));
     }
-    bar.push(spacer());
-    let original = mode == crate::library::ViewMode::Original;
-    let (a, orig) = latch(
-        ui,
-        format!("face-original-{slot}"),
-        "Original",
-        "The library's own artwork",
-        original,
-    );
-    let (b, vect) = latch(
-        ui,
-        format!("face-vector-{slot}"),
-        "Vector",
-        "The library's background with KONTRA's controls; frees the control pictures",
-        mode == crate::library::ViewMode::Vectorized,
-    );
-    let (c, generated) = latch(
-        ui,
-        format!("face-kontra-{slot}"),
-        "KONTRA",
-        "Readable sections and channel strips",
-        mode == crate::library::ViewMode::Kontra,
-    );
-    bar.push(segmented(vec![orig, vect, generated]));
+    // The library view (Original, Vector, KONTRA) is chosen from the part's
+    // picture button, which owns that popup; this row carries only patch tabs.
     if let Some(n) = pick.filter(|&n| n != face.shown) {
         face.show(n);
     }
-    if a || b || c {
-        cx.selection.parts[slot].view = if b {
-            3
-        } else if c {
-            2
-        } else {
-            1
-        };
-        let chosen = if b {
-            crate::library::ViewMode::Vectorized
-        } else if c {
-            crate::library::ViewMode::Kontra
-        } else {
-            crate::library::ViewMode::Original
-        };
-        cx.p.shared.libraries.edit(|settings| {
-            settings
-                .instrument_views
-                .insert(path.to_string_lossy().into_owned(), chosen);
-        });
-        face.presentation = if a {
-            Presentation::Bitmap
-        } else {
-            Presentation::Vector
-        };
-        face.sync();
-    }
-
-    let held = face.bytes() as f64 / (1024. * 1024.);
-    bar.insert(
-        bar.len() - 1,
-        caption(format!("{held:.1} MB pictures"))
-            .fill(secondary())
-            .lines(1)
-            .tip("Decoded artwork this view keeps in memory"),
-    );
-    let mode = if a {
-        crate::library::ViewMode::Original
-    } else if b {
-        crate::library::ViewMode::Vectorized
-    } else if c {
-        crate::library::ViewMode::Kontra
-    } else {
-        mode
-    };
     let page = &face.face.pages[face.page.0];
     let avail = ui
         .scene()
@@ -1525,7 +1447,8 @@ mod tests {
         }
         h.idle(4);
         let authored = native(&h);
-        h.press("face-vector-0");
+        h.press("view-0");
+        h.press("menu-item-1");
         h.idle(4);
         assert_eq!(native(&h),authored,"Vector must project the evaluated graph, keeping geometry and live targets");
         assert!(!h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().contains("-ir-0")),

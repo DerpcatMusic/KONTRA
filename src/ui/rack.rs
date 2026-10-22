@@ -1075,13 +1075,13 @@ fn backdrop(image: Option<Arc<moose::mui::mui::scene::Image>>, row: usize) -> Ve
         block(BANNER.0, ROW * 2.)
             .fill(Fill::Image(image, moose::mui::mui::scene::Fit::Cover))
             .at(0., y),
-        // The name sits on a darker stretch so a logo in the artwork never crowds it.
+        // The names sit on a light wash that fades out quickly, so the artwork shows through.
         block(BANNER.0 * 0.75, ROW * 2.)
             .fill(Gradient::linear(
                 90.,
                 [
-                    (0., Role::Surface.alpha(0.7)),
-                    (0.5, Role::Surface.alpha(0.45)),
+                    (0., Role::Surface.alpha(0.55)),
+                    (0.5, Role::Surface.alpha(0.2)),
                     (1., Role::Surface.alpha(0.)),
                 ],
             ))
