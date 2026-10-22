@@ -161,3 +161,13 @@ Compositions:
 ## Waiting on
 
 - Rows 2, 4 and 5 need a native reading of the stage 1/2 limit targets, the clock constant, and the Dual SKF reader branch for type 130. The Wine-oracle sweep (row 1) is still needed for cutoffs other than 0.5.
+
+## Constant resolution (static PE read, this pass)
+
+Global constants were read from the Kontakt 8 image (`re-binaries/Kontakt8.exe`, RVA = VA - 0x140000000,
+`.rdata`), not from the decompile text. Confirmed: clock move factor 0.015 (`DAT_144f38664`), shaper
+0.06 / 0.0075, sample constants 440, 1/12, 69, 20, 80, 2pi, 2.0, 1.3075, 0.293, 0.7352, 1.4, 0.05,
+3.0, 6, 5, 0.66, 0.65, 1.3. Each matches `chamberlin.rs`, `shaper.rs` and `cascade.rs`.
+
+Still open: stage 1/2 limit targets (the parameter-store object from `FUN_140649e30`), the Dual SKF
+record-to-slot map (Wine probe blocked, see PARITY_MATRIX), and all sweeps.
