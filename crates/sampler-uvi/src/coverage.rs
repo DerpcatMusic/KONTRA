@@ -209,6 +209,18 @@ mod tests {
     }
 
     #[test]
+    fn shared_script_event_drives_program_gain_as_owner_output_source() {
+        // ScriptEventModulation on a Program Gain route is the owner-level value
+        // that sendScriptModulation broadcasts (EventId 40 here).
+        let text = r#"<Program><ControlSignalSources><ScriptEventModulation Name="ScriptEventModulation 40" EventId="40" Bipolar="0"/></ControlSignalSources><Connections><SignalConnection Source="$Program/ScriptEventModulation 40" Destination="Gain" Ratio="1"/></Connections></Program>"#;
+        let (ir, ..) = super::super::translate_full(text, super::super::Source::Bank).unwrap();
+        assert_eq!(ir.source_indices.global_modulation.len(), 1);
+        let recipe = &ir.source_indices.global_modulation[0];
+        assert_eq!(recipe.sources.len(), 1);
+        assert!(matches!(ir.modulators[recipe.sources[0].0].source, sampler_ir::ModulationSource::Script(40)));
+    }
+
+    #[test]
     fn dropped_scope_connections_do_not_look_implemented() {
         let text = r#"<Program><ControlSignalSources><ConstantModulation Name="shared"/></ControlSignalSources><Connections><SignalConnection Source="$Program/shared" Destination="Gain" Ratio="1"/><SignalConnection Source="@MIDI CC 1" Destination="Pan" Ratio="1"/></Connections></Program>"#;
         let (ir, ..) = super::super::translate_full(text, super::super::Source::Bank).unwrap();

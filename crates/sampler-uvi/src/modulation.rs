@@ -319,9 +319,14 @@ impl Translation {
     pub(crate) fn connect_shared_output(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
         let mut qualification = SourceQualification::default();
         if let Err(gap) = self.try_connect(connection, out, None, &mut qualification)? {
-            let feature = gap.feature;
+            let message = format!(
+                "{}: shared output connection has no supported exact modulator program: {} {}",
+                path(connection),
+                gap.feature,
+                gap.detail
+            );
             self.gap(connection, gap);
-            return Err(format!("{}: shared output connection has no supported exact modulator program: {feature}", path(connection)));
+            return Err(message);
         }
         qualification.require_output(connection)
     }
@@ -1563,17 +1568,13 @@ mod tests {
     }
 
     #[test]
-    fn rejected_global_script_source_reports_event_identity_and_output_owner() {
+    fn global_script_source_is_an_owner_output_source_not_a_refusal() {
         let xml = r#"<Program Name="P"><ControlSignalSources>
             <ScriptEventModulation Name="crossfade" EventId="40" Bipolar="0"/>
             </ControlSignalSources><Connections>
             <SignalConnection Source="$Program/crossfade" Destination="Gain" Ratio="1"/>
             </Connections></Program>"#;
-        let error = crate::translate_bank(xml).err().expect("unimplemented shared source must refuse").to_string();
-        assert!(error.contains("Program \"P\""), "{error}");
-        assert!(error.contains("ScriptEventModulation EventId=40 Bipolar=0"), "{error}");
-        assert!(error.contains("destination Amplitude"), "{error}");
-        assert!(error.contains("shared source lifecycle/input actor is not implemented"), "{error}");
+        crate::translate_bank(xml).expect("owner-level script event is an executable global output source");
     }
 
     #[test]
