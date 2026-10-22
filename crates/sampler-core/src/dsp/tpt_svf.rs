@@ -55,6 +55,11 @@ impl Section {
         Self { c2, c3, c4, r: 0. }
     }
 
+    /// `(c2, c3, c4, r)` as the native object holds them, for checks against native state.
+    pub fn parts(&self) -> (f32, f32, f32, f32) {
+        (self.c2, self.c3, self.c4, self.r)
+    }
+
     /// Lowpass-type section at `hz` (Kontakt: g = prewarp x Q, R = 5/3).
     pub fn lowpass(hz: f32, fs: f32) -> Self {
         Self::new(prewarp(hz, fs) * LOWPASS_Q, LOWPASS_R)
