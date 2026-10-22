@@ -162,7 +162,9 @@ fn promoted_constant_property_representation_keeps_its_separate_publication_law(
     instrument.validate().unwrap();
     assert_eq!(instrument.source_indices.constant_properties.len(), 1);
     let property = &instrument.source_indices.constant_properties[0];
-    assert_eq!(property.law, ir::SourceConstantPropertyLaw::UnqualifiedNative);
+    // Default: Core law, reported as an approximation (not omitted).
+    assert_eq!(property.law, ir::SourceConstantPropertyLaw::DeclaredCoreTargetRead);
+    assert!(instrument.unsupported.iter().any(|u| u.feature.contains("Constant cadence") && u.reason == ir::Reason::UnknownLaw));
     let recipe = &instrument.source_indices.processing[0];
     let route = &instrument.routes[recipe.routes[0].0];
     assert!(matches!(instrument.modulators[route.source.0].source,

@@ -572,7 +572,9 @@ fn normal_constant_definitions_have_distinct_controls_and_references_share_actua
     // explicit qualification boundary. Validation is not stripped or weakened.
     let encoded=serde_json::to_vec(&translated.instrument).unwrap();let cached:ir::Instrument=serde_json::from_slice(&encoded).unwrap();cached.validate().unwrap();assert_eq!(cached.source_indices.constant_properties,roles);assert_eq!(cached.controls,translated.instrument.controls);
     for (old,new)in translated.instrument.controls.iter().zip(&cached.controls){if let (ir::ControlValue::Continuous{min:a,max:b,default:c,..},ir::ControlValue::Continuous{min:x,max:y,default:z,..})=(&old.value,&new.value){assert_eq!((a.to_bits(),b.to_bits(),c.to_bits()),(x.to_bits(),y.to_bits(),z.to_bits()));}}
-    let error=sampler_uvi::assemble_translated(sampler_uvi::translate_path(&path).unwrap(),RATE).err().expect("normal native temporal law must not be silently activated");assert!(error.to_string().contains("declared-Core target reader"),"{error}");
+    // Default: the Core law is approximated and reported as a warning-level UnknownLaw entry, not silently native.
+    let default_translated=sampler_uvi::translate_path(&path).unwrap();assert!(default_translated.instrument.unsupported.iter().any(|u|u.feature.contains("Constant cadence")&&u.reason==ir::Reason::UnknownLaw));
+    sampler_uvi::assemble_translated(default_translated,RATE).expect("approximate Core law loads by default");
     translated.declare_core_constant_target_reads();let loaded=sampler_uvi::assemble_translated(translated,RATE).unwrap();let limits=Limits::for_plan(&loaded.plan,8,8);let mut rt=Runtime::new(loaded.plan,limits).unwrap();let plan=rt.active_plan();
     let bindings=rt.source_constant_properties(plan).unwrap().collect::<Vec<_>>();assert_eq!(bindings.len(),2);
     let a=bindings.iter().find(|row|row.node==roles[0].node).unwrap();let b=bindings.iter().find(|row|row.node==roles[1].node).unwrap();assert_eq!(rt.source_constant_property(plan,a.node).unwrap().value,0.25);assert_eq!(rt.source_constant_property(plan,b.node).unwrap().value,0.5);
