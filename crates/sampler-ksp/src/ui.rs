@@ -92,6 +92,13 @@ pub fn picture_path(name: &str) -> String {
     format!("Resources/pictures/{name}.png")
 }
 
+/// Kontakt 8 `move_control_px` placement, shared by the evaluator and the model. X
+/// clamps to 0..=1000 and Y to 0..=750 (the evaluator warns); a negative X or Y hides
+/// the control and keeps its place, returned as `None`.
+pub fn px_move(x: i32, y: i32) -> Option<(i32, i32)> {
+    (x >= 0 && y >= 0).then_some((x.min(1000), y.min(750)))
+}
+
 /// Image layout from a Kontakt picture's `.txt` description. Missing or
 /// malformed lines keep the defaults.
 pub fn picture_meta(txt: &str) -> ir::ImageMeta {

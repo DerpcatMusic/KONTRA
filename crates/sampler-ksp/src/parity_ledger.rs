@@ -4,6 +4,7 @@ use super::LedgerEntry;
 use sampler_parity::Status;
 const MISSING: &str = "No frontend implementation in the current profile";
 const INIT_ONLY: &str = "Restricted to on init: compile-time rejection outside it matches Kontakt; runtime effect is modeled";
+const MOVE_CONTROL_PX: &str = "Kontakt 8 clamps X above 1000 and Y above 750 with its warning; a negative X or Y hides the control in place (tests/move_control_px_conformance.rs)";
 const GET_UI_ID: &str = "Undeclared or non-UI operands are rejected with Kontakt's text; ids are KONTRA-assigned, not Kontakt's numbers";
 const SUBSET: &str = "Implemented subset; native fidelity or host binding is not fully verified";
 const VALUE: &str = "Typed value operation covered by the KSP compiler/runtime fixtures";
@@ -1927,7 +1928,7 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "min", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:1697", spec: "docs/architecture-v2/KSP_PARITY.md", detail: VALUE },
     LedgerEntry { name: "mod", status: Status::Approximate, owner: "crates/sampler-ksp/src/parser.rs:40", spec: "docs/architecture-v2/KSP_FRONTEND.md", detail: LANGUAGE },
     LedgerEntry { name: "move_control", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1519", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#move_control--", detail: SUBSET },
-    LedgerEntry { name: "move_control_px", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1520", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#move_control_px--", detail: SUBSET },
+    LedgerEntry { name: "move_control_px", status: Status::Implemented, owner: "crates/sampler-ksp/src/eval.rs:1515", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#move_control_px--", detail: MOVE_CONTROL_PX },
     LedgerEntry { name: "ms_to_ticks", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1880", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands#ms_to_ticks--", detail: SUBSET },
     LedgerEntry { name: "msb", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1862", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#msb--", detail: SUBSET },
     LedgerEntry { name: "not", status: Status::Approximate, owner: "crates/sampler-ksp/src/parser.rs:40", spec: "docs/architecture-v2/KSP_FRONTEND.md", detail: LANGUAGE },
