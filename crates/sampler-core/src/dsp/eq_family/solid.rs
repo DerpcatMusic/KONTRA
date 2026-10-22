@@ -17,21 +17,91 @@
 //! - HP: RBJ high-pass (bandwidth form) plus a prewarped first-order high-pass (18 dB/oct).
 //! - LP: an RBJ high-shelf cut plus a peak (below 60 kHz) or an RBJ low-pass (12 dB/oct), from
 //!   one of four table sets chosen by rate (46, 60, 120 kHz).
-//! Peaks are Orfanidis designs with a prescribed Nyquist gain (0x141ac4cf0). OPEN: coefficient
-//! smoothing (Kontakt builds the core with smoothing on, 20 ms per the RE notes; the native
-//! process steps the registers per frame, see docs/re/engine/eq-kontakt.md sec. 5). The update
-//! address once recorded here, 0x141ab4d70, is an unrelated object helper in 8.13.1 (it sets a
-//! byte at +0x13da1 and calls 0x140acbe30 with a string at +0x13db0), so the law is still to be
-//! located from the setter; here coefficients switch at the band stage's control rate.
+//! Peaks are Orfanidis designs with a prescribed Nyquist gain (0x141ac4cf0). Coefficient glide:
+//! [`Glide`], the native lane ramp (eq-kontakt.md sec. 8). The knob lanes move per frame and the
+//! section is redesigned from them on each frame that moves.
 use sampler_ir::fx::eq::{Kind, SolidSection};
 use std::f64::consts::PI;
 
 const N: usize = 11;
 
-/// Knob-glide length of the native G_EQ: 20 ms (RE notes; the native literal 0.02 is in the
-/// `.rdata` cache). The native ramp moves the knob values linearly per frame and redesigns each
-/// frame; the increment writer that fixes the length is not located (docs/re/engine/eq-kontakt.md sec. 5).
-pub(super) const RAMP_SECONDS: f64 = 0.020;
+/// Frames per knob-control grid block of the native G_EQ (the caller's block counter, 0x1bc).
+pub(super) const GLIDE_BLOCK: u64 = 32;
+
+/// Grid blocks a knob move takes: `int(rate * 0.02 / 32 + 0.5)`, at least one (native increment
+/// writer 0x141aa1fb0: f32 0.02 at .rdata 0x147697658, +0.5 at 0x14470bad0). The ramp covers
+/// `glide_blocks(rate) * GLIDE_BLOCK` frames, 20 ms rounded to whole blocks.
+pub(super) fn glide_blocks(rate: u32) -> u32 {
+    ((rate as f32 * 0.02 / 32. + 0.5) as u32).max(1)
+}
+
+/// The three knob lanes of one Solid band (frequency, Q, gain), in f32 like the native lanes.
+/// Native: current values 0x13db0+4i, per-frame increments 0x13df0+4i, targets 0x13e30+4i, the
+/// gate at 0x13e71 and the countdown at 0x13e74 (`0x140acbe30`, `0x141a595d0`).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Glide {
+    lanes: [f32; 3],
+    inc: [f32; 3],
+    target: [f32; 3],
+    pub(super) countdown: i32,
+    pub(super) gate: bool,
+    valid: bool,
+}
+
+impl Glide {
+    pub(crate) fn lanes(&self) -> [f32; 3] {
+        self.lanes
+    }
+
+    /// The control grid point (`0x140acbe30` at each 32-frame block). The first call takes the
+    /// knobs as they are. A move restarts every lane toward its target over `glide_blocks`
+    /// blocks from wherever it is, and lanes whose step is negligible jump to their target.
+    /// Returns whether the coefficients must be redesigned before this block's first frame.
+    pub(crate) fn grid(&mut self, rate: u32, target: [f32; 3]) -> bool {
+        if !self.valid {
+            *self = Self { lanes: target, target, valid: true, ..Self::default() };
+            return true;
+        }
+        if target == self.target {
+            // Nothing moved: the countdown runs, and its last block lands the lanes on the target.
+            self.countdown -= 1;
+            if self.countdown == 0 {
+                self.lanes = self.target;
+                self.inc = [0.; 3];
+                self.gate = false;
+            }
+            return false;
+        }
+        self.target = target;
+        let step = 1. / (glide_blocks(rate) * GLIDE_BLOCK as u32) as f32;
+        let mut moving = 0f32;
+        for k in 0..3 {
+            let inc = (self.target[k] - self.lanes[k]) * step;
+            let square = inc * inc;
+            if f64::from(square) < 1e-15 {
+                self.inc[k] = 0.;
+                self.lanes[k] = self.target[k];
+            } else {
+                self.inc[k] = inc;
+                moving += square;
+            }
+        }
+        if moving > 0. {
+            self.countdown = glide_blocks(rate) as i32;
+            self.gate = true;
+        }
+        true
+    }
+
+    /// One frame of the ramp: the lanes step by their increments. Returns whether the
+    /// coefficients must be redesigned for this frame (the gate is open and a lane moved).
+    pub(crate) fn frame(&mut self) -> bool {
+        for k in 0..3 {
+            self.lanes[k] += self.inc[k];
+        }
+        self.gate && self.inc.iter().any(|&d| d != 0.)
+    }
+}
 
 /// The native grid: F(i * F(0.1)) widened, so it is not exact decimal tenths.
 fn grid() -> [f64; N] {

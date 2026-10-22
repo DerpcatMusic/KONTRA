@@ -1296,6 +1296,8 @@ pub(super) struct ProcessorState {
     daft: filter::daft::State,
     /// Live Formant's control ramp.
     formant: formant::Ramp,
+    /// Solid G-EQ knob glide (the native lanes of one band).
+    glide: eq_family::solid::Glide,
 }
 impl ProcessorState {
     fn finite_for(&self, stage: ProcessorRef<'_>) -> bool {
