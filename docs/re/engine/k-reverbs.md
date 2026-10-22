@@ -285,7 +285,7 @@ is the one the Rust core already uses; the constants now confirm them.
 |---|---|---|---|
 | `DAT_1447148a4` | 0.001 | predelay ms to frames: `p · 250 · 0.001 · sr` | CONFIRMED (matches 0.25·p·sr) |
 | `DAT_144fc4a18` | 250 | predelay target scale (ms) | CONFIRMED |
-| `DAT_1447148b8` | 0.02 | parameter ramp duration (s) | CONFIRMED value; increment writer not located |
+| `DAT_1447148b8` | 0.02 | not the Plate ramp (used by other modules) | Plate uses `DAT_147697658` = 0.0200000014; see docs/re/engine/k-plate-ramp.md |
 | `DAT_1479ab65c` | 23561.9453 = 7500·π | init low-pass prewarp `tanf(x · 7500π)` with `x = +0x68` | CONFIRMED constant; `+0x68` = 1/sr is INFERRED (writer not found by pattern) |
 | `DAT_1479ab620` | 5600 | damp shelf corner (Hz) | CONFIRMED |
 | `DAT_144714a00` | 10 | base of the gain powers | CONFIRMED |
@@ -311,12 +311,8 @@ found), and the display laws.
 - The Raum outer process `1419878b0` (0141980000.c) does not reference the
   Cosmic-specific fields by the offsets in the findings note; those offsets are
   used by a different SIMD-heavy routine.
-- The double-state loop with two gains (+0xdd0, +0xdd8) and two states
-  (+0xde0, +0xde8), with the input taps at +0xdc0/+0xdc8 and +0xdf0/+0xdf8, is
-  in `141966ad0` (0141960000.c line 6083, 5251 bytes). It is guarded by floats
-  at +0xd38 and +0xd3c, and its feedback input passes a per-channel odd
-  polynomial with coefficients in the rdata constants. This is a **candidate**
-  for the Cosmic b80 feedback path, not confirmed: the findings note tied b80 to
-  +0xdd4/+0xdd8, which does not match these offsets exactly.
-- Still open: predelay feedback, b80 identity, post-filter laws, the wet law,
-  and any native vector. No Cosmic row can reach parity without a Kontakt capture.
+- The double-state loop in `141966ad0` was once a b80 candidate. It is REJECTED: it
+  belongs to the Freak class vtable. b80 is the NI::DSP::Limiter (see
+  docs/re/engine/k-raum-cosmic-laws.md, section 0).
+- Still open after the laws pass: the parameter writing +0x8c (feedback law), the
+  SVF preset writer, and the limiter parameter 1. No native Cosmic vector exists.
