@@ -9,7 +9,7 @@
 //! (Legacy Phaser audio 0x140aa3830, 0x1409619b0, speed getter 0x140a736a0;
 //! Phaser filter 0x1407c9a70). Interpolation, pan, saturation and the sweep
 //! law are generic.
-use super::tpt_svf::{Cut as LoopCut, CutState, State};
+use super::tpt_svf::{Cut as LoopCut, CutState, Saturator, SaturatorState, State};
 use super::{Planar, ProcessorState, flush};
 use crate::Error;
 use sampler_ir::fx::timemod::{
@@ -131,10 +131,16 @@ pub(crate) struct TimeMod {
     /// In-loop cut (`Feedback::cut`) and the first of its [`CUT_FRAMES`] state frames.
     cut: Option<LoopCut>,
     cut_at: usize,
+    /// In-loop saturator on the line input (`Line::saturation`), its amount, and its first state frame.
+    saturator: Option<Saturator>,
+    saturation: f32,
+    sat_at: usize,
 }
 
 /// Slab frames for the in-loop cut: `[lowpass s0, lowpass s1, highpass s0, highpass s1]`, each `[L, R]`.
 const CUT_FRAMES: usize = 4;
+/// Slab frames for the saturator: `[section B s0, s1, section A s0, s1]`, each `[L, R]`.
+const SAT_FRAMES: usize = 4;
 
 #[derive(Clone, Copy)]
 enum PhaseShape { Triangle, Saw, Square }
@@ -351,6 +357,10 @@ impl TimeMod {
             || cfg.allpass.is_some_and(|a| !matches!(a.law, SweepLaw::Filter { .. }));
         let cut = cfg.line.and_then(|l| l.feedback.cut).map(|c| LoopCut::new(c, rate as f32));
         let cut_at = if bank.is_some() { cap } else { tap_at + if cfg.line.is_some() { MAX_TAPS } else { 0 } };
+        // Only the generic line (`Native::None`) runs the in-loop saturator; natives return early.
+        let saturation = cfg.line.filter(|l| l.native == Native::None).map_or(0., |l| l.saturation);
+        let saturator = (saturation != 0.).then(|| Saturator::new(rate as f32));
+        let sat_at = cut_at + if cut.is_some() { CUT_FRAMES } else { 0 };
         Ok(Self {
             cfg,
             rate,
@@ -358,9 +368,12 @@ impl TimeMod {
             ap_at,
             fb_at,
             tap_at,
-            frames: cut_at + if cut.is_some() { CUT_FRAMES } else { 0 },
+            frames: sat_at + if saturator.is_some() { SAT_FRAMES } else { 0 },
             cut,
             cut_at,
+            saturator,
+            saturation,
+            sat_at,
             heads,
             taps,
             voices,
@@ -555,6 +568,9 @@ impl TimeMod {
         if self.cut.is_some() && filled == 0 {
             slab[self.cut_at..self.cut_at + CUT_FRAMES].fill([0.; 2]);
         }
+        if self.saturator.is_some() && filled == 0 {
+            slab[self.sat_at..self.sat_at + SAT_FRAMES].fill([0.; 2]);
+        }
         let mut finite = true;
         let [left, right] = block;
         let mut coefficient = [0f32; 2];
@@ -664,10 +680,26 @@ impl TimeMod {
             }
             if let Some(line) = &cfg.line {
                 let source = usize::from(line.feedback.source);
-                let input = [
+                let mut input = [
                     line.input[0][0] * sig[0] + line.input[0][1] * sig[1],
                     line.input[1][0] * sig[0] + line.input[1][1] * sig[1],
                 ];
+                // Replika path 0 (`0141aa0000.c` 5452-5474): the tap is crossfaded with its saturated copy,
+                // `(1 - a) dry + a sat(tap)`. The tap gain and modulation product of that path are not modelled.
+                if let Some(sat) = &self.saturator {
+                    let at = self.sat_at;
+                    for c in 0..2 {
+                        let mut st: SaturatorState = [
+                            State { s0: slab[at][c] as f32, s1: slab[at + 1][c] as f32 },
+                            State { s0: slab[at + 2][c] as f32, s1: slab[at + 3][c] as f32 },
+                        ];
+                        let dry = input[c] as f32;
+                        let wet = sat.tick(&mut st, dry, self.saturation);
+                        input[c] = f64::from((1. - self.saturation) * dry + self.saturation * wet);
+                        (slab[at][c], slab[at + 1][c]) = (f64::from(st[0].s0), f64::from(st[0].s1));
+                        (slab[at + 2][c], slab[at + 3][c]) = (f64::from(st[1].s0), f64::from(st[1].s1));
+                    }
+                }
                 let mut out = [0f64; 2];
                 let mut fed = [0f64; 2];
                 for (k, head) in self.heads[..self.taps].iter().enumerate() {
@@ -753,6 +785,11 @@ impl TimeMod {
         // Retained state decays to denormals only between blocks of silence.
         for frame in &mut slab[self.ap_at..self.tap_at] {
             *frame = frame.map(flush);
+        }
+        if self.saturator.is_some() {
+            for frame in &mut slab[self.sat_at..self.sat_at + SAT_FRAMES] {
+                *frame = frame.map(flush);
+            }
         }
         !finite
     }

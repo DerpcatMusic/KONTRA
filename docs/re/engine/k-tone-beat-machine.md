@@ -241,6 +241,33 @@ record bytes are non-zero (set by the file metadata parsers). That gate is not c
 session 3 played at 1.0 (see "Third oracle session"). Session 1's 0.25 and session 3's 1.0 come from
 the same stored values.
 
+### Decompile, second pass (2026-10-22, read-only)
+
+Source: `Research/KONTRA/source/kontakt8/*.c` (the Ghidra project is gone, so `query.sh` is unavailable).
+
+- Grid factor, confirmed: `FUN_14087d740` computes `G = 240 * mn / md / (len / rate) * ts`, reading
+  only the zone object (sample length `+0x1794`, rate `+0x178c`, `mn` `+0x7a6`, `md` `+0x7a7`, `ts`
+  `+0x7a8`). Apply step `FUN_14086f680` (`0140860000.c:9277`) sets `ts = B / G0`, with `B` the record's
+  BPM (`+0x28`). No host tempo, sync or transport input is read here. Cell length `FUN_140872590`
+  (`0140870000.c:1780`): `240 * W_n / (B * W_d)`.
+- Apply gate: `FUN_14086f680` writes `ts` only when `record[0] != 0` and `record[0x20] != 0`. Callers:
+  `FUN_1408af580` (`01408a0000.c:7194`) skips the apply for group id 5 (the Beat Machine) when the
+  group byte `+0xc2d` is non-zero (not fully traced); `FUN_1408b1960` (`01408b0000.c:1583`) and
+  `FUN_14135e550` (`0141350000.c:11331`) are file-record gated. A zone that is not applied keeps
+  `ts = 1.0` (default `FUN_1408df940`). That fits the 1.0 playbacks in sessions 3 to 5, but the flag
+  that blocks the apply in those sessions is not identified.
+- Slot 18 writes the attack and release frames (`+0x54`, `+0x58`) and the flag (`+0x50`). The generic
+  render `FUN_140cdb6f0` (`0140cd0000.c:6251`) uses `+0x58` as a crossfade length and a per-sample
+  exponential gain, `pow(DAT_1447149a8, +0x3c)`. That is a candidate for the decay the oracle showed
+  at rate 0.25 (about 0.1 s). Not linked to the oracle, not confirmed.
+- `slice_flag_1` (`+0x99`): serialisers `FUN_140d12740` (`0140d10000.c:1436`) and `FUN_140d12910`
+  (`0140d10000.c:1728`); reader only in slot 18 (`0140cd0000.c:5720`). No load-side writer found.
+- Loops: `FUN_1409601d0` (`0140960000.c:70`) changes `ts` from the loop length (powers of two). Its only
+  caller is a UI handler (`FUN_140625ec0`, message types 0xc and 0xd). No Beat-specific loop render path
+  found.
+- Getter `FUN_1408adf90` case 0x12 returns `(+0x7ac if > 0 else G) * 1000`, probably the displayed BPM
+  in milli-units.
+
 ### Voice (lowering and playback) — implemented
 
 `sampler-core` plays a Beat Machine zone as slices (`source/beat_slices.rs`, `Player`):
@@ -267,7 +294,7 @@ of the saved `beat_fixed.nki`, `--no-scripts`, note 60 for 0.8 s.
 | Slot rates (tone x 0.25), slices 1-3 (50, 80, 110 Hz) | 49.86, 79.99, 110.02 Hz | 49.86, 80.00, 109.97 Hz | 0.5 % | pass (oracle vs render within 0.05 %; analytic-signal median over the central 55 ms of each cell, re-measured 2026-10-22) |
 | Slot boundaries (onset at 0, cells 125 ms) | changes near 100, 240, 350 ms | same within one 20 ms step | 20 ms | pass |
 | Slice 4 (560 Hz) | silent after 380 ms | 139.91 Hz, full level | — | fail (decay, below) |
-| Level (peak, first 100 ms) | 0.136 RMS | 0.161 RMS | — | fail, 1.5 dB; the plain sampler render of the same zone is at our level, so the gap is in the shared level path |
+| Level (peak, first 100 ms) | 0.136 RMS | 0.161 RMS | — | fail, 1.5 dB. Our plain sampler render equals our Beat render, but no oracle plain-sampler level was measured, so it is not known whether the gap is shared (velocity curve) or Beat-only |
 | Amplitude over time | flat to ~100 ms, then falls to ~0 by 350 ms (tau about 0.1 s) | flat | — | fail, not modelled |
 
 The source tones are flat (RMS 0.35 in each cell), and the NKI amplitude envelope has sustain
@@ -319,9 +346,13 @@ Results (artifacts: `PluginArtifacts/kontra-oracle/beat-machine/session3/`):
 Conflict with session 1. Session 1 (KSP `play_note`, one zone, 1/16 at 120 BPM, trigger file
 without a tempo meta, so 120 BPM) played at 0.25, with the decay and the slice-4 silence. Session 3
 (MIDI file at 60 BPM, three zones, no script) played at 1.0, with neither. The stored value is 0.25
-in both NKIs. So the oracle rate is not the stored `tempo_scale` alone. The variables not yet
-separated are: the KSP script being present, the note source (script or MIDI), the host tempo the
-MIDI file sets (60 or 120 BPM), and the zone count. The decay and the slice-4 silence belong to
+in both NKIs. So the oracle rate is not the stored `tempo_scale` alone. Sessions 4 and 5 tested two of
+these. Session 4 (session 3 plus an empty KSP script, attached after the save) stayed at 1.0 in all
+zones, so the script is not the condition. Session 5 (session 3 with the MIDI file at 120 BPM, no
+script) also stayed at 1.0, so the MIDI file's tempo is not the condition. That does not show the
+tempo reaches Kontakt at all. Still open: the note source (session 1's notes came from `play_note`;
+sessions 3 to 5 used MIDI) and the zone count (session 1 had one zone over all keys; sessions 3 to 5
+had three). The decay and the slice-4 silence belong to
 the 0.25 case, and they have not been reproduced at 1.0.
 
 ### Not recovered
@@ -405,13 +436,17 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 2. Confirm the stored-mode to internal-id map. The export groups internal id 4
    with the sampler family and uses id 5 for the Beat Machine rule, so stored
    Beat (4 in the repo) is not the identity map. Unresolved.
-3. Oracle, Beat Machine rate: session 3 (MIDI-timed, three zones) gave rate 1.0 where the
-   stored value is 0.25 (1/16) and 0.5 (1/8). Session 1 gave 0.25 with the same stored value.
-   Separate the variables (KSP script, note source, host tempo from the MIDI file, zone count)
-   in one run, and read the host-tempo path in the grid factor (item 6).
-4. Oracle, amplitude: the 1.54 dB level gap is constant (oracle -17.35 dB, render -15.81 dB RMS)
-   in session 3. The session 1 decay after about 100 ms did not reproduce at rate 1.0; it may
-   belong to the 0.25 case.
+3. Oracle, Beat Machine rate: sessions 3 to 5 gave rate 1.0 where the stored value is 0.25 (1/16)
+   and 0.5 (1/8). Session 1 gave 0.25 with the same stored value. Excluded: the script being
+   present (session 4) and the MIDI file tempo, 60 or 120 BPM (session 5). Remaining: the note
+   source (KSP `play_note` or MIDI) and the zone count (one or three). The decompile gate (item 6)
+   names a group flag (`+0xc2d`, group id 5) that is not traced; it is the next lead.
+4. Oracle, level: the 1.54 dB gap is constant (oracle -17.35 dB, render -15.81 dB RMS) in sessions 3
+   to 5. No oracle plain-sampler level exists, so it is not known whether the gap is shared (the
+   velocity curve) or Beat-only. Oracle peak gain at velocity 100 is 0.384, about (100/127)^4 (one
+   point, not a fit); ours is 0.458. One plain-sampler session at several velocities would separate
+   the two. The session 1 decay after about 100 ms did not reproduce at rate 1.0; it may belong to
+   the 0.25 case.
 5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.
 6. Grid factor: resolved for the stored `ts` (`BPM * len / 240`, see "Zone playback rate"). Still
    open: the runtime condition under which `ts` is applied (session 1 yes, session 3 no), the zone grid

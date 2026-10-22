@@ -374,3 +374,85 @@ Not confirmed as a table. Findings:
 - `svf`: 12 pass, including `saturator_polynomial_is_the_normalised_exponent_sum`,
   `saturator_sections_are_r_two_at_their_decoded_cutoffs` and `saturator_dc_output_is_g_times_tanh_of_the_drive`.
 - `saturator`: 8 pass (the three new ones above, plus the existing color saturator tests).
+
+---
+
+## Loop pass
+
+Method: decompile text only (`0141aa0000.c`, `0141ac0000.c`, `0141ab0000.c`, `0141a70000.c`), plus the
+`tpt_svf` and `timemod` code already in the tree. No binary, Ghidra, radare2, REA, Wine or Kontakt; nothing
+measured against Kontakt. No native vector.
+
+### Wired
+
+1. **Saturator (SATURATION, setter index 29). CONFIRMED law, tie INFERRED.**
+   - Setter `141ac5980` case 0x1d (`0141ac0000.c` line 3654): the target goes to `C+0x142b0`; live (`C+0x8`
+     set, the ctor default 1) writes the amount `C+0x142ac = v` at once and calls `141accd10`.
+   - Placement: loop path 0 (`C+0x604 == 0`, the ctor default; no writer found, GAP-L). `0141aa0000.c`
+     5452-5474: when `a != 0`, the tap runs through `141aa44a0` (`tpt_svf::Saturator`), then the tap is
+     `(1 - a) dry + a sat(tap)`. Drive `d = 10^a` (`powf` base f32 `144714a00`), gain `g = 10^(-a/2)`.
+   - Mapping: `Line::saturation` (sampler-ir), `dsp/timemod` runs the stage on the line input before the
+     write. Generic lines only (`Native::None`). The four state frames live in the slab, reset when the ring
+     is empty, flushed at block end.
+   - Approximation: the decompile's tap carries the lane product `m` and the tap gain `Ctl(0x68)`, and the
+     dry term does not. Neither is modelled, so the dry term is the line input. At `a = 0` the stage is
+     skipped, which is exact for this port. The decompile's `a = 0` crossfade differs by `m x Ctl(0x68)`.
+
+### Still open
+
+2. **Output term `OUT = F1 x Ctl(0x60) + F2`** (`141aa9480` step 13). Not wired.
+   - `Ctl(0x60)` = block `P0 + 0x60`. Default **0**: the block allocator `141a7d480` zeroes every 0x70-byte
+     block, and nothing writes the offset. GAP-J stays open. The setter switch `141ac5980` has no store at
+     that offset (checked: its only `+0x60` references are virtual calls on sub-objects). The bypass fade
+     `141acc600` writes sub-object targets (`C+0x62cc`, `+0x1144c`, `+0x1292c`), not `Ctl(0x60)`. The
+     earlier note that it writes `P3 + 0x60` is not supported by the text.
+   - F2 is the cut after head 2 (step 12: F1 out is written to head 2, read back, then filtered by F2). Head 2
+     is a separate read (GAP-C: ring addressing, head time field), which the generic line does not have.
+     So F2 has no faithful position. The output stays the head sum. At the default weight the decompile
+     output is F2 of the head 2 read, which is the head sum only when the cut is neutral.
+   - LOWCUT/HIGHCUT are the cut stages (GAP-D). They stay on the recirculated signal, inert while the matrix
+     is zero, so the output is unchanged by them.
+
+3. **Feedback (FEEDBACK). Not wired, kept at 0.**
+   - No index is tied to FEEDBACK (name binding still open, see "Name binding" above).
+   - The recirculating path is F2 out, written to head 3, read next frame (`0141aa0000.c` step 12). Head 3's
+     gain comes from the head gains (setter index 12 through `141abba60`, tie UNKNOWN, GAP-C).
+   - The matrix writes (step 16) use `Ctl(0x8) x Ctl(0x1c)` (dry), `Ctl(0x64)` (side, idx 16), and `Ctl(0x4)`
+     (output). None multiplies the recirculated signal, so no feedback scalar is confirmed.
+   - Test (c), the echo scale, is not written: the law it would check is not confirmed.
+   - Open address: `141aa9480` step 12, `141abba60`, GAP-C.
+
+4. **Ducking (DUCKING_SENSE, DUCKING_RELEASE, DUCKING_AMOUNT). NotModeled.**
+   - `141abd290` (569 B) read path: constants decoded (L15), head roles INFERRED. The body `141abd0b0`
+     (section position and gain) is not read (GAP-M), and the writers of `C+0xad0`, `C+0xad8`, `+0x918`,
+     `+0x91c`, `+0x938` are not traced (GAP-B).
+
+### Unchanged opens (addresses)
+
+- GAP-A: ramp length `n` in `141aa1580`.
+- GAP-C: head ring writer `H+0x15c`, mode-1 kernels `141ab8c60` / `141ab8a00` / `141ab87d0` / `141ab7fe0`,
+  blend `141ab7e00`.
+- GAP-D: glide 3 step `F+0x1430`, `F+0x100` class and flag.
+- GAP-F: the amount glide coefficient `C+0x142a8` (live path does not use it).
+- GAP-I: LFO consumers `+0x94c` / `+0x960` in `141ab7480`.
+- GAP-L: writers of `C+0x600` / `C+0x604` / `C+0x630..+0x638` / `C+0x6cc` / `C+0x6d0` (path 0 assumed).
+
+### Mapping (sampler-kontakt `replika_config`)
+
+- SATURATION: mapped (no note). Outside 0..1 (or non-finite): InvalidValue, mapping returns None.
+- LOWCUT, HIGHCUT: still UnknownLawOmitted (law confirmed, binding not, GAP-D). The open address is in the note.
+- FEEDBACK: still UnknownLawOmitted, open at `141aa9480` step 12 (note text).
+- DUCKING_*: still NotModeled, open at `141abd290` (note text).
+- depth, rate, modulation: UnknownLawOmitted, open at GAP-I (note text).
+
+### Tests
+
+- `dsp::tpt_svf::replika_saturator_full_amount_is_ten_and_minus_half_power_of_drive`: DC limit at a = 1 is
+  `10^-0.5 tanh(10 x 0.1)`.
+- `dsp::timemod::replika_zero_saturation_passes_the_delayed_input_exactly`: saturation 0 returns the delayed
+  impulse exactly (no stage).
+- `dsp::timemod::replika_full_saturation_delivers_gain_times_tanh_of_drive_at_dc`: line output at DC is
+  `10^-0.5 tanh(1)`.
+- `effects::timemod::replika_saturation_maps_into_the_line_input` (sampler-kontakt): maps 0.5, rejects 1.5.
+- `replika_time_law_is_documented_and_the_rest_is_reported`: note count 28 -> 27 (saturation is mapped).
+- Existing `loop_cut_acts_only_through_the_feedback_matrix` (zero matrix bit-identical): passes.

@@ -117,9 +117,9 @@ const SATURATOR_R: f32 = 2.;
 /// Saturator (`141aa44a0`). Section B (2205 Hz) takes `tanh(d x)`; its out6 `f` feeds the polynomial
 /// `P(f) = c4 f^2 + c8 f^3 + c0c f^4 + c10 f^5`, which drives section A (5 Hz). Both sections have
 /// R = 2 and Q = 1 (`141ac9c50`). Output `g (tanh(d x) + P - 2 A.out5 - A.out6)`, with c14 = c18 = 1,
-/// `d = 10^a`, `g = 10^(-a/2)`. CONFIRMED arithmetic. Not wired: the Replika loop is not ported.
+/// `d = 10^a`, `g = 10^(-a/2)`. CONFIRMED arithmetic. Wired on the Replika line input (`dsp/timemod`,
+/// `Line::saturation`), path 0 of `0141aa0000.c` 5452-5474.
 /// ponytail: `powf` per sample for `d` and `g`; the decompile refreshes them only when the amount moves.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Saturator {
     /// `c4, c8, c0c, c10` of `P(f)`, each divided by the raw base (`141abe910`).
@@ -129,10 +129,8 @@ pub struct Saturator {
 }
 
 /// Per-channel states of a [`Saturator`]: `[section B, section A]`.
-#[allow(dead_code)]
 pub type SaturatorState = [State; 2];
 
-#[allow(dead_code)]
 impl Saturator {
     pub fn new(fs: f32) -> Self {
         let [p2, p3, p4, p5, p6] = SAT_EXPONENTS.map(|e| 10f32.powf(e * SAT_K));
@@ -243,5 +241,19 @@ mod tests {
             let want = 10f32.powf(-0.5 * a) * (10f32.powf(a) * 1e-3).tanh();
             assert!((y - want).abs() <= 1e-3 * want, "a={a}: {y} vs {want}");
         }
+    }
+
+    /// Full amount (a = 1): drive d = 10^1 = 10 and gain g = 10^-0.5 (`141aa44a0` with `141accd10`),
+    /// so the DC limit at x = 0.1 is 10^-0.5 tanh(10 x) = 10^-0.5 tanh(1).
+    #[test]
+    fn replika_saturator_full_amount_is_ten_and_minus_half_power_of_drive() {
+        let s = Saturator::new(FS);
+        let mut st: SaturatorState = Default::default();
+        let mut y = 0.;
+        for _ in 0..200_000 {
+            y = s.tick(&mut st, 0.1, 1.);
+        }
+        let want = 10f32.powf(-0.5) * 1f32.tanh();
+        assert!((y - want).abs() <= 1e-3 * want, "{y} vs {want}");
     }
 }
