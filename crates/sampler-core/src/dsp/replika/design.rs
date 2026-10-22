@@ -26,13 +26,18 @@ const POST_EXP: f64 = f64::from_bits(0xc063_a28c_59d5_433b);
 const TAN_THIRD: f32 = f32::from_bits(0x3eaa_aaab);
 const TAN_2_15: f32 = f32::from_bits(0x3e08_8889);
 
-/// `1419529e0`, the g part: tan(pi f / fs) to fifth order (`x + x^3/3 + 2x^5/15`), in the native f32 order.
-fn tan_series(f: f32, fs: f32) -> f32 {
-    let x = (f64::from(f) * std::f64::consts::PI / f64::from(fs)) as f32;
+/// The g part of `1419529e0`: tan(x) to fifth order (`x + x^3/3 + 2x^5/15`), in the native f32 order. Shared
+/// with the tap section `14199dcc0` (`replika::read`).
+pub(super) fn tan_poly(x: f32) -> f32 {
     let x2 = x * x;
     let x3 = x2 * x;
     let x5 = x3 * x2;
     x3 * TAN_THIRD + x + x5 * TAN_2_15
+}
+
+/// `1419529e0` with x = pi f / fs, the argument rounded to f32 as the native `cvtpd2ps`.
+fn tan_series(f: f32, fs: f32) -> f32 {
+    tan_poly((f64::from(f) * std::f64::consts::PI / f64::from(fs)) as f32)
 }
 
 /// `141ac96c0`: the damping k = 2 - 2 arg.

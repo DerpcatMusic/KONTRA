@@ -547,5 +547,6 @@ fn half_scale(lim: &mut DbLimiter, x: [f32; 2]) -> [f32; 2] {
 
 mod design;
 mod mode1;
+mod read;
 #[cfg(test)]
 mod tests;
