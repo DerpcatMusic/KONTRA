@@ -990,3 +990,24 @@ fn string_array_sort_changes_only_the_inclusive_range() {
         );
     }
 }
+
+#[test]
+fn group_lookup_is_exact_and_case_sensitive_for_constant_and_runtime_names() {
+    // Kontakt's group lookup compares names byte for byte: "GR1" misses "gr1".
+    let rt = run(
+        "on init declare $a declare $b declare $c declare $d declare @n end on
+         on note
+           $a := find_group(\"GR1\")
+           $b := find_group(\"gr1\")
+           @n := \"Gr2\"
+           $c := find_group(@n)
+           @n := \"gr2\"
+           $d := find_group(@n)
+         end on",
+        &["gr1", "gr2"],
+    );
+    assert_eq!(cell(&rt, 0), -1);
+    assert_eq!(cell(&rt, 1), 0);
+    assert_eq!(cell(&rt, 2), -1);
+    assert_eq!(cell(&rt, 3), 1);
+}

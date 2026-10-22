@@ -1343,7 +1343,8 @@ impl Runtime {
                     .get(usize::from(base)..usize::from(base) + usize::from(count))
                     .ok_or(Error::InvalidInput)?
                     .iter()
-                    .position(|t| t.eq_ignore_ascii_case(name.as_str()));
+                    // Kontakt's group lookup compares names byte for byte (case-sensitive).
+                    .position(|t| &**t == name.as_str());
                 self.set_reg(id, local, found.map_or(-1, |i| i as i64))?;
             }
             Op::TextIndex { text, local } => {
