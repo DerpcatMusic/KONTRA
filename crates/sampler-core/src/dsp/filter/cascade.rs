@@ -2278,29 +2278,25 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    /// The SV2 and SV4 classes at res .9 (cutoff .5) against native impulse outputs of the
-    /// process functions 0x140b02400 and 0x140b02790 run under kemu with the setters' targets
-    /// (`cascade_sv_res9_vectors.json`, 512 frames). Their algebra is the native one; the capture
-    /// rows at this setting differ by the measurement chain, not by these stages.
+    /// The SV2, SV4 and SV6 classes at res .9 (cutoff .5), and SV2 BP at u = 1, against native
+    /// impulse outputs of the process functions 0x140b02400, 0x140b02790 and 0x140b02cf0 run under
+    /// kemu with the setters' targets (`tools/re/sv_native_vectors.py`, 512 frames).
     #[test]
-    fn sv_res9_match_the_native_vectors() {
+    fn sv_kemu_match_the_native_vectors() {
         super::super::ladder_kernel::prepare();
         let cases: Vec<serde_json::Value> =
-            serde_json::from_str(include_str!("cascade_sv_res9_vectors.json")).unwrap();
+            serde_json::from_str(include_str!("cascade_sv_kemu_vectors.json")).unwrap();
         const N: usize = 512;
         const BLOCK: usize = super::super::super::BLOCK;
         let mut failures = Vec::new();
         for case in &cases {
             let set = &case["setting"];
             let name = set["type"].as_str().unwrap();
-            let sv = match name {
-                "LP2" => Sv::Two { mode: 0 },
-                "BP2" => Sv::Two { mode: 1 },
-                "HP2" => Sv::Two { mode: 2 },
-                "LP4" => Sv::Four { mode: 0 },
-                "BP4" => Sv::Four { mode: 1 },
-                "HP4" => Sv::Four { mode: 2 },
-                _ => Sv::Four { mode: 3 },
+            let mode = ["LP", "BP", "HP", "NOTCH"].iter().position(|m| name.starts_with(m)).unwrap() as u8;
+            let sv = match case["class"].as_str().unwrap() {
+                "SV2" => Sv::Two { mode },
+                "SV4" => Sv::Four { mode },
+                _ => Sv::Six { mode },
             };
             let unit = CascadeSettings {
                 class: Legacy::Sv(sv),
