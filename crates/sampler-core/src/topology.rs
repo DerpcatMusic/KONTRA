@@ -10,7 +10,7 @@ use crate::{
 pub(crate) mod signal;
 pub(crate) mod stages;
 
-const MAX_MEMBERS: usize = 16;
+const MAX_MEMBERS: usize = sampler_ir::MAX_PROCESSING_MEMBERS;
 /// Actual scope program operand giving an explicitly declared source gate.
 #[derive(Clone,Copy,Debug)]
 pub struct ProcessingModulationGate {pub source:usize,pub route:usize,pub velocity:crate::VelocityCurve}

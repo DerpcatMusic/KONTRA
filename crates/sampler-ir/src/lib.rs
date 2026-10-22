@@ -9,6 +9,10 @@
 #![forbid(unsafe_code)]
 
 pub mod fx;
+/// Authored zones (or scope members) one source-processing owner can address.
+/// This is an engine capacity, not a native UVI law: lowering and the core
+/// topology use the same bound. ponytail: raise if a real keygroup exceeds it.
+pub const MAX_PROCESSING_MEMBERS: usize = 64;
 pub mod kontakt;
 pub mod units;
 mod validate;
