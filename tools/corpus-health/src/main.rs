@@ -17,6 +17,7 @@
 //! resume that item is recorded as `crash` and skipped, so one bad library
 //! cannot stall the run.
 mod health;
+mod ksp;
 mod heap;
 mod inspect;
 mod load_audit;
@@ -3094,6 +3095,8 @@ fn main() {
         [cmd, rest @ ..] if cmd == "preset-switch" => preset_switch::run(rest),
         [cmd, rest @ ..] if cmd == "onset" => onset::run(rest),
         [cmd, rest @ ..] if cmd == "health" => health::run(rest),
+        [cmd, rest @ ..] if cmd == "ksp" => ksp::run(rest),
+        [cmd, rest @ ..] if cmd == "ksp-summary" => ksp::summary(rest),
         [cmd, rest @ ..] if cmd == "onset-worker" => onset::worker(rest),
         [cmd, out, rest @ ..] if cmd == "run" => {
             let mut opts = Opts::default();
@@ -3145,6 +3148,7 @@ fn main() {
                  \x20      [--from RUN [--reuse]] [--failed-from RUN] [--workers N] [--timeout S] [ROOT ...]\n\
                  \x20      | quick [--workers N] | quick-list RUN | summary OUT.jsonl SUMMARY.md | diff OLD NEW\n\
                  \x20      | health RUN... [--json OUT] [--md LIBRARY_GAPS.md] [--baseline OLD.json] (exit 1 on errors)\n\
+                 \x20      | ksp OUT.jsonl [--md REPORT.md] PATH... | ksp-summary OUT.jsonl\n\
                  \x20      | preset-switch PLAN.json (explicit full-swap runtime probe; ui-render helper)\n\
                  \x20      | inspect INPUT [--program INDEX|BANK_MEMBER] [--base ORIGINAL.nki]\n\
                  \x20          [--initialize] [--ephemeral-source] [--ui-only] [--ephemeral-render] [--profile-init]"

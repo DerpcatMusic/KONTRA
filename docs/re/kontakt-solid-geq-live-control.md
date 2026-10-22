@@ -112,10 +112,9 @@ lane default and the saved record agree.
   therefore has no engine binding; the runtime reports it through the
   engine-parameter outcome (`EngineParameterOutcome { result: Err }`) rather
   than dropping it silently.
-* **The 20 ms coefficient smoothing** stays open (the other 59-entry row). The
-  changed knobs recompute the band's biquad at the next block through the
-  existing aux-key check in `eq_family/generic.rs`; the native ramps the
-  coefficients instead.
+* **The coefficient smoothing is the native lane schedule** (eq-kontakt.md sec. 8):
+  30 blocks of 32 frames at 48 kHz, redesigned per frame in DF1. Open: whether a non-live
+  move glides (the writer of the live flag `0x13da0` is not located).
 * A knob written by a script before the patch is loaded is applied by
   `apply_writes` (§4) for group inserts and for every program rack, because
   both go through `apply_writes`.

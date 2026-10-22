@@ -2126,6 +2126,18 @@ fn assemble_streamed_cancelable(
             return Err(initial_playback_error(reason.clone()).into());
         }
     }
+    // Owned multipart members beyond stereo are admitted but not mixed: say so.
+    for (asset,source) in sources.iter().enumerate() {
+        let Ok(source)=source else {continue};
+        if source.unrouted_parts>0 && instrument.zones.iter().any(|zone|zone.asset==Some(ir::AssetRef(asset))) {
+            instrument.unsupported.push(ir::Unsupported {
+                location: locations[asset].clone(),
+                feature: "UVI multipart channel routing".into(),
+                value: format!("{} members owned; only the first two are routed to stereo", source.unrouted_parts+2),
+                reason: ir::Reason::UnknownLaw,
+            });
+        }
+    }
     bind_native_header_geometry(&mut instrument,&sources.iter().map(|source|source.as_ref().ok().and_then(|source|source.original_channels).map(|channels|(channels,if channels<=2{2}else{channels}))).collect::<Vec<_>>())?;
     let playbacks:Vec<_>=sources.iter().map(|s|match s {Ok(s)=>s.playback.clone(),Err(_)=>Ok(None)}).collect();
     apply_initial_playbacks(&mut instrument,&playbacks,&sources.iter().map(Result::is_ok).collect::<Vec<_>>())?;

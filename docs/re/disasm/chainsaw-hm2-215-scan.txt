@@ -1,0 +1,60 @@
+# HM2 (Chainsaw) +0x215 / +0x210..0x214 store scan, Kontakt8.exe .text
+# Method: disp32 search for 0x210..0x215 in executable sections, capstone decode of the instruction that carries the displacement. One-time scan, 2026-10-23.
+# Result: no store in the HM2 class range (0x14196xxxx-0x14197xxxx) writes byte +0x215. Literal-disp hits outside HM2 are listed for completeness.
+# Writers of +0x215 that exist: clears only (141972140 @ 0141970000.c:1162; 140990000.c:10227 ; 141950000.c:9343 is a qword index, not this byte).
+
+## disp 0x215, decoded (may include misaligned decodes)
+14045d951	mov dword ptr [rbp + 0x620], 0x215
+1406a83c6	add byte ptr [rbx + 0x215], bh
+14077f531	lea eax, [rcx + 0x215]
+140cec062	inc dword ptr [rax + rax*8 + 0x215850f]
+140d2d3b4	movabs dword ptr [0x215850fc0850369], eax
+140d2d624	movabs al, byte ptr [0x215850fc0850369]
+14102cde1	mov dword ptr [rbp + 0x215], eax
+1411e5204	add byte ptr [rbx + 0x215e9d8], cl
+141416f55	rol dword ptr [rax + rax*8 + 0x2158e0f], 0
+141971920	cmp byte ptr [rdi + 0x215], 0
+1419f3642	add byte ptr [rax + 0x215], bh
+141a15bf2	cmp eax, dword ptr [rip + 0x215850f]
+141fabe69	add byte ptr [rax + 0x215], bh
+141facb35	lea esp, [rip + 0x215]
+14209a87e	add byte ptr [rax + rax*8 + 0x215840f], al
+1421c08c2	mov byte ptr [rbp + rsi + 0x215], dl
+142f5a7bc	add byte ptr [rbx + 0x215], bh
+142f6e370	mov dword ptr [rcx + 0x18], 0x215
+143242f6a	add byte ptr [rax + rax*8 + 0x215850f], al
+14329487d	add byte ptr [rax + rax*8 + 0x215850f], al
+1432c3192	mov byte ptr [rbp + rsi + 0x215], dl
+14358a300	movabs al, byte ptr [0x215e9000006]
+143c8e8ce	add byte ptr [rbx + rbx*8 + 0x215840f], al
+143dae49c	inc dword ptr [rax + rax*8 + 0x215840f]
+143e69160	inc dword ptr [rax + rax*8 + 0x215840f]
+1443c5219	movzx ecx, byte ptr [rax + 0x215]
+1443c53f4	movzx ecx, byte ptr [rax + 0x215]
+1443c5fbb	movzx ecx, byte ptr [rax + 0x215]
+1443c618f	movzx ecx, byte ptr [rax + 0x215]
+
+## stores at disp 0x210..0x215 in 0x1409..0x141e region, rsp excluded
+1409898ea	add byte ptr [rcx + 0x210], bh
+1419419a5	sub dword ptr [rbp + 0x210], eax
+141946daa	sub dword ptr [rbp + 0x210], eax
+141970350	sub dword ptr [rbp + 0x210], ecx
+141970520	sub dword ptr [rbp + 0x210], ecx
+141992514	sub dword ptr [rbp + 0x210], edi
+1419f366a	add byte ptr [rax + 0x210], bh
+1419f3674	add byte ptr [rax + 0x211], bh
+1419f367e	add byte ptr [rax + 0x212], bh
+1419f3688	add byte ptr [rax + 0x213], bh
+1419f3692	add byte ptr [rax + 0x214], bh
+141a81be6	sub dword ptr [rbp + 0x210], eax
+141a9bc15	sub dword ptr [rbp + 0x210], esp
+141a9c2ea	sub dword ptr [rbp + 0x210], eax
+141bc36f1	sub byte ptr [rbx + 0x210], cl
+141bd9e72	sub byte ptr [rbp + 0x210], dl
+141beb0c8	sub byte ptr [rdx + 0x210], dl
+141c11805	sub dword ptr [rax + 0x210], eax
+141c1583c	sub dword ptr [rcx + 0x210], eax
+141d2199c	sub byte ptr [rbx + 0x210], al
+141d370cd	sub byte ptr [rbp + 0x210], dl
+141d46a5f	sub byte ptr [rdx + 0x210], dl
+141e85bbe	sub byte ptr [rbp + 0x210], al

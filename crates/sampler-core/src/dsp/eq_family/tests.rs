@@ -77,42 +77,102 @@ fn solid_knobs_run_through_the_spline_tables() {
 }
 
 #[test]
-fn solid_knobs_glide_linearly_over_the_native_ramp() {
-    // A knob move glides the knob values over the ramp and redesigns from them: one block is part
-    // way to the new design, and after the ramp the cached TPT coefficients are the design at the
-    // target, bit for bit.
+fn solid_knob_glide_is_the_native_lane_schedule() {
+    // Native lanes from the Kontakt 8 G_EQ live path under kemu (geq_ramp_vectors.json, made by
+    // tools/re/geq_ramp_vectors.py): LMF freq, LMF Q and LMF gain are lanes 3, 4 and 2. The gain
+    // steps 0.5 -> 0.75 at grid block 1 and 0.75 -> 0.25 at block 16, while the first ramp moves.
+    let vectors: serde_json::Value = serde_json::from_str(include_str!("geq_ramp_vectors.json")).unwrap();
+    assert_eq!(solid::glide_blocks(48_000), 30);
+    assert_eq!(solid::glide_blocks(44_100), 28);
+    for run in vectors["runs"].as_array().unwrap() {
+        let rate = run["rate"].as_u64().unwrap() as u32;
+        assert_eq!(solid::glide_blocks(rate), run["blocks_n"].as_u64().unwrap() as u32, "rate {rate}");
+        let mut glide = solid::Glide::default();
+        for (f, frame) in run["frames"].as_array().unwrap().iter().enumerate() {
+            if f as u64 % solid::GLIDE_BLOCK == 0 {
+                let gain = match f / 32 {
+                    0 => 0.5,
+                    1..=15 => 0.75,
+                    _ => 0.25,
+                };
+                glide.grid(rate, [0.5, 0.5, gain]);
+            }
+            glide.frame();
+            let native: Vec<f32> = frame["lanes"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+            let want = [native[3], native[4], native[2]];
+            assert_eq!(glide.lanes().map(f32::to_bits), want.map(f32::to_bits), "rate {rate} frame {f}");
+            assert_eq!(glide.gate, frame["gate"].as_u64() == Some(1), "rate {rate} frame {f} gate");
+            if glide.gate {
+                assert_eq!(i64::from(glide.countdown), frame["counter"].as_i64().unwrap(), "rate {rate} frame {f} countdown");
+            }
+        }
+    }
+}
+
+#[test]
+fn solid_knob_glide_redesigns_each_moving_frame_and_lands_on_the_target() {
+    // The section is redesigned from the lanes on every frame that moves them, so the ramp is
+    // audible as a sequence of designs, and the last of them is the design at the target.
     let c = Parameter::Constant;
     let band = |gain| EqBand {
         law: Law::Solid(SolidSection::HighMid),
         frequency: c(0.5),
         q: c(0.5),
         gain_db: c(gain),
-        ramp: solid::RAMP_SECONDS,
         ..EqBand::rbj(Kind::Peak, 0., 0., 0.)
     };
     let design = |gain: f64| {
         let [b0, b1, b2, a1, a2] = solid::coefficients(SolidSection::HighMid, Kind::Peak, 2, f64::from(RATE), 0.5, 0.5, gain);
-        kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [a1, a2] }).unwrap().to_array()
+        [b0, b1, b2, a1, a2]
     };
     let (flat, boost) = (stage(band(0.5)), stage(band(1.)));
     let mut state = ProcessorState::default();
     let mut block: Planar = [[0.; BLOCK]; 2];
     flat.process(&mut state, &[], &mut block, BLOCK, 0);
-    assert!(state.aux[10..16] == design(0.5), "first use is the design at the stored knobs");
-    boost.process(&mut state, &[], &mut block, BLOCK, BLOCK as u64);
-    assert!(state.aux[10..16] != design(0.5) && state.aux[10..16] != design(1.), "one block is part-way");
-    assert_eq!(state.aux[7], BLOCK as f64, "the ramp counts the frames it has run");
-    for n in 2..2000 {
-        boost.process(&mut state, &[], &mut block, BLOCK, (n * BLOCK) as u64);
+    assert!(state.aux[8..13] == design(0.5), "first use is the design at the stored knobs");
+    let frames = solid::glide_blocks(RATE) as usize * solid::GLIDE_BLOCK as usize;
+    let mut at = BLOCK as u64;
+    boost.process(&mut state, &[], &mut block, BLOCK, at);
+    at += BLOCK as u64;
+    assert!(state.aux[8..13] != design(0.5) && state.aux[8..13] != design(1.), "the first block is part-way");
+    while state.glide.gate {
+        boost.process(&mut state, &[], &mut block, BLOCK, at);
+        at += BLOCK as u64;
     }
-    assert!(state.aux[10..16] == design(1.), "the ramp ends at the target design, bit for bit");
+    assert!(at as usize >= frames + BLOCK, "the ramp runs its whole length");
+    // f32 lanes accumulate 960 steps (native too), so the landing is within 1e-5, not bit-exact.
+    let landed = state.aux[8..13].iter().zip(design(1.)).map(|(a, b)| (a - b).abs()).fold(0., f64::max);
+    assert!(landed < 1e-5, "the last design is the target design, off by {landed}");
 }
 
-/// The native literal behind the 20 ms ramp (f32 0.02, bits 0x3ca3d70a at 0x1447148b8 in the
-/// Kontakt 8 `.rdata` cache). Its use as the G_EQ ramp length is not yet proven (eq-kontakt sec. 5).
 #[test]
-fn ramp_constant_is_the_native_twenty_ms_literal() {
-    assert_eq!((solid::RAMP_SECONDS as f32).to_bits(), 0x3ca3d70a);
+fn solid_df1_section_is_the_native_cascade_record() {
+    // The native section is direct-form I (process 0x141a595d0), so a static design filters the
+    // same as the TPT realisation it replaces: the impulse responses of the two forms agree.
+    let c = Parameter::Constant;
+    let band = EqBand {
+        law: Law::Solid(SolidSection::HighMid),
+        frequency: c(0.5),
+        q: c(0.5),
+        gain_db: c(1.),
+        ..EqBand::rbj(Kind::Peak, 0., 0., 0.)
+    };
+    let stage = stage(band);
+    let mut state = ProcessorState::default();
+    let mut block: Planar = [[0.; BLOCK]; 2];
+    block[0][0] = 1.;
+    stage.process(&mut state, &[], &mut block, BLOCK, 0);
+    let [b0, b1, b2, a1, a2] = solid::coefficients(SolidSection::HighMid, Kind::Peak, 2, f64::from(RATE), 0.5, 0.5, 1.);
+    let mut y = [0.; 8];
+    let (mut x1, mut x2, mut y1, mut y2) = (0., 0., 0., 0.);
+    for (n, out) in y.iter_mut().enumerate() {
+        let x = if n == 0 { 1. } else { 0. };
+        *out = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        (x2, x1, y2, y1) = (x1, x, y1, *out);
+    }
+    for (n, want) in y.iter().enumerate() {
+        assert!((block[0][n] - want).abs() < 1e-12, "frame {n}");
+    }
 }
 
 #[test]

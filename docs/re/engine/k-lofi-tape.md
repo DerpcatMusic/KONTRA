@@ -35,6 +35,29 @@ is not one config. Merging the two families is the next migration step, not done
 - Core and constants from the earlier kcolor model; code claims max error 1e-6 vs the emulated core. **measured** against that model, not against Kontakt output.
 - Knobs are fixed constants; the native 20 ms control ramps are not modelled. **unconfirmed** (documented in `bite.rs`).
 - Saved-field binding (`scatter` in `effects/mod.rs`): **measured** by `bite_record_fields_land_on_their_core_indices`.
+- Live lanes (2026-10-23): the ten continuous `ENGINE_PAR_BITE_*` rows (identity law, `BITE_LIVE` in `sampler-ir/src/fx/color.rs`) are script-addressable. Each block rebuilds the engine from the block-start values (`Curve::LiveBite`). DC quant (bool) and HPF (enum) stay stored, as Freak's switches do.
+
+#### Native control callbacks (decompile, `0141930000.c`, Kontakt 8)
+
+The Bite constructor `FUN_141935890` registers twelve `std::function` control callbacks. Their vtable slot 2 bodies (`FUN_141936200`..`FUN_141936730`, vtables `0x1476973c0`..`0x1476975f0`) map each control to a core field (`lVar1` = core object):
+
+| Field | Control (from callback) | Native write |
+|---|---|---|
+| `+0x3a4` | Bits | `FUN_141936610`: `exp2(1 - nb)`, `nb = 2 - int(x·-15)` clamped 2..16, same as `Engine::new` |
+| `+0x3ac` | DC quant | `FUN_141936710`: bool `x >= 0.5` |
+| `+0x3b8` | HPF | `FUN_1419363d0`: 5 / 100 / 200 Hz by `int(3x)` clamped 0..2; writes the HP smoother at `+0x980` |
+| `+0x54` | Saturate | `FUN_1419364e0`: soft `0.2x + 0.05`, trim table at `1200 − 79.73x` |
+| `+0x64` | Crunch | `FUN_141936600` → `FUN_1419390d0`: drive in/out (`+0x740/+0x744`, `24·saturate` term) |
+| (pitch) | Frequency | `FUN_1419365d0` → `FUN_141936c40` (not read; presumed to set pitch `+0x728`, which the pre/post curve uses) |
+| `+0x60` | Dither | `FUN_1419365e0`: `+0x734 = x²` |
+| `+0x6c` | Jitter | `FUN_1419366f0`: `+0x730 = x²` |
+| `+0x74` | Expand | `FUN_141936730`: `c = 2^(8 − 7.9x) − 1` (`+0x758..0x760`) |
+| `+0x80` | Mix | `FUN_141936490`: wet/dry at `+0x74c/+0x750` |
+| `+0x58`, `+0x78` | Pre / post filter | `FUN_141936870` (pitch-dependent log curve, pitch at `+0x728`) → `FUN_141938dc0` |
+
+`FUN_141938dc0` is the TPT coefficient setter for one SVF pair: `g = tan3(π·f·(1/sr))` (the `tan3` of `bite.rs`, constant `π` at `0x1447149d4`), `a1 = 1/((g + k)·g + 1)` with damping `k` at `+0x58`/`+0x5c` (0.7654, 1.8478), `a2 = a1·g`. It writes the coefficients **immediately**. It also sets the target (`+0x48`, `+0x50`) and the current value (`+0x4c`, `+0x54`) to the same number, so no ramp is started here.
+
+Open: the **20 ms ramp** is not in these callbacks. It must be in the process `0x141937fb0` or a helper that moves `+0x4c` toward `+0x48`. Not traced, so the Rust live path rebuilds the engine per block with no ramp. Kontakt output vectors are still missing.
 
 ### Tape Saturator (0x42)
 - Gain, warmth, roll-off, quality (×4 oversampling at Quality ≥ 0.5). Table of 4098 f32 entries recovered earlier. **measured** (`matches_the_native_core` in `tape.rs`), **unconfirmed** against Kontakt output.
@@ -80,9 +103,9 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 | Item | Shared engine | Kontakt 8 | Gap |
 | --- | --- | --- | --- |
 | Lo-Fi hold, quantizer, noise | covered, measured | mapped | flag (P truncation), reset seed |
-| Bite | covered, model-checked | mapped | 20 ms control ramps, Kontakt output vectors |
+| Bite | covered, model-checked; live lanes wired (10 continuous) | mapped | 20 ms ramp (not in the control callbacks; process `0x141937fb0` untraced), DC/HPF live switches, Kontakt output vectors |
 | Tape Saturator | covered, table recovered | mapped | Kontakt output vectors |
-| Tape live slew | tick law verified under KEMU, Rust `Slew` (not wired) | per-tick law decoded | tick cadence (wrapper dispatch), per-sample lane use in Tape::process |
+| Tape live slew | tick law verified under KEMU, Rust `Slew` (not wired) | tick cadence decoded (every 32 host frames, `FUN_1408fc360`), per-frame lane use decoded | host warmth → per-tick flag/array path (`FUN_14199dd80`), wrapper KEMU run, live Rust lane |
 | Wow / Flutter parameters | bindings measured | mapped | scrape, age, saturation, gate laws |
 | Wow / Flutter DSP | generic only | unrecovered | exact pitch law, Scrape/Age/Saturation/Gate |
 | Wine oracle measurement | none | no Kontakt install in the Wine prefix | everything measured against Kontakt |
@@ -105,9 +128,16 @@ Source: `source/kontakt8/0140ae0000.c`. Object fields, from the setter and ramp 
 - Step count: `+0x2258 = max(1, int(0.03·T/sr + 0.5))` (`DAT_144fcdc04 = 0.03`, `DAT_14470bad0 = 0.5`). For any real T/sr below about 16.7 this is 1, so the warmth ramp is one tick.
 - Slew rate: `+0x225c = 1/(N·sr)` with `N = +0x2258` (`DAT_14470bad4 = 1.0`). The earlier note `0.025/(N·sr)` was wrong. The constant 0.025 (`DAT_144f38678`) feeds the `+0x1458` field, not the slew.
 - **Tick (`FUN_140ae1b40`, group B) vectors, KEMU (`tools/re/tape_slew_kemu.py`):** a pending tick sets `inc = (tgt − cur)·rate` per lane, snaps lanes with `inc² < 1e-15`, reloads the counter `+0x2254` from `+0x2258`; a non-pending tick decrements the counter and snaps `cur = tgt`, `inc = 0` at zero. Verified in `tape.rs::Slew` (`slew_tick_matches_the_native_lanes`, sampler-core).
-- Per-sample advance (decompile of the process loop `FUN_140ae1190`, lines ~1210–1225): `cur += inc` before each sample's gain read. Not yet run under KEMU.
+- Per-frame advance and read (`FUN_140ae1190`, lines ~1210–1245, **decompiled, not yet run under KEMU**): the lane advance `cur += inc` runs once per **base-rate frame** (inner loop over the chunk's `uVar34` frames, not per oversampled sample; the oversampled loop feeds the resampler, bounded by `+0x2168`). Output is `out_L = cur0 · b_L + a_L`, `out_R = cur0 · b_R + a_R`, with `cur0 = +0x2220` read after the increment. This is the Rust `self.warmth * b[2] + a[2]` term, so the live lane replaces `warmth` with `cur0` per frame.
+- **Tick cadence (decoded 2026-10-23).** The tape wrapper is `BEffectTape` (ctor `FUN_1407c8890`, vtable `0x144f14e40`). Its block process is **vtable slot 23 = `FUN_1408fc360`** (`01408f0000.c`). It keeps a control counter at wrapper `+0x1bc`:
+  - When the counter is `< 1`, it sets it to **32** (host frames), then for params 0..4 calls the core setter (`core->vt[0x60]`, slot 12 = `FUN_140ae1e10`) only where the per-param flag `+0xb5b0 + i` is set, with the value from the per-tick array `+0xb5c0 + 4·tick` (clamped to `[0, 1]`), then calls **`core->vt[0x40]` = slot 8 = the slew tick `FUN_140ae1b40`**.
+  - Then it runs `core->vt[0x38]` = slot 7 = `FUN_140ae1190` on `min(counter, remaining)` frames and subtracts that from the counter.
+  - So the tick fires **once per 32 host frames** (not per sample and not per block), and the first tick happens at the first frame. The setter's per-param flags are the only way a value reaches the core from this loop.
+- **Derived consequence (not yet run through the wrapper):** with `N = max(1, int(0.03·T/sr + 0.5)) = 1` for every realistic `T` (`T ≤ 4·sr`), a pending tick sets `inc = (tgt − cur)/sr` and reloads the counter to 1. The next tick snaps `cur = tgt`. So one warmth move is a **32-frame linear segment** of slope `(tgt − cur)/sr`, then a snap at the next tick. That is a very small move per segment, and it will be checked against the wrapper before any Rust lane depends on it.
+- **Still open (the live-lane blocker):** how a host warmth change becomes the per-tick flag and array above. The host path is the generic store `FUN_140ad1c50(wrapper, id, value, force)` (writes `+0x351c[id]`, then `FUN_14199dd80(wrapper+0x1c0, value, clamp)`). `FUN_14199dd80` writes a per-param value array (`+0x388`, or the smoothing arrays `+0x340/+0x358/+0x370/+0x3a0` when `+0x2f8` is set), sets the dirty flag `+0x3d4` (or `+0x3d0`), and, for param 9, a flag `+0x3288`. Which of these becomes the `+0xb5b1` flag and `+0xb5c8` array of `FUN_1408fc360` is **not traced yet**. Without that link, the 32-frame cadence is confirmed, but the value curve a host sees is not.
+- A KEMU end-to-end run (ctor, init, setParam, per-block) needs that link too. A harness that only sets the setter directly would skip the wrapper path, so it is not a native vector for the live curve.
 
-**Blocker for the live lane (what is still unknown):** the cadence of the tick. `FUN_140ae1b40` has no direct `call` in the binary; it is vtable slot 8 of the Tape core (`NI::KONTAKTFX::Tape::vftable` = `0x144fcdb40`, slot 3 = init `0x140ae0fc0`, slot 7 = process `0x140ae1190`, slot 8 = tick `0x140ae1b40`). The tape wrapper (`IDSPCoreWrapper<Tape,BEffectBase>`, ctor `FUN_1407c8890`, core object at `+0x38`) is expected to make those calls; its dispatch is not traced yet. With the per-sample `inc = Δ/(N·sr)`, a ramp of R ticks covers `R·M` samples (M = samples between ticks) and only reaches `Δ` when `M = sr`, so the tick cadence decides the live curve. Next step: find the wrapper method that calls `[core+0x40]` (tick) and `[core+0x18]` (init) and the block size it runs with.
+**Blocker for the live Rust lane:** the host warmth → `FUN_14199dd80` → `+0xb5b1`/`+0xb5c8` → `FUN_1408fc360` chain. Next step: trace who reads `+0x3d4`/`+0x3d0` in the wrapper and what writes `+0xb5b1`, then run the wrapper under KEMU with a moving warmth to produce the vectors.
 
 No Rust processor lane or parity row is claimed. The Tape `live control not modelled` gap stays open.
 

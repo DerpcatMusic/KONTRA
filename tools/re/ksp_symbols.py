@@ -6,9 +6,10 @@
   sync                                  recompute status, owner, tests and corpus rank;
                                         write docs/re/ksp/SYMBOLS.tsv and COVERAGE.md
   check                                 CI gate: every row has a status and a test link,
-                                        and the committed files match a fresh sync
-  doctor FILE... [--fail-on STATUS]     per-symbol status for KSP text (.ksp); .nki/.nkb
-                                        are extracted with dump_scripts first
+                                        full rows keep their test (docs/re/ksp/FULL_UNTESTED.txt
+                                        lists the known debt), and the committed files match a fresh sync
+  doctor FILE... [--fail-on STATUS]     per-symbol status for KSP text (.ksp) or .nki
+                                        instruments (scripts extracted with dump_scripts)
 
 Status vocabulary (KONTRA, from parity_ledger.rs): full = Implemented, simplified =
 Approximate, stub = Stub, unsupported = Unsupported or no ledger/frontend binding.
@@ -32,6 +33,7 @@ COVERAGE = OUT / "COVERAGE.md"
 LEDGER = ROOT / "crates/sampler-ksp/src/parity_ledger.rs"
 BUILTINS = ROOT / "crates/sampler-ksp/src/builtins.rs"
 CORPUS = ROOT / "docs/architecture-v2/KSP_COVERAGE.md"
+SCRATCH = Path("/data/dev/workspace/scratch")
 TEST_DIRS = [ROOT / "crates/sampler-ksp/tests", ROOT / "crates/sampler-kontakt/tests"]
 
 STATUSES = ("full", "simplified", "stub", "unsupported")
@@ -529,6 +531,29 @@ def sync_all(write):
     return rows, text_tsv, text_md
 
 
+FULL_UNTESTED = OUT / "FULL_UNTESTED.txt"
+
+
+def allowed_full_untested():
+    """Ledger `full` rows that have no conformance test yet, known debt (one id per line)."""
+    if not FULL_UNTESTED.exists():
+        return set()
+    return {l.strip() for l in FULL_UNTESTED.read_text().splitlines() if l.strip() and not l.startswith("#")}
+
+
+def full_without_test(rows, allowed):
+    """A row marked full must keep its conformance test. Debt in `allowed` is listed, not new."""
+    errors = []
+    for r in rows:
+        untested = r["tests"] == "untested"
+        if r["status"] == "full" and untested and r["id"] not in allowed:
+            errors.append(f"{r['id']}: marked full but no conformance test names it "
+                          "(add a test, or demote the ledger row)")
+        if r["id"] in allowed and not (r["status"] == "full" and untested):
+            errors.append(f"{r['id']}: no longer full-without-test; remove it from FULL_UNTESTED.txt")
+    return errors
+
+
 def check():
     rows, text_tsv, text_md = sync_all(write=False)
     errors = []
@@ -537,6 +562,7 @@ def check():
             errors.append(f"{r['id']}: no status ({r['status']!r})")
         if not r["tests"]:
             errors.append(f"{r['id']}: no test link or 'untested'")
+    errors += full_without_test(rows, allowed_full_untested())
     if SYMBOLS.read_text() != text_tsv:
         errors.append("SYMBOLS.tsv is out of date: run tools/re/ksp_symbols.py sync")
     if COVERAGE.read_text() != text_md:
@@ -561,24 +587,34 @@ def strip_source(text):
 
 
 def extract_nki(path):
-    """Extract KSP scripts from a .nki/.nkb with the sampler-kontakt dump_scripts example."""
-    tmp = Path(tempfile.mkdtemp(prefix="ksp-doctor-", dir="/data/dev/workspace/scratch"))
-    shutil.copy(path, tmp / Path(path).name)
+    """Extract KSP scripts from a .nki with the sampler-kontakt dump_scripts example.
+
+    The file is read in place: its .nicnt access data lives next to it in the library tree.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="ksp-doctor-", dir=SCRATCH if SCRATCH.is_dir() else None))
     out = tmp / "scripts"
-    out.mkdir()
     cmd = ["nice", "-n", "10", "build-slot", "cargo", "run", "-q", "-p", "sampler-kontakt",
-           "--example", "dump_scripts", "--", str(tmp), str(out)]
+           "--example", "dump_scripts", "--", str(Path(path).resolve()), str(out)]
     subprocess.run(cmd, cwd=ROOT, check=True)
     return out, tmp
 
 
-def scripts_of(path):
-    """[(label, text)] for one input: a .ksp/.txt script, or every script in a .nki/.nkb/.nkm/.nka."""
+def library_of(path):
+    """Library folder of an input: `Lib/Instruments/X.nki` belongs to `Lib`, else its parent folder."""
     p = Path(path)
-    if p.suffix.lower() in (".nki", ".nkb", ".nkm", ".nka"):
+    parent = p.parent
+    return parent.parent.name if parent.name.lower() == "instruments" else (parent.name or p.stem)
+
+
+def scripts_of(path):
+    """[(label, text)] for one input: a .ksp/.txt script, or every script of a .nki instrument."""
+    p = Path(path)
+    if p.suffix.lower() in (".nkb", ".nkm", ".nka"):
+        sys.exit(f"doctor: {p.name}: only .nki instruments carry scripts; pass the instruments a bank or multi uses")
+    if p.suffix.lower() == ".nki":
         out, cleanup = extract_nki(p)
         try:
-            return [(f.name, f.read_text(errors="replace")) for f in sorted(out.glob("*.ksp"))]
+            return [(f"{p.stem}:{f.stem}", f.read_text(errors="replace")) for f in sorted(out.glob("*.ksp"))]
         finally:
             shutil.rmtree(cleanup, ignore_errors=True)
     return [(p.name, p.read_text(errors="replace"))]
@@ -713,7 +749,7 @@ def doctor(paths, as_json=False, strict=False, fail_on=None):
     for raw in paths:
         for label, text in scripts_of(raw):
             rep = script_report(label, scan_script(text, resolve), resolve)
-            rep["library"] = Path(raw).stem
+            rep["library"] = library_of(raw)
             reports.append(rep)
     agg = aggregate(reports) if len(reports) > 1 else None
     unsupported = sorted({s["symbol"] for r in reports for s in r["symbols"]
@@ -755,7 +791,7 @@ def main(argv=None):
     r.add_argument("--binary", type=Path, help="Kontakt8.exe, for string/xref evidence")
     sub.add_parser("sync")
     sub.add_parser("check")
-    d = sub.add_parser("doctor", help="diagnose KSP scripts (.ksp/.txt, or .nki/.nkb/.nkm/.nka)")
+    d = sub.add_parser("doctor", help="diagnose KSP scripts (.ksp/.txt or .nki instruments)")
     d.add_argument("files", nargs="+")
     d.add_argument("--json", action="store_true", help="machine-readable report, incl. per-library and per-symbol aggregate")
     d.add_argument("--strict", action="store_true", help="exit 1 when any unsupported symbol is used")
