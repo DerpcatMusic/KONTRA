@@ -222,7 +222,8 @@ impl Panner {
         }
         let s = self.scale * 0.707_106_77;
         let q = Self::scaled_speaker(sp.pos);
-        let radius = ((0.5 - q.y) * (0.5 - q.y) + (0.5 - q.x) * (0.5 - q.x)).sqrt() * DISTANCE_SCALE;
+        let radius =
+            ((0.5 - q.y) * (0.5 - q.y) + (0.5 - q.x) * (0.5 - q.x)).sqrt() * DISTANCE_SCALE;
         let source = self.sources[src];
         let dx = source.x - sp.pos.x;
         let dy = source.y - sp.pos.y;
@@ -247,7 +248,9 @@ impl Panner {
                 (PI - a as f64) as f32
             }
         };
-        let w = self.tables.sin((theta as f64 * 0.5 * wf as f64 + FRAC_PI_2) as f32);
+        let w = self
+            .tables
+            .sin((theta as f64 * 0.5 * wf as f64 + FRAC_PI_2) as f32);
         w * w
     }
 
@@ -269,7 +272,8 @@ impl Panner {
                 num / sum
             }
             GainMode::Cosine => {
-                let x = (self.distance(src, spk, true) * self.exponent * 6.283_185_482_025_146) as f64;
+                let x =
+                    (self.distance(src, spk, true) * self.exponent * 6.283_185_482_025_146) as f64;
                 if x <= FRAC_PI_2 {
                     self.tables.sin((x + FRAC_PI_2) as f32)
                 } else {
@@ -303,7 +307,15 @@ impl GainSmoother {
 
     /// Renders one route: each sample emits `gain * input` (overwriting `out` when `overwrite`), then
     /// steps the gain toward `target`.
-    pub fn render(&mut self, s: usize, k: usize, target: f32, overwrite: bool, input: &[f32], out: &mut [f32]) {
+    pub fn render(
+        &mut self,
+        s: usize,
+        k: usize,
+        target: f32,
+        overwrite: bool,
+        input: &[f32],
+        out: &mut [f32],
+    ) {
         let gain = self.gain[s][k].get_or_insert(target);
         for (o, i) in out.iter_mut().zip(input) {
             let v = *gain * i;
@@ -367,8 +379,16 @@ mod driver_tests {
             &mut [&mut out[..], &mut [0.0f32; 4][..]],
             |s, k, overwrite, _, _| panned_calls.push((s, k, overwrite)),
         );
-        assert_eq!(out, [3.0, 5.0, 7.0, 9.0], "LFE: a*2 overwrites, then b*2 sums");
-        assert_eq!(panned_calls, [(0, 1, true), (1, 1, false)], "panned route: overwrite on the first source only");
+        assert_eq!(
+            out,
+            [3.0, 5.0, 7.0, 9.0],
+            "LFE: a*2 overwrites, then b*2 sums"
+        );
+        assert_eq!(
+            panned_calls,
+            [(0, 1, true), (1, 1, false)],
+            "panned route: overwrite on the first source only"
+        );
     }
 
     #[test]
@@ -376,7 +396,12 @@ mod driver_tests {
         let a = [1.0f32; 3];
         let mut out = [0.0f32; 3];
         let mut called = false;
-        drive_block(&[&a], &[Route::Lfe { level: 0.25 }], &mut [&mut out[..]], |_, _, _, _, _| called = true);
+        drive_block(
+            &[&a],
+            &[Route::Lfe { level: 0.25 }],
+            &mut [&mut out[..]],
+            |_, _, _, _, _| called = true,
+        );
         assert!(!called);
         assert_eq!(out, [0.25; 3]);
     }
@@ -419,13 +444,20 @@ mod tests {
 
     fn assert_close(name: &str, got: &[f32], want: &[f32]) {
         let peak = want.iter().fold(1e-30f32, |m, v| m.max(v.abs()));
-        let worst = got.iter().zip(want).fold(0f32, |m, (g, w)| m.max((g - w).abs()));
-        assert!(worst <= 1e-5 * peak.max(1.0), "{name}: worst {worst} vs peak {peak}");
+        let worst = got
+            .iter()
+            .zip(want)
+            .fold(0f32, |m, (g, w)| m.max((g - w).abs()));
+        assert!(
+            worst <= 1e-5 * peak.max(1.0),
+            "{name}: worst {worst} vs peak {peak}"
+        );
     }
 
     #[test]
     fn tables_match_native_init() {
-        let v: Vectors = serde_json::from_str(include_str!("surround_panner_native_vectors.json")).unwrap();
+        let v: Vectors =
+            serde_json::from_str(include_str!("surround_panner_native_vectors.json")).unwrap();
         let t = Tables::new();
         assert_close("sin table", &t.sin[..], &v.sin_table);
         assert_close("asin table", &t.asin[..], &v.asin_table);
@@ -433,7 +465,8 @@ mod tests {
 
     #[test]
     fn matches_native_kemu_vectors() {
-        let v: Vectors = serde_json::from_str(include_str!("surround_panner_native_vectors.json")).unwrap();
+        let v: Vectors =
+            serde_json::from_str(include_str!("surround_panner_native_vectors.json")).unwrap();
         let t = Tables::new();
         let (mut got, mut want) = (Vec::new(), Vec::new());
         for [x, y] in &v.lookup {
@@ -446,23 +479,41 @@ mod tests {
             let speakers = lay
                 .speakers
                 .iter()
-                .map(|&(x, y, disabled)| Speaker { pos: Point { x, y }, disabled })
+                .map(|&(x, y, disabled)| Speaker {
+                    pos: Point { x, y },
+                    disabled,
+                })
                 .collect();
             let mode = match case.mode {
                 0 => GainMode::Power,
                 1 => GainMode::Cosine,
                 _ => GainMode::Exp2,
             };
-            let mut p = Panner::new(speakers, vec![Point { x: lay.source[0], y: lay.source[1] }], mode);
+            let mut p = Panner::new(
+                speakers,
+                vec![Point {
+                    x: lay.source[0],
+                    y: lay.source[1],
+                }],
+                mode,
+            );
             p.scale = case.scale;
             p.exponent = case.p;
-            p.offset = Point { x: lay.off[0], y: lay.off[1] };
+            p.offset = Point {
+                x: lay.off[0],
+                y: lay.off[1],
+            };
             p.radius_offset = lay.radius_off;
             p.angle_offset = lay.angle_off;
-            let tag = format!("{} scale {} p {} mode {}", case.layout, case.scale, case.p, case.mode);
+            let tag = format!(
+                "{} scale {} p {} mode {}",
+                case.layout, case.scale, case.p, case.mode
+            );
             let pos = p.source_position(0);
             assert_close(&format!("{tag} pos"), &[pos.x, pos.y], &case.pos);
-            let dist: Vec<f32> = (0..p.speakers.len()).map(|i| p.distance(0, i, true)).collect();
+            let dist: Vec<f32> = (0..p.speakers.len())
+                .map(|i| p.distance(0, i, true))
+                .collect();
             assert_close(&format!("{tag} dist"), &dist, &case.dist);
             let weight: Vec<f32> = (0..p.speakers.len()).map(|i| p.weight(0, i)).collect();
             assert_close(&format!("{tag} weight"), &weight, &case.weight);
@@ -549,5 +600,109 @@ mod native_driver_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod native_record_tests {
+    //! Record-driven native run (`tools/re/surround_record_kemu.py`): reader, then the case-6 apply,
+    //! then the block driver. Parameters are the values the apply wrote to the object; each block
+    //! carries them so a per-block SIZE step is covered too.
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct Block {
+        sources: Vec<[f32; 2]>,
+        input: Vec<Vec<f32>>,
+        out: Vec<Vec<f32>>,
+        scale: f32,
+        exponent: f32,
+        offset: [f32; 2],
+        radius_offset: f32,
+        angle_offset: f32,
+        mode: u32,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        n: usize,
+        speakers: Vec<[f32; 2]>,
+        blocks: Vec<Block>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        cases: Vec<Case>,
+    }
+
+    fn native_mode(m: u32) -> GainMode {
+        match m {
+            0 => GainMode::Power,
+            1 => GainMode::Cosine,
+            _ => GainMode::Exp2,
+        }
+    }
+
+    /// Known gap: the record apply (setter `0x1409685e0`) leaves main-output gain state that the
+    /// Rust model does not carry (base case native = Rust * pi/2; rate and LFE dB dependent). Run
+    /// with `--ignored` to see the mismatch list; remove the ignore when the state is modelled.
+    #[ignore = "record apply path: LFE sub-object state not modelled (see docs/re/engine/k-effects-batch-a.md Pass 10)"]
+    #[test]
+    fn record_apply_matches_native_blocks() {
+        let v: Fixture =
+            serde_json::from_str(include_str!("surround_record_native_vectors.json")).unwrap();
+        let mut failed = Vec::new();
+        for case in &v.cases {
+            let speakers: Vec<Speaker> = case
+                .speakers
+                .iter()
+                .map(|&[x, y]| Speaker {
+                    pos: Point { x, y },
+                    disabled: false,
+                })
+                .collect();
+            let outputs = speakers.len();
+            let mut smoother = GainSmoother::new(case.blocks[0].sources.len(), outputs);
+            for (b, block) in case.blocks.iter().enumerate() {
+                let sources: Vec<Point> =
+                    block.sources.iter().map(|&[x, y]| Point { x, y }).collect();
+                let mut panner = Panner::new(speakers.clone(), sources, native_mode(block.mode));
+                panner.scale = block.scale;
+                panner.exponent = block.exponent;
+                panner.offset = Point {
+                    x: block.offset[0],
+                    y: block.offset[1],
+                };
+                panner.radius_offset = block.radius_offset;
+                panner.angle_offset = block.angle_offset;
+                let gains: Vec<Vec<f32>> = (0..block.sources.len())
+                    .map(|s| (0..outputs).map(|k| panner.gain(s, k)).collect())
+                    .collect();
+                let inputs: Vec<&[f32]> = block.input.iter().map(|x| x.as_slice()).collect();
+                let mut outs = vec![vec![0.0f32; case.n]; outputs];
+                let mut out_refs: Vec<&mut [f32]> =
+                    outs.iter_mut().map(|o| o.as_mut_slice()).collect();
+                let routes = vec![Route::Panned; outputs];
+                drive_block(
+                    &inputs,
+                    &routes,
+                    &mut out_refs,
+                    |s, k, overwrite, input, out| {
+                        smoother.render(s, k, gains[s][k], overwrite, input, out);
+                    },
+                );
+                for (k, got) in outs.iter().enumerate() {
+                    let worst = got
+                        .iter()
+                        .zip(&block.out[k])
+                        .fold(0f32, |m, (g, w)| m.max((g - w).abs()));
+                    if worst > 1e-5 {
+                        failed.push(format!("{} block {b} output {k}: worst {worst}", case.name));
+                    }
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
     }
 }

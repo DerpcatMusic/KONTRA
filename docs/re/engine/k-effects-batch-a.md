@@ -624,3 +624,50 @@ writes). Not found by offset search over `0140[89a-f]*.c` (the copies at `140800
 is therefore not decided, and the stereo-out lowering stays NotModeled. The unnamed floats `+0x194`,
 `+0x1bc`, `+0x1c0` and the flags are unknown. Vtable slot 9 (`140d11ff0`, the writer) is the natural
 cross-check for the round trip. Rate dependence of `1/1800` (item 3 in Pass 8) was not probed in this pass.
+
+## Pass 10: record apply found and measured under kemu (2026-10-23)
+
+The Pass 9 blocker is resolved for the parameter mapping. The apply is the load path case 6 in
+`1409619b0` (`0140960000.c:1493`), which calls the setter `1409685e0` (`0140960000.c:4728`, 20 args) with P
+(the reader's record object): `spk = P+8`, `src = P+0xcc`, SIZE `0x19c` (xmm3), DIVERGENCE `0x1a0`, `0x194`,
+LFE dB `0x198`, flags `0x1a4/0x1a5/0x1a6`, `0x1bc`, `0x1b8` (never written by the reader, so 0), `0x1c0`,
+gain mode `0x1c4`, layout `0x1c8`, OFFSET_X `0x1b0`, OFFSET_Y `0x1b4`, DISTANCE `0x1a8`, AZIMUTH `0x1ac`.
+
+Constants read from the binary: `1.1` (scale), `2.0` (LFE base), `1/6` (LFE exponent), `0.5` (offset scale),
+`-1` and `1` (clamp), `pi/2`. Setter rules, now confirmed by the probe below:
+
+| DSP field (object) | Record source | Rule |
+| --- | --- | --- |
+| `+0x348` scale | SIZE | `1.1 - SIZE` |
+| `+0x34c` exponent | DIVERGENCE | `2 * DIVERGENCE` |
+| `+0x350`, `+0x354` offset | OFFSET_X, OFFSET_Y | `clamp(0.5 * v, -1, 1)` |
+| `+0x358` radius offset | DISTANCE | `clamp(0.5 * v, 0, 1)` |
+| `+0x35c` angle offset | AZIMUTH | `clamp(v, -1, 1)` |
+| `+0x394` gain mode | `0x1c4` | identity (native 1 = `Cosine`-mode index, to confirm) |
+| `+0x398` layout | `0x1c8` | identity, no output effect measured yet |
+| `+0x1c0 + 12i` speakers | P+8 | raw 12-byte copy |
+| `+0x280`, `+0x344` counts | P+0xc8, P+0x18c | copies |
+| LFE gain | LFE dB `0x198` | `2^(dB/6)` (not 10^(dB/20)) |
+| rate term | `+0x7b4` (object) | `p6 * pi / rate` term: `0x194` is a frequency-like input |
+
+Probe: `tools/re/surround_record_kemu.py` (reader on a crafted record, then the setter, then the driver). The
+one-at-a-time sweep matches the table above exactly in the object fields (`scale 0.9` at SIZE 0.2, `exp 0.4`
+at DIVERGENCE 0.2, offsets/angles as listed). Fixture: `crates/sampler-core/src/dsp/surround_record_native_vectors.json`.
+
+Findings that block lowering:
+- **Main-output gain differs by pi/2 after the apply.** The base record (SIZE 0.5, DIVERGENCE 0.5, offsets 0,
+  LFE 0 dB, mode 0) gives native `0.035459` at sample 1 where the direct-write path (no setter, the same
+  Rust-verified state as `surround_panner_driver_native_vectors.json`) gives `0.022574`. Ratio `pi/2`
+  exactly. The setter path also depends on the LFE dB (-60 dB: 0.0128, -200 dB: 0.0046) and on the rate
+  field `+0x7b4` (48 kHz base 0.0355, 47999 Hz 0.0128, 44.1 kHz 0.0046). So the LFE sub-object (`+0x7a0`
+  BFilter4Pole, which the Rust model does not carry) is in the main path after the apply. This is the first
+  thing to model; it also answers the `1/1800` rate question, which is therefore not separable yet.
+- `+0x194` (p6) enters the gain law through `2 / rate * p6 * pi/2`. Not swept with a non-zero rate yet.
+- Flags `0x1a4` and `0x1a6` set to 1 make the driver raise an exception in the harness (the rebuild path
+  `140ac1dc0` with the output pool, not the DSP); `0x1a5` = 1 gives NaN. Not swept, the meaning is open.
+- Gain mode `0x1c4` and layout `0x1c8` are written to `+0x394` and `+0x398`. Their output effect is not
+  separated from the pi/2 gap yet; the ignored test covers mode 1 (mapped to `Cosine`, unconfirmed).
+
+Status: the record-to-Panner mapping is measured and documented. The stereo-out lowering stays NotModeled
+until the LFE sub-object state (main-path gain, rate) is modelled and the ignored test
+`record_apply_matches_native_blocks` (`sampler_core::dsp::surround_panner::native_record_tests`) passes.
