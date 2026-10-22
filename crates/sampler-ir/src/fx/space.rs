@@ -235,6 +235,10 @@ pub struct Network {
     /// 12 damping, 13 modulation, 14 rate, 15 diffusion, 16 freeze, 17
     /// reverb, 18 sparse, 19 input gain.
     pub raum: Option<[f32; 20]>,
+    /// [`Topology::Raum`] tempo-synced predelay: the unit's beat count. When
+    /// set, the predelay is `beats · 60 / tempo · core[1]` seconds, capped at
+    /// 2 s, and `predelay_seconds` is unused.
+    pub raum_beats: Option<f64>,
 }
 
 impl Network {
@@ -246,6 +250,7 @@ impl Network {
         predelay_seconds: 0.0,
         damping_hz: 6_000.0,
         bands: None,
+        raum_beats: None,
         modulation_seconds: 0.000_75,
         modulation_hz: 0.7,
         diffusion: 0.375,

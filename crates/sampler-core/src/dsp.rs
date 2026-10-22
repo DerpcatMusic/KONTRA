@@ -1436,7 +1436,7 @@ pub(super) fn process<'a, const TRACE: bool>(
                         .for_each(|(w, v)| *w = *v as f32);
                 }
                 let [left, right] = &mut wet;
-                filters.spaces[*index].process([&mut left[..len], &mut right[..len]]);
+                filters.spaces[*index].process([&mut left[..len], &mut right[..len]], filters.tempo);
                 for (v, w) in block.iter_mut().zip(&wet) {
                     v[..len]
                         .iter_mut()
