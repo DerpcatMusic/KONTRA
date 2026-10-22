@@ -775,6 +775,8 @@ impl Cx<'_> {
     }
 
     /// Apply to an explicit base, leaving the part intact until validation.
+    /// Only the part is selected: no reveal and no unfold, so the rack keeps
+    /// its scroll and the part keeps its fold while the preset swaps.
     fn snapshot(&mut self, slot: usize, path: String) {
         let accepted = self
             .selection
@@ -782,7 +784,8 @@ impl Cx<'_> {
             .get(slot)
             .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
         if accepted {
-            self.show(slot);
+            self.state.select(slot);
+            self.state.notice.clear();
         } else {
             self.state.notice = "Select a base NKI instrument before loading a preset.".into();
         }
