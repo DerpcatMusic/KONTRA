@@ -83,7 +83,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
                     .and_then(|s| s.surface(&id))
                     .map(|s| s.frame.size.height)
             };
-            if let Some(body) = frame(format!("body-{slot}")) {
+            // A sized body clips to its room, so its own height is not the natural one.
+            if let Some(body) = natural_body(ui, slot, cx.state.face_natural.get(&slot).copied()) {
                 cx.state.bodies.insert(slot, body);
             }
             let part = &cx.selection.parts[slot];
@@ -545,12 +546,16 @@ fn part(
 
 /// A part's body at full height, as last laid out. A sized body clips what
 /// its viewport hides, so the viewport's content height stands in for it, or
-/// `face`, the shown interface's natural stage height, when there is one.
+/// `face`, the shown interface's natural stage height, when there is one. Content
+/// never counts for less than the rack room, so a sized part can be dragged up to it.
 fn natural_body(ui: &Ui, slot: usize, face: Option<f64>) -> Option<f64> {
     let scene = ui.scene()?;
     let body = scene.surface(&format!("body-{slot}"))?.frame.size.height;
     Some(match scene.surface(&format!("patch-view-{slot}")) {
-        Some(view) => body - view.frame.size.height + face.unwrap_or(view.content.height),
+        Some(view) => {
+            body - view.frame.size.height
+                + face.unwrap_or(view.content.height.max(super::part::rack_room(ui, slot)))
+        }
         None => body,
     })
 }

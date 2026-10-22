@@ -285,7 +285,7 @@ fn rendered_descendants(ui: &Ui, root: &str) -> usize {
     rendered_geometry(ui, root).len()
 }
 fn fitting_room(ui: &Ui) -> Size {
-    Size::new(ui.scene().unwrap().surface("face-0").unwrap().frame.size.width, room_height(ui, 0))
+    Size::new(ui.scene().unwrap().surface("face-0").unwrap().frame.size.width, room_height(ui, 0, false))
 }
 fn assert_incoming_root_size(ui: &Ui, room: Size, authored: Size, setting: f32) {
     let scale = scale_to_fit(room, authored, setting);
