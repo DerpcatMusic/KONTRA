@@ -551,5 +551,6 @@ mod design;
 mod head;
 mod mode1;
 mod read;
+mod write;
 #[cfg(test)]
 mod tests;
