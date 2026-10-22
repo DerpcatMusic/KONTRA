@@ -428,6 +428,16 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
     }
     if let Some(cb) = persistence_changed {
         if may_suspend(hir, &cb.body, true) {
+            // The runtime runs this body later, but its set_engine_par writes are
+            // load-time engine state. Run a copy now, waits elapsed as in init, and
+            // keep only the engine writes; everything else rolls back. Failure keeps none.
+            // ponytail: one bounded pass on a copy, so a suspending body's own clock
+            // waits and async completions are not replayed here.
+            let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone(), e.zone_batch.clone());
+            let ok = e.block(&cb.body).and_then(|_| e.finish_zone_batch(cb.span, true)).is_ok();
+            let engine = if ok { e.st.engine.clone() } else { before.0.engine.clone() };
+            (e.st, e.fuel, e.consumed, e.pending_menus, e.zone_batch) = before;
+            e.st.engine = engine;
             e.st.model.persistence_completion = model::PersistenceCompletion::Scheduled;
             #[cfg(feature = "scan")]
             crate::scan::phase("persistence_scheduled", None);
