@@ -548,7 +548,7 @@ impl VoiceModulation {
     pub(crate) fn validate_element_program(&self,index:u32)->Result<usize,Error>{
         let p=self.programs.get(index as usize).ok_or(Error::InvalidInput)?;
         if p.native.is_some()||p.provider_scope.is_some()
-            ||p.sources.iter().any(|s|!matches!(s,Prepared::Input(InputSource::Controller(cc)) if *cc<128) && !matches!(s,Prepared::Input(InputSource::Constant|InputSource::ConstantProperty{..})))
+            ||p.sources.iter().any(|s|!matches!(s,Prepared::Input(InputSource::Controller(cc)) if *cc<128) && !matches!(s,Prepared::Input(InputSource::Constant|InputSource::ConstantProperty{..}|InputSource::Script(_))))
             ||p.targets.iter().any(|t|!matches!(t,CompiledTarget::Attenuate|CompiledTarget::Decibels|CompiledTarget::Pan))
         {return Err(Error::InvalidInput);}
         Ok(p.sources.len())

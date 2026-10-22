@@ -114,14 +114,21 @@ struct PreparedBus {
 // Immutable actual source-definition and destination joins. A source is
 // canonical per retained generation/input owner/definition, not per bus or note.
 #[derive(Clone,Copy,PartialEq,Eq)]
-enum ElementSourceKind {Controller(u8),Constant,Property{node:u32,value:crate::ControlId,style:crate::ControlId,bipolar:bool}}
+enum ElementSourceKind {Controller(u8),Constant,Property{node:u32,value:crate::ControlId,style:crate::ControlId,bipolar:bool},
+    /// Owner-level script event value (`sendScriptModulation` broadcast): written by
+    /// [`crate::Runtime::set_script_event_value`], default 0 until set.
+    Script{id:u16,bipolar:bool}}
 #[derive(Clone,Copy,PartialEq,Eq)]
 struct ElementSource {
     owner:crate::prepare::PreparedSourceOwnerIndex,
     identity:sampler_ir::ModulatorRef,
     kind:ElementSourceKind,
 }
-impl ElementSource {fn controller(self)->Option<u8>{match self.kind{ElementSourceKind::Controller(cc)=>Some(cc),_=>None}}}
+impl ElementSource {
+    fn controller(self)->Option<u8>{match self.kind{ElementSourceKind::Controller(cc)=>Some(cc),_=>None}}
+    /// The fixed value an explicitly constant source holds; script values start at 0.
+    fn fixed_target(self)->Option<f64>{match self.kind{ElementSourceKind::Constant|ElementSourceKind::Property{..}=>Some(1.),ElementSourceKind::Script{..}=>Some(0.),ElementSourceKind::Controller(_)=>None}}
+}
 struct ElementOutput {
     owner:crate::prepare::PreparedSourceOwnerIndex,
     input_owner:crate::prepare::PreparedSourceOwnerIndex,
@@ -538,6 +545,8 @@ impl Prepared {
                     (crate::ModSource::Controller(a),Some(b))if a==b&&b<128=>ElementSourceKind::Controller(b),
                     (crate::ModSource::Constant,None)=>ElementSourceKind::Constant,
                     (crate::ModSource::ConstantProperty{node,value,style,bipolar},None)=>ElementSourceKind::Property{node,value,style,bipolar},
+                    (crate::ModSource::Script(id),None)=>ElementSourceKind::Script{id,bipolar:false},
+                    (crate::ModSource::ScriptBipolar(id),None)=>ElementSourceKind::Script{id,bipolar:true},
                     _=>return Err(Error::InvalidInput),
                 };
                 let definition=ElementSource{owner:input_owner,identity,kind};
@@ -808,7 +817,7 @@ impl BusState {
             peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
             input_peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
             input_peak_enabled: vec![false; plan.buses.len()].into_boxed_slice(),
-            element_sources:plan.buses.elements.sources.iter().map(|source|CoreElementMidiPoint{target:1.,initialized:source.controller().is_none(),..Default::default()}).collect(),
+            element_sources:plan.buses.elements.sources.iter().map(|source|CoreElementMidiPoint{target:source.fixed_target().unwrap_or(1.),initialized:source.controller().is_none(),..Default::default()}).collect(),
             element_bindings:allocate(plan.buses.elements.inputs.len())?,
             element_modulation:crate::voice_mod::VoiceModState::new_scoped(&plan.buses.elements.modulation,plan.buses.elements.outputs.len())?,
             element_points:allocate(plan.buses.elements.outputs.iter().try_fold(0usize,|n,output|n.checked_add(output.points.len()).ok_or(Error::Capacity))?)?,
@@ -844,7 +853,7 @@ impl BusState {
         // exact initialization identities belong to this prepared generation.
         for (source,state)in graph.elements.sources.iter().zip(self.element_sources.iter_mut()){
             if source.owner==input_owner{
-                if source.controller().is_none(){state.target=1.;state.initialized=true;}
+                if let Some(fixed)=source.fixed_target(){state.target=fixed;state.initialized=true;}
                 for (identity,value)in initial{if *identity==source.identity{state.target=value.normalized();state.initialized=true;}}
                 state.accepted_at=at;state.original_at=at;
             }
@@ -861,6 +870,18 @@ impl BusState {
                 if !state.initialized||state.accepted_at>at{return Err(Error::InvalidInput);}
             }
         }Ok(())
+    }
+    /// Write owner-level script value `id` into every installed source that
+    /// names it. The value is clamped to the source's domain; the next cell
+    /// boundary forecasts it (see `prepare_element_outputs`).
+    pub(crate) fn set_script_event(&mut self,graph:&PreparedBuses,id:u16,value:f64)->Result<(),Error>{
+        if !value.is_finite(){return Err(Error::InvalidInput);}
+        for (source,state) in graph.elements.sources.iter().zip(self.element_sources.iter_mut()){
+            if let ElementSourceKind::Script{id:named,bipolar}=source.kind{
+                if named==id{state.target=if bipolar{value.clamp(-1.,1.)}else{value.clamp(0.,1.)};}
+            }
+        }
+        Ok(())
     }
     pub(crate) fn commit_element_input(&mut self,graph:&PreparedBuses,receiver:crate::ReceiverId,performance:crate::PerformanceId,
         number:u8,value:f64,original_at:u64,at:u64){
