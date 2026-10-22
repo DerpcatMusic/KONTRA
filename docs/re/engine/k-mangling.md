@@ -95,3 +95,43 @@ Beat Masher kernel `FUN_141aa4610` (5630 B) is not read beyond its header (it re
 What this does not give: no coefficient, no field-to-KSP-name map (the `ENGINE_PAR_*` names come from `a80000.c` `FUN_140981540` registrations, e.g. `beatmasher_rotate` 0x1e9, `gater_rate` 0x1f2), no unit or range, no vector. Each module still needs the per-sample kernel read end to end, the constants pulled from `docs/re/kontakt-rdata/constants.tsv`, and a kemu vector run (`tools/re/*_kemu_vectors.py`) before any of it is a law.
 
 Next steps, in order: (1) Gater `FUN_141ae2f60` + `FUN_141a9d870` + `FUN_141acb6f0` into a kemu vector template; (2) Reverse Grain `FUN_141ae3f90` (4592 B) with its scheduler; (3) Beat Masher `FUN_141aa4610`; (4) Beat Slicer `FUN_141aa5ce0` and the Transpose Stretch kernel (not located); (5) KE065 (0x74 vs 0x75 identity), still open.
+
+## Gater pass, 2026-10-23 (read, no port)
+
+Listings are read from the decompile cache (`source/kontakt8/*.c`, not copied here, per ENGINE.md evidence rule). Scratch helper `fn.py` lives outside the repo. Status: understanding only; no kemu vector, no Rust code, parity rows stay `missing`.
+
+Constants resolved from `docs/re/kontakt-rdata/constants.tsv` (u32 column is authoritative for f32 literals):
+
+| Symbol | Address | Value | Used for |
+| --- | --- | --- | --- |
+| `DAT_144714988` | 0x144714988 | 1.0 (double) | clock period, wrap test |
+| `DAT_144714998` | 0x144714998 | 2.0 (double) | phase wrap step |
+| `DAT_14470bb18` | 0x14470bb18 | -1.0 | phase wrap correction |
+| `DAT_144f38dd0` | 0x144f38dd0 | -2.0 | phase wrap correction |
+| `DAT_14470bae8` | 0x14470bae8 | 0.5 (double) | round-to-nearest in clock split |
+| `DAT_14470bad0` | 0x14470bad0 | 0.5f | half-period scale (segment length) |
+| `DAT_14470bad4` | 0x14470bad4 | 1.0f | unity level, ramp ceiling |
+| `DAT_144714930` | 0x144714930 | 0.98f | per-sample smoothing of the kernel output level |
+| `DAT_144f3859c` | 0x144f3859c | 1e-30f | denormal guard added to the smoothed level |
+| `DAT_144714994` | 0x144714994 | 2.0f | peak-tracker decay step |
+| `DAT_1447148a0` | 0x1447148a0 | 1e-5f | one-shot gate: peak below threshold x 1e-5 |
+| `DAT_144725080` | 0x144725080 | 0.6f | peak-tracker factor (multiplied per sample) |
+| `DAT_144f385a4` | 0x144f385a4 | 1e-18f | denormal guard added to kernel recursion |
+| `DAT_144714b90` | 0x144714b90 | 0x7fffffff | abs mask on the peak tracker |
+| `DAT_144714ba0` | 0x144714ba0 | sign mask (assumed 0x80000000, not read) | negation by XOR in the segment setup |
+| `DAT_144f38920` | 0x144f38920 | (not read) | segment-length test in FUN_141abb0e0 |
+| `DAT_144714a54` | 0x144714a54 | (not read) | attack slope numerator in FUN_141a883f0 |
+| `_DAT_1479ab0e8` | 0x1479ab0e8 | f32 -1.5669e38 (u32 feebc2a0) | compare with abs(x): never true as read, so the branch that zeroes the step is dead. Double-check before relying on it |
+| `_DAT_1479ab1bc` | 0x1479ab1bc | 0.13333f | cubic shaping coefficient in the kernel curve (x^3 term) |
+| `_DAT_1479ab1d4` | 0x1479ab1d4 | 0.33333f | cubic shaping term |
+| `_DAT_147698870` | 0x147698870 | 0.36f | added to the shaping sum before the division |
+| `_DAT_1479af27c` | 0x1479af27c | 2^-31 (4.6567e-10 f32) | LCG int to float in [-1, 1) for the noise source |
+
+Object roles from the driver and block core (offsets relative to the wrapper object, unless noted):
+- Driver `FUN_1409003c0`: frame count at +0x120, channel count at +0x124, block cap at +0x1bc (set to 32 when zero), the block core object at +0x1c0, and a sync flag at core+0x1e (chooses `+0x28` tempo period over `+0x24` free rate). Before the loop it prepares per-channel pointers (+0x408, +0x498). It tracks the input peak as `|x| & 0x7fffffff`, stored at +0x3c8 (double). One-shot state +0x3dc goes 1 to 2 when the peak falls below `+0x3d8 x 1e-5`.
+- Block core `FUN_141ae2d20` (core = wrapper+0x1c0): picks rate `+0x24` or `+0x28` into the clock (`FUN_141acae30`, which stores twice the value at clock+0x24). Clock object is at core+0x128. Per block it ticks the clock (`FUN_141acb6f0`, segment schedule), then runs the kernel once per frame through a per-voice struct at core+0x200 (input samples at +0xc and +0x58, outputs at +0x54 and +0x5c). Noise and rate contributions come through `FUN_141a98d20` (reads clock+0x70, the step level).
+- Clock `FUN_141a9d870` (per sample): advances the phase double at clock+0x8 by the per-sample increment clock+0x18, wraps at 1.0, and updates two step segments (48-byte records at clock+0x78 and clock+0xa8, selected by the toggle at clock+0x38). Segment states: 0 attack (level is linear in time, goes to unity), 1 hold until the end time at +0x8c, 2 release (linear decay to zero), 3 done. Output level clock+0x70 is the running max over the two segments.
+- Segment start `FUN_141acbc20`, `FUN_141abb0e0` (reads clock+0x24 and clock+0x2c, schedules the next segment with the half-period check), `FUN_141a883f0` (re-seeds the clock state): all three flip the toggle at clock+0x38, set the attack/release slopes and write the segment record. Their exact field-to-parameter meaning is not yet tied to KSP names.
+- Kernel `FUN_141ae2f60` (per-frame): 4000-entry float ring at core+0x138 indexed by write position +0x130 and read position +0x134 (delayed read, wrap at 4000). LCG seed at +0x108 (`x = x*0x41c64e6d + 0x3039`). Flags at +0x74 bits 1, 2, 4, 8, 16, each a ramp with a level at +0x78 and a per-bit slope/offset pair (+0xb0/+0xb4, +0xc0/+0xc4, +0xd0/+0xd4, +0xe0/+0xe4, +0xf8/+0xfc). Output level path: smoothing `0.98 x + 1e-30`, then a cubic shaping of the ramp value, then the L/R outputs at +0x54 and +0x5c. The 1e-18 guard sits in the same recursion.
+
+Still open for this module, in order: (1) the setter that writes ENGINE_PAR_GATER values into these fields (the module class vtable slots 1 and 2 at 0x1408dc160 / 0x140971020 are the candidates; `FUN_1408dc160` only clears state and calls `FUN_141ae1390`); (2) the stored-field to parameter binding for the `Fx4Bx4` record (reader VA 0x140ac5980); (3) the rate table behind `FUN_141acb6f0` for synced rates; (4) a kemu driver for the kernel and clock with a constructed object (ctor `FUN_14064ed20`); (5) the Rust port in `sampler-core/src/dsp` and a vector test.
