@@ -107,6 +107,61 @@ impl Cut {
     }
 }
 
+/// Exponent base of the saturator polynomial: `10^(0.05 p)` (f32 `1447148c0` = 0.05).
+const SAT_K: f32 = 0.05;
+/// Exponents `p2..p6` of `141abe910`, passed by slot 1 (`141a9e300`): (0, -40, -45, -49, -40).
+const SAT_EXPONENTS: [f32; 5] = [0., -40., -45., -49., -40.];
+/// Damping R of both saturator sections (`141ac9c50` writes 2.0 when `144714994` is nonzero).
+const SATURATOR_R: f32 = 2.;
+
+/// Saturator (`141aa44a0`). Section B (2205 Hz) takes `tanh(d x)`; its out6 `f` feeds the polynomial
+/// `P(f) = c4 f^2 + c8 f^3 + c0c f^4 + c10 f^5`, which drives section A (5 Hz). Both sections have
+/// R = 2 and Q = 1 (`141ac9c50`). Output `g (tanh(d x) + P - 2 A.out5 - A.out6)`, with c14 = c18 = 1,
+/// `d = 10^a`, `g = 10^(-a/2)`. CONFIRMED arithmetic. Not wired: the Replika loop is not ported.
+/// ponytail: `powf` per sample for `d` and `g`; the decompile refreshes them only when the amount moves.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Saturator {
+    /// `c4, c8, c0c, c10` of `P(f)`, each divided by the raw base (`141abe910`).
+    poly: [f32; 4],
+    pre: Section,
+    post: Section,
+}
+
+/// Per-channel states of a [`Saturator`]: `[section B, section A]`.
+#[allow(dead_code)]
+pub type SaturatorState = [State; 2];
+
+#[allow(dead_code)]
+impl Saturator {
+    pub fn new(fs: f32) -> Self {
+        let [p2, p3, p4, p5, p6] = SAT_EXPONENTS.map(|e| 10f32.powf(e * SAT_K));
+        let base = p2 + 3. * p4 + 5. * p6;
+        Self {
+            poly: [
+                (2. * p3 + 8. * p5) / base,
+                (-4. * p4 - 20. * p6) / base,
+                -8. * p5 / base,
+                16. * p6 / base,
+            ],
+            pre: Section::new(prewarp(2205., fs), SATURATOR_R),
+            post: Section::new(prewarp(5., fs), SATURATOR_R),
+        }
+    }
+
+    /// One sample at saturation amount `a` (0..1).
+    pub fn tick(&self, state: &mut SaturatorState, x: f32, a: f32) -> f32 {
+        let d = 10f32.powf(a);
+        let g = 10f32.powf(-0.5 * a);
+        let drive = (d * x).tanh();
+        let (_, f) = self.pre.tick(&mut state[0], drive);
+        let [c4, c8, c0c, c10] = self.poly;
+        let p = (((c10 * f + c0c) * f + c8) * f + c4) * f * f;
+        let (a5, a6) = self.post.tick(&mut state[1], p);
+        g * (drive + p - self.post.r * a5 - a6)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +201,47 @@ mod tests {
             y = low.tick(&mut ls, dc);
         }
         assert!((y - 1.).abs() < 1e-3, "lowpass must pass DC at unity, got {y}");
+    }
+
+    /// Literal values from the decoded exponents (`141abe910`, constants 1447148c0 = 0.05,
+    /// 1447149d0 = 3, 1447149f0 = 5, 1447149f8 = 8, 144f38e04 = -4, 14471cb14 = 20, 144fc4d20 = -8,
+    /// 144714a10 = 16, exponents -40, -45, -49, -40): base 1.0668702, normalised by the base.
+    #[test]
+    fn saturator_polynomial_is_the_normalised_exponent_sum() {
+        let s = Saturator::new(FS);
+        let want = [0.0453523, -0.2085480, -0.0266059, 0.1499714];
+        for (got, want) in s.poly.iter().zip(want) {
+            assert!((got - want).abs() < 1e-5, "{got} vs {want}");
+        }
+    }
+
+    /// Both saturator sections: R = 2 (`141ac9c50`), Q = 1, cutoffs 2205 Hz and 5 Hz (`1479ab60c`,
+    /// `1447149f0`). `c3 / c2` is the warped cutoff g.
+    #[test]
+    fn saturator_sections_are_r_two_at_their_decoded_cutoffs() {
+        let s = Saturator::new(FS);
+        assert_eq!((s.pre.r, s.post.r), (2., 2.));
+        let w = |hz: f64| {
+            let w = hz * std::f64::consts::PI / f64::from(FS);
+            (w + w * w * w / 3. + 2. * w.powi(5) / 15.) as f32
+        };
+        assert!((s.pre.c3 / s.pre.c2 - w(2205.)).abs() < 1e-5);
+        assert!((s.post.c3 / s.post.c2 - w(5.)).abs() < 1e-7);
+    }
+
+    /// At DC the lowpass sections pass their input (bp -> 0, lp -> input), so P cancels against
+    /// `2 A.out5 + A.out6` and the saturator settles to `g tanh(d x)`, with d = 10^a, g = 10^(-a/2).
+    #[test]
+    fn saturator_dc_output_is_g_times_tanh_of_the_drive() {
+        let s = Saturator::new(FS);
+        for a in [0.0f32, 0.5, 1.0] {
+            let mut st: SaturatorState = Default::default();
+            let mut y = 0.;
+            for _ in 0..200_000 {
+                y = s.tick(&mut st, 1e-3, a);
+            }
+            let want = 10f32.powf(-0.5 * a) * (10f32.powf(a) * 1e-3).tanh();
+            assert!((y - want).abs() <= 1e-3 * want, "a={a}: {y} vs {want}");
+        }
     }
 }
