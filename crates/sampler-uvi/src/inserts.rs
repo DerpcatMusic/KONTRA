@@ -53,7 +53,7 @@ impl Translation {
             let route=&self.ir.routes[route.0];
             for source in std::iter::once(route.source).chain(route.scale.map(|scale|scale.source)) {
                 if !matches!(self.ir.modulators[source.0].source,ir::ModulationSource::Controller(number)if number<128)
-                    &&!matches!(self.ir.modulators[source.0].source,ir::ModulationSource::ConstantProperty{..}|ir::ModulationSource::Constant) {
+                    &&!matches!(self.ir.modulators[source.0].source,ir::ModulationSource::ConstantProperty{..}|ir::ModulationSource::Constant|ir::ModulationSource::Script(_)|ir::ModulationSource::ScriptBipolar(_)) {
                     let source = match &self.ir.modulators[source.0].source {
                         ir::ModulationSource::Script(id) => format!("ScriptEventModulation EventId={id} Bipolar=0"),
                         ir::ModulationSource::ScriptBipolar(id) => format!("ScriptEventModulation EventId={id} Bipolar=1"),
