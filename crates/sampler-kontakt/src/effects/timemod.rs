@@ -347,7 +347,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
-        0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, setter case 0xe 0x140962630) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the setter's parameter binding are not yet verified",
+        0x22 => "Rotator: horn/drum law located (control 0x140a97d30, audio 0x140aae920, output stage 0x140ac21f0 ported) but the runtime-initialised lane vectors at 0x149e6c400..0x149e6c45c and the RT_* setter binding (virtual BParFXRotator, vtable not exported) are not yet verified",
         _ => return None,
     })
 }

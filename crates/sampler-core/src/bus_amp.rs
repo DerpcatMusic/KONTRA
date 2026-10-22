@@ -8,12 +8,21 @@
 //! threshold) and -20 units/s for the falling pan (`DAT_144f38e14`), each divided
 //! by the sample rate. Arithmetic is f32 as in the native code.
 
-const FADER_RAMP: f32 = 1.0 / 180.0;
+/// One-pole fader step per sample (`DAT_144f38638`), shared by the FX output stage.
+pub(crate) const FADER_RAMP: f32 = 1.0 / 180.0;
 const RATIO_BIAS: f32 = 1e-12;
 const RATIO_LOW: f32 = 0.999;
 const RATIO_HIGH: f32 = 1.001;
 const PAN_SLEW_RATE: f32 = 10.0;
 const PAN_FALL_RATE: f32 = -20.0;
+
+/// Native gain test (`FUN_14097cc50`): a gain change is ramped when the current and target
+/// magnitudes differ by more than 0.1% (ratio outside [0.999, 1.001]).
+pub(crate) fn gain_ramps(current: f32, target: f32) -> bool {
+    let magnitude = |x: f32| f32::from_bits(x.to_bits() & 0x7fff_ffff);
+    let ratio = magnitude(current + RATIO_BIAS) / magnitude(target + RATIO_BIAS);
+    ratio > RATIO_HIGH || ratio < RATIO_LOW
+}
 
 /// The state of one bus amplifier: the saved targets, and the current fader and
 /// pan that ramp toward them. The current values start at the targets on the
@@ -79,10 +88,7 @@ impl BusAmp {
     /// ramp restarts from the stored value on every channel and stores the final
     /// value of the last channel.
     fn fader(&mut self, channels: &mut [&mut [f32]]) {
-        let magnitude = |x: f32| f32::from_bits(x.to_bits() & 0x7fff_ffff);
-        let ratio = magnitude(self.current_volume + RATIO_BIAS)
-            / magnitude(self.volume + RATIO_BIAS);
-        if ratio > RATIO_HIGH || ratio < RATIO_LOW {
+        if gain_ramps(self.current_volume, self.volume) {
             let mut gain = self.current_volume;
             for channel in channels.iter_mut() {
                 gain = self.current_volume;
