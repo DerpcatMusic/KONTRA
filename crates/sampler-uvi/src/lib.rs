@@ -29,6 +29,7 @@ pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
+mod placement;
 pub mod parity;
 mod resources;
 pub mod script;
