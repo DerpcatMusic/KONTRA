@@ -1,0 +1,55 @@
+/ 166: fcn.141aba040 (int64_t arg1, int64_t arg2);
+| `- args(rcx, rdx) vars(4:sp[0x10..0x40])
+|           0x141aba040      48895c2408     mov qword [var_8h], rbx
+|           0x141aba045      4889742418     mov qword [var_18h], rsi
+|           0x141aba04a      57             push rdi
+|           0x141aba04b      4883ec30       sub rsp, 0x30
+|           0x141aba04f      33f6           xor esi, esi
+|           0x141aba051      0f29742420     movaps xmmword [var_20h], xmm6
+|           0x141aba056      488931         mov qword [rcx], rsi       ; arg1
+|           0x141aba059      0fb6da         movzx ebx, dl              ; arg2
+|           0x141aba05c      48897110       mov qword [rcx + 0x10], rsi ; arg1
+|           0x141aba060      488bf9         mov rdi, rcx               ; arg1
+|           0x141aba063      897108         mov dword [rcx + 8], esi   ; arg1
+|           0x141aba066      4889711c       mov qword [rcx + 0x1c], rsi ; arg1
+|           0x141aba06a      48897128       mov qword [rcx + 0x28], rsi ; arg1
+|           0x141aba06e      897130         mov dword [rcx + 0x30], esi ; arg1
+|           0x141aba071      48897138       mov qword [rcx + 0x38], rsi ; arg1
+|           0x141aba075      48897140       mov qword [rcx + 0x40], rsi ; arg1
+|           0x141aba079      48897148       mov qword [rcx + 0x48], rsi ; arg1
+|           0x141aba07d      e82e0a0000     call 0x141abaab0
+|           0x141aba082      0f57f6         xorps xmm6, xmm6
+|           0x141aba085      84db           test bl, bl
+|       ,=< 0x141aba087      741c           je 0x141aba0a5
+|       |   0x141aba089      488b8fc000..   mov rcx, qword [rdi + 0xc0]
+|       |   0x141aba090      4c8d442448     lea r8, [var_48h]
+|       |   0x141aba095      89742448       mov dword [var_48h], esi
+|       |   0x141aba099      488b5108       mov rdx, qword [rcx + 8]
+|       |   0x141aba09d      488b09         mov rcx, qword [rcx]
+|       |   0x141aba0a0      e8dbccd2fe     call 0x1407e6d80
+|       `-> 0x141aba0a5      660f7ef1       movd ecx, xmm6
+|           0x141aba0a9      660f7ef0       movd eax, xmm6
+|           0x141aba0ad      3bc8           cmp ecx, eax
+|       ,=< 0x141aba0af      750f           jne 0x141aba0c0
+|       |   0x141aba0b1      33c0           xor eax, eax
+|       |   0x141aba0b3      894750         mov dword [rdi + 0x50], eax
+|      ,==< 0x141aba0b6      eb0b           jmp 0x141aba0c3
+..
+|      |`-> 0x141aba0c0      897750         mov dword [rdi + 0x50], esi
+|      |    ; CODE XREF from fcn.141aba040 @ 0x141aba0b6(x)
+|      `--> 0x141aba0c3      660f7ef1       movd ecx, xmm6
+|           0x141aba0c7      660f7ef0       movd eax, xmm6
+|           0x141aba0cb      3bc8           cmp ecx, eax
+|       ,=< 0x141aba0cd      7511           jne 0x141aba0e0
+|       |   0x141aba0cf      33c0           xor eax, eax
+|       |   0x141aba0d1      894754         mov dword [rdi + 0x54], eax
+|      ,==< 0x141aba0d4      eb0d           jmp 0x141aba0e3
+..
+|      |`-> 0x141aba0e0      897754         mov dword [rdi + 0x54], esi
+|      |    ; CODE XREF from fcn.141aba040 @ 0x141aba0d4(x)
+|      `--> 0x141aba0e3      488b5c2440     mov rbx, qword [var_8h]
+|           0x141aba0e8      488b742450     mov rsi, qword [var_18h]
+|           0x141aba0ed      0f28742420     movaps xmm6, xmmword [var_20h]
+|           0x141aba0f2      4883c430       add rsp, 0x30
+|           0x141aba0f6      5f             pop rdi
+\           0x141aba0f7      c3             ret

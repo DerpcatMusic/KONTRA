@@ -1,0 +1,40 @@
+            0x141a7e8b0      48896928       mov qword [rcx + 0x28], rbp
+            0x141a7e8b4      896930         mov dword [rcx + 0x30], ebp
+            0x141a7e8b7      48896938       mov qword [rcx + 0x38], rbp
+            0x141a7e8bb      48896940       mov qword [rcx + 0x40], rbp
+            0x141a7e8bf      48896948       mov qword [rcx + 0x48], rbp
+            0x141a7e8c3      4883c150       add rcx, 0x50              ; 80
+            0x141a7e8c7      e8845431ff     call 0x140d93d50
+            0x141a7e8cc      498dbea800..   lea rdi, [r14 + 0xa8]
+            0x141a7e8d3      48892f         mov qword [rdi], rbp
+            0x141a7e8d6      48896f08       mov qword [rdi + 8], rbp
+            0x141a7e8da      48896f10       mov qword [rdi + 0x10], rbp
+            0x141a7e8de      49899ec000..   mov qword [r14 + 0xc0], rbx
+            0x141a7e8e5      4189aec800..   mov dword [r14 + 0xc8], ebp
+            0x141a7e8ec      41c7868000..   mov dword [r14 + 0x80], 0x3f000000 ; [0x3f000000:4]=-1
+            0x141a7e8f7      f3410f104e74   movss xmm1, dword [r14 + 0x74]
+            0x141a7e8fd      f3410f114e74   movss dword [r14 + 0x74], xmm1
+            0x141a7e903      0f28d9         movaps xmm3, xmm1
+            0x141a7e906      f30f591d52..   mulss xmm3, dword [0x144714960]
+            0x141a7e90e      f30f59c9       mulss xmm1, xmm1
+            0x141a7e912      f30f590d4e..   mulss xmm1, dword [0x1479ab468]
+            0x141a7e91a      0f28d1         movaps xmm2, xmm1
+            0x141a7e91d      f30f59d3       mulss xmm2, xmm3
+            0x141a7e921      0f28c2         movaps xmm0, xmm2
+            0x141a7e924      f30f59c1       mulss xmm0, xmm1
+            0x141a7e928      f30f5915d8..   mulss xmm2, dword [0x144760108]
+            0x141a7e930      f30f58d3       addss xmm2, xmm3
+            0x141a7e934      f30f5905a4..   mulss xmm0, dword [0x144fcfce0]
+            0x141a7e93c      f30f58d0       addss xmm2, xmm0
+            0x141a7e940      f3410f115678   movss dword [r14 + 0x78], xmm2
+            0x141a7e946      f30f10050a..   movss xmm0, dword [0x144fd1c58] ; [0x144fd1c58:4]=0x3fb33333
+            0x141a7e94e      0f57c9         xorps xmm1, xmm1
+            0x141a7e951      660f7ec1       movd ecx, xmm0
+            0x141a7e955      660f7ec8       movd eax, xmm1
+            0x141a7e959      3bc8           cmp ecx, eax
+        ,=< 0x141a7e95b      7513           jne 0x141a7e970
+        |   0x141a7e95d      33c0           xor eax, eax
+        |   0x141a7e95f      4189467c       mov dword [r14 + 0x7c], eax
+       ,==< 0x141a7e963      eb16           jmp 0x141a7e97b
+       ||   0x141a7e965      6666660f1f..   nop word [rax + rax]
+       |`-> 0x141a7e970      41c7467c33..   mov dword [r14 + 0x7c], 0x3fb33333 ; [0x3fb33333:4]=-1

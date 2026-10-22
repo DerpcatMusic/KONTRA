@@ -1,0 +1,40 @@
+            0x141a7eb60      104989         adc byte [rcx - 0x77], cl
+            0x141a7eb63      8e28           mov gs, word [rax]
+            0x141a7eb65      0100           add dword [rax], eax
+            0x141a7eb67      004989         add byte [rcx - 0x77], cl
+            0x141a7eb6a      8630           xchg byte [rax], dh
+            0x141a7eb6c      0100           add dword [rax], eax
+            0x141a7eb6e      004d89         add byte [rbp - 0x77], cl
+            0x141a7eb71      be38010000     mov esi, 0x138             ; 312
+            0x141a7eb76      4d89be4001..   mov qword [r14 + 0x140], r15
+            0x141a7eb7d      4d89be4801..   mov qword [r14 + 0x148], r15
+            0x141a7eb84      49898e5001..   mov qword [r14 + 0x150], rcx
+            0x141a7eb8b      4d89be5801..   mov qword [r14 + 0x158], r15
+            0x141a7eb92      41c7866001..   mov dword [r14 + 0x160], 1
+            0x141a7eb9d      4d89be6801..   mov qword [r14 + 0x168], r15
+            0x141a7eba4      498b863001..   mov rax, qword [r14 + 0x130]
+            0x141a7ebab      4d89be7001..   mov qword [r14 + 0x170], r15
+            0x141a7ebb2      4d89be7801..   mov qword [r14 + 0x178], r15
+            0x141a7ebb9      4d89be8001..   mov qword [r14 + 0x180], r15
+            0x141a7ebc0      4989868801..   mov qword [r14 + 0x188], rax
+            0x141a7ebc7      4d89be9001..   mov qword [r14 + 0x190], r15
+            0x141a7ebce      41c7869801..   mov dword [r14 + 0x198], 1
+            0x141a7ebd9      4d89bea001..   mov qword [r14 + 0x1a0], r15
+            0x141a7ebe0      498d8ea801..   lea rcx, [r14 + 0x1a8]
+            0x141a7ebe7      498b962801..   mov rdx, qword [r14 + 0x128]
+            0x141a7ebee      e88dfcffff     call 0x141a7e880
+            0x141a7ebf3      90             nop
+            0x141a7ebf4      498d8e7802..   lea rcx, [r14 + 0x278]
+            0x141a7ebfb      498b963001..   mov rdx, qword [r14 + 0x130]
+            0x141a7ec02      e879fcffff     call 0x141a7e880
+            0x141a7ec07      90             nop
+            0x141a7ec08      4d89be4803..   mov qword [r14 + 0x348], r15
+            0x141a7ec0f      498d8e5003..   lea rcx, [r14 + 0x350]
+            0x141a7ec16      e8355131ff     call 0x140d93d50
+            0x141a7ec1b      498d8e8403..   lea rcx, [r14 + 0x384]
+            0x141a7ec22      e8295131ff     call 0x140d93d50
+            0x141a7ec27      4d89bec003..   mov qword [r14 + 0x3c0], r15
+            0x141a7ec2e      498d8ed003..   lea rcx, [r14 + 0x3d0]
+            0x141a7ec35      e856c9f1ff     call 0x14199b590
+            0x141a7ec3a      4d89be2004..   mov qword [r14 + 0x420], r15
+            0x141a7ec41      498d8e3004..   lea rcx, [r14 + 0x430]
