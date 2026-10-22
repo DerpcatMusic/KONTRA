@@ -122,6 +122,9 @@ input.group>=16||input.channel>=16||input.key>=128
             .copied()
             .flatten()
         {
+            // A keyswitch note consumes neither an RR step nor a random draw.
+            let saved = self.plans.get(self.active_plan.0).unwrap();
+            let (random, draw) = (saved.native_random, saved.native_draw);
             let note = self.note_on_owned_pitch_base(performance, input, source, pitch,intrinsic, velocity, expression, receiver)?;
             if !self
                 .plans
@@ -133,6 +136,8 @@ input.group>=16||input.channel>=16||input.key>=128
             {
                 let generation = self.plans.get_mut(self.active_plan.0).unwrap();
                 generation.native_cycle = generation.native_cycle.wrapping_sub(1);
+                generation.native_random = random;
+                generation.native_draw = draw;
             }
             self.articulation_now(index, value);
             if !self
@@ -301,7 +306,7 @@ input.group>=16||input.channel>=16||input.key>=128
             let generation = self.plans.get(plan.0).unwrap();
             let state = self.performance_state.edit(performance);
             state.native_tick = generation.native_cycle;
-            state.native_seed = generation.native_seed;
+            state.native_draw = generation.native_draw;
             self.performance_state.sync_metadata(performance);
         }
         let snapshot = self.performance_state.channel_current_index(performance, address);
