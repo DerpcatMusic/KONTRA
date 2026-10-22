@@ -82,6 +82,7 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 | Lo-Fi hold, quantizer, noise | covered, measured | mapped | flag (P truncation), reset seed |
 | Bite | covered, model-checked | mapped | 20 ms control ramps, Kontakt output vectors |
 | Tape Saturator | covered, table recovered | mapped | Kontakt output vectors |
+| Tape live slew | tick law verified under KEMU, Rust `Slew` (not wired) | per-tick law decoded | tick cadence (wrapper dispatch), per-sample lane use in Tape::process |
 | Wow / Flutter parameters | bindings measured | mapped | scrape, age, saturation, gate laws |
 | Wow / Flutter DSP | generic only | unrecovered | exact pitch law, Scrape/Age/Saturation/Gate |
 | Wine oracle measurement | none | no Kontakt install in the Wine prefix | everything measured against Kontakt |
@@ -92,3 +93,22 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 - `effects::timemod::tests::wow_flutter_reads_its_stream_and_maps_generic_law` (sampler-kontakt): reader order, mix, and the omitted-law diagnostic.
 
 - **Kernel located (2026-10-23):** see [k-wowflutter-kernel.md](k-wowflutter-kernel.md). Process = vtable slot 19 (`FUN_14199d080`) of `WowFlutter::vftable` (`0x1476a3400`), reached from slot 7 (`FUN_14099f000`). Port still blocked on the sub-object readers and constants.
+
+## Live control: Tape Saturator (decoded 2026-10-23, not yet a Rust lane)
+
+Source: `source/kontakt8/0140ae0000.c`. Object fields, from the setter and ramp code:
+
+- Setter `FUN_140ae1e10(obj, param, value)`: param 0 gain → `FUN_140ae1ee0` (dB table lookup, not decoded); param 1 warmth → `obj+0x3c = 10^(0.05·(6w−3))`, ramp target `obj+0x2240`; param 2 roll-off → `obj+0x24`/`+0x40` (law not decoded); param 3 quality → bool `obj+0x2c = 0.5 < v`. Warmth and the flags set `+0x2250 = 1`, `+0x2260 = 1`.
+- **Native vector (KEMU, `tools/re/tape_live_kemu.py`):** warmth 0, 0.25, 0.5, 1 gives gain 0.70794577, 0.84139514, 1.0, 1.41253757, exact match with the law (error 0). `tape.rs` already uses the same law at init.
+- **Slew (`FUN_140ae1b40`, 713 B):** four lanes, current `+0x2220..0x222c`, target `+0x2240..0x224c`, per-step increment `+0x2230..0x223c`, step counter `+0x2254` reloaded from `+0x2258`, step rate `+0x225c`. A lane snaps when its square falls under the threshold.
+- Init `FUN_140ae0fc0(obj, T, sr)` (decompiled, constants read from `.rdata`): `+0x2170 = T`, `+0x2174 = 1/T`, `+0x2178 = sr`. `T` is compared with 50 kHz and 100 kHz (`DAT_144f38d5c`, `DAT_1447377cc`) to pick the oversampling (`+0x2160`, `+0x2164`), so **T is the processing rate (host rate times oversampling), not a ramp length**.
+- Step count: `+0x2258 = max(1, int(0.03·T/sr + 0.5))` (`DAT_144fcdc04 = 0.03`, `DAT_14470bad0 = 0.5`). For any real T/sr below about 16.7 this is 1, so the warmth ramp is one tick.
+- Slew rate: `+0x225c = 1/(N·sr)` with `N = +0x2258` (`DAT_14470bad4 = 1.0`). The earlier note `0.025/(N·sr)` was wrong. The constant 0.025 (`DAT_144f38678`) feeds the `+0x1458` field, not the slew.
+- **Tick (`FUN_140ae1b40`, group B) vectors, KEMU (`tools/re/tape_slew_kemu.py`):** a pending tick sets `inc = (tgt − cur)·rate` per lane, snaps lanes with `inc² < 1e-15`, reloads the counter `+0x2254` from `+0x2258`; a non-pending tick decrements the counter and snaps `cur = tgt`, `inc = 0` at zero. Verified in `tape.rs::Slew` (`slew_tick_matches_the_native_lanes`, sampler-core).
+- Per-sample advance (decompile of the process loop `FUN_140ae1190`, lines ~1210–1225): `cur += inc` before each sample's gain read. Not yet run under KEMU.
+
+**Blocker for the live lane (what is still unknown):** the cadence of the tick. `FUN_140ae1b40` has no direct `call` in the binary; it is vtable slot 8 of the Tape core (`NI::KONTAKTFX::Tape::vftable` = `0x144fcdb40`, slot 3 = init `0x140ae0fc0`, slot 7 = process `0x140ae1190`, slot 8 = tick `0x140ae1b40`). The tape wrapper (`IDSPCoreWrapper<Tape,BEffectBase>`, ctor `FUN_1407c8890`, core object at `+0x38`) is expected to make those calls; its dispatch is not traced yet. With the per-sample `inc = Δ/(N·sr)`, a ramp of R ticks covers `R·M` samples (M = samples between ticks) and only reaches `Δ` when `M = sr`, so the tick cadence decides the live curve. Next step: find the wrapper method that calls `[core+0x40]` (tick) and `[core+0x18]` (init) and the block size it runs with.
+
+No Rust processor lane or parity row is claimed. The Tape `live control not modelled` gap stays open.
+
+Bite (0x66) and the Bus Comp and Raum trailing items were not started in this pass.
