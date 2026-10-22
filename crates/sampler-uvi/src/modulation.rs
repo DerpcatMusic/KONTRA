@@ -158,9 +158,9 @@ enum Signal {
         scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
         /// Source smoothing as a route lag: seconds to 99% of a step.
         smoothing: f64,
-        /// A second modulator summed into the value (MultiLFO noise), with its
-        /// own `w` → value curve.
-        extra: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+        /// Further modulators summed into the value (MultiLFO waveforms and
+        /// noise), each with its own `w` → value curve.
+        extra: Option<Vec<(ir::ModulatorRef, Vec<(f64, f64)>)>>,
         /// The program- or layer-level source this reads, reported (and made
         /// instrument-wide) once a route uses it.
         shared: Option<Shared>,
@@ -562,7 +562,7 @@ impl Translation {
                         ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * 1000f64.log2() * ratio)),
                     ),
                 };
-                for (modulator, curve) in std::iter::once((modulator, curve)).chain(extra) {
+                for (modulator, curve) in std::iter::once((modulator, curve)).chain(extra.into_iter().flatten()) {
                     let ir_bipolar = self.ir.modulators[modulator.0].source.bipolar();
                     let points =
                         match self.live_points(connection, &curve, bipolar, |m| match law {
@@ -722,7 +722,7 @@ impl Translation {
         let result=self.signal_inner(owner,connection,qualification)?;
         if let (Some(node),Ok(Signal::Live{modulator,extra,..}))=(source_node(owner,connection.attribute("Source").unwrap_or_default()),&result){
             self.modulator_nodes.entry(*modulator).or_insert(node.id());
-            if let Some((source,_))=extra{self.modulator_nodes.entry(*source).or_insert(node.id());}
+            for (source,_) in extra.iter().flatten(){self.modulator_nodes.entry(*source).or_insert(node.id());}
         }Ok(result)
     }
     fn signal_inner(&mut self, owner: Node, connection: Node, qualification: &mut SourceQualification) -> Result<Result<Signal, Gap>, String> {
@@ -1014,7 +1014,7 @@ impl Translation {
                 }) = &mut signal
                 {
                     let mut modulators = vec![*modulator];
-                    modulators.extend(extra.as_ref().map(|e| e.0));
+                    modulators.extend(extra.iter().flatten().map(|e| e.0));
                     *shared = self.shared(node, modulators);
                 }
                 Ok(signal)
@@ -1142,13 +1142,10 @@ impl Translation {
         let starts_at_zero = id != 1.0 && (phase == 0.0 || phase == 0.5);
         let smoothing = if smooth < NEGLIGIBLE_SMOOTH {
             0.0
-        } else if let Err(why) = smoothable(retrigger, starts_at_zero) {
-            return Ok(Err(gap(
-                "LFO Smooth",
-                format!("{smooth}: {why}"),
-                NotModeled,
-            )));
         } else {
+            if let Err(why) = smoothable(retrigger, starts_at_zero) {
+                self.approximated(node, "LFO Smooth", format!("{smooth}: {why}; lag applied per route"));
+            }
             smooth * 100f64.ln() / 3f64.ln()
         };
         let polar = number(node, "Bipolar", 1.0)? != 0.0;
@@ -1206,12 +1203,13 @@ impl Translation {
         }))
     }
 
-    /// A `MultiLFO`. Measured (v1, `UVI_MULTILFO_ENDPOINT_EVIDENCE.md`) only for
-    /// SineDepth 1 with NoiseDepth n ≥ 0, normalized and bipolar:
+    /// A `MultiLFO`. Sine alone with NoiseDepth n ≥ 0, normalized and bipolar,
+    /// is measured (v1, `UVI_MULTILFO_ENDPOINT_EVIDENCE.md`):
     /// Depth·(sin 2π(phase) + n·noise)/(1 + n), the noise a uniform −1..1 value
     /// drawn for each half cycle (an IR sample-and-hold at twice the rate),
     /// Smooth an Euler one-pole of time constant Smooth per 32-frame point.
-    /// Other waveform mixes, normalization and polarity are unmeasured.
+    /// Any other waveform mix is approximated: each weighted waveform is its
+    /// own route, normalized by the sum of |weights| + noise (UnknownLaw).
     fn multi_lfo(
         &mut self,
         node: Node,
@@ -1232,8 +1230,8 @@ impl Translation {
             ("ManualTrigger", 0.0),
         ];
         let mut unmeasured = Vec::new();
-        if weights != [1.0, 0.0, 0.0, 0.0] || !(0.0..=1.0).contains(&noise) {
-            unmeasured.push(format!("waveforms {weights:?} + noise {noise}"));
+        if !(0.0..=1.0).contains(&noise) {
+            unmeasured.push(format!("noise {noise}"));
         }
         for (name, measured) in settings {
             let value = number(node, name, measured)?;
@@ -1243,6 +1241,10 @@ impl Translation {
         }
         if !unmeasured.is_empty() {
             return Ok(Err(gap("MultiLFO", unmeasured.join(", "), UnknownLaw)));
+        }
+        let total = weights.iter().map(|w| w.abs()).sum::<f64>() + noise;
+        if total == 0.0 {
+            return Ok(Err(gap("MultiLFO", "no waveform weight", UnknownLaw)));
         }
         let retrigger = match number(node, "Retrigger", 1.0)? {
             1.0 => true,
@@ -1257,13 +1259,10 @@ impl Translation {
         // first value. Exact discretization needs a per-route lag law.
         let smoothing = if smooth <= 0.0 {
             0.0
-        } else if let Err(why) = smoothable(retrigger, phase == 0.0 || phase == 0.5) {
-            return Ok(Err(gap(
-                "MultiLFO Smooth",
-                format!("{smooth}: {why}"),
-                NotModeled,
-            )));
         } else {
+            if let Err(why) = smoothable(retrigger, phase == 0.0 || phase == 0.5) {
+                self.approximated(node, "MultiLFO Smooth", format!("{smooth}: {why}; lag applied per route"));
+            }
             smooth * 100f64.ln()
         };
         let freq = number(node, "Freq", 0.5)?;
@@ -1290,29 +1289,61 @@ impl Translation {
             })
         };
         let id = node.id();
-        let sine = self.modulator(
-            format!("node {id:?}"),
-            lfo(ir::LfoShape::Sine, rate(1.0), phase),
-        );
-        let depth = number(node, "Depth", 1.0)?.clamp(0.0, 1.0) * factor / (1.0 + noise);
-        let extra = (noise > 0.0).then(|| {
-            let held = lfo(
-                ir::LfoShape::SampleAndHold,
-                rate(2.0),
-                (2.0 * phase).fract(),
-            );
+        let depth = number(node, "Depth", 1.0)?.clamp(0.0, 1.0) * factor / total;
+        // Sine, Triangle, Saw and Square are the traced UVI tables; the Saw's
+        // orientation is not measured, so it is the rising ramp.
+        let shapes = [
+            (ir::LfoShape::Sine, weights[0]),
+            (ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Triangle)), weights[1]),
+            (ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::RampUp)), weights[2]),
+            (ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Square)), weights[3]),
+        ];
+        let mut parts: Vec<(ir::ModulatorRef, Vec<(f64, f64)>)> = shapes
+            .into_iter()
+            .filter(|(_, w)| *w != 0.0)
+            .map(|(shape, w)| {
+                let modulator = self.modulator(format!("node {id:?} {shape:?}"), lfo(shape, rate(1.0), phase));
+                (modulator, vec![(0.0, -depth * w), (1.0, depth * w)])
+            })
+            .collect();
+        if noise > 0.0 {
+            let held = lfo(ir::LfoShape::SampleAndHold, rate(2.0), (2.0 * phase).fract());
             let modulator = self.modulator(format!("node {id:?} noise"), held);
-            (modulator, vec![(0.0, -depth * noise), (1.0, depth * noise)])
-        });
+            parts.push((modulator, vec![(0.0, -depth * noise), (1.0, depth * noise)]));
+        }
+        if weights != [1.0, 0.0, 0.0, 0.0] {
+            self.approximated(
+                node,
+                "MultiLFO waveform mix",
+                format!("waveforms {weights:?} + noise {noise}: summed by |weights| + noise"),
+            );
+        }
+        let (modulator, curve) = parts.remove(0);
         Ok(Ok(Signal::Live {
-            modulator: sine,
-            curve: vec![(0.0, -depth), (1.0, depth)],
+            modulator,
+            curve,
             bipolar: true,
             scale,
             smoothing,
-            extra,
+            extra: (!parts.is_empty()).then_some(parts),
             shared: None,
         }))
+    }
+
+    /// Reports an approximated law as an UnknownLaw warning once per node and
+    /// feature: the route still plays, approximated, instead of refusing the
+    /// program.
+    fn approximated(&mut self, node: Node, feature: &str, value: String) {
+        let location = path(node);
+        if self.ir.unsupported.iter().any(|u| u.location == location && u.feature == feature) {
+            return;
+        }
+        self.ir.unsupported.push(ir::Unsupported {
+            location,
+            feature: feature.into(),
+            value,
+            reason: ir::Reason::UnknownLaw,
+        });
     }
 
     /// A `StepEnvelope`: `NumSteps` `Levels`, each held for one step of
@@ -1327,7 +1358,6 @@ impl Translation {
         for (name, measured) in [
             ("Bipolar", 0.0),
             ("InterpolationMode", 0.0),
-            ("Smooth", 0.0),
             ("Depth", 1.0),
         ] {
             let value = number(node, name, measured)?;
@@ -1389,6 +1419,14 @@ impl Translation {
         } else {
             ir::Frequency::Hertz(freq / count)
         };
+        // Smooth: the lag law is unmeasured; τ = Smooth as for MultiLFO.
+        let smooth = number(node, "Smooth", 0.0)?;
+        let smoothing = if smooth < NEGLIGIBLE_SMOOTH {
+            0.0
+        } else {
+            self.approximated(node, "StepEnvelope Smooth", format!("{smooth}: lag applied per route"));
+            smooth * 100f64.ln()
+        };
         let saw = ir::Lfo {
             shape: ir::LfoShape::SawUp,
             rate,
@@ -1411,7 +1449,7 @@ impl Translation {
             curve,
             bipolar: false,
             scale: None,
-            smoothing: 0.0,
+            smoothing,
             extra: None,
             shared: None,
         }))
@@ -2071,16 +2109,35 @@ mod tests {
             );
             assert!((route.smoothing.seconds() - 0.1 * 100f64.ln()).abs() < 1e-12);
         }
-        // A sum cannot pass the gain law, nor can unmeasured waveform mixes.
+        // A sum cannot pass the gain law. An unmeasured waveform mix plays as
+        // an approximation, reported once as an UnknownLaw warning.
         let ir = translate_connections(
             r#"<MultiLFO Name="M" SineDepth="1" NoiseDepth="0.5"/><MultiLFO Name="T" TriangleDepth="1"/>"#,
             r#"<SignalConnection Source="$Program/M" Destination="Gain" Ratio="1"/>
-               <SignalConnection Source="$Program/T" Destination="Pan" Ratio="1"/>"#,
+               <SignalConnection Source="$Program/T" Destination="Pitch" Ratio="2"/>"#,
             "",
         );
-        assert!(ir.zones[0].routes.is_empty());
-        let reasons: Vec<_> = ir.unsupported.iter().map(|u| u.reason).collect();
-        assert_eq!(reasons, [ir::Reason::NotModeled, ir::Reason::UnknownLaw]);
+        let pan: Vec<&ir::Route> = ir.zones[0].routes.iter().map(|r| &ir.routes[r.0]).collect();
+        assert_eq!(pan.len(), 1);
+        assert_eq!(lfo(&ir, pan[0]).shape, ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Triangle)));
+        assert_eq!(ir.unsupported.iter().filter(|u| u.feature == "MultiLFO waveform mix").count(), 1);
+        assert!(ir.unsupported.iter().any(|u| u.reason == ir::Reason::NotModeled));
+    }
+
+    #[test]
+    fn multi_lfo_waveform_mix_sums_weighted_routes() {
+        let ir = translate(
+            r#"<MultiLFO Name="M" SineDepth="0.5" SquareDepth="-0.5" Depth="1" Freq="2"/>"#,
+            r#"<SignalConnection Source="$Program/M" Destination="Pitch" Ratio="2"/>"#,
+            "",
+        );
+        let routes = routes(&ir);
+        assert_eq!(routes.len(), 2, "{:?}", ir.unsupported);
+        // Normalized by |0.5| + |-0.5| = 1: sine ±0.5, square ∓0.5.
+        let points: Vec<_> = routes.iter().map(|r| shape_points(&ir, r)).collect();
+        assert!(points.iter().all(|p| p.len() == 2));
+        assert_eq!(lfo(&ir, routes[1]).shape, ir::LfoShape::Native(ir::NativeWave::Uvi(ir::UviWave::Square)));
+        assert_eq!(ir.unsupported.iter().filter(|u| u.feature == "MultiLFO waveform mix").count(), 1);
     }
 
     fn shape_points(ir: &ir::Instrument, route: &ir::Route) -> Vec<(f64, f64)> {
