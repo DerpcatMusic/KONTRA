@@ -219,9 +219,8 @@ roles. UNKNOWN: `L+0x40`, update thunk body, other parameter writers besides ind
 of `141ae3ba0` (attack/release selection, link, side) and the `L+0x40` writer.
 
 **Implemented.** `crates/sampler-core/src/dsp/db_limiter.rs` (`DbLimiter`, not wired): the five
-parameter laws, the detector, the dB envelope, the gain and the output clamp. Attack is 0 and the
-second dB state is omitted, because their writers are not decoded. The detector stays INFERRED, and
-`L+0x40` is read as the sample rate (INFERRED).
+parameter laws, the detector, the attack, the second dB state, the mode, the gain and the output
+clamp. Attack, second state and `L+0x40` were closed in this pass (see "Closed in this pass").
 
 ---
 
@@ -261,7 +260,7 @@ A.out6)), with A.out5 at `B+0x38` and A.out6 at `B+0x3c`.
 law, slot-1 and setup calls. UNKNOWN: R of section A (c50) and section B (`B+0x84`), `C+0x142a8` writer.
 
 **Port consequence.** The polynomial is a constant table: port the four numbers. Amount is a glided
-drive and gain. Exact port blocked by c50 and `B+0x84` (section damping).
+drive and gain. c50 and `B+0x84` are closed in this pass (R = 2.0), so the saturator ports.
 
 ---
 
@@ -311,7 +310,7 @@ copy with the count formula and ports directly. Kernels matter only for other li
 
 ---
 
-## Open items
+## Open items (before this pass; closed items are listed in "Closed in this pass")
 
 1. GAP-A: lanes 2-3 phase increments (`144714b78`, `144714b7c`); 147697658; `n`.
 2. GAP-C: writer of `H+0x15c` and `H+0x194` on the active branch; head time field; kernels
@@ -324,3 +323,54 @@ copy with the count formula and ports directly. Kernels matter only for other li
 Core portable: partly. Blocked by the section R terms (GAP-D, GAP-F), the mode-1 head reader and
 time source (GAP-C), and the ramp scale (GAP-A). The limiter (GAP-E) and the saturator polynomial
 (GAP-F) port once their listed writers are confirmed.
+
+---
+
+## Closed in this pass
+
+Method: the decompile text and TSV rows as before, plus one read-only `pefile` read of 8 `.rdata`
+bytes at `144714b78` (the extractor skips `_UNK_`-prefixed references, so `constants.tsv` has no
+row for it). No Ghidra, radare2, REA, Wine or Kontakt. The sampler-core tests were run; sampler-kontakt
+was not changed and not built.
+
+| Gap | Status | Law and address |
+|---|---|---|
+| GAP-A | Open | Lanes 2-3 closed (GAP-K). `147697658` = 0.02 (f32 `3ca3d70b`), so the ramp length is `max(1, trunc(rate x 0.02 / n + 0.5))` (`141aa1580`; the limiter uses the same law, `141ae28c0`). Open: `n`, the integer divisor set earlier in `141aa1580`. |
+| GAP-B | Open | Not traced in this pass: writers of `C+0xad0`, `C+0xad8`, `+0x918`, `+0x91c`, `+0x938`. |
+| GAP-C | Open | Mode-1 kernels not read in this pass: `141ab8c60` (1240 B, selection), `141ab8a00` (530 B), `141ab87d0` (549 B), `141ab7fe0` (754 B), blend `141ab7e00` (468 B; the blend is partly lost in the text). Active-branch length writer in `141ab4e30` (1480 B). Stays NotModeled. |
+| GAP-D | Open | Unchanged: glide 3 step, `F+0x100` object, writer of `F+0x5`. |
+| GAP-E | Closed | Rate setup `141ae28c0` (limiter slot 3, `0141ae0000.c:2118`): `L+0x40` = rate. Attack `L+0xcc` = 1 - 200/rate (`144f38ce4` = 200, u32 `43480000`). Second dB state `L+0xbc`: rise `L+0xc0` = 1 - (1/15)/rate (`144f386a8`, u32 `3d888889`), fall `L+0xc4` = 1 - (1/3)/rate (`144760108`); update in `141ae3ba0`. Gain = -max(0, env, hold) dB. Index 4 sets `L+0xad` (mode): 1 = the first envelope rises at once, else attack. Ported in `db_limiter.rs`, with the output clamp kept. Open: release before the index-1 setter (default `L+0xb0`, so release starts at 0 in the port); ramp lengths `L+0x88` and `+0x8c` (not applied); rebuild `141ae6c60` (writes `+0xd0` and `+0xc0`, reached from `141ae9e40`, which is not a slot of this vtable; not applied). |
+| GAP-F | Closed for R and the polynomial | c50 (R of section A, `B+0x50`) and `B+0x84` (R of section B) = 2.0: `141ac9c50` (`0141ac0000.c:6018`) writes `0x40000000` when `144714994` is nonzero (u32 `40000000`). Sections at 2205 Hz (`1479ab60c`) and 5 Hz (`1447149f0`), Q = 1 (`14470bad4`). Polynomial: `141abe910` with K = 0.05 (`1447148c0`, u32 `3d4ccccd`), exponents (0, -40, -45, -49, -40) from slot 1 `141a9e300`, divided by the raw base 1.0668702: c4 = 0.0453523, c8 = -0.2085480, c0c = -0.0266059, c10 = 0.1499714. Output `141aa44a0`: g (tanh(d x) + (P - c50 A.out5 - A.out6) c18), with c14 = c18 = 1, d = 10^a, g = 10^(-a/2). Ported as `tpt_svf::Saturator` (not wired). Open: writer of `C+0x142a8` (amount glide coefficient). |
+| GAP-H | Open | Unchanged. |
+| GAP-K | Closed | Lanes 2 and 3: `144714b78` and `144714b7c` = 1.0 (f32 `3f800000`, read from the PE `.rdata`). Lanes 0 and 1 = 1.0 (`144714b70`; its u64 `3f8000003f800000` covers `144714b74` too). Each frame adds 1.0 to all four lane phases (`141a9f4d0`). |
+| GAP-N | Open | Not read in this pass: `141acbfb0` (mode rebuild), `141a9d4a0` / `141a9d660` / `141a9d7c0` (index 8 table path), `141a90910` (index 0/1 conversion), `141acc600` (ramp length `+0x62d8`). |
+| GAP-O | Open | `14199ce60` (543 B) beyond its first 40 lines, not read. |
+| GAP-G, I, J, L, M, P, Q | Open | Out of scope this pass; addresses as in `k-replika-core.md`. |
+
+### Name binding (task 1)
+
+Not confirmed as a table. Findings:
+- The setter path `140754060` (4291 B, `0140750000.c:3475`) is a cereal serializer: its arguments are
+  `StaticObject<cereal::detail::Versions>`, and `uVar16 = uVar15 | 0x145f0` (`:3891-3921`) is a
+  variant tag. It does not bind indices.
+- The 53 indices are the slots of the Replika wrapper's stream array at `+0x145f0` (8-byte pointers).
+  The per-quantum reader `1408f98d0` loops over 0x35 entries (`01408f0000.c:6097`); the ctor
+  `1407c7d40` zeroes them (`01407c0000.c:4522`). No store into that array is in the decompile text, so
+  the host writer that maps ENGINE_PAR ids to slots is not located.
+- `crates/sampler-core/src/engine_par_ids.tsv` `internal_id` cannot bind by itself: TIME (`0x2c0`) and
+  SATURATION (`0x2c4`) are not a fixed offset from indices 8 and 29, and `set_engine_par` tests `0x414`
+  as the step-modulator count (`0140780000.c:6105`), while the table gives `0x414` to RDL_WIDTH.
+- Named now (6 of 53): index 8 = TIME (medium: TSV linear 2000 ms at raw 1e6 equals `141ac5980`
+  case 8 at k = 0.5, 4000 x 0.5 v); index 9 = TYPE (inferred: `trunc(4v)` clamped 0..3 against TSV
+  TYPE 0..4); indices 2 and 3 = LOWCUT and HIGHCUT (inferred from the GAP-D sweep shapes); index 29 =
+  SATURATION (inferred amount target); index 16 = WIDTH (inferred side scale). 47 unnamed. The Kontakt
+  mapping is not changed: nothing reached confirmed.
+
+### Tests (sampler-core, `build-slot cargo test -p sampler-core --lib <filter> -j 4`)
+
+- `limiter`: 11 pass, including `rate_setup_coefficients_match_the_decoded_constants`,
+  `attack_coefficient_sets_the_first_frame_gain`, `instant_mode_reaches_the_peak_on_the_first_frame`,
+  `second_db_state_sets_the_gain_when_above_the_envelope`, and the output clamp test.
+- `svf`: 12 pass, including `saturator_polynomial_is_the_normalised_exponent_sum`,
+  `saturator_sections_are_r_two_at_their_decoded_cutoffs` and `saturator_dc_output_is_g_times_tanh_of_the_drive`.
+- `saturator`: 8 pass (the three new ones above, plus the existing color saturator tests).
