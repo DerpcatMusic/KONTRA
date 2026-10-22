@@ -5,9 +5,10 @@ Status: native saved-state Formant I implemented (round 3).
 Docs first: Kontakt 8 [Filter Reference, Formant I](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference),
 Talk, Sharp and Size; KSP [Engine Parameters](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameters), filter controls.
 
-Historical binary leads: wrapper `0x1408fa7b0`, core setter
-`0x140b05ac0`, sample-rate setup `0x140afd4f0`, clock `0x140b03690`,
-audio `0x140b00750`. The wrapper clamps control inputs to [0,1] and
+Binary leads: core setter `0x140b05ac0`, sample-rate setup `0x140afd4f0`,
+clock `0x140b03690` (ramp `0x140acbcb0`), audio `0x140b00750`. The wrapper
+`0x1408fa7b0` named in older notes is a legacy cascade (it drives `0x140b05c70`),
+not Formant; the Formant wrapper is not identified. The wrapper clamps control inputs to [0,1] and
 updates them every 32 samples. The audio core has three parallel
 second-order bandpasses, not three serial peaking EQ sections.
 
@@ -55,7 +56,6 @@ sine/cosine polynomial coefficients (0x149e745e0/0x149e74600), and
 .9 radius base at 0x144714914. Setter disassembly 0x140b05ac0 confirms
 Sharp/Size branches. These are computed vectors, not host recordings.
 
-Limit: static saved controls are implemented. Native 15 ms control ramps,
-32-sample wrapper clock and four-sample coefficient clock remain to be wired
-when live Formant controls are supported; existing diagnostics for unrelated
-filter laws remain.
+Status: the native 15 ms control ramp, the 32-frame tick and the four-frame
+coefficient clock are ported and checked against kemu vectors
+(`tools/re/formant_kemu_vectors.py`, see `docs/re/engine/filt-formant-effect.md`).
