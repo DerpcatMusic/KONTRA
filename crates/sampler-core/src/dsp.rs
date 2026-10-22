@@ -150,6 +150,8 @@ pub enum Processor {
     Phaser([f32; 2]),
     /// Ring modulator: sine carrier crossfaded with the input (`sampler_ir::fx::ringmod`).
     RingMod(sampler_ir::fx::ringmod::Config),
+    /// Kontakt Stereo Tune: bus scope only, its delay state is owned by the bus (like [`Processor::Space`]).
+    StereoTune(sampler_ir::fx::stereo_tune::Config),
     /// Formant I (or Formant II when `second`) with Talk, Sharp, Size as event-rate lanes
     /// (KSP ENGINE_PAR_FORMANT_*).
     LiveFormant { knobs: [Parameter; 3], second: bool },
@@ -225,6 +227,7 @@ impl Processor {
             Processor::TimeMod(config) => config.check().is_ok(),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::RingMod(config) => config.check().is_ok(),
+            Processor::StereoTune(config) => config.check().is_ok(),
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::LiveFormant { knobs, .. } => knobs.iter().all(live_knob),
@@ -250,8 +253,6 @@ pub(crate) mod ring_ramp;
 // Surround Panner speaker law (native 0x140a94580 and its helpers); the block driver is not wired yet.
 #[allow(dead_code)]
 pub(crate) mod surround_panner;
-// Stereo Tune core (native 0x140aaf640); the Kontakt lowering is not wired yet.
-#[allow(dead_code)]
 pub(crate) mod stereo_tune;
 // Wired by the Kontakt mapping for module 0x22; until then only the tests build it.
 #[allow(dead_code)]
@@ -350,6 +351,8 @@ pub(super) enum PreparedProcessor {
     Pan { position: control::PreparedParameter, offset:f64, law: sampler_ir::PanLaw, expression: bool },
     /// Ring modulator carrier phase at `offset` of the delay storage.
     RingMod { ring: ringmod::RingMod, offset: usize },
+    /// Index into the bus's stereo tunes.
+    StereoTune(usize),
 }
 
 pub(super) struct CompiledVoiceChain {
@@ -396,7 +399,7 @@ impl PreparedProcessor {
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
                 | Self::LiveFormant { .. } | Self::LivePhaser { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
-                | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. }) => OperationOwner::Scalar(scalar),
+                | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. } | Self::StereoTune(..)) => OperationOwner::Scalar(scalar),
         }
     }
     pub(super) fn view(&self) -> ProcessorRef<'_> {
@@ -421,6 +424,7 @@ impl PreparedProcessor {
             Self::Branch { count, gain, first, last } => ProcessorRef::Branch { count, gain, first, last },
             Self::StateVariable(x) => ProcessorRef::StateVariable(x),
             Self::Space(index, live) => ProcessorRef::Space(index, live),
+            Self::StereoTune(index) => ProcessorRef::StereoTune(index),
             Self::Mix { count, lanes } => ProcessorRef::Mix { count, lanes },
         }
     }
@@ -473,6 +477,7 @@ pub(super) enum ProcessorRef<'a> {
     S1200 { stage: &'a machine::S1200Stage, offset: &'a usize },
     Mp60 { stage: &'a machine::Mp60Stage, offset: &'a usize },
     RingMod { ring: &'a ringmod::RingMod, offset: &'a usize },
+    StereoTune(&'a usize),
 }
 impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
     fn from(stage: &'a PreparedProcessor) -> Self { stage.view() }
@@ -746,6 +751,7 @@ impl VoiceChain {
                 &mut delay_frames,
                 filters,
                 None,
+                None,
             )?,
             post: compile_processors(
                 self.post,
@@ -753,6 +759,7 @@ impl VoiceChain {
                 bindings,
                 &mut delay_frames,
                 filters,
+                None,
                 None,
             )?,
             tail_frames: self.tail_frames,
@@ -789,6 +796,7 @@ pub(super) fn compile_processors(
     delay_frames: &mut usize,
     filters: &mut svf::FilterRegistryBuilder,
     mut spaces: Option<&mut Vec<sampler_ir::fx::space::Config>>,
+    mut tunes: Option<&mut Vec<sampler_ir::fx::stereo_tune::Config>>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
         return Err(Error::InvalidInput);
@@ -878,6 +886,11 @@ pub(super) fn compile_processors(
                         _ => [None; LIVE_KNOBS],
                     };
                     PreparedProcessor::Space(spaces.len() - 1, live)
+                }
+                Processor::StereoTune(config) => {
+                    let tunes = tunes.as_deref_mut().ok_or(Error::InvalidInput)?;
+                    tunes.push(config);
+                    PreparedProcessor::StereoTune(tunes.len() - 1)
                 }
                 Processor::Mix {
                     count,
@@ -1333,6 +1346,7 @@ impl ProcessorState {
             | ProcessorRef::Branch { .. }
             | ProcessorRef::StateVariable(_)
             | ProcessorRef::Space(..)
+            | ProcessorRef::StereoTune(..)
             | ProcessorRef::S1200 { .. }
             | ProcessorRef::Mp60 { .. }
             | ProcessorRef::Mix { .. } => true,
@@ -1528,6 +1542,22 @@ pub(super) fn process<'a, const TRACE: bool>(
                         .iter_mut()
                         .zip(&w[..len])
                         .for_each(|(v, w)| *v = f64::from(*w));
+                }
+            }
+            ProcessorRef::StereoTune(index) => {
+                let mut input = [[0f32; BLOCK]; 2];
+                for (w, v) in input.iter_mut().zip(block.iter()) {
+                    for (w, v) in w[..len].iter_mut().zip(&v[..len]) {
+                        *w = *v as f32;
+                    }
+                }
+                let mut out = [[0f32; BLOCK]; 2];
+                let [out_l, out_r] = &mut out;
+                filters.stereo_tunes[*index].process(&input[0][..len], &input[1][..len], &mut out_l[..len], &mut out_r[..len]);
+                for (v, w) in block.iter_mut().zip(&out) {
+                    for (v, w) in v[..len].iter_mut().zip(&w[..len]) {
+                        *v = f64::from(*w);
+                    }
                 }
             }
             ProcessorRef::TimeMod { timemod, offset, live } => {
@@ -2222,7 +2252,7 @@ mod tests {
                         &mut svf::FilterContext {
                             tempo: 120.0,
                             bank: &mut filters,
-                            spaces: &mut [],
+                            spaces: &mut [], stereo_tunes: &mut [],
                             expression: None,
                         },
                     );
@@ -2302,7 +2332,7 @@ mod tests {
                                     &mut svf::FilterContext {
                                         tempo: 120.0,
                                         bank: &mut filters,
-                                        spaces: &mut [],
+                                        spaces: &mut [], stereo_tunes: &mut [],
                                         expression: None,
                                     },
                                 );
@@ -2649,6 +2679,7 @@ mod live_phaser_processor_tests {
                 &mut delay_frames,
                 &mut svf::FilterRegistryBuilder::default(),
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(bindings.len(), 2, "{name}: lanes are cutoff then resonance");
@@ -2673,7 +2704,7 @@ mod live_phaser_processor_tests {
                 let mut context = svf::FilterContext {
                     tempo: 120.0,
                     bank: &mut filters,
-                    spaces: &mut [],
+                    spaces: &mut [], stereo_tunes: &mut [],
                     expression: None,
                 };
                 assert!(!super::process::<false>(
