@@ -46,6 +46,7 @@ Not recovered, so MP60 is not wired:
 
 - **Rate law**: how `object+0x178c` and the 512-entry curve `param_5` produce the step (`fVar39`) and the per-frame positions. The curve comes from the caller of `FUN_14086e030`.
 - **Source fetch**: `FUN_14086e030` (2845 bytes) calls `FUN_140870e30`, `FUN_140828500` (refill) and `FUN_1408f5110` (channel index), which belong to Kontakt's streaming source. Not decoded.
+- **Resample kernel (blocker, read 2026-10-22)**: the window interpolation the render uses is `FUN_140947580` (416 bytes, polyphase, SSE-packed) and `FUN_140947720` (452 bytes, the variant with a second table pointer), in `0140940000.c`. Their constants are `_UNK_`/`_DAT_` SIMD globals in `.rdata` (`0x144f39250..`), not yet extracted. The render calls `FUN_14086e030` with four arguments while the export names ten parameters, so the argument roles (rate, table, window pointers) are not verified. Porting this blind would mean guessing, so it is parked until a Kontakt run confirms the roles.
 - **Helpers decoded only partly**: `FUN_140880860` derives the window bounds from the source table (0x38-byte entries at `object+0x560`, frame count at `+0x1794`, clamped to 4-frame padding). `FUN_140883f10` rounds the frame count up to 512-frame blocks when `object+0x1788` is in `5..=19`; otherwise it returns the count. `FUN_140883ce0` returns `object+0x1790`; `FUN_140884d90` returns `object+0x178c`.
 
 Without the rate law and the source fetch, the chain would process the raw source at the wrong rate, so it is not wired and must not be claimed as MP60 parity.
