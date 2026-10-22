@@ -79,6 +79,12 @@ impl Shape {
 #[derive(Clone, Copy, Debug)]
 pub enum ModSource {
     Lfo(Lfo),
+    /// Stored envelope-follower fields (attack, decay, gain, adaption), held
+    /// per voice; follows the note's group audio, 0..=1.
+    Follower([f32; 4]),
+    /// Kontakt glide ramp (stored mode and time, ms): starts at the note's
+    /// interval from the previous note, octave-normalized, bipolar.
+    Glide { mode: u32, time_ms: f32 },
     /// Gated by the voice's family: releases with it.
     Envelope(Envelope),
     /// Index into [`ModProgram::breakpoints`]; gated like `Envelope`.
@@ -112,7 +118,7 @@ pub enum ModSource {
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
+        matches!(self, Self::Lfo(_) | Self::Glide { .. } | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
 }
 
@@ -347,6 +353,10 @@ enum Prepared {
     Envelope(usize),
     /// Index into the program's breakpoint envelopes and the voice's segments.
     Breakpoints(usize),
+    /// Slot among the program's followers, and its stored fields.
+    Follower{slot:usize,spec:[f32;4]},
+    /// Slot among the program's glides, and its stored fields.
+    Glide{slot:usize,mode:u32,time_ms:f32},
     Input(InputSource),
 }
 
@@ -424,6 +434,8 @@ pub(crate) struct VoiceModulation {
     sources: usize,
     envelopes: usize,
     breakpoints: usize,
+    followers: usize,
+    glides: usize,
     routes: usize,
 }
 
@@ -435,6 +447,8 @@ pub(crate) struct ModShape {
     sources: usize,
     envelopes: usize,
     breakpoints: usize,
+    followers: usize,
+    glides: usize,
     routes: usize,
 }
 
@@ -638,6 +652,8 @@ impl VoiceModulation {
             sources: self.sources,
             envelopes: self.envelopes,
             breakpoints: self.breakpoints,
+            followers: self.followers,
+            glides: self.glides,
             routes: self.routes,
         }
     }
@@ -739,6 +755,26 @@ impl VoiceModulation {
                         ModSource::Envelope(envelope) => {
                             envelopes.push(envelope);
                             Prepared::Envelope(envelopes.len() - 1)
+                        }
+                        ModSource::Follower(spec) => {
+                            if crate::blocks::follower::AdaptiveFollower::from_stored(1.0, spec).is_none() {
+                                return Err(Error::InvalidInput);
+                            }
+                            let slot = program.sources[..source_index]
+                                .iter()
+                                .filter(|s| matches!(s, ModSource::Follower(_)))
+                                .count();
+                            Prepared::Follower { slot, spec }
+                        }
+                        ModSource::Glide { mode, time_ms } => {
+                            if !matches!(mode, 1 | 2) || !time_ms.is_finite() || time_ms < 0.0 {
+                                return Err(Error::InvalidInput);
+                            }
+                            let slot = program.sources[..source_index]
+                                .iter()
+                                .filter(|s| matches!(s, ModSource::Glide { .. }))
+                                .count();
+                            Prepared::Glide { slot, mode, time_ms }
                         }
                         ModSource::Breakpoints(index) => {
                             let b = program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
@@ -1060,6 +1096,16 @@ impl VoiceModulation {
                 .map(|p| p.envelopes.len())
                 .max()
                 .unwrap_or(0),
+            glides: compiled
+                .iter()
+                .map(|p| p.sources.iter().filter(|s| matches!(s, Prepared::Glide { .. })).count())
+                .max()
+                .unwrap_or(0),
+            followers: compiled
+                .iter()
+                .map(|p| p.sources.iter().filter(|s| matches!(s, Prepared::Follower { .. })).count())
+                .max()
+                .unwrap_or(0),
             breakpoints: compiled
                 .iter()
                 .map(|p| p.breakpoints.len())
@@ -1101,7 +1147,7 @@ impl VoiceModulation {
                 let signal=wave(lfo.shape,lfo.phase,seed^index as u64);
                 program.fades[index].as_ref().map_or(signal,|gains|f64::from(signal as f32*gains[0]))
             }
-            Prepared::Lfo(_)|Prepared::Envelope(_)|Prepared::Breakpoints(_)=>0.,
+            Prepared::Lfo(_)|Prepared::Envelope(_)|Prepared::Breakpoints(_)|Prepared::Follower{..}|Prepared::Glide{..}=>0.,
             Prepared::Input(input)=>input.input(inputs,seed,index),
             Prepared::Provider(source)=>provider.at(source.source,frame),
         }))
@@ -1343,6 +1389,12 @@ pub(crate) struct Inputs<'a> {
     /// The note's raw pitch bend, -1..=1.
     pub bend: f64,
     pub controls: RealValuesRef<'a>,
+    /// Group audio for the span being advanced, for audio-driven sources
+    /// (envelope follower). Empty when the caller has none: those sources hold.
+    pub audio: &'a [f32],
+    /// Semitones from the previous note of the group to this note (glide).
+    /// 0 when the caller has none.
+    pub interval: i32,
 }
 
 impl<'a> Inputs<'a> {
@@ -1364,6 +1416,8 @@ impl<'a> Inputs<'a> {
             script,
             controls,
             bend: expression.bend,
+            audio: &[],
+            interval: 0,
         }
     }
 }
@@ -1437,6 +1491,12 @@ pub(crate) struct VoiceModState {
     previous_processor_values: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
     segments: Box<[Segment]>,
+    followers: usize,
+    follower: Box<[crate::blocks::follower::AdaptiveFollower]>,
+    glides: usize,
+    glide: Box<[crate::blocks::glide::GlideRamp]>,
+    /// Key of the last note this state started: the origin of the next glide.
+    last_key: Option<i32>,
     /// Runtime frame and seed of the latest voice start: the restart of every
     /// shared retriggered LFO.
     restart: (u64, u64),
@@ -1492,6 +1552,8 @@ impl VoiceModState {
         add::<f64>(&mut n,slots(shape.sources.checked_mul(2).ok_or(Error::Capacity)?)?)?;
         add::<f64>(&mut n,slots(shape.routes.checked_mul(3+SCALE_LAGS).ok_or(Error::Capacity)?)?)?;
         add::<EnvelopeState>(&mut n,slots(shape.envelopes)?)?;add::<Segment>(&mut n,slots(shape.breakpoints)?)?;
+        add::<crate::blocks::follower::AdaptiveFollower>(&mut n,slots(shape.followers)?)?;
+        add::<crate::blocks::glide::GlideRamp>(&mut n,slots(shape.glides)?)?;
         add::<(u64,u64)>(&mut n,domains)?;
         add::<Option<(u64,u64)>>(&mut n,if domains==0{0}else{rows})?;Ok(n)
     }
@@ -1508,6 +1570,10 @@ impl VoiceModState {
             sources: modulation.sources,
             envelopes: modulation.envelopes,
             breakpoints: modulation.breakpoints,
+            followers: modulation.followers,
+            glides: modulation.glides,
+            glide: std::iter::repeat_n(crate::blocks::glide::GlideRamp { start: 0.0, step: 0.0, gain: 0.0 }, slots(modulation.glides)?).collect(),
+            last_key: None,
             routes: modulation.routes,
             program: crate::dsp::allocate(voices)?,
             seed: crate::dsp::allocate(voices)?,
@@ -1529,6 +1595,7 @@ impl VoiceModState {
             )
             .collect(),
             segments: crate::dsp::allocate(slots(modulation.breakpoints)?)?,
+            follower: std::iter::repeat_n(crate::blocks::follower::AdaptiveFollower::new(0., 0., 0.), slots(modulation.followers)?).collect(),
             restart: (0, 0),restart_domains:Box::new([]),pending_restart:Box::new([]),
         })
     }
@@ -1566,6 +1633,9 @@ impl VoiceModState {
             &mut larger.previous_processor_values,
         );
         take(&mut self.envelope, &mut larger.envelope);
+        take(&mut self.follower, &mut larger.follower);
+        take(&mut self.glide, &mut larger.glide);
+        larger.last_key = self.last_key;
     }
 
     fn empty() -> Self {
@@ -1576,6 +1646,10 @@ impl VoiceModState {
             sources: 0,
             envelopes: 0,
             breakpoints: 0,
+            followers: 0,
+            glides: 0,
+            glide: Box::new([]),
+            last_key: None,
             routes: 0,
             program: Box::new([]),
             seed: Box::new([]),
@@ -1592,6 +1666,7 @@ impl VoiceModState {
             previous_processor_values: Box::new([]),
             envelope: Box::new([]),
             segments: Box::new([]),
+            follower: Box::new([]),
             restart: (0, 0),restart_domains:Box::new([]),pending_restart:Box::new([]),
         }
     }
@@ -1814,12 +1889,39 @@ impl VoiceModState {
         for segment in &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()] {
             *segment = Segment::default();
         }
+        let (mut slot, mut glide_slot) = (0, 0);
+        for source in p.sources.iter() {
+            match *source {
+                Prepared::Follower { spec, .. } => {
+                    if let Some(follower) = crate::blocks::follower::AdaptiveFollower::from_stored(clock.rate as f32, spec) {
+                        self.follower[voice * self.followers + slot] = follower;
+                    }
+                    slot += 1;
+                }
+                Prepared::Glide { mode, time_ms, .. } => {
+                    self.glide[voice * self.glides + glide_slot] = crate::blocks::glide::GlideRamp::kontakt_glide(
+                        mode,
+                        time_ms,
+                        inputs.interval,
+                        clock.rate as f32,
+                    );
+                    glide_slot += 1;
+                }
+                _ => {}
+            }
+        }
+        self.last_key = Some((inputs.key * 127.0).round() as i32);
         if initially_released{self.release(modulation,voice);}
         let restart=self.restart_point(voice,index as usize);
         self.outputs[voice] = self.evaluate(p, voice, inputs, clock, 0, true,restart,provider);
         self.previous[voice] = self.outputs[voice];
         if !self.previous_values.is_empty(){let span=voice*self.sources..voice*self.sources+p.sources.len();self.previous_values[span.clone()].copy_from_slice(&self.values[span]);}
         self.times[voice] = [clock.now; 2];
+    }
+
+    /// Semitones from the last note this state started to `key` (0 before any).
+    pub(crate) fn glide_interval(&self, key: i32) -> i32 {
+        self.last_key.map_or(0, |last| key - last)
     }
 
     pub(crate) fn validate_element_start(&self,modulation:&VoiceModulation,row:usize,region:usize,points:usize)->Result<(),Error>{
@@ -2121,6 +2223,20 @@ impl VoiceModState {
                 Prepared::Breakpoints(b) => f64::from(
                     self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
                 ),
+                Prepared::Glide { slot, .. } => {
+                    let ramp = &mut self.glide[voice * self.glides + slot];
+                    let n = (frames as usize).clamp(1, crate::dsp::BLOCK);
+                    let mut buf = [0f32; crate::dsp::BLOCK];
+                    ramp.render(&mut buf[..n]);
+                    f64::from(buf[n - 1])
+                }
+                Prepared::Follower { slot, .. } => {
+                    let follower = &mut self.follower[voice * self.followers + slot];
+                    if let Some(audio) = note_inputs.map(|inputs| inputs.audio).filter(|a| !a.is_empty()) {
+                        follower.process(audio);
+                    }
+                    f64::from(follower.level())
+                }
                 Prepared::Input(input) => input_point(input,i),
                 Prepared::Provider(source)=>provider.at(source.source,clock.now),
             };
@@ -2826,7 +2942,7 @@ mod tests {
             held: 0,
             script: &script,
             bend: 0.0,
-            controls: RealValuesRef::new(&[]),
+            controls: RealValuesRef::new(&[]), audio: &[], interval: 0,
         };
         let clock = |now| Clock {
             rate: 48000.0,
@@ -3032,7 +3148,7 @@ mod tests {
             let inputs = Inputs {
                 velocity: 1., key: 0.5, pressure: 0, timbre: 0,
                 controllers: &controllers, held: 0, script: &script,
-                bend: 0., controls: RealValuesRef::new(&[]),
+                bend: 0., controls: RealValuesRef::new(&[]), audio: &[], interval: 0,
             };
             let mut state = VoiceModState::new(&modulation, 1).unwrap();
             for now in [0, 2400, 48127] {
@@ -3071,7 +3187,7 @@ mod tests {
         let inputs = Inputs {
             velocity: 1., key: 0.5, pressure: 0, timbre: 0,
             controllers: &controllers, held: 0, script: &script,
-            bend: 0., controls: RealValuesRef::new(&old),
+            bend: 0., controls: RealValuesRef::new(&old), audio: &[], interval: 0,
         };
         let clock = |now| Clock { rate: 48000., tempo: 120., now };
         actual.start(&modulation, 0, 0, &inputs, clock(2400), 7);
@@ -3120,7 +3236,7 @@ mod tests {
                 held: 0,
                 script: &Default::default(),
                 bend: 0.0,
-                controls: RealValuesRef::new(&[]),
+                controls: RealValuesRef::new(&[]), audio: &[], interval: 0,
             };
             let clock = |now| Clock {
                 rate: 1000.0,
@@ -3155,7 +3271,7 @@ mod scoped_restart_tests {
         let modulation=VoiceModulation::new(vec![program(),program()],vec![Some(0),Some(1)],vec![0;2]).unwrap();
         let mut state=VoiceModState::new_scoped(&modulation,3).unwrap();
         let cc=[0;128];let values=Default::default();
-        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[])};
+        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[]),audio:&[],interval:0};
         let clock=|now|Clock{rate:1000.,tempo:120.,now};
         state.start(&modulation,0,0,&inputs,clock(0),1);state.commit_scoped_start(0);
         state.start(&modulation,1,0,&inputs,clock(600),2);
@@ -3172,7 +3288,7 @@ mod scoped_restart_tests {
         let program=ModProgram{sources:vec![ModSource::Constant],routes:vec![ModRoute::new(0,ModTarget::Pan,2.),ModRoute::new(0,ModTarget::Decibels,6.)],..Default::default()};
         let modulation=VoiceModulation::new(vec![program],vec![Some(0)],vec![0]).unwrap();
         let mut state=VoiceModState::new_scoped(&modulation,1).unwrap();let cc=[0;128];let values=Default::default();
-        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[])};
+        let inputs=Inputs{velocity:1.,key:0.5,pressure:0,timbre:0,controllers:&cc,held:0,script:&values,bend:0.,controls:RealValuesRef::new(&[]),audio:&[],interval:0};
         state.start(&modulation,0,0,&inputs,Clock{rate:48000.,tempo:120.,now:97},1);
         let out=state.outputs[0];assert_eq!(out.scalar_pan,2.);assert!((out.scalar_gain-10f64.powf(6./20.)).abs()<1e-15);
         assert_eq!(out.gains[0],0.);assert_eq!(out.gains[1],out.scalar_gain as f32);
@@ -3373,5 +3489,130 @@ mod provider_legacy_validation164 {
             assert_eq!(physical.validate_provider_bindings(&owner, &[Some((0, 0))]), Err(Error::InvalidInput), "malformed provider case {malformed}");
             assert_eq!(physical.validate_provider_bindings(&owner, &[]), Err(Error::InvalidInput), "missing metadata must not hide malformed provider case {malformed}");
         }
+    }
+}
+
+#[cfg(test)]
+mod follower_source_tests {
+    use super::*;
+
+    fn modulation() -> VoiceModulation {
+        let program = ModProgram {
+            sources: vec![ModSource::Follower([1.0, 1.0, 6.0, 0.5])],
+            routes: vec![ModRoute::new(0, ModTarget::Pan, 1.)],
+            ..Default::default()
+        };
+        VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap()
+    }
+
+    fn inputs<'a>(cc: &'a [u32; 128], values: &'a crate::script_params::ModValues, audio: &'a [f32]) -> Inputs<'a> {
+        Inputs {
+            velocity: 1.,
+            key: 0.5,
+            pressure: 0,
+            timbre: 0,
+            controllers: cc,
+            held: 0,
+            script: values,
+            bend: 0.,
+            controls: RealValuesRef::new(&[]),
+            audio,
+            interval: 0,
+        }
+    }
+
+    #[test]
+    fn follower_source_follows_the_span_audio_and_holds_without_it() {
+        let modulation = modulation();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        let cc = [0; 128];
+        let values = crate::script_params::ModValues::default();
+        let clock = |now| Clock { rate: 48_000.0, tempo: 120.0, now };
+        let silent: Vec<f32> = vec![0.0; 64];
+        let loud: Vec<f32> = vec![1.0; 64];
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, &[]), clock(0), 1);
+        let p = &modulation.programs[0];
+        let mut run = |state: &mut VoiceModState, audio: &[f32], now: u64| {
+            let restart = state.restart_point(0, 0);
+            state.evaluate(p, 0, &inputs(&cc, &values, audio), clock(now), 64, false, restart, ProviderView::empty());
+            state.values[0]
+        };
+        let first = run(&mut state, &loud, 64);
+        let second = run(&mut state, &loud, 128);
+        assert!(first > 0.0 && second > first, "rises towards the loud input: {first} {second}");
+        // The second state recovers towards its first-state ceiling, which itself
+        // decays, so the level falls over a long silence rather than at once.
+        let decayed = (0..40).map(|k| run(&mut state, &silent, 192 + 64 * k)).last().unwrap();
+        assert!(decayed > 0.0 && decayed < 0.5, "falls over silence, tracking the decayed ceiling: {decayed}");
+        let held = run(&mut state, &[], 192 + 64 * 40);
+        assert_eq!(held, decayed, "no audio supplied: the follower holds");
+    }
+}
+
+#[cfg(test)]
+mod glide_source_tests {
+    use super::*;
+
+    fn modulation() -> VoiceModulation {
+        let program = ModProgram {
+            sources: vec![ModSource::Glide { mode: 1, time_ms: 100.0 }],
+            routes: vec![ModRoute::new(0, ModTarget::Pan, 1.)],
+            ..Default::default()
+        };
+        VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap()
+    }
+
+    fn inputs<'a>(cc: &'a [u32; 128], values: &'a crate::script_params::ModValues, key: u8, interval: i32) -> Inputs<'a> {
+        Inputs {
+            velocity: 1.,
+            key: f64::from(key) / 127.0,
+            pressure: 0,
+            timbre: 0,
+            controllers: cc,
+            held: 0,
+            script: values,
+            bend: 0.,
+            controls: RealValuesRef::new(&[]),
+            audio: &[],
+            interval,
+        }
+    }
+
+    #[test]
+    fn glide_starts_at_the_interval_from_the_previous_note_and_ramps_to_zero() {
+        let modulation = modulation();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        let (cc, values) = ([0; 128], crate::script_params::ModValues::default());
+        let clock = |now| Clock { rate: 1000.0, tempo: 120.0, now };
+        let p = &modulation.programs[0];
+        // The first note has no previous note: nothing to glide from.
+        assert_eq!(state.glide_interval(60), 0);
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, 60, 0), clock(0), 1);
+        assert_eq!(state.values[0], 0.0, "first note");
+        // The next note sees the previous key and glides seven semitones up.
+        assert_eq!(state.glide_interval(67), 7);
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, 67, 7), clock(0), 2);
+        assert!((state.values[0] + 7.0 / 12.0).abs() < 1e-6, "starts at -interval/12 octaves");
+        let mut last = state.values[0];
+        for k in 1..=12u64 {
+            let restart = state.restart_point(0, 0);
+            state.evaluate(p, 0, &inputs(&cc, &values, 67, 0), clock(64 * k), 64, false, restart, ProviderView::empty());
+            assert!(state.values[0] >= last, "rises towards zero");
+            last = state.values[0];
+        }
+        assert!(last.abs() < 1e-3, "lands on zero after 700 frames: {last}");
+    }
+
+    #[test]
+    fn downward_interval_mirrors_the_glide_and_zero_interval_is_silent() {
+        let modulation = modulation();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        let (cc, values) = ([0; 128], crate::script_params::ModValues::default());
+        let clock = |now| Clock { rate: 1000.0, tempo: 120.0, now };
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, 67, 0), clock(0), 1);
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, 60, -7), clock(0), 2);
+        assert!((state.values[0] - 7.0 / 12.0).abs() < 1e-6, "downward starts above zero");
+        state.start(&modulation, 0, 0, &inputs(&cc, &values, 60, 0), clock(0), 3);
+        assert_eq!(state.values[0], 0.0, "no interval, no glide");
     }
 }

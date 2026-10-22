@@ -697,14 +697,20 @@ impl Runtime {
         let mut filter = None;
         let points = if plan.modulation.program(i).is_some() {
             let performance = self.selections[f.note.0.index].performance;
-            let inputs = super::voice_mod::Inputs::new(
-                n,
-                expression.value,
-                &self.performance_state.channel_current(performance, n.address).controllers,
-                self.release_times[f.note.0.index].counter(n.key_down(), at),
-                &self.note_params[f.note.0.index].mods,
-                plan.controls.base_reals(),
-            );
+            let follow_len = v.follow_len;
+            let mut follow = [0f32; super::dsp::BLOCK];
+            follow[..follow_len].copy_from_slice(&v.follow_audio[..follow_len]);
+            let inputs = super::voice_mod::Inputs {
+                audio: &follow[..follow_len],
+                ..super::voice_mod::Inputs::new(
+                    n,
+                    expression.value,
+                    &self.performance_state.channel_current(performance, n.address).controllers,
+                    self.release_times[f.note.0.index].counter(n.key_down(), at),
+                    &self.note_params[f.note.0.index].mods,
+                    plan.controls.base_reals(),
+                )
+            };
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
                 tempo: self.tempo,
@@ -1064,6 +1070,11 @@ impl Runtime {
                 ramp_mix(segment, target, ramp, at);
             }
         }
+        let follow_len = segment.len().min(super::dsp::BLOCK);
+        for (dst, frame) in v.follow_audio.iter_mut().zip(segment.iter()) {
+            *dst = (frame[0] + frame[1]) * 0.5;
+        }
+        v.follow_len = follow_len;
         if faults == 0 {
             if let Some(chain) = chain {
                 for &bus in &chain.tap_buses {

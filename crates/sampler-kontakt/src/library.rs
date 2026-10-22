@@ -1882,16 +1882,23 @@ impl Translation {
                     // from the stored fields to their parameters:
                     //  - DBD: the saved durations pass a resolver (helper slot +0x28,
                     //    0x1409651b0) whose unit law, and the v0x10/0x11 legacy tail, are open.
-                    //  - Glide: no caller recovered for the note pitch and time to ramp
-                    //    start, step and gain (0x140ceb090 setup).
-                    //  - Follower: the four stored floats have no proved route to the
-                    //    builder's controls (0x140977a95..0x140977b6a).
-                    Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
-                        let feature = match params.modulator {
-                            Modulator::Dbd(_) => "DBD envelope (0x41): saved-duration resolver and legacy tail",
-                            Modulator::Glide(_) => "glide (0x0B): pitch and time to ramp start, step and gain",
-                            _ => "envelope follower (0x0A): saved floats to builder controls",
-                        };
+                    //  - Glide: executable (`ModSource::Glide`); the setup law is
+                    //    FUN_140cebba0, the interval is the previous note of the plan.
+                    //  - Follower: executable (`ModSource::Follower`), stored floats map to
+                    //    the builder roles; it samples the group audio of the
+                    //    previous span (working timing choice, see k-mod-external.md).
+                    Modulator::Follower(f) => ir::ModulationSource::Follower(ir::Follower {
+                        attack: f.values[0],
+                        decay: f.values[1],
+                        gain: f.values[2],
+                        adaption: f.values[3],
+                    }),
+                    Modulator::Glide(g) => ir::ModulationSource::Glide(ir::Glide {
+                        mode: g.mode,
+                        time_ms: g.values[0],
+                    }),
+                    Modulator::Dbd(_) => {
+                        let feature = "DBD envelope (0x41): saved-duration resolver and legacy tail";
                         self.unsupported(
                             &at,
                             feature,

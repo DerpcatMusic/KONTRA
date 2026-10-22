@@ -87,8 +87,20 @@ impl AdaptiveFollower {
         Some(Self::new(2f32.powf(g * SIXTH), coefficient(t_first), coefficient(t_second)))
     }
 
+    /// Kontakt's stored follower object (`BParEnvF`, 0x0A, v0x60): the four floats
+    /// in file order are attack, decay, gain and adaption speed (the text parser
+    /// writes them to `+8`, `+0xc`, `+0x10`, `+0x14`, FUN_140924xxx). The builder
+    /// takes attack as `t_second`, decay as `t_first` and gain as `g`. Adaption
+    /// speed is stored as `logf(x) * 6/ln 2` (binary32 `0x410a7fac` at `0x14471cb10`,
+    /// the scale of FUN_140910000's `adaptionSpeed` branch), so the builder's base
+    /// `2^(b/6)` is `x` again. The binary-object path is not proved to take the same
+    /// log step; this constructor applies it. `None` unless `x > 0`.
+    pub fn from_stored(rate: f32, [attack, decay, gain, adaption]: [f32; 4]) -> Option<Self> {
+        const SIX_OVER_LN2: f32 = 8.656_169_9; // 0x410a7fac, binary32 at 0x14471cb10
+        Self::from_builder(rate, decay, attack, gain, adaption.ln() * SIX_OVER_LN2)
+    }
+
     /// Process one call; at most [`Self::FRAME`] samples (more is unproved and ignored).
-    #[allow(clippy::manual_clamp)]
     pub fn process(&mut self, input: &[f32]) {
         let n = input.len();
         if n > Self::FRAME {
@@ -99,7 +111,15 @@ impl AdaptiveFollower {
             self.ring.copy_within(shift.., 0);
         }
         for (i, &x) in input.iter().enumerate() {
-            let target = (self.gain * x).max(0.0).min(1.0).abs();
+            // Native compares: a NaN target fails both bounds and passes through.
+            let mut target = self.gain * x;
+            if target <= 0.0 {
+                target = 0.0;
+            }
+            if 1.0 <= target {
+                target = 1.0;
+            }
+            let target = target.abs();
             let rise = if target - self.a < 0.0 { 0.0 } else { 1.0 };
             let a1 = self.a * self.first * (1.0 - rise) + target * rise;
             let k = if target - a1 < 0.0 { 0.0 } else { 1.0 };
@@ -111,6 +131,11 @@ impl AdaptiveFollower {
             self.r = r1 - (r1 - self.a) * j;
             self.ring[(Self::FRAME - n + i) >> 5] = self.r;
         }
+    }
+
+    /// The current second state: the follower's output level.
+    pub fn level(&self) -> f32 {
+        self.r
     }
 
     /// Slot 6 (0x140ae3d80): the first `out.len()` ring cells.
@@ -159,6 +184,15 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_follower_passes_nan_through_like_the_native_compares() {
+        let mut f = AdaptiveFollower::new(1.0, 0.5, 0.5);
+        f.process(&[f32::NAN]);
+        assert!(f.a.is_nan() && f.r.is_nan());
+        f.process(&[0.0; 4]);
+        assert!(f.r.is_nan(), "a NaN state stays NaN");
+    }
+
+    #[test]
     fn adaptive_follower_ring_shifts_by_the_unwritten_share_of_the_frame() {
         let mut f = AdaptiveFollower::new(1.0, 0.0, 0.0);
         f.process(&[0.25; 1024]);
@@ -178,6 +212,20 @@ mod tests {
         let before = f;
         f.process(&[1.0; 2000]);
         assert_eq!(f, before);
+    }
+
+    #[test]
+    fn stored_fields_map_to_the_builder_roles() {
+        // Adaption 0.5 gives base 2^(-1) = 0.5 through the log step; gain 6 gives 2.
+        let f = AdaptiveFollower::from_stored(1000.0, [1.0, 2.0, 6.0, 0.5]).unwrap();
+        let b = AdaptiveFollower::from_builder(1000.0, 2.0, 1.0, 6.0, -6.0).unwrap();
+        assert_eq!(f.gain, 2.0);
+        assert!((f.first - b.first).abs() < 1e-6 && (f.second - b.second).abs() < 1e-6);
+        // Attack (1) counts 32 samples, decay (2) counts 64.
+        assert!((f64::from(f.second) - 0.5f64.powf(1.0 / 32.0)).abs() < 1e-6);
+        assert!((f64::from(f.first) - 0.5f64.powf(1.0 / 64.0)).abs() < 1e-6);
+        assert!(AdaptiveFollower::from_stored(1000.0, [1.0, 1.0, 0.0, 0.0]).is_none());
+        assert!(AdaptiveFollower::from_stored(1000.0, [1.0, 1.0, 0.0, f32::NAN]).is_none());
     }
 
     #[test]
