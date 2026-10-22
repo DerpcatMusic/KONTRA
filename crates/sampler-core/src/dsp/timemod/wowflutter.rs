@@ -124,4 +124,58 @@ mod tests {
         );
         assert!(y[383][0].abs() < 1e-6 && y[385][0].abs() < 1e-6);
     }
+
+    /// The law has no gain of its own: the output is `mix * wet_read + (1 - mix) * dry`
+    /// and each read is a linear interpolation of earlier inputs, so no depth or mix
+    /// can push a sine's peak above its input's. A +23 dB insert gain is not here.
+    #[test]
+    fn wow_flutter_adds_no_gain_at_any_mix() {
+        const RATE: u32 = 48_000;
+        let x: Vec<[f64; 2]> = (0..RATE as usize)
+            .map(|n| {
+                let s = 0.5 * (TAU * 440. * n as f64 / f64::from(RATE)).sin();
+                [s, s]
+            })
+            .collect();
+        for mix in [0.0, 0.5, 1.0] {
+            let mut line = Line::single(DelayTime::Ms(0.), 2000.);
+            line.native = Native::WowFlutter(WowFlutter {
+                wow: 1.,
+                flutter: 1.,
+                speed: 1.,
+                stereo: 1.,
+            });
+            let cfg = Config {
+                address: None,
+                line: Some(line),
+                allpass: None,
+                order: Order::LineThenAllpass,
+                lfo: Lfo {
+                    shape: LfoShape::Sine,
+                    rate: Rate::Hz(0.),
+                    phase: 0.,
+                },
+                dry: 1. - mix,
+                wet: mix,
+            };
+            let (y, fault) = super::super::tests::run(cfg, RATE, 120., &x, 64);
+            assert!(!fault);
+            let peak = y.iter().flatten().fold(0f64, |p, v| p.max(v.abs()));
+            assert!(
+                peak <= 0.5 + 1e-9,
+                "mix {mix}: peak {peak} exceeds the input peak 0.5"
+            );
+            if mix == 1. {
+                // A delayed sine keeps its level; linear interpolation at 440 Hz costs ~nothing.
+                let tail = &y[RATE as usize / 4..];
+                let rms =
+                    (tail.iter().map(|f| f[0] * f[0]).sum::<f64>() / tail.len() as f64).sqrt();
+                let input_rms = 0.5 / 2f64.sqrt();
+                assert!(
+                    (rms / input_rms - 1.).abs() < 0.02,
+                    "wet-only rms {rms} vs input {input_rms}"
+                );
+            }
+        }
+    }
 }
