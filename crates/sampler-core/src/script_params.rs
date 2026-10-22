@@ -988,6 +988,31 @@ impl Runtime {
         Ok(())
     }
 
+    /// Play cursor of the event's first non-stolen voice, measured from its
+    /// zone start in microseconds at the zone's source rate.
+    fn play_position_micros(&self, plan: crate::PlanId, note: crate::NoteId) -> Result<i64, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        let mut family = self.notes.get(note.0).unwrap().first_family;
+        while let Some(index) = family {
+            let f = self.families.slots[index.get()].value.unwrap();
+            family = f.siblings.next;
+            let mut voice = f.first_voice;
+            while let Some(v) = voice {
+                let state = self.voices.slots[v.get()].value.unwrap();
+                voice = state.siblings.next;
+                if state.stolen {
+                    continue;
+                }
+                let Some(rate) = generation.source(state.sample).map(|s| s.sample_rate()) else {
+                    return Ok(0);
+                };
+                let frames = state.cursor.trace_position().saturating_sub(state.cursor.trace_start());
+                return Ok((frames as f64 * 1_000_000. / f64::from(rate.max(1))).round() as i64);
+            }
+        }
+        Ok(0)
+    }
+
     /// What `get_event_par` reports for a built-in parameter other than note
     /// and velocity. Unknown or retired aliases read 0; a live event with no
     /// eligible voices reports ZoneId = -1.
@@ -1017,6 +1042,7 @@ impl Runtime {
                 let note = self.notes.get(note.0).unwrap();
                 i64::from(note.input_source.map_or(note.address.channel, |source| source.channel))
             }
+            crate::EventInfo::PlayPosition => self.play_position_micros(plan, note)?,
             crate::EventInfo::ZoneId => {
                 let mut highest = -1;
                 let mut family = self.notes.get(note.0).unwrap().first_family;

@@ -2167,11 +2167,13 @@ impl Gen<'_, '_> {
                             | b::event_par::NOTE
                             | b::event_par::VELOCITY
                             | b::event_par::REL_VELOCITY
+                            | b::event_par::PLAY_POS
                     )
                 ) && !self.selects_many(builtin, args, 0) =>
             {
                 let info = match self.const_int(args, 1) {
                     Some(b::event_par::ZONE_ID) => sampler_core::EventInfo::ZoneId,
+                    Some(b::event_par::PLAY_POS) => sampler_core::EventInfo::PlayPosition,
                     Some(b::event_par::NOTE) => sampler_core::EventInfo::Key,
                     Some(b::event_par::VELOCITY) => sampler_core::EventInfo::Velocity,
                     Some(b::event_par::REL_VELOCITY) => sampler_core::EventInfo::ReleaseVelocity,
