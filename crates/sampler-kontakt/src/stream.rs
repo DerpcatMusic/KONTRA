@@ -3,7 +3,7 @@
 //! page cache. Authored RAM-only sources, heads and a bounded page pool are resident.
 
 use crate::{
-    LoadError,
+    LoadError, head_cache,
     samples::{FileAt, Source},
 };
 use sampler_core::{AssetId, DecodeFailure, HeadBudget, HeadBudgetStatus, HeadPreparer, PAGE_FRAMES, Pcm, ResidentBuffer, StreamCache, StreamWorker};
@@ -167,9 +167,17 @@ pub trait AssetSource: Send + Sync {
     fn open_stream(&self) -> io::Result<SampleReader> {
         self.open()
     }
+    /// Equal keys decode to equal frames, so decoded head chunks may be shared
+    /// in process. `None` (the default) opts out of the head cache.
+    fn content_key(&self) -> Option<Arc<str>> {
+        None
+    }
 }
 
 impl AssetSource for Source {
+    fn content_key(&self) -> Option<Arc<str>> {
+        Some(self.source_key())
+    }
     fn open_stream_channels(&self,workspace_limit:usize)->io::Result<Option<SampleReader>> {
         open_native_channel_reader(self,true,workspace_limit)
     }
@@ -1233,7 +1241,7 @@ pub(crate) struct Opened {
 
 /// Read `ranges` of `pcm` from `reader` and make them resident; their bytes.
 fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>], page:&mut[Frame]) -> io::Result<usize> {
-    let prepared = match prepare_head_ranges(&pcm.head_preparer(), reader, ranges, page, &|| !pcm.residency_permitted(), None) {
+    let prepared = match prepare_head_ranges(&pcm.head_preparer(), reader, ranges, page, &|| !pcm.residency_permitted(), None, None) {
         Ok(prepared) => prepared,
         // A concurrent KSP purge can remove the final residency owner while
         // this worker reads. That transaction is obsolete, not a source fault.
@@ -1313,13 +1321,14 @@ fn range_bounds(pcm: &Pcm, ranges: &[Range<usize>]) -> io::Result<(usize, usize)
             .ok_or_else(|| io::Error::other("decoded sample head size overflow"))?,
     ))
 }
-fn prepare_head_ranges(
+pub(crate) fn prepare_head_ranges(
     recipe: &HeadPreparer,
     reader: &mut SampleReader,
     ranges: &[Range<usize>],
     page:&mut[Frame],
     canceled: &(dyn Fn() -> bool + Sync),
     mut timing: Option<&mut head_prepare::Timing>,
+    cache: Option<head_cache::ChunkCache<'_>>,
 ) -> io::Result<sampler_core::PreparedRanges> {
     // Metadata and all geometry are validated before quota admission or payload
     // allocation. The decoder workspace is one page, independent of source size.
@@ -1347,7 +1356,17 @@ fn prepare_head_ranges(
             if canceled() {
                 return Err(canceled_head());
             }
-            let frames = &mut page[..(range.end - position).min(PAGE_FRAMES)];
+            // Chunks end on the absolute page grid, so presets that cover the
+            // same source page produce identical chunks for the head cache.
+            let end = ((position / PAGE_FRAMES + 1) * PAGE_FRAMES).min(range.end);
+            if let Some(packed) = cache.as_ref().and_then(|c| c.get(position, end - position)) {
+                builder
+                    .push_packed(position, (*packed).clone())
+                    .map_err(|e| head_prepare_error(recipe, e))?;
+                position = end;
+                continue;
+            }
+            let frames = &mut page[..end - position];
             let read_start = timing.as_ref().map(|_| Instant::now());
             let result = reader.read(position, frames);
             if let Some(timing) = &mut timing {
@@ -1369,6 +1388,11 @@ fn prepare_head_ranges(
                     .saturating_add(pack_start.unwrap().elapsed().as_micros() as u64);
             }
             result?;
+            if let Some(cache) = cache {
+                if let Some(packed) = builder.last_packed().filter(|p| p.len() == frames.len()) {
+                    cache.put(position, packed.clone());
+                }
+            }
             position += frames.len();
         }
     }
@@ -2071,10 +2095,12 @@ impl Streamer {
                 continue;
             }
             let residency_page=residency_page.clone();
+            let content=source.content_key();
             pcm.set_prepared_residency_loader(move || {
                 let mut page=residency_page.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut reader = source.open().map_err(|_| sampler_core::Error::NotReady)?;
-                prepare_head_ranges(&recipe, &mut reader, &ranges, &mut page, &|| false, None).map_err(
+                let cache=content.as_ref().map(|key| head_cache::ChunkCache::new(head_cache::process(), key));
+                prepare_head_ranges(&recipe, &mut reader, &ranges, &mut page, &|| false, None, cache).map_err(
                     |error| {
                         if error
                             .get_ref()
