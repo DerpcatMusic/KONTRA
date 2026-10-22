@@ -10,8 +10,8 @@ Corpus weight = instruments whose scripts mention the symbol, from the last meas
 
 | source | rows | binary evidence |
 |---|---|---|
-| manual | 1740 | lea-ref 1462, message 119, absent 109, string 50 |
-| ledger/builtins only | 256 | template 107, lea-ref 79, absent 49, message 14, string 7 |
+| manual | 1739 | lea-ref 1462, message 119, absent 108, string 50 |
+| ledger/builtins only | 257 | template 107, lea-ref 79, absent 50, message 14, string 7 |
 
 Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in .text; `data-ref` = absolute pointer in data; `string` = exact string, no reference found; `message` = name appears only inside a diagnostic text; `absent` = neither; `template` = `#` family placeholder.
 
@@ -91,13 +91,13 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `message` (simplified, 2741), `play_note` (simplified, 2577), `note_off` (simplified, 2000), `set_controller` (simplified, 1915), `disable_logging` (simplified, 369), `set_snapshot_type` (simplified, 5)
 
-### command / Event Commands (16 symbols, 9594 instrument-uses)
+### command / Event Commands (15 symbols, 9593 instrument-uses)
 
-`ignore_event` (simplified, 2576), `fade_out` (simplified, 2246), `set_event_par_arr` (simplified, 1962), `change_tune` (simplified, 721), `get_event_par` (simplified, 721), `set_event_par` (simplified, 615), `change_vol` (simplified, 467), `change_note` (simplified, 268), `event_status` (simplified, 6), `fade_in` (simplified, 5), `change_pan` (simplified, 2), `by_marks` (simplified, 1)
+`ignore_event` (simplified, 2576), `fade_out` (simplified, 2246), `set_event_par_arr` (simplified, 1962), `change_tune` (simplified, 721), `get_event_par` (simplified, 721), `set_event_par` (simplified, 615), `change_vol` (simplified, 467), `change_note` (simplified, 268), `event_status` (simplified, 6), `fade_in` (simplified, 5), `change_pan` (simplified, 2), `change_velo` (simplified, 1)
 
-### command / Engine Parameter Commands (6 symbols, 8455 instrument-uses)
+### command / Engine Parameter Commands (7 symbols, 8456 instrument-uses)
 
-`get_engine_par_disp` (simplified, 2741), `set_engine_par` (simplified, 2741), `output_channel_name` (simplified, 2732), `get_engine_par` (simplified, 237), `get_mod_idx` (simplified, 2), `get_target_idx` (simplified, 2)
+`get_engine_par_disp` (simplified, 2741), `set_engine_par` (simplified, 2741), `output_channel_name` (simplified, 2732), `get_engine_par` (simplified, 237), `get_mod_idx` (simplified, 2), `get_target_idx` (simplified, 2), `get_engine_par_disp_ext` (simplified, 1)
 
 ### command / Group Commands (4 symbols, 7936 instrument-uses)
 
@@ -147,9 +147,9 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `%CC_TOUCHED` (simplified, 1852), `%KEY_DOWN` (simplified, 1653), `%GROUPS_SELECTED` (simplified, 368), `%EVENT_PAR` (simplified, 5), `%POLY_AT` (simplified, 1)
 
-### command / ledger (7 symbols, 2979 instrument-uses)
+### command / ledger (6 symbols, 2978 instrument-uses)
 
-`find_mod` (simplified, 2737), `find_group` (simplified, 233), `find_target` (simplified, 4), `set_control_par_str_arr` (simplified, 2), `get_control_par_str` (simplified, 1), `get_engine_par_disp_ext` (simplified, 1), `ui_wavetable` (simplified, 1)
+`find_mod` (simplified, 2737), `find_group` (simplified, 233), `find_target` (simplified, 4), `set_control_par_str_arr` (simplified, 2), `get_control_par_str` (simplified, 1), `ui_wavetable` (simplified, 1)
 
 ### command / Time-Related Commands (6 symbols, 2753 instrument-uses)
 
@@ -235,6 +235,10 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `$SIGNATURE_DENOM` (simplified, 1), `$SIGNATURE_NUM` (simplified, 1)
 
+### command / MIDI Object Commands (1 symbols, 1 instrument-uses)
+
+`by_marks` (simplified, 1)
+
 ### constants $KSP (1 symbols, 1 instrument-uses)
 
 `$KSP_TIMER` (simplified, 1)
@@ -258,6 +262,7 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 | `on note_controller` | unsupported | 0 |
 | `detect_key` | unsupported | 0 |
 | `detect_tempo` | unsupported | 0 |
+| `get_engine_par_disp_ext` | simplified | 1 |
 | `set_note_controller` | simplified | 0 |
 | `set_poly_at` | unsupported | 0 |
 | `$ENGINE_PAR_VOICE_GROUP` | simplified | 0 |

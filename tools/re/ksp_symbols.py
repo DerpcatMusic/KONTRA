@@ -84,9 +84,15 @@ def parse_manual(text):
                                              "restriction": "", "since": ""})
 
     def syntax_after(i, name):
+        """Signature from the first `name(args)` line after a title; wrapped lines are joined."""
         for j in range(i + 1, min(i + 4, len(lines))):
-            m = re.fullmatch(rf"\s{{3,6}}{name}\(([^()]*)\)\s*", lines[j])
-            if m:
+            t = lines[j].strip()
+            if not t.startswith(name + "("):
+                continue
+            if ")" not in t and j + 1 < len(lines):
+                t += " " + lines[j + 1].strip()
+            m = re.match(rf"{name}\(([^()]*)\)", t)
+            if m and m[1].strip():
                 return f"{name}({re.sub(r'[<>]', '', m[1])})"
         return ""
 
