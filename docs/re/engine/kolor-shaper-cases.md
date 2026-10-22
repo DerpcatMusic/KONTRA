@@ -1,6 +1,6 @@
 # Kolor shaper cases 0, 1, 3, 4: dispatch findings
 
-Status: **cc70 stage recovered and verified; case 4 ported (output 0.0 natively, see below); cfb0 state update (c830) and cases 6-9 parity still open.**
+Status: **cc70 stage recovered and verified; case 4 ported (output 0.0 natively, see below); c830 (state update) and cases 6-9 recovered and verified; cases 6-9 are a Rust kernel, not yet wired into the dispatch (control lane).**
 Scope: decompiled source in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (`0141970000.c`,
 `0141940000.c`), the dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, and the raw
 disassembly of the shaper functions in `docs/re/disasm/kolor-*.txt` (radare2 `pdf`, read by hand, no decompile).
@@ -26,18 +26,51 @@ The Rust kernel is `crates/sampler-core/src/dsp/color/kolor/shaper_6_9.rs` (`Cc7
 Fixtures: `tools/re/fixtures/kolor_shaper_6_9_cc70.json`, `..._cfb0.json`, plus per-mode wrapper drives
 `kolor_shaper_{6,7,8,9}_wrapper.json` from `kolor_kemu_probe.build`/`block`.
 
-## Still open
+## c830: the state update (recovered, GRU)
 
-- **c830 (`14194c830`) state update.** cfb0 stores its 8-float result into `shaper[0..8]`. Black-box, that
-  result is a dense mix of the state: lane j moves output i by about 0.2-0.36 when i = j and 0.01-0.07
-  otherwise, and it depends on x non-linearly. Its helpers are not recovered: `1419466a0` (24-lane affine
-  output, 365 B), `141943870` (x2), `141943490`, `141943550`. Until they are, the state after the first
-  sample is unknown and cases 6-8 are exact for one sample only.
-- **Case 9 (`1419748b0`)** is the inlined twin of cfb0 that writes state back. Not analysed beyond
-  confirming the shape; the same c830 gap applies.
-- **Parameter fill.** `P` (shaper+0x30) and `P2` (shaper+0x2c0) are written by the control lane. The
-  kernel takes them as given.
-- The Rust kernel is `#[allow(dead_code)]` and unwired: wiring it in before c830 would give wrong state.
+`14194c830` is a GRU step: input size 1, hidden size 8. Recovered from the decompile
+(`/data/dev/workspace/Research/KONTRA/source/kontakt8/0141940000.c`, `FUN_14194c830`) and the raw
+disassembly (`docs/re/disasm/kolor-shaper-14194c830.txt`), then checked against the emulator.
+
+With `P2 = shaper+0x2c0` (0x108 floats), `s` the state (`shaper[0..8]`), `x` the input:
+
+```
+A  = M s + b                      M 24x8 column-major at P2[0x30..0xf0], b = P2[0xf0..0x108]
+r  = sigmoid(x p[i]   + p[0x18+i] + A[i])       i = 0..8     (141943870 = 0.5 tanh(0.5 v) + 0.5)
+z  = sigmoid(x p[8+i] + p[0x20+i] + A[8+i])     i = 0..8
+n  = tanh(r * A[16+i] + x p[0x10+i] + p[0x28+i])              (ptanh, 141943490)
+s'[i] = (1 - z) n + z s[i]
+```
+
+Helpers, all read: `1419466a0` (the 24-row `M s + b`, via the generic GEMM `141932e70`), `141943870`
+(8-lane sigmoid), `141943490` / `141943550` (4-lane ptanh; `141943550` returns the same result in xmm0),
+`141932e70` (generic GEMM, used with rows = 24, inner = 8, column-major).
+
+Verified: `141943490` and `141943870` against native over a sweep (max 1.4e-7 and 1.2e-7);
+`c830` alone against the formulas above (max 7.6e-8). Fixture: `kolor_shaper_6_9_c830.json`.
+
+The C830 block `P2` is written by the control lane. The kernel takes it as given.
+
+## Case 9 (1419748b0): same math, other calling convention
+
+`1419748b0` reads x through `ctx+0x10` (a pointer to a pointer to x), takes the shaper in `rdx`, and
+returns y in xmm0. Its body is the cfb0 sequence: cc70 with `P = shaper+0x30` (y, old state), then c830
+with `P2 = shaper+0x2c0`, then the 8-float result written back to `shaper[0..8]`. Verified against native
+over warmed 12-sample runs (`kolor_shaper_6_9_sequence.json`, `cases9`).
+
+## Kernel status
+
+`sampler-core/src/dsp/color/kolor/shaper_6_9.rs`: `Shaper6_9` (state carried, `load_params` for control
+writes). Tests: `ptanh_and_sigmoid_match_native`, `cc70_matches_native`, `cfb0_sample_matches_native`,
+`c830_step_matches_native`, `shaper_sequence_matches_native` (cfb0 and case 9, steady and moving params).
+All at 1e-5. The module stays `#[allow(dead_code)]` and unwired: the dispatch (`1419749f0`, control lane)
+is not connected to it yet.
+
+## Open
+
+- Wiring cases 6-9 into the dispatch (control lane; `kolor/mod.rs`).
+- Case 4 (`14197a150`) is resolved on main (see the case 4 sections below). Cases 0, 1, 3 are unchanged here.
+- Parameter fill of `P` and `P2` (control lane).
 
 ## Dispatch (1419749f0, `FUN_1419749f0`)
 
@@ -58,13 +91,14 @@ Fixtures: `tools/re/fixtures/kolor_shaper_6_9_cc70.json`, `..._cfb0.json`, plus 
 
 - `14194cc70` (cc70), `141946590`, `14192d1b0`, `141946410`: read and verified, see the recovered section above.
   `14194cc70` uses the P-block offsets above, not `shaper+0x140` (that was the cfb0-relative view).
-- `14194c830` (c830), `141979f60`, `141979bf0`: not read to completion; c830 is the open item above.
+- `14194c830` (c830): recovered, see above. `141979f60`, `141979bf0`: case 4 chain, not read to completion.
 - `1419426e0` (253 B): std-array-style 1-element wrap (copies the input into a proxy). Not DSP.
 
-## Open
+## Open (case 0, 1/3, 4, and the kemu vectors for them)
 
-- Case 0, 1/3, 4 output math depends on the unread helpers above. Read them with
-  `radare2 -c 'pdf @ ...'` on `/data/dev/workspace/re-binaries/Kontakt8.exe` before writing any Rust.
+- Case 0, 1/3, 4 output math depends on the unread helpers above (`141979f60`, `141979bf0`, `141978300`,
+  `141974f10`). Read them with `radare2 -c 'pdf @ ...'` on `/data/dev/workspace/re-binaries/Kontakt8.exe`
+  before writing any Rust.
 - Kemu vectors for these cases need a warmed multi-block run via `kolor_kemu_probe.py`. The probe currently
   only drives the wrapper driver (`14197a2c0`), so the shaper state must be seeded through it.
 
