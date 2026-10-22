@@ -162,3 +162,16 @@ Order of work (each is a small, independently testable change):
 4. Per-parameter laws for the opaque families, one at a time, only with a reference measurement, starting with MOD_TARGET_INTENSITY and CUTOFF.
 
 Overhaul risk if attempted anyway: high. The runtime is lowered to a typed IR and shared with UVI/native behaviour; a rewrite would invalidate the 19 test files in `sampler-ksp/tests` and the 432-of-1494 corpus-health baseline.
+
+## 6. `set_engine_par` native dispatch (Kontakt 8 decompile)
+
+Evidence: `set_engine_par` in the decompile around `0140780000.c:5700-6200`, the internal-id predicate `FUN_1407a43f0` in `01407a0000.c`, and the id table in `crates/sampler-core/src/engine_par_ids.tsv`.
+
+| step | native behaviour | our state |
+|---|---|---|
+| constant index outside `0..0x400` | returns -1 | runtime constant lookup |
+| internal id `< 0` (no internal id in the table) | returns 0, no message, no effect | 375 table rows with `-`: unbound write is an observable `InvalidInput`, no script warning |
+| internal ids `0x2a2..0x2a5` | "cannot be used with this engine parameter!", returns -1 | not modelled |
+| other internal ids | predicate `FUN_1407a43f0` decides "Engine parameter is not supported!" (returns -1) | predicate is not ported; `unsupported_engine_parameter` uses name membership instead |
+
+Open: numbered family instances (`SF#_*`, `V#_*`, `RV#_*`, `SENDLEVEL_#`, `BW#`, `FREQ#`, `GAIN#`, `BASSPRO_GEQ_#`, `WT_FORM#`, `AUX_LEVEL_#`) are absent from the table. The decompile holds no `ENGINE_PAR_` name strings except `VOLUME` and `PAN`, so their native constants and internal ids cannot be recovered from it. Their "not supported" warnings are our name classification, not a verified native result. Porting the predicate needs the constant-to-name table for those families.
