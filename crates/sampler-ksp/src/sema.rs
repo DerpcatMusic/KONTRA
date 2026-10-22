@@ -362,7 +362,14 @@ impl<'a> Sema<'a, '_> {
             }
             ast::StmtKind::If(cond, yes, no) => {
                 let cond = self.condition(cond)?;
-                StmtKind::If(cond, self.block(yes)?, self.block(no)?)
+                // `if (1=1)` around a whole on init runs its body exactly once,
+                // like the enclosing block.
+                let yes = if always_true(&self.hir, &cond) {
+                    self.statements(yes)?
+                } else {
+                    self.block(yes)?
+                };
+                StmtKind::If(cond, yes, self.block(no)?)
             }
             ast::StmtKind::While(cond, body) => {
                 let cond = self.condition(cond)?;
@@ -1435,6 +1442,10 @@ fn is_literal(e: &Expr) -> bool {
         ExprKind::Arith(_, l, r) => is_literal(l) && is_literal(r),
         _ => false,
     }
+}
+
+fn always_true(hir: &Hir, cond: &Expr) -> bool {
+    matches!(fold(hir, cond), Some(Const::Int(n)) if n != 0)
 }
 
 /// Compile-time evaluation of constant expressions with KSP integer semantics.
