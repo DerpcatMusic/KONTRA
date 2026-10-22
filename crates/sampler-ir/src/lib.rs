@@ -2161,6 +2161,20 @@ pub enum ProcessorParameter {
     Size,
     Colour,
     Predelay,
+    /// Kontakt Freak's live knobs (one role each; core indices in `fx::color`).
+    FreakAntifold,
+    FreakFrequency,
+    FreakType,
+    FreakHarmonics,
+    FreakContour,
+    FreakRelease,
+    FreakBpFreq,
+    FreakStereo,
+    FreakFeedback,
+    FreakCarrier,
+    FreakTuning,
+    FreakWidth,
+    FreakMix,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
