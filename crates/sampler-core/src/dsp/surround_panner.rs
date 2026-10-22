@@ -647,7 +647,6 @@ mod native_record_tests {
     /// Known gap: the record apply (setter `0x1409685e0`) leaves main-output gain state that the
     /// Rust model does not carry (base case native = Rust * pi/2; rate and LFE dB dependent). Run
     /// with `--ignored` to see the mismatch list; remove the ignore when the state is modelled.
-    #[ignore = "record apply path: LFE sub-object state not modelled (see docs/re/engine/k-effects-batch-a.md Pass 10)"]
     #[test]
     fn record_apply_matches_native_blocks() {
         let v: Fixture =

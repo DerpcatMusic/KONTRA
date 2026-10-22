@@ -101,10 +101,15 @@ class RecEmu(Emu):
             raise RuntimeError("reader consumed %d of %d bytes" % (self.pos, len(self.rec)))
         return p
 
-    def apply(self, obj, p):
-        """The case-6 apply: vtable slot 25, the flag at +0xc, then the setter with P's fields."""
+    def apply(self, obj, p, out_gain=1.0):
+        """The case-6 apply: vtable slot 25, the flag at +0xc, then the setter with P's fields.
+
+        Slot 25 (0x140abd780) stores xmm1 at +0x1a4 (the output gain). The caller loads xmm1 from its
+        own state object (+0x10, `movss xmm1,[rdi+0x10]` at 0x1409620d2 before the call); that value is
+        passed as `out_gain` (the state's gain, 1.0 unless the loader says otherwise).
+        """
         vt = self.read(obj, "Q")
-        self.call(self.read(vt + 200, "Q"), obj, limit=2_000_000)
+        self.call(self.read(vt + 200, "Q"), obj, f={1: out_gain}, limit=2_000_000)
         self.write(obj + 0xC, "B", 0)
         spk, src = p + 8, p + 0xCC
         f = lambda off: self.read(p + off, "f")  # noqa: E731
@@ -195,6 +200,12 @@ def main():
     for rate in (44100.0, 96000.0):
         cases.append(run_case(e, "rate_%d" % rate, dict(BASE), blocks=6, rate=rate))
     cases.append(run_case(e, "sweep_p194_rate96000", dict(BASE, p194=0.7), blocks=6, rate=96000.0))
+    for c in cases:
+        c["n"] = N
+        for b in c["blocks"]:
+            pr = b["params"]
+            b.update(scale=pr["scale_348"], exponent=pr["exp_34c"], offset=[pr["off_x_350"], pr["off_y_354"]],
+                     radius_offset=pr["radius_358"], angle_offset=pr["angle_35c"], mode=pr["gain_mode_394"])
     with open(dst, "w") as f:
         json.dump({"exe_note": "Kontakt8.exe via kemu; see module docstring", "cases": cases},
                   f, separators=(",", ":"))
