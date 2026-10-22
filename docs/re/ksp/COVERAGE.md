@@ -6,6 +6,15 @@ Status (KONTRA, from `crates/sampler-ksp/src/parity_ledger.rs`): **full** = Impl
 
 Corpus weight = instruments whose scripts mention the symbol, from the last measured run in `docs/architecture-v2/KSP_COVERAGE.md` (no corpus re-run for this map). Conformance = a test under `crates/sampler-ksp/tests` or `crates/sampler-kontakt/tests` names the symbol; `untested` otherwise.
 
+## Evidence per row (compat rows)
+
+| source | rows | binary evidence |
+|---|---|---|
+| manual | 1740 | lea-ref 1462, message 119, absent 109, string 50 |
+| ledger/builtins only | 256 | template 107, lea-ref 79, absent 49, message 14, string 7 |
+
+Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in .text; `data-ref` = absolute pointer in data; `string` = exact string, no reference found; `message` = name appears only inside a diagnostic text; `absent` = neither; `template` = `#` family placeholder.
+
 ## Totals (compat rows)
 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
