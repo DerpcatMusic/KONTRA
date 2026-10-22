@@ -16,7 +16,7 @@ fn nkis(dir: &Path, out: &mut Vec<PathBuf>) {
             nkis(&path, out);
         } else if path
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+            .is_some_and(|e| e.eq_ignore_ascii_case("nki") || e.eq_ignore_ascii_case("nkm"))
         {
             out.push(path);
         }
@@ -31,14 +31,32 @@ fn main() {
     let mut files = Vec::new();
     nkis(Path::new(&root), &mut files);
     files.sort();
-    let (mut read, mut failed, mut with_dropped_fx, mut with_ir, mut reported, mut entries) = (0, 0, 0, 0, 0, 0);
+    // Each program of a multi is one item (read_program); instruments read whole.
+    let mut items: Vec<(PathBuf, Option<usize>)> = Vec::new();
+    for path in files {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkm"))
+        {
+            let programs = sampler_kontakt::read_multi(&path).map_or(0, |m| m.programs.len());
+            items.extend((0..programs).map(|p| (path.clone(), Some(p))));
+        } else {
+            items.push((path, None));
+        }
+    }
+    let (mut read, mut failed, mut with_dropped_fx, mut with_ir, mut reported, mut entries) =
+        (0, 0, 0, 0, 0, 0);
     let mut caveats = BTreeMap::<String, BTreeSet<usize>>::new();
     // ALL=1: every unsupported feature, by name, with instruments and entries.
     let mut features = BTreeMap::<String, (BTreeSet<usize>, usize)>::new();
     // module -> (instruments, slots by rack kind)
     let mut modules = BTreeMap::<String, (BTreeSet<usize>, BTreeMap<&str, usize>)>::new();
-    for (i, path) in files.iter().enumerate() {
-        let Ok(kontakt) = sampler_kontakt::read(path) else {
+    for (i, (path, program)) in items.iter().enumerate() {
+        let parsed = match program {
+            Some(p) => sampler_kontakt::read_program(path, *p),
+            None => sampler_kontakt::read(path),
+        };
+        let Ok(kontakt) = parsed else {
             failed += 1;
             continue;
         };
@@ -113,7 +131,7 @@ fn main() {
     }
     println!(
         "{} files, {read} read, {failed} unreadable, {reported} with at least one report, {entries} entries, {with_dropped_fx} with a dropped/untranslated effect",
-        files.len()
+        items.len()
     );
     println!("{with_ir} instruments with a translated impulse response");
     for (feature, set) in caveats {
@@ -126,7 +144,7 @@ fn main() {
             println!("FEATURE\t{}\t{entries}\t{feature}", n.len());
             if std::env::var_os("FILES").is_some() {
                 for &i in n {
-                    println!("FILE\t{feature}\t{}", files[i].display());
+                    println!("FILE\t{feature}\t{}", items[i].0.display());
                 }
             }
         }
