@@ -13,8 +13,8 @@ Coverage and the doctor are described in [docs/re/ksp/COVERAGE.md](../re/ksp/COV
 
 Current state, from the code:
 
-- `compile_with` lowers source to a `Script` whose callbacks run as
-  `sampler_core::ops::Op` sequences. Scripts are not re-parsed per callback.
+- `compile_with` compiles source once into a `Script`; `lower.rs` emits sampler-core
+  instructions (`I::Op`) for callback bodies. Scripts are not re-parsed per callback.
 - `init_cache.rs` caches initialized state, keyed by source, layout and context
   identities (`Script::setup()`).
 - Values are `Value::Int(i32)`, `Value::Real(f64)`, `Value::Text(String)` (`model.rs`).
