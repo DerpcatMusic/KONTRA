@@ -994,6 +994,21 @@ fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group:
     find(-1).or_else(|| find(0))
 }
 
+/// Zone velocity response for a velocity-driven plain volume route, or `None` when the route stays on
+/// the generic modulation path. Full intensity is gain x velocity. Kontakt's default intensity
+/// (50 of 127, the Beat Machine route, oracle session B) follows `VolumeTable`. Other intensities
+/// are not measured and keep the generic path.
+fn velocity_volume_law(intensity: f64) -> Option<ir::VelocityResponse> {
+    const DEFAULT_INTENSITY: f64 = 50.0 / 127.0;
+    if intensity == 1.0 {
+        Some(ir::VelocityResponse::Linear)
+    } else if (intensity - DEFAULT_INTENSITY).abs() < 1e-6 {
+        Some(ir::VelocityResponse::VolumeTable)
+    } else {
+        None
+    }
+}
+
 /// The Beat Machine controls of a stored mode-4 record: `slice_float_1` is Slice Atk and
 /// `slice_float_2` Slice Rel (both milliseconds, in control order), `slice_flag_1` the flag.
 fn beat_slices_from_record(
@@ -2206,12 +2221,12 @@ impl Translation {
                 };
                 if let (ModSource::Velocity, [t]) = (&params.source, params.targets.as_slice())
                     && plain_volume(t)
-                    && t.signed_intensity() == 1.0
                     && velocity == ir::VelocityResponse::None
+                    && let Some(law) = velocity_volume_law(f64::from(t.signed_intensity()))
                 {
-                    // gain × velocity: the attenuate law at full intensity,
+                    // gain × velocity at full intensity, or Kontakt's default-intensity table:
                     // kept on the voice so no per-voice modulation is needed.
-                    velocity = ir::VelocityResponse::Linear;
+                    velocity = law;
                     #[cfg(feature = "scan")]
                     self.target_outcomes
                         .insert((index, usize::from(slot), true, 0), true);
@@ -7279,5 +7294,22 @@ mod doctor_envelope_coefficients_tests {
         }
         assert_eq!(ahdsr_coefficients(-2.), ahdsr_coefficients(-1.));
         assert_eq!(ahdsr_coefficients(2.), ahdsr_coefficients(1.));
+    }
+}
+
+#[cfg(test)]
+mod velocity_volume_law_tests {
+    use super::*;
+
+    #[test]
+    fn full_and_default_route_intensities_pick_their_velocity_laws() {
+        assert_eq!(velocity_volume_law(1.0), Some(ir::VelocityResponse::Linear));
+        // Stored as f32 in the NKI (the Beat Machine route reads 0.3937009871).
+        assert_eq!(
+            velocity_volume_law(f64::from(0.393_700_99_f32)),
+            Some(ir::VelocityResponse::VolumeTable)
+        );
+        assert_eq!(velocity_volume_law(0.5), None);
+        assert_eq!(velocity_volume_law(0.0), None);
     }
 }

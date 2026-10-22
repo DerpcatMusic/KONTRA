@@ -453,6 +453,13 @@ a formula can be specified. The protocol's rough fitted amplitude
 | 110 | −1.42 |
 | 127 | 0 |
 
+Oracle confirmation (2026-10-22, Beat Machine route, session B): the Beat Machine's
+velocity route (velocity to volume, intensity 50 of 127, target volume, no shaper) gave
+peak gains of −9.12, −5.71 and −2.30 dB at velocities 32, 64 and 100 relative to 127. These
+match the table within 0.02 dB, so the table is the law for that route. The engine uses it
+only for that intensity (`VelocityResponse::VolumeTable`, `sampler-core` `VOLUME_TABLE_DB`);
+full intensity stays linear. Other intensities and shapers are not measured.
+
 That protocol separately measures the instrument CC7 amplitude law as
 `(CC7/127)^3`, with unsent CC7 after restart at .5 amplitude. This is a
 controller observation and must not be substituted for velocity response.
