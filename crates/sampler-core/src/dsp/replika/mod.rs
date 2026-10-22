@@ -165,16 +165,18 @@ pub fn storage_len(rate: f32) -> usize {
 pub const STATE_SLOTS: usize = 15;
 
 /// T4 dB table with linear interpolation (`1404d14d0`, entries `2^(k/60 - 20)`, deltas to the next entry).
+/// The native index is `(short)(int)x`: below 0 (so x <= -1) the gain is 0, and in (-1, 0) it interpolates from
+/// entry 0. Entries are f32 of the exact `2^(k/60 - 20)` (checked against the table under kemu, 2400 entries).
 fn t4(x: f32) -> f32 {
-    if x < 0. {
+    let k = x.trunc();
+    if k < 0. {
         return 0.;
     }
-    if x >= 2400. {
+    if k >= 2400. {
         return 1_048_576.;
     }
-    let k = x.trunc();
     let f = x - k;
-    let v = |k: f32| (k / 60. - 20.).exp2();
+    let v = |k: f32| (f64::from(k) / 60. - 20.).exp2() as f32;
     v(k) + f * (v(k + 1.) - v(k))
 }
 
