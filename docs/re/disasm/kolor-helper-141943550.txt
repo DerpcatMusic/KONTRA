@@ -1,0 +1,38 @@
+┌ 171: fcn.141943550 (int64_t arg1);
+`- args(rcx)
+0x141943550      0f1021         movups xmm4, xmmword [rcx] ; arg1
+0x141943553      660f6f0545..   movdqa xmm0, xmmword [0x147696da0] ; [0x147696da0:16]=-1
+0x14194355b      660f6f1d7d..   movdqa xmm3, xmmword [0x147696de0] ; [0x147696de0:16]=-1
+0x141943563      660f6f1545..   movdqa xmm2, xmmword [0x147696db0] ; [0x147696db0:16]=-1
+0x14194356b      0f5dc4         minps xmm0, xmm4
+0x14194356e      0f54251b16..   andps xmm4, xmmword [0x144714b90]
+0x141943575      0fc225c337..   cmpltps xmm4, xmmword [0x147696d40] ; [0x147696d40:16]=-1
+0x14194357d      0f5fd8         maxps xmm3, xmm0
+0x141943580      660f6f0588..   movdqa xmm0, xmmword [0x147696d10] ; [0x147696d10:16]=-1
+0x141943588      0f28cb         movaps xmm1, xmm3
+0x14194358b      0f59cb         mulps xmm1, xmm3
+0x14194358e      0f59d1         mulps xmm2, xmm1
+0x141943591      0f59c1         mulps xmm0, xmm1
+0x141943594      0f58155537..   addps xmm2, xmmword [0x147696cf0]
+0x14194359b      0f58058e37..   addps xmm0, xmmword [0x147696d30]
+0x1419435a2      0f59d1         mulps xmm2, xmm1
+0x1419435a5      0f59c1         mulps xmm0, xmm1
+0x1419435a8      0f58151138..   addps xmm2, xmmword [0x147696dc0]
+0x1419435af      0f5805aa37..   addps xmm0, xmmword [0x147696d60]
+0x1419435b6      0f59d1         mulps xmm2, xmm1
+0x1419435b9      0f59c1         mulps xmm0, xmm1
+0x1419435bc      0f58153d37..   addps xmm2, xmmword [0x147696d00]
+0x1419435c3      0f5805b637..   addps xmm0, xmmword [0x147696d80]
+0x1419435ca      0f59d1         mulps xmm2, xmm1
+0x1419435cd      0f58154c37..   addps xmm2, xmmword [0x147696d20]
+0x1419435d4      0f59d1         mulps xmm2, xmm1
+0x1419435d7      0f58157237..   addps xmm2, xmmword [0x147696d50]
+0x1419435de      0f59d1         mulps xmm2, xmm1
+0x1419435e1      0f58158837..   addps xmm2, xmmword [0x147696d70]
+0x1419435e8      0f59d3         mulps xmm2, xmm3
+0x1419435eb      0f5ed0         divps xmm2, xmm0
+0x1419435ee      0f28c4         movaps xmm0, xmm4
+0x1419435f1      0f54e3         andps xmm4, xmm3
+0x1419435f4      0f55c2         andnps xmm0, xmm2
+0x1419435f7      0f56c4         orps xmm0, xmm4
+└           0x1419435fa      c3             ret
