@@ -1,6 +1,6 @@
 # Kontakt 8 source modules: Beat Machine, S1200 Machine, MP60 Machine
 
-Status: **S1200 partial** (filter modes 1..=5 run on voices with `Group.machine`); **MP60 not wired**; **Beat Machine missing**. Addresses are Kontakt 8.exe VAs; decompile exports are in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (read with `rg`, never pasted here).
+Status: **S1200 partial** (filter modes 1..=5 run on voices with `Group.machine`); **MP60 chain implemented but unwired** (rate law and source fetch not decoded); **Beat Machine missing**. Addresses are Kontakt 8.exe VAs; decompile exports are in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (read with `rg`, never pasted here).
 
 ## Stored record
 
@@ -26,15 +26,29 @@ Wiring: `lower.rs` places `Processor::S1200` first in the voice's pre-amplitude 
 Verified: impulse golden and DC gain for the mode filter, quantiser ties, AA impulse and DC, 26k capture schedule, block-size invariance of the whole stage (`cargo test -p sampler-core --lib machine`).
 Not verified: a rendered comparison against Kontakt. Filter modes 0, 6 and 7 are not recovered.
 
-## MP60 Machine (partially decoded, not wired)
+## MP60 Machine (chain implemented, unwired)
 
-Render `FUN_140cddf50` (5313 bytes, vtable `BMPC60::vftable` `0x144fd03e0`, render slot 27). Constructor `FUN_140cd8ea0` writes the coefficients.
+Render `FUN_140cddf50` (5313 bytes; vtable `BMPC60::vftable`, `0x144fd03e0`). Constructor `FUN_140cd8ea0` writes every coefficient (extraction: `tools/re/gen_mp60_tables.py`).
 
-- **Stage 1 (decoded, not yet verified).** Five chained sections per channel over an 18-word state (`param_1+0xb0`, stride `0x48` bytes). Coefficients are shared by the object: `+0xa60, a64, a68, a6c, a70` (feedback/feed-forward of section A), `+0xa78, a7c, a80`, `+0xac0, ac4, ac8, acc, ad0, ad4`, `+0xad8, adc`, output gain `+0xaf0`. Constructor values: `a60=0x3f3fd3c9 a64=0x3f799a8f a68=0x3f03c688 a6c=0xbf1b12e3 a70=0x3d34fe36 a78=0xbf3008e5 a7c=0xbeacf572 a80=0xbf6e4121 ac0=0xbe90159c ac4=0x3db76fdf ac8=0x4017a773 acc=0x3feb21b8 ad0=0xbf551047 ad4=0x3f2cb783 ad8=0x3f4fa03a adc=0x3f0b9ee0 af0 (gain) = set in the constructor, not yet re-read`.
-- **Stage 2** at `+0xb24..+0xb94` (constructor writes present, usage in the render not yet traced).
-- **Resampler (not recovered).** The render feeds the IIR from a variable-rate resampler: a 512-entry curve table (`param_5`), ring buffers of `0x800` bytes per channel with mask `param_1+0x60`, and 4-point interpolation (`uVar14+1..+3`). Helpers `FUN_14086e030`, `FUN_140880860`, `FUN_140883f10` are not decoded. This is the main gap.
+Order of the render:
 
-Not implemented: MP60 DSP, MP60 wiring, rate law of the resampler. The loader still reports MP60 as not modelled.
+1. **Source resampling pass** into per-channel buffers (`FUN_14086e030`). Its step is `fVar39 = 1 / (object+0x14 * DAT_144f385c4)`, which is `44100 / object+0x14` (1.0 at the internal 44.1 kHz rate, since `DAT_144f385c4` = 1/44100). The pitch term uses `88200 / object+0x178c` (`DAT_144fc4c24`) times the render's pitch argument `param_6`.
+2. **Stage 1 IIR** in place on those buffers: five sections, a trailing tap `+0xad4` on the last section output, gain `+0xaf0`.
+3. **12-bit quantiser**: `ROUND(x * 2048) / 2048` (`DAT_144fd0dcc` = 2048, `DAT_144fd0d4c` = 2^-11).
+4. **Stage 2 IIR** on the quantised ring: six sections, trailing tap `+0xba4`, gain `+0xbc4`.
+5. **Output conversion**: when `object+0x14 == 44100` (`DAT_144f38d58`) the samples are copied; otherwise a fractional read converts to the host rate with the Catmull-Rom kernel (4 taps, weights from `0.5`, `1`, `3` = `DAT_14470bad0`, `DAT_14470bad4`, `DAT_1447149d0`). The repo's `resample::cubic_four` is the same kernel and is the intended reuse.
+
+Section form (both stages, verified by hand against the render's expressions): `y = x + f0 x[n-1] + f1 x[n-2] + g0 y[n-1] + g1 y[n-2]`; the sections use a subset of these taps (stage 1: A/B biquad, C/D/E 1-2 taps; stage 2: sections 1/2 biquad, 3-6 fewer taps). Constants are in `dsp/machine.rs` (`MP60_IIR1`, `MP60_IIR2`).
+
+Shipped and tested: the IIR chain (stage 1 → quantiser → stage 2), DC gain of each stage equal to its analytic product (stability included), quantiser ties, history round-trip across blocks. `#[allow(dead_code)]` on these items until wiring.
+
+Not recovered, so MP60 is not wired:
+
+- **Rate law**: how `object+0x178c` and the 512-entry curve `param_5` produce the step (`fVar39`) and the per-frame positions. The curve comes from the caller of `FUN_14086e030`.
+- **Source fetch**: `FUN_14086e030` (2845 bytes) calls `FUN_140870e30`, `FUN_140828500` (refill) and `FUN_1408f5110` (channel index), which belong to Kontakt's streaming source. Not decoded.
+- **Helpers decoded only partly**: `FUN_140880860` derives the window bounds from the source table (0x38-byte entries at `object+0x560`, frame count at `+0x1794`, clamped to 4-frame padding). `FUN_140883f10` rounds the frame count up to 512-frame blocks when `object+0x1788` is in `5..=19`; otherwise it returns the count. `FUN_140883ce0` returns `object+0x1790`; `FUN_140884d90` returns `object+0x178c`.
+
+Without the rate law and the source fetch, the chain would process the raw source at the wrong rate, so it is not wired and must not be claimed as MP60 parity.
 
 ## Beat Machine (missing)
 
@@ -45,5 +59,5 @@ The stored slice fields have no decoded meaning. The beat-sequencer path (group 
 | Module | Shared engine covers | Missing |
 |---|---|---|
 | S1200 Machine | AA IIR, filter modes 1..=5, 26 kHz hold, quantiser, voice wiring | Filter modes 0, 6, 7; render comparison against Kontakt; group-delay latency |
-| MP60 Machine | nothing (plays as sampler) | Stage 1 verification, stage 2, resampler, wiring |
+| MP60 Machine | IIR chain (stages 1, 2, 12-bit quantiser), constants, goldens | Rate law, source fetch, output conversion, wiring; no Kontakt comparison |
 | Beat Machine | nothing (plays as sampler) | Slice/pattern generator, slice field meaning |

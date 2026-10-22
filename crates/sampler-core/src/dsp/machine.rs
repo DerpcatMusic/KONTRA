@@ -45,8 +45,13 @@ pub fn s1200_round(x: f64) -> f64 {
 
 /// Output quantiser: `ROUND(x * 2^9.5) / 2^9.5`, the product taken in binary32.
 pub fn s1200_quantize(x: f32) -> f32 {
-    let scaled = x * S1200_QUANT_SCALE;
-    s1200_round(f64::from(scaled)) as f32 * S1200_QUANT_INVERSE
+    round_step(x, S1200_QUANT_SCALE, S1200_QUANT_INVERSE)
+}
+
+/// `ROUND(x * scale) * inverse` in binary32, ties to even (`cvtsd2si`). MP60's
+/// stage-to-stage quantiser is the same form with scale 2^11.
+fn round_step(x: f32, scale: f32, inverse: f32) -> f32 {
+    s1200_round(f64::from(x * scale)) as f32 * inverse
 }
 
 /// The 7-tap / 6-pole anti-alias IIR of the S1200 render. History is stored
@@ -240,6 +245,113 @@ impl S1200Stage {
     }
 }
 
+/// One MP60 section: `y = x + ff[0] x[n-1] + ff[1] x[n-2] + fb[0] y[n-1] + fb[1] y[n-2]`.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
+pub struct Mp60Section {
+    pub ff: [f32; 2],
+    pub fb: [f32; 2],
+}
+
+/// One MP60 IIR stage: sections in render order, a trailing `tail * y[n-1]`
+/// tap on the last section's output, then the stage gain.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
+pub struct Mp60Iir {
+    pub sections: &'static [Mp60Section],
+    pub tail: f32,
+    pub gain: f32,
+}
+
+/// Stage 1 (object `+0xa60..+0xaf0`, render `FUN_140cddf50`): five sections.
+#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
+pub const MP60_IIR1: Mp60Iir = Mp60Iir {
+    sections: &[
+        Mp60Section { ff: [f32::from_bits(0xbe90_159c), f32::from_bits(0x3f4f_a03a)], fb: [f32::from_bits(0x3f3f_d3c9), f32::from_bits(0xbf30_08e5)] },
+        Mp60Section { ff: [f32::from_bits(0x3db7_6fdf), f32::from_bits(0x3f0b_9ee0)], fb: [f32::from_bits(0x3f79_9a8f), f32::from_bits(0xbeac_f572)] },
+        Mp60Section { ff: [f32::from_bits(0x4017_a773), 0.0], fb: [f32::from_bits(0x3f03_c688), f32::from_bits(0xbf6e_4121)] },
+        Mp60Section { ff: [f32::from_bits(0x3feb_21b8), 0.0], fb: [f32::from_bits(0xbf1b_12e3), 0.0] },
+        Mp60Section { ff: [f32::from_bits(0xbf55_1047), 0.0], fb: [f32::from_bits(0x3d34_fe36), 0.0] },
+    ],
+    tail: f32::from_bits(0x3f2c_b783),
+    gain: f32::from_bits(0xbc6a_5c95),
+};
+
+/// Stage 2 (object `+0xb24..+0xbc4`): six sections.
+#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
+pub const MP60_IIR2: Mp60Iir = Mp60Iir {
+    sections: &[
+        Mp60Section { ff: [f32::from_bits(0x3fd2_4e50), f32::from_bits(0x3f49_7b8e)], fb: [f32::from_bits(0xbfd8_41bf), f32::from_bits(0xbf67_99cc)] },
+        Mp60Section { ff: [f32::from_bits(0xbd64_413c), f32::from_bits(0x3ad2_0d5a)], fb: [f32::from_bits(0xbf31_0a86), f32::from_bits(0xbeac_80e6)] },
+        Mp60Section { ff: [f32::from_bits(0x3df0_e93f), 0.0], fb: [f32::from_bits(0x3ece_02b3), f32::from_bits(0xbe5f_c54e)] },
+        Mp60Section { ff: [f32::from_bits(0x4003_b432), 0.0], fb: [f32::from_bits(0x3d36_dd82), f32::from_bits(0xbab0_80e0)] },
+        Mp60Section { ff: [f32::from_bits(0xbf10_2849), 0.0], fb: [f32::from_bits(0x3f21_a07b), 0.0] },
+        Mp60Section { ff: [f32::from_bits(0x3f14_f53e), 0.0], fb: [f32::from_bits(0x3f14_d65c), 0.0] },
+    ],
+    tail: f32::from_bits(0x3e0f_acb8),
+    gain: f32::from_bits(0x3f5d_1f83),
+};
+
+/// MP60 quantiser between the two IIR stages: `ROUND(x * 2^11) / 2^11`
+/// (`DAT_144fd0dcc` = 2048.0, `DAT_144fd0d4c` = 2^-11).
+pub const MP60_QUANT_SCALE: f32 = 2048.0;
+pub const MP60_QUANT_INVERSE: f32 = 1.0 / 2048.0;
+
+/// Per-channel history words of one stage: `[input, output]` per section,
+/// each `[n-1, n-2]`. Six sections at most.
+pub const MP60_SECTIONS: usize = 6;
+pub const MP60_STAGE_WORDS: usize = MP60_SECTIONS * 4;
+
+/// Runs one sample through an MP60 IIR stage, updating its histories.
+#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
+fn mp60_iir(stage: &Mp60Iir, history: &mut [[[f32; 2]; 2]; MP60_SECTIONS], x: f32) -> f32 {
+    let mut input = x;
+    for (section, h) in stage.sections.iter().zip(history.iter_mut()) {
+        let y = input + section.ff[0] * h[0][0] + section.ff[1] * h[0][1] + section.fb[0] * h[1][0] + section.fb[1] * h[1][1];
+        h[0] = [input, h[0][0]];
+        h[1] = [y, h[1][0]];
+        input = y;
+    }
+    // The shift above leaves y[n-1] of the last section in its second output word.
+    let last = &history[stage.sections.len() - 1];
+    (input + stage.tail * last[1][1]) * stage.gain
+}
+
+/// The MP60 IIR chain: stage 1, the 12-bit quantiser, stage 2. Resampling
+/// around the chain is not implemented (its rate law is not decoded).
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)] // MP60 chain is unwired until its resampler's rate law is decoded.
+pub struct Mp60Chain {
+    stage1: [[[f32; 2]; 2]; MP60_SECTIONS],
+    stage2: [[[f32; 2]; 2]; MP60_SECTIONS],
+}
+
+impl Mp60Chain {
+    pub fn process(&mut self, x: f32) -> f32 {
+        let y1 = mp60_iir(&MP60_IIR1, &mut self.stage1, x);
+        let q = round_step(y1, MP60_QUANT_SCALE, MP60_QUANT_INVERSE);
+        mp60_iir(&MP60_IIR2, &mut self.stage2, q)
+    }
+
+    /// Load / store the histories of one channel from delay-storage slots.
+    pub fn load(slots: &[[f64; 2]], c: usize) -> Self {
+        let mut chain = Self::default();
+        for k in 0..MP60_STAGE_WORDS * 2 {
+            let word = slots[k][c] as f32;
+            let (stage, rest) = if k < MP60_STAGE_WORDS { (&mut chain.stage1, k) } else { (&mut chain.stage2, k - MP60_STAGE_WORDS) };
+            stage[rest / 4][rest % 4 / 2][rest % 2] = word;
+        }
+        chain
+    }
+
+    pub fn store(&self, slots: &mut [[f64; 2]], c: usize) {
+        for (k, slot) in slots.iter_mut().enumerate().take(MP60_STAGE_WORDS * 2) {
+            let (stage, rest) = if k < MP60_STAGE_WORDS { (&self.stage1, k) } else { (&self.stage2, k - MP60_STAGE_WORDS) };
+            slot[c] = f64::from(stage[rest / 4][rest % 4 / 2][rest % 2]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +411,46 @@ mod tests {
             assert!((dc - 1.0).abs() < 1e-4, "mode {m} dc {dc}");
         }
         assert!(s1200_mode(1).is_none() && s1200_mode(6).is_none());
+    }
+
+    /// The DC gain of a stage is the product of its section gains
+    /// `(1 + ff0 + ff1) / (1 - fb0 - fb1)`, times `(1 + tail) * gain`. A
+    /// constant input must settle to it, which also checks stability.
+    #[test]
+    fn mp60_stages_settle_to_their_analytic_dc_gain() {
+        for stage in [MP60_IIR1, MP60_IIR2] {
+            let mut history = [[[0.0f32; 2]; 2]; MP60_SECTIONS];
+            let mut y = 0.0;
+            for _ in 0..200_000 {
+                y = mp60_iir(&stage, &mut history, 1.0);
+            }
+            let dc: f64 = stage.sections.iter().map(|s| {
+                f64::from(1.0 + s.ff[0] + s.ff[1]) / f64::from(1.0 - s.fb[0] - s.fb[1])
+            }).product::<f64>() * f64::from((1.0 + stage.tail) * stage.gain);
+            assert!((f64::from(y) - dc).abs() <= 1e-4 * dc.abs().max(1e-3), "dc {y} expected {dc}");
+        }
+    }
+
+    #[test]
+    fn mp60_quantiser_steps_at_twelve_bits_and_ties_to_even() {
+        assert_eq!(round_step(1.0 / 2048.0, MP60_QUANT_SCALE, MP60_QUANT_INVERSE), MP60_QUANT_INVERSE);
+        assert_eq!(round_step(1.5 / 2048.0, MP60_QUANT_SCALE, MP60_QUANT_INVERSE), 2.0 * MP60_QUANT_INVERSE);
+        assert_eq!(round_step(0.5 / 2048.0, MP60_QUANT_SCALE, MP60_QUANT_INVERSE), 0.0);
+    }
+
+    #[test]
+    fn mp60_chain_state_round_trips_through_slots_across_blocks() {
+        let signal: Vec<f32> = (0..600).map(|n| (n as f32 * 0.07).sin() * 0.5).collect();
+        let mut whole = Mp60Chain::default();
+        let want: Vec<f32> = signal.iter().map(|&x| whole.process(x)).collect();
+        let mut slots = vec![[0.; 2]; MP60_STAGE_WORDS * 2];
+        let mut got = Vec::new();
+        for part in signal.chunks(37) {
+            let mut chain = Mp60Chain::load(&slots, 0);
+            got.extend(part.iter().map(|&x| chain.process(x)));
+            chain.store(&mut slots, 0);
+        }
+        assert_eq!(got, want);
     }
 
     #[test]
