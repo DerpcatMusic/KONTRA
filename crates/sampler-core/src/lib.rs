@@ -92,6 +92,7 @@ pub use source::storage::{
 };
 pub use source::bundle::SourceBundleRefusal;
 mod bus;
+pub mod bus_amp;
 pub use bus::{Bus, BusMix, BusPeakTap, BusSend, ChannelBus, GroupFader, SourceOwnerControl, SourceOwnerOutputControl, SourceOwnerControlTarget, ScopeControlSite};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
