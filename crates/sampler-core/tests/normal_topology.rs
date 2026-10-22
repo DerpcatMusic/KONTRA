@@ -2062,3 +2062,40 @@ fn malformed_constant_definition_and_unqualified_native_law_never_reach_behavior
     let mut instrument=constant_property_ir(0.25);instrument.source_indices.constant_properties[0].law=ir::SourceConstantPropertyLaw::UnqualifiedNative;assert!(instrument.validate().is_ok());instrument.behaviors.push(ir::Behavior{name:"not-run".into(),language:ir::Language::Ksp,source:String::new(),slot:None,state:vec![],requires:vec![]});let bound=std::cell::Cell::new(false);
     let error=lower(&instrument,48000,constant_property_pcm(),|_,plan|{bound.set(true);Ok(plan)}).err().unwrap();assert!(error.to_string().contains("declared-Core target reader"));assert!(!bound.get());
 }
+
+/// One bus chain holding `processors`, rendered from a steady stereo source (key 60, the first zone).
+fn bus_stereo_stage_render(processors: Vec<ir::Processor>) -> Vec<[f32; 2]> {
+    let mut instrument = bus_marker_graph();
+    for (index, zone) in instrument.zones.iter_mut().enumerate() {
+        zone.keys = ir::KeyRange { low: 60 + index as u8, high: 60 + index as u8 };
+        zone.pitch = ir::KeyTracking::Fixed;
+    }
+    instrument.chains[0].pre_amplitude = processors;
+    let sources = (0..2)
+        .map(|_| {
+            Pcm::new(48000, (0..4096).map(|f| {
+                let t = f as f32;
+                [0.3 * (t * 0.01).sin() + 0.1 * (t * 0.37).cos(), 0.2 * (t * 0.013).cos()]
+            }).collect::<Vec<_>>().into_boxed_slice()).unwrap()
+        })
+        .collect();
+    let plan = lower(&instrument, 48000, sources, |_, p| Ok(p)).unwrap();
+    let limits = sampler_core::Limits::for_plan(&plan, 8, 16);
+    let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
+    rt.trigger(pan_input(0), 60, 1.).unwrap();
+    let mut out = vec![[0f32; 2]; 2048];
+    rt.render(&mut out).unwrap();
+    out
+}
+/// Native apply: at mix 0 the stage passes the input through (`out = (1 - a3) * in`), so the bus
+/// output equals the plain bus; at mix 1 the stage changes the signal.
+#[test]
+fn stereo_tune_bus_stage_is_transparent_at_zero_mix_and_processes_at_full_mix() {
+    let dry = bus_stereo_stage_render(vec![ir::Processor::Gain(ir::Gain::UNITY)]);
+    let at_zero = bus_stereo_stage_render(vec![ir::Processor::StereoTune(ir::fx::stereo_tune::Config { split: 0.5, drift: 0.5, spread: 0.5, mix: 0.0 })]);
+    let at_full = bus_stereo_stage_render(vec![ir::Processor::StereoTune(ir::fx::stereo_tune::Config { split: 0.5, drift: 0.5, spread: 0.5, mix: 1.0 })]);
+    let worst = |a: &[[f32; 2]], b: &[[f32; 2]]| a.iter().zip(b).flat_map(|(x, y)| [(x[0] - y[0]).abs(), (x[1] - y[1]).abs()]).fold(0f32, f32::max);
+    assert!(dry.iter().any(|f| f[0] != 0.), "source must be audible");
+    assert!(worst(&dry, &at_zero) <= 1e-6, "mix 0 changed the bus by {}", worst(&dry, &at_zero));
+    assert!(worst(&dry, &at_full) > 1e-3, "mix 1 left the bus unchanged: {}", worst(&dry, &at_full));
+}

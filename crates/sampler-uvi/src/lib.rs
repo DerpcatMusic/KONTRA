@@ -570,6 +570,36 @@ fn record_read(node: Node, name: &str) {
     });
 }
 
+/// Members of a channel bundle (`dir/*a*b*c`); 0 for a single sample.
+fn bundle_width(player: Node) -> usize {
+    player.attribute("SamplePath").filter(|p| p.contains('*')).map_or(0, |p| p.split('*').count() - 1)
+}
+
+/// The program's own placement of a bundle's members. Row `k` of the keygroup's
+/// first active `GainMatrix` gives member `k` as `[Gain_k_1, Gain_k_2]`: input
+/// `k` to output left and right. A member the matrix leaves silent (both cells
+/// zero, e.g. one driven only by a Macro) gets an equal-power even spread.
+fn bundle_placement(keygroup: Node, width: usize) -> Result<Vec<[f64; 2]>, String> {
+    let matrix = keygroup
+        .children()
+        .filter(|n| n.has_tag_name("Inserts"))
+        .flat_map(|n| n.children())
+        .find(|n| n.has_tag_name("GainMatrix") && n.attribute("Bypass") == Some("0"));
+    let spread = stream::even_spread(width);
+    (0..width)
+        .map(|k| {
+            let placed = match matrix {
+                Some(m) => [
+                    number(m, &format!("Gain_{}_1", k + 1), 0.0)?,
+                    number(m, &format!("Gain_{}_2", k + 1), 0.0)?,
+                ],
+                None => [0.0, 0.0],
+            };
+            Ok(if placed == [0.0, 0.0] { spread[k] } else { placed })
+        })
+        .collect()
+}
+
 fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
     record_read(node, name);
     match node.attribute(name) {
@@ -913,6 +943,15 @@ impl Translation {
             true,
             Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8),
         )?;
+        // A wide bundle's placement already is this keygroup's matrix (see
+        // `bundle_placement`), so its 2x2 subset must not apply to the mix again.
+        if keygroup.children().filter(|n| n.has_tag_name("Oscillators")).flat_map(|n| n.children()).any(|p| bundle_width(p) > 2) {
+            for processor in &mut processors {
+                if let ir::Processor::StereoMatrix(cells) = processor {
+                    *cells = [[1., 0.], [0., 1.]];
+                }
+            }
+        }
         // The keygroup's own insert-bypass is a separate retained owner from
         // each insert's Bypass and every SamplePlayer enable predicate.
         let insert_count = u16::try_from(processors.len())
@@ -1045,6 +1084,16 @@ impl Translation {
             let at = path(player);
             let asset = player.attribute("SamplePath").filter(|p| !p.is_empty())
                 .and_then(|sample| self.asset(&at, sample));
+            if let (Some(asset), width @ 3..=12) = (asset, bundle_width(player)) {
+                let location = self.locations[asset.0].clone();
+                let members = bundle_placement(keygroup, width)?;
+                match self.ir.source_indices.bundle_placements.iter().find(|p| p.location == location) {
+                    None => self.ir.source_indices.bundle_placements.push(ir::BundlePlacement { location, members }),
+                    // One bundle used by two keygroups keeps the first placement, reported.
+                    Some(first) if first.members != members => self.unsupported(&at, "bundle placement differs between keygroups", width),
+                    Some(_) => {}
+                }
+            }
             let start = number(player, "SampleStart", 0.0)?;
             if start != 0.0 {
                 self.unsupported(&at, "SampleStart", start);
@@ -1873,10 +1922,10 @@ pub fn assemble_translated_streamed_cancelable(
         if canceled(){return Err(Box::new(sampler_kontakt::LoadError::Canceled));}
         sources.push(match &t.bank {
             #[cfg(feature="library-access")]
-            Some((bank,program_path))=>bank.initial_stream_source(program_path,location,inherit[asset]),
+            Some((bank,program_path))=>bank.initial_stream_source(program_path,location,inherit[asset],authored_placement(&t.instrument,location)),
             #[cfg(not(feature="library-access"))]
             Some(_)=>Err("bank samples need the library-access feature".to_string()),
-            None=>stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset]),
+            None=>stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset],authored_placement(&t.instrument,location)),
         });
     }
     assemble_streamed_cancelable(t.instrument,t.locations,sources,rate,policy,canceled)
@@ -1922,7 +1971,7 @@ pub fn load_streamed(
     let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
         .iter().enumerate()
-        .map(|(asset,location)| stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset]))
+        .map(|(asset,location)| stream::initial_source(vec![stream::Origin::File(location.into())],inherit[asset],authored_placement(&instrument,location)))
         .collect();
     assemble_streamed(instrument, locations, sources, rate, policy)
 }
@@ -1944,7 +1993,7 @@ pub fn load_program_streamed(
     let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
         .iter().enumerate()
-        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset]))
+        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset],authored_placement(&instrument,authored)))
         .collect();
     assemble_streamed(instrument, locations, sources, rate, policy)
 }
@@ -2086,6 +2135,11 @@ fn decode_initial_file(path:&Path,inherit:bool)->Result<audio::InitialDecoded,Er
     Ok(decoded)
 }
 
+/// The authored `[left, right]` gain of each member of a bundle wider than two.
+fn authored_placement(instrument:&ir::Instrument,location:&str)->Option<Vec<[f64;2]>> {
+    instrument.source_indices.bundle_placements.iter().find(|p|p.location==location).map(|p|p.members.clone())
+}
+
 /// A failed initial file must not erase an authored dynamic target's mapping.
 /// The loader still reports the failed file; a later sample transaction can
 /// activate this same compiled region without replacing the whole plan.
@@ -2124,18 +2178,6 @@ fn assemble_streamed_cancelable(
             && let Ok(source)=source
             && let Err(reason)=&source.admission {
             return Err(initial_playback_error(reason.clone()).into());
-        }
-    }
-    // Owned multipart members beyond stereo are admitted but not mixed: say so.
-    for (asset,source) in sources.iter().enumerate() {
-        let Ok(source)=source else {continue};
-        if source.unrouted_parts>0 && instrument.zones.iter().any(|zone|zone.asset==Some(ir::AssetRef(asset))) {
-            instrument.unsupported.push(ir::Unsupported {
-                location: locations[asset].clone(),
-                feature: "UVI multipart channel routing".into(),
-                value: format!("{} members owned; only the first two are routed to stereo", source.unrouted_parts+2),
-                reason: ir::Reason::UnknownLaw,
-            });
         }
     }
     bind_native_header_geometry(&mut instrument,&sources.iter().map(|source|source.as_ref().ok().and_then(|source|source.original_channels).map(|channels|(channels,if channels<=2{2}else{channels}))).collect::<Vec<_>>())?;
@@ -2434,6 +2476,19 @@ mod scripted_translation_tests {
             instrument, locations, groups, inserts, bank: None, dir: None,
             text: std::sync::Arc::from(xml), lua: Default::default(),
         }
+    }
+
+    #[test]
+    fn bundle_members_take_the_keygroup_matrix_placement_and_fall_back_to_even_spread() {
+        let xml = r#"<Program Gain="1"><Layers><Layer Gain="1"><Keygroups><Keygroup Gain="1" LowKey="60" HighKey="60"><Inserts><GainMatrix Name="matrix" Bypass="0" Gain_1_1="1" Gain_2_2="0.5"/></Inserts><Oscillators><SamplePlayer SamplePath="./*a.wav*b.wav*c.wav" BaseNote="60" Gain="1" Bypass="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        let translated = translated_fixture(xml);
+        let placed = &translated.instrument.source_indices.bundle_placements;
+        assert_eq!(placed.len(), 1);
+        // Member 3 has no matrix cell: it takes the even spread's last (right) position.
+        assert_eq!(placed[0].members, vec![[1.0, 0.0], [0.0, 0.5], stream::even_spread(3)[2]]);
+        // Stereo samples never take the bundle path.
+        let stereo = r#"<Program Gain="1"><Layers><Layer Gain="1"><Keygroups><Keygroup Gain="1" LowKey="60" HighKey="60"><Oscillators><SamplePlayer SamplePath="./a.wav" BaseNote="60" Gain="1" Bypass="0"/></Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+        assert!(translated_fixture(stereo).instrument.source_indices.bundle_placements.is_empty());
     }
 
     #[test]
@@ -2777,7 +2832,7 @@ pub fn load_program_scripted_streamed(
     let inherit=initial_playback_assets(&instrument,locations.len())?;
     let sources = locations
         .iter().enumerate()
-        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset]))
+        .map(|(asset,authored)| bank.initial_stream_source(&program_path, authored,inherit[asset],authored_placement(&instrument,authored)))
         .collect();
     let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
     let sampler_kontakt::Streamed {

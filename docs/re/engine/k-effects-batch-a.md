@@ -280,7 +280,7 @@ vtable. The speaker matrix and LFE routing are still unrecovered.
    vectors (`tools/re/*_kemu_vectors.py` templates).
 2. Skreamer Deluxe and Chainsaw: diff `140902480` and `1408fe290` (same length);
    identify the shared core, then read the Chainsaw kernel behind `140aba230`.
-3. Stereo Tune: core ported and bit-exact (above); lowering needs the record mapping.
+3. Stereo Tune: done (core and lowering wired; see Settled above). Open: script writes and voice scope.
 4. Surround Panner: find the core that slot 23 dispatches to.
 
 ## Pass 2 (decoded, not ported, no native vector yet)
@@ -335,10 +335,22 @@ Decoded facts that the port depends on:
 - Apply sets the four ramp lanes: 1.0, `(900*a+100)*k/rate` (one-pole coefficient), `2*(0.99*c)+0.02`
   (cross spread) and the mix as f32 bits (`+0x20c`).
 
-Not settled: the record-to-apply mapping (which saved field is `a`, `b`, `c`, `mix`, the KSP names are
-`$ENGINE_PAR_STEREOTUNE_DRIFT/MIX/SPLIT/SPREAD`), and the `+0x1c0` scale `k` (the harness uses 1.0; the
-writer is not in the stereo tune functions). Lowering stays unwired until both are read from the
-`BParFXStereoTune` loader `140701a80` and its writers.
+Settled (2026-10-23, lowering wired):
+
+- **Record to apply.** Reader `140ac6120` (version 0x10, exactly 16 bytes) stores float `i` at params
+  `+0x8 + 4i`; apply `140abbce0` reads `+0x8` (a: one-pole, `(900a+100)*k/rate`), `+0xc` (b: tap ratio
+  `1.0594631^(4 f^3)`, `f = 0.85 b * 0.4 + 0.06`), `+0x10` (c: cross spread `2 * 0.99 c + 0.02`) and `+0x14`
+  (mix, to ramp lane 3). Record order is apply order. The KSP names per slot are not proven by the
+  decompile (the repo's KSP table lists SPLIT, DRIFT, SPREAD, MIX, but that order is not established here).
+- **Rate scale `k` (`+0x1c0`).** Ctor `140a86e50` stores `0x40c90fdb` (2*pi, f32) at `+0x1c0`. Reset
+  `140a99630`, prepare `140ac0de0` and apply only read it. So `k = 2*pi` for every instance, and the
+  one-pole coefficient is `(900a+100) * 2*pi / rate`. It is not sample rate or block size. Kemu vectors
+  (`tools/re/stereotune_kemu_vectors.py`) keep the ctor value and include a 44.1 kHz case.
+- **Post stage `140ac21f0`.** Gain target `+0x1a4` and current `+0x1ac` are 1.0 from the base ctor
+  `140a856c0`, so the post stage is a unity bus add into the host output. Nothing extra for the lowering.
+- **Lowering.** `Processor::StereoTune` (IR `fx::stereo_tune::Config`), bus scope only, state owned by the
+  bus like `Space` and cleared with it. Test: `normal_topology::stereo_tune_bus_stage_*` (mix 0 transparent,
+  mix 1 changes the bus). Not done: script writes to `ENGINE_PAR_STEREOTUNE_*`, live knob lanes.
 
 ### Stereo Tune per-chunk core (read, kept for the record)
 
@@ -465,6 +477,23 @@ block driver `140ab0070` (per source: scalar fast path at `+0xc00` or the panned
 shared mix `140ac21f0`, LFE sub-object at `+0x7a0`, and the output layouts above stereo. The engine has no
 multi-channel output path for this module yet; a stereo downmix needs the driver first.
 
+### Kolor dry path, ported (2026-10-23, `kolor/chain.rs`)
+
+Measured with `tools/re/kolor_kemu_probe.py` (impulse, step at 0.5 per channel, mode 0 and the
+native fixtures). For modes 0, 1, 3, 4, 6..9 the output is exactly `g[n] * in[n]` per channel,
+steady and moving (knob 0 does not touch it):
+
+- `g[n] = A * g[n-1] + B`, `A = 0.99947651`, `B = 0.5*(1-A)` (fit residual 3e-8). The ramp settles at 0.5.
+- Start: left `g[0] = B/2`, right `g[0] = B`. The left/right difference is measured, its cause is not decoded.
+- Port: `sampler-core/src/dsp/color/kolor/chain.rs` (`DryPath`). Test: all 8 modes, steady and moving,
+  L and R, against the fixture at 1e-5 absolute.
+
+Modes 2 and 5 are **not** matched. Their output minus `g*in` (the shaper residual, peak 0.015 steady)
+is mode-signed (positive for 2, negative for 5) and starts at zero. A 6-tap ARX fit of that residual
+on the input leaves 1.5e-5, so it is not a short linear filter. It needs the post-shaper biquad
+sections (`+0x9484`, `+0x9568`, `+0x9670`, `+0x9708`) with coefficients from prepare `141979410`
+and the notify lambdas, which are still open.
+||||||| 10491d993
 ## Pass 6: Surround Panner block driver, routing core ported (2026-10-23)
 
 Evidence: decompile `Research/KONTRA/source/kontakt8/0140ab0000.c:3` (`140ab0070`, 1880 B, scalar paths) and

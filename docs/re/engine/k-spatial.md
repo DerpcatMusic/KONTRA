@@ -49,10 +49,10 @@ Decompile confirmed (`0140ac0000.c`, `FUN_140ac6120`, 113 bytes): the reader
 accepts only a 16-byte payload (else throws) and stores four consecutive floats
 read in order into object offsets +0x8, +0xc, +0x10, +0x14. Object class
 `StereoTuneModuleInst`, 0x458 bytes, constructor `FUN_140650620` (base
-`FUN_14064b740`; vftable global not yet resolved). The four float-to-KSP-name
-mapping (Split, Drift, Spread, Mix) and the process routine are **not yet
-recovered**: the process method sits in the class vtable, and resolving that is
-the next step. No DSP law is claimed.
+`FUN_14064b740`; vftable global not yet resolved). Record to apply and the DSP are settled in
+`k-effects-batch-a.md` (Stereo Tune, Settled): float i lands at +0x8+4i and apply reads split, drift,
+spread, mix in that order; the rate scale +0x1c0 is the ctor constant 2*pi. The bus-scope stage is
+lowered (`sampler-kontakt/src/effects/stereotune.rs`). The KSP name per slot is not proven.
 
 RTTI scan of `re-binaries/Kontakt8.exe` (static, `pefile`): the
 `StereoTuneModuleInst` vtable is at 0x14474b670 (82 slots). Slot 81 is
@@ -140,7 +140,7 @@ not read in this pass.
 | Stereo Modeller width/pan law | implemented, tested | KONTRA_DSP_LAWS | matched (settled) |
 | Stereo Modeller pseudo delay | implemented, tested | KONTRA_DSP_LAWS | matched (settled path) |
 | Stereo Modeller channel layouts, base reset, latency | missing | none | open |
-| Stereo Tune (0x70) | named + diagnosed; no DSP | catalog reader schema | missing (DSP law) |
+| Stereo Tune (0x70) | bus-scope stage lowered; core bit-exact to kemu | catalog reader schema, kemu vectors | partial (script writes, voice scope open) |
 | Surround Panner (0x1d v0x70) | diagnosed; no DSP | fx_other.tsv bindings | missing (matrix, pan law, LFE) |
 | Instrument bus static pan | implemented on shared Pan/Balance stage, tested | kontakt-bus-pan.md | matched (static) |
 | Bus live pan slew | law confirmed (±20/sr, threshold), not wired | decomp `FUN_140824910`, `FUN_140823d70` | missing (control plumbing) |

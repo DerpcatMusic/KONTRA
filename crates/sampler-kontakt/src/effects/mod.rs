@@ -78,6 +78,7 @@ const MODULES: &[(u16, &str)] = &[
     (0x78, "Skreamer Deluxe"),
     (0x79, "Kolor"),
     (0x75, "Transpose Stretch"),
+    (0x70, "Stereo Tune"),
 ];
 
 pub(crate) fn module_name(id: u16) -> String {
@@ -266,6 +267,8 @@ pub(crate) enum Params {
     /// A native law that runs, with one stored field it does not model.
     DynamicsNoted(sampler_ir::Processor, dynamics::Note),
     TimeMod(timemod::Unit),
+    /// `BParFXStereoTune` (version 0x10): split, drift, spread, mix (reader `0x140ac6120`, 16 bytes).
+    StereoTune([f32; 4]),
     /// Linear gain.
     Gainer {
         gain: f32,
@@ -361,6 +364,9 @@ impl Slot {
             0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
                 let (core, beats) = space::read_raum(&mut r)?;
                 Params::Raum { core, beats }
+            }
+            0x70 if self.version == 0x10 && self.public.len() == 16 => {
+                Params::StereoTune([r.f32()?, r.f32()?, r.f32()?, r.f32()?])
             }
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
@@ -982,6 +988,9 @@ pub(crate) fn chain_with(
                     impulses.as_deref_mut().expect("checked above"),
                 )
             }
+            Some(Params::StereoTune(knobs)) if scope == Scope::Bus => {
+                modelled = stereotune::slot_stereo_tune(&mut b, &site, &mut notes, *knobs)
+            }
             // Addressed, so a script's GN_GAIN reaches it (Conflux's Volume knob).
             Some(Params::Gainer { gain: parameter }) => color::slot_gainer(&mut b, &site, *parameter),
             Some(Params::StereoModeller { spread, pan, pseudo }) => {
@@ -1093,6 +1102,7 @@ pub(crate) mod space;
 pub(crate) mod color;
 pub(crate) mod mangling;
 pub(crate) mod ringmod;
+pub(crate) mod stereotune;
 
 #[cfg(test)]
 mod test_support;
