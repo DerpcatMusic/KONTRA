@@ -1,15 +1,19 @@
-//! Kontakt Beat Machine slice sequencer and slice span law.
+//! Kontakt Beat Machine slice sequencer and crossfade law.
 //!
 //! Ported from the render-side methods of `BSlice` (vtable `0x144f39f00`, Kontakt 8):
-//! slot 12 (cursor reset), slot 13 (cursor settle) and slot 18 (slice start and end).
+//! slot 12 (cursor reset), slot 13 (cursor settle) and slot 18 (crossfade lengths).
 //! The table holds up to 8 entries; entry `i` here is the native element `i + 1`,
 //! and missing entries read as kind 0 (skipped), as zeroed native memory does.
 //!
-//! Not wired: the Beat Machine voice still plays as a sampler, so this module has no
-//! caller yet. Slot 18 also sets a field from a call into the source player, which
-//! is not modelled. The native 0.001 and 0.5 constants are the `.rdata` values
+//! Slot 18 turns the stored `slice_float_1` and `slice_float_2` (Kontakt's "Slice Atk"
+//! and "Slice Rel", milliseconds) into frame counts at the render sample rate, which is
+//! the render-context field at `+0x27d00` (set from the host rate, default 44100).
+//! Wired as data only: the loader fills `ir::Group::beat_slices`, and no voice runs
+//! this sequencer yet, so the Beat Machine still plays as a sampler. Slot 18 also sets a
+//! field from a call into the source player, which is not modelled.
+//! The native 0.001 and 0.5 constants are the `.rdata` values
 //! (`docs/re/kontakt-rdata/constants.tsv`).
-#![allow(dead_code)] // not wired yet, see the module docs
+#![allow(dead_code)] // the sequencer has no voice caller yet, see the module docs
 
 /// Native entry kinds below this are skipped by the sequencer.
 pub const ACTIVE_KIND: i32 = 3;
@@ -45,12 +49,12 @@ pub struct Sequencer {
     pub position: i32,
     /// Native `+0x6c`: cleared by the reset when `flag` is set.
     pub alt_position: i32,
-    /// Native `+0x50`: set from the request flag byte by [`Sequencer::span`].
+    /// Native `+0x50`: set from the stored `slice_flag_1` by [`Sequencer::crossfade`].
     pub flag: bool,
-    /// Native `+0x54`: slice start, in frames.
-    pub start: i32,
-    /// Native `+0x58`: slice end, in frames.
-    pub end: i32,
+    /// Native `+0x54`: "Slice Atk" crossfade attack, in frames (`slice_float_1`).
+    pub attack: i32,
+    /// Native `+0x58`: "Slice Rel" crossfade release, in frames (`slice_float_2`).
+    pub release: i32,
 }
 
 impl Sequencer {
@@ -63,8 +67,8 @@ impl Sequencer {
             position: 0,
             alt_position: 0,
             flag: false,
-            start: 0,
-            end: 0,
+            attack: 0,
+            release: 0,
         }
     }
 
@@ -113,11 +117,12 @@ impl Sequencer {
         }
     }
 
-    /// Slot 18: slice start and end in frames, from times in milliseconds and the
-    /// render sample rate (native `+0x27d00`). Each value is truncated after `+ 0.5`.
-    pub fn span(&mut self, start_ms: f32, end_ms: f32, rate: f32, flag: bool) {
-        self.end = (end_ms * MS_SCALE * rate + HALF) as i32;
-        self.start = (start_ms * MS_SCALE * rate + HALF) as i32;
+    /// Slot 18: crossfade attack and release in frames, from the Slice Atk and Slice Rel
+    /// times in milliseconds and the render sample rate (native `+0x27d00`). Each value is
+    /// `ms * 0.001 * rate + 0.5`, truncated to an integer.
+    pub fn crossfade(&mut self, attack_ms: f32, release_ms: f32, rate: f32, flag: bool) {
+        self.release = (release_ms * MS_SCALE * rate + HALF) as i32;
+        self.attack = (attack_ms * MS_SCALE * rate + HALF) as i32;
         self.flag = flag;
     }
 }
@@ -191,12 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn span_is_rounded_milliseconds_at_the_render_rate() {
+    fn crossfade_is_rounded_milliseconds_at_the_render_rate() {
         // 100 ms at 48 kHz = 4800 frames; 500 ms = 24000 frames; 44.1 kHz: 100 ms = 4410.
+        // Atk 100 ms is the `slice_float_1` slot, Rel 500 ms the `slice_float_2` slot.
         let mut s = Sequencer::new(table(&[]));
-        s.span(100.0, 500.0, 48000.0, true);
-        assert_eq!((s.start, s.end, s.flag), (4800, 24000, true));
-        s.span(100.0, 500.0, 44100.0, false);
-        assert_eq!((s.start, s.end), (4410, 22050));
+        s.crossfade(100.0, 500.0, 48000.0, true);
+        assert_eq!((s.attack, s.release, s.flag), (4800, 24000, true));
+        s.crossfade(100.0, 500.0, 44100.0, false);
+        assert_eq!((s.attack, s.release), (4410, 22050));
     }
 }

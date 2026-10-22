@@ -732,6 +732,9 @@ pub struct Group {
     /// here so the engine can voice them without another load.
     #[cfg_attr(feature = "cache", serde(default))]
     pub machine: Option<Machine>,
+    /// Beat Machine crossfade controls (stored mode 4); `None` for every other source.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub beat_slices: Option<BeatSlices>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -766,6 +769,17 @@ pub enum Machine {
     /// 0x318); valid values are `0..=S1200_FILTER_MODES`.
     S1200 { filter_mode: Option<u8> },
     Mp60,
+}
+
+/// Beat Machine slice controls of a stored mode-4 group. `attack_ms` and `release_ms`
+/// are Kontakt's "Slice Atk" and "Slice Rel" (stored `slice_float_1`, `slice_float_2`,
+/// milliseconds); `flag` is the stored `slice_flag_1`, whose UI meaning is not recovered.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatSlices {
+    pub attack_ms: f32,
+    pub release_ms: f32,
+    pub flag: bool,
 }
 
 /// Largest stored S1200 filter selector; `set_engine_par` rejects larger values.
