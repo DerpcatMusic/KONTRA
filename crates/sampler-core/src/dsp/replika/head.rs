@@ -17,9 +17,11 @@
 //! vectors run mode 2 with flag 1 to check its arithmetic. Flag 0 (kernel `141ab8a00`, void in the text) is not
 //! ported either.
 //!
-//! Not ported: the write-only index and rate history of the taps (`K+0x08`, `+0x10`, `+0x1c`, `+0x20`, `+0x40`,
-//! `+0x90..+0xa0`), which no reader in this unit uses; the wrapper `141ab7a90` (the gains `+0x70`, `+0x74` and the
-//! mixing) and the caller of the speeds.
+//! The tap object also keeps the driver's write side (`K+0x08` index, `+0x10` fraction, `+0x1c` step, `+0x20` and
+//! `+0x40` of the previous frame, `+0x90..+0xa0` the rate history): the deposit `141accfb0` reads them as its
+//! index, offset, count and rates, so they are part of this port. Not ported: the deposit's own history (`+0x84..+0x8c`),
+//! the reset of the object (`141abaab0` / `141aba040`), the write stage `141acd110`, the wrapper `141ab7a90` (the
+//! gains `+0x70`, `+0x74` and the mixing) and the caller of the speeds.
 //!
 //! Vectors: `docs/re/engine/vectors/replika-native-mode1-driver.json` (kemu, 4 cases of 128 frames, modes 1, 2, 3, 1).
 
@@ -47,11 +49,19 @@ fn min_native(c: f64, x: f64) -> f64 {
     if c <= x { c } else { x }
 }
 
-/// The read position after one frame: the integer part of `pos + rate` wrapped to the mask, plus the fraction.
-fn advance(pos: f64, rate: f64, mask: i32) -> f64 {
-    let p = pos + rate;
+/// The tap position after one frame (`K+0x00`, `K+0x08..0x20`, `K+0x40`, `K+0x90..0xa0`): `t = trunc(pos + rate)`,
+/// the index `t & mask` and the fraction. The old index and fraction, the step `t - old index` and the rate history
+/// shift in the order of the native stores.
+fn advance(tap: &mut Tap, rate: f64) {
+    let p = tap.pos + rate;
     let t = p as i32;
-    f64::from(t & mask) + (p - f64::from(t))
+    tap.prev_frac = tap.frac;
+    tap.prev_wr = tap.wr;
+    tap.delta = t.wrapping_sub(tap.wr);
+    tap.wr = t & tap.mask;
+    tap.frac = p - f64::from(t);
+    tap.pos = f64::from(tap.wr) + tap.frac;
+    tap.rates = [rate, tap.rates[0], tap.rates[1]];
 }
 
 /// The level crossfade of the driver (`H+0x57c0..0x57e1`).
@@ -189,8 +199,8 @@ impl Head {
             y[1] = self.post[1].tick(y[1]);
         }
 
-        self.taps[0].pos = advance(self.taps[0].pos, rate_l, self.taps[0].mask);
-        self.taps[1].pos = advance(self.taps[1].pos, rate_r, self.taps[1].mask);
+        advance(&mut self.taps[0], rate_l);
+        advance(&mut self.taps[1], rate_r);
 
         let sec_l = min_native(SECTION_MAX, rate_l * SECTION_SCALE) as f32;
         let sec_r = min_native(SECTION_MAX, rate_r * SECTION_SCALE) as f32;
@@ -286,6 +296,12 @@ mod tests {
                 s0: f(init, &format!("{p}_s0")) as f32,
                 s1: f(init, &format!("{p}_s1")) as f32,
             };
+            t.wr = f(init, &format!("{p}_wr")) as i32;
+            t.frac = f(init, &format!("{p}_frac"));
+            t.delta = f(init, &format!("{p}_delta")) as i32;
+            t.prev_wr = f(init, &format!("{p}_pwr")) as i32;
+            t.prev_frac = f(init, &format!("{p}_pfrac"));
+            t.rates = [0, 1, 2].map(|k| f(init, &format!("{p}_rate{k}")));
             t
         };
         let post = |p: &str| PostFilter {
@@ -425,6 +441,40 @@ mod tests {
                     f(st, "k2_pos"),
                     1e-9,
                 );
+                for (i, p) in ["k1", "k2"].iter().enumerate() {
+                    let t = &head.taps[i];
+                    assert_eq!(
+                        i64::from(t.wr),
+                        f(st, &format!("{p}_wr")) as i64,
+                        "{at} {p}_wr"
+                    );
+                    assert_eq!(
+                        i64::from(t.delta),
+                        f(st, &format!("{p}_delta")) as i64,
+                        "{at} {p}_delta"
+                    );
+                    assert_eq!(
+                        i64::from(t.prev_wr),
+                        f(st, &format!("{p}_pwr")) as i64,
+                        "{at} {p}_pwr"
+                    );
+                    assert!(
+                        (t.frac - f(st, &format!("{p}_frac"))).abs() <= 1e-10,
+                        "{at} {p}_frac"
+                    );
+                    assert!(
+                        (t.prev_frac - f(st, &format!("{p}_pfrac"))).abs() <= 1e-10,
+                        "{at} {p}_pfrac"
+                    );
+                    for k in 0..3 {
+                        close(
+                            &format!("{at} {p}_rate{k}"),
+                            t.rates[k],
+                            f(st, &format!("{p}_rate{k}")),
+                            1e-9,
+                        );
+                    }
+                }
                 close(
                     &format!("{at} k1_offset"),
                     head.taps[0].offset,

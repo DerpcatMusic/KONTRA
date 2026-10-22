@@ -114,6 +114,9 @@ for _name, _k in (("k1", K1), ("k2", K2)):
         _name + "_idx": (_k + 0x30, "i"), _name + "_xprev": (_k + 0x38, "d"),
         _name + "_offset": (_k + 0x48, "d"), _name + "_s0": (_k + 0x50, "f"), _name + "_s1": (_k + 0x54, "f"),
         _name + "_damp": (_k + 0x7C, "f"), _name + "_rate": (_k + 0x80, "f"),
+        _name + "_wr": (_k + 0x08, "i"), _name + "_frac": (_k + 0x10, "d"), _name + "_delta": (_k + 0x1C, "i"),
+        _name + "_pwr": (_k + 0x20, "i"), _name + "_pfrac": (_k + 0x40, "d"),
+        _name + "_rate0": (_k + 0x90, "d"), _name + "_rate1": (_k + 0x98, "d"), _name + "_rate2": (_k + 0xA0, "d"),
     })
 
 
@@ -125,6 +128,8 @@ def snapshot(e, h, names=None):
 FRAME_FIELDS = (
     "delay_base", "r58", "r60", "f_level", "f_target", "f_pend", "f_trig", "g_cur", "g_count", "g_pend",
     "g_fresh", "k1_pos", "k2_pos", "k1_offset", "k2_offset", "k1_s0", "k1_s1", "k2_s0", "k2_s1",
+    "k1_wr", "k2_wr", "k1_frac", "k2_frac", "k1_delta", "k2_delta", "k1_pwr", "k2_pwr", "k1_pfrac", "k2_pfrac",
+    "k1_rate0", "k1_rate1", "k1_rate2", "k2_rate0", "k2_rate1", "k2_rate2",
     "pl_s0", "pl_s1", "pr_s0", "pr_s1", "sl_c2", "sl_c3", "sl_c4", "sl_f", "sr_c2", "sr_c3", "sr_c4", "sr_f",
 )
 
