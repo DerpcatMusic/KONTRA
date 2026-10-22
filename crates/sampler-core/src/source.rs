@@ -686,11 +686,11 @@ impl Cursor {
     }
 
     pub(super) fn step(&self) -> f64 {
-        if let Some(loops) = self.loops {
-            let (local, position) = self.segment(i128::from(self.position));
-            if let Some(r) = local.loop_range
-                && position >= i128::from(local.first_boundary(r))
-                && local.exit.is_none_or(|exit| position < i128::from(exit))
+        if let Some(loops) = &self.loops {
+            let (range, exit, position) = self.segment_of(i128::from(self.position));
+            if let Some(r) = range
+                && position >= i128::from(self.first_boundary(r))
+                && exit.is_none_or(|exit| position < i128::from(exit))
             {
                 let tuning = loops
                     .slots
@@ -707,12 +707,10 @@ impl Cursor {
 
     // Reuse the established single-loop address law for each serial segment.
     // Each finite slot adds its repetitions to the traversal before the next.
-    fn segment(&self, position: i128) -> (Self, i128) {
-        let mut local = *self;
-        let loops = self.loops.unwrap();
-        local.loops = None;
-        local.loop_range = None;
-        local.exit = None;
+    // Returns the owning segment's loop and exit with the offset inside it; no
+    // cursor copy, since this runs several times per output frame.
+    fn segment_of(&self, position: i128) -> (Option<Loop>, Option<u64>, i128) {
+        let loops = self.loops.as_ref().unwrap();
         let mut offset = position;
         for (i, slot) in loops
             .slots
@@ -722,12 +720,19 @@ impl Cursor {
         {
             let first = self.first_boundary(slot.range);
             if loops.exits[i].is_none_or(|exit| offset < i128::from(exit)) {
-                local.loop_range = Some(slot.range);
-                local.exit = loops.exits[i];
-                return (local, offset);
+                return (Some(slot.range), loops.exits[i], offset);
             }
             offset -= i128::from(loops.exits[i].unwrap() - first);
         }
+        (None, None, offset)
+    }
+
+    fn segment(&self, position: i128) -> (Self, i128) {
+        let mut local = *self;
+        let (range, exit, offset) = self.segment_of(position);
+        local.loops = None;
+        local.loop_range = range;
+        local.exit = exit;
         (local, offset)
     }
 
@@ -936,14 +941,24 @@ impl Cursor {
     /// loop guards follow the same repeated path as the cursor, in either direction.
     fn index(&self, position: i128) -> Option<usize> {
         if self.loops.is_some() {
-            let (local, position) = self.segment(position);
-            return local.index(position);
+            let (range, exit, position) = self.segment_of(position);
+            return self.index_in(range, exit, position);
         }
+        self.index_in(self.loop_range, self.exit, position)
+    }
+
+    // The single-loop law of `index` for the loop and exit of one segment.
+    fn index_in(
+        &self,
+        loop_range: Option<Loop>,
+        exit: Option<u64>,
+        position: i128,
+    ) -> Option<usize> {
         let mut offset = u64::try_from(position).ok()?;
-        if let Some(r) = self.loop_range {
+        if let Some(r) = loop_range {
             let first = self.first_boundary(r);
             let length = (r.end - r.start) as u64;
-            if let Some(exit) = self.exit
+            if let Some(exit) = exit
                 && offset >= exit
             {
                 offset = first.checked_add(offset - exit)?;
@@ -963,11 +978,20 @@ impl Cursor {
     /// Resolve both source legs once for rendering and residency prediction.
     fn address(&self, position: i128) -> Option<ReadAddress> {
         if self.loops.is_some() {
-            let (local, position) = self.segment(position);
-            return local.address(position);
+            let (range, exit, position) = self.segment_of(position);
+            return self.address_in(range, exit, position);
         }
-        let index = self.index(position)?;
-        let Some(r) = self.loop_range else {
+        self.address_in(self.loop_range, self.exit, position)
+    }
+
+    fn address_in(
+        &self,
+        loop_range: Option<Loop>,
+        exit: Option<u64>,
+        position: i128,
+    ) -> Option<ReadAddress> {
+        let index = self.index_in(loop_range, exit, position)?;
+        let Some(r) = loop_range else {
             return Some(ReadAddress {
                 primary: index,
                 crossfade: None,
@@ -989,9 +1013,7 @@ impl Cursor {
             length - (offset - first) % length
         };
         if remaining > frames as u64
-            || self
-                .exit
-                .is_some_and(|exit| offset >= exit || remaining >= exit - offset)
+            || exit.is_some_and(|exit| offset >= exit || remaining >= exit - offset)
         {
             return Some(ReadAddress {
                 primary: index,
