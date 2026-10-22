@@ -18,7 +18,8 @@
 //! - LP: an RBJ high-shelf cut plus a peak (below 60 kHz) or an RBJ low-pass (12 dB/oct), from
 //!   one of four table sets chosen by rate (46, 60, 120 kHz).
 //! Peaks are Orfanidis designs with a prescribed Nyquist gain (0x141ac4cf0). OPEN: coefficient
-//! smoothing (Kontakt builds the core with smoothing on: 20 ms in whole blocks). The update
+//! smoothing (Kontakt builds the core with smoothing on, 20 ms per the RE notes; the native
+//! process steps the registers per frame, see docs/re/engine/eq-kontakt.md sec. 5). The update
 //! address once recorded here, 0x141ab4d70, is an unrelated object helper in 8.13.1 (it sets a
 //! byte at +0x13da1 and calls 0x140acbe30 with a string at +0x13db0), so the law is still to be
 //! located from the setter; here coefficients switch at the band stage's control rate.
@@ -27,8 +28,9 @@ use std::f64::consts::PI;
 
 const N: usize = 11;
 
-/// Coefficient smoothing time constant of the native G_EQ: one-pole glide per block, 20 ms (RE
-/// notes; the original's stepping is not yet confirmed, see docs/re/engine/eq-kontakt.md).
+/// Coefficient smoothing time constant of the native G_EQ: 20 ms (RE notes). The stepping here
+/// is a one-pole glide per block, a placeholder: the native ramp is linear per frame (see
+/// docs/re/engine/eq-kontakt.md sec. 5).
 pub(super) const RAMP_SECONDS: f64 = 0.020;
 
 /// The native grid: F(i * F(0.1)) widened, so it is not exact decimal tenths.

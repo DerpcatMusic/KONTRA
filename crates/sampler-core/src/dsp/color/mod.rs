@@ -86,7 +86,9 @@ pub enum CurveSettings {
     Drive(sampler_ir::fx::color::Drive),
     Tubescreamer(sampler_ir::fx::color::Tubescreamer),
     Dirt(sampler_ir::fx::color::Dirt),
-    Freak(sampler_ir::fx::color::Freak),
+    /// Kontakt Freak: the saved knobs, and per core index a live parameter where a script
+    /// or modulation drives it.
+    Freak(sampler_ir::fx::color::Freak, [Option<Parameter>; 19]),
     Bite(sampler_ir::fx::color::Bite),
     Tape(sampler_ir::fx::color::Tape),
     Exciter(sampler_ir::fx::color::Exciter),
@@ -193,7 +195,7 @@ impl Settings {
                 CurveSettings::Tape(d) => [d.gain, d.warmth, d.rolloff].iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Bite(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Dirt(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
-                CurveSettings::Freak(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
+                CurveSettings::Freak(d, live) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)) && live.iter().flatten().all(live_knob),
                 CurveSettings::Tubescreamer(d) => d.knobs.iter().all(|v| (0.0..=1.0).contains(v)),
                 CurveSettings::Drive(d) => [d.input_gain, d.overdrive, d.trash, d.mix, d.output_gain].iter().all(|v| v.is_finite()),
             }
@@ -219,7 +221,7 @@ impl Settings {
             && self.tone.is_none()
             && self.stereo.is_none()
             && self.widener.is_none()
-            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(_) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_) | CurveSettings::Fuzz { .. })
+            && !matches!(self.curve, CurveSettings::Enhanced(_) | CurveSettings::Drums(_) | CurveSettings::Skreamer(_) | CurveSettings::Drive(_) | CurveSettings::Tubescreamer(_) | CurveSettings::Dirt(_) | CurveSettings::Freak(..) | CurveSettings::Bite(_) | CurveSettings::Tape(_) | CurveSettings::Exciter(_) | CurveSettings::ToneStack(_) | CurveSettings::Diode(_) | CurveSettings::Amp(_) | CurveSettings::Fuzz { .. })
     }
 
     /// Frames of ring storage the pseudo-stereo delay needs.
@@ -261,7 +263,11 @@ impl Settings {
             CurveSettings::Drive(d) => Curve::Drive(drive::Engine::new(d, rate)),
             CurveSettings::Tubescreamer(d) => Curve::Tubescreamer(tubescreamer::Engine::new(d, rate)),
             CurveSettings::Dirt(d) => Curve::Dirt(dirt::Engine::new(d, rate)),
-            CurveSettings::Freak(d) => Curve::Freak(freak::Engine::new(d, rate)),
+            CurveSettings::Freak(d, live) => {
+                let live = live.map(|p| p.map(|p| p.compile(bindings)));
+                let engine = freak::Engine::new(d, rate);
+                if live.iter().all(Option::is_none) { Curve::Freak(engine) } else { Curve::LiveFreak(engine, live) }
+            }
             CurveSettings::Bite(d) => Curve::Bite(bite::Engine::new(d, rate)),
             CurveSettings::Tape(d) => Curve::Tape(tape::Engine::new(d, rate)),
             CurveSettings::Exciter(d) => Curve::Exciter(exciter::Engine::new(d, rate)),
@@ -339,6 +345,8 @@ enum Curve {
     Tubescreamer(tubescreamer::Engine),
     Dirt(dirt::Engine),
     Freak(freak::Engine),
+    /// Freak with script-driven knobs: written at each block start, before the process.
+    LiveFreak(freak::Engine, [Option<PreparedParameter>; 19]),
     Bite(bite::Engine),
     Tape(tape::Engine),
     Exciter(exciter::Engine),
@@ -640,6 +648,15 @@ impl Color {
             Curve::Tubescreamer(d) => d.process(slot!(state, Tubescreamer), block, len),
             Curve::Dirt(d) => d.process(slot!(state, Dirt), block, len),
             Curve::Freak(d) => d.process(slot!(state, Freak), block, len),
+            Curve::LiveFreak(d, knobs) => {
+                let freak = slot!(state, Freak);
+                for (i, knob) in knobs.iter().enumerate() {
+                    if let Some(knob) = knob {
+                        freak::set_live(freak, i, knob.value(parameters, at, None) as f32);
+                    }
+                }
+                d.process(freak, block, len)
+            }
             Curve::Bite(d) => d.process(slot!(state, Bite), block, len),
             Curve::Tape(d) => d.process(slot!(state, Tape), block, len),
             Curve::Exciter(d) => d.process(slot!(state, Exciter), block, len),
