@@ -99,6 +99,17 @@ pub fn effect_layout(module: u16) -> Option<&'static [(&'static str, char)]> {
             ("bright", 'f'),
             ("mix", 'f'),
         ],
+        // Skreamer Deluxe (BParFXSkreamerDlx, version 0x10; reader 0x140ac6040): mode enum, drive,
+        // tone, bass, mid, treble, mono flag (stored at wrapper +0x1c0).
+        0x78 => &[
+            ("mode", 'i'),
+            ("drive", 'f'),
+            ("tone", 'f'),
+            ("bass", 'f'),
+            ("mid", 'f'),
+            ("treble", 'f'),
+            ("mono", 'b'),
+        ],
         0x22 => &[
             ("speed", 'f'),
             ("balance", 'f'),

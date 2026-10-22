@@ -373,6 +373,28 @@ fn custom_parameters_share_standard_indices_and_do_not_alias_modulators() {
     );
 }
 
+/// `$EVENT_PAR_1` and `$EVENT_PAR_2` are freely assignable per-event parameters in the
+/// Kontakt KSP manual (get_event_par / set_event_par), alongside `$EVENT_PAR_0` and `$EVENT_PAR_3`.
+#[test]
+fn event_par_1_and_2_are_independent_freely_assignable_parameters() {
+    let mut rt = runtime(
+        "on init declare $a declare $b declare $c declare $d end on
+        on note
+        set_event_par($EVENT_ID, $EVENT_PAR_1, 11)
+        set_event_par($EVENT_ID, $EVENT_PAR_2, 22)
+        $a := get_event_par($EVENT_ID, $EVENT_PAR_1)
+        $b := get_event_par($EVENT_ID, $EVENT_PAR_2)
+        $c := get_event_par($EVENT_ID, $EVENT_PAR_0)
+        $d := get_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 2)
+        end on",
+    );
+    note(&mut rt);
+    assert_eq!(
+        (0..4).map(|i| cell(&rt, 0, i)).collect::<Vec<_>>(),
+        vec![11, 22, 0, 22]
+    );
+}
+
 #[test]
 fn event_mark_deletion_preserves_other_marks_and_note_reuse_clears_them() {
     let mut rt = runtime(

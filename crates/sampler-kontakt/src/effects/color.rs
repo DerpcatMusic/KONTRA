@@ -43,6 +43,22 @@ pub(super) fn skreamer(knobs: &[f32]) -> Option<Config> {
     knobs.iter().all(|v| (0.0..=1.0).contains(v)).then(|| Config::skreamer(knobs))
 }
 
+/// 0x78 Skreamer Deluxe (BParFXSkreamerDlx, reader 0x140ac6040, apply 0x140abb9f0): the mode
+/// enum (0..=2), drive, tone, bass, mid, treble, mono flag. Each knob is clamped to 0..1 by the
+/// apply and lands on the Tubescreamer core index: drive 0, bass 1, mid 2, treble 3, tone 4, level
+/// 5 fixed at 0.5, mode 6 = enum/2. The stereo wrapper (flag 0) runs two cores; the mono branch
+/// (flag != 0) is not modeled, so it returns None.
+pub(super) fn skreamer_deluxe(fields: &[ni_file::kontakt::objects::EffectField]) -> Option<Config> {
+    let v = raw(fields)?;
+    let &[mode, drive, tone, bass, mid, treble, mono] = &v[..] else { return None };
+    // The reader accepts only enum 0..=2; the mono flag is the unmodeled branch.
+    if mono != 0.0 || !matches!(mode, 0.0 | 1.0 | 2.0) {
+        return None;
+    }
+    let knobs = [drive, bass, mid, treble, tone, 0.5, mode * 0.5].map(|k| k.clamp(0.0, 1.0));
+    Some(Config::stereorizer_tubescreamer(sampler_ir::fx::color::Tubescreamer { knobs }))
+}
+
 /// The live knobs of a stored record: (module, field count, normalized float fields,
 /// field index). Skreamer: TONE, DRIVE, BASS, BRIGHT, MIX (fx_dynamics_dist_tape.tsv).
 /// Fuzz: amount, bass, treble are floats; the mono flag is a byte and is not live.
@@ -198,7 +214,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x70 => "Stereo Tune: reader 0x140ac6120 identified (4 saved floats: Drift, Spread, Split, Mix); fields not decoded and DSP law not extracted, so the slot passes audio through unprocessed",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x78 => "Skreamer Deluxe (BParFXSkreamerDlx, IFx5B): wrapper is Stereorizer<Tubescreamer>, and the reader-to-core map is proved (apply 140abb9f0), but the stereo combine and control ramp are not decoded and no native capture exists, so the slot passes audio through unprocessed",
+        0x78 => "Skreamer Deluxe mono branch (stored flag != 0, driver 140902480 calls only core 1480 in place): not decoded, so the slot passes audio through unprocessed",
         // Reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but the Chainsaw ctor, apply and
         // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are
         // not guessed from the Big Fuzz layout.
@@ -239,6 +255,20 @@ mod tests {
         let mut bad = saved.clone();
         bad[0].value = Integer(3);
         assert!(typed_core(0x66, &bad).is_none());
+    }
+
+    #[test]
+    fn skreamer_deluxe_record_lands_on_its_tubescreamer_indices() {
+        use EffectValue::{Byte, Float, Integer};
+        let saved = fields(vec![Integer(2), Float(0.1), Float(0.4), Float(0.2), Float(0.3), Float(0.6), Byte(0)]);
+        let Some(Config { curve: sampler_ir::fx::color::Curve::Stereorizer(t), .. }) = skreamer_deluxe(&saved) else {
+            panic!("Skreamer Deluxe not mapped");
+        };
+        // drive 0, bass 1, mid 2, treble 3, tone 4, level .5, mode enum/2.
+        assert_eq!(t.knobs, [0.1, 0.2, 0.3, 0.6, 0.4, 0.5, 1.0]);
+        // The mono flag and an out-of-range enum are not guesses.
+        assert!(skreamer_deluxe(&fields(vec![Integer(0), Float(0.5), Float(0.5), Float(0.5), Float(0.5), Float(0.5), Byte(1)])).is_none());
+        assert!(skreamer_deluxe(&fields(vec![Integer(3), Float(0.5), Float(0.5), Float(0.5), Float(0.5), Float(0.5), Byte(0)])).is_none());
     }
 
     #[test]
@@ -579,6 +609,22 @@ pub(super) fn slot_skreamer(b: &mut Lowering, s: &Site, fields: &[ni_file::konta
         Some(config) => {
             push_color(b, s, config);
             b.combined = s.gain;
+            true
+        }
+        None => false,
+    }
+}
+
+/// 0x78 Skreamer Deluxe: `Stereorizer<Tubescreamer>`, stereo branch only.
+pub(super) fn slot_skreamer_deluxe(b: &mut Lowering, s: &Site, notes: &mut Notes, fields: &[ni_file::kontakt::objects::EffectField]) -> bool {
+    b.flush();
+    match skreamer_deluxe(fields) {
+        Some(config) => {
+            push_color(b, s, config);
+            b.combined = s.gain;
+            if s.dynamic.is_some() {
+                notes.push(("Skreamer Deluxe live controls".into(), "knobs are constants".into(), Reason::NotModeled));
+            }
             true
         }
         None => false,

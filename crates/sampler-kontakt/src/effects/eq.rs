@@ -160,9 +160,10 @@ pub(super) fn solid_geq(version: u16, public: &[u8], notes: &mut Notes) -> Optio
     }
     notes.push((
         "Solid G-EQ smoothing".into(),
-        "native coefficients and topology are exact (G_EQ setter vectors); knob moves glide linearly in \
-         knob space (20 ms, redesigned per block; the native ramp redesigns per frame, process 0x141a595d0), \
-         and the ramp length is not confirmed (its increment writer is not located)"
+        "knob moves glide on the native lane schedule (32-frame control grid, 30 blocks = 20 ms at 48 kHz, \
+         per-frame DF1 redesign; kemu vectors, sampler-core geq_ramp_vectors.json). Open: the writer of the \
+         live flag (0x13da0) is not located, so whether a non-live knob move glides is unknown; a move re-times \
+         only its own band (native re-times every moving lane)"
             .into(),
         Reason::UnknownLaw,
     ));
