@@ -356,9 +356,8 @@ fn runtime_menu_getters_read_authored_and_live_items() {
 
 #[test]
 fn runtime_menu_add_and_invalid_indexes_follow_native_defaults() {
-    let rt = run("on init declare $count declare $value declare $invalid declare $visible declare @text declare ui_menu $m end on
+    let rt = run("on init declare $count declare $value declare $invalid declare $visible declare @text declare ui_menu $m add_menu_item($m,\"added\",-2147483648) end on
         on note
-            add_menu_item($m,\"added\",-2147483648)
             set_menu_item_value(get_ui_id($m),-1,73)
             set_menu_item_str(get_ui_id($m),5,\"invalid\")
             set_menu_item_visibility(get_ui_id($m),0,7)
@@ -791,22 +790,16 @@ fn menu_text_read_modify_write_emits_the_same_value_it_stores() {
 }
 
 #[test]
-fn appended_menu_item_read_modify_write_emits_the_same_value_it_stores() {
+fn appended_menu_item_reads_back_the_value_it_stores() {
     let mut rt = run(
-        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare $value end on
-        on note add_menu_item($m,\"second\",get_num_menu_items(get_ui_id($m)))
+        "on init declare ui_menu $m add_menu_item($m,\"first\",17) declare $value
+            add_menu_item($m,\"second\",get_num_menu_items(get_ui_id($m)))
             $value := get_menu_item_value(get_ui_id($m),1) end on",
         &[],
     );
     assert_eq!(cell(&rt, 0), 1);
-    let mut effects = 0;
-    rt.drain_effects(|effect| {
-        assert_eq!(effect.args()[1], 1);
-        effects += 1;
-        true
-    });
-    assert_eq!(effects, 1);
 }
+
 #[test]
 fn hidden_selected_menu_entry_keeps_its_original_index_and_logical_value() {
     let rt = run(
@@ -890,7 +883,11 @@ fn display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune
                     default: ControlValue::Real(law.decode(800000)),
                 });
                 p.with_controls(controls)?.with_engine_parameters(
-                    vec![EngineParameterBinding { address, control, law }],
+                    vec![EngineParameterBinding {
+                        address,
+                        control,
+                        law,
+                    }],
                     vec![],
                 )
             });
@@ -899,10 +896,26 @@ fn display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune
                     .unwrap()
             });
             assert!(!text[0].as_str().is_empty());
-            assert_eq!(text[0].as_str(), text[3].as_str(), "{parameter}, {address:?}");
-            assert_eq!(text[1].as_str(), text[4].as_str(), "{parameter}, {address:?}");
-            assert_ne!(text[0].as_str(), text[2].as_str(), "Ext must not use the stored value");
-            assert_ne!(text[1].as_str(), text[2].as_str(), "Ext must not use the stored value");
+            assert_eq!(
+                text[0].as_str(),
+                text[3].as_str(),
+                "{parameter}, {address:?}"
+            );
+            assert_eq!(
+                text[1].as_str(),
+                text[4].as_str(),
+                "{parameter}, {address:?}"
+            );
+            assert_ne!(
+                text[0].as_str(),
+                text[2].as_str(),
+                "Ext must not use the stored value"
+            );
+            assert_ne!(
+                text[1].as_str(),
+                text[2].as_str(),
+                "Ext must not use the stored value"
+            );
             assert_eq!((cell(&rt, 5), cell(&rt, 6)), (800000, 678901));
             // Real read/write consumers check complete address binding. Display
             // with a supplied value does NOT, so text above cannot replace this guard.
@@ -915,11 +928,23 @@ fn display_ext_supplied_constant_and_dynamic_values_use_existing_pan_volume_tune
             assert!(rt.take_engine_parameter_outcome().is_none());
             assert_eq!(rt.engine_parameter(address).unwrap(), 678901);
             for wrong in [
-                EngineParameterAddress { group: group + 1, ..address },
-                EngineParameterAddress { slot: slot + 1, ..address },
-                EngineParameterAddress { generic: generic + 1, ..address },
+                EngineParameterAddress {
+                    group: group + 1,
+                    ..address
+                },
+                EngineParameterAddress {
+                    slot: slot + 1,
+                    ..address
+                },
+                EngineParameterAddress {
+                    generic: generic + 1,
+                    ..address
+                },
             ] {
-                assert_eq!(rt.engine_parameter(wrong), Err(sampler_core::Error::InvalidInput));
+                assert_eq!(
+                    rt.engine_parameter(wrong),
+                    Err(sampler_core::Error::InvalidInput)
+                );
             }
         }
     }
@@ -978,9 +1003,17 @@ fn string_array_sort_changes_only_the_inclusive_range() {
          end on",
         &[],
     );
-    for (index, expected) in ["outside-left", "a", "b", "c", "outside-right", "tail", "abc"]
-        .into_iter()
-        .enumerate()
+    for (index, expected) in [
+        "outside-left",
+        "a",
+        "b",
+        "c",
+        "outside-right",
+        "tail",
+        "abc",
+    ]
+    .into_iter()
+    .enumerate()
     {
         assert_eq!(
             rt.script_text(rt.active_plan(), ScriptInstanceId(0), index as u32)

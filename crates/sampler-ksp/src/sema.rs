@@ -8,6 +8,14 @@ use crate::model::PerformanceControl;
 use sampler_core::Comparison;
 use std::collections::HashMap;
 
+/// Commands the manual restricts to the "on init" callback.
+const INIT_ONLY: [Builtin; 4] = [
+    Builtin::AddMenuItem,
+    Builtin::MakePersistent,
+    Builtin::SetScriptTitle,
+    Builtin::SetUiHeightPx,
+];
+
 /// Declaration budgets; see `crate::Limits`.
 #[derive(Clone, Copy)]
 pub struct Budget {
@@ -28,6 +36,8 @@ struct Sema<'a, 's> {
     budget: Budget,
     array_cells: usize,
     in_init: bool,
+    /// Function bodies are checked for their callers' context at lowering time.
+    in_function: bool,
     loops: usize,
     /// Controls from the performance view file, once `load_performance_view` ran.
     performance_view: &'s [PerformanceControl],
@@ -50,6 +60,7 @@ pub fn analyze<'a, 's>(
         budget,
         array_cells: 0,
         in_init: false,
+        in_function: false,
         loops: 0,
         performance_view,
         performance_loaded: false,
@@ -98,10 +109,12 @@ pub fn analyze<'a, 's>(
             body,
         });
     }
+    s.in_function = true;
     for (index, body) in bodies.into_iter().enumerate() {
         let body = s.block(&body)?;
         s.hir.functions[index].body = body;
     }
+    s.in_function = false;
     let mut seen = HashMap::new();
     for c in callbacks {
         let kind = match (syms.name(c.name), c.arg) {
@@ -1121,6 +1134,15 @@ impl<'a> Sema<'a, '_> {
         fault(span, format!("undeclared variable {name}"))
     }
 
+    /// Kontakt's wording for an undeclared name or a non-UI operand of get_ui_id.
+    fn get_ui_id_error(&self, e: &ast::Expr) -> String {
+        let name = match &e.kind {
+            A::Var(sym, _) => self.name(*sym),
+            _ => "",
+        };
+        format!("get_ui_id(): \"{name}\" was not declared or is not allowed here!")
+    }
+
     fn declared_var_arg(&mut self, e: &ast::Expr, array: bool) -> Result<(VarId, Span)> {
         let A::Var(sym, None) = &e.kind else {
             return fault(e.span, "expected a variable");
@@ -1147,6 +1169,14 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn builtin(&mut self, b: Builtin, args: &[ast::Expr], span: Span) -> Result<(Vec<Arg>, Ty)> {
+        // Kontakt rejects these outside "on init" (its own error text); functions
+        // inherit the context of the callback that calls them, so they are exempt.
+        if INIT_ONLY.contains(&b) && !self.in_init && !self.in_function {
+            return fault(
+                span,
+                format!("{}() can only be used in \"on init\" callback!", b.name()),
+            );
+        }
         let sig = b.sig();
         let max = sig.args.len();
         let min = max - sig.optional as usize;
@@ -1190,10 +1220,19 @@ impl<'a> Sema<'a, '_> {
                     Arg::Expr(value)
                 }
                 K::V => {
-                    let (var, span) = self.declared_var_arg(e, false)?;
-                    if b == Builtin::GetUiId && self.hir.vars[var.0 as usize].ui.is_none() {
-                        return fault(span, "get_ui_id requires a UI control");
-                    }
+                    let (var, span) = match self.declared_var_arg(e, false) {
+                        Ok(found)
+                            if b == Builtin::GetUiId
+                                && self.hir.vars[found.0.0 as usize].ui.is_none() =>
+                        {
+                            return fault(e.span, self.get_ui_id_error(e));
+                        }
+                        Ok(found) => found,
+                        Err(_) if b == Builtin::GetUiId => {
+                            return fault(e.span, self.get_ui_id_error(e));
+                        }
+                        Err(err) => return Err(err),
+                    };
                     Arg::Var(var, span)
                 }
                 K::A => self.var_arg(e, true)?,
@@ -1223,6 +1262,19 @@ impl<'a> Sema<'a, '_> {
             {
                 return fault(span, format!("{} parameter must be {lo}..={hi}", b.name()));
             }
+        }
+        // $CONTROL_PAR_TYPE is derived from the widget kind: readable, never settable.
+        if matches!(
+            b,
+            Builtin::SetControlPar | Builtin::SetControlParStr | Builtin::SetControlParReal
+        ) && let Arg::Expr(par) = &out[1]
+            && let Some(Const::Int(par)) = fold(&self.hir, par)
+            && par == builtins::CONTROL_PAR_TYPE
+        {
+            return fault(
+                span,
+                "The value of $CONTROL_PAR_TYPE cannot be changed! This control parameter only works with get_control_par().",
+            );
         }
         // Runtime-owned system arrays are readable operands, not destinations.
         // The initializer and callback lowerer both need a declared array home.

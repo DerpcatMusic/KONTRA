@@ -35,7 +35,9 @@ mod nks;
 mod objects;
 mod parity;
 mod pcm;
-pub use parity::{parity_reports, read_parity_reports, read_parity_reports_summary};
+pub use parity::{
+    parity_reports, parity_summaries, read_parity_reports, read_parity_reports_summary,
+};
 mod persistence;
 mod resource_container;
 mod resources;

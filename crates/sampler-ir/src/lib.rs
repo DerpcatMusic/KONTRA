@@ -2234,6 +2234,17 @@ pub enum ProcessorParameter {
     FreakTuning,
     FreakWidth,
     FreakMix,
+    /// Kontakt Bite's continuous live knobs (`fx::color::BITE_LIVE`).
+    BiteSaturate,
+    BitePrefilter,
+    BiteFrequency,
+    BiteJitter,
+    BiteCrunch,
+    BiteBits,
+    BiteDither,
+    BiteExpand,
+    BitePostfilter,
+    BiteMix,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

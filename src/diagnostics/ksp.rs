@@ -2,6 +2,75 @@
 use sampler_core::{BehaviorFault, Instruction as I, Op, SourceSite};
 use serde_json::{Value, json};
 
+/// One Diagnostics entry: a script's symbols that are not full, for one status code.
+pub(super) struct SymbolIssue {
+    pub code: &'static str,
+    pub message: String,
+    pub details: Value,
+}
+
+const LISTED_SYMBOLS: usize = 32;
+
+/// Unsupported, stub and simplified symbols per KSP script, one issue per script and code.
+pub(super) fn symbol_issues(reports: &[sampler_parity::ScriptReport]) -> Vec<SymbolIssue> {
+    let mut out = Vec::new();
+    for report in reports
+        .iter()
+        .filter(|r| r.lang == sampler_parity::Lang::Ksp)
+    {
+        // code -> symbol -> uses, in first-use order per code.
+        let mut by_code: Vec<(&'static str, Vec<(String, u64)>)> = Vec::new();
+        for construct in &report.constructs {
+            let status = sampler_ksp::symbols::of_construct(&construct.name, construct.status);
+            if status.is_full() {
+                continue;
+            }
+            let code = status.code();
+            let index = match by_code.iter().position(|(c, _)| *c == code) {
+                Some(index) => index,
+                None => {
+                    by_code.push((code, Vec::new()));
+                    by_code.len() - 1
+                }
+            };
+            let uses = &mut by_code[index].1;
+            match uses.iter_mut().find(|(name, _)| *name == construct.name) {
+                Some((_, count)) => *count += 1,
+                None => uses.push((construct.name.clone(), 1)),
+            }
+        }
+        for (code, uses) in by_code {
+            let names: Vec<String> = uses
+                .iter()
+                .take(LISTED_SYMBOLS)
+                .map(|(n, c)| format!("{n} x{c}"))
+                .collect();
+            let omitted = uses.len().saturating_sub(LISTED_SYMBOLS);
+            let kind = code.trim_start_matches("KSP-").to_ascii_lowercase();
+            let mut message = format!(
+                "{code}: {} {kind} symbol(s) in {}: {}",
+                uses.len(),
+                report.title,
+                names.join(", ")
+            );
+            if omitted > 0 {
+                message.push_str(&format!(" (+{omitted} more)"));
+            }
+            out.push(SymbolIssue {
+                code,
+                message,
+                details: json!({
+                    "schema": "ksp-symbols-v1",
+                    "script": report.id,
+                    "symbols": uses.iter().map(|(name, count)| json!({"name": name, "count": count})).take(LISTED_SYMBOLS).collect::<Vec<_>>(),
+                    "symbols_omitted": omitted,
+                }),
+            });
+        }
+    }
+    out
+}
+
 fn hex_digest(digest: [u8; 32]) -> String {
     use std::fmt::Write;
     let mut text = String::with_capacity(64);
@@ -107,6 +176,47 @@ pub(super) fn fault_data(
 mod tests {
     use super::*;
     use sampler_core::*;
+
+    #[test]
+    fn non_full_symbols_are_one_issue_per_script_and_code() {
+        use sampler_parity::{Construct, ConstructKind, Lang, ScriptReport, Span, Status};
+        let construct = |name: &str, status| Construct {
+            span: Span::default(),
+            kind: ConstructKind::Builtin,
+            name: name.into(),
+            status,
+            detail: String::new(),
+            owner: None,
+            spec: None,
+        };
+        let report = ScriptReport {
+            id: "ksp:slot0".into(),
+            title: "Script slot 0".into(),
+            lang: Lang::Ksp,
+            source_len: 0,
+            tokens: vec![],
+            constructs: vec![
+                construct("sh_left", Status::Implemented), // untested in SYMBOLS.tsv: simplified
+                construct("real", Status::Implemented),    // tested: full, no issue
+                construct("sh_left", Status::Implemented),
+                construct("no_such_builtin", Status::Unsupported),
+                construct("@linked-source", Status::Unsupported),
+            ],
+            lowered: vec![],
+        };
+        let mut lua = report.clone();
+        lua.lang = Lang::Luau;
+        let issues = symbol_issues(&[report, lua]);
+        let codes: Vec<_> = issues.iter().map(|i| i.code).collect();
+        assert_eq!(codes, ["KSP-SIMPLIFIED", "KSP-UNSUPPORTED"]);
+        assert!(
+            issues[0].message.contains("sh_left x2"),
+            "{}",
+            issues[0].message
+        );
+        assert!(!issues[0].message.contains("real"));
+        assert_eq!(issues[1].details["symbols"].as_array().unwrap().len(), 2);
+    }
 
     #[test]
     fn actual_vm_fault_resolves_source_and_rejects_mismatched_generation() {
