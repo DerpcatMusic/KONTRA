@@ -139,3 +139,78 @@ vtable. The speaker matrix and LFE routing are still unrecovered.
    identify the shared core, then read the Chainsaw kernel behind `140aba230`.
 3. Stereo Tune: read `FUN_140aaf640`.
 4. Surround Panner: find the core that slot 23 dispatches to.
+
+## Pass 2 (decoded, not ported, no native vector yet)
+
+Evidence: vtable rows from `kontakt-rdata/vtables.tsv.gz`, decompile cache
+`Research/KONTRA/source/kontakt8/*.c`. Status stays **missing**: no kernel is
+ported and no kemu vector exists, so no row can be "parity".
+
+### Chainsaw kernel = HM2 core (identified)
+
+- Chainsaw wrapper bases are `Stereorizer<HM2>`; the core class is
+  `hm2::dsp::effektrig::HM2`, vtable `0x14769a9e8` (58-byte slot 0 ctor, 61-byte `0x14769aaa0` variant).
+- Wrapper slot 23 `1408fe290` calls the core at `+0x1340` through vtable slot 19
+  (`0x98`), with the channel pointer arrays at `+0x22b0` (input) and `+0x2340`
+  (output), block size in the 4th argument.
+- **HM2 slot 19 = `141971820` (2317 B), the per-block process.** Read in full
+  (`0141970000.c:825`). Per sample: input `(L+R) * DAT_144714900` through a
+  trapezoidal one-pole pair (state `+0xe24..+0xe2c`, `+0xe30`), a feedback
+  stage on `+0xe60..+0xe78` and `+0xe3c..+0xe54`, the sub-processes
+  `FUN_1419714c0`, `FUN_1419590a0`, `FUN_14194c5b0` (the last two
+  not read), a `sqrt(x^2+eps)` soft-saturator, a `FUN_141971150` lookup
+  (not read) on the `fma` path, and the output is written to both channels.
+  Smoothing and the reset are in `FUN_141972140` (83 B). Not read: `1419714c0`,
+  `1419590a0`, `14194c5b0`, `141971150`, the constants `DAT_14769ac*`.
+- Apply `140aba230` writes the cores through **HM2 slot 12 = `1409a9ec0`** (194 B),
+  so the clamp indices 0..3 are the HM2 knob slots.
+- Other HM2 slots: 3 `14099a700` (951 B), 6 `1419709e0` (358 B), 8 `1419721a0` (164 B, reset),
+  20 `141970b50` (1533 B), 18 `1419723c0` (29 B).
+- Still to do: read the four helper functions and constants, then vectors by
+  calling slot 19 directly on a prepared HM2 object (no driver, so the
+  ring-buffer fault in `engine-k-stomps-full/tools/re/kemu_chainsaw.py` is not hit).
+
+### Stereo Tune per-chunk core (partly read)
+
+- Driver `140aa7320` (176 B): loops over 32-sample chunks (`+0x120` total,
+  `+0x1bc` countdown), calls `FUN_140acb6c0` on the boundary, `FUN_140aaf640`
+  per chunk, then `FUN_140ac21f0` (shared post).
+- `140aaf640` (2583 B, `0140aa0000.c:11795`) is a **modulated delay line**:
+  per channel, a phase/rate pair (`+0x1e0..+0x1f8`, incremented per sample) drives
+  the read position in a ring of length `*(+0x238)`, with an offset `+0x23c`/`+0x240`,
+  a 4-point cubic (Lagrange-style, constants `DAT_14470bad8`, `DAT_144fc40e0`, `DAT_144f385a8`)
+  interpolator, and a one-pole/allpass pair (`+0x304..+0x31c`) on the write
+  side. Gain table at `*(+0x248)`. The two channels read the same ring with
+  different offsets (cross-tap). Not read in full: the second channel half
+  (decompile lines ~11900+) and the constants.
+
+### Surround Panner: slot 23 is a routing driver, the law is in helpers
+
+- Slot 23 `140905fa0` (87 B) = `FUN_140ab0070(this, buf, 0, n, mode)` then
+  `FUN_140ac21f0` (post). Not a DSP core.
+- `140ab0070` (1880 B) is the generic per-channel block driver: per source
+  it either applies the scalar gain at `+0xc00` (fast path, sum into the
+  output buffer) or calls `FUN_140ab4eb0` (3813 B, the panned path, flag 1/0).
+  The LFE sub-object at `+0x7a0` gets vtable slots `0x58`, `0x30`, `0x38`,
+  `0xb8` (block prepare, process pair, process).
+- **Speaker gain law** `FUN_140a94580` (511 B), mode at `+0x394`:
+  - mode 0 (default): `g_i = w_i / sum_j w_j` with `w_i = (FUN_140a93cb0 / d_i^2)^p`,
+    `p = +0x34c`, `d_i = max(FUN_140a94180(src, i), 0.01)` (`DAT_1447148b4`).
+  - mode 1: `x = d * p * 2pi`; `g = FUN_140ac3230(x + pi/2)` when `x <= pi/2`, else 0.
+  - mode 2: `g = 2^(d * p * -8)` (`DAT_144714998` = 2.0, `DAT_144fc4d20` = -8).
+- `FUN_140a94180` (234 B): Euclidean distance between the source
+  (`FUN_140a985b0`, at `+0x348` scaled by `DAT_1447148d0`=0.1) and speaker `i`
+  (`+0x1c0+12i`), scaled by `DAT_144fc3e50` if flag = 1.
+- `FUN_140a985b0` (520 B): source position from `+0x284/+0x288`, angle via a
+  1024-entry table at `0x14a612760` (sin-like, indexed `(a/2pi)*1024`),
+  adds `+0x350/+0x354` offsets, clamps to [0,1].
+- `FUN_140ac3230` (244 B): periodic lookup in a 1024-entry table at
+  `0x14a611750`, scaled by `fVar1` = `DAT_14470bad4` (1.0).
+- **Blocker for the vector**: both tables (`0x14a612760`, `0x14a611750`) are
+  `.data (bss-or-unbacked)` in `constants.tsv`, so their contents are filled
+  at runtime. The initializer has not been found (no decompile references in
+  `0140ac0000.c` or `0140a90000.c` writing them). Find it before a vector.
+- Constants confirmed from `constants.tsv`: `0.01` (`1447148b4`), `0.1`
+  (`1447148d0`), `0.5`, `1.0`, `1024` (`144fc4b0c`), `1/pi` (`144f38960`),
+  `2/pi` (`144f38988`), `pi`, `2pi`, `pi/2`, `1e-6`, `1e-7`, `-1`, `2.0`, `-8`,
+  `0.7071` (`144fc3b60`); `144fc3e50` = 1.17851126, `144fc43c0` = 2pi (f32).
