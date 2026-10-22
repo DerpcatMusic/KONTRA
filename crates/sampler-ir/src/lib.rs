@@ -2755,6 +2755,8 @@ pub enum Processor {
     LivePhaser { knobs: [f32; 2], address: SlotAddress },
     /// Kontakt Ring Modulator: sine carrier, see `fx::ringmod`.
     RingMod(fx::ringmod::Config),
+    /// Kontakt Stereo Tune: detuned delay taps with cross spread, see `fx::stereo_tune`. Bus scope only.
+    StereoTune(fx::stereo_tune::Config),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
     TimeMod(fx::timemod::Config),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
