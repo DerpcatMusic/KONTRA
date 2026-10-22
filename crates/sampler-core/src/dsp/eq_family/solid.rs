@@ -27,6 +27,10 @@ use std::f64::consts::PI;
 
 const N: usize = 11;
 
+/// Coefficient smoothing time constant of the native G_EQ: one-pole glide per block, 20 ms (RE
+/// notes; the original's stepping is not yet confirmed, see docs/re/engine/eq-kontakt.md).
+pub(super) const RAMP_SECONDS: f64 = 0.020;
+
 /// The native grid: F(i * F(0.1)) widened, so it is not exact decimal tenths.
 fn grid() -> [f64; N] {
     let tenth = 0.1_f32;

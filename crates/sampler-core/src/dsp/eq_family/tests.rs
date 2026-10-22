@@ -1,6 +1,7 @@
 use super::super::BLOCK;
 use super::*;
 use sampler_ir::fx::eq::{Band, Config, SolidSection};
+use super::solid;
 
 const RATE: u32 = 48_000;
 
@@ -73,6 +74,33 @@ fn solid_knobs_run_through_the_spline_tables() {
     // Knob .5 is the 0 dB knot of every gain table.
     let flat = EqBand { gain_db: c(0.5), ..band };
     assert_eq!(response_db(stage(flat), 2619.29), 0.);
+}
+
+#[test]
+fn solid_coefficients_glide_to_a_new_design_over_the_native_ramp() {
+    // A knob move redesigns the section; the 20 ms smoothing approaches it over blocks, not at once.
+    let c = Parameter::Constant;
+    let band = |gain| EqBand {
+        law: Law::Solid(SolidSection::HighMid),
+        frequency: c(0.5),
+        q: c(0.5),
+        gain_db: c(gain),
+        ramp: solid::RAMP_SECONDS,
+        ..EqBand::rbj(Kind::Peak, 0., 0., 0.)
+    };
+    let (flat, boost) = (stage(band(0.5)), stage(band(1.)));
+    let mut state = ProcessorState::default();
+    let mut block: Planar = [[0.; BLOCK]; 2];
+    flat.process(&mut state, &[], &mut block, BLOCK, 0);
+    let before = state.aux[4..10].to_vec();
+    boost.process(&mut state, &[], &mut block, BLOCK, BLOCK as u64);
+    let target = state.aux[10..16].to_vec();
+    let first = state.aux[4..10].to_vec();
+    assert!(first != before && first != target, "one block is part-way to the new design");
+    for n in 2..2000 {
+        boost.process(&mut state, &[], &mut block, BLOCK, (n * BLOCK) as u64);
+    }
+    assert!(state.aux[4..10].iter().zip(&target).all(|(a, b)| (a - b).abs() < 1e-12), "glide settles");
 }
 
 #[test]
