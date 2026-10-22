@@ -722,13 +722,19 @@ impl Default for StreamPolicy {
             block_frames: 64,
             voices: 256,
             decoders: 4,
-            head_budget: usize::MAX,
+            // The host's `Auto` payload budget (src/sound/v2.rs). Unbounded heads
+            // reached 20 GB on ANALOG STRINGS; over budget, starts fall back to
+            // the bounded initial-state windows instead of failing.
+            head_budget: DEFAULT_HEAD_BUDGET,
             lazy: false,
-            allow_cold_fallback: false,
+            allow_cold_fallback: true,
             resident_budget: None,
         }
     }
 }
+
+/// Packed head bytes shared by all streamed sources of one load.
+const DEFAULT_HEAD_BUDGET: usize = 256 << 20;
 
 /// Pool pages per streaming voice: the page it reads, the next, and one more
 /// for a window or crossfade spanning a page boundary.
