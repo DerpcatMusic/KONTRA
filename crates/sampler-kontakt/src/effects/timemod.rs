@@ -1028,6 +1028,32 @@ mod tests {
     }
 
     #[test]
+    fn wow_flutter_insert_mix_is_a_dry_wet_blend() {
+        // On an insert, mix 0 passes the input (dry = 1 - mix) and mix 1 is wet only.
+        for (mix, dry, wet) in [(0f32, 1., 0.), (1., 0., 1.)] {
+            let mut public = Vec::new();
+            for f in [0.3f32, 0.2, 0.1, 0.5, 0.4, 0., 0.] {
+                public.extend(f.to_le_bytes());
+            }
+            public.push(0);
+            public.extend(mix.to_le_bytes());
+            let mut fx = slot(0x6a, public, 1.0);
+            fx.version = 0x10;
+            // A group insert: a dynamic address puts the slot in its own Mix block.
+            let built = super::super::chain_with(&[fx], Scope::Bus, None, Some((0, -1)), (-1, 1), &[]);
+            let config = built
+                .processors
+                .iter()
+                .find_map(|p| match p {
+                    sampler_ir::Processor::TimeMod(c) => Some(c),
+                    _ => None,
+                })
+                .expect("a time-modulation processor");
+            assert_eq!((config.dry, config.wet), (dry, wet), "mix {mix}");
+        }
+    }
+
+    #[test]
     fn phaser_filter_native_four_stage_impulse() {
         let mut payload = 13i32.to_le_bytes().repeat(2);
         for value in [0.0f32, 0.0] { payload.extend(value.to_le_bytes()); }
@@ -1066,7 +1092,13 @@ mod tests {
 pub(super) fn slot_timemod(b: &mut Lowering, s: &Site, notes: &mut Notes, unit: &Unit) -> bool {
     b.flush();
     // The slot's dry level is the core's dry only outside a Mix block (as for convolution).
-    let dry = if s.mix || matches!(unit, Unit::Phaser { .. }) { 0. } else { f64::from(s.fx.dry_level) };
+    // On an insert, Wow / Flutter's Mix is the dry/wet blend the modulated cores use
+    // (dry = 1 - mix, docs/re/engine/k-modfx-classic-bodies.md), so mix 0 passes the input.
+    let dry = match unit {
+        Unit::WowFlutter { mix, .. } if s.mix => 1. - f64::from(*mix),
+        _ if s.mix || matches!(unit, Unit::Phaser { .. }) => 0.,
+        _ => f64::from(s.fx.dry_level),
+    };
     match config(unit, dry, notes) {
         Some(config) => {
             b.out.processors.push(Processor::TimeMod(config));
