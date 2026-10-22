@@ -22,6 +22,8 @@ pub(crate) struct SampleMetadata {
     pub fine_tune: f64,
     pub frames: usize,
     pub looping: Option<Loop>,
+    /// (stored end, frames) when the stored loop end lay past EOF and was clamped.
+    pub loop_clamp: Option<(usize, usize)>,
     pub geometry_error: Option<MetadataError>,
     pub channels: Option<u16>,
     pub bits: Option<u16>,
@@ -387,10 +389,23 @@ fn finish(mut state: State, format: Format, frames: usize) -> Result<SampleMetad
             state.looping = Some((0, frames, LoopShape::Wrap));
         }
     }
+    // Some UVI FLAC exports store the last index as frames*channels-1, so the
+    // exclusive end lands past EOF. Clamp to the decoded frame count and report;
+    // a start at or past the clamped end is still malformed.
+    let mut loop_clamp = None;
     let looping = state
         .looping
         .map(|(start, end, shape)| {
-            if start >= end || end > frames {
+            if start >= end {
+                return Err(MetadataError::Invalid);
+            }
+            let end = if end > frames {
+                loop_clamp = Some((end, frames));
+                frames
+            } else {
+                end
+            };
+            if start >= end {
                 return Err(MetadataError::Invalid);
             }
             Ok(Loop {
@@ -413,6 +428,7 @@ fn finish(mut state: State, format: Format, frames: usize) -> Result<SampleMetad
         fine_tune,
         frames,
         looping,
+        loop_clamp,
         geometry_error: state.geometry_error,
         channels: state.channels,
         bits: state.bits,
@@ -741,7 +757,12 @@ mod tests {
         let m = parse(&wav(&[chunk(b"smpl", &sampler(3, 4, 9), false)]), 16).unwrap();
         assert!(m.looping.is_none());
         assert_eq!((m.base_note, m.fine_tune), (61, 50.));
-        assert!(parse(&wav(&[chunk(b"smpl", &sampler(0, 4, 99), false)]), 16).is_err());
+        // An end past EOF is clamped to the frame count and reported, not refused
+        // (exclusive 100 > 16 frames). A start at or past the clamped end still is.
+        let m = parse(&wav(&[chunk(b"smpl", &sampler(0, 4, 99), false)]), 16).unwrap();
+        assert_eq!(m.loop_clamp, Some((100, 16)));
+        assert_eq!(m.looping.map(|l| (l.start, l.end)), Some((4, 16)));
+        assert!(parse(&wav(&[chunk(b"smpl", &sampler(0, 20, 30), false)]), 16).is_err());
     }
     #[test]
     fn aiff_markers_are_exclusive_and_foreign_flac_metadata_matches() {
@@ -989,7 +1010,7 @@ impl SampleMetadata {
 mod initial_ir_tests {
     use super::*;
     fn metadata(shape:LoopShape)->SampleMetadata {
-        SampleMetadata {format:Format::Wav,base_note:64,fine_tune:25.,frames:128,
+        SampleMetadata {format:Format::Wav,base_note:64,fine_tune:25.,frames:128,loop_clamp:None,
             looping:Some(Loop {start:16,end:96,mode:LoopMode::Continuous,shape,passes:None}),
             geometry_error:None,channels:Some(1),bits:Some(16),tempo:0.}
     }
