@@ -142,7 +142,7 @@ c3 `+0xc`, c4 `+0x10`, out5 `+0x14`, out6 `+0x18`, d `+0x1c`, x `+0x20`, g `+0x2
   `144fcfce0` = 2/15), i.e. tan(w) to fifth order.
 - Lowpass-type (`1419529e0`): g = g0 * Q, Q = f32 `1479ab25c` = 0.7498942; R = 5/3 (bit pattern
   `14473775c` = 0x3fd55555).
-- Highpass-type (`141abe6a0`): g = g0; R = `F+0xbc` (writer UNKNOWN).
+- Highpass-type (`141abe6a0`): g = g0; R = `F+0xbc` = 2.0, written in setup by `141ac97e0` (the zero branch there is dead for the constant 2.0).
 - Both: c2 = 1/(g^2 + R g + 1), c3 = g c2, c4 = g c3.
 
 **Chain (`141aa3ec0`, per channel, CONFIRMED arithmetic).**
@@ -158,19 +158,24 @@ c3 `+0xc`, c4 `+0x10`, out5 `+0x14`, out6 `+0x18`, d `+0x1c`, x `+0x20`, g `+0x2
 - Glide 1 (m): target `F+0x1408` = (v3 != 1.0) (`141abe820`). Coefficient `F+0x1400` =
   `exp(ln(0.05) / (0.025 fs))` (`141ac97e0`; f64 `147698b10` = ln 0.05 = -2.9957; f32 `144f38678`
   = 0.025), i.e. 5% per 25 ms. Snap `F+0x140c` = 0.001.
-- Glide 2 (h): target `F+0x141c` = (v2 != 0) (`141abe6a0`). Coefficient `F+0x1414` is written by
-  `141ac97e0` as the raw f64 -2.9957, not an exponential. As a one-pole coefficient that diverges.
-  ANOMALY: treat as UNKNOWN until read again. Snap `F+0x1420` = 0.001.
+- Glide 2 (h): target `F+0x141c` = (v2 != 0) (`141abe6a0`). Coefficient `F+0x1414` = exp(ln(0.05) / (0.025 fs)),
+  the same as glide 1 (`141ac97e0` stores the `exp` result; an earlier reading of it as the raw
+  -2.9957 was wrong). Snap `F+0x1420` = 0.001.
 - Glide 3: length `F+0x143c` = int(0.025 fs). Snap `F+0x1434` = 0.001. Step `F+0x1430` writer UNKNOWN.
 - `F+0x0` = fs (`141ac97e0` stores it), set in setup before use.
 
 **Label.** CONFIRMED: section algebra, both sweep laws, constants, mix, chain order, glide targets,
-glide 1 coefficient and snaps. INFERRED: LOWCUT/HIGHCUT names; out6 as lowpass. UNKNOWN: highpass R,
-glide 2 coefficient (anomaly), glide 3 step, `F+0x100` class and flag.
+glide 1 and glide 2 coefficients, highpass R, snaps. INFERRED: LOWCUT/HIGHCUT names; out6 as lowpass.
+UNKNOWN: glide 3 step, `F+0x100` class and flag, the writer of the enable byte `F+0x5`.
 
 **Port consequence.** A TPT SVF pair with the sweep laws and fixed mix ports directly. Blocked by
-the highpass R (`F+0xbc`; saturator R terms too, GAP-F), glide 2 coefficient, glide 3 step, and the
-`F+0x100` object.
+glide 3 step and the `F+0x100` object (its flag is `F+0x4`). The saturator R terms are GAP-F.
+
+**Implemented.** `crates/sampler-core/src/dsp/tpt_svf.rs` (`Section`, `Cut`, `prewarp`) with the
+sweep laws in `sampler-ir` (`log_sweep_hz`, `linear_sweep_hz`). The in-loop hook is
+`Feedback::cut` in `sampler-ir`, run in `dsp/timemod/mod.rs` on the recirculated signal before the
+matrix. `sampler-kontakt` `replika_cut` maps LOWCUT and HIGHCUT into it. Not ported: the glides (static
+targets), glide 3, the `F+0x100` object, and F1's output term `OUT = F1 x Ctl(0x60) + F2`.
 
 ---
 
@@ -212,6 +217,11 @@ roles. UNKNOWN: `L+0x40`, update thunk body, other parameter writers besides ind
 
 **Port consequence.** A stereo dB-domain peak limiter, five parameters. An exact port needs the rest
 of `141ae3ba0` (attack/release selection, link, side) and the `L+0x40` writer.
+
+**Implemented.** `crates/sampler-core/src/dsp/db_limiter.rs` (`DbLimiter`, not wired): the five
+parameter laws, the detector, the dB envelope, the gain and the output clamp. Attack is 0 and the
+second dB state is omitted, because their writers are not decoded. The detector stays INFERRED, and
+`L+0x40` is read as the sample rate (INFERRED).
 
 ---
 
@@ -306,8 +316,7 @@ copy with the count formula and ports directly. Kernels matter only for other li
 1. GAP-A: lanes 2-3 phase increments (`144714b78`, `144714b7c`); 147697658; `n`.
 2. GAP-C: writer of `H+0x15c` and `H+0x194` on the active branch; head time field; kernels
    `141ab8a00`, `141ab87d0`, `141ab7fe0`; blend in `141ab7e00`.
-3. GAP-D: highpass R (`F+0xbc`); glide 2 coefficient (`F+0x1414`, anomaly); glide 3 step
-   (`F+0x1430`); `F+0x100` class and flag.
+3. GAP-D: glide 3 step (`F+0x1430`); `F+0x100` class and flag; writer of `F+0x5`.
 4. GAP-E: `L+0x40` writer; rest of `141ae3ba0`; other parameter writers.
 5. GAP-F: R of section A (`B+0x50`) and section B (`B+0x84`); `C+0x142a8` writer.
 6. GAP-H: type 2 on `C+0x618`/`C+0x718` on all paths; second argument.
