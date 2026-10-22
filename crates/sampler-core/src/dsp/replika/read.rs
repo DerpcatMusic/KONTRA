@@ -45,6 +45,17 @@ pub struct Tap {
     /// `+0x74`: section frequency. `+0x80`: rate factor (preset).
     pub freq: f32,
     pub rate: f32,
+    /// `+0x08`: the driver's index (`trunc(pos + rate) & mask`), read by the deposit `141accfb0`.
+    pub wr: i32,
+    /// `+0x10`: the driver's fraction, read by the deposit as the sub-sample offset.
+    pub frac: f64,
+    /// `+0x1c`: taps written per frame (the index step), read by the deposit as its count.
+    pub delta: i32,
+    /// `+0x20`, `+0x40`: the driver's index and fraction of the previous frame.
+    pub prev_wr: i32,
+    pub prev_frac: f64,
+    /// `+0x90`, `+0x98`, `+0xa0`: the last three rates (the deposit's `a` and `b`).
+    pub rates: [f64; 3],
     /// `+0x64` bp, `+0x68` lp, `+0x6c` d, `+0x70` v of the last tap.
     pub bp: f32,
     pub lp: f32,
@@ -79,6 +90,12 @@ impl Tap {
             lp: 0.,
             d: 0.,
             v: 0.,
+            wr: 0,
+            frac: 0.,
+            delta: 0,
+            prev_wr: 0,
+            prev_frac: 0.,
+            rates: [0.; 3],
         }
     }
 
