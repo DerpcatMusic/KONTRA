@@ -2739,6 +2739,10 @@ fn load_part_with(
             for missing in &loaded.report.missing {
                 trace.missing(missing, loaded.instrument.as_deref());
             }
+            if let Some(instrument) = loaded.instrument.as_deref() {
+                // ponytail: compiles each KSP script a second time for its statuses; reuse the load's compile if load time shows it.
+                trace.ksp_symbols(&sampler_kontakt::parity_summaries(instrument));
+            }
             if let Some(startup) = &loaded.report.stream_startup {
                 trace.detail("stream_startup", serde_json::to_value(startup).unwrap_or_default());
                 if let Some(warning) = startup.warning() {

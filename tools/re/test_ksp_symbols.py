@@ -35,6 +35,21 @@ class KspSymbols(unittest.TestCase):
         with self.assertRaises(SystemExit):
             k.scripts_of("bank.nkb")
 
+    def test_full_row_that_loses_its_test_fails_the_gate(self):
+        row = {"id": "command:x", "status": "full", "tests": "untested"}
+        self.assertEqual(len(k.full_without_test([row], set())), 1)
+        self.assertEqual(k.full_without_test([row], {"command:x"}), [])
+        tested = {**row, "tests": "2 (audit.rs)"}
+        self.assertEqual(len(k.full_without_test([tested], {"command:x"})), 1)
+        self.assertEqual(k.full_without_test([{**row, "status": "simplified"}], set()), [])
+
+    def test_checked_in_ksp_fixtures_pass_strict_doctor(self):
+        fixtures = sorted(str(p) for p in (Path(__file__).resolve().parent / "fixtures" / "ksp").glob("*.ksp"))
+        self.assertTrue(fixtures)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(k.doctor(fixtures, strict=True), 0, buf.getvalue())
+
     def test_library_is_the_folder_above_instruments(self):
         self.assertEqual(k.library_of("/x/Conflux/Instruments/Conflux.nki"), "Conflux")
         self.assertEqual(k.library_of("/x/Loose/a.nki"), "Loose")

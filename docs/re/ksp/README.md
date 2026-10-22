@@ -18,3 +18,24 @@ rank. `full` is only reported when a conformance test exists; an untested ledger
 shown as `simplified`. The summary line gives the symbol count, the percent full, and the blockers
 (unsupported or stub symbols). With several inputs, `--json` also carries a per-library and
 per-symbol aggregate. Tests: `python3 -m unittest tools/test_ksp_symbols.py`.
+
+### Corpus and plugin
+
+The same SYMBOLS.tsv status drives three surfaces, so they agree on each `KSP-*` code:
+
+- **Doctor** (above): one script or instrument, text or `--json`.
+- **Corpus**: `cargo run -p corpus-health -- ksp OUT.jsonl --md RANKED.md PATH...` writes one record
+  per instrument and symbol, and a ranked report of symbols that are not full, weighted by the
+  instruments that use them. `corpus-health ksp-summary OUT.jsonl` prints the per-library view.
+  Run it on at most a few instruments unless the full corpus is the point.
+- **Plugin**: loading a KSP instrument adds one Diagnostics entry per script and code
+  (`KSP-SIMPLIFIED`, `KSP-STUB`, `KSP-UNSUPPORTED`) listing its non-full symbols (stage `scripts`).
+  Source: `sampler_ksp::symbols`, which embeds SYMBOLS.tsv.
+
+Known difference: doctor tokenises the script text, the plugin and corpus tool use the parser's
+constructs. Percentages can differ by a few symbols on the same script.
+
+`check` fails when a row marked `full` loses its conformance test. Known debt is listed in
+`FULL_UNTESTED.txt`; remove a line once a test names the symbol. CI also runs
+`doctor tools/re/fixtures/ksp/*.ksp --strict`.
+
