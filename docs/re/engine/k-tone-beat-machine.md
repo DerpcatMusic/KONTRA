@@ -200,26 +200,49 @@ law (now named `attack` / `release` and `crossfade`):
   agree with the KSP manual names `num_slices_zone`, `zone_slice_idx_loop_start/end`,
   `zone_slice_loop_count`, `zone_slice_length` (KSP manual, Zone and Slice Functions).
 
-Wiring (this pass): the Kontakt loader reads `slice_float_1`, `slice_float_2` and
-`slice_flag_1` from the mode-4 record into `ir::Group::beat_slices`
-(`crates/sampler-ir/src/lib.rs`, `BeatSlices`; `crates/sampler-kontakt/src/library.rs`,
-`beat_slices_from_record`). Lowering does not consume it yet: no voice runs the
-sequencer, so the zone still plays as a sampler and the report says so. Unit tests:
-`beat_slices` (sequencer and crossfade rounding at 48 kHz and 44.1 kHz) and the loader
-mapping test.
+Wiring: the Kontakt loader reads `slice_float_1`, `slice_float_2` and `slice_flag_1` from
+the mode-4 record into `ir::Group::beat_slices` (`crates/sampler-ir/src/lib.rs`,
+`BeatSlices`; `crates/sampler-kontakt/src/library.rs`, `beat_slices_from_record`). Lowering
+does not consume it yet: no voice runs the sequencer, so the zone still plays as a sampler
+and the report says so. Unit tests: `beat_slices` (sequencer and crossfade rounding at 48 kHz
+and 44.1 kHz) and the loader mapping test.
 
-### Zone slices in the file (not parsed)
+### Zone slice markers (chunk 0x35, parsed)
 
-The slice markers (Grid Fix or Auto, or manual markers, manual p. 177-180) and the
-loops are not parsed by `vendor/ni-file` (no grid or marker reader), so the sequencer
-table and the zone slice positions are unknown to the loader. Parsing them is the
-next blocker for voicing the Beat Machine.
+A zone with a grid stores its slice boundaries in a structured child chunk `0x35` of the
+zone (`vendor/ni-file/src/kontakt/objects/zone_slices.rs`, `ZoneSlices`). Public payload, from
+the capture (grid fixed, 120 BPM, four 1/16 slices, 48 kHz):
+
+- `u8` (0), `i32` selected (-1), `u32` count (5)
+- `u32` grid length in frames (24000 = 4 x 6000); present only when count > 0 (inferred
+  from the plain zone, count 0, payload 9 bytes)
+- `count` records of `u32` frame, `f32` frame (equal up to rounding, meaning open), `u32`
+  extra (8 on the first record, 0 after)
+
+Frames: 0, 6000, 12000, 18000, 24000, so the four slices are consecutive pairs. The loader
+copies the frames into `BeatSlices::markers` (checked on the saved NKI through `ir_json`:
+`markers` = `[0,6000,12000,18000,24000]`, attack 3.0, release 12.5, flag true). A zone with
+a second, different grid in the same Beat Machine group is reported as unsupported. The
+layout is confirmed for one grid only; other grid modes and counts are not in the corpus.
+
+### Playback rate candidate (one capture)
+
+The zone private block holds a float at byte offset 12: 0.25 in the grid-fixed zone and 1.0
+in the plain zone (the same in the sampler-fixed file). That matches the decompiled zone
+`tempoScaling` (`+0x7a8`, default `0x3f800000`, written at `0140860000.c:9276-9278` and
+multiplied into the grid factor `FUN_14087d740`, `0140870000.c:9390`). The capture's
+playback rate is 0.25 (200/320/440/560 Hz tones heard at 50/80/110/140 Hz, slices cut at
+about 125 ms), so the candidate is: rate = stored tempo scaling for a fixed grid. The grid
+factor's constants are not resolved, and only one grid setting has been measured, so this is
+not a law yet.
 
 ### Not recovered
 
-- The slice playback speed law. The native capture below gives rate 0.25 for every
-  slice under the probe's settings; the rule that sets it is not known.
-- The meaning of `slice_flag_1` (`+0x99`).
+- The playback rate law beyond the candidate above (grid factor constants, auto grid).
+- The second-trigger silence (the Lua probe's second note produced nothing).
+- The meaning of `slice_flag_1` (`+0x99`) and of the float copy in the `0x35` records.
+- The source player call from slot 18 (`+0x38`) and the slice-to-voice path (fade
+  shape beyond the attack and release lengths, reverse).
 - The source player call from slot 18 (`+0x38`) and the slice-to-voice path (fade
   shape beyond the attack and release lengths, reverse).
 
@@ -284,7 +307,7 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 | Module | Shared engine covers | Missing |
 | --- | --- | --- |
 | Tone Machine | Mode mapping and stand-in granular engine, reported `NotModeled` | Render kernel, grain/formant/DC laws, record-to-object mapping, `hiQuality` |
-| Beat Machine | Stored mode reported; `slice_float_1/2` = Slice Atk/Rel (ms) and `+0x27d00` = render rate decoded; crossfade law and sequencer ported and unit-tested; controls reach `ir::Group::beat_slices` | Zone slice markers and loops are not parsed; slice playback (rate law, crossfade, voice) not modelled; `slice_flag_1` meaning; native capture is one rate sample (0.25) |
+| Beat Machine | Stored mode reported; `slice_float_1/2` = Slice Atk/Rel (ms) and `+0x27d00` = render rate decoded; crossfade law and sequencer ported and unit-tested; controls and zone slice markers (chunk 0x35) reach `ir::Group::beat_slices` | No voice runs the sequencer or plays marker slices yet; playback rate law (candidate: zone tempo scaling, one capture); second-trigger silence; `slice_flag_1` meaning |
 
 ## Open items (for the next pass)
 
@@ -296,7 +319,10 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
    Beat (4 in the repo) is not the identity map. Unresolved.
 3. Oracle, Beat Machine: the playback rate law (candidate in the capture section),
    the second-trigger behaviour, and the speed readout on the normal Use Beat Machine
-   path. One session each, nice 19.
-4. Parse the zone slice markers and grid (Fix/Auto) from the instrument file, so the
-   sequencer table is loaded instead of being empty.
+   path. One session each, nice 19. A second grid setting (other tempo or unit) would
+   test the candidate directly.
+4. Lowering: a voice that plays `BeatSlices::markers` through `beat_slices::Sequencer`
+   with the crossfade law. Blocked on the internal-trigger semantics in item 2 and 3.
 5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.
+6. Zone grid mode (Fix/Auto/none) and the grid factor constants behind the rate
+   candidate, from the zone private block and `FUN_14087d740`.
