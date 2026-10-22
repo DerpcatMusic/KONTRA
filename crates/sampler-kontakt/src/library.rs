@@ -22,6 +22,7 @@ const PROGRAM: u16 = 0x28;
 const GROUP_LIST: u16 = 0x33;
 const ZONE_LIST: u16 = 0x34;
 const LOOPS: u16 = 0x39;
+const ZONE_SLICES: u16 = 0x35;
 const INTERNAL_MODS: u16 = 0x3b;
 const EXTERNAL_MODS: u16 = 0x3c;
 const FILE_TABLE: u16 = 0x4b;
@@ -649,6 +650,27 @@ fn translate(
         else {
             continue; // Muted group: never sounds.
         };
+        if !zone.slice_markers.is_empty() {
+            // Markers belong to the zone; a Beat Machine group keeps the first zone's grid and
+            // reports a later zone whose grid differs (one table per group until lowering).
+            let markers = std::mem::take(&mut zone.slice_markers);
+            let conflict = match out.ir.groups[group.group.0].beat_slices.as_mut() {
+                Some(beat) if beat.markers.is_empty() => {
+                    beat.markers = markers.clone();
+                    false
+                }
+                Some(beat) => beat.markers != markers,
+                None => false,
+            };
+            if conflict {
+                out.unsupported(
+                    &format!("zone {index} (group {})", group.index),
+                    "beat machine zone slices differ from the group's first zone",
+                    markers.len(),
+                    ir::Reason::NotModeled,
+                );
+            }
+        }
         if !zone.sample_present {
             continue;
         } // Authored empty zone, no sample to resolve.
@@ -993,6 +1015,7 @@ fn beat_slices_from_record(
             attack_ms,
             release_ms,
             flag,
+            markers: Vec::new(),
         }),
         _ => None,
     }
@@ -3547,6 +3570,8 @@ impl Translation {
 /// One serialized zone: its group, mapping and sample reference.
 #[derive(Clone)]
 struct RawZone {
+    /// Zone slice boundaries in sample frames (Beat Machine grid); empty without a grid.
+    slice_markers: Vec<u32>,
     source_id: Option<u32>,
     identity_layout: (u16, usize, Option<u16>),
     sample_present: bool,
@@ -3937,8 +3962,18 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             slots: Vec::new(),
         },
     };
+    let slice_markers = match source_zone.0.find_first(ZONE_SLICES) {
+        Some(chunk) => ni_file::kontakt::objects::ZoneSlices::try_from(chunk)
+            .map_err(|e| e.to_string())?
+            .markers
+            .iter()
+            .map(|marker| marker.frame)
+            .collect(),
+        None => Vec::new(),
+    };
     let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
+        slice_markers,
         source_id,
         identity_layout: (source_zone.0.version, source_zone.0.private_data.len(),
             source_zone.0.private_data.get(56..58).map(|b| u16::from_le_bytes([b[0],b[1]]))),
@@ -7199,6 +7234,7 @@ mod time_machine_tests {
             attack_ms: 32.0,
             release_ms: 600.0,
             flag: true,
+            markers: Vec::new(),
         };
         assert_eq!(beat_slices_from_record(&full), Some(expected));
         let partial = record(vec![field("slice_float_1", V::Float(1.0))]);
