@@ -873,7 +873,7 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
             out.push(banner(
                 Role::Warning,
                 format!(
-                    "{} notes were dropped: the part ran out of voices.",
+                    "{} notes were dropped: the part reached a capacity limit.",
                     p.capacity_drops
                 ),
             ));
