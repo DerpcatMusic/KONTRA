@@ -305,3 +305,18 @@ until that is settled.
 Still open after this pass: the parameter-ramp increment writer (the lanes and
 the 0.02 s length are known, the code that writes `+0x163450..+0x163468` is not
 found), and the display laws.
+
+## Raum Cosmic: where the open laws sit (2026-10-22, not finished)
+
+- The Raum outer process `1419878b0` (0141980000.c) does not reference the
+  Cosmic-specific fields by the offsets in the findings note; those offsets are
+  used by a different SIMD-heavy routine.
+- The double-state loop with two gains (+0xdd0, +0xdd8) and two states
+  (+0xde0, +0xde8), with the input taps at +0xdc0/+0xdc8 and +0xdf0/+0xdf8, is
+  in `141966ad0` (0141960000.c line 6083, 5251 bytes). It is guarded by floats
+  at +0xd38 and +0xd3c, and its feedback input passes a per-channel odd
+  polynomial with coefficients in the rdata constants. This is a **candidate**
+  for the Cosmic b80 feedback path, not confirmed: the findings note tied b80 to
+  +0xdd4/+0xdd8, which does not match these offsets exactly.
+- Still open: predelay feedback, b80 identity, post-filter laws, the wet law,
+  and any native vector. No Cosmic row can reach parity without a Kontakt capture.
