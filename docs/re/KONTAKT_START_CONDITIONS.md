@@ -47,7 +47,7 @@ Mode `3` is Cycle Round Robin. `0x140876bd0` scans every group and all four fixe
 
 The scan considers all four mode fields directly, including nonzero records beyond a zero-mode gap. It does not consult the serialization occupied mask. Reset/reload behavior beyond `on init` and callbacks never reaching this block is **unproved**.
 
-## Random: binary-proved algorithm, PRNG boundary
+## Random: binary-proved algorithm and PRNG law
 
 Mode `4` is Cycle Random. `0x140876bd0` sets `N` to the **number of mode-4 records across all groups and all four slots**. It does not count eligible/mapped groups, deduplicate groups, or use authored RR positions.
 
@@ -59,7 +59,18 @@ Template `0x144f17fa8`, count declaration `0x144f17f68`. Each mode-4 condition i
 
 No generator-level last-winner memory, reroll, shuffle bag, or no-repeat check exists. The random draw is **outside the RR release guard**: a release-generated note callback that reaches this block makes a new random selection. Failed predicates do not cause a second draw. Raw count includes unreachable/unusable rows; unused ordinals can therefore produce no admitted group.
 
-**Unproved:** the exact KSP PRNG, seed, distribution/rejection mapping, and random-state sharing with user scripts. The similarly named Lua `math.random` implementation `0x141e63430` is a different runtime and is **not evidence** for this KSP call. Do not substitute SplitMix64 or claim bit-exact native randomness. NI documents inclusive `random(min,max)` bounds.
+**Recovered generator and mapping** (Kontakt 8 `random(from,to)` builtin):
+
+- Generator: MT19937. `0x1410ebf10` seeds it (`init_genrand`: word 0 is the seed, multiplier `1812433253`). `0x1410ec0c0` twists and tempers with the standard constants. The state is one global, `0x14a6381e0`, read by `0x1414d5e80`. Layout: index, then 624 words, double-buffered. Its stream equals standard MT19937; the reference vectors are in `sampler-core/src/native_start.rs` tests.
+- Mapping (`0x1414e6140`): with `n = to - from + 1`, draw one 32-bit word if `n-1 <= 0xffffffff`, else two (first word high). Multiply by `n`, keep the high part, and reject while the low part is below `(2^bits - n) mod n` (Lemire multiply-high with rejection).
+- Call chain located: `0x1414df760` → `0x1414e2d70` → `0x1414d5e80` (global state) → `0x1414e6140`. The engine applies this law to the mode-4 draw `random(0, N-1)`.
+
+**Open:**
+
+1. Seed. The global is initialised once by `0x1414e7ec0` from `std::random_device`, so the binary holds no fixed native seed. The engine seeds with `reset_native_cycles(seed)` (low 32 bits). That is a KONTRA choice, not Kontakt's.
+2. KSP node link. The builtin is reached from Lua-stack bindings, and the evaluator of the compiled KSP `random` node was not located. The identity of the KSP draw with this builtin is assumed (shared `'from' must be less than or equal to 'to'` text), not proven. The similarly named Lua `math.random` at `0x141e63430` is not evidence for it.
+3. Shared stream with user scripts: not established. Kontakt redraws on release-generated callbacks. The engine draws only in `admit` (one per admitted note), and the select path copies the latest draw. The release redraw is not implemented (see `BASIC_BEHAVIORS.md` row 3).
+4. Bounds are inclusive, as NI documents for `random(min,max)`.
 
 ## Condition chaining
 
