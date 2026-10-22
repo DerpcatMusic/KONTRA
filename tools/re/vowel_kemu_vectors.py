@@ -20,13 +20,12 @@ import json
 import math
 import os
 import random
-import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kemu import Emu  # noqa: E402
 
-PREPARE, CLOCK, KERNEL, RAW_GOAL_GLOBAL = 0x1408DB380, 0x140AE9F90, 0x140909BE0, 0x144FD4C54
+PREPARE, CLOCK, KERNEL, CLOCK_BRANCH = 0x1408DB380, 0x140AE9F90, 0x140909BE0, 0x144FD4C54
 CLASSES = {"a": (0x144F12F90, 0x14095DD00), "b": (0x144F13128, 0x14095E250)}
 OBJ_BYTES, MAX_FRAMES = 0x2000, 128
 
@@ -85,7 +84,7 @@ def run_case(e, case, inb, outb):
 def main():
     exe, dst = sys.argv[1:3]
     e = Emu(exe, heap_mb=64)
-    assert e.read(0x144FD4C54, "I") == 0  # the clock's alternative branch is dead in this image
+    assert e.read(CLOCK_BRANCH, "I") == 0  # the clock's alternative branch is dead in this image
     for key, (vt, setter) in CLASSES.items():
         assert e.read(vt + 1 * 8, "Q") == PREPARE, key
         assert e.read(vt + 23 * 8, "Q") == CLOCK, key
