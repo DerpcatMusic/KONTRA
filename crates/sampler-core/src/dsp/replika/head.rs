@@ -805,7 +805,16 @@ mod tests {
                 div: f(init, "g_div") as f32,
                 count_init: f(init, "g_count_init") as i32,
             },
-            post: [PostFilter { env: 0., coef: 0., s0: 0., s1: 0., c2: 0., c3: 0., c4: 0., gain: 0. }; 2],
+            post: [PostFilter {
+                env: 0.,
+                coef: 0.,
+                s0: 0.,
+                s1: 0.,
+                c2: 0.,
+                c3: 0.,
+                c4: 0.,
+                gain: 0.,
+            }; 2],
             sec: [Section::new(0., 0.); 2],
             rate: 1.,
             time: ["t0", "t1", "t2", "t3"].map(|k| f(init, k) as f32),
@@ -836,34 +845,86 @@ mod tests {
             assert_eq!(h.kernel[1] as f64, f(end, "kernel_r"), "{tag} kernel R");
             let g = &h.glide;
             close_f32(&format!("{tag} glide cur"), g.cur as f64, f(end, "g_cur"));
-            close_f32(&format!("{tag} glide target"), g.target as f64, f(end, "g_target"));
-            close_f32(&format!("{tag} glide step"), g.step as f64, f(end, "g_step"));
+            close_f32(
+                &format!("{tag} glide target"),
+                g.target as f64,
+                f(end, "g_target"),
+            );
+            close_f32(
+                &format!("{tag} glide step"),
+                g.step as f64,
+                f(end, "g_step"),
+            );
             assert_eq!(g.count as f64, f(end, "g_count"), "{tag} glide count");
-            assert_eq!(g.count_init as f64, f(end, "g_count_init"), "{tag} glide count init");
+            assert_eq!(
+                g.count_init as f64,
+                f(end, "g_count_init"),
+                "{tag} glide count init"
+            );
             assert_eq!(g.pending, f(end, "g_pend") != 0.0, "{tag} glide pending");
             assert_eq!(g.fresh, f(end, "g_fresh") != 0.0, "{tag} glide fresh");
             close_f32(&format!("{tag} base"), h.base_src, f(end, "base_src"));
             close_f32(&format!("{tag} level"), h.fade.level, f(end, "level"));
-            close_f32(&format!("{tag} target"), h.fade.target, f(end, "fade_target"));
+            close_f32(
+                &format!("{tag} target"),
+                h.fade.target,
+                f(end, "fade_target"),
+            );
             assert_eq!(h.fade.pending, f(end, "pend") != 0.0, "{tag} pend");
             assert_eq!(h.fade.trigger, f(end, "trig") != 0.0, "{tag} trig");
             close_f32(&format!("{tag} s"), h.s, f(end, "s"));
             for (side, tap) in [("L", &h.taps[0]), ("R", &h.taps[1])] {
                 let key = |name: &str| format!("{side}_{name}");
                 close_f32(&format!("{tag} {side} pos"), tap.pos, f(end, &key("pos")));
-                close_f32(&format!("{tag} {side} frac"), tap.frac, f(end, &key("frac")));
-                close_f32(&format!("{tag} {side} phase"), tap.phase, f(end, &key("phase")));
-                close_f32(&format!("{tag} {side} xprev"), tap.x_prev, f(end, &key("xprev")));
-                close_f32(&format!("{tag} {side} pfrac"), tap.prev_frac, f(end, &key("pfrac")));
-                close_f32(&format!("{tag} {side} offset"), tap.offset, f(end, &key("offset")));
+                close_f32(
+                    &format!("{tag} {side} frac"),
+                    tap.frac,
+                    f(end, &key("frac")),
+                );
+                close_f32(
+                    &format!("{tag} {side} phase"),
+                    tap.phase,
+                    f(end, &key("phase")),
+                );
+                close_f32(
+                    &format!("{tag} {side} xprev"),
+                    tap.x_prev,
+                    f(end, &key("xprev")),
+                );
+                close_f32(
+                    &format!("{tag} {side} pfrac"),
+                    tap.prev_frac,
+                    f(end, &key("pfrac")),
+                );
+                close_f32(
+                    &format!("{tag} {side} offset"),
+                    tap.offset,
+                    f(end, &key("offset")),
+                );
                 assert_eq!(tap.wr as f64, f(end, &key("wr")), "{tag} {side} wr");
-                assert_eq!(tap.delta as f64, f(end, &key("delta")), "{tag} {side} delta");
+                assert_eq!(
+                    tap.delta as f64,
+                    f(end, &key("delta")),
+                    "{tag} {side} delta"
+                );
                 assert_eq!(tap.prev_wr as f64, f(end, &key("pwr")), "{tag} {side} pwr");
                 assert_eq!(tap.idx as f64, f(end, &key("idx")), "{tag} {side} idx");
-                close_f32(&format!("{tag} {side} s0"), tap.state.s0 as f64, f(end, &key("s0")));
-                close_f32(&format!("{tag} {side} s1"), tap.state.s1 as f64, f(end, &key("s1")));
+                close_f32(
+                    &format!("{tag} {side} s0"),
+                    tap.state.s0 as f64,
+                    f(end, &key("s0")),
+                );
+                close_f32(
+                    &format!("{tag} {side} s1"),
+                    tap.state.s1 as f64,
+                    f(end, &key("s1")),
+                );
                 for (i, name) in ["rate0", "rate1", "rate2"].iter().enumerate() {
-                    close_f32(&format!("{tag} {side} {name}"), tap.rates[i], f(end, &key(name)));
+                    close_f32(
+                        &format!("{tag} {side} {name}"),
+                        tap.rates[i],
+                        f(end, &key(name)),
+                    );
                 }
             }
             assert_eq!(ring_l, words(&end["ring_l"]), "{tag} ring L");
