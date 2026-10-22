@@ -659,6 +659,20 @@ impl Runtime {
         Ok(())
     }
 
+    /// Set the owner-level script event value `id` of `plan` (the Falcon
+    /// `sendScriptModulation` broadcast that drives a Program/Layer output
+    /// modulator such as a global Gain crossfade). Unipolar sources clamp to
+    /// 0..=1, bipolar to -1..=1. Unset ids hold 0. Takes effect at the next cell.
+    pub fn set_script_event_value(
+        &mut self,
+        plan: crate::PlanId,
+        id: u16,
+        value: f64,
+    ) -> Result<(), Error> {
+        let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+        generation.dsp.buses.set_script_event(&generation.prepared.buses, id, value)
+    }
+
     /// Set a note's script volume (decibels), pan (-1..=1) or pitch
     /// (semitones), or add to it, for a frontend that drives the runtime
     /// directly (Falcon's `changeVolume`, `changePan`, `changeTune`). Voices

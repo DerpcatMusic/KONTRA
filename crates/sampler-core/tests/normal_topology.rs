@@ -2013,6 +2013,31 @@ fn actual_property_only_global_output_starts_without_fictitious_receiver_and_kee
 }
 
 #[test]
+fn owner_level_script_event_drives_global_output_and_defaults_to_zero(){
+    use sampler_core::{Runtime,Limits};
+    let mut instrument=explicit_output_instrument(false,true);
+    instrument.modulators.push(ir::Modulator{scope:ir::Scope::Master,source:ir::ModulationSource::Script(7)});
+    instrument.routes.push(ir::Route::new(ir::ModulatorRef(0),ir::Target::Amplitude,ir::Depth::Normalized(1.)));
+    instrument.source_indices.global_modulation.push(ir::SourceGlobalModulation{owner:ir::SourceOwnerId::UviNode(0),input_owner:ir::SourceOwnerId::UviNode(0),outlet:ir::BusRef(0),sources:vec![ir::ModulatorRef(0)],routes:vec![ir::RouteRef(0)]});
+    instrument.validate().unwrap();
+    let prepared=lower(&instrument,48000,constant_property_pcm(),|_,plan|Ok(plan)).unwrap();
+    let limits=Limits::for_plan(&prepared,4,8);let mut rt=Runtime::new(prepared,limits).unwrap();let plan=rt.active_plan();
+    rt.trigger(pan_input(42_010),60,1.).unwrap();
+    // Each 1024-frame block ends with the cell ramp settled.
+    // The fixture PCM is 4096 frames: read a window well inside it.
+    let settled=|rt:&mut Runtime|{let mut out=[[0.;2];1024];support::without_heap(||rt.render(&mut out).unwrap());out[1023][0].abs()};
+    // Unset owner value holds 0: the global output is silent.
+    assert_eq!(settled(&mut rt),0.);
+    rt.set_script_event_value(plan,7,0.5).unwrap();let half=settled(&mut rt);
+    rt.set_script_event_value(plan,7,1.).unwrap();let full=settled(&mut rt);
+    assert!(half>0.&&full>half*1.5,"half {half} full {full}");
+    // Another event id does not drive this source.
+    rt.set_script_event_value(plan,8,0.).unwrap();assert!((settled(&mut rt)-full).abs()<1e-6);
+    assert_eq!(rt.set_script_event_value(plan,7,f64::NAN),Err(Error::InvalidInput));
+    assert_eq!(rt.stats().nonfinite_frames,0);
+}
+
+#[test]
 fn malformed_constant_definition_and_unqualified_native_law_never_reach_behavior_publication(){
     for malformed in 0..4{
         let mut instrument=constant_property_ir(0.25);assert!(instrument.validate().is_ok());

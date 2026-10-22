@@ -1993,7 +1993,7 @@ impl Lowering<'_> {
             for (identity,index)in sources {
                 let controller=match self.ir.modulators[identity.0].source{
                     ir::ModulationSource::Controller(cc)if cc<128=>Some(cc),
-                    ir::ModulationSource::Constant|ir::ModulationSource::ConstantProperty{..}=>None,
+                    ir::ModulationSource::Constant|ir::ModulationSource::ConstantProperty{..}|ir::ModulationSource::Script(_)|ir::ModulationSource::ScriptBipolar(_)=>None,
                     _=>return Err(unsupported(label.clone(),Feature::ModulatorScope(self.ir.modulators[identity.0].scope))),
                 };
                 let slot=roster.get_mut(index).ok_or_else(||core(Stage::Modulation,&label)(Error::InvalidInput))?;
@@ -2097,7 +2097,7 @@ impl Lowering<'_> {
                     (m.scope, &m.source),
                     (ir::Scope::Master, ir::ModulationSource::Lfo(_))
                 );
-                let resolved_element=element_inputs&&(matches!(m.source,ir::ModulationSource::Controller(cc)if cc<128)||matches!(m.source,ir::ModulationSource::Constant|ir::ModulationSource::ConstantProperty{..}));
+                let resolved_element=element_inputs&&(matches!(m.source,ir::ModulationSource::Controller(cc)if cc<128)||matches!(m.source,ir::ModulationSource::Constant|ir::ModulationSource::ConstantProperty{..}|ir::ModulationSource::Script(_)|ir::ModulationSource::ScriptBipolar(_)));
                 if m.scope != ir::Scope::Voice && !shared && !resolved_element {
                     return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
                 }
