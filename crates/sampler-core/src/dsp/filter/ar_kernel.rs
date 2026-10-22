@@ -49,6 +49,34 @@ fn mix([high, band, low]: [f32; 3], weights: [f32; 3]) -> f32 {
     (low * weights[0] + (band + band) * weights[1]) + high * weights[2]
 }
 
+/// The frame terms that depend only on the mode and the resonance control. The
+/// frame loop reuses them until the resonance value changes, which is the same
+/// arithmetic on the same inputs, so the output bits do not change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Resonant {
+    pub(crate) resonance: f32,
+    floor: f32,
+    gain: f32,
+    amount: f32,
+    r: f32,
+}
+
+pub(crate) fn resonant(mode: u8, resonance: f32) -> Resonant {
+    debug_assert!(mode < 9);
+    let family = mode / 3;
+    let weights: [f32; 3] = std::array::from_fn(|i| if i == usize::from(mode % 3) { 1. } else { 0. });
+    let (floor_db, resonance_offset, resonance_scale, gain_a, gain_b) = match family {
+        0 => (f32::from_bits(0x40d491d1), 0., 24., 0.9965784, 0.14948677),
+        1 => (f32::from_bits(0xbf1a5e35), 6., 24., 1.195894, 0.24914463),
+        _ => (-0.6, 6., 20., 1.195894, 0.29897354),
+    };
+    let floor = lookup(floor_db * 9.965784 + 1200., Past::LastEntry);
+    let r = resonance * resonance_scale;
+    let gain = lookup(((gain_a - r * gain_b) * weights[1] - gain_a) * r + 1200., Past::LastEntry);
+    let amount = lookup((r - resonance_offset) * 9.965784 + 1200., Past::LastEntry);
+    Resonant { resonance, floor, gain, amount, r }
+}
+
 impl ArKernel {
     /// Stereo frame; the shared detector follows the signed stereo band sum.
     pub(crate) fn tick(
@@ -59,19 +87,26 @@ impl ArKernel {
         rate_inverse: f32,
         ramping: bool,
     ) -> [f32; 2] {
-        debug_assert!(mode < 9);
+        self.tick_resonant(input, mode, controls, rate_inverse, ramping, resonant(mode, controls[2]))
+    }
+
+    /// [`Self::tick`] with the resonance terms precomputed by [`resonant`] for
+    /// `controls[2]`.
+    pub(crate) fn tick_resonant(
+        &mut self,
+        input: [f32; 2],
+        mode: u8,
+        controls: [f32; 3],
+        rate_inverse: f32,
+        ramping: bool,
+        terms: Resonant,
+    ) -> [f32; 2] {
+        debug_assert!(mode < 9 && terms.resonance.to_bits() == controls[2].to_bits());
         let family = mode / 3;
         let weights = std::array::from_fn(|i| if i == usize::from(mode % 3) { 1. } else { 0. });
         let [g, hz_lane, resonance] = controls;
-        let (floor_db, resonance_offset, resonance_scale, gain_a, gain_b) = match family {
-            0 => (f32::from_bits(0x40d491d1), 0., 24., 0.9965784, 0.14948677),
-            1 => (f32::from_bits(0xbf1a5e35), 6., 24., 1.195894, 0.24914463),
-            _ => (-0.6, 6., 20., 1.195894, 0.29897354),
-        };
-        let floor = lookup(floor_db * 9.965784 + 1200., Past::LastEntry);
-        let r = resonance * resonance_scale;
+        let Resonant { floor, gain, amount, .. } = terms;
         let zdf = Zdf::new(g, (1. - self.feedback) + (1. - self.feedback));
-        let gain = lookup(((gain_a - r * gain_b) * weights[1] - gain_a) * r + 1200., Past::LastEntry);
         let mut detected = 0.;
         let output = std::array::from_fn(|ch| {
             let s = &mut self.channels[ch];
@@ -115,7 +150,6 @@ impl ArKernel {
             self.cap = (0.86 - (b - 130.) * 0.0031111108)
                 - ((a - 70.) * -0.005982609 - (b - 130.) * (a - 70.) * -0.00002164251);
         }
-        let amount = lookup((r - resonance_offset) * 9.965784 + 1200., Past::LastEntry);
         let target = (1. - 1. / ((amount - 1.) * (floor / level.max(floor).min(1e8)) + 1.)).max(0.);
         // The native ramp kernel rounds this coefficient before multiplying the delta.
         let adaptation_rate = rate_inverse * 2092.3;
