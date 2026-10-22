@@ -650,23 +650,24 @@ fn translate(
         else {
             continue; // Muted group: never sounds.
         };
-        if !zone.slice_markers.is_empty() {
-            // Markers belong to the zone; a Beat Machine group keeps the first zone's grid and
-            // reports a later zone whose grid differs (one table per group until lowering).
-            let markers = std::mem::take(&mut zone.slice_markers);
-            let conflict = match out.ir.groups[group.group.0].beat_slices.as_mut() {
-                Some(beat) if beat.markers.is_empty() => {
-                    beat.markers = markers.clone();
-                    false
-                }
-                Some(beat) => beat.markers != markers,
-                None => false,
-            };
-            if conflict {
+        if out.ir.groups[group.group.0].beat_slices.is_some() {
+            // Beat Machine zones carry their own grid; a zone without one plays as a sampler.
+            let at = format!("zone {index} (group {})", group.index);
+            let grid = ir::BeatGrid::from_markers(&zone.slice_markers, zone.slice_tempo);
+            zone.beat_grid = grid.unwrap_or_else(|reason| {
                 out.unsupported(
-                    &format!("zone {index} (group {})", group.index),
-                    "beat machine zone slices differ from the group's first zone",
-                    markers.len(),
+                    &at,
+                    "beat machine slice markers",
+                    reason,
+                    ir::Reason::NotModeled,
+                );
+                None
+            });
+            if zone.beat_grid.is_none() {
+                out.unsupported(
+                    &at,
+                    "beat machine zone without slice markers (played as a sampler)",
+                    zone.slice_markers.len(),
                     ir::Reason::NotModeled,
                 );
             }
@@ -1015,7 +1016,6 @@ fn beat_slices_from_record(
             attack_ms,
             release_ms,
             flag,
-            markers: Vec::new(),
         }),
         _ => None,
     }
@@ -2435,9 +2435,14 @@ impl Translation {
             ir::Machine::BeatMachine => (Some(ir::Machine::BeatMachine), "Beat Machine"),
         };
         // Filter modes 1..=5 of the S1200 and the MP60 chain are modelled; the rest play as a sampler.
+        // A Beat Machine group is modelled through its zones: a zone without a grid is reported there.
         let modelled = matches!(
             value,
-            Some(ir::Machine::S1200 { filter_mode: Some(1..=ir::S1200_FILTER_MODE_MAX) } | ir::Machine::Mp60)
+            Some(
+                ir::Machine::S1200 { filter_mode: Some(1..=ir::S1200_FILTER_MODE_MAX) }
+                    | ir::Machine::Mp60
+                    | ir::Machine::BeatMachine
+            )
         );
         if !modelled {
             self.unsupported(
@@ -3538,6 +3543,7 @@ impl Translation {
                 law: ir::PanLaw::Balance,
             },
             playback: ir::Playback {
+                beat_grid: z.beat_grid,
                 start: z.start,
                 end,
                 reverse: group.reverse,
@@ -3572,6 +3578,10 @@ impl Translation {
 struct RawZone {
     /// Zone slice boundaries in sample frames (Beat Machine grid); empty without a grid.
     slice_markers: Vec<u32>,
+    /// Stored zone playback rate of the grid (private float at byte 12).
+    slice_tempo: f32,
+    /// Set by the loader for zones of a Beat Machine group.
+    beat_grid: Option<ir::BeatGrid>,
     source_id: Option<u32>,
     identity_layout: (u16, usize, Option<u16>),
     sample_present: bool,
@@ -3962,7 +3972,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             slots: Vec::new(),
         },
     };
-    let slice_markers = match source_zone.0.find_first(ZONE_SLICES) {
+    let slice_markers: Vec<u32> = match source_zone.0.find_first(ZONE_SLICES) {
         Some(chunk) => ni_file::kontakt::objects::ZoneSlices::try_from(chunk)
             .map_err(|e| e.to_string())?
             .markers
@@ -3971,9 +3981,21 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             .collect(),
         None => Vec::new(),
     };
+    let slice_tempo = match source_zone.0.private_data.get(12..16) {
+        Some(bytes) if !slice_markers.is_empty() => {
+            let tempo = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            if !(tempo.is_finite() && tempo > 0.0) {
+                return Err(format!("zone grid playback rate {tempo}"));
+            }
+            tempo
+        }
+        _ => 1.0,
+    };
     let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
         slice_markers,
+        slice_tempo,
+        beat_grid: None,
         source_id,
         identity_layout: (source_zone.0.version, source_zone.0.private_data.len(),
             source_zone.0.private_data.get(56..58).map(|b| u16::from_le_bytes([b[0],b[1]]))),
@@ -7234,7 +7256,6 @@ mod time_machine_tests {
             attack_ms: 32.0,
             release_ms: 600.0,
             flag: true,
-            markers: Vec::new(),
         };
         assert_eq!(beat_slices_from_record(&full), Some(expected));
         let partial = record(vec![field("slice_float_1", V::Float(1.0))]);

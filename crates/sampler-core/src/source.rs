@@ -114,6 +114,9 @@ pub struct Playback {
     /// Saved crossfade before the unmodulated loop was clamped to file boundaries.
     pub loop_control_crossfade: Option<usize>,
     pub transpose_semitones: f64,
+    /// Beat Machine slices of this zone; when set, the cursor plays them in order and the
+    /// loops above are ignored (ponytail: loops and Beat Machine zones together are not seen yet).
+    pub beat: Option<beat_slices::Spec>,
 }
 
 impl Playback {
@@ -175,6 +178,20 @@ impl Playback {
         source_rate: u32,
         output_rate: u32,
     ) -> Result<Cursor, Error> {
+        if let Some(spec) = self.beat {
+            let plain = Playback {
+                beat: None,
+                loop_range: None,
+                loop_slots: [None; 8],
+                loop_control_crossfade: None,
+                ..self
+            };
+            let mut cursor = plain.cursor(frames, source_rate, output_rate)?;
+            let player = beat_slices::Player::new(spec, source_rate, output_rate);
+            cursor.position = player.origin(self.start);
+            cursor.beat = Some(player);
+            return Ok(cursor);
+        }
         let end = self.end.unwrap_or(frames);
         if let Some((shifted, lead)) = self.reach_back(end) {
             let mut cursor = shifted.cursor(frames, source_rate, output_rate)?;
@@ -210,6 +227,7 @@ impl Playback {
             return Err(Error::InvalidInput);
         }
         let mut cursor = Cursor {
+            beat: None,
             wavetable: self.wavetable,
             wavetable_base: self.wavetable,
             start: self.start,
@@ -323,6 +341,7 @@ pub(super) struct CursorTemplate {
     exit: Option<u64>,
     fade_frames: u32,
     lead: u64,
+    beat: Option<beat_slices::Player>,
 }
 
 impl CursorTemplate {
@@ -355,6 +374,7 @@ impl CursorTemplate {
             exit: cursor.exit,
             fade_frames: cursor.fade_frames,
             lead: cursor.lead,
+            beat: cursor.beat,
         }
     }
 
@@ -362,6 +382,7 @@ impl CursorTemplate {
         let extra = self.loops.map(|i| loops[i]);
         let wavetable = extra.and_then(|extra| extra.wavetable);
         let mut cursor = Cursor {
+            beat: self.beat,
             wavetable,
             wavetable_base: wavetable,
             start: self.start,
@@ -388,12 +409,17 @@ impl CursorTemplate {
         if let Some(frames) = self.loop_control_crossfade {
             cursor = cursor.with_saved_crossfade(frames);
         }
+        if let Some(beat) = self.beat {
+            cursor.position = beat.origin(self.start);
+        }
         cursor
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Cursor {
+    /// Beat Machine voice: slice order, slice starts and crossfades (see `render_slices`).
+    beat: Option<beat_slices::Player>,
     wavetable: Option<crate::Wavetable>,
     wavetable_base: Option<crate::Wavetable>,
     start: usize,
@@ -1167,6 +1193,9 @@ impl Cursor {
         if self.starved() {
             return self.render_starved(pcm, output, envelope, gain, gains, kernel);
         }
+        if self.beat.is_some() {
+            return self.render_slices(pcm, output, envelope, gain, gains, kernel);
+        }
         if gain == 0.0 || gains == [0.0; 2] {
             self.last = [0.; 2];
             return self.advance_silent(output.len(), envelope);
@@ -1240,6 +1269,57 @@ impl Cursor {
             return offset;
         }
         self.render_filtered(pcm, output, envelope, gain, gains, kernel)
+    }
+
+    /// Beat Machine playback: the slice order and cell lengths come from the sequencer, the
+    /// read position jumps to each slice start, and each slice fades in and out.
+    fn render_slices(
+        &mut self,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) -> usize {
+        let Some(mut player) = self.beat else {
+            return 0;
+        };
+        let mut rendered = 0;
+        while rendered < output.len() && !envelope.done() {
+            if player.slot_done() {
+                if !player.next_slice() {
+                    self.position = (self.end - self.start) as u64;
+                    self.fraction = 0.;
+                    break;
+                }
+                self.position = player.origin(self.start);
+                self.fraction = 0.;
+            }
+            let Some(sample) = self.sample(pcm, kernel) else {
+                self.beat = Some(player);
+                self.starvation = Some(self.fade_frames);
+                return rendered
+                    + self.render_starved(
+                        pcm,
+                        &mut output[rendered..],
+                        envelope,
+                        gain,
+                        gains,
+                        kernel,
+                    );
+            };
+            self.last = sample;
+            let amplitude = envelope.next() * gain * player.gain();
+            for c in 0..2 {
+                output[rendered][c] += sample[c] * amplitude * gains[c];
+            }
+            self.advance();
+            player.played();
+            rendered += 1;
+        }
+        self.beat = Some(player);
+        rendered
     }
 
     fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) -> usize {
@@ -2018,6 +2098,64 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn beat_zone_plays_grid_slices_in_order_at_the_stored_rate() {
+        // Four 0.125 s sines (200, 320, 440, 560 Hz) on the 1/16 grid at 48 kHz, read at 0.25.
+        let tones = [200.0f32, 320.0, 440.0, 560.0];
+        let pcm: Vec<Frame> = (0..24000)
+            .map(|i| {
+                let t = (i % 6000) as f32 / 48000.0;
+                let s = 0.5 * (std::f32::consts::TAU * tones[i / 6000] * t).sin();
+                [s, s]
+            })
+            .collect();
+        let spec = beat_slices::Spec {
+            markers: [0, 6000, 12000, 18000, 24000, 0, 0, 0, 0],
+            count: 5,
+            attack_ms: 3.0,
+            release_ms: 12.5,
+            flag: true,
+        };
+        let playback = Playback {
+            beat: Some(spec),
+            transpose_semitones: 12.0 * 0.25f64.log2(),
+            ..Playback::default()
+        };
+        let kernel = Kernel::new(crate::ResampleQuality::Realtime);
+        let mut envelope = EnvelopeState::new(crate::Envelope::default());
+        let mut cursor = playback.cursor(pcm.len(), 48000, 48000).unwrap();
+        let mut out = vec![[0.; 2]; 30000];
+        let mut total = 0;
+        while total < out.len() {
+            let n = cursor.render(
+                pcm.as_slice(),
+                &mut out[total..],
+                &mut envelope,
+                1.0,
+                [1.0, 1.0],
+                &kernel,
+            );
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
+        assert_eq!(total, 24000, "four 6000-frame cells");
+        for (slice, tone) in tones.iter().enumerate() {
+            // Middle 0.1 s of each cell, away from the fades: crossings of a 0.25x sine.
+            let window = &out[slice * 6000 + 600..slice * 6000 + 5400];
+            let crossings = window
+                .windows(2)
+                .filter(|pair| (pair[0][0] < 0.) != (pair[1][0] < 0.))
+                .count() as f32;
+            let expected = 2. * tone * 0.25 * 0.1;
+            assert!(
+                (crossings - expected).abs() <= 1.,
+                "slice {slice}: {crossings} vs {expected}"
+            );
         }
     }
 
@@ -2834,7 +2972,7 @@ mod tests {
 mod demand;
 pub use demand::SampleDemand;
 mod time_machine;
-mod beat_slices;
+pub(crate) mod beat_slices;
 mod tone_machine;
 
 /// [`stretch_block`] mixed into `output` the way `Cursor::render` mixes a
