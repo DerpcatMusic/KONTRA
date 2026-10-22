@@ -158,12 +158,35 @@ script over the slice table. If that holds, its parity depends on the script
 engine (the parity workbench), not on a DSP kernel. The timing and playback
 law are not recovered from this text alone.
 
+### Slice sequencer (slots 12, 13, 18) ported, not wired
+
+`crates/sampler-core/src/source/beat_slices.rs` ports the three `BSlice` methods:
+
+- Slot 12 (reset): skips entries with kind below 3, then sets the loop count
+  from the first active entry (`+0x18`; 0 means unbounded). `+0x88` is written
+  only when the walk advances, so it keeps its old value when entry 0 is
+  active. The port keeps that. Whether the caller zeroes it is not verified.
+  Position: `+0x74 = (int)pos` when the flag at `+0x50` is clear, else `+0x6c = 0`.
+- Slot 13 (settle): skips inactive entries from the current index; an entry of
+  kind 4 sets the loop count to 1.
+- Slot 18 (span): `start = (int)(ms * 0.001f * rate + 0.5f)` for `+0x90` and
+  `end` for `+0x94`, with `rate` the render field at `+0x27d00`. It is presumed
+  to be the sample rate (unconfirmed; the same field is a divisor elsewhere next
+  to the constant 16000). The constants are the
+  `.rdata` values `0x3a83126f` (0.001f) and `0x3f000000` (0.5f). Slot 18 also
+  sets `+0x38` from a call into the source player, which is not ported.
+
+Verification: unit tests only (golden values from the decompiled logic and the
+rdata constants). No native vector: the cursor state is not observable through
+the oracle, and no slice-playback capture has been made.
+
 ### Not recovered
 
-- The sequencer timing law and pattern source.
+- The pattern source and the meaning of the script-driven loop variables.
 - The meaning of stored `slice_float_1`, `slice_float_2`, `slice_flag_1`
   (`crates/sampler-kontakt/src/library.rs` `machine()`).
-- The slice-to-voice playback path (start, length, fade) and its render kernel.
+- The slice-to-voice playback path (fade, reverse) and the source player call
+  from slot 18.
 
 ## Gap table
 

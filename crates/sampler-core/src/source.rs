@@ -2818,6 +2818,7 @@ mod tests {
 mod demand;
 pub use demand::SampleDemand;
 mod time_machine;
+mod beat_slices;
 
 /// [`stretch_block`] mixed into `output` the way `Cursor::render` mixes a
 /// sampler voice: scaled by the voice envelope (when `enveloped`), `gain` and
