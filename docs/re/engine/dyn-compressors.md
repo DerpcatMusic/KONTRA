@@ -208,3 +208,38 @@ Unrecovered: the process function (the CompXT vtable entry is not yet
 located), each derived-state formula, the saved-field→index map for
 Supercharger, and the meaning of each index. Supercharger GT therefore stays
 `missing` in the parity matrix.
+
+## CompXT signal path (partial, 2026-10-22)
+
+Recovered structure (addresses are the Kontakt 8.13 binary; C in the export):
+
+- Block process: vtable slot 7 of the CompXT wrapper, `0x141aaa9e0`
+  (`0141aa0000.c:5955`, 685 bytes). Per frame it: reads the two channel
+  inputs, optionally replaces channel 0 by the mean of the last two
+  channels when the link flag `+0x2f1` is set (×0.5 at `DAT_14470bad0`),
+  sets trigger flags `+0x6d/+0x74/+0xa60` (and `+0x7b/+0x82/+0x5301`) when
+  the level exceeds `DAT_1479ab288`, calls the per-frame core
+  `0x141a95f00` through vtable slot 18, and writes the two outputs back.
+- Per-frame core `0x141a95f00` (`0141a90000.c:3161`, 1,431 bytes): a
+  peak/power detector with two one-pole followers per path. Each follower is
+  `s = (s − x)·c + x`, where `c` is the attack coefficient when `x` exceeds
+  the state and the release coefficient otherwise (state pairs at
+  `+0x340/+0x358/+0x360`, `+0x378/+0x390/+0x398`, `+0x3b0/+0x3c8/+0x3d0`,
+  `+0x3e8…`, `+0x420/+0x438/+0x440`, `+0x458/+0x470/+0x478`,
+  `+0x490/+0x4a8/+0x4b0`). Coefficients are set by the prepare routine
+  `0x141aa2400` (`exp(−1/(t·Fs))`, `DAT_14470bb18`, `DAT_144714908`).
+- Look-ahead window: `FUN_141a964a0` (`0141a90000.c:3381`, 3,392 bytes),
+  a sliding window with a decay state per channel (`+0x500`, `+0x15c0`,
+  coefficients `+0x2d0`, `+0x2d8`). Same family as the Kontakt Pro "33
+  Windowed" stage; not yet compared sample-for-sample.
+- Gain smoother: a one-pole on the detected level at `+0x4c0` with attack
+  `+0x4d8` and release `+0x4e0`.
+- Parameter setter `0x141ac7450` (index guard `> 0x58`); the per-index
+  table in the section above.
+
+Still unrecovered: the gain-computer law (the mapping from detected level
+to gain, which the one-pole smoother acts on), `FUN_141a964a0`'s
+coefficient and reset rules, how the effect's saved fields and the
+engine-parameter ids (`0x3a8`…`0x3ab` saturation/character/link modes) reach
+the setter indices, and the saturation and character transfer curves.
+No Rust port has been written for CompXT yet.
