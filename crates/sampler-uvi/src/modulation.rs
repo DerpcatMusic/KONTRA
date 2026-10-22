@@ -1053,10 +1053,9 @@ impl Translation {
             return;
         }
         let value = if shared.master {
-            for m in &shared.modulators {
-                self.ir.modulators[m.0].scope = ir::Scope::Master;
-            }
-            "one instance restarted by every note-on (overlapping notes: inferred, not measured)"
+            // The native runtime refuses a retriggered Master LFO outside MPE
+            // (no global owner), so it plays one instance per voice instead.
+            "one instance in UVI restarted by every note-on; approximated per voice (overlapping notes: inferred, not measured)"
         } else {
             "one shared instance in UVI, approximated per voice; activation ownership is unproved, so the routing keygroup owns the output"
         };
@@ -2219,8 +2218,8 @@ mod tests {
             features,
             ["Program-level LFO", "LFO rate modulated by a live source"]
         );
-        // A program-level retriggered LFO is one instance restarted by every note.
-        assert_eq!(ir.modulators[route.source.0].scope, ir::Scope::Master);
+        // A program-level retriggered LFO plays per voice (approximated, warned).
+        assert_eq!(ir.modulators[route.source.0].scope, ir::Scope::Voice);
         assert!(ir.unsupported[0].value.contains("inferred, not measured"));
     }
 }
