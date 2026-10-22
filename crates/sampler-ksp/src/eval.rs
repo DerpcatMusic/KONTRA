@@ -1512,17 +1512,38 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                 }
                 V::I(0)
             }
-            MoveControl | MoveControlPx => {
+            MoveControl => {
                 if let Some(ui) = self.ui_of(Self::var(args, 0, span)?) {
                     let id = b::FIRST_UI_ID + ui as i32;
                     let (x, y) = (self.int(args, 1)?, self.int(args, 2)?);
-                    let (px, py) = if builtin == MoveControl {
-                        (GRID_X, GRID_Y)
-                    } else {
-                        (b::CONTROL_PAR_POS_X, b::CONTROL_PAR_POS_Y)
-                    };
-                    self.st.properties.insert((id, px), x);
-                    self.st.properties.insert((id, py), y);
+                    self.st.properties.insert((id, GRID_X), x);
+                    self.st.properties.insert((id, GRID_Y), y);
+                }
+                V::I(0)
+            }
+            MoveControlPx => {
+                if let Some(ui) = self.ui_of(Self::var(args, 0, span)?) {
+                    let id = b::FIRST_UI_ID + ui as i32;
+                    let (x, y) = (self.int(args, 1)?, self.int(args, 2)?);
+                    if x > 1000 {
+                        self.warn(span, "move_control_px(): X position must be between 0 and 1000 pixels!");
+                    }
+                    if y > 750 {
+                        self.warn(span, "move_control_px(): Y position must be between 0 and 750 pixels!");
+                    }
+                    // Kontakt sets or clears only the whole-control hide bit; a negative
+                    // position sets it and leaves the placement alone.
+                    let hide = self.st.properties.get(&(id, b::CONTROL_PAR_HIDE)).copied().unwrap_or(0);
+                    match crate::ui::px_move(x, y) {
+                        Some((x, y)) => {
+                            self.st.properties.insert((id, b::CONTROL_PAR_HIDE), hide & !b::HIDE_WHOLE_CONTROL);
+                            self.st.properties.insert((id, b::CONTROL_PAR_POS_X), x);
+                            self.st.properties.insert((id, b::CONTROL_PAR_POS_Y), y);
+                        }
+                        None => {
+                            self.st.properties.insert((id, b::CONTROL_PAR_HIDE), hide | b::HIDE_WHOLE_CONTROL);
+                        }
+                    }
                 }
                 V::I(0)
             }
