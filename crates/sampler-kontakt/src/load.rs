@@ -720,24 +720,37 @@ fn saved_values(state: &[(String, ir::Saved)]) -> sampler_ksp::SavedValues {
 }
 
 /// The data-folder `.nka` files a script loads with a literal
-/// `load_array(<array>, 2)`, by lowercase array name without its sigil.
+/// `load_array(<array>, 2)`, by lowercase array name without its sigil, and the
+/// reason for each file the resources could not provide when the host knows one.
 fn data_arrays(
     source: &str,
     resources: &mut Resources,
-) -> std::collections::BTreeMap<String, Vec<u8>> {
-    source
+) -> (
+    std::collections::BTreeMap<String, Vec<u8>>,
+    std::collections::BTreeMap<String, String>,
+) {
+    let mut files = std::collections::BTreeMap::new();
+    let mut reasons = std::collections::BTreeMap::new();
+    let stems = source
         .split("load_array(")
         .skip(1)
         .filter_map(|call| {
             let (array, mode) = call.split_once(')')?.0.split_once(',')?;
             let stem = array.trim().get(1..)?.to_lowercase();
             (mode.trim() == "2" && !stem.is_empty()).then_some(stem)
-        })
-        .filter_map(|stem| {
-            let bytes = resources.read(&format!("Resources/data/{stem}.nka"))?;
-            Some((stem, bytes))
-        })
-        .collect()
+        });
+    for stem in stems {
+        match resources.read_result(&format!("Resources/data/{stem}.nka")) {
+            Ok(Some(bytes)) => {
+                files.insert(stem, bytes);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                reasons.insert(stem, error.to_string());
+            }
+        }
+    }
+    (files, reasons)
 }
 
 /// What a script may query while its `on init` runs.
@@ -795,6 +808,7 @@ fn script_environment_with_zones(
         instrument_persisted: None,
         performance_view,
         data_arrays: Default::default(),
+        data_array_reasons: Default::default(),
         midi_object: Default::default(),
         folders: Default::default(),
     }
@@ -928,7 +942,7 @@ pub(crate) fn initialize_scripts_with_zones(
                 Some(&zone_parameters),
             );
             if let Some(resources) = resources.as_ref() {
-                environment.data_arrays =
+                (environment.data_arrays, environment.data_array_reasons) =
                     data_arrays(&behavior.source, &mut resources.borrow_mut());
             }
             environment.snapshot_mode = snapshot_mode;
