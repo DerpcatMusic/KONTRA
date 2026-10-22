@@ -153,6 +153,8 @@ pub enum Processor {
     /// Formant I (or Formant II when `second`) with Talk, Sharp, Size as event-rate lanes
     /// (KSP ENGINE_PAR_FORMANT_*).
     LiveFormant { knobs: [Parameter; 3], second: bool },
+    /// Script-addressed Phaser filter (type 13): Cutoff and Resonance lanes, native clock.
+    LivePhaser { knobs: [Parameter; 2] },
     StateVariable(StateVariableFilter),
     /// One band of the universal EQ superset (Kontakt legacy, Solid, generic RBJ, scripted UVI).
     Eq(eq_family::EqBand),
@@ -226,6 +228,7 @@ impl Processor {
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::LiveFormant { knobs, .. } => knobs.iter().all(live_knob),
+            Processor::LivePhaser { knobs } => knobs.iter().all(live_knob),
             Processor::S1200(stage) => stage.valid(),
             Processor::Mp60(stage) => stage.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
@@ -298,6 +301,8 @@ pub(super) enum PreparedProcessor {
     },
     Dynamics(dynamics::Dynamics),
     LiveFormant { knobs: [control::PreparedParameter; 3], second: bool, rate: u32 },
+    /// Cutoff and Resonance lanes; the clock state lives in `offset`'s cells of the delay slab.
+    LivePhaser { knobs: [control::PreparedParameter; 2], offset: usize },
     Formant(formant::Formant),
     Color {
         color: color::Color,
@@ -382,7 +387,7 @@ impl PreparedProcessor {
                 color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
-                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
+                | Self::LiveFormant { .. } | Self::LivePhaser { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
                 | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. }) => OperationOwner::Scalar(scalar),
         }
     }
@@ -399,6 +404,7 @@ impl PreparedProcessor {
             Self::TimeMod { timemod, offset, live } => ProcessorRef::TimeMod { timemod, offset, live },
             Self::Dynamics(x) => ProcessorRef::Dynamics(x),
             Self::LiveFormant { knobs, second, rate } => ProcessorRef::LiveFormant { knobs, second, rate },
+            Self::LivePhaser { knobs, offset } => ProcessorRef::LivePhaser { knobs, offset },
             Self::Formant(x) => ProcessorRef::Formant(x),
             Self::Color { color, offset } => ProcessorRef::Color { color, offset },
             Self::Filter { engine, offset } => ProcessorRef::Filter { engine, offset },
@@ -448,6 +454,7 @@ pub(super) enum ProcessorRef<'a> {
     TimeMod { timemod: &'a timemod::TimeMod, offset: &'a usize, live: &'a PreparedKnobs },
     Dynamics(&'a dynamics::Dynamics),
     LiveFormant { knobs: &'a [control::PreparedParameter; 3], second: &'a bool, rate: &'a u32 },
+    LivePhaser { knobs: &'a [control::PreparedParameter; 2], offset: &'a usize },
     Formant(&'a formant::Formant),
     Color { color: &'a color::Color, offset: &'a usize },
     Filter { engine: &'a filter::Engine, offset: &'a usize },
@@ -830,6 +837,11 @@ pub(super) fn compile_processors(
                     second,
                     rate,
                 },
+                Processor::LivePhaser { knobs } => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(filter::phaser::CELLS).ok_or(Error::Capacity)?;
+                    PreparedProcessor::LivePhaser { knobs: knobs.map(|k| k.compile(bindings)), offset }
+                }
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
             Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
             Processor::S1200(stage) => {
@@ -1303,6 +1315,7 @@ impl ProcessorState {
             | ProcessorRef::Dynamics(_)
             | ProcessorRef::Formant(_)
             | ProcessorRef::LiveFormant { .. }
+            | ProcessorRef::LivePhaser { .. }
             | ProcessorRef::Eq(_)
             | ProcessorRef::ControlMatrix(_)
             | ProcessorRef::Branch { .. }
@@ -1556,6 +1569,16 @@ pub(super) fn process<'a, const TRACE: bool>(
             ProcessorRef::LiveFormant { knobs, second, rate } => {
                 let [talk, sharp, size] = knobs.map(|k| k.value(parameters, at, None) as f32);
                 formant::Formant::compile([talk, sharp, size], *second, *rate).process(state, block, len)
+            }
+            ProcessorRef::LivePhaser { knobs, offset } => {
+                let cells = &mut delay_samples[*offset..*offset + filter::phaser::CELLS];
+                let mut clock = filter::phaser::PhaserClock::load(cells);
+                let [left, right] = block;
+                clock.process(
+                    |position| knobs.map(|k| k.value(parameters, at + position as u64, None) as f32),
+                    [&mut left[..len], &mut right[..len]],
+                );
+                clock.store(cells);
             }
             ProcessorRef::Filter { engine, offset } => {
                 fault |= engine.process(
@@ -2573,5 +2596,90 @@ mod pan_preparation_work_tests {
         assert!(control[0].batch_index().is_none());assert!(matches!(control.view(0).pre.get(0),ProcessorRef::Pan{..}));
         let expression=compile(Parameter::Constant(0.25),true);
         assert!(expression[0].batch_index().is_none());assert!(matches!(expression.view(0).pre.get(0),ProcessorRef::Pan{..}));
+    }
+}
+
+#[cfg(test)]
+mod live_phaser_processor_tests {
+    use super::*;
+
+    /// Production processor path: `compile_processors` (the prepare step of a voice chain) and
+    /// `process` (the per-block entry), with Cutoff and Resonance as live lanes that move across
+    /// host calls. Compared with the native host-call schedules in `phaser_kemu_vectors.json`.
+    #[test]
+    fn live_phaser_lanes_match_native_vectors_through_the_processor_path() {
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("dsp/filter/phaser_kemu_vectors.json")).unwrap();
+        let values = |v: &serde_json::Value| -> Vec<f64> {
+            v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+        };
+        let mut failures = Vec::new();
+        for case in file["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let rate = case["rate"].as_f64().unwrap() as u32;
+            let stim = values(&case["stim"]);
+            let native = values(&case["out"]);
+            let knob = |id| {
+                Parameter::Control(ControlRange { control: crate::ControlId(id), low: 0.0, high: 1.0, ramp_frames: 0 })
+            };
+            let mut bindings = Vec::new();
+            let mut delay_frames = 0usize;
+            let stages = compile_processors(
+                Box::new([Processor::LivePhaser { knobs: [knob(1), knob(2)] }]),
+                rate,
+                &mut bindings,
+                &mut delay_frames,
+                &mut svf::FilterRegistryBuilder::default(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(bindings.len(), 2, "{name}: lanes are cutoff then resonance");
+            let mut states = [ProcessorState::default()];
+            let mut delay = vec![[0.; 2]; delay_frames];
+            let mut filters = svf::FilterBank::new(&svf::PreparedFilters::default(), 0).unwrap();
+            let mut out = Vec::with_capacity(stim.len());
+            let mut at = 0usize;
+            for call in case["calls"].as_array().unwrap() {
+                let (cut, res) = (call[0].as_f64().unwrap(), call[1].as_f64().unwrap());
+                let frames = call[2].as_u64().unwrap() as usize;
+                // Each host call writes its goals; the clock samples the lanes at its segments.
+                let parameters = [
+                    ControlRamp::test_ramp(cut, cut, at as u64, 0),
+                    ControlRamp::test_ramp(res, res, at as u64, 0),
+                ];
+                let mut block = [[0.; BLOCK]; 2];
+                for i in 0..frames {
+                    block[0][i] = stim[at + i];
+                    block[1][i] = stim[at + i];
+                }
+                let mut context = svf::FilterContext {
+                    tempo: 120.0,
+                    bank: &mut filters,
+                    spaces: &mut [],
+                    expression: None,
+                };
+                assert!(!super::process::<false>(
+                    &stages[..],
+                    &mut states,
+                    &mut block,
+                    frames,
+                    &parameters,
+                    at as u64,
+                    &mut delay,
+                    &mut context,
+                    None,
+                ));
+                out.extend_from_slice(&block[0][..frames]);
+                at += frames;
+            }
+            assert_eq!(at, stim.len(), "{name}: call sizes do not cover the stimulus");
+            let peak = native.iter().fold(1e-6f64, |m, v| m.max(v.abs()));
+            let worst = out.iter().zip(&native).fold(0f64, |m, (a, b)| m.max((a - b).abs())) / peak;
+            println!("{name}: processor path worst error {worst:e} of peak");
+            if worst >= 1e-5 {
+                failures.push(format!("{name}: worst error {worst:e} of peak"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
