@@ -4,6 +4,7 @@ pub mod filter;
 pub mod eq;
 pub mod timemod;
 pub mod ringmod;
+pub mod stereo_tune;
 pub mod space;
 pub mod color;
 pub mod kolor;
