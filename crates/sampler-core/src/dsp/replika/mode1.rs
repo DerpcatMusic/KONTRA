@@ -161,7 +161,7 @@ pub(super) fn native_cos_fold(v: f32) -> (f32, f32) {
 /// `|t| > 1`, `+0x38` slope offset) and its ADAA; when the step is below 1e-4 the derivative
 /// `s + sum d_i sin(c_i s)` is used at `s = clamp(t, -1, 1)` (`141aa31f0`, `14199ae00`). The trig, the table
 /// and the section steps keep the native operation order, so the state matches bit for bit before the ADAA.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WriteFilter {
     /// `+0x00..+0x0c`: derivative weights d_i.
     d: [f32; 4],
@@ -272,6 +272,78 @@ impl WriteFilter {
     }
 }
 
+impl WriteFilter {
+    /// The lane object as the native has it: `words` is the 0x1480-byte object (1312 u32). Offsets are the
+    /// native ones (`/4` for words). The MT ring is `+0xc4..+0x1440` (1248 entries, word `48 + k` for k in
+    /// 1..=1248) with the index at `+0xc0`: index p <= 624 is the block at ring[1..=624] at position p, index
+    /// p > 624 is the block at ring[625..=1248] at position p - 624 (`1410ec0c0` twists into the other half).
+    pub(super) fn from_object(words: &[u32]) -> WriteFilter {
+        let f = |off: usize| f32::from_bits(words[off / 4]);
+        let sec = |o: usize| {
+            let state = State {
+                s0: f(o),
+                s1: f(o + 4),
+            };
+            (
+                Section::from_coefficients(f(o + 8), f(o + 12), f(o + 16)),
+                state,
+            )
+        };
+        let p = words[48] as usize;
+        let (block, i) = if p <= 624 {
+            (1..=624, p)
+        } else {
+            (625..=1248, p - 624)
+        };
+        let mut s = [0u32; 624];
+        for (j, k) in block.enumerate() {
+            s[j] = words[48 + k];
+        }
+        WriteFilter {
+            d: [f(0x00), f(0x04), f(0x08), f(0x0c)],
+            w: [f(0x10), f(0x14), f(0x18), f(0x1c)],
+            c: [f(0x20), f(0x24), f(0x28), f(0x2c)],
+            prev_t: f(0x30),
+            in_gain: f(0x34),
+            lin: f(0x38),
+            prev_f: f(0x3c),
+            konst: f(0x40),
+            env: f(0x50),
+            env_coef: f(0x54),
+            env_idx: f(0x1458),
+            dither_lo: f(0x1448),
+            dither_hi: f(0x144c),
+            dither_gain: f(0x1470),
+            in_scale: f(0x1464),
+            out_gain: f(0x1468),
+            adaa_k: f(0x146c),
+            prev_z: f(0x145c),
+            prev_cubic: f(0x1460),
+            sec_a: sec(0x58),
+            sec_b: sec(0x8c),
+            mt: Mt { s, i },
+        }
+    }
+
+    /// The scalar state the write touches, in the order of the `wf` fields of `replika-native-head-write-*.json`:
+    /// `+0x30`, `+0x3c`, `+0x50`, `+0x1458`, the sections' integrators `+0x58/+0x5c` and `+0x8c/+0x90`, `+0x145c`, `+0x1460`.
+    #[cfg(test)]
+    pub(super) fn probe(&self) -> [f32; 10] {
+        [
+            self.prev_t,
+            self.prev_f,
+            self.env,
+            self.env_idx,
+            self.sec_a.1.s0,
+            self.sec_a.1.s1,
+            self.sec_b.1.s0,
+            self.sec_b.1.s1,
+            self.prev_z,
+            self.prev_cubic,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,58 +406,6 @@ mod tests {
             .expect("vector json")
     }
 
-    /// The lane object as the native has it: `words` is the 0x1480-byte object (1312 u32). Offsets are the
-    /// native ones (`/4` for words). The MT ring is `+0xc4..+0x1440` (1248 entries, word `48 + k` for k in
-    /// 1..=1248) with the index at `+0xc0`: index p <= 624 is the block at ring[1..=624] at position p, index
-    /// p > 624 is the block at ring[625..=1248] at position p - 624 (`1410ec0c0` twists into the other half).
-    fn load(words: &[u32]) -> WriteFilter {
-        let f = |off: usize| f32::from_bits(words[off / 4]);
-        let sec = |o: usize| {
-            let state = State {
-                s0: f(o),
-                s1: f(o + 4),
-            };
-            (
-                Section::from_coefficients(f(o + 8), f(o + 12), f(o + 16)),
-                state,
-            )
-        };
-        let p = words[48] as usize;
-        let (block, i) = if p <= 624 {
-            (1..=624, p)
-        } else {
-            (625..=1248, p - 624)
-        };
-        let mut s = [0u32; 624];
-        for (j, k) in block.enumerate() {
-            s[j] = words[48 + k];
-        }
-        WriteFilter {
-            d: [f(0x00), f(0x04), f(0x08), f(0x0c)],
-            w: [f(0x10), f(0x14), f(0x18), f(0x1c)],
-            c: [f(0x20), f(0x24), f(0x28), f(0x2c)],
-            prev_t: f(0x30),
-            in_gain: f(0x34),
-            lin: f(0x38),
-            prev_f: f(0x3c),
-            konst: f(0x40),
-            env: f(0x50),
-            env_coef: f(0x54),
-            env_idx: f(0x1458),
-            dither_lo: f(0x1448),
-            dither_hi: f(0x144c),
-            dither_gain: f(0x1470),
-            in_scale: f(0x1464),
-            out_gain: f(0x1468),
-            adaa_k: f(0x146c),
-            prev_z: f(0x145c),
-            prev_cubic: f(0x1460),
-            sec_a: sec(0x58),
-            sec_b: sec(0x8c),
-            mt: Mt { s, i },
-        }
-    }
-
     /// The native write filter (kemu, `141aa3c60` on the head-0 lane objects after a mode-1 run, noise in)
     /// matches the Rust filter sample by sample, left and right. The dither is the native MT stream from the
     /// object's own ring, so the draws are compared too.
@@ -399,7 +419,7 @@ mod tests {
                 .iter()
                 .map(|v| v.as_u64().expect("u32") as u32)
                 .collect();
-            let mut wf = load(&words);
+            let mut wf = WriteFilter::from_object(&words);
             let (xs, ys) = (floats(&doc["x"]), floats(&doc["y"]));
             let max = xs
                 .iter()
