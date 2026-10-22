@@ -4,6 +4,7 @@ use super::LedgerEntry;
 use sampler_parity::Status;
 const MISSING: &str = "No frontend implementation in the current profile";
 const INIT_ONLY: &str = "Restricted to on init: compile-time rejection outside it matches Kontakt; runtime effect is modeled";
+const GET_UI_ID: &str = "Undeclared or non-UI operands are rejected with Kontakt's text; ids are KONTRA-assigned, not Kontakt's numbers";
 const SUBSET: &str = "Implemented subset; native fidelity or host binding is not fully verified";
 const VALUE: &str = "Typed value operation covered by the KSP compiler/runtime fixtures";
 const GLOBAL: &str = "Accepted and ignored: the plugin has no global key/scale service";
@@ -1855,7 +1856,7 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "get_scale_name", status: Status::Approximate, owner: "crates/sampler-ksp/src/eval.rs:1039", spec: "docs/architecture-v2/KSP_PARITY.md", detail: SUBSET },
     LedgerEntry { name: "get_sel_zones_idx", status: Status::Unsupported, owner: "crates/sampler-ksp/src/sema.rs:37", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_sel_zones_idx--", detail: MISSING },
     LedgerEntry { name: "get_target_idx", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2132", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_target_idx--", detail: SUBSET },
-    LedgerEntry { name: "get_ui_id", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2549", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_id--", detail: SUBSET },
+    LedgerEntry { name: "get_ui_id", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:2549", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_id--", detail: GET_UI_ID },
     LedgerEntry { name: "get_ui_wf_property", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1616", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#get_ui_wf_property--", detail: SUBSET },
     LedgerEntry { name: "get_voice_limit", status: Status::Stub, owner: "crates/sampler-ksp/src/eval.rs:1835", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#get_voice_limit--", detail: ZONE_STUB },
     LedgerEntry { name: "get_zone_id", status: Status::Approximate, owner: "crates/sampler-ksp/src/eval.rs:1835", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#get_zone_id--", detail: SUBSET },

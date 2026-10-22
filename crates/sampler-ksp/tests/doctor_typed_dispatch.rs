@@ -22,7 +22,10 @@ fn get_ui_id_rejects_non_ui_declared_variables_at_the_operand_span() {
         ] {
             assert_eq!(error.kind, Kind::Error);
             assert_eq!(error.offset, source.rfind("$plain").unwrap());
-            assert_eq!(error.message, "get_ui_id requires a UI control");
+            assert_eq!(
+                error.message,
+                "get_ui_id(): \"$plain\" was not declared or is not allowed here!"
+            );
         }
     }
 }
