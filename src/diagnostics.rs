@@ -1872,6 +1872,13 @@ impl LoadTrace {
         }
         self.issue_details("scripts", code, message, details);
     }
+    /// KSP symbols that are simplified, stubbed or unsupported: one entry per script and code,
+    /// with the SYMBOLS.tsv status that `ksp_symbols.py doctor` reports for the same symbol.
+    pub fn ksp_symbols(&mut self, reports: &[sampler_parity::ScriptReport]) {
+        for issue in ksp::symbol_issues(reports) {
+            self.issue_details("scripts", issue.code, issue.message, issue.details);
+        }
+    }
     /// Translator diagnostics use typed keys; authored values and names never enter them.
     pub fn missing(
         &mut self,
