@@ -2875,6 +2875,12 @@ impl Translation {
     ) -> Option<ir::RouteRef> {
         let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
+            // A zero-intensity route to a destination we do not model has no depth,
+            // so it cannot change the sound: nothing to report. Routes with a
+            // live intensity (or other features) still report.
+            if i == 0. && matches!(feature, "modulation target" | "modulation of a module parameter") {
+                return None;
+            }
             let destination = target.slot.map_or_else(String::new, |slot| format!(" destination slot {slot}"));
             this.unsupported(
                 at,
@@ -4968,6 +4974,31 @@ mod modulation {
         t.apply_intensity_scales();
         assert_eq!(t.ir.routes[0].scale, None);
         assert!(t.ir.unsupported.iter().any(|u| u.feature == "modulation of a modulator's intensity"));
+    }
+
+    /// A zero-intensity route to a destination that is not modeled is inert: no
+    /// route, no report. A non-zero one still reports.
+    #[test]
+    fn zero_intensity_unmodeled_routes_are_silent() {
+        let mut out = translation();
+        out.ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Constant,
+        });
+        let source = ir::ModulatorRef(out.ir.modulators.len() - 1);
+        let silent = ModTarget {
+            slot: Some(3),
+            ..target("frequency", 0.0)
+        };
+        assert!(out.route("g", source, true, &silent, None).is_none());
+        assert!(out.ir.unsupported.is_empty());
+        let live = ModTarget {
+            slot: Some(3),
+            ..target("frequency", 0.5)
+        };
+        assert!(out.route("g", source, true, &live, None).is_none());
+        assert_eq!(out.ir.unsupported.len(), 1);
+        assert_eq!(out.ir.unsupported[0].feature, "modulation of a module parameter");
     }
 
     #[test]
@@ -7096,6 +7127,12 @@ impl Translation {
                 .collect();
             for r in targets {
                 let (saved, unit) = self.route_intensity.get(&r).copied().unwrap_or((f64::NAN, f64::NAN));
+                // Saved intensities of ±1e-7 are float32 residue from the file: the
+                // route is silent, so an intensity scale on it cannot be heard.
+                // ponytail: 1e-6 cutoff, a route this small is below the output's float32 noise floor.
+                if saved.is_finite() && saved.abs() <= 1e-6 {
+                    continue;
+                }
                 let route = &self.ir.routes[r];
                 let reason = why.clone().or_else(|| {
                     if !unit.is_finite() || unit == 0. || !(0. ..=1.).contains(&saved) {
