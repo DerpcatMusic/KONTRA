@@ -32,6 +32,13 @@ pub struct Note {
 pub const DEFAULT_SEQUENCE: &str =
     "60:100:0:0.9,64:90:0.5:0.9,67:80:1:0.9,60:110:1.5:1.5,64:100:1.5:1.5,67:100:1.5:1.5";
 
+/// `file.nkm#N` names program N of a multi; a plain path is a single instrument.
+fn program_path(arg: &Path) -> Option<(std::path::PathBuf, usize)> {
+    let text = arg.to_str()?;
+    let (path, index) = text.rsplit_once('#')?;
+    Some((path.into(), index.parse().ok()?))
+}
+
 /// `key:velocity:start:length` notes, comma separated.
 pub fn parse(sequence: &str) -> Result<Vec<Note>, String> {
     sequence
@@ -244,6 +251,15 @@ pub fn run(
             .instrument
             .retain_zones(|z| keys.iter().any(|&k| z.keys.low <= k && k <= z.keys.high));
         kontakt.locations = kept.iter().map(|&a| kontakt.locations[a].clone()).collect();
+        sampler_kontakt::load_read(kontakt, &options, progress, || false)
+    } else if let Some((path, index)) = program_path(instrument) {
+        // `file.nkm#N`: program N of a multi, as the corpus survey addresses it.
+        let options = sampler_kontakt::Options {
+            library: Some(path.clone().into()),
+            ..options
+        };
+        let kontakt = sampler_kontakt::read_program(&path, index)
+            .map_err(|e| io::Error::other(e.to_string()))?;
         sampler_kontakt::load_read(kontakt, &options, progress, || false)
     } else {
         sampler_kontakt::load(instrument, &options, progress)
