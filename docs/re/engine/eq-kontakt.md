@@ -168,3 +168,40 @@ and Pro EQ (G9) are not closed in this pass.
   (live switches), plus the multi-slot legacy case. For G6, a sample-accurate
   measurement is needed: MIDI timing jitter (tens of ms) is too coarse for a
   20 ms glide, so the plan is a KSP-timed step against a continuous sine.
+
+## 7. Native probe-response check (2026-10-22)
+
+`solid::tests::sections_match_native_probe_responses` runs the composition of
+each section against the Wine-oracle probe rows in
+`docs/re/kontakt-bindings/solid-geq-responses.tsv` (LL pair, dB at 30..15000 Hz,
+48 kHz).
+
+| Section | Rows | Result |
+| --- | --- | --- |
+| LF shelf (shelf + two peaks) | geqA 1-9, 20 | matches, worst 0.033 dB (asserted) |
+| LF bell | geqA 10-19 | matches, worst 0.045 dB (asserted) |
+| HF bell, knob <= 0.5 | geqA 66-75 | matches within 0.1 dB (asserted) |
+| HF bell, knob >= 0.75 | geqA 72-75 | OPEN: native has a low-frequency term (about -25.7 dB at 30 Hz for knob 0.75 gain max, +3 dB for knob 1), not in our peak |
+| HF shelf | geqA 57-65, 76 | OPEN: gain=min rows match, gain=max rows do not (native +13.8 dB flat at knob 0, ours 0 to +19.9 dB) |
+| LMF | geqA 35-38 | partial: knob 0.75 q 0 matches (worst 0.06 dB); knob 0.25 q 0 is off by 2.9-13.6 dB; q 1 is off by up to 2.4 dB at 30 Hz |
+| HMF | geqA 53-56 | OPEN: worst 4.0 dB at 15 kHz, q 1 |
+
+Interpretation (not yet proven):
+- The mismatched rows are the ones where the bell centre is near the top of
+  its range, or where a section is near Nyquist. The native peaks are Orfanidis
+  designs with a prescribed Nyquist gain (`0x141ac4cf0`, `solid.rs` header). Our
+  `peak()` does not apply that Nyquist term, so the DC/low-frequency offset is
+  missing.
+- Decompile constants confirmed from the image (not guessed): `pi` =
+  4*atan2(1,1) at `0x14a6520b8`, shelf slope S = 0.55 (default) and 0.49 (other
+  bank) at `0x1479ab370` / `0x1479ab358`, peak Q 0.7 at `0x1479ab3b0`. The
+  shelf design `0x141abee60` has the same algebra as the RBJ high shelf with
+  that S. Its HF call matches the existing `high_shelf` with S 0.55, but the
+  LF shelf path in the decompile passes S 0.55/0.49, while the instruction-level
+  test (`coefficients_match_the_native_setter`) matches S 0.5. That conflict is
+  unresolved: the instruction-level test is the stronger evidence, so S 0.5 is
+  kept.
+
+Still open (no code in this pass): the glide writer for the per-knob increment
+(section 5), live switch semantics beyond the recompute path, bank 16, the HF
+shelf gain=max rows, the HF bell knob >= 0.75 rows, and the LMF/HMF rows above.

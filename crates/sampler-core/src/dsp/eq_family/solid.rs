@@ -526,4 +526,99 @@ mod tests {
             }
         }
     }
+
+    /// Magnitude in dB of the cascade `sections` ([b0, b1, b2, a1, a2] each) at `hz`.
+    fn cascade_db(sections: &[[f64; 5]], hz: f64, rate: f64) -> f64 {
+        let w = std::f64::consts::TAU * hz / rate;
+        let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2. * w).cos(), (2. * w).sin());
+        sections
+            .iter()
+            .map(|c| {
+                let [b0, b1, b2, a1, a2] = *c;
+                let (nr, ni) = (b0 + b1 * c1 + b2 * c2, -(b1 * s1 + b2 * s2));
+                let (dr, di) = (1. + a1 * c1 + a2 * c2, -(a1 * s1 + a2 * s2));
+                10. * ((nr * nr + ni * ni) / (dr * dr + di * di)).log10()
+            })
+            .sum()
+    }
+
+    /// Native probe responses (Wine oracle, `docs/re/kontakt-bindings/solid-geq-responses.tsv`,
+    /// LL pair, dB at 30..15000 Hz). Each row: section, knobs (freq, q, gain) and the native dB.
+    /// Only rows the composition matches are asserted (LF shelf, LF bell, HF bell with knob <= 0.5);
+    /// the open rows are listed in docs/re/engine/eq-kontakt.md section 7.
+    /// The native measurement reads about 0.02 dB low at mid frequencies, so the tolerance is 0.1.
+    #[test]
+    fn sections_match_native_probe_responses() {
+        use SolidSection::*;
+        const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+        #[rustfmt::skip]
+        let rows: &[(&str, f64, f64, f64, [f64; 10])] = &[
+        ("LFSHELF", 0.0, 0.0, 1.0, [15.51, 11.77, 8.25, 3.83, 0.26, -0.5, -0.3, -0.08, -0.04, -0.03]), // 1 LF freq=0 gain=max
+        ("LFSHELF", 0.25, 0.0, 1.0, [19.25, 16.45, 12.85, 7.54, 1.7, -0.57, -0.68, -0.19, -0.07, -0.04]), // 2 LF freq=250000 gain=max
+        ("LFSHELF", 0.5, 0.0, 1.0, [20.84, 20.79, 18.66, 13.32, 5.61, 0.76, -1.23, -0.54, -0.17, -0.09]), // 3 LF freq=500000 gain=max
+        ("LFSHELF", 0.75, 0.0, 1.0, [20.91, 21.4, 21.62, 19.33, 11.64, 5.19, -0.2, -1.41, -0.53, -0.26]), // 4 LF freq=750000 gain=max
+        ("LFSHELF", 1.0, 0.0, 1.0, [20.9, 21.17, 21.46, 20.59, 14.22, 7.7, 1.36, -1.67, -0.76, -0.38]), // 5 LF freq=1000000 gain=max
+        ("LFSHELF", 0.5, 0.0, 0.0, [-20.89, -20.84, -18.71, -13.37, -5.66, -0.81, 1.18, 0.5, 0.12, 0.04]), // 6 LF gain=0 freq=mid
+        ("LFSHELF", 0.5, 0.0, 0.25, [-8.96, -8.98, -8.48, -6.74, -2.82, -0.25, 0.65, 0.25, 0.05, 0.01]), // 7 LF gain=250000 freq=mid
+        ("LFSHELF", 0.5, 0.0, 0.75, [8.86, 8.87, 8.38, 6.65, 2.76, 0.2, -0.7, -0.3, -0.1, -0.06]), // 8 LF gain=750000 freq=mid
+        ("LFBELL", 0.0, 0.0, 1.0, [12.67, 10.68, 4.5, 1.29, 0.2, 0.03, -0.01, -0.02, -0.02, -0.02]), // 10 LF bell freq=0 gain=max
+        ("LFBELL", 0.0, 0.0, 0.0, [-12.71, -10.73, -4.54, -1.34, -0.25, -0.08, -0.04, -0.03, -0.02, -0.02]), // 11 LF bell freq=0 gain=min
+        ("LFBELL", 0.25, 0.0, 1.0, [3.75, 12.37, 14.63, 4.4, 0.81, 0.19, 0.03, -0.02, -0.02, -0.02]), // 12 LF bell freq=250000 gain=max
+        ("LFBELL", 0.25, 0.0, 0.0, [-3.8, -12.42, -14.68, -4.45, -0.86, -0.24, -0.08, -0.03, -0.03, -0.02]), // 13 LF bell freq=250000 gain=min
+        ("LFBELL", 0.5, 0.0, 1.0, [0.78, 2.89, 7.04, 17.54, 3.56, 0.98, 0.24, 0.02, -0.01, -0.02]), // 14 LF bell freq=500000 gain=max
+        ("LFBELL", 0.5, 0.0, 0.0, [-0.83, -2.94, -7.09, -17.59, -3.61, -1.03, -0.28, -0.07, -0.03, -0.03]), // 15 LF bell freq=500000 gain=min
+        ("LFBELL", 0.75, 0.0, 1.0, [0.13, 0.58, 1.58, 5.43, 16.33, 4.87, 1.39, 0.21, 0.03, -0.0]), // 16 LF bell freq=750000 gain=max
+        ("LFBELL", 0.75, 0.0, 0.0, [-0.18, -0.63, -1.62, -5.48, -16.38, -4.92, -1.44, -0.26, -0.08, -0.05]), // 17 LF bell freq=750000 gain=min
+        ("LFBELL", 1.0, 0.0, 1.0, [0.04, 0.21, 0.62, 2.33, 11.55, 10.99, 3.3, 0.57, 0.12, 0.03]), // 18 LF bell freq=1000000 gain=max
+        ("LFBELL", 1.0, 0.0, 0.0, [-0.08, -0.26, -0.67, -2.38, -11.6, -11.04, -3.35, -0.62, -0.16, -0.08]), // 19 LF bell freq=1000000 gain=min
+        ("LMF", 0.25, 0.0, 1.0, [0.65, -0.85, -2.14, 14.06, 23.7, 13.68, 7.73, -12.97, 4.68, 3.05]), // 35 LMF freq=250000 q=0 gain=max
+        ("LMF", 0.25, 1.0, 1.0, [4.06, 8.56, 12.55, 17.99, 20.66, 16.37, 10.82, 4.38, 1.46, 0.64]), // 36 LMF freq=250000 q=1000000 gain=max
+        ("LMF", 0.75, 0.0, 1.0, [0.01, 0.11, 0.34, 1.3, 5.48, 12.66, 18.45, 6.29, 2.14, 0.96]), // 37 LMF freq=750000 q=0 gain=max
+        ("LMF", 0.75, 1.0, 1.0, [-1.96, -0.46, 1.82, 6.45, 13.77, 18.84, 20.31, 14.57, 8.52, 4.82]), // 38 LMF freq=750000 q=1000000 gain=max
+        ("HMF", 0.25, 0.0, 1.0, [0.03, 0.18, 0.53, 1.91, 7.31, 16.51, 13.79, 4.34, 1.33, 0.56]), // 53 HMF freq=250000 q=0 gain=max
+        ("HMF", 0.25, 1.0, 1.0, [0.49, 1.73, 3.74, 8.12, 15.37, 20.08, 19.29, 12.19, 6.62, 3.86]), // 54 HMF freq=250000 q=1000000 gain=max
+        ("HMF", 0.75, 0.0, 1.0, [-0.02, -0.01, 0.02, 0.13, 0.89, 2.94, 7.65, 20.36, 10.15, 5.7]), // 55 HMF freq=750000 q=0 gain=max
+        ("HMF", 0.75, 1.0, 1.0, [3.73, 3.76, 3.82, 4.11, 5.7, 8.93, 13.78, 18.81, 14.67, 9.03]), // 56 HMF freq=750000 q=1000000 gain=max
+        ("HFSHELF", 0.0, 0.0, 1.0, [13.84, 13.89, 14.02, 14.3, 14.44, 14.47, 14.13, 12.96, 12.39, 12.24]), // 57 HF freq=0 gain=max
+        ("HFSHELF", 0.25, 0.0, 1.0, [8.69, 8.72, 8.78, 9.05, 9.69, 10.01, 10.76, 12.5, 13.14, 12.76]), // 58 HF freq=250000 gain=max
+        ("HFSHELF", 0.5, 0.0, 1.0, [-7.23, -7.18, -7.06, -6.55, -4.22, -1.64, 1.38, 7.73, 11.87, 12.98]), // 59 HF freq=500000 gain=max
+        ("HFSHELF", 0.75, 0.0, 1.0, [0.64, 0.64, 0.62, 0.56, 0.14, -1.18, -2.6, 0.69, 7.87, 12.49]), // 60 HF freq=750000 gain=max
+        ("HFSHELF", 1.0, 0.0, 1.0, [3.04, 3.04, 3.03, 3.01, 2.82, 2.17, 0.75, 0.5, 5.54, 11.82]), // 61 HF freq=1000000 gain=max
+        ("HFSHELF", 0.5, 0.0, 0.0, [-0.02, 0.0, 0.05, 0.28, 1.48, 0.4, -4.76, -12.54, -17.4, -19.18]), // 62 HF gain=0 freq=mid
+        ("HFSHELF", 0.5, 0.0, 0.25, [-0.02, -0.01, 0.03, 0.17, 0.93, 0.2, -3.23, -6.94, -7.95, -8.15]), // 63 HF gain=250000 freq=mid
+        ("HFSHELF", 0.5, 0.0, 0.75, [-0.03, -0.04, -0.07, -0.22, -0.98, -0.24, 3.19, 6.89, 7.9, 8.1]), // 64 HF gain=750000 freq=mid
+        ("HFSHELF", 0.5, 0.0, 1.0, [-7.23, -7.18, -7.06, -6.55, -4.22, -1.64, 1.38, 7.73, 11.87, 12.98]), // 65 HF gain=1000000 freq=mid
+        ("HFBELL", 0.0, 0.0, 1.0, [-0.01, 0.02, 0.11, 0.49, 2.86, 9.72, 13.36, 2.54, 0.63, 0.24]), // 66 HF bell freq=0 gain=max
+        ("HFBELL", 0.0, 0.0, 0.0, [-0.04, -0.07, -0.16, -0.54, -2.91, -9.77, -13.41, -2.59, -0.67, -0.29]), // 67 HF bell freq=0 gain=min
+        ("HFBELL", 0.25, 0.0, 1.0, [-0.02, -0.01, 0.01, 0.12, 0.82, 3.0, 9.88, 9.45, 2.67, 1.14]), // 68 HF bell freq=250000 gain=max
+        ("HFBELL", 0.25, 0.0, 0.0, [-0.03, -0.04, -0.06, -0.16, -0.87, -3.04, -9.93, -9.5, -2.72, -1.19]), // 69 HF bell freq=250000 gain=min
+        ("HFBELL", 0.5, 0.0, 1.0, [-0.02, -0.02, -0.02, 0.01, 0.17, 0.74, 2.7, 13.0, 10.99, 4.97]), // 70 HF bell freq=500000 gain=max
+        ("HFBELL", 0.5, 0.0, 0.0, [-0.02, -0.03, -0.03, -0.06, -0.22, -0.79, -2.75, -13.05, -11.04, -5.02]), // 71 HF bell freq=500000 gain=min
+        ("HFBELL", 0.75, 0.0, 1.0, [-25.71, -25.36, -24.64, -22.3, -16.37, -10.76, -4.93, 2.51, 9.65, 22.14]), // 72 HF bell freq=750000 gain=max
+        ("HFBELL", 0.75, 0.0, 0.0, [-0.02, -0.02, -0.03, -0.03, -0.08, -0.24, -0.84, -4.0, -11.07, -22.92]), // 73 HF bell freq=750000 gain=min
+        ("HFBELL", 1.0, 0.0, 1.0, [3.08, 3.08, 3.08, 3.08, 3.07, 3.05, 2.96, 2.43, 2.82, 9.28]), // 74 HF bell freq=1000000 gain=max
+        ("HFBELL", 1.0, 0.0, 0.0, [-0.02, -0.02, -0.02, -0.03, -0.05, -0.12, -0.38, -2.01, -6.16, -11.59]), // 75 HF bell freq=1000000 gain=min
+        ];
+        let mut worst = std::collections::BTreeMap::<&str, (f64, String)>::new();
+        for &(key, f, q, g, want) in rows.iter().filter(|r| matches!(r.0, "LFSHELF" | "LFBELL") || (r.0 == "HFBELL" && r.1 <= 0.5)) {
+            let sections: Vec<[f64; 5]> = match key {
+                "LFSHELF" => (0..3).map(|i| coefficients(LowFrequency, Kind::LowShelf, i, 48000., f, q, g)).collect(),
+                "LFBELL" => vec![coefficients(LowFrequency, Kind::Peak, 0, 48000., f, q, g)],
+                "HFBELL" => vec![coefficients(HighFrequency, Kind::Peak, 0, 48000., f, q, g)],
+                "HFSHELF" => (0..2).map(|i| coefficients(HighFrequency, Kind::HighShelf, i, 48000., f, q, g)).collect(),
+                "LMF" => vec![coefficients(LowMid, Kind::Peak, 0, 48000., f, q, g)],
+                _ => vec![coefficients(HighMid, Kind::Peak, 0, 48000., f, q, g)],
+            };
+            for (hz, db) in PROBES.iter().zip(want) {
+                let err = (cascade_db(&sections, *hz, 48000.) - db).abs();
+                let entry = worst.entry(key).or_insert((0., String::new()));
+                if err > entry.0 {
+                    *entry = (err, format!("f={f} q={q} g={g} at {hz} Hz"));
+                }
+            }
+        }
+        for (key, (err, _)) in &worst {
+            assert!(*err < 0.1, "{key}: worst {err:.3} dB");
+        }
+    }
 }
