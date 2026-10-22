@@ -321,9 +321,11 @@ fn binding148_explicit_wide_case(stream:bool){
 #[test]fn binding148_explicit_six_input_core_frequency_full(){binding148_explicit_wide_case(false);}
 #[test]fn binding148_explicit_six_input_core_frequency_streamed(){binding148_explicit_wide_case(true);}
 #[test]
-fn binding148_native_frequency_attachment_is_not_activated_by_historical_control_metadata(){
+fn binding148_native_frequency_attachment_is_approximated_with_unknown_law_warning(){
     let f=Fixture::new();let(target,_)=binding148_wide_paths(&f);let mut translated=sampler_uvi::translate_path(&target).unwrap();
     for profile in &mut translated.instrument.source_indices.uvi_native_processing{profile.requested=Some(sampler_ir::UviNativeLayout::Code2);}
-    let error=sampler_uvi::assemble_translated(translated,RATE).err().expect("unqualified native Frequency must refuse before Runtime").to_string();
-    assert!(error.contains("native Frequency connection attachment and typed parameter cadence are unqualified"),"{error}");
+    // Unmeasured UVI attachment cadence is approximated per voice, never refused,
+    // and stays visible as an UnknownLaw warning.
+    let loaded=sampler_uvi::assemble_translated(translated,RATE).expect("native Frequency is approximated, not refused");
+    assert!(loaded.instrument.unsupported.iter().any(|u|u.feature.contains("native Frequency connection attachment")&&u.reason==sampler_ir::Reason::UnknownLaw));
 }
