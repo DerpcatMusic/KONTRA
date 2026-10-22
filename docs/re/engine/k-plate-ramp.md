@@ -197,3 +197,31 @@ A per-frame ramp in our Plate needs, per core:
 
 Parity needs a native step capture (decay or low, 48 kHz): 960 linear frames if U1 is
 one-shot, or an exponential tail if the flags stay armed.
+
+## Implementation
+
+In the repo (branch `engine/plate-ramp`):
+
+- `crates/sampler-core/src/dsp/space/design/plate.rs`: `LaneRamp`, a private 8-lane
+  smoother with `set_target`, `tick_block` and `frame`. Lane 0 predelay, 1 decay,
+  2 core 7, 3 low, 4 high damp, 5 stereo. Lanes 6 and 7 have no setter case and stay
+  unused at 0. `N = max(1, int(sr·0.02/32 + 0.5))` (the f32 constant `0x3ca3d70b`),
+  `rate = 1/(32 N)`, `inc = (T - L)·rate`, snap when `inc² < 1e-15`, countdown N
+  blocks. The ramp is linear.
+- Tests (decompile-derived, one per behaviour): N for 48 kHz = 30 and 44.1 kHz = 28;
+  the lane reaches the target after N blocks and not before; the per-frame increment
+  is `(T - start)/(32 N)`; the snap rule. `impulse_matches_native` is unchanged.
+- Coefficients are not rebuilt by the smoother. The ponytail note on `LaneRamp` names
+  the per-block rebuild (native: per frame) and the upgrade path.
+
+Open: U1 (writer of the armed array `+0x163680`) is still not found. The ramp is linear
+until it proves otherwise. A native step capture settles it.
+
+Live path (checked 2026-10-22): none. The Plate lowers to a constant
+`Processor::Space` (`sampler-kontakt` `effects/space.rs` `plate()`, `slot_plate`).
+`Config::network` has `address: None`, and `Config::lanes()` returns nothing for
+`KontaktPlate` (only SparkVerb and Freeverb have lanes), so `live_knobs` is `None`.
+The only `Space::retune` caller (`dsp.rs`, the `ProcessorRef::Space` arm) needs live
+knobs. So `LaneRamp` is not reachable from a running instrument.
+
+No native ramp vector exists. Parity still needs a Kontakt step capture.
