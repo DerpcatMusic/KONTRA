@@ -24,6 +24,10 @@ read with `rg`; no C is pasted here.
 | `01405f0000.c:7486..7540` | UI per-machine visibility; internal id 1 shows the "DC Filter" control |
 | `0140580000.c:7363` | Undo label "Beat Machine activated" (the mode-change message only) |
 | `0140cd0000.c:4551..4600` | `FUN_140cd94c0` body (see Tone object below) |
+| `0140cd0000.c:5701` | Slot 18 `FUN_140cdab80`: crossfade frames from `+0x90`/`+0x94` and `+0x27d00` (Beat Machine) |
+| `0140d10000.c:7372..7398` | Machine init `FUN_140d1ba90`: `Slice Atk` to `+0x90`, `Slice Rel` to `+0x94`, `Transient` to `+0x9c` |
+| `0140960000.c:4300` | `FUN_140967c60`: sets the render rate `+0x27d00` (Hz; 44100 below 10) and `1000 / rate` |
+| `01408e0000.c:3903` | Call with the 44100 default rate |
 
 ## Vtable slots (cached rdata, `docs/re/kontakt-rdata/vtables.tsv.gz`)
 
@@ -139,54 +143,81 @@ object reads is not confirmed.
 ### Slice object
 
 - `FUN_140d20780` (`0140d20000.c:700`): 0x90-byte object, vtable `BSlice::vftable`,
-  zeroed, then `+0x54 = 32` (dword), `+0x58 = 600` (dword), `+0x5c = 0` (word),
-  `+0x8/+0xc = -1`, `+0x4c = 1.0f`. The meaning of 32 and 600 is not
-  recovered (slice count or a timing value are both possible; not claimed).
+  zeroed, then `+0x54 = 32` and `+0x58 = 600` (dwords), `+0x8/+0xc = -1`, `+0x4c = 1.0f`.
+  Slot 18 overwrites `+0x54` and `+0x58` with the crossfade frame counts (below), so
+  32 and 600 are only the frame values before the first slot-18 call.
 - A separate object at `0140a70000.c:4607` stores the `BSlice` vtable at a
   different offset; the link between that object and the group is unproven.
 
-### Internal-trigger rule (the only control-flow lead)
+### Stored controls (decompile, resolved this pass)
 
-`0140870000.c:5446` runs when a group has internal id 5 and the flag byte
-`+0xc38` is zero. The export shows that this path does not render audio. It
-emits **script text** that disallows the group's notes and then steps through
-slices: `$sliceIdx`, `$loopIdx`, `$loopCount`, `_num_slices(...)` and
-`_slice_idx_loop_start(group, loop)` for up to 7 loops.
+- The machine init `FUN_140d1ba90` (`0140d10000.c:7372..7398`) fills the control
+  struct by name through `FUN_14087d160` (a getter of the control's stored value):
+  `Slice Atk` goes to `+0x90`, `Slice Rel` to `+0x94` (both floats), `Transient` to
+  `+0x9c` (int). The record order is the same as the control order, so the stored
+  `slice_float_1` is **Slice Atk** and `slice_float_2` is **Slice Rel**, both in
+  milliseconds (the Kontakt manual describes Slice Atk/Rel as the crossfade times
+  between slices, p. 205). The same convention holds for Time Machine 1
+  (`machine_float_1` = Smooth, `machine_float_2` = Grain), see `time_stretch_writes.rs`.
+  Evidence: decompile plus that convention; no capture isolates the two values yet.
+- `slice_flag_1` is copied to `+0x99` and then to `+0x50` by slot 18. No control name in
+  the init list maps to `+0x99` (the init writes a u16 `1` at `+0x98`, so the byte is 0).
+  Its UI meaning is **not recovered**.
+- The render-context field `+0x27d00` is the **render sample rate in Hz** (float).
+  Setter `FUN_140967c60` (`0140960000.c:4300`) stores its argument there (and at
+  `+0x116c`), falls back to the constant 44100 when the value is below 10
+  (`.rdata` 10.0 at `0x144714a00`; default 44100 at `0x144f38d58`, also passed from
+  `01408e0000.c:3903`), and derives `1000 / rate` (ms per sample, a double at `+0x12158`).
 
-Inference (to be confirmed): the Beat Machine's timing is driven by generated
-script over the slice table. If that holds, its parity depends on the script
-engine (the parity workbench), not on a DSP kernel. The timing and playback
-law are not recovered from this text alone.
+### Crossfade law (slot 18, `FUN_140cdab80`, `0140cd0000.c:5701`)
 
-### Slice sequencer (slots 12, 13, 18) ported, not wired
+- Inputs: source object `+0x90` (Slice Atk, ms), `+0x94` (Slice Rel, ms), `+0x99`
+  (flag), render context `+0x27d00` (rate).
+- Outputs on the slice object: `+0x54` = attack frames, `+0x58` = release frames,
+  `+0x50` = flag, `+0x38` = a call result from the source player (not ported).
+- `frames = (int)(ms * 0.001f * rate + 0.5f)`, with the `.rdata` constants
+  `0x3a83126f` (0.001f) and `0x3f000000` (0.5f). The port's earlier names "slice start
+  and end" were wrong: these are crossfade lengths.
 
-`crates/sampler-core/src/source/beat_slices.rs` ports the three `BSlice` methods:
+### Slice sequencer (slots 12, 13) ported, not wired
 
-- Slot 12 (reset): skips entries with kind below 3, then sets the loop count
-  from the first active entry (`+0x18`; 0 means unbounded). `+0x88` is written
-  only when the walk advances, so it keeps its old value when entry 0 is
-  active. The port keeps that. Whether the caller zeroes it is not verified.
-  Position: `+0x74 = (int)pos` when the flag at `+0x50` is clear, else `+0x6c = 0`.
-- Slot 13 (settle): skips inactive entries from the current index; an entry of
-  kind 4 sets the loop count to 1.
-- Slot 18 (span): `start = (int)(ms * 0.001f * rate + 0.5f)` for `+0x90` and
-  `end` for `+0x94`, with `rate` the render field at `+0x27d00`. It is presumed
-  to be the sample rate (unconfirmed; the same field is a divisor elsewhere next
-  to the constant 16000). The constants are the
-  `.rdata` values `0x3a83126f` (0.001f) and `0x3f000000` (0.5f). Slot 18 also
-  sets `+0x38` from a call into the source player, which is not ported.
+`crates/sampler-core/src/source/beat_slices.rs` ports the sequencer and the slot-18
+law (now named `attack` / `release` and `crossfade`):
 
-Verification: unit tests only (golden values from the decompiled logic and the
-rdata constants). No native vector: the cursor state is not observable through
-the oracle, and no slice-playback capture has been made.
+- Slot 12 (reset): skips entries with kind below 3, then sets the loop count from the
+  first active entry (`+0x18`; 0 means unbounded). `+0x88` is written only when the
+  walk advances. Position: `+0x74 = (int)pos` when the flag at `+0x50` is clear, else
+  `+0x6c = 0`.
+- Slot 13 (settle): skips inactive entries from the current index; an entry of kind 4
+  sets the loop count to 1.
+- The table walk and the internal-trigger script (`0140870000.c:5446`, which uses
+  `_num_slices`, `_slice_idx_loop_start`, `_slice_loop_count`, `_slice_length`, and
+  `play_note(-1,-1,0,...)` with event parameters `1000 + zone` and `1000 + slice`)
+  agree with the KSP manual names `num_slices_zone`, `zone_slice_idx_loop_start/end`,
+  `zone_slice_loop_count`, `zone_slice_length` (KSP manual, Zone and Slice Functions).
+
+Wiring (this pass): the Kontakt loader reads `slice_float_1`, `slice_float_2` and
+`slice_flag_1` from the mode-4 record into `ir::Group::beat_slices`
+(`crates/sampler-ir/src/lib.rs`, `BeatSlices`; `crates/sampler-kontakt/src/library.rs`,
+`beat_slices_from_record`). Lowering does not consume it yet: no voice runs the
+sequencer, so the zone still plays as a sampler and the report says so. Unit tests:
+`beat_slices` (sequencer and crossfade rounding at 48 kHz and 44.1 kHz) and the loader
+mapping test.
+
+### Zone slices in the file (not parsed)
+
+The slice markers (Grid Fix or Auto, or manual markers, manual p. 177-180) and the
+loops are not parsed by `vendor/ni-file` (no grid or marker reader), so the sequencer
+table and the zone slice positions are unknown to the loader. Parsing them is the
+next blocker for voicing the Beat Machine.
 
 ### Not recovered
 
-- The pattern source and the meaning of the script-driven loop variables.
-- The meaning of stored `slice_float_1`, `slice_float_2`, `slice_flag_1`
-  (`crates/sampler-kontakt/src/library.rs` `machine()`).
-- The slice-to-voice playback path (fade, reverse) and the source player call
-  from slot 18.
+- The slice playback speed law. The native capture below gives rate 0.25 for every
+  slice under the probe's settings; the rule that sets it is not known.
+- The meaning of `slice_flag_1` (`+0x99`).
+- The source player call from slot 18 (`+0x38`) and the slice-to-voice path (fade
+  shape beyond the attack and release lengths, reverse).
 
 ## Native Tone vector (oracle, default parameters)
 
@@ -205,12 +236,51 @@ This vector is the baseline for a Tone kernel port. No port exists yet, so no
 comparison has been run. The slot-23 kernel's SIMD branch and its object
 layout are still open.
 
+## Native Beat Machine capture (oracle, default parameters)
+
+Probe: `tools/kontakt-oracle/probes/beat_machine.lua`, run once with
+`nice -n 19 tools/kontakt-oracle/render.py tools/kontakt-oracle/probes/beat_machine.lua OUT.wav 6`
+(one Kontakt 8 session under Wine, Xvfb stopped afterwards; the DAW hosts were not touched).
+The probe writes its own sample: 0.5 s mono float at 48 kHz, four 1/16-note slices at 120 BPM
+(sines of 200, 320, 440, 560 Hz, 25/40/55/70 whole cycles per slice). The zone is set with
+`set_zone_grid(inst, zone, "fixed", 120.0)` (Lua API; Fix mode, default width 1/16),
+and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: grid
+`fixed` at 120.0, mode `beat_machine`, script accepted (`probe.log`).
+
+- Files (`/data/dev/workspace/PluginArtifacts/kontra-oracle/beat-machine/`):
+  `beat_machine_4slices.wav` (float32, stereo, 48 kHz, 9.1 s, L = R, SHA-256
+  `10ccf8a679a228983a0fd4ee7a0143fe5a944f07df5750d5aa4340873dd36a2c`),
+  `beat_machine_probe.lua`, `probe.log`.
+- Trigger: the MIDI note render.py sends about 1 s into the recording starts a KSP timer.
+  The KSP then plays note 60 at +0.1 s and again at +2.0 s. The first burst starts
+  about 1.03 s into the recording.
+- Measured (analytic signal, instantaneous frequency and amplitude):
+  - Four slices in order. Frequencies about 50, 80, 110 and 140 Hz, which are the source
+    frequencies 200, 320, 440 and 560 Hz times **0.25**. So every slice plays at rate 0.25.
+  - Onsets about 1.03, 1.15, 1.28 and 1.41 s: spacing 0.125 s, which is one 1/16 at 120 BPM.
+  - Each slice is audible for about 0.12 s, so only about a quarter of its source material is
+    heard. The slice is cut at the slot end.
+  - Silence after about 1.45 s.
+  - Peak 0.192 for a 0.5 amplitude input (gain 0.384, -8.3 dB). The Tone capture above has
+    the same peak; the cause is not characterised (same open question as the Tone note).
+  - No second burst at +2.0 s. The probe's first note has no note-off (duration -1),
+    so the second note may be ignored while held. Not explained.
+- Candidate law (unverified, fits both numbers): rate = zone length / one host bar.
+  The zone is 0.5 s (one beat at 120 BPM); one 4/4 bar at 120 BPM is 2.0 s, so 0.25.
+  Slot spacing = bar / 16 = 0.125 s. The manual says the Beat Machine should be enabled
+  with the Use Beat Machine button, not by switching the source mode, and that the Speed
+  readout then shows a percentage. The probe switched the mode directly, so the speed
+  state may differ from the normal path.
+- Next single experiment (not run): change the grid BPM or host tempo and see whether the
+  rate and the slot spacing move as the candidate predicts. Also enable the Beat Machine
+  through the Sync / Slice path if the probe can drive it.
+
 ## Gap table
 
 | Module | Shared engine covers | Missing |
 | --- | --- | --- |
 | Tone Machine | Mode mapping and stand-in granular engine, reported `NotModeled` | Render kernel, grain/formant/DC laws, record-to-object mapping, `hiQuality` |
-| Beat Machine | Stored mode reported; plays as sampler | Sequencer timing law, slice field meaning, slice playback path |
+| Beat Machine | Stored mode reported; `slice_float_1/2` = Slice Atk/Rel (ms) and `+0x27d00` = render rate decoded; crossfade law and sequencer ported and unit-tested; controls reach `ir::Group::beat_slices` | Zone slice markers and loops are not parsed; slice playback (rate law, crossfade, voice) not modelled; `slice_flag_1` meaning; native capture is one rate sample (0.25) |
 
 ## Open items (for the next pass)
 
@@ -220,5 +290,9 @@ layout are still open.
 2. Confirm the stored-mode to internal-id map. The export groups internal id 4
    with the sampler family and uses id 5 for the Beat Machine rule, so stored
    Beat (4 in the repo) is not the identity map. Unresolved.
-3. Oracle: one Wine dump of a Tone and a Beat Machine instrument (single session,
-   nice 19) to fix the parameter laws.
+3. Oracle, Beat Machine: the playback rate law (candidate in the capture section),
+   the second-trigger behaviour, and the speed readout on the normal Use Beat Machine
+   path. One session each, nice 19.
+4. Parse the zone slice markers and grid (Fix/Auto) from the instrument file, so the
+   sequencer table is loaded instead of being empty.
+5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.

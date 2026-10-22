@@ -278,7 +278,7 @@ the 32-byte snapshot identity blob as if it were a uniform source schema.
 |---:|---|---|
 | 0, 3, 6, 7 | None | Common fields only |
 | 1, 2 | f32, f32, bool | `machine_float_1/2`, `machine_flag` |
-| 4 | f32, f32, bool | `slice_float_1/2`, `slice_flag_1`; another bool at v0x106 |
+| 4 | f32, f32, bool | `slice_float_1/2` = Slice Atk / Slice Rel in ms (`0140d10000.c:7372`), `slice_flag_1` unassigned; another bool at v0x106 |
 | 5 | bool, u32, u32 | Time Machine 2 controls (decoder names `dfd_*` are historical); meaning unassigned |
 | 8 | bool, bool, f32, f32 | v0x100 uses u32 instead of second bool; retain original version |
 | 9 | Four f32, two u32 | Position, form1, phase, phase_random, form_type, quality at v0x103 |
