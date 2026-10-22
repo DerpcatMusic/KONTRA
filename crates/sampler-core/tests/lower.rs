@@ -514,6 +514,27 @@ fn zone_routes_lower_to_voice_modulation() {
     assert!(lower(&ir, 48000, vec![constant(0.5)], no_behaviors).is_ok());
 }
 
+/// Kontakt's own plain-MIDI bend range is not recovered (audit rows
+/// CORE-SOUND-005 NOT-PROBED, CORE-SOUND-006 BLOCKED-RUNTIME), so without a
+/// Pitch Bend route to Pitch the plan keeps the MIDI default of 2 semitones.
+#[test]
+fn plain_midi_bend_range_is_two_semitones_without_a_bend_route() {
+    let ir = ir::Instrument {
+        assets: vec![asset("a")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    let plan = lower(&ir, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    assert_eq!(plan.bend_range(), 2.0);
+    let rt = Runtime::new(plan, limits()).unwrap();
+    assert_eq!(rt.bend_range(), 2.0);
+}
+
 #[test]
 fn native_mpe_defaults_are_identity_at_rest_and_follow_pressure_and_timbre() {
     use sampler_core::{
