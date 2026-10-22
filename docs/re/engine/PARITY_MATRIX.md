@@ -47,8 +47,8 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | AR BP2 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
 | AR BP4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
 | AR BP2/4 | partial | vector | Same kernel and vectors as AR LP2. Host recording open. |
-| Daft | partial | decomp | Two-stage loop, knees, gain/cutoff/feedback/resonance/response laws and Kaiser x2 transcribed from FUN_140affa30 with image constants; golden hash only. Start-up, ramp clock and Kontakt audio open. |
-| Daft HP | partial | decomp | Same loop as Daft (response 1). Golden hash only; Kontakt audio open. |
+| Daft | partial | decomp | Two-stage loop, knees, gain/cutoff/feedback/resonance/response laws and Kaiser x2 transcribed from FUN_140affa30 with image constants; start-up (prepare snap) and per-sample lane advance confirmed; golden hash only. Open: ramp tick rate (caller of vtable slot 8 not found), countdown arming, Kontakt audio (Daft ENGINE_PAR ids not recorded). docs/re/engine/filt-ar-daft.md. |
+| Daft HP | partial | decomp | Same loop as Daft (response 1). Golden hash only; same open items as Daft. |
 | Ladder LP1 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
 | Ladder LP2 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
 | Ladder LP3 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
