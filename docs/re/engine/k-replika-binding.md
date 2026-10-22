@@ -46,9 +46,9 @@ shape of the emulated response. UNKNOWN = no name.
 | 14 | wet L gain 2(1-v) (INFERRED pan) | v=0: x2 (peak 2.0, energy 4); v=1: silent; default 0.5 = unity | P +0x24, +0x28 |
 | 15 | delay offset (INFERRED) | echo -600 frames per unit: v=0 -> 1922, default 0.3 -> 1742, v=1 -> 1322 | P +0x38 (smoother 3) |
 | 16 | WIDTH (INFERRED; law CONFIRMED by energy) | L = (0.5 + v) tap, R = (0.5 - v) tap: v=0 energy 0.5, v=1 energy 2.5; default 0.5 gives R = 0 | P +0x64 (side scale) |
-| 17 | gate threshold, max(1-v, 0.001) (state CONFIRMED) | with target -60 dB (index 18 = 1): v=1 gate engages, energy 103 -> 1e-4 | C+0x13e18 |
-| 18 | gate target, -60 v dB (state CONFIRMED) | with threshold 0.001 (index 17 = 1): v=1 gate closes, energy 103 -> 1e-4 | C+0x13e10 |
-| 19 | gate release (state CONFIRMED) | with gate engaged: |delta| ~1e-6 (no audible effect in steady state) | C+0x13e28 |
+| 17 | DUCKING SENSE (name INFERRED; case 0x11 CONFIRMED): gate threshold on \|mid\| = max(1-v, 0.001) | burst (sense 0.8, amount 0.5): echo peak 0.50 -> 0.081; sense 0 with amount 0.5: identical to amount 0 | C+0x13e18 |
+| 18 | DUCKING AMOUNT (name INFERRED; case 0x12 CONFIRMED): gate target -60 v dB | burst (sense 0.8): amount 0 identical to default; amount 0.5 echo energy 504 -> 3.86 | C+0x13e10 |
+| 19 | DUCKING RELEASE (name INFERRED; case 0x13 CONFIRMED): closed-branch factor 0.05^(1/((200 + 7300 v) x 0.001 x rate)) | burst (sense 0.8, amount 0.5): release 0 energy 3.86, release 1 (7500 ms) energy 0.53 | C+0x13e28 |
 | 20 | raw store only | none (raw store C+0x840+4i) | none |
 | 21 | raw store only | none | none |
 | 22 | raw store only | none | none |
@@ -94,8 +94,10 @@ as mode switch; the name follows from the TSV). FEEDBACK is index 5, not 12: ind
   index 4 for dry, index 5 for the feedback path) to be active; single-index tests from default cannot see them.
 - Targeted pairs: 13 with index 4 = 0; 17, 18 and 19 with index 5 = 0.8 and index 17 or 18 set.
   These are the only evidence for rows 13, 17, 18 and 19 above.
-- No index in the table moves the output through a ducking path. The ducking read `141abd290` has
-  no confirmed writer (GAP-B, GAP-M); candidates 25 and 26 change flags only, not verified.
+- Ducking is indices 17, 18, 19 (the gate of `141aa9480`, steps 10 and 14). At the reset sense
+  (threshold 1.0) the gate never opens on the impulse (|mid| <= 0.5), so the impulse binding could not show it. Under a 1 kHz burst (see
+  Ducking below) each index moves the echo. The earlier note that `141abd290` is the ducker is wrong: it is
+  the head position update (GAP-M). Candidates 25 and 26 change flags only, not verified.
 - No index moves the output through an LFO. The rotator coefficients are written by index 30
   (C+0x980..0x997), but its consumer (GAP-I) is not in the loop as read.
 
@@ -124,7 +126,8 @@ across renders (fresh image per render).
 - Feedback law: the second echo is 2282 frames after the first at TIME 0.02, gain 0.96 at index 5 = 0.8.
   The decay per cycle and the index 5 law need a longer run (more than 4096 frames).
 - Gate release (19) only shows during the gate transition; the tail shape needs a windowed test.
-- Ducking (sense, release, amount) and LFO (depth, rate, modulation) have no audible index here.
+- LFO (depth, rate, modulation) has no audible index here. Ducking names (sense, amount, release) are INFERRED
+  from the case laws; the saved-field tie is not confirmed (see Ducking below).
 - Index 12 as head gains at v>=0.5 is a no-op in our bases; heads 2 and 3 are not separated.
 - The wrapper's real default values for TIME, HIGHCUT and index 52 are not in `1408ddbc0`.
 
@@ -157,4 +160,42 @@ reset value otherwise.
 | 29 | SATURATION | core, wired |
 | 52 | TAP GAIN | core; not wired (implicit 1.0) |
 
-Ducking (sense, release, amount; indices in `k-replika-gaps.md`) and the mode-1 kernels are not ported (pieces 2 and 3).
+Piece 2 (ducking): indices 17, 18, 19 ported as the gate and wired from the saved DUCKING_* fields (see below).
+The mode-1 kernels are not ported (piece 3).
+
+## Ducking (piece 2)
+
+Decompile (CONFIRMED arithmetic, `0141aa0000.c`, `0141ac0000.c`):
+- Setter cases `141ac5980`: 0x11 (17) `+0x13e18 = max(1 - v, 0.001)` (3614-3618); 0x12 (18) `+0x13e10 = -60 v`
+  (3621); 0x13 (19) `+0x13e28 = 0.05^(1 / ((200 + 7300 v) x 0.001 x rate))` (3624-3631). Setup `141aa1580`
+  (1100-1105): rate `+0x13e00`, base `+0x13e30` = 0.05, retention `+0x13e20` = 0.05^(333.3333175 / rate),
+  `+0x13e04` = 200, `+0x13e08` = 7500.
+- Per frame (`141aa9480`, 5551-5558): mid = 0.5 (tapA + tapB), the taps after saturation (step 7). If |mid| < threshold:
+  env = env x release; else env = (env - target) x retention + target. env in dB, starts at 0.
+- Wet gain (5598-5625): T4 index = env x 9.96578407 + 1200 (both channels), so the gain is 10^(env/20);
+  W = OUT x Ctl(0xc) x Ctl(0x24 or 0x28) x gain. This is the echo level, before the matrix.
+
+Emulation (`tools/re/replika_ducking_kemu.py --trigger`, one render each; 2048 frames of 1 kHz sine at 0.5,
+then silence; echo near frame 1754-4082):
+
+| case (routes every quantum) | peak | energy | max abs diff vs amount 0 |
+| --- | --- | --- | --- |
+| default (no routes) | 0.500012 | 504.523 | 0 |
+| amount 0 (17 = 0.8, 18 = 0) | 0.500012 | 504.523 | 0 |
+| duck (17 = 0.8, 18 = 0.5) | 0.0811783 | 3.86113 | 0.483814 |
+| sense 0 (17 = 0, 18 = 0.5) | 0.500012 | 504.523 | 0 |
+| release 1 (17 = 0.8, 18 = 0.5, 19 = 1) | 0.0167662 | 0.531928 | 0.48419 |
+
+Native vectors (`vectors/replika-native-ducking-*.json`, 4096 frames): `ducking-amount0` (17 0.8, 18 0),
+`ducking-amount0p5` (17 0.8, 18 0.5, 19 0), `ducking-amount0p5-release1` (19 1). Port max abs error
+1.19e-7, 7.45e-8 and 1.12e-8 (tolerance 1e-5).
+
+Labels: the gate law and its three constants are CONFIRMED arithmetic and emulated. The names are INFERRED
+(sense = trigger, amount = depth, release = decay). The saved tie (DUCKING_SENSE field 29 -> index 17,
+DUCKING_RELEASE field 30 -> 19, DUCKING_AMOUNT field 31 -> 18) is INFERRED by name and by the saved order; no
+decompile text binds the wrapper slots to the saved fields.
+
+Not confirmed: the release factor is written by the setter from the block rate. Written before prepare
+(rate 0, base 0) it is 0, which is instant release. The harness routes 19 after prepare every quantum, as
+the wrapper does for routed indices; the reset default (19 = 0, no route) is only correct after prepare.
+The port uses the prepared rate.

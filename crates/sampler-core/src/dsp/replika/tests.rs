@@ -42,6 +42,18 @@ fn vector(name: &str) -> Value {
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/re/engine/vectors/replika-native-highcut-v0p5.json"
         )),
+        "ducking-amount0" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/re/engine/vectors/replika-native-ducking-amount0.json"
+        )),
+        "ducking-amount0p5" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/re/engine/vectors/replika-native-ducking-amount0p5.json"
+        )),
+        "ducking-amount0p5-release1" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/re/engine/vectors/replika-native-ducking-amount0p5-release1.json"
+        )),
         other => panic!("no vector {other} in {VECTOR_DIR}"),
     };
     serde_json::from_str(text).expect("vector json")
@@ -153,6 +165,16 @@ fn lowcut_and_highcut_match_native_vectors() {
 #[test]
 fn saturation_matches_native_vector() {
     assert_case("saturation-v0p5");
+}
+
+/// Ducker (gate of `141aa9480`): 1 kHz burst of 0.5 for 2048 frames, sense 0.8 (threshold 0.2), release 0
+/// (200 ms). The amount-0 case is the same run with target 0 dB; the 0.5 case ducks the echo to about 0.08;
+/// the release-1 case (7500 ms) keeps the duck through the window.
+#[test]
+fn ducking_matches_native_vectors_at_amount_zero_and_half() {
+    assert_case("ducking-amount0");
+    assert_case("ducking-amount0p5");
+    assert_case("ducking-amount0p5-release1");
 }
 
 /// The measured input law (index 0 at the reset value is 1.0000119; at 1.0 it is 3.98113).
