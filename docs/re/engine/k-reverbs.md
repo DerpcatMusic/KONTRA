@@ -38,8 +38,9 @@ Reverb and Convolution); KSP engine parameters. Repo evidence:
   16-point Walsh-Hadamard; four panned groups; wet predelay
   `max(int(0.25·p·sr),1)`; level `0.04216965`.
 - Edge cases: Init's 7500 Hz bilinear low-pass is lost on `clear()` until a
-  decay/low/damp setter runs (`plate.rs`); parameter ramps
-  `int(sr·0.02/bs+0.5)` blocks are not reproduced.
+  decay/low/damp setter runs (`plate.rs`); parameter ramps are not
+  reproduced. Decompile pass 2026-10-22 corrected the ramp shape: it is a
+  per-frame linear ramp (see "Plate decompile pass" below), not a block count.
 - Evidence: core setter `0x141ac7280`, apply `0x140963eb3`, shelf
   `0x141a92480`, Hadamard/taps tables `0x1479aa750`/`0x1479aa7d0`.
 - **Unverified:** the 2.993/1.007 decay and 0.25 predelay display laws in
@@ -90,10 +91,10 @@ Reverb and Convolution); KSP engine parameters. Repo evidence:
 
 | Module / item | Engine covers | Missing or approximate | Next step |
 |---|---|---|---|
-| Plate core | Full core (20 AP, shelves, ring, 16 lines, Hadamard, panning) | Init low-pass after `clear()`; ramps; display decay/predelay laws lack addresses | Confirm display laws from decompile; add ramp law |
+| Plate core | Full core (20 AP, shelves, ring, 16 lines, Hadamard, panning) | Ramp length and increment writer (per-frame ramp of 8 lanes is confirmed); Init LP frequency source (+0x68); display decay/predelay laws | Find the increment writer in the apply path; locate +0x68 writer; find display vtable |
 | Galois core | Full core, vector-verified | Dry/wet lane (dispatcher lane 8) has no binding; set fully wet, Return/Dry carries mix | Find lane 8 binding in `0x141aea370` setter |
 | Raum Grounded/Airy | Full core | Tempo-synced predelay (`240·n/(f·m·bpm)`) not bound, read as ms; feedback limiter reduced to ±2.5 clamp (gain table missing) | Extract limiter `0x141ae3ba0` gain table; sync table |
-| Raum Cosmic | none | Eight-stage allpass core unbuilt; reported unmodeled | Extract Cosmic setter/process once source READY |
+| Raum Cosmic | Chain bank (8 stages, 2 lines each, LFO, sign flips, Catmull-Rom, matrices, rings) from decompile; no native vector | Predelay feedback, b80 feedback, post-filter laws, wet law (inside Raum outer `1419878b0`); FDN bank sticky flag | Dedicated pass on `1419878b0`; Kontakt capture for a native vector |
 | Legacy Reverb | Freeverb network, setter laws, predelay ms | Input lowpass uses a one-pole stand-in at 20 Hz·1000^cutoff; the native biquad prototype coefficients are not in the image | Recover prototype coefficients from decompile |
 | Reverb Delight (0x7a) | field binding measured | Amp, tremolo, spring-reverb cores; MONO unproved | Out of this unit's scope unless assigned |
 
@@ -220,3 +221,57 @@ from code and constants), INFERRED, UNKNOWN.
   clamp bounds (2000 ms observed at 120 BPM and x = 4) are assumed to be 0 to 2 s.
   Key 21's flag (+0x21) is not read by the law (+0x20); the floor is not applied.
   No live Kontakt render has checked either point.
+
+## Plate decompile pass (2026-10-22, Kontakt 8 export READY)
+
+Read from the existing export only (no new decompile). Labels as above.
+
+- **Constructor** `141a81d80` (0141a80000.c): sets defaults decay 0.5 (+0x48),
+  low 0.5 (+0x54), high damp 0.5 (+0x50), core 8 = 1 (+0xf0), and core 7 at
+  +0x4c = 0.1 (CONFIRMED value; the repo's "core 7 fixed 1" is the apply path,
+  which is not located). Calls `141ac46d0(obj, 2)` to set two channels and
+  96100-frame channel buffers. The constructor does not build any section.
+- **Prepare** `141aa2300` (0141aa0000.c): stores sample rate at +0x64, block
+  size, tap offset `int(sr·0.005)` term, then `141a92180`, then the three
+  setter calls (0, 1, 9, 10) and `141abd580` and `141aba8b0`. CONFIRMED.
+- **Init low-pass** is `141a92180`: `tanf(+0x68 · c)` bilinear first-order
+  section; coefficient law CONFIRMED. Its frequency at +0x68 is written by no
+  Plate function in the export (UNKNOWN source). The repo's 7500 Hz value
+  matches the native impulse vector but its origin is not located here.
+- **Setter** `141ac7280` (0141ac0000.c): each control writes a *target* lane
+  (+0x163470.. block) and a dirty flag (+0x163490). When the flag at +0x8 is
+  set the targets are copied to the live lanes at once; otherwise the live
+  values glide. Core 1 (decay) calls `141abcff0` (line biquad rebuild), core
+  9 (low) `141ac3430`, core 10 (high damp) `141abec10`. CONFIRMED.
+- **Ramp**: eight live lanes (+0x163430..+0x16344c) advance by one increment
+  per frame inside the process loop (`141a7a1a0` and `141a7b670`, 0141a70000.c
+  near lines 7078-7093). Lane 0 is predelay (read index
+  `int(p·k·sr)` clamped to ≥ 1, wrap 0x17763; k is the constant at
+  `DAT_1447148a4`, 0.25 per repo, not re-read), lane 1 decay (line biquads
+  rebuilt while its increment is nonzero), lane 3 low (shelf gain as a power
+  of ten of the lane, `141a92270`), lane 4 high damp (shelf corner from a
+  constant, gain via `141a92080`, then `141a972c0`), lane 5 stereo (pan).
+  CONFIRMED structure; the constants were not re-read. The increment writer and the ramp length
+  are NOT located in the export: the repo's `int(sr·0.02/bs+0.5)` remains
+  UNVERIFIED.
+- **Display laws** (decay 2.993x + 1.007 s, predelay 0.25x s): no address
+  found in the setter or constructor. Still UNVERIFIED.
+
+Plate status after this pass: core, shelves, lines and panning are
+decompile-backed and vector-tested (`impulse_matches_native`). Open: ramp
+length and increment writer, the source of the init LP frequency, display laws.
+Parity needs a native capture of a ramped parameter change (not done here).
+
+## Raum Cosmic decompile check (2026-10-22)
+
+- The Cosmic findings note (`~/.cache/k-reverbs-oracle/findings/cosmic.md`)
+  was re-read against the export. Dispatch (`14198db10` flag, algorithm from
+  Raum+0x9f4), decay law `141a..` `14198d2a0` (c = cos(1.17v), s = sin(1.17v)),
+  size `14198ec30`, modulation `14198e820`, rate `14198e830`, and the Raum
+  outer process `1419878b0` (6436 bytes, SIMD) are present in 0141980000.c.
+- Not closed here: predelay feedback gains, b80 feedback identity, post-filter
+  laws and the Cosmic wet law. These sit inside `1419878b0`, which is a large
+  SIMD function; they need a dedicated pass. No native vector exists for
+  Cosmic, so no Cosmic row can reach parity without a Kontakt capture.
+- The repo's Cosmic chain bank (`design/cosmic.rs`) stays as implemented.
+  Its status is partial, not "none" (the gap table below was out of date).

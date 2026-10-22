@@ -343,7 +343,7 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 /// Why a delay or modulation module without a mapping stays unsupported.
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
-        0x5a => "Replika: core control laws known (setParam 0x141ac5980: time 8/9, type 28, gains 0/1, mix 4) but the saved-field to core-index binding (generic per-quantum streams at wrapper +0x14580/+0x145f0) and the line read/write recurrence (0x141ab7e00 / 0x141acd110, line filter, saturation 0x141aa44a0) are not extracted",
+        0x5a => "Replika: reader 0x140d02250 and setter 0x141ac5980 (53 indices) are read, but the wrapper-index to control binding is not tied to names, the per-sample core (0x141aa9480: LFO, envelope, saturator 0x141aa44a0, sections) relies on constants absent from the decompile text, and the line recurrence is not extracted (docs/re/engine/k-replika.md)",
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
@@ -381,33 +381,44 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
         return None;
     }
-    for (name, value) in [
-        ("feedback", rep.feedback),
-        ("lowcut", rep.lowcut),
-        ("highcut", rep.highcut),
-        ("saturation", rep.saturation),
-        ("tape_age", rep.tape_age),
-        ("flutter", rep.flutter),
-        ("depth", rep.depth),
-        ("rate", rep.rate),
-        ("modulation", rep.modulation),
-        ("bbd_type", rep.bbd_type),
-        ("amount", rep.amount),
-        ("size", rep.size),
-        ("shuffle", rep.shuffle),
-        ("feel", rep.feel),
-        ("accent", rep.accent),
-        ("pan", rep.pan),
-        ("width", rep.width),
-        ("lr_offset", rep.lr_offset),
-        ("ducking_sense", rep.ducking_sense),
-        ("ducking_release", rep.ducking_release),
-        ("ducking_amount", rep.ducking_amount),
+    // Reason split (docs/re/engine/k-replika.md): a control whose effect the IR can already
+    // represent (feedback matrix, tap pan and level, tap depth, LFO rate, input matrix) but
+    // whose source law is unestablished is UnknownLawOmitted. Everything else has no IR
+    // equivalent (filters, saturation, tape, flutter, BBD, ducking, noise, density, shuffle).
+    for (name, value, reason) in [
+        ("feedback", rep.feedback, Reason::UnknownLawOmitted),
+        ("lowcut", rep.lowcut, Reason::NotModeled),
+        ("highcut", rep.highcut, Reason::NotModeled),
+        ("saturation", rep.saturation, Reason::NotModeled),
+        ("tape_age", rep.tape_age, Reason::NotModeled),
+        ("flutter", rep.flutter, Reason::NotModeled),
+        ("depth", rep.depth, Reason::UnknownLawOmitted),
+        ("rate", rep.rate, Reason::UnknownLawOmitted),
+        ("modulation", rep.modulation, Reason::UnknownLawOmitted),
+        ("bbd_type", rep.bbd_type, Reason::NotModeled),
+        ("amount", rep.amount, Reason::NotModeled),
+        ("size", rep.size, Reason::NotModeled),
+        ("quality", rep.quality, Reason::NotModeled),
+        ("shuffle", rep.shuffle, Reason::NotModeled),
+        ("feel", rep.feel, Reason::NotModeled),
+        ("accent", rep.accent, Reason::NotModeled),
+        ("pan", rep.pan, Reason::UnknownLawOmitted),
+        ("width", rep.width, Reason::UnknownLawOmitted),
+        ("lr_offset", rep.lr_offset, Reason::UnknownLawOmitted),
+        ("ducking_sense", rep.ducking_sense, Reason::NotModeled),
+        ("ducking_release", rep.ducking_release, Reason::NotModeled),
+        ("ducking_amount", rep.ducking_amount, Reason::NotModeled),
     ] {
-        notes.push(("parameters".into(), format!("{name} {value}"), Reason::NotModeled));
+        notes.push(("parameters".into(), format!("{name} {value}"), reason));
     }
-    for (name, on) in [("stereo", rep.stereo), ("noise", rep.noise), ("pingpong", rep.pingpong), ("pingpong_flip", rep.pingpong_flip), ("dense", rep.dense)] {
-        notes.push(("parameters".into(), format!("{name} {on}"), Reason::NotModeled));
+    for (name, on, reason) in [
+        ("stereo", rep.stereo, Reason::UnknownLawOmitted),
+        ("pingpong", rep.pingpong, Reason::UnknownLawOmitted),
+        ("pingpong_flip", rep.pingpong_flip, Reason::UnknownLawOmitted),
+        ("noise", rep.noise, Reason::NotModeled),
+        ("dense", rep.dense, Reason::NotModeled),
+    ] {
+        notes.push(("parameters".into(), format!("{name} {on}"), reason));
     }
     notes.push(("type".into(), rep.ty.to_string(), Reason::NotModeled));
     let mut line = Line::single(DelayTime::Ms(f64::from(rep.time) * 2000.), 2000.);
@@ -783,6 +794,9 @@ mod tests {
         let line = cfg.line.expect("delay line");
         assert_eq!(line.taps[0].time, sampler_ir::fx::timemod::DelayTime::Ms(500.));
         assert!(notes.iter().any(|n| n.1.contains("feedback")));
+        // Every other control is reported (none silently dropped), with a precise reason.
+        assert_eq!(notes.len(), 28, "22 float controls, 5 flags and the type");
+        assert!(notes.iter().all(|n| n.2 != sampler_ir::Reason::Unknown));
     }
 
     #[test]
