@@ -1,6 +1,6 @@
 # Kontakt 8 Mangling effects: Beat Masher, Beat Slicer, Gater, Reverse Grain, Transpose Stretch
 
-Status: **no DSP law recovered.** The Kontakt 8 decompile is not complete (`/data/dev/workspace/Research/KONTRA/source/kontakt8/` has no `READY` marker and no files yet), and the public Kontakt effect reference returns HTTP 403 to WebFetch. Nothing below is a verified law. The entries are repo evidence (cited) or open questions. This PR diagnoses the five modules by name and reason instead of dropping them silently.
+Status: **no DSP law verified; call structure mapped.** The Kontakt 8 decompile export is now READY (`/data/dev/workspace/Research/KONTRA/source/kontakt8/`), and the mapping in the next section comes from it. The public Kontakt effect reference returns HTTP 403 to WebFetch. Nothing below is a verified law. The entries are repo evidence (cited) or open questions. This PR diagnoses the five modules by name and reason instead of dropping them silently.
 
 ## Evidence used
 
@@ -68,3 +68,30 @@ Shared-core question: Beat Masher, Reverse Grain and Transpose Stretch all reduc
 - High: the five modules exist with the serialization IDs and reader VAs above, and the repo has no DSP for them.
 - High: no current code applies the KSP `ENGINE_PAR_BEATMASHER/BEATSLICER/GATER/RG/TS_*` writes. `rg` finds them only in the KSP crate, the parameter-name table and the ledger. Not verified: whether the KSP lowering emits a diagnostic for these writes.
 - Low: every parameter meaning, unit and law.
+
+## Extraction map (decompile, 2026-10-22)
+
+Source: `source/kontakt8/*.c` (`// ==== <addr> FUN_<addr> size=N` headers), vtables from `docs/re/kontakt-rdata/vtables.tsv.gz`. Sizes are decompiled byte sizes, not disassembly.
+
+The five modules are the Traktor-family FX wrapper with a different core. Each has the same three-level shape:
+
+| Level | Beat Masher | Beat Slicer | Gater | Reverse Grain | Transpose Stretch |
+| --- | --- | --- | --- | --- | --- |
+| Class (NI::DSP) | `BeatMasher2` | `BeatSlicerB` | `Gater` | `ReverseGrains` | `Transpose` |
+| Wrapper vtable (slot 23 = process) | `ModulatableDSPCoreWrapper<BEffectBeatMasherTraits>` 0x144e92750 | `...BeatSlicerTraits` 0x144e92a08 | `...GaterTraits` 0x144f16360 | `...ReverseGrainTraits` 0x144e93a78 | `...TransposeStretchTraits` 0x144e93f50 |
+| Driver (slot 23 target) | `FUN_1408fd2e0` (1221 B) | `FUN_1408fd7b0` (1221 B) | `FUN_1409003c0` (1237 B) | `FUN_140901fb0` (1221 B) | `FUN_140903c90` (1221 B) |
+| Block core | `FUN_141aa4540` (207 B) | `FUN_141aa5c10` (207 B) | `FUN_141ae2d20` (563 B) | `FUN_141ae3ef0` (151 B) | `FUN_141ae5180` (151 B) |
+| Per-sample kernel | `FUN_141aa4610` (5630 B) | `FUN_141aa5ce0` (not sized) | `FUN_141ae2f60` (1171 B) + `FUN_141a9d870` (738 B) + `FUN_141acb6f0` (398 B) | `FUN_141ae3f90` (4592 B) | not located yet |
+
+Shared by all five drivers: `FUN_140ac28f0` (1710 B, pre-block) and `FUN_140ac21f0` (1777 B, post-block), both calling `FUN_14097cc50` (58 B). The drivers loop in blocks of at most 0x20 frames (`param_1+0x1bc`) and do per-block peak tracking on the input (the `DAT_144714b90` mask) before calling the block core.
+
+Gater specifics read so far (not verified):
+- The driver flips a one-shot state (`+0x3dc` 1 -> 2) once the phase `+0x3c8` passes a threshold.
+- The block core advances a double-precision phase (`+0xf8`, step `+0x100`, wrap `DAT_144714998`) and a float phase (`+0x2c`, step `+0x34`), and calls `FUN_141acb6f0` (398 B) with the phase-derived value. This is the rate/sync path.
+- The per-sample kernel `FUN_141ae2f60` keeps a 32-bit LCG (`x = x*0x41c64e6d + 0x3039`, the noise source) and a gate with a three-stage step/trigger latch (`+0x74` flag bits 1, 2, 4, each with its own ramp at `+0xb0/+0xb4`, `+0xc0/+0xc4`, `+0xd8`). The gain shaping is a cubic polynomial with constants `_DAT_1479ab1bc`, `_DAT_1479ab1d4` and `_DAT_147698870`. Shape, rate table and stutter mode are not yet tied to those fields, and the constants are not extracted.
+
+Beat Masher kernel `FUN_141aa4610` (5630 B) is not read beyond its header (it reads counters at +0x15c and +0xc4).
+
+What this does not give: no coefficient, no field-to-KSP-name map (the `ENGINE_PAR_*` names come from `a80000.c` `FUN_140981540` registrations, e.g. `beatmasher_rotate` 0x1e9, `gater_rate` 0x1f2), no unit or range, no vector. Each module still needs the per-sample kernel read end to end, the constants pulled from `docs/re/kontakt-rdata/constants.tsv`, and a kemu vector run (`tools/re/*_kemu_vectors.py`) before any of it is a law.
+
+Next steps, in order: (1) Gater `FUN_141ae2f60` + `FUN_141a9d870` + `FUN_141acb6f0` into a kemu vector template; (2) Reverse Grain `FUN_141ae3f90` (4592 B) with its scheduler; (3) Beat Masher `FUN_141aa4610`; (4) Beat Slicer `FUN_141aa5ce0` and the Transpose Stretch kernel (not located); (5) KE065 (0x74 vs 0x75 identity), still open.

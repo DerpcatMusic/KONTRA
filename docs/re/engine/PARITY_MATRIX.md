@@ -180,11 +180,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Beat Masher | missing | none | missing: reader fields and factory/vtable structure confirmed (k-mangling.md); audio kernel and laws not located; no native vector |
-| Beat Slicer | missing | none | missing: reader fields and factory/vtable structure confirmed; audio kernel and laws not located; no native vector |
-| Gater | missing | none | missing: vtable and child-unit structure confirmed; gate/step/noise kernel not located; no native vector |
-| Reverse Grain | missing | none | missing: reader fields confirmed (shared with Transpose Stretch, KE065 unresolved); kernel not located |
-| Transpose Stretch | missing | none | missing: reader fields confirmed (shared with Reverse Grain); kernel not located; vtable differs from the other four mangling modules in slots 3, 16, 66 |
+| Beat Masher | missing | decomp | Driver `FUN_1408fd2e0` -> block core `FUN_141aa4540` -> per-sample kernel `FUN_141aa4610` (5630 B, unread); kernel and laws not verified; no native vector. Map: k-mangling.md 'Extraction map' |
+| Beat Slicer | missing | decomp | Driver `FUN_1408fd7b0` -> block core `FUN_141aa5c10` -> kernel `FUN_141aa5ce0` (unsized, unread); no law verified; no native vector |
+| Gater | missing | decomp | Driver `FUN_1409003c0` -> block core `FUN_141ae2d20` -> kernel `FUN_141ae2f60` (LCG noise, 3-flag step/ramp latch, cubic gain; constants unextracted) + `FUN_141a9d870` + `FUN_141acb6f0`; not ported, no native vector |
+| Reverse Grain | missing | decomp | Driver `FUN_140901fb0` -> block core `FUN_141ae3ef0` -> kernel `FUN_141ae3f90` (4592 B, unread); not ported, no native vector |
+| Transpose Stretch | missing | decomp | Driver `FUN_140903c90` -> block core `FUN_141ae5180` (151 B, same size as the Reverse Grain core; body unread); kernel not located; not ported, no native vector |
 | Stereo Modeller | partial | vector | Settled width/balance and pseudo delay verified (docs/re/engine/k-spatial.md). Open: channel layouts, width across .5, pseudo automation, latency, bypass/mix |
 | Stereo Tune | missing | decomp | Reader FUN_140ac6120 confirmed (4 floats at +0x8..+0x14). BEffectStereoTune vtable 0x144fc2868: slot 23 `140aa7320` (176 B) is the driver candidate and calls per-chunk core `FUN_140aaf640` (not read); apply slot 29 `140abbce0`. Float-to-name map and law not recovered. Passes through today. See `k-effects-batch-a.md` |
 | Surround Panner | missing | vector | Parameter bindings measured (fx_other.tsv). BEffectSurroundPanner vtable 0x144e94e68: slot 23 `140905fa0` (87 B) is small and likely dispatches to a core outside this vtable (not found). Speaker matrix, pan law, LFE routing not recovered. Diagnosed as NotModeled. See `k-effects-batch-a.md` |
