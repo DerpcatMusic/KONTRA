@@ -56,6 +56,31 @@ fn loop_cut_acts_only_through_the_feedback_matrix() {
     assert_ne!(run_with(fed_back, None), run_with(fed_back, Some(cut)));
 }
 
+/// Saturation 0 is no stage at all: the line returns its input exactly, delayed (no crossfade).
+#[test]
+fn replika_zero_saturation_passes_the_delayed_input_exactly() {
+    let input = impulse(16, [1., 0.5]);
+    let l = line(&[Tap::at(DelayTime::Frames(4))], 10.);
+    let out = run(wrap(l, LFO_OFF), 48_000, 120., &input, 64).0;
+    for (i, o) in out.iter().enumerate() {
+        let want = if i == 4 { [1., 0.5] } else { [0., 0.] };
+        assert_eq!(*o, want, "frame {i}");
+    }
+}
+
+/// Full saturation on the tap (a = 1): at DC the line delivers g tanh(d x) with d = 10, g = 10^-0.5
+/// (`141aa44a0`, `141accd10`), once the 5 Hz section has settled.
+#[test]
+fn replika_full_saturation_delivers_gain_times_tanh_of_drive_at_dc() {
+    let mut l = line(&[Tap::at(DelayTime::Frames(4))], 10.);
+    l.saturation = 1.;
+    let input = vec![[0.1, 0.1]; 48_000];
+    let out = run(wrap(l, LFO_OFF), 48_000, 120., &input, 64).0;
+    let want = 10f64.powf(-0.5) * 1f64.tanh();
+    let last = out[47_999][0];
+    assert!((last - want).abs() <= 2e-3 * want, "{last} vs {want}");
+}
+
 #[test]
 fn integer_delay_impulse_and_feedback_repeats() {
     let (out, fault) = run(Config::delay(5, [[0.5, 0.], [0., 0.]], 0., 1.), 48_000, 120., &impulse(20, [1., 2.]), 64);

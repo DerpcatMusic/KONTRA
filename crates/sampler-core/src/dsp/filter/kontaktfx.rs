@@ -1219,6 +1219,42 @@ mod tests {
         }
     }
 
+    /// kemu stereo vectors of Dual SKF (`tools/re/kontaktfx_kemu_vectors.py`): independent L/R
+    /// noise at 44.1, 48 and 96 kHz, steady and moving knobs. The native sequence per 32-frame
+    /// block is setters for changed knobs, the tick, then the process; each block here builds the
+    /// core from its knobs and passes the same history on, which is that sequence.
+    #[test]
+    fn dual_skf_stereo_matches_the_native_vectors() {
+        let file: serde_json::Value = serde_json::from_str(include_str!("kontaktfx_stereo_vectors.json")).unwrap();
+        let f = |v: &serde_json::Value| v.as_f64().unwrap() as f32;
+        let floats = |v: &serde_json::Value| -> Vec<f32> { v.as_array().unwrap().iter().map(f).collect() };
+        for case in file.as_array().unwrap() {
+            let rate = case["rate"].as_u64().unwrap() as u32;
+            let (left, right) = (floats(&case["left"]), floats(&case["right"]));
+            let (native_l, native_r) = (floats(&case["outL"]), floats(&case["outR"]));
+            let mut state = ProcessorState::default();
+            let (mut out_l, mut out_r) = (Vec::new(), Vec::new());
+            for (b, knobs) in case["knobs"].as_array().unwrap().iter().enumerate() {
+                let k = floats(knobs);
+                let unit = KontaktFilter::new(KontaktFx::DualSkf([k[0], k[1], k[2], k[3], k[4]]), rate);
+                let mut block: Planar = [[0.0; BLOCK]; 2];
+                for n in 0..QUANTUM as usize {
+                    block[0][n] = f64::from(left[b * QUANTUM as usize + n]);
+                    block[1][n] = f64::from(right[b * QUANTUM as usize + n]);
+                }
+                assert!(!unit.process(&mut state, &mut block, QUANTUM as usize, b as u64 * QUANTUM, [0.0; 4]));
+                out_l.extend(block[0][..QUANTUM as usize].iter().map(|&v| v as f32));
+                out_r.extend(block[1][..QUANTUM as usize].iter().map(|&v| v as f32));
+            }
+            for (name, got, want) in [("L", &out_l, &native_l), ("R", &out_r, &native_r)] {
+                let peak = want.iter().fold(1.0f32, |m, v| m.max(v.abs()));
+                for (n, (a, b)) in got.iter().zip(want).enumerate() {
+                    assert!((a - b).abs() <= 1e-6 * peak, "{rate} {} {name} [{n}] {a} vs {b}", case["label"]);
+                }
+            }
+        }
+    }
+
     // Source-free lifecycle fixtures; no bank, native process or edited golden.
     fn typed_owner_cases() -> Vec<KontaktFx> {
         let knobs = [0.35, 0.25, 0.45, 0.1, 0.5];
