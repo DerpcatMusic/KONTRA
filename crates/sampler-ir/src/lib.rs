@@ -1691,6 +1691,12 @@ pub enum ModulationSource {
     Envelope(Envelope),
     /// A multi-segment envelope (Kontakt flex), gated like `Envelope`.
     Breakpoints(Breakpoints),
+    /// Kontakt's adaptive envelope follower, stored fields in file order.
+    /// Follows the group audio; output is 0..=1.
+    Follower(Follower),
+    /// Kontakt's glide: a pitch ramp from the previous note, octave-normalized
+    /// (see `GlideRamp::kontakt_glide`). Stored `BParGlide` mode and time.
+    Glide(Glide),
     Lfo(Lfo),
     Controller(u8),
     Velocity,
@@ -1724,6 +1730,24 @@ impl ModulationSource {
     pub fn bipolar(&self) -> bool {
         matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
+}
+
+/// Stored glide fields: mode 1 scales time per semitone, 2 keeps it constant.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Glide {
+    pub mode: u32,
+    pub time_ms: f32,
+}
+
+/// Stored envelope-follower fields: attack, decay, gain and adaption speed.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Follower {
+    pub attack: f32,
+    pub decay: f32,
+    pub gain: f32,
+    pub adaption: f32,
 }
 
 /// Glides from 0 through `points`, each reached `time` after the previous;

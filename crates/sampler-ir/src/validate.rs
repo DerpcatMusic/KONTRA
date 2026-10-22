@@ -1208,6 +1208,17 @@ impl Instrument {
                     if !self.source_indices.constant_properties.iter().any(|row|row.node==*node&&row.value==*value&&row.style==*style&&row.bipolar==*bipolar){return Err(ValidationError::ZoneRouting{owner:"Constant source".into(),reason:"source differs from actual definition property role"});}
                 },
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
+                ModulationSource::Glide(g) => {
+                    if !matches!(g.mode, 1 | 2) || !g.time_ms.is_finite() || g.time_ms < 0.0 {
+                        return Err(ValidationError::ZoneRouting { owner: "Glide source".into(), reason: "glide mode must be 1 or 2 and time finite and non-negative" });
+                    }
+                }
+                ModulationSource::Follower(f) => {
+                    let finite = [f.attack, f.decay, f.gain, f.adaption].iter().all(|v| v.is_finite());
+                    if !finite || f.adaption <= 0.0 {
+                        return Err(ValidationError::ZoneRouting { owner: "Follower source".into(), reason: "stored follower fields must be finite and adaption speed positive" });
+                    }
+                }
                 ModulationSource::Breakpoints(b) => {
                     for point in &b.points {
                         check.time(point.time, "breakpoint time")?;
