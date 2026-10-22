@@ -128,13 +128,15 @@ fn report(bytes: &[u8], limits: Limits, out: &mut impl Write) -> io::Result<()> 
                             let group = Group::parse(record).map_err(source)?;
                             writeln!(
                                 out,
-                                "    group {index}: gain {}, pan {}, tune ratio {}, tracking {}, reverse {}, release {}",
+                                "    group {index}: gain {}, pan {}, tune ratio {}, tracking {}, reverse {}, release {}, release monophonic {}, release counter {}",
                                 group.gain,
                                 group.pan,
                                 group.tune,
                                 group.key_tracking,
                                 group.reverse,
-                                group.release_trigger
+                                group.release_trigger,
+                                group.release_monophonic,
+                                group.release_counter
                             )?;
                         } else {
                             let zone = Zone::parse(record).map_err(source)?;
