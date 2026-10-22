@@ -13,6 +13,13 @@ Status: **partial.** The Kontakt 8 decompile is ready (`source/kontakt8/READY`);
 - **Parity options for IR size**: (a) license Élastique and port the engine behind a trait in `sampler-core`; (b) keep an independent stretch and gate it on a measured tolerance against Kontakt renders (same route as the Time Machine Pro WSOLA stand-in). Option (b) is the only one available without a licence; until it is measured, the `IR size` note stays `NotModeled`.
 Remaining gaps after this confirmation: resize engine (Élastique, see above), S.Rate inner-rate preparation (`+0x354`), unset crossover default (wrapper `FUN_140ab5e00`), latency reporting, true-stereo routing. Parity is not claimed for any of them.
 
+## Wrapper mapping: open items (checked this pass)
+
+- The repo note that `FUN_140abd100` is the convolution setter is **not supported**. Its only caller (`0140960000.c:2600`) is a bus-level case `0x46`, and its signature takes a per-slot record that does not match the 0x16 saved fields.
+- The class-switch case `0x16` in `FUN_1409619b0` (`0140960000.c:2003`) calls `FUN_140ab8a90`, which takes 22 scalars and forwards them to the reverb-network setters `FUN_140acf*`/`FUN_140ad*`. Whether that switch is keyed by the same module id as the saved 0x16 record is not established (the switch variable is `*(int*)(record+8)`). The mapping from saved fields to the wrapper's `+0x220/+0x350/+0x354` fields is therefore unresolved.
+- IR load in `FUN_140ab5e00` (`0140ab0000.c:4010+`): the IR sample's rate and channel count are read; the flag `+0x224` is set when the IR channel count differs from `+0x124`. The decimation step divides the host rate by the IR rate with a floor at `0.0` before the `DAT_144fc4048` scale, which is a `double` constant that must be read as `<d`, not `<f`.
+- Parity for S.Rate, crossover default and true-stereo therefore remains open; nothing in this pass changes the Rust behaviour.
+
 ## Evidence used
 
 - Saved record and wrapper preparation: `crates/sampler-kontakt/src/effects/mod.rs` (0x16 reader, ~l.427-449), `crates/sampler-kontakt/src/effects/space.rs` (`convolution`).
