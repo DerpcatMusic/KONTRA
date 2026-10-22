@@ -131,6 +131,7 @@ impl Ar {
         let mut seeded = read(38) != 0.;
         let mut previous = [read(39), read(40)];
         let mut dirty = read(41) != 0.;
+        let mut terms = ar_kernel::resonant(self.mode, ramps[2].current);
         let mut position = 0;
         while position < len {
             if countdown == 0 {
@@ -169,12 +170,16 @@ impl Ar {
                         r.current += r.delta;
                     }
                 }
-                let output = kernel.tick(
+                if terms.resonance.to_bits() != ramps[2].current.to_bits() {
+                    terms = ar_kernel::resonant(self.mode, ramps[2].current);
+                }
+                let output = kernel.tick_resonant(
                     [block[0][i] as f32, block[1][i] as f32],
                     self.mode,
                     ramps.map(|r| r.current),
                     1. / self.rate,
                     ramping,
+                    terms,
                 );
                 for ch in 0..2 {
                     block[ch][i] = f64::from(output[ch]);
