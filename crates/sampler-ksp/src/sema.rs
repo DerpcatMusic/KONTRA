@@ -1134,6 +1134,15 @@ impl<'a> Sema<'a, '_> {
         fault(span, format!("undeclared variable {name}"))
     }
 
+    /// Kontakt's wording for an undeclared name or a non-UI operand of get_ui_id.
+    fn get_ui_id_error(&self, e: &ast::Expr) -> String {
+        let name = match &e.kind {
+            A::Var(sym, _) => self.name(*sym),
+            _ => "",
+        };
+        format!("get_ui_id(): \"{name}\" was not declared or is not allowed here!")
+    }
+
     fn declared_var_arg(&mut self, e: &ast::Expr, array: bool) -> Result<(VarId, Span)> {
         let A::Var(sym, None) = &e.kind else {
             return fault(e.span, "expected a variable");
@@ -1211,10 +1220,19 @@ impl<'a> Sema<'a, '_> {
                     Arg::Expr(value)
                 }
                 K::V => {
-                    let (var, span) = self.declared_var_arg(e, false)?;
-                    if b == Builtin::GetUiId && self.hir.vars[var.0 as usize].ui.is_none() {
-                        return fault(span, "get_ui_id requires a UI control");
-                    }
+                    let (var, span) = match self.declared_var_arg(e, false) {
+                        Ok(found)
+                            if b == Builtin::GetUiId
+                                && self.hir.vars[found.0.0 as usize].ui.is_none() =>
+                        {
+                            return fault(e.span, self.get_ui_id_error(e));
+                        }
+                        Ok(found) => found,
+                        Err(_) if b == Builtin::GetUiId => {
+                            return fault(e.span, self.get_ui_id_error(e));
+                        }
+                        Err(err) => return Err(err),
+                    };
                     Arg::Var(var, span)
                 }
                 K::A => self.var_arg(e, true)?,

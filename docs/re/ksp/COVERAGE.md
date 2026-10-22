@@ -20,7 +20,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |
 |---|---|---|---|---|---|---|---|---|
 | callback | 17 | 0 | 14 | 0 | 3 | 0.0% | 0.0% | 14 |
-| command | 282 | 21 | 224 | 5 | 32 | 7.4% | 25.1% | 191 |
+| command | 282 | 22 | 223 | 5 | 32 | 7.8% | 27.5% | 191 |
 | keyword | 18 | 2 | 16 | 0 | 0 | 11.1% | - | 18 |
 | datatype | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
 | ui_control | 16 | 0 | 16 | 0 | 0 | 0.0% | 0.0% | 14 |
@@ -32,7 +32,7 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 19 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **23** | **1891** | **26** | **56** | **1.2%** | **10.1%** | **426** |
+| **all** | **1996** | **24** | **1890** | **26** | **56** | **1.2%** | **11.0%** | **426** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
@@ -45,7 +45,6 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 | 3 | `on ui_control` | callback | simplified | 2741 | crates/sampler-ksp/src/sema.rs:106 |
 | 5 | `get_control_par` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2661 |
 | 6 | `get_engine_par_disp` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:1332 |
-| 7 | `get_ui_id` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2549 |
 | 10 | `message` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2872 |
 | 11 | `set_control_par` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2658 |
 | 12 | `set_control_par_str` | command | simplified | 2741 | crates/sampler-ksp/src/lower.rs:2634 |
@@ -60,6 +59,7 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 | 23 | `$CONTROL_PAR_TEXT` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 | 24 | `$CONTROL_PAR_TEXT_ALIGNMENT` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 | 25 | `$CONTROL_PAR_VALUE` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
+| 26 | `$CONTROL_PAR_WIDTH` | control_par | simplified | 2741 | crates/sampler-ksp/src/model.rs:283 |
 
 ## Backlog by family (non-full, corpus-used, top 12 per family)
 
@@ -71,13 +71,13 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 `$ENGINE_PAR_VOLUME` (simplified, 2741), `$ENGINE_PAR_PAN` (simplified, 2736), `$ENGINE_PAR_OUTPUT_CHANNEL` (simplified, 2733), `$ENGINE_PAR_DECAY` (simplified, 2560), `$ENGINE_PAR_MOD_TARGET_INTENSITY` (simplified, 2410), `$ENGINE_PAR_GN_GAIN` (simplified, 2018), `$ENGINE_PAR_ATTACK` (simplified, 1541), `$ENGINE_PAR_ATK_CURVE` (simplified, 986), `$ENGINE_PAR_RELEASE` (simplified, 885), `$ENGINE_PAR_EFFECT_BYPASS` (simplified, 725), `$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN` (simplified, 725), `$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL` (simplified, 721)
 
-### command / User Interface Commands (29 symbols, 19004 instrument-uses)
-
-`get_control_par` (simplified, 2741), `get_ui_id` (simplified, 2741), `set_control_par` (simplified, 2741), `move_control_px` (simplified, 2736), `set_knob_label` (simplified, 2018), `set_knob_unit` (simplified, 2018), `set_ui_width_px` (simplified, 722), `set_text` (simplified, 505), `add_text_line` (simplified, 473), `set_menu_item_str` (simplified, 376), `set_menu_item_visibility` (simplified, 373), `get_font_id` (simplified, 368)
-
 ### callback / Callbacks (10 symbols, 17208 instrument-uses)
 
 `on init` (simplified, 2741), `on note` (simplified, 2741), `on ui_control` (simplified, 2741), `on controller` (simplified, 2740), `on release` (simplified, 2740), `on pgs_changed` (simplified, 2389), `on listener` (simplified, 722), `on persistence_changed` (simplified, 377), `on async_complete` (simplified, 16), `on poly_at` (simplified, 1)
+
+### command / User Interface Commands (28 symbols, 16263 instrument-uses)
+
+`get_control_par` (simplified, 2741), `set_control_par` (simplified, 2741), `move_control_px` (simplified, 2736), `set_knob_label` (simplified, 2018), `set_knob_unit` (simplified, 2018), `set_ui_width_px` (simplified, 722), `set_text` (simplified, 505), `add_text_line` (simplified, 473), `set_menu_item_str` (simplified, 376), `set_menu_item_visibility` (simplified, 373), `get_font_id` (simplified, 368), `set_skin_offset` (simplified, 353)
 
 ### constants $KEY (20 symbols, 12701 instrument-uses)
 
