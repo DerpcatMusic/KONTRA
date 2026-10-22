@@ -320,8 +320,8 @@ pub(crate) enum Params {
     /// `BParFXPlateReverb`: decay, low shelf, high damp, predelay, stereo.
     Plate([f32; 5]),
     /// `BParFXRaum` Grounded or Airy: the core controls (`sampler_ir`
-    /// `Network::raum`) and whether the predelay is tempo-synced.
-    Raum { core: [f32; 20], synced: bool },
+    /// `Network::raum`) and the synced predelay's beats, if any.
+    Raum { core: [f32; 20], beats: Option<f64> },
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
     /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
@@ -384,8 +384,8 @@ impl Slot {
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
             // Grounded (0), Airy (1) and Cosmic (2) decode alike.
             0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
-                let (core, synced) = space::read_raum(&mut r)?;
-                Params::Raum { core, synced }
+                let (core, beats) = space::read_raum(&mut r)?;
+                Params::Raum { core, beats }
             }
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
@@ -1277,11 +1277,11 @@ pub(crate) fn chain_with(
                     .push(sampler_ir::Processor::Space(space::plate(v, &mut notes)));
                 combined = gain;
             }
-            Some(Params::Raum { core, synced }) if scope == Scope::Bus => {
+            Some(Params::Raum { core, beats }) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors
                     .push(sampler_ir::Processor::Space(space::raum(
-                        core, *synced, &mut notes,
+                        core, *beats, &mut notes,
                     )));
                 combined = gain;
             }
@@ -2678,7 +2678,7 @@ mod tests {
         bytes.push(0);
         let array = effect_fixture(0x65, 0x10, &bytes);
         let slots = rack(&array, |_, error| panic!("{error}"));
-        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        let Some(Params::Raum { core, beats: None }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
         assert_eq!(core[9], 1.0);
         assert_eq!([core[6], core[10], core[11], core[13], core[14], core[17]], [0.1, 0.6, 0.8, 0.7, 0.15, 0.4]);
         let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
@@ -2697,7 +2697,7 @@ mod tests {
         bytes.push(0);
         let array = effect_fixture(0x65, 0x10, &bytes);
         let slots = rack(&array, |_, error| panic!("{error}"));
-        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        let Some(Params::Raum { core, beats: None }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
         assert_eq!(core[9], 0.5);
         assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
         assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
