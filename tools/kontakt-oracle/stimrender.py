@@ -9,6 +9,7 @@ constants such as "$EFFECT_TYPE_LIMITER"), plus "stimulus": one of the builders 
 bypassed chain.  One note per step whose length equals the stimulus; steps 1 s apart plus the stimulus.
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ import eqrender  # noqa: E402
 import wavutil  # noqa: E402
 
 RATE = 48000
-WORK = Path("/tmp/w3/audit")
+WORK = Path(os.environ.get("ORACLE_WORK", "/tmp/w3/audit"))
 
 
 def stim_limiter():
@@ -44,7 +45,14 @@ def stim_release():
     return np.concatenate([np.full(n1, 0.6), 0.02 * np.sin(2 * np.pi * 2000 * np.arange(n2) / RATE)])
 
 
-STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release}
+def stim_impulse():
+    """One 0.5 unit impulse in 2.5 s: echoes and tails of time-based effects."""
+    x = np.zeros(int(2.5 * RATE))
+    x[0] = 0.5
+    return x
+
+
+STIMULI = {"limiter": stim_limiter, "ramp": stim_ramp, "release": stim_release, "impulse": stim_impulse}
 
 
 def write_wav(path: Path, x, right=False):
