@@ -774,16 +774,51 @@ pub enum Machine {
 /// Beat Machine slice controls of a stored mode-4 group. `attack_ms` and `release_ms`
 /// are Kontakt's "Slice Atk" and "Slice Rel" (stored `slice_float_1`, `slice_float_2`,
 /// milliseconds); `flag` is the stored `slice_flag_1`, whose UI meaning is not recovered.
-/// `markers` are the zone's slice boundaries in sample frames (strictly increasing; slice
-/// `i` spans `markers[i]..markers[i + 1]`); empty when the zone stores no grid.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BeatSlices {
     pub attack_ms: f32,
     pub release_ms: f32,
     pub flag: bool,
-    #[cfg_attr(feature = "cache", serde(default))]
-    pub markers: Vec<u32>,
+}
+
+/// Most slice boundaries one Beat Machine table holds: eight slices, as in the native
+/// `BSlice` table (`beat_slices::SLOTS`).
+pub const BEAT_GRID_MARKERS: usize = 9;
+
+/// Slice boundaries of one zone of a Beat Machine group, in source frames: slice `i` spans
+/// `markers[i]..markers[i + 1]` (strictly increasing). `tempo_scale` is the zone's stored
+/// playback rate (private float at byte 12; 0.25 for the captured fixed 1/16 grid).
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatGrid {
+    pub markers: [u32; BEAT_GRID_MARKERS],
+    /// Number of used entries in `markers`; slices are `count - 1`.
+    pub count: u8,
+    pub tempo_scale: f32,
+}
+
+impl BeatGrid {
+    /// `Ok(None)` below two markers (no slice), `Err` above the table capacity.
+    pub fn from_markers(markers: &[u32], tempo_scale: f32) -> Result<Option<Self>, String> {
+        if markers.len() < 2 {
+            return Ok(None);
+        }
+        if markers.len() > BEAT_GRID_MARKERS {
+            return Err(format!(
+                "{} slice markers exceed the Beat Machine table ({} slices)",
+                markers.len(),
+                BEAT_GRID_MARKERS - 1
+            ));
+        }
+        let mut grid = [0; BEAT_GRID_MARKERS];
+        grid[..markers.len()].copy_from_slice(markers);
+        Ok(Some(Self {
+            markers: grid,
+            count: markers.len() as u8,
+            tempo_scale,
+        }))
+    }
 }
 
 /// Largest stored S1200 filter selector; `set_engine_par` rejects larger values.
@@ -1670,6 +1705,9 @@ pub struct Playback {
     /// Saved crossfade before file-boundary clamping, used by constrained loop modulation.
     #[cfg_attr(feature = "cache", serde(default))]
     pub loop_control_crossfade: Option<Span>,
+    /// Beat Machine slice boundaries of this zone; `None` for a zone played as a sampler.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub beat_grid: Option<BeatGrid>,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

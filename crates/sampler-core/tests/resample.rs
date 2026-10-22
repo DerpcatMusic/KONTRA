@@ -1097,6 +1097,7 @@ fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
                                     gain: 1.0,
                                     envelope: Envelope::new(7, 3, 9, 0.4, 80).unwrap(),
                                     playback: Playback {
+                                        beat: None,
                                         wavetable: None,
                                         loop_slots: [None; 8],
                                         loop_control_crossfade: None,
@@ -1236,6 +1237,7 @@ fn ping_pong_matches_independently_unrolled_pcm_at_fractional_and_multi_turn_rat
                             Pcm::new(source_rate, source.clone().into_boxed_slice()).unwrap(),
                             48000,
                             Playback {
+                                beat: None,
                                 wavetable: None,
                                 loop_slots: [None; 8],
                                 loop_control_crossfade: None,
@@ -1441,6 +1443,7 @@ fn counted_loop_interpolation_matches_finite_unrolled_assets_through_final_eof()
                                     Pcm::new(rate, source.clone().into_boxed_slice()).unwrap(),
                                     48000,
                                     Playback {
+                                        beat: None,
                                         wavetable: None,
                                         loop_slots: [None; 8],
                                         loop_control_crossfade: None,

@@ -1598,7 +1598,24 @@ impl Lowering<'_> {
                 passes: None,
             }
         };
+        // Beat Machine: the zone's grid slices and the group's crossfade controls. The stored zone
+        // rate is a step factor, so it is folded into the transposition (12 * log2 of the rate).
+        let beat_grid = zone.playback.beat_grid;
+        let (beat, beat_tempo) = match (beat_grid, group.and_then(|g| g.beat_slices)) {
+            (Some(grid), Some(slices)) => (
+                Some(crate::source::beat_slices::Spec {
+                    markers: grid.markers,
+                    count: grid.count,
+                    attack_ms: slices.attack_ms,
+                    release_ms: slices.release_ms,
+                    flag: slices.flag,
+                }),
+                12.0 * f64::from(grid.tempo_scale).log2(),
+            ),
+            _ => (None, 0.0),
+        };
         let playback = Playback {
+            beat,
             wavetable,
             start: zone.playback.start as usize,
             end: zone.playback.end.map(|end| end as usize),
@@ -1644,7 +1661,7 @@ impl Lowering<'_> {
                 .playback
                 .loop_control_crossfade
                 .map(|span| span.frames(asset_rate) as usize),
-            transpose_semitones: tune,
+            transpose_semitones: tune + beat_tempo,
         };
         let region = Region {
             sample: zone.asset.map_or(crate::DORMANT_SAMPLE, |a| a.0),
