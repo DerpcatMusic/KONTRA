@@ -2230,6 +2230,74 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// One Pro-53 unit through the clocked cascade: a zero-length call snaps the clock to `start`,
+    /// then the frames run in 64-frame calls with the goals at `end`. Returns each channel's output.
+    fn pro53_render(rate: u32, start: [f64; 2], end: [f64; 2], inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        let unit = CascadeSettings {
+            class: Legacy::Pro52,
+            cutoff: Parameter::Control(ControlRange { control: crate::ControlId(0), low: 0.0, high: 1.0, ramp_frames: 0 }),
+            resonance: Parameter::Control(ControlRange { control: crate::ControlId(1), low: 0.0, high: 1.0, ramp_frames: 0 }),
+        }
+        .compile(rate, &mut Vec::new());
+        let held = |v: [f64; 2]| [ControlRamp::test_ramp(v[0], v[0], 0, 0), ControlRamp::test_ramp(v[1], v[1], 0, 0)];
+        let mut cells = vec![[0.0; 2]; CELLS];
+        let mut out = vec![Vec::new(); inputs.len()];
+        assert!(!unit.process(&mut cells, &held(start), &mut [[0.0; super::super::super::BLOCK]; 2], 0, 0, [0.0; 4]));
+        let frames = inputs[0].len();
+        for at in (0..frames).step_by(super::super::super::BLOCK) {
+            let n = (frames - at).min(super::super::super::BLOCK);
+            let mut block = [[0.0; super::super::super::BLOCK]; 2];
+            for (ch, input) in inputs.iter().enumerate().take(2) {
+                for i in 0..n {
+                    block[ch][i] = f64::from(input[at + i]);
+                }
+            }
+            assert!(!unit.process(&mut cells, &held(end), &mut block, n, at as u64, [0.0; 4]));
+            for (ch, o) in out.iter_mut().enumerate() {
+                o.extend(block[ch][..n].iter().map(|&v| v as f32));
+            }
+        }
+        out
+    }
+
+    /// Pro-53 against the native wrapper (`tools/re/cascade_kemu_vectors.py`, `pro53_kemu_vectors.json`):
+    /// static coefficients at 44.1/48/96 kHz, one 128-frame call, cutoff and resonance moving toward
+    /// new goals in 32-frame clock steps (up and down), and two channels with their own state over
+    /// shared coefficients. Error below 2e-5 of each vector's peak.
+    #[test]
+    fn pro53_native_vectors_match_static_clock_and_stereo() {
+        super::super::ladder_kernel::prepare();
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("pro53_kemu_vectors.json")).unwrap();
+        let pair = |v: &serde_json::Value| -> [f64; 2] { [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()] };
+        let mut failures = Vec::new();
+        for case in vectors["cases"].as_array().unwrap() {
+            let frames = case["frames"].as_u64().unwrap() as usize;
+            let inputs: Vec<Vec<f32>> = case["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|kind| {
+                    (0..frames)
+                        .map(|i| match kind.as_str().unwrap() {
+                            "imp" => if i == 0 { 1.0 } else { 0.0 },
+                            _ => if (i / 20) % 2 == 0 { 4.0 } else { -4.0 },
+                        })
+                        .collect()
+                })
+                .collect();
+            let ours = pro53_render(case["rate"].as_u64().unwrap() as u32, pair(&case["start"]), pair(&case["end"]), &inputs);
+            for (ch, native) in case["out"].as_array().unwrap().iter().enumerate() {
+                let native: Vec<f32> = native.as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = ours[ch].iter().zip(&native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
+                if !(err < 2e-5) {
+                    failures.push(format!("{} {} {:?} ch{ch}: err {err}", case["name"], case["rate"], case["start"]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// The SV family against the native classes run under kemu (sv/vectors.py: setters,
     /// 32-frame block update, process; 64 frames of an impulse and a +-4 square).
     #[test]
