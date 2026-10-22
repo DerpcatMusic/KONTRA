@@ -231,9 +231,28 @@ fn packed_state_resumes_the_run_exactly() {
         ..ReplikaControls::default()
     };
     let core = ReplikaCore::from_controls(rate, &controls);
-    assert_eq!(
+    let (loaded, reset) = (
         ReplikaState::load(rate, &[[0.; 2]; STATE_SLOTS]),
-        ReplikaState::new(rate)
+        ReplikaState::new(rate),
+    );
+    assert!(loaded.mode1.is_none());
+    assert_eq!(
+        (
+            loaded.frame,
+            loaded.filters,
+            loaded.saturator,
+            loaded.matrix_limiter,
+            loaded.head3_limiter,
+            loaded.env
+        ),
+        (
+            reset.frame,
+            reset.filters,
+            reset.saturator,
+            reset.matrix_limiter,
+            reset.head3_limiter,
+            reset.env
+        )
     );
     let x: Vec<f64> = (0..600).map(|i| (0.1 * f64::from(i)).sin()).collect();
     let (mut want_l, mut want_r) = (vec![0.; 600], vec![0.; 600]);
