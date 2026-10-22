@@ -3,6 +3,7 @@
 use super::LedgerEntry;
 use sampler_parity::Status;
 const MISSING: &str = "No frontend implementation in the current profile";
+const INIT_ONLY: &str = "Restricted to on init: compile-time rejection outside it matches Kontakt; runtime effect is modeled";
 const SUBSET: &str = "Implemented subset; native fidelity or host binding is not fully verified";
 const VALUE: &str = "Typed value operation covered by the KSP compiler/runtime fixtures";
 const GLOBAL: &str = "Accepted and ignored: the plugin has no global key/scale service";
@@ -1765,7 +1766,7 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "@unknown", status: Status::Unsupported, owner: "crates/sampler-ksp/src/sema.rs:362", spec: "docs/architecture-v2/KSP_FRONTEND.md", detail: UNKNOWN },
     LedgerEntry { name: "abs", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:1682", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#basic-operators", detail: VALUE },
     LedgerEntry { name: "acos", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1830", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#trigonometric-commands", detail: SUBSET },
-    LedgerEntry { name: "add_menu_item", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2711", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#add_menu_item--", detail: SUBSET },
+    LedgerEntry { name: "add_menu_item", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:2711", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#add_menu_item--", detail: INIT_ONLY },
     LedgerEntry { name: "add_text_line", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1514", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#add_text_line--", detail: SUBSET },
     LedgerEntry { name: "allow_group", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2038", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#allow_group--", detail: SUBSET },
     LedgerEntry { name: "and", status: Status::Approximate, owner: "crates/sampler-ksp/src/parser.rs:40", spec: "docs/architecture-v2/KSP_FRONTEND.md", detail: LANGUAGE },
@@ -1883,7 +1884,7 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "lsb", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1862", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#lsb--", detail: SUBSET },
     LedgerEntry { name: "make_instr_persistent", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2886", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#make_instr_persistent--", detail: SUBSET },
     LedgerEntry { name: "make_perfview", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2887", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#make_perfview", detail: SUBSET },
-    LedgerEntry { name: "make_persistent", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2886", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#make_persistent--", detail: SUBSET },
+    LedgerEntry { name: "make_persistent", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:2886", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#make_persistent--", detail: INIT_ONLY },
     LedgerEntry { name: "max", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:1697", spec: "docs/architecture-v2/KSP_PARITY.md", detail: VALUE },
     LedgerEntry { name: "message", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2872", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#message--", detail: SUBSET },
     LedgerEntry { name: "mf_copy_export_area", status: Status::Approximate, owner: "crates/sampler-ksp/src/eval.rs:1039", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/midi-object-commands#mf_copy_export_area--", detail: SUBSET },
@@ -2016,14 +2017,14 @@ pub(super) const TABLE: &[LedgerEntry] = &[
     LedgerEntry { name: "set_poly_at", status: Status::Unsupported, owner: "crates/sampler-ksp/src/sema.rs:37", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_poly_at--", detail: MISSING },
     LedgerEntry { name: "set_rpn", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2850", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_rpn---set_nrpn--", detail: SUBSET },
     LedgerEntry { name: "set_sample", status: Status::Unsupported, owner: "crates/sampler-ksp/src/sema.rs:37", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-commands#set_sample--", detail: MISSING },
-    LedgerEntry { name: "set_script_title", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2889", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_script_title--", detail: SUBSET },
+    LedgerEntry { name: "set_script_title", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:2889", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_script_title--", detail: INIT_ONLY },
     LedgerEntry { name: "set_skin_offset", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2870", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_skin_offset--", detail: SUBSET },
     LedgerEntry { name: "set_snapshot_type", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2887", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_snapshot_type--", detail: SUBSET },
     LedgerEntry { name: "set_table_steps_shown", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2573", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_table_steps_shown--", detail: SUBSET },
     LedgerEntry { name: "set_text", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2606", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_text--", detail: SUBSET },
     LedgerEntry { name: "set_ui_color", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2870", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_color--", detail: SUBSET },
     LedgerEntry { name: "set_ui_height", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2888", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_height--", detail: SUBSET },
-    LedgerEntry { name: "set_ui_height_px", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2888", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_height_px--", detail: SUBSET },
+    LedgerEntry { name: "set_ui_height_px", status: Status::Implemented, owner: "crates/sampler-ksp/src/lower.rs:2888", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_height_px--", detail: INIT_ONLY },
     LedgerEntry { name: "set_ui_wf_property", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:1461", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_wf_property--", detail: SUBSET },
     LedgerEntry { name: "set_ui_width_px", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2888", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#set_ui_width_px--", detail: SUBSET },
     LedgerEntry { name: "set_voice_limit", status: Status::Approximate, owner: "crates/sampler-ksp/src/lower.rs:2869", spec: "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/engine-parameter-commands#set_voice_limit--", detail: SUBSET },
