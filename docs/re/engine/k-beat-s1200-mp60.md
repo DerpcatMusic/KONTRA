@@ -1,6 +1,6 @@
 # Kontakt 8 source modules: Beat Machine, S1200 Machine, MP60 Machine
 
-Status: **S1200 partial** (filter modes 1..=5 run on voices with `Group.machine`); **MP60 chain implemented but unwired** (rate law and source fetch not decoded); **Beat Machine missing**. Addresses are Kontakt 8.exe VAs; decompile exports are in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (read with `rg`, never pasted here).
+Status: **S1200 partial** (filter modes 1..=5 run on voices with `Group.machine`); **MP60 wired as a host-rate stage** (`Mp60Stage`, unverified against Kontakt; the render's own rate law and source fetch are not ported); **Beat Machine missing**. Addresses are Kontakt 8.exe VAs; decompile exports are in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (read with `rg`, never pasted here).
 
 ## Stored record
 
@@ -8,7 +8,7 @@ Status: **S1200 partial** (filter modes 1..=5 run on voices with `Group.machine`
 |---:|---|---|
 | 4 | Beat Machine | `slice_float_1`, `slice_float_2`, `slice_flag_1` (unassigned meaning) |
 | 6 | S1200 Machine | filter mode = engine parameter `0x318` (range 0..=5, validated by `FUN_140789c30`) |
-| 7 | MP60 Machine | common fields only |
+| 7 | MP60 Machine | common fields only; the loader maps it to `Machine::Mp60`, which lowering places as `Processor::Mp60` |
 
 Loader: `crates/sampler-kontakt/src/library.rs` `machine()`. S1200 filter modes 1..=5 are modelled. Other modes, absent values and MP60/Beat report "played as a sampler; its DSP is not modelled".
 
@@ -26,7 +26,7 @@ Wiring: `lower.rs` places `Processor::S1200` first in the voice's pre-amplitude 
 Verified: impulse golden and DC gain for the mode filter, quantiser ties, AA impulse and DC, 26k capture schedule, block-size invariance of the whole stage (`cargo test -p sampler-core --lib machine`).
 Not verified: a rendered comparison against Kontakt. Filter modes 0, 6 and 7 are not recovered.
 
-## MP60 Machine (chain implemented, unwired)
+## MP60 Machine (wired as a host-rate stage)
 
 Render `FUN_140cddf50` (5313 bytes; vtable `BMPC60::vftable`, `0x144fd03e0`). Constructor `FUN_140cd8ea0` writes every coefficient (extraction: `tools/re/gen_mp60_tables.py`).
 
@@ -50,7 +50,24 @@ Not recovered, so MP60 is not wired:
 - **Still open for the wire**: the render driver `FUN_140cddf50` calls `FUN_14086e030` with four arguments, and the export signature names ten. The window per channel is four taps by four frames: tap `t` frame `j` reads source `base + j + t - 1`, zero outside `[0, len)`. The variant `FUN_140947720` (452 bytes, used when the caller passes a non-zero curve pointer) is not ported yet. Source reads go through the page cache (`FUN_140870e30`, `FUN_140828500`, `FUN_1408f5110`); a resident source takes the success path, so the port reads the source buffer directly.
 - **Helpers decoded only partly**: `FUN_140880860` derives the window bounds from the source table (0x38-byte entries at `object+0x560`, frame count at `+0x1794`, clamped to 4-frame padding). `FUN_140883f10` rounds the frame count up to 512-frame blocks when `object+0x1788` is in `5..=19`; otherwise it returns the count. `FUN_140883ce0` returns `object+0x1790`; `FUN_140884d90` returns `object+0x178c`.
 
-Without the rate law and the source fetch, the chain would process the raw source at the wrong rate, so it is not wired and must not be claimed as MP60 parity.
+### Render driver, as decoded (own notes; `0140cd0000.c:8057`, helpers in `0140860000.c`, `0140880000.c`, `0140940000.c`)
+
+- Per block of at most 512 frames: an optional 512-entry curve (`param_5`) is linearly interpolated over the block; the source window is filled by `FUN_14086e030` (streamed, zero outside the sample) into per-channel scratch; stage 1 IIR runs over it into a ring; the 44.1 kHz grid is produced by the four-point kernel `FUN_140947580` at a phase advanced by `44100 / H` times the pitch argument, with the ratio clamped and snapped to 1.0 inside a band; the 12-bit quantiser and stage 2 follow; the output is copied when `object+0x14 == 44100` and otherwise read with a four-point kernel at the host rate. `object+0x14` is read as the host rate (inferred from the copy test and the `44100 / rate` step).
+- Not ported: the curve variant (`FUN_140947720`, used when the curve pointer is non-null), the streamed source fetch (`FUN_14086e030` with its page-cache helpers `FUN_140870e30`, `FUN_140828500`, `FUN_1408f5110`), and the exact clamp/snap constants of the rate law.
+
+### Wired form (what the engine does)
+
+`Mp60Stage` (`crates/sampler-core/src/dsp/machine.rs`) runs after the sampler has pitched its output, at the host rate:
+
+1. host rate `H` to the 44.1 kHz grid: internal sample `k` reads the host input at `k * H / 44100` with the four-point Lagrange kernel (the render's, `lagrange4`);
+2. stage 1 IIR, 12-bit quantiser `ROUND(x * 2^11) / 2^11`, stage 2 IIR (`Mp60Chain`);
+3. 44.1 kHz back to `H`: output frame `m` reads the internal grid at `m * 44100 / H`.
+
+At `H == 44100` the stage is the bare chain (the render's copy path, no lag). Otherwise output is delayed by `2 + ceil(3 H / 44100)` host frames so that both four-point windows are complete; the lag is our choice, not measured from Kontakt. Pitch is applied by the sampler upstream, not by the render's own rate law, so the quantiser and IIRs see pitched host-rate audio rather than Kontakt's pitched 44.1 kHz grid.
+
+Tests (`cargo test -p sampler-core --lib machine`): 44.1 kHz null test against the chain; 48 kHz lag, DC settling to the chain's DC gain, and block-size invariance.
+
+Not verified: any comparison with a Kontakt MP60 render (no native capture). Parity is not claimed.
 
 ## Beat Machine (missing)
 
@@ -61,5 +78,5 @@ The stored slice fields have no decoded meaning. The beat-sequencer path (group 
 | Module | Shared engine covers | Missing |
 |---|---|---|
 | S1200 Machine | AA IIR, filter modes 1..=5, 26 kHz hold, quantiser, voice wiring | Filter modes 0, 6, 7; render comparison against Kontakt; group-delay latency |
-| MP60 Machine | IIR chain (stages 1, 2, 12-bit quantiser), constants, goldens | Rate law, source fetch, output conversion, wiring; no Kontakt comparison |
+| MP60 Machine | IIR chain (stages 1, 2, 12-bit quantiser), constants, goldens, host-rate wiring (`Mp60Stage`), tests | Render's rate law and curve variant, streamed source fetch, Kontakt's own output lag and read kernel; no Kontakt comparison |
 | Beat Machine | nothing (plays as sampler) | Slice/pattern generator, slice field meaning |

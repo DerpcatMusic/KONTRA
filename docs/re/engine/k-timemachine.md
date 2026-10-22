@@ -286,3 +286,17 @@ inside the stage virtuals is not read, so no Elastique stage is implemented.
   emit call (7-argument call in `FUN_1419d1600`) is still unconfirmed.
 - Pro stage: the Pro synthesis variant (`0x1476a6f08`) has the same ratio setter at other offsets. The
   formant and envelope order laws are still unread, so no Pro stage is implemented.
+
+## Record-to-object transfers (decompile, `0140cd0000.c:6014-6040`; MP60/TM2 pass)
+
+The per-class parameter transfers copy stored record fields into the engine object. Record offsets are the
+source record's; object offsets are the `BTimeMachine2`/`BTimeMachine3` members. Field names come from the
+measured KSP sweep above, not from the export.
+
+| Transfer | Speed setter | Copies (record -> object) |
+| --- | --- | --- |
+| TM2 `FUN_140cdb250` (66 B) | record float `+0x38` via vtable `+0x28` | int `+0xbc` -> `+0xbc` (Transient Size, `dfd_integer_1`); byte `+0xb8` -> `+0x17` (Transient Copy, `dfd_flag`) |
+| Pro `FUN_140cdb2a0` (90 B) | record float `+0x38` via vtable `+0x28` | ints `+0x1ac` and `+0x1cc` -> same offsets; int `+0x1c8` -> `+0x1c8`; byte `+0x1c4` -> `+0x1c4` (formant/envelope controls and flag, names not confirmed) |
+
+What this does not give: the consumers of these members. TM2's transient scheduling and Pro's Elastique formant
+and envelope-order laws are still unread, so nothing above changes the rendered audio.
