@@ -148,8 +148,7 @@ Built on `engine/filt-sv` (`dsp/filter/linear.rs` `Zdf`, `dsp/filter/shaper.rs` 
 
 The Wine oracle's `eqrender.py` analyses a 16384-frame window that starts 256 frames before the response's
 loudest sample (`spectrum`: `part = x[start - 16 ...]`, `ev = peak - 240`). For LP4 and LP6 at knob 0 the
-peak is at frame ~508 and ~778, so the window drops the early part of the impulse response and removes its
-DC energy: the measured shape is a window artefact. Taking the same window in the engine reproduces the
+window drops the early part of the impulse response, so the measured shape is a window artefact. Taking the same window in the engine reproduces the
 Kontakt curve to 0.02 dB (LP4: -0.43, -9.51, -20.12, -28.06, -36.33, -42.38, -48.40 dB at 30..2000 Hz).
 The golden test now uses that window for every case, and includes the knob-0 rows for LP4, LP6 and Ladder.
 The earlier "knob-0 mechanism" notes above are superseded by this.
