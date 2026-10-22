@@ -1,8 +1,76 @@
 # Kolor shaper cases 0, 1, 3, 4: dispatch findings
 
-Status: **read, not implemented.** No Rust port and no kemu vectors yet. Scope: decompiled source in
-`/data/dev/workspace/Research/KONTRA/source/kontakt8/` (`0141970000.c`, `0141940000.c`) and the
-dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`.
+Status: **cc70 stage recovered and verified; case 4 ported (output 0.0 natively, see below); c830 (state update) and cases 0, 1, 3, 6-9 recovered and verified as one kernel (`Shaper6_9`); not yet wired into the dispatch (control lane).**
+Scope: decompiled source in `/data/dev/workspace/Research/KONTRA/source/kontakt8/` (`0141970000.c`,
+`0141940000.c`), the dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, and the raw
+disassembly of the shaper functions in `docs/re/disasm/kolor-*.txt` (radare2 `pdf`, read by hand, no decompile).
+
+## Recovered: cc70 and the cfb0 sample (cases 6-8)
+
+`cfb0` (`14194cfb0`) takes the shaper and `&x`. Verified against the binary: its returned `out[0]` is the
+`cc70` scalar with `P = shaper+0x30`, `V = [x, s0..s7]` where `s = shaper[0..8]`. Max error 2.5e-8
+(`tools/re/kolor_shaper_6_9_vectors.py`, `cfb0_verify` run).
+
+With `M1 = P[0x000..0x120]`, `b1 = P[0x120..0x140]`, `M2 = P[0x140..0x240]`, `off = P[0x240..0x260]`,
+`w = P[0x260..0x280]`, `c = P[0x280]`, matrices column-major (`M[c*8 + r]`):
+
+```
+A = M1 V + b1          (141946590, 9 -> 8 lanes; 141932e70 is the generic matmul it calls)
+Q = M2 A + off         (14192d1b0, 8x8 matmul on A; off added in cc70)
+X = Q / sqrt(Q^2 + 1) + A   (cc70 lanes; rsqrtps + one Newton step, masked for Q^2+1 = inf)
+y = w . X + c          (141946410, single-float dot + bias)
+```
+
+The Rust kernel is `crates/sampler-core/src/dsp/color/kolor/shaper_6_9.rs` (`Cc70::sample`). Tests:
+`cc70_matches_native` (24 random blocks) and `cfb0_sample_matches_native` (12 random shapers), both at 1e-5.
+Fixtures: `tools/re/fixtures/kolor_shaper_6_9_cc70.json`, `..._cfb0.json`, plus per-mode wrapper drives
+`kolor_shaper_{6,7,8,9}_wrapper.json` from `kolor_kemu_probe.build`/`block`.
+
+## c830: the state update (recovered, GRU)
+
+`14194c830` is a GRU step: input size 1, hidden size 8. Recovered from the decompile
+(`/data/dev/workspace/Research/KONTRA/source/kontakt8/0141940000.c`, `FUN_14194c830`) and the raw
+disassembly (`docs/re/disasm/kolor-shaper-14194c830.txt`), then checked against the emulator.
+
+With `P2 = shaper+0x2c0` (0x108 floats), `s` the state (`shaper[0..8]`), `x` the input:
+
+```
+A  = M s + b                      M 24x8 column-major at P2[0x30..0xf0], b = P2[0xf0..0x108]
+r  = sigmoid(x p[i]   + p[0x18+i] + A[i])       i = 0..8     (141943870 = 0.5 tanh(0.5 v) + 0.5)
+z  = sigmoid(x p[8+i] + p[0x20+i] + A[8+i])     i = 0..8
+n  = tanh(r * A[16+i] + x p[0x10+i] + p[0x28+i])              (ptanh, 141943490)
+s'[i] = (1 - z) n + z s[i]
+```
+
+Helpers, all read: `1419466a0` (the 24-row `M s + b`, via the generic GEMM `141932e70`), `141943870`
+(8-lane sigmoid), `141943490` / `141943550` (4-lane ptanh; `141943550` returns the same result in xmm0),
+`141932e70` (generic GEMM, used with rows = 24, inner = 8, column-major).
+
+Verified: `141943490` and `141943870` against native over a sweep (max 1.4e-7 and 1.2e-7);
+`c830` alone against the formulas above (max 7.6e-8). Fixture: `kolor_shaper_6_9_c830.json`.
+
+The C830 block `P2` is written by the control lane. The kernel takes it as given.
+
+## Case 9 (1419748b0): same math, other calling convention
+
+`1419748b0` reads x through `ctx+0x10` (a pointer to a pointer to x), takes the shaper in `rdx`, and
+returns y in xmm0. Its body is the cfb0 sequence: cc70 with `P = shaper+0x30` (y, old state), then c830
+with `P2 = shaper+0x2c0`, then the 8-float result written back to `shaper[0..8]`. Verified against native
+over warmed 12-sample runs (`kolor_shaper_6_9_sequence.json`, `cases9`).
+
+## Kernel status
+
+`sampler-core/src/dsp/color/kolor/shaper_6_9.rs`: `Shaper6_9` (state carried, `load_params` for control
+writes). Tests: `ptanh_and_sigmoid_match_native`, `cc70_matches_native`, `cfb0_sample_matches_native`,
+`c830_step_matches_native`, `shaper_sequence_matches_native` (cfb0 and case 9, steady and moving params).
+All at 1e-5. The module stays `#[allow(dead_code)]` and unwired: the dispatch (`1419749f0`, control lane)
+is not connected to it yet.
+
+## Open
+
+- Wiring cases 6-9 into the dispatch (control lane; `kolor/mod.rs`).
+- Case 4 (`14197a150`) is resolved on main (see the case 4 sections below). Cases 0, 1, 3 are ported (see above).
+- Parameter fill of `P` and `P2` (control lane).
 
 ## Dispatch (1419749f0, `FUN_1419749f0`)
 
@@ -14,23 +82,44 @@ dispatch disassembly `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`.
 
 | Case | Body | Notes |
 |------|------|-------|
-| 0 | input x = `*param_1[2]` → 4-slot state vector `[x, s0..s6]` built from shaper fields → `14194cc70(shaper+0x30, out, vec)` → `14194c830(shaper+0x2c0, ...)` → store the 8-float result back into shaper+0..0x1c | Two-stage: first `cc70`, then `c830`. |
+| 0 | input x = `*param_1[2]` → 9-float `V = [x, s0..s7]` (from `shaper[0..8]`, read in full) → `14194cc70(shaper+0x30, y, V)` → `14194c830(shaper+0x2c0, ..., x)` → store the 8-float result back into shaper+0..0x1c; returns `y` (xmm0, the cc70 output) | Verified from the disassembly (`docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`, 141974a2e..141974b3d). Same as cfb0 (cases 6-8). |
 | 1 | `1419426e0` wraps x into a 1-element array → `141974860` pushes an 8-float record into a ring (slot stride 9 floats) → `cc70` on the ring as above | Same code path as 3. |
 | 3 | identical to case 1 | Confirmed by reading both arms. |
 | 4 | x → `14197a150(shaper, out, &x)`, which calls `141979f60(shaper+0x20, ...)` then `141979bf0(shaper+0x208, ...)` and stores 4 floats back at shaper+0..0xc | Not yet read below these two helpers. |
 
-## Helpers (roles only, bodies unread)
+## Cases 0, 1, 3: ported (2026-10-23)
 
-- `14194cc70` (450 B): builds 8 lanes from `shaper+0x140` via `141946590` and `14192d1b0`, adds offsets at
-  `shaper+0x240..0x25c`, applies a per-lane rsqrt-normalised gain, then calls `141946410(shaper+0x260, ...)`.
-  Uses SSE `rsqrtps`; the gain path has an `x < eps || x == eps` guard per lane.
-- `14194c830` (501 B), `141946590`, `14192d1b0`, `141946410`, `141979f60`, `141979bf0`: not read.
+Read from the dispatch disassembly (`141974a2e` case 0, `141974b75`/`141974c02` cases 1/3) and checked against
+the emulator. All three compute the cfb0 sequence, so they share `Shaper6_9` (`shaper_0_1_3.rs`: `Shaper0`,
+`Shaper1_3` aliases).
+
+- Case 0: `V = [x, s0..s7]` in a stack buffer (`[rsp+0x68]`, state copied to `[rsp+0x6c..0x8c]`); `cc70` writes
+  `y` at `[rsp+0x20]`; `c830` (P2 = shaper+0x2c0, x at `[rsp+0x30]`) writes the new state to `[rbp-0x70]`; the
+  state is stored to shaper[0..8]; `y` is returned in xmm0.
+- Case 1/3: `1419426e0` makes a 1-element view of the data buffer `[rbp-0x30]` and writes `x` at float 0.
+  `141974860` pushes `shaper[0..8]` at float 1..8 (ring: `off = 0 + cap(1)`, count 1 then 0, stride 9). So
+  the buffer is `V = [x, s]`, and `cc70` reads it through `*V`. `c830` and the state store are as in case 0;
+  return is the cc70 `y` at `[rsp+0x28]`.
+- The ring state (count, offset, cap) is not read by `cc70` (checked: the native vectors match with it ignored).
+
+Fixtures: `tools/re/kolor_shaper_0_1_3_vectors.py` drives the dispatch with the selector byte at shaper+0x6f0 (0,
+1, 3), 12 samples per warmed run, steady and moving P/P2 at samples 3, 6, 9. Output: `kolor_shaper_0_sequence.json`,
+`kolor_shaper_1_3_sequence.json`. Tests: `case0_sequence_matches_native`, `case1_3_sequence_matches_native` at 1e-5.
+
+Not measured: which modes select cases 0, 1, 3 in the wrapper (only the dispatch is driven, not `14197a2c0`).
+
+## Helpers
+
+- `14194cc70` (cc70), `141946590`, `14192d1b0`, `141946410`: read and verified, see the recovered section above.
+  `14194cc70` uses the P-block offsets above, not `shaper+0x140` (that was the cfb0-relative view).
+- `14194c830` (c830): recovered, see above. `141979f60`, `141979bf0`: case 4 chain, not read to completion.
 - `1419426e0` (253 B): std-array-style 1-element wrap (copies the input into a proxy). Not DSP.
 
-## Open
+## Open (case 0, 1/3, 4, and the kemu vectors for them)
 
-- Case 0, 1/3, 4 output math depends on the unread helpers above. Read them with
-  `radare2 -c 'pdf @ ...'` on `/data/dev/workspace/re-binaries/Kontakt8.exe` before writing any Rust.
+- Case 0, 1/3, 4 output math depends on the unread helpers above (`141979f60`, `141979bf0`, `141978300`,
+  `141974f10`). Read them with `radare2 -c 'pdf @ ...'` on `/data/dev/workspace/re-binaries/Kontakt8.exe`
+  before writing any Rust.
 - Kemu vectors for these cases need a warmed multi-block run via `kolor_kemu_probe.py`. The probe currently
   only drives the wrapper driver (`14197a2c0`), so the shaper state must be seeded through it.
 
@@ -70,3 +159,28 @@ and applied with `subss`.
 Still open: `141932e70` (generic 8-lane helper used by `141977650`, `14192d1b0`, `141946590`), `141978300`,
 `141974f10`, the state layout behind `shaper+0x20/0x100/0x120/0x240/0x290`, and the warmed-up kemu fixtures.
 Nothing in this section has been run under unicorn or compared to native output yet.
+
+## Case 4: resolved (2026-10-23)
+
+Output is **0.0 for every input** in the shipped binary. Measured, not inferred:
+
+- The output is `w . v + b` (`141946410`, a dot product of the 8-lane state `v` with 8 weights at
+  shaper+0x260 plus a bias at shaper+0x280). Those 9 floats are zero after every static init we run, and no
+  decompiled code writes them. `w` and `b` are loaded from `DAT_14a64ba20`, `ba30`, `ba40`, which sit past the raw
+  `.data` bytes (`0xa64ba20` vs raw end `0xa588000`), so the loader zero-fills them.
+- No knob change writes those bytes (knobs 0-3 and 5-12 stepped; knob 4 is the mode and reseeds the state only,
+  knob 13 untested). No per-block write touches them. Output over 1709 calls
+  (inputs to 3e38, random, long run) is exactly 0. State stays finite (|s| <= 0.51).
+- The recurrent 7-float state (`14197a150` write-back) is real and evolves, but nothing reads it into the output,
+  so it is not ported. The Rust case returns `0.0` and its tests check it against the native vectors.
+
+**Caveat:** the claim depends on no init we did not run writing `ba20..ba40`. Nothing in the decompile does, and
+the PE has no `.CRT` init table to check. If the output ever goes non-zero natively, the native-vector test fails.
+
+Static init needed to populate the shaper template (for the state path, if ever ported): `1404AC840`,
+`1404ADFA0`, `1404AE740`, `1404AEBA0` (`1404AEED0` ran too, no change to the output weights). `141976810` builds
+the template and `141974510` copies it into the shaper. Without these the 8x8 matrix at shaper+0x20 and the bias
+at +0x120 are zero.
+Measured: `u = bias + c*x` with `c` at shaper+0x20 (8 floats) and bias at shaper+0x120 matches native to 4 decimals.
+Recurrent part (`141979bf0`, `141978300`, `141974f10`, `14192d1b0`) still unread for the state.
+

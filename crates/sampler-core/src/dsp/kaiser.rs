@@ -103,15 +103,40 @@ pub(crate) enum Wrapper {
     Many(Kaiser),
 }
 
+/// One history per oversampler: a `Wrapper` keeps one mode for its whole life (its factor
+/// follows the rate), so the x2 pair and the x4 machine share one slot instead of both sitting
+/// inline.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct WrapperState {
-    two: EffektrigState,
-    kaiser: State,
+pub(crate) enum WrapperState {
+    #[default]
+    Unused,
+    Two(EffektrigState),
+    Many(State),
 }
 
 impl WrapperState {
     pub(crate) fn finite(&self) -> bool {
-        self.two.finite() && self.kaiser.finite()
+        match self {
+            Self::Unused => true,
+            Self::Two(s) => s.finite(),
+            Self::Many(s) => s.finite(),
+        }
+    }
+
+    fn two(&mut self) -> &mut EffektrigState {
+        if !matches!(self, Self::Two(_)) {
+            *self = Self::Two(EffektrigState::default());
+        }
+        let Self::Two(s) = self else { unreachable!() };
+        s
+    }
+
+    fn many(&mut self) -> &mut State {
+        if !matches!(self, Self::Many(_)) {
+            *self = Self::Many(State::default());
+        }
+        let Self::Many(s) = self else { unreachable!() };
+        s
     }
 }
 
@@ -138,8 +163,8 @@ impl Wrapper {
     pub(crate) fn up(&self, s: &mut WrapperState, x: f32, out: &mut [f32]) {
         match self {
             Self::One => out[0] = x,
-            Self::Two(e) => (out[0], out[1]) = e.up(&mut s.two, x),
-            Self::Many(k) => k.up(&mut s.kaiser, x, out),
+            Self::Two(e) => (out[0], out[1]) = e.up(s.two(), x),
+            Self::Many(k) => k.up(s.many(), x, out),
         }
     }
 
@@ -148,8 +173,8 @@ impl Wrapper {
     pub(crate) fn down(&self, s: &mut WrapperState, frame: &[f32]) -> f32 {
         match self {
             Self::One => frame[0],
-            Self::Two(e) => e.down(&mut s.two, frame[0], frame[1]),
-            Self::Many(k) => k.down(&mut s.kaiser, frame),
+            Self::Two(e) => e.down(s.two(), frame[0], frame[1]),
+            Self::Many(k) => k.down(s.many(), frame),
         }
     }
 }

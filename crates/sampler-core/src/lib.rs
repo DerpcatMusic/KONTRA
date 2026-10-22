@@ -96,6 +96,7 @@ pub mod bus_amp;
 pub use bus::{Bus, BusMix, BusPeakTap, BusSend, ChannelBus, GroupFader, SourceOwnerControl, SourceOwnerOutputControl, SourceOwnerControlTarget, ScopeControlSite};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
+pub use dsp::surround_panner;
 pub use dsp::{
     Biquad, DynamicsSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
     ArSettings, CascadeSettings, ColorSettings, FilterSettings, LegacyFilter, SvFilter, CurveSettings, FilterKind, GainerSettings, HoldSettings, Impulse, LadderSettings,
