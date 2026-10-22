@@ -77,3 +77,19 @@ Shared-core question: Beat Masher, Reverse Grain and Transpose Stretch all reduc
 - Not yet found: the per-sample kernel for any of the five modules, and any constant for their laws.
 
 Status: no matrix row moves from `missing`. The next step is to find where the engine stores values written for ids 256-277 (a per-id store or a switch on the id) and follow that consumer to the sample loop.
+
+## Pass 4: module parameter tables (verified)
+
+Kontakt registers each mangling module's parameters with a name and an internal id through `FUN_140981540(module, "<name>", id)`. The registration functions are `FUN_140a81330` (Beat Masher), `FUN_140a813d0` (Beat Slicer), `FUN_140a81970` (Gater) and the Reverse Grain and Transpose Stretch equivalents near `0140a80000.c:940-1006`. These are the internal ids, distinct from the engine-parameter ids in `engine_par_ids.tsv`.
+
+| Module | Internal id -> name |
+|---|---|
+| Beat Masher | 0x1e9 rotate; 0x1ea gate_mash; 0x1eb mix; 0x3b4 length; 0x3b5 reverse; 0x3b6 wrap_m; 0x3b7 mash |
+| Beat Slicer | 0x1ee buzz; 0x1ef mix; 0x3bc pattern; 0x3bd style; 0x3be two_bars; 0x3bf gate; 0x3c0 slice |
+| Gater | 0x1f2 rate; 0x1f5 shape; 0x1f6 noise; 0x1f7 mix; 0x3b8 stutter; 0x3b9 mute_input; 0x3ba gate; 0x3bb tempo_sync |
+| Reverse Grain | 0x1fa speed; 0x1fb grain; 0x1fc pitch; 0x1fd mix; 0x3c1 forward; 0x3c2 invert; 0x3c3 reverse |
+| Transpose Stretch | 0x200 amount; 0x201 size; 0x202 key; 0x203 mix; 0x3c4 stretch; 0x3c5 grain; 0x3c6 two_bars |
+
+Readers of these ids are the binding functions (`FUN_14066f670`, `FUN_140670840`, `FUN_140653c90`, `FUN_140655b30`; `FUN_141163a50` reads 0x1f7, `FUN_141170a70` reads 0x3b8). They read the value and forward it to the engine. Hits for the same literals inside functions that index object fields (`param[0x1f2]`) are offsets, not ids; scan results must filter for argument position.
+
+Not yet found: the consumer that turns these values into samples. The binding functions do not contain the DSP.
