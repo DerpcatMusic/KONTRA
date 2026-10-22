@@ -747,6 +747,36 @@ fn installed_instruments_translate_or_report_why_not() {
     );
 }
 
+/// Read-only articulation reports on two installed keyswitch patterns: a brass
+/// patch whose control keys are only hints, and a script-owned set whose zones
+/// stay untagged because the script's group selection gates them.
+#[test]
+fn installed_keyswitch_patterns_report_and_own_switching_as_measured() {
+    if let Some(path) = find(
+        "Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Staccato.nki",
+    ) {
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let m = sampler_kontakt::articulation_migration(&kontakt.instrument);
+        assert_eq!((m.switches_found, m.migrated), (0, 0));
+        assert!(!m.unrecognised.is_empty());
+        assert!(
+            m.unrecognised.iter().all(|u| u.contains("keyswitch")),
+            "{:?}",
+            m.unrecognised
+        );
+    }
+    if let Some(path) = find(
+        "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/02 Areia - 10 Violas - Core Techniques.nki",
+    ) {
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let ir = &kontakt.instrument;
+        assert_eq!(ir.switching.owner, sampler_ir::SwitchOwner::Behavior);
+        let m = sampler_kontakt::articulation_migration(ir);
+        assert_eq!((m.switches_found, m.migrated), (16, 0));
+        assert!(ir.zones.iter().all(|z| z.articulation.is_none()));
+    }
+}
+
 fn first_instruments(roots: &[PathBuf]) -> Vec<PathBuf> {
     fn first(library: &Path) -> Option<PathBuf> {
         let mut instruments = Vec::new();

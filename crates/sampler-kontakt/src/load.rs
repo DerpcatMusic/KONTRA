@@ -109,7 +109,9 @@ pub fn articulation_migration(ir: &ir::Instrument) -> ArticulationMigration {
             .iter()
             .filter(|u| {
                 let f = u.feature.to_lowercase();
-                f.contains("keyswitch") || f.contains("start") || f.contains("articulation")
+                // "group start" only: a bare "start" also matches unrelated
+                // KSP warnings such as "polyphonic variables start at 0".
+                f.contains("keyswitch") || f.contains("group start") || f.contains("articulation")
             })
             .map(|u| format!("{}: {} {}", u.location, u.feature, u.value))
             .collect(),
@@ -1602,6 +1604,25 @@ mod migration_tests {
         ir.zones.push(zone);
         let m = articulation_migration(&ir);
         assert_eq!((m.switches_found, m.migrated), (2, 1));
+    }
+
+    #[test]
+    fn unrelated_start_warnings_are_not_articulation_reports() {
+        let mut ir = ir::Instrument::default();
+        let report = |feature: &str| ir::Unsupported {
+            location: "script slot 1".into(),
+            feature: feature.into(),
+            value: String::new(),
+            reason: ir::Reason::NotModeled,
+        };
+        ir.unsupported = vec![
+            report("script Warning: polyphonic variables start at 0; initializer ignored"),
+            report("group start join"),
+            report("keyswitch script"),
+        ];
+        let m = articulation_migration(&ir);
+        assert_eq!(m.unrecognised.len(), 2);
+        assert!(m.unrecognised.iter().all(|u| !u.contains("polyphonic")));
     }
 }
 
