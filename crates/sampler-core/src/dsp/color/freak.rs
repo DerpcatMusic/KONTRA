@@ -10,9 +10,6 @@ use super::hilbert;
 use super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use sampler_ir::fx::color::Freak;
 
-const BASE: usize = 0x940;
-const SIZE: usize = 0x11e0 - BASE;
-
 /// A byte image of the core object from offset `B`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Mem<const N: usize, const B: usize>([u8; N]);
@@ -69,7 +66,7 @@ type Image = Mem<0x1400, 0>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct State {
-    m: Mem<SIZE, BASE>,
+    m: Image,
     ready: bool,
 }
 
@@ -86,8 +83,22 @@ impl State {
     }
 }
 
+/// A live knob write, the native parameter callback: the value goes to the core's parameter
+/// slot and its shadow, then the setter runs. A value already stored costs nothing, so an
+/// unchanged lane is free per block. Only continuous knobs go live; MODE (16) would need the
+/// engine's `d00`, so it stays a stored value.
+pub(super) fn set_live(state: &mut State, i: usize, v: f32) {
+    if state.m.f(0x70 + 4 * i).to_bits() == v.to_bits() {
+        return;
+    }
+    let mut d00 = 0.0;
+    state.m.wf(0x70 + 4 * i, v);
+    state.m.wf(0x588 + 4 * i, v);
+    set(&mut state.m, i, &mut d00);
+}
+
 pub(super) struct Engine {
-    image: Box<Mem<SIZE, BASE>>,
+    image: Box<Image>,
     d00: f32,
 }
 
@@ -435,9 +446,7 @@ impl Engine {
             set(&mut m, i, &mut d00);
         }
         prepare(&mut m, rate);
-        let mut image = Box::new(Mem::<SIZE, BASE>::default());
-        image.0.copy_from_slice(&m.0[BASE..BASE + SIZE]);
-        Self { image, d00 }
+        Self { image: Box::new(m), d00 }
     }
 
     pub(super) fn process(&self, s: &mut State, block: &mut Planar, len: usize) {
@@ -453,7 +462,7 @@ impl Engine {
     }
 
     #[inline(always)]
-    fn sample(&self, m: &mut Mem<SIZE, BASE>, l: f32, r: f32) -> (f32, f32) {
+    fn sample(&self, m: &mut Image, l: f32, r: f32) -> (f32, f32) {
         let (dl, dr) = (f64(l), f64(r));
         // 1. input envelope and gate
         let mx = l.abs().max(r.abs());
@@ -581,7 +590,7 @@ impl Engine {
         let q = zip4(modv, out4, |a, b| k1180 * (a + b));
         let pq = zip4(modv, out4, |a, b| k1180 * (a - b));
         let thr = m.f4(0x1190);
-        let adaa = |m: &mut Mem<SIZE, BASE>, x: [f32; 4], so: usize| -> [f32; 4] {
+        let adaa = |m: &mut Image, x: [f32; 4], so: usize| -> [f32; 4] {
             let (xp, fp) = (m.f4(so), m.f4(so + 0x10));
             let fx = map4(x, adaa_f);
             let y = std::array::from_fn(|k| {
@@ -619,7 +628,7 @@ impl Engine {
 }
 
 /// MINSTD (48271, 2^31 - 1) uniform in `[+0x10c0, +0x10c4]` (0x141962370).
-fn rand(m: &mut Mem<SIZE, BASE>, so: usize) -> f32 {
+fn rand(m: &mut Image, so: usize) -> f32 {
     let sd = ((u64::from(m.i(so)) * 48271) % 2_147_483_647) as u32;
     m.wi(so, sd);
     let (lo, hi) = (m.f(0x10c0), m.f(0x10c4));
@@ -627,7 +636,7 @@ fn rand(m: &mut Mem<SIZE, BASE>, so: usize) -> f32 {
 }
 
 /// Mode 0 fuzz chain (0x141964b20 and the ring-mod std::function 0x141943a20).
-fn fuzz(m: &mut Mem<SIZE, BASE>, d28: [f64; 2], e00: f32) -> [f64; 2] {
+fn fuzz(m: &mut Image, d28: [f64; 2], e00: f32) -> [f64; 2] {
     let nz = [f64(rand(m, 0x104c)), f64(rand(m, 0x1050))];
     let (lp0, k10d0) = (m.d2(0x10f0), m.d2(0x10d0));
     let t = zip2(zip2(nz, lp0, |a, b| a - b), k10d0, |a, b| a * b);
@@ -744,6 +753,43 @@ mod tests {
             let rate = 48_000.0;
             let out = run(&|n| (0.5 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / rate).sin()) as f32, 2400);
             check("sine", &out[1920..2400], &sine);
+        }
+    }
+
+    /// Every live lane name resolves to an engine parameter id (lowering unwraps the lookup).
+    #[test]
+    fn live_lane_names_are_engine_parameters() {
+        for (index, name, _) in sampler_ir::fx::color::FREAK_LIVE {
+            assert!(crate::engine_parameter_id(name).is_some(), "{name} (knob {index})");
+        }
+    }
+
+    /// Live knob writes into a core built with the defaults give the output of a core built with
+    /// the new knobs, over the first blocks (setter path, no native vector for live moves).
+    #[test]
+    fn live_knob_writes_match_a_core_built_with_them() {
+        let moves = [(0, 0.8), (1, 0.3), (3, 0.6), (4, 0.7), (5, 0.2), (6, 0.4), (7, 0.9), (10, 0.25), (11, 0.6), (12, 0.45), (13, 0.7), (14, 0.35), (18, 0.55)];
+        let mut target = DEFAULTS;
+        for (i, v) in moves {
+            target[i] = v;
+        }
+        let built = Engine::new(Freak { knobs: target }, 48_000);
+        let live = Engine::new(Freak { knobs: DEFAULTS }, 48_000);
+        let (mut a, mut b) = (State::default(), State { m: *live.image, ready: true });
+        for (i, v) in moves {
+            set_live(&mut b, i, v);
+        }
+        for start in (0..BLOCK * 8).step_by(BLOCK) {
+            let mut x: Planar = [[0.0; BLOCK]; 2];
+            for i in 0..BLOCK {
+                let n = (start + i) as f64;
+                x[0][i] = if start + i == 0 { 0.5 } else { 0.5 * (2.0 * std::f64::consts::PI * 200.0 * n / 48_000.0).sin() };
+                x[1][i] = x[0][i];
+            }
+            let mut y = x;
+            built.process(&mut a, &mut x, BLOCK);
+            live.process(&mut b, &mut y, BLOCK);
+            assert!(x == y, "block at {start}: live writes differ from the built core");
         }
     }
 }

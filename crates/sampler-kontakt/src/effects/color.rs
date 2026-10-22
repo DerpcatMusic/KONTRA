@@ -603,6 +603,16 @@ pub(super) fn slot_typed(
             }
             true
         }
+        Some(config) if s.fx.module == 0x68 => {
+            // Freak: the continuous knobs are script lanes (binding rows `F`); the bool
+            // switches and the MODE enum stay stored values.
+            push_color(b, s, config);
+            b.combined = s.gain;
+            if s.dynamic.is_some() {
+                notes.push(("Freak switches and mode".into(), "stored values only; not live".into(), Reason::NotModeled));
+            }
+            true
+        }
         Some(config) => {
             b.out.processors.push(Processor::Color(config));
             b.combined = s.gain;

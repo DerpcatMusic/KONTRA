@@ -160,8 +160,9 @@ pub(super) fn solid_geq(version: u16, public: &[u8], notes: &mut Notes) -> Optio
     }
     notes.push((
         "Solid G-EQ smoothing".into(),
-        "native coefficients and topology are exact (G_EQ setter vectors); the native 20 ms coefficient \
-         smoothing on knob changes is not modelled"
+        "native coefficients and topology are exact (G_EQ setter vectors); knob moves glide over one block \
+         at a time (20 ms), but the native per-frame linear ramp of the coefficient registers (process \
+         0x141a595d0) and its step writer are not matched yet, so the glide is an approximation"
             .into(),
         Reason::UnknownLaw,
     ));

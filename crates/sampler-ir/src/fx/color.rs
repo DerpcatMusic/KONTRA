@@ -215,6 +215,28 @@ pub struct Freak {
     pub knobs: [f32; 19],
 }
 
+/// Freak core index, `ENGINE_PAR_FREAK_*` name and role of each live knob (binding rows `F`,
+/// identity law, fx_bite_dirt_freak_wowflutter_twindelay.tsv). Core indices as `Freak::knobs`;
+/// the setter table is `dsp::color::freak::set`.
+pub const FREAK_LIVE: [(u8, &str, crate::ProcessorParameter); 13] = {
+    use crate::ProcessorParameter as P;
+    [
+        (0, "ENGINE_PAR_FREAK_ANTIFOLD", P::FreakAntifold),
+        (1, "ENGINE_PAR_FREAK_FREQUENCY", P::FreakFrequency),
+        (3, "ENGINE_PAR_FREAK_TYPE", P::FreakType),
+        (4, "ENGINE_PAR_FREAK_HARMONICS", P::FreakHarmonics),
+        (5, "ENGINE_PAR_FREAK_CONTOUR", P::FreakContour),
+        (6, "ENGINE_PAR_FREAK_RELEASE", P::FreakRelease),
+        (7, "ENGINE_PAR_FREAK_BP_FREQ", P::FreakBpFreq),
+        (10, "ENGINE_PAR_FREAK_STEREO", P::FreakStereo),
+        (11, "ENGINE_PAR_FREAK_FEEDBACK", P::FreakFeedback),
+        (12, "ENGINE_PAR_FREAK_CARRIER", P::FreakCarrier),
+        (13, "ENGINE_PAR_FREAK_TUNING", P::FreakTuning),
+        (14, "ENGINE_PAR_FREAK_WIDTH", P::FreakWidth),
+        (18, "ENGINE_PAR_FREAK_MIX", P::FreakMix),
+    ]
+};
+
 /// Kontakt Dirt core values (0..1, enums as i/2) by core index: drive A/B, blend A/B, tone
 /// A/B, bias A/B, diode type A/B, comp A/B, routing, amount lo/hi, level.
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
@@ -539,6 +561,13 @@ impl Config {
                 ("ENGINE_PAR_FUZZ_TREBLE", P::FuzzTreble, knobs[2]),
             ] {
                 lane(name, role, f64::from(value), Law::Identity);
+            }
+        }
+        if let Curve::Freak(Freak { knobs }) = self.curve {
+            // The continuous knobs (identity binding laws). The bool switches, the
+            // MODE enum and the unnamed field 17 stay stored values.
+            for (index, name, role) in FREAK_LIVE {
+                lane(name, role, f64::from(knobs[usize::from(index)]), Law::Identity);
             }
         }
         if let Some(Stereo { width, pan, .. }) = self.stereo {
