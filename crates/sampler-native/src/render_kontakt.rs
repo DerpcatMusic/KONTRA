@@ -304,20 +304,11 @@ pub fn render(
     let mut scripts = loaded.scripts;
     let plan = loaded.plan;
     let rate = plan.sample_rate();
-    let limits = Limits {
-        notes: 64,
-        channels: 16,
-        performances: 1,
-        expressions: 64,
-        families: 64,
-        decisions: 256,
-        voices: 512,
-        commands: 256,
-        behaviors: 16,
-        behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(16),
-        note_cells: plan.note_cell_count().saturating_mul(64),
-    };
+    // The sizing a host gets (Limits::for_plan), not a hand-written literal. The
+    // literal's 64 note slots and 16 script callbacks refused notes with Capacity
+    // (dense Vista and ANALOG STRINGS chords), and their note-offs then failed
+    // with StaleHandle.
+    let limits = Limits::for_plan(&plan, 4096, 512);
     let mut rt =
         Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
     // KONTRA_SELECTION_TRACE=1: per note, how many regions each reason rejected and what sounded.
