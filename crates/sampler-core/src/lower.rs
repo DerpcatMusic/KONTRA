@@ -1457,6 +1457,9 @@ impl Lowering<'_> {
         if let Some(&ir::Machine::S1200 { filter_mode: Some(mode @ 1..=ir::S1200_FILTER_MODE_MAX) }) = group.and_then(|g| g.machine.as_ref()) {
             pre.push(Processor::S1200(crate::dsp::machine::S1200Stage::new(crate::dsp::machine::s1200_mode(mode), self.rate)));
         }
+        if let Some(ir::Machine::Mp60) = group.and_then(|g| g.machine.as_ref()) {
+            pre.push(Processor::Mp60(crate::dsp::machine::Mp60Stage::new(self.rate)));
+        }
         if gain > 1.0 {
             // Region gain is an attenuator; boost belongs to the voice chain.
             pre.push(Processor::Gain(gain));

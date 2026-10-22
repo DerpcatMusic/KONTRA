@@ -143,6 +143,9 @@ pub enum Processor {
     /// Kontakt S1200 Machine source stage (`dsp/machine.rs`): anti-alias IIR,
     /// filter-mode biquads, 26 kHz sample-and-hold. Placed by lowering.
     S1200(machine::S1200Stage),
+    /// Kontakt MP60 Machine source stage (`dsp/machine.rs`): host-rate to the
+    /// 44.1 kHz chain (IIR, 12-bit quantiser, IIR) and back. Placed by lowering.
+    Mp60(machine::Mp60Stage),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
     /// Ring modulator: sine carrier crossfaded with the input (`sampler_ir::fx::ringmod`).
@@ -224,6 +227,7 @@ impl Processor {
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::LiveFormant { knobs, .. } => knobs.iter().all(live_knob),
             Processor::S1200(stage) => stage.valid(),
+            Processor::Mp60(stage) => stage.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -307,6 +311,11 @@ pub(super) enum PreparedProcessor {
         stage: machine::S1200Stage,
         offset: usize,
     },
+    /// The MP60 machine with its histories at `offset` of the delay storage.
+    Mp60 {
+        stage: machine::Mp60Stage,
+        offset: usize,
+    },
     Branch {
         count: u16,
         gain: f64,
@@ -370,7 +379,7 @@ impl PreparedProcessor {
                 color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
-                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. }
+                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. } | Self::Mp60 { .. }
                 | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. }) => OperationOwner::Scalar(scalar),
         }
     }
@@ -391,6 +400,7 @@ impl PreparedProcessor {
             Self::Color { color, offset } => ProcessorRef::Color { color, offset },
             Self::Filter { engine, offset } => ProcessorRef::Filter { engine, offset },
             Self::S1200 { stage, offset } => ProcessorRef::S1200 { stage, offset },
+            Self::Mp60 { stage, offset } => ProcessorRef::Mp60 { stage, offset },
             Self::Branch { count, gain, first, last } => ProcessorRef::Branch { count, gain, first, last },
             Self::StateVariable(x) => ProcessorRef::StateVariable(x),
             Self::Space(index, live) => ProcessorRef::Space(index, live),
@@ -443,6 +453,7 @@ pub(super) enum ProcessorRef<'a> {
     Mix { count: &'a u16, lanes: &'a [usize; 3] },
     Pan { position: &'a control::PreparedParameter, offset:&'a f64, law: &'a sampler_ir::PanLaw, expression: &'a bool },
     S1200 { stage: &'a machine::S1200Stage, offset: &'a usize },
+    Mp60 { stage: &'a machine::Mp60Stage, offset: &'a usize },
     RingMod { ring: &'a ringmod::RingMod, offset: &'a usize },
 }
 impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
@@ -822,6 +833,11 @@ pub(super) fn compile_processors(
                 let offset = *delay_frames;
                 *delay_frames = offset.checked_add(machine::S1200_WORDS).ok_or(Error::Capacity)?;
                 PreparedProcessor::S1200 { stage, offset }
+            }
+            Processor::Mp60(stage) => {
+                let offset = *delay_frames;
+                *delay_frames = offset.checked_add(machine::MP60_WORDS).ok_or(Error::Capacity)?;
+                PreparedProcessor::Mp60 { stage, offset }
             }
                 Processor::Color(settings) => {
                     let offset = *delay_frames;
@@ -1290,6 +1306,7 @@ impl ProcessorState {
             | ProcessorRef::StateVariable(_)
             | ProcessorRef::Space(..)
             | ProcessorRef::S1200 { .. }
+            | ProcessorRef::Mp60 { .. }
             | ProcessorRef::Mix { .. } => true,
         }
     }
@@ -1517,6 +1534,14 @@ pub(super) fn process<'a, const TRACE: bool>(
             ProcessorRef::Formant(formant) => formant.process(state, block, len),
             ProcessorRef::S1200 { stage, offset } => {
                 let words = &mut delay_samples[*offset..*offset + machine::S1200_WORDS];
+                let [frames, next, ..] = &mut state.aux;
+                let mut schedule = [*frames, *next];
+                let [left, right] = block;
+                stage.process(words, &mut schedule, [&mut left[..], &mut right[..]], len);
+                [*frames, *next] = schedule;
+            }
+            ProcessorRef::Mp60 { stage, offset } => {
+                let words = &mut delay_samples[*offset..*offset + machine::MP60_WORDS];
                 let [frames, next, ..] = &mut state.aux;
                 let mut schedule = [*frames, *next];
                 let [left, right] = block;
