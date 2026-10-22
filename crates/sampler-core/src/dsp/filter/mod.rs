@@ -24,6 +24,7 @@ pub(crate) mod chamberlin;
 pub(crate) mod daft;
 pub(crate) mod formant;
 pub(crate) mod linear;
+pub(crate) mod phaser;
 pub(crate) mod shaper;
 pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
