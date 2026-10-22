@@ -2117,9 +2117,15 @@ mod tests {
                     h[start + n] = block[0][n];
                 }
             }
+            // The Kontakt measurement analyses a 16384-frame window that starts 256 frames before
+            // the response's loudest sample (tools/kontakt-oracle/eqrender.py, `spectrum`). Taking
+            // the same window is what reproduces the order-4/6 knob-0 shape (it is not a law).
+            let peak = (0..N).max_by(|&a, &b| h[a].abs().total_cmp(&h[b].abs())).unwrap();
+            let window = |n: usize| (peak + n).checked_sub(256).and_then(|i| h.get(i).copied()).unwrap_or(0.0);
             let measured = case["db"].as_array().unwrap();
             for (i, &f) in probes.iter().enumerate() {
-                let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, &x)| {
+                let (re, im) = (0..N).fold((0.0, 0.0), |(re, im), n| {
+                    let x = window(n);
                     let a = -2.0 * std::f64::consts::PI * f * n as f64 / 48_000.0;
                     (re + x * a.cos(), im + x * a.sin())
                 });

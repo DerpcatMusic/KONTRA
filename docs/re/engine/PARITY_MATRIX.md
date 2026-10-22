@@ -65,9 +65,9 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | PRO-53 | partial | vector | kemu stage vectors, 2e-5 relative, 3 knob points (`cascade_stage_vectors.json`); moving controls and stereo unvectored |
 | Legacy LP1 | partial | vector (Wine oracle, golden 0.1 dB), decomp | static response matches; dynamic cutoff cadence not measured |
 | Legacy LP2 | parity | vector (Wine oracle, golden 0.1 dB), decomp | static response; cadence shares the clock (decomp) |
-| Legacy LP4 | partial | vector (Wine oracle) | knob 0 (res 0) shape differs: Kontakt ~8 dB/oct tail, ours steeper; mechanism open (filt-legacy doc) |
-| Legacy LP6 | partial | vector (Wine oracle) | knob 0 shape differs as LP4 |
-| Legacy Ladder | partial | vector (Wine oracle), decomp | knob 0 shape differs; setter and stage clip constants match the decompile |
+| Legacy LP4 | parity | vector (Wine oracle golden, 0.1 dB, knob 0 included), decomp | static response incl. knob 0; the earlier knob-0 tail was the oracle's analysis window (starts 256 frames before the loudest sample), reproduced exactly in the test |
+| Legacy LP6 | parity | vector (Wine oracle golden, 0.1 dB, knob 0 included) | static response incl. knob 0 (analysis-window artefact, see LP4) |
+| Legacy Ladder | parity | vector (Wine oracle golden, 0.1 dB, knob 0 included), decomp | static response incl. knob 0 (analysis-window artefact); setter and stage clip constants match the decompile |
 | Legacy HP1 | partial | vector (Wine oracle, golden 0.1 dB), decomp | static response matches; dynamic cadence not measured |
 | Legacy HP2 | parity | vector (Wine oracle, golden 0.1 dB) | static response |
 | Legacy HP4 | parity | vector (Wine oracle, golden 0.1 dB) | static response, knob 0 included |
