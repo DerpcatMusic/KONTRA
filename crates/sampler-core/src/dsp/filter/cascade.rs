@@ -2342,6 +2342,42 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// 3x2 Versatile (LP type, wet 1, shift 0, gain .5) against the native cutoff, resonance and
+    /// process code under kemu (`tools/re/versatile_kemu_vectors.py`, `versatile_kemu_vectors.json`):
+    /// a cutoff sweep, and independent stage resonances at cutoffs .5 and .8. Error below 2e-5 of
+    /// each vector's peak.
+    #[test]
+    fn versatile_native_sweeps_match() {
+        super::super::ladder_kernel::prepare();
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("versatile_kemu_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for case in vectors["cases"].as_array().unwrap() {
+            let res: Vec<f32> = case["res"].as_array().unwrap().iter().map(|r| r.as_f64().unwrap() as f32).collect();
+            let v = sampler_ir::fx::filter::Versatile {
+                shift: [0.0; 2],
+                resonance: [res[1], res[2]],
+                types: [0.0; 3],
+                wet: [1.0; 3],
+                gain: 0.5,
+            };
+            let c = versatile(&v, case["cut"].as_f64().unwrap() as f32, res[0], 48_000.0);
+            let mut s = [0f32; 8];
+            s[7] = c.gain;
+            let impulse = case["input"] == "imp";
+            let ours: Vec<f32> = (0..64)
+                .map(|i| if impulse { if i == 0 { 1.0 } else { 0.0 } } else if (i / 20) % 2 == 0 { 4.0 } else { -4.0 })
+                .map(|x| c.tick(&mut s, x))
+                .collect();
+            let native: Vec<f32> = case["out"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+            let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+            let err = ours.iter().zip(&native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
+            if !(err < 2e-5) {
+                failures.push(format!("{} {:?} {}: err {err}", case["cut"], res, case["input"]));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// The SV family against the native classes run under kemu (sv/vectors.py: setters,
     /// 32-frame block update, process; 64 frames of an impulse and a +-4 square).
     #[test]
