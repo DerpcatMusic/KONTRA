@@ -122,3 +122,33 @@ Still open (the exact gate is not yet pinned):
 Not done: no fix, no new Kontakt render, no code PR. The NI manual page
 (`ksp-manual/en/advanced-concepts`) returned HTTP 403 to WebFetch, so the condition's documented
 semantics are unverified.
+
+## Dolce Staccato burst: release-trigger hypothesis falsified (2026-10-22, fifth pass)
+
+Steps 1 and 2 of the follow-up, settled from data and the decompile. No fix.
+
+- **Groups (`.nki` read via `sampler_kontakt::read_chunks`; the `inspect-kontakt-chunks` dump
+  fails on this file with "Truncated at byte 39").** The instrument has 384 groups and 9600 zone
+  records. All 384 groups have `release_trigger = false`, `release_trigger_note_monophonic = true`,
+  `rls_trig_counter = 0`. Each key-60 zone (384) sits in its own group. So this instrument has no
+  native release-trigger groups. The `NO_SYS_SCRIPT_RLS_TRIG` gate on `run_release` (fourth pass)
+  cannot be the source of the burst.
+- **Decompile (`Research/KONTRA/source/kontakt8/0140870000.c`, generator at `FUN_140876bd0`).**
+  `NO_SYS_SCRIPT_RLS_TRIG` appears only as `USE_CODE_IF_NOT(NO_SYS_SCRIPT_RLS_TRIG)` around the
+  generated system-script text for release triggers (~4816, 4929, 4940, 5003). When the condition
+  is set, the generated release code is left out: the pedal exit, `disallow_group`/`allow_group`
+  of the release groups, and `_reset_rls_trig_counter` on note-on. That means the script owns
+  release handling. It matches KONTRA's reading (the flag silences the system's release path), so
+  `owns_release_triggers` is not the defect. The `groups.rs:412` test is consistent with the
+  decompile and is kept.
+- **Where the sound comes from for SHORT.** The SHORT attack is `play_note` at script line 71673
+  (`case $ART__SHORT` runs 70650-71704; `change_tune` by `2*$neighbor_borrow`). The release side
+  for SHORT only calls `note_off` (77458). So the burst is a behaviour of the attack voice under
+  `note_off`, not a release sample.
+- **Discriminating facts.** Kontakt's held note is exactly 0.0 until note-off (not a low ramp).
+  KONTRA's held note peaks at about 0.0002 (a ramp floor). A fix must reproduce the exact-zero hold
+  and the post-note-off rise. Nothing has been verified on that route yet.
+
+Open: the mechanism that makes a `note_off` on a silent attack voice produce a sound about 20 ms
+later that peaks about 180 ms after that. The next probe should read the attack voice's envelope and
+gain state at `note_off` in KONTRA (`crates/sampler-ksp` event state), not the release gate.
