@@ -73,7 +73,7 @@ gaps below, and every res .9 row of the classes other than SV1/HP1 is open under
 | G1 | Cutoff law, u .25 to .75 | **closed** | Capture rows at res 0 and res .5 match within 1 dB (u = 1 for BP2 is G12) |
 | G2 | Cutoff law, u <= .25 (SV2 class) | **closed** | BP2 and HP2 match the capture at u = 0, .25, .5, .75 (res 0). LP2 at u = 0 matches once the capture's window is applied (G10). The g law is the setter `0x140b04ee0`: `note = min(115 u + 20, 160)`, `f = table(5 note + 1381.8816)`, `g = tan(pi f T)` (PE constants 115, 20, 160, 5, 1381.88) |
 | G3 | Resonance law res <= .5 | **closed** | Native vectors (1e-6) and the capture rows at res .5 (within 1 dB) |
-| G4 | Resonance law res .9 | **algebra closed; capture chain open** | Native-exact: `sv_res9_match_the_native_vectors` (kemu runs of 0x140b02400 and 0x140b02790 at u .5, res .9, 512 frames) agrees with the Rust stages to 1e-4 for LP2/BP2/HP2 and LP4/BP4/HP4/Notch4. The capture rows at res .9 still differ by 2 to 11 dB (BP and HP worst, 30 Hz skirt included). The capture window is now reproduced; what remains is the capture chain (the knob ramp from the previous step is the first suspect, not tested) |
+| G4 | Resonance law res .9 | **algebra closed; capture chain open** | Native-exact (kemu oracle): `sv_res9_match_the_native_vectors` (`tools/re/sv_native_vectors.py`: kemu runs of 0x140b02400, 0x140b02790 and 0x140b02cf0 at u .5, res .9, 512 frames; SV6 through the native setters and `TABLE_INIT`) agrees with the Rust stages to 1e-5 of peak for LP2/BP2/HP2, LP4/BP4/HP4/Notch4 and LP6/BP6/HP6/Notch6. The capture rows at res .9 still differ by 2 to 11 dB (BP and HP worst, 30 Hz skirt included). The capture window is now reproduced; what remains is the capture chain (the knob ramp from the previous step is the first suspect, not tested) |
 | G5 | Self-oscillation stability | **covered** | Test `sv_classes_stay_bounded_at_full_resonance` (all five classes, u 0 and 1, res 1, +-4 square): finite and peak < 1e4. Not a level match (G4) |
 | G6 | Knee constants | **closed** | `0.25`, `2L`, the SV2 and SV4 operation orders confirmed from `0x140b02790` and the setters |
 | G7 | MultiSV bandwidth | **identified; record path partly traced** | Core ENGINE_PAR index 2 (+0x28) is read by `0x140b03b50` as `spread = 31.5 b + 0.5` (constants confirmed, centre `180 u - 20` confirmed). Mode is index 3 (`0x140b048a0`, `round(2 v)` clamped 0..2). The reader `0x140d00db0` writes the value at +0x24, but the copy to core index 2 is not traced. Vector-verified at bandwidth 0.3 only |
@@ -121,8 +121,8 @@ Padé forms. Each differs in precision or clamp, so each needs its own vector ch
 
 ## Next steps
 
-1. G4: a kemu driver for the SV classes (the vector generator is not in this repo) to dump SV4/SV6
-   res .9 vectors, then compare the measured peaks with the level recorded.
+1. G4: the kemu driver is in `tools/re/sv_native_vectors.py` (SV2, SV4, SV6 at res .9). The remaining
+   step is the measured peaks against the recorded level, not a vector.
 2. G10 and G12: trace the SV2/Six process transform (`0x140b02400`, `0x140b02cf0`) at small `g`.
 3. G7 and MultiSV capture: find the bandwidth engine-parameter name (the probe was blocked by another oracle session holding the guard), then capture types 63..65 at bandwidths 0, .3, 1.
    G8 (SV2 `l`): trace the SV2 process (`0x140b02400`).

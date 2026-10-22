@@ -49,6 +49,18 @@ def sv_r(v):
     return 1.0 - q * q * q
 
 
+def impulse(e, proc, obj, n=N):
+    inp, out = e.alloc(4 * n), e.alloc(4 * n)
+    imp = np.zeros(n, dtype=np.float32)
+    imp[0] = 1.0
+    e.uc.mem_write(inp, imp.tobytes())
+    arr_in, arr_out = e.alloc(8), e.alloc(8)
+    e.write(arr_in, "Q", inp)
+    e.write(arr_out, "Q", out)
+    e.call(proc, obj, arr_in, arr_out, n)
+    return np.frombuffer(e.uc.mem_read(out, 4 * n), dtype=np.float32).astype(np.float64)
+
+
 def run(proc, count, mode, block_values, mix_slots):
     e = Emu(EXE)
     obj = e.alloc(0x400)
@@ -57,15 +69,7 @@ def run(proc, count, mode, block_values, mix_slots):
         e.write(obj + addr, "f", *vals)
     for addr, v in mix_slots(mode):
         e.write(obj + addr, "f", v)
-    inp, out = e.alloc(4 * N), e.alloc(4 * N)
-    imp = np.zeros(N, dtype=np.float32)
-    imp[0] = 1.0
-    e.uc.mem_write(inp, imp.tobytes())
-    arr_in, arr_out = e.alloc(8), e.alloc(8)
-    e.write(arr_in, "Q", inp)
-    e.write(arr_out, "Q", out)
-    e.call(proc, obj, arr_in, arr_out, N)
-    return np.frombuffer(e.uc.mem_read(out, 4 * N), dtype=np.float32).astype(np.float64)
+    return impulse(e, proc, obj)
 
 
 def sv2(mode):
@@ -93,9 +97,36 @@ def sv4(mode):
     return run(SV4, 1, mode, block, mix)
 
 
+SV6, SV6_SET = 0x140B02CF0, 0x140B06070
+TABLE_INIT = 0x1404D14D0  # fills the cutoff exponential table (DAT_14a6b2600, bss) at load in the original
+# Mode index at +0x48 selects the setter's resonance-to-s formula (0 LP, 1 BP, 2 HP, 3 NOTCH);
+# the one-hot mix weight slot per mode is the one the SV6 process reads.
+SV6_MIX = (0x4C, 0x50, 0x54, 0x58)
+
+
+def sv6(mode, cutoff=CUTOFF, res=RES, n=N):
+    """SV6 through the native setters, not Python formulas. Setter 0x140b06070 idx 0 is the
+    cutoff (0x140b05160 writes g at +0x3a0 and l at +0x3ac, reading the sample-rate term at
+    +0x36c); idx 1 is the resonance (R at +0x3a4, 1 - s at +0x3a8). The process reads lanes
+    +0x380..+0x38c, so the targets are copied there with zero ramp deltas (steady state)."""
+    e = Emu(EXE)
+    e.call(TABLE_INIT)
+    obj = e.alloc(0x400)
+    e.write(obj + 0xC, "I", 1)
+    e.write(obj + 0x36C, "f", f32(1.0 / 48000.0))
+    e.write(obj + 0x48, "i", mode)
+    e.call(SV6_SET, obj, 0, 0, f={2: cutoff})
+    e.call(SV6_SET, obj, 1, 0, f={2: res})
+    e.write(obj + 0x380, "f", *e.read(obj + 0x3A0, "f", 4))
+    e.write(obj + 0x390, "f", 0.0, 0.0, 0.0, 0.0)
+    e.write(obj + SV6_MIX[mode], "f", 1.0)
+    return impulse(e, SV6, obj, n)
+
+
 CASES = [
     ("SV2", "LP2", sv2, 0), ("SV2", "BP2", sv2, 1), ("SV2", "HP2", sv2, 2),
     ("SV4", "LP4", sv4, 0), ("SV4", "BP4", sv4, 1), ("SV4", "HP4", sv4, 2), ("SV4", "NOTCH4", sv4, 3),
+    ("SV6", "LP6", sv6, 0), ("SV6", "BP6", sv6, 1), ("SV6", "HP6", sv6, 2), ("SV6", "NOTCH6", sv6, 3),
 ]
 
 
