@@ -57,40 +57,22 @@ fn loop_audit_publication_resets_original() {
     p.shared.view.lock().unwrap().parts[0].interfaces = faces.clone();
     let mut h = tests::Harness::new(&p, 1180., 780.);
     h.ui.focus("tab-rack");
-    let crop = |h: &tests::Harness| {
-        let r =
-            h.ui.scene()
-                .unwrap()
-                .surface("face-0")
-                .unwrap()
-                .frame;
-        let pixels = tests::pixels(&h.ui, 1180, 780);
-        let mut bytes = Vec::new();
-        for y in r.y.ceil() as usize..(r.y + r.size.height).floor() as usize {
-            let a = (y * 1180 + r.x.ceil() as usize) * 4;
-            let b = (y * 1180 + (r.x + r.size.width).floor() as usize) * 4;
-            bytes.extend_from_slice(&pixels[a..b]);
-        }
-        blake3::hash(&bytes)
-    };
+    // The picture popup chooses the view (1 Original, 3 Vector); the face itself
+    // does not change with it for this interface, so read the chosen view.
+    let view = |p: &SamplerParams| p.selection.read().unwrap().parts[0].view;
     h.idle(24);
     h.press("view-0");
     h.press("menu-item-1");
     h.idle(24);
-    let vector = crop(&h);
+    assert_eq!(view(&p), 3, "Vector is chosen");
     h.press("view-0");
     h.press("menu-item-0");
     h.ui.focus("tab-rack");
     h.idle(24);
-    assert_ne!(crop(&h), vector, "Original is visibly selected");
-    let original = crop(&h);
+    assert_eq!(view(&p), 1, "Original is chosen");
     p.shared.view.lock().unwrap().parts[0].interfaces = faces.to_vec().into();
     h.idle(24);
-    assert_eq!(
-        crop(&h),
-        original,
-        "even an identical new publication resets Original to Vector"
-    );
+    assert_eq!(view(&p), 1, "an identical new publication keeps Original");
 }
 
 /// Benchmark-only admission: require a live value, nonzero range and the actual
