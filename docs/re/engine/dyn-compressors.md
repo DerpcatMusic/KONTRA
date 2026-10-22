@@ -179,3 +179,32 @@ Current behaviour: no processor. The effect raises a `NotModeled` note
 3. Recover the Supercharger variant selector and transfer from the 0x60
    object and its core. No law without it.
 4. Check Classic against the native recording path.
+
+## CompXT core parameter map (Supercharger GT, 2026-10-22)
+
+Source: `NI::DSP::CSL::Rockruepel_CompXT` parameter setter `0x141ac7450`
+(`0141ac0000.c:4308`, 4,714 bytes, index guard `> 0x58` returns). Each case
+stores the value in a `double` slot at `core+8+index*8` and recomputes the
+derived state. Only the dispatch is recorded here; the derived formulas
+for each case and the process function are not yet recovered.
+
+| index | conversion (as in the setter) | derived state |
+|---|---|---|
+| 0 | `FUN_141a98340` (spline evaluator, same as Solid EQ/Bus tables) | `+0x6f8` (and `+0x770` when flag `+0x680`) |
+| 1 | spline × `DAT_1479ab4b0` | `+0x708` |
+| 2 | `pow(DAT_1447149c8, spline × DAT_144f388e0)` | `+0x710` |
+| 3, 4 | block-level float index (`×DAT_1476989a0`) into table `DAT_1478fa900` | interpolated |
+| 5, 6 | spline into `+0x920` loop | — |
+| 7, 8, 9, 0xa, 0x16 | bool switches (`x > 0.0`) | `+0x2f2`–`+0x2f6`, `+0x7f0`–`+0x7f7` |
+| 0xb, 0xc, 0xf | additive spline, cast to int | — |
+| 0xd, 0xe, 0x13, 0x14, 0x15, 0x19, 0x1a–0x1d, 0x29 | `pow(2^…)`-style dB/time conversions | `+0x718`, `+0x720`, `+0x6c8`, `+0x6d0`, `+0x700`, `+0x728`–`+0x17f0` |
+| 0x10, 0x11, 0x12 | spline; 0x12 is `1 − x` | `+0x740`, `+0x748` |
+| 0x20, 0x23, 0x26, 0x28 | three-value spline groups | `+0x500`, `+0x560`, `+0x5c0`, `+0x620` |
+| 0x2a, 0x2b | spline | `+0xdd8`/`+0x1e98`, `+0xdd0`/`+0x1e90` |
+| 0x2c, 0x31, 0x34 | scaled spline | `+0x52e0`, `+0x52f0`, `+0x52f8` |
+| 0x2e, 0x30, 0x33, 0x36 | bool (`x ≥ 0.5`) → `FUN_141ab9560`/`9cd0`/`9140` | `+0x2f3`–`+0x2f6` |
+
+Unrecovered: the process function (the CompXT vtable entry is not yet
+located), each derived-state formula, the saved-field→index map for
+Supercharger, and the meaning of each index. Supercharger GT therefore stays
+`missing` in the parity matrix.
