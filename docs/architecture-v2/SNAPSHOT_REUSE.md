@@ -3,8 +3,22 @@
 Player preset swaps (`queue_snapshot(..., reuse: false)`) do not use this path.
 Reuse keeps the previous preset's runtime, samples, scripts, ordinary values and
 UI tree, so a swap through it is not a fresh load. Swaps prepare a fresh
-replacement through the ordinary loader instead. Reuse can serve a swap again
-only after ordinary and script state are reset to fresh-load values (open).
+replacement through the ordinary loader instead.
+
+Open: making reuse safe for swaps needs a post-init baseline of the base
+instrument, which this owner does not have. Two facts block a same-owner reset:
+- The snapshot is read into the plan before init (`read_with_snapshot_and_controls`
+  applies persisted values with `apply_snapshot`), so plan control defaults are
+  snapshot-dependent, not the base defaults.
+- Init restores persistent variables from the saved snapshot
+  (`sampler-ksp` `restore_saved`, persistent homes only), so the post-init state of
+  a snapshot-loaded owner is not the base's post-init state either.
+A reset must come from a base-only init (no snapshot values), and then cover every
+authored field (`SetupLayout.fields`), not only persistent homes.
+
+Speed, also open: a snapshot read always parses the base instrument.
+`read_overlaid` consults the base read cache only when no snapshot is given, so
+every preset swap re-reads the library file. Measure before changing it.
 
 The product loader can submit a compatible snapshot to the existing owner's
 control queue. It does not prepare or install another Runtime, rerun `on init`,

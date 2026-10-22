@@ -869,11 +869,20 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
         ));
     }
     if let Some(p) = v.report.as_ref().map(|r| r.runtime) {
+        if p.voice_drops > 0 {
+            out.push(banner(
+                Role::Warning,
+                format!(
+                    "{} notes were dropped: the part ran out of voices.",
+                    p.voice_drops
+                ),
+            ));
+        }
         if p.capacity_drops > 0 {
             out.push(banner(
                 Role::Warning,
                 format!(
-                    "{} notes were dropped: the part reached a capacity limit.",
+                    "{} notes were refused: the part reached an internal capacity limit.",
                     p.capacity_drops
                 ),
             ));

@@ -2292,6 +2292,8 @@ input.channel >= 16 || input.group >= 16 || input.key >= 128
         };
         if !self.processing_admission { self.steal_voices(1); }
         if self.processing_admission && self.voices.available() == 0 {
+            // A full voice pool is a voice drop, however the start was admitted.
+            self.voice_drops = self.voice_drops.saturating_add(1);
             return Err(Error::Capacity);
         }
         if at > self.now && self.available_commands() == 0 {
