@@ -233,6 +233,9 @@ pub(crate) mod eq_family;
 pub(crate) mod filter;
 pub(crate) mod hiir;
 pub(crate) mod kaiser;
+// Wired by the Kontakt mapping for module 0x22; until then only the tests build it.
+#[allow(dead_code)]
+pub(crate) mod rotator;
 pub(crate) mod space;
 pub(crate) mod timemod;
 pub(super) mod control;
