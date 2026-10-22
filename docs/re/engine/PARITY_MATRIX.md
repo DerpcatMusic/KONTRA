@@ -52,7 +52,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Ladder LP1 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
 | Ladder LP2 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
 | Ladder LP3 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
-| Ladder LP4 | partial | vector | most native vectors (84 HQ-off, 249 HQ-on cells); steady knobs only; moving controls and flag 0x49 unvectored |
+| Ladder LP4 | partial | vector | most native vectors (84 HQ-off, 249 HQ-on cells); steady knobs plus stereo moving cutoff (`ladder_kemu_vectors.json`, 1-2 ulp tail residual); flag 0x49 and HQ-on moving controls unvectored |
 | Ladder HP1 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
 | Ladder HP2 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
 | Ladder HP3 | partial | vector | steady knobs only: native PCM grid (`ladder_native_vectors.rs`, `ladder_native_hq_vectors.rs`); moving controls, flag 0x49 path and HQ-on non-LP4 selectors unvectored |
