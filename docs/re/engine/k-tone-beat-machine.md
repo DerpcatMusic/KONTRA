@@ -1,12 +1,11 @@
 # Kontakt 8 Tone Machine and Beat Machine: decompile findings
 
-Status: **missing, partial evidence.** No Tone Machine or Beat Machine render
-kernel was recovered from the Kontakt 8 C export
-(`Research/KONTRA/source/kontakt8/`, `READY` present). Function names there are
-generic (`FUN_*`), and the render entry points are reached through vtable
-slots whose targets are not named in the export. This unit records the
-object layouts, dispatch and saved-field names that were confirmed, plus the
-open leads. It changes no DSP. Both matrix rows stay `missing`.
+Status: **missing, candidate kernels located.** The process kernels are now
+located through the cached vtable table (`docs/re/kontakt-rdata/vtables.tsv.gz`,
+section "Vtable slots" below), but they are not ported: the Tone kernel is
+three ~2 KB vectorised variants whose laws are not yet read, and the Beat
+Machine has no audio kernel of its own (slice playback, see below). No DSP is
+changed; both matrix rows stay `missing`.
 
 Scope: Kontakt 8 only. Addresses are Kontakt 8.exe VAs. Decompile text is
 read with `rg`; no C is pasted here.
@@ -25,6 +24,39 @@ read with `rg`; no C is pasted here.
 | `01405f0000.c:7486..7540` | UI per-machine visibility; internal id 1 shows the "DC Filter" control |
 | `0140580000.c:7363` | Undo label "Beat Machine activated" (the mode-change message only) |
 | `0140cd0000.c:4551..4600` | `FUN_140cd94c0` body (see Tone object below) |
+
+## Vtable slots (cached rdata, `docs/re/kontakt-rdata/vtables.tsv.gz`)
+
+Calibration: the known TM1 render (`0x140ce3600`, `time_machine.rs`) is slot 23
+of `BTimeMachine` (`0x144fd06f0`). The S1200 and MP60 renders are slot 27 of
+their vtables. So the render slot is per class; read it from each class's
+own vtable.
+
+| Class | vtable VA | Bases | Slot 2 (factory) | Process candidates |
+| --- | --- | --- | --- | --- |
+| `BToneMachine` | `0x144fd0bb0` | BGrainMachine, BMachineBase, BSoundObj | (`ToneMachineModule` slot 2 = `FUN_140d20640`, the 0x420 allocator) | slot 23 `FUN_140ce3ff0` (2197 B), slot 24 `FUN_140ce23e0` (2207 B), slot 25 `FUN_140cdd640` (2070 B) |
+| `BTimeMachine` (TM1, reference) | `0x144fd06f0` | BGrainMachine, ... | n/a | slot 23 `FUN_140ce3600` (2448 B, the TM1 render) |
+| `BTimeMachine2` (TM2, reference) | `0x144fd07d0` | BGrainMachine, ... | n/a | slots 23/24/25 `FUN_140ce2d20` (2208 B), `FUN_140ce0dd0` (2198 B), `FUN_140cdc4d0` (2056 B) |
+| `BSlice` (Beat Machine) | `0x144f39f00` | BMachineBase, BSoundObj | (`SliceMachineModule` slot 2 = `FUN_140d20780`, the 0x90 allocator) | no slot above 189 B; slot 18 `FUN_140cdab80` (189 B), slot 12 `FUN_140ce6780` (174 B), slot 13 `FUN_140ce6210` (89 B) |
+| `BWavetableMachine` | `0x144fd0c90` | BMachineBase, BSoundObj | n/a | slot 18 `FUN_140cdaf50` (332 B) |
+
+Findings from these bodies (decompile, not yet ported):
+
+- The three Tone candidates share one skeleton (same field offsets, same
+  calls: `FUN_140883ce0` source length, `FUN_140883f10` block rounding,
+  `FUN_14086e030` source pass). They differ in their arguments and locals.
+  Which one runs for a normal Tone voice is not settled. The TM2 candidates have
+  the same sizes within a few bytes, so the Tone kernel may be a TM2-family
+  skeleton with grain constants (hypothesis, unconfirmed).
+- Beat Machine slots 12 and 13 walk a table of up to 7 entries (stride `0x38`,
+  one-based index) and test an entry's field at `+0x20`: values below 3 are
+  skipped, value 4 marks a loop entry, and the entry's field at `+0x18` is a
+  count (0 means unbounded). This is the sequencer that the script emitter
+  (`0140870000.c:5446`) drives with `$loopIdx` / `$loopCount`.
+- Beat Machine slot 18 derives a start and length from two float parameters
+  (`+0x90`, `+0x94`) times a scale constant and a per-sample factor from the
+  render context (`+0x27d00`), with rounding `0.5`. It also copies a flag
+  byte from `+0x99`.
 
 ## Internal machine ids
 
@@ -92,12 +124,11 @@ object reads is not confirmed.
 
 ### Not recovered
 
-- The Tone render kernel. Candidate render functions in `0140cd0000.c`
-  (`FUN_140cdc4d0`, `FUN_140cdcd10`, `FUN_140cdd640`) were checked by callee and
-  field use. `FUN_140cdcd10` calls the TM1 scheduler `FUN_140cda1b0`;
-  `FUN_140cdc4d0` calls `FUN_140cd9d30` (1137 bytes, parameter-state prep). None
-  is tied to the 0x420 object yet. `FUN_140cdb6f0` (3477 bytes) is the generic
-  source render called from `0140870000.c:7620`, not a Tone-specific kernel.
+- The Tone render kernel as a ported law. Its process candidates are the
+  vtable slots 23 to 25 above. Earlier guesses (`FUN_140cdc4d0`,
+  `FUN_140cdcd10`, `FUN_140cdd640`) were by callee only and are superseded.
+  `FUN_140cdb6f0` (3477 bytes) is the generic source render called from
+  `0140870000.c:7620`, not a Tone-specific kernel.
 - Grain size, overlap, alignment search and window (the stand-in constants in
   `time_machine.rs` remain UNMEASURED).
 - Formant law, DC filter coefficients, `hiQuality` effect, and the `Ph Rand`,
