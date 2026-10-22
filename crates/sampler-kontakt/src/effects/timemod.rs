@@ -343,7 +343,7 @@ pub(super) fn read(module: u16, version: u16, r: &mut Reader) -> Option<Unit> {
 /// Why a delay or modulation module without a mapping stays unsupported.
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
-        0x5a => "Replika: reader 0x140d02250 and setter 0x141ac5980 (53 indices) are read, but the wrapper-index to control binding is not tied to names, the per-sample core (0x141aa9480: LFO, envelope, saturator 0x141aa44a0, sections) relies on constants absent from the decompile text, and the line recurrence is not extracted (docs/re/engine/k-replika.md)",
+        0x5a => "Replika: only the v0x12 reader (0x140d02250) is read; other saved versions are not (docs/re/engine/k-replika.md)",
         0x5b => "Phasis: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but their binding to the core parameter indices and the core's oversampling resamplers (about 96 kHz internal) are not extracted",
         0x5c => "Flair: saved fields and most of the core law are extracted, but the writer of the pitch note field (+0x40), the internal-rate resampler and the random start phase are not",
         0x69 => "Vibrato Chorus: saved fields measured (fx_raum_delight_psyche_vibrato_phasis_replika.tsv) but the core's wave-digital LC ladder (the delay line it models) is not extracted",
@@ -385,14 +385,18 @@ fn replika_cut(lowcut: f32, highcut: f32) -> Option<Cut> {
     (highpass_hz.is_some() || lowpass_hz.is_some()).then_some(Cut { highpass_hz, lowpass_hz })
 }
 
-/// Replika Delay (v0x12). Only the laws measured or documented so far are
-/// mapped; every other control is reported as not modelled.
+/// Replika SATURATION (setter index 29, `0141ac0000.c` case 0x1d): the saturator amount a, live, so
+/// `a = v` at once. Range 0..=1 (the drive `10^a` and gain `10^(-a/2)` are the decoded laws).
+fn replika_saturation(v: f32) -> Option<f32> {
+    ((0. ..=1.).contains(&v) && v.is_finite()).then_some(v)
+}
+
+/// Replika Delay (v0x12). Mapped: TIME (free, mode-3 branch) and SATURATION (in-loop saturator on the
+/// line input). LOWCUT and HIGHCUT are set into the loop cut but still reported: inert while the feedback
+/// matrix is zero. Every other control is reported with the decompile address that still blocks it
+/// (docs/re/engine/k-replika-gaps.md, "Loop pass").
 fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> {
     // Free time (replika_time_ms, mode-3 branch): 2000 x stored over the 0..1 range.
-    // Everything else is reported, not modelled: the oracle capture could not move the echo
-    // gain, time or tone with feedback, saturation, ping-pong or type writes
-    // (docs/re/engine/k-delays.md), so no law for them is mapped. LOWCUT and HIGHCUT are mapped
-    // into the loop (replika_cut) and act only once the feedback law sets the matrix.
     if !(0. ..=1.).contains(&rep.time) || !rep.time.is_finite() {
         notes.push(("parameters".into(), format!("time {}", rep.time), Reason::InvalidValue));
         return None;
@@ -401,6 +405,10 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         notes.push(("parameters".into(), format!("lowcut {} highcut {}", rep.lowcut, rep.highcut), Reason::InvalidValue));
         return None;
     }
+    let Some(saturation) = replika_saturation(rep.saturation) else {
+        notes.push(("parameters".into(), format!("saturation {}", rep.saturation), Reason::InvalidValue));
+        return None;
+    };
     if unit_set(rep.time_unit).is_some() {
         notes.push(("time_unit".into(), format!("{}", rep.time_unit), Reason::NotModeled));
         return None;
@@ -408,13 +416,20 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     // Reason split (docs/re/engine/k-replika.md): a control whose effect the IR can already
     // represent (feedback matrix, tap pan and level, tap depth, LFO rate, input matrix) but
     // whose source law is unestablished is UnknownLawOmitted. Everything else has no IR
-    // equivalent (filters, saturation, tape, flutter, BBD, ducking, noise, density, shuffle).
+    // equivalent (filters, tape, flutter, BBD, ducking, noise, density, shuffle).
+    // The open address is appended where the loop law is known to be blocked (k-replika-gaps.md).
+    let open = |name: &str| match name {
+        "feedback" => " (open: 141aa9480 step 12, no confirmed feedback scalar)",
+        "lowcut" | "highcut" => " (open: GAP-D binding; inert while feedback is 0)",
+        "depth" | "rate" | "modulation" => " (open: GAP-I, LFO consumers in 141ab7480)",
+        "ducking_sense" | "ducking_release" | "ducking_amount" => " (open: 141abd290, GAP-M and GAP-B)",
+        _ => "",
+    };
     for (name, value, reason) in [
         ("feedback", rep.feedback, Reason::UnknownLawOmitted),
         // In the loop: inert until the feedback law exists, so reported with the feedback reason.
         ("lowcut", rep.lowcut, Reason::UnknownLawOmitted),
         ("highcut", rep.highcut, Reason::UnknownLawOmitted),
-        ("saturation", rep.saturation, Reason::NotModeled),
         ("tape_age", rep.tape_age, Reason::NotModeled),
         ("flutter", rep.flutter, Reason::NotModeled),
         ("depth", rep.depth, Reason::UnknownLawOmitted),
@@ -434,7 +449,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
         ("ducking_release", rep.ducking_release, Reason::NotModeled),
         ("ducking_amount", rep.ducking_amount, Reason::NotModeled),
     ] {
-        notes.push(("parameters".into(), format!("{name} {value}"), reason));
+        notes.push(("parameters".into(), format!("{name} {value}{}", open(name)), reason));
     }
     for (name, on, reason) in [
         ("stereo", rep.stereo, Reason::UnknownLawOmitted),
@@ -449,6 +464,7 @@ fn replika_config(rep: &Replika, dry: f64, notes: &mut Notes) -> Option<Config> 
     let mut line = Line::single(DelayTime::Ms(replika_time_ms(rep.time)), 2000.);
     line.native = Native::None;
     line.feedback.cut = replika_cut(rep.lowcut, rep.highcut);
+    line.saturation = saturation;
     Some(Config { address: None, line: Some(line), allpass: None, order: Order::LineThenAllpass, lfo: Lfo { shape: LfoShape::Sine, rate: Rate::Hz(0.), phase: 0. }, dry, wet: 1. })
 }
 
@@ -821,7 +837,7 @@ mod tests {
         assert_eq!(line.taps[0].time, sampler_ir::fx::timemod::DelayTime::Ms(500.));
         assert!(notes.iter().any(|n| n.1.contains("feedback")));
         // Every other control is reported (none silently dropped), with a precise reason.
-        assert_eq!(notes.len(), 28, "22 float controls, 5 flags and the type");
+        assert_eq!(notes.len(), 27, "21 float controls (SATURATION is mapped), 5 flags and the type");
         assert!(notes.iter().all(|n| n.2 != sampler_ir::Reason::Unknown));
     }
 
@@ -835,6 +851,41 @@ mod tests {
         let mid = super::replika_cut(0.5, 1.).expect("cut");
         assert!((mid.highpass_hz.expect("highpass") - 100.).abs() < 1e-3, "LOWCUT 0.5 is 10^(2 x 0.5 + 1)");
         assert_eq!(mid.lowpass_hz, None);
+    }
+
+    /// v0x12 stream with SATURATION (field 5) set and everything else zero.
+    fn replika_bytes(saturation: f32) -> Vec<u8> {
+        let f32s = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
+        let mut public = 0i32.to_le_bytes().to_vec();
+        public.extend(f32s(&[0.25, 0., 0., 0., saturation, 0., 0., 0., 0., 0.]));
+        public.extend([0u8; 3]); // stereo, noise, pingpong
+        public.extend(f32s(&[0.; 3])); // time unit, two unread floats
+        public.push(0);
+        public.extend(f32s(&[0.; 4])); // bbd type, amount, size, modulation
+        public.push(0); // dense
+        public.extend(f32s(&[0.; 9]));
+        public.push(0); // pingpong flip
+        public
+    }
+
+    /// SATURATION (setter index 29) is the in-loop saturator amount, live: a = v. Outside 0..1 is
+    /// rejected; the mapped control leaves no note.
+    #[test]
+    fn replika_saturation_maps_into_the_line_input() {
+        let public = replika_bytes(0.5);
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        let mut notes = Vec::new();
+        let cfg = super::replika_config(&rep, 0.5, &mut notes).expect("maps");
+        assert_eq!(cfg.line.expect("delay line").saturation, 0.5);
+        assert!(notes.iter().all(|n| !n.1.starts_with("saturation")), "{notes:?}");
+
+        let public = replika_bytes(1.5);
+        let mut r = super::super::Reader(&public);
+        let Some(super::Unit::Replika(rep)) = super::read_replika(0x12, &mut r) else { panic!("v0x12 must read") };
+        let mut notes = Vec::new();
+        assert!(super::replika_config(&rep, 0.5, &mut notes).is_none());
+        assert!(notes.iter().any(|n| n.1.starts_with("saturation") && n.2 == sampler_ir::Reason::InvalidValue));
     }
 
     #[test]
