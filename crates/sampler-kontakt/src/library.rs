@@ -32,6 +32,18 @@ mod impulse_namespace;
 mod zone_routing;
 use impulse_namespace::EffectFileOrigins;
 
+/// Kontakt's release-trigger-counter source (source type 10). The producer
+/// at decompile 0x14084f380 returns `(T - held) / T`, clamped at 0, only for a
+/// release-trigger group with `T > 0` (`T` in ms, the group's `rls_trig_counter`);
+/// every other group holds 1.
+fn release_counter_source(release_trigger: bool, counter_ms: i32) -> ir::ModulationSource {
+    if release_trigger && counter_ms > 0 {
+        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(counter_ms)))
+    } else {
+        ir::ModulationSource::Constant
+    }
+}
+
 /// A translated instrument and the resolver of the samples its assets name.
 pub struct Kontakt {
     pub instrument: ir::Instrument,
@@ -2164,12 +2176,8 @@ impl Translation {
                     ModSource::MonoAftertouch => ir::ModulationSource::ChannelPressure,
                     ModSource::PolyAftertouch => ir::ModulationSource::PolyPressure,
                     ModSource::Constant => ir::ModulationSource::Constant,
-                    // Kontakt manual (Source module, T): counts down from T ms
-                    // at note-on and holds its value at note-off.
-                    ModSource::ReleaseTriggerCounter if v.rls_trig_counter > 0 => {
-                        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(
-                            v.rls_trig_counter,
-                        )))
+                    ModSource::ReleaseTriggerCounter => {
+                        release_counter_source(v.release_trigger, v.rls_trig_counter)
                     }
                     // KSP set_event_par_arr($EVENT_PAR_MOD_VALUE_ID, v, id).
                     ModSource::Script(id) if id <= 1000 => ir::ModulationSource::Script(id as u16),
@@ -5327,6 +5335,25 @@ mod modulation {
             unknown_i16: -1,
             unknown_flags: 0x10,
         }
+    }
+
+    /// The release counter counts `T` ms only in a release-trigger group with
+    /// `T > 0` (decompile 0x14084f380, source type 10). Otherwise its value is
+    /// the constant 1, not a dropped route.
+    #[test]
+    fn release_counter_is_a_counter_only_in_a_release_group_with_a_time() {
+        assert_eq!(
+            release_counter_source(true, 1000),
+            ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(1000.))
+        );
+        assert_eq!(
+            release_counter_source(true, 0),
+            ir::ModulationSource::Constant
+        );
+        assert_eq!(
+            release_counter_source(false, 1000),
+            ir::ModulationSource::Constant
+        );
     }
 
     /// An AHDSR stage time addressed as a modulation target binds to the
