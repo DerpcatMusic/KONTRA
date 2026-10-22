@@ -107,9 +107,15 @@ fn output_does_not_depend_on_the_block_partition() {
 
 #[test]
 fn low_pass_keeps_dc_and_removes_nyquist_high_pass_the_reverse() {
+    // Native passband (docs/re/engine/filt-ar-daft.md): drive 0.6, output 1.8 - 1.2 r^2 with
+    // r = 1 - (1 - 0.3)^2 at resonance 0.3. DC passes at that gain, not at unity. Measured small
+    // so the knees stay linear (a 0.5 input is compressed to ~0.43).
+    let r = 1. - (1. - 0.3f64).powi(2);
+    let passband = 0.6 * (1.8 - 1.2 * r * r);
+    let small = vec![[0.001f32; 2]; FRAMES];
+    let low = run(plan(small, 0.3, 0.), 64, 0);
+    assert!((f64::from(low[900][0]) / 0.001 / passband - 1.).abs() < 0.01, "{:?}", low[900]);
     let dc = vec![[0.5f32; 2]; FRAMES];
-    let low = run(plan(dc.clone(), 0.3, 0.), 64, 0);
-    assert!((low[900][0] - 0.5).abs() < 1e-3, "{:?}", low[900]);
     let alt: Vec<[f32; 2]> = (0..FRAMES)
         .map(|i| if i % 2 == 0 { [0.5; 2] } else { [-0.5; 2] })
         .collect();
