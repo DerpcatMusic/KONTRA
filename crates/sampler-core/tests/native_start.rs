@@ -133,3 +133,26 @@ fn rr_has_exact_phase_and_random_reset_repeats_a_distribution() {
             > 1
     );
 }
+
+#[test]
+fn random_rows_match_their_own_ordinal_so_two_rows_joined_by_and_never_pass() {
+    // docs/re/KONTAKT_START_CONDITIONS.md (Random): one draw over all mode-4
+    // rows, and each row matches only its own ordinal. Two random rows of one
+    // group joined by AND can therefore never both match.
+    let second = GroupStart {
+        slot: 1,
+        test: StartTest::Random,
+        next: StartJoin::And,
+    };
+    let mut rt = runtime(
+        vec![
+            vec![row(StartTest::Random, StartJoin::And), second],
+            vec![row(StartTest::Random, StartJoin::And)],
+        ],
+        None,
+    );
+    rt.reset_native_cycles(7);
+    let picks: Vec<Vec<usize>> = (0..60).map(|i| selected(&mut rt, i)).collect();
+    assert!(picks.iter().all(|p| !p.contains(&0)), "{picks:?}");
+    assert!(picks.iter().any(|p| p == &[1]), "{picks:?}");
+}
