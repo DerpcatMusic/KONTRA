@@ -125,11 +125,11 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 
 | Module | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Fuzz | partial | vector | Static kernel matches kemu native vectors (`amp/fuzz.rs`). Live amount/bass/treble lanes are wired. Unconfirmed: live identity law and saved-record offsets beyond the reader layout; mono is stored only. |
-| Kolor | missing | decomp | Reader, 10-mode table and 11 knob registrations decompiled (`docs/re/engine/k-stomps-b.md`). No DSP: processing function not located, float-to-knob tie unconfirmed. |
-| Saturator | partial | vector | Classic shape law and Enhanced/Drums curve points from Wine-oracle probes; live Shape on the physical slot. Enhanced/Drums PCM is not vector-tested; internal-modulator 32-frame clock missing. |
-| Skreamer | partial | vector | Static core matches the kemu model of the native core (`skreamer.rs` tests); five live knobs wired. Missing: moving-control PCM against native data. |
-| Skreamer Deluxe | missing | decomp | Reader (mode int + 5 floats + byte) and knob names drive/tone/bass/mid/treble decompiled. Not mapped: the earlier Tubescreamer mapping was wrong. Reported as not modeled. |
+| Fuzz | partial | vector | Static kernel matches kemu native vectors (`amp/fuzz.rs`); live amount/bass/treble lanes wired. Missing: the live identity law (needs a Fuzz INIT preset in the Wine oracle, none on this machine) and the mono live switch (stored only, diagnosed). |
+| Kolor | missing | decomp | Reader (`140ac5a20`, `0140ac0000.c:3645`), 10-mode table (`140664320`, `0140660000.c:1552`) and 11 knob registrations (`0140a80000.c:866`) are in `k-stomps-b.md`. No DSP: unrecoverable from the decompile text, because the processing function is not named there and the vtable and ctor lambdas (`0141970000.c:5950+`) need cross-reference analysis, which this swarm does not run. |
+| Saturator | partial | vector | Enhanced and Drums steady-state peaks match the Wine-oracle table within 0.01 (`enhanced_and_drums_match_the_native_sine_peaks`; closest miss 0.0036 at Enhanced shape 1, in 0.082, so the tolerance is not tighter). Live Shape on the physical slot. Missing: the internal-modulator 32-frame clock and native vectors for moving Shape. |
+| Skreamer | partial | vector | Static core matches the kemu model of the native core (`skreamer.rs` tests); five live knobs wired. Missing: moving-control PCM against native data (no oracle capture). |
+| Skreamer Deluxe | missing | decomp | Reader (`140ac6040`, mode int + 5 floats + byte) and knob names drive/tone/bass/mid/treble (`0140a80000.c:956`) decompiled. Kernel and apply not located in the decompile text (same reason as Kolor), so the module stays reported as not modeled. The earlier Tubescreamer mapping was wrong and is removed. |
 | Big Fuzz | parity | vector | kernel: `kontakt_bigfuzz_vectors` (matches_the_native_big_fuzz); knob order confirmed by decompile apply `140ab9f40` |
 | Cat | parity | vector | kernel: `kontakt_cat_vectors` (matches_the_native_cat); knob order confirmed by decompile apply `140ab9100` |
 | Chainsaw | missing | decomp | params `chainsaw_distortion/low/high/level` (ids 0xd7..0xda), reader `140ac51f0` (4 f32 + u8), apply candidate `140aba230` (clamps 4 knobs, u8 = mono, sets two cores); kernel not located |

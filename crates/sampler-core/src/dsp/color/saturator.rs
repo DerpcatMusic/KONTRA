@@ -251,4 +251,65 @@ mod tests {
         enhanced(0.5, rates, &mut state, &mut shaped, BLOCK);
         assert!(shaped[0][BLOCK - 1] > 0.0 && shaped[0][BLOCK - 1] < 2.0 && state.finite());
     }
+
+    /// Steady-state output peak of a 200 Hz sine at `amplitude` through Enhanced (or
+    /// Drums) at signed `shape`, after the trackers settle.
+    fn sine_peak(shape: f32, amplitude: f32, drums: bool) -> f64 {
+        const RATE: u32 = 48_000;
+        let rates = Rates::new(RATE);
+        let mut state = State::default();
+        let (frames, settle) = (RATE as usize * 6 / 10, RATE as usize / 2);
+        let mut peak = 0f64;
+        for start in (0..frames).step_by(BLOCK) {
+            let mut block = [[0.0; BLOCK]; 2];
+            for i in 0..BLOCK {
+                let n = (start + i) as f64;
+                let x = f64::from(amplitude) * (std::f64::consts::TAU * 200.0 * n / f64::from(RATE)).sin();
+                block[0][i] = x;
+                block[1][i] = x;
+            }
+            if drums {
+                super::drums(shape, rates, &mut state, &mut block, BLOCK);
+            } else {
+                super::enhanced(shape, rates, &mut state, &mut block, BLOCK);
+            }
+            for i in 0..BLOCK {
+                if start + i >= settle {
+                    peak = peak.max(block[0][i].abs());
+                }
+            }
+        }
+        peak
+    }
+
+    /// Native steady-state output peaks (Wine oracle, `docs/re/kontakt-bindings/saturation-curves.tsv`)
+    /// for the five input peaks below. The table's shape is the normalized knob; signed Shape = 2v - 1.
+    /// Tolerance 0.01: the native table is 3-decimal and its stimulus is a ramp, not a steady
+    /// sine. The closest miss is Enhanced shape 1 at 0.082 (0.5804 vs 0.584), so 0.0025 fails.
+    #[test]
+    fn enhanced_and_drums_match_the_native_sine_peaks() {
+        const INPUT: [f32; 5] = [0.082, 0.235, 0.389, 0.542, 0.696];
+        const ENHANCED: [(f32, [f64; 5]); 4] = [
+            (0.25, [0.131, 0.339, 0.507, 0.650, 0.767]),
+            (0.5, [0.247, 0.545, 0.709, 0.801, 0.852]),
+            (0.75, [0.419, 0.709, 0.783, 0.801, 0.806]),
+            (1.0, [0.584, 0.729, 0.735, 0.735, 0.734]),
+        ];
+        const DRUMS: [(f32, [f64; 5]); 3] = [
+            (0.25, [0.099, 0.276, 0.443, 0.597, 0.740]),
+            (0.5, [0.174, 0.451, 0.661, 0.806, 0.884]),
+            (0.75, [0.342, 0.631, 0.634, 0.634, 0.634]),
+        ];
+        for (drums, table) in [(false, &ENHANCED[..]), (true, &DRUMS[..])] {
+            for (normalized, native) in table {
+                for (amplitude, want) in INPUT.iter().zip(native) {
+                    let got = sine_peak(2.0 * normalized - 1.0, *amplitude, drums);
+                    assert!(
+                        (got - want).abs() <= 0.01,
+                        "drums={drums} shape={normalized} in={amplitude}: {got:.4} vs native {want}"
+                    );
+                }
+            }
+        }
+    }
 }
