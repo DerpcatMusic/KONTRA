@@ -1,5 +1,6 @@
 //! Extract every distinct KSP script of a library tree, keeping the counts.
-//! Usage: dump_scripts ROOT OUT_DIR
+//! Usage: dump_scripts ROOT OUT_DIR   (ROOT: a library tree or one .nki in place)
+//! A single file is read where it lives: .nicnt access data is found next to it.
 //! Writes OUT_DIR/<hash>.ksp once per distinct script and OUT_DIR/manifest.tsv
 //! with one `hash<TAB>instrument path` line per use. Library content stays out
 //! of the repository: point OUT_DIR at a cache directory and delete it after.
@@ -31,13 +32,21 @@ fn main() {
     );
     std::fs::create_dir_all(&out).unwrap();
     let mut files = Vec::new();
-    walk(Path::new(&root), &mut files);
+    if Path::new(&root).is_file() {
+        files.push(root.into());
+    } else {
+        walk(Path::new(&root), &mut files);
+    }
     files.sort();
     let mut manifest = std::fs::File::create(format!("{out}/manifest.tsv")).unwrap();
     let mut seen = HashSet::new();
     for path in files {
-        let Ok(loaded) = sampler_kontakt::read(&path) else {
-            continue;
+        let loaded = match sampler_kontakt::read(&path) {
+            Ok(loaded) => loaded,
+            Err(err) => {
+                eprintln!("dump_scripts: skipped {}: {err:?}", path.display());
+                continue;
+            }
         };
         for b in &loaded.instrument.behaviors {
             let mut h = DefaultHasher::new();
