@@ -55,46 +55,40 @@ impl Generic {
         }
         let kind = self.band.kind;
         if let Law::Solid(section) = self.band.law {
-            // The native G_EQ ramp (eq-kontakt.md sec. 5): the knob values move linearly from where
-            // they were to the new target over the ramp, and the section is redesigned from the
-            // moving values (the native per-frame recompute, here once per block). aux: target knobs
-            // (3), valid flag, ramp start knobs (3), frames elapsed in the ramp, TPT coefficients (6).
-            let read = |p: PreparedParameter| p.value(parameters, at, None);
-            let target = [read(self.frequency), read(self.q), read(self.gain)];
-            let ramp = self.band.ramp * f64::from(self.rate);
-            let fraction = |elapsed: f64| if ramp > 0. { (elapsed / ramp).min(1.) } else { 1. };
-            let first = state.aux[3] == 0.;
-            let changed = first || state.aux[..3] != target;
-            let start: [f64; 3] = if first {
-                target
-            } else if changed {
-                std::array::from_fn(|k| state.aux[4 + k] + (state.aux[k] - state.aux[4 + k]) * fraction(state.aux[7]))
-            } else {
-                std::array::from_fn(|k| state.aux[4 + k])
+            // The native G_EQ knob glide (eq-kontakt.md sec. 8): the knobs are read on a 32-frame grid,
+            // a move glides the lanes to the new targets over `glide_blocks` grid blocks, and every
+            // frame that moves a lane redesigns the section from the lanes.
+            let rate = self.rate;
+            let knobs = |at: u64| {
+                let read = |p: PreparedParameter| p.value(parameters, at, None);
+                [read(self.frequency), read(self.q), read(self.gain)].map(|v| (v as f32).clamp(0., 1.))
             };
-            let elapsed = if changed { 0. } else { state.aux[7] };
-            let end = (elapsed + len as f64).min(ramp);
-            // A ramp still moving this block, or a new target, needs a redesign.
-            if changed || end > elapsed {
-                let now: [f64; 3] = std::array::from_fn(|k| start[k] + (target[k] - start[k]) * fraction(end));
-                let [b0, b1, b2, a1, a2] = solid::coefficients(
+            let design = |lanes: [f32; 3]| {
+                solid::coefficients(
                     section,
                     kind,
                     usize::from(self.band.poles),
-                    f64::from(self.rate),
-                    now[0],
-                    now[1],
-                    now[2],
-                );
-                let svf = kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [a1, a2] })
-                    .unwrap_or(kernel::Svf::PASS);
-                state.aux[10..16].copy_from_slice(&svf.to_array());
+                    f64::from(rate),
+                    f64::from(lanes[0]),
+                    f64::from(lanes[1]),
+                    f64::from(lanes[2]),
+                )
+            };
+            // aux: x1, x2, y1, y2 for each channel (0..8), then the section's b0 b1 b2 a1 a2 (8..13).
+            let mut c: [f64; 5] = std::array::from_fn(|i| state.aux[8 + i]);
+            let mut start = 0;
+            for frame in 0..len {
+                let at_frame = at + frame as u64;
+                let grid = at_frame % solid::GLIDE_BLOCK == 0 && state.glide.grid(rate, knobs(at_frame));
+                let moved = state.glide.frame();
+                if grid || moved {
+                    run_df1(c, &mut state.aux[..8], block, start..frame);
+                    c = design(state.glide.lanes());
+                    state.aux[8..13].copy_from_slice(&c);
+                    start = frame;
+                }
             }
-            state.aux[..3].copy_from_slice(&target);
-            state.aux[3] = 1.;
-            state.aux[4..7].copy_from_slice(&start);
-            state.aux[7] = end;
-            run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[10 + i])), state, block, len);
+            run_df1(c, &mut state.aux[..8], block, start..len);
             return;
         }
         if self.band.law == Law::UviDigital {
@@ -166,3 +160,22 @@ pub(super) fn run(svf: kernel::Svf, state: &mut ProcessorState, block: &mut Plan
     svf.run_stereo(&mut state.z, [&mut left[..len], &mut right[..len]]);
     state.z = state.z.map(|s| s.map(flush));
 }
+
+/// Frames `range` of both channels through one direct-form-I section, the native G_EQ cascade
+/// record (`y = b0 x + b1 x1 + b2 x2 - a1 y1 - a2 y2`, process 0x141a595d0). `hist` holds x1, x2,
+/// y1 and y2 for each channel.
+fn run_df1(c: [f64; 5], hist: &mut [f64], block: &mut Planar, range: std::ops::Range<usize>) {
+    for (channel, samples) in block.iter_mut().enumerate() {
+        let h = &mut hist[4 * channel..4 * channel + 4];
+        for x in &mut samples[range.clone()] {
+            let input = *x;
+            let y = flush(c[0] * input + c[1] * h[0] + c[2] * h[1] - c[3] * h[2] - c[4] * h[3]);
+            *x = y;
+            h[1] = h[0];
+            h[0] = input;
+            h[3] = h[2];
+            h[2] = y;
+        }
+    }
+}
+
