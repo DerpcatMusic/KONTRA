@@ -135,3 +135,26 @@ across renders (fresh image per render).
 Cases: default; time-v0p01 (TIME 0.01: echo 782); time-v0p03 (TIME 0.03: echo 2702); feedback-v0p8
 (index 5 = 0.8: echo 1742 and 4024); saturation-v0p5 (29 = 0.5: peak 0.78); lowcut-v0p5 (2 = 0.5:
 peak 0.99); highcut-v0p5 (3 = 0.5: peak 0.52).
+
+## Piece 1 status (`engine/replika-port`)
+
+Ported in `sampler-core` `dsp/replika` and checked against the native vectors (max abs error 1.19e-7 to 2.38e-7).
+"Wired" means `replika_config` sets the control from the saved Kontakt value; "core" means the core runs it with the
+reset value otherwise.
+
+| idx | control | piece 1 |
+| --- | --- | --- |
+| 0, 1 | input level A, B | core (law in `k-replika-gaps.md`, piece 1); not wired (reset 0.762405) |
+| 2 | LOWCUT | core, wired |
+| 3 | HIGHCUT | core, wired |
+| 4 | DRY/WET | core; not wired (reset 1.0, wet only) |
+| 5 | FEEDBACK | core, wired (1.2 x value) |
+| 8 | TIME | core, wired (mode 3, 2000 ms x value) |
+| 12 | HEAD GAIN | not ported (floor unbacked) |
+| 13, 14 | PAN DRY, PAN WET | core matrix; not wired (reset 0.5) |
+| 15 | DELAY OFFSET | core; not wired (reset 0.3) |
+| 16 | WIDTH | core side scale; not wired (reset 0.5) |
+| 29 | SATURATION | core, wired |
+| 52 | TAP GAIN | core; not wired (implicit 1.0) |
+
+Ducking (sense, release, amount; indices in `k-replika-gaps.md`) and the mode-1 kernels are not ported (pieces 2 and 3).

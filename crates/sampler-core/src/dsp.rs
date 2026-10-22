@@ -252,6 +252,7 @@ pub(crate) mod timemod;
 pub(crate) mod tpt_svf;
 pub(crate) mod db_limiter;
 pub(crate) mod replika_head;
+pub(crate) mod replika;
 pub(super) mod control;
 pub use ar::ArSettings;
 pub use filter::Settings as FilterSettings;
