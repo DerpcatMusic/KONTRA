@@ -14,6 +14,7 @@ mod drive;
 mod tubescreamer;
 mod dirt;
 mod freak;
+mod hilbert;
 mod bite;
 mod tape;
 mod exciter;
