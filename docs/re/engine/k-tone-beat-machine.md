@@ -229,8 +229,17 @@ in the plain zone (the same in the sampler-fixed file). It matches the decompile
 `tempoScaling` (`+0x7a8`, default `0x3f800000`, written at `0140860000.c:9276-9278` and
 multiplied into the grid factor `FUN_14087d740`, `0140870000.c:9390`). The loader keeps it as
 `tempo_scale`; lowering folds it into the zone transposition (12 * log2 of the rate), so the
-voice reads the sample at that step. The grid factor's constants are not resolved, so the
-rule "rate = stored value" is verified for this one grid only.
+voice reads the sample at that step. The stored value is now resolved (decompile, `FUN_14087d740` at
+`0140870000.c:9390` and its apply step `FUN_14086f680` at `0140860000.c:9277`). The factor reads only
+the zone's sample object: length `len` (frames), rate (Hz), measure numerator and denominator
+(`+0x7a6`, `+0x7a7`), and the zone's `ts` (`+0x7a8`). For the probe zones, `ts = BPM * (len / rate) / 240`,
+the sample length in 4/4 bars at the grid BPM. Checked on all three zones: A (120 BPM, 0.5 s) 0.25;
+B (90 BPM, 0.667 s) 0.25; C (100 BPM, 1.2 s) 0.5. The cell length is `240 * num / (BPM * denom)` s
+(`FUN_140872590`, `0140870000.c:1780`; num and denom at `+0x7a4`, `+0x7a5`), which matches the measured
+1/16 cells at 120 and 90 BPM. The runtime gate is not resolved. `FUN_14086f680` only runs when two
+record bytes are non-zero (set by the file metadata parsers). That gate is not confirmed as the reason
+session 3 played at 1.0 (see "Third oracle session"). Session 1's 0.25 and session 3's 1.0 come from
+the same stored values.
 
 ### Voice (lowering and playback) — implemented
 
@@ -295,9 +304,10 @@ Results (artifacts: `PluginArtifacts/kontra-oracle/beat-machine/session3/`):
   its last cell while the key is still held.
 - Cell spacing is 1/16 of a quarter at each BPM, in all three zones: 6000 frames (120 BPM), 8000
   (90 BPM), 7200 (100 BPM). The width argument `8` did not change the spacing. Zone C has 8 cells
-  of 7200 frames over its 1.2 s sample, and stored `tempo_scale` 0.5. So the stored value is the
-  width as a fraction of a quarter (1/16 gives 0.25, 1/8 gives 0.5), and the cell spacing does not
-  follow the width.
+  of 7200 frames over its 1.2 s sample, and stored `tempo_scale` 0.5. The stored `tempo_scale` is
+  the sample length in bars at the grid BPM, `BPM * length_s / 240` (0.25, 0.25, 0.5 here; see
+  "Zone playback rate"). The width argument does not enter it. (An earlier reading of this note,
+  "width as a fraction of a quarter", was a coincidence of these three values and is withdrawn.)
 - Oracle playback rate is **1.0** in all three zones. A: 200, 320, 440, 560 Hz. B: 240, 360, 480,
   600 Hz. C (8 cells): 200, 200, 320, 320, 440, 440, 560, 560 Hz. Each cell plays its whole source
   slice, and the level is flat at -17.35 dB RMS in every cell. There is no decay and no slice-4
@@ -316,7 +326,8 @@ the 0.25 case, and they have not been reproduced at 1.0.
 
 ### Not recovered
 
-- The grid factor constants behind the rate rule (other grids, auto grid, other BPM).
+- The runtime condition for applying the stored `ts` (session 1 vs session 3), auto grid, and
+  whether `set_zone_grid`'s width argument reaches the record (session 3's `8` did not change the cells).
 - The amplitude fall after about 100 ms in the oracle, and the 1.5 dB level gap.
 - The second-trigger silence (session 2 did not test it).
 - The meaning of `slice_flag_1` (`+0x99`) and of the float copy in the `0x35` records.
@@ -402,5 +413,6 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
    in session 3. The session 1 decay after about 100 ms did not reproduce at rate 1.0; it may
    belong to the 0.25 case.
 5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.
-6. Grid factor constants behind the rate rule (`FUN_14087d740`), and the zone grid mode
-   (Fix/Auto/none) from the zone private block.
+6. Grid factor: resolved for the stored `ts` (`BPM * len / 240`, see "Zone playback rate"). Still
+   open: the runtime condition under which `ts` is applied (session 1 yes, session 3 no), the zone grid
+   mode (Fix/Auto/none) in the private block, and the BPM setter for `set_zone_grid` from a script.
