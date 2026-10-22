@@ -102,6 +102,8 @@ pub const INIT_FUEL: u64 = 200_000_000;
 /// writes of a real preset (about 1e4 in measured libraries); a body that polls for an
 /// async flag never finishes with waits elapsed, and exhausts this instead of INIT_FUEL.
 const SCHEDULED_LOAD_FUEL: u64 = 1_000_000;
+/// The copy's stop at a clock wait: its writes so far are load-time, the rest happens at runtime.
+const LOAD_COPY_STOP: &str = "load-time copy reached a clock wait";
 
 /// Detect suspension before evaluating a callback, so its prefix is never replayed.
 fn may_suspend<'a>(hir: &'a Hir, body: &'a [Stmt], async_wait_suspends: bool) -> bool {
@@ -326,6 +328,8 @@ struct Eval<'h, const TRACK: bool> {
     residency_pass: model::ResidencyPass,
     async_result: Option<(i32, i32)>,
     async_depth: u8,
+    /// A load-time copy of a scheduled persistence body: stops at its first clock wait.
+    load_copy: bool,
     zone_batch: crate::zone_routing::InitialZoneBatch,
     current_statement: Option<u32>,
     profile: Option<HashMap<&'static str, (u64, u128)>>,
@@ -377,6 +381,7 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
         residency_pass: model::ResidencyPass::InstrumentPersistence,
         async_result: None,
         async_depth: 0,
+        load_copy: false,
         zone_batch: Default::default(),
         current_statement: None,
         profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
@@ -432,14 +437,18 @@ fn run_observed<const TRACK: bool>(hir: &Hir, env: &Environment) -> Result<Initi
     }
     if let Some(cb) = persistence_changed {
         if may_suspend(hir, &cb.body, true) {
-            // The runtime runs this body later, but its set_engine_par writes are
-            // load-time engine state. Run a copy now, waits elapsed as in init, on a
-            // small fuel budget, and keep only the engine writes; everything else rolls
-            // back (the fuel too). Failure or exhaustion keeps none.
-            // ponytail: async completions and clock waits of the body are not replayed here.
+            // The runtime runs this body later, but the set_engine_par writes it makes
+            // before its first clock wait are load-time engine state. Run a copy now (async
+            // completions elapse as in init) on a small fuel budget; keep only its engine
+            // writes, and roll back the rest, fuel included. Exhaustion keeps none.
+            // ponytail: writes after a clock wait are left to the runtime, and a copy
+            // that fails part-way keeps none rather than its partial writes.
             let before = (e.st.clone(), e.fuel, e.consumed.clone(), e.pending_menus.clone(), e.zone_batch.clone());
             e.fuel = e.fuel.min(SCHEDULED_LOAD_FUEL);
-            let ok = e.block(&cb.body).and_then(|_| e.finish_zone_batch(cb.span, true)).is_ok();
+            e.load_copy = true;
+            let run = e.block(&cb.body).and_then(|_| e.finish_zone_batch(cb.span, true));
+            e.load_copy = false;
+            let ok = run.is_ok() || matches!(&run, Err(f) if f.message == LOAD_COPY_STOP);
             let engine = if ok { e.st.engine.clone() } else { before.0.engine.clone() };
             (e.st, e.fuel, e.consumed, e.pending_menus, e.zone_batch) = before;
             e.st.engine = engine;
@@ -2267,6 +2276,9 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
             }
             Wait | WaitTicks => {
                 self.finish_zone_batch(span, true)?;
+                if self.load_copy {
+                    return fault(span, LOAD_COPY_STOP);
+                }
                 self.warn(span,format!("{} has no clock delay in on init",builtin.name()));
                 V::I(0)
             }
