@@ -218,3 +218,27 @@ Interpretation (not yet proven):
 Still open (no code in this pass): the glide writer for the per-knob increment
 (section 5), live switch semantics beyond the recompute path, bank 16, the HF
 shelf gain=max rows, the HF bell knob >= 0.75 rows, and the LMF/HMF rows above.
+
+## 8. Solid G-EQ native ramp, decoded from the export (2026-10-22)
+
+Source: cached decompile `Research/KONTRA/source/kontakt8/0141a50000.c`
+(`FUN_141a595d0`, 1894 bytes) and `0141a80000.c` (`FUN_141a89140`, `FUN_141a89350`).
+Read-only; no disassembly re-run, no code change.
+
+- **Lane block.** 16 float lanes at `obj+0x13db0 + 4*i` hold current values; the
+  matching per-frame increments sit at `obj+0x13df0 + 4*i`. Per frame of the chunk
+  (`param_4` frames) every lane does `value += inc`.
+- **Lane to parameter.** Lanes 0..11 write through `FUN_141a89350(obj, idx, value)`
+  to indices `0,1,3,4,5,6,7,8,9,10,12,13` (lane 2 is index 3, lane 10 is index 12,
+  lane 11 is index 13). Each write is gated on that lane's increment being nonzero.
+  Lane 12 (`0x13de0`, inc `0x13e20`) is copied to `obj+0x13da4` instead of a param
+  write. Lanes 13..15 advance but have no write in this function.
+- **Gates.** Per-frame writes run only when pending flag `obj+0x13da1` is 0 and gate
+  `obj+0x13e71` is nonzero. When the pending flag is set, `FUN_141a89140` does a full
+  redesign of every lane (indices 12,13,0,1,3..10, plus bools 11 from `obj+0xef9a` and
+  2 from `obj+0xef99`), then clears the flag.
+- **Reset.** `FUN_141a9eac0` zeroes lanes, increments and the pending flag.
+- **Still open.** The increment writer (ramp length, the 20 ms claim) is not located:
+  no literal store to `0x13df0..0x13e2c` outside the reset. The stores are probably
+  computed offsets. The redesign law itself is in `FUN_141a89350`
+  (27 KB) and is not decoded here.
