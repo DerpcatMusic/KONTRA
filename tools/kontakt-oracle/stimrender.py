@@ -21,7 +21,6 @@ import eqrender  # noqa: E402
 import wavutil  # noqa: E402
 
 RATE = 48000
-WORK = Path("/tmp/w3/audit")
 
 
 def stim_limiter():
@@ -76,7 +75,7 @@ def main():
     prefix = Path(sys.argv[2])
     x = STIMULI[spec["stimulus"]]()
     dur = len(x) / RATE
-    WORK.mkdir(parents=True, exist_ok=True)
+    WORK = eqrender.scratch_dir()  # per run: nothing shared with other sessions
     stim = WORK / "stimulus.wav"
     write_wav(stim, x)
     ref = WORK / "stimulus_ref.wav"      # same stimulus, right channel, on a second instrument without effects:

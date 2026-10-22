@@ -3,6 +3,10 @@
 
     eqtopo.py dlf dhf ...      (prefixes in /tmp/w3/audit: PREFIX.tsv + PREFIX.h.npy)   -> TSV on stdout
 """
+import os
+from pathlib import Path
+
+SCRATCH = os.environ.get("ORACLE_SCRATCH", str(Path.home() / ".cache/kontra-oracle"))
 import sys
 from pathlib import Path
 
@@ -50,9 +54,9 @@ def spline(y, u):
 
 
 def load(prefix):
-    rows = [l.split("\t") for l in open(f"/tmp/w3/audit/{prefix}.tsv").read().splitlines()[1:]]
+    rows = [l.split("\t") for l in open(f"{SCRATCH}/{prefix}.tsv").read().splitlines()[1:]]
     rows = [r for r in rows if r[2] == "LL"]
-    return list(zip(rows, np.load(f"/tmp/w3/audit/{prefix}.h.npy")))
+    return list(zip(rows, np.load(f"{SCRATCH}/{prefix}.h.npy")))
 
 
 def main():
