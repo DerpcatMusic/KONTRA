@@ -275,3 +275,33 @@ Parity needs a native capture of a ramped parameter change (not done here).
   Cosmic, so no Cosmic row can reach parity without a Kontakt capture.
 - The repo's Cosmic chain bank (`design/cosmic.rs`) stays as implemented.
   Its status is partial, not "none" (the gap table below was out of date).
+
+## Plate constants pass (rdata cache, 2026-10-22)
+
+Values from `docs/re/kontakt-rdata/constants.tsv` (f32 column). Each law below
+is the one the Rust core already uses; the constants now confirm them.
+
+| Constant | Value | Used for | Status |
+|---|---|---|---|
+| `DAT_1447148a4` | 0.001 | predelay ms to frames: `p · 250 · 0.001 · sr` | CONFIRMED (matches 0.25·p·sr) |
+| `DAT_144fc4a18` | 250 | predelay target scale (ms) | CONFIRMED |
+| `DAT_1447148b8` | 0.02 | parameter ramp duration (s) | CONFIRMED value; increment writer not located |
+| `DAT_1479ab65c` | 23561.9453 = 7500·π | init low-pass prewarp `tanf(x · 7500π)` with `x = +0x68` | CONFIRMED constant; `+0x68` = 1/sr is INFERRED (writer not found by pattern) |
+| `DAT_1479ab620` | 5600 | damp shelf corner (Hz) | CONFIRMED |
+| `DAT_144714a00` | 10 | base of the gain powers | CONFIRMED |
+| `DAT_1447148e0` | 0.2 | damp gain `10^(0.2·c − 0.2)`, c = 1 − hd | CONFIRMED |
+| `DAT_1479ab340`, `DAT_1479ab2e0` | 1.71875, 1.4375 | low gain `10^(c·1.71875 − 1.4375)`, c = 1 − ls | CONFIRMED |
+| `DAT_1479ab61c`, `DAT_147698a7c` | 4851, 6000 | line damping frequency `c·4851 + 6000` (Hz), c = 1 − hd | CONFIRMED (matches `line_biquad` f2) |
+| `DAT_144714914` | 0.9 | allpass coefficient | CONFIRMED |
+| `DAT_14470bad4` | 1.0 | clamps | CONFIRMED |
+
+Init low-pass: the design routine `141a92180` runs inside prepare (`141aa2300`),
+before the four setters. The setters for decay, low and damp write shared
+coefficient slots (`+0x360..+0x37c`) in the damp path, so whether the 7500 Hz
+section survives into production is **open**. The constructed-core native
+impulse vector matches with it on. Production keeps it off (`init_lp = false`)
+until that is settled.
+
+Still open after this pass: the parameter-ramp increment writer (the lanes and
+the 0.02 s length are known, the code that writes `+0x163450..+0x163468` is not
+found), and the display laws.
