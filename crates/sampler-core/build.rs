@@ -9,15 +9,19 @@ fn main() {
     let text = fs::read_to_string("src/engine_par_ids.tsv").expect("engine_par_ids.tsv");
     let mut bound: Vec<(usize, String)> = Vec::new();
     let mut native: Vec<(String, i32)> = Vec::new();
+    let mut internals: Vec<(i32, String)> = Vec::new();
     for line in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
         let cols: Vec<&str> = line.split('\t').collect();
-        assert_eq!(cols.len(), 3, "bad row: {line}");
-        let (id, name, constant) = (cols[0], cols[1], cols[2]);
+        assert_eq!(cols.len(), 4, "bad row: {line}");
+        let (id, name, constant, internal) = (cols[0], cols[1], cols[2], cols[3]);
         if id != "-" {
             bound.push((id.parse().expect("engine_id"), name.to_owned()));
         }
         if constant != "-" {
             native.push((name.to_owned(), constant.parse().expect("native_constant")));
+        }
+        if internal != "-" {
+            internals.push((constant.parse().expect("native_constant"), internal.trim_start_matches("0x").to_owned()));
         }
     }
     bound.sort();
@@ -33,6 +37,12 @@ fn main() {
     out.push_str("pub const ENGINE_PARAMETER_NATIVE_CONSTANTS: &[(&str, i32)] = &[\n");
     for (name, value) in &native {
         out.push_str(&format!("    (\"{name}\", {value}),\n"));
+    }
+    out.push_str("];\n\n");
+    out.push_str("/// Native script constant -> internal engine id, from the Kontakt 8 builder table.\n");
+    out.push_str("pub const ENGINE_PARAMETER_INTERNAL_IDS: &[(i32, i32)] = &[\n");
+    for (constant, internal) in &internals {
+        out.push_str(&format!("    ({constant}, 0x{internal}),\n"));
     }
     out.push_str("];\n");
     let dest = Path::new(&env::var("OUT_DIR").unwrap()).join("engine_parameter_names.rs");
