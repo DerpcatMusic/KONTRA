@@ -5,9 +5,8 @@
 //! sum and difference branches, and in mode 0 the fuzz chain (MINSTD noise, band-pass, ADAA
 //! rectifier, smoothing SVFs, sine ring-mod, level follower). Model kcolor/freak.py: the core
 //! runs on its native object layout (offsets 0x940..0x11e0), so the setters port as written.
-// ponytail: the Hilbert coefficient design 0x141968890 is not ported; its output is dumped for
-// 44.1/48/88.2/96 kHz and other rates use the nearest (upgrade: port the designer).
 use super::super::Planar;
+use super::hilbert;
 use super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use sampler_ir::fx::color::Freak;
 
@@ -117,14 +116,6 @@ const CTOR: [(usize, u32); 55] = [
     (0x119c, 0x39b504f3),
 ];
 
-/// Hilbert stage tables by rate (0x141968890 output, dumped at 44.1/48/88.2/96 kHz): gain 0x960, all-pass 0x9c0, FIR 0xc40.
-#[rustfmt::skip]
-const HILBERT: [(u32, [f32; 4], [[f32; 4]; 8], [[f32; 4]; 8]); 4] = [
-    (44100, [f32::from_bits(0x3d2e15ec), f32::from_bits(0x3d2e15ec), f32::from_bits(0x3c935548), f32::from_bits(0x3c935548)], [[f32::from_bits(0x3f3ade56), f32::from_bits(0x3f3ade56), f32::from_bits(0xbf7f3a1a), f32::from_bits(0xbf7f3a1a)], [f32::from_bits(0x3e6af385), f32::from_bits(0x3e6af385), f32::from_bits(0xbf7ce90d), f32::from_bits(0xbf7ce90d)], [f32::from_bits(0xbebd86ec), f32::from_bits(0xbebd86ec), f32::from_bits(0xbf756eee), f32::from_bits(0xbf756eee)], [f32::from_bits(0xbf438687), f32::from_bits(0xbf438687), f32::from_bits(0xbf5d77b0), f32::from_bits(0xbf5d77b0)], [f32::from_bits(0xbf6cc1f2), f32::from_bits(0xbf6cc1f2), f32::from_bits(0xbf1a3d06), f32::from_bits(0xbf1a3d06)], [f32::from_bits(0xbf7a411d), f32::from_bits(0xbf7a411d), f32::from_bits(0xbda1e0ec), f32::from_bits(0xbda1e0ec)], [f32::from_bits(0xbf7e61bb), f32::from_bits(0xbf7e61bb), f32::from_bits(0x3f01bd71), f32::from_bits(0x3f01bd71)], [f32::from_bits(0xbf7fc597), f32::from_bits(0xbf7fc597), f32::from_bits(0x3f69859d), f32::from_bits(0x3f69859d)]], [[f32::from_bits(0x3c80ce16), f32::from_bits(0x3c80ce16), f32::from_bits(0xbd138e67), f32::from_bits(0xbd138e67)], [f32::from_bits(0x3e483b53), f32::from_bits(0x3e483b53), f32::from_bits(0x3d14ae9b), f32::from_bits(0x3d14ae9b)], [f32::from_bits(0xbf7075ac), f32::from_bits(0xbf7075ac), f32::from_bits(0xbd18ce04), f32::from_bits(0xbd18ce04)], [f32::from_bits(0x3fcaa2d3), f32::from_bits(0x3fcaa2d3), f32::from_bits(0x3d28305d), f32::from_bits(0x3d28305d)], [f32::from_bits(0xbfef1d03), f32::from_bits(0xbfef1d03), f32::from_bits(0xbd6fd946), f32::from_bits(0xbd6fd946)], [f32::from_bits(0x3ffb4d8b), f32::from_bits(0x3ffb4d8b), f32::from_bits(0x3eff67c8), f32::from_bits(0x3eff67c8)], [f32::from_bits(0xbffef6a4), f32::from_bits(0xbffef6a4), f32::from_bits(0x3ee658f4), f32::from_bits(0x3ee658f4)], [f32::from_bits(0x3fffe2cc), f32::from_bits(0x3fffe2cc), f32::from_bits(0x3db3d318), f32::from_bits(0x3db3d318)]]),
-    (48000, [f32::from_bits(0xbb00577b), f32::from_bits(0xbb00577b), f32::from_bits(0x3d3b18e1), f32::from_bits(0x3d3b18e1)], [[f32::from_bits(0x3f147a57), f32::from_bits(0x3f147a57), f32::from_bits(0xbf7f5601), f32::from_bits(0xbf7f5601)], [f32::from_bits(0xbc06fe6a), f32::from_bits(0xbc06fe6a), f32::from_bits(0xbf7d7844), f32::from_bits(0xbf7d7844)], [f32::from_bits(0xbf09705e), f32::from_bits(0xbf09705e), f32::from_bits(0xbf77d507), f32::from_bits(0xbf77d507)], [f32::from_bits(0xbf542dbe), f32::from_bits(0xbf542dbe), f32::from_bits(0xbf669a49), f32::from_bits(0xbf669a49)], [f32::from_bits(0xbf7185c4), f32::from_bits(0xbf7185c4), f32::from_bits(0xbf366671), f32::from_bits(0xbf366671)], [f32::from_bits(0xbf7b6db0), f32::from_bits(0xbf7b6db0), f32::from_bits(0xbe97f6ce), f32::from_bits(0xbe97f6ce)], [f32::from_bits(0xbf7ea399), f32::from_bits(0xbf7ea399), f32::from_bits(0x3e968dae), f32::from_bits(0x3e968dae)], [f32::from_bits(0xbf7fcd38), f32::from_bits(0xbf7fcd38), f32::from_bits(0x3f5a5bc7), f32::from_bits(0x3f5a5bc7)]], [[f32::from_bits(0xbab9e166), f32::from_bits(0xbab9e166), f32::from_bits(0xbdbb572b), f32::from_bits(0xbdbb572b)], [f32::from_bits(0x3ed38be5), f32::from_bits(0x3ed38be5), f32::from_bits(0x3dbc8522), f32::from_bits(0x3dbc8522)], [f32::from_bits(0xbf96288e), f32::from_bits(0xbf96288e), f32::from_bits(0xbdc0940d), f32::from_bits(0xbdc0940d)], [f32::from_bits(0x3fd79639), f32::from_bits(0x3fd79639), f32::from_bits(0x3dce7a1a), f32::from_bits(0x3dce7a1a)], [f32::from_bits(0xbff2d4f4), f32::from_bits(0xbff2d4f4), f32::from_bits(0xbe028aed), f32::from_bits(0xbe028aed)], [f32::from_bits(0x3ffc2b7e), f32::from_bits(0x3ffc2b7e), f32::from_bits(0x3ea687f9), f32::from_bits(0x3ea687f9)], [f32::from_bits(0xbfff1f27), f32::from_bits(0xbfff1f27), f32::from_bits(0x3f1a2677), f32::from_bits(0x3f1a2677)], [f32::from_bits(0x3fffe69c), f32::from_bits(0x3fffe69c), f32::from_bits(0x3e1690e4), f32::from_bits(0x3e1690e4)]]),
-    (88200, [f32::from_bits(0x3b9552bc), f32::from_bits(0x3b9552bc), f32::from_bits(0xbddfbe18), f32::from_bits(0xbddfbe18)], [[f32::from_bits(0xbc2f4ebd), f32::from_bits(0xbc2f4ebd), f32::from_bits(0xbf7fadac), f32::from_bits(0xbf7fadac)], [f32::from_bits(0xbf11103c), f32::from_bits(0xbf11103c), f32::from_bits(0xbf7edd1a), f32::from_bits(0xbf7edd1a)], [f32::from_bits(0xbf5423f9), f32::from_bits(0xbf5423f9), f32::from_bits(0xbf7ca8da), f32::from_bits(0xbf7ca8da)], [f32::from_bits(0xbf6ff54d), f32::from_bits(0xbf6ff54d), f32::from_bits(0xbf76714e), f32::from_bits(0xbf76714e)], [f32::from_bits(0xbf7a5661), f32::from_bits(0xbf7a5661), f32::from_bits(0xbf654d04), f32::from_bits(0xbf654d04)], [f32::from_bits(0xbf7e0a4c), f32::from_bits(0xbf7e0a4c), f32::from_bits(0xbf3954e4), f32::from_bits(0xbf3954e4)], [f32::from_bits(0xbf7f5cc7), f32::from_bits(0xbf7f5cc7), f32::from_bits(0xbeada968), f32::from_bits(0xbeada968)], [f32::from_bits(0xbf7fe6f4), f32::from_bits(0xbf7fe6f4), f32::from_bits(0x3f069a6e), f32::from_bits(0x3f069a6e)]], [[f32::from_bits(0xbedc636e), f32::from_bits(0xbedc636e), f32::from_bits(0x3e5fe21e), f32::from_bits(0x3e5fe21e)], [f32::from_bits(0x3f96b782), f32::from_bits(0x3f96b782), f32::from_bits(0xbe6085fd), f32::from_bits(0xbe6085fd)], [f32::from_bits(0xbfd44bb3), f32::from_bits(0xbfd44bb3), f32::from_bits(0x3e6282a3), f32::from_bits(0x3e6282a3)], [f32::from_bits(0x3feff24d), f32::from_bits(0x3feff24d), f32::from_bits(0xbe686b3b), f32::from_bits(0xbe686b3b)], [f32::from_bits(0xbffa8254), f32::from_bits(0xbffa8254), f32::from_bits(0x3e7aa0e0), f32::from_bits(0x3e7aa0e0)], [f32::from_bits(0x3ffe49a9), f32::from_bits(0x3ffe49a9), f32::from_bits(0xbe9d6a1d), f32::from_bits(0xbe9d6a1d)], [f32::from_bits(0xbfff9560), f32::from_bits(0xbfff9560), f32::from_bits(0x3f344225), f32::from_bits(0x3f344225)], [f32::from_bits(0x3ffff37a), f32::from_bits(0x3ffff37a), f32::from_bits(0x3ef2cb24), f32::from_bits(0x3ef2cb24)]]),
-    (96000, [f32::from_bits(0x3d008399), f32::from_bits(0x3d008399), f32::from_bits(0xbdf733f8), f32::from_bits(0xbdf733f8)], [[f32::from_bits(0xbd89cd6a), f32::from_bits(0xbd89cd6a), f32::from_bits(0xbf7fb4b7), f32::from_bits(0xbf7fb4b7)], [f32::from_bits(0xbf1a5ee7), f32::from_bits(0xbf1a5ee7), f32::from_bits(0xbf7ef6bd), f32::from_bits(0xbf7ef6bd)], [f32::from_bits(0xbf583bea), f32::from_bits(0xbf583bea), f32::from_bits(0xbf7cf6ed), f32::from_bits(0xbf7cf6ed)], [f32::from_bits(0xbf717a39), f32::from_bits(0xbf717a39), f32::from_bits(0xbf77573a), f32::from_bits(0xbf77573a)], [f32::from_bits(0xbf7adcdb), f32::from_bits(0xbf7adcdb), f32::from_bits(0xbf67d3f6), f32::from_bits(0xbf67d3f6)], [f32::from_bits(0xbf7e374e), f32::from_bits(0xbf7e374e), f32::from_bits(0xbf3fb20f), f32::from_bits(0xbf3fb20f)], [f32::from_bits(0xbf7f6aec), f32::from_bits(0xbf7f6aec), f32::from_bits(0xbec69601), f32::from_bits(0xbec69601)], [f32::from_bits(0xbf7fe915), f32::from_bits(0xbf7fe915), f32::from_bits(0x3ef766ce), f32::from_bits(0x3ef766ce)]], [[f32::from_bits(0xbefecf1b), f32::from_bits(0xbefecf1b), f32::from_bits(0x3e77585c), f32::from_bits(0x3e77585c)], [f32::from_bits(0x3f9eaa9f), f32::from_bits(0x3f9eaa9f), f32::from_bits(0xbe77fd7d), f32::from_bits(0xbe77fd7d)], [f32::from_bits(0xbfd829d1), f32::from_bits(0xbfd829d1), f32::from_bits(0x3e79fbe6), f32::from_bits(0x3e79fbe6)], [f32::from_bits(0x3ff169dc), f32::from_bits(0x3ff169dc), f32::from_bits(0xbe7fe07c), f32::from_bits(0xbe7fe07c)], [f32::from_bits(0xbffb0148), f32::from_bits(0xbffb0148), f32::from_bits(0x3e88ec90), f32::from_bits(0x3e88ec90)], [f32::from_bits(0x3ffe704f), f32::from_bits(0x3ffe704f), f32::from_bits(0xbea7cff4), f32::from_bits(0xbea7cff4)], [f32::from_bits(0xbfff9e92), f32::from_bits(0xbfff9e92), f32::from_bits(0x3f2bae05), f32::from_bits(0x3f2bae05)], [f32::from_bits(0x3ffff48a), f32::from_bits(0x3ffff48a), f32::from_bits(0x3f044c99), f32::from_bits(0x3f044c99)]]),
-];
 
 /// Init slot 1 defaults, core values p0..p18.
 pub(super) const DEFAULTS: [f32; 19] =
@@ -363,11 +354,11 @@ fn prepare(m: &mut Image, sr: u32) {
     m.pair(0xcc0, tanpoly(f64(w * m.f(0xcf0))));
     m.pair(0x1110, tanpoly(f64(w * 20000.0 * 0.75)));
     m.pair(0x1140, tanpoly(f64(w * 20.0)));
-    let (_, gain, allpass, fir) = HILBERT.iter().min_by_key(|h| h.0.abs_diff(sr)).expect("tables");
-    m.wf4(0x960, *gain);
+    let h = hilbert::design(sr);
+    m.wf4(0x960, h.gain);
     for j in 0..8 {
-        m.wf4(0x9c0 + 16 * j, allpass[j]);
-        m.wf4(0xc40 + 16 * j, fir[j]);
+        m.wf4(0x9c0 + 16 * j, h.allpass[j]);
+        m.wf4(0xc40 + 16 * j, h.fir[j]);
     }
     for b in [0xd50, 0x1010, 0x102c] {
         m.wf(b, srf);
@@ -739,9 +730,11 @@ mod tests {
                 }
                 out.split_off(4800)
             };
+            // The designer's 48 kHz taps sit within 3.9e-6 relative of the dumped table (hilbert
+            // gate). That moves these native vectors by up to 1.1e-5 (measured), so the bound is 2e-5.
             let check = |name: &str, out: &[f32], native: &[f32]| {
                 for (i, (a, b)) in out.iter().zip(native).enumerate() {
-                    assert!((a - b).abs() <= 1e-6, "{:?} {name}[{i}]: {a} vs {b}", case["params"]);
+                    assert!((a - b).abs() <= 2e-5, "{:?} {name}[{i}]: {a} vs {b}", case["params"]);
                 }
             };
             let imp: Vec<f32> = case["impulse_L"].as_array().unwrap().iter().map(f).collect();
