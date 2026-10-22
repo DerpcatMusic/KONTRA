@@ -61,8 +61,7 @@ pub(super) fn live_field(parameter: &str) -> Option<(u16, usize, usize, usize)> 
 }
 
 /// The modules whose saved fields `typed_core` maps.
-pub(super) const TYPED_CORES: [u16; 12] = [0x23, 0x24, 0x42, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x6f];
-pub(super) const TYPED_CORES: [u16; 14] = [0x23, 0x24, 0x42, 0x4d, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x6f, 0x78];
+pub(super) const TYPED_CORES: [u16; 13] = [0x23, 0x24, 0x42, 0x4d, 0x53, 0x55, 0x56, 0x58, 0x66, 0x67, 0x68, 0x6e, 0x6f];
 
 /// The amp, cabinet and pedal modules `amp` maps.
 const AMPS: [u16; 9] = [0x23, 0x24, 0x4d, 0x53, 0x55, 0x56, 0x58, 0x6e, 0x6f];
@@ -200,13 +199,11 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x70 => "Stereo Tune: reader 0x140ac6120 identified (4 saved floats: Drift, Spread, Split, Mix); fields not decoded and DSP law not extracted, so the slot passes audio through unprocessed",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
         0x78 => "Skreamer Deluxe (BParFXSkreamerDlx, IFx5B): its knobs are drive, tone, bass, mid and treble (KSP names, binary registrations), not the Tubescreamer core pot and filter fields; the mapping is not established",
-        0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x77 | 0x79 => {
-        0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x77 | 0x79 => {
         // Reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but the Chainsaw ctor, apply and
         // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are
         // not guessed from the Big Fuzz layout.
         0x77 => "Chainsaw: record reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but its ctor, apply, kernel and parameter names are not extracted",
-        0x4d | 0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x79 => {
+        0x52 | 0x54 | 0x61 | 0x6c | 0x76 | 0x79 => {
             "amp, cabinet or pedal model: cores and tables are not extracted, so no topology is proved"
         }
         _ => return None,

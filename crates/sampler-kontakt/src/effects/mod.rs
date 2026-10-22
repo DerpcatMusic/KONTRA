@@ -348,12 +348,8 @@ impl Slot {
             0x10..=0x12 | 0x14 | 0x5d => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
             0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
-            0x5a => Params::TimeMod(timemod::read_replika(self.version, &mut r)?),
-            0x6a => Params::TimeMod(timemod::read_wow_flutter(self.version, &mut r)?),
             // Cosmic (type 2) keeps its decoded fields: its core is not built.
             0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
-            // Grounded (0), Airy (1) and Cosmic (2) decode alike.
-            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
                 let (core, synced) = space::read_raum(&mut r)?;
                 Params::Raum { core, synced }
             }
@@ -432,27 +428,12 @@ impl Slot {
                 [r.flag()?, r.flag()?, r.flag()?],
             )),
             0x43 if self.version == 0x10 => Params::Dynamics(dynamics::transient(r.f32()?, r.f32()?, r.f32()?, r.i32()?)),
-            0x46 if (0x10..=0x12).contains(&self.version) => {
-                let bus = dynamics::bus_comp(
-                    [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
-                    [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
-                    if self.version == 0x12 { Some(r.f32()?) } else { None },
-                );
-                match bus {
-                    Ok((processor, Some(note))) => Params::DynamicsNoted(processor, note),
-                    other => Params::Dynamics(other.map(|(processor, _)| processor)),
-                }
-            }
-            0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
             0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
                 [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
                 [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
                 if self.version == 0x12 { Some(r.f32()?) } else { None },
             )),
-            // The reader throws on any other version (0x51 only).
-            0x5f if self.version == 0x51 => {
-                Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?))
-            }
+            0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -468,7 +449,6 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
-                let mut hq = false;
                 if (30..=41).contains(&kind) {
                     // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
                     // Exact version framing comes from the shared verified reader.
@@ -483,10 +463,9 @@ impl Slot {
                             cutoff: record.cutoff,
                             resonance: record.resonance,
                             extra: vec![record.leading_value],
-                            hq: record.unknown_flag.is_some_and(|flag| flag != 0),
                         });
                     }
-                    hq = r.skip_repeats(kind);
+                    r.skip_repeats(kind);
                 } else if matches!(kind, 120 | 130 | 140..=143) {
                     // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
                     // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
@@ -510,7 +489,7 @@ impl Slot {
                     let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
                     let mut extra = values[2..].to_vec();
                     extra.extend(variant);
-                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra, hq: false });
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
                 } else if (22..=24).contains(&kind) && self.version >= 0x93 {
                     // Later records repeat the EQ kind (v0x95: five times) before the bands.
                     r.skip_repeats(kind);
@@ -540,7 +519,6 @@ impl Slot {
                         cutoff,
                         resonance,
                         extra,
-                        hq,
                     }
                 }
             }
@@ -576,19 +554,15 @@ impl Reader<'_> {
         self.take().map(i32::from_le_bytes)
     }
     /// Consume the subtype repeats and their flag bytes after the first.
-    /// Skip repeated subtype ids and the one flag byte in front of each repeat; true when the
-    /// first flag is set.
-    fn skip_repeats(&mut self, kind: i32) -> bool {
+    fn skip_repeats(&mut self, kind: i32) {
         let k = kind.to_le_bytes();
-        let mut first = None;
         loop {
             if let Some(rest) = self.0.strip_prefix(&k) {
                 self.0 = rest;
-            } else if let Some((&flag, rest)) = self.0.split_first().filter(|(_, r)| r.starts_with(&k)) {
-                first.get_or_insert(flag != 0);
-                self.0 = &rest[k.len()..];
+            } else if let Some(rest) = self.0.strip_prefix(&[0]).and_then(|r| r.strip_prefix(&k)) {
+                self.0 = rest;
             } else {
-                return first.unwrap_or(false);
+                return;
             }
         }
     }
@@ -891,72 +865,12 @@ pub(crate) fn chain_with(
             }
             Some(Params::Filter { kind: kind @ (90 | 91), cutoff, resonance, extra }) => {
                 modelled = filter::slot_formant(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
-            Some(Params::Filter {
-                kind: kind @ (90 | 91),
-                cutoff,
-                resonance,
-                extra,
-                ..
-            }) => {
-                flush(&mut combined, &mut filters, &mut out);
-                // Kontakt 8 Filter Reference: Formant I. FUN_1409a80a0 maps
-                // Talk/Sharp to core 0/2; FUN_140aeffe0 maps saved Size to core 1.
-                // Formant II is the same core on its second table (filter.rs).
-                let knobs = extra.first().map(|&size| [*cutoff, *resonance, size]);
-                if let Some(knobs) = knobs.filter(|v| v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x))) {
-                    // Formant II with script or modulation lanes takes the live path below on the
-                    // second table; the static one keeps the filter-bank mapping and its fidelity.
-                    if *kind == 91 && dynamic.is_none() {
-                        match filter(91, knobs[0], knobs[1], &knobs[2..]) {
-                            Ok((processors, mapped)) => {
-                                out.processors.extend(processors);
-                                note_fidelity(&mut notes, 91, &mapped);
-                                combined = gain;
-                            }
-                            Err(gap) => {
-                                notes.push((gap.name.into(), gap.reason.into(), sampler_ir::Reason::NotModeled));
-                                modelled = false;
-                            }
-                        }
-                    } else if let Some((group, generic)) = dynamic {
-                        out.lane_slots.push((fx.slot, out.processors.len()));
-                        out.processors.push(sampler_ir::Processor::LiveFormant {
-                            knobs,
-                            second: *kind == 91,
-                            address: sampler_ir::SlotAddress { group, slot: fx.slot as i32, generic },
-                        });
-                        combined = gain;
-                    } else {
-                        out.processors.push(sampler_ir::Processor::Formant(knobs));
-                        combined = gain;
-                    }
-                } else {
-                    notes.push(("Formant parameters".into(), "missing Size or outside normalized range".into(), sampler_ir::Reason::InvalidValue));
-                    modelled = false;
-                }
             }
             Some(Params::Fields(fields)) if fx.module == 0x21 => {
                 modelled = color::slot_skreamer(&mut b, &site, fields)
             }
-            Some(Params::Fields(fields)) if fx.module == 0x64 => {
-                modelled = ringmod::slot_ring_modulator(&mut b, &site, &mut notes, fields)
-            }
             Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
                 modelled = color::slot_typed(&mut b, &site, &mut notes, fields)
-                flush(&mut combined, &mut filters, &mut out);
-                match color::typed_core(fx.module, fields) {
-                    Some(config) => {
-                        out.processors.push(sampler_ir::Processor::Color(config));
-                        combined = gain;
-                        if fx.module == 0x4d {
-                            notes.push(("Jump knobs".into(), "fixed fitted preset; knob laws not measured".into(), sampler_ir::Reason::NotModeled));
-                        }
-                        if dynamic.is_some() {
-                            notes.push(("Creative FX live controls".into(), "knobs are constants".into(), sampler_ir::Reason::NotModeled));
-                        }
-                    }
-                    None => modelled = false,
-                }
             }
             Some(Params::LoFi { values, flag }) => {
                 modelled = color::slot_lofi(&mut b, &site, &mut notes, values, *flag)
@@ -969,49 +883,6 @@ pub(crate) fn chain_with(
                 if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) =>
             {
                 modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
-            Some(Params::Filter {
-                kind: kind @ 30..=41,
-                cutoff,
-                resonance,
-                extra,
-                hq,
-            }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) => {
-                // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
-                // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
-                // Gain is signed normalized (12 dB per unit); the native kernel
-                // retains the record-version cutoff clock.
-                let values = [extra[0], *cutoff, *resonance];
-                if values.iter().all(|v| v.is_finite())
-                    && (-1.0..=1.0).contains(&values[0])
-                    && values[1..].iter().all(|v| (0.0..=1.0).contains(v))
-                {
-                    out.filter_slots
-                        .push((fx.slot, out.processors.len() + filters.len()));
-                    let mapped = filter::template(*kind).expect("ladder rows are in the table");
-                    let mut config = mapped.config;
-                    config.drive = f64::from(values[0]);
-                    config.cutoff = f64::from(values[1]);
-                    config.resonance = f64::from(values[2]);
-                    config.high_quality = *hq;
-                    config.binding = Some(sampler_ir::fx::filter::Binding {
-                        address: sampler_ir::SlotAddress {
-                            group: physical.0,
-                            slot: fx.slot as i32,
-                            generic: physical.1,
-                        },
-                        record_version: fx.version,
-                    });
-                    filters.extend(config.processors(None).expect("ladder rows configure"));
-                    note_fidelity(&mut notes, *kind, &mapped);
-                    combined = product(gain, combined);
-                } else {
-                    notes.push((
-                        "Ladder LP4 parameters".into(),
-                        "non-finite or outside native range".into(),
-                        sampler_ir::Reason::InvalidValue,
-                    ));
-                    modelled = false;
-                }
             }
             // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the native FilterDJ.
             Some(Params::Filter { kind: kind @ 100..=108, cutoff, resonance, .. })
@@ -1024,67 +895,11 @@ pub(crate) fn chain_with(
                 if matches!(kind, 70 | 71) && !extra.is_empty() =>
             {
                 modelled = filter::slot_daft(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
-            Some(Params::Filter {
-                kind,
-                cutoff,
-                resonance,
-                extra,
-                ..
-            }) if matches!(kind, 70 | 71) && !extra.is_empty() => {
-                // The Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY
-                // "Daft parameter laws and scheduling". The leading value is the
-                // Gain control; modulation adds to the saved normalized knob.
-                // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
-                out.filter_slots
-                    .push((fx.slot, out.processors.len() + filters.len()));
-                let mapped = filter::template(*kind).expect("Daft rows are in the table");
-                let mut config = mapped.config;
-                // Native gain setter (FUN_140b05290) takes the signed leading value unclamped.
-                config.drive = f64::from(extra[0]);
-                config.cutoff = f64::from(*cutoff).clamp(0.0, 1.0);
-                config.resonance = f64::from(*resonance).clamp(0.0, 1.0);
-                filters.extend(config.processors(None).expect("Daft rows configure"));
-                note_fidelity(&mut notes, *kind, &mapped);
-                combined = product(gain, combined);
             }
             Some(Params::Filter { kind, cutoff, resonance, extra }) => {
                 modelled = filter::slot_filter(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
             Some(Params::Dynamics(result)) => modelled = dynamics::slot_dynamics(&mut b, &site, &mut notes, result),
-            Some(Params::DynamicsNoted(processor, note)) => {
-            Some(Params::Filter {
-                kind,
-                cutoff,
-                resonance,
-                extra,
-                ..
-            }) => match filter(*kind, *cutoff, *resonance, match kind {
-                63..=65 => &extra[..extra.len().min(1)],
-                19 | 120 | 130 | 140..=143 => extra,
-                _ => &[],
-            }) {
-                Ok((processors, mapped)) => {
-                    out.filter_slots
-                        .push((fx.slot, out.processors.len() + filters.len()));
-                    filters.extend(processors);
-                    note_fidelity(&mut notes, *kind, &mapped);
-                    combined = product(gain, combined);
-                }
-                Err(gap) => {
-                    notes.push((
-                        format!("filter type ({}: {})", gap.name, gap.reason),
-                        format!("{kind} cutoff {cutoff} resonance {resonance}"),
-                        sampler_ir::Reason::NotModeled,
-                    ));
-                    modelled = false;
-                }
-            },
-            Some(Params::Dynamics(result)) => {
-                flush(&mut combined, &mut filters, &mut out);
-                out.processors.push(processor.clone());
-                combined = gain;
-                notes.push(note.clone());
-            }
             Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 modelled = dynamics::slot_compressor(
                     &mut b,
@@ -1155,972 +970,6 @@ pub(crate) fn chain_with(
                 if scope != Scope::Voice || !matches!(p, sampler_ir::Processor::Eq(_)) {
                     *p = p.at(address);
                 }
-            for p in &mut out.processors[begin..] {
-                if scope != Scope::Voice || !matches!(p, sampler_ir::Processor::Eq(_)) {
-                    *p = p.at(address);
-                }
-            }
-            // A modelled module that changes only its level still owns the slot's
-            // Output and Bypass.
-            if modelled && out.processors.len() == begin {
-                out.processors
-                    .push(sampler_ir::Processor::StereoMatrix(IDENTITY));
-            }
-            let count = out.processors.len() - begin;
-            if count > 0 {
-                let convolution = matches!(params, Some(Params::Convolution(_)));
-                let wet = if matches!(params, Some(Params::Eq { .. })) && eq_unset {
-                    1.0
-                } else {
-                    wet
-                };
-                out.processors.insert(
-                    begin,
-                    sampler_ir::Processor::Mix {
-                        count: count as u16,
-                        address: sampler_ir::SlotAddress {
-                            group,
-                            slot: fx.slot as i32,
-                            generic,
-                        },
-                        dry: if convolution || matches!(fx.module, 0x10..=0x13) {
-                            f64::from(fx.dry_level)
-                        } else {
-                            0.0
-                        },
-                        wet,
-                        bypass: fx.bypass,
-                    },
-                );
-                for (_, at) in out.filter_slots.iter_mut().chain(&mut out.lane_slots) {
-                    if *at >= begin {
-                        *at += 1;
-                    }
-                }
-            }
-        }
-        if !modelled {
-            out.notes.push((
-                fx.slot,
-                "effect".into(),
-                match color::unproved(fx.module).or(timemod::unproved(fx.module)) {
-                    Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
-                    None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
-                },
-                sampler_ir::Reason::NotModeled,
-            ));
-        }
-        out.notes.extend(
-            notes
-                .into_iter()
-                .map(|(f, v, r)| (fx.slot, format!("{name}: {f}"), v, r)),
-        );
-    }
-    flush(&mut combined, &mut filters, &mut out);
-    out
-}
-
-/// An instrument bus (`$NI_BUS_OFFSET` + `index`) with the groups routed to it.
-pub(crate) struct BusPlan {
-    pub index: usize,
-    /// The bus fader (linear) and pan.
-    pub volume: f32,
-    pub pan: f32,
-    /// Phase invert and L/R swap (the Inverter law on the bus amplifier).
-    pub invert: bool,
-    pub swap: bool,
-    pub groups: Vec<sampler_ir::GroupRef>,
-}
-
-/// The program's instrument buses with the groups routed to them (`routes`
-/// pairs a group with its 0-based bus).
-pub(crate) fn bus_plans(program: &Program, routes: &[(sampler_ir::GroupRef, u8)]) -> Vec<BusPlan> {
-    program
-        .0
-        .children
-        .iter()
-        .filter(|child| child.id == BUS)
-        .enumerate()
-        .filter_map(|(index, child)| {
-            let params = InsertBus::try_from(child).ok()?.params().ok()?;
-            Some(BusPlan {
-                index,
-                volume: params.volume,
-                pan: params.pan,
-                // The saved flag offsets are not yet proven (docs/re/engine/k-utilities-routing.md).
-                invert: false,
-                swap: false,
-                groups: routes
-                    .iter()
-                    .filter(|&&(_, bus)| usize::from(bus) == index)
-                    .map(|&(group, _)| group)
-                    .collect(),
-            })
-        })
-        .collect()
-}
-
-/// The instrument-level racks as buses: every group feeds an insert bus
-/// (the insert rack), whose Send Levels slots feed one bus per send slot
-/// (the send rack's effects), and the main rack follows both. A group routed
-/// to an instrument bus (`buses`) feeds that bus instead, whose fader and rack
-/// run before the insert bus. Changes nothing when the racks do nothing.
-pub(crate) fn instrument_buses(
-    ir: &mut sampler_ir::Instrument,
-    racks: &[(String, Vec<Slot>)],
-    buses: &[BusPlan],
-    dynamic: bool,
-    load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
-) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
-    let mut indexed = |request: ImpulseRequest| load(request.index);
-    instrument_buses_with_recipes(ir, racks, buses, dynamic, &mut indexed, None)
-}
-
-pub(crate) fn instrument_buses_with_recipes(
-    ir: &mut sampler_ir::Instrument,
-    racks: &[(String, Vec<Slot>)],
-    buses: &[BusPlan],
-    dynamic: bool,
-    load: &mut dyn FnMut(ImpulseRequest) -> Result<Decoded, String>,
-    recipes: Option<&mut Vec<(ImpulseRequest, Convolution)>>,
-) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
-    use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
-    let rack = |name: &str| {
-        racks
-            .iter()
-            .find(|(n, _)| n == name)
-            .map_or(&[][..], |(_, s)| s.as_slice())
-    };
-    let mut report = Vec::new();
-    let mut take = |name: &str, c: &Chain| {
-        report.extend(c.notes.iter().map(|n| (name.to_string(), n.clone())));
-    };
-    let mut store = std::mem::take(&mut ir.impulses);
-    let mut source = Impulses {
-        store: &mut store,
-        recipes,
-        load,
-    };
-    // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
-    let generic = |n| dynamic.then_some((-1, n));
-    let insert = chain_with(
-        rack("instrument insert"),
-        Scope::Bus,
-        Some(&mut source),
-        generic(1),
-        (-1, 1),
-        &[],
-    );
-    take("instrument insert", &insert);
-    let main = chain_with(
-        rack("instrument main"),
-        Scope::Bus,
-        Some(&mut source),
-        generic(2),
-        (-1, 2),
-        &[],
-    );
-    take("instrument main", &main);
-    // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
-    let mut sends = Vec::new();
-    for slot in rack("instrument send")
-        .iter()
-        .filter(|s| dynamic || !s.bypass)
-    {
-        let mut c = chain_with(
-            std::slice::from_ref(slot),
-            Scope::Bus,
-            Some(&mut source),
-            generic(0),
-            (-1, 0),
-            &[],
-        );
-        // Port from v1 0cb7a8a0:src/fx/processor.rs (process returns and
-        // SendInputs::tap): bypassed returns contribute no dry signal.
-        // Keep the real slot control so scripts can re-enable the return.
-        if dynamic && !c.processors.is_empty() {
-            c.processors.push(sampler_ir::Processor::SendReturnGate {
-                address: sampler_ir::SlotAddress {
-                    group: -1,
-                    slot: slot.slot as i32,
-                    generic: 0,
-                },
-            });
-        }
-        take("instrument send", &c);
-        let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
-        if !c.processors.is_empty() {
-            sends.push((slot.slot, c.processors, f64::from(level)));
-        }
-    }
-    // Instrument buses: only the ones a group feeds and that do something.
-    // `$NI_BUS_OFFSET` + the bus number.
-    let mut instrument = Vec::new();
-    let mut invalid_pan = Vec::new();
-    for bus in buses.iter().filter(|b| dynamic || !b.groups.is_empty()) {
-        let name = format!("bus {}", bus.index);
-        let c = chain_with(
-            rack(&name),
-            Scope::Bus,
-            Some(&mut source),
-            generic(1000 + bus.index as i32),
-            (-1, 1000 + bus.index as i32),
-            &[],
-        );
-        take(&name, &c);
-        let mut processors = c.processors;
-        // Native bus amplifier order (BInsertBus audio 0x140824910): L/R swap, phase
-        // invert, then the fader and the balance. Same matrix as the Inverter slot.
-        if bus.invert || bus.swap {
-            if let Some(flip) = matrix(&Params::Inverter { invert: bus.invert, swap: bus.swap }, &mut Vec::new()) {
-                processors.push(sampler_ir::Processor::StereoMatrix(flip));
-            }
-        }
-        if dynamic {
-            // A script sets the bus volume and routes groups to any bus at run
-            // time, so every bus exists and its volume is a Mix block's wet level.
-            processors.push(sampler_ir::Processor::Mix {
-                count: 1,
-                address: sampler_ir::SlotAddress {
-                    group: -1,
-                    slot: sampler_core::BUS_VOLUME_SLOT,
-                    generic: 1000 + bus.index as i32,
-                },
-                dry: 0.0,
-                wet: f64::from(bus.volume),
-                bypass: false,
-            });
-            processors.push(sampler_ir::Processor::StereoMatrix(IDENTITY));
-        }
-        if bus.pan.is_finite() {
-            if bus.pan != 0. {
-                // NI Bus Insert Effects amplifier: BInsertBus audio 0x140824910
-                // calls 0x140823d70 with channel flags 0/1: independent linear
-                // balance, which is the shared `PanLaw::Balance`. Clamping first
-                // reproduces the native clamps exactly.
-                processors.push(sampler_ir::Processor::Pan(sampler_ir::Pan {
-                    position: f64::from(bus.pan.clamp(-1., 1.)),
-                    law: sampler_ir::PanLaw::Balance,
-                }));
-            }
-        } else {
-            invalid_pan.push((name, (0, "instrument bus pan".into(), bus.pan.to_string(),
-                sampler_ir::Reason::InvalidValue)));
-        }
-        if dynamic || !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
-            instrument.push((bus, processors));
-        }
-    }
-    report.extend(invalid_pan);
-    ir.impulses = store;
-    let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
-    if !chained && instrument.is_empty() {
-        ir.input_bus = None;
-        return (report, Vec::new());
-    }
-    // Bus order: insert, sends, main, then the instrument buses.
-    let main_bus = (!main.processors.is_empty()).then_some(sends.len() + 1);
-    let target = main_bus.map_or(Output::Master, |i| Output::Bus(BusRef(i)));
-    let add = |ir: &mut sampler_ir::Instrument,
-               name: String,
-               processors: Vec<sampler_ir::Processor>,
-               sends,
-               output,
-               gain| {
-        let chain = (!processors.is_empty()).then(|| {
-            let index = ir.buses.len();
-            ir.chains.push(sampler_ir::Chain {
-                scope: IrScope::Bus(BusRef(index)),
-                pre_amplitude: processors,
-                post_amplitude: Vec::new(),
-            });
-            ChainRef(ir.chains.len() - 1)
-        });
-        ir.buses.push(sampler_ir::Bus {
-            name,
-            chain,
-            sends,
-            output,
-            gain,
-        });
-    };
-    let unity = sampler_ir::Gain::UNITY;
-    let feeds: Vec<_> = sends
-        .iter()
-        .enumerate()
-        .map(|(i, (_, _, level))| Send {
-            to: Output::Bus(BusRef(i + 1)),
-            gain: sampler_ir::Gain::Linear(*level),
-            position: SendPosition::PostChain,
-        })
-        .collect();
-    let send_buses: Vec<_> = sends
-        .iter()
-        .enumerate()
-        .map(|(i, (slot, _, _))| (*slot, BusRef(i + 1)))
-        .collect();
-    let entry = if chained {
-        let mut segments = Vec::new();
-        let mut cursor = 0;
-        for tap in &insert.send_taps {
-            let n = tap.position;
-            let feeds = if tap.bypass {
-                Vec::new()
-            } else {
-                send_buses
-                    .iter()
-                    .filter_map(|&(slot, bus)| {
-                        tap.levels.get(slot).map(|&level| Send {
-                            to: Output::Bus(bus),
-                            gain: sampler_ir::Gain::Linear(f64::from(level)),
-                            position: SendPosition::PostChain,
-                        })
-                    })
-                    .collect()
-            };
-            segments.push((insert.processors[cursor..n].to_vec(), feeds));
-            cursor = n;
-        }
-        if segments.is_empty() {
-            segments.push((insert.processors, feeds));
-        } else if cursor < insert.processors.len() {
-            segments.push((insert.processors[cursor..].to_vec(), Vec::new()));
-        }
-        // Each continuation is another summed bus, so its history and send
-        // position use the existing preallocated bus DAG.
-        let continuation = sends.len() + 1 + usize::from(main_bus.is_some());
-        let mut segments = segments.into_iter().enumerate().peekable();
-        let (_, (processors, feeds)) = segments.next().expect("insert segment");
-        let next = if segments.peek().is_some() {
-            Output::Bus(BusRef(continuation))
-        } else {
-            target
-        };
-        add(ir, "insert".into(), processors, feeds, next, unity);
-        for (slot, processors, _) in sends {
-            add(
-                ir,
-                format!("send {slot}"),
-                processors,
-                Vec::new(),
-                target,
-                unity,
-            );
-        }
-        if main_bus.is_some() {
-            add(
-                ir,
-                "main".into(),
-                main.processors,
-                Vec::new(),
-                Output::Master,
-                unity,
-            );
-        }
-        while let Some((i, (processors, feeds))) = segments.next() {
-            let next = if segments.peek().is_some() {
-                Output::Bus(BusRef(continuation + i))
-            } else {
-                target
-            };
-            add(
-                ir,
-                format!("insert continuation {i}"),
-                processors,
-                feeds,
-                next,
-                unity,
-            );
-        }
-        for group in &mut ir.groups {
-            group.output = Output::Bus(BusRef(0));
-        }
-        Output::Bus(BusRef(0))
-    } else {
-        Output::Master
-    };
-    ir.input_bus = if let Output::Bus(bus) = entry {
-        Some(bus)
-    } else {
-        None
-    };
-    for (bus, processors) in instrument {
-        let at = BusRef(ir.buses.len());
-        add(
-            ir,
-            format!("bus {}", bus.index),
-            processors,
-            Vec::new(),
-            entry,
-            if dynamic {
-                unity
-            } else {
-                sampler_ir::Gain::Linear(f64::from(bus.volume))
-            },
-        );
-        ir.bus_addresses.push((1000 + bus.index as i32, at));
-        for group in &bus.groups {
-            ir.groups[group.0].output = Output::Bus(at);
-        }
-    }
-    (report, send_buses)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn compressor_modes_without_a_core_are_not_modeled() {
-        for mode in [3i32, -1] {
-            let mut bytes = mode.to_le_bytes().to_vec();
-            for v in [-12f32, 0.5, 10., 100.] {
-                bytes.extend(v.to_le_bytes());
-            }
-            bytes.push(0);
-            let mut fx = slot(0x19, bytes, 1.);
-            fx.version = 0x70;
-            let built = super::chain(&[fx], super::Scope::Voice);
-            assert!(
-                built.processors.is_empty(),
-                "mode {mode} has no core"
-            );
-            assert!(built.notes.iter().any(|(_, feature, _, reason)| {
-                feature.ends_with("compressor mode") && *reason == sampler_ir::Reason::NotModeled
-            }));
-        }
-    }
-
-    /// Conflux's Volume knob writes GN_GAIN to its insert Gainer; unity is
-    /// 396851 and full scale +24 dB (16x), the effect output-gain law.
-    #[test]
-    fn live_gainer_gain_reaches_its_slot_with_the_output_gain_law() {
-        let fx = slot(0x13, 1f32.to_le_bytes().to_vec(), 1.);
-        let built = super::chain_with(&[fx], super::Scope::Voice, None, Some((0, -1)), (0, -1), &[]);
-        let mut rt = fx_runtime(built.processors, 120., &[[0., 0.], [0.25, -0.25]]);
-        let address = sampler_core::EngineParameterAddress {
-            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_GN_GAIN").unwrap(),
-            group: 0, slot: 0, generic: -1,
-        };
-        assert_eq!(rt.engine_parameter(address), Ok(396851), "saved unity gain reads back as unity");
-        assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress { slot: 1, ..address }, 0).is_err());
-        rt.set_engine_parameter(address, 1_000_000).unwrap();
-        assert_eq!(rt.engine_parameter(address), Ok(1_000_000));
-    }
-
-    /// The saved Solid G-EQ record v0x11 with every knob flat and only the low
-    /// pass enabled (eq.rs `read` order).
-    fn solid_payload() -> Vec<u8> {
-        let mut b = Vec::new();
-        for v in [0.5f32, 0.5] {
-            b.extend(v.to_le_bytes()); // LF gain, freq
-        }
-        b.push(0); // LF shelf
-        for _ in 0..6 {
-            b.extend(0.5f32.to_le_bytes()); // LMF gain, freq, Q; HMF gain, freq, Q
-        }
-        for _ in 0..2 {
-            b.extend(0.5f32.to_le_bytes()); // HF gain, freq
-        }
-        b.push(0); // HF shelf
-        for _ in 0..2 {
-            b.extend(0.5f32.to_le_bytes()); // HP freq, LP freq
-        }
-        b.extend([1u8, 0]); // LP on, HP off
-        b
-    }
-
-    /// A script-addressed Solid G-EQ: every band is one config with the band's own
-    /// lanes, the split renders exactly like the unaddressed module, and a `SEQ_`
-    /// write moves the band (all three LF shelf sections included).
-    #[test]
-    fn solid_geq_bands_are_live_and_the_split_is_audio_identical() {
-        let module = |address| {
-            let mut fx = slot(0x44, solid_payload(), 1.);
-            fx.version = 0x11;
-            super::chain_with(&[fx], super::Scope::Voice, None, address, (0, -1), &[])
-        };
-        let live = module(Some((0, -1)));
-        assert!(
-            live.notes.iter().all(|(_, feature, _, _)| feature != "live control"),
-            "{:?}",
-            live.notes
-        );
-        let bands: Vec<u8> = live
-            .processors
-            .iter()
-            .filter_map(|p| match p {
-                sampler_ir::Processor::Eq(c) => {
-                    assert_eq!(c.count, 1);
-                    assert_eq!(
-                        c.address,
-                        Some(sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 })
-                    );
-                    Some(c.band)
-                }
-                sampler_ir::Processor::Mix { count, address, .. } => {
-                    assert_eq!((*count, *address), (5, sampler_ir::SlotAddress { group: 0, slot: 0, generic: -1 }));
-                    None
-                }
-                other => panic!("{other:?}"),
-            })
-            .collect();
-        assert_eq!(bands, [0, 1, 2, 3, 5]);
-        let input = [[1.0f32, -0.5]; 4];
-        let plain = fx_probe(module(None).processors, 48_000., &input);
-        assert_eq!(fx_probe(live.processors.clone(), 48_000., &input), plain);
-        let address = |name: &str| sampler_core::EngineParameterAddress {
-            parameter: sampler_core::engine_parameter_id(name).unwrap(),
-            group: 0,
-            slot: 0,
-            generic: -1,
-        };
-        let gain = address("ENGINE_PAR_SEQ_LF_GAIN");
-        let mut rt = fx_runtime(live.processors, 48_000., &input);
-        assert_eq!(rt.engine_parameter(gain), Ok(500_000));
-        rt.set_engine_parameter(gain, 1_000_000).unwrap();
-        let mut raised = [[0.0f32; 2]; 4];
-        rt.render(&mut raised).unwrap();
-        assert_ne!(raised, plain, "the LF shelf follows its lane");
-    }
-
-    /// Recorded init writes reach the saved Solid G-EQ record: the identity knob
-    /// law for the twelve continuous knobs and the switch law for the enables.
-    #[test]
-    fn solid_geq_init_writes_reach_the_saved_record() {
-        let mut fx = slot(0x44, solid_payload(), 1.);
-        fx.version = 0x11;
-        let write = |parameter: &str, value: i32| sampler_ksp::EnginePar {
-            parameter: parameter.into(),
-            value,
-            group: 0,
-            slot: 0,
-            generic: -1,
-        };
-        super::apply_writes(
-            std::slice::from_mut(&mut fx),
-            &[
-                write("$ENGINE_PAR_SEQ_HF_GAIN", 1_000_000),
-                write("$ENGINE_PAR_SEQ_LF_BELL", 1),
-                write("$ENGINE_PAR_SEQ_HP", 1),
-                write("$ENGINE_PAR_SEQ_LP", 0),
-            ],
-            0,
-            -1,
-        );
-        let built = super::chain_with(&[fx], super::Scope::Voice, None, None, (0, -1), &[]);
-        let bands: Vec<(u8, sampler_ir::fx::eq::Kind, f32)> = built
-            .processors
-            .iter()
-            .map(|p| match p {
-                sampler_ir::Processor::Eq(c) => (c.band, c.bands()[0].kind, c.bands()[0].gain_db),
-                other => panic!("{other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            bands,
-            [
-                (0, sampler_ir::fx::eq::Kind::Peak, 0.5),
-                (1, sampler_ir::fx::eq::Kind::Peak, 0.5),
-                (2, sampler_ir::fx::eq::Kind::Peak, 0.5),
-                (3, sampler_ir::fx::eq::Kind::HighShelf, 1.),
-                (4, sampler_ir::fx::eq::Kind::HighPass, 0.),
-            ]
-        );
-    }
-
-    #[test]
-    fn live_shape_drive_and_damping_reach_only_the_physical_slot() {
-        for (module, payload, parameter, value, expected) in [
-            (0x1d, vec![0.0f32, 0.], "ENGINE_PAR_SHAPE", 750_000, 0.75f32),
-            (0x1e, vec![0.0f32, 0., 0.], "ENGINE_PAR_DRIVE", 1_000_000, 0.74903756),
-            (0x1e, vec![0.0f32, 0., 0.], "ENGINE_PAR_DAMPING", 1_000_000, 0.031603266),
-        ] {
-            let bytes = payload.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let fx = slot(module, bytes, 1.);
-            let built = super::chain_with(&[fx], super::Scope::Voice, None,
-                Some((0, -1)), (0, -1), &[]);
-            assert!(built.notes.is_empty(), "{:?}", built.notes);
-            let mut rt = fx_runtime(built.processors, 120., &[[0., 0.], [0.25, -0.25]]);
-            let address = sampler_core::EngineParameterAddress {
-                parameter: sampler_core::engine_parameter_id(parameter).unwrap(),
-                group: 0, slot: 0, generic: -1,
-            };
-            let mut before = [[0.; 2]; 1]; rt.render(&mut before).unwrap();
-            assert!(rt.set_engine_parameter(sampler_core::EngineParameterAddress {
-                slot: 1, ..address }, value).is_err());
-            rt.set_engine_parameter(address, value).unwrap();
-            let mut after = [[0.; 2]; 1]; rt.render(&mut after).unwrap();
-            assert!((after[0][0] - expected).abs() < 2e-6,
-                "{parameter}: {:?} expected {expected}", after[0]);
-        }
-    }
-
-    /// Stereo Tune and Surround Panner have no proved law: each must surface a
-    /// named diagnostic and pass audio through, never a silent or invented DSP.
-    #[test]
-    fn unproved_spatial_modules_are_named_and_pass_through() {
-        let mut bytes = Vec::new();
-        for v in [0.1f32, 0.2, 0.3, 0.4] { bytes.extend(v.to_le_bytes()); }
-        for (module, name) in [(0x70u16, "Stereo Tune"), (0x1d, "Surround Panner")] {
-            let mut fx = slot(module, bytes.clone(), 1.0);
-            fx.version = if module == 0x1d { 0x70 } else { 0x10 };
-            let built = chain(&[fx], Scope::Voice);
-            assert!(built.processors.is_empty(), "{name} must not invent DSP: {:?}", built.processors);
-            assert!(built.notes.iter().any(|(_, _, text, reason)| text.contains(name) && *reason == sampler_ir::Reason::NotModeled), "{name}: {:?}", built.notes);
-        }
-    }
-
-    #[test]
-    fn instrument_bus_pan_only_uses_native_stereo_balance() {
-        use sampler_ir as ir;
-        for (pan, expected) in [(-1., [1., 0.]), (-0.5, [1., 0.5]),
-            (0., [1., 1.]), (0.5, [0.5, 1.]), (1., [0., 1.])] {
-            let mut instrument = ir::Instrument::default();
-            instrument.groups.push(ir::Group::default());
-            let (notes, _) = super::instrument_buses(&mut instrument, &[],
-                &[super::BusPlan { index: 0, volume: 1., pan, invert: false, swap: false,
-                    groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
-            assert!(notes.is_empty());
-            if pan == 0. { continue; }
-            assert_eq!(instrument.buses.len(), 1, "pan-only bus must exist");
-            let chain = instrument.buses[0].chain.unwrap();
-            let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(),
-                120., &[[1., 1.]]);
-            assert_eq!(output[0], expected);
-        }
-    }
-
-    /// Native bus amplifier order: swap, then invert, then the balance. [0.25, -0.5]
-    /// swaps to [-0.5, 0.25], inverts to [0.5, -0.25], then pan +0.5 halves the left.
-    #[test]
-    fn instrument_bus_swap_and_invert_run_before_the_balance() {
-        use sampler_ir as ir;
-        let mut instrument = ir::Instrument::default();
-        instrument.groups.push(ir::Group::default());
-        let (notes, _) = super::instrument_buses(&mut instrument, &[],
-            &[super::BusPlan { index: 0, volume: 1., pan: 0.5, invert: true, swap: true,
-                groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
-        assert!(notes.is_empty());
-        let chain = instrument.buses[0].chain.unwrap();
-        let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(), 120., &[[0.25, -0.5]]);
-        assert_eq!(output[0], [0.25, -0.25]);
-    }
-
-    /// Output's double-buffered layer buses (ANALOG STRINGS `switch_bus`): a
-    /// bus saved at volume 0 sounds once the script writes its fader.
-    #[test]
-    fn script_bus_volume_writes_reach_the_dynamic_bus_fader() {
-        use sampler_ir as ir;
-        let mut instrument = ir::Instrument::default();
-        instrument.groups.push(ir::Group::default());
-        instrument.assets.push(ir::Asset { residency: Default::default(), location: ir::AssetLocation::Path("probe".into()), encoding: ir::Encoding::Wav, root_key: None, loops: vec![] });
-        let mut zone = ir::Zone::new(ir::AssetRef(0));
-        zone.keys = ir::KeyRange { low: 60, high: 60 };
-        zone.group = Some(ir::GroupRef(0));
-        zone.velocity = ir::VelocityResponse::None;
-        instrument.zones.push(zone);
-        let (notes, _) = super::instrument_buses(&mut instrument, &[],
-            &[super::BusPlan { index: 0, volume: 0., pan: 0., invert: false, swap: false, groups: vec![ir::GroupRef(0)] }],
-            true, &mut |_| Err("unused".into()));
-        assert!(notes.is_empty(), "{notes:?}");
-        let pcm = sampler_core::Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
-        let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, p| Ok(p)).unwrap();
-        let limits = sampler_core::Limits::for_plan(&plan, 4, 4);
-        let mut rt = sampler_core::Runtime::new(plan, limits).unwrap();
-        rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
-        let mut out = [[0.0; 2]; 16];
-        rt.render(&mut out).unwrap();
-        assert_eq!(out[8], [0., 0.], "saved volume 0 mutes the bus");
-        let address = sampler_core::EngineParameterAddress {
-            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_VOLUME").unwrap(),
-            group: -1, slot: -1, generic: 1000,
-        };
-        rt.set_engine_parameter(address, 629_961).expect("bus fader write is bound");
-        assert_eq!(rt.engine_parameter(address).unwrap(), 629_961, "read back through the same law");
-        let mut ramp = vec![[0.0; 2]; 1024]; // past the slot's 10 ms ramp
-        rt.render(&mut ramp).unwrap();
-        assert!((ramp[1023][0] - 0.5).abs() < 1e-3, "0 dB fader passes the voice: {:?}", ramp[1023]);
-    }
-
-    #[test]
-    fn convolution_auto_gain_sums_energy_in_f32() {
-        let recipe = super::Convolution {
-            decimation: 1., predelay_ms: 0., early: [1., 20., 20_000.],
-            late: [1., 20., 20_000.], xpoint: 0.5,
-            flags: [false, true, false, false, false],
-            curve_x: Vec::new(), curve_db: Vec::new(), ir_index: 0,
-        };
-        let mut frames = vec![[0.0001, 0.00005]; 10_001];
-        frames[0] = [1., 0.5];
-        let impulse = super::restore_impulse(&recipe, (44_100, frames)).unwrap();
-        // The wrapper's f32 sum (0x140ab6740) of 1 + 10000·1e-8 stays 1.0.
-        assert_eq!(impulse.left[0].to_bits(), 0x3f3504f3);
-        assert_eq!(impulse.right[0], impulse.left[0] * 0.5);
-    }
-
-    use ni_file::kontakt::Chunk;
-
-    fn legacy_eq_slot(kind: i32) -> super::Slot {
-        let mut public = [kind.to_le_bytes(); 2].concat();
-        for values in [[300f32, 1., 0.], [1000., 1.5, 0.], [6000., 2., 0.]]
-            .into_iter()
-            .take((kind - 21) as usize)
-        {
-            for value in values {
-                public.extend(value.to_le_bytes());
-            }
-        }
-        let mut fx = slot(0x18, public, 1.);
-        fx.slot = 5;
-        fx
-    }
-
-    /// Filter record v0x95 repeats the EQ kind five times before the bands.
-    #[test]
-    fn later_eq_records_repeat_the_kind() {
-        let mut public = [23i32.to_le_bytes(); 5].concat();
-        for value in [632f32, 0.5, 3., 2000., 1., -2.] {
-            public.extend(value.to_le_bytes());
-        }
-        let mut fx = slot(0x18, public, 1.);
-        fx.version = 0x95;
-        assert!(matches!(fx.params(), Some(Params::Eq { bands }) if bands == vec![[632., 0.5, 3.], [2000., 1., -2.]]));
-    }
-
-    /// The three KONTAKTFX record layouts decode to the core's knobs in native order.
-    #[test]
-    fn kontaktfx_filter_records_reach_their_cores() {
-        use sampler_ir::fx::filter::{KontaktFx, Variant};
-        let record = |kind: i32, head: &[u8], tail: usize, knobs: &[f32]| {
-            let mut public = head.to_vec();
-            public.extend(knobs.iter().flat_map(|v| v.to_le_bytes()));
-            public.extend((0..tail).flat_map(|_| kind.to_le_bytes()));
-            slot(0x18, public, 1.)
-        };
-        let k = |kind: i32, n: usize| (0..n).flat_map(|_| kind.to_le_bytes()).collect::<Vec<u8>>();
-        let simple = [k(120, 1), vec![1], k(120, 4)].concat();
-        let monark = [k(141, 2), 2i32.to_le_bytes().to_vec()].concat();
-        for (fx, expected) in [
-            (record(120, &simple, 0, &[0.7, 0.3]), KontaktFx::SimpleLpHp { lp: 0.7, hp: 0.3 }),
-            (record(130, &k(130, 3), 2, &[0.5, 0.25, 0.75, 0.125, 0.0]), KontaktFx::DualSkf([0.25, 0.125, 0.5, 0.75, 0.5])),
-            (
-                record(141, &monark, 3, &[0.5, 0.25, 2.5, 1.0, 0.0]),
-                KontaktFx::Monark { mode: 1, variant: 2, knobs: [0.5, 0.25, 0.5, 0.5, 1.0] },
-            ),
-        ] {
-            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
-            assert!(
-                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::FilterBank(c) if c.variant == Variant::Kontakt(expected))),
-                "{expected:?}: {:?}",
-                built.processors
-            );
-        }
-    }
-
-    #[test]
-    fn init_only_group_eq_gain_writes_reach_static_bands() {
-        let initialized = sampler_ksp::initialize(
-            "on init\nset_engine_par($ENGINE_PAR_GAIN1, 0, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN1, 250000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN2, 1000000, 7, 5, -1)\nset_engine_par($ENGINE_PAR_GAIN3, 750000, 7, 5, -1)\nend on",
-            sampler_ksp::Limits::LIBRARY,
-            &Default::default(),
-        ).unwrap();
-        assert!(!initialized.writes_effect_slots());
-        let writes = initialized.engine_pars();
-        for kind in 22..=24 {
-            let mut fx = legacy_eq_slot(kind);
-            let saved = fx.public.clone();
-            apply_writes(std::slice::from_mut(&mut fx), &writes, 7, -1);
-            let Some(Params::Eq { bands }) = fx.params() else {
-                panic!("legacy EQ record must still decode")
-            };
-            for (band, values) in bands.iter().enumerate() {
-                assert_eq!(values[2], [-9., 18., 9.][band]);
-                let at = 8 + band * 12;
-                assert_eq!(&fx.public[at..at + 8], &saved[at..at + 8]);
-            }
-            let built = chain(std::slice::from_ref(&fx), Scope::Voice);
-            let eq_bands: Vec<_> = built
-                .processors
-                .iter()
-                .filter_map(|p| match p {
-                    sampler_ir::Processor::Eq(c) => Some(c.bands()),
-                    _ => None,
-                })
-                .flatten()
-                .collect();
-            assert_eq!(eq_bands.len(), bands.len());
-            for (band, values) in eq_bands.iter().zip(&bands) {
-                assert_eq!(band.law, sampler_ir::fx::eq::Law::KontaktLegacy);
-                assert_eq!(band.gain_db, values[2]);
-                assert_eq!(band.frequency, sampler_core::KontaktLegacyEqSettings::frequency_knob(values[0]));
-            }
-            assert!(
-                built
-                    .notes
-                    .iter()
-                    .all(|n| n.3 == sampler_ir::Reason::UnknownLaw)
-            );
-        }
-    }
-
-    #[test]
-    fn init_eq_gain_writes_reject_wrong_owners_and_clamp_own_law() {
-        let mut write = sampler_ksp::EnginePar {
-            parameter: "$ENGINE_PAR_GAIN1".into(),
-            value: 1_000_000,
-            group: 7,
-            slot: 5,
-            generic: -1,
-        };
-        for (group, physical_slot, generic) in [(8, 5, -1), (7, 4, -1), (7, 5, 1), (-1, 5, 1)] {
-            let mut fx = legacy_eq_slot(22);
-            let saved = fx.public.clone();
-            (write.group, write.slot, write.generic) = (group, physical_slot, generic);
-            apply_writes(
-                std::slice::from_mut(&mut fx),
-                std::slice::from_ref(&write),
-                7,
-                -1,
-            );
-            assert_eq!(fx.public, saved);
-            // Even an exact instrument rack address must remain outside this route.
-            if group == -1 {
-                apply_writes(
-                    std::slice::from_mut(&mut fx),
-                    std::slice::from_ref(&write),
-                    group,
-                    generic,
-                );
-                assert_eq!(fx.public, saved);
-            }
-        }
-        (write.group, write.slot, write.generic) = (7, 5, -1);
-        for name in [
-            "ENGINE_PAR_GAIN2",
-            "ENGINE_PAR_GAIN3",
-            "ENGINE_PAR_GAIN4",
-            "ENGINE_PAR_GAIN01",
-        ] {
-            let mut fx = legacy_eq_slot(22);
-            let saved = fx.public.clone();
-            write.parameter = name.into();
-            apply_writes(
-                std::slice::from_mut(&mut fx),
-                std::slice::from_ref(&write),
-                7,
-                -1,
-            );
-            assert_eq!(fx.public, saved);
-        }
-        write.parameter = "ENGINE_PAR_GAIN1".into();
-        for value in [i32::MIN, i32::MAX] {
-            let mut fx = legacy_eq_slot(22);
-            write.value = value;
-            apply_writes(
-                std::slice::from_mut(&mut fx),
-                std::slice::from_ref(&write),
-                7,
-                -1,
-            );
-            assert_eq!(
-                fx.params(),
-                Some(Params::Eq {
-                    bands: vec![[300., 1., if value < 0 { -18. } else { 18. }]],
-                })
-            );
-        }
-        for variant in 0..5 {
-            let mut fx = legacy_eq_slot(22);
-            match variant {
-                0 => fx.module = 0x44,
-                1 => {
-                    fx.public.pop();
-                }
-                2 => fx.public.push(0),
-                3 => fx.public[4..8].copy_from_slice(&23i32.to_le_bytes()),
-                _ => fx.public[8..12].copy_from_slice(&f32::NAN.to_le_bytes()),
-            }
-            let saved = fx.public.clone();
-            apply_writes(
-                std::slice::from_mut(&mut fx),
-                std::slice::from_ref(&write),
-                7,
-                -1,
-            );
-            assert_eq!(fx.public, saved);
-        }
-    }
-
-    #[test]
-    fn live_eq_retains_flat_bands_and_their_physical_indices() {
-        let mut public = Vec::new();
-        for kind in [24i32, 24] {
-            public.extend(kind.to_le_bytes());
-        }
-        for values in [[300f32, 1., 0.], [1000., 1., 12.], [6000., 1., 0.]] {
-            for value in values {
-                public.extend(value.to_le_bytes());
-            }
-        }
-        let slot = super::Slot {
-            slot: 5,
-            module: 0x18,
-            version: 0x92,
-            bypass: false,
-            output_gain: 1.,
-            dry_level: 0.,
-            output_set: false,
-            public,
-        };
-        let fixed = super::chain(std::slice::from_ref(&slot), super::Scope::Voice);
-        assert_eq!(
-            fixed
-                .processors
-                .iter()
-                .map(|p| match p { sampler_ir::Processor::Eq(c) => c.bands().len(), _ => 0 })
-                .sum::<usize>(),
-            1,
-            "the static unmodulated path keeps its existing arithmetic"
-        );
-        let live = super::chain_with(
-            std::slice::from_ref(&slot),
-            super::Scope::Voice,
-            None,
-            Some((7, -1)),
-            (7, -1),
-            &[],
-        );
-        let routed = super::chain_with(
-            std::slice::from_ref(&slot),
-            super::Scope::Voice,
-            None,
-            None,
-            (7, -1),
-            &[5],
-        );
-        assert_eq!(routed.filter_slots, vec![(5, 0), (5, 1), (5, 2)]);
-        assert_eq!(
-            live.filter_slots.len(),
-            3,
-            "live EQ must retain physical band owners, including flat bands"
-        );
-        for (band, &(physical, index)) in live.filter_slots.iter().enumerate() {
-            assert_eq!(physical, 5);
-            assert!(
-                matches!(
-                    live.processors[index],
-                    sampler_ir::Processor::Eq(c) if c.count == 1
-                ),
-                "band {band} must address its actual EQ processor"
-            );
-        }
-    }
-
-    #[test]
-    fn ladder_and_daft_cutoff_routes_retain_the_authored_physical_slot() {
-        for kind in [33i32, 70, 71] {
-            let mut public = kind.to_le_bytes().to_vec();
-            if kind == 33 {
-                public.push(0);
             }
             // A modelled module that changes only its level still owns the slot's
             // Output and Bypass.
@@ -2164,11 +1013,7 @@ mod tests {
             b.out.notes.push((
                 fx.slot,
                 "effect".into(),
-                match color::unproved(fx.module)
-                    .or(timemod::unproved(fx.module))
-                    .or(dynamics::unproved(fx.module))
-                    .or(mangling::unproved(fx.module))
-                {
+                match color::unproved(fx.module).or(timemod::unproved(fx.module)) {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                     None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },
@@ -2194,6 +1039,8 @@ pub(crate) mod eq;
 pub(crate) mod timemod;
 pub(crate) mod space;
 pub(crate) mod color;
+pub(crate) mod mangling;
+pub(crate) mod ringmod;
 
 #[cfg(test)]
 mod test_support;
@@ -2350,121 +1197,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn legacy_filters_keep_the_authored_slot_and_their_stored_knobs() {
-        // Saved types 2 (LP1) and 3 (HP1): the cascade core takes the stored knobs.
-        for (kind, cutoff, poles, response) in [
-            (2i32, 0.5996094f32, 1, sampler_ir::fx::filter::Response::LowPass),
-            (3, 0., 1, sampler_ir::fx::filter::Response::HighPass),
-        ] {
-            let mut payload = kind.to_le_bytes().repeat(2);
-            for value in [cutoff, 0.] {
-                payload.extend(value.to_le_bytes());
-            }
-            for scope in [Scope::Voice, Scope::Bus] {
-                let mut saved = slot(0x18, payload.clone(), 1.);
-                saved.slot = 5;
-                let out = chain(&[saved], scope);
-                assert!(
-                    !out.notes.iter().any(|(_, _, _, r)| *r == sampler_ir::Reason::NotModeled),
-                    "{kind}: {:?}",
-                    out.notes
-                );
-                assert_eq!(out.filter_slots, [(5, 0)]);
-                let sampler_ir::Processor::FilterBank(c) = out.processors[0] else {
-                    panic!("missing filter")
-                };
-                assert_eq!(c.topology, sampler_ir::fx::filter::Topology::Cascade);
-                assert_eq!((c.response, c.poles), (response, poles));
-                assert_eq!(c.cutoff, f64::from(cutoff));
-            }
-        }
-        let sampler_ir::Processor::FilterBank(c) = filter(2, 0.4, 0.7, &[]).unwrap().0[0] else {
-            panic!("missing filter")
-        };
-        assert_eq!((c.cutoff, c.resonance), (f64::from(0.4f32), f64::from(0.7f32)));
-    }
-
-    #[test]
-    fn sv_filters_are_native_cascade_classes() {
-        use sampler_ir::fx::filter::{Topology, Variant};
-        let sampler_ir::Processor::FilterBank(c) = filter(52, 0.293, 0.0, &[]).unwrap().0[0] else {
-            panic!()
-        };
-        assert_eq!((c.topology, c.variant, c.cutoff as f32), (Topology::Cascade, Variant::Sv, 0.293));
-        let sampler_ir::Processor::FilterBank(c) = filter(65, 0.5, 0.5, &[0.3]).unwrap().0[0] else {
-            panic!()
-        };
-        assert_eq!(c.variant, Variant::MultiSv { mode: 2, bandwidth: 0.3 });
-        // Legacy LP4 is a cascade-core class; type 1 is not a filter type.
-        assert!(filter(8, 0.5, 0.5, &[]).is_ok());
-        assert!(filter(1, 0.5, 0.5, &[]).is_err());
-    }
-
     use super::*;
 
-    fn slot(module: u16, public: Vec<u8>, gain: f32) -> Slot {
-        Slot {
-            slot: 0,
-            module,
-            version: 0x50,
-            bypass: false,
-            output_gain: gain,
-            dry_level: 1.0,
-            output_set: true,
-            public,
-        }
-    }
-
     // Owned wire fixture: the wrapper's internal enum deliberately differs from the child ID.
-    fn effect_fixture(module: u16, version: u16, public: &[u8]) -> BParamArrayBParFX8 {
-        mod wire {
-            include!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/support/chunks.rs"
-            ));
-        }
-        let mut state = 20u32.to_le_bytes().to_vec();
-        state.extend([0; 6]);
-        state.extend(1f32.to_le_bytes());
-        state.extend(0f32.to_le_bytes());
-        state.extend((-1i32).to_le_bytes());
-        let child = wire::chunk(module, &wire::object(version, &[], public, &[]));
-        let wrapper = wire::object(0x50, &state, &[], &child);
-        let mut array = vec![0];
-        array.extend(0x13u16.to_le_bytes());
-        array.extend(8u32.to_le_bytes());
-        for index in 0..8 {
-            array.push(u8::from(index == 5));
-            if index == 5 {
-                array.extend(wire::chunk(0x25, &wrapper));
-            }
-        }
-        BParamArrayBParFX8::try_from(&Chunk {
-            id: RACK,
-            data: array,
-        })
-        .unwrap()
-    }
-
     // Authored independently of the decoder schema: native Raum reader
     // 0x140ac5cc0, v0x10, serializes I + 12F + 2B + 3F + B (67 bytes).
-    fn raum_payload() -> Vec<u8> {
-        // Kontakt 8.13.1 FUN_140ac5cc0 validates the leading u32 as an enum 0..=2.
-        let mut bytes = 2i32.to_le_bytes().to_vec();
-        bytes.extend(
-            [
-                0.125f32, 0.25, 0.5, 1., 2., 4., 8., 16., 32., 64., 128., 256.,
-            ]
-            .into_iter()
-            .flat_map(f32::to_le_bytes),
-        );
-        bytes.extend([0xa5, 0x5a]);
-        bytes.extend([-0.5f32, -1., -2.].into_iter().flat_map(f32::to_le_bytes));
-        bytes.push(0xff);
-        bytes
-    }
-
     /// Cosmic (type 2): the same fields land on the core controls, and the
     /// chain bank is built (no 'not built' note, no error).
     #[test]
@@ -2482,25 +1219,6 @@ mod tests {
         let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
         assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum && n.raum.is_some_and(|r| r[9] == 1.0)))), "{:?}", out.notes);
         assert!(out.notes.iter().all(|note| !format!("{note:?}").contains("not built")), "{:?}", out.notes);
-    }
-
-    /// Airy (type 1): fields land on core controls (apply `0x140abb190`);
-    /// a 40 ms predelay becomes `√((40·0.0125))/2`.
-    #[test]
-    fn raum_airy_maps_fields_to_core_controls() {
-        let mut bytes = 1i32.to_le_bytes().to_vec();
-        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
-        bytes.extend([1, 0]);
-        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
-        bytes.push(0);
-        let array = effect_fixture(0x65, 0x10, &bytes);
-        let slots = rack(&array, |_, error| panic!("{error}"));
-        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
-        assert_eq!(core[9], 0.5);
-        assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
-        assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
-        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
-        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
     }
 
     #[test]
@@ -2687,6 +1405,9 @@ mod tests {
         assert!(out.notes.iter().any(|(_, feature, value, reason)| {
             feature == "effect" && *reason == sampler_ir::Reason::NotModeled && value.contains("Supercharger GT")
         }));
+    }
+
+    #[test]
     fn mangling_modules_are_named_and_reported_with_their_reason() {
         for (module, name) in [(0x71, "Beat Masher"), (0x73, "Beat Slicer"), (0x75, "Transpose Stretch")] {
             let out = chain(&[slot(module, vec![0; 16], 1.0)], Scope::Voice);
@@ -2957,99 +1678,6 @@ mod tests {
     }
 
     #[test]
-    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_applies() {
-        let modeller = |spread: f32, pan: f32| {
-            let mut bytes = spread.to_le_bytes().to_vec();
-            bytes.extend(pan.to_le_bytes());
-            bytes.push(0);
-            match chain(&[slot(0x1f, bytes, 1.0)], Scope::Voice)
-                .processors
-                .as_slice()
-            {
-                [
-                    sampler_ir::Processor::Color(config),
-                ] => {
-                    let stereo = config.stereo.unwrap();
-                    assert!(!stereo.pseudo);
-                    assert_eq!(stereo.width, (f64::from(spread).clamp(-1.0, 1.0) + 1.0) * 0.5);
-                    assert_eq!(stereo.pan, f64::from(pan));
-                }
-                other => panic!("{other:?}"),
-            }
-        };
-        // The width/pan fields reach the kernel; its measured laws (KONTAKT_REFERENCE.md
-        // s.20) are tested in sampler-core's color::stereo.
-        modeller(1.0, 0.0);
-        modeller(1.5, 0.0);
-        modeller(-0.5, 0.0);
-        modeller(0.0, -0.5);
-        // An Inverter that changes nothing still applies its Output (Una's tone
-        // groups store +6 dB against -6 dB on their instrument bus).
-        let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
-        assert_eq!(
-            inverter,
-            vec![sampler_ir::Processor::StereoMatrix([
-                [2.0, 0.0],
-                [0.0, 2.0]
-            ])]
-        );
-    }
-
-    #[test]
-    fn classic_compressor_slot_is_the_native_classic_law_with_its_link_flag() {
-        let mut bytes = Vec::new();
-        for x in [0.0f32, -18.0, 0.25, 10.0, 120.0] {
-            bytes.extend(x.to_le_bytes());
-        }
-        bytes.push(1);
-        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
-            panic!("{:?}", built.processors)
-        };
-        use sampler_ir::fx::dynamics::{Law, Link, Native};
-        assert_eq!(c.law, Law::KontaktClassic(Native { threshold_db: -18.0, ratio: 0.25 }));
-        assert_eq!(c.link, Link::Mean);
-        assert_eq!(c.attack.seconds(), 0.01);
-        assert_eq!(c.release.seconds(), 0.12);
-        assert!(built.notes.is_empty(), "{:?}", built.notes);
-    }
-
-    #[test]
-    fn pro_compressor_is_the_native_pro_law_and_always_max_linked() {
-        let mut bytes = 2i32.to_le_bytes().to_vec();
-        for x in [-18.0f32, 0.25, 10.0, 120.0] {
-            bytes.extend(x.to_le_bytes());
-        }
-        bytes.push(1);
-        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        let [sampler_ir::Processor::Dynamics(c), ..] = built.processors[..] else {
-            panic!("{:?}", built.processors)
-        };
-        use sampler_ir::fx::dynamics::{Law, Link};
-        assert!(matches!(c.law, Law::KontaktPro(_)));
-        assert_eq!(c.link, Link::Max);
-        assert!(built.notes.is_empty(), "{:?}", built.notes);
-    }
-
-    #[test]
-    fn ladder_records_with_flag_bytes_parse_to_their_cutoff() {
-        // Conflux (v0x92): kind, flag, kind, then leading, cutoff, resonance.
-        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind, floats.
-        let k = 33i32.to_le_bytes();
-        let floats: Vec<u8> = [0.0f32, 0.4, 0.25]
-            .iter()
-            .flat_map(|x| x.to_le_bytes())
-            .collect();
-        for layout in [&[&k[..], &[0], &k][..], &[&k, &[0], &k, &k, &k, &[0], &k]] {
-            let mut bytes = layout.concat();
-            bytes.extend(&floats);
-            let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
-            let note = &built.notes[1].2;
-            assert_eq!(*note, "33 cutoff 0.4 resonance 0.25", "{:?}", built.notes);
-        }
-    }
-
-    #[test]
     fn ladder_first_flag_byte_selects_high_quality() {
         // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind floats. The first flag is HQ.
         let k = 33i32.to_le_bytes();
@@ -3066,25 +1694,6 @@ mod tests {
                 built.notes
             );
         }
-    }
-
-    #[test]
-    fn daft_filter_slot_keeps_its_normalized_controls() {
-        let mut bytes = Vec::new();
-        for _ in 0..2 {
-            bytes.extend(71i32.to_le_bytes());
-        }
-        for x in [0.25f32, 0.5, 0.75] {
-            bytes.extend(x.to_le_bytes());
-        }
-        let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
-        let [sampler_ir::Processor::Daft(d), ..] = built.processors[..] else {
-            panic!("{:?} {:?}", built.processors, built.notes)
-        };
-        assert_eq!(
-            (d.gain, d.cutoff, d.resonance, d.highpass),
-            (0.25, 0.5, 0.75, true)
-        );
     }
 
     #[test]
@@ -3156,230 +1765,35 @@ mod tests {
         );
     }
 
+
+    /// Stereo Tune and Surround Panner have no proved law: each must surface a
+    /// named diagnostic and pass audio through, never a silent or invented DSP.
     #[test]
-    fn galois_reverb_room_type_is_a_native_u32_enum() {
-        // Kontakt 8.13.1 FUN_140d019f0 reads a u32 room type before nine floats.
-        // Hall (1) used to decode as the f32 1.4e-45 and play as a room.
-        let mut public = 1u32.to_le_bytes().to_vec();
-        for x in [0.25f32, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
-            public.extend(x.to_le_bytes());
+    fn unproved_spatial_modules_are_named_and_pass_through() {
+        let mut bytes = Vec::new();
+        for v in [0.1f32, 0.2, 0.3, 0.4] { bytes.extend(v.to_le_bytes()); }
+        for (module, name) in [(0x70u16, "Stereo Tune"), (0x1d, "Surround Panner")] {
+            let mut fx = slot(module, bytes.clone(), 1.0);
+            fx.version = if module == 0x1d { 0x70 } else { 0x10 };
+            let built = chain(&[fx], Scope::Voice);
+            assert!(built.processors.is_empty(), "{name} must not invent DSP: {:?}", built.processors);
+            assert!(built.notes.iter().any(|(_, _, text, reason)| text.contains(name) && *reason == sampler_ir::Reason::NotModeled), "{name}: {:?}", built.notes);
         }
-        let mut hall = slot(0x59, public, 1.0);
-        hall.version = 0x10;
-        let Some(Params::Reverb(v)) = hall.params() else { panic!("hall reverb decodes") };
-        assert_eq!(v[0], 1.0);
-        assert_eq!(v[1], 0.25);
-        let mut notes = Vec::new();
-        let core = space::galois(&v, &mut notes).network.unwrap().galois.unwrap();
-        assert!(core.hall, "type 1 runs the Hall core");
-        hall.public[..4].copy_from_slice(&2u32.to_le_bytes());
-        assert!(hall.params().is_none(), "Kontakt throws on room type 2");
     }
 
+    /// Native bus amplifier order: swap, then invert, then the balance. [0.25, -0.5]
+    /// swaps to [-0.5, 0.25], inverts to [0.5, -0.25], then pan +0.5 halves the left.
     #[test]
-    fn send_rack_reverb_becomes_a_send_bus_fed_by_send_levels() {
+    fn instrument_bus_swap_and_invert_run_before_the_balance() {
         use sampler_ir as ir;
-        let mut levels = 2u32.to_le_bytes().to_vec();
-        levels.extend([0.5f32, 1.0].iter().flat_map(|x| x.to_le_bytes()));
-        levels.extend(0u32.to_le_bytes());
-        let mut reverb = Vec::new();
-        for x in [0.0f32, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
-            reverb.extend(x.to_le_bytes());
-        }
-        let mut instrument = ir::Instrument {
-            groups: vec![ir::Group {
-                muted: false,
-                wavetable: None,
-                time_stretch: None,
-                start: Vec::new(),
-                name: "g".into(),
-                gain: ir::Gain::UNITY,
-                pan: ir::Pan::default(),
-                tune: ir::Pitch::Semitones(0.0),
-                chain: None,
-                output: ir::Output::Master,
-                voice_limit: None,
-                source_voice_limit: None,
-                monophonic_release: false,
-                sends: Vec::new(),
-                tap: None,
-            }],
-            ..Default::default()
-        };
-        let racks = vec![
-            (
-                "instrument insert".to_string(),
-                vec![slot(0x17, levels, 1.0)],
-            ),
-            ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
-        ];
-        let report = instrument_buses(&mut instrument, &racks, &[], false, &mut |_| {
-            Err("none".into())
-        });
-        assert_eq!(instrument.buses.len(), 2, "{report:?}");
-        assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
-        let feed = &instrument.buses[0].sends[0];
-        assert_eq!(feed.to, ir::Output::Bus(ir::BusRef(1)));
-        assert_eq!(feed.gain, ir::Gain::Linear(0.5));
-        let chain = &instrument.chains[instrument.buses[1].chain.unwrap().0];
-        assert!(matches!(
-            chain.pre_amplitude[..],
-            [ir::Processor::Space(_)]
-        ));
-        instrument.validate().unwrap();
-        // A physical return at slot 3 remains addressable even when the
-        // instrument level is zero; a group tap can still feed that return.
-        let mut sparse = ir::Instrument::default();
-        let mut return_slot = slot(0x59, racks[1].1[0].public.clone(), 1.0);
-        return_slot.slot = 3;
-        let mut zero = 4u32.to_le_bytes().to_vec();
-        zero.extend([0.0f32; 4].iter().flat_map(|x| x.to_le_bytes()));
-        zero.extend(0u32.to_le_bytes());
-        let (_, returns) = instrument_buses(
-            &mut sparse,
-            &[
-                ("instrument insert".into(), vec![slot(0x17, zero, 1.0)]),
-                ("instrument send".into(), vec![return_slot]),
-            ],
-            &[],
-            false,
-            &mut |_| Err("none".into()),
-        );
-        assert_eq!(returns, vec![(3, ir::BusRef(1))]);
-        assert_eq!(sparse.buses[0].sends[0].gain, ir::Gain::Linear(0.0));
-        // Nothing to do: no buses.
-        let mut plain = ir::Instrument::default();
-        instrument_buses(&mut plain, &[], &[], false, &mut |_| Err("none".into()));
-        assert!(plain.buses.is_empty());
-        // A routed bus at half volume owns its groups' output; an unrouted one
-        // is not built.
-        let mut routed = instrument.clone();
-        routed.buses.clear();
-        routed.chains.clear();
-        let plans = [
-            BusPlan {
-                index: 0,
-                volume: 0.5,
-                pan: 0.0,
-                invert: false,
-                swap: false,
-                groups: vec![ir::GroupRef(0)],
-            },
-            BusPlan {
-                index: 1,
-                volume: 0.5,
-                pan: 0.0,
-                invert: false,
-                swap: false,
-                groups: Vec::new(),
-            },
-        ];
-        instrument_buses(&mut routed, &[], &plans, false, &mut |_| Err("none".into()));
-        assert_eq!(routed.buses.len(), 1);
-        assert_eq!(routed.buses[0].gain, ir::Gain::Linear(0.5));
-        assert_eq!(routed.buses[0].output, ir::Output::Master);
-        assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
-        routed.validate().unwrap();
-    }
-
-    #[test]
-    fn voice_send_levels_are_admitted_on_both_sides_of_the_amplifier() {
-        let mut levels = 1u32.to_le_bytes().to_vec();
-        levels.extend(0.5f32.to_le_bytes());
-        levels.extend(0u32.to_le_bytes());
-        let mut before = slot(0x17, levels.clone(), 1.0);
-        before.slot = 2;
-        let mut after = slot(0x17, levels, 1.0);
-        after.slot = 6;
-        let (chain, boundary) = voice_chain(&[before, after], 4, None, 0, &[]);
-        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
-        assert_eq!(boundary, 0);
-        assert_eq!(chain.send_taps.len(), 2);
-        assert_eq!(chain.send_taps[0].slot, 2);
-        assert_eq!(
-            chain.send_taps[0].position,
-            sampler_ir::VoiceSendPosition::BeforeAmplitude(0)
-        );
-        assert_eq!(chain.send_taps[1].slot, 6);
-        assert_eq!(
-            chain.send_taps[1].position,
-            sampler_ir::VoiceSendPosition::AfterAmplitude(0)
-        );
-    }
-
-    #[test]
-    fn instrument_send_tap_precedes_later_inserts_on_the_summed_bus() {
-        use sampler_ir as ir;
-        let mut before = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
-        before.dry_level = 0.0;
-        let mut levels = 1u32.to_le_bytes().to_vec();
-        levels.extend(0.5f32.to_le_bytes());
-        levels.extend(0u32.to_le_bytes());
-        let mut tap = slot(0x17, levels, 1.0);
-        tap.slot = 2;
-        let mut after = slot(0x13, 3.0f32.to_le_bytes().to_vec(), 1.0);
-        after.slot = 3;
-        after.dry_level = 0.0;
-        let mut ir = ir::Instrument::default();
-        instrument_buses(
-            &mut ir,
-            &[
-                ("instrument insert".into(), vec![before, tap, after]),
-                (
-                    "instrument send".into(),
-                    vec![slot(0x13, 0.5f32.to_le_bytes().to_vec(), 1.0)],
-                ),
-            ],
-            &[],
-            false,
-            &mut |_| Err("none".into()),
-        );
-        assert_eq!(ir.buses.len(), 3);
-        assert_eq!(ir.buses[0].output, ir::Output::Bus(ir::BusRef(2)));
-        assert_eq!(ir.buses[0].sends[0].to, ir::Output::Bus(ir::BusRef(1)));
-        assert_eq!(ir.buses[0].sends[0].gain, ir::Gain::Linear(0.5));
-        for (bus, gain) in [(0, 2.0), (2, 3.0)] {
-            let stages = &ir.chains[ir.buses[bus].chain.unwrap().0].pre_amplitude;
-            assert!(
-                matches!(stages[..], [ir::Processor::Color(c)] if c.gainer.is_some_and(|x| x.gain == ir::Gain::Linear(gain) && x.dry == 0.0))
-            );
-        }
-        ir.validate().unwrap();
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        let (notes, _) = super::instrument_buses(&mut instrument, &[],
+            &[super::BusPlan { index: 0, volume: 1., pan: 0.5, invert: true, swap: true,
+                groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
+        assert!(notes.is_empty());
+        let chain = instrument.buses[0].chain.unwrap();
+        let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(), 120., &[[0.25, -0.5]]);
+        assert_eq!(output[0], [0.25, -0.25]);
     }
 }
-
-/// Rebuild an impulse with the same shaping path; cache metadata carries no audio.
-pub(crate) fn restore_impulse(
-    c: &Convolution,
-    decoded: Decoded,
-) -> Result<sampler_ir::Impulse, String> {
-    let mut store = Vec::new();
-    let mut decoded = Some(decoded);
-    let mut load = |_| {
-        decoded
-            .take()
-            .ok_or_else(|| "impulse already consumed".to_owned())
-    };
-    space::convolution(
-        c,
-        ImpulseRequest { index: c.ir_index, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } },
-        &mut Impulses {
-            store: &mut store,
-            load: &mut load,
-            recipes: None,
-        },
-        &mut Vec::new(),
-    )?;
-    store.pop().ok_or_else(|| "missing shaped impulse".into())
-}
-
-
-// Universal effect families (wave 4): each maps native effects onto sampler_ir::fx.
-pub(crate) mod dynamics;
-pub(crate) mod filter;
-pub(crate) mod eq;
-pub(crate) mod timemod;
-pub(crate) mod space;
-pub(crate) mod color;
-pub(crate) mod mangling;
-pub(crate) mod ringmod;

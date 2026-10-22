@@ -29,6 +29,9 @@ pub(crate) enum Unit {
     Twin(TwinDelay),
     Psyche(PsycheDelay),
     Replika(Replika),
+    /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
+    /// gate (flag), mix (f32).
+    WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
 }
 
 /// Kontakt Replika Delay saved controls, v0x12 (reader `0x140d02250`): stream
@@ -68,9 +71,6 @@ pub(crate) struct Replika {
     pub ducking_release: f32,
     pub ducking_amount: f32,
     pub pingpong_flip: bool,
-    /// Wow / Flutter v0x10: wow, flutter, scrape, speed, stereo, age, saturation (f32),
-    /// gate (flag), mix (f32).
-    WowFlutter { fields: [f32; 7], gate: bool, mix: f32 },
 }
 
 /// Choral voice tables (0x14193cd70), f32 bits: G0 delay scale, G1 rate scale,
@@ -868,6 +868,24 @@ mod tests {
             assert!((actual[1] + expected * 0.5).abs() < 2e-7);
         }
     }
+
+    /// Reader 0x140ac65f0: seven floats, the gate flag, then the mix.
+    #[test]
+    fn wow_flutter_reads_its_stream_and_maps_generic_law() {
+        let mut public = Vec::new();
+        for f in [0.3f32, 0.2, 0.1, 0.5, 0.4, 0., 0.] {
+            public.extend(f.to_le_bytes());
+        }
+        public.push(0);
+        public.extend(0.8f32.to_le_bytes());
+        let built = chain(&[Slot { public, ..slot(0x6a, 0x10, &[]) }], Scope::Voice);
+        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
+        let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
+        assert_eq!((w.wow, w.flutter, w.speed, w.stereo), (0.3, 0.2, 0.5, 0.4));
+        assert!((config.wet - 0.8).abs() < 1e-6);
+        // Scrape is set, so it is reported as omitted; the generic pitch law is always reported.
+        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLawOmitted && n.1.contains("Scrape")), "{:?}", built.notes);
+    }
 }
 
 /// Modulated delay and phaser units (`Params::TimeMod`).
@@ -903,21 +921,5 @@ pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff:
     } else {
         notes.push(("Phaser filter parameters".into(), format!("{knobs:?}"), Reason::InvalidValue));
         false
-    /// Reader 0x140ac65f0: seven floats, the gate flag, then the mix.
-    #[test]
-    fn wow_flutter_reads_its_stream_and_maps_generic_law() {
-        let mut public = Vec::new();
-        for f in [0.3f32, 0.2, 0.1, 0.5, 0.4, 0., 0.] {
-            public.extend(f.to_le_bytes());
-        }
-        public.push(0);
-        public.extend(0.8f32.to_le_bytes());
-        let built = chain(&[Slot { public, ..slot(0x6a, 0x10, &[]) }], Scope::Voice);
-        let sampler_ir::Processor::TimeMod(config) = built.processors[0] else { panic!("{:?}", built.notes) };
-        let sampler_ir::fx::timemod::Native::WowFlutter(w) = config.line.unwrap().native else { panic!() };
-        assert_eq!((w.wow, w.flutter, w.speed, w.stereo), (0.3, 0.2, 0.5, 0.4));
-        assert!((config.wet - 0.8).abs() < 1e-6);
-        // Scrape is set, so it is reported as omitted; the generic pitch law is always reported.
-        assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLawOmitted && n.1.contains("Scrape")), "{:?}", built.notes);
     }
 }
