@@ -654,20 +654,46 @@ Probe: `tools/re/surround_record_kemu.py` (reader on a crafted record, then the 
 one-at-a-time sweep matches the table above exactly in the object fields (`scale 0.9` at SIZE 0.2, `exp 0.4`
 at DIVERGENCE 0.2, offsets/angles as listed). Fixture: `crates/sampler-core/src/dsp/surround_record_native_vectors.json`.
 
-Findings that block lowering:
-- **Main-output gain differs by pi/2 after the apply.** The base record (SIZE 0.5, DIVERGENCE 0.5, offsets 0,
-  LFE 0 dB, mode 0) gives native `0.035459` at sample 1 where the direct-write path (no setter, the same
-  Rust-verified state as `surround_panner_driver_native_vectors.json`) gives `0.022574`. Ratio `pi/2`
-  exactly. The setter path also depends on the LFE dB (-60 dB: 0.0128, -200 dB: 0.0046) and on the rate
-  field `+0x7b4` (48 kHz base 0.0355, 47999 Hz 0.0128, 44.1 kHz 0.0046). So the LFE sub-object (`+0x7a0`
-  BFilter4Pole, which the Rust model does not carry) is in the main path after the apply. This is the first
-  thing to model; it also answers the `1/1800` rate question, which is therefore not separable yet.
-- `+0x194` (p6) enters the gain law through `2 / rate * p6 * pi/2`. Not swept with a non-zero rate yet.
+Findings (first pass; corrected in Pass 11):
+- **"Main-output gain differs by pi/2" was a harness artefact, not a missing sub-object.** The apply calls
+  slot 25 (`0x140abd780`, `mov [rcx+0x1a4], xmm1`) with the output gain in `xmm1`. The native caller loads it
+  from its own state object just before (`movss xmm1,[rdi+0x10]` at `0x1409620d2`). The harness passed no
+  float there, so `xmm1` held whatever the reader had left (pi/2 at base, and rate/LFE-dependent values in
+  the other cases). With the state gain passed as 1.0 (`apply(..., out_gain=1.0)`), the setter path equals the
+  direct-write path and the Rust model, block for block at 1e-5 across every fixture case.
+- Whole-object diff (direct-write A vs setter B, `0x2670` bytes): besides the mapped fields the setter writes
+  the speaker copy `+0x1c0..`, the source copy `+0x284..`, the counts, `+0xc04`, `+0xc8c`, `+0x2498`, `+0x263c`,
+  `+0x2638`, `+0x2640`, `+0x380..+0x38c` and `+0x350..+0x35c` (the clamp helper `0x140abd6f0`), `+0x1a4`
+  (slot 25), `+0x9a4` and `+0xba8..+0xbcc`, `+0xbf8`, `+0xc00` (the LFE filter design, called through
+  `0x1408e4970`). None of the last group is needed for the stereo, LFE-free output: the fixture matches
+  without modelling them.
 - Flags `0x1a4` and `0x1a6` set to 1 make the driver raise an exception in the harness (the rebuild path
-  `140ac1dc0` with the output pool, not the DSP); `0x1a5` = 1 gives NaN. Not swept, the meaning is open.
-- Gain mode `0x1c4` and layout `0x1c8` are written to `+0x394` and `+0x398`. Their output effect is not
-  separated from the pi/2 gap yet; the ignored test covers mode 1 (mapped to `Cosine`, unconfirmed).
+  `140ac1dc0` with the output pool, not the DSP); `0x1a5` = 1 gives NaN. Not swept, the meaning is open
+  (optional, not needed for the stereo-out path).
+- Gain mode `0x1c4` and layout `0x1c8` are written to `+0x394` and `+0x398`. Mode 1 is verified (Cosine);
+  mode 2 is not measured; layout 2 had no output effect in the sweep but other layouts are unverified.
 
-Status: the record-to-Panner mapping is measured and documented. The stereo-out lowering stays NotModeled
-until the LFE sub-object state (main-path gain, rate) is modelled and the ignored test
-`record_apply_matches_native_blocks` (`sampler_core::dsp::surround_panner::native_record_tests`) passes.
+## Pass 11: stereo-out lowering (2026-10-23)
+
+Pass 10's pi/2 gap is closed (see its Findings): the record apply equals the Rust model at 1e-5 for every
+fixture case (`record_apply_matches_native_blocks`, un-ignored). The rate dependence was the same artefact:
+at 44.1, 48 and 96 kHz (`+0x7b4`, read by the setter's `p6 / rate` term) the stereo output is unchanged. The LFE
+dB only reaches LFE-routed outputs, which the stereo subset does not contain.
+
+Lowering (`sampler-kontakt/src/effects/surround.rs`): a bus-scope record with two enabled speakers, two enabled
+sources, gain mode 0 or 1 and layout 0 is a fixed 2x2 mix. `stereo_panner` maps the record with the Pass 10 table
+(`scale = 1.1 - SIZE`, `exponent = 2 * DIVERGENCE`, offsets `clamp(0.5 v)`, radius `clamp(0.5 DIST)`, angle
+`clamp(AZ)`), `sampler_core::surround_panner::Panner::gain` gives the gains, and the matrix is folded into the
+chain's `StereoMatrix` (rows: output L/R, columns: input L/R; source 0 is left, source 1 right).
+Why a static matrix is exact: the apply writes the positions once, and the native gain smoother starts each
+pair at its target, so with no moving source or live control every gain is constant over the run.
+
+Tests: `every_native_stereo_case_matches_its_block` runs every fixture case in the subset (scale, exponent, radius,
+angle and the mix against native block 0, 1e-5); `saved_stereo_record_lowers_to_the_native_block` runs the saved
+record through the bus chain.
+
+Not modelled (each stays NotModeled): flagged (disabled) speakers or sources and the LFE route; more than two
+outputs (multichannel); gain mode 2 (`Exp2`, not measured); layouts other than 0; moving sources or a scale
+change over time (the static matrix assumes a constant record); live script controls; voice and group
+inserts. No delay is modelled. Open: the crash flags `0x1a4` and `0x1a6` (rebuild path `140ac1dc0`, needs the
+output pool state) and the NaN flag `0x1a5`.
