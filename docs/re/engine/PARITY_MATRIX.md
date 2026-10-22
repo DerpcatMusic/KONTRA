@@ -164,7 +164,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | PsycheDelay | unknown | none | |
 | Replika Delay | partial | decomp | v0x12 reader; RDL_TIME (documented law) only; core setter binding read (docs/re/engine/k-delays.md), core DSP not yet read |
 | Twin Delay | unknown | none | |
-| Legacy Delay | unknown | none | |
+| Legacy Delay | partial | decomp | Kernel, setter and sync getter verified against decompile; constants read from the PE image. No native parameter vector: the oracle harness does not apply float delay parameters (docs/re/engine/k-delays.md) |
 
 ## Reverbs / Convolution (k-reverbs, k-convolution)
 

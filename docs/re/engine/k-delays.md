@@ -163,3 +163,25 @@ Not yet read: the audio functions (`FUN_141abd210`, `FUN_141acc600`,
 line read/write recurrence. The ducking, saturation, BBD and stereo laws are in
 those. Confidence: the switch structure is high; the meaning of each index is medium
 until the called functions are read.
+
+## Legacy Delay: decompile check (2026-10-22)
+
+Verified against the decompile, not measured:
+- Audio kernel `FUN_140aa1130` (stereo branch, `0140aa0000.c`): ring L = in_L·g,
+  ring R = (1−pan)·g·in_R, then cross terms g·pan·lp_R into L and (1−pan)·g·lp_L
+  / g·pan·lp_L into R, with lp one-pole `lp += (ring[read] − lp)·c`. Matches
+  `legacy_delay` in `sampler-core/src/dsp/timemod/mod.rs`.
+- Setter case `0x43` in `FUN_1409619b0` (`0140960000.c:2570`): frames = int(time·rate·0.001), clamped to
+  0x40000 (2^18), c = 1 − damping·0.7, g = feedback·0.98. Matches `timemod/effects` mapping.
+- Sync getter `FUN_140a74bf0` (`0140a70000.c:3963`): ms = (unit·60 / tempo)·count·1000, tempo < 0.1 → 120,
+  count ≥ 1 by default (flag +0x20 set in `FUN_140a723e0`), clamp to [0, 5800].
+
+Constants read from the Kontakt 8 PE image (`.data`, not decompilation): 0.1, 60, 120,
+1000, 0.001, 0.98, 0.7 (`144714xxx` / `144f38xxx` addresses). Verified.
+
+Not verified: a native parameter vector. The Wine oracle capture with five Legacy Delay
+steps (`legacy1.npz`) returned identical echoes in every step, including the 500 ms
+preset when DL_TIME was set to 140 ms. The harness does not change float delay
+parameters, so no parameter vector can be taken with it yet.
+
+Matrix status: partial / decomp.
