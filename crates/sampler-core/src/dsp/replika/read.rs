@@ -99,6 +99,25 @@ impl Tap {
         }
     }
 
+    /// `141aba040` with flag 0 (and `141abaab0`, which it calls): the driver and kernel fields to zero (`K+0x00`,
+    /// `+0x08..+0x40`, `+0x48`, `+0x50`, `+0x54`) and the rates `+0x90..+0xa0` to 1. The section, the freq block and
+    /// the outputs keep their values. Not here: the deposit's history `+0x84..+0x8c` (the `Deposit` object) and the
+    /// ring clear `1407e6d80` of flag 1.
+    pub fn reset(&mut self) {
+        self.pos = 0.;
+        self.wr = 0;
+        self.frac = 0.;
+        self.delta = 0;
+        self.prev_wr = 0;
+        self.phase = 0.;
+        self.idx = 0;
+        self.x_prev = 0.;
+        self.prev_frac = 0.;
+        self.offset = 0.;
+        self.state = State::default();
+        self.rates = [1.; 3];
+    }
+
     /// `14199dcc0`: the section for frequency `f`, g = tan(f pi rate) with the kernel's damping.
     fn set_freq(&mut self, f: f32) {
         self.freq = f;
@@ -228,6 +247,67 @@ mod tests {
             for (i, want) in words(&case["ring1"]).into_iter().enumerate() {
                 close(&format!("ring[{i}]"), ring[i], f32::from_bits(want));
             }
+        }
+    }
+
+    #[test]
+    fn kernel_reset_matches_native_vectors() {
+        let path = format!(
+            "{}/../../docs/re/engine/vectors/replika-native-kernel-reset.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
+            .expect("vector json");
+        let num = |v: &Value, k: &str| v[k].as_f64().unwrap_or_else(|| panic!("field {k}"));
+        for case in doc["cases"].as_array().expect("cases") {
+            let init = &case["init"];
+            let end = &case["end"];
+            let mut t = Tap::new(
+                num(init, "pos"),
+                num(init, "wr") as i32,
+                num(init, "phase"),
+                num(init, "idx") as i32,
+                num(init, "xprev"),
+                num(init, "offset"),
+                num(init, "damp") as f32,
+                num(init, "rate") as f32,
+            );
+            t.wr = num(init, "wr") as i32;
+            t.frac = num(init, "frac");
+            t.delta = num(init, "delta") as i32;
+            t.prev_wr = num(init, "pwr") as i32;
+            t.prev_frac = num(init, "pfrac");
+            t.rates = [num(init, "rate0"), num(init, "rate1"), num(init, "rate2")];
+            t.state = State {
+                s0: num(init, "s0") as f32,
+                s1: num(init, "s1") as f32,
+            };
+            t.reset();
+            let seed = &case["seed"];
+            assert_eq!(t.pos, num(end, "pos"), "seed {seed} pos");
+            assert_eq!(t.wr as i64, num(end, "wr") as i64, "seed {seed} wr");
+            assert_eq!(t.frac, num(end, "frac"), "seed {seed} frac");
+            assert_eq!(
+                t.delta as i64,
+                num(end, "delta") as i64,
+                "seed {seed} delta"
+            );
+            assert_eq!(t.prev_wr as i64, num(end, "pwr") as i64, "seed {seed} pwr");
+            assert_eq!(t.phase, num(end, "phase"), "seed {seed} phase");
+            assert_eq!(t.idx as i64, num(end, "idx") as i64, "seed {seed} idx");
+            assert_eq!(t.x_prev, num(end, "xprev"), "seed {seed} xprev");
+            assert_eq!(t.prev_frac, num(end, "pfrac"), "seed {seed} pfrac");
+            assert_eq!(t.offset, num(end, "offset"), "seed {seed} offset");
+            assert_eq!(f64::from(t.state.s0), num(end, "s0"), "seed {seed} s0");
+            assert_eq!(f64::from(t.state.s1), num(end, "s1"), "seed {seed} s1");
+            assert_eq!(t.rates, [1.0; 3], "seed {seed} rates");
+            // Fields the reset does not touch.
+            assert_eq!(
+                f64::from(t.sec.parts().3),
+                num(end, "damp"),
+                "seed {seed} damp"
+            );
+            assert_eq!(f64::from(t.rate), num(end, "rate"), "seed {seed} rate");
         }
     }
 }
