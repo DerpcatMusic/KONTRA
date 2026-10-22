@@ -16,6 +16,7 @@ OUT_PREFIX.tsv: one row per step and channel pair with peak/bandwidth metrics an
 frequencies; OUT_PREFIX.h.npy: the LL magnitude responses in dB (rfft bins, N=16384).
 """
 import json
+import tempfile
 import os
 import subprocess
 import sys
@@ -69,6 +70,25 @@ f:close()
 """
 
 
+SCRATCH_ROOT = Path.home() / ".cache" / "kontra-oracle"
+
+
+def scratch_dir() -> Path:
+    """A fresh per-run work directory under the user's cache (never /tmp)."""
+    SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="run-", dir=SCRATCH_ROOT))
+
+
+def scaled(value) -> int:
+    """Kontakt parameter values are integers on the 0..1000000 scale (0 = minimum, 1000000 =
+    maximum). A fractional value would be truncated silently by int(), so refuse it."""
+    if isinstance(value, str):
+        return value
+    if float(value) != int(value):
+        raise ValueError(f"oracle parameter {value!r} is not an integer on the 0..1000000 scale")
+    return int(value)
+
+
 def make_lua(spec, wav_dir: Path, stimulus: Path = None, extra_lua: str = "") -> str:
     """stimulus: an existing stereo WAV to play instead of the generated impulse."""
     cmds, starts = [], [0]
@@ -80,6 +100,7 @@ def make_lua(spec, wav_dir: Path, stimulus: Path = None, extra_lua: str = "") ->
            f"  declare ~cval[{m}]", f"  declare %cstart[{len(starts) + 1}]"]
     for i, (slot, par, val) in enumerate(cmds):
         ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  ~cval[{i}] := {val if isinstance(val, str) else repr(float(val))}"]
+        ksp += [f"  %cpar[{i}] := $ENGINE_PAR_{par}", f"  %cslot[{i}] := {slot}", f"  %cval[{i}] := {scaled(val)}"]
     ksp += [f"  %cstart[{i}] := {s}" for i, s in enumerate(starts)]
     ksp += ["end on", "on controller", "  if ($CC_NUM = 20)", "    $k := %cstart[%CC[20]]",
             "    while ($k < %cstart[%CC[20] + 1])",
@@ -152,8 +173,7 @@ CHUNK = 60   # steps per Kontakt session
 
 def run(spec, prefix, first_no=1):
     steps = spec["steps"]
-    work = Path("/tmp/w3/audit")
-    work.mkdir(parents=True, exist_ok=True)
+    work = scratch_dir()
     lua, mid, wav = work / "eqrender_gen.lua", work / "eqrender.mid", prefix.with_suffix(".wav")
     lua.write_text(make_lua(spec, work))
     make_midi(len(steps) + 1, mid)
