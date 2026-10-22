@@ -190,7 +190,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Surround Panner | missing | vector | Parameter bindings measured (fx_other.tsv). Speaker matrix, pan law, LFE routing not recovered. Diagnosed as NotModeled |
 | Inverter | partial | decomp | Reader (v0x60) and audio confirmed; native render vector missing |
 | Send Levels | partial | none | Taps, levels, bypass shared; reader not found in decompile; live tap binding open |
-| Group/instrument/bus/main insert routing and send taps | partial | decomp | Bus amp order (swap, invert, fader, pan) confirmed; bus saved flag offsets and fader/pan slew open |
+| Group/instrument/bus/main insert routing and send taps | partial | decomp | Bus amp order (swap, invert, fader, pan) confirmed. Fader ramp and pan slew laws (`FUN_140824910`) ported in `sampler_core::bus_amp` with constants read from the binary; not yet wired into the bus chain. Saved bus invert/swap offsets open. No native vector |
 | Effect slot ordering and processing scopes | partial | none | Scopes and rack order modelled; per-slot scheduler not decompile-confirmed |
 
 ## Modulation sources (k-mod-envelopes, k-mod-lfo-step, k-mod-external)
