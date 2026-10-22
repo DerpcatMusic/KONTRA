@@ -164,11 +164,14 @@ fn attribute_initial_override_is_not_reloaded_by_bend_but_later_registered_pitch
         });
     }
 }
+// Step is 2^((pitch - root)/12), limited to [1/256, 256]: the same 96-semitone window as the
+// bend path. Root 31 puts the registered limit at 127 (root + 96), so u32::MAX (127.99...)
+// is the first rejected pitch. Root 69 admits every registered pitch, and root 0 silences
+// the reference by pushing the 440 Hz source above Nyquist, so neither can test rejection.
 #[test]
 fn rejected_live_registered_pitch_keeps_current_pcm_and_future_key_default(){
     for mpe in [false,true]{
-        // Root 24: the held 69 stays audible (45 above the root), while u32::MAX (about 128) is 104 above it, past the 96-semitone step 256 limit.
-        let mut actual=runtime_rooted(24);let mut reference=runtime_rooted(24);let mut receiver=Receiver::new(&actual,mpe);
+        let mut actual=runtime_rooted(31);let mut reference=runtime_rooted(31);let mut receiver=Receiver::new(&actual,mpe);
         receiver.pitch(&mut actual,60,69u32<<25);let held=receiver.on(&mut actual,60,0);reference_note(&mut reference,60,69.);
         support::without_heap(||{
             compare(&mut actual,&mut reference);let before=(actual.now(),actual.note_count(),actual.voice_count(),actual.expression(actual.expression_id(held).unwrap()).unwrap());

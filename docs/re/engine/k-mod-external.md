@@ -145,3 +145,21 @@ Unit: `k-mod-external`. Matrix rows: `docs/re/engine/PARITY_MATRIX.md`, "Modulat
 - Negative lag: `trunc(cells_samples * 0.25 + 0.5)` as a stored integer. The consumer that uses this count
   was not located. The lowering keeps negative lag unsupported.
 - Still open: shape law (`+0x..` shaper tables) and the bypass flag semantics.
+
+## RandomBipolar leads (decompile pass, 2026-10-22; no law yet)
+
+Survey impact: `external modulation from RandomBipolar` is the largest modulation gap (550 rows in
+`Conflux/Multis/Ray Line.nkm` alone, 51 instruments corpus-wide). Routes stay dropped (`UnknownLawOmitted`).
+
+- Source type 13 name and class: `0140a70000.c:3388` ("Random Bipolar"), type 12 is "Random Unipolar"
+  (`:3382`). Classification path: `FUN_140973970` (`0140970000.c:2395`), already in the code.
+- Object factory: the source-type switch in `0141a00000.c:10785-11097` allocates a 0x650-byte object for
+  type 0xc (`FUN_141a00880`, `0141a00000.c:331`) and a 0x668-byte object for type 0xd (`FUN_141a00a70`
+  call with flag `1`).
+- Caution: `0141a00000.c` mixes zmq vtables into these bodies. `FUN_141a00a70` (1012 bytes) is a generic
+  large object, not obviously a random source. Treat the type-0xd body as unattributed.
+- Type 0xc constructor stores a 32-bit seed built from two `rand()` calls (`iVar2 << 0x1f | uVar1`) at
+  object `+0x648` and sets the type byte `+0x14c = 0xc`. The MSVC `rand()` stream is the only RNG seen in
+  this path. Generator (per-voice draw or per-block), interval and cadence are not yet read.
+- Next: find the per-block consumer of the type-0xc/0xd object (the reader of `+0x648`, `+0x14c`), and check
+  whether the 0xd object differs only by a bipolar mapping. Use radare2 on one function at a time, not a re-decompile.
