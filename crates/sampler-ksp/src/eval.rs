@@ -1943,6 +1943,8 @@ impl<const TRACK: bool> Eval<'_, TRACK> {
                     )
                 }
             }
+            // Multi-script only: lowering rejects these at build time.
+            GetEngineParM | SetEngineParM => V::I(0),
             GetEngineParDispExt => {
                 let parameter = symbol_name(self.hir, self.int(args, 0)?)
                     .and_then(|name| sampler_core::engine_parameter_id(&name));

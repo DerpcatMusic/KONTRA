@@ -477,7 +477,6 @@ fn text_property_write_is_visible_to_script() {
 }
 
 #[test]
-#[ignore = "audit: engine display queries return empty text"]
 fn engine_display_query_returns_pan_text() {
     let mut rt = runtime(
         "on init declare @out end on
