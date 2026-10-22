@@ -456,3 +456,36 @@ fn every_interpolation_keeps_integer_reads_and_ring_wrap_exact() {
         }
     }
 }
+
+/// Kontakt 8 Phaser filter (type 13) responses: Wine oracle (`tools/kontakt-oracle/eqrender.py`,
+/// 48 kHz), impulse through the L channel against the bypass reference. Rows: Cutoff, Resonance,
+/// dB at 30..15000 Hz.
+#[test]
+fn phaser_filter_matches_kontakt_measurements() {
+    const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+    const KONTAKT: [(f32, f32, [f64; 10]); 8] = [
+        (0.0, 0.0, [-0.68, -2.93, -10.44, -3.35, -4.68, -8.48, -1.69, -0.24, -0.05, -0.01]),
+        (0.25, 0.0, [-0.17, -0.68, -1.97, -10.42, -0.71, -4.69, -8.39, -0.99, -0.19, -0.05]),
+        (0.5, 0.0, [-0.04, -0.16, -0.44, -1.86, -24.92, -0.92, -4.20, -4.73, -0.82, -0.21]),
+        (0.75, 0.0, [-0.01, -0.04, -0.10, -0.41, -2.78, -19.65, -1.20, -10.79, -3.87, -0.93]),
+        (1.0, 0.0, [-0.00, -0.01, -0.02, -0.10, -0.62, -2.64, -17.63, -0.02, -17.05, -4.34]),
+        (0.5, 0.5, [2.49, 1.83, 0.51, -3.46, -16.21, -0.66, -6.93, -7.95, 1.78, -0.28]),
+        (0.5, 0.9, [6.54, 3.43, -0.04, -5.73, -13.17, -2.10, -8.32, -12.74, 4.03, -0.91]),
+        (0.5, 1.0, [7.81, 3.39, -0.60, -6.35, -12.69, -2.82, -8.54, -14.13, 4.24, -1.10]),
+    ];
+    const N: usize = 16384;
+    for (cutoff, resonance, db) in KONTAKT {
+        let (out, fault) = run(Config::phaser_filter(cutoff, resonance, None), 48_000, 120., &impulse(N, [1., 1.]), 64);
+        assert!(!fault);
+        for (probe, want) in PROBES.iter().zip(db) {
+            let (mut re, mut im) = (0f64, 0f64);
+            for (n, v) in out.iter().enumerate() {
+                let phase = std::f64::consts::TAU * probe * n as f64 / 48_000.;
+                re += v[0] * phase.cos();
+                im -= v[0] * phase.sin();
+            }
+            let got = 20. * (re * re + im * im).sqrt().log10();
+            assert!((got - want).abs() < 0.1, "cutoff {cutoff} res {resonance} at {probe} Hz: {got} dB vs {want}");
+        }
+    }
+}
