@@ -198,7 +198,7 @@ pub(super) fn unproved(module: u16) -> Option<&'static str> {
         0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
         0x70 => "Stereo Tune: reader 0x140ac6120 identified (4 saved floats: Drift, Spread, Split, Mix); fields not decoded and DSP law not extracted, so the slot passes audio through unprocessed",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
-        0x78 => "Skreamer Deluxe (BParFXSkreamerDlx, IFx5B): its knobs are drive, tone, bass, mid and treble (KSP names, binary registrations), not the Tubescreamer core pot and filter fields; the mapping is not established",
+        0x78 => "Skreamer Deluxe (BParFXSkreamerDlx, IFx5B): wrapper is Stereorizer<Tubescreamer>, and the reader-to-core map is proved (apply 140abb9f0), but the stereo combine and control ramp are not decoded and no native capture exists, so the slot passes audio through unprocessed",
         // Reader 0x140ac51f0 (Fx4B) is shared with Big Fuzz, but the Chainsaw ctor, apply and
         // kernel are not extracted and KSP has no ENGINE_PAR_CHAINSAW_* names: its knobs are
         // not guessed from the Big Fuzz layout.

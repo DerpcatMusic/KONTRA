@@ -91,6 +91,58 @@ measured).
 The driver is the same length as the Chainsaw driver (both 2283 bytes); the
 two are probably one template with different cores. Not compared yet.
 
+### Skreamer Deluxe, decoded (2026-10-23, decompile cache and binary constants)
+
+Core type: the wrapper is `ModulatableDSPCoreWrapper<BEffectSkreamerDlxTraits>`
+over **`Stereorizer<Tubescreamer>`** (`vtables.tsv.gz`, wrapper rows). So the
+kernel is the Tubescreamer core already in `sampler-core/src/dsp/color/tubescreamer.rs`,
+not a new one. Its native vectors are `tables/kontakt_tubescreamer_vectors.json`.
+
+**Reader to core index (apply `140abb9f0`, decompile `0140ab0000.c:7935`).** The
+apply calls `FUN_1409a9f90(core, index, value)` on both cores (`param+0x1480`
+and `param+0x200`). Values are clamped to [0, 1] (`DAT_14470bad4` = 1; the
+mode step uses `DAT_14470bad0` = 0.5):
+
+| Reader field | Field | Core index | Knob (KSP name) |
+| --- | --- | --- | --- |
+| `+0x08` float | drive | 0 | Drive |
+| `+0x0c` float | tone | 4 | Tone |
+| `+0x10` float | bass | 1 | Bass (`pot a` in the core's own naming) |
+| `+0x14` float | mid | 2 | Mid (`pot b`) |
+| `+0x18` float | treble | 3 | Treble (`filter`) |
+| `+0x1c` int | mode | 6 = `clamp(int * 0.5, 0, 1)` | circuit `int(p6 * 3)` in the core (ints 0, 1, 2) |
+| (constant) | level | 5 = 0.5 | written once (`+0x2530` guard) |
+
+This is the same field-to-index table the removed test
+`tubescreamer_record_fields_land_on_their_core_indices` asserted
+(`[0.1, 0.3, 0.4, 0.6, 0.2, 0.5, 1.0]` for drive, pot a, pot b, filter, tone), so
+that mapping was not wrong. Only the names differed. The apply writes indices by
+number, and the index meaning comes from the core ctor. Byte `+0x20` is a flag
+copied into the wrapper byte `+0x1c0` (see the driver below).
+
+**Driver `140902480` (2283 B), what is confirmed:**
+- Pre stage `140ac28f0`, post stage `140ac21f0` (shared with Kolor and Chainsaw).
+- Two-path branch on wrapper byte `+0x1c0` (from reader `+0x20`):
+  - `+0x1c0 == 0`: stereo branch. Core `+0x1480` runs on the stereo pointer pair
+    `+0x2540` to `+0x25d0`, and core `+0x200` runs on a second pair built in
+    `+0x1280`/`+0x1300`/`+0x1380`/`+0x1400` (the L/R copies with `memmove`), then a
+    combine into `+0x25d8`.
+  - `+0x1c0 != 0`: mono branch. Only core `+0x1480` is called.
+- Each core call is vtable slot 0x98 (index 19), the same as Kolor.
+- Optional control-rate smoother `FUN_141ee2160` (fractional block split by a
+  ramp count from `+0x1874`/`+0x17d8`/`+0x17e0`) runs before each core, on the
+  flag `+0x19fc` (the input side) and `+0x77c` (the core-2 side).
+- Tail: peak-hold at `+0x2510`, and a state at `+0x2514`. When the state is 1 and
+  the `+0x2500` level is at or below `+0x2510 * DAT_1447148a0`, it moves to 2. The
+  branch that zeroes outputs (`memset`) is not yet read.
+
+**Still not decoded (so no port):** the exact stereo combine (how `+0x25d8`
+selects between core outputs), the `FUN_141ee2160` ramp, and the gate's constant
+`DAT_1447148a0`. There is no native capture and no kemu harness for the wrapper
+(`140902480` calls shared stages, so a kemu run needs them stubbed or emulated).
+Next: decode the combine and the gate, then run the driver under kemu with the
+core's seeding slot after prepare, and compare to a native capture.
+
 ## Chainsaw (`BEffectChainsaw` 0x144f15e68, wrapper 0x144f15d58)
 
 | Step | Address | Size |
