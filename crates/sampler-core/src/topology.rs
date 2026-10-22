@@ -536,7 +536,7 @@ impl Runtime {
         }
         if phase==ProcessingModulationPhase::Commit{
             if let Some(gate)=generation.prepared.processing_scopes[owner.template].modulation_gate{
-                let factor=match gate.velocity{crate::VelocityCurve::Constant=>1.,crate::VelocityCurve::Linear=>inputs.velocity,crate::VelocityCurve::Power(p)=>inputs.velocity.powf(p)};
+                let factor=match gate.velocity{crate::VelocityCurve::Constant=>1.,crate::VelocityCurve::Linear=>inputs.velocity,crate::VelocityCurve::Power(p)=>inputs.velocity.powf(p),crate::VelocityCurve::VolumeTable=>f64::from(crate::prepare::volume_table_amplitude(inputs.velocity))};
                 ramp.from.scalar_gain*=factor;ramp.to.scalar_gain*=factor;
             }
             let mut parameters=generation.dsp.modulated_parameters.claim(0);

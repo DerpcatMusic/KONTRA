@@ -1092,6 +1092,7 @@ fn lower_inputs(instrument: &ir::Instrument, rate: u32, pcm: SourceInputs, optio
                 ir::VelocityResponse::None => VelocityCurve::Constant,
                 ir::VelocityResponse::Linear => VelocityCurve::Linear,
                 ir::VelocityResponse::Power(exponent) => VelocityCurve::Power(exponent),
+                ir::VelocityResponse::VolumeTable => VelocityCurve::VolumeTable,
             })
             .collect();
         plan = plan
@@ -2051,7 +2052,7 @@ impl Lowering<'_> {
                 gates[scope]=Some(crate::ProcessingModulationGate{
                     source:*sources.get(&gate.source).ok_or_else(||core(Stage::Modulation,"scope gate source absent")(Error::InvalidInput))?,
                     route:*routes.get(&gate.route).ok_or_else(||core(Stage::Modulation,"scope gate route absent")(Error::InvalidInput))?,
-                    velocity:match gate.velocity{ir::VelocityResponse::None=>crate::VelocityCurve::Constant,ir::VelocityResponse::Linear=>crate::VelocityCurve::Linear,ir::VelocityResponse::Power(p)=>crate::VelocityCurve::Power(p)},
+                    velocity:match gate.velocity{ir::VelocityResponse::None=>crate::VelocityCurve::Constant,ir::VelocityResponse::Linear=>crate::VelocityCurve::Linear,ir::VelocityResponse::Power(p)=>crate::VelocityCurve::Power(p),ir::VelocityResponse::VolumeTable=>crate::VelocityCurve::VolumeTable},
                 });
             }
             for (identity,&source)in &sources{
