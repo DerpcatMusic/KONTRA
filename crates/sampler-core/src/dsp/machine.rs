@@ -352,6 +352,60 @@ impl Mp60Chain {
     }
 }
 
+/// MP60 resample kernel constants (`DAT_144714b70..7c` = 1.0 per lane,
+/// `DAT_144f39230..3c` = 1/6, `DAT_144f39250..5c` = 0.5; the lanes are the
+/// four window columns of `FUN_140947580`).
+#[allow(dead_code)] // MP60 resampler is unwired until the render driver is ported.
+const MP60_KERNEL_ONE: f32 = f32::from_bits(0x3f80_0000);
+#[allow(dead_code)]
+const MP60_KERNEL_SIXTH: f32 = f32::from_bits(0x3e2a_aaab);
+#[allow(dead_code)]
+const MP60_KERNEL_HALF: f32 = f32::from_bits(0x3f00_0000);
+
+/// Port of `FUN_140947580` (416 bytes, `0140940000.c`): four-point Lagrange
+/// cubic per lane over window rows `base-1..base+2`, phase accumulated per
+/// lane by `step`. `window` rows are `[f32; 4]` (one per tap, four lanes);
+/// rows outside the window read as zero. `state` = `[base, frac]` (`param_5`),
+/// `limit` = `param_6`, `count` = `param_7` (rows still to produce). Returns the
+/// number of output rows written to `out`.
+#[allow(dead_code)] // MP60 resampler is unwired until the render driver is ported.
+pub fn mp60_resample_rows(window: &[[f32; 4]], step: f32, state: &mut [i32; 2], limit: i32, count: &mut i32, out: &mut [[f32; 4]]) -> usize {
+    let row = |i: i32| usize::try_from(i).ok().and_then(|i| window.get(i)).copied().unwrap_or([0.0; 4]);
+    let one = MP60_KERNEL_ONE;
+    let sixth = MP60_KERNEL_SIXTH;
+    let half = MP60_KERNEL_HALF;
+    let mut base = [state[0]; 4];
+    let mut pos = [state[0] as f32 + state[1] as f32; 4];
+    let mut written = 0;
+    while *count > 0 && base[0] < limit && written < out.len() {
+        let [xm1, x0, x1, x2] = [row(base[0] - 1), row(base[0]), row(base[0] + 1), row(base[0] + 2)];
+        // Phase before the step, then every lane advances by `step`.
+        let mut t = [0.0f32; 4];
+        for j in 0..4 {
+            t[j] = pos[j] - base[j] as f32;
+            pos[j] += step;
+        }
+        for j in 1..4 {
+            base[j] = pos[j] as i32;
+        }
+        let mut result = [0.0f32; 4];
+        for j in 0..4 {
+            let a = t[j] + one;
+            let b = a - one;
+            let c = b - one;
+            let d = c - one;
+            result[j] = (a * x2[j] * b * c - d * xm1[j] * b * c) * sixth + (x0[j] * a * c - a * x1[j] * b) * d * half;
+        }
+        out[written] = result;
+        written += 1;
+        *count -= 1;
+        base[0] = pos[0] as i32;
+    }
+    state[0] = pos[0] as i32;
+    state[1] = (pos[0] - state[0] as f32) as i32;
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +505,25 @@ mod tests {
             chain.store(&mut slots, 0);
         }
         assert_eq!(got, want);
+    }
+
+    /// A four-point Lagrange cubic reproduces any cubic exactly, so the
+    /// kernel must return each lane's cubic at the accumulated phases.
+    #[test]
+    fn mp60_kernel_reproduces_cubics_at_the_accumulated_phase() {
+        let poly = |j: usize, k: f32| (j as f32 + 1.0) * k * k * k - 2.0 * k * k + k + j as f32;
+        let window: Vec<[f32; 4]> = (0..4).map(|r| std::array::from_fn(|j| poly(j, r as f32))).collect();
+        let mut state = [1, 0];
+        let mut count = 4;
+        let mut out = [[0.0f32; 4]; 4];
+        let written = mp60_resample_rows(&window, 0.25, &mut state, 2, &mut count, &mut out);
+        assert_eq!((written, count, state), (4, 0, [2, 0]));
+        for (i, row) in out.iter().enumerate() {
+            for j in 0..4 {
+                let want = poly(j, 1.0 + 0.25 * i as f32);
+                assert!((row[j] - want).abs() < 1e-4, "row {i} lane {j}: {} want {want}", row[j]);
+            }
+        }
     }
 
     #[test]
