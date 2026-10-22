@@ -1490,6 +1490,12 @@ impl Gen<'_, '_> {
                 self.cover(*builtin, Coverage::Native);
                 return Ok(());
             }
+            ExprKind::Builtin(Builtin::GetEngineParDispM, _) => {
+                // Native args: id, slot-or-output, generic, channel-search flag. It is legal in
+                // a single script; the slot and output-channel display paths are not modelled yet.
+                self.ignore(Builtin::GetEngineParDispM, "slot or output display is not modelled; text is empty");
+                return Ok(());
+            }
             ExprKind::Builtin(builtin, _) if e.ty == Ty::Str => {
                 self.ignore(*builtin, "text is not available at runtime; empty");
                 return Ok(());

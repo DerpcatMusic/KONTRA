@@ -215,6 +215,7 @@ builtins! {
     GetEngineParDispExt "get_engine_par_disp_ext" [I I I I I] 0 Str;
     SetEnginePar "set_engine_par" [I I I I I] 0 Int;
     GetEngineParM "get_engine_par_m" [I I I I] 0 Int;
+    GetEngineParDispM "get_engine_par_disp_m" [I I I I] 0 Str;
     SetEngineParM "set_engine_par_m" [I I I I I] 0 Int;
     GetVoiceLimit "get_voice_limit" [I] 0 Int;
     SetVoiceLimit "set_voice_limit" [I I] 0 Int;
