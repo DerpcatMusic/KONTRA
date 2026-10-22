@@ -167,6 +167,9 @@ pub(super) struct PreparedBuses {
     spaces: Box<[sampler_ir::fx::space::Config]>,
     /// The bus each space belongs to.
     space_bus: Box<[usize]>,
+    /// Every Stereo Tune, by `PreparedProcessor::StereoTune` index, and the bus each belongs to.
+    stereo_tunes: Box<[sampler_ir::fx::stereo_tune::Config]>,
+    stereo_tune_bus: Box<[usize]>,
     /// The spaces that hold a convolution, in order: the slots
     /// [`crate::Runtime::swap_convolution`] addresses.
     convolutions: Box<[usize]>,
@@ -280,6 +283,8 @@ impl PreparedBuses {
         let mut filters = crate::dsp::svf::FilterRegistryBuilder::default();
         let mut spaces = Vec::new();
         let mut space_bus = Vec::new();
+        let mut stereo_tunes = Vec::new();
+        let mut stereo_tune_bus = Vec::new();
         let nodes = buses
             .into_iter()
             .enumerate()
@@ -295,8 +300,10 @@ impl PreparedBuses {
                     &mut delay_frames,
                     &mut filters,
                     Some(&mut spaces),
+                    Some(&mut stereo_tunes),
                 )?;
                 space_bus.resize(spaces.len(), index);
+                stereo_tune_bus.resize(stereo_tunes.len(), index);
                 Ok(PreparedBus {
                     processors,
                     follows: Box::new([]),
@@ -329,6 +336,8 @@ impl PreparedBuses {
             delay_frames,
             spaces: spaces.into_boxed_slice(),
             space_bus: space_bus.into_boxed_slice(),
+            stereo_tunes: stereo_tunes.into_boxed_slice(),
+            stereo_tune_bus: stereo_tune_bus.into_boxed_slice(),
             convolutions: convolutions.into_boxed_slice(),
             impulses: impulses.into(),
             rate,
@@ -760,6 +769,7 @@ pub(super) struct BusState {
     cells: Box<[ProcessorState]>,
     delay_samples: Box<[[f64; 2]]>,
     spaces: Box<[crate::dsp::Space]>,
+    stereo_tunes: Box<[crate::dsp::stereo_tune::StereoTune]>,
     /// Per bus, the frames its tail rings after input stops; a swapped-in
     /// impulse may change it.
     tail_frames: Box<[u32]>,
@@ -782,8 +792,9 @@ pub(super) struct BusState {
 /// Reset only the failing/expired actual bus's stateful Space owners. The
 /// immutable compilation roster is shared by legacy and typed signal paths.
 /// No allocation, owner discovery by name, or new history cache is involved.
-fn clear_owned_bus_spaces(spaces:&mut[crate::dsp::Space],owners:&[usize],bus:usize){
+fn clear_owned_bus_spaces(spaces:&mut[crate::dsp::Space],owners:&[usize],tunes:&mut[crate::dsp::stereo_tune::StereoTune],tune_owners:&[usize],bus:usize){
     for (space,&owner)in spaces.iter_mut().zip(owners){if owner==bus{space.clear();}}
+    for (tune,&owner)in tunes.iter_mut().zip(tune_owners){if owner==bus{tune.clear();}}
 }
 
 impl BusState {
@@ -809,6 +820,17 @@ impl BusState {
                 .iter()
                 .map(|config| crate::dsp::Space::new(config, plan.buses.rate, &plan.buses.impulses))
                 .collect::<Result<_, _>>()?,
+            stereo_tunes: plan
+                .buses
+                .stereo_tunes
+                .iter()
+                .map(|c| {
+                    crate::dsp::stereo_tune::StereoTune::with_knobs(
+                        plan.buses.rate,
+                        [c.split, c.drift, c.spread, c.mix].map(|v| v as f32),
+                    )
+                })
+                .collect(),
             tail_frames: plan.buses.nodes.iter().map(|n| n.tail_frames).collect(),
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
@@ -1001,6 +1023,7 @@ impl BusState {
         self.tone_history = [[0.; 2]; 2];
         self.tone_ringing = false;
         self.spaces.iter_mut().for_each(crate::dsp::Space::clear);
+        self.stereo_tunes.iter_mut().for_each(crate::dsp::stereo_tune::StereoTune::clear);
         for buffer in &mut self.buffers {
             buffer.remaining = 0;
             buffer.state_dirty = false;
@@ -1074,13 +1097,13 @@ impl BusState {
             if cutoff<20_000. && (input>0||ringing){produced=len;}
             for pair in 0..channel.tones.len(){let mut frames=[[0.;2];BLOCK];
                 for c in 0..2{let source=pair*2+c;if source<signal.input.get(){for f in 0..len{frames[f][c]=channel.work[source*BLOCK+f];}}}
-                if channel.tones[pair].process(&mut frames[..len],&mut channel.tone_history[pair],cutoff,at).is_err(){self.cells[node.states.clone()].fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
+                if channel.tones[pair].process(&mut frames[..len],&mut channel.tone_history[pair],cutoff,at).is_err(){self.cells[node.states.clone()].fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
                 for c in 0..2{let target=pair*2+c;if target<signal.input.get(){for f in 0..len{channel.work[target*BLOCK+f]=frames[f][c];}}}
             }
             if produced==0{channel.tone_history.fill([[0.;2];2]);}
             self.tone_ringing=cutoff<20_000. && channel.tone_history.iter().any(|pair|pair[0].iter().any(|v|v.abs()>1e-12));
         }
-        if produced==0{if buffer.state_dirty{channel.histories.fill(0.);self.cells[node.states.clone()].fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);buffer.state_dirty=false;}return 0;}
+        if produced==0{if buffer.state_dirty{channel.histories.fill(0.);self.cells[node.states.clone()].fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);buffer.state_dirty=false;}return 0;}
         let states=&mut self.cells[node.states.clone()];
         let mut chain=|planes:&mut[f32],frames:usize,stride:usize|->Result<(),Error>{
             if frames>BLOCK || stride<frames || stride.checked_add(frames).is_none_or(|end|end>planes.len()) {return Err(Error::InvalidInput);}
@@ -1090,11 +1113,11 @@ impl BusState {
             for c in 0..2{for frame in 0..frames{block[c][frame]=f64::from(planes[c*stride+frame]);}}
             let fault=crate::dsp::process::<TRACE>(node.processors.as_ref(),states,&mut block,frames,
                 parameters,at,&mut self.delay_samples,
-                &mut crate::dsp::svf::FilterContext{tempo,bank:&mut self.filters,expression:None,spaces:&mut self.spaces},
+                &mut crate::dsp::svf::FilterContext{tempo,bank:&mut self.filters,expression:None,spaces:&mut self.spaces,stereo_tunes:&mut self.stereo_tunes},
                 if TRACE{trace.as_mut().map(|(graph,recorder)|crate::trace::Section{recorder:&mut **recorder,graph,nodes:&graph.buses[index].stages,identity:Default::default()})}else{None});
             if fault || !crate::dsp::finite_states(&node.processors,states)
                 || block.iter().any(|values|values[..frames].iter().any(|value|!(*value as f32).is_finite())) {
-                states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);
+                states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);
                 return Err(Error::InvalidInput);
             }
             for c in 0..2{for frame in 0..frames{let value=block[c][frame]as f32;planes[c*stride+frame]=if value.is_subnormal(){0.}else{value};}}
@@ -1102,11 +1125,11 @@ impl BusState {
         };
         let rendered=crate::topology::signal::render_program_with_chain(signal,&mut channel.work,&mut channel.histories,&mut channel.dry,
             parameters,graph.rate,at,produced,&Default::default(),&mut chain);
-        let position=match rendered {Ok(position)=>position,Err(_)=>{states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}};
+        let position=match rendered {Ok(position)=>position,Err(_)=>{states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}};
         if channel.work[position..].iter().take(signal.output.get()*BLOCK).any(|v|!v.is_finite())
-            || channel.histories.iter().any(|v|!v.is_finite()){states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
+            || channel.histories.iter().any(|v|!v.is_finite()){states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
         let mix=self.mix[index];
-        if signal.output.get()!=2 && mix.gain[0]!=mix.gain[1]{states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
+        if signal.output.get()!=2 && mix.gain[0]!=mix.gain[1]{states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);channel.reset();buffer.remaining=0;buffer.state_dirty=false;return 1;}
         for c in 0..signal.output.get(){let gain=mix.gain[if signal.output.get()==2{c}else{0}];for f in 0..produced{channel.samples[c*BLOCK+f]=channel.work[position+c*BLOCK+f]*gain;}}
         if signal.output.get()==2{
             for f in 0..produced{self.peaks[index][0]=self.peaks[index][0].max(channel.samples[f].abs());self.peaks[index][1]=self.peaks[index][1].max(channel.samples[BLOCK+f].abs());}
@@ -1114,7 +1137,7 @@ impl BusState {
                 let id=g.buses[index].output;r.record(id,&block,&block,produced,[1.;2],true,Default::default(),parameters,&g.nodes[id]);}}
         }
         buffer.state_dirty=true;buffer.dirty=true;
-        if produced<len{channel.histories.fill(0.);states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);buffer.state_dirty=false;}
+        if produced<len{channel.histories.fill(0.);states.fill(ProcessorState::default());clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);buffer.state_dirty=false;}
         // Only actual stereo host outputs need a fixed stereo copy. N-bus
         // fan-out borrows distinct existing generation-owned source/target planes.
         let width=signal.output.get();let mut emitted=[[0f32;2];BLOCK];let mut pre_emitted=[[0f32;2];BLOCK];
@@ -1276,6 +1299,7 @@ impl BusState {
                         bank: &mut self.filters,
                         expression: None,
                         spaces: &mut self.spaces,
+                        stereo_tunes: &mut self.stereo_tunes,
                     },
                     if TRACE {
                         trace.as_mut().map(|(g, r)| crate::trace::Section {
@@ -1302,7 +1326,7 @@ impl BusState {
                 } else {
                     buffer.samples[..produced].fill([0.; 2]);
                     states.fill(ProcessorState::default());
-                    clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,index);
+                    clear_owned_bus_spaces(&mut self.spaces,&graph.space_bus,&mut self.stereo_tunes,&graph.stereo_tune_bus,index);
                     faults += 1;
                 }
             }
