@@ -6,6 +6,7 @@
 //! rectifier, smoothing SVFs, sine ring-mod, level follower). Model kcolor/freak.py: the core
 //! runs on its native object layout (offsets 0x940..0x11e0), so the setters port as written.
 use super::super::Planar;
+use super::hilbert;
 use super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
 use super::hilbert;
 use sampler_ir::fx::color::Freak;
@@ -115,6 +116,7 @@ const CTOR: [(usize, u32); 55] = [
     (0x1074, 0x3f800000), (0x10c0, 0xbf800000), (0x10c4, 0x3f800000), (0x1190, 0x39b504f3), (0x1194, 0x39b504f3), (0x1198, 0x39b504f3),
     (0x119c, 0x39b504f3),
 ];
+
 
 /// Init slot 1 defaults, core values p0..p18.
 pub(super) const DEFAULTS: [f32; 19] =
@@ -354,6 +356,7 @@ fn prepare(m: &mut Image, sr: u32) {
     m.pair(0x1110, tanpoly(f64(w * 20000.0 * 0.75)));
     m.pair(0x1140, tanpoly(f64(w * 20.0)));
     let h = hilbert::design(w, 20.0, 20_000.0);
+    let h = hilbert::design(sr);
     m.wf4(0x960, h.gain);
     for j in 0..8 {
         m.wf4(0x9c0 + 16 * j, h.allpass[j]);
@@ -729,6 +732,8 @@ mod tests {
                 }
                 out.split_off(4800)
             };
+            // The designer's 48 kHz taps sit within 3.9e-6 relative of the dumped table (hilbert
+            // gate). That moves these native vectors by up to 1.1e-5 (measured), so the bound is 2e-5.
             let check = |name: &str, out: &[f32], native: &[f32]| {
                 for (i, (a, b)) in out.iter().zip(native).enumerate() {
                     // 2e-5: the 48 kHz Hilbert coefficients differ from the native dump by ~4e-6 relative (see hilbert.rs).
