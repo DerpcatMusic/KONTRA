@@ -71,9 +71,40 @@ Per-block (`14197a2c0`, `param_4` samples, two channels):
 4. A stereo level detector updates `param+0x9748` with attack/release from
    `+0x9754`/`+0x9758`.
 
+### Kolor emulation status (2026-10-23, `tools/re/kolor_kemu_probe.py`)
+
+Established under kemu (native code, no port):
+
+- Construction: `BEffectKolor` ctor `1407c7950` runs (allocator `140711a10` intercepted). The core is
+  the object at `obj+0x1c0`; its vtable is `14769af00`, slot 19 = `14197a2c0`, slot 20 = `141979410`.
+- Block call (read from `140900eb0` at `0x140901088..0x140901178`): core process is
+  `(this=core, in_chans, out_chans, count)`; the driver passes the same two-pointer array for both.
+  The kernel reads the dry sample from `in[k]` and writes `out[k]`.
+- Prepare = core slot 20, `141979410(this, rate f32)`. It seeds `+0x7e0` (smoother), `+0x7e4`/`+0x7e8`
+  (= 1), `+0x9744` (= rate), calls `FUN_1419790c0`.
+- Per-mode seed `14197acc0(core, mode)` writes `+0x7dc`, clears `+0x7f4`, and resets the two shaper
+  objects of that mode at `core+0x800+(2m+k)*0x700` through `141974d90`.
+- Apply `140abae20` (slot 29) calls the wrapper setter `1409aaa90` (slot 32) for knobs 0..13; knob
+  values land at `core+0x5c`.
+- Shaper dispatch `1419749f0` returns the first float of its stage output (`movss xmm0,[rsp+0x20]` at
+  `141974b43`; disassembly in `docs/re/disasm/kolor-shaper-dispatch-1419749f0.txt`). Case 9 is
+  `1419748b0` (`docs/re/disasm/kolor-case9-1419748b0.txt`).
+- Ctor builds each shaper template in a 0x6f0 scratch via `141975910`/`141975c10`/... and copies it with
+  `1419735c0`/`1419738d0`/`141973be0`/`141973ef0`/`1419732b0`. Writers into the mode-9 object are the copy
+  at `0x1419734f3`.
+- Dry path works: with `+0x78 = 0`, output = gain ramp `+0x7c4` times input (peak 0.0074 on a 0.5 sine
+  in the first block, from the ramp starting at 0).
+
+Blocker (evidence): with `+0x78 = 1` (wet) the output is exactly zero in all 10 modes. The biquad
+coefficient blocks at `0x9400..0x96b8` are only partly sane: values such as `0x955c = 1.3e11`,
+`0x94c0 = 4.8e20`, `0x9508 = 13676.7` are non-physical, so the knob-driven design step is not run
+correctly. The writer is the control refresh `141940330`, gated by flags at `param+0x498` and by
+`+0x515`, which the probe does not yet satisfy. Next: trace which function writes `+0x9508`/`+0x955c`
+during the block (same write-tracer approach as `probe5`), and resolve the `+0x498` flag source.
+
 Not yet done: the helpers `14194cc70`, `14194c830`, `141974860`,
 `14197adb0`, `14197a150`, `14197ae80`, `14194cfb0`, `1419748b0` (called from the
-shaper dispatch); the exact coefficient meaning of the biquad state; the
+shaper dispatch; their bodies are read from the cache, not yet ported); the exact coefficient meaning of the biquad state; the
 Kolor state init. No kemu vector exists; the port is not started.
 
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
