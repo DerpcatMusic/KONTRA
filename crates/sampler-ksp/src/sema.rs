@@ -41,6 +41,8 @@ struct Sema<'a, 's> {
     in_function: bool,
     /// Nesting of the block being analysed; `on init`'s own body is 1.
     depth: u32,
+    /// A declaration's init-time UI parameters, emitted before its initializer.
+    ui_params: Option<StmtKind>,
     loops: usize,
     /// Controls from the performance view file, once `load_performance_view` ran.
     performance_view: &'s [PerformanceControl],
@@ -65,6 +67,7 @@ pub fn analyze<'a, 's>(
         in_init: false,
         in_function: false,
         depth: 0,
+        ui_params: None,
         loops: 0,
         performance_view,
         performance_loaded: false,
@@ -280,31 +283,33 @@ impl<'a> Sema<'a, '_> {
         self.syms.name(sym)
     }
 
+    // One frame per nesting level (with stmt): nesting tests run near the
+    // default test-thread stack.
     fn block(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>> {
         self.depth += 1;
-        let out = self.statements(body);
-        self.depth -= 1;
-        out
-    }
-
-    fn statements(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>> {
         let mut out = Vec::with_capacity(body.len());
         for s in body {
-            if let ast::StmtKind::Declare(d) = &s.kind {
-                if !self.in_init {
-                    return fault(s.span, "declarations are only allowed in on init");
-                }
-                out.extend(self.declare(d)?.into_iter().map(|kind| Stmt { span: s.span, kind }));
-            } else if let Some(kind) = self.stmt(s)? {
-                out.push(Stmt { span: s.span, kind });
-            }
+            let kind = self.stmt(s)?;
+            self.push(s.span, kind, &mut out);
         }
+        self.depth -= 1;
         Ok(out)
+    }
+
+    /// A statement, after the init-time UI parameters its declaration left.
+    #[inline(never)]
+    fn push(&mut self, span: Span, kind: Option<StmtKind>, out: &mut Vec<Stmt>) {
+        out.extend(self.ui_params.take().into_iter().chain(kind).map(|kind| Stmt { span, kind }));
     }
 
     fn stmt(&mut self, s: &ast::Stmt) -> Result<Option<StmtKind>> {
         Ok(Some(match &s.kind {
-            ast::StmtKind::Declare(_) => unreachable!("statements() analyses declarations"),
+            ast::StmtKind::Declare(d) => {
+                if !self.in_init {
+                    return fault(s.span, "declarations are only allowed in on init");
+                }
+                return self.declare(d);
+            }
             ast::StmtKind::Assign(target, value) => {
                 if let A::Var(sym, Some(index)) = &target.kind
                     && self.resolve(*sym).is_none()
@@ -361,11 +366,10 @@ impl<'a> Sema<'a, '_> {
                 let cond = self.condition(cond)?;
                 // `if (1=1)` around a whole on init runs its body exactly once,
                 // like the enclosing block.
-                let yes = if always_true(&self.hir, &cond) {
-                    self.statements(yes)?
-                } else {
-                    self.block(yes)?
-                };
+                let once = always_true(&self.hir, &cond);
+                self.depth -= u32::from(once);
+                let yes = self.block(yes)?;
+                self.depth += u32::from(once);
                 StmtKind::If(cond, yes, self.block(no)?)
             }
             ast::StmtKind::While(cond, body) => {
@@ -601,9 +605,9 @@ impl<'a> Sema<'a, '_> {
         Ok(offset)
     }
 
-    /// The statements a declaration runs in `on init`: its deferred UI
-    /// parameters, then its initializer.
-    fn declare(&mut self, d: &ast::Declare) -> Result<Vec<StmtKind>> {
+    /// The initializer a declaration runs in `on init`; deferred UI
+    /// parameters go to `ui_params`, which run first.
+    fn declare(&mut self, d: &ast::Declare) -> Result<Option<StmtKind>> {
         let text = self.name(d.name);
         let span = d.name_span;
         let valid = text.len() > 1
@@ -661,7 +665,7 @@ impl<'a> Sema<'a, '_> {
                     span,
                 },
             )?;
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let ui = match d.ui {
             Some(word) => {
@@ -745,7 +749,6 @@ impl<'a> Sema<'a, '_> {
                 span,
             },
         )?;
-        let mut out = Vec::new();
         if let Some((kind, params, at_init)) = ui {
             self.hir.uis.push(Ui {
                 unresolved: false,
@@ -756,24 +759,24 @@ impl<'a> Sema<'a, '_> {
             });
             if !at_init.is_empty() {
                 self.hir.ui_params_at_init = true;
-                out.push(StmtKind::UiParams(ui_index.unwrap(), at_init));
+                self.ui_params = Some(StmtKind::UiParams(ui_index.unwrap(), at_init));
             }
         }
         if d.init.is_empty() {
-            return Ok(out);
+            return Ok(None);
         }
         if d.storage == Storage::Polyphonic {
             // Kontakt keeps no value for a note-owned initializer (cells start at 0
             // per note; a write outside a note is dropped, measured on Kontakt 8.13.1).
             // Kontakt emits no diagnostic for it, so neither do we.
-            return Ok(out);
+            return Ok(None);
         }
         let mut values = Vec::with_capacity(d.init.len());
         for e in &d.init {
             let value = self.expr(e)?;
             values.push(self.coerce(value, ty)?);
         }
-        out.push(if let Some(len) = len {
+        Ok(Some(if let Some(len) = len {
             if values.len() > len as usize {
                 return fault(d.init[0].span, "too many array initializers");
             }
@@ -783,8 +786,7 @@ impl<'a> Sema<'a, '_> {
                 return fault(d.init[0].span, "scalar takes one initializer");
             }
             StmtKind::Assign(Place::Var(var), values.pop().unwrap())
-        });
-        Ok(out)
+        }))
     }
 
     fn function(&self, sym: Sym) -> Option<FnId> {
