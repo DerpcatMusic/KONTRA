@@ -565,3 +565,24 @@ Unknown (so the panned path stays unported and the Kontakt lowering stays NotMod
 Known facts from this pass that the port must keep: the source count and output count are the same field pair
 (`+0x124`, `+0x128`, both set by slot 12), so a mono scenario needs a silent second source; the sin/asin tables
 must be initialised first (`140a9cb40`), otherwise the source position is wrong and every gain is zero.
+
+## Pass 8: Surround Panner gain smoother identified (black-box, moving and distance verified, 2026-10-23)
+
+Evidence: `tools/re/surround_panner_driver_kemu.py` (kemu on `Kontakt8.exe`, 5 cases incl. `dc_step`), fixture
+`crates/sampler-core/src/dsp/surround_panner_driver_native_vectors.json`, test
+`native_driver_tests::panned_route_matches_native_kemu_blocks` (all cases pass at 1e-5).
+
+- **Smoothed quantity: the per-(source, output) output gain**, not the scale. The gain is `g = 140a94580` at the
+  block-start target (scale, positions); each sample emits `g * input`, then steps `g += (target - g) / 1800`.
+  Fit on `dc_step` (scale 1.0 -> 1.7 at sample 128): residual rms 1e-7, max 2.2e-7 (float noise). The scale-domain
+  and power/log/inverse-scale domains do not give a constant ratio, so they are rejected.
+- Sample 128 is still the old gain; the first new value is at 129 (output, then update).
+- The first block starts each pair at its target (no ramp from zero in `stereo_fixed`).
+- The same one-pole covers the moving source and the distance steps (1.0 -> 1.7 -> 0.6): both pass at 1e-5, so no
+  separate delay-line contribution shows up in these vectors.
+- **Open:** rate dependence (the driver never sets a sample rate, so `1/1800` is only measured at the default),
+  the raw disassembly confirmation of the smoother (`140ab4eb0` not re-read here), the distance delay line with an
+  impulse probe, the LFE filter law, `140ac21f0` fader path, multichannel layouts, stereo downmix.
+- **Lowering still open:** the Surround Panner record (version 0x70) reader is not identified, so the
+  `sampler-kontakt` lowering keeps the NotModeled pass-through. The DSP is in `sampler_core` and is not wired to any
+  runtime yet.
