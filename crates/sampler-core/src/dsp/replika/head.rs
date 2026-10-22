@@ -20,8 +20,8 @@
 //! The tap object also keeps the driver's write side (`K+0x08` index, `+0x10` fraction, `+0x1c` step, `+0x20` and
 //! `+0x40` of the previous frame, `+0x90..+0xa0` the rate history): the deposit `141accfb0` reads them as its
 //! index, offset, count and rates, so they are part of this port. Not ported: the deposit's own history (`+0x84..+0x8c`),
-//! the reset of the object (`141abaab0` / `141aba040`), the write stage `141acd110`, the wrapper `141ab7a90` (the
-//! gains `+0x70`, `+0x74` and the mixing) and the caller of the speeds.
+//! the write stage `141acd110`, the wrapper `141ab7a90` (the gains `+0x70`, `+0x74` and the mixing) and the caller of
+//! the speeds. The mode writer `141aca4a0` (k = 0, 1, 2, 4, `Head::set_mode`) is ported; its k = 3 is blocked.
 //!
 //! Vectors: `docs/re/engine/vectors/replika-native-mode1-driver.json` (kemu, 4 cases of 128 frames, modes 1, 2, 3, 1).
 
@@ -90,6 +90,9 @@ pub struct Glide {
     /// `+0x5804`: a settle is pending; `+0x5805`: set when the glide settles.
     pub pending: bool,
     pub fresh: bool,
+    /// `+0x57f8`: the glide length, the divisor of the step. `+0x5800`: the count a new glide starts from.
+    pub div: f32,
+    pub count_init: i32,
 }
 
 /// The modulation sources of one frame: A (`H+0x5868`), B (`H+0x5870`) and the pair at `H+0x5880`.
@@ -125,6 +128,21 @@ pub struct Head {
     pub time: [f32; 4],
     /// `+0x00`, `+0x38`, `+0x40`: the anchors of the base change (`141abd190`; writers not traced).
     pub anchor: [f64; 3],
+    /// `+0x8c`: the lane mode. `141abbc90` takes it, and its tail sets the kernel flags from it (k = 1).
+    pub lane: i32,
+    /// `+0x68`, `+0x69`, `+0x6a`: the glide targets of head modes 0, 1 and 3 (set: 1.0, clear: 0.0).
+    pub mode_flags: [bool; 3],
+    /// `+0x270` (L) and `+0x340` (R): the kernel flags, which are the taps' `+0xc8` (1 = kernel 1, 2 = kernel 2).
+    pub kernel: [i32; 2],
+}
+
+/// `141aca4a0` with k = 3 calls `141acb100`, which is not ported. Returned before anything is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Blocked;
+
+/// The glide target of a mode flag: 1.0 when set, else 0.0 (the byte test of `141aca4a0`).
+fn flag_target(on: bool) -> f32 {
+    if on { 1.0 } else { 0.0 }
 }
 
 /// `141aca670`: the Replika path (k) from the raw index-28 value: `min(4, floor(5 v))`. Path k sets the head
@@ -240,6 +258,62 @@ impl Head {
         }
     }
 
+    /// `141aca4a0(H, k, flag)`: the head mode writer for k = 0, 1, 2 and 4 (other k only set the mode). `rings` are the
+    /// L and R rings behind the taps' handles (`K+0xc0`, the same as `**(H+0x150)` and `**(H+0x188)`); with `flag` the
+    /// taps clear them (`1407e6d80`). The tail is `rebase_request` and `sample_time`. k = 3 calls the unported
+    /// `141acb100`: it returns `Err(Blocked)` and changes nothing.
+    ///
+    /// The design chain `141abbc90` (k = 1: lane and post coefficients) is not applied here; only its tail is, the
+    /// kernel flags from the lane mode and the tap resets.
+    pub fn set_mode(&mut self, k: i32, flag: bool, rings: [&mut [f32]; 2]) -> Result<(), Blocked> {
+        if k == 3 {
+            return Err(Blocked);
+        }
+        self.mode = k;
+        let [ring_l, ring_r] = rings;
+        match k {
+            0 => self.set_glide(flag_target(self.mode_flags[0])),
+            1 => {
+                self.kernel = [if (1..=3).contains(&self.lane) { 1 } else { 2 }; 2];
+                self.reset_taps(flag, ring_l, ring_r);
+                self.set_glide(flag_target(self.mode_flags[1]));
+            }
+            2 => {
+                self.kernel = [2; 2];
+                self.reset_taps(flag, ring_l, ring_r);
+            }
+            _ => {}
+        }
+        self.rebase_request();
+        self.sample_time();
+        Ok(())
+    }
+
+    /// The tap resets of `141aca4a0`: `141abaab0` on both taps, or with `flag` `141aba040(K, 1)` (the reset and the
+    /// ring clear; it contains the `141abaab0` part).
+    fn reset_taps(&mut self, flag: bool, ring_l: &mut [f32], ring_r: &mut [f32]) {
+        if flag {
+            self.taps[0].reset_flagged(true, ring_l);
+            self.taps[1].reset_flagged(true, ring_r);
+        } else {
+            self.taps.iter_mut().for_each(Tap::reset_rates);
+        }
+    }
+
+    /// The glide retarget of `141aca4a0`: `+0x57ec` = target. When it differs from the current `+0x57e8`, the step is
+    /// `(target - cur) / +0x57f8`, the count restarts at `+0x5800` and the settle flags are set (`+0x5804` = 1, `+0x5805` = 0).
+    fn set_glide(&mut self, target: f32) {
+        let g = &mut self.glide;
+        g.target = target;
+        if target == g.cur {
+            return;
+        }
+        g.count = g.count_init;
+        g.step = (target - g.cur) / g.div;
+        g.pending = true;
+        g.fresh = false;
+    }
+
     /// The per-head glide of the LFO mix (`+0x57e8`): settle when the gap is inside the threshold or the count runs out,
     /// else step by `+0x57f0`.
     fn glide_step(&mut self) {
@@ -347,6 +421,8 @@ mod tests {
                 count: f(init, "g_count") as i32,
                 pending: f(init, "g_pend") != 0.0,
                 fresh: f(init, "g_fresh") != 0.0,
+                div: 1.0,
+                count_init: 0,
             },
             post: [post("pl"), post("pr")],
             sec: [
@@ -356,6 +432,9 @@ mod tests {
             rate,
             time: [0.; 4],
             anchor: [0.; 3],
+            lane: 0,
+            mode_flags: [false; 3],
+            kernel: [1, 1],
         }
     }
 
@@ -654,5 +733,219 @@ mod tests {
         for (v, want) in cases {
             assert_eq!(path_for_index(v as f32), want, "index {v}");
         }
+    }
+
+    fn mode_vector() -> Value {
+        let path = format!(
+            "{}/../../docs/re/engine/vectors/replika-native-mode-writer.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
+            .expect("vector json")
+    }
+
+    /// The head of a mode-writer case: the fields the writer, its tail and the taps' resets read or write.
+    fn mode_head(init: &Value) -> Head {
+        let tap = |p: &str| {
+            let mut t = Tap::new(
+                f(init, &format!("{p}_pos")),
+                0,
+                f(init, &format!("{p}_phase")),
+                f(init, &format!("{p}_idx")) as i32,
+                f(init, &format!("{p}_xprev")),
+                f(init, &format!("{p}_offset")),
+                0.0,
+                1.0,
+            );
+            t.wr = f(init, &format!("{p}_wr")) as i32;
+            t.frac = f(init, &format!("{p}_frac"));
+            t.delta = f(init, &format!("{p}_delta")) as i32;
+            t.prev_wr = f(init, &format!("{p}_pwr")) as i32;
+            t.prev_frac = f(init, &format!("{p}_pfrac"));
+            t.rates = [0, 1, 2].map(|k| f(init, &format!("{p}_rate{k}")));
+            t.state = State {
+                s0: f(init, &format!("{p}_s0")) as f32,
+                s1: f(init, &format!("{p}_s1")) as f32,
+            };
+            t
+        };
+        Head {
+            mode: f(init, "mode") as i32,
+            factor: 0.,
+            s: f(init, "s"),
+            base_src: f(init, "base_src"),
+            delay: DelayPos {
+                lo: 0,
+                hi: 0,
+                mode: 0,
+                base: 0.,
+                r58: 0.,
+                r60: 0.,
+                a: 0.,
+                b: 0.,
+                flag: false,
+            },
+            taps: [tap("L"), tap("R")],
+            fade: Fade {
+                coef: 0.,
+                level: f(init, "level"),
+                target: f(init, "fade_target"),
+                thr: 0.,
+                pending: f(init, "pend") != 0.0,
+                trigger: f(init, "trig") != 0.0,
+            },
+            glide: Glide {
+                cur: f(init, "g_cur") as f32,
+                target: f(init, "g_target") as f32,
+                step: f(init, "g_step") as f32,
+                thr: 0.,
+                count: f(init, "g_count") as i32,
+                pending: f(init, "g_pend") != 0.0,
+                fresh: f(init, "g_fresh") != 0.0,
+                div: f(init, "g_div") as f32,
+                count_init: f(init, "g_count_init") as i32,
+            },
+            post: [PostFilter {
+                env: 0.,
+                coef: 0.,
+                s0: 0.,
+                s1: 0.,
+                c2: 0.,
+                c3: 0.,
+                c4: 0.,
+                gain: 0.,
+            }; 2],
+            sec: [Section::new(0., 0.); 2],
+            rate: 1.,
+            time: ["t0", "t1", "t2", "t3"].map(|k| f(init, k) as f32),
+            anchor: [f(init, "a0"), f(init, "a38"), f(init, "a40")],
+            lane: f(init, "lane") as i32,
+            mode_flags: ["flag68", "flag69", "flag6a"].map(|k| f(init, k) != 0.0),
+            kernel: [f(init, "kernel_l") as i32, f(init, "kernel_r") as i32],
+        }
+    }
+
+    /// `141aca4a0` for k = 0, 1, 2, 4 with flag 0 and 1 (kemu): the head fields, the taps and the two rings after the
+    /// call. Floats within 1e-5, integers and flags exact.
+    #[test]
+    fn mode_writer_matches_native_vectors() {
+        let doc = mode_vector();
+        for case in doc["cases"].as_array().expect("cases") {
+            let k = f(case, "k") as i32;
+            let flag = f(case, "flag") != 0.0;
+            let (init, end) = (&case["init"], &case["end"]);
+            let mut h = mode_head(init);
+            let mut ring_l = words(&init["ring_l"]);
+            let mut ring_r = words(&init["ring_r"]);
+            h.set_mode(k, flag, [&mut ring_l[..], &mut ring_r[..]])
+                .expect("k 0, 1, 2 and 4 are ported");
+            let tag = format!("k {k} flag {flag} seed {}", f(case, "seed"));
+            assert_eq!(h.mode as f64, f(end, "mode"), "{tag} mode");
+            assert_eq!(h.kernel[0] as f64, f(end, "kernel_l"), "{tag} kernel L");
+            assert_eq!(h.kernel[1] as f64, f(end, "kernel_r"), "{tag} kernel R");
+            let g = &h.glide;
+            close_f32(&format!("{tag} glide cur"), g.cur as f64, f(end, "g_cur"));
+            close_f32(
+                &format!("{tag} glide target"),
+                g.target as f64,
+                f(end, "g_target"),
+            );
+            close_f32(
+                &format!("{tag} glide step"),
+                g.step as f64,
+                f(end, "g_step"),
+            );
+            assert_eq!(g.count as f64, f(end, "g_count"), "{tag} glide count");
+            assert_eq!(
+                g.count_init as f64,
+                f(end, "g_count_init"),
+                "{tag} glide count init"
+            );
+            assert_eq!(g.pending, f(end, "g_pend") != 0.0, "{tag} glide pending");
+            assert_eq!(g.fresh, f(end, "g_fresh") != 0.0, "{tag} glide fresh");
+            close_f32(&format!("{tag} base"), h.base_src, f(end, "base_src"));
+            close_f32(&format!("{tag} level"), h.fade.level, f(end, "level"));
+            close_f32(
+                &format!("{tag} target"),
+                h.fade.target,
+                f(end, "fade_target"),
+            );
+            assert_eq!(h.fade.pending, f(end, "pend") != 0.0, "{tag} pend");
+            assert_eq!(h.fade.trigger, f(end, "trig") != 0.0, "{tag} trig");
+            close_f32(&format!("{tag} s"), h.s, f(end, "s"));
+            for (side, tap) in [("L", &h.taps[0]), ("R", &h.taps[1])] {
+                let key = |name: &str| format!("{side}_{name}");
+                close_f32(&format!("{tag} {side} pos"), tap.pos, f(end, &key("pos")));
+                close_f32(
+                    &format!("{tag} {side} frac"),
+                    tap.frac,
+                    f(end, &key("frac")),
+                );
+                close_f32(
+                    &format!("{tag} {side} phase"),
+                    tap.phase,
+                    f(end, &key("phase")),
+                );
+                close_f32(
+                    &format!("{tag} {side} xprev"),
+                    tap.x_prev,
+                    f(end, &key("xprev")),
+                );
+                close_f32(
+                    &format!("{tag} {side} pfrac"),
+                    tap.prev_frac,
+                    f(end, &key("pfrac")),
+                );
+                close_f32(
+                    &format!("{tag} {side} offset"),
+                    tap.offset,
+                    f(end, &key("offset")),
+                );
+                assert_eq!(tap.wr as f64, f(end, &key("wr")), "{tag} {side} wr");
+                assert_eq!(
+                    tap.delta as f64,
+                    f(end, &key("delta")),
+                    "{tag} {side} delta"
+                );
+                assert_eq!(tap.prev_wr as f64, f(end, &key("pwr")), "{tag} {side} pwr");
+                assert_eq!(tap.idx as f64, f(end, &key("idx")), "{tag} {side} idx");
+                close_f32(
+                    &format!("{tag} {side} s0"),
+                    tap.state.s0 as f64,
+                    f(end, &key("s0")),
+                );
+                close_f32(
+                    &format!("{tag} {side} s1"),
+                    tap.state.s1 as f64,
+                    f(end, &key("s1")),
+                );
+                for (i, name) in ["rate0", "rate1", "rate2"].iter().enumerate() {
+                    close_f32(
+                        &format!("{tag} {side} {name}"),
+                        tap.rates[i],
+                        f(end, &key(name)),
+                    );
+                }
+            }
+            assert_eq!(ring_l, words(&end["ring_l"]), "{tag} ring L");
+            assert_eq!(ring_r, words(&end["ring_r"]), "{tag} ring R");
+        }
+    }
+
+    /// k = 3 calls the unported `141acb100`: the writer returns `Blocked` and the head and rings stay as they were.
+    #[test]
+    fn mode_three_is_blocked_and_writes_nothing() {
+        let doc = mode_vector();
+        let case = &doc["cases"][0];
+        let mut h = mode_head(&case["init"]);
+        let before = h.clone();
+        let mut ring_l = words(&case["init"]["ring_l"]);
+        let mut ring_r = words(&case["init"]["ring_r"]);
+        let r = h.set_mode(3, true, [&mut ring_l[..], &mut ring_r[..]]);
+        assert_eq!(r, Err(Blocked));
+        assert_eq!(h.mode, before.mode);
+        assert_eq!(h.glide, before.glide);
+        assert_eq!(h.kernel, before.kernel);
+        assert_eq!(ring_l, words(&case["init"]["ring_l"]));
     }
 }

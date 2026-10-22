@@ -101,8 +101,7 @@ impl Tap {
 
     /// `141aba040` with flag 0 (and `141abaab0`, which it calls): the driver and kernel fields to zero (`K+0x00`,
     /// `+0x08..+0x40`, `+0x48`, `+0x50`, `+0x54`) and the rates `+0x90..+0xa0` to 1. The section, the freq block and
-    /// the outputs keep their values. Not here: the deposit's history `+0x84..+0x8c` (the `Deposit` object) and the
-    /// ring clear `1407e6d80` of flag 1.
+    /// the outputs keep their values. Not here: the deposit's history `+0x84..+0x8c` (the `Deposit` object).
     pub fn reset(&mut self) {
         self.pos = 0.;
         self.wr = 0;
@@ -115,7 +114,22 @@ impl Tap {
         self.prev_frac = 0.;
         self.offset = 0.;
         self.state = State::default();
+        self.reset_rates();
+    }
+
+    /// `141abaab0`: the rates `+0x90..+0xa0` to 1 (its history `+0x84` and `+0x8c` is not modelled).
+    pub fn reset_rates(&mut self) {
         self.rates = [1.; 3];
+    }
+
+    /// `141aba040(K, flag)`: `reset()`, and with `flag` the ring clear `1407e6d80` of the ring that `K+0xc0` names
+    /// (`ring`: `**(H+0x150)` for L, `**(H+0x188)` for R, see `Head::set_mode`). The clear writes 0 to every element:
+    /// `ring.fill(0.)`.
+    pub fn reset_flagged(&mut self, flag: bool, ring: &mut [f32]) {
+        self.reset();
+        if flag {
+            ring.fill(0.);
+        }
     }
 
     /// `14199dcc0`: the section for frequency `f`, g = tan(f pi rate) with the kernel's damping.

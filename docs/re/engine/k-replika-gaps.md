@@ -347,6 +347,35 @@ was not changed and not built.
 | GAP-O | Open | `14199ce60` (543 B) beyond its first 40 lines, not read. |
 | GAP-G, I, J, L, M, P, Q | Open | Out of scope this pass; addresses as in `k-replika-core.md`. |
 
+### Piece 3c part 1: mode writer `141aca4a0` and the flag-1 ring clear (PORTED, NOT WIRED)
+
+`Head::set_mode` (`replika/head.rs`) ports the mode writer for k = 0, 1, 2 and 4, with flag 0 and 1. It sets `H+0xc0 = k`
+and then: k = 0 glides to the target from the byte `H+0x68`; k = 1 runs the tail of `141abbc90` (kernel flags from the lane
+mode `H+0x8c`: 1 for lane modes 1..3, else 2; `141abaab0` on both taps), then with flag `141aba040(K, 1)` on both taps, then
+glides to `H+0x69`; k = 2 sets `H+0x270 = H+0x340 = 2`, `141abaab0` on both taps, and with flag `141aba040(K, 1)`. Every path
+ends with `141abd190` and `141ac4510`. The design chain's lane and post coefficients of k = 1 are not applied (`design.rs`
+is exact but not wired to a write filter). `Tap::reset_rates` is `141abaab0`, `Tap::reset_flagged` is `141aba040`, and the ring
+clear `1407e6d80` is `ring.fill(0.)`. `Glide.div` (`+0x57f8`) and `Glide.count_init` (`+0x5800`) are new fields (3840 after prepare in the index-28 run).
+`H+0x270` and `H+0x340` are the taps' `+0xc8` (`K+0xc8`). Their writers are the tap constructor, the tail of `141abbc90`
+and `141aca4a0` (k = 2); no reset writes them.
+
+k = 3 is `Err(Blocked)` before any write: it calls `141acb100` (unported), which takes `float(H+0x88)` and is followed by the
+glide from `H+0x6a`. Native `141aca4a0` sets `H+0xc0 = 3` before that call; the port leaves `H+0xc0` alone.
+
+Identity of `K+0xc0` (blocker (d)): CLOSED by emulation. The head constructor stores the mode-0 handles at `H+0x150`
+(`141a7eb84`, L) and `H+0x188` (`141a7ebc0`, R), and the tap init stores `K+0xc0` (`141a7e8de`, called for `K = H+0x1a8`
+and `H+0x278`). Under kemu (index 28 = 0.3, head 0 at core+0xac0), `H+0x268 = H+0x150` and `H+0x338 = H+0x188` after prepare and
+after three quanta (0x100000bb8 and 0x100000bd0). The handles are `{begin, end}` records in the core; each points to a 2 MB ring
+(524288 f32), and the other heads have their own rings. A write watch on head 0's four words over the constructor, prepare and one
+quantum shows only the four constructor stores. So the flag-1 clear of the L tap clears the ring the mode-0 reader uses
+(`**(H+0x150)`), and R the one at `**(H+0x188)`.
+
+Vectors: `docs/re/engine/vectors/replika-native-mode-writer.json` (kemu, `tools/re/replika_mode_writer_kemu.py`; 4 seeds x
+k in {0, 1, 2, 4} x flag {0, 1}; 64-sample synthetic rings behind the handles; head, tap and ring fields before and after).
+Tests: `mode_writer_matches_native_vectors` (tolerance 1e-5, integers and flags exact) and
+`mode_three_is_blocked_and_writes_nothing`. Still open: `141acb100` (k = 3), the k = 1 design chain on the write filter, and the
+deposit history `K+0x84` / `K+0x8c` (not in `Tap`).
+
 ### Name binding (task 1)
 
 Not confirmed as a table. Findings:
