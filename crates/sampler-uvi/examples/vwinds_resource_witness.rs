@@ -5,6 +5,8 @@
 mod audio;
 #[path = "../src/sample_metadata.rs"]
 mod sample_metadata;
+#[path = "../src/placement.rs"]
+mod placement;
 
 use sampler_core::{LoopMode, LoopShape};
 use sampler_uvi::{Bank, translate_path};
