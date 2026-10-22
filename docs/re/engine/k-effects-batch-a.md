@@ -317,3 +317,36 @@ Helpers still unread for the port: `14194c5b0` (580 B), `1419590a0` (397 B), `14
 `1419714c0` (863 B) is a Newton-style solver with up to 20 iterations and an exp-polynomial
 approximation; its polynomial constants `DAT_14769ab64/ab68` and `DAT_144e79a48` are read here.
 No Rust port and no native vector exist, so the row stays **missing**.
+
+## Pass 4: dirty-flag hypothesis rejected, probe knob bug fixed (blocked, 2026-10-23)
+
+Corrects pass 3. Evidence: `tools/re/chainsaw_hm2_kemu.py` (fixed), `docs/re/disasm/chainsaw-hm2-215-scan.txt`.
+
+1. **The knob value is a float in xmm2, not an int in r8.** `1409a9ec0` does `movss [rcx+r9*4+0x150], xmm2`
+   (disasm at `0x1409a9eca`). Pass 3 passed the bit pattern as an integer, so the knobs held garbage
+   (`0x31932fad`) and the gain read was meaningless. The probe now passes `f={2: v}`.
+2. **The per-block gain does not need `+0x215`.** With correct knobs, the apply's else branch
+   (`+0x148 != 0`, the prepared path) writes `+0x34[i] = +0x180[i] = value` directly, so `+0x40`
+   (= `+0x34 + 3*4`) is 0.5 before the block. The dirty path (`+0x215 != 0`) in `141971820` only
+   refreshes `+0x180` from the LFO state; it is not the only route to the gain.
+3. **No code raises `+0x215`.** The `.text` scan (disp32 0x210..0x215, capstone-decoded) finds no store
+   in the HM2 class range that sets that byte. The only uses are clears (`141972140` at
+   `0141970000.c:1162`, `1409x` at `0140990000.c:10227`) and the read `cmp byte [rdi+0x215],0` in
+   `141971820`. The dirty path is therefore not reachable from any prepared object by writes we can find.
+   Full hit list: `docs/re/disasm/chainsaw-hm2-215-scan.txt`.
+4. **Real blocker: the solver chain is zero.** After the fixed knobs the block still outputs exactly 0.
+   The chain is `141971150` (835 B, state-space step with a 10x10 solve `141950580`), which feeds
+   `1419590a0` (397 B, reads a 4x12 coefficient block at `+0x520..+0x5a0`), then `14194c5b0` and the
+   shaper `1419714c0`. Measured after the prepare order plus a redesign (`1419709e0` again):
+   `+0x520..+0x57c` = 0 (`1419590a0` output is therefore the bias `param[0x30]` = 0), while `+0x750`
+   (the `141971150` matrix) is non-zero (7.23, 1.75). The writers of `+0x584` and up are the
+   template constructors `141974510`, `141975080`, `141976810` (used for the `+0x800`/`+0x8e0` shaper
+   objects, `0141970000.c:5834..5838`); no writer of `+0x520..+0x57c` exists in the HM2 functions.
+   So that block is either built by a template copy we have not found, or it is a sub-object whose
+   constructor the wrapper does not run. Next: find which function owns `+0x4c0` (the `1419714c0` object)
+   and whether its ctor is reached from `14196fd00` or from `14196fab0` (the base ctor, `0141960000.c:12982`).
+5. Helpers still unread: `14194c5b0`, `141950580`, `1419723e0` (read partially, it consumes the
+   `+0x520` block), `141936990`, `141ee86c0`, `1409abdd0` (the deferred apply, reads `+0x148`/`+0x1b0`
+   /`+0x1f8` via `param[9]`, `param[6]`, `param[12]`; it is not a `+0x215` writer).
+
+Status: **still missing**. No Rust port, no kemu vector, no PARITY_MATRIX row change.
