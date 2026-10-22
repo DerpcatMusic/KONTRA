@@ -194,7 +194,10 @@ impl Daft {
                 a[DELTA..DELTA + 4].fill(0.);
             }
         }
-        if a[TARGET..TARGET + 4] != target.map(f64::from) {
+        // Native: one dirty flag for all four lanes, set by any setter. A routed setter writes on
+        // every control chunk (`modulation[3]` bits 1, 2, 4: cutoff, resonance, gain), so its ramp
+        // restarts each chunk even when the value holds. The tick then re-derives every lane's delta.
+        if modulation[3] != 0. || a[TARGET..TARGET + 4] != target.map(f64::from) {
             // Native: delta = (target - current) * (1 / (quanta * 32 * 2)) in f32, snapped below 1e-15.
             let inverse = 1. / ((self.ramp_quanta * QUANTUM as u32 * 2) as f32);
             for k in 0..4 {
@@ -325,5 +328,83 @@ mod tests {
         };
         assert_eq!(quanta(48_000), 3);
         assert_eq!(quanta(22_050), 1);
+    }
+}
+
+#[cfg(test)]
+mod kemu_vectors {
+    use super::*;
+
+    /// Native Daft through kemu (`tools/re/daft_kemu_vectors.py`): constructor, prepare, setters, the
+    /// 32-frame tick and the loop, stereo. A modulation route is written on every block; a disabled
+    /// control is fixed at its first value.
+    #[test]
+    fn native_kemu_vectors_through_the_production_path() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("daft_kemu_vectors.json")).unwrap();
+        let num = |v: &serde_json::Value| v.as_f64().unwrap();
+        let mut failures = Vec::new();
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            let schedule: Vec<[f64; 3]> = case["schedule"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|k| [num(&k[0]), num(&k[1]), num(&k[2])])
+                .collect();
+            let enabled: Vec<bool> = case["enabled"].as_array().unwrap().iter().map(|v| v.as_bool().unwrap()).collect();
+            let fixed = schedule[0];
+            let base = |i: usize| Parameter::Constant(if enabled[i] { 0. } else { fixed[i] });
+            let daft = DaftSettings {
+                gain: base(0),
+                cutoff: base(1),
+                resonance: base(2),
+                response: Parameter::Constant(num(&case["response"])),
+            }
+            .compile(num(&case["rate"]) as u32, &mut Vec::new());
+            let stim: Vec<Vec<f64>> = case["stim"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_array().unwrap().iter().map(|v| num(v) as f32 as f64).collect())
+                .collect();
+            let mut state = ProcessorState::default();
+            let mut out: [Vec<f64>; 2] = Default::default();
+            for (block, knobs) in schedule.iter().enumerate() {
+                let mut buffer: Planar = [[0.; crate::dsp::BLOCK]; 2];
+                let range = block * 32..(block + 1) * 32;
+                buffer[0][..32].copy_from_slice(&stim[0][range.clone()]);
+                buffer[1][..32].copy_from_slice(&stim[1][range]);
+                // Route bits as the voice plan writes them: 1 cutoff, 2 resonance, 4 gain.
+                let routes = [(1, 1.), (2, 2.), (0, 4.)]
+                    .iter()
+                    .filter(|(i, _)| enabled[*i])
+                    .fold(0., |m, (_, bit)| m + bit);
+                let modulation = [
+                    if enabled[1] { knobs[1] } else { 0. },
+                    if enabled[2] { knobs[2] } else { 0. },
+                    if enabled[0] { knobs[0] } else { 0. },
+                    routes,
+                ];
+                daft.process(&mut state, &[], &mut buffer, 32, (block * 32) as u64, modulation);
+                for c in 0..2 {
+                    out[c].extend_from_slice(&buffer[c][..32]);
+                }
+            }
+            let peak = ["outL", "outR"]
+                .iter()
+                .flat_map(|key| case[*key].as_array().unwrap().iter().map(num))
+                .fold(0f64, |m, v| m.max(v.abs()));
+            for (c, key) in [(0, "outL"), (1, "outR")] {
+                let want: Vec<f64> = case[key].as_array().unwrap().iter().map(num).collect();
+                let worst = out[c].iter().zip(&want).map(|(g, w)| (g - w).abs()).fold(0f64, f64::max) / peak;
+                // Worst case: self-oscillating feedback (resonance 0.95) amplifies f32 rounding to about
+                // 1.1e-6 of peak; every other case is within 2e-7.
+                if worst > 2e-6 {
+                    failures.push(format!("{name} {key} worst {worst:e} of peak"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
