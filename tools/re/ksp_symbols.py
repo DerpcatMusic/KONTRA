@@ -17,6 +17,7 @@ Rows with class `modern-extension` are KONTRA proposals, not Kontakt symbols.
 import argparse
 import collections
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -548,6 +549,10 @@ def check():
 
 # ---------------------------------------------------------------- doctor
 
+DOCTOR_STATUSES = ("full", "simplified", "stub", "unsupported", "modern-extension")
+BLOCKING = ("unsupported", "stub")
+
+
 def strip_source(text):
     text = re.sub(r'"[^"\n]*"', '""', text)
     text = re.sub(r"//[^\n]*", " ", text)
@@ -567,62 +572,178 @@ def extract_nki(path):
     return out, tmp
 
 
-def doctor(paths, fail_on):
-    rows = load_rows()
-    by_name = {r["name"]: r for r in rows}
-    templates = [(re.compile(re.escape(r["name"]).replace("#", "[A-Z0-9]+")), r)
-                 for r in rows if "#" in r["name"]]
-
-    def lookup(key):
-        if key in by_name:
-            return by_name[key]
-        return next((r for rx, r in templates if rx.fullmatch(key)), None)
-    fired = collections.Counter()
-    for raw in paths:
-        p = Path(raw)
-        cleanup = None
-        if p.suffix in (".nki", ".nkb"):
-            out, cleanup = extract_nki(p)
-            scripts = [(f.name, f.read_text(errors="replace")) for f in sorted(out.glob("*.ksp"))]
-        else:
-            scripts = [(p.name, p.read_text(errors="replace"))]
-        for label, text in scripts:
-            text = strip_source(text)
-            local = set(re.findall(r"\bfunction\s+([A-Za-z_]\w*)", text))
-            # Script-declared variables and arrays shadow same-named manual tokens.
-            declared = set(re.findall(r"\bdeclare\s+(?:polyphonic\s+|const\s+)?(?:ui_\w+\s+)?([$%~!@?][A-Za-z_]\w*)", text))
-            hits = collections.Counter()
-            for m in re.finditer(r"^[ \t]*on[ \t]+([a-z_]+)\b", text, re.M):
-                hits[f"on {m[1]}"] += 1
-            for m in re.finditer(r"(?<![A-Za-z0-9_])([$%!~@?]?)([A-Za-z_][A-Za-z0-9_]*)(\()?", text):
-                sigil, word, call = m[1], m[2], m[3]
-                if word in local:
-                    continue
-                if sigil:
-                    key = sigil + word
-                    if key in declared:
-                        continue
-                    if lookup(key):
-                        hits[key] += 1
-                    elif sigil == "$" and word.isupper():
-                        hits[key] += 1
-                elif call and word in by_name:
-                    hits[word] += 1
-                elif word in by_name and by_name[word]["category"] in ("keyword", "ui_control", "preprocessor"):
-                    hits[word] += 1
-            print(f"== {label}")
-            for key, n in sorted(hits.items(), key=lambda kv: (int(lookup(kv[0])["corpus_rank"] or 10**9) if lookup(kv[0]) else 10**9, kv[0])):
-                r = lookup(key)
-                if r is None:
-                    code, cat, rank = "KSP-UNKNOWN", "-", "-"
-                else:
-                    code, cat, rank = f"KSP-{r['status'].upper()}", r["category"], r["corpus_rank"] or "-"
-                fired[code] += 1
-                print(f"  {code:<18} {key:<42} x{n:<3} {cat:<12} corpus_rank={rank}")
-        if cleanup:
+def scripts_of(path):
+    """[(label, text)] for one input: a .ksp/.txt script, or every script in a .nki/.nkb/.nkm/.nka."""
+    p = Path(path)
+    if p.suffix.lower() in (".nki", ".nkb", ".nkm", ".nka"):
+        out, cleanup = extract_nki(p)
+        try:
+            return [(f.name, f.read_text(errors="replace")) for f in sorted(out.glob("*.ksp"))]
+        finally:
             shutil.rmtree(cleanup, ignore_errors=True)
-    print("summary:", dict(fired) or "no KSP symbols found")
-    return 1 if fail_on and fired[f"KSP-{fail_on.upper()}"] else 0
+    return [(p.name, p.read_text(errors="replace"))]
+
+
+class Resolver:
+    """Maps a script token (`on init`, `$gain`, `inc`) to its ledger row."""
+
+    def __init__(self, rows):
+        self.by_name = {r["name"]: r for r in rows}
+        self.templates = [(re.compile(re.escape(r["name"]).replace("#", "[A-Z0-9]+")), r)
+                          for r in rows if "#" in r["name"]]
+
+    def __call__(self, key):
+        if key in self.by_name:
+            return self.by_name[key]
+        return next((r for rx, r in self.templates if rx.fullmatch(key)), None)
+
+    def is_builtin(self, word):
+        return word in self.by_name
+
+
+def scan_script(text, resolve):
+    """Counter of KSP tokens used by one script (comments, strings and blocks stripped)."""
+    text = strip_source(text)
+    local = set(re.findall(r"\bfunction\s+([A-Za-z_]\w*)", text))
+    # Script-declared variables and arrays shadow same-named manual tokens.
+    declared = set(re.findall(r"\bdeclare\s+(?:polyphonic\s+|const\s+)?(?:ui_\w+\s+)?([$%~!@?][A-Za-z_]\w*)", text))
+    hits = collections.Counter()
+    for m in re.finditer(r"^[ \t]*on[ \t]+([a-z_]+)\b", text, re.M):
+        hits[f"on {m[1]}"] += 1
+    for m in re.finditer(r"(?<![A-Za-z0-9_])([$%!~@?]?)([A-Za-z_][A-Za-z0-9_]*)(\()?", text):
+        sigil, word, call = m[1], m[2], m[3]
+        if word in local:
+            continue
+        if sigil:
+            key = sigil + word
+            if key in declared:
+                continue
+            if resolve(key):
+                hits[key] += 1
+            elif sigil == "$" and word.isupper():
+                hits[key] += 1
+        elif call and resolve.is_builtin(word):
+            hits[word] += 1
+        elif resolve.is_builtin(word) and resolve.by_name[word]["category"] in ("keyword", "ui_control", "preprocessor"):
+            hits[word] += 1
+    return hits
+
+
+def classify(row):
+    """(status, code) for a ledger row. Full needs a conformance test; otherwise it is simplified."""
+    if row is None:
+        return "unsupported", "KSP-UNKNOWN"
+    if row["class"] not in ("", "compat"):
+        return "modern-extension", "KSP-MODERN"
+    status = row["status"]
+    if status == "full" and row["tests"] == "untested":
+        status = "simplified"
+    return status, "KSP-" + status.upper().replace("-", "_")
+
+
+def symbol_report(key, count, row):
+    status, code = classify(row)
+    return {
+        "symbol": key,
+        "count": count,
+        "status": status,
+        "code": code,
+        "category": row["category"] if row else "-",
+        "conformance": "untested" if row is None or row["tests"] == "untested" else "tested",
+        "corpus_rank": int(row["corpus_rank"]) if row and row["corpus_rank"] else None,
+        "owner": row["owner"] if row else "",
+    }
+
+
+def script_report(label, hits, resolve):
+    symbols = [symbol_report(k, n, resolve(k)) for k, n in hits.items()]
+    symbols.sort(key=lambda s: (s["corpus_rank"] is None, s["corpus_rank"] or 0, s["symbol"]))
+    total = len(symbols)
+    full = sum(1 for s in symbols if s["status"] == "full")
+    blockers = sorted({s["symbol"] for s in symbols if s["status"] in BLOCKING or s["code"] == "KSP-UNKNOWN"})
+    pct = round(100.0 * full / total, 1) if total else 0.0
+    return {"script": label, "symbols": symbols, "total": total, "full": full,
+            "full_percent": pct, "blockers": blockers}
+
+
+def summary_line(report):
+    if not report["total"]:
+        return f"{report['script']}: no KSP symbols found"
+    blockers = ", ".join(report["blockers"][:8]) or "none"
+    return (f"{report['script']}: {report['total']} symbols, {report['full_percent']}% full, "
+            f"blockers: {blockers}")
+
+
+def aggregate(reports):
+    """Per-library and per-symbol totals over several doctor reports."""
+    libs, symbols = {}, {}
+    for rep in reports:
+        lib = rep["library"]
+        agg = libs.setdefault(lib, {"library": lib, "scripts": 0, "symbols": set(), "blockers": set()})
+        agg["scripts"] += 1
+        for s in rep["symbols"]:
+            agg["symbols"].add(s["symbol"])
+            sym = symbols.setdefault(s["symbol"], {**{k: s[k] for k in ("symbol", "status", "code", "category", "conformance", "corpus_rank")},
+                                                   "count": 0, "libraries": set()})
+            sym["count"] += s["count"]
+            sym["libraries"].add(lib)
+        agg["blockers"].update(rep["blockers"])
+    lib_out = []
+    for agg in libs.values():
+        full = sum(1 for s in agg["symbols"] if symbols[s]["status"] == "full")
+        total = len(agg["symbols"])
+        lib_out.append({"library": agg["library"], "scripts": agg["scripts"], "symbols": total,
+                        "full_percent": round(100.0 * full / total, 1) if total else 0.0,
+                        "blockers": sorted(agg["blockers"])})
+    sym_out = []
+    for s in symbols.values():
+        s = dict(s)
+        s["libraries"] = sorted(s["libraries"])
+        s["library_count"] = len(s["libraries"])
+        sym_out.append(s)
+    sym_out.sort(key=lambda s: (s["corpus_rank"] is None, s["corpus_rank"] or 0, s["symbol"]))
+    lib_out.sort(key=lambda l: l["library"])
+    return {"libraries": lib_out, "symbols": sym_out}
+
+
+def doctor(paths, as_json=False, strict=False, fail_on=None):
+    """Diagnose KSP scripts. Exit 1 with --strict when any unsupported symbol is used."""
+    resolve = Resolver(load_rows())
+    reports = []
+    for raw in paths:
+        for label, text in scripts_of(raw):
+            rep = script_report(label, scan_script(text, resolve), resolve)
+            rep["library"] = Path(raw).stem
+            reports.append(rep)
+    agg = aggregate(reports) if len(reports) > 1 else None
+    unsupported = sorted({s["symbol"] for r in reports for s in r["symbols"]
+                          if s["code"] in ("KSP-UNSUPPORTED", "KSP-UNKNOWN")})
+    if as_json:
+        print(json.dumps({"scripts": reports, "aggregate": agg, "unsupported": unsupported}, indent=2))
+    else:
+        for rep in reports:
+            print(f"== {rep['script']}")
+            for s in rep["symbols"]:
+                rank = s["corpus_rank"] if s["corpus_rank"] is not None else "-"
+                print(f"  {s['code']:<18} {s['symbol']:<42} x{s['count']:<3} {s['category']:<12} "
+                      f"{s['conformance']:<9} corpus_rank={rank}")
+            print("summary:", summary_line(rep))
+        if agg:
+            print("== by library")
+            for lib in agg["libraries"]:
+                print(f"  {lib['library']}: {lib['scripts']} scripts, {lib['symbols']} symbols, "
+                      f"{lib['full_percent']}% full, blockers: {', '.join(lib['blockers'][:8]) or 'none'}")
+            print("== by symbol (corpus rank order)")
+            for s in agg["symbols"][:40]:
+                print(f"  {s['code']:<18} {s['symbol']:<42} x{s['count']:<4} libraries={s['library_count']}")
+    if fail_on:
+        if any(s["status"] == fail_on for r in reports for s in r["symbols"]):
+            return 1
+    if strict and unsupported:
+        if not as_json:
+            print(f"strict: unsupported symbols used: {', '.join(unsupported)}", file=sys.stderr)
+        return 1
+    return 0
 
 
 
@@ -634,9 +755,11 @@ def main(argv=None):
     r.add_argument("--binary", type=Path, help="Kontakt8.exe, for string/xref evidence")
     sub.add_parser("sync")
     sub.add_parser("check")
-    d = sub.add_parser("doctor")
+    d = sub.add_parser("doctor", help="diagnose KSP scripts (.ksp/.txt, or .nki/.nkb/.nkm/.nka)")
     d.add_argument("files", nargs="+")
-    d.add_argument("--fail-on", choices=STATUSES[1:] + ("unknown",), help="exit 1 if this status occurs")
+    d.add_argument("--json", action="store_true", help="machine-readable report, incl. per-library and per-symbol aggregate")
+    d.add_argument("--strict", action="store_true", help="exit 1 when any unsupported symbol is used")
+    d.add_argument("--fail-on", choices=DOCTOR_STATUSES, help="exit 1 if this status occurs")
     args = ap.parse_args(argv)
     if args.cmd == "refresh":
         existing = load_rows() if SYMBOLS.exists() else []
@@ -652,7 +775,7 @@ def main(argv=None):
         return 0
     if args.cmd == "check":
         return check()
-    return doctor(args.files, args.fail_on)
+    return doctor(args.files, as_json=args.json, strict=args.strict, fail_on=args.fail_on)
 
 
 if __name__ == "__main__":
