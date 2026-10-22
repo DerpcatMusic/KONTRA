@@ -119,6 +119,14 @@ not traced.
 | v0x12 trailing float | parsed | **now diagnosed** (note `solid bus comp trailing field`); processor still runs |
 | smoothing, reset, latency, tail | none documented | export |
 
+## Solid Bus Comp trailing field: evidence and blocker (2026-10-23)
+
+- **Record offset.** The v0x12 reader `FUN_140d02850` (`0140d00000.c:1726`) stores the trailing float at record `+0x24`, after the link and side-chain bytes at `+0x20`/`+0x21`. Earlier versions stop at `+0x21` (v0x11) or `+0x1c` (v0x10).
+- **Setter.** The effect setter `FUN_1409a9d40` (`01409a0000.c:7961`, 60 bytes) calls the core's dirty-mark `FUN_141ac69e0(this+0x1c0)`, then stores the raw float at `this + 0x2a18 + idx*4`. It is a generic per-control store, not a Bus Comp field. The generic getter `0140990000.c:1496` reads the same array.
+- **Consumer not found.** The core `FUN_141aaa1e0` (`0141aa0000.c:5701`) reads its own fields (`+0x19e1` link byte, `+0x0c`/`+0x10` channel counts), not `this+0x2a18`. No direct caller of `FUN_1409a9d40` exists. It is reached only through an effect vtable.
+- **Blocker.** The trailing field's `idx` is set by the apply code that calls the vtable slot. That code is not located. Two whole-program searches timed out at 550-600 s (`RefsTo` on `0x1409a9d40`, `DispScan` on `0x2a18`). A targeted search needs the vtable of `BEffectSSLGBusComp` (its constructor is near `01407f0000.c:2856`) and a `DumpVtable` of that vtable to find the slot that targets `0x1409a9d40`. Then the apply that writes slot `idx` from `record+0x24` is the next read.
+- **Status.** Still `NotModeled`. The processor runs without it. No law is added.
+
 ## Supercharger GT (0x60, version 0x51)
 
 Saved fields are known from the binding table (`fx_other.tsv`): trim, saturation,

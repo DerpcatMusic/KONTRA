@@ -34,6 +34,7 @@ pub mod nckp;
 mod parser;
 #[cfg(feature = "scan")]
 pub mod scan;
+pub mod symbols;
 mod sema;
 pub mod setup;
 pub mod ui;

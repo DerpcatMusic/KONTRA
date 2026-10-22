@@ -211,7 +211,7 @@ pub(super) fn stereo_modeller(spread: f32, pan: f32, pseudo: bool) -> Config {
 /// is missing. `None` for modules this family does not own or that are mapped.
 pub(super) fn unproved(module: u16) -> Option<&'static str> {
     Some(match module {
-        0x1d => "Surround Panner (version 0x70): variable speaker lists and an embedded resampling-style panner (0x140ab0070, 0x140ab4eb0); speaker matrix and pan law not extracted",
+        0x1d => "Surround Panner (version 0x70): speaker gain law is ported (sampler_core::dsp::surround_panner); the block driver (0x140ab0070, 0x140ab4eb0), LFE routing and channel layouts are not mapped",
         0x70 => "Stereo Tune outside a bus chain: its delay state is bus-owned like a reverb, so a voice or group insert passes audio through",
         0x22 => "Rotator: summed-input core 0x140aae920 with four-state recurrences and ring buffers; rotation, acceleration and distance laws not extracted",
         0x78 => "Skreamer Deluxe mono branch (stored flag != 0, driver 140902480 calls only core 1480 in place): not decoded, so the slot passes audio through unprocessed",

@@ -133,6 +133,32 @@ shaper cases, and to check each mode's wet part against the vectors.
 Mode table and knob registrations: see `k-stomps-b.md` (unchanged, still
 measured).
 
+### Kolor shaper cases 2 and 5, decoded (2026-10-23, port in `kolor/shaper_2_5.rs`)
+
+Dispatch `1419749f0`: jump table at `0x141974d68` (dwords, relative to `0x140000000`). Case targets:
+0 `141974a2e`, 1 `141974b60`, 2 `141974bf1`, 3 `141974c02`, 4 `141974c7e`, 5 `141974cad`, 6 `141974cbf`,
+7 `141974cee`, 8 `141974d1d`, 9 `141974d4c`. All cases return through the epilogue at `141974b43` with the
+result in `xmm0`.
+
+- Case 2 (`141974bf1`) reads the float at `*(rcx)` and calls `14197adb0`. Stateless.
+  With `x` the input and constants 0.05, 0.0025, 1, 13.72612, -0.75:
+  `y = (x*0.05)/sqrt(0.0025*x*x + 1) * 13.72612`,
+  `s = exp(-(exp(-0.75*sqrt|y|) + 1) * y)`, out = `(exp(y) - s) / (exp(-y) + exp(y))`.
+- Case 5 (`141974cad`) reads the float at `*(rcx+8)` and calls `14197ae80`. Stateless odd soft clip:
+  out = `1 - e` for `x < 0`, `e - 1` for `x >= 0`, with `e = exp(-|x|)`.
+- `1443d111a` is the CRT `expf` thunk (`api-ms-win-crt-math`).
+
+Not yet measured: which `param+0x7dc` mode selects which case, and whether the post-dispatch gain
+(`DAT_14769aea8`) and the mode-4/2/5 branches apply to these outputs.
+
+### Kolor fixture check (2026-10-23): the dry path is not a scaled input
+
+The earlier "dry path = `(1-wet) * in * ramp`" reading does not hold for the native vectors. Dividing
+`steady_L` by `0.5 * in` gives a ratio that changes with the sample index (mode 0: 7.9e-4 at n=1, 0.017 at
+n=32, 0.10 at n=200, 0.23 at n=511). So the output is filtered by the per-stage sections (`+0x9484`,
+`+0x9568`, `+0x9670`, `+0x9708`), and the ramp alone cannot explain it. Any port must include those
+sections with coefficients from prepare/notify, which are still open.
+
 ## Skreamer Deluxe (`BEffectSkreamerDlx` 0x144e93da8, wrapper 0x144e93c98)
 
 | Step | Address | Size |
@@ -423,3 +449,63 @@ Corrects pass 3. Evidence: `tools/re/chainsaw_hm2_kemu.py` (fixed), `docs/re/dis
    /`+0x1f8` via `param[9]`, `param[6]`, `param[12]`; it is not a `+0x215` writer).
 
 Status: **still missing**. No Rust port, no kemu vector, no PARITY_MATRIX row change.
+
+## Pass 5: Surround Panner speaker law ported, vectors pass (2026-10-23)
+
+Evidence: `tools/re/surround_panner_kemu_vectors.py` (kemu on `Kontakt8.exe`, sha256 `0fe6356e…`),
+`crates/sampler-core/src/dsp/surround_panner.rs`, vectors `surround_panner_native_vectors.json`.
+
+- **Tables located.** The runtime-filled tables are written by `FUN_140a9cb40` (decompile
+  `0140a90000.c:8107`, pass 2 missed it). Loop 1 fills `0x14a611750` with `sin(k * 0.0015339807878856412)`
+  (`144fc3c70` = 2pi/4096, a running double accumulator), 1025 entries. Loop 2 fills `0x14a612760` with
+  `asin(-1 + j * 0.001953125)` (`144fc3cc8` = 2/1024), 1025 entries. Confirmed under kemu: max error 6e-8.
+  The sine table is quarter-wave: index k is the angle k*pi/2048, not a full period.
+- **Lookup** `140ac3230`: reduce to [0, pi/2] (2pi, pi sign flip, pi/2 mirror), then `sin[(int)(x*2/pi*1024+0.5)]`.
+- **Source position** `140a985b0`: `c = |dx|/r` (1 if r < 1e-5), `theta = acos(c)` mirrored by the sign of
+  `x-0.5` (pi - theta) and `y-0.5` (2pi - theta), radius `r + 0x358`, angle `(theta/pi + 0x35c)*pi`,
+  `x = 0.5 + r*cos`, `y = 0.5 + r*sin`, plus `0x350/0x354`, clamped to [0, 1].
+- **Distance** `140a94180`: source scaled by `0x348` around 0.5, speakers scaled by 0.1 around 0.5, Euclidean,
+  times 1.1785 when flag = 1.
+- **Weight** `140a93cb0`: zero for disabled speakers; else `cos^2(theta * wf / 2)` where
+  `wf = max(0, (R - s)/(R + s))`, `R` = speaker radius * 1.1785, `s = 0x348 * 0.7071`, and `theta` from the
+  quadrant of the source-to-speaker vector (the four branches are reproduced literally, `DAT_14471489c` = 1e-6).
+- **Gain** `140a94580`: mode 0 `(w_i/d_i^2)^p` normalised over the enabled speakers (`d` clamped to 0.01);
+  mode 1 `cos(d*p*2pi)` for `d*p*2pi <= pi/2`, else 0; mode 2 `2^(-8 d p)`; any other mode returns 1.0.
+
+Not ported (the record stays NotModeled, so the pass-through diagnostic in `effects/mod.rs` still holds):
+block driver `140ab0070` (per source: scalar fast path at `+0xc00` or the panned path `140ab4eb0`),
+shared mix `140ac21f0`, LFE sub-object at `+0x7a0`, and the output layouts above stereo. The engine has no
+multi-channel output path for this module yet; a stereo downmix needs the driver first.
+
+## Pass 6: Surround Panner block driver, routing core ported (2026-10-23)
+
+Evidence: decompile `Research/KONTRA/source/kontakt8/0140ab0000.c:3` (`140ab0070`, 1880 B, scalar paths) and
+`:3469` (`140ab4eb0`, 3813 B, read to line ~3600). Port: `crates/sampler-core/src/dsp/surround_panner.rs` (`Route`,
+`drive_block`), tests `driver_tests`.
+
+Read from the scalar code (no SSE shuffles on these paths; the vector variants are the same loops):
+
+- Object fields: source count `+0x124`, output count `+0x128`, per-output record `+0x1c8 + 12k` whose byte 0 is the
+  flag, per-source input pointer `*(+0x20 + 8s)` (the panned path falls back to `+0x20` when null), output `k` at
+  `param_2 + 0x9c010 + 4*(off + 0x400*k)`, scalar level `+0xc00`.
+- Outer loop over sources `s`, inner over outputs `k`. A bit per output `k` in a stack word is set after its first
+  write. The first write overwrites, later writes sum (`out = in*g` vs `out += in*g`). The panned path receives the
+  same choice as its 7th argument (1 = first write, 0 = add).
+- Flag 1 outputs take the scalar path (`in * (+0xc00)`) and then the LFE sub-object at `+0x7a0`: vtable slots
+  `0x58` (prepare with block length), `0x30`/`0x38` (process, output pointer, channel 0), `0xb8` (process pair).
+  Flag 0 outputs take `140ab4eb0`. Inferred from the call pattern, not yet confirmed by a native vector.
+- Per-block state: `+0xc94` and `+0x1bc` are saved before the first source and restored before each positional
+  output, so each panned call starts from the same state. `+0xc88` is a countdown advanced by the block length
+  while `+0x2498` or `+0xc8c` is set, and set to -1 once it reaches `+0xc90`. Its consumer is not read yet.
+- `140ab4eb0` (read so far): gain via `140a94580` into the cache `+0x39c` (replaced only when it still holds the
+  sentinel `144714a54`); a distance delay `(N - 0x20) * d * scale` samples, clamped to [2, N-1] from `+0x2638`,
+  and a second window from `+0x2640`; the output `local_118` is either a local scratch (overwrite) or the output
+  buffer (add); the state `+0x1bc` counts down from 0x20, so the gain is refreshed every 32 samples. The per-32
+  update body, the `+0xc8c` branch, and the delay-line read/write are not yet decoded.
+
+Still open (the record stays NotModeled, so the pass-through diagnostic in `effects/mod.rs` still holds):
+- Panned path `140ab4eb0`: 32-sample gain update body, delay line, crossfade, `140a94270`, `140a93ed0`, `140a93b00`.
+- LFE sub-object (`+0x7a0`): its filter and level law. Only the vtable slots are known.
+- Shared mix `140ac21f0` (slot 23 post-process).
+- Output layouts and stereo downmix: the speaker matrix is not extracted, so no stereo fold is claimed.
+- Kemu wrapper vectors for the driver (ctor, prepare, apply, per-block) are not recorded yet.
