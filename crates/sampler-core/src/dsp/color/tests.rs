@@ -559,8 +559,10 @@ fn uvi_redux2_matches_the_native() {
 }
 
 /// Every processor stage of every voice carries a color state: shapers share one slot, so
-/// adding a shaper must not grow it past the largest (2.9 KB when written).
+/// adding a shaper must not grow it past the largest. The bound was 3 KB (2.9 KB when
+/// written, Freak's core at 2.2 KB); Freak's live knob slots (76 B) and the native core
+/// window (2.2 KB) now put the slot at Freak's size, 3.1 KB, so the bound is 3.5 KB.
 #[test]
 fn color_state_holds_one_shaper_at_a_time() {
-    assert!(std::mem::size_of::<State>() <= 3072, "{}", std::mem::size_of::<State>());
+    assert!(std::mem::size_of::<State>() <= 3584, "{}", std::mem::size_of::<State>());
 }

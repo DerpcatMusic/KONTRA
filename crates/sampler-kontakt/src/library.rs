@@ -5374,7 +5374,7 @@ mod modulation {
             common[..7].copy_from_slice(&[0, 6, 1, 9, 0, 0, 0]);
             WavetableSource {
                 common, position: 0.25, phase: 0., phase_random: 0.,
-                form1: 0.5, form2: 0., form_type: if admitted { 17 } else { 2 },
+                form1: 0.5, form2: 0., form_type: if admitted { 17 } else { 20 },
                 form2_type: 1, quality: 1, inharmonic_enabled: false,
                 inharmonic: 0., mod_wave: 0, mod_type: 0, mod_amount: 0.,
                 mod_tune: 0., unknown_tail: [0; 16],
