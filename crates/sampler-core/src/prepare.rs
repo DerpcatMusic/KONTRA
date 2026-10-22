@@ -1619,13 +1619,29 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
+        // Programs routinely share one code block (every region of a generated
+        // table). Scan each block once, keyed by its allocation, and keep the
+        // per-program lifetime check. Scanning shared code per program is
+        // quadratic on large tables.
+        let mut scanned = std::collections::HashMap::<usize, (bool, bool)>::new();
+        let mut external_programs = false;
         for program in &programs {
-            for op in program.code.iter() {
-                if let super::Instruction::AwaitExternal{processor}=op {
-                    if program.wait_lifetime!=super::WaitLifetime::Callback
-                        || self.source_owners.processor(*processor).is_none() {
-                        return Err(Error::InvalidInput);
+            let key = std::sync::Arc::as_ptr(&program.code).cast::<()>() as usize;
+            let (awaits, unbound) = *scanned.entry(key).or_insert_with(|| {
+                let mut awaits = false;
+                let mut unbound = false;
+                for op in program.code.iter() {
+                    if let super::Instruction::AwaitExternal { processor } = op {
+                        awaits = true;
+                        unbound |= self.source_owners.processor(*processor).is_none();
                     }
+                }
+                (awaits, unbound)
+            });
+            if awaits {
+                external_programs = true;
+                if program.wait_lifetime != super::WaitLifetime::Callback || unbound {
+                    return Err(Error::InvalidInput);
                 }
             }
         }
@@ -1652,7 +1668,7 @@ impl Prepared {
         self.source_owners.note_root=None;
         self.source_owners.note_entry=None;
         for owner in self.source_owners.rows_mut(){for processor in &mut owner.event_processors{processor.note_program=None;}}
-        self.external_programs=programs.iter().any(|program|program.code.iter().any(|op|matches!(op,super::Instruction::AwaitExternal{..})));
+        self.external_programs = external_programs;
         self.
 programs = programs.into_boxed_slice();
         self.stages = Box::new([super::Stage {
@@ -3073,5 +3089,36 @@ mod prepared_source_owner_tests {
         assert!(matches!(PreparedSourceOwners::compile(&[cycle_root,cycle_child],0,0,&[]),Err(Error::InvalidInput)));
         let mut bad=root;bad.zones.push(sampler_ir::ZoneRef(0));
         assert!(matches!(PreparedSourceOwners::compile(&[bad,child],0,0,&[]),Err(Error::InvalidInput)));
+    }
+}
+
+#[cfg(test)]
+mod shared_program_code_tests {
+    use super::*;
+    use crate::{Instruction, Program, WaitLifetime};
+    use sampler_ir::SourceEventProcessorId;
+
+    #[test]
+    fn shared_code_keeps_await_checks_per_program_and_reports_external_programs() {
+        // Clones share one code allocation, as generated region programs do.
+        let awaiting = Program::new(vec![
+            Instruction::AwaitExternal { processor: SourceEventProcessorId::KontaktScriptSlot(0) },
+            Instruction::End,
+        ])
+        .unwrap();
+        // The processor is unbound, so any program that awaits it is refused.
+        let refused = Prepared::new(48000, vec![], vec![], 0).unwrap().with_programs(
+            vec![
+                awaiting.clone().with_wait_lifetime(WaitLifetime::Callback),
+                awaiting.clone().with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        );
+        assert!(refused.is_err());
+        let plain = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(vec![Program::new(vec![Instruction::End]).unwrap()], None)
+            .unwrap();
+        assert!(!plain.external_programs);
     }
 }
