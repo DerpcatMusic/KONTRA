@@ -2033,7 +2033,10 @@ fn glob(pattern: &str, text: &str) -> bool {
     go(pattern.as_bytes(), text.as_bytes())
 }
 
-/// What a result depends on: the item file, the tier and the crates' git tree.
+/// What a result depends on: the item file, the tier and the engine inputs.
+/// Committed inputs are keyed by git tree ids. Uncommitted edits are keyed by
+/// the content of their diff and untracked files, so an unchanged dirty tree
+/// reuses its results and any edit still invalidates them.
 fn tree_hash() -> String {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -2043,28 +2046,33 @@ fn tree_hash() -> String {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default()
     };
-    let tree = format!(
-        "{}{}",
-        git(&["rev-parse", "HEAD:crates"]),
-        git(&["rev-parse", "HEAD:tools/corpus-health"])
-    );
-    if git(&[
-        "status",
-        "--porcelain",
+    const ENGINE: &[&str] = &[
         "crates",
         "tools/corpus-health",
         "vendor",
-    ])
-    .is_empty()
-    {
-        tree
-    } else {
-        // Uncommitted edits: never reuse results across them.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        format!("{tree}+dirty{now}")
+        "Cargo.toml",
+        "Cargo.lock",
+    ];
+    let tree: String = ENGINE
+        .iter()
+        .map(|p| git(&["rev-parse", &format!("HEAD:{p}")]))
+        .collect();
+    let mut status = vec!["status", "--porcelain", "--"];
+    status.extend(ENGINE);
+    if git(&status).is_empty() {
+        return tree;
     }
+    let mut diff = vec!["diff", "HEAD", "--binary", "--"];
+    diff.extend(ENGINE);
+    let mut content = git(&diff);
+    let mut untracked = vec!["ls-files", "--others", "--exclude-standard", "--"];
+    untracked.extend(ENGINE);
+    for file in git(&untracked).lines() {
+        content.push_str(&git(&["hash-object", "--", file]));
+    }
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&content, &mut hasher);
+    format!("{tree}+dirty{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 fn cache_key(item: &Item, tier: &str, tree: &str) -> String {
