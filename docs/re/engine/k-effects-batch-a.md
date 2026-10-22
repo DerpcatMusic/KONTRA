@@ -214,3 +214,23 @@ ported and no kemu vector exists, so no row can be "parity".
   (`1447148d0`), `0.5`, `1.0`, `1024` (`144fc4b0c`), `1/pi` (`144f38960`),
   `2/pi` (`144f38988`), `pi`, `2pi`, `pi/2`, `1e-6`, `1e-7`, `-1`, `2.0`, `-8`,
   `0.7071` (`144fc3b60`); `144fc3e50` = 1.17851126, `144fc43c0` = 2pi (f32).
+
+## Pass 3: direct HM2 kemu probe (blocked, 2026-10-23)
+
+Probe: `tools/re/chainsaw_hm2_kemu.py` (runs, no fault, output 0). Sequence: ctor `14196fd00`,
+slot 5 `14099c970`, slot 3 `14099a700` (rate, 32), slot 6 `1419709e0`, slot 20 `141970b50` (rate),
+knobs `1409a9ec0` 0..3, slot 19 `141971820`. The ring-buffer fault of the driver path is not hit.
+
+Blocker: output is exactly zero. The per-block gain is `obj+0x40`, copied from `+0x180[3]` only in
+the block that is gated by the dirty flag `+0x215`. `1409a9ec0` takes the `+0x148 != 0` branch after
+prepare (zeroes `+0x198[i]`, so nothing is copied), and no decompiled writer sets `+0x215` to 1
+(`0140990000.c:10227` and `0141970000.c:1162` only clear it). Needed before a vector: read
+`1409abdd0` (the `+0x214` deferred-apply path, called from slot 8 `1419721a0`) and the setter that
+raises `+0x215`, then confirm the apply order.
+
+Helpers still unread for the port: `14194c5b0` (580 B), `1419590a0` (397 B), `141950580`
+(the 10x10 solver used by `141971150`), `1419723e0` (685 B, the reset-constants path), `141936990`,
+`141ee86c0`. Constants: the `DAT_14769ab*`/`DAT_14769ac*` table and `DAT_14470bad*` (read via `pf`).
+`1419714c0` (863 B) is a Newton-style solver with up to 20 iterations and an exp-polynomial
+approximation; its polynomial constants `DAT_14769ab64/ab68` and `DAT_144e79a48` are read here.
+No Rust port and no native vector exist, so the row stays **missing**.
