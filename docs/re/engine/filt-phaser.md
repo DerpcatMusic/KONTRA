@@ -3,12 +3,36 @@
 Scope: Kontakt 8 Phaser filter only (saved filter type 13, `filter-type-ids.tsv`). Not the Legacy Phaser
 effect (`k-timemachine` / legacy mod-fx notes). Status date 2026-10-22.
 
-Outcome of this pass: the native object, its vtable, the process driver, the per-block kernel and the
-coefficient law are located and read. The **host-side writer of the live Cutoff/Resonance lanes is not
-located**, so the live lane law, its per-chunk cadence and a kemu vector set are **not** delivered. The
-static path (`Processor::Phaser`, `phaser_filter`) is unchanged. No Wine run, no fresh Ghidra run. The
-decompile export under `Research/KONTRA/source/kontakt8/` and the PE bytes (`pefile` + `capstone`
-disassembly of a few functions, no execution) were the only sources.
+Outcome (second pass, 2026-10-22): the live Cutoff/Resonance clock is ported and verified against the native
+object under kemu. The host-side writer that supplies the lane goals is still not located: the vectors model it
+the way the Vowel family does (goals written per host call, dirty flag once). The static path is unchanged. The
+runtime still lowers live Phaser lanes through the static TimeMod lane path (`slot_phaser` in
+`crates/sampler-kontakt/src/effects/timemod.rs`), so the live clock is not routed yet.
+
+## Live clock (verified under kemu)
+
+- Harness: `tools/re/phaser_kemu_vectors.py` (native reset `0x14094a720`, prepare `0x1408de8a0`, constants at
+  `obj+0x410..0x430` written after the reset, one clock call `0x140ae9f90` per host call, mono, overwrite).
+- Vectors: `crates/sampler-core/src/dsp/filter/phaser_kemu_vectors.json`, 10 schedules at 44.1, 48 and 96 kHz,
+  5176 frames, 136 KB.
+- Test: `dsp::filter::phaser::tests::phaser_live_lanes_match_native_process_vectors`, worst case 6.6e-7 of peak
+  (tolerance 1e-5). A double-precision Python model of the same rules agrees to 9.0e-7 of peak.
+- Port: `crates/sampler-core/src/dsp/filter/phaser.rs` (`PhaserClock`, f32). Rules, as the native clock reads them:
+  - The first call snaps both lanes to their goals. Later calls keep the 32-frame countdown (`obj+0x1bc`), which
+    carries across calls and reloads to 32 only while frames remain. A call starts with an empty segment when the
+    countdown is 0 and a lane is moving.
+  - A segment is moving when either lane is more than 1e-4 from its goal. A moving segment renders the countdown's
+    frames, then the cutoff moves by `clamp(goal - cur, -step, step)` with `step = clamp(1 / (31 r + 4), 1/35, 1/4)`
+    (`r` the resonance at the call's start), and the resonance moves `0.015` of the distance while it is more than
+    1e-4 away.
+  - The coefficient setter (`0x14095d770`) is recomputed only when an input moved by at least 1e-6 (`DAT_1447148f0`).
+    Its law: `(1 - f) / (1 + f)` with `f = 0.0543... * (e - 1) * 0.33 + 0.02` and `e` the truncated exponential
+    series of `3c`; feedback `0.85 * clamp(r, 0, 1)`.
+  - The kernel (`0x140909810`) runs four first-order allpass stages per sample, input `x + feedback * y3[n-1]`,
+    output `0.5 * (y3 + x)` in overwrite mode.
+- The clock rules are the ones the Vowel port (`crates/sampler-core/src/dsp/filter/cascade.rs`) reads from the same
+  wrapper address; the Phaser vectors are the first kemu check of them on a non-Vowel class. Nothing was imported
+  from Vowel or Formant code.
 
 ## Located addresses
 
@@ -49,7 +73,7 @@ BFilter6PoleLP / BFilterPro52 slots (generic BFilterBase).
 | `+0x1ec` | current resonance (float) | driver |
 | `+0x1f0` | current cutoff (float) | driver |
 
-## Native laws (read, not yet vector-verified)
+## Native laws (coefficient, kernel and clock verified by the vectors above)
 
 ### Coefficient and feedback (slot 36, `0x14095d770`)
 
@@ -82,23 +106,29 @@ BFilter6PoleLP / BFilterPro52 slots (generic BFilterBase).
 - Work is split into chunks: `+0x1bc` is reset to `0x20`, each chunk renders `min(remaining, countdown)`
   frames through slot 33, and at the end of a chunk the driver can advance the lane ramp and call slot 36
   again.
-- NOT read: the exact ramp step (a smoothing factor `DAT_144f38664` per chunk with a deadband), the stride
-  of the lane buffer walk (`lVar15`), and the predicates in slots 45 and 46.
+- Ramp step and deadband: now read through the Vowel port of the same wrapper (see "Live clock"); the
+  vectors check them. Lane buffer walk (`lVar15`) and the predicates in slots 45 and 46 are still not read.
 
-## Open questions (blocking the live-lane parity work)
+## Pinned in the second pass
 
-1. The host-side writer of `+0x1dc`, `+0x1e0` and `+0x1a1` for the Cutoff and Resonance ENGINE_PAR lanes.
-   Candidates to read next: the dispatcher `FUN_140973970` (live path), `FUN_140978a00`, `FUN_140979b20`.
-   The generic setter `FUN_14087cb70` / `FUN_140838f30` is used by other BFilter classes, not this one.
-2. Whether `+0x1c8` / `+0x1d0` point at one float or at a per-chunk array (the driver indexes with `lVar15`).
-3. Slot 37 (`value * 0.01f`): if the live Cutoff value is 0..100 before slot 36, the Rust lane law needs a
-   `0.01` factor. Find the caller of slot 37 for the Phaser (not in the generic `0x14087ce80` path, which
-   calls slot 37 virtually on its own object).
-4. Fifth argument of slot 33 (accumulate vs overwrite): which caller passes which value.
-5. Driver ramp: the smoothing constant `DAT_144f38664` and the deadband constant, to be read from the PE
-   with `pefile` before any port.
-6. `+0x200` (slot 1) is not read by slot 36 or slot 33; it belongs to the generic cutoff mapping
-   (`FUN_14087cb70`), which the Phaser does not use on the slot 36 path.
+- Slot 49 (`0x14087cc40`, 169 B) is a text-value converter: atof of the string, multiplied by 1000 for a `k`
+  suffix, then slot 37 (`0x14087cfa0`, `value * 0.01f`), then the string is freed. Slot 37 is therefore the
+  percent-to-normalized mapping of a text value. No numeric ENGINE_PAR path into `obj+0x1dc` through slot 37 was
+  found; the vectors take normalized goals, as the clock reads them.
+
+## Open questions
+
+1. The host-side writer of the goals (`obj+0x1dc`, `obj+0x1e0`) and of the dirty flag (`obj+0x1a1`) for the live
+   ENGINE_PAR lanes is not located. The vectors use goals per host call and dirty once. A per-chunk dirty flag
+   (snap every chunk, no ramp) is not excluded by any vector.
+2. The numeric KSP path: whether the live Cutoff value is normalized or percent (slot 37) before it becomes a goal.
+3. The modulation-buffer path (`obj+0x1c8` / `obj+0x1d0`, one value per chunk). No vector covers it.
+4. The accumulate branch of the kernel (fifth argument 0). The vectors use 1 (overwrite).
+5. Out-of-range resonance goals. The Rust clock uses the raw goal for the ramp and clamps only in the coefficient law;
+   no vector covers a resonance goal outside [0, 1].
+6. Stereo. The vectors are mono; the kernel loops over `+0x124` channels.
+7. Runtime routing: the Rust `process` takes one goal per call; the Vowel port samples the lane per segment. The
+   Phaser runtime path (`slot_phaser`) does not use the clock yet.
 
 ## Verified against the PE image (`pefile`, no execution)
 
@@ -119,15 +149,6 @@ These match the Rust constants in `filter_coefficient` and `Config::phaser_filte
 
 ## What is not verified
 
-- No kemu vector set for this family (the harness was not written: the live writer is missing, so the
-  object state cannot be driven the way the native host does).
-- No Kontakt audio (Wine) for the live lanes. The static 8-step Wine measurement
-  (`phaser_filter_matches_kontakt_measurements`, under 0.1 dB) is unchanged.
-- The accumulate/overwrite fifth argument and the lane-pointer semantics above.
-
-## Next step
-
-Locate the live writer (open question 1), then write `tools/re/phaser_kemu_vectors.py` on the same pattern
-as `formant_kemu_vectors.py`: vtable pointer at `obj+0`, constants at `+0x410`, prepare via slot 1, reset via
-slot 5, the writer, the driver at `0x140ae9f90`, stereo output. Compare a pure-Python model of the driver ramp
-to the vector before debugging Rust.
+- Host start-up order and the host writer (open question 1).
+- Any Kontakt audio render of a moving control (no Wine run).
+- The static 8-step Wine measurement is unchanged (`phaser_filter_matches_kontakt_measurements`, under 0.1 dB).

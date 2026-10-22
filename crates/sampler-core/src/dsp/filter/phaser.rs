@@ -76,9 +76,15 @@ impl PhaserClock {
         } else {
             1.
         };
-        let frequency = (f64::from(exponential - 1.) * 0.054_310_930_074_677_53 * 0.32999999999999996 + 0.02) as f32;
+        let frequency =
+            (f64::from(exponential - 1.) * 0.054_310_930_074_677_53 * 0.32999999999999996 + 0.02)
+                as f32;
         self.coefficient = (1. - frequency) / (frequency + 1.);
-        let r = if resonance >= 0. { resonance.min(1.) } else { 0. };
+        let r = if resonance >= 0. {
+            resonance.min(1.)
+        } else {
+            0.
+        };
         self.feedback = (f64::from(r) * 0.85) as f32;
     }
 
@@ -107,8 +113,13 @@ impl PhaserClock {
         let mut position = 0;
         while position < len {
             self.design(self.current);
-            let moving = (goal[0] - self.current[0]).abs() > MOVING || (goal[1] - self.current[1]).abs() > MOVING;
-            let n = if moving { self.countdown.min(len - position) } else { len - position };
+            let moving = (goal[0] - self.current[0]).abs() > MOVING
+                || (goal[1] - self.current[1]).abs() > MOVING;
+            let n = if moving {
+                self.countdown.min(len - position)
+            } else {
+                len - position
+            };
             for (k, out) in output[position..position + n].iter_mut().enumerate() {
                 let x = input[position + k] as f32;
                 let mut stage = self.feedback * self.y[3] + x;
@@ -142,30 +153,55 @@ mod tests {
     /// frame counts. The worst error is the largest difference over the peak of the native output.
     #[test]
     fn phaser_live_lanes_match_native_process_vectors() {
-        let file: serde_json::Value = serde_json::from_str(include_str!("phaser_kemu_vectors.json")).unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("phaser_kemu_vectors.json")).unwrap();
         let mut failures = Vec::new();
         let mut worst_overall = 0f64;
         for case in file["cases"].as_array().unwrap() {
             let name = case["name"].as_str().unwrap();
-            let values = |v: &serde_json::Value| -> Vec<f64> { v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect() };
+            let values = |v: &serde_json::Value| -> Vec<f64> {
+                v.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x.as_f64().unwrap())
+                    .collect()
+            };
             let stim = values(&case["stim"]);
             let native = values(&case["out"]);
             let calls: Vec<(f32, f32, usize)> = case["calls"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|c| (c[0].as_f64().unwrap() as f32, c[1].as_f64().unwrap() as f32, c[2].as_u64().unwrap() as usize))
+                .map(|c| {
+                    (
+                        c[0].as_f64().unwrap() as f32,
+                        c[1].as_f64().unwrap() as f32,
+                        c[2].as_u64().unwrap() as usize,
+                    )
+                })
                 .collect();
             let mut clock = PhaserClock::new();
             let mut out = vec![0f64; stim.len()];
             let mut at = 0;
             for (cut, res, frames) in calls {
-                clock.process([cut, res], &stim[at..at + frames], &mut out[at..at + frames]);
+                clock.process(
+                    [cut, res],
+                    &stim[at..at + frames],
+                    &mut out[at..at + frames],
+                );
                 at += frames;
             }
-            assert_eq!(at, stim.len(), "{name}: call sizes do not cover the stimulus");
+            assert_eq!(
+                at,
+                stim.len(),
+                "{name}: call sizes do not cover the stimulus"
+            );
             let peak = native.iter().fold(1e-6f64, |m, v| m.max(v.abs()));
-            let worst = out.iter().zip(&native).fold(0f64, |m, (a, b)| m.max((a - b).abs())) / peak;
+            let worst = out
+                .iter()
+                .zip(&native)
+                .fold(0f64, |m, (a, b)| m.max((a - b).abs()))
+                / peak;
             println!("{name}: worst error {worst:e} of peak");
             worst_overall = worst_overall.max(worst);
             if worst >= 1e-5 {
