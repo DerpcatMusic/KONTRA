@@ -72,3 +72,53 @@ Source: `scratch/survey/full-20261022.jsonl` (`corpus-health --tier full`, 1395 
 - Tooling trap: `sampler-native render-kontakt*` refuses to overwrite an existing output and exits
   with "File exists (os error 17)" with no other output. An old output path can look like a
   silent render. Check the exit status and the file's mtime.
+
+## Dolce Staccato note-off burst: gate search (2026-10-22, fourth pass, no fix)
+
+Root cause not established. No code change in this pass. Corrections to the third pass first.
+
+- **The third-pass attribution to the `play_note` at script line 77297 is wrong for this
+  instrument.** Persisted state: `%store_menu_developer_type_art = [1, 0]`, so articulation 0
+  is `$ART__SHORT` (constants: LONG 0, SHORT 1, LEGATO 2, PORTATO 3). Line 77297 sits in the
+  `case $ART__LONG` block (76962-77333). The SHORT block (77455-77490) only runs
+  `note_off(%_event_id[...])` when CC64 < 64 and updates the labels. Nothing plays there.
+- The tonal release path for this instrument is `on release` 76019 (`switch_developer_enable_performance`
+  = 0, `page_current_developer` = TONAL, `get_event_par(..., SOURCE)` is -1 for host input, so
+  the block runs) → select 76022 → SHORT 77455. The common block after the select (77491-77536)
+  is choir-only. No `play_note` exists on the tonal SHORT release path.
+- The performance-mode release (`switch_developer_enable_performance = 1`, 77739-77794) does
+  play `play_note` (77757/77759), but the persisted value is 0 and no script line assigns it.
+- SHORT note-on calls `reset_rls_trig_counter($EVENT_NOTE)` (line 70652). The note-on tonal path
+  calls `change_note` + `ignore_event` (68793-68795) for keys in range.
+
+Kontakt oracle (`dolce07.wav`, 48 kHz float, notes 60/62/58/65): output is exactly 0.0 through
+1.00 s, first nonzero at ~1.02 s, peak 0.0199 at ~1.2 s, below 0.001 by 2.0 s. The burst starts
+at note-off and is not a held-note tail.
+
+Where the release sound would have to come from: the native release-trigger group path, not the
+script. KONTRA gates it off as follows:
+
+- `SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)` (Staccato script line 81) →
+  `owns_release_triggers` (`crates/sampler-ksp/src/lib.rs:1753`) → `with_script_release_triggers`
+  (`lib.rs:905`) → `run_release` with `musical = false`
+  (`crates/sampler-core/src/prepare/selection.rs:1216`). Native release groups are silent.
+- `crates/sampler-ksp/tests/groups.rs:409-424` encodes that reading ("native release groups do not
+  fire"). It is the team's interpretation, not checked against Kontakt.
+- Kontakt's generated system-script code (decompile bucket
+  `Research/KONTRA/source/kontakt8/0140870000.c` lines ~4816-5022) emits the release-trigger logic only under
+  `USE_CODE_IF_NOT(NO_SYS_SCRIPT_RLS_TRIG)`: the pedal exit, `disallow_group`/`allow_group` of
+  `rlsTrigGroups`, and `_reset_rls_trig_counter` on note-on. That shows the condition removes the
+  script-side gating. It does not show that native release groups stop sounding under it.
+
+Still open (the exact gate is not yet pinned):
+
+1. Whether the Staccato key-60 groups carry `release_trigger = true` and `rls_trig_counter > 0`
+   (the release counter law in `crates/sampler-kontakt/src/library.rs:37-47`). Needs a per-group
+   dump from the `.nki`; `object_survey` only aggregates.
+2. Whether Kontakt sounds those native release groups when `NO_SYS_SCRIPT_RLS_TRIG` is set. The
+   candidate fix is to keep native release playback and only drop the script-side gating. That
+   contradicts `groups.rs:412`, so it needs an oracle check before any change.
+
+Not done: no fix, no new Kontakt render, no code PR. The NI manual page
+(`ksp-manual/en/advanced-concepts`) returned HTTP 403 to WebFetch, so the condition's documented
+semantics are unverified.
