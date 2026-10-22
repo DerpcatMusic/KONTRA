@@ -247,6 +247,9 @@ pub(crate) mod kaiser;
 // Ring sub-object ramp (0x140acb6c0); wired when the Ring core lands.
 #[allow(dead_code)]
 pub(crate) mod ring_ramp;
+// Surround Panner speaker law (native 0x140a94580 and its helpers); the block driver is not wired yet.
+#[allow(dead_code)]
+pub(crate) mod surround_panner;
 // Stereo Tune core (native 0x140aaf640); the Kontakt lowering is not wired yet.
 #[allow(dead_code)]
 pub(crate) mod stereo_tune;
