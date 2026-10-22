@@ -56,6 +56,8 @@ pub struct Tap {
     pub prev_frac: f64,
     /// `+0x90`, `+0x98`, `+0xa0`: the last three rates (the deposit's `a` and `b`).
     pub rates: [f64; 3],
+    /// `+0x84`, `+0x88`, `+0x8c`: the deposit history (`141accfb0`, see `deposit.rs`); the write stage shifts it.
+    pub hist: [f32; 3],
     /// `+0x64` bp, `+0x68` lp, `+0x6c` d, `+0x70` v of the last tap.
     pub bp: f32,
     pub lp: f32,
@@ -96,6 +98,7 @@ impl Tap {
             prev_wr: 0,
             prev_frac: 0.,
             rates: [0.; 3],
+            hist: [0.; 3],
         }
     }
 
