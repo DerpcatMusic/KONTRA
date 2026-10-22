@@ -92,3 +92,16 @@ Kontakt values. Confirming them needs the decompiled core or Kontakt vectors.
 - `effects::timemod::tests::wow_flutter_reads_its_stream_and_maps_generic_law` (sampler-kontakt): reader order, mix, and the omitted-law diagnostic.
 
 - **Kernel located (2026-10-23):** see [k-wowflutter-kernel.md](k-wowflutter-kernel.md). Process = vtable slot 19 (`FUN_14199d080`) of `WowFlutter::vftable` (`0x1476a3400`), reached from slot 7 (`FUN_14099f000`). Port still blocked on the sub-object readers and constants.
+
+## Live control: Tape Saturator (decoded 2026-10-23, not yet a Rust lane)
+
+Source: `source/kontakt8/0140ae0000.c`. Object fields, from the setter and ramp code:
+
+- Setter `FUN_140ae1e10(obj, param, value)`: param 0 gain → `FUN_140ae1ee0` (dB table lookup, not decoded); param 1 warmth → `obj+0x3c = 10^(0.05·(6w−3))`, ramp target `obj+0x2240`; param 2 roll-off → `obj+0x24`/`+0x40` (law not decoded); param 3 quality → bool `obj+0x2c = 0.5 < v`. Warmth and the flags set `+0x2250 = 1`, `+0x2260 = 1`.
+- **Native vector (KEMU, `tools/re/tape_live_kemu.py`):** warmth 0, 0.25, 0.5, 1 gives gain 0.70794577, 0.84139514, 1.0, 1.41253757, exact match with the law (error 0). `tape.rs` already uses the same law at init.
+- **Slew (`FUN_140ae1b40`, 713 B):** four lanes, current `+0x2220..0x222c`, target `+0x2240..0x224c`, per-step increment `+0x2230..0x223c`, step counter `+0x2254` reloaded from `+0x2258`, step rate `+0x225c`. A lane snaps when its square falls under the threshold.
+- Ramp length (`FUN_140ae0fc0`, init): `+0x2258 = int(T·0.03 / sr + 0.5)` clamped to ≥1, with `T = +0x2170` (init argument) and `sr = +0x2178`; `+0x225c = 0.025 / (N·sr)`. Only the callers of `FUN_140ae0fc0` supply `T`, and those are not traced yet.
+
+**Blocker for the live lane:** a moving-control vector needs `T` (the init argument's native caller) and the process loop that consumes the four slew lanes. Without them the ramp curve is a guess, so no Rust lane or parity row is claimed. Next step: trace the callers of `FUN_140ae0fc0`, then run `FUN_140ae1b40` under KEMU for a block schedule.
+
+Bite (0x66) and the Bus Comp and Raum trailing items were not started in this pass.
