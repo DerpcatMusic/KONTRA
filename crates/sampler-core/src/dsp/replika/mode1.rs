@@ -8,15 +8,19 @@
 //! `T4(env x 9.96578407 + 1200)` (the same table as `replika::t4`). Output `+0x54 x bp x g`, with bp = the
 //! section's `+0x3c`.
 //!
-//! Write filter `141aa3c60` (`WriteFilter`, not wired): the per-sample write path of the same head, with the
-//! waveshaper `141aa31f0` / `14199c5b0` (its trig from `14199b1d0` and `14199ae00`), the MT dither `1410ec0c0`
-//! (`timemod::mt::Mt`: the same MT19937 stream, checked against the object's ring) and two TPT sections. Its
-//! vector test is at 1e-4, not 1e-5 (see `WRITE_TOLERANCE`).
+//! Write filter `141aa3c60` (`WriteFilter`, not wired): the per-sample write path of the same head. Its
+//! waveshaper `141aa31f0` (ADAA over the antiderivative `14199c5b0`, direct form below a 1e-4 step) takes the
+//! native trig of `14199ae00` (sin) and `14199b1d0` (cos and sine fold), ported exactly from the disassembly
+//! (`docs/re/engine/disasm/replika-mode1-listings.txt`, constants in `replika-mode1-constants.txt`). The MT
+//! dither `1410ec0c0` is `timemod::mt::Mt`, the same MT19937 stream as the object's ring. Vector test at 1e-5.
+//!
+//! Large-argument branches (not ported, not reached by the write path): `14199ae00` takes a 2/pi bit-table
+//! reduction when |v| >= 25966 (`1476a3760`), and `14199b1d0` does the same when |v| >= 18838 (`1476a3750`). The
+//! write path's arguments are the lane coefficients times |t| <= 1, all below 13.
 //!
 //! Piece 3a is still partial. Open (addresses in `k-replika-gaps.md`): the design chain that sets the write
 //! filter's coefficients (`141abbc90`, `141ac3fd0`, `1419529e0`, `14199dbf0`, `141ac96c0`), the MT seed of the
-//! lane (its init is not read), the native trig polynomial for 1e-5, the threshold branches (|v| >= 25966 in
-//! `14199ae00`, not reachable with these coefficients), and everything on the kernel side.
+//! lane (its init is not read), and everything on the kernel side.
 #![allow(dead_code)] // not wired: the mode-1 reader is not in the loop yet.
 
 use super::t4;
@@ -53,15 +57,16 @@ pub struct PostFilter {
 impl PostFilter {
     /// One sample. The state updates are in the order of `141aa3e00` (section, then envelope).
     pub fn tick(&mut self, x: f32) -> f32 {
-        // `140d947a0` with input x: bp and lp from the state before the step, then both integrators.
-        let d = x - self.s1;
-        let bp = d * self.c3 + self.s0 * self.c2;
-        let lp = self.c3 * self.s0 + d * self.c4 + self.s1;
-        self.s0 = 2. * bp - self.s0;
-        self.s1 = 2. * lp - self.s1;
+        // `140d947a0` (the shared section step) with input x.
+        let mut st = State {
+            s0: self.s0,
+            s1: self.s1,
+        };
+        let (bp, _) = Section::from_coefficients(self.c2, self.c3, self.c4).tick(&mut st, x);
+        (self.s0, self.s1) = (st.s0, st.s1);
 
         // Envelope: `(env - v) coef + v` with v = ln(|x| + floor) x 8.6858902.
-        let v = (x.abs() + LOG_FLOOR).ln() * DB_PER_NEPER;
+        let v = native_logf(x.abs() + LOG_FLOOR) * DB_PER_NEPER;
         self.env = (self.env - v) * self.coef + v;
         let g = t4(self.env * INDEX_PER_DB + INDEX_OFFSET);
         self.gain * bp * g
@@ -75,6 +80,76 @@ const THIRD: f32 = f32::from_bits(0x3eaa_aaab);
 /// `1e-4` as f64 (`1476a36d8`): the shaper switches from ADAA to its direct form below this step.
 const SHAPER_EPS: f64 = 9.999_999_747_378_752e-5;
 
+/// `1476a3730` = 2/pi (f32 `3f22f983`): the reduction's quotient scale.
+const TWO_OVER_PI: f32 = f32::from_bits(0x3f22_f983);
+/// `1476a3770` = 1.5 x 2^23 (f32 `4b400000`): adding it rounds to the nearest integer, leaving k in the mantissa.
+const ROUND_MAGIC: f32 = f32::from_bits(0x4b40_0000);
+/// `1476a37b0` = -f32(pi/2) (f32 `bfc90fdb`): the one-term reduction r = |v| - k pi/2.
+const NEG_HALF_PI: f32 = f32::from_bits(0xbfc9_0fdb);
+/// sin(r) = r + r^3 (S0 + r^2 (S1 + r^2 S2)) with `1476a3780`, `1476a3710`, `1476a37a0`.
+const SIN_POLY: [f32; 3] = [
+    f32::from_bits(0xb94d_70ca),
+    f32::from_bits(0x3c08_85d3),
+    f32::from_bits(0xbe2a_aaa8),
+];
+/// cos(r) = 1 + r^2 (C0 + r^2 (C1 + r^2 (C2 + r^2 C3))) with `1476a3700`, `1476a3790`, `1476a3720`, `147696dd0`.
+const COS_POLY: [f32; 4] = [
+    f32::from_bits(0x37cc_730b),
+    f32::from_bits(0xbab6_036e),
+    f32::from_bits(0x3d2a_aa9e),
+    f32::from_bits(0xbf00_0000),
+];
+
+/// Native reduction of `a` = |v| (both `14199ae00` and `14199b1d0`): k = round(2a/pi) and r = a - k pi/2 in f32.
+/// k is valid below the large-argument branch (`14199ae00`: |v| >= 25966; `14199b1d0`: |v| >= 18838, where the
+/// native switches to a 2/pi bit-table reduction that is not ported).
+fn native_reduce(a: f32) -> (u32, f32) {
+    let kf = (a * TWO_OVER_PI + ROUND_MAGIC) - ROUND_MAGIC;
+    (kf as u32, kf * NEG_HALF_PI + a)
+}
+
+fn native_sin_r(r: f32, r2: f32) -> f32 {
+    let [s0, s1, s2] = SIN_POLY;
+    ((s0 * r2 + s1) * r2 + s2) * r2 * r + r
+}
+
+fn native_cos_r(r2: f32) -> f32 {
+    let [c0, c1, c2, c3] = COS_POLY;
+    (((c0 * r2 + c1) * r2 + c2) * r2 + c3) * r2 + 1.
+}
+
+/// `logf` as the kemu import computes it: the double log rounded to f32 (the Kontakt CRT's own `logf` is not
+/// read, so this is the reference the vectors use).
+fn native_logf(x: f32) -> f32 {
+    f64::from(x).ln() as f32
+}
+
+/// `14199ae00` per lane: sin(v). Odd k takes the cosine polynomial, and the sign is sign(v) XOR bit 1 of k.
+pub(super) fn native_sin(v: f32) -> f32 {
+    let (k, r) = native_reduce(v.abs());
+    let r2 = r * r;
+    let base = if k & 1 == 0 {
+        native_sin_r(r, r2)
+    } else {
+        native_cos_r(r2)
+    };
+    if v.is_sign_negative() != (k >> 1 & 1 == 1) {
+        -base
+    } else {
+        base
+    }
+}
+
+/// `14199b1d0` per lane: (cos(v), sin(|v| - k pi/2)). Even k takes the cosine polynomial, and the cosine's sign
+/// is bit 1 of (k + 1); the second value is the unsigned sine of the reduced argument (xmm1).
+pub(super) fn native_cos_fold(v: f32) -> (f32, f32) {
+    let (k, r) = native_reduce(v.abs());
+    let r2 = r * r;
+    let sin = native_sin_r(r, r2);
+    let base = if k & 1 == 0 { native_cos_r(r2) } else { sin };
+    (if (k + 1) >> 1 & 1 == 1 { -base } else { base }, sin)
+}
+
 /// Write filter `141aa3c60` on one lane object (`H+0x2dc0` L, `H+0x4240` R; 0x1480 bytes). Piece 3a, not wired.
 ///
 /// Per sample: the gain index from the previous envelope (`T4(1200 - 9.96578 env)`), the log envelope of
@@ -84,9 +159,8 @@ const SHAPER_EPS: f64 = 9.999_999_747_378_752e-5;
 ///
 /// The waveshaper (native offsets): `F(t) = t^2/2 - sum w_i cos(c_i t) - k` (`14199c5b0`, linear outside
 /// `|t| > 1`, `+0x38` slope offset) and its ADAA; when the step is below 1e-4 the derivative
-/// `s + sum d_i sin(c_i s)` is used at `s = clamp(t, -1, 1)` (`141aa31f0`, `14199ae00`). The native trig is
-/// a single-precision polynomial: it agrees with libm to 7.6e-8 on these coefficients, and that rounding is what
-/// `WRITE_TOLERANCE` covers.
+/// `s + sum d_i sin(c_i s)` is used at `s = clamp(t, -1, 1)` (`141aa31f0`, `14199ae00`). The trig, the table
+/// and the section steps keep the native operation order, so the state matches bit for bit before the ADAA.
 #[derive(Clone)]
 pub struct WriteFilter {
     /// `+0x00..+0x0c`: derivative weights d_i.
@@ -133,15 +207,25 @@ pub struct WriteFilter {
 impl WriteFilter {
     /// One sample, the order of `141aa3c60`.
     pub fn tick(&mut self, x: f32) -> f32 {
+        let arg = self.pre(x);
+        let y = self.shaper(arg);
+        self.post(y)
+    }
+
+    /// Envelope, gain and dither: the shaper input (the first half of `141aa3c60`).
+    pub fn pre(&mut self, x: f32) -> f32 {
         let g = t4(INDEX_OFFSET - self.env_idx * INDEX_PER_DB);
-        let v = ((g * x).abs() + LOG_FLOOR).ln() * DB_PER_NEPER;
+        let v = native_logf((g * x).abs() + LOG_FLOOR) * DB_PER_NEPER;
         self.env = (self.env - v) * self.env_coef + v;
         self.env_idx = self.env;
 
         let u = self.mt.next() as f32;
         let dither = (self.dither_hi - self.dither_lo) * u * UNIT_SCALE + self.dither_lo;
-        let y = self.shaper((dither * self.dither_gain + g * x) * self.in_scale);
+        (dither * self.dither_gain + g * x) * self.in_scale
+    }
 
+    /// Gain, cubic ADAA and the two sections: the output (the second half of `141aa3c60`).
+    pub fn post(&mut self, y: f32) -> f32 {
         let z = y * self.out_gain;
         let dz = z - self.prev_z;
         let cubic = z * z * z * THIRD;
@@ -166,7 +250,7 @@ impl WriteFilter {
             ((f - self.prev_f) as f64 / f64::from(d)) as f32
         } else {
             let s = t.clamp(-1., 1.);
-            let sin = |i: usize| (s * self.c[i]).sin() * self.d[i];
+            let sin = |i: usize| native_sin(s * self.c[i]) * self.d[i];
             (sin(2) + sin(0)) + (sin(3) + sin(1)) + s
         };
         self.prev_t = t;
@@ -182,8 +266,8 @@ impl WriteFilter {
         if t < -1. {
             return self.lin - t;
         }
-        let cos = |i: usize| (t * self.c[i]).cos() * self.w[i];
-        let sum = ((cos(2) + cos(0)) + cos(3)) + cos(1);
+        let cos = |i: usize| native_cos_fold(t * self.c[i]).0 * self.w[i];
+        let sum = (cos(0) + cos(2)) + (cos(1) + cos(3));
         t * t * 0.5 - sum - self.konst
     }
 }
@@ -302,13 +386,6 @@ mod tests {
         }
     }
 
-    /// Looser than `TOLERANCE`. The waveshaper's ADAA divides the antiderivative step by the input step, and
-    /// some steps are small (4.4e-4 at sample 83 of the left vector, above the 1e-4 switch). The native's
-    /// antiderivative differs from libm by its own f32 rounding (7.6e-8 max on these coefficients, measured
-    /// against `14199c5b0`), so that division turns it into about 6e-5 at the output. Closing to 1e-5 needs
-    /// the native trig polynomial (`14199b1d0`, `14199ae00`), not ported.
-    const WRITE_TOLERANCE: f32 = 1e-4;
-
     /// The native write filter (kemu, `141aa3c60` on the head-0 lane objects after a mode-1 run, noise in)
     /// matches the Rust filter sample by sample, left and right. The dither is the native MT stream from the
     /// object's own ring, so the draws are compared too.
@@ -331,9 +408,47 @@ mod tests {
                 .fold(0f32, f32::max);
             eprintln!("replika mode1 write filter {name}: max abs error {max:.3e}");
             assert!(
-                max < WRITE_TOLERANCE,
+                max < TOLERANCE,
                 "write filter {name}: max abs error {max:e}"
             );
         }
+    }
+
+    /// The native 4-lane trig (kemu on `14199ae00` and `14199b1d0`, 2048 lanes below the large-argument
+    /// branches) against the port: sin, and cos with the sine fold.
+    #[test]
+    fn native_trig_matches_vectors() {
+        let path = format!(
+            "{}/../../docs/re/engine/vectors/replika-native-trig.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
+            .expect("vector json");
+        let rows = |k: &str| -> Vec<[f32; 4]> {
+            doc[k]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|r| {
+                    let v = floats(r);
+                    [v[0], v[1], v[2], v[3]]
+                })
+                .collect()
+        };
+        let (ins, sins, coss, folds) = (rows("in"), rows("sin"), rows("cos"), rows("fold"));
+        let (mut e_sin, mut e_cos, mut e_fold) = (0f32, 0f32, 0f32);
+        for (i, row) in ins.iter().enumerate() {
+            for l in 0..4 {
+                let (c, f) = native_cos_fold(row[l]);
+                e_sin = e_sin.max((native_sin(row[l]) - sins[i][l]).abs());
+                e_cos = e_cos.max((c - coss[i][l]).abs());
+                e_fold = e_fold.max((f - folds[i][l]).abs());
+            }
+        }
+        eprintln!("replika native trig: sin {e_sin:.3e} cos {e_cos:.3e} fold {e_fold:.3e}");
+        assert!(
+            e_sin.max(e_cos).max(e_fold) < TOLERANCE,
+            "trig: sin {e_sin:e} cos {e_cos:e} fold {e_fold:e}"
+        );
     }
 }
