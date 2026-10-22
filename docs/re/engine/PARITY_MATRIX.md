@@ -186,7 +186,7 @@ One row per Kontakt module. Status: **missing** / **partial** / **parity**. Evid
 | Reverse Grain | missing | none | missing: reader fields confirmed (shared with Transpose Stretch, KE065 unresolved); kernel not located |
 | Transpose Stretch | missing | none | missing: reader fields confirmed (shared with Reverse Grain); kernel not located; vtable differs from the other four mangling modules in slots 3, 16, 66 |
 | Stereo Modeller | partial | vector | Settled width/balance and pseudo delay verified (docs/re/engine/k-spatial.md). Open: channel layouts, width across .5, pseudo automation, latency, bypass/mix |
-| Stereo Tune | missing | decomp | Reader FUN_140ac6120 confirmed (4 floats at +0x8..+0x14). Float-to-name map and process law not recovered (vtable pending). Passes through today |
+| Stereo Tune | missing | decomp | Reader FUN_140ac6120 confirmed (4 floats at +0x8..+0x14). Vtable 0x14474b670 located; process slot not yet identified; float-to-name map and law not recovered. Passes through today |
 | Surround Panner | missing | vector | Parameter bindings measured (fx_other.tsv). Speaker matrix, pan law, LFE routing not recovered. Diagnosed as NotModeled |
 | Inverter | partial | decomp | Reader (v0x60) and audio confirmed; native render vector missing |
 | Send Levels | partial | none | Taps, levels, bypass shared; reader not found in decompile; live tap binding open |

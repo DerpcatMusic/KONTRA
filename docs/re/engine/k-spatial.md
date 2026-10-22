@@ -54,6 +54,14 @@ mapping (Split, Drift, Spread, Mix) and the process routine are **not yet
 recovered**: the process method sits in the class vtable, and resolving that is
 the next step. No DSP law is claimed.
 
+RTTI scan of `re-binaries/Kontakt8.exe` (static, `pefile`): the
+`StereoTuneModuleInst` vtable is at 0x14474b670 (82 slots). Slot 81 is
+0x14066e470, a parameter-query thunk in a second base vtable at 0x14474b8f8,
+not the DSP. Candidate slots checked and rejected as DSP: 0x140651900,
+0x140651970, 0x140651ac0, 0x14065cf20, 0x14065d0b0, 0x14065d240, 0x140658a60
+(generic module plumbing: parameter get/set and state queries). The process
+slot is therefore still unidentified.
+
 Before this change the module had no name in the module table and showed as
 `unknown effect 0x70`. It now has a name and a `NotModeled` note saying the
 slot is passed through unprocessed. No DSP is invented.
@@ -88,12 +96,32 @@ no crossfeed). Engine: `crates/sampler-kontakt/src/effects/mod.rs::instrument_bu
 routes it through the shared `Processor::Pan` stage with `PanLaw::Balance` (identical gains; position clamped to ±1 first, matching the native clamps); the test
 `instrument_bus_pan_only_uses_native_stereo_balance` checks it.
 
-**Open:** live bus pan is not wired. The native per-sample ramp (step
-±20/sample-rate once the difference exceeds 20/sample-rate, from the same
-evidence doc) needs a bus pan control slot, which does not exist yet next to
-`BUS_VOLUME_SLOT` (`sampler-core/src/control.rs`). Phase invert and L/R swap bus
-flags are also open: the bus struct has only volume and pan, and the flag offsets
-were not extracted in this pass.
+Decompile confirmation of `FUN_140824910` (bus audio, `0140820000.c`):
+
+- Order: effects are upstream; then L/R swap if `+0x2d` and the channel count
+  is 2; then phase invert if `+0x2c` (XOR of the sign bit, mask 0x80000000,
+  on every sample); then fader; then the stereo balance; then
+  `FUN_140715380`, which is a peak meter (ring of 32 floats with peak hold),
+  not an effect.
+- Fader: current `+0x60`, target `+0x24`. If the ratio of
+  `|cur + 1e-12| / |target + 1e-12|` is above 1.001 or below 0.999, the gain is
+  ramped per sample: each sample multiplies by `g`, then
+  `g += (target - g) * (1/180)`, starting from `cur` on every channel and
+  storing the final `g` into `+0x60`. Otherwise one constant multiply by target.
+- Pan: current `+0x64`, target `+0x28`. The step is `10/sr` per side, so
+  rising `20/sr` and falling `-20/sr`. If `|cur - target| > 20/sr`, the
+  per-sample pan trajectory is emitted (`cur`, then `cur` advances toward target,
+  clamped at target) and stored into `+0x64`. Otherwise the static balance
+  uses target and `+0x64` is left unchanged.
+- The stored `+0x2e` first-call flag copies the saved values into the current
+  fields before the first block.
+
+Still open: the saved byte locations of the invert and swap flags. The
+`InsertBus` record reader in `vendor/ni-file` exposes only name, volume, pan,
+output and an unknown tail, and the BInsertBus reader was not yet found in the
+decompile. Until then the engine keeps both flags off. Live pan wiring (a bus
+pan control slot next to `BUS_VOLUME_SLOT`, and the per-sample pan trajectory
+above) is not built yet.
 
 ## Group and instrument pan
 
@@ -115,8 +143,9 @@ not read in this pass.
 | Stereo Tune (0x70) | named + diagnosed; no DSP | catalog reader schema | missing (DSP law) |
 | Surround Panner (0x1d v0x70) | diagnosed; no DSP | fx_other.tsv bindings | missing (matrix, pan law, LFE) |
 | Instrument bus static pan | implemented on shared Pan/Balance stage, tested | kontakt-bus-pan.md | matched (static) |
-| Bus live pan slew | not wired | native ramp noted in evidence | missing |
-| Bus phase invert / L-R swap | not represented | none extracted | missing |
+| Bus live pan slew | law confirmed (±20/sr, threshold), not wired | decomp `FUN_140824910`, `FUN_140823d70` | missing (control plumbing) |
+| Bus fader ramp (1/180, ratio 1.001/0.999) | law confirmed | decomp `FUN_140824910` | law confirmed; engine check pending |
+| Bus phase invert / L-R swap | audio order and laws confirmed; saved byte offsets not located | decomp `FUN_140824910` | partial |
 | Group pan centre law (0.7677 vs centre unity) | conflict unresolved | limiter-dynamics.tsv, ownership.rs | unverified |
 
 ## Verification
@@ -128,11 +157,14 @@ not read in this pass.
 
 ## Next
 
-1. Resolve the StereoTuneModuleInst vtable (ctor `FUN_140650620`) to its
-   process routine and derive the float-to-name mapping and the law. Write the law here and implement it in the shared
-   `color` family, not a copy.
+1. Stereo Tune: the vtable is located (0x14474b670); identify the process slot
+   and derive the float-to-name mapping and the law, then implement it in the
+   shared `color` family.
 2. Surround Panner: extract the speaker list reader and the 0x140ab0070 panner.
    Decide whether a generic multichannel stage belongs in `sampler-core` (see
    `docs/architecture-v2/KONTAKT_TOPOLOGY.md` P1 T12) before adding one.
-3. Bus live pan: add a bus pan control next to `BUS_VOLUME_SLOT` and use the
-   native ±20/sample-rate ramp. Keep it additive in `engine_parameters.rs`.
+3. Bus live pan: add a bus pan control next to `BUS_VOLUME_SLOT` and the
+   native ±20/sample-rate trajectory above. Keep it additive in
+   `engine_parameters.rs`.
+4. Bus invert/swap: locate the BInsertBus saved bytes for the two flags, then
+   set them in `effects/bus.rs::bus_plans`.
