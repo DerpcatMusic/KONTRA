@@ -197,8 +197,8 @@ pub(super) fn galois(v: &[f32; 10], _notes: &mut Notes) -> Config {
 /// (+8), feedback, low shelf, high cut, reverb, diffusion, decay, mod, size,
 /// damping, rate, mix (+0x34); bytes freeze, sparse; the predelay time
 /// object's unit (+0x60) and two floats; a byte. Returns the core controls
-/// (apply `0x140abb190`) and whether the predelay is tempo-synced.
-pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
+/// (apply `0x140abb190`) and the synced predelay's beat count, if any.
+pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], Option<f64>)> {
     let kind = r.i32()? as f32;
     let mut f = [0f32; 12];
     for x in &mut f {
@@ -221,15 +221,43 @@ pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
     };
     let b = |v: bool| if v { 1.0 } else { 0.0 };
     let core = [mix, pre, 0.0, 0.25, 0.0625, 0.0, feedback, high_cut, low_shelf, kind * 0.5, decay, size, damping, modulation, rate, diffusion, b(freeze), reverb, b(sparse), 1.0];
-    Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), unit > f32::from_bits(0x3089_705f)))
+    Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), beat_division(unit as i32)))
+}
+
+/// Raum predelay unit key → beats of a note (setter `0x140a74f30`, sampled at
+/// keys 5, 6, 7, 8, 10, 16, 20). Keys 0 to 4 are free milliseconds; key 21 is
+/// the 1/64 note that also sets a flag the synced law does not read here.
+pub(super) fn beat_division(key: i32) -> Option<f64> {
+    // f32 arithmetic gives the stored bit patterns (`0x402aaaab` is 8/3).
+    let beats = match key {
+        5 => 4.0,
+        6 => f64::from(8.0_f32 / 3.0),
+        7 => 2.0,
+        8 => f64::from(4.0_f32 / 3.0),
+        9 => 1.0,
+        10 => f64::from(2.0_f32 / 3.0),
+        11 => 1.5,
+        12 => 0.5,
+        13 => f64::from(1.0_f32 / 3.0),
+        14 => 0.75,
+        15 => 0.25,
+        16 => f64::from(1.0_f32 / 6.0),
+        17 => 0.125,
+        18 => f64::from(1.0_f32 / 12.0),
+        19 => 0.0625,
+        20 => f64::from(1.0_f32 / 24.0),
+        21 => 1.0 / 64.0,
+        _ => return None,
+    };
+    Some(beats)
 }
 
 /// Raum (0x65) Grounded, Airy or Cosmic on the native core (core 9 selects);
 /// its own mix law carries the dry path. Input gain (core 19) has no saved
 /// field and stays 1.
-pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config {
-    if synced {
-        notes.push(("predelay sync".into(), "Raum's tempo-synced predelay (core 2..5, `240·n/(f·m·bpm)`) is not bound; the saved time is read as milliseconds".into(), UnknownLaw));
+pub(super) fn raum(core: &[f32; 20], beats: Option<f64>, notes: &mut Notes) -> Config {
+    if beats.is_some() {
+        notes.push(("predelay sync".into(), "Raum's synced predelay uses the knob (core 1) as its amount; that reading is not confirmed by a live render".into(), UnknownLaw));
     }
     if core[6] > 0.0 {
         notes.push(("feedback limiter".into(), "Raum's feedback limiter (NI::DSP::Limiter `0x141ae3ba0`) is reduced to its ±2.5 clamp: its gain table is not extracted".into(), UnknownLaw));
@@ -240,6 +268,7 @@ pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config 
         decay_seconds: 199.75 * f64::from(core[10]) / (75.0 * (1.0 - f64::from(core[10])) + 1.0) + 0.25,
         predelay_seconds: if x <= 0.5 { 0.08 * (2.0 * x).powi(2) } else { 1.92 * (2.0 * x - 1.0).powi(2) + 0.08 },
         raum: Some(*core),
+        raum_beats: beats,
         ..Network::DEFAULT
     })
 }
@@ -257,6 +286,15 @@ pub(super) fn why_unbound(module: u16) -> &'static str {
 mod tests {
     use super::*;
     use crate::effects::ImpulseRequest;
+
+    #[test]
+    fn raum_sync_keys_map_to_the_native_note_table() {
+        let beats: Vec<_> = (0..23).map(beat_division).collect();
+        assert!(beats[..5].iter().all(Option::is_none) && beats[22].is_none());
+        assert_eq!(beats[5], Some(4.0));
+        assert_eq!(beats[10], Some(f64::from(2.0_f32 / 3.0)));
+        assert_eq!(beats[21], Some(1.0 / 64.0));
+    }
 
     #[test]
     fn legacy_predelay_is_stored_milliseconds() {
@@ -349,7 +387,7 @@ mod tests {
         bytes.push(0);
         let array = effect_fixture(0x65, 0x10, &bytes);
         let slots = rack(&array, |_, error| panic!("{error}"));
-        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        let Some(Params::Raum { core, beats: None }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
         assert_eq!(core[9], 0.5);
         assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
         assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
@@ -443,9 +481,9 @@ pub(super) fn slot_plate(b: &mut Lowering, s: &Site, notes: &mut Notes, v: &[f32
 }
 
 /// Raum (0x65, Grounded or Airy) on a bus.
-pub(super) fn slot_raum(b: &mut Lowering, s: &Site, notes: &mut Notes, core: &[f32; 20], synced: bool) -> bool {
+pub(super) fn slot_raum(b: &mut Lowering, s: &Site, notes: &mut Notes, core: &[f32; 20], beats: Option<f64>) -> bool {
     b.flush();
-    b.out.processors.push(Processor::Space(raum(core, synced, notes)));
+    b.out.processors.push(Processor::Space(raum(core, beats, notes)));
     b.combined = s.gain;
     true
 }

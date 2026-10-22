@@ -202,3 +202,21 @@ from code and constants), INFERRED, UNKNOWN.
   the clamp maximum, consistent with `predelay_ms = 60000·x·v/bpm`.
   Partial: the full key set is still needed, and the engine has no host-tempo path
   into the space build yet.
+
+## Freeverb lengths and Raum tempo sync
+
+- **Freeverb (`0x14094c760`)**: the comb and allpass tuning constants (25.31 to
+  36.67 ms combs, 12.61/10.0/7.73/5.10 ms allpasses, spread 0.52154, scale 0.001)
+  match the repo's `ALLPASS_MS`/`COMB_MS` and the spread. No code change.
+- **Raum sync unit (`0x140a74f30`)**: keys 5 to 21 store a beat count (4, 8/3, 2,
+  4/3, 1, 2/3, 1.5, 0.5, 1/3, 0.75, 0.25, 1/6, 0.125, 1/12, 1/16, 1/24, 1/64). Keys
+  0 to 4 are free milliseconds (sampled). The synced law `0x140a74bf0` is
+  `beats · 60 / bpm · v · 1000` ms, with bpm 120 below 0.1 (constants 60, 1000,
+  0.1, 120 read from the binary).
+- Implemented: `Network::raum_beats`; `Outer` ring holds a 2 s ceiling and reads
+  `D = round(secs·rate)` behind the write; host tempo flows `dsp.rs` →
+  `Space::process` → `Outer::process`.
+- **Open**: `v` is taken as the normalised predelay knob (`core[1]`); the caller's
+  clamp bounds (2000 ms observed at 120 BPM and x = 4) are assumed to be 0 to 2 s.
+  Key 21's flag (+0x21) is not read by the law (+0x20); the floor is not applied.
+  No live Kontakt render has checked either point.
