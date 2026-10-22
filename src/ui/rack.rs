@@ -482,7 +482,8 @@ fn part(
                 .into_iter()
                 .chain(instrument::notices(cx, slot))
                 .collect();
-            let stage = behind(cx, slot, instrument::stage(ui, cx, slot, view));
+            let inner = instrument::stage(ui, cx, slot, view);
+            let stage = behind(cx, slot, inner);
             match room {
                 // A sized part keeps its header and notices and scrolls its
                 // stage in what the height leaves; the rest is clipped.
