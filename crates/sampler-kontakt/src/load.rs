@@ -441,7 +441,7 @@ fn finish_sources_kept(
             )
         {
             report.push((
-                "wavetable requires a cycle-aligned start and one 2048-frame cycle, zone dropped",
+                "wavetable requires one 2048-frame cycle, zone dropped",
                 "invalid cycle geometry".into(),
             ));
             playable[index] = false;
@@ -610,11 +610,10 @@ fn fit_keys(
     true
 }
 
-/// Engine wavetables read whole 2048-frame cycles from a cycle-aligned start and
-/// ignore a trailing partial cycle (`wavetable::Table::new`), so only the start
-/// and one full cycle are required here.
+/// Engine wavetables read whole 2048-frame cycles from any start and ignore a
+/// trailing partial cycle (`wavetable::Table::new`), so one full cycle is required.
 fn wavetable_cycles_admitted(start: u64, end: u64) -> bool {
-    start % 2048 == 0 && end.checked_sub(start).is_some_and(|frames| frames >= 2048)
+    end.checked_sub(start).is_some_and(|frames| frames >= 2048)
 }
 
 /// Fit authored sample positions to the decoded audio the way Kontakt
@@ -2109,12 +2108,12 @@ mod diagnostic_tests {
     }
 
     #[test]
-    fn wavetable_admits_partial_trailing_cycle_but_not_misaligned_start() {
-        // corpus gap: zones whose length is not whole cycles were dropped here,
-        // while the engine's Table::new already floors to whole cycles.
+    fn wavetable_admits_partial_trailing_cycle_and_misaligned_start() {
+        // corpus gap: Conflux's 249 zones with a misaligned start were dropped here.
+        // Cycle k is read from start + k * 2048, so alignment is not needed to play.
         assert!(wavetable_cycles_admitted(0, 3 * 2048 + 100));
         assert!(wavetable_cycles_admitted(4096, 4096 + 2048));
-        assert!(!wavetable_cycles_admitted(64, 64 + 2 * 2048));
+        assert!(wavetable_cycles_admitted(64, 64 + 2 * 2048));
         assert!(!wavetable_cycles_admitted(0, 100));
         assert!(!wavetable_cycles_admitted(4096, 4096));
     }
