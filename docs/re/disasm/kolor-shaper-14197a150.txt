@@ -1,0 +1,98 @@
+┌ 364: fcn.14197a150 (int64_t arg1, int64_t arg2, int64_t arg3);
+│ `- args(rcx, rdx, r8) vars(16:sp[0x8..0x100])
+│           0x14197a150      48895c2418     mov qword [var_18h], rbx
+│           0x14197a155      48897c2420     mov qword [var_20h], rdi
+│           0x14197a15a      55             push rbp
+│           0x14197a15b      488d6c24a9     lea rbp, [rsp - 0x57]
+│           0x14197a160      4881ecf000..   sub rsp, 0xf0
+│           0x14197a167      488b0552b7..   mov rax, qword [0x14a2a58c0] ; [0x14a2a58c0:8]=0x2b992ddfa232
+│           0x14197a16e      4833c4         xor rax, rsp
+│           0x14197a171      48894547       mov qword [var_47h], rax
+│           0x14197a175      498b00         mov rax, qword [r8]        ; arg3
+│           0x14197a178      488bfa         mov rdi, rdx               ; arg2
+│           0x14197a17b      488bd9         mov rbx, rcx               ; arg1
+│           0x14197a17e      f30f1000       movss xmm0, dword [rax]
+│           0x14197a182      488d45c7       lea rax, [var_39h]
+│           0x14197a186      f30f114587     movss dword [var_79h], xmm0
+│           0x14197a18b      a803           test al, 3                 ; reloc.WS2_32.dll_closesocket
+│       ┌─< 0x14197a18d      760a           jbe 0x14197a199
+│       │   0x14197a18f      f30f1145c7     movss dword [var_39h], xmm0
+│      ┌──< 0x14197a194      e987000000     jmp 0x14197a220
+│      │└─> 0x14197a199      b901000000     mov ecx, 1
+│      │    0x14197a19e      488d45c7       lea rax, [var_39h]
+│      │    0x14197a1a2      48c1e802       shr rax, 2
+│      │    0x14197a1a6      8bd1           mov edx, ecx
+│      │    0x14197a1a8      48f7d8         neg rax
+│      │    0x14197a1ab      83e003         and eax, 3
+│      │    0x14197a1ae      483bc1         cmp rax, rcx
+│      │    0x14197a1b1      0f42d0         cmovb edx, eax
+│      │    0x14197a1b4      4533c0         xor r8d, r8d
+│      │    0x14197a1b7      482bca         sub rcx, rdx
+│      │    0x14197a1ba      4883e1fc       and rcx, 0xfffffffffffffffc
+│      │    0x14197a1be      4803ca         add rcx, rdx
+│      │    0x14197a1c1      4885d2         test rdx, rdx
+│      │┌─< 0x14197a1c4      7415           je 0x14197a1db
+│      ││   0x14197a1c6      4c8d4dc7       lea r9, [var_39h]
+│     ┌───> 0x14197a1ca      428b448587     mov eax, dword [rbp + r8*4 - 0x79]
+│     ╎││   0x14197a1cf      43890481       mov dword [r9 + r8*4], eax
+│     ╎││   0x14197a1d3      49ffc0         inc r8
+│     ╎││   0x14197a1d6      4c3bc2         cmp r8, rdx
+│     └───< 0x14197a1d9      7cef           jl 0x14197a1ca
+│      │└─> 0x14197a1db      483bd1         cmp rdx, rcx
+│      │┌─< 0x14197a1de      7d22           jge 0x14197a202
+│      ││   0x14197a1e0      488d45c7       lea rax, [var_39h]
+│      ││   0x14197a1e4      0f1f4000       nop dword [rax]
+│      ││   0x14197a1e8      0f1f840000..   nop dword [rax + rax]
+│     ┌───> 0x14197a1f0      0f10449587     movups xmm0, xmmword [rbp + rdx*4 - 0x79]
+│     ╎││   0x14197a1f5      0f110490       movups xmmword [rax + rdx*4], xmm0
+│     ╎││   0x14197a1f9      4883c204       add rdx, 4
+│     ╎││   0x14197a1fd      483bd1         cmp rdx, rcx
+│     └───< 0x14197a200      7cee           jl 0x14197a1f0
+│      │└─> 0x14197a202      4883f901       cmp rcx, 1                 ; reloc.WS2_32.dll_accept
+│      │┌─< 0x14197a206      7d18           jge 0x14197a220
+│      ││   0x14197a208      488d55c7       lea rdx, [var_39h]
+│      ││   0x14197a20c      0f1f4000       nop dword [rax]
+│     ┌───> 0x14197a210      8b448d87       mov eax, dword [rbp + rcx*4 - 0x79]
+│     ╎││   0x14197a214      89048a         mov dword [rdx + rcx*4], eax
+│     ╎││   0x14197a217      48ffc1         inc rcx
+│     ╎││   0x14197a21a      4883f901       cmp rcx, 1                 ; reloc.WS2_32.dll_accept
+│     └───< 0x14197a21e      7cf0           jl 0x14197a210
+│      ││   ; CODE XREF from fcn.14197a150 @ 0x14197a194(x)
+│      └└─> 0x14197a220      0f1003         movups xmm0, xmmword [rbx]
+│           0x14197a223      488d45c7       lea rax, [var_39h]
+│           0x14197a227      488bd7         mov rdx, rdi
+│           0x14197a22a      488d4b20       lea rcx, [rbx + 0x20]
+│           0x14197a22e      48894507       mov qword [var_7h], rax
+│           0x14197a232      0f1145cb       movups xmmword [var_35h], xmm0
+│           0x14197a236      4c8d4507       lea r8, [var_7h]
+│           0x14197a23a      f30f104b10     movss xmm1, dword [rbx + 0x10]
+│           0x14197a23f      f30f114ddb     movss dword [var_25h], xmm1
+│           0x14197a244      f30f104314     movss xmm0, dword [rbx + 0x14]
+│           0x14197a249      f30f1145df     movss dword [var_21h], xmm0
+│           0x14197a24e      f30f104b18     movss xmm1, dword [rbx + 0x18]
+│           0x14197a253      f30f114de3     movss dword [var_1dh], xmm1
+│           0x14197a258      e803fdffff     call 0x141979f60
+│           0x14197a25d      488d4587       lea rax, [var_79h]
+│           0x14197a261      48895d97       mov qword [var_69h], rbx
+│           0x14197a265      488d8b9002..   lea rcx, [rbx + 0x290]
+│           0x14197a26c      488945af       mov qword [var_51h], rax
+│           0x14197a270      4c8d4d97       lea r9, [var_69h]
+│           0x14197a274      4c8d45af       lea r8, [var_51h]
+│           0x14197a278      488d55e7       lea rdx, [var_19h]
+│           0x14197a27c      e86ff9ffff     call 0x141979bf0
+│           0x14197a281      0f1045e7       movups xmm0, xmmword [var_19h]
+│           0x14197a285      488bc7         mov rax, rdi
+│           0x14197a288      8b4dff         mov ecx, dword [var_1h]
+│           0x14197a28b      f20f104df7     movsd xmm1, qword [var_9h]
+│           0x14197a290      0f1103         movups xmmword [rbx], xmm0
+│           0x14197a293      f20f114b10     movsd qword [rbx + 0x10], xmm1
+│           0x14197a298      894b18         mov dword [rbx + 0x18], ecx
+│           0x14197a29b      488b4d47       mov rcx, qword [var_47h]
+│           0x14197a29f      4833cc         xor rcx, rsp
+│           0x14197a2a2      e8e9f2a402     call 0x1443c9590
+│           0x14197a2a7      4c8d9c24f0..   lea r11, [var_f0h]
+│           0x14197a2af      498b5b20       mov rbx, qword [r11 + 0x20]
+│           0x14197a2b3      498b7b28       mov rdi, qword [r11 + 0x28]
+│           0x14197a2b7      498be3         mov rsp, r11
+│           0x14197a2ba      5d             pop rbp
+└           0x14197a2bb      c3             ret

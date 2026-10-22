@@ -176,7 +176,7 @@ class Emu:
 
 
 MATH1F = {
-    'expf': math.exp, 'logf': math.log, 'log10f': math.log10, 'sqrtf': math.sqrt, 'sinf': math.sin,
+    'expf': math.exp, 'logf': math.log, 'log10f': math.log10, 'sqrtf': math.sqrt, 'sinf': math.sin, 'asinf': math.asin, 'acosf': math.acos,
     'cosf': math.cos, 'tanf': math.tan, 'atanf': math.atan, 'tanhf': math.tanh, 'floorf': math.floor,
     'ceilf': math.ceil, 'truncf': math.trunc, 'roundf': lambda x: math.floor(abs(x) + 0.5) * (1 if x >= 0 else -1),
     'exp2f': lambda x: 2.0 ** x, 'log2f': math.log2,
@@ -184,6 +184,6 @@ MATH1F = {
 MATH1D = {
     'exp': math.exp, 'log': math.log, 'log10': math.log10, 'sqrt': math.sqrt, 'sin': math.sin, 'cos': math.cos,
     'tan': math.tan, 'atan': math.atan, 'tanh': math.tanh, 'floor': math.floor, 'ceil': math.ceil,
-    'trunc': math.trunc, 'exp2': lambda x: 2.0 ** x, 'log2': math.log2,
+    'trunc': math.trunc, 'exp2': lambda x: 2.0 ** x, 'log2': math.log2, 'asin': math.asin, 'acos': math.acos,
     'round': lambda x: math.copysign(math.floor(abs(x) + 0.5), x),  # C round: half away from zero
 }
