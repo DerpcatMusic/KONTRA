@@ -16,8 +16,8 @@ Native layout (decompile, Kontakt 8):
   then the wrapper ctor FUN_140ae5f40 at +0x210. The core is at +0x420. Channel count is the
   core's uint at +0xc. Process FUN_140b000c0 reads planar channel pointers (in table, out table).
 - BlueMonark: BFilter object 0x5490 bytes. Factory FUN_1407c92f0 runs the wrapper ctor FUN_1407f0ed0
-  on the object. The core is at +0x210. setType FUN_140af0020(obj, 36 + mode) sets the mode
-  (36 LP1 = mode 2, 37 LP2 = mode 1, 38 LP4 = mode 0, 39 BP = mode 3).
+  on the object. The core is at +0x210. setType FUN_140af0020(obj, code) sets the mode:
+  36 LP1 = mode 2, 37 LP2 = mode 1, 38 LP4 = mode 0, 39 BP = mode 3.
 
 Knob order in the core: Dual SKF HP cutoff, HP resonance, LP cutoff, LP resonance, drive (stored
 2v - 1). Monark cutoff, resonance, input gain (3v + 1), modulation (2v - 1), feedback.
@@ -132,15 +132,29 @@ def rel_error(got, want):
 
 
 def stereo_cases():
-    """Dual SKF stereo: independent L/R noise, steady and moving knobs (one knob set per block)."""
+    """Stereo: independent L/R noise, steady and moving knobs (one knob set per 32-frame block).
+
+    Dual SKF at 44.1, 48 and 96 kHz. BlueMonark mode 0 (LP4) variant 0 at the same rates: the only
+    Monark mode and variant that reproduce the stored mono cases under kemu. Other modes and variants
+    are open (see the unit doc) and get no stereo vectors.
+    """
     rng = random.Random(0x5EED)
     frames = 8 * BLOCK
     left = [rng.uniform(-0.5, 0.5) for _ in range(frames)]
     right = [rng.uniform(-0.5, 0.5) for _ in range(frames)]
-    steady = [[0.5, 0.3, 0.5, 0.5, 0.5]] * 8
-    moving = [[0.3 + 0.05 * b, 0.4, 0.6 - 0.04 * b, 0.2 + 0.03 * b, 0.5 - 0.02 * b] for b in range(8)]
-    return [{"rate": rate, "label": label, "schedule": schedule, "left": left, "right": right}
-            for rate in (44100, 48000, 96000) for label, schedule in (("steady", steady), ("moving", moving))]
+    dual_steady = [[0.5, 0.3, 0.5, 0.5, 0.5]] * 8
+    dual_moving = [[0.3 + 0.05 * b, 0.4, 0.6 - 0.04 * b, 0.2 + 0.03 * b, 0.5 - 0.02 * b] for b in range(8)]
+    mon_steady = [[0.6, 0.3, 0.0, 0.5, 0.0]] * 8
+    mon_moving = [[0.3 + 0.05 * b, 0.6 - 0.05 * b, 0.1 + 0.1 * b, 0.4 + 0.05 * b, 0.1 * b] for b in range(8)]
+    out = []
+    for rate in (44100, 48000, 96000):
+        for label, schedule in (("steady", dual_steady), ("moving", dual_moving)):
+            out.append({"class": "DualSKF", "mode": 0, "variant": 0, "rate": rate, "label": label,
+                        "schedule": schedule, "left": left, "right": right})
+        for label, schedule in (("steady", mon_steady), ("moving", mon_moving)):
+            out.append({"class": "BlueMonark", "mode": 0, "variant": 0, "rate": rate, "label": label,
+                        "schedule": schedule, "left": left, "right": right})
+    return out
 
 
 def main():
@@ -176,13 +190,14 @@ def main():
                    + [c for c in existing if c["class"] == "BlueMonark"]}, f, separators=(",", ":"))
     stereo_out = []
     for case in stereo_cases():
+        spec = DUAL if case["class"] == "DualSKF" else MONARK
         tables = make_tables(e, len(case["left"]))
-        out_l, out_r = render(e, DUAL, rate=case["rate"], channels=2, mode=0, variant=0,
+        out_l, out_r = render(e, spec, rate=case["rate"], channels=2, mode=case["mode"], variant=case["variant"],
                               schedule=case["schedule"], left=case["left"], right=case["right"], tables=tables)
-        stereo_out.append({"class": "DualSKF", "rate": case["rate"], "label": case["label"],
-                           "knobs": case["schedule"], "left": case["left"], "right": case["right"],
-                           "outL": out_l, "outR": out_r})
-        print("DualSKF", case["rate"], case["label"], "peak %.4g" % max(abs(v) for v in out_l + out_r), flush=True)
+        stereo_out.append({"class": case["class"], "mode": case["mode"], "variant": case["variant"],
+                           "rate": case["rate"], "label": case["label"], "knobs": case["schedule"],
+                           "left": case["left"], "right": case["right"], "outL": out_l, "outR": out_r})
+        print(case["class"], case["rate"], case["label"], "peak %.4g" % max(abs(v) for v in out_l + out_r), flush=True)
     with open(os.path.join(out_dir, "kontaktfx_stereo_vectors.json"), "w") as f:
         json.dump(stereo_out, f, separators=(",", ":"))
 
