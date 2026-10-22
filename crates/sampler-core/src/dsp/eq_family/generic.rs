@@ -55,42 +55,46 @@ impl Generic {
         }
         let kind = self.band.kind;
         if let Law::Solid(section) = self.band.law {
-            // The native G_EQ biquad `poles` of this section, from the saved knobs. aux: key (3),
-            // valid flag, current TPT coefficients (6), target TPT coefficients (6).
+            // The native G_EQ ramp (eq-kontakt.md sec. 5): the knob values move linearly from where
+            // they were to the new target over the ramp, and the section is redesigned from the
+            // moving values (the native per-frame recompute, here once per block). aux: target knobs
+            // (3), valid flag, ramp start knobs (3), frames elapsed in the ramp, TPT coefficients (6).
             let read = |p: PreparedParameter| p.value(parameters, at, None);
-            let key = [read(self.frequency), read(self.q), read(self.gain)];
-            if state.aux[3] == 0. || state.aux[..3] != key {
+            let target = [read(self.frequency), read(self.q), read(self.gain)];
+            let ramp = self.band.ramp * f64::from(self.rate);
+            let fraction = |elapsed: f64| if ramp > 0. { (elapsed / ramp).min(1.) } else { 1. };
+            let first = state.aux[3] == 0.;
+            let changed = first || state.aux[..3] != target;
+            let start: [f64; 3] = if first {
+                target
+            } else if changed {
+                std::array::from_fn(|k| state.aux[4 + k] + (state.aux[k] - state.aux[4 + k]) * fraction(state.aux[7]))
+            } else {
+                std::array::from_fn(|k| state.aux[4 + k])
+            };
+            let elapsed = if changed { 0. } else { state.aux[7] };
+            let end = (elapsed + len as f64).min(ramp);
+            // A ramp still moving this block, or a new target, needs a redesign.
+            if changed || end > elapsed {
+                let now: [f64; 3] = std::array::from_fn(|k| start[k] + (target[k] - start[k]) * fraction(end));
                 let [b0, b1, b2, a1, a2] = solid::coefficients(
                     section,
                     kind,
                     usize::from(self.band.poles),
                     f64::from(self.rate),
-                    key[0],
-                    key[1],
-                    key[2],
+                    now[0],
+                    now[1],
+                    now[2],
                 );
-                let target = kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [a1, a2] })
-                    .unwrap_or(kernel::Svf::PASS)
-                    .to_array();
-                if state.aux[3] == 0. || self.band.ramp <= 0. {
-                    state.aux[4..10].copy_from_slice(&target);
-                }
-                state.aux[10..16].copy_from_slice(&target);
-                state.aux[..3].copy_from_slice(&key);
-                state.aux[3] = 1.;
+                let svf = kernel::Svf::from_biquad(&kernel::Biquad { b: [b0, b1, b2], a: [a1, a2] })
+                    .unwrap_or(kernel::Svf::PASS);
+                state.aux[10..16].copy_from_slice(&svf.to_array());
             }
-            // One-pole glide of the current coefficients toward the target, once per block.
-            let step = if self.band.ramp > 0. {
-                (len as f64 / (self.band.ramp * f64::from(self.rate))).min(1.)
-            } else {
-                1.
-            };
-            for i in 0..6 {
-                let (current, target) = (state.aux[4 + i], state.aux[10 + i]);
-                let next = current + (target - current) * step;
-                state.aux[4 + i] = if step >= 1. || (target - next).abs() < 1e-12 { target } else { next };
-            }
-            run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[4 + i])), state, block, len);
+            state.aux[..3].copy_from_slice(&target);
+            state.aux[3] = 1.;
+            state.aux[4..7].copy_from_slice(&start);
+            state.aux[7] = end;
+            run(kernel::Svf::from_array(std::array::from_fn(|i| state.aux[10 + i])), state, block, len);
             return;
         }
         if self.band.law == Law::UviDigital {
