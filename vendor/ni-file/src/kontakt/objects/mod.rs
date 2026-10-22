@@ -41,6 +41,7 @@ mod voice_groups;
 mod voice_limit;
 mod zone_data;
 mod zone_list;
+mod zone_slices;
 
 pub use bank::*;
 pub use bpar_script::*;
@@ -85,3 +86,4 @@ pub use voice_groups::*;
 pub use voice_limit::*;
 pub use zone_data::*;
 pub use zone_list::*;
+pub use zone_slices::*;
