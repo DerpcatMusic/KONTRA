@@ -87,6 +87,27 @@ fn gainer_matches_the_frozen_slew_equation() {
 }
 
 #[test]
+fn gainer_inside_the_unity_window_passes_the_input_and_holds_the_slew() {
+    // Native unity shortcut (0x140aa2980): state and target in [0.999, 1.001] pass
+    // the input bit-exact and the smoother does not advance.
+    let mut bindings = Vec::new();
+    let settings = ColorSettings {
+        gainer: Some(GainerSettings {
+            gain: Parameter::Control(ControlRange { control: crate::ControlId(0), low: 0., high: 1., ramp_frames: 0 }),
+            dry: 0.,
+        }),
+        ..ColorSettings::IDENTITY
+    };
+    let color = settings.compile(48_000, &mut bindings);
+    let ramps = [ControlRamp::test_ramp(1.0004, 1.0001, 0, 64)];
+    let mut state = State::default();
+    let mut block = [[0.5; BLOCK]; 2];
+    color.process(&mut state, &ramps, &mut block, BLOCK, 0, &mut []);
+    assert!(block.iter().flatten().all(|v| *v == 0.5));
+    assert_eq!(state.gain, 1.0004f32);
+}
+
+#[test]
 fn gainer_slews_toward_a_moving_target_with_the_native_coefficient() {
     // A control ramp from 1.0 down to 0.0: g[n+1] = g[n] + (t - g[n]) * 0.00055555...
     let mut bindings = Vec::new();

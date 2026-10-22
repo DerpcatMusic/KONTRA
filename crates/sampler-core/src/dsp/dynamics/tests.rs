@@ -1,7 +1,7 @@
 //! Engine-level checks: every law through the one public path.
 use super::*;
 use sampler_ir::Time;
-use sampler_ir::fx::dynamics::{Direction, Generic, Maximizer, Native, Topology};
+use sampler_ir::fx::dynamics::{Direction, Generic, Key, Maximizer, Native, Topology};
 
 const BLOCK: usize = super::super::BLOCK;
 
@@ -88,8 +88,8 @@ fn cases() -> Vec<(&'static str, DynamicsSettings, u32)> {
         ("pro mix", settings(Law::KontaktPro(native), Link::Max, 1.3, 0.5, [-10., 0.9, 0.00005, 0.5]), 96_000),
         ("limiter", settings(Law::KontaktLimiter(native), Link::Max, 1., 1., [6., 0., 0., 0.1]), 48_000),
         ("limiter mix", settings(Law::KontaktLimiter(native), Link::Max, 0.9, 0.5, [12., 0., 0., 0.01]), 44_100),
-        ("hilbert", settings(Law::KontaktHilbert(native), Link::Max, 1., 1., [0.5, 1., 0., 0.05]), 48_000),
-        ("hilbert 96k mix", settings(Law::KontaktHilbert(native), Link::Max, 1.1, 0.5, [0.2, 0.6, 0., 0.3]), 96_000),
+        ("hilbert", settings(Law::KontaktHilbert(native, Key::Internal), Link::Max, 1., 1., [0.5, 1., 0., 0.05]), 48_000),
+        ("hilbert 96k mix", settings(Law::KontaktHilbert(native, Key::Internal), Link::Max, 1.1, 0.5, [0.2, 0.6, 0., 0.3]), 96_000),
         ("feedback", settings(Law::KontaktFeedback { native, high_quality: false }, Link::Max, 1., 1., [3., 8., 0.002, 0.1]), 48_000),
         ("feedback hq off", settings(Law::KontaktFeedback { native, high_quality: true }, Link::Off, 1.4, 0.7, [10., 20., 0.0005, 0.05]), 44_100),
         ("transient", settings(Law::KontaktTransient { attack: 0.9, sustain: 0.2, gain: 0.6, clip: false }, Link::Off, 1., 1., [0.; 4]), 48_000),
@@ -189,7 +189,7 @@ fn run_law(law: Law, link: Link, knobs: [f64; 4], input: &[[f64; 2]]) -> Vec<[f6
         for (i, f) in chunk.iter().enumerate() {
             (block[0][i], block[1][i]) = (f[0], f[1]);
         }
-        laws::process(law, &shared, knobs, 48_000, &mut state, &mut cells, &mut block, chunk.len());
+        laws::process(law, &shared, knobs, 48_000, &mut state, &mut cells, &mut block, None, chunk.len());
         out.extend((0..chunk.len()).map(|i| [block[0][i], block[1][i]]));
     }
     out
@@ -524,12 +524,12 @@ mod hilbert {
     use crate::dsp::dynamics::laws::{Hilbert, hilbert_window};
 
     fn run(knobs: [f64; 4], input: &[[f64; 2]]) -> Vec<[f64; 2]> {
-        run_law(Law::KontaktHilbert(NATIVE), Link::Max, knobs, input)
+        run_law(Law::KontaktHilbert(NATIVE, Key::Internal), Link::Max, knobs, input)
     }
 
     #[test]
     fn window_and_latency_follow_the_rate() {
-        let latency = laws::latency(&Law::KontaktHilbert(NATIVE), 48_000);
+        let latency = laws::latency(&Law::KontaktHilbert(NATIVE, Key::Internal), 48_000);
         assert_eq!((hilbert_window(44_100), latency), (128, 127));
         assert_eq!(hilbert_window(96_000), 256);
     }
@@ -647,7 +647,7 @@ mod feedback {
             for (i, f) in chunk.iter().enumerate() {
                 (block[0][i], block[1][i]) = (f[0], f[1]);
             }
-            laws::process(law, &shared, knobs, 48_000, &mut state, &mut cells, &mut block, chunk.len());
+            laws::process(law, &shared, knobs, 48_000, &mut state, &mut cells, &mut block, None, chunk.len());
             out.extend((0..chunk.len()).map(|i| [block[0][i], block[1][i]]));
         }
         let native: [(usize, f32, f32); 10] = [
@@ -857,5 +857,53 @@ mod maximizer {
             let sum: f32 = p.iter().map(|b| f32::from_bits(*b)).sum();
             assert!((sum - 1.).abs() < 0.03, "{sum}");
         }
+    }
+}
+
+/// The Transparent Limiter side-chain: the Hilbert detector reads a key buffer.
+mod sidechain {
+    use super::*;
+
+    const KNOBS: [f64; 4] = [0.5, 1., 0., 0.05];
+
+    fn run(input: &[[f64; 2]], key: &[[f64; 2]]) -> Vec<[f64; 2]> {
+        let law = Law::KontaktHilbert(NATIVE, Key::External);
+        let shared = Shared { link: Link::Max, makeup: 1., mix: 1. };
+        let mut state = ProcessorState::default();
+        let mut cells = vec![[0.; 2]; laws::cells(&law, 48_000).unwrap()];
+        let mut out = vec![];
+        for (x, k) in input.chunks(BLOCK).zip(key.chunks(BLOCK)) {
+            let (mut block, mut keys) = ([[0.; BLOCK]; 2], [[0.; BLOCK]; 2]);
+            for i in 0..x.len() {
+                (block[0][i], block[1][i]) = (x[i][0], x[i][1]);
+                (keys[0][i], keys[1][i]) = (k[i][0], k[i][1]);
+            }
+            laws::process(law, &shared, KNOBS, 48_000, &mut state, &mut cells, &mut block, Some(&keys), x.len());
+            out.extend((0..x.len()).map(|i| [block[0][i], block[1][i]]));
+        }
+        out
+    }
+
+    fn rms(out: &[[f64; 2]]) -> f64 {
+        (out.iter().map(|f| f[0] * f[0]).sum::<f64>() / out.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn a_key_equal_to_the_audio_is_the_internal_detector() {
+        // Bit-exact: the same detector on the same signal (the key path is only a source change).
+        let input = sine(0.8, 440., 4800);
+        let internal = run_law(Law::KontaktHilbert(NATIVE, Key::Internal), Link::Max, KNOBS, &input);
+        assert_eq!(run(&input, &input), internal);
+    }
+
+    #[test]
+    fn a_silent_key_leaves_the_audio_unreduced() {
+        // The detector sees no key, so the gain stays at unity and the audio is
+        // only brick-walled; the internal detector reduces the loud sine first.
+        let input = sine(2., 440., 4800);
+        let silent = vec![[0.; 2]; 4800];
+        let keyed = run(&input, &silent);
+        let internal = run_law(Law::KontaktHilbert(NATIVE, Key::Internal), Link::Max, KNOBS, &input);
+        assert!(rms(&keyed[1000..]) > rms(&internal[1000..]) * 1.05, "{} {}", rms(&keyed[1000..]), rms(&internal[1000..]));
     }
 }

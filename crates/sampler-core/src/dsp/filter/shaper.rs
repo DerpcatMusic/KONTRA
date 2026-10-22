@@ -11,6 +11,10 @@ pub(crate) enum Slope {
     Fused(f32),
     /// `(|c| 0.25) inv` with `inv = 1 / L`: the SV2 and SV Multi order.
     Split { inv: f32 },
+    /// `c - (|c| c) w`: the AR state order, which keeps the product before the weight.
+    Direct(f32),
+    /// The clamp plus a fraction of the excess: `c + s (v - c)` (the legacy BFilter knee).
+    Excess(f32),
 }
 
 /// Clamp to `+-limit`, then bend the top. Kontakt's SV state saturator (`limit = 2L`).
@@ -33,15 +37,37 @@ impl Knee {
         Self { limit: l + l, slope: Slope::Split { inv: 1.0 / l } }
     }
 
+    /// The legacy BFilter knee: clamp to `+-1`, then pass `slope` of the excess.
+    #[inline(always)]
+    pub(crate) fn excess(slope: f32) -> Self {
+        Self { limit: 1.0, slope: Slope::Excess(slope) }
+    }
+
+    /// The excess slope of an [`Slope::Excess`] knee (0 for the other shapes).
+    pub(crate) fn excess_slope(self) -> f32 {
+        match self.slope {
+            Slope::Excess(slope) => slope,
+            _ => 0.0,
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn apply(self, v: f32) -> f32 {
         let c = v.clamp(-self.limit, self.limit);
-        let w = match self.slope {
-            Slope::Fused(w) => c.abs() * w,
-            Slope::Split { inv } => (c.abs() * 0.25) * inv,
-        };
-        (1.0 - w) * c
+        match self.slope {
+            Slope::Fused(w) => (1.0 - c.abs() * w) * c,
+            Slope::Split { inv } => (1.0 - (c.abs() * 0.25) * inv) * c,
+            Slope::Direct(w) => c - (c.abs() * c) * w,
+            Slope::Excess(slope) => (v - c) * slope + c,
+        }
     }
+}
+
+/// `(a - c |s|) s` with `s` the input clamped to +-4: the Pro-53 and Versatile feedback knee.
+#[inline(always)]
+pub(crate) fn soft(v: f32, (a, c): (f32, f32)) -> f32 {
+    let s = v.clamp(-4.0, 4.0);
+    (a - s.abs() * c) * s
 }
 
 /// `v (v^2 + 27) / (9 v^2 + 27)`: the Padé tanh-like curve of the ladder and Monark inputs.
@@ -49,4 +75,27 @@ impl Knee {
 pub(crate) fn pade(v: f32) -> f32 {
     let v2 = v * v;
     ((v2 + 27.0) * v) / ((v2 * 9.0) + 27.0)
+}
+
+/// `(a - c |s|) s` with `s` the input clamped to +-4: Pro-53's feedback `NL` and the Versatile
+/// band shaper. A transfer stage: it owns no state and is placed where a core saturates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Soft {
+    pub a: f32,
+    pub c: f32,
+}
+
+impl Soft {
+    #[inline(always)]
+    pub(crate) fn apply(self, v: f32) -> f32 {
+        let s = v.clamp(-4.0, 4.0);
+        (self.a - s.abs() * self.c) * s
+    }
+}
+
+/// `v / sqrt(v^2 + 1)`: the bounded soft clip of the Dual SKF resonance loop (a transfer stage).
+#[inline(always)]
+pub(crate) fn unit_sqrt(v: f32) -> f32 {
+    let n = 1.0 / ((v * v) + 1.0).sqrt();
+    n * v
 }

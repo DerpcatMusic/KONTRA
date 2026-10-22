@@ -30,6 +30,7 @@ use super::super::control::{ControlRamp, ControlRange, Parameter, PreparedParame
 use super::super::hiir::{Hiir, HiirState};
 use super::super::Planar;
 use super::super::biquad::{self, Coefficients, Shape};
+use super::chamberlin::{pro52, versatile, Chamberlin};
 use super::linear::Zdf;
 use super::shaper::{self, Knee};
 
@@ -147,9 +148,9 @@ pub(crate) struct Design {
     pub parallel: bool,
     /// Output gain.
     pub gain: f32,
-    /// Knee clip `clamp(v, -1, 1) + slope (v - clamp)`: (where, slope). `where` 0 is the input
+    /// Knee clip [`Knee::excess`]: (where, knee). `where` 0 is the input
     /// (HP4), `s + 1` the stored output of section `s`.
-    pub clip: Option<(usize, f32)>,
+    pub clip: Option<(usize, Knee)>,
 }
 
 // ----------------------------------------------------------------- the native law
@@ -193,7 +194,7 @@ fn bits(p: [u32; 5]) -> [f32; 5] {
     p.map(f32::from_bits)
 }
 
-fn clamp01(v: f32) -> f32 {
+pub(super) fn clamp01(v: f32) -> f32 {
     if v >= 0.0 {
         if v >= 1.0 { 1.0 } else { v }
     } else {
@@ -390,7 +391,7 @@ fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design
             d.count = 2;
             d.gain = gain;
             // LP4 (FUN_140909bf0) knees the first section's output, HP4 (FUN_14090b4e0) the input.
-            d.clip = Some((if high { 0 } else { 1 }, 0.6));
+            d.clip = Some((if high { 0 } else { 1 }, Knee::excess(0.6)));
         }
         SectionClass::Bp4 => {
             let w = angle(v, 0.82);
@@ -402,7 +403,7 @@ fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design
             *s = [x.scale(dx), y.scale(dy), Section::default()];
             d.count = 2;
             d.gain = gain;
-            d.clip = Some((1, 0.6));
+            d.clip = Some((1, Knee::excess(0.6)));
         }
         SectionClass::Br4 => {
             // f64 coefficients (FUN_1408e4af0); the section math is the same.
@@ -469,7 +470,7 @@ fn design(class: SectionClass, cutoff: f32, resonance: f32, rate: f32) -> Design
             *s = [x.scale(dv), y.scale(dv), z.scale(dv)];
             d.count = 3;
             d.gain = gain;
-            d.clip = Some((2, 0.7));
+            d.clip = Some((2, Knee::excess(0.7)));
         }
     }
     d
@@ -506,113 +507,12 @@ pub(crate) struct Stage {
     pub weights: [f32; 3],
     pub wet: f32,
 }
-
-/// Up to three stages in series, a soft-clipped feedback of the last low pass subtracted from
-/// the input, and an output gain smoothed toward `gain` by `smooth` per frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Chamberlin {
-    pub stages: [Stage; 3],
-    pub count: usize,
-    pub feedback: (f32, f32),
-    pub gain: f32,
-    pub smooth: f32,
-}
-
-/// `(a - c |s|) s` with `s` the input clamped to +-4 (Pro-53 feedback `NL`, Versatile shaper).
-#[inline(always)]
-fn soft(v: f32, (a, c): (f32, f32)) -> f32 {
-    let s = v.clamp(-4.0, 4.0);
-    (a - s.abs() * c) * s
-}
-
 /// The 2401-entry table `2^(i/60 - 20)` at the MIDI-note index `((x 100 + 20) 5) + 1381.88`
 /// (`FUN_14095d940` / `FUN_14095d630`): 25.96 Hz at 0, 8372 Hz at 1.
-fn note_hertz(cutoff: f32) -> f32 {
+pub(super) fn note_hertz(cutoff: f32) -> f32 {
     super::ladder_kernel::exponential((clamp01(cutoff) * 100.0 + 20.0) * 5.0 + 1381.881_6)
 }
 
-/// Pro-53 (`FUN_14095d940` setter, `FUN_1409099a0` process): two stages, the second fed the
-/// first's low pass scaled by its damping, `NL(l2)` fed back.
-fn pro52(cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
-    let r = clamp01(resonance);
-    let k = if r >= 0.5 { r * 0.48 + 0.46 } else { r * 1.16 + 0.12 };
-    let limit = (r * 0.293) * (r + 1.3075) + 0.7352;
-    let g = (note_hertz(cutoff) * (f32::from_bits(0x40c90e56) / rate)).clamp(0.0, limit);
-    let k2 = k * 0.8;
-    let d2 = 2.0 - (k2 + k2);
-    let low = |d, k, eps| Stage { g, d, k, eps, weights: [1.0, 0.0, 0.0], wet: 1.0, ..Stage::default() };
-    Chamberlin {
-        stages: [low(2.0 - (k + k), 1.0, 1e-7), low(d2, d2, 0.0), Stage::default()],
-        count: 2,
-        feedback: (0.133_35, 0.016_668_75),
-        gain: 1.0,
-        smooth: 1.0,
-    }
-}
-
-/// 3x2 Versatile (`FUN_14095db50` cutoff, `FUN_140966230`.. resonances, assignment
-/// `0x14096490b`, normaliser `FUN_14096f840`, process `FUN_140aef6e0`): three stages with the
-/// band-state shaper, morphing LP -> BP -> HP, each blended by its wet amount.
-fn versatile(v: &sampler_ir::fx::filter::Versatile, cutoff: f32, resonance: f32, rate: f32) -> Chamberlin {
-    let k = (1.0 / f64::from(rate) * f64::from_bits(0x401921cac083126f)) as f32;
-    let note = clamp01(cutoff) * 111.0 + 20.0;
-    let shift = v.shift.map(|x| clamp01(x) * 80.0);
-    let n1 = shift[0] + note;
-    let notes = [note, n1, n1 + shift[1]];
-    let res = [clamp01(resonance), clamp01(v.resonance[0]), clamp01(v.resonance[1])];
-    let wet = v.wet.map(clamp01);
-    let mut stages = [Stage::default(); 3];
-    let mut comp = [0f32; 3];
-    for i in 0..3 {
-        let r = res[i];
-        let q = if r > 0.5 { (f64::from(r - 0.5) * 0.66 + 0.65) as f32 } else { (f64::from(r) * 1.3) as f32 };
-        let limit = ((f64::from(q) + 1.3075) * f64::from(q) * 0.293 + 0.7352) as f32;
-        let arg = (notes[i] - 69.0) * 0.083_333_336;
-        let g = ((f64::from(arg).exp2() * 440.0) as f32 * k).min(limit);
-        let t = clamp01(v.types[i]);
-        let weights = if t < 0.5 {
-            let a = 0.5 - t;
-            [a + a, t + t, 0.0]
-        } else {
-            let a = 1.0 - t;
-            [0.0, a + a, ((t - 0.5) + t) - 0.5]
-        };
-        comp[i] = (f64::from(wet[i]) / (f64::from(1.0 - r) * 1.4 + 0.05) + f64::from(1.0 - wet[i])) as f32;
-        stages[i] = Stage { g, d: 2.0 - (q + q), k: 1.0, eps: 0.0, shaper: (0.06, 0.0075), weights, wet: wet[i] };
-    }
-    let [fa, fb, fc] = stages.map(|s| s.g);
-    let [a1, b1, c1] = comp.map(|c| c - 1.0);
-    let inv = 1.0 / fa;
-    let t1 = (a1 * b1) / ((fb * inv) * 6.0 - 5.0);
-    let t2 = (c1 * b1) / ((fc / fb) * 6.0 - 5.0);
-    let t3 = (c1 * a1) / ((fc * inv) * 6.0 - 5.0);
-    let norm = (3.0 / f64::from((((t1 + t2) + t3) + comp[1]) + (comp[2] + comp[0]))) as f32;
-    let gain = 10f64.powf(f64::from((clamp01(v.gain) - 0.5) * 3.0)) as f32;
-    Chamberlin { stages, count: 3, feedback: (0.0, 0.0), gain: gain * norm, smooth: (1.0 / f64::from(rate) * 20.0) as f32 }
-}
-
-impl Chamberlin {
-    /// One frame. `state = [b, l] x 3, feedback, smoothed gain`.
-    #[inline(always)]
-    fn tick(&self, state: &mut [f32; 8], input: f32) -> f32 {
-        let mut y = input - state[6];
-        let mut low = 0.0;
-        for (i, st) in self.stages[..self.count].iter().enumerate() {
-            let (b, l) = (state[2 * i], state[2 * i + 1]);
-            let hp = soft(b, st.shaper) + (y * st.k - (b * st.d + l));
-            let b = hp * st.g + b;
-            let l = (b * st.g + st.eps) + l;
-            state[2 * i] = b;
-            state[2 * i + 1] = l;
-            let mode = (b * st.weights[1] + hp * st.weights[2]) + l * st.weights[0];
-            y += (mode - y) * st.wet;
-            low = l;
-        }
-        state[6] = soft(low, self.feedback);
-        state[7] += (self.gain - state[7]) * self.smooth;
-        state[7] * y
-    }
-}
 
 /// Legacy Ladder (`FUN_14095d630` setter, `FUN_140aec760` / `FUN_140aef200` process): four
 /// one-pole stages with a zero at 0.3, a `v (1 - |v| / 100)` clip between stages and in the
@@ -1854,8 +1754,8 @@ impl Cascade {
     /// moves snap while modulated) and the resonance by `0.015` of the distance when that is
     /// over `1e-4`. Versatile's clock (`0x140aea690`) moves both by `0.015`.
     // ponytail: "modulated" is a nonzero cutoff delta, not the native's modulation-buffer
-    // pointer; the clock's alternative branch (global 0x144fd4c54 = 1) and its offset slew
-    // (+0x1f4 -> +0x1f8) are taken as unused, both unwritten in the binary.
+    // pointer. The clock's alternative branch is dead: `DAT_144fd4c54` is 0 in the image's
+    // .rdata and never written in the decompile, so FUN_140ae9f90 runs its `else` path only.
     pub(crate) fn process(
         &self,
         cells: &mut [[f64; 2]],
@@ -2011,7 +1911,7 @@ fn pack(d: &Design, cells: &mut [[f64; 2]]) {
     }
     flat[15] = f64::from(d.gain);
     flat[16] = d.count as f64 + if d.parallel { 8.0 } else { 0.0 };
-    flat[17] = d.clip.map_or(-1.0, |(s, slope)| s as f64 * 4.0 + f64::from(slope));
+    flat[17] = d.clip.map_or(-1.0, |(s, knee)| s as f64 * 4.0 + f64::from(knee.excess_slope()));
     for (i, v) in flat.iter().enumerate() {
         cells[i / 2][i % 2] = *v;
     }
@@ -2031,7 +1931,7 @@ fn unpack(cells: &[[f64; 2]]) -> Design {
         gain: flat[15] as f32,
         clip: (flat[17] >= 0.0).then(|| {
             let s = (flat[17] / 4.0).floor();
-            (s as usize, (flat[17] - s * 4.0) as f32)
+            (s as usize, Knee::excess((flat[17] - s * 4.0) as f32))
         }),
     }
 }
@@ -2039,12 +1939,8 @@ fn unpack(cells: &[[f64; 2]]) -> Design {
 /// One frame through the design. `state[s] = [x1, x2, y1, y2]`.
 #[inline(always)]
 fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
-    let knee = |v: f32, slope: f32| {
-        let k = v.clamp(-1.0, 1.0);
-        (v - k) * slope + k
-    };
     let input = match d.clip {
-        Some((0, slope)) => knee(input, slope),
+        Some((0, knee)) => knee.apply(input),
         _ => input,
     };
     let mut x = input;
@@ -2054,10 +1950,10 @@ fn tick(d: &Design, state: &mut [[f32; 4]; 3], input: f32) -> f32 {
         let [x1, x2, y1, y2] = state[s];
         let section_in = if d.parallel { input } else { x };
         let mut y = c.c1 * y1 + c.c2 * y2 + c.b2 * x2 + c.b1 * x1 + c.b0 * section_in;
-        if let Some((at, slope)) = d.clip
+        if let Some((at, knee)) = d.clip
             && at == s + 1
         {
-            y = knee(y, slope);
+            y = knee.apply(y);
         }
         state[s] = [section_in, x1, y, y1];
         sum += y;
@@ -2185,6 +2081,57 @@ mod tests {
             other.resonance = Parameter::Constant(8.5);
             assert!(!other.valid(), "resonance range is unchanged");
         }
+    }
+
+    /// Kontakt 8 measured through its own Filters/Effect (tools/kontakt-oracle eqrender.py, 48 kHz):
+    /// dB of the left-channel response at ten probes, per legacy type, cutoff and resonance knob.
+    /// The compiled unit's impulse response (16384 frames) is taken at the same probes.
+    #[test]
+    fn legacy_responses_match_the_kontakt_measurements() {
+        const N: usize = 16384;
+        let file: serde_json::Value = serde_json::from_str(include_str!("cascade_kontakt_oracle.json")).unwrap();
+        let probes: Vec<f64> = file["probes_hz"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let mut failures = Vec::new();
+        for case in file["cases"].as_array().unwrap() {
+            let class = match case["class"].as_str().unwrap() {
+                "Lp2" => Legacy::Lp2, "Hp2" => Legacy::Hp2, "Bp2" => Legacy::Bp2,
+                "Hp4" => Legacy::Hp4, "Bp4" => Legacy::Bp4, "Br4" => Legacy::Br4,
+                "Lp1" => Legacy::Lp1, "Hp1" => Legacy::Hp1, "Lp4" => Legacy::Lp4, "Lp6" => Legacy::Lp6,
+                "Ladder" => Legacy::Ladder,
+                other => panic!("unknown class {other}"),
+            };
+            let cutoff = case["cutoff"].as_f64().unwrap();
+            let resonance = case["resonance"].as_f64().unwrap();
+            let setting = CascadeSettings { class, cutoff: Parameter::Constant(cutoff), resonance: Parameter::Constant(resonance) };
+            let unit = setting.compile(48_000, &mut Vec::new());
+            let mut cells = vec![[0.0; 2]; CELLS];
+            let mut h = vec![0f64; N];
+            for start in (0..N).step_by(super::super::super::BLOCK) {
+                let len = super::super::super::BLOCK.min(N - start);
+                let mut block = [[0.0; super::super::super::BLOCK]; 2];
+                if start == 0 {
+                    block[0][0] = 1.0;
+                }
+                assert!(!unit.process(&mut cells, &[], &mut block, len, start as u64, [0.0; 4]));
+                for n in 0..len {
+                    h[start + n] = block[0][n];
+                }
+            }
+            let measured = case["db"].as_array().unwrap();
+            for (i, &f) in probes.iter().enumerate() {
+                let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, &x)| {
+                    let a = -2.0 * std::f64::consts::PI * f * n as f64 / 48_000.0;
+                    (re + x * a.cos(), im + x * a.sin())
+                });
+                let ours = 20.0 * (re * re + im * im).sqrt().max(1e-12).log10();
+                let want = measured[i].as_f64().unwrap();
+                // Stop-band probes below -60 dB are noise on both sides; the measured dB are rounded to 0.01, so compare the rest to 0.1 dB.
+                if want > -60.0 && (ours - want).abs() > 0.1 {
+                    failures.push(format!("{} cutoff {cutoff} res {resonance} @{f} Hz: ours {ours:.2} dB, Kontakt {want:.2} dB", case["class"]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     fn impulse_response(class: SectionClass, cutoff: f32, resonance: f32, input: &[f32]) -> Vec<f32> {
@@ -2644,4 +2591,59 @@ mod tests {
     fn cabs(a: (f64, f64)) -> f64 {
         a.0.hypot(a.1)
     }
+
+/// Kontakt 8 Vowel A / Vowel B responses (Wine oracle, `tools/kontakt-oracle/eqrender.py`, 48 kHz):
+/// impulse through the L channel against the bypass reference. Rows: Cutoff, Resonance, dB at
+/// 30..15000 Hz.
+#[test]
+fn vowel_filters_match_kontakt_measurements() {
+    const PROBES: [f64; 10] = [30., 60., 100., 200., 500., 1000., 2000., 5000., 10000., 15000.];
+    const VOWEL_A: [(f32, f32, [f64; 10]); 8] = [
+        (0.0, 0.0, [-1.25, -1.20, -1.06, -0.38, 8.44, 2.49, 0.39, -1.05, -1.23, -1.26]),
+        (0.25, 0.0, [-1.24, -1.16, -0.96, 0.09, 9.91, -1.96, 2.31, -0.76, -1.17, -1.24]),
+        (0.5, 0.0, [-1.23, -1.11, -0.82, 0.68, 5.26, -6.10, 3.41, -0.40, -1.10, -1.23]),
+        (0.75, 0.0, [-1.21, -1.05, -0.63, 1.61, -0.55, -9.65, 1.75, 0.05, -1.02, -1.20]),
+        (1.0, 0.0, [-1.19, -0.93, -0.30, 3.36, -5.96, -12.96, -1.55, 0.58, -0.92, -1.18]),
+        (0.5, 0.5, [-4.27, -4.15, -3.85, -2.28, 4.13, -8.62, 4.75, -3.25, -4.11, -4.26]),
+        (0.5, 0.9, [-5.52, -5.39, -5.10, -3.52, 3.28, -9.78, 5.23, -4.46, -5.35, -5.50]),
+        (0.5, 1.0, [-5.57, -5.45, -5.15, -3.57, 3.23, -9.83, 5.25, -4.51, -5.41, -5.56]),
+    ];
+    const VOWEL_B: [(f32, f32, [f64; 10]); 8] = [
+        (0.0, 0.0, [-1.19, -0.94, -0.32, 3.66, -1.75, 2.80, -0.27, -1.13, -1.24, -1.26]),
+        (0.25, 0.0, [-1.21, -1.03, -0.58, 1.94, -1.30, -0.30, 1.46, -0.88, -1.20, -1.25]),
+        (0.5, 0.0, [-1.23, -1.09, -0.76, 1.00, 2.81, -5.49, 3.30, -0.52, -1.13, -1.23]),
+        (0.75, 0.0, [-1.24, -1.13, -0.88, 0.43, 7.83, -7.37, 2.11, -0.03, -1.03, -1.21]),
+        (1.0, 0.0, [-1.24, -1.16, -0.96, 0.05, 10.20, -7.28, -1.61, 0.60, -0.92, -1.18]),
+        (0.5, 0.5, [-3.56, -3.42, -3.08, -1.23, 1.77, -7.25, 3.69, -2.72, -3.44, -3.57]),
+        (0.5, 0.9, [-4.47, -4.33, -3.99, -2.13, 1.04, -8.04, 3.69, -3.60, -4.34, -4.47]),
+        (0.5, 1.0, [-4.51, -4.37, -4.03, -2.17, 1.01, -8.08, 3.69, -3.64, -4.38, -4.51]),
+    ];
+    for (class, rows) in [(SectionClass::VowelA, VOWEL_A), (SectionClass::VowelB, VOWEL_B)] {
+        for (cutoff, resonance, db) in rows {
+            let d = design(class, cutoff, resonance, 48_000.0);
+            for (probe, want) in PROBES.iter().zip(db) {
+                let got = 20.0 * vowel_response(&d, *probe).log10();
+                assert!((got - want).abs() < 0.1, "{class:?} cutoff {cutoff} res {resonance} at {probe} Hz: {got} dB vs {want}");
+            }
+        }
+    }
+}
+
+/// Magnitude of a parallel section bank: `gain * sum of the sections' responses` (the sections
+/// all read the input).
+fn vowel_response(d: &Design, hz: f64) -> f64 {
+    let w = std::f64::consts::TAU * hz / 48_000.0;
+    let z = (w.cos(), -w.sin());
+    let sum = d.sections[..d.count].iter().fold((0.0, 0.0), |acc, s| {
+        let num = cadd(cadd(cscale(f64::from(s.b0), (1.0, 0.0)), cscale(f64::from(s.b1), z)), cscale(f64::from(s.b2), cmul(z, z)));
+        let den = csub(csub((1.0, 0.0), cscale(f64::from(s.c1), z)), cscale(f64::from(s.c2), cmul(z, z)));
+        cadd(acc, cdiv(num, den))
+    });
+    f64::from(d.gain) * cabs(sum)
+}
+
+fn cdiv(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let n = b.0 * b.0 + b.1 * b.1;
+    ((a.0 * b.0 + a.1 * b.1) / n, (a.1 * b.0 - a.0 * b.1) / n)
+}
 }

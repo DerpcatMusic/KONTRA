@@ -37,7 +37,7 @@ def click(env, x, y, wait=1.2):
 
 
 def shot(env, name):
-    subprocess.run(["import", "-window", "root", f"/tmp/w3/audit/{name}.png"], env=env, check=False)
+    subprocess.run(["import", "-window", "root", str(Path(os.environ.get("ORACLE_SCRATCH", Path.home() / ".cache/kontra-oracle")) / f"{name}.png")], env=env, check=False)
 
 
 def select_device(env):
@@ -68,7 +68,7 @@ def select_device(env):
 
 def trigger(midi=None):
     """One MIDI note into Kontakt (ALSA Midi Through 14:0) starts the probe's KSP sequence."""
-    mid = Path(midi) if midi else Path("/tmp/w3/audit/trigger.mid")
+    mid = Path(midi) if midi else Path.home() / ".cache/kontra-oracle/trigger.mid"
     trk = bytes([0x00, 0x90, 36, 100, 0x60, 0x80, 36, 0, 0x00, 0xFF, 0x2F, 0x00])
     if not midi:
         mid.write_bytes(b"MThd" + (6).to_bytes(4, "big") + bytes([0, 0, 0, 1, 0x01, 0xE0]) + b"MTrk" + len(trk).to_bytes(4, "big") + trk)

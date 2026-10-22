@@ -168,7 +168,7 @@ impl Net {
             pair,
             early: (!native && n.early > 0.0).then(|| Early::new(n.early, n.size, (n.predelay_seconds as f32 * rate) as usize, rate)),
             gate: n.gate_seconds.filter(|_| n.topology == Topology::Jezar || !native).map(|g| Gate::new(g, rate)),
-            raum: n.raum.filter(|_| n.topology == Topology::Raum).map(|p| design::raum::Outer::new(&p, rate as u32)),
+            raum: n.raum.filter(|_| n.topology == Topology::Raum).map(|p| design::raum::Outer::new(&p, rate as u32, n.raum_beats)),
             pos: 0,
         })
     }
@@ -190,9 +190,9 @@ impl Net {
     }
 
     /// Replace `l`/`r` with the wet signal.
-    fn process(&mut self, l: &mut [f32], r: &mut [f32]) {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], tempo: f64) {
         if let Some(o) = &mut self.raum {
-            return o.process(l, r, |a, b| self.core.process(a, b));
+            return o.process(l, r, tempo, |a, b| self.core.process(a, b));
         }
         if let Some(p) = &mut self.pair {
             for (l, r) in l.chunks_mut(crate::dsp::BLOCK).zip(r.chunks_mut(crate::dsp::BLOCK)) {
@@ -296,7 +296,7 @@ impl Space {
     }
 
     /// Process up to [`crate::dsp::BLOCK`] frames of each channel in place.
-    pub(crate) fn process(&mut self, [left, right]: [&mut [f32]; 2]) {
+    pub(crate) fn process(&mut self, [left, right]: [&mut [f32]; 2], tempo: f64) {
         let n = left.len().min(right.len()).min(crate::dsp::BLOCK);
         let (left, right) = (&mut left[..n], &mut right[..n]);
         let mut input = [[0f32; crate::dsp::BLOCK]; 2];
@@ -307,7 +307,7 @@ impl Space {
             wet[0][..n].copy_from_slice(left);
             wet[1][..n].copy_from_slice(right);
             let [wl, wr] = &mut wet;
-            net.process(&mut wl[..n], &mut wr[..n]);
+            net.process(&mut wl[..n], &mut wr[..n], tempo);
         }
         if let Some(conv) = &mut self.conv {
             let (mut cl, mut cr) = (input[0], input[1]);
@@ -336,14 +336,14 @@ mod tests {
         l[0] = 1.0;
         r[0] = 1.0;
         for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
-            s.process([l, r]);
+            s.process([l, r], 120.0);
         }
         (l, r)
     }
 
     /// Presets for the CPU measurement and cross-preset checks.
     pub(super) fn presets() -> Vec<(&'static str, Network)> {
-        use sampler_ir::fx::space::{Freeverb as Fv, Galois, SparkVerb};
+        use sampler_ir::fx::space::{Freeverb as Fv, Galois, InputFilter, SparkVerb};
         let spark = |quality| SparkVerb {
             quality,
             room_m: 20.0,
@@ -378,7 +378,7 @@ mod tests {
                     topology: Topology::Freeverb,
                     predelay_seconds: 0.02,
                     input_cutoff_hz: 8_000.0,
-                    freeverb: Some(Fv { feedback: 0.84, damp: 0.2, allpass: 0.5, input_gain: 0.015, width: 0.75 }),
+                    freeverb: Some(Fv { feedback: 0.84, damp: 0.2, allpass: 0.5, input_gain: 0.015, width: 0.75, input_filter: InputFilter::OnePole }),
                     ..Network::DEFAULT
                 },
             ),
@@ -428,7 +428,7 @@ mod tests {
                         let v = if (b * 64 + k) % 9_973 == 0 { 0.5 } else { 1e-3 * ((b * 64 + k) as f32 * 0.01).sin() };
                         (l[k], r[k]) = (v, -v);
                     }
-                    net.process(&mut l, &mut r);
+                    net.process(&mut l, &mut r, 120.0);
                 }
                 std::hint::black_box(&l);
                 best = best.min(t.elapsed().as_secs_f64() * 1e9 / frames as f64);
@@ -450,7 +450,7 @@ mod tests {
                 if b == 0 {
                     (l[0], r[0]) = (1.0, 1.0);
                 }
-                net.process(&mut l, &mut r);
+                net.process(&mut l, &mut r, 120.0);
                 assert!(l.iter().chain(&r).all(|v| v.is_finite()));
                 e += l.iter().chain(&r).map(|v| f64::from(v * v)).sum::<f64>();
             }

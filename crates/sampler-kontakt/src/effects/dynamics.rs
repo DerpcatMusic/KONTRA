@@ -4,12 +4,24 @@
 //! one `Config` superset, saved knobs passed through (dispatcher
 //! `0x1409047a0`; cores `0x140ab2250`, `0x140ab2c80`, `0x140ab35d0`).
 
-use sampler_ir::fx::dynamics::{Config, Law, Link, Native};
 use super::{Lowering, Notes, Site};
+use sampler_ir::fx::dynamics::{Config, Key, Law, Link, Native};
 use sampler_ir::{Gain, Processor, Reason, Time};
 
 /// One note for the diagnostics: feature, detail, reason.
 pub(super) type Note = (String, String, Reason);
+
+/// Why a dynamics module has no processor yet, for the diagnostic note. Only
+/// modules whose saved fields are read but whose law is unproven belong here.
+pub(super) fn unproved(module: u16) -> Option<&'static str> {
+    Some(match module {
+        0x60 => {
+            "Supercharger GT: saved fields read, but no verified law (variant identity, \
+             transfer curve, detector and timing not extracted; see docs/re/engine/dyn-compressors.md)"
+        }
+        _ => return None,
+    })
+}
 
 /// `BParFXCompressor`: integer mode, threshold dB, saved ratio (0..=1), attack
 /// and release ms, stereo-link byte.
@@ -80,12 +92,13 @@ pub(super) fn limiter(input_gain: f32, release_ms: f32) -> Result<Processor, Not
     }))
 }
 
-/// `BParFXHilbertLimiter` (0x5f, "Transparent Limiter"): normalized drive,
-/// release (s) and ceiling, then the side-chain byte; they feed controls 0..3
-/// of `BEffectHilbertLimiter` (`0x1409aa9e0` clamps each to 0..=1 before the
-/// core setter `0x141aea680`). The saved-order to control-id map follows the
-/// four-control layout (three floats, then the side-chain bool as id 3); it
-/// is inferred, not traced.
+/// `BParFXHilbertLimiter` (0x5f, "Transparent Limiter", version 0x51): floats
+/// at saved +8, +0xc, +0x10 (normalized drive, release s, ceiling), then the
+/// side-chain byte at +0x14. Decompile: reader `0x140d01ae0`; controls 0..2
+/// are those floats in order (setter `0x141aea680`), control 3 is the
+/// side-chain flag (`0x1409aa9e0` clamps 0..=1 and stores it). The side-chain
+/// selects `BEffectHilbertLimiterSC`, whose key input the core now supports
+/// (`Key::External`); no slot routes one yet, so the flag stays diagnosed.
 pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -> Result<Processor, Note> {
     if ![drive, release, ceiling].iter().all(|v| v.is_finite()) {
         return Err((
@@ -100,7 +113,7 @@ pub(super) fn hilbert(drive: f32, release: f32, ceiling: f32, sidechain: bool) -
     let unit = |v: f32| f64::from(v.clamp(0.0, 1.0));
     Ok(Processor::Dynamics(Config {
         address: None,
-        law: Law::KontaktHilbert(Native { threshold_db: unit(drive), ratio: unit(ceiling) }),
+        law: Law::KontaktHilbert(Native { threshold_db: unit(drive), ratio: unit(ceiling) }, Key::Internal),
         attack: Time::Milliseconds(0.0),
         release: Time::Seconds(unit(release)),
         link: Link::Max,
@@ -175,8 +188,13 @@ pub(super) fn transient(attack: f32, sustain: f32, gain: f32, clip: i32) -> Resu
 /// float. Floats feed core controls 0..=4 (threshold, makeup, attack, release,
 /// ratio) and 7 (mix), bytes 5 (link) and 6 (side-chain) of `BEffectSSLGBusComp`
 /// (setter `0x1409a9d40`, no clamp). That order is inferred from the core ids,
-/// not traced; the trailing float has no traced binding and is ignored.
-pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<f32>) -> Result<Processor, Note> {
+/// not traced. The v0x12 trailing float has no traced binding: the processor
+/// still runs, and the note reports the field as unmodelled.
+pub(super) fn bus_comp(
+    v: [f32; 6],
+    [link, sidechain]: [bool; 2],
+    tail: Option<f32>,
+) -> Result<(Processor, Option<Note>), Note> {
     if !v.iter().all(|x| (0.0..=1.0).contains(x)) {
         return Err(("solid bus comp parameters".into(), format!("{v:?}"), Reason::InvalidValue));
     }
@@ -184,7 +202,7 @@ pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<
         return Err(("solid bus comp external side-chain".into(), String::new(), Reason::NotModeled));
     }
     let [threshold, makeup, attack, release, ratio, mix] = v.map(f64::from);
-    Ok(Processor::Dynamics(Config {
+    let processor = Processor::Dynamics(Config {
         address: None,
         law: Law::KontaktBusComp { threshold, makeup, attack, release, ratio, link },
         attack: Time::Milliseconds(0.0),
@@ -192,7 +210,9 @@ pub(super) fn bus_comp(v: [f32; 6], [link, sidechain]: [bool; 2], _tail: Option<
         link: if link { Link::Max } else { Link::Off },
         makeup: Gain::UNITY,
         mix,
-    }))
+    });
+    let note = tail.map(|t| ("solid bus comp trailing field".into(), format!("{t}"), Reason::NotModeled));
+    Ok((processor, note))
 }
 
 #[cfg(test)]
@@ -206,7 +226,7 @@ mod limiter_tests {
         assert!(limiter(f32::NAN, 100.0).is_err());
         assert!(limiter(0.0, -1.0).is_err());
         let Ok(Processor::Dynamics(h)) = hilbert(2.0, 0.5, 0.9, false) else { panic!() };
-        assert!(matches!(h.law, Law::KontaktHilbert(Native { threshold_db: 1.0, .. })));
+        assert!(matches!(h.law, Law::KontaktHilbert(Native { threshold_db: 1.0, .. }, Key::Internal)));
         assert!(hilbert(0.5, 0.5, 0.5, true).is_err());
         let Ok(Processor::Dynamics(f)) = feedback([0.2, 0.8, 0.0, 0.0, 1.0, 1.0, 0.0], [true, true, false]) else {
             panic!()
@@ -216,7 +236,8 @@ mod limiter_tests {
         let Ok(Processor::Dynamics(t)) = transient(1.0, 0.5, 0.5, 1) else { panic!() };
         assert!(matches!(t.law, Law::KontaktTransient { attack: 1.0, clip: true, .. }));
         assert!(transient(0.5, 0.5, 0.5, 2).is_err());
-        let Ok(Processor::Dynamics(b)) = bus_comp([0.5, 0.2, 0.5, 1.0, 1.0, 0.7], [true, false], Some(0.6)) else {
+        let Ok((Processor::Dynamics(b), Some(_))) = bus_comp([0.5, 0.2, 0.5, 1.0, 1.0, 0.7], [true, false], Some(0.6))
+        else {
             panic!()
         };
         assert!(matches!(b.law, Law::KontaktBusComp { release: 1.0, link: true, .. }) && b.mix == f64::from(0.7f32));

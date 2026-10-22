@@ -136,6 +136,9 @@ pub enum AmpModel {
     Cat,
     /// 0x56 (reader 0x140d00a50, Fx6B): volume, tone, drive, bass, mid, treble, mono.
     DStortion,
+    /// 0x4d Jump (reader 0x140d01e10, Fx6BB): preamp, master, presence, treble, mid, bass, higain, mono.
+    /// The engine applies a fixed fitted chain; the knobs are carried but not yet read.
+    Jump,
 }
 
 /// A Kontakt amp, cabinet or pedal model and its core values in the model's order.
@@ -528,6 +531,16 @@ impl Config {
             lane("ENGINE_PAR_NOISELEVEL", P::LoFiNoise, f64::from(level), Law::Pow { a: 1., p: 3. });
             lane("ENGINE_PAR_NOISECOLOR", P::LoFiColor, f64::from(color), Law::Identity);
         }
+        if let Curve::Amp(Amp { model: AmpModel::Fuzz, knobs }) = self.curve {
+            // Stored-law identity is unmeasured (no Fuzz binding row); see docs/re/engine/k-stomps-b.md.
+            for (name, role, value) in [
+                ("ENGINE_PAR_FUZZ_AMOUNT", P::FuzzAmount, knobs[0]),
+                ("ENGINE_PAR_FUZZ_BASS", P::FuzzBass, knobs[1]),
+                ("ENGINE_PAR_FUZZ_TREBLE", P::FuzzTreble, knobs[2]),
+            ] {
+                lane(name, role, f64::from(value), Law::Identity);
+            }
+        }
         if let Some(Stereo { width, pan, .. }) = self.stereo {
             // Stereo Modeller (fx_other.tsv): both knobs -1..1; the unit's width is 0..1.
             let signed = Law::Linear { a: -1., b: 2. };
@@ -558,6 +571,7 @@ impl Config {
             Self { curve: Curve::Amp(Amp { model: AmpModel::AcBox, .. }), .. } => "AC Box",
             Self { curve: Curve::Amp(Amp { model: AmpModel::Cat, .. }), .. } => "Cat",
             Self { curve: Curve::Amp(Amp { model: AmpModel::DStortion, .. }), .. } => "DStortion",
+            Self { curve: Curve::Amp(Amp { model: AmpModel::Jump, .. }), .. } => "Jump",
             Self { curve: Curve::Bite(_), .. } => "Bite",
             Self { curve: Curve::Tape(_), .. } => "Tape",
             Self { curve: Curve::Exciter(_), .. } => "Exciter",
@@ -570,5 +584,19 @@ impl Config {
             Self { widener: Some(_), .. } => "Widener",
             _ => "Color",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addressed_fuzz_exposes_its_three_live_lanes_and_not_the_mono_flag() {
+        let fuzz = Amp { model: AmpModel::Fuzz, knobs: [0.5; 24] };
+        let address = crate::SlotAddress { group: 0, slot: 1, generic: 0 };
+        let names: Vec<&str> = Config::amp(fuzz).at(address).lanes().iter().map(|l| l.name).collect();
+        assert_eq!(names, ["ENGINE_PAR_FUZZ_AMOUNT", "ENGINE_PAR_FUZZ_BASS", "ENGINE_PAR_FUZZ_TREBLE"]);
+        assert!(Config::amp(fuzz).lanes().is_empty(), "an unaddressed unit has no lanes");
     }
 }

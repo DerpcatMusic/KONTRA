@@ -5,38 +5,18 @@
 // ponytail: the table and the phase/decimation matrices do not depend on rate or knobs; they
 // are the native init's output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
+use super::kernel::{DECIMATE, PHASE, V, add, lookup, mul, zip};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
-use super::dstortion::zip;
+use super::super::super::control::{ControlRamp, PreparedParameter};
 
-type V = [f32; 4];
 
 const LO: f32 = -125.0;
 const HI: f32 = 130.0;
 const BIAS: f32 = 0.440_002_44;
-const PHASE: [V; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-0.070_312_5, 0.867_187_5, 0.226_562_5, -0.023_437_5],
-    [-0.062_5, 0.562_5, 0.562_5, -0.062_5],
-    [-0.023_437_5, 0.226_562_5, 0.867_187_5, -0.070_312_5],
-];
-const DECIMATE: [V; 4] = [
-    [-0.005_859_375, -0.015_625, -0.017_578_125, 0.0],
-    [0.056_640_625, 0.140_625, 0.216_796_875, 0.25],
-    [0.216_796_875, 0.140_625, 0.056_640_625, 0.0],
-    [-0.017_578_125, -0.015_625, -0.005_859_375, 0.0],
-];
 
 fn shaper() -> &'static [f32] {
     static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
     T.get_or_init(|| include_bytes!("fuzz.f32le").chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
-}
-
-fn mul(a: V, b: V) -> V {
-    zip(a, b, |a, b| a * b)
-}
-
-fn add(a: V, b: V) -> V {
-    zip(a, b, |a, b| a + b)
 }
 
 /// Per channel: the interpolator history (+0x320), the gain stage (+0x330), the one-poles
@@ -101,12 +81,7 @@ impl Engine {
             let p = mul(l.s, PHASE[k]);
             (p[1] + p[3]) + (p[0] + p[2]) + BIAS
         });
-        let y: V = std::array::from_fn(|n| {
-            let i = (u[n].max(LO).min(HI) - LO) as i32;
-            let fr = u[n] - (i as f32 + LO);
-            let i = i as usize * 2;
-            fr * tab[i + 1] + tab[i]
-        });
+        let y: V = lookup(tab, u, LO, HI);
         let z = add(add(add(mul(y, DECIMATE[0]), mul(l.h[0], DECIMATE[1])), mul(l.h[1], DECIMATE[2])), mul(DECIMATE[3], l.h[2]));
         l.h = [y, l.h[0], l.h[1]];
         let hz = (z[1] + z[3]) + (z[0] + z[2]);
@@ -134,11 +109,42 @@ impl Engine {
     }
 }
 
+/// Live knobs: the unit is rebuilt from the current values at each call. Building it
+/// is a few table reads and no allocation, and its history is kept in `state`, so a
+/// constant knob equals the static unit exactly.
+pub(crate) fn process_live(
+    knobs: [PreparedParameter; 3],
+    mono: bool,
+    rate: u32,
+    state: &mut State,
+    parameters: &[ControlRamp],
+    block: &mut Planar,
+    len: usize,
+    at: u64,
+) {
+    let [amount, bass, treble] = knobs.map(|p| p.value(parameters, at, None) as f32);
+    Engine::new([amount, bass, treble, f32::from(u8::from(mono))], rate).process(state, block, len);
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::super::super::BLOCK;
     use super::*;
 
     /// kemu vectors (kontra-w5/fuzz_native.py): ctor, init, apply, settled ramp, kernel.
+    /// A constant live knob is the static unit: same history, same samples.
+    #[test]
+    fn live_constant_knobs_equal_the_static_unit() {
+        let knobs = [0.9, 0.2, 0.8];
+        let (mut live, mut stat) = (State::default(), State::default());
+        let (mut a, mut b): (Planar, Planar) = ([[0.3; BLOCK]; 2], [[0.3; BLOCK]; 2]);
+        let parameters = knobs.map(|v| PreparedParameter::Constant(f64::from(v)));
+        process_live(parameters, false, 48_000, &mut live, &[], &mut a, BLOCK, 0);
+        Engine::new([0.9, 0.2, 0.8, 0.0], 48_000).process(&mut stat, &mut b, BLOCK);
+        assert_eq!(a, b);
+        assert_eq!(live, stat);
+    }
+
     #[test]
     fn matches_the_native_fuzz() {
         let cases: [(u32, [f32; 4]); 5] = [

@@ -8,8 +8,9 @@
 //!   assumed (fully wet).
 //! - 0x15 legacy: exact network and setter laws (`FUN_140aa3d10`,
 //!   `FUN_14094c760`, case 0x3e of `FUN_1409619b0`): Freeverb delay lengths,
-//!   feedback, damping, channel mix, predelay in ms. Only the input lowpass's
-//!   cutoff-to-pole law is stood in (reported as an UnknownLaw note).
+//!   feedback, damping, channel mix, predelay in ms, and the two-pole input
+//!   low-pass (`0x14095b2d0`, `0x14082a0b0`). The low-pass law is INFERRED from
+//!   the decompile, not native-captured.
 //! - 0x57 Plate: the native core (`sampler_core` `dsp/space/design/plate.rs`),
 //!   matched to the emulated core's impulse response.
 //! - 0x16 Convolution: Reverse, early/late filters and composition, the
@@ -17,14 +18,16 @@
 //!   applied; IR size (an STFT time-stretch engine) and S.Rate (IR
 //!   preparation at the inner rate untraced) are reported unmodeled.
 //! - 0x65 Raum: Grounded and Airy drive the native core ([`Topology::Raum`],
-//!   `sampler_core` `dsp/space/design/raum.rs`); Cosmic is reported unmodeled.
+//!   `sampler_core` `dsp/space/design/raum.rs`); Cosmic (type 2) runs the
+//!   chain bank of `design/cosmic.rs` on the same outer, with the spec's
+//!   INFERRED and UNKNOWN parts kept as the outer's behaviour.
 //! - 0x7a Reverb Delight: field binding measured, cores not extracted;
 //!   reported unmodeled with the reason in the slot's `effect` note.
 
 use super::{Impulses, ImpulseRequest, Lowering, Notes, Site, Decoded};
 use sampler_ir::{Processor, Reason, SlotAddress};
 use sampler_ir::Reason::{NotModeled, UnknownLaw};
-use sampler_ir::fx::space::{Config, Freeverb, Galois, Network, Topology};
+use sampler_ir::fx::space::{Config, Freeverb, Galois, InputFilter, Network, Topology};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Convolution {
@@ -79,6 +82,13 @@ pub(super) fn convolution(
             NotModeled,
         ));
     }
+    // Saved flags [2] and [3] have no shaping law here; say so rather than drop them.
+    if c.flags[2] {
+        notes.push(("IR preserve length".into(), "on: Kontakt keeps the response's full length under its IR size control; that resize path is not modeled".into(), NotModeled));
+    }
+    if c.flags[3] {
+        notes.push(("IR latency compensation bypass".into(), "on: the host latency report for this convolution is not modeled; the engine is zero-latency".into(), NotModeled));
+    }
     let left: Vec<f32> = frames.iter().map(|f| f[0]).collect();
     let right: Vec<f32> = frames.iter().map(|f| f[1]).collect();
     // Saved [1] is the low cut and [2] the high cut: the corpus's defaults
@@ -119,32 +129,26 @@ pub(super) fn convolution(
 /// size, stereo, colour, damping, each 0..1. The setter (case 0x3e of
 /// `FUN_1409619b0`) turns them into: comb feedback `size*0.3 + 0.65`, comb
 /// damping coefficient `1 - (1-colour)*0.35`, channel-mix weight
-/// `(stereo+1)/2`, an input lowpass at normalized cutoff
-/// `(1-damping)*0.75 + 0.25`, fixed allpass gain 0.5 and input gain 0.015.
-pub(super) fn legacy(v: &[f32; 5], notes: &mut Notes) -> Config {
+/// `(stereo+1)/2`, the input low-pass at normalized cutoff
+/// `(1-damping)*0.75 + 0.25` (a two-pole Butterworth biquad, see
+/// [`InputFilter::Butterworth2`]), fixed allpass gain 0.5 and input gain 0.015.
+pub(super) fn legacy(v: &[f32; 5], _notes: &mut Notes) -> Config {
     let predelay_ms = f64::from(v[0].clamp(0.0, 180.0));
     let [_, size, stereo, colour, damping] = v.map(|x| x.clamp(0.0, 1.0));
     let feedback = size * 0.3 + 0.65;
     let damp = 1.0 - (1.0 - colour) * 0.35;
     let width = (stereo + 1.0) * 0.5;
     let cutoff = (1.0 - damping) * 0.75 + 0.25;
-    notes.push((
-        "legacy reverb input lowpass".into(),
-        format!(
-            "normalized cutoff {cutoff}: Kontakt runs a shared biquad-prototype filter whose prototype coefficients are not in the static image; a one-pole at 20 Hz * 1000^cutoff stands in"
-        ),
-        UnknownLaw,
-    ));
     Config::network(Network {
         topology: Topology::Freeverb,
         predelay_seconds: predelay_ms * 0.001,
-        input_cutoff_hz: 20.0 * 1000f64.powf(f64::from(cutoff)),
         freeverb: Some(Freeverb {
             feedback: f64::from(feedback),
             damp: f64::from(damp),
             allpass: 0.5,
             input_gain: f64::from(0.015f32),
             width: f64::from(width),
+            input_filter: InputFilter::Butterworth2 { x: f64::from(cutoff) },
         }),
         ..Network::DEFAULT
     })
@@ -193,8 +197,8 @@ pub(super) fn galois(v: &[f32; 10], _notes: &mut Notes) -> Config {
 /// (+8), feedback, low shelf, high cut, reverb, diffusion, decay, mod, size,
 /// damping, rate, mix (+0x34); bytes freeze, sparse; the predelay time
 /// object's unit (+0x60) and two floats; a byte. Returns the core controls
-/// (apply `0x140abb190`) and whether the predelay is tempo-synced.
-pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
+/// (apply `0x140abb190`) and the synced predelay's beat count, if any.
+pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], Option<f64>)> {
     let kind = r.i32()? as f32;
     let mut f = [0f32; 12];
     for x in &mut f {
@@ -217,14 +221,43 @@ pub(super) fn read_raum(r: &mut super::Reader) -> Option<([f32; 20], bool)> {
     };
     let b = |v: bool| if v { 1.0 } else { 0.0 };
     let core = [mix, pre, 0.0, 0.25, 0.0625, 0.0, feedback, high_cut, low_shelf, kind * 0.5, decay, size, damping, modulation, rate, diffusion, b(freeze), reverb, b(sparse), 1.0];
-    Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), unit > f32::from_bits(0x3089_705f)))
+    Some((core.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }), beat_division(unit as i32)))
 }
 
-/// Raum (0x65) Grounded or Airy on the native core; its own mix law carries
-/// the dry path. Input gain (core 19) has no saved field and stays 1.
-pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config {
-    if synced {
-        notes.push(("predelay sync".into(), "Raum's tempo-synced predelay (core 2..5, `240·n/(f·m·bpm)`) is not bound; the saved time is read as milliseconds".into(), UnknownLaw));
+/// Raum predelay unit key → beats of a note (setter `0x140a74f30`, sampled at
+/// keys 5, 6, 7, 8, 10, 16, 20). Keys 0 to 4 are free milliseconds; key 21 is
+/// the 1/64 note that also sets a flag the synced law does not read here.
+pub(super) fn beat_division(key: i32) -> Option<f64> {
+    // f32 arithmetic gives the stored bit patterns (`0x402aaaab` is 8/3).
+    let beats = match key {
+        5 => 4.0,
+        6 => f64::from(8.0_f32 / 3.0),
+        7 => 2.0,
+        8 => f64::from(4.0_f32 / 3.0),
+        9 => 1.0,
+        10 => f64::from(2.0_f32 / 3.0),
+        11 => 1.5,
+        12 => 0.5,
+        13 => f64::from(1.0_f32 / 3.0),
+        14 => 0.75,
+        15 => 0.25,
+        16 => f64::from(1.0_f32 / 6.0),
+        17 => 0.125,
+        18 => f64::from(1.0_f32 / 12.0),
+        19 => 0.0625,
+        20 => f64::from(1.0_f32 / 24.0),
+        21 => 1.0 / 64.0,
+        _ => return None,
+    };
+    Some(beats)
+}
+
+/// Raum (0x65) Grounded, Airy or Cosmic on the native core (core 9 selects);
+/// its own mix law carries the dry path. Input gain (core 19) has no saved
+/// field and stays 1.
+pub(super) fn raum(core: &[f32; 20], beats: Option<f64>, notes: &mut Notes) -> Config {
+    if beats.is_some() {
+        notes.push(("predelay sync".into(), "Raum's synced predelay uses the knob (core 1) as its amount; that reading is not confirmed by a live render".into(), UnknownLaw));
     }
     if core[6] > 0.0 {
         notes.push(("feedback limiter".into(), "Raum's feedback limiter (NI::DSP::Limiter `0x141ae3ba0`) is reduced to its ±2.5 clamp: its gain table is not extracted".into(), UnknownLaw));
@@ -235,6 +268,7 @@ pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config 
         decay_seconds: 199.75 * f64::from(core[10]) / (75.0 * (1.0 - f64::from(core[10])) + 1.0) + 0.25,
         predelay_seconds: if x <= 0.5 { 0.08 * (2.0 * x).powi(2) } else { 1.92 * (2.0 * x - 1.0).powi(2) + 0.08 },
         raum: Some(*core),
+        raum_beats: beats,
         ..Network::DEFAULT
     })
 }
@@ -243,7 +277,6 @@ pub(super) fn raum(core: &[f32; 20], synced: bool, notes: &mut Notes) -> Config 
 /// translated; empty for every other module.
 pub(super) fn why_unbound(module: u16) -> &'static str {
     match module {
-        0x65 => ": Raum Cosmic: its eight-stage allpass core is not built (Grounded and Airy are)",
         0x7a => ": Reverb Delight field binding measured (MONO unproved: field 11 bytes unstable); its amp, tremolo and spring-reverb cores are not extracted",
         _ => "",
     }
@@ -252,6 +285,16 @@ pub(super) fn why_unbound(module: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::ImpulseRequest;
+
+    #[test]
+    fn raum_sync_keys_map_to_the_native_note_table() {
+        let beats: Vec<_> = (0..23).map(beat_division).collect();
+        assert!(beats[..5].iter().all(Option::is_none) && beats[22].is_none());
+        assert_eq!(beats[5], Some(4.0));
+        assert_eq!(beats[10], Some(f64::from(2.0_f32 / 3.0)));
+        assert_eq!(beats[21], Some(1.0 / 64.0));
+    }
 
     #[test]
     fn legacy_predelay_is_stored_milliseconds() {
@@ -259,10 +302,40 @@ mod tests {
         let c = legacy(&[90.0, 0.5, 1.0, 0.5, 0.5], &mut notes);
         let n = c.network.unwrap();
         assert!((n.predelay_seconds - 0.09).abs() < 1e-12);
-        assert_eq!(notes.len(), 1);
+        assert!(notes.is_empty());
         // size .5 -> 0.8, colour .5 -> 1 - .5*.35, stereo 1 -> width 1.
         let f = n.freeverb.unwrap();
         assert!((f.feedback - 0.8).abs() < 1e-6 && (f.damp - 0.825).abs() < 1e-6 && f.width == 1.0);
+    }
+
+    #[test]
+    fn convolution_reports_unmodeled_length_and_latency_flags() {
+        let c = Convolution {
+            decimation: 1.0,
+            predelay_ms: 0.0,
+            early: [1.0, 20.0, 20_000.0],
+            late: [1.0, 20.0, 20_000.0],
+            xpoint: -1.0,
+            flags: [false, false, true, true, false],
+            curve_x: vec![],
+            curve_db: vec![],
+            ir_index: 0,
+        };
+        let (mut store, mut recipes) = (Vec::new(), None);
+        let mut load = |_| Ok((48_000u32, vec![[1.0f32, 0.5]; 4]));
+        let mut notes = Notes::new();
+        let mut impulses = Impulses { store: &mut store, recipes: recipes.as_mut(), load: &mut load };
+        let request = ImpulseRequest { index: 0, address: sampler_ir::SlotAddress { group: -1, slot: -1, generic: -1 } };
+        convolution(&c, request, &mut impulses, &mut notes).unwrap();
+        let names: Vec<&str> = notes.iter().map(|n| n.0.as_str()).collect();
+        assert_eq!(names, ["IR preserve length", "IR latency compensation bypass"]);
+        assert!(notes.iter().all(|n| n.2 == NotModeled));
+        // Off flags stay silent.
+        let quiet = Convolution { flags: [false; 5], ..c };
+        let mut notes = Notes::new();
+        let mut impulses = Impulses { store: &mut store, recipes: None, load: &mut load };
+        convolution(&quiet, request, &mut impulses, &mut notes).unwrap();
+        assert!(notes.is_empty());
     }
 
     #[test]
@@ -277,7 +350,7 @@ mod tests {
             rebuilt.set(lane.role, lane.value);
         }
         let (a, b) = (rebuilt.network.unwrap(), c.network.unwrap());
-        assert!((a.predelay_seconds - b.predelay_seconds).abs() < 1e-9 && (a.input_cutoff_hz / b.input_cutoff_hz - 1.).abs() < 1e-5);
+        assert!((a.predelay_seconds - b.predelay_seconds).abs() < 1e-9);
         assert_eq!(a.freeverb, b.freeverb);
         // RV_SIZE at 1: comb feedback 0.95.
         rebuilt.set(sampler_ir::ProcessorParameter::Size, 1.0);
@@ -314,7 +387,7 @@ mod tests {
         bytes.push(0);
         let array = effect_fixture(0x65, 0x10, &bytes);
         let slots = rack(&array, |_, error| panic!("{error}"));
-        let Some(Params::Raum { core, synced: false }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        let Some(Params::Raum { core, beats: None }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
         assert_eq!(core[9], 0.5);
         assert!((core[1] - 0.5f32.sqrt() / 2.0).abs() < 1e-6);
         assert_eq!([core[0], core[6], core[7], core[8], core[10], core[16], core[17], core[18]], [0.25, 0.1, 0.3, 0.2, 0.6, 1.0, 0.4, 0.0]);
@@ -408,9 +481,9 @@ pub(super) fn slot_plate(b: &mut Lowering, s: &Site, notes: &mut Notes, v: &[f32
 }
 
 /// Raum (0x65, Grounded or Airy) on a bus.
-pub(super) fn slot_raum(b: &mut Lowering, s: &Site, notes: &mut Notes, core: &[f32; 20], synced: bool) -> bool {
+pub(super) fn slot_raum(b: &mut Lowering, s: &Site, notes: &mut Notes, core: &[f32; 20], beats: Option<f64>) -> bool {
     b.flush();
-    b.out.processors.push(Processor::Space(raum(core, synced, notes)));
+    b.out.processors.push(Processor::Space(raum(core, beats, notes)));
     b.combined = s.gain;
     true
 }

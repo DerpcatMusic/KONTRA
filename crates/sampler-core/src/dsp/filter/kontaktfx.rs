@@ -20,7 +20,8 @@
 //! 2 ms ramps (DJ: 1 ms per slot).
 // ponytail: stereo runs the mono cores per channel with shared controls (DJ averages its
 // resonance envelope over both channels as its channel loop does); the Monark noise LCG is per
-// channel. The native channel interleave is unprobed; vectors are mono.
+// channel. The native DJ process (FUN_140afef00) reads each channel through its own buffer
+// pointer with per-channel state, so the layout is per channel, not interleaved; vectors are mono.
 #![allow(clippy::excessive_precision, clippy::unreadable_literal)]
 use super::super::kaiser::{Kaiser, State as KaiserState};
 use super::shaper;
@@ -589,8 +590,7 @@ impl Skf {
                 let a = s1 - gg * s1;
                 let k = (SKF_C238[j] - SKF_C220[j] * r) * (q + q);
                 let y = ((((a - (((a - s2) * gg) + s2)) * k) + inp) / (1.0 - ((gg - gg * gg) * k))) * SKF_CLIP[2 * j + 1];
-                let n = 1.0 / ((y * y) + 1.0).sqrt();
-                let yy = (n * y) * SKF_CLIP[2 * j];
+                let yy = shaper::unit_sqrt(y) * SKF_CLIP[2 * j];
                 let v = (yy - s1) * gg;
                 let a1 = s1 + v;
                 let hp = yy - a1;

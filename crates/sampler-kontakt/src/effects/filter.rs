@@ -44,14 +44,16 @@ const SV: &str = "FilterSV1/2/4/6 setters, 32-frame coefficient ramp and process
 const MULTI_SV: &str = "FilterMultiSV (0x140b05d50, 0x140b01d00) matches the native class under kemu to 1e-6; the bandwidth is the record's leading value (read into +0x24), its ENGINE_PAR id is unprobed";
 const LEGACY: &str = "BFilter class law and process run by the cascade core (dsp/filter/cascade.rs) match the native classes under kemu to 2e-5 and the Kontakt LP4/LP6 measurements; control clock 0x140ae9f90 reproduced except its alternative branch (global 0x144fd4c54) and offset slew (+0x1f8), both unwritten";
 const STAGES: &str = "setter and process (Pro-53 FUN_14095d940/FUN_1409099a0, Legacy Ladder FUN_14095d630/FUN_140aef200, Vowel FUN_14095dd00/FUN_14095e250/FUN_140914a20) run by the cascade core match the native code (kemu) to 2e-5; scalar summation order only (the SSE path for >= 32-frame calls differs in rounding); clock as LEGACY";
-const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); the gain law and the HQ (2x resampled) mode are unproved";
+const LADDER: &str = "core FUN_140b00be2/FUN_140b06180 checked (cutoff law and table, pole polynomial, resonance, feedback correction, clip, stages, tap weights and compensation, 2 ms ramp); gain law (1200 + 119.589 g table index) and HQ (flag > 0.5, shared 2x Kaiser) confirmed against the Kontakt 8 decompile; HQ is the shared 2x Kaiser oversampler around the core (static composition bit-exact on 282 native cells); the cutoff path flag 0x49 source byte is unproved";
 const DAFT: &str = "saved controls and ramp scheduling extracted; native audio core and resampler not recovered, saturation and interpolation are stand-ins (CORE-FILTERS-029..031)";
 const AR: &str = "FilterDJ equation and 32-frame clock match extracted instruction vectors; no host oracle (CORE-FILTERS-019)";
 const KFX: &str = "KONTAKTFX cores (dsp/filter/kontaktfx.rs: FilterDJExtRange + FilterLadderExtRange, Dual SKF, BlueMonark) bit-exact against the native classes under kemu at 48 kHz; record layouts and knob order from the BFilter readers; stereo interleave and the Simple LP/HP alternate smoother (u8, rate 1/(p2 1500 + 150)) unprobed";
 const SIMPLE: KontaktFx = KontaktFx::SimpleLpHp { lp: 0.0, hp: 0.0 };
+const SIMPLE_CAVEAT: &str = "Simple LP/HP core bit-exact in mono against the native class under kemu; the native stereo channel interleave and the alternate smoother (u8, rate 1/(p2 1500 + 150)) are unprobed, so stereo runs per-channel mono cores with shared controls";
 const fn monark(mode: u8) -> KontaktFx {
     KontaktFx::Monark { mode, variant: 0, knobs: [0.0; 5] }
 }
+const VERSATILE: &str = "3x2 Versatile core (cascade.rs versatile, Chamberlin stages with the band-state shaper, morph and wet law, clock 0x140aea690) is run against extracted native models only at cutoff 0.5, resonance 0 / 0.3 / 0.5 and one mixed shift/morph/wet set; shift, morph, wet and gain sweeps and the 2x SSE rounding path are unmeasured";
 const FORMANT_II: &str = "table rows 5..=9 and the +5 row offset are extracted from the shared core; type 91 is measured ($FILTER_TYPE_FORMANT_2)";
 
 fn build(id: i32) -> Option<(&'static str, Build)> {
@@ -72,7 +74,7 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         15 => ("Vowel B", C(variant(Bp, 4, Variant::VowelB), Exact, STAGES)),
         16 => ("Pro-53", C(variant(Lp, 4, Variant::Pro52), Exact, STAGES)),
         17 => ("Legacy Ladder", C(variant(Lp, 4, Variant::Ladder), Exact, STAGES)),
-        19 => ("3x2 Versatile", C(variant(Lp, 4, Variant::Versatile(VERSATILE_UNSET)), Exact, STAGES)),
+        19 => ("3x2 Versatile", C(variant(Lp, 4, Variant::Versatile(VERSATILE_UNSET)), Partial, VERSATILE)),
         22 => ("EQ 1 band", Elsewhere("eq family")),
         23 => ("EQ 2 band", Elsewhere("eq family")),
         24 => ("EQ 3 band", Elsewhere("eq family")),
@@ -117,7 +119,7 @@ fn build(id: i32) -> Option<(&'static str, Build)> {
         106 => ("AR LP2/4", C(native(Topology::Ar, Lp, 0), Exact, AR)),
         107 => ("AR BP2/4", C(native(Topology::Ar, Bp, 0), Exact, AR)),
         108 => ("AR HP2/4", C(native(Topology::Ar, Hp, 0), Exact, AR)),
-        120 => ("Simple LP/HP", C(variant(Lp, 2, Variant::Kontakt(SIMPLE)), Exact, KFX)),
+        120 => ("Simple LP/HP", C(variant(Lp, 2, Variant::Kontakt(SIMPLE)), Partial, SIMPLE_CAVEAT)),
         130 => ("Dual SKF", C(variant(Bp, 4, Variant::Kontakt(KontaktFx::DualSkf([0.0; 5]))), Exact, KFX)),
         140 => ("Monark LP1", C(variant(Lp, 1, Variant::Kontakt(monark(2))), Exact, KFX)),
         141 => ("Monark LP2", C(variant(Lp, 2, Variant::Kontakt(monark(1))), Exact, KFX)),
@@ -148,13 +150,13 @@ pub(crate) fn template(id: i32) -> Option<Mapped> {
     }
 }
 
-/// A saved type with its stored cutoff, resonance and optional third knob (Formant Size).
 /// Placeholder knobs that [`map`] replaces with the record's.
 const VERSATILE_UNSET: sampler_ir::fx::filter::Versatile =
     sampler_ir::fx::filter::Versatile { shift: [0.0; 2], resonance: [0.0; 2], types: [0.0; 3], wet: [0.0; 3], gain: 0.0 };
 
-/// `extra` is the SV bandwidth (63..=65), Formant II's size, or Versatile's 11 knobs in object order (reader 0x140d00db0, offsets
-/// 0x38..0x60): SHIFTB, SHIFTC, RESB, RESC, TYPEA..C, BYPA..C, FILTER_GAIN.
+/// A saved type with its stored cutoff, resonance and optional third knob. `extra` is the SV
+/// bandwidth (63..=65), Formant II's size, or Versatile's 11 knobs in object order (reader
+/// 0x140d00db0, offsets 0x38..0x60): SHIFTB, SHIFTC, RESB, RESC, TYPEA..C, BYPA..C, FILTER_GAIN.
 pub(crate) fn map(id: i32, cutoff: f32, resonance: f32, extra: &[f32]) -> Result<Mapped, Gap> {
     match build(id) {
         None => Err(Gap { name: "filter type", reason: "type id not in the Kontakt 8 filter table" }),
@@ -675,6 +677,7 @@ pub(super) fn slot_ladder(
     cutoff: f32,
     resonance: f32,
     extra: &[f32],
+    hq: bool,
 ) -> bool {
     // Kontakt 8 Filter Reference: Ladder filters. FUN_140cf4c80
     // maps saved 30..=41 to the 12 rows in FUN_140b00b80.
@@ -689,6 +692,7 @@ pub(super) fn slot_ladder(
         config.drive = f64::from(values[0]);
         config.cutoff = f64::from(values[1]);
         config.resonance = f64::from(values[2]);
+        config.high_quality = hq;
         config.binding = Some(sampler_ir::fx::filter::Binding {
             address: sampler_ir::SlotAddress {
                 group: s.physical.0,
@@ -735,7 +739,8 @@ pub(super) fn slot_daft(b: &mut Lowering, s: &Site, notes: &mut Notes, kind: i32
     b.out.filter_slots.push((s.fx.slot, b.out.processors.len() + b.filters.len()));
     let mapped = template(kind).expect("Daft rows are in the table");
     let mut config = mapped.config;
-    config.drive = f64::from(extra[0]).clamp(0.0, 1.0);
+    // Native gain setter (FUN_140b05290) takes the signed leading value unclamped.
+    config.drive = f64::from(extra[0]);
     config.cutoff = f64::from(cutoff).clamp(0.0, 1.0);
     config.resonance = f64::from(resonance).clamp(0.0, 1.0);
     b.filters.extend(config.processors(None).expect("Daft rows configure"));

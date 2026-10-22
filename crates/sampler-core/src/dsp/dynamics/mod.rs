@@ -124,7 +124,7 @@ impl DynamicsSettings {
                 Law::KontaktTransient { attack, sustain, gain, .. } => {
                     [attack, sustain, gain].iter().all(|v| (0. ..=1.).contains(v))
                 }
-                Law::KontaktHilbert(_) => self
+                Law::KontaktHilbert(..) => self
                     .threshold
                     .bounds()
                     .iter()
@@ -229,7 +229,7 @@ impl Dynamics {
             Law::KontaktEnhanced(_) => 2.,
             Law::KontaktPro(_) => 3.,
             Law::KontaktLimiter(_) => 4.,
-            Law::KontaktHilbert(_) => 5.,
+            Law::KontaktHilbert(..) => 5.,
             Law::KontaktFeedback { .. } => 6.,
             Law::KontaktTransient { .. } => 7.,
             Law::KontaktBusComp { .. } => 8.,
@@ -258,6 +258,21 @@ impl Dynamics {
         len: usize,
         at: u64,
     ) {
+        self.process_keyed(state, cells, parameters, block, None, len, at);
+    }
+
+    /// [`Self::process`] with a key buffer for a keyed law (`Key::External`).
+    /// Without one, a keyed law detects on its audio.
+    pub(super) fn process_keyed(
+        &self,
+        state: &mut ProcessorState,
+        cells: &mut [[f64; 2]],
+        parameters: &[ControlRamp],
+        block: &mut Planar,
+        key: Option<&Planar>,
+        len: usize,
+        at: u64,
+    ) {
         if len == 0 {
             return;
         }
@@ -269,6 +284,6 @@ impl Dynamics {
             makeup: self.makeup,
             mix: self.mix,
         };
-        laws::process(self.law, &shared, knobs, self.rate, state, cells, block, len);
+        laws::process(self.law, &shared, knobs, self.rate, state, cells, block, key, len);
     }
 }

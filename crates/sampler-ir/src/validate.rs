@@ -35,6 +35,11 @@ pub enum ValidationError {
         owner: String,
         field: &'static str,
     },
+    /// A feature the core supports but no slot can feed yet (a key bus).
+    Unrouted {
+        owner: String,
+        what: &'static str,
+    },
     /// Non-finite, negative where forbidden, or beyond the field's range.
     OutOfRange {
         owner: String,
@@ -72,6 +77,7 @@ impl fmt::Display for ValidationError {
             Self::InvertedRange { owner, field } => {
                 write!(f, "{owner}: {field} low is above high")
             }
+            Self::Unrouted { owner, what } => write!(f, "{owner}: {what} is not routed"),
             Self::OutOfRange {
                 owner,
                 field,
@@ -387,6 +393,13 @@ impl Check<'_> {
                 Processor::Phaser(knobs) => {
                     for knob in knobs { self.within(f64::from(knob), 0.0..=1.0, "phaser control")?; }
                 }
+                Processor::RingMod(config) => {
+                    config.check().map_err(|field| ValidationError::OutOfRange {
+                        owner: self.owner.clone(),
+                        field,
+                        value: f64::NAN,
+                    })?;
+                }
                 Processor::Ar(d) => {
                     self.within(f64::from(d.mode), 0.0..=8.0, "ar mode")?;
                     self.within(d.cutoff, 0.0..=1.0, "ar cutoff")?;
@@ -455,9 +468,13 @@ impl Check<'_> {
                             self.within(m.slew_ms, 0.0..=200.0, "maximizer slew")?;
                             self.within(f64::from(m.mode), 0.0..=2.0, "maximizer mode")?;
                         }
-                        Law::KontaktHilbert(n) => {
+                        Law::KontaktHilbert(n, key) => {
                             self.within(n.threshold_db, 0.0..=1.0, "dynamics drive")?;
                             self.within(n.ratio, 0.0..=1.0, "dynamics ceiling")?;
+                            // The core runs a key buffer; no slot routes one yet.
+                            if key == crate::fx::dynamics::Key::External {
+                                return Err(ValidationError::Unrouted { owner: self.owner.clone(), what: "dynamics side-chain key" });
+                            }
                         }
                     }
                 }
@@ -1105,6 +1122,9 @@ impl Instrument {
             if let Some(stretch) = group.time_stretch {
                 check.within(f64::from(stretch.speed), 0.0..=64.0, "time stretch speed")?;
             }
+            if let Some(crate::Machine::S1200 { filter_mode: Some(mode) }) = group.machine {
+                check.within(f64::from(mode), 0.0..=f64::from(crate::S1200_FILTER_MODE_MAX), "S1200 filter mode")?;
+            }
             if let Some(limit) = group.source_voice_limit {
                 check.exists(Reference::VoiceLimit(limit))?;
             }
@@ -1208,6 +1228,17 @@ impl Instrument {
                     if !self.source_indices.constant_properties.iter().any(|row|row.node==*node&&row.value==*value&&row.style==*style&&row.bipolar==*bipolar){return Err(ValidationError::ZoneRouting{owner:"Constant source".into(),reason:"source differs from actual definition property role"});}
                 },
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
+                ModulationSource::Glide(g) => {
+                    if !matches!(g.mode, 1 | 2) || !g.time_ms.is_finite() || g.time_ms < 0.0 {
+                        return Err(ValidationError::ZoneRouting { owner: "Glide source".into(), reason: "glide mode must be 1 or 2 and time finite and non-negative" });
+                    }
+                }
+                ModulationSource::Follower(f) => {
+                    let finite = [f.attack, f.decay, f.gain, f.adaption].iter().all(|v| v.is_finite());
+                    if !finite || f.adaption <= 0.0 {
+                        return Err(ValidationError::ZoneRouting { owner: "Follower source".into(), reason: "stored follower fields must be finite and adaption speed positive" });
+                    }
+                }
                 ModulationSource::Breakpoints(b) => {
                     for point in &b.points {
                         check.time(point.time, "breakpoint time")?;
@@ -1652,6 +1683,15 @@ mod tests {
             config.cutoff = 0.5;
             config.resonance = 8.5;
             assert!(check(config).is_err());
+        }
+    }
+
+    #[test]
+    fn s1200_filter_mode_is_bounded_by_the_stored_selector() {
+        for (filter_mode, valid) in [(None, true), (Some(0), true), (Some(5), true), (Some(6), false)] {
+            let mut ir = one_zone();
+            ir.groups.push(Group { machine: Some(Machine::S1200 { filter_mode }), ..Default::default() });
+            assert_eq!(ir.validate().is_ok(), valid, "{filter_mode:?}");
         }
     }
 

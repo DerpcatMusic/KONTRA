@@ -153,6 +153,20 @@ pub struct Freeverb {
     /// Channel-mix weight `w` in `0..=1` (`1` keeps the channels apart): the
     /// input becomes `b*mean + (1-b)*x` with `b = 2*(1-w)`.
     pub width: f64,
+    /// The input low-pass ahead of the network.
+    pub input_filter: InputFilter,
+}
+
+/// The input low-pass of a Freeverb-family network.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum InputFilter {
+    /// One-pole at [`Network::input_cutoff_hz`].
+    #[default]
+    OnePole,
+    /// Two-pole Butterworth-like biquad of Kontakt's Legacy Reverb (module
+    /// 0x15), normalized cutoff `x` in `0..=1` (`0x14095b2d0`, `0x14082a0b0`).
+    Butterworth2 { x: f64 },
 }
 
 /// Decay ratios of the low and high bands against the mid band.
@@ -221,6 +235,10 @@ pub struct Network {
     /// 12 damping, 13 modulation, 14 rate, 15 diffusion, 16 freeze, 17
     /// reverb, 18 sparse, 19 input gain.
     pub raum: Option<[f32; 20]>,
+    /// [`Topology::Raum`] tempo-synced predelay: the unit's beat count. When
+    /// set, the predelay is `beats · 60 / tempo · core[1]` seconds, capped at
+    /// 2 s, and `predelay_seconds` is unused.
+    pub raum_beats: Option<f64>,
 }
 
 impl Network {
@@ -232,6 +250,7 @@ impl Network {
         predelay_seconds: 0.0,
         damping_hz: 6_000.0,
         bands: None,
+        raum_beats: None,
         modulation_seconds: 0.000_75,
         modulation_hz: 0.7,
         diffusion: 0.375,
@@ -306,7 +325,10 @@ impl Config {
             .collect();
         }
         let (Topology::Freeverb, Some(f)) = (n.topology, n.freeverb) else { return Vec::new() };
-        let cutoff = (n.input_cutoff_hz / 20.).log(1000.);
+        let cutoff = match f.input_filter {
+            InputFilter::Butterworth2 { x } => x,
+            InputFilter::OnePole => (n.input_cutoff_hz / 20.).log(1000.),
+        };
         vec![
             Lane::new("ENGINE_PAR_RV_PREDELAY", P::Predelay, n.predelay_seconds * 1e3, Law::Table(&tables::RV_PREDELAY)),
             Lane::new("ENGINE_PAR_RV_SIZE", P::Size, (f.feedback - 0.65) / 0.3, Law::Identity),
@@ -353,7 +375,7 @@ impl Config {
             P::Size => f.feedback = f64::from(v as f32 * 0.3 + 0.65),
             P::Width => f.width = f64::from((v as f32 + 1.) * 0.5),
             P::Colour => f.damp = f64::from(1. - (1. - v as f32) * 0.35),
-            P::Damping => n.input_cutoff_hz = 20. * 1000f64.powf(f64::from((1. - v as f32) * 0.75 + 0.25)),
+            P::Damping => f.input_filter = InputFilter::Butterworth2 { x: f64::from((1. - v as f32) * 0.75 + 0.25) },
             _ => {}
         }
     }

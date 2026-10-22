@@ -132,3 +132,17 @@ Checked against `dsp/filter/linear.rs` (`Zdf`) and `dsp/filter/shaper.rs` (`Knee
 Result: none of the six modules is a `Zdf` or `Knee` configuration, so this unit adds no shared-stage code.
 Mapping them would break the bit-exact vectors for no gain. Revisit if the Kontakt decompile shows a
 state knee in Formant or Phaser.
+
+## Kontakt measurements (Wine oracle, 2026-10-21)
+
+Rendered with `tools/kontakt-oracle/eqrender.py` (48 kHz, impulse through L, bypass reference, probes at
+30..15000 Hz). Specs: Formant I/II (`FORMANT_TALK/SHARP/SIZE` grid, 18 steps); Vowel A/B and Phaser
+(`CUTOFF/RESONANCE` grid, 24 steps, `Filters/Effect` presets with `EFFECT_SUBTYPE` 13/14/15).
+
+| Module | Steps | Engine test | Result |
+| --- | --- | --- | --- |
+| Formant I (90) and II (91) | 17 (step 1 excluded: first write lost, reads back as the Talk 0.5 response) | `formant_responses_match_kontakt_measurements` | max error < 0.1 dB at every probe |
+| Vowel A (14), Vowel B (15) | 16 | `vowel_filters_match_kontakt_measurements` (cascade `design`, parallel bank) | < 0.1 dB |
+| Phaser (13) | 8 (cutoff grid at res 0, res .5/.9/1 at cutoff .5) | `phaser_filter_matches_kontakt_measurements` | < 0.1 dB, including resonance feedback `0.85 r` |
+
+Still open: Formant live ramps, live lanes for Phaser and Vowel, AET Filter (not implemented).

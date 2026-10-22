@@ -20,6 +20,7 @@
 pub(crate) mod ar;
 pub(crate) mod ar_kernel;
 pub(crate) mod cascade;
+pub(crate) mod chamberlin;
 pub(crate) mod daft;
 pub(crate) mod formant;
 pub(crate) mod linear;
@@ -28,6 +29,7 @@ pub(crate) mod kontaktfx;
 pub(crate) mod ladder;
 pub(crate) mod ladder_kernel;
 pub(crate) mod svf;
+pub(crate) mod table;
 
 use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
 use super::{Planar, ProcessorState};
@@ -115,7 +117,7 @@ impl Engine {
     pub(crate) fn cells(&self) -> usize {
         match &self.core {
             Core::Cascade(c) => c.cells(),
-            Core::Ladder(_) => ladder::CELLS,
+            Core::Ladder(c) => c.cells(),
             Core::Ar(_) => ar::CELLS,
             Core::Daft(_) | Core::Kontakt(_) => 0,
         }

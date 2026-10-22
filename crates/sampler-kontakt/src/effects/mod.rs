@@ -71,8 +71,13 @@ const MODULES: &[(u16, &str)] = &[
     (0x69, "Vibrato Chorus"),
     (0x6a, "Wow / Flutter"),
     (0x6b, "Twin Delay"),
+    (0x71, "Beat Masher"),
     (0x72, "Gater"),
+    (0x73, "Beat Slicer"),
     (0x74, "Reverse Grain"),
+    (0x78, "Skreamer Deluxe"),
+    (0x79, "Kolor"),
+    (0x75, "Transpose Stretch"),
 ];
 
 pub(crate) fn module_name(id: u16) -> String {
@@ -230,8 +235,10 @@ pub(crate) fn apply_writes(
             parameter @ ("ENGINE_PAR_SHAPE" | "ENGINE_PAR_DRIVE" | "ENGINE_PAR_DAMPING") => {
                 fx.apply_drive_parameter(parameter, w.value)
             }
-            parameter if color::skreamer_parameter(parameter).is_some() => {
-                fx.apply_skreamer_parameter(parameter, w.value)
+            parameter if color::live_field(parameter).is_some() => {
+                if let Some((module, count, float_fields, index)) = color::live_field(parameter) {
+                    fx.apply_live_field(module, count, float_fields, index, w.value);
+                }
             }
             "ENGINE_PAR_GAIN1" if group >= 0 && generic == -1 => fx.apply_eq_gain(0, w.value),
             "ENGINE_PAR_GAIN2" if group >= 0 && generic == -1 => fx.apply_eq_gain(1, w.value),
@@ -252,6 +259,8 @@ pub(crate) enum Params {
     /// A native dynamics law (Limiter 0x1c, Transparent Limiter 0x5f), mapped
     /// at parse time.
     Dynamics(Result<sampler_ir::Processor, dynamics::Note>),
+    /// A native law that runs, with one stored field it does not model.
+    DynamicsNoted(sampler_ir::Processor, dynamics::Note),
     TimeMod(timemod::Unit),
     /// Linear gain.
     Gainer {
@@ -306,6 +315,8 @@ pub(crate) enum Params {
         cutoff: f32,
         resonance: f32,
         extra: Vec<f32>,
+        /// Ladder HQ flag (the first flag byte of the Ladder record).
+        hq: bool,
     },
     /// 1-3 band EQ (filter types 22..=24): Hz, octaves, dB.
     Eq {
@@ -320,8 +331,8 @@ pub(crate) enum Params {
     /// `BParFXPlateReverb`: decay, low shelf, high damp, predelay, stereo.
     Plate([f32; 5]),
     /// `BParFXRaum` Grounded or Airy: the core controls (`sampler_ir`
-    /// `Network::raum`) and whether the predelay is tempo-synced.
-    Raum { core: [f32; 20], synced: bool },
+    /// `Network::raum`) and the synced predelay's beats, if any.
+    Raum { core: [f32; 20], beats: Option<f64> },
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
     /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
@@ -337,10 +348,13 @@ impl Slot {
             0x10..=0x12 | 0x14 | 0x5d => Params::TimeMod(timemod::read(self.module, self.version, &mut r)?),
             0x63 => Params::TimeMod(timemod::read_psyche(self.version, &mut r)?),
             0x6b => Params::TimeMod(timemod::read_twin(self.version, &mut r)?),
+            0x5a => Params::TimeMod(timemod::read_replika(self.version, &mut r)?),
+            0x6a => Params::TimeMod(timemod::read_wow_flutter(self.version, &mut r)?),
             // Cosmic (type 2) keeps its decoded fields: its core is not built.
-            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1, 0, 0, 0])) => {
-                let (core, synced) = space::read_raum(&mut r)?;
-                Params::Raum { core, synced }
+            // Grounded (0), Airy (1) and Cosmic (2) decode alike.
+            0x65 if self.version == 0x10 && matches!(self.public.get(..4), Some([0 | 1 | 2, 0, 0, 0])) => {
+                let (core, beats) = space::read_raum(&mut r)?;
+                Params::Raum { core, beats }
             }
             0x13 => Params::Gainer { gain: r.f32()? },
             0x20 => {
@@ -417,12 +431,21 @@ impl Slot {
                 [r.flag()?, r.flag()?, r.flag()?],
             )),
             0x43 if self.version == 0x10 => Params::Dynamics(dynamics::transient(r.f32()?, r.f32()?, r.f32()?, r.i32()?)),
-            0x46 if (0x10..=0x12).contains(&self.version) => Params::Dynamics(dynamics::bus_comp(
-                [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
-                [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
-                if self.version == 0x12 { Some(r.f32()?) } else { None },
-            )),
-            0x5f => Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?)),
+            0x46 if (0x10..=0x12).contains(&self.version) => {
+                let bus = dynamics::bus_comp(
+                    [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+                    [r.flag()?, if self.version >= 0x11 { r.flag()? } else { false }],
+                    if self.version == 0x12 { Some(r.f32()?) } else { None },
+                );
+                match bus {
+                    Ok((processor, Some(note))) => Params::DynamicsNoted(processor, note),
+                    other => Params::Dynamics(other.map(|(processor, _)| processor)),
+                }
+            }
+            // The reader throws on any other version (0x51 only).
+            0x5f if self.version == 0x51 => {
+                Params::Dynamics(dynamics::hilbert(r.f32()?, r.f32()?, r.f32()?, r.flag()?))
+            }
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -438,6 +461,7 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
+                let mut hq = false;
                 if (30..=41).contains(&kind) {
                     // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
                     // Exact version framing comes from the shared verified reader.
@@ -452,9 +476,10 @@ impl Slot {
                             cutoff: record.cutoff,
                             resonance: record.resonance,
                             extra: vec![record.leading_value],
+                            hq: record.unknown_flag.is_some_and(|flag| flag != 0),
                         });
                     }
-                    r.skip_repeats(kind);
+                    hq = r.skip_repeats(kind);
                 } else if matches!(kind, 120 | 130 | 140..=143) {
                     // KONTAKTFX layouts: Simple LP/HP kind, u8, kind x4, two knobs; Dual SKF
                     // kind x3, five knobs, kind x2; Monark kind x2, i32 variant, five knobs,
@@ -478,7 +503,7 @@ impl Slot {
                     let values: Vec<f32> = (0..knobs).map(|_| r.f32()).collect::<Option<_>>()?;
                     let mut extra = values[2..].to_vec();
                     extra.extend(variant);
-                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra });
+                    return Some(Params::Filter { kind, cutoff: values[0], resonance: values[1], extra, hq: false });
                 } else if (22..=24).contains(&kind) && self.version >= 0x93 {
                     // Later records repeat the EQ kind (v0x95: five times) before the bands.
                     r.skip_repeats(kind);
@@ -508,6 +533,7 @@ impl Slot {
                         cutoff,
                         resonance,
                         extra,
+                        hq,
                     }
                 }
             }
@@ -542,16 +568,19 @@ impl Reader<'_> {
     fn i32(&mut self) -> Option<i32> {
         self.take().map(i32::from_le_bytes)
     }
-    /// Consume the subtype repeats and their flag bytes after the first.
-    fn skip_repeats(&mut self, kind: i32) {
+    /// Skip repeated subtype ids and the one flag byte in front of each repeat; true when the
+    /// first flag is set.
+    fn skip_repeats(&mut self, kind: i32) -> bool {
         let k = kind.to_le_bytes();
+        let mut first = None;
         loop {
             if let Some(rest) = self.0.strip_prefix(&k) {
                 self.0 = rest;
-            } else if let Some(rest) = self.0.strip_prefix(&[0]).and_then(|r| r.strip_prefix(&k)) {
-                self.0 = rest;
+            } else if let Some((&flag, rest)) = self.0.split_first().filter(|(_, r)| r.starts_with(&k)) {
+                first.get_or_insert(flag != 0);
+                self.0 = &rest[k.len()..];
             } else {
-                return;
+                return first.unwrap_or(false);
             }
         }
     }
@@ -852,11 +881,14 @@ pub(crate) fn chain_with(
             Some(Params::Filter { kind: 13, cutoff, resonance, .. }) => {
                 modelled = timemod::slot_phaser(&mut b, &site, &mut notes, *cutoff, *resonance)
             }
-            Some(Params::Filter { kind: kind @ (90 | 91), cutoff, resonance, extra }) => {
+            Some(Params::Filter { kind: kind @ (90 | 91), cutoff, resonance, extra, .. }) => {
                 modelled = filter::slot_formant(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
             Some(Params::Fields(fields)) if fx.module == 0x21 => {
                 modelled = color::slot_skreamer(&mut b, &site, fields)
+            }
+            Some(Params::Fields(fields)) if fx.module == 0x64 => {
+                modelled = ringmod::slot_ring_modulator(&mut b, &site, &mut notes, fields)
             }
             Some(Params::Fields(fields)) if color::TYPED_CORES.contains(&fx.module) => {
                 modelled = color::slot_typed(&mut b, &site, &mut notes, fields)
@@ -868,10 +900,10 @@ pub(crate) fn chain_with(
             Some(Params::SendLevels { sends, .. }) => {
                 modelled = bus::slot_send_levels(&mut b, &site, &mut notes, sends)
             }
-            Some(Params::Filter { kind: kind @ 30..=41, cutoff, resonance, extra })
+            Some(Params::Filter { kind: kind @ 30..=41, cutoff, resonance, extra, hq })
                 if !extra.is_empty() && matches!(fx.version, 0x90..=0x92 | 0x95) =>
             {
-                modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
+                modelled = filter::slot_ladder(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra, *hq)
             }
             // Adaptive-resonance family: saved 100..=108 are modes 0..=8 of the native FilterDJ.
             Some(Params::Filter { kind: kind @ 100..=108, cutoff, resonance, .. })
@@ -880,15 +912,19 @@ pub(crate) fn chain_with(
             {
                 modelled = filter::slot_ar(&mut b, &site, &mut notes, *kind, *cutoff, *resonance)
             }
-            Some(Params::Filter { kind, cutoff, resonance, extra })
+            Some(Params::Filter { kind, cutoff, resonance, extra, .. })
                 if matches!(kind, 70 | 71) && !extra.is_empty() =>
             {
                 modelled = filter::slot_daft(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
-            Some(Params::Filter { kind, cutoff, resonance, extra }) => {
+            Some(Params::Filter { kind, cutoff, resonance, extra, .. }) => {
                 modelled = filter::slot_filter(&mut b, &site, &mut notes, *kind, *cutoff, *resonance, extra)
             }
             Some(Params::Dynamics(result)) => modelled = dynamics::slot_dynamics(&mut b, &site, &mut notes, result),
+            Some(Params::DynamicsNoted(processor, note)) => {
+                modelled = dynamics::slot_dynamics(&mut b, &site, &mut notes, &Ok(processor.clone()));
+                notes.push(note.clone());
+            }
             Some(Params::Compressor { mode, threshold_db, ratio, attack_ms, release_ms, link }) => {
                 modelled = dynamics::slot_compressor(
                     &mut b,
@@ -911,8 +947,8 @@ pub(crate) fn chain_with(
             Some(Params::Plate(v)) if scope == Scope::Bus => {
                 modelled = space::slot_plate(&mut b, &site, &mut notes, v)
             }
-            Some(Params::Raum { core, synced }) if scope == Scope::Bus => {
-                modelled = space::slot_raum(&mut b, &site, &mut notes, core, *synced)
+            Some(Params::Raum { core, beats }) if scope == Scope::Bus => {
+                modelled = space::slot_raum(&mut b, &site, &mut notes, core, *beats)
             }
             Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
                 modelled = space::slot_convolution(
@@ -1002,7 +1038,11 @@ pub(crate) fn chain_with(
             b.out.notes.push((
                 fx.slot,
                 "effect".into(),
-                match color::unproved(fx.module).or(timemod::unproved(fx.module)) {
+                match color::unproved(fx.module)
+                    .or(timemod::unproved(fx.module))
+                    .or(dynamics::unproved(fx.module))
+                    .or(mangling::unproved(fx.module))
+                {
                     Some(why) => format!("{name} v{:#x} len {}: {why}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                     None => format!("{name} v{:#x} len {}{}", fx.version, fx.public.len(), space::why_unbound(fx.module)),
                 },
@@ -1028,6 +1068,8 @@ pub(crate) mod eq;
 pub(crate) mod timemod;
 pub(crate) mod space;
 pub(crate) mod color;
+pub(crate) mod mangling;
+pub(crate) mod ringmod;
 
 #[cfg(test)]
 mod test_support;
@@ -1184,6 +1226,30 @@ mod tests {
         );
     }
 
+    use super::*;
+
+    // Owned wire fixture: the wrapper's internal enum deliberately differs from the child ID.
+    // Authored independently of the decoder schema: native Raum reader
+    // 0x140ac5cc0, v0x10, serializes I + 12F + 2B + 3F + B (67 bytes).
+    /// Cosmic (type 2): the same fields land on the core controls, and the
+    /// chain bank is built (no 'not built' note, no error).
+    #[test]
+    fn raum_cosmic_maps_to_the_chain_bank() {
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        bytes.extend([40f32, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.15, 0.25].into_iter().flat_map(f32::to_le_bytes));
+        bytes.extend([0, 0]);
+        bytes.extend([0f32, 0., 0.].into_iter().flat_map(f32::to_le_bytes));
+        bytes.push(0);
+        let array = effect_fixture(0x65, 0x10, &bytes);
+        let slots = rack(&array, |_, error| panic!("{error}"));
+        let Some(Params::Raum { core, beats: None }) = slots[0].params() else { panic!("{:?}", slots[0].params()) };
+        assert_eq!(core[9], 1.0);
+        assert_eq!([core[6], core[10], core[11], core[13], core[14], core[17]], [0.1, 0.6, 0.8, 0.7, 0.15, 0.4]);
+        let out = chain_with(&slots, Scope::Bus, None, Some((7, -1)), (7, -1), &[]);
+        assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum && n.raum.is_some_and(|r| r[9] == 1.0)))), "{:?}", out.notes);
+        assert!(out.notes.iter().all(|note| !format!("{note:?}").contains("not built")), "{:?}", out.notes);
+    }
+
     #[test]
     fn malformed_effect_payloads_keep_raw_bytes_and_report_physical_framing_errors() {
         use sampler_ir::{Reason, SourceParameterValue};
@@ -1305,9 +1371,8 @@ mod tests {
                 assert_eq!(&bytes[52..54], &[0xa5, 0x5a]);
                 assert_eq!(&bytes[54..58], &(-0.5f32).to_le_bytes());
                 assert_eq!(bytes[66], 0xff);
-                assert!(
-                    matches!(slots[0].params(), Some(Params::Fields(ref fields)) if fields.len() == 19)
-                );
+                // Type 2 (Cosmic) is admitted: the chain bank is built from its fields.
+                assert!(matches!(slots[0].params(), Some(Params::Raum { core, .. }) if core[9] == 1.0));
                 assert_eq!(saved.fields.len(), 19);
                 for (name, value) in [
                     ("param_0", SourceParameterValue::Integer(2)),
@@ -1343,6 +1408,13 @@ mod tests {
                         if *c == sampler_ir::fx::color::Config { address: c.address, ..sampler_ir::fx::color::Config::tape(tape) })));
                     continue;
                 }
+                // Cosmic is admitted on a bus (Raum is bus-only, as Grounded and Airy are).
+                if module == 0x65 && scope == Scope::Bus {
+                    assert!(out.processors.iter().any(|p| matches!(p, sampler_ir::Processor::Space(c) if c.network.is_some_and(|n| n.topology == sampler_ir::fx::space::Topology::Raum))), "{:?}", out.notes);
+                    // Only the feedback limiter's own UnknownLaw note (this payload has feedback > 0).
+                    assert!(out.notes.iter().all(|n| n.3 == Reason::UnknownLaw), "{:?}", out.notes);
+                    continue;
+                }
                 assert!(out.processors.is_empty());
                 assert!(out.send_taps.is_empty());
                 assert_eq!(out.notes.len(), 1);
@@ -1351,6 +1423,31 @@ mod tests {
                     (5, "effect", Reason::NotModeled)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn supercharger_is_diagnosed_not_silently_passed() {
+        let authored = Slot { version: 0x51, ..slot(0x60, vec![0; 32], 1.0) };
+        let out = chain(&[authored], Scope::Bus);
+        assert!(out.processors.is_empty(), "no law is proven, so nothing may run");
+        assert!(out.notes.iter().any(|(_, feature, value, reason)| {
+            feature == "effect" && *reason == sampler_ir::Reason::NotModeled && value.contains("Supercharger GT")
+        }));
+    }
+
+    #[test]
+    fn mangling_modules_are_named_and_reported_with_their_reason() {
+        for (module, name) in [(0x71, "Beat Masher"), (0x73, "Beat Slicer"), (0x75, "Transpose Stretch")] {
+            let out = chain(&[slot(module, vec![0; 16], 1.0)], Scope::Voice);
+            assert!(out.processors.is_empty(), "{name}");
+            let (_, _, value, reason) = out
+                .notes
+                .iter()
+                .find(|(_, feature, _, _)| feature == "effect")
+                .expect("missing effect diagnostic");
+            assert_eq!(*reason, sampler_ir::Reason::NotModeled);
+            assert!(value.starts_with(name) && value.contains("reader VA"), "{value}");
         }
     }
 
@@ -1610,6 +1707,25 @@ mod tests {
     }
 
     #[test]
+    fn ladder_first_flag_byte_selects_high_quality() {
+        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind floats. The first flag is HQ.
+        let k = 33i32.to_le_bytes();
+        let floats: Vec<u8> = [0.0f32, 0.4, 0.25].iter().flat_map(|x| x.to_le_bytes()).collect();
+        for (flag, expect) in [(0u8, false), (1, true)] {
+            let mut bytes = [&k[..], &[flag], &k, &k, &k, &[0], &k].concat();
+            bytes.extend(&floats);
+            let mut slot_ = slot(0x18, bytes, 1.0);
+            slot_.version = 0x95;
+            let built = chain(&[slot_], Scope::Voice);
+            assert!(
+                built.processors.iter().any(|p| matches!(p, sampler_ir::Processor::LadderLP4(d) if d.high_quality == expect)),
+                "flag {flag}: {:?}",
+                built.notes
+            );
+        }
+    }
+
+    #[test]
     fn inverter_saved_flags_match_native_assignment_and_audio() {
         // BPar+8/+9 -> wrapper+0x1c0/+0x1c1, FUN_1409619b0 case 4.
         for (flags, expected) in [(vec![1, 0], [-0.25, 0.5]), (vec![0, 1], [-0.5, 0.25]), (vec![1, 1], [0.5, -0.25])] {
@@ -1676,5 +1792,37 @@ mod tests {
             processors,
             vec![sampler_ir::Processor::Color(color::gainer(1.0, 0.0))]
         );
+    }
+
+
+    /// Stereo Tune and Surround Panner have no proved law: each must surface a
+    /// named diagnostic and pass audio through, never a silent or invented DSP.
+    #[test]
+    fn unproved_spatial_modules_are_named_and_pass_through() {
+        let mut bytes = Vec::new();
+        for v in [0.1f32, 0.2, 0.3, 0.4] { bytes.extend(v.to_le_bytes()); }
+        for (module, name) in [(0x70u16, "Stereo Tune"), (0x1d, "Surround Panner")] {
+            let mut fx = slot(module, bytes.clone(), 1.0);
+            fx.version = if module == 0x1d { 0x70 } else { 0x10 };
+            let built = chain(&[fx], Scope::Voice);
+            assert!(built.processors.is_empty(), "{name} must not invent DSP: {:?}", built.processors);
+            assert!(built.notes.iter().any(|(_, _, text, reason)| text.contains(name) && *reason == sampler_ir::Reason::NotModeled), "{name}: {:?}", built.notes);
+        }
+    }
+
+    /// Native bus amplifier order: swap, then invert, then the balance. [0.25, -0.5]
+    /// swaps to [-0.5, 0.25], inverts to [0.5, -0.25], then pan +0.5 halves the left.
+    #[test]
+    fn instrument_bus_swap_and_invert_run_before_the_balance() {
+        use sampler_ir as ir;
+        let mut instrument = ir::Instrument::default();
+        instrument.groups.push(ir::Group::default());
+        let (notes, _) = super::instrument_buses(&mut instrument, &[],
+            &[super::BusPlan { index: 0, volume: 1., pan: 0.5, invert: true, swap: true,
+                groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
+        assert!(notes.is_empty());
+        let chain = instrument.buses[0].chain.unwrap();
+        let output = fx_probe(instrument.chains[chain.0].pre_amplitude.clone(), 120., &[[0.25, -0.5]]);
+        assert_eq!(output[0], [0.25, -0.25]);
     }
 }

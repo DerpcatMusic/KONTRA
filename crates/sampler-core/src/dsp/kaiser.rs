@@ -193,7 +193,36 @@ impl State {
     pub(crate) fn finite(&self) -> bool {
         self.up.iter().chain(&self.down).flatten().chain(&self.up_delay).chain(&self.down_delay).all(|v| v.is_finite()) && self.acc.is_finite()
     }
+
+    /// Every f32 register in a fixed order; [`WORDS`] long.
+    fn words(&self) -> impl Iterator<Item = &f32> {
+        self.up_delay.iter().chain(&self.down_delay).chain(self.up.iter().chain(&self.down).flatten()).chain(std::iter::once(&self.acc))
+    }
+
+    fn words_mut(&mut self) -> impl Iterator<Item = &mut f32> {
+        self.up_delay
+            .iter_mut()
+            .chain(self.down_delay.iter_mut())
+            .chain(self.up.iter_mut().chain(self.down.iter_mut()).flatten())
+            .chain(std::iter::once(&mut self.acc))
+    }
+
+    /// Park the registers in f64 slots (exact: every f32 widens losslessly).
+    pub(crate) fn save(&self, out: &mut [f64]) {
+        for (o, v) in out.iter_mut().zip(self.words()) {
+            *o = f64::from(*v);
+        }
+    }
+
+    pub(crate) fn load(&mut self, src: &[f64]) {
+        for (v, s) in self.words_mut().zip(src) {
+            *v = *s as f32;
+        }
+    }
 }
+
+/// f32 registers of one [`State`]: the stored form of a channel's oversampler.
+pub(crate) const WORDS: usize = 8 + 9 + 2 * (MAX - 1) * 16 + 1;
 
 impl Kaiser {
     pub(crate) fn new(factor: usize) -> Self {

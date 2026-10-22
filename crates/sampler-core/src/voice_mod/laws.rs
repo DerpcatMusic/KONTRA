@@ -402,6 +402,17 @@ mod tests {
         assert_eq!(curve_position(127), 127.0_f32 * 0.007874015718698502_f32);
     }
 
+    /// Recorded AHDSR control ticks at R = 1,500 (docs/architecture-v2/KONTAKT_DSP_LAWS.md):
+    /// `trunc(ms * 0.001 * R)` of the attack/hold and decay/release laws.
+    #[test]
+    fn envelope_time_matches_recorded_control_ticks() {
+        let ticks = |ms: f32| (f64::from(ms) * 0.001 * 1500.0) as u32;
+        for (x, attack, decay) in [(0.25, 24, 28), (0.5, 256, 332), (0.75, 2415, 3543), (1.0, 22500, 37500)] {
+            assert_eq!(ticks(u2n_env_a(x)), attack, "attack {x}");
+            assert_eq!(ticks(u2n_env_d(x)), decay, "decay {x}");
+        }
+    }
+
     #[test]
     fn envelope_conversions_use_native_constants_and_clamp_order() {
         assert_eq!(u2n_env_a(-3.0), u2n_env_a(0.0)); // clamp before exp

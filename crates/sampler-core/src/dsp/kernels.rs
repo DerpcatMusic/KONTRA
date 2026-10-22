@@ -14,9 +14,19 @@ pub(super) fn one_pole32(state: f32, input: f32, coefficient: f32) -> f32 {
     state + (input - state) * coefficient
 }
 
+/// Gainer multiplier and next smoothed gain. Both the state and the target
+/// inside the native unity window `[0.999, 1.001]` (double-precision
+/// comparison) the stage passes the input through and the smoother holds:
+/// process `0x140aa2980` skips the slew and the mix helper `0x140ac21f0` reads
+/// the input buffer directly. Outside it, `dry + g` and one slew step.
 #[inline(always)]
 pub(super) fn gainer(current: f32, target: f32, dry: f64, k: f32) -> (f64, f32) {
-    (dry + f64::from(current), one_pole32(current, target, k))
+    let unity = |v: f64| (0.999..=1.001).contains(&v);
+    if unity(f64::from(current)) && unity(f64::from(target)) {
+        (1., current)
+    } else {
+        (dry + f64::from(current), one_pole32(current, target, k))
+    }
 }
 
 #[inline(always)]

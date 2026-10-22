@@ -140,8 +140,13 @@ pub enum Processor {
     Formant([f32; 3]),
     /// Formant core table 2 (rows 5..=9): Kontakt Formant II.
     FormantII([f32; 3]),
+    /// Kontakt S1200 Machine source stage (`dsp/machine.rs`): anti-alias IIR,
+    /// filter-mode biquads, 26 kHz sample-and-hold. Placed by lowering.
+    S1200(machine::S1200Stage),
     /// Kontakt native four-stage Phaser filter.
     Phaser([f32; 2]),
+    /// Ring modulator: sine carrier crossfaded with the input (`sampler_ir::fx::ringmod`).
+    RingMod(sampler_ir::fx::ringmod::Config),
     /// Formant I (or Formant II when `second`) with Talk, Sharp, Size as event-rate lanes
     /// (KSP ENGINE_PAR_FORMANT_*).
     LiveFormant { knobs: [Parameter; 3], second: bool },
@@ -214,9 +219,11 @@ impl Processor {
             Processor::Filter(settings) => settings.valid(),
             Processor::TimeMod(config) => config.check().is_ok(),
             Processor::Phaser(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            Processor::RingMod(config) => config.check().is_ok(),
             Processor::Formant(knobs) | Processor::FormantII(knobs) => knobs.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::LiveFormant { knobs, .. } => knobs.iter().all(live_knob),
+            Processor::S1200(stage) => stage.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -239,8 +246,11 @@ pub use filter::cascade::{CascadeSettings, Legacy as LegacyFilter, Sv as SvFilte
 #[cfg(test)]
 mod kernel_tests;
 mod kernels;
+pub(crate) mod ringmod;
 pub use eq_family::{EqBand, KontaktLegacyEqSettings};
 mod live;
+pub(crate) mod machine;
+mod machine_tables;
 pub use ladder::LadderSettings;
 mod taps;
 pub use taps::{VoiceSendPosition, VoiceSendTap};
@@ -286,6 +296,11 @@ pub(super) enum PreparedProcessor {
         engine: filter::Engine,
         offset: usize,
     },
+    /// The S1200 machine with its history words at `offset` of the delay storage.
+    S1200 {
+        stage: machine::S1200Stage,
+        offset: usize,
+    },
     Branch {
         count: u16,
         gain: f64,
@@ -302,6 +317,8 @@ pub(super) enum PreparedProcessor {
         lanes: [usize; 3],
     },
     Pan { position: control::PreparedParameter, offset:f64, law: sampler_ir::PanLaw, expression: bool },
+    /// Ring modulator carrier phase at `offset` of the delay storage.
+    RingMod { ring: ringmod::RingMod, offset: usize },
 }
 
 pub(super) struct CompiledVoiceChain {
@@ -347,14 +364,15 @@ impl PreparedProcessor {
                 color::ColorOwner::Scalar(color) => OperationOwner::Scalar(Self::Color { color, offset }),
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
-                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. }
-                | Self::Branch { .. } | Self::Space(..)) => OperationOwner::Scalar(scalar),
+                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. }
+                | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. }) => OperationOwner::Scalar(scalar),
         }
     }
     pub(super) fn view(&self) -> ProcessorRef<'_> {
         match self {
             Self::Gain(x) => ProcessorRef::Gain(x),
             Self::Pan { position, offset, law, expression } => ProcessorRef::Pan { position, offset, law, expression },
+            Self::RingMod { ring, offset } => ProcessorRef::RingMod { ring, offset },
             Self::StereoMatrix(x) => ProcessorRef::StereoMatrix(x),
             Self::Biquad(x) => ProcessorRef::Biquad(x),
             Self::Eq(x) => ProcessorRef::Eq(eq_family::EqRef::Scalar(x)),
@@ -366,6 +384,7 @@ impl PreparedProcessor {
             Self::Formant(x) => ProcessorRef::Formant(x),
             Self::Color { color, offset } => ProcessorRef::Color { color, offset },
             Self::Filter { engine, offset } => ProcessorRef::Filter { engine, offset },
+            Self::S1200 { stage, offset } => ProcessorRef::S1200 { stage, offset },
             Self::Branch { count, gain, first, last } => ProcessorRef::Branch { count, gain, first, last },
             Self::StateVariable(x) => ProcessorRef::StateVariable(x),
             Self::Space(index, live) => ProcessorRef::Space(index, live),
@@ -417,6 +436,8 @@ pub(super) enum ProcessorRef<'a> {
     StateVariable(&'a svf::SvfHandle), Space(&'a usize, &'a PreparedKnobs),
     Mix { count: &'a u16, lanes: &'a [usize; 3] },
     Pan { position: &'a control::PreparedParameter, offset:&'a f64, law: &'a sampler_ir::PanLaw, expression: &'a bool },
+    S1200 { stage: &'a machine::S1200Stage, offset: &'a usize },
+    RingMod { ring: &'a ringmod::RingMod, offset: &'a usize },
 }
 impl<'a> From<&'a PreparedProcessor> for ProcessorRef<'a> {
     fn from(stage: &'a PreparedProcessor) -> Self { stage.view() }
@@ -758,6 +779,11 @@ pub(super) fn compile_processors(
                 Processor::Phaser(knobs) => prepare_timemod(
                     timemod::TimeMod::phaser_filter(knobs)?, None, bindings, delay_frames,
                 )?,
+                Processor::RingMod(config) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(ringmod::RingMod::FRAMES).ok_or(Error::Capacity)?;
+                    PreparedProcessor::RingMod { ring: ringmod::RingMod::compile(config, rate), offset }
+                }
                 Processor::Dynamics(settings) => {
                     PreparedProcessor::Dynamics(settings.prepare(rate, bindings, delay_frames)?)
                 }
@@ -786,6 +812,11 @@ pub(super) fn compile_processors(
                 },
             Processor::Formant(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, false, rate)),
             Processor::FormantII(knobs) => PreparedProcessor::Formant(formant::Formant::compile(knobs, true, rate)),
+            Processor::S1200(stage) => {
+                let offset = *delay_frames;
+                *delay_frames = offset.checked_add(machine::S1200_WORDS).ok_or(Error::Capacity)?;
+                PreparedProcessor::S1200 { stage, offset }
+            }
                 Processor::Color(settings) => {
                     let offset = *delay_frames;
                     *delay_frames = offset.checked_add(settings.ring_frames(rate)).ok_or(Error::Capacity)?;
@@ -1223,6 +1254,8 @@ pub(super) struct ProcessorState {
     delay_filled: u32,
     /// The color unit's stage histories.
     color: color::State,
+    /// Daft's loop states and x2 resamplers.
+    daft: filter::daft::State,
 }
 impl ProcessorState {
     fn finite_for(&self, stage: ProcessorRef<'_>) -> bool {
@@ -1237,6 +1270,7 @@ impl ProcessorState {
             ProcessorRef::Filter { .. } => self.color.finite(),
             ProcessorRef::Gain(_)
             | ProcessorRef::Pan { .. }
+            | ProcessorRef::RingMod { .. }
             | ProcessorRef::StereoMatrix(_)
             | ProcessorRef::Biquad(_)
             | ProcessorRef::ControlGain(_)
@@ -1249,6 +1283,7 @@ impl ProcessorState {
             | ProcessorRef::Branch { .. }
             | ProcessorRef::StateVariable(_)
             | ProcessorRef::Space(..)
+            | ProcessorRef::S1200 { .. }
             | ProcessorRef::Mix { .. } => true,
         }
     }
@@ -1436,7 +1471,7 @@ pub(super) fn process<'a, const TRACE: bool>(
                         .for_each(|(w, v)| *w = *v as f32);
                 }
                 let [left, right] = &mut wet;
-                filters.spaces[*index].process([&mut left[..len], &mut right[..len]]);
+                filters.spaces[*index].process([&mut left[..len], &mut right[..len]], filters.tempo);
                 for (v, w) in block.iter_mut().zip(&wet) {
                     v[..len]
                         .iter_mut()
@@ -1474,6 +1509,14 @@ pub(super) fn process<'a, const TRACE: bool>(
                 at,
             ),
             ProcessorRef::Formant(formant) => formant.process(state, block, len),
+            ProcessorRef::S1200 { stage, offset } => {
+                let words = &mut delay_samples[*offset..*offset + machine::S1200_WORDS];
+                let [frames, next, ..] = &mut state.aux;
+                let mut schedule = [*frames, *next];
+                let [left, right] = block;
+                stage.process(words, &mut schedule, [&mut left[..], &mut right[..]], len);
+                [*frames, *next] = schedule;
+            }
             // Event-rate lanes: constant within a fragment (as LiveDistortion); the
             // coefficients follow them while the filter and noise states persist.
             ProcessorRef::LiveFormant { knobs, second, rate } => {
@@ -1494,6 +1537,9 @@ pub(super) fn process<'a, const TRACE: bool>(
             ProcessorRef::Color { color, offset } => {
                 let ring = &mut delay_samples[*offset..];
                 color.process(&mut state.color, parameters, block, len, at, ring);
+            }
+            ProcessorRef::RingMod { ring, offset } => {
+                ring.process(&mut delay_samples[*offset..*offset + ringmod::RingMod::FRAMES], block, len);
             }
             ProcessorRef::Gain(gain) => {
                 applied = [*gain; 2];

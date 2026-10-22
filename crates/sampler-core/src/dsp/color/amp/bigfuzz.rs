@@ -6,45 +6,20 @@
 // ponytail: the table and the phase/decimation matrices do not depend on rate or knobs; they
 // are the native ctor/init output (dumped under kemu), not re-derived here.
 use super::super::super::Planar;
+use super::kernel::{DECIMATE, PHASE_BIG_FUZZ, V, add, mul, sub};
 use super::super::super::filter::ladder_kernel::{exponential_effektrig as table, prepare as prepare_table};
-use super::dstortion::zip;
 
-type V = [f32; 4];
 
 /// The ctor's clipper gain (+0x2b0), bias (+0x2c0) and feedback (+0x2e0) lanes.
 const GAIN: V = [425.978_607, 420.222_137, 0.0, 0.0];
 const BIAS: V = [0.5; 4];
 const FEEDBACK: [f32; 2] = [-11.220_179_6, -17.782_789_2];
 /// Rows +0x310..+0x340 (row k is phase k).
-const PHASE: [V; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-0.140_625, 0.867_187_5, 0.226_562_5, -0.023_437_5],
-    [-0.125, 0.562_5, 0.562_5, -0.062_5],
-    [-0.046_875, 0.226_562_5, 0.867_187_5, -0.070_312_5],
-];
 /// Rows +0x350..+0x380.
-const DECIMATE: [V; 4] = [
-    [-0.005_859_375, -0.015_625, -0.017_578_125, 0.0],
-    [0.056_640_625, 0.140_625, 0.216_796_875, 0.25],
-    [0.216_796_875, 0.140_625, 0.056_640_625, 0.0],
-    [-0.017_578_125, -0.015_625, -0.005_859_375, 0.0],
-];
 
 fn shaper() -> &'static [f32] {
     static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
     T.get_or_init(|| include_bytes!("bigfuzz.f32le").chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
-}
-
-fn mul(a: V, b: V) -> V {
-    zip(a, b, |a, b| a * b)
-}
-
-fn add(a: V, b: V) -> V {
-    zip(a, b, |a, b| a + b)
-}
-
-fn sub(a: V, b: V) -> V {
-    zip(a, b, |a, b| a - b)
 }
 
 /// Per channel the blocks at +0x390 (interpolator), +0x3a0..+0x3d0 (network) and +0x3e0..
@@ -121,7 +96,7 @@ impl Engine {
         let r = self.r;
         let mut o = [0.0f32; 4];
         for k in (0..4).rev() {
-            let p = mul(l.s, PHASE[k]);
+            let p = mul(l.s, PHASE_BIG_FUZZ[k]);
             l.a[2] = ((p[1] + p[0]) + p[2]) + p[3];
             let x5 = add(mul(sub(l.c, l.d), GAIN), BIAS);
             let i: [i32; 4] = std::array::from_fn(|n| (x5[n].max(self.lo[n]).min(self.hi[n]) + 127.0) as i32);

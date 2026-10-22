@@ -18,9 +18,13 @@
 //! - out: signed taps of the damped reads (Airy blends `T3`/`T4` by
 //!   diffusion) into 4 (Grounded) or 2 (Airy) coupled units, angle
 //!   `±0.35x`/`±0.2625x`, cross rotation 0.01; `√(1-mix)·in + √mix·G·wet`.
+//! - Cosmic (type 2) replaces the kernel with the chain bank in `cosmic.rs`
+//!   (eight allpass stages on two lines each); the same outer applies.
 
-use super::super::network::{Coupled, Interp, LineSpec, Matrix, Modulation, Ring, Spec, TapFrom};
+use super::super::network::{Chain, Coupled, Interp, LineSpec, Matrix, Modulation, Ring, Spec, TapFrom};
+use super::cosmic::Cosmic;
 use super::galois_law::{hadamard_maps_of, matrix_ab, primes};
+use super::identity;
 
 const LINES: usize = 31;
 const GROUNDED_B: [u32; LINES] = [0, 1, 10, 17, 28, 23, 6, 7, 8, 9, 2, 11, 12, 13, 14, 15, 16, 3, 18, 19, 20, 21, 22, 5, 24, 25, 26, 27, 4, 29, 30];
@@ -177,15 +181,28 @@ pub(in super::super) fn kernel(k: &Kernel, rate: f64) -> Spec {
     s
 }
 
-/// The Raum `Spec` for core controls `p` (`Topology::Raum`); Cosmic (type 2)
-/// is not built.
+/// The Raum `Spec` for core controls `p` (`Topology::Raum`): Grounded and Airy
+/// run the 31-line kernel; Cosmic (type 2) the chain bank.
 pub(in super::super) fn spec(p: &[f32; 20], rate: u32) -> Result<Spec, crate::Error> {
     let kind = ((3.0 * p[9]) as u32).min(2);
     if kind == 2 {
-        return Err(crate::Error::InvalidInput);
+        return Ok(cosmic(p, rate));
     }
     let k = Kernel { airy: kind == 1, decay: p[10], size: p[11], damping: p[12], modulation: p[13], diffusion: p[15], freeze: p[16] >= 0.5, reverb: p[17], sparse: p[18] >= 0.5 };
     Ok(kernel(&k, f64::from(rate)))
+}
+
+/// Cosmic (type 2, `cosmic.rs`) as a `Spec`: no lines, so `direct = 1` feeds
+/// the predelayed pair straight into the chain. The chain output is the wet
+/// signal unscaled: the kernel's Galois gain and wet/dry law do not apply
+/// (CONFIRMED, findings §10.3 with `g = 1` steady; §10.4 skips the kernel).
+/// Outer's dry/wet and post filters apply as for Grounded and Airy (INFERRED:
+/// findings §10.1 and §10.6 are UNKNOWN, so their feedback is Outer's).
+fn cosmic(p: &[f32; 20], rate: u32) -> Spec {
+    let mut s = Spec::new(Vec::new(), identity());
+    s.direct = 1.0;
+    s.chain = Chain::Cosmic(Box::new(Cosmic::new(p[10], p[11], p[13], p[14], rate)));
+    s
 }
 
 /// `fexp2` of the Raum low shelf (`0x141982300`): nearest-even split,
@@ -245,7 +262,10 @@ impl Svf {
 /// `dry·x + wet·LP(shelf(v))`. The type gain is taken settled at 1.
 pub(in super::super) struct Outer {
     ring: [Vec<f32>; 2],
+    /// Samples read behind the write, `1..ring.len()`.
     delay: usize,
+    /// Synced predelay: beats, rate and the predelay knob (`core[1]`).
+    sync: Option<(f64, f64, f32)>,
     pos: usize,
     input: f32,
     feedback: f32,
@@ -258,16 +278,18 @@ pub(in super::super) struct Outer {
 }
 
 impl Outer {
-    pub(in super::super) fn new(p: &[f32; 20], rate: u32) -> Self {
+    pub(in super::super) fn new(p: &[f32; 20], rate: u32, beats: Option<f64>) -> Self {
         let sr = rate as f32;
         let x = f64::from(p[1]);
         let t = if x <= 0.5 { 0.08 * (2.0 * x).powi(2) } else { 1.92 * (2.0 * x - 1.0).powi(2) + 0.08 };
-        let delay = (t * f64::from(rate)).max(2.0).round() as usize;
+        // The ring holds the 2 s synced ceiling; free predelay sizes it exactly.
+        let len = if beats.is_some() { 2 * rate as usize + 1 } else { (t * f64::from(rate)).max(2.0).round() as usize };
         let gate = if t < f64::from(f32::from_bits(0x38d1_b717)) { 0.0 } else { 1.0 };
         let m = p[0];
         Self {
-            ring: [vec![0.0; delay], vec![0.0; delay]],
-            delay,
+            ring: [vec![0.0; len], vec![0.0; len]],
+            delay: len - 1,
+            sync: beats.map(|b| (b, f64::from(rate), p[1])),
             pos: 0,
             input: p[19] * p[19],
             feedback: p[6].sqrt() * gate * f32::from_bits(0x3f34_fdf4),
@@ -286,14 +308,20 @@ impl Outer {
 
     /// Replace `l`/`r` (at most one block) with Raum's output; `kernel`
     /// runs the network in place.
-    pub(in super::super) fn process(&mut self, l: &mut [f32], r: &mut [f32], kernel: impl FnOnce(&mut [f32], &mut [f32])) {
+    pub(in super::super) fn process(&mut self, l: &mut [f32], r: &mut [f32], tempo: f64, kernel: impl FnOnce(&mut [f32], &mut [f32])) {
         let n = l.len().min(crate::dsp::BLOCK);
         let mut dry = [[0f32; crate::dsp::BLOCK]; 2];
         dry[0][..n].copy_from_slice(&l[..n]);
         dry[1][..n].copy_from_slice(&r[..n]);
-        let len = self.delay;
+        let len = self.ring[0].len();
+        if let Some((beats, rate, amount)) = self.sync {
+            // Host tempo, or 120 below 0.1 (`0x140a74bf0`); 2 s ceiling.
+            let bpm = if tempo < 0.1 { 120.0 } else { tempo };
+            let secs = (beats * 60.0 / bpm * f64::from(amount)).clamp(0.0, 2.0);
+            self.delay = ((secs * rate).round() as usize).clamp(1, len - 1);
+        }
         for i in 0..n {
-            let read = (self.pos + 1) % len;
+            let read = (self.pos + len - self.delay) % len;
             for (ch, io) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
                 self.ring[ch][self.pos] = *io * self.input + self.fb[ch];
                 let pd = self.ring[ch][read];
@@ -304,7 +332,7 @@ impl Outer {
                 self.fb[ch] = self.feedback * (f32::from_bits(0x3fb5_0bf3) * f).clamp(-2.5, 2.5);
                 *io = pd;
             }
-            self.pos = read;
+            self.pos = (self.pos + 1) % len;
         }
         kernel(&mut l[..n], &mut r[..n]);
         for (ch, io) in [&mut l[..n], &mut r[..n]].into_iter().enumerate() {
@@ -321,6 +349,22 @@ impl Outer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Synced predelay: one beat at 120 BPM is half a second; 60 BPM doubles it;
+    /// a tempo under 0.1 falls back to 120.
+    #[test]
+    fn synced_predelay_follows_host_tempo() {
+        let mut p = [0f32; 20];
+        p[1] = 1.0;
+        let mut o = Outer::new(&p, 48_000, Some(1.0));
+        let (mut l, mut r) = ([0f32; 64], [0f32; 64]);
+        o.process(&mut l, &mut r, 120.0, |_, _| {});
+        assert_eq!(o.delay, 24_000);
+        o.process(&mut l, &mut r, 60.0, |_, _| {});
+        assert_eq!(o.delay, 48_000);
+        o.process(&mut l, &mut r, 0.05, |_, _| {});
+        assert_eq!(o.delay, 24_000);
+    }
 
     const AIRY: Kernel = Kernel { airy: true, decay: 0.8, size: 0.5, damping: 0.25, modulation: 0.0, diffusion: 0.25, freeze: false, reverb: 1.0, sparse: false };
 
@@ -358,18 +402,38 @@ mod tests {
         assert!((lp.g - 0.704_282_9).abs() < 1e-6 && (lp.d - 0.401_280_8).abs() < 1e-6, "{} {}", lp.g, lp.d);
         let mut p = [0.5, 0.1, 0.0, 0.25, 0.0625, 0.0, 0.0, 0.6, 0.7, 0.5, 0.8, 0.5, 0.25, 0.0, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0];
         p[0] = 0.3;
-        let mut o = Outer::new(&p, 48_000);
-        assert_eq!(o.delay, 154);
+        let mut o = Outer::new(&p, 48_000, None);
+        assert_eq!(o.ring[0].len(), 154);
         assert!((o.mix[1] - 0.464_758).abs() < 1e-6);
         let mut net = super::super::super::network::Network::new(spec(&p, 48_000).unwrap());
         let (mut l, mut r) = (vec![0f32; 256], vec![0f32; 256]);
         l[0] = 1.0;
         r[3] = 0.5;
         for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
-            o.process(l, r, |a, b| net.process(a, b));
+            o.process(l, r, 120.0, |a, b| net.process(a, b));
         }
         assert_eq!(l[0], 1.0);
         let want = [-8.41861e-5, -1.988_768e-4, -1.369_708e-4];
         assert!(l[239..242].iter().zip(want).all(|(g, w)| (g - w).abs() < 2e-9), "{:?}", &l[236..242]);
+    }
+
+    /// Cosmic (type 2) through the outer, 3 s at 48 kHz, unit impulse: finite,
+    /// not silent, and the last quarter carries less energy than the first.
+    #[test]
+    fn cosmic_impulse_is_finite_and_decays() {
+        let p = [0.5, 0.1, 0.0, 0.25, 0.0625, 0.0, 0.0, 0.6, 0.7, 1.0, 0.8, 1.0, 0.25, 0.5, 0.25, 0.25, 0.0, 1.0, 0.0, 1.0];
+        let frames = 3 * 48_000;
+        let mut o = Outer::new(&p, 48_000, None);
+        let mut net = super::super::super::network::Network::new(spec(&p, 48_000).unwrap());
+        let (mut l, mut r) = (vec![0f32; frames], vec![0f32; frames]);
+        l[0] = 1.0;
+        for (l, r) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+            o.process(l, r, 120.0, |a, b| net.process(a, b));
+        }
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        let energy = |a: &[f32], b: &[f32]| a.iter().chain(b).map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let q = frames / 4;
+        let (head, tail) = (energy(&l[..q], &r[..q]), energy(&l[frames - q..], &r[frames - q..]));
+        assert!(head > 0.0 && tail < head, "head {head} tail {tail}");
     }
 }

@@ -3,7 +3,7 @@
 use sampler_ir::Reason;
 
 
-use super::{BUS, Chain, Convolution, Decoded, ImpulseRequest, Impulses, Lowering, Note, Notes, Scope, SendTap, Site, Slot, IDENTITY, chain_with, product};
+use super::{BUS, Chain, Convolution, Decoded, ImpulseRequest, Impulses, Lowering, Note, Notes, Params, Scope, SendTap, Site, Slot, IDENTITY, chain_with, matrix, product};
 use ni_file::kontakt::objects::{InsertBus, Program};
 
 /// An instrument bus (`$NI_BUS_OFFSET` + `index`) with the groups routed to it.
@@ -12,6 +12,9 @@ pub(crate) struct BusPlan {
     /// The bus fader (linear) and pan.
     pub volume: f32,
     pub pan: f32,
+    /// Phase invert and L/R swap (the Inverter law on the bus amplifier).
+    pub invert: bool,
+    pub swap: bool,
     pub groups: Vec<sampler_ir::GroupRef>,
 }
 
@@ -30,6 +33,9 @@ pub(crate) fn bus_plans(program: &Program, routes: &[(sampler_ir::GroupRef, u8)]
                 index,
                 volume: params.volume,
                 pan: params.pan,
+                // The saved flag offsets are not yet proven (docs/re/engine/k-utilities-routing.md).
+                invert: false,
+                swap: false,
                 groups: routes
                     .iter()
                     .filter(|&&(_, bus)| usize::from(bus) == index)
@@ -149,6 +155,13 @@ pub(crate) fn instrument_buses_with_recipes(
         );
         take(&name, &c);
         let mut processors = c.processors;
+        // Native bus amplifier order (BInsertBus audio 0x140824910): L/R swap, phase
+        // invert, then the fader and the balance. Same matrix as the Inverter slot.
+        if bus.invert || bus.swap {
+            if let Some(flip) = matrix(&Params::Inverter { invert: bus.invert, swap: bus.swap }, &mut Vec::new()) {
+                processors.push(sampler_ir::Processor::StereoMatrix(flip));
+            }
+        }
         if dynamic {
             // A script sets the bus volume and routes groups to any bus at run
             // time, so every bus exists and its volume is a Mix block's wet level.
@@ -168,12 +181,13 @@ pub(crate) fn instrument_buses_with_recipes(
         if bus.pan.is_finite() {
             if bus.pan != 0. {
                 // NI Bus Insert Effects amplifier: BInsertBus audio 0x140824910
-                // calls 0x140823d70 with channel flags 0/1: independent linear balance.
-                let left = 1. - bus.pan.clamp(0., 1.);
-                let right = (bus.pan + 1.).clamp(0., 1.);
-                processors.push(sampler_ir::Processor::StereoMatrix([
-                    [f64::from(left), 0.], [0., f64::from(right)],
-                ]));
+                // calls 0x140823d70 with channel flags 0/1: independent linear
+                // balance, which is the shared `PanLaw::Balance`. Clamping first
+                // reproduces the native clamps exactly.
+                processors.push(sampler_ir::Processor::Pan(sampler_ir::Pan {
+                    position: f64::from(bus.pan.clamp(-1., 1.)),
+                    law: sampler_ir::PanLaw::Balance,
+                }));
             }
         } else {
             invalid_pan.push((name, (0, "instrument bus pan".into(), bus.pan.to_string(),
@@ -380,7 +394,7 @@ mod tests {
             let mut instrument = ir::Instrument::default();
             instrument.groups.push(ir::Group::default());
             let (notes, _) = crate::effects::instrument_buses(&mut instrument, &[],
-                &[crate::effects::BusPlan { index: 0, volume: 1., pan,
+                &[crate::effects::BusPlan { index: 0, volume: 1., pan, invert: false, swap: false,
                     groups: vec![ir::GroupRef(0)] }], false, &mut |_| Err("unused".into()));
             assert!(notes.is_empty());
             if pan == 0. { continue; }
@@ -406,7 +420,7 @@ mod tests {
         zone.velocity = ir::VelocityResponse::None;
         instrument.zones.push(zone);
         let (notes, _) = crate::effects::instrument_buses(&mut instrument, &[],
-            &[crate::effects::BusPlan { index: 0, volume: 0., pan: 0., groups: vec![ir::GroupRef(0)] }],
+            &[crate::effects::BusPlan { index: 0, volume: 0., pan: 0., invert: false, swap: false, groups: vec![ir::GroupRef(0)] }],
             true, &mut |_| Err("unused".into()));
         assert!(notes.is_empty(), "{notes:?}");
         let pcm = sampler_core::Pcm::new(48000, vec![[0.5; 2]; 4096].into_boxed_slice()).unwrap();
@@ -443,6 +457,7 @@ mod tests {
                 muted: false,
                 wavetable: None,
                 time_stretch: None,
+                machine: None,
                 start: Vec::new(),
                 name: "g".into(),
                 gain: ir::Gain::UNITY,
@@ -513,12 +528,16 @@ mod tests {
                 index: 0,
                 volume: 0.5,
                 pan: 0.0,
+                invert: false,
+                swap: false,
                 groups: vec![ir::GroupRef(0)],
             },
             BusPlan {
                 index: 1,
                 volume: 0.5,
                 pan: 0.0,
+                invert: false,
+                swap: false,
                 groups: Vec::new(),
             },
         ];

@@ -723,6 +723,11 @@ pub struct Group {
     /// plain sampler playback, where transposition also changes tempo.
     #[cfg_attr(feature = "cache", serde(default))]
     pub time_stretch: Option<TimeStretch>,
+    /// Kontakt machine source identified but not yet voiced (Beat Machine,
+    /// S1200, MP60). Such zones play as a sampler; the stored controls are kept
+    /// here so the engine can voice them without another load.
+    #[cfg_attr(feature = "cache", serde(default))]
+    pub machine: Option<Machine>,
     pub name: String,
     pub start: Vec<GroupStart>,
     pub gain: Gain,
@@ -748,6 +753,20 @@ pub struct Group {
     pub tap: Option<GroupTap>,
 }
 
+/// Kontakt machine source modules whose DSP the engine does not yet model.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Machine {
+    BeatMachine,
+    /// `filter_mode` is the stored S1200 filter selector (engine parameter
+    /// 0x318); valid values are `0..=S1200_FILTER_MODES`.
+    S1200 { filter_mode: Option<u8> },
+    Mp60,
+}
+
+/// Largest stored S1200 filter selector; `set_engine_par` rejects larger values.
+pub const S1200_FILTER_MODE_MAX: u8 = 5;
+
 /// Which time-stretch engine configuration a group's source uses. The engine
 /// is shared (`sampler-core` `StretchEngine`); the kind only picks its
 /// configuration, so formats add kinds without new DSP code paths.
@@ -757,6 +776,8 @@ pub enum StretchKind {
     TimeMachine1,
     TimeMachine2,
     TimeMachinePro,
+    /// Tone Machine (stored mode 1). Shares the Time Machine 1 record fields.
+    ToneMachine,
 }
 
 /// Saved controls of a time-stretch source. Pitch is the group/zone tuning
@@ -1691,6 +1712,12 @@ pub enum ModulationSource {
     Envelope(Envelope),
     /// A multi-segment envelope (Kontakt flex), gated like `Envelope`.
     Breakpoints(Breakpoints),
+    /// Kontakt's adaptive envelope follower, stored fields in file order.
+    /// Follows the group audio; output is 0..=1.
+    Follower(Follower),
+    /// Kontakt's glide: a pitch ramp from the previous note, octave-normalized
+    /// (see `GlideRamp::kontakt_glide`). Stored `BParGlide` mode and time.
+    Glide(Glide),
     Lfo(Lfo),
     Controller(u8),
     Velocity,
@@ -1724,6 +1751,24 @@ impl ModulationSource {
     pub fn bipolar(&self) -> bool {
         matches!(self, Self::Lfo(_) | Self::PitchBend | Self::ScriptBipolar(_) | Self::ConstantProperty{bipolar:true,..})
     }
+}
+
+/// Stored glide fields: mode 1 scales time per semitone, 2 keeps it constant.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Glide {
+    pub mode: u32,
+    pub time_ms: f32,
+}
+
+/// Stored envelope-follower fields: attack, decay, gain and adaption speed.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Follower {
+    pub attack: f32,
+    pub decay: f32,
+    pub gain: f32,
+    pub adaption: f32,
 }
 
 /// Glides from 0 through `points`, each reached `time` after the previous;
@@ -2093,6 +2138,10 @@ pub enum ProcessorParameter {
     LoFiFrequency,
     LoFiNoise,
     LoFiColor,
+    /// Kontakt Fuzz amount, bass and treble (live lanes of a script-addressed Fuzz).
+    FuzzAmount,
+    FuzzBass,
+    FuzzTreble,
     /// Stored knobs of script-addressed Kontakt delay, modulation and reverb
     /// units (the family's `set` applies the native setter).
     Time,
@@ -2595,6 +2644,8 @@ pub enum Processor {
     FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
+    /// Kontakt Ring Modulator: sine carrier, see `fx::ringmod`.
+    RingMod(fx::ringmod::Config),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).
     TimeMod(fx::timemod::Config),
     /// Mute a send return when its paired Mix slot is bypassed. Uses that
@@ -2711,6 +2762,8 @@ pub struct LadderLP4 {
     pub record_version: u16,
     /// Output selector: saved Morphology type minus 29 (1..=12); feedback closes around stage 4.
     pub taps: u8,
+    /// Native HQ flag: run the core at twice the rate inside a shared 2x Kaiser oversampler.
+    pub high_quality: bool,
 }
 
 #[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]

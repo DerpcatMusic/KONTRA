@@ -12,6 +12,8 @@
 //! production HQ ownership and moving controls, and the alternative cutoff path (flag
 //! 0x49) remain outside those static comparisons. Importer diagnostics remain unchanged.
 
+use super::linear::Tpt1;
+use super::shaper::{Knee, Slope};
 use std::sync::OnceLock;
 
 static EXPONENTIAL: OnceLock<[f32; 2401]> = OnceLock::new();
@@ -130,6 +132,9 @@ pub(crate) fn cutoff(value: f32) -> f32 {
 
 /// Resonance-to-feedback scale of the core (0x144fcfdd0).
 const FEEDBACK: f32 = 4.16;
+
+/// The feedback soft clip: clamp to +-24, then `(1 - |v| / 48)` (1/48 as stored).
+const CLIP: Knee = Knee { limit: 24.0, slope: Slope::Fused(f32::from_bits(0x3caa_aaab)) };
 
 fn pole(w: f32) -> f32 {
     let w2 = w * w;
@@ -303,6 +308,8 @@ impl Ladder {
         self.gain = gain;
     }
 
+    /// Forget the held state (tests only: the audio path reuses the voice's state).
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.state = [[0.0; 5]; 2];
         self.controls.started = false;
@@ -360,6 +367,7 @@ impl Ladder {
     fn process_held(&mut self, left: &mut [f32], right: &mut [f32]) {
         let c = self.g * self.reciprocal;
         let c4 = ((c * c) * c) * c;
+        let cell = Tpt1 { g: self.g, r: self.reciprocal };
         let taps = usize::from(self.taps());
         let feedback_scale = self.feedback * FEEDBACK;
         for (channel, samples) in [left, right].into_iter().enumerate() {
@@ -378,14 +386,10 @@ impl Ladder {
                 let feedback =
                     feedback + (state[4] + correction) * self.correction * self.correction_gain;
                 state[4] = correction;
-                let mut value = (input - feedback).clamp(-24.0, 24.0);
-                value *= 1.0 - value.abs() * f32::from_bits(0x3caa_aaab); // 1/48 as stored
+                let mut value = CLIP.apply(input - feedback);
                 let mut outputs = [value; 5];
                 for (stage, history) in state[..4].iter_mut().enumerate() {
-                    let previous = *history;
-                    let predicted = (2.0 * previous + self.g * value) * self.reciprocal;
-                    *history = previous + self.g * (value - predicted);
-                    value = previous + *history;
+                    value = cell.tick(history, value);
                     outputs[stage + 1] = value;
                 }
                 let tap = if taps <= 4 {

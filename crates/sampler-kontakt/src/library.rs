@@ -3,7 +3,7 @@
 //! translator states only what it decodes; everything else it finds is listed
 //! in [`ir::Instrument::unsupported`] with its source location.
 
-use crate::{LoadError, Samples};
+use crate::{LoadError, Samples, time_stretch_writes};
 use ni_file::kontakt::{
     StructuredObject,
     objects::{
@@ -301,6 +301,17 @@ fn translate(
         #[cfg(feature = "scan")]
         target_outcomes: HashMap::new(),
     };
+    // Kontakt stores the preload in bytes. 0 selects the global policy and 0xf000 (60 KiB) is
+    // the instrument default set at init (Kontakt 8 `FUN_140940000`, `0x21b70`). Any other
+    // value is an authored override that the stream policy does not yet apply.
+    if !matches!(params.dfd_channel_preload_size, 0 | 0xf000) {
+        out.unsupported(
+            "instrument",
+            "DFD preload override",
+            params.dfd_channel_preload_size,
+            ir::Reason::NotModeled,
+        );
+    }
     match crate::program_automation(
         &program.0.private_data,
         program.version(),
@@ -931,6 +942,23 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
     None
 }
 
+/// A group-level engine write as the corpus spells it (`set_engine_par(p, v, group, -1, -1)`),
+/// falling back to the generic-0 spelling, which Kontakt also honours for these parameters
+/// (measured with tm_sweep.py). The last matching write wins.
+fn group_engine_write(writes: &[sampler_ksp::EnginePar], parameter: &str, group: i32) -> Option<i32> {
+    let find = |generic: i32| {
+        writes
+            .iter()
+            .rev()
+            .find(|w| {
+                w.parameter.trim_start_matches('$') == parameter
+                    && (w.group, w.slot, w.generic) == (group, -1, generic)
+            })
+            .map(|w| w.value)
+    };
+    find(-1).or_else(|| find(0))
+}
+
 /// Stored (serialized) group source modes, in the order of Kontakt 8.13.1's own
 /// enum-name table (strings at file offset 0x7555700 of Kontakt8.exe: Sampler, ToneMachine, TimeMachine,
 /// DirectFromDisk, BeatMachine, TimeMachine2, S1200Machine, MP60Machine,
@@ -938,6 +966,7 @@ fn eq_knob(name: &str) -> Option<(usize, ir::ProcessorParameter)> {
 /// and Pro (8) carry the extra fields their controls need, DFD (3) none.
 /// (docs/architecture-v2/KONTAKT_OBJECTS.md's table naming 3 as Time Machine 2 and
 /// 5 as DFD is wrong; Conflux's 90 mode-3 groups are DFD.)
+const SOURCE_MODE_TONE: u32 = 1;
 const SOURCE_MODE_TM1: u32 = 2;
 const SOURCE_MODE_TM2: u32 = 5;
 const SOURCE_MODE_TM_PRO: u32 = 8;
@@ -951,9 +980,18 @@ const SOURCE_MODE_TM_PRO: u32 = 8;
 /// libraries, and mode 5 (which DFD's streaming fields would occupy) never occurs.
 const SOURCE_MODE_DFD: u32 = 3;
 
+/// The machine kind of a stored source mode (4 Beat Machine, 6 S1200, 7 MP60).
+fn machine_kind(mode: u32) -> Option<ir::Machine> {
+    match mode {
+        4 => Some(ir::Machine::BeatMachine),
+        6 => Some(ir::Machine::S1200 { filter_mode: None }),
+        7 => Some(ir::Machine::Mp60),
+        _ => None,
+    }
+}
+
 fn source_mode_name(mode: u32) -> &'static str {
     match mode {
-        1 => "Tone Machine",
         2 => "Time Machine",
         4 => "Beat Machine",
         5 => "Time Machine 2",
@@ -997,6 +1035,7 @@ fn stretch_from_record(
         })
     };
     let kind = match params.mode {
+        SOURCE_MODE_TONE => ir::StretchKind::ToneMachine,
         SOURCE_MODE_TM1 => ir::StretchKind::TimeMachine1,
         SOURCE_MODE_TM2 => ir::StretchKind::TimeMachine2,
         SOURCE_MODE_TM_PRO => ir::StretchKind::TimeMachinePro,
@@ -1006,7 +1045,7 @@ fn stretch_from_record(
     if f("timing_value").is_some_and(|v| v > 1e-9) {
         notes.push(("time machine tempo-synced speed", format!("{speed}"), ir::Reason::UnknownLaw));
     }
-    if kind != ir::StretchKind::TimeMachine1 {
+    if !matches!(kind, ir::StretchKind::TimeMachine1 | ir::StretchKind::ToneMachine) {
         speed = speed.max(0.01);
     }
     if !(speed.is_finite() && (0.0..=64.0).contains(&speed)) {
@@ -1015,6 +1054,17 @@ fn stretch_from_record(
     }
     let mut t = ir::TimeStretch::new(kind, speed);
     match kind {
+        ir::StretchKind::ToneMachine => {
+            // Tone Machine shares the Time Machine 1 machine-record fields.
+            t.smooth = f("machine_float_1")?;
+            t.grain_ms = f("machine_float_2")?;
+            t.high_quality = b("machine_flag")?;
+            notes.push((
+                "tone machine backend (stand-in granular engine, unmeasured)",
+                "tone".into(),
+                ir::Reason::NotModeled,
+            ));
+        }
         ir::StretchKind::TimeMachine1 => {
             t.smooth = f("machine_float_1")?;
             t.grain_ms = f("machine_float_2")?;
@@ -1088,6 +1138,24 @@ fn voice_limit(
 fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
     let (attack, fall) = ahdsr_coefficients(curve);
     (ir::Curve::Exponential(attack), ir::Curve::Exponential(fall))
+}
+
+/// Stored AHDSR times are unit knobs, not milliseconds. Attack and hold use the
+/// 15 s law (`fconv_u2n_env_a`), decay and release the 25 s law
+/// (`fconv_u2n_env_d`); the sustain knob is cubed (`x³`, see
+/// `docs/re/engine/k-mod-envelopes.md`). The engine's own stage scaling uses the
+/// same knob convention (`EnvelopeState::scale_stage`).
+fn ahdsr_attack_ms(knob: f32) -> f32 {
+    sampler_core::native_mod_laws::u2n_env_a(knob)
+}
+
+fn ahdsr_decay_ms(knob: f32) -> f32 {
+    sampler_core::native_mod_laws::u2n_env_d(knob)
+}
+
+fn ahdsr_sustain(knob: f32) -> f32 {
+    let x = knob.clamp(0.0, 1.0);
+    x * x * x
 }
 
 fn ahdsr_coefficients(curve: f32) -> (f64, f64) {
@@ -1372,12 +1440,12 @@ impl Translation {
         source.ahdsrs.push(ir::SourceAhdsr {
             group,
             slot,
-            attack_ms: envelope.attack_ms,
+            attack_ms: ahdsr_attack_ms(envelope.attack_ms),
             attack_curve: envelope.attack_curve,
-            hold_ms: envelope.hold_ms,
-            decay_ms: envelope.decay_ms,
-            sustain: envelope.sustain,
-            release_ms: envelope.release_ms,
+            hold_ms: ahdsr_attack_ms(envelope.hold_ms),
+            decay_ms: ahdsr_decay_ms(envelope.decay_ms),
+            sustain: ahdsr_sustain(envelope.sustain),
+            release_ms: ahdsr_decay_ms(envelope.release_ms),
             ahd_only: envelope.unknown_flag != 0,
             native_amplitude: false,
         });
@@ -1387,27 +1455,27 @@ impl Translation {
             (
                 "ENGINE_PAR_ATTACK",
                 EnvelopeStage::Attack,
-                f64::from(envelope.attack_ms),
+                f64::from(ahdsr_attack_ms(envelope.attack_ms)),
             ),
             (
                 "ENGINE_PAR_HOLD",
                 EnvelopeStage::Hold,
-                f64::from(envelope.hold_ms),
+                f64::from(ahdsr_attack_ms(envelope.hold_ms)),
             ),
             (
                 "ENGINE_PAR_DECAY",
                 EnvelopeStage::Decay,
-                f64::from(envelope.decay_ms),
+                f64::from(ahdsr_decay_ms(envelope.decay_ms)),
             ),
             (
                 "ENGINE_PAR_SUSTAIN",
                 EnvelopeStage::Sustain,
-                f64::from(envelope.sustain),
+                f64::from(ahdsr_sustain(envelope.sustain)),
             ),
             (
                 "ENGINE_PAR_RELEASE",
                 EnvelopeStage::Release,
-                f64::from(envelope.release_ms),
+                f64::from(ahdsr_decay_ms(envelope.release_ms)),
             ),
             ("ENGINE_PAR_ATK_CURVE", EnvelopeStage::AttackCurve, curve),
         ] {
@@ -1573,6 +1641,10 @@ impl Translation {
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
+        // Stored and retained, but no shared resampler selects a quality per group yet.
+        if v.interp_quality != 0 {
+            self.unsupported(&at, "interpolation quality", v.interp_quality, not_modeled);
+        }
         // Start options become articulations or reports in `keyswitch::translate`.
         self.start_criteria.push((
             at.clone(),
@@ -1581,6 +1653,7 @@ impl Translation {
         ));
         let mut wavetable = None;
         let mut time_stretch = None;
+        let mut machine = None;
         match group.source_identity() {
             Ok(source) if source.mode == 9 => {
                 wavetable = group
@@ -1626,10 +1699,13 @@ impl Translation {
             Ok(source)
                 if matches!(
                     source.mode,
-                    SOURCE_MODE_TM1 | SOURCE_MODE_TM2 | SOURCE_MODE_TM_PRO
+                    SOURCE_MODE_TONE | SOURCE_MODE_TM1 | SOURCE_MODE_TM2 | SOURCE_MODE_TM_PRO
                 ) =>
             {
                 time_stretch = self.time_stretch(group, source.mode, &at, index);
+            }
+            Ok(source) if machine_kind(source.mode).is_some() => {
+                machine = self.machine(source.mode, &at, index);
             }
             // The remaining engines are played as a sampler, named in the report.
             Ok(source) => self.unsupported(
@@ -1653,6 +1729,7 @@ impl Translation {
             muted: v.muted,
             wavetable,
             time_stretch,
+            machine,
             name: v.name.clone(),
             gain: ir::Gain::Linear(f64::from(v.volume)),
             pan: ir::Pan {
@@ -1803,13 +1880,19 @@ impl Translation {
                 let source = match params.modulator {
                     Modulator::Ahdsr(env) => {
                         let ms = |ms: f32| ir::Time::Milliseconds(f64::from(ms.max(0.0)));
+                        let (attack, hold, decay, release) = (
+                            ahdsr_attack_ms(env.attack_ms),
+                            ahdsr_attack_ms(env.hold_ms),
+                            ahdsr_decay_ms(env.decay_ms),
+                            ahdsr_decay_ms(env.release_ms),
+                        );
                         let (attack_shape, fall) = ahdsr_curves(env.attack_curve);
                         ir::ModulationSource::Envelope(ir::Envelope {
-                            attack: ms(env.attack_ms),
-                            hold: ms(env.hold_ms),
-                            decay: ms(env.decay_ms),
-                            sustain: f64::from(env.sustain.clamp(0.0, 1.0)),
-                            release: ms(env.release_ms),
+                            attack: ms(attack),
+                            hold: ms(hold),
+                            decay: ms(decay),
+                            sustain: f64::from(ahdsr_sustain(env.sustain)),
+                            release: ms(release),
                             attack_shape,
                             decay_shape: fall,
                             release_shape: fall,
@@ -1882,16 +1965,23 @@ impl Translation {
                     // from the stored fields to their parameters:
                     //  - DBD: the saved durations pass a resolver (helper slot +0x28,
                     //    0x1409651b0) whose unit law, and the v0x10/0x11 legacy tail, are open.
-                    //  - Glide: no caller recovered for the note pitch and time to ramp
-                    //    start, step and gain (0x140ceb090 setup).
-                    //  - Follower: the four stored floats have no proved route to the
-                    //    builder's controls (0x140977a95..0x140977b6a).
-                    Modulator::Dbd(_) | Modulator::Glide(_) | Modulator::Follower(_) => {
-                        let feature = match params.modulator {
-                            Modulator::Dbd(_) => "DBD envelope (0x41): saved-duration resolver and legacy tail",
-                            Modulator::Glide(_) => "glide (0x0B): pitch and time to ramp start, step and gain",
-                            _ => "envelope follower (0x0A): saved floats to builder controls",
-                        };
+                    //  - Glide: executable (`ModSource::Glide`); the setup law is
+                    //    FUN_140cebba0, the interval is the previous note of the plan.
+                    //  - Follower: executable (`ModSource::Follower`), stored floats map to
+                    //    the builder roles; it samples the group audio of the
+                    //    previous span (working timing choice, see k-mod-external.md).
+                    Modulator::Follower(f) => ir::ModulationSource::Follower(ir::Follower {
+                        attack: f.values[0],
+                        decay: f.values[1],
+                        gain: f.values[2],
+                        adaption: f.values[3],
+                    }),
+                    Modulator::Glide(g) => ir::ModulationSource::Glide(ir::Glide {
+                        mode: g.mode,
+                        time_ms: g.values[0],
+                    }),
+                    Modulator::Dbd(_) => {
+                        let feature = "DBD envelope (0x41): saved-duration resolver and legacy tail";
                         self.unsupported(
                             &at,
                             feature,
@@ -2221,26 +2311,61 @@ impl Translation {
             }
         };
         let mut notes = Vec::new();
-        let stretch = stretch_from_record(&params, &mut notes)?;
+        let mut stretch = stretch_from_record(&params, &mut notes)?;
         for (feature, value, reason) in notes {
             self.unsupported(at, feature, value, reason);
         }
-        for name in [
-            "ENGINE_PAR_SPEED",
-            "ENGINE_PAR_SPEED_UNIT",
-            "ENGINE_PAR_SMOOTH",
-            "ENGINE_PAR_GRAIN_LENGTH",
-            "ENGINE_PAR_TRANSIENT_SIZE",
-            "ENGINE_PAR_TM_LEGATO",
-            "ENGINE_PAR_TMPRO_KEEP_FORMANTS",
-            "ENGINE_PAR_FORMANT_SHIFT",
-        ] {
-            if let Some(value) = self.script_par(name, index as i32, -1, -1) {
+        // Measured writes (time_stretch_writes) change the stored source record; the
+        // rest have no law yet, and writes with no field for this kind are reported.
+        let unapplied = time_stretch_writes::apply(&mut stretch, |name| {
+            group_engine_write(&self.engine, name, index as i32)
+        });
+        for name in ["ENGINE_PAR_SPEED_UNIT"] {
+            if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
                 self.unsupported(at, &format!("{name} write"), value, ir::Reason::UnknownLaw);
+            }
+        }
+        for name in unapplied {
+            if let Some(value) = group_engine_write(&self.engine, name, index as i32) {
+                self.unsupported(at, &format!("{name} write"), value, ir::Reason::NotModeled);
             }
         }
         let _ = mode;
         Some(stretch)
+    }
+
+    /// A machine source group (stored modes 4, 6, 7). Its own controls are
+    /// recorded in the IR; the DSP that would consume them is not modelled, so
+    /// the zones play as a sampler and the report says so.
+    fn machine(&mut self, mode: u32, at: &str, index: usize) -> Option<ir::Machine> {
+        let kind = machine_kind(mode)?;
+        let (value, name) = match kind {
+            ir::Machine::S1200 { .. } => {
+                let raw = self.script_par("ENGINE_PAR_S1200_FILTER_MODE", index as i32, -1, -1);
+                let filter_mode = match raw {
+                    Some(v) if (0..=i32::from(ir::S1200_FILTER_MODE_MAX)).contains(&v) => Some(v as u8),
+                    Some(v) => {
+                        self.unsupported(at, "S1200 filter mode out of range", v, ir::Reason::InvalidValue);
+                        None
+                    }
+                    None => None,
+                };
+                (Some(ir::Machine::S1200 { filter_mode }), "S1200 Machine")
+            }
+            ir::Machine::Mp60 => (Some(ir::Machine::Mp60), "MP60 Machine"),
+            ir::Machine::BeatMachine => (Some(ir::Machine::BeatMachine), "Beat Machine"),
+        };
+        // Filter modes 1..=5 of the S1200 are modelled; the rest play as a sampler.
+        let modelled = matches!(value, Some(ir::Machine::S1200 { filter_mode: Some(1..=ir::S1200_FILTER_MODE_MAX) }));
+        if !modelled {
+            self.unsupported(
+                at,
+                &format!("{name} source (played as a sampler; its DSP is not modelled)"),
+                mode,
+                ir::Reason::NotModeled,
+            );
+        }
+        value
     }
 
     fn script_par(&self, parameter: &str, group: i32, slot: i32, generic: i32) -> Option<i32> {
@@ -4007,7 +4132,7 @@ mod saved_tests {
     }
 
     #[test]
-    fn raw_ahdsr_preparation_keeps_original_f32_setters_before_curve_normalization() {
+    fn ahdsr_preparation_lowers_stored_knobs_before_curve_normalization() {
         let mut indices = ir::SourceIndices::default();
         let envelope = ni_file::kontakt::objects::EnvelopeAhdsr {
             attack_ms: 125.012924,
@@ -4036,12 +4161,12 @@ mod saved_tests {
             ]
             .map(f32::to_bits),
             [
-                envelope.attack_ms,
+                ahdsr_attack_ms(envelope.attack_ms),
                 envelope.attack_curve,
-                envelope.hold_ms,
-                envelope.decay_ms,
-                envelope.sustain,
-                envelope.release_ms
+                ahdsr_attack_ms(envelope.hold_ms),
+                ahdsr_decay_ms(envelope.decay_ms),
+                ahdsr_sustain(envelope.sustain),
+                ahdsr_decay_ms(envelope.release_ms)
             ]
             .map(f32::to_bits)
         );
@@ -4075,7 +4200,8 @@ mod saved_tests {
                     == Some("$ENGINE_PAR_SUSTAIN"))
                 .unwrap()
                 .value,
-            400000
+            // Stored sustain knob 0.4 is cubed: level 0.064 (x³, not linear).
+            64000
         );
         assert!(
             values
@@ -4576,6 +4702,16 @@ mod modulation {
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
 
     #[test]
+    /// Stored knobs (KONTAKT_DSP_LAWS.md, AHDSR section): knob 0.5 is 171.2 ms
+    /// attack/hold, 221.6 ms decay/release, and sustain level 0.125.
+    #[test]
+    fn ahdsr_stored_knobs_map_to_native_times_and_sustain() {
+        assert!((ahdsr_attack_ms(0.5) - 171.2167).abs() < 1e-3);
+        assert!((ahdsr_decay_ms(0.5) - 221.6159).abs() < 1e-3);
+        assert_eq!(ahdsr_sustain(0.5), 0.125);
+        assert_eq!(ahdsr_sustain(2.0), 1.0);
+    }
+
     fn ahdsr_stage_laws_are_native_exponential_curves() {
         let curve = |k: ir::Curve, t: f64| match k {
             ir::Curve::Exponential(k) => (k * t).exp_m1() / k.exp_m1(),
@@ -4773,8 +4909,7 @@ mod modulation {
         assert_eq!(out.script_intensity(7, "controller"), Some(0.5));
     }
 
-    #[test]
-    fn fx_decode_group_insert_errors_reach_the_ir_report() {
+    fn group_public(interp_quality: i32) -> Vec<u8> {
         let mut public = 0u32.to_le_bytes().to_vec();
         for value in [1f32, 0.0, 1.0] {
             public.extend(value.to_le_bytes());
@@ -4783,11 +4918,47 @@ mod modulation {
         public.extend(0i32.to_le_bytes());
         public.extend((-1i16).to_le_bytes());
         public.extend([0; 10]); // Voice group, amplifier split, mute/solo.
-        public.extend(0i32.to_le_bytes());
+        public.extend(interp_quality.to_le_bytes());
+        public
+    }
+
+    #[test]
+    fn unmodeled_group_interpolation_is_reported_not_dropped() {
         let mut group = Group(ni_file::kontakt::StructuredObject {
             version: 0x95,
             private_data: vec![],
-            public_data: public,
+            public_data: group_public(2),
+            children: vec![ni_file::kontakt::Chunk {
+                id: 0x38,
+                data: vec![0],
+            }],
+        });
+        let mut out = translation();
+        assert!(out.group(0, &group).unwrap().is_some());
+        assert!(
+            out.ir
+                .unsupported
+                .iter()
+                .any(|n| n.feature == "interpolation quality" && n.value == "2")
+        );
+        group.0.public_data = group_public(0);
+        let mut default = translation();
+        assert!(default.group(0, &group).unwrap().is_some());
+        assert!(
+            !default
+                .ir
+                .unsupported
+                .iter()
+                .any(|n| n.feature == "interpolation quality")
+        );
+    }
+
+    #[test]
+    fn fx_decode_group_insert_errors_reach_the_ir_report() {
+        let mut group = Group(ni_file::kontakt::StructuredObject {
+            version: 0x95,
+            private_data: vec![],
+            public_data: group_public(0),
             children: vec![ni_file::kontakt::Chunk {
                 id: 0x38,
                 data: vec![0],
@@ -5920,6 +6091,7 @@ mod modulation {
                 resonance: 0.,
                 record_version: 0x92,
                 taps: 4,
+                high_quality: false,
             }),
             ir::Processor::Daft(ir::Daft {
                 address: None,
@@ -5974,6 +6146,7 @@ mod modulation {
                 resonance: 0.,
                 record_version: 0x92,
                 taps: 4,
+                high_quality: false,
             }),
             ir::Processor::Daft(ir::Daft {
                 address: None,
@@ -6652,6 +6825,25 @@ impl Translation {
 mod time_machine_tests {
     use super::*;
 
+    /// Both spellings of a group-level write reach the same stretch field; another group's write does not.
+    #[test]
+    fn group_writes_accept_generic_minus_one_and_zero() {
+        let write = |generic, group, value| sampler_ksp::EnginePar {
+            parameter: "ENGINE_PAR_SPEED".into(),
+            value,
+            group,
+            slot: -1,
+            generic,
+        };
+        let corpus = [write(-1, 0, 750_000)];
+        assert_eq!(group_engine_write(&corpus, "ENGINE_PAR_SPEED", 0), Some(750_000));
+        let measured = [write(0, 0, 250_000), write(0, 1, 900_000)];
+        assert_eq!(group_engine_write(&measured, "ENGINE_PAR_SPEED", 0), Some(250_000));
+        assert_eq!(group_engine_write(&measured, "ENGINE_PAR_SPEED", 2), None);
+        let both = [write(0, 0, 250_000), write(-1, 0, 750_000)];
+        assert_eq!(group_engine_write(&both, "ENGINE_PAR_SPEED", 0), Some(750_000));
+    }
+
     /// A v0x106 source record as Conflux stores it (common record defaults),
     /// plus the mode-specific extension.
     fn record(mode: u32, speed: (f32, f32, f32), extension: &[u8]) -> Vec<u8> {
@@ -6685,6 +6877,13 @@ mod time_machine_tests {
         let t = stretch_from_record(&tm1, &mut notes).unwrap();
         assert_eq!((t.kind, t.speed, t.smooth, t.grain_ms, t.high_quality), (ir::StretchKind::TimeMachine1, 1.0, 0.75, 12.5, false));
         assert!(notes.is_empty());
+        // Tone Machine (stored 1): TM1 machine-record fields, reported as an unmeasured stand-in.
+        let tone = parse(record(SOURCE_MODE_TONE, (-1.0, 0.0, 1.0), &tail));
+        let mut notes = Vec::new();
+        let t = stretch_from_record(&tone, &mut notes).unwrap();
+        assert_eq!((t.kind, t.smooth, t.grain_ms), (ir::StretchKind::ToneMachine, 0.75, 12.5));
+        assert!(notes.iter().any(|n| n.0.starts_with("tone machine backend")));
+        notes.clear();
         // TM2: transient copy B, size I, grain profile I; reported as stand-in.
         let ext = [1, 0xe8, 3, 0, 0, 2, 0, 0, 0];
         let tm2 = parse(record(SOURCE_MODE_TM2, (-1.0, 0.0, 1.0), &ext));
@@ -6700,6 +6899,10 @@ mod time_machine_tests {
 
     #[test]
     fn the_stored_mode_ids_name_the_machines_and_dfd_stays_a_sampler() {
+        assert_eq!(machine_kind(4), Some(ir::Machine::BeatMachine));
+        assert_eq!(machine_kind(6), Some(ir::Machine::S1200 { filter_mode: None }));
+        assert_eq!(machine_kind(7), Some(ir::Machine::Mp60));
+        assert_eq!(machine_kind(SOURCE_MODE_TM1), None);
         assert_eq!(source_mode_name(SOURCE_MODE_TM1), "Time Machine");
         assert_eq!(source_mode_name(SOURCE_MODE_TM2), "Time Machine 2");
         assert_eq!(source_mode_name(SOURCE_MODE_TM_PRO), "Time Machine Pro");
