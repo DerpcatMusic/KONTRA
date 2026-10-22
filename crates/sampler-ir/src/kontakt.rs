@@ -284,7 +284,9 @@ pub struct ModulationTarget {
     pub param: String,
     /// Saved magnitude; flags bit 1 stores depth sign independently of invert.
     pub intensity: f32,
-    /// Signed native lag; negative values have no proved smoothing law.
+    /// Signed native lag. Positive: one-pole per 32-frame cell (laws in
+    /// `sampler-core` `voice_mod::laws`, from the route compiler FUN_140873040).
+    /// Negative: the stored count law is proved; its consumer is not located.
     pub lag_ms: i16,
     pub name: String,
     /// Physical owning module slot, never a dense processor index.

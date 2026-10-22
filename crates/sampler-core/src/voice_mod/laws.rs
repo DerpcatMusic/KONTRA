@@ -350,6 +350,26 @@ pub const UNSUPPORTED: &[(&str, &str)] = &[
     ("lag scheduler", "the lag state equations are proved but the execution period is not; lag is left on the existing router law"),
 ];
 
+/// Route lag laws from the native route compiler FUN_140873040 (`0140870000.c`,
+/// lag read as a signed i16 at target `+0xe`). Constants read from the Kontakt 8
+/// binary: `-2 ln 10` at 0x144f38de0, `1/32000` (ms to 32-frame cells) at
+/// 0x144f387c8, `0.25` at 0x144e79a60, `0.5` at 0x14470bae8.
+pub const NATIVE_LAG_EXPONENT: f64 = -4.605_170_185_988_092;
+
+/// One-pole coefficient for a positive lag, per 32-frame cell:
+/// `1 - exp(-2 ln10 / (rate * lag / 32000))` (native text `0x144f1d950` path).
+/// Two cells equal one 64-frame step, which is the engine's control grid.
+pub fn native_lag_coefficient_per_cell(rate: f64, lag_ms: i16) -> f64 {
+    let cells = rate * f64::from(lag_ms) / 32_000.0;
+    1.0 - (NATIVE_LAG_EXPONENT / cells).exp()
+}
+
+/// Stored count for a negative lag (native text `0x144f1d820` path):
+/// `trunc(rate * |lag| / 32000 * 0.25 + 0.5)`. Its consumer is not located.
+pub fn native_negative_lag_count(rate: f64, lag_ms: i16) -> i64 {
+    (rate * f64::from(lag_ms.unsigned_abs()) / 32_000.0 * 0.25 + 0.5) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,5 +555,16 @@ mod tests {
         assert_eq!(external_source_q(8), Ok(false));
         assert!(external_source_q(13).is_err() && external_source_q(7).is_err());
         assert!(is_add(6, 0) && !is_add(2, 0) && !is_add(0x8d, 0) && !is_add(0x19, 4) && is_add(26, 0));
+    }
+
+    #[test]
+    fn route_lag_matches_the_native_compiler_laws() {
+        // A 32-frame cell applied twice equals the engine's 64-frame step.
+        let rate = 48_000.0;
+        let per_cell = native_lag_coefficient_per_cell(rate, 250);
+        let engine_64 = 1.0 - (-2.0 * std::f64::consts::LN_10 * 64.0 / (rate * 250.0 / 1000.0)).exp();
+        assert!((1.0 - (1.0 - per_cell) * (1.0 - per_cell) - engine_64).abs() < 1e-12);
+        // Negative lag: 375 * 0.25 + 0.5 truncates to 94.
+        assert_eq!(native_negative_lag_count(rate, -250), 94);
     }
 }
