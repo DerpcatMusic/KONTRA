@@ -68,3 +68,12 @@ Shared-core question: Beat Masher, Reverse Grain and Transpose Stretch all reduc
 - High: the five modules exist with the serialization IDs and reader VAs above, and the repo has no DSP for them.
 - High: no current code applies the KSP `ENGINE_PAR_BEATMASHER/BEATSLICER/GATER/RG/TS_*` writes. `rg` finds them only in the KSP crate, the parameter-name table and the ledger. Not verified: whether the KSP lowering emits a diagnostic for these writes.
 - Low: every parameter meaning, unit and law.
+
+## Pass 3 findings (2026-10-22, fresh worktree off main)
+
+- Native engine-parameter ids (`crates/sampler-core/src/engine_par_ids.tsv`, column `native_constant`): Beat Masher 242-248 (ROTATE 242, GATE 243, MIX 244, LENGTH 245, REVERSE 246, WRAP 247, MASH 248); Beat Slicer 249-255 (BUZZ 249, MIX 250, PATTERN 251, STYLE 252, TWOBARS 253, GATE 254, SLICE 255); Gater 256-263 (RATE 256, SHAPE 257, NOISE 258, MIX 259, STUTTER 260, MUTE_INPUT 261, GATE 262, RATE_SYNC 263); Reverse Grain 264-270 (SPEED 264, GRAIN 265, PITCH 266, MIX 267, FORWARD 268, REVERSE 269, INVERT_GRAINS 270); Transpose Stretch 271-277 (AMOUNT 271, SIZE 272, KEY 273, MIX 274, STRETCH 275, GRAIN 276, TWOBARS 277). Table-only; no law.
+- The vtable slots 3, 16 and 66 are parameter and UI binding. The module forwards to a child object at +0x430 (`param_1[0x86]`) through its vtable slot 0x158, so the DSP is not in the module class. It sits behind the engine parameter path.
+- Literal scans for the ids find registry and string-parser code (for example, a waveform-name parser at `FUN_140d8ec10`), not the per-sample kernels. Scanning for id literals gives many false positives: small hex values recur in unrelated code.
+- Not yet found: the per-sample kernel for any of the five modules, and any constant for their laws.
+
+Status: no matrix row moves from `missing`. The next step is to find where the engine stores values written for ids 256-277 (a per-id store or a switch on the id) and follow that consumer to the sample loop.
