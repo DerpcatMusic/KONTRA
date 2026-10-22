@@ -464,3 +464,20 @@ Not ported (the record stays NotModeled, so the pass-through diagnostic in `effe
 block driver `140ab0070` (per source: scalar fast path at `+0xc00` or the panned path `140ab4eb0`),
 shared mix `140ac21f0`, LFE sub-object at `+0x7a0`, and the output layouts above stereo. The engine has no
 multi-channel output path for this module yet; a stereo downmix needs the driver first.
+
+### Kolor dry path, ported (2026-10-23, `kolor/chain.rs`)
+
+Measured with `tools/re/kolor_kemu_probe.py` (impulse, step at 0.5 per channel, mode 0 and the
+native fixtures). For modes 0, 1, 3, 4, 6..9 the output is exactly `g[n] * in[n]` per channel,
+steady and moving (knob 0 does not touch it):
+
+- `g[n] = A * g[n-1] + B`, `A = 0.99947651`, `B = 0.5*(1-A)` (fit residual 3e-8). The ramp settles at 0.5.
+- Start: left `g[0] = B/2`, right `g[0] = B`. The left/right difference is measured, its cause is not decoded.
+- Port: `sampler-core/src/dsp/color/kolor/chain.rs` (`DryPath`). Test: all 8 modes, steady and moving,
+  L and R, against the fixture at 1e-5 absolute.
+
+Modes 2 and 5 are **not** matched. Their output minus `g*in` (the shaper residual, peak 0.015 steady)
+is mode-signed (positive for 2, negative for 5) and starts at zero. A 6-tap ARX fit of that residual
+on the input leaves 1.5e-5, so it is not a short linear filter. It needs the post-shaper biquad
+sections (`+0x9484`, `+0x9568`, `+0x9670`, `+0x9708`) with coefficients from prepare `141979410`
+and the notify lambdas, which are still open.
