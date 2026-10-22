@@ -258,7 +258,9 @@ def refresh(manual_pdf, binary, existing):
     rows = parse_manual(text)
     blank = {"section": "ledger", "signature": "", "restriction": "", "since": ""}
     for name in ledger_entries():
-        if name.startswith("@") or name.endswith("_"):
+        # `#` marks a digit or word family template (`$ENGINE_PAR_RV#_DAMPING`); a trailing `_`
+        # is a prefix placeholder and `@` entries are internal diagnostics. Neither is a symbol.
+        if not re.fullmatch(r"[$%!~]?[A-Za-z_][A-Za-z0-9_#]*|on [a-z_/]+", name) or name.endswith("_"):
             continue
         if name.startswith("on "):
             key = ("callback", name)
@@ -292,6 +294,8 @@ def refresh(manual_pdf, binary, existing):
         old = prior.get(rid, {})
         bname = row["name"][3:] if row["category"] == "callback" else row["name"]
         row["binary"] = evidence.get(bname, old.get("binary", "")) if binary else old.get("binary", "")
+        if "#" in bname:
+            row["binary"] = "template"
     return list(universe.values())
 
 
@@ -451,7 +455,14 @@ def coverage_md(rows):
          "Status (KONTRA, from `crates/sampler-ksp/src/parity_ledger.rs`): **full** = Implemented; **simplified** = Approximate (documented approximation); **stub** = accepted and ignored; **unsupported** = no ledger entry or frontend binding.",
          "",
          "Corpus weight = instruments whose scripts mention the symbol, from the last measured run in `docs/architecture-v2/KSP_COVERAGE.md` (no corpus re-run for this map). Conformance = a test under `crates/sampler-ksp/tests` or `crates/sampler-kontakt/tests` names the symbol; `untested` otherwise.",
-         "", "## Totals (compat rows)", "",
+         "", "## Evidence per row (compat rows)", "",
+         "| source | rows | binary evidence |", "|---|---|---|"]
+    for src_name in ("manual", "ledger/builtins only"):
+        group = [r for r in compat if ("manual" if r["section"] not in ("ledger", "kontra-builtins") else "ledger/builtins only") == src_name]
+        by_binary = collections.Counter((r["binary"].split(" ")[0] or "not scanned") for r in group)
+        o.append(f"| {src_name} | {len(group)} | " + ", ".join(f"{k} {v}" for k, v in by_binary.most_common()) + " |")
+    o += ["", "Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in .text; `data-ref` = absolute pointer in data; `string` = exact string, no reference found; `message` = name appears only inside a diagnostic text; `absent` = neither; `template` = `#` family placeholder.",
+          "", "## Totals (compat rows)", "",
          "| category | symbols | full | simplified | stub | unsupported | % full | corpus-weighted % full | tested |",
          "|---|---|---|---|---|---|---|---|---|"]
     cats = sorted({r["category"] for r in compat}, key=lambda c: CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else 99)
@@ -551,6 +562,13 @@ def extract_nki(path):
 def doctor(paths, fail_on):
     rows = load_rows()
     by_name = {r["name"]: r for r in rows}
+    templates = [(re.compile(re.escape(r["name"]).replace("#", "[A-Z0-9]+")), r)
+                 for r in rows if "#" in r["name"]]
+
+    def lookup(key):
+        if key in by_name:
+            return by_name[key]
+        return next((r for rx, r in templates if rx.fullmatch(key)), None)
     fired = collections.Counter()
     for raw in paths:
         p = Path(raw)
@@ -572,7 +590,7 @@ def doctor(paths, fail_on):
                     continue
                 if sigil:
                     key = sigil + word
-                    if key in by_name:
+                    if lookup(key):
                         hits[key] += 1
                     elif sigil == "$" and word.isupper():
                         hits[key] += 1
@@ -581,11 +599,11 @@ def doctor(paths, fail_on):
                 elif word in by_name and by_name[word]["category"] in ("keyword", "ui_control", "preprocessor"):
                     hits[word] += 1
             print(f"== {label}")
-            for key, n in sorted(hits.items(), key=lambda kv: (int(by_name[kv[0]]["corpus_rank"] or 10**9) if kv[0] in by_name else 10**9, kv[0])):
-                if key not in by_name:
+            for key, n in sorted(hits.items(), key=lambda kv: (int(lookup(kv[0])["corpus_rank"] or 10**9) if lookup(kv[0]) else 10**9, kv[0])):
+                r = lookup(key)
+                if r is None:
                     code, cat, rank = "KSP-UNKNOWN", "-", "-"
                 else:
-                    r = by_name[key]
                     code, cat, rank = f"KSP-{r['status'].upper()}", r["category"], r["corpus_rank"] or "-"
                 fired[code] += 1
                 print(f"  {code:<18} {key:<42} x{n:<3} {cat:<12} corpus_rank={rank}")
