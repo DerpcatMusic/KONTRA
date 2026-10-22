@@ -532,6 +532,8 @@ struct EditorState {
     resizing: Option<(usize, f64)>,
     /// Each part's notices and controls at their full height, as last laid out.
     bodies: HashMap<usize, f64>,
+    /// Where each sized part's stage is scrolled to (where it glides to).
+    patch_y: HashMap<usize, f64>,
     /// Each preset's neighbors in its library folder, of which scan and shelf.
     neighbors: (
         std::sync::Weak<Vec<PathBuf>>,
@@ -775,6 +777,8 @@ impl Cx<'_> {
     }
 
     /// Apply to an explicit base, leaving the part intact until validation.
+    /// Only the part is selected: no reveal and no unfold, so the rack keeps
+    /// its scroll and the part keeps its fold while the preset swaps.
     fn snapshot(&mut self, slot: usize, path: String) {
         let accepted = self
             .selection
@@ -782,7 +786,8 @@ impl Cx<'_> {
             .get(slot)
             .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
         if accepted {
-            self.show(slot);
+            self.state.select(slot);
+            self.state.notice.clear();
         } else {
             self.state.notice = "Select a base NKI instrument before loading a preset.".into();
         }
@@ -1209,6 +1214,7 @@ fn build(
         reveal: None,
         resizing: None,
         bodies: HashMap::new(),
+        patch_y: HashMap::new(),
         neighbors: Default::default(),
         started: Instant::now(),
         computer,

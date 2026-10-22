@@ -61,7 +61,7 @@ fn loop_audit_publication_resets_original() {
         let r =
             h.ui.scene()
                 .unwrap()
-                .surface("face-original-0")
+                .surface("face-0")
                 .unwrap()
                 .frame;
         let pixels = tests::pixels(&h.ui, 1180, 780);
@@ -74,10 +74,12 @@ fn loop_audit_publication_resets_original() {
         blake3::hash(&bytes)
     };
     h.idle(24);
-    h.press("face-vector-0");
+    h.press("view-0");
+    h.press("menu-item-1");
     h.idle(24);
     let vector = crop(&h);
-    h.press("face-original-0");
+    h.press("view-0");
+    h.press("menu-item-0");
     h.ui.focus("tab-rack");
     h.idle(24);
     assert_ne!(crop(&h), vector, "Original is visibly selected");

@@ -746,11 +746,13 @@ fn editor_with_a_real_instrument() {
     let mut h = Harness::new(&p, 1180., 780.);
     h.idle(40);
     let shot = |h: &Harness, name: &str| shoot(&h.ui, 1180, 780, &format!("app/{stem}-{name}.png"));
-    if h.ui.scene().unwrap().surface("face-original-0").is_some() {
-        h.press("face-original-0");
+    if h.ui.scene().unwrap().surface("view-0").is_some() {
+        h.press("view-0");
+        h.press("menu-item-0");
         h.idle(20);
         shot(&h, "rack-original");
-        h.press("face-vector-0");
+        h.press("view-0");
+        h.press("menu-item-1");
         h.idle(20);
         shot(&h, "rack-vector");
     } else {
