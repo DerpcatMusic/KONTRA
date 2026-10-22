@@ -255,7 +255,7 @@ of the saved `beat_fixed.nki`, `--no-scripts`, note 60 for 0.8 s.
 
 | Check | Oracle | Render | Tolerance | Result |
 | --- | --- | --- | --- | --- |
-| Slot rates (tone x 0.25), slices 1-3 (50, 80, 110 Hz) | 50.02, 79.98, 109.90 Hz | 49.94, 80.00, 109.96 Hz | 0.5 % | pass (render within 0.12 %) |
+| Slot rates (tone x 0.25), slices 1-3 (50, 80, 110 Hz) | 49.86, 79.99, 110.02 Hz | 49.86, 80.00, 109.97 Hz | 0.5 % | pass (oracle vs render within 0.05 %; analytic-signal median over the central 55 ms of each cell, re-measured 2026-10-22) |
 | Slot boundaries (onset at 0, cells 125 ms) | changes near 100, 240, 350 ms | same within one 20 ms step | 20 ms | pass |
 | Slice 4 (560 Hz) | silent after 380 ms | 139.91 Hz, full level | — | fail (decay, below) |
 | Level (peak, first 100 ms) | 0.136 RMS | 0.161 RMS | — | fail, 1.5 dB; the plain sampler render of the same zone is at our level, so the gap is in the shared level path |
@@ -266,14 +266,53 @@ The source tones are flat (RMS 0.35 in each cell), and the NKI amplitude envelop
 
 ### Second oracle session (retrigger, grid, BPM) — not conclusive
 
-`tools/kontakt-oracle/probes/beat_machine_session2.lua` was run once (`session2_grid_retrigger.wav`
-in the artifacts folder). It asked for three zones (1/16 at 120 BPM, 1/16 at 90 BPM, 1/8 at
+`tools/kontakt-oracle/probes/beat_machine_session2.lua` was run once (its `probe.log` is kept in the
+artifacts folder; the WAV was deleted after session 3 superseded it). It asked for three zones (1/16 at 120 BPM, 1/16 at 90 BPM, 1/8 at
 100 BPM) and timed notes by KSP timer chains. Only the first note of the first zone sounded.
 The later notes and the other two zones did not appear. The probe design cannot separate a
 timer that does not re-arm from a silent second note, and standalone Kontakt sends MIDI to the
 selected instrument only. The grid law (rate and slot spacing for other grids and BPMs) and the
 second-trigger silence are therefore still open. A corrected probe would use one instrument with
 three zones (keys 0-59, 60-84, 85-127, root keys 48, 72, 96) and MIDI timing from a file.
+
+### Third oracle session (MIDI-timed, one instrument, three zones)
+
+Probe `tools/kontakt-oracle/probes/beat_machine_session3.lua`. Notes come from
+`beat_machine_session3_midi.py` (a Standard MIDI File, 1000 ticks per quarter at 60 BPM, so one
+tick is 1 ms), not from a KSP script. Run once with
+`nice -n 19 tools/kontakt-oracle/render.py PROBE OUT.wav 10.5 session3.mid` (22.9 s recording,
+signal from 1.0 s to 10.8 s; Kontakt and Xvfb stopped afterwards). One instrument, group 0 in
+mode `beat_machine`, no script. Zones: A keys 0-59 root 48, 1/16 at 120 BPM; B keys 60-84 root 72,
+1/16 at 90 BPM; C keys 85-127 root 96, `set_zone_grid` "fixed", 100.0, width 8. Saved as `beat3.nki`.
+
+Results (artifacts: `PluginArtifacts/kontra-oracle/beat-machine/session3/`):
+
+- Seven notes, all audible: first triggers, retriggers after the sequence ended, and short
+  holds (150, 300, 400 ms). The second-trigger silence of sessions 1 and 2 does not reproduce.
+  It came from the KSP timer set-up, not from the Beat voice.
+- Note-off: a short-held note fades out about 250 ms after the note-off (A, 150 ms hold: -23 dB
+  to -47 dB in that window). A long hold does not extend the sequence: the 1/16 sequence ends at
+  its last cell while the key is still held.
+- Cell spacing is 1/16 of a quarter at each BPM, in all three zones: 6000 frames (120 BPM), 8000
+  (90 BPM), 7200 (100 BPM). The width argument `8` did not change the spacing. Zone C has 8 cells
+  of 7200 frames over its 1.2 s sample, and stored `tempo_scale` 0.5. So the stored value is the
+  width as a fraction of a quarter (1/16 gives 0.25, 1/8 gives 0.5), and the cell spacing does not
+  follow the width.
+- Oracle playback rate is **1.0** in all three zones. A: 200, 320, 440, 560 Hz. B: 240, 360, 480,
+  600 Hz. C (8 cells): 200, 200, 320, 320, 440, 440, 560, 560 Hz. Each cell plays its whole source
+  slice, and the level is flat at -17.35 dB RMS in every cell. There is no decay and no slice-4
+  silence.
+- The native render of the same NKI and MIDI (`sampler-native render-kontakt-midi --no-scripts`)
+  plays at the stored rate: A 49.86, 80.00, 109.97, 139.95 Hz; C 100, 100, 160, 160, 220, 220,
+  280, 280 Hz. Its level is flat at -15.81 dB, so the level gap is a constant 1.54 dB.
+
+Conflict with session 1. Session 1 (KSP `play_note`, one zone, 1/16 at 120 BPM, trigger file
+without a tempo meta, so 120 BPM) played at 0.25, with the decay and the slice-4 silence. Session 3
+(MIDI file at 60 BPM, three zones, no script) played at 1.0, with neither. The stored value is 0.25
+in both NKIs. So the oracle rate is not the stored `tempo_scale` alone. The variables not yet
+separated are: the KSP script being present, the note source (script or MIDI), the host tempo the
+MIDI file sets (60 or 120 BPM), and the zone count. The decay and the slice-4 silence belong to
+the 0.25 case, and they have not been reproduced at 1.0.
 
 ### Not recovered
 
@@ -345,7 +384,7 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 | Module | Shared engine covers | Missing |
 | --- | --- | --- |
 | Tone Machine | Mode mapping and stand-in granular engine, reported `NotModeled` | Render kernel, grain/formant/DC laws, record-to-object mapping, `hiQuality` |
-| Beat Machine | Stored mode and controls decoded; zone grid (chunk 0x35, `Playback::beat_grid`) and rate (private float 12) parsed; zone played as sliced cells with the sequencer, linear fades, at the stored rate (one capture, rate within 0.2 %) | Oracle amplitude fall after about 100 ms and 1.5 dB level gap; second trigger; grid factor (other grids); `slice_flag_1` meaning; auto grid |
+| Beat Machine | Stored mode and controls decoded; zone grid (chunk 0x35, `Playback::beat_grid`) and rate (private float 12) parsed; zone played as sliced cells with the sequencer, linear fades, at the stored rate (session 1, rate within 0.2 %) | Oracle rate 1.0 in session 3 against stored 0.25 and 0.5 (rate rule open); constant 1.54 dB level gap; `slice_flag_1` meaning; loops; auto grid. Second trigger: resolved (sounds in session 3) |
 
 ## Open items (for the next pass)
 
@@ -355,13 +394,13 @@ and group 0 with `set_group_playback_mode(inst, 0, "beat_machine")`. Readbacks: 
 2. Confirm the stored-mode to internal-id map. The export groups internal id 4
    with the sampler family and uses id 5 for the Beat Machine rule, so stored
    Beat (4 in the repo) is not the identity map. Unresolved.
-3. Oracle, Beat Machine (one corrected session): a single instrument with three zones
-   (keys 0-59 root 48, 60-84 root 72, 85-127 root 96; grids 1/16 at 120, 1/16 at 90,
-   1/8 at 100), notes sent by a MIDI file so each note-on and note-off is timed. This tests
-   the rate rule on other grids, the retrigger and hold behaviour, and the second-trigger
-   silence. Session 2 (KSP timers) did not produce them.
-4. Oracle, amplitude: the fall after about 100 ms and the 1.5 dB level gap (compare the
-   plain sampler render of the same zone, which is at the render level).
+3. Oracle, Beat Machine rate: session 3 (MIDI-timed, three zones) gave rate 1.0 where the
+   stored value is 0.25 (1/16) and 0.5 (1/8). Session 1 gave 0.25 with the same stored value.
+   Separate the variables (KSP script, note source, host tempo from the MIDI file, zone count)
+   in one run, and read the host-tempo path in the grid factor (item 6).
+4. Oracle, amplitude: the 1.54 dB level gap is constant (oracle -17.35 dB, render -15.81 dB RMS)
+   in session 3. The session 1 decay after about 100 ms did not reproduce at rate 1.0; it may
+   belong to the 0.25 case.
 5. `slice_flag_1` (`+0x99`): find the control or the writer of that byte.
 6. Grid factor constants behind the rate rule (`FUN_14087d740`), and the zone grid mode
    (Fix/Auto/none) from the zone private block.
