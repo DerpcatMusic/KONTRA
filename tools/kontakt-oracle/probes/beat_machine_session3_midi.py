@@ -32,10 +32,13 @@ def vlq(n: int) -> bytes:
 
 
 def main() -> None:
-    events = [(0, bytes([0xFF, 0x51, 0x03]) + (1000000).to_bytes(3, "big"))]
+    # Optional BPM (default 60): the tempo meta is the only thing that changes; note times stay in ms.
+    bpm = float(sys.argv[2]) if len(sys.argv) > 2 else 60.0
+    tick = lambda ms: round(ms * bpm / 60)  # 1000 ticks per quarter: one tick is 60000/(1000*bpm) ms
+    events = [(0, bytes([0xFF, 0x51, 0x03]) + round(60_000_000 / bpm).to_bytes(3, "big"))]
     for key, on, off in NOTES:
-        events.append((on, bytes([0x90, key, 100])))
-        events.append((off, bytes([0x80, key, 0])))
+        events.append((tick(on), bytes([0x90, key, 100])))
+        events.append((tick(off), bytes([0x80, key, 0])))
     events.sort(key=lambda e: e[0])  # no two events share a ms in NOTES, so the order is fixed
     track = b""
     last = 0
