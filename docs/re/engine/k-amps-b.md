@@ -66,9 +66,16 @@ The NaN steps are not a law. The cause is unconfirmed.
 
 No shared-engine change in this unit yet. The four unmodelled modules stay diagnosed as unproved. The engine work needs the process entries above read first. That is more than one session of work.
 
+Session 2026-10-22 (CPU-limited, decompile text only, no oracle or build runs):
+
+- Jump chunk entry `0x140aa33c0` splits the block at the 32-sample control boundary, calls `0x140acb910` (block-rate state update), then the kernel `0x140aac6f0` on each sub-block, then `0x140ac21f0`. Confirmed from the decompile text.
+- Kernel prologue (confirmed): the 32-sample accumulator at `param_2+0xac010` is cleared, then each of the `*(param_1+0x124)` input lanes is added scaled by `1.0 / count` (`DAT_14470bad4` = 1.0). The stage chain after this loop is not yet read.
+- The constants generator (`tools/kontakt-oracle/gen_amp_consts.py`) was run against `re-binaries/Kontakt8.exe`. It emits 2612 scalars. The output is a cache artifact (`~/.cache/kontra-amps-b/jump_consts.rs`), not committed: 165 KB of globals with no consumer yet. Commit only the constants a read stage actually uses.
+- Still unread: stage order and per-stage tables (`0x140aac6f0` after the input sum), knob laws (`0x140a9bd30`, `0x140ab7e10`), Van51, Super Fast 100 and Reverb Delight. The Jump preset in `amp/jump.rs` is still the one-trace fit, not the kernel.
+
 ## Implementation (Jump, shared amp chain)
 
-- Shared core: `crates/sampler-core/src/dsp/color/amp/chain.rs`. Input gain, one-pole pre high-pass, a 17-knot piecewise-linear shaper table over -1..1, one-pole post low-pass, and a fixed latency ring (max 256 samples). A product preamp is a `Spec` preset. The shared engine is `dsp/color/amp/`, which dispatches on `AmpModel`.
+- Shared core: `crates/sampler-core/src/dsp/color/amp/chain.rs`. Input gain, one-pole pre high-pass, a 17-knot piecewise-linear shaper table over -1..1, one-pole post low-pass, and a fixed latency ring (`MAX_DELAY` = 64 samples). A product preamp is a `Spec` preset. The shared engine is `dsp/color/amp/`, which dispatches on `AmpModel`.
 - Jump preset: `crates/sampler-core/src/dsp/color/amp/jump.rs`. Fitted by `tools/kontakt-oracle/fit_chain.py` to the Wine oracle's default-step left channel (`jump_default.f32le`, 28800 samples). Fit: pre HP 160 Hz, post LP 3 kHz, gain 2, latency 48, relative RMS 0.242. The fitted table is close to a linear inverting slope, so the nonlinearity is not captured.
 - Mapping: `crates/sampler-kontakt/src/effects/color.rs` (module 0x4d, 8 fields) to `AmpModel::Jump`. Jump's knobs are stored but not used, and a note is emitted that says so (`effects/mod.rs`, Typed core branch).
 - Tests: `chain::tests::identity_chain_is_a_null_path` (bit-tight null path), `chain::tests::delay_is_exact`, and `jump::tests::default_trace_within_fit_tolerance` (relative RMS below 0.25 against the native default trace).
