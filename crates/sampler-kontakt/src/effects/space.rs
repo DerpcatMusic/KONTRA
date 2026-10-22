@@ -78,7 +78,7 @@ pub(super) fn convolution(
     if c.decimation > 1.0 {
         notes.push((
             "IR sample-rate decimation".into(),
-            format!("{}: the wet path runs at (int)(rate/S.Rate) between a resampler pair (0x140a84580; the Kaiser law is in sampler-core space/resample.rs), but how the IR is prepared at that inner rate (the IR-rate rescale under flag +0x354) is not traced", c.decimation),
+            format!("{}: the wet path runs at (int)(rate/S.Rate) between a resampler pair (0x140a84580; the Kaiser law is in sampler-core space/resample.rs), but how the IR is prepared at that inner rate (the IR-rate rescale gated by Preserve Length, +0x354) is not traced", c.decimation),
             NotModeled,
         ));
     }

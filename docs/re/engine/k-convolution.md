@@ -11,7 +11,23 @@ Status: **partial.** The Kontakt 8 decompile is ready (`source/kontakt8/READY`);
 - **Resize `FUN_1419b3450`** (1535 bytes): a streaming loop that feeds 256-position steps into a stretch object at `+0x160` (virtual calls: process, query, flush). The object is built by `FUN_1419baf70`, whose vtable is **`CElastiqueMC`** (Zplane Élastique time-stretch). The Élastique algorithm is proprietary; it is not reproduced here and no bit-exact port is claimed.
 - **Stretch engine constants (confirmed from the binary, `re-binaries/Kontakt8.exe`)**: size range bounds `0.5`, `1.0` (identity), `1.5` (so the Rust `0.5..=1.5` gate is correct); the `FUN_1419be690` setup sizes its transform as `2^floor(log2(N+1))` times a multiplier (`1/ln 2` = 1.4426950 is the stored constant at `0x144f38918`, `2.0` at `0x144714994`). Its frame, hop and window choices come from inside Élastique and are not implemented.
 - **Parity options for IR size**: (a) license Élastique and port the engine behind a trait in `sampler-core`; (b) keep an independent stretch and gate it on a measured tolerance against Kontakt renders (same route as the Time Machine Pro WSOLA stand-in). Option (b) is the only one available without a licence; until it is measured, the `IR size` note stays `NotModeled`.
-Remaining gaps after this confirmation: resize engine (Élastique, see above), S.Rate inner-rate preparation (`+0x354`), unset crossover default (wrapper `FUN_140ab5e00`), latency reporting, true-stereo routing. Parity is not claimed for any of them.
+## Flag consumers (RE pass, 2026-10-22)
+
+Caller `FUN_1409619b0` (`0140960000.c:2600`, case 0x46) passes the record's saved bytes into the wrapper `FUN_140abd100` (`0140ab0000.c:8959`), which stores them into the preparation object before `FUN_140ab5e00`:
+
+| Saved byte | Stored at (wrapper object) | Meaning |
+|---|---|---|
+| `+0x274` flags[0] | `+0x421` | Reverse |
+| `+0x275` flags[1] | `+0x420` | Auto Gain |
+| `+0x276` flags[2] | `+0x354` (byte) | **Preserve Length** (not S.Rate; the earlier `+0x354` label was wrong) |
+| `+0x277` flags[3] | `+0x218` (byte) | Latency compensation bypass (raw) |
+| `+0x278` flags[4] | `+0x422` | Volume envelope |
+
+- Preserve Length consumer (`FUN_140ab5e00`, the `fVar2 >= 0` S.Rate branch, around `0140ab0000.c:4131`): with the S.Rate factor set, the IR rate used afterwards is `(int)(file_rate / S.Rate)` only when Preserve Length is **off**; when on, the file rate is kept. The inner (wet) rate is `(int)(host / S.Rate)` in both cases. Only the rate bookkeeping is recovered; no sample-level resize gate was found in this branch.
+- Latency compensation: `flags[3]` is inverted into `+0x219` (`0140ab0000.c:9078/9083`: `+0x219 = (+0x218 == 0)`). When `+0x219 != 0` and the block-size int (`+0x220`) is positive, the wrapper stores `(int)((host / inner) * block)` into `+0x21c` and allocates a delay object (`FUN_140961340`/`FUN_140969280`, buffer `len + 0x400` rounded to 16, zeroed). The wrapper never reads that object again, and no reader of `+0x21c` in the convolution path was found, so the host latency report is still unrecovered.
+- Caveat: the decompile dumps the wrapper's third argument as `lVar10 + 0x27c`, which is a pointer used as a float. The S.Rate factor is taken to be the float stored at `+0x350`; that identity is inferred, not verified.
+
+Remaining gaps after this confirmation: resize engine (Élastique, see above), S.Rate inner-rate preparation (`+0x350`/Preserve Length rate bookkeeping), unset crossover default (wrapper `FUN_140ab5e00`), latency reporting (no reader of `+0x21c` found), true-stereo routing. Parity is not claimed for any of them.
 
 ## Evidence used
 
