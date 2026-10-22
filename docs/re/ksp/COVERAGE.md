@@ -29,10 +29,10 @@ Binary evidence: `lea-ref` = exact string referenced by a RIP-relative `lea` in 
 | variable | 14 | 0 | 8 | 0 | 6 | 0.0% | 0.0% | 10 |
 | engine_par | 726 | 0 | 726 | 0 | 0 | 0.0% | 0.0% | 36 |
 | control_par | 94 | 0 | 73 | 21 | 0 | 0.0% | 0.0% | 32 |
-| event_par | 31 | 0 | 27 | 0 | 4 | 0.0% | 0.0% | 17 |
+| event_par | 31 | 0 | 29 | 0 | 2 | 0.0% | 0.0% | 19 |
 | zone_par | 19 | 0 | 19 | 0 | 0 | 0.0% | 0.0% | 4 |
 | loop_par | 6 | 0 | 6 | 0 | 0 | 0.0% | - | 0 |
-| **all** | **1996** | **16** | **1893** | **26** | **61** | **0.8%** | **6.2%** | **422** |
+| **all** | **1996** | **16** | **1895** | **26** | **59** | **0.8%** | **6.2%** | **424** |
 
 Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMBOLS.tsv and KSP_MODERN.md; they are excluded from the totals above.
 
@@ -117,7 +117,7 @@ Modern-extension rows (KONTRA proposals, not Kontakt symbols) are listed in SYMB
 
 ### event_par (15 symbols, 6677 instrument-uses)
 
-`$EVENT_PAR_MOD_VALUE_ID` (simplified, 1911), `$EVENT_PAR_ALLOW_GROUP` (simplified, 1552), `$EVENT_PAR_0` (simplified, 619), `$EVENT_PAR_1` (unsupported, 610), `$EVENT_PAR_SOURCE` (simplified, 369), `$EVENT_PAR_2` (unsupported, 349), `$EVENT_PAR_3` (simplified, 349), `$EVENT_PAR_TUNE` (simplified, 270), `$EVENT_PAR_NOTE` (simplified, 269), `$EVENT_PAR_VELOCITY` (simplified, 268), `$EVENT_PAR_ZONE_ID` (simplified, 103), `$EVENT_PAR_PLAY_POS` (simplified, 3)
+`$EVENT_PAR_MOD_VALUE_ID` (simplified, 1911), `$EVENT_PAR_ALLOW_GROUP` (simplified, 1552), `$EVENT_PAR_0` (simplified, 619), `$EVENT_PAR_1` (simplified, 610), `$EVENT_PAR_SOURCE` (simplified, 369), `$EVENT_PAR_2` (simplified, 349), `$EVENT_PAR_3` (simplified, 349), `$EVENT_PAR_TUNE` (simplified, 270), `$EVENT_PAR_NOTE` (simplified, 269), `$EVENT_PAR_VELOCITY` (simplified, 268), `$EVENT_PAR_ZONE_ID` (simplified, 103), `$EVENT_PAR_PLAY_POS` (simplified, 3)
 
 ### command / Keyboard Commands (7 symbols, 6373 instrument-uses)
 
