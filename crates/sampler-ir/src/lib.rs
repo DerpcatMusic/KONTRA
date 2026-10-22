@@ -2726,6 +2726,9 @@ pub enum Processor {
     FilterBank(fx::filter::Config),
     /// Kontakt Phaser filter, normalized Cutoff/Resonance.
     Phaser([f32; 2]),
+    /// Script- and modulation-addressed Phaser filter (type 13): the stored Cutoff and Resonance
+    /// are lanes, moved by the native control clock.
+    LivePhaser { knobs: [f32; 2], address: SlotAddress },
     /// Kontakt Ring Modulator: sine carrier, see `fx::ringmod`.
     RingMod(fx::ringmod::Config),
     /// Universal delay / modulation effect (delays, chorus, flanger, phaser, ...).

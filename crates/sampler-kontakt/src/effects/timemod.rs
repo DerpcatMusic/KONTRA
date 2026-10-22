@@ -1086,7 +1086,7 @@ pub(super) fn slot_phaser(b: &mut Lowering, s: &Site, notes: &mut Notes, cutoff:
         if let Some((group, generic)) = s.dynamic {
             b.out.lane_slots.push((s.fx.slot, b.out.processors.len()));
             let address = SlotAddress { group, slot: s.fx.slot as i32, generic };
-            b.out.processors.push(Processor::TimeMod(Config::phaser_filter(knobs[0], knobs[1], Some(address))));
+            b.out.processors.push(Processor::LivePhaser { knobs, address });
         } else {
             b.out.processors.push(Processor::Phaser(knobs));
         }
