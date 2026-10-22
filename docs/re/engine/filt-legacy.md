@@ -94,11 +94,18 @@ Parameters are the saved knobs (`CUTOFF`, `RESONANCE`), both 0..1 on the engine'
 
 ## Control clock (shared by the legacy cascade and stage cores)
 
-- Native control clock `0x140ae9f90` reproduced at 32-frame blocks.
+- Native control clock `0x140ae9f90` (vtable slot 23 of each class; kernel slot 33, setter slot 36).
+  A host call of N frames is processed in 32-frame segments. The countdown `obj+0x1bc` is 32 after a
+  reload and carries across host calls. A moving call (goal differs from the current knob by more than 1e-4)
+  opens with an empty segment when the countdown is 0 (a previous call ended on a boundary), then
+  one clock step per segment, and one more step after the last segment. Verified by kemu for LP1 and HP1
+  (`tools/re/legacy_lp1_process_vectors.py`, `lp1_process_vectors.json`, host calls of 17 to 64 frames).
+  Step counts per 32 frames therefore depend on the host call size: 1.25 for 128-frame calls, 1.5 for
+  64, 2.0 for 32 (kemu). Other clocked classes use the same native function; not probed per class.
 - The alternative branch (global `0x144fd4c54`) is dead: the image holds 0 there and the export
   never writes it, so only the `else` path runs. The offset slew `+0x1f8` is not referenced in
   `FUN_140ae9f90`. Both are closed (`cascade.rs` process comment).
-- Coefficient update cadence of LP1/HP1: not measurable with static impulse steps (OPEN).
+- Coefficient update cadence of LP1/HP1: measured with kemu process vectors (see above).
 
 ## Gap table (closed against the decompile, 2026-10-21)
 
@@ -109,7 +116,7 @@ and the image's read-only data read with `pefile` (the static value of a global,
 | --- | --- | --- | --- |
 | Clock alternative branch (`DAT_144fd4c54`) | ignored (else path) | the global is 0 in the image's `.rdata`; no writer in the export; `FUN_140ae9f90` runs only its `else` path | **closed**: dead branch |
 | Clock offset slew `+0x1f8` | not modelled | not referenced in `FUN_140ae9f90` | **closed** for the clock; the cascade's own slew stays unmodelled and unused |
-| LP1 / HP1 update cadence | static steps only | the clock in `FUN_140ae9f90` runs the 32-frame block | **open**: needs a dynamic-cutoff capture (no oracle step yet) |
+| LP1 / HP1 update cadence | countdown model (above) | `FUN_140ae9f90` process-level kemu vectors, real vtables | **closed** for LP1 and HP1 (2e-6 per sample); other classes unprobed |
 | LP2 .. LP6, BP2, BP4, BR4 response | Kontakt-measured to 0.1 dB above -60 dB (golden) | measurement | **closed** |
 | Stereo (legacy family) | per-channel state, no L to R coupling | measured, and the process loop of `FUN_140afef00` keeps per-channel state with shared controls | **closed** |
 | Legacy Ladder setter (17) | note `100 p + 20`, index `5 * note + 1381.88`, `g = table * pi / rate`, clamp `1.57`, `0.5`, `res * 4`, `+1e-12` | `FUN_14095d630` and `FUN_140aef200` constants read from the image | **closed**: every constant equals the engine's `note_hertz`, `legacy_ladder` and `Ladder2x` |
@@ -173,5 +180,5 @@ The earlier "knob-0 mechanism" notes above are superseded by this.
 
 1. Legacy Ladder knob 0: knob sweep and table check (above).
 2. Simple LP/HP: trace the record-to-parameter mapping from the BFilter reader, then re-measure.
-3. LP1/HP1 update cadence: a dynamic-cutoff capture.
+3. (done) LP1/HP1 update cadence: kemu process vectors, see above.
 4. Stage types 14/15/16/19: add to the oracle spec and extend the golden test.
