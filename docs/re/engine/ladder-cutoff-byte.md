@@ -2,7 +2,7 @@
 
 Status: the flag source is decoded for every Ladder record version the importer admits
 (v0x90..0x92 and v0x95). Corpus gap 6 ("filter law") was 56 instruments, 72 of the 78 Ray Line
-refusals being Ladder LP4. LP4 (HQ off and on) and BP4 (HQ off) are now Exact (see Gap table). Evidence is the Kontakt 8
+refusals being Ladder LP4. All twelve Ladder selectors are now Exact (see Gap table). Evidence is the Kontakt 8
 decompile export and the `.rdata` tables; the binary was not re-opened.
 
 ## Record bytes (reader 0x140d00db0, BParFXFilter, container offset 0xA00)
@@ -74,8 +74,8 @@ vectors (`ladder_kemu_vectors.json`) still pass.
 | LP4, HQ off | kernel + flag law | Exact: steady knobs bit-exact (84 native cells), moving cutoff 1-2 ulp (kemu, flag 0), flag 1 (kemu) |
 | LP4, HQ on | shared 2x Kaiser | Exact (kemu): steady, moving and flag-1 moving match. HQ controls sample once per 32 host frames, as the native host does (per-frame sampling only differs when a control changes inside a block) |
 | BP4, HQ off | kernel + taps 10 | Exact (kemu): steady, moving and flag-1 moving |
-| BP4, HQ on | shared 2x Kaiser | Partial: not vectored |
-| LP1..Notch except LP4 | kernel | Partial, unchanged |
+| BP4, HQ on | shared 2x Kaiser | Exact (kemu): steady, moving, flag-1 moving |
+| LP1..LP3, HP1..HP4, BP2, Peak, Notch | kernel, taps 1..3, 5..8, 9, 11, 12 | Exact (kemu, modes 0,1,2,4..8,10,11): moving cutoff flag 0 within 2e-7 of peak; flag 1 and HQ on match. Steady knobs from the static PCM grid |
 | v0x93 / v0x94 Ladder records | reader read, importer does not admit | open (no corpus record checked) |
 
 ## Open

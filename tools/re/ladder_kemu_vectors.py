@@ -38,6 +38,15 @@ NEW_CASES = [
     ("noise_hq_moving_cutoff", "noise_moving_cutoff", {"hq": 1}),
     ("noise_hq_flag1_moving_cutoff", "noise_moving_cutoff", {"hq": 1, "flag49": 1}),
 ]
+# Every other Ladder selector (saved 30..41 is mode 0..11; 3 = LP4 and 9 = BP4 are above).
+# Steady static knobs for all selectors are already in ladder_native_vectors.rs.
+SWEEP_MODES = [0, 1, 2, 4, 5, 6, 7, 8, 10, 11]
+for _m in SWEEP_MODES:
+    NEW_CASES += [
+        (f"noise_m{_m}_moving_cutoff", "noise_moving_cutoff", {"mode": _m}),
+        (f"noise_m{_m}_flag1_moving_cutoff", "noise_moving_cutoff", {"mode": _m, "flag49": 1}),
+        (f"noise_m{_m}_hq_flag1_moving_cutoff", "noise_moving_cutoff", {"mode": _m, "hq": 1, "flag49": 1}),
+    ]
 
 
 def complete(e, *args, **kwargs):

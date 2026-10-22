@@ -24,10 +24,10 @@ Both gaps are concentrated in Conflux.
 - Per-entry evidence: the one per-entry dump in scratch (`ray-unsupported.tsv`, Conflux Ray Line,
   program 1) has 78 "filter law" entries: 72 Ladder LP4, 5 Daft LP, 1 Ladder BP4.
 - So the bulk of gap 6 is Ladder. Update 2026-10-22: the flag 0x49 byte is decoded
-  (`ladder-cutoff-byte.md`); Ladder LP4 (HQ off and on) and BP4 (HQ off) are Exact from kemu
-  vectors, so their notes go away. The other Ladder rows stay Partial. The Daft rows are a
-  separate, smaller open item (see Daft): the note is the fidelity report, and the filter is
-  still mapped, so the note only goes away with Exact (needs the host caller of slot 8).
+  (`ladder-cutoff-byte.md`); all twelve Ladder selectors are Exact from kemu vectors
+  (`ladder_kemu_vectors.json`), so their notes go away. The Daft rows are a separate, smaller open
+  item (see Daft): the note is the fidelity report, and the filter is still mapped, so the note
+  only goes away with Exact (needs the host caller of slot 8).
 
 ### Ladder: what the decompile confirms
 
