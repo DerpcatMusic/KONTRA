@@ -58,3 +58,18 @@ Controls: Distortion (input gain; range limited, distortion present at the lowes
 - Locate the Chainsaw kernel. `ModulatableDSPCoreWrapper<BEffectChainsawTraits,1>` and `BEffectChainsaw` are named in `01407c0000.c`/`01407f0000.c`; the apply is not among the candidates checked so far (`140ab9ad0`, `140ab9d00`, `140ab9f40` read other records).
 - Then record the laws, add an `AmpModel::Chainsaw` core and mapping.
 - `docs/architecture-v2/DSP_COVERAGE.md` still lists these modules as "missing"; that table predates the amp cores.
+
+## Distortion oracle measurement (2026-10-22)
+
+Tooling: `eqrender.init_preset` accepts a specific `.nkp` file, and `stimrender`
+gains a `sine_mid` stimulus (0.6 s 200 Hz at 0.4). Captures under
+`Effects/Distortion/{Trans,Tube} - 100 Drive 0 Damp.nkp`, six steps each
+(drive 0/0.5/1 x damping 0/1).
+
+Findings, not yet a parity vector:
+
+- Damping writes are visible: Transistor damping 1 vs 0 changes the output by 3.7e-2.
+- Drive writes are not visible: Tube and Transistor show differences of about 1e-4..2e-3 across drive steps, so ENGINE_PAR_DRIVE writes do not reach the core in this capture.
+- Levels are not calibrated: the reference (R, no effect) peaks at 0.307 for a 0.4 input, and the L bypass step peaks at 0.39 (Transistor) or 0.71 (Tube). The stimrender output is therefore not a usable absolute vector until the sample gain of the chain is measured.
+
+Next: find why the drive write is ignored (physical slot, group or KSP parameter path), and calibrate the reference gain, before recording a Distortion vector.

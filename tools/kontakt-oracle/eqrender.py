@@ -36,6 +36,8 @@ PROBES = [30, 60, 100, 200, 500, 1000, 2000, 5000, 10000, 15000]
 
 def init_preset(rel: str) -> Path:
     d = PRESETS / rel
+    if d.is_file():  # a specific preset file, e.g. "Effects/Distortion/Tube - 100 Drive 0 Damp.nkp"
+        return d
     return (sorted(d.glob("- INIT*.nkp")) or sorted(d.glob("*.nkp")))[0]
 
 
