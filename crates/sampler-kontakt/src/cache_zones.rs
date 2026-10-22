@@ -150,6 +150,7 @@ pub(crate) fn encode(
         match z.velocity {
             ir::VelocityResponse::None => w.u8(0),
             ir::VelocityResponse::Linear => w.u8(1),
+            ir::VelocityResponse::VolumeTable => w.u8(3),
             ir::VelocityResponse::Power(v) => {
                 w.u8(2);
                 w.f64(v);
@@ -271,6 +272,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<(Vec<ir::Zone>, Vec<ir::kontakt::Zo
             0 => ir::VelocityResponse::None,
             1 => ir::VelocityResponse::Linear,
             2 => ir::VelocityResponse::Power(r.f64()?),
+            3 => ir::VelocityResponse::VolumeTable,
             _ => return None,
         };
         let start = r.u64()?;
@@ -448,7 +450,9 @@ mod tests {
         a.playback.reverse = true;
         a.playback.start_range = 7;
         a.playback.loop_control_crossfade = Some(ir::Span::Frames(32));
-        let zones = [a, ir::Zone::new(ir::AssetRef(1))];
+        let mut table = ir::Zone::new(ir::AssetRef(2));
+        table.velocity = ir::VelocityResponse::VolumeTable;
+        let zones = [a, ir::Zone::new(ir::AssetRef(1)), table];
         let mut bytes = Vec::new();
         encode(&zones, &[], &mut bytes).unwrap();
         assert_eq!(decode(&bytes).unwrap().0, zones);

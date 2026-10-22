@@ -69,7 +69,7 @@ pub enum Legacy {
 impl Legacy {
     fn retains_raw_cutoff(self) -> bool {
         matches!(self, Self::Lp1 | Self::Hp1 | Self::Bp2 | Self::Lp2 | Self::Hp2
-            | Self::Lp4 | Self::Hp4 | Self::Bp4 | Self::Br4 | Self::Lp6)
+            | Self::Lp4 | Self::Hp4 | Self::Bp4 | Self::Br4 | Self::Lp6 | Self::VowelA | Self::VowelB)
     }
 
     pub fn from_saved(id: i32) -> Option<Self> {
@@ -113,7 +113,7 @@ enum SectionClass {
 impl SectionClass {
     fn retains_raw_cutoff(self) -> bool {
         matches!(self, Self::Lp1 | Self::Hp1 | Self::Bp2 | Self::Lp2 | Self::Hp2
-            | Self::Lp4 | Self::Hp4 | Self::Bp4 | Self::Br4 | Self::Lp6)
+            | Self::Lp4 | Self::Hp4 | Self::Bp4 | Self::Br4 | Self::Lp6 | Self::VowelA | Self::VowelB)
     }
 }
 
@@ -1749,10 +1749,13 @@ impl Cascade {
     /// modulation).
     ///
     /// The control clock (`0x140ae9f90`, types 2..=17): the first call snaps to the target;
-    /// after every 32-frame chunk the cutoff moves toward it by at most
+    /// while the knobs differ from their goals, each 32-frame segment is followed by one step, and
+    /// the cutoff moves toward its goal by at most
     /// `clamp(1 / (31 r + 4), 1/35, 1/4)` (`r` the resonance at the call's start; downward
     /// moves snap while modulated) and the resonance by `0.015` of the distance when that is
-    /// over `1e-4`. Versatile's clock (`0x140aea690`) moves both by `0.015`.
+    /// over `1e-4`. The segment countdown carries across host calls (see `process`; kemu for LP1 and
+    /// HP1 with mixed host sizes, Vowel A/B, and Pro-53 with 64-frame calls).
+    /// Versatile's clock (`0x140aea690`) moves both by `0.015` after each 32-frame chunk.
     // ponytail: "modulated" is a nonzero cutoff delta, not the native's modulation-buffer
     // pointer. The clock's alternative branch is dead: `DAT_144fd4c54` is 0 in the image's
     // .rdata and never written in the decompile, so FUN_140ae9f90 runs its `else` path only.
@@ -1788,10 +1791,24 @@ impl Cascade {
         let started = cells[CLOCK + 1][0] != 0.0;
         let mut current = if started { cells[CLOCK].map(|v| v as f32) } else { target(0) };
         let step = (1.0 / (31.0 * current[1] + 4.0)).clamp(0.028_571_429, 0.25);
+        // Every class but Versatile (which has its own clock) runs the wrapper's 32-frame countdown
+        // (`0x1bc`), which carries across host calls. A moving call first takes the frames left in
+        // the open segment, then steps the clock once per segment it closes, including the empty
+        // segment that opens a call starting on a boundary. A static call runs in one piece.
+        let versatile = matches!(class, ClockedClass::Versatile(_));
+        let mut countdown = if started && !versatile { cells[CLOCK + 1][1] as usize } else { 0 };
         let mut position = 0;
         while position < len {
             let goal = target(position);
-            let frames = position..position + QUANTUM.min(len - position);
+            let moving = (goal[0] - current[0]).abs() > 1e-4 || (goal[1] - current[1]).abs() > 1e-4;
+            let n = if versatile {
+                QUANTUM.min(len - position)
+            } else if moving {
+                countdown.min(len - position)
+            } else {
+                len - position
+            };
+            let frames = position..position + n;
             match class.law(self.rate, cells, current) {
                 Law::Sections(d) => {
                     for ch in 0..2 {
@@ -1829,10 +1846,19 @@ impl Cascade {
                 }
             }
             position = frames.end;
-            current = class.clock(current, goal, step, modulation[0] != 0.0);
+            if versatile {
+                current = class.clock(current, goal, step, modulation[0] != 0.0);
+            } else if moving {
+                countdown -= n;
+                // Native reloads the countdown only while frames remain (`iVar14 > 0`).
+                if countdown == 0 && position < len {
+                    countdown = QUANTUM;
+                }
+                current = class.clock(current, goal, step, modulation[0] != 0.0);
+            }
         }
         cells[CLOCK] = current.map(f64::from);
-        cells[CLOCK + 1][0] = 1.0;
+        cells[CLOCK + 1] = [1.0, countdown as f64];
         !cells[..KNOBS].iter().flatten().all(|v| v.is_finite())
     }
 
@@ -1974,7 +2000,8 @@ mod tests {
             let class = Legacy::from_saved(id).unwrap();
             let core = PreparedCascadeCore::new(class, 48_000.);
             assert!(matches!(core, PreparedCascadeCore::Clocked(ClockedClass::Sections(_))));
-            assert_eq!(core.retains_raw_cutoff(), id <= 12);
+            // Vowel A/B keep the raw cutoff too: the native wrapper does not clamp it (kemu vectors).
+            assert_eq!(core.retains_raw_cutoff(), id <= 12 || id >= 14);
         }
         for class in [Legacy::Pro52, Legacy::Ladder, Legacy::Versatile(sampler_ir::fx::filter::Versatile {
             shift: [0.5; 2], resonance: [0.2; 2], types: [0.0; 3], wet: [1.0; 3], gain: 0.5,
@@ -2043,10 +2070,63 @@ mod tests {
         for at in [128, 192] {
             unit.process(&mut cells, &parameters, &mut block, 64, at, [0.0; 4]);
         }
-        // Four 32-frame updates: the first four native setter arguments from
-        // wrapper 0x140ae9f90 at res .25, rather than a clipped 1 -> .5 slew.
-        assert_eq!(cells[CLOCK][0], f64::from(8.15957260131836_f32));
+        // Two 64-frame wrapper calls at res .25: three clock steps per call (one per 32-frame
+        // chunk and one at the call's end), setter args 8.41489, 8.32979, 8.24468 | 8.15957,
+        // 8.07447, 7.98936 under kemu (0x140ae9f90, LP1), not a clipped 1 -> .5 slew.
+        assert_eq!(cells[CLOCK][0], f64::from(7.989_359_4_f32));
         assert_eq!(ClockedClass::Sections(SectionClass::Lp1).clock([8.5, 0.25], [0.5, 0.25], 1.0 / 11.75, true)[0], 0.5);
+    }
+
+    /// Native LP1 with a moving cutoff under kemu (`lp1_process_vectors.json`, written by
+    /// `tools/re/legacy_lp1_process_vectors.py`): each case is a list of host calls, each with a
+    /// cutoff goal and a frame count (at most the engine block).
+    #[test]
+    fn legacy_lp1_hp1_moving_cutoff_matches_native_process_vectors() {
+        let file: serde_json::Value = serde_json::from_str(include_str!("lp1_process_vectors.json")).unwrap();
+        let rate = file["rate"].as_f64().unwrap() as u32;
+        let resonance = file["resonance"].as_f64().unwrap();
+        let values = |v: &serde_json::Value| -> Vec<f64> {
+            v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+        };
+        for case in file["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let class = match case["class"].as_str().unwrap() {
+                "lp1" => Legacy::Lp1,
+                "hp1" => Legacy::Hp1,
+                other => panic!("unknown class {other}"),
+            };
+            let calls: Vec<(f64, usize)> = case["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| (c[0].as_f64().unwrap(), c[1].as_u64().unwrap() as usize))
+                .collect();
+            let stim = values(&case["stim"]);
+            let native = values(&case["out"]);
+            let unit = CascadeSettings {
+                class,
+                cutoff: Parameter::Control(ControlRange { control: crate::ControlId(1), low: 0.5, high: 8.5, ramp_frames: 0 }),
+                resonance: Parameter::Constant(resonance),
+            }
+            .compile(rate, &mut Vec::new());
+            let mut cells = vec![[0.0; 2]; CELLS];
+            let mut worst = 0f64;
+            let mut at = 0usize;
+            for (goal, frames) in calls {
+                let parameters = [ControlRamp::test_ramp(goal, goal, at as u64, 0)];
+                let mut block = [[0.0; super::super::super::BLOCK]; 2];
+                for (n, slot) in block[0][..frames].iter_mut().enumerate() {
+                    *slot = f64::from(stim[at + n] as f32);
+                }
+                unit.process(&mut cells, &parameters, &mut block, frames, at as u64, [0.0; 4]);
+                for (n, v) in block[0][..frames].iter().enumerate() {
+                    worst = worst.max((v - native[at + n]).abs());
+                }
+                at += frames;
+            }
+            assert_eq!(at, stim.len());
+            assert!(worst < 2e-6, "{name}: worst error against native {class:?} {worst:e}");
+        }
     }
 
     #[test]
@@ -2225,6 +2305,110 @@ mod tests {
             let err = ours.iter().zip(native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
             if !(err < 2e-5) {
                 failures.push(format!("{key}: err {err}: {:?} vs {:?}", &ours[..4], &native[..4]));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// One Pro-53 unit through the clocked cascade: a zero-length call snaps the clock to `start`,
+    /// then the frames run in 64-frame calls with the goals at `end`. Returns each channel's output.
+    fn pro53_render(rate: u32, start: [f64; 2], end: [f64; 2], inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        let unit = CascadeSettings {
+            class: Legacy::Pro52,
+            cutoff: Parameter::Control(ControlRange { control: crate::ControlId(0), low: 0.0, high: 1.0, ramp_frames: 0 }),
+            resonance: Parameter::Control(ControlRange { control: crate::ControlId(1), low: 0.0, high: 1.0, ramp_frames: 0 }),
+        }
+        .compile(rate, &mut Vec::new());
+        let held = |v: [f64; 2]| [ControlRamp::test_ramp(v[0], v[0], 0, 0), ControlRamp::test_ramp(v[1], v[1], 0, 0)];
+        let mut cells = vec![[0.0; 2]; CELLS];
+        let mut out = vec![Vec::new(); inputs.len()];
+        assert!(!unit.process(&mut cells, &held(start), &mut [[0.0; super::super::super::BLOCK]; 2], 0, 0, [0.0; 4]));
+        let frames = inputs[0].len();
+        for at in (0..frames).step_by(super::super::super::BLOCK) {
+            let n = (frames - at).min(super::super::super::BLOCK);
+            let mut block = [[0.0; super::super::super::BLOCK]; 2];
+            for (ch, input) in inputs.iter().enumerate().take(2) {
+                for i in 0..n {
+                    block[ch][i] = f64::from(input[at + i]);
+                }
+            }
+            assert!(!unit.process(&mut cells, &held(end), &mut block, n, at as u64, [0.0; 4]));
+            for (ch, o) in out.iter_mut().enumerate() {
+                o.extend(block[ch][..n].iter().map(|&v| v as f32));
+            }
+        }
+        out
+    }
+
+    /// Pro-53 against the native wrapper (`tools/re/cascade_kemu_vectors.py`, `pro53_kemu_vectors.json`):
+    /// static coefficients at 44.1/48/96 kHz, one 128-frame call, cutoff and resonance moving toward
+    /// new goals in 32-frame clock steps (up and down), and two channels with their own state over
+    /// shared coefficients. Error below 2e-5 of each vector's peak.
+    #[test]
+    fn pro53_native_vectors_match_static_clock_and_stereo() {
+        super::super::ladder_kernel::prepare();
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("pro53_kemu_vectors.json")).unwrap();
+        let pair = |v: &serde_json::Value| -> [f64; 2] { [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()] };
+        let mut failures = Vec::new();
+        for case in vectors["cases"].as_array().unwrap() {
+            let frames = case["frames"].as_u64().unwrap() as usize;
+            let inputs: Vec<Vec<f32>> = case["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|kind| {
+                    (0..frames)
+                        .map(|i| match kind.as_str().unwrap() {
+                            "imp" => if i == 0 { 1.0 } else { 0.0 },
+                            _ => if (i / 20) % 2 == 0 { 4.0 } else { -4.0 },
+                        })
+                        .collect()
+                })
+                .collect();
+            let ours = pro53_render(case["rate"].as_u64().unwrap() as u32, pair(&case["start"]), pair(&case["end"]), &inputs);
+            for (ch, native) in case["out"].as_array().unwrap().iter().enumerate() {
+                let native: Vec<f32> = native.as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+                let err = ours[ch].iter().zip(&native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
+                if !(err < 2e-5) {
+                    failures.push(format!("{} {} {:?} ch{ch}: err {err}", case["name"], case["rate"], case["start"]));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// 3x2 Versatile (LP type, wet 1, shift 0, gain .5) against the native cutoff, resonance and
+    /// process code under kemu (`tools/re/versatile_kemu_vectors.py`, `versatile_kemu_vectors.json`):
+    /// a cutoff sweep, and independent stage resonances at cutoffs .5 and .8. Error below 2e-5 of
+    /// each vector's peak.
+    #[test]
+    fn versatile_native_sweeps_match() {
+        super::super::ladder_kernel::prepare();
+        let vectors: serde_json::Value = serde_json::from_str(include_str!("versatile_kemu_vectors.json")).unwrap();
+        let mut failures = Vec::new();
+        for case in vectors["cases"].as_array().unwrap() {
+            let res: Vec<f32> = case["res"].as_array().unwrap().iter().map(|r| r.as_f64().unwrap() as f32).collect();
+            let v = sampler_ir::fx::filter::Versatile {
+                shift: [0.0; 2],
+                resonance: [res[1], res[2]],
+                types: [0.0; 3],
+                wet: [1.0; 3],
+                gain: 0.5,
+            };
+            let c = versatile(&v, case["cut"].as_f64().unwrap() as f32, res[0], 48_000.0);
+            let mut s = [0f32; 8];
+            s[7] = c.gain;
+            let impulse = case["input"] == "imp";
+            let ours: Vec<f32> = (0..64)
+                .map(|i| if impulse { if i == 0 { 1.0 } else { 0.0 } } else if (i / 20) % 2 == 0 { 4.0 } else { -4.0 })
+                .map(|x| c.tick(&mut s, x))
+                .collect();
+            let native: Vec<f32> = case["out"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+            let scale = native.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+            let err = ours.iter().zip(&native).map(|(a, b)| (a - b).abs() / scale).fold(0f32, f32::max);
+            if !(err < 2e-5) {
+                failures.push(format!("{} {:?} {}: err {err}", case["cut"], res, case["input"]));
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -2716,6 +2900,66 @@ fn vowel_filters_match_kontakt_measurements() {
             }
         }
     }
+}
+
+/// Native Vowel A / B with live cutoff and resonance lanes under kemu (`vowel_kemu_vectors.json`,
+/// written by `tools/re/vowel_kemu_vectors.py`): each case is a list of host calls with a cutoff
+/// goal, a resonance goal and a frame count; the clock's countdown carries across calls.
+#[test]
+fn vowel_live_lanes_match_native_process_vectors() {
+    let file: serde_json::Value = serde_json::from_str(include_str!("vowel_kemu_vectors.json")).unwrap();
+    let mut failures = Vec::new();
+    let mut worst_overall = 0f64;
+    for case in file["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let class = match case["class"].as_str().unwrap() {
+            "a" => Legacy::VowelA,
+            "b" => Legacy::VowelB,
+            other => panic!("unknown class {other}"),
+        };
+        let rate = case["rate"].as_f64().unwrap() as u32;
+        let values = |v: &serde_json::Value| -> Vec<f64> {
+            v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+        };
+        let stim = values(&case["stim"]);
+        let native = values(&case["out"]);
+        let calls: Vec<(f64, f64, usize)> = case["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (c[0].as_f64().unwrap(), c[1].as_f64().unwrap(), c[2].as_u64().unwrap() as usize))
+            .collect();
+        let knob = |id| Parameter::Control(ControlRange { control: crate::ControlId(id), low: 0.0, high: 1.0, ramp_frames: 0 });
+        let unit = CascadeSettings { class, cutoff: knob(1), resonance: knob(2) }
+        .compile(rate, &mut Vec::new());
+        let mut cells = vec![[0.0; 2]; CELLS];
+        let scale = native.iter().fold(1e-6f64, |m, v| m.max(v.abs()));
+        let mut worst = 0f64;
+        let mut at = 0usize;
+        for (cut, res, frames) in calls {
+            let parameters = [
+                ControlRamp::test_ramp(cut, cut, at as u64, 0),
+                ControlRamp::test_ramp(res, res, at as u64, 0),
+            ];
+            let mut block = [[0.0; super::super::super::BLOCK]; 2];
+            for (n, slot) in block[0][..frames].iter_mut().enumerate() {
+                *slot = f64::from(stim[at + n] as f32);
+            }
+            unit.process(&mut cells, &parameters, &mut block, frames, at as u64, [0.0; 4]);
+            for (n, v) in block[0][..frames].iter().enumerate() {
+                worst = worst.max((v - native[at + n]).abs() / scale);
+            }
+            at += frames;
+        }
+        assert_eq!(at, stim.len());
+        worst_overall = worst_overall.max(worst);
+        println!("{name}: worst error {worst:e} of peak");
+        if worst >= 1e-5 {
+            failures.push(format!("{name}: worst error {worst:e} of peak"));
+        }
+    }
+    println!("worst over all cases {worst_overall:e} of peak");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// Magnitude of a parallel section bank: `gain * sum of the sections' responses` (the sections

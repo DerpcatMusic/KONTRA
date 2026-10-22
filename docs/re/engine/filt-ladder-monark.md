@@ -16,8 +16,8 @@ Saved type ids are measured (`docs/re/kontakt-bindings/filter-type-ids.tsv`). Ma
 | Ladder HP1 / HP2 / HP3 / HP4 | 34 / 35 / 36 / 37 | same, taps 5..8 | Partial |
 | Ladder BP2 / BP4 | 38 / 39 | same, taps 9..10 | Partial |
 | Ladder Peak / Notch | 40 / 41 | same, taps 11..12 | Partial |
-| Monark LP4 / LP2 / LP1 / BP | 142 / 141 / 140 / 143 | `kontaktfx.rs` (Monark) | Exact (KFX, kemu, 48 kHz) |
-| Pro-53 | 16 | `cascade.rs` `Variant::Pro52` (Chamberlin) | Exact (kemu, 2e-5) |
+| Monark LP4 / LP2 / LP1 / BP | 142 / 141 / 140 / 143 | `kontaktfx.rs` (Monark) | LP4 variant 0 exact (kemu, mono and stereo); LP2, LP1, BP and variants 1/2 open |
+| Pro-53 | 16 | `cascade.rs` `Variant::Pro52` (Chamberlin) | parity (kemu oracle), caveats in the Pro-53 section |
 
 Ladder taps follow the saved id: `taps = id - 29` (1..=12), internal selectors 22..33 map to
 modes 0..11 (`docs/re/DSP_SYSTEM_INVENTORY.md`).
@@ -58,9 +58,30 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   init). The kernel reads it from `LadderLP4::cutoff_path`, not from the record version.
 
 ### Monark (saved 140..143)
-- Oversampling: x3 below 66 kHz, x2 below 100 kHz through the shared Kaiser stage.
-- Tables `monark.f32le` (cutoff to note 48, resonance to feedback 21, two 4032-entry tables).
-- Noise LCG per channel; stereo channel interleave unprobed (vectors are mono).
+- Oversampling: x3 below 66 kHz, x2 below 100 kHz through the shared Kaiser stage (`factor` in
+  `Monark::new`; the native split is not re-read in this pass).
+- Tables `monark.f32le` (cutoff to note 48, resonance to feedback 21, two 4032-entry tables). Checked:
+  the file matches the Kontakt 8 PE image at 0x149e6c600, 0x149e6c6c0, 0x149e6c720, 0x149e6c7e0 and
+  0x149e706e0 (mode-indexed 4 x 21 x 48 blocks).
+- Native object (decompile, PE): factory `FUN_1407c92f0` (size 0x5490) runs wrapper ctor `FUN_1407f0ed0`
+  on the object itself, so the core is at +0x210 (vtable `0x144f129a0`). Mode is set by
+  `FUN_140af0020(obj, code)` (code 36 LP1 = mode 2, 37 LP2 = mode 1, 38 LP4 = mode 0, 39 BP = mode 3), which calls
+  `FUN_140b044e0` (core+0x5098 = mode, then `FUN_140b06640`). Setter `FUN_140b05740` (index 2 is
+  `3v + 1`, index 3 is `2v - 1`), prepare `FUN_140afcc40`, tick `FUN_140b032f0` (ramp at core+0x5010),
+  process `FUN_140afd9c0`.
+- Noise LCG per channel (`MonarkChannel::lcg`). Stereo is one core with per-channel history: with
+  identical L and R inputs native channels 0 and 1 agree, and random L/R noise matches the Rust core
+  for LP4 variant 0 (vectors in `kontaktfx_stereo_vectors.json`).
+
+### Monark open items (kemu does not reproduce them)
+- Modes LP2 (141, mode 1), LP1 (140, mode 2) and BP (143, mode 3), variant 0: under kemu the first
+  impulse samples are already off (mode 2 is about 470x the stored first sample), with a 0.03 to 0.05
+  relative error of peak. The mode-indexed tables (`DAT_149e6c7e0`, `DAT_149e706e0`) match the stored file in the PE image. Tried: setType before or after the setters and prepare, and
+  the setType/setter/prepare orders. None matched. The old generator's setup for non-LP4 modes is
+  unknown. Stored mono cases for these modes are kept unchanged and are NOT claimed.
+- Variants 1 (noisy drive) and 2 (drive): kemu misses the stored cases by 1.4 to 1.6 of peak in
+  modes 0 and 2 (the other modes were not run with variants). Native variant setter not identified. Candidates tried: `FUN_140af0170` (0x44/0x45,
+  sets core+0x3c) and `FUN_140af0080` (0x4d to 0x54, `FUN_140b044f0`). None matched. Not claimed.
 
 ### Pro-53 (saved 16)
 - Setter FUN_14095d940 (confirmed): note `100 v + 20`, index `5 note + 1381.88`, table value;
@@ -71,14 +92,46 @@ drive, 2 drive. Knob order in the core: cutoff, resonance, input gain, modulatio
   the feedback NL `(a - c|s|)s`, input clamped to +-4.
 - Output selector Lp 4 pole, `Variant::Pro52`.
 
+#### Pro-53 native evidence (kemu, filt-pro53)
+
+Oracle: `tools/re/cascade_kemu_vectors.py` writes `crates/sampler-core/src/dsp/filter/pro53_kemu_vectors.json`
+(29 cases); test `pro53_native_vectors_match_static_clock_and_stereo` (2e-5 of each vector's peak).
+
+- Object: the image vtable at 0x144F0FBD0 holds the process at slot 0x108 and the setter at 0x120.
+  No instruction in the image takes its address (no LEA into that table), so the constructor was not
+  located. The generator builds the object on the same slot offsets: zeroed memory, rate setter
+  FUN_1408de8e0 (rate at +0x14, scale K / rate at +0x364, K = 6.283 at 0x144F38BDC), channel count
+  (+0x124), input and output channel pointers (+0x20, +0xA0).
+- Setter guard: the stored raw knobs (+0x1E4, +0x1E8) gate the update. Identical values are skipped;
+  any change, however small, updates the coefficients. The generator starts them at -123.
+- Stereo: the process keeps 5 floats of state per channel (+0x208 + 20 i) and shares the
+  coefficients. A two-channel object gives each channel its own run (left impulse, right square,
+  bit-equal to the mono runs). Whether Kontakt runs one two-channel object or two one-channel objects
+  is not shown.
+- Call size: 32-, 64- and 128-frame process calls are bit-identical. The process has no SSE
+  rounding path (the earlier open note for 32+ frame calls does not apply to FUN_1409099a0).
+- Sample rates: 48, 44.1 and 96 kHz static and moving. 192 kHz is untested.
+- Control clock: the wrapper FUN_140AE9F90 renders each 32-frame chunk as [clock step, setter,
+  process]. It makes one more clock step (and setter) at the end of each call, so a call of N frames
+  takes N / 32 + 1 steps. The cutoff step is `clamp(1 / (31 r + 4), 1/35, 1/4)`, taken once per call from
+  the resonance at the call start (a 512-frame sweep with rising resonance separates this from a step
+  fixed at the block start: 6.7e-5 against 0.95). The resonance moves 0.015 of its distance per step.
+  LP1 (legacy type 2) uses the same wrapper with the same event order (probe: set, process, set,
+  process, set), so `Cascade::process` now clocks before each chunk for every clocked family except
+  Versatile. The LP1 test expectation changed from the four-step value 8.15957 to the native six-step
+  value 7.98936 (two 64-frame calls).
+- Not covered: call sizes that are not a multiple of 32 (the native chunk counter persists across
+  calls; `Cascade::process` restarts chunking per call), the host's real call size, and
+  Versatile's clock (its own function, 0x140AEA690; kept in the old order, checked in filt-multi-versatile).
+
 ## Evidence
 
 - Ladder core checks: `NATIVE_LADDER_EVIDENCE.md`, `ladder_native_vectors.rs`,
   `ladder_native_hq_vectors.rs` (static HQ-off composition; PCM over 564 original captures,
   HQ on and off, 44.1/48/96 kHz, gain -1/0/+1; HQ-on captures are not reproduced).
-- Monark and KONTAKTFX: bit-exact vs the native classes under `kemu` (per
+- Monark LP4 variant 0 and KONTAKTFX: bit-exact vs the native classes under `kemu` (per
   `sampler-kontakt/src/effects/filter.rs` KFX note).
-- Pro-53 and Legacy Ladder: `FUN_14095d940` / `FUN_1409099a0` checked under `kemu` to 2e-5.
+- Pro-53: `FUN_14095d940` / `FUN_1409099a0` / `FUN_140ae9f90` under `kemu` at 2e-5 (`pro53_kemu_vectors.json`, see the Pro-53 section). The other clocked legacy types (LP1 probed, Legacy Ladder, Moog and Rez) now share the wrapper clock order; their moving-control output is not vectored.
 
 ## Gap table (after the decompile)
 
@@ -91,12 +144,12 @@ Rows marked confirmed were checked against the decompile and the binary's consta
 | Ladder HQ (2x) | shared Kaiser 2x, flag > 0.5 | confirmed (FUN_140b06180 factor, FUN_140ae22e0 16-tap); HQ-on moving-control cadence still unproved |
 | Ladder flag 0x49 (alt cutoff) | version proxy `0x90..=0x92` | **open**: mechanism confirmed, source byte not decoded for v0x95; needs a native capture with the byte set |
 | Ladder moving controls | 32-frame ramp, 2 ms | partly confirmed (FUN_140b036a0, FUN_140b06180 ramp count); HQ cadence open |
-| Monark | Exact (kemu runs native code) | not re-read in the decompile this pass; stereo interleave unprobed |
-| Pro-53 | Exact (constants confirmed) | confirmed; per-stage feedback constants (0.13335, 0.0166875) verified by vectors, not re-read |
+| Monark LP4 variant 0 | Exact (kemu oracle, mono 48 kHz and stereo 44.1/48/96 kHz, moving knobs) | Setter, prepare, tick, process and the mode entry confirmed in the decompile; stereo layout as in Dual SKF. Open: LP2/LP1/BP and variants 1/2 (see Monark open items). |
+| Pro-53 | parity (kemu oracle) | constants and stage code confirmed; static 44.1/48/96 kHz, moving clock (up and down), stereo and call size vectored; constructor not located; non-multiple-of-32 calls and 192 kHz open (see Pro-53 section) |
 
 
 ## Next steps
 
 1. Done: the flag is explicit (`cutoff_path`). Confirm flag 1 with a native capture (open in
    `ladder-cutoff-byte.md`).
-2. Re-read Monark's setter and process (FUN_140b05740 / FUN_140afd9c0) against the decompile.
+2. Monark open items above: find the old generator setup for modes 1-3 and the native variant setter, then add their vectors.

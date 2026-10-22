@@ -768,6 +768,8 @@ pub enum VelocityCurve {
     Linear,
     /// Positive finite exponent of normalized velocity. Applied once per voice.
     Power(f64),
+    /// Kontakt's velocity-to-volume response at the default route intensity; see `VOLUME_TABLE_DB`.
+    VolumeTable,
 }
 
 impl PreparedRegion {
@@ -789,8 +791,47 @@ impl VelocityCurve {
             Self::Constant => 1.0,
             Self::Linear => velocity as f32,
             Self::Power(exponent) => velocity.powf(exponent) as f32,
+            Self::VolumeTable => volume_table_amplitude(velocity),
         }
     }
+}
+
+/// Kontakt's velocity-to-volume response at the default route intensity (50 of 127), as relative dB
+/// at MIDI velocities 1, 8, 16, 32, 48, 64, 80, 100, 110 and 127. Calibration of 2026-10-07
+/// (`docs/architecture-v2/KONTAKT_DSP_LAWS.md`). Oracle session B (Beat Machine route, velocities
+/// 32, 64, 100 and 127) reproduces the peak gains of these points within 0.02 dB. Other route
+/// intensities are not covered by the table.
+const VOLUME_TABLE_DB: [(f64, f64); 10] = [
+    (1., -12.9),
+    (8., -12.0),
+    (16., -11.0),
+    (32., -9.1),
+    (48., -7.4),
+    (64., -5.7),
+    (80., -4.1),
+    (100., -2.3),
+    (110., -1.42),
+    (127., 0.),
+];
+
+/// Amplitude for a normalized velocity under `VOLUME_TABLE_DB`: linear in dB between table points,
+/// flat below velocity 1, silent at velocity 0.
+pub(crate) fn volume_table_amplitude(velocity: f64) -> f32 {
+    let v = (velocity * 127.0).clamp(0.0, 127.0);
+    if v <= 0.0 {
+        return 0.0;
+    }
+    let db = if v <= VOLUME_TABLE_DB[0].0 {
+        VOLUME_TABLE_DB[0].1
+    } else {
+        let i = VOLUME_TABLE_DB
+            .windows(2)
+            .position(|w| v <= w[1].0)
+            .unwrap_or(VOLUME_TABLE_DB.len() - 2);
+        let ((v0, d0), (v1, d1)) = (VOLUME_TABLE_DB[i], VOLUME_TABLE_DB[i + 1]);
+        d0 + (d1 - d0) * (v - v0) / (v1 - v0)
+    };
+    10f64.powf(db / 20.) as f32
 }
 
 /// Linear zone crossfades inside a region's key and velocity ranges (see
@@ -2841,6 +2882,8 @@ impl Prepared {
                     VelocityCurve::Constant => 0.,
                     VelocityCurve::Linear => 1.,
                     VelocityCurve::Power(p) => p,
+                    // Not an exponent: the table law (see VOLUME_TABLE_DB).
+                    VelocityCurve::VolumeTable => -1.,
                 },
             )))
             .chain(
@@ -3136,5 +3179,31 @@ mod shared_program_code_tests {
             .with_programs(vec![Program::new(vec![Instruction::End]).unwrap()], None)
             .unwrap();
         assert!(!plain.external_programs);
+    }
+}
+
+#[cfg(test)]
+mod volume_table_tests {
+    use super::*;
+
+    /// Relative peak gains of the Beat Machine velocity route in oracle session B (1/16 Beat zone,
+    /// velocities 32, 64, 100 and 127): -9.12, -5.71, -2.30 and 0 dB relative to 127.
+    #[test]
+    fn default_route_table_matches_the_oracle_beat_zone_gains() {
+        let at = |v: f64| VelocityCurve::VolumeTable.amplitude(v / 127.0) as f64;
+        for (v, oracle_db) in [(32.0, -9.11), (64.0, -5.71), (100.0, -2.30), (127.0, 0.0)] {
+            let rel = 20.0 * (at(v) / at(127.0)).log10();
+            assert!((rel - oracle_db).abs() < 0.15, "velocity {v}: {rel:.2} dB, oracle {oracle_db}");
+        }
+    }
+
+    #[test]
+    fn table_is_silent_at_zero_monotonic_and_unity_at_full_velocity() {
+        let at = |v: f64| VelocityCurve::VolumeTable.amplitude(v / 127.0);
+        assert_eq!(at(0.0), 0.0);
+        assert!((at(127.0) - 1.0).abs() < 1e-6);
+        for v in 1..=127 {
+            assert!(at(f64::from(v)) >= at(f64::from(v) - 1.0), "dips at velocity {v}");
+        }
     }
 }

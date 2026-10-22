@@ -24,7 +24,7 @@ Companion families that share the same cores: Monark 140..=143 and Simple LP/HP 
 | IR configuration | `crates/sampler-ir/src/fx/filter.rs` (`Variant::Versatile`, `KontaktFx::DualSkf`) | Config types only; no DSP. |
 | Range validation | `crates/sampler-ir/src/validate.rs` (~L373) | Versatile knobs must lie in 0..=1. |
 | Versatile core | `crates/sampler-core/src/dsp/filter/cascade.rs` (`versatile`, ~L554; `ClockedClass::clock`, ~L1967) | Chamberlin stages, shared with Pro-53. |
-| Dual SKF core | `crates/sampler-core/src/dsp/filter/kontaktfx.rs` (`Skf`, ~L526) | Mono core; stereo runs one core per channel. |
+| Dual SKF core | `crates/sampler-core/src/dsp/filter/kontaktfx.rs` (`Skf`, ~L526) | One core for both channels: per-channel filter and oversampler state, shared controls (native layout, Module 2). |
 | Oversampling | `crates/sampler-core/src/dsp/kaiser.rs` (shared `Kaiser` stage) | Dual SKF and Monark use it below 66 kHz. |
 
 ## Decompile confirmation (Kontakt 8 export)
@@ -43,7 +43,7 @@ Functions read in `source/kontakt8/` (headers `// ==== <addr> <name>`):
 
 Not resolved in this pass:
 - The record-to-slot mapping for Dual SKF (row 5). The reader `FUN_140d00db0` is a tag-based chunk
-  reader for all BFilter records; the type 130 field order is not isolated.
+  reader for all BFilter records and reads no 130 knobs (Module 2).
 - The Versatile stage 1/2 limit targets (row 2).
 - The SSE path for 32+ frame calls (row 3): not located as a separate function in this pass.
 
@@ -88,18 +88,45 @@ the zero placeholders in `VERSATILE_UNSET` are replaced in `map`.
 **Parameters (native order).** HP cutoff, HP resonance, LP cutoff, LP resonance, drive
 (`KontaktFx::DualSkf`, `ir/fx/filter.rs`).
 
-**Mapping from the saved record.** The top-level `cutoff` feeds the LP cutoff slot, and the
-top-level `resonance` feeds the HP cutoff slot. The reader stores drive as `2v - 1` in the
-record, so the mapping uses `(v + 1) / 2`. Those top-level fields are read from the BFilter reader,
-not from a recorded vector, so the field-to-slot assignment is **unconfirmed**. See the gap table.
+**Mapping from the saved record.** The extension reads five knobs after three kind words (type 130
+layout in `effects/mod.rs`). It maps the first record value to the LP cutoff slot and the second to
+the HP cutoff slot (the `cutoff`/`resonance` names), and the drive is `(v + 1) / 2`. The field-to-slot
+assignment is **unconfirmed**:
+- The generic BFilter reader `FUN_140d00db0` reads no Dual SKF knobs for type 130. Its gates for
+  cutoff, resonance and the 0x3f/0x48 fields exclude 0x82, and it returns at `2 < type - 0x5f`.
+- The BFilterDualSKF vtable slots 7, 8, 12 to 14, 23 and others are forwarders (`rcx += 0x210`, then a
+  jump through the wrapper's vtable slot of the same number). Slots 0, 3 and 4 are the destructor, a
+  copy and a type compare. The typed knob reader for 130 was not located in the export.
+- Native knob order is fixed by the core: index 0 is the stage 0 cutoff (the HP output), 1 its
+  resonance, 2 the stage 1 cutoff (LP), 3 its resonance, 4 the drive (`FUN_140b000c0`, `FUN_140b03630`).
+  The Rust mapping and the native order agree on what each index does; what is open is which record
+  value feeds which index.
+- The Rust `KontaktFilter::new` modulation pair `[2, 0]` moves knob 2 (LP cutoff) with cutoff
+  modulation and knob 0 (HP cutoff) with resonance modulation. This follows the same unconfirmed mapping.
 
 **Core.** One `Skf` recurrence holds both sections (HP and LP) and their resonance feedback.
 Native setter 0x140b059c0, prepare 0x140afd350, process 0x140b000c0, cutoff law 0x140b06580 (per
 the file header). Below 66 kHz the core runs ×2 through the shared Kaiser stage, then decimates.
 
-**Evidence.** `kontaktfx_vectors.json` has three `DualSKF` cases at 48 kHz. The test
-`kontaktfx::tests::matches_the_native_classes` checks them. It passes. The header records
-bit-exact agreement with the native class at 48 kHz.
+**Native layout (this unit, Kontakt 8 decompile and PE).** The object is a BFilter of 0x51A0 bytes,
+built by factory `FUN_1407c95c0`: BFilter base `FUN_140a856c0`, then wrapper ctor `FUN_140ae5f40` at
++0x210, so the core is at +0x420. Prepare `FUN_140afd350(core, rate, quantum)` sets the oversampling
+factor (2 below 66 kHz, else 1), the Kaiser stages, the ramp count (2 ms) and the initial controls.
+Process `FUN_140b000c0(core, in[], out[], n)` takes planar channel pointers and the channel count from
+core+0xc. Per channel it runs upsample, the two sections, downsample. Each channel has its own
+history (0x18 bytes at core+0x20+0x18ch, and one Kaiser state per channel). The control ramp is copied
+per channel and only the last channel commits it, so both channels see the same control trajectory.
+
+**Evidence.** kemu vectors (`tools/re/kontaktfx_kemu_vectors.py`, Kontakt 8 PE, core-level calls:
+setter, prepare, tick, process):
+- `kontaktfx_vectors.json`, DualSKF cases at 48 kHz mono (impulse and square, 3 knob sets). The
+  regenerated values match the previous file to 5e-9 of peak.
+- `kontaktfx_stereo_vectors.json`: independent L/R noise, 256 frames, at 44.1, 48 and 96 kHz, steady
+  and moving knobs (one knob set per 32-frame block). The native channels 0 and 1 agree when the input
+  is identical in both channels. Writing a changed knob only (as the Rust test does) gives the same
+  output as writing all knobs at every block (checked: max difference 0).
+- The test `dual_skf_stereo_matches_the_native_vectors` checks the stereo vectors at 1e-6 of peak, and
+  `kontaktfx::tests::matches_the_native_classes` checks the mono cases. Both pass.
 
 ## How multi-filters compose from the shared cores
 
@@ -130,37 +157,50 @@ Compositions:
 
 | # | Item | Engine covers it now | Missing or unproved | Status | Needed to close |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Versatile law at other cutoffs | Cutoff setter, resonance law, normaliser and process confirmed against the decompile | Vectors use cutoff 0.5 only; no sweep | Partial | Wine-oracle sweep over cutoff |
-| 2 | Versatile shift, morph, wet and gain sweeps | Full law in code | No sweep vectors; the mixed case uses one shift and one morph set | Partial | Recorded or native vectors across the knob ranges |
-| 3 | Versatile SSE rounding path (≥32-frame calls) | Scalar order matches the scalar native path | The SSE path differs in rounding, as for Pro-53 | Missing | A native vector captured with 32+ frame calls |
-| 4 | Versatile clock constant (0.015) | Clock `0x140aea690` read; ramp move per tick | Constant is a global in the export, not resolved | Partial | Resolve `DAT_144f38664` from the binary's data section |
-| 5 | Dual SKF field-to-slot mapping | Mapping in `effects/filter.rs` | Top-level `cutoff`/`resonance` → LP/HP slots is from the reader only | Unconfirmed | Decompile of the BFilter reader for type 130, or a Kontakt saved-state round trip |
-| 6 | Dual SKF sample rates other than 48 kHz | Core handles any rate; ×2 Kaiser below 66 kHz | Vectors only at 48 kHz | Partial | Native captures at 44.1, 96 and 192 kHz |
-| 7 | Dual SKF stereo interleave | One core per channel with shared controls | Native channel interleave unprobed; vectors are mono | Missing | Stereo native capture |
+| 1 | Versatile law at other cutoffs | Cutoff setter `FUN_14095db50`, stage 1/2 resonance setters and the scalar process run natively under kemu | Native sweep cutoff 0.1 to 0.9 at resonance 0.5, LP type, wet 1, shift 0, gain 0.5 (`versatile_kemu_vectors.json`); VERS-lp keys reproduce exactly | Closed for these settings | None for these settings; other types and resonances stay covered by the code |
+| 2 | Versatile shift, morph, wet and gain sweeps | Full law in code | Native setters for shift, morph, wet and gain not located; the harness writes LP weights, wet 1, gain 0.5 and shift 0 itself | Open | Locate the setters that write the stage weights (+0x3e0..+0x3f4), wet (+0x404, +0x408, +0x40c), gain (+0x420) and shift (+0x428, +0x42c), then drive them natively |
+| 3 | Versatile SSE rounding path (≥32-frame calls) | Dispatcher `FUN_140aec840` uses SSE branch `FUN_140aee4b0` when `DAT_14a5ed92c` is set and the call has 32+ frames (flag is 0 in the image, set at run time) | Under kemu, one channel at 64 frames equals the scalar path; stereo and hardware rounding unchecked | Partial | Stereo native vector; a hardware capture if one exists |
+| 4 | Versatile clock constant (0.015) | Constant read from the image: `DAT_144f38664` = 0.015; clock is virtual slot 0xb8 (`FUN_140aea690`) | Moving-control vectors for the clock not run; the Rust clock order (process then clock) is unverified for Versatile | Constant closed; moving open | Run `FUN_140aea690` natively with moving goals and compare with `ClockedClass::clock` for Versatile |
+| 5 | Dual SKF field-to-slot mapping | Mapping in `effects/filter.rs`; native knob order fixed | Which record value feeds which knob: the generic reader gives no 130 knobs and the typed reader was not located | Unconfirmed | Decompile of the typed 130 knob reader (stream order and store offsets into setParam), or a Kontakt saved-state round trip. The `[2, 0]` modulation pair depends on it |
+| 6 | Dual SKF sample rates other than 48 kHz | Core handles any rate; ×2 Kaiser below 66 kHz (prepare `FUN_140afd350`) | 44.1 and 96 kHz kemu vectors, mono and stereo, pass; 192 kHz not vectored (same path as 96 kHz) | Closed at 44.1, 48, 96 kHz | 192 kHz kemu vector if a 192 kHz path is ever used |
+| 7 | Dual SKF stereo interleave | One core: per-channel filter and Kaiser state, shared controls | Native layout confirmed in `FUN_140b000c0` (planar, per channel); kemu stereo vectors bit-match with moving knobs | Closed (kemu oracle) | Stereo capture from the real host is not needed for the core |
 | 8 | Dual SKF in the KSP parity ledger | Engine is implemented | `sampler-ksp` ledger still lists `$FILTER_TYPE_DUAL_SKF` as Approximate | Doc drift | Separate KSP-side change, out of this unit |
 | 10 | Explicit-stage and Soft move (this PR) | Bit-identical (stage vectors 2e-5 tolerance and the filter suite, 63/63) | Done |
 | 9 | Stale status docs | `docs/architecture-v2/DSP_COVERAGE.md` carries a stale-status banner | `docs/FEATURES.md` rows 113–115 still say ✗ for these types; the file is pinned to `d36380b` (2026-10-03) | Doc drift | Leave the pinned audit as-is; the next audit refresh should update it |
+
+## Validation of the generator (this pass)
+
+`tools/re/kontaktfx_kemu_vectors.py` reproduces the stored 48 kHz mono cases:
+- DualSKF: all three knob sets, impulse and square, within 5e-9 of peak.
+- BlueMonark: mode 0 variant 0 (both knob sets) within 1e-9 of peak. Modes 1, 2 and 3 (variant 0) differ
+  by up to 0.05 of peak, and variants 1 and 2 (modes 0 and 2) differ by 1.4 to 1.6 of peak. The mode and variant
+  setup entry points were checked (setType before or after setters and prepare, and the mode table
+  `DAT_144fcf368` and the Monark tables `monark.f32le` were compared with the PE image and match). These
+  cases are not reproduced under kemu and are carried over unchanged. Monark is the next unit to
+  investigate (`filt-ladder-monark.md`).
 
 ## Changes in this unit
 
 - `effects/filter.rs`: 3x2 Versatile fidelity is now `Partial` with a caveat that names the
   vector coverage (row 1–4). It was `Exact`, which overclaimed the vectors. The misplaced doc
   comment above `VERSATILE_UNSET` moved to `map`.
-- No new DSP. No new tests: the existing `stage_classes_match_the_native_models`,
+- No new DSP. New: the kemu generator, the stereo vectors and their test. Rows 5 to 7 updated.
+- Earlier pass: no new tests: the existing `stage_classes_match_the_native_models`,
   `matches_the_native_classes` and `effects::filter` tests cover the behaviour, and they pass
   (`build-slot cargo test -p sampler-core --lib filter -j 4`: 62 passed; `-p sampler-kontakt --lib
   effects::filter`: 4 passed).
 
 ## Confidence
 
-- Versatile: **medium**. Laws and topology match the recorded vectors at one cutoff. Other settings
-  are the code's own statement.
-- Dual SKF: **medium-high** at 48 kHz, mono. The field-to-slot mapping is **low** until row 5 is
-  confirmed.
+- Versatile: **medium**. Laws and topology match the recorded vectors and the native cutoff and
+  resonance sweeps (LP type, wet 1, shift 0, gain 0.5). Morph, wet, gain and shift settings are the
+  code's own statement until their native setters are driven.
+- Dual SKF core: **high** at 44.1, 48 and 96 kHz, mono and stereo, kemu oracle. The field-to-slot
+  mapping is **low** until row 5 is confirmed.
 
 ## Waiting on
 
-- Rows 2, 4 and 5 need a native reading of the stage 1/2 limit targets, the clock constant, and the Dual SKF reader branch for type 130. The Wine-oracle sweep (row 1) is still needed for cutoffs other than 0.5.
+- Row 2: native setters for the morph, wet, gain and shift knobs. Row 3: stereo native vector and hardware check of the SSE branch. Row 4: moving-control vectors for `FUN_140aea690`. Row 5 (Dual SKF reader for type 130) is outside this unit.
 
 ## Constant resolution (static PE read, this pass)
 
@@ -169,5 +209,19 @@ Global constants were read from the Kontakt 8 image (`re-binaries/Kontakt8.exe`,
 0.06 / 0.0075, sample constants 440, 1/12, 69, 20, 80, 2pi, 2.0, 1.3075, 0.293, 0.7352, 1.4, 0.05,
 3.0, 6, 5, 0.66, 0.65, 1.3. Each matches `chamberlin.rs`, `shaper.rs` and `cascade.rs`.
 
-Still open: stage 1/2 limit targets (the parameter-store object from `FUN_140649e30`), the Dual SKF
-record-to-slot map (Wine probe blocked, see PARITY_MATRIX), and all sweeps.
+Stage 1/2 limit targets are not from the parameter store on this path: the native resonance setters
+(`FUN_1409663f0`, `FUN_1409665c0`) write them with the same law as stage 0 (checked at resonance
+0.2, 0.6 and 0.9). Still open: the Dual SKF record-to-slot map (Wine probe blocked, see
+PARITY_MATRIX), and the Versatile morph, wet, gain and shift setters.
+
+## Native sweeps (filt-pro53-versatile)
+
+- `tools/re/versatile_kemu_vectors.py` drives `FUN_14095db50` (which calls `FUN_140966230` and the
+  normaliser), the stage 1 and 2 resonance setters and the scalar process `FUN_140aef6e0` under kemu.
+  It reproduces the existing VERS-lp keys (`cascade_stage_vectors.json`) exactly and writes
+  `versatile_kemu_vectors.json` (24 cases).
+- Test `versatile_native_sweeps_match` (`cascade.rs`) checks the sweeps at 2e-5 of each vector's peak.
+- Stage fields read from the process code: stage 0 g +0x3c8, damping +0x3d4, weights +0x3e0/+0x3e4/+0x3e8,
+  wet +0x404; stage 1 g +0x3cc, damping +0x3d8, weights +0x3ec/+0x3f0/+0x3f4, wet +0x408; stage 2 g +0x3d0,
+  damping +0x3dc, weights +0x3f8/+0x3fc/+0x400, wet +0x40c. Output gain target +0x420 times normaliser
+  +0x41c, smoothed with the rate constant +0x470. Notes +0x424; shift raw +0x428 and +0x42c.

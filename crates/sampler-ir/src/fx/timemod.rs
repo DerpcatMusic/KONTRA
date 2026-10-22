@@ -421,6 +421,9 @@ pub struct Line {
     /// `[[1,1],[0,0]]` style rows feed one side, e.g. ping-pong).
     pub input: [[f64; 2]; 2],
     pub feedback: Feedback,
+    /// Amount `a` (0..=1) of the in-loop saturator on the line input (Replika SATURATION):
+    /// `(1 - a) x input + a x saturate(input)`, 0 = off. Generic lines only; natives ignore it.
+    pub saturation: f32,
     /// Ring capacity; tempo-synced and modulated reads clamp to it.
     pub max_ms: f64,
     /// Right-channel delay times are the left ones times this (1 = equal).
@@ -443,6 +446,7 @@ impl Line {
             interpolation: Interpolation::Linear,
             input: Self::IDENTITY_INPUT,
             feedback: Feedback::OFF,
+            saturation: 0.,
             max_ms,
             right_scale: 1.,
             native: Native::None,
@@ -807,6 +811,9 @@ impl Config {
             }
             if !(l.max_ms.is_finite() && l.max_ms >= 0. && l.max_ms <= 20_000.) {
                 return Err("max_ms");
+            }
+            if !(l.saturation.is_finite() && (0. ..=1.).contains(&l.saturation)) {
+                return Err("saturation");
             }
             if !(0.1..=10.).contains(&l.right_scale) {
                 return Err("right_scale");

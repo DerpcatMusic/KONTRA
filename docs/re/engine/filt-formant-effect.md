@@ -71,11 +71,28 @@ when it lands.
 
 ### Vowel A / Vowel B (types 14 and 15)
 
-- Parameters: stored cutoff/resonance; the Kontakt vowel-pair morph is in the cascade core.
-- Law: `Topology::Cascade` with `Variant::VowelA` / `VowelB`, four band-pass stages (`variant(Bp, 4, ...)`).
-  `filter.rs` records the core as matching the native code to 2e-5 (scalar order). That claim is cited to the
-  `kemu` tool and was not re-run in this unit.
-- Gap: no live control lanes for vowel morph. No recorded vector in `docs/re/` for these two types was found.
+- Parameters: Cutoff and Resonance only. The setters `FUN_14095dd00` (A) and `FUN_14095e250` (B) take
+  `(this, cutoff, resonance)`, and the process `FUN_140914a20` has no morph input, so there is no morph lane.
+- Law: `Topology::Cascade` with `Variant::VowelA` / `VowelB`; core `SectionClass::VowelA/VowelB` in `cascade.rs`:
+  two parallel warped second-order sections summed (prepare on the 4-pole prototypes, scalar process).
+- Live lanes, the clock of the shared wrapper `0x140ae9f90` (vtable slot 23): a host call writes its goals at
+  `obj+0x1dc` (cutoff) and `obj+0x1e0` (resonance); the 32-frame countdown (`obj+0x1bc`) carries across calls. A moving
+  call steps the cutoff once per segment, including the empty segment that opens a call starting on a boundary, and
+  moves the resonance by 0.015 of the distance over 1e-4. The raw cutoff is kept unclamped; the setter clamps.
+- Evidence: `tools/re/vowel_kemu_vectors.py` (kemu, real vtables, `KONTAKT8_EXE OUT_JSON`) writes
+  `crates/sampler-core/src/dsp/filter/vowel_kemu_vectors.json`: 10 host-call schedules for A and B at 44.1, 48 and
+  96 kHz (static, cutoff and resonance sweeps, mixed call sizes, over-range goals). Test
+  `vowel_live_lanes_match_native_process_vectors`: worst case 6.5e-6 of peak (tolerance 1e-5). Static output is
+  unchanged: 2e-6 (A) and 6e-6 (B) of peak against the same native run. The Kontakt 8 static measurement
+  (`vowel_filters_match_kontakt_measurements`, 0.1 dB) still passes.
+- Not verified: (1) host start-up order and how the host feeds live lanes (the vectors write goals per call and set
+  the dirty flag only on the first call); (2) any Kontakt audio render of a moving control; (3) the modulation-buffer
+  path (`obj+0x1c8` / `obj+0x1d0`, one value per 32-frame chunk), where resonance snaps per chunk instead of
+  ramping, not covered by any vector; (4) the SIMD kernel `FUN_140914f20` (gated by `DAT_14a5ed92c`) and the stereo
+  group path; vectors are mono and use the scalar kernel; (5) the raw goal `obj+0x1f8` stays 0 in the vectors (its
+  host write is unknown).
+- RE note: `FUN_140a9a300` stores the rate from xmm1 (`movss [rcx+0x14], xmm1`), so prepare takes the rate as its
+  float argument; the decompile shows it without arguments.
 
 ### AET Filter (effect type `$EFFECT_TYPE_AET_FILTER`)
 
@@ -99,8 +116,8 @@ when it lands.
 | Formant I | 90 | static + live lanes (Talk/Sharp/Size) | per-sample coefficient ramps (decompiled, not ported), 15 ms length unread | kontakt-formant.md, FUN_140b00750, FUN_140b05ac0 | Exact (static), Partial (live timing) |
 | Formant II | 91 | static table 2 + live lanes (this PR) | measured output vector; lane routing confirmed on Kontakt | formant.rs tests, core inference | Partial, unverified routing |
 | Phaser | 13 | static four-stage allpass | live Cutoff/Resonance lanes; feedback vector | timemod.rs test | Partial |
-| Vowel A | 14 | cascade VowelA, BP4 | live morph lanes; recorded vector | filter.rs (kemu) | Claimed exact, not re-run |
-| Vowel B | 15 | cascade VowelB, BP4 | live morph lanes; recorded vector | filter.rs (kemu) | Claimed exact, not re-run |
+| Vowel A | 14 | cascade VowelA, two parallel sections; live cutoff/resonance clock | host routing of live lanes; Kontakt render of a moving control | vowel_kemu_vectors.json (kemu, 6.5e-6 of peak); Kontakt 8 static measurement | Partial (native live cadence verified) |
+| Vowel B | 15 | cascade VowelB, two parallel sections; live cutoff/resonance clock | host routing of live lanes; Kontakt render of a moving control | vowel_kemu_vectors.json (kemu, 6.5e-6 of peak); Kontakt 8 static measurement | Partial (native live cadence verified) |
 | AET Filter | effect | none | reader, spectral morph core, saved id | tools/re/kontakt_dyx.py | Missing |
 
 ## Tests
@@ -117,7 +134,7 @@ when it lands.
 - Decompiled Kontakt C was not used (export not READY when worked). Constants above are from repo evidence.
 - No Wine oracle measurement (`tools/kontakt-oracle/`) was run for Formant II, Phaser, Vowel A/B or AET.
 - AET Filter core not written.
-- Phaser live lanes and Vowel morph lanes not wired.
+- Phaser live lanes not wired. Vowel A/B live cutoff and resonance lanes are covered in the Vowel section.
 
 ## Shared filter core check (filt-sv, PR #116)
 

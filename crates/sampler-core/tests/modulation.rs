@@ -194,7 +194,7 @@ fn projected_pitch_participates_in_initial_queued_and_batch_source_preflight() {
         plan(
             routes(),
             Playback {
-                transpose_semitones: 48.0,
+                transpose_semitones: 96.0,
                 ..Playback::default()
             },
             false,
@@ -232,12 +232,13 @@ fn projected_pitch_participates_in_initial_queued_and_batch_source_preflight() {
                 1.0,
                 Envelope::default(),
                 Playback {
-                    transpose_semitones: 48.0,
+                    transpose_semitones: 96.0,
                     ..Playback::default()
                 }
             ),
             Err(Error::InvalidInput)
         );
+        // Step 128 admits the +12 projection (256) but not +13 (about 271).
         rt.start_family(
             family,
             0,
@@ -245,7 +246,7 @@ fn projected_pitch_participates_in_initial_queued_and_batch_source_preflight() {
             1.0,
             Envelope::default(),
             Playback {
-                transpose_semitones: 36.0,
+                transpose_semitones: 84.0,
                 ..Playback::default()
             },
         )

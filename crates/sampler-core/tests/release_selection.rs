@@ -482,7 +482,7 @@ fn looped_release_owns_its_duration_and_works_at_empty_and_exclusive_end_boundar
 fn dormant_pitch_is_validated_without_rejecting_unreachable_onset_velocity_layers() {
     let mut high = region(0);
     high.velocity_low = 0.5;
-    high.playback.transpose_semitones = 48.; // maximum supported source ratio already
+    high.playback.transpose_semitones = 96.; // step 256 = MAX_STEP; the +12 expression exceeds it
     let mut low = region(0);
     low.velocity_high = 0.49;
     for velocity_policy in [
