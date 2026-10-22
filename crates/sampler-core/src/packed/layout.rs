@@ -12,20 +12,36 @@ pub struct Packing<'a> {
     mono: bool,
     width: Width,
 }
-fn samples(frames: &[Frame], mono: bool) -> impl Iterator<Item = f32> + '_ {
-    frames
-        .iter()
-        .flat_map(move |f| f.iter().take(if mono { 1 } else { 2 }).copied())
+/// Whether every stored sample (left channel only when mono, else L/R) passes `ok`.
+fn all_samples(frames: &[Frame], mono: bool, ok: impl Fn(f32) -> bool) -> bool {
+    if mono {
+        frames.iter().all(|f| ok(f[0]))
+    } else {
+        frames.as_flattened().iter().all(|&s| ok(s))
+    }
+}
+/// The stored samples converted by `convert`, as one exact-size allocation.
+fn stored<T>(frames: &[Frame], mono: bool, convert: impl Fn(f32) -> T) -> Box<[T]> {
+    let mut data = Vec::with_capacity(frames.len() * if mono { 1 } else { 2 });
+    if mono {
+        data.extend(frames.iter().map(|f| convert(f[0])));
+    } else {
+        data.extend(frames.as_flattened().iter().map(|&s| convert(s)));
+    }
+    data.into_boxed_slice()
 }
 impl<'a> Packing<'a> {
     pub(super) fn analyze(frames: &'a [Frame]) -> Self {
         let mono = frames.iter().all(|[l, r]| l.to_bits() == r.to_bits());
+        // `k as f32 == q` is `q.fract() == 0` for in-range q (|q| < 2^23 here),
+        // without the libm `truncf` call `fract` makes on the baseline target.
         let exact = |scale: f32, max: f32| {
-            samples(frames, mono).all(|s| {
+            all_samples(frames, mono, |s| {
                 let q = s * scale;
-                q.fract() == 0.
+                let k = q as i32;
+                k as f32 == q
                     && (-max..max).contains(&q)
-                    && ((q as i32) as f32 / scale).to_bits() == s.to_bits()
+                    && (k as f32 / scale).to_bits() == s.to_bits()
             })
         };
         let width = if exact(I16, I16) {
@@ -54,26 +70,14 @@ impl<'a> Packing<'a> {
     /// vector reserves its exact sample count; no temporary f32 sample copy.
     pub fn finish(self) -> Packed {
         let len = self.frames.len();
-        let count = len * if self.mono { 1 } else { 2 };
+        let (frames, mono) = (self.frames, self.mono);
         let data = match self.width {
-            Width::I16 => {
-                let mut data = Vec::with_capacity(count);
-                data.extend(samples(self.frames, self.mono).map(|s| (s * I16) as i16));
-                Data::I16(data.into_boxed_slice())
-            }
-            Width::I24 => {
-                let mut data = Vec::with_capacity(count);
-                data.extend(samples(self.frames, self.mono).map(|s| {
-                    let [a, b, c, _] = ((s * I24) as i32).to_le_bytes();
-                    [a, b, c]
-                }));
-                Data::I24(data.into_boxed_slice())
-            }
-            Width::F32 => {
-                let mut data = Vec::with_capacity(count);
-                data.extend(samples(self.frames, self.mono));
-                Data::F32(data.into_boxed_slice())
-            }
+            Width::I16 => Data::I16(stored(frames, mono, |s| (s * I16) as i16)),
+            Width::I24 => Data::I24(stored(frames, mono, |s| {
+                let [a, b, c, _] = ((s * I24) as i32).to_le_bytes();
+                [a, b, c]
+            })),
+            Width::F32 => Data::F32(stored(frames, mono, |s| s)),
         };
         Packed {
             data,
