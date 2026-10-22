@@ -141,7 +141,8 @@ decompilation can provide.
 **Mode-4 path (runtime source mode at `+0xba8`).** Stored group mode 3 is DFD; the window routine and the DFD menu id (4, `0140610000.c` source menu) both use runtime 4. Two set points found:
 - `0140760000.c:19175`: a mode-0 (Sampler) source becomes 4 when its resident flag `+0x2a96a` is clear and `+0x120 < 0`. So a non-resident Sampler group streams like DFD.
 - `0140760000.c:17182`: mode 4 is set unconditionally on the branch guarded by `FUN_14051b400(7)`, which returns the constant 1 (`0140510000.c:8772`). The branch runs when `+0xfc >= 0`.
-- The store that maps stored mode 3 to runtime 4 at group load was not located in the decompile. The 3 → 4 mapping is therefore inferred from the window gate and the menu id, not seen directly.
+- Further constant writes of 4 at `0140740000.c:4818` and `01407b0000.c:2032` (grep of `0xba8` writes, 2026-10-22). Writes of 0 at `0140760000.c:16551` and `0140710000.c:3680` reset the mode.
+- The store that maps stored mode 3 to runtime 4 at group load was not located in the decompile (no variable-to-`+0xba8` write matches it). The 3 → 4 mapping is therefore inferred from the window gate and the menu id, not seen directly.
 
 **HQI (group `interp_quality`).** Enum recovered from the group editor (`0140610000.c:3785`, shown for file version 0xd): 0 Standard, 1 High, 2 Perfect. Native dumps show `interp_quality = 0` in every surveyed group.
 - Kernel per value: **not recovered.** The decompile has no named resampler kernel; constant searches (Blackman, Kaiser, sinc) found nothing usable.
