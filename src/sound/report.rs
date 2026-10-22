@@ -152,8 +152,12 @@ impl FaultInbox {
 /// Problems while playing, cumulative since the part was installed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProblems {
-    /// Notes or voices refused for lack of preallocated capacity.
+    /// Note starts refused for a non-voice capacity limit (command queue,
+    /// packet or release bookkeeping, allocation).
     pub capacity_drops: u64,
+    /// Note starts refused because the voice pool or stream admission was full.
+    #[serde(default)]
+    pub voice_drops: u64,
     /// Core starts rejected by the voice-slot pool, excluding stream-page
     /// admission and adapter/script capacity failures in the aggregate above.
     #[serde(default)]

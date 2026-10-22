@@ -214,6 +214,10 @@ pub enum Runtime {
     VoicesDropped {
         count: u64,
     },
+    /// Note starts refused by a non-voice capacity limit.
+    CapacityRefused {
+        count: u64,
+    },
     StreamUnderruns {
         count: u64,
     },
@@ -246,7 +250,11 @@ impl Runtime {
             ),
             Self::VoicesDropped { count } => (
                 format!("{count} notes dropped"),
-                "The part reached a capacity limit: voices or another internal limit was full.".into(),
+                "The part ran out of voices.".into(),
+            ),
+            Self::CapacityRefused { count } => (
+                format!("{count} notes refused"),
+                "The part reached an internal capacity limit.".into(),
             ),
             Self::StreamUnderruns { count } => (
                 format!("{count} streaming underruns"),

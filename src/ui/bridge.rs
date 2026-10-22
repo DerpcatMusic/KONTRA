@@ -260,8 +260,14 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
             },
         ),
         (
-            p.capacity_drops,
+            p.voice_drops,
             lr::Runtime::VoicesDropped {
+                count: p.voice_drops,
+            },
+        ),
+        (
+            p.capacity_drops,
+            lr::Runtime::CapacityRefused {
                 count: p.capacity_drops,
             },
         ),
