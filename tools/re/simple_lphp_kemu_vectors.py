@@ -35,7 +35,7 @@ TABLE_INIT = 0x1404D14D0
 POOL_ALLOC = 0x140711A10  # the pool allocator the array ctor calls (patched, see below)
 WRAPPER_ARRAY_CTOR = 0x1407CCBB0  # BFilterSimpleLPHP element constructor loop (count 1)
 WRAPPER_SETTER = 0x140961190  # wrapper vtable slot 12 (int in edx, value in xmm2)
-DJ_CTOR = 0x140AF44C0  # FilterDJExtRange core constructor
+DJ_CTOR = 0x140AF44C0  # FilterDJExtRange core constructor (used by the copy probe)
 DJ_OFFSET = 0x54F0  # DJ core inside the wrapper element
 DJ_PREPARE = 0x140AFD0F0  # vtable slot 3: (this, rate in xmm1, block in r8d)
 DJ_COPY = 0x140AF6300  # vtable slot 19: copy-reinit from another DJ core
@@ -130,9 +130,14 @@ def cases(mode2_value):
     return out
 
 
+def new_element(e):
+    """A fresh BFilterSimpleLPHP element from its real array constructor (see the pool patch)."""
+    e.uc.mem_write(POOL_ALLOC, b"\x48\xB8" + struct.pack("<Q", e.alloc(0x5960 * 2)) + b"\xC3")
+    return e.call(WRAPPER_ARRAY_CTOR, 0, 1, limit=4_000_000)
+
+
 def run_case(e, name, seq, in_table, out_table, left, right, out_left):
-    core = e.alloc(0x5960)
-    complete(e, DJ_CTOR, core)
+    core = new_element(e) + DJ_OFFSET  # the wrapper's own DJ core (mode 2 from the constructor)
     complete(e, DJ_PREPARE, core, 0, BLOCK, f={1: RATE})
     rng = random.Random(7)
     stim = [f32(rng.uniform(-0.4, 0.4)) for _ in range(N)]
@@ -182,11 +187,9 @@ def main():
     exe, dst = sys.argv[1:3]
     e = Emu(exe)
     complete(e, TABLE_INIT)
-    buf = e.alloc(0x5960 * 2)
-    # The array ctor takes its element memory from the pool allocator (a global object). Return a
-    # zeroed buffer from it instead; the element constructor itself runs unchanged.
-    e.uc.mem_write(POOL_ALLOC, b"\x48\xB8" + struct.pack("<Q", buf) + b"\xC3")
-    element = e.call(WRAPPER_ARRAY_CTOR, 0, 1, limit=4_000_000)
+    # The array ctor takes its element memory from the pool allocator (a global object); new_element()
+    # patches it to return a zeroed buffer. The element constructor itself runs unchanged.
+    element = new_element(e)
     mode2_value = f32(2.0 / struct.unpack("<f", e.uc.mem_read(MODE2_SCALE_ADDR, 4))[0])
     left, right = e.alloc(N * 4), e.alloc(N * 4)
     out_left, out_right = e.alloc(N * 4), e.alloc(N * 4)
@@ -195,6 +198,7 @@ def main():
     e.write(out_table, "Q", out_left, out_right)
 
     dj_ctor = dump_slots(e, element + DJ_OFFSET)
+    assert all(q["rate"] == -1.0 for q in dj_ctor), dj_ctor
     results = []
     for name, seq in cases(mode2_value):
         results.append(run_case(e, name, seq, in_table, out_table, left, right, out_left))

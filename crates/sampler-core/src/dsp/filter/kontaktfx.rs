@@ -1259,6 +1259,64 @@ mod tests {
         }
     }
 
+    /// Native DJ core (simple_lphp_kemu_vectors.json, tools/re/simple_lphp_kemu_vectors.py): the
+    /// setter writes per index (0 cutoff: slots 0 and 1; 1 resonance raw: slot 2 target and dirty;
+    /// 2 and 3: no slot write), replayed on the Rust DJ core. Every recorded slot rate is -1 or 0,
+    /// so the native alternate-smoother branch (rate > 0) never runs; the ramp below is that branch's
+    /// complement and must match the native slots and output bit for bit.
+    #[test]
+    fn simple_lphp_dj_replays_native_slot_writes() {
+        prepare_table();
+        let file: serde_json::Value = serde_json::from_str(include_str!("simple_lphp_kemu_vectors.json")).unwrap();
+        let f = |v: &serde_json::Value| v.as_f64().unwrap() as f32;
+        assert!(file["rates_nonpositive_in_every_case"].as_bool().unwrap());
+        assert_eq!(file["wrapper_setter_probe"]["changed_offsets_in_slot_region"].as_array().unwrap().len(), 0);
+        let rate = f(&file["rate"]);
+        for case in file["cases"].as_array().unwrap() {
+            let stim: Vec<f32> = case["stim"].as_array().unwrap().iter().map(f).collect();
+            let dj = Dj::new(rate);
+            let mut s = DjState::default();
+            // native prepare: cutoff 0 and the resonance raw 0 (the ctor values), then the bind() snap
+            dj.set(&mut s, 0.0, 0.0);
+            Dj::snap(&mut s);
+            for (b, block) in case["blocks"].as_array().unwrap().iter().enumerate() {
+                for call in block["calls"].as_array().unwrap() {
+                    let (index, value) = (call[0].as_u64().unwrap(), f(&call[1]));
+                    match index {
+                        0 => {
+                            let keep = s.slots[2];
+                            dj.set(&mut s, value, 0.0);
+                            s.slots[2] = keep;
+                        }
+                        1 => {
+                            s.slots[2].tgt = value;
+                            s.slots[2].dirty = true;
+                        }
+                        _ => {}
+                    }
+                }
+                s.slots.iter_mut().for_each(|q| q.block(dj.timing));
+                let out: Vec<f32> = (0..QUANTUM as usize)
+                    .map(|n| dj.tick(&mut s, [stim[b * QUANTUM as usize + n]; 2])[0])
+                    .collect();
+                for (i, (slot, native)) in s.slots.iter().zip(block["slots"].as_array().unwrap()).enumerate() {
+                    let want = |k: &str| f(&native[k]);
+                    assert_eq!(slot.cur.to_bits(), want("cur").to_bits(), "{} block {b} slot {i} cur", case["name"]);
+                    assert_eq!(slot.d.to_bits(), want("step").to_bits(), "{} block {b} slot {i} step", case["name"]);
+                    assert_eq!(slot.tgt.to_bits(), want("target").to_bits(), "{} block {b} slot {i} target", case["name"]);
+                    // Native counts on past zero (-1, -2, ...) and only acts when it hits exactly zero; the
+                    // Rust counter parks at zero. Both never act again after the snap, so compare the clamp.
+                    assert_eq!(slot.count, native["count"].as_i64().unwrap().max(0) as i32, "{} block {b} slot {i} count", case["name"]);
+                    assert!(!slot.dirty && native["dirty"].as_u64().unwrap() == 0, "{} block {b} slot {i} dirty", case["name"]);
+                }
+                for (n, (a, want)) in out.iter().zip(block["out"].as_array().unwrap()).enumerate() {
+                    let want = f(want);
+                    assert!(a.to_bits() == want.to_bits() || (a - want).abs() <= 2e-5 * want.abs().max(1.0), "{} block {b} frame {n}: {a} vs {want}", case["name"]);
+                }
+            }
+        }
+    }
+
     // Source-free lifecycle fixtures; no bank, native process or edited golden.
     fn typed_owner_cases() -> Vec<KontaktFx> {
         let knobs = [0.35, 0.25, 0.45, 0.1, 0.5];
