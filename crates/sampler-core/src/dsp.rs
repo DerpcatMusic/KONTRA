@@ -365,8 +365,6 @@ impl PreparedProcessor {
             },
             scalar @ (Self::Pan { .. } | Self::ControlMatrix(_) | Self::TimeMod { .. } | Self::Dynamics(_)
                 | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. } | Self::S1200 { .. }
-                | Self::Branch { .. } | Self::Space(..)) => OperationOwner::Scalar(scalar),
-                | Self::LiveFormant { .. } | Self::Formant(_) | Self::Filter { .. }
                 | Self::Branch { .. } | Self::Space(..) | Self::RingMod { .. }) => OperationOwner::Scalar(scalar),
         }
     }
