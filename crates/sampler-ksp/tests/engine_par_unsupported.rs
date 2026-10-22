@@ -104,3 +104,15 @@ fn slot_or_output_display_query_is_reported_as_not_modelled() {
     let w = warnings("on init declare @t end on on note @t := get_engine_par_disp_m($ENGINE_PAR_VOLUME, -1, -1, 0) end on");
     assert!(w.iter().any(|m| m.contains("get_engine_par_disp_m") && m.contains("not modelled")), "{w:?}");
 }
+
+#[test]
+fn find_group_of_an_unknown_constant_name_warns_with_the_native_wording() {
+    let w = warnings("on note message(find_group(\"Missing\")) end on");
+    assert!(
+        w.iter().any(|m| m
+            == "find_group(): Group \"Missing\" was not found. Index will be invalid!"),
+        "{w:?}"
+    );
+    let known = warnings("on note message(find_group(\"Group 0\")) end on");
+    assert!(known.iter().all(|m| !m.contains("was not found")), "{known:?}");
+}
