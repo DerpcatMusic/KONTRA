@@ -52,8 +52,6 @@ pub struct EqBand {
     pub bandwidth: Parameter,
     /// `UviDigital`: which section of the band's design this stage runs (`poles` is the order).
     pub section: u8,
-    /// Seconds over which a redesigned section's coefficients glide to the new design (0 jumps).
-    pub ramp: f64,
 }
 
 impl EqBand {
@@ -72,7 +70,6 @@ impl EqBand {
             proportional_q: 0.,
             bandwidth: c(1.),
             section: 0,
-            ramp: 0.,
         }
     }
 
@@ -246,10 +243,6 @@ pub(crate) fn live_band(b: &sampler_ir::fx::eq::Band) -> EqBand {
         proportional_q: b.proportional_q,
         bandwidth: c(f64::from(b.bandwidth)),
         section: 0,
-        ramp: match b.law {
-            Law::Solid(_) => solid::RAMP_SECONDS,
-            _ => 0.,
-        },
     }
 }
 

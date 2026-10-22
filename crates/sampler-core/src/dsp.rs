@@ -252,6 +252,7 @@ pub(crate) mod ring_ramp;
 pub(crate) mod stereo_tune;
 // Wired by the Kontakt mapping for module 0x22; until then only the tests build it.
 #[allow(dead_code)]
+pub(crate) mod gater;
 pub(crate) mod rotator;
 pub(crate) mod space;
 pub(crate) mod timemod;
@@ -1299,6 +1300,8 @@ pub(super) struct ProcessorState {
     daft: filter::daft::State,
     /// Live Formant's control ramp.
     formant: formant::Ramp,
+    /// Solid G-EQ knob glide (the native lanes of one band).
+    glide: eq_family::solid::Glide,
 }
 impl ProcessorState {
     fn finite_for(&self, stage: ProcessorRef<'_>) -> bool {
